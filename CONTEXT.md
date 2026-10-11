@@ -37,8 +37,12 @@ An index along an axis in the Table Source's current order, from zero to the axi
 _Avoid_: Visual index, row number, offset
 
 **Key**:
-An opaque identity the Table Source assigns to a row or column, compared only for equality and used for Grid state that must survive reordering.
+An opaque 64-bit identity the Table Source assigns to a row or column, compared only for equality and used for Grid state that must survive reordering.
 _Avoid_: ID, logical index, handle
+
+**Key Interner**:
+A Table Source helper that maps the host's own identities (composite or string keys) to Keys without collisions.
+_Avoid_: Key hasher, ID map
 
 **Window**:
 The span of positions on an axis that the Grid currently needs keys for (the visible range plus overscan), filled in by the Table Source.
