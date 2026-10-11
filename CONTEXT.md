@@ -71,7 +71,7 @@ The shared Table Source implementation for simple sources: it holds no cell data
 _Avoid_: Memory source, default source, engine
 
 **Logical Index**:
-An In-Memory Table Source's index into its own stored rows or columns; never seen by the Grid.
+The index of a base row or column in the host's data, as an In-Memory Table Source tracks it; never seen by the Grid.
 _Avoid_: Base index, storage index
 
 **Remap**:
