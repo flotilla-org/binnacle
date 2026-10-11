@@ -18,6 +18,18 @@ _Avoid_: Storage, data source, model, backend
 A request the Grid emits for its host or Table Source to act on, such as a sort request, a column move or the start of an edit.
 _Avoid_: Callback, event, command
 
+**Action**:
+A semantic input the host sends the Grid on the user's behalf (move focus, select all, activate, cancel, typed text), mapped from native keys by the host's keymap.
+_Avoid_: Command, key event, shortcut
+
+**Mode**:
+The single interaction the Grid is in the middle of: idle, dragging a selection, resizing, moving headers or editing.
+_Avoid_: State, gesture, tool
+
+**Strip**:
+One axis's list of visible items in a Snapshot (Position, Key, offset, size), which the host crosses with the other axis's Strip to draw cells.
+_Avoid_: Band, row list, track
+
 **Snapshot**:
 The Grid's per-frame, read-only description of what to draw (cell and header placements with Keys and flags, selection, scroll extents, damage), stamped with a generation.
 _Avoid_: Frame, render list, view model
