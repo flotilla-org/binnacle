@@ -64,12 +64,16 @@ _Avoid_: Border, padding, gutter
 The ordered list of columns and directions the user has asked to sort by, held by the Grid as header state and requested from the Table Source.
 _Avoid_: Sort order, remap spec
 
-### Inside an in-memory Table Source
+### Inside an In-Memory Table Source
+
+**In-Memory Table Source**:
+The shared Table Source implementation for simple sources: it holds no cell data, only the Remap and the machinery to sort, filter and move from keys and results the host feeds it.
+_Avoid_: Memory source, default source, engine
 
 **Logical Index**:
-An in-memory Table Source's index into its own stored rows or columns; never seen by the Grid.
+An In-Memory Table Source's index into its own stored rows or columns; never seen by the Grid.
 _Avoid_: Base index, storage index
 
 **Remap**:
-An in-memory Table Source's mapping from Position to Logical Index, produced by its sort, filter and moves.
+An In-Memory Table Source's mapping from Position to Logical Index, produced by its sort, filter and moves.
 _Avoid_: Permutation, view mapping
