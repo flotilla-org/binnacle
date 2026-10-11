@@ -1,0 +1,11 @@
+[package]
+name = "binnacle-prototype-ratatui"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "PROTOTYPE, throwaway: drives a stub Grid and In-Memory Table Source through the frame loop from ratatui (wayfinder ticket #5)."
+
+[workspace]
+
+[dependencies]
+ratatui = "0.30"
