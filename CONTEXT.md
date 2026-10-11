@@ -44,6 +44,18 @@ _Avoid_: ID, logical index, handle
 The span of positions on an axis that the Grid currently needs keys for (the visible range plus overscan), filled in by the Table Source.
 _Avoid_: Page, viewport, chunk
 
+**Scroll Anchor**:
+The Grid's scroll state on one axis: a Position plus an offset into that item, used instead of an absolute coordinate so huge tables stay precise.
+_Avoid_: Scroll offset, scroll position
+
+**Size Override**:
+A size set for one item on an axis (by a user resize, auto-size or restored layout) that replaces the axis default size.
+_Avoid_: Custom width, stored width
+
+**Gap**:
+The gridline thickness between items on an axis, part of the Grid's layout and hit testing.
+_Avoid_: Border, padding, gutter
+
 **Sort Spec**:
 The ordered list of columns and directions the user has asked to sort by, held by the Grid as header state and requested from the Table Source.
 _Avoid_: Sort order, remap spec
