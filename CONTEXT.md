@@ -18,6 +18,14 @@ _Avoid_: Storage, data source, model, backend
 A request the Grid emits for its host or Table Source to act on, such as a sort request, a column move or the start of an edit.
 _Avoid_: Callback, event, command
 
+**Snapshot**:
+The Grid's per-frame, read-only description of what to draw (cell and header placements with Keys and flags, selection, scroll extents, damage), stamped with a generation.
+_Avoid_: Frame, render list, view model
+
+**Change Notice**:
+A message from the Table Source telling the Grid how an axis changed (reset, reordered, inserted, removed, content changed).
+_Avoid_: Invalidation, update event, data changed
+
 ### Axes and identity
 
 **Axis**:
