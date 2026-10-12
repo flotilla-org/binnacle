@@ -22,6 +22,7 @@ impl fmt::Display for Unsortable {
 impl std::error::Error for Unsortable {}
 
 type Extract<R, T> = Box<dyn Fn(&R) -> Option<T>>;
+type Keep<R> = Box<dyn Fn(&R) -> bool>;
 type ExtractBytes<R> = Box<dyn for<'r> Fn(&'r R) -> Option<Cow<'r, [u8]>>>;
 
 enum Column<R> {
@@ -46,6 +47,8 @@ impl<R> Column<R> {
 pub struct MemorySource<R> {
     table: InMemoryTableSource,
     columns: HashMap<Key, Column<R>>,
+    /// The filter in force, kept to place rows the base data gains.
+    keep: Option<Keep<R>>,
 }
 
 impl<R> MemorySource<R> {
@@ -55,6 +58,7 @@ impl<R> MemorySource<R> {
         MemorySource {
             table: InMemoryTableSource::new(rows, cols),
             columns: HashMap::new(),
+            keep: None,
         }
     }
 
@@ -105,18 +109,100 @@ impl<R> MemorySource<R> {
     }
 
     /// Keeps only the rows for which `keep` is true, in sort order, and
-    /// returns the Change Notice the rows need. The sort is not redone.
+    /// returns the Change Notice the rows need. The sort is not redone. The
+    /// filter stays in force for rows the base data gains or changes.
     ///
     /// # Panics
     ///
     /// If `rows` is not as long as the base row count.
-    pub fn filter(&mut self, rows: &[R], keep: impl Fn(&R) -> bool) -> ChangeNotice {
-        self.table.apply_filter(rows.iter().map(keep).collect())
+    pub fn filter(&mut self, rows: &[R], keep: impl Fn(&R) -> bool + 'static) -> ChangeNotice {
+        let notice = self.table.apply_filter(rows.iter().map(&keep).collect());
+        self.keep = Some(Box::new(keep));
+        notice
     }
 
     /// See [`InMemoryTableSource::clear_filter`].
     pub fn clear_filter(&mut self) -> ChangeNotice {
+        self.keep = None;
         self.table.clear_filter()
+    }
+
+    /// Rows were appended to the host's base data, now `rows`, keyed by
+    /// `keys` if the rows have host Keys (empty otherwise). With no sort or
+    /// filter active they are `Inserted` at the end; otherwise they are
+    /// sorted and filtered into place and the rows need a `Reset`.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is shorter than before, or as [`InMemoryTableSource::append_rows`].
+    pub fn appended(&mut self, rows: &[R], keys: &[Key]) -> ChangeNotice {
+        let n = rows
+            .len()
+            .checked_sub(self.table.base_rows())
+            .expect("rows were appended, not removed");
+        let notice = self.table.append_rows(n, keys);
+        if !matches!(notice, ChangeNotice::Inserted { .. }) {
+            return self.reorder(rows);
+        }
+        notice
+    }
+
+    /// The value in `column` of base row `row` (a Logical Index into `rows`)
+    /// changed. Returns `ContentChanged` for the row's Position, `Reordered`
+    /// if the rows are sorted by that column, `Reset` if the filter now keeps
+    /// or drops the row where it did not before, or `None` if the row is
+    /// filtered out either way.
+    ///
+    /// # Panics
+    ///
+    /// If `row` is not a row of `rows`, or `rows` is not as long as the base
+    /// row count.
+    pub fn edited(&mut self, rows: &[R], row: usize, column: Key) -> Option<ChangeNotice> {
+        if let Some(keep) = &self.keep
+            && keep(&rows[row]) != self.table.row_position(row).is_some()
+        {
+            return Some(self.reorder(rows));
+        }
+        if self.sort_spec().find(column).is_some() {
+            self.resort(rows);
+            return Some(ChangeNotice::Reordered);
+        }
+        let p = self.table.row_position(row)?;
+        Some(ChangeNotice::ContentChanged(p..p + 1))
+    }
+
+    /// The host's base data changed in some other way (rows inserted or
+    /// removed anywhere, or replaced): it is now `rows`, keyed by `keys` (by
+    /// Logical Index if `None`). The sort and filter in force are applied
+    /// again and the rows need the `Reset` returned.
+    ///
+    /// # Panics
+    ///
+    /// As [`InMemoryTableSource::replace_rows`].
+    pub fn replaced(&mut self, rows: &[R], keys: Option<Vec<Key>>) -> ChangeNotice {
+        let spec = self.sort_spec().clone();
+        self.table.replace_rows(rows.len(), keys);
+        // Every spec column had a closure when it was applied.
+        let _ = self.sort(rows, &spec);
+        self.reorder(rows)
+    }
+
+    /// Sorts `rows` again by the Sort Spec in force.
+    fn resort(&mut self, rows: &[R]) {
+        let spec = self.sort_spec().clone();
+        let _ = self.sort(rows, &spec);
+    }
+
+    /// Applies the sort and filter in force to `rows` again; returns the
+    /// `Reset` the rows need.
+    fn reorder(&mut self, rows: &[R]) -> ChangeNotice {
+        if !self.sort_spec().is_empty() {
+            self.resort(rows);
+        }
+        match &self.keep {
+            Some(keep) => self.table.apply_filter(rows.iter().map(keep).collect()),
+            None => ChangeNotice::Reset(self.count(Axis::Rows)),
+        }
     }
 
     /// The Sort Spec the rows are in, as last applied.

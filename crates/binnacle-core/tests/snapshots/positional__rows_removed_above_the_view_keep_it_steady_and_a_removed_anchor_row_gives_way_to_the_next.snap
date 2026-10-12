@@ -1,0 +1,35 @@
+---
+source: crates/binnacle-core/tests/positional.rs
+expression: out
+---
+--- 1. scroll to row 8
+window Rows 0..6
+window Cols 0..3
+window Rows 6..14
+gen 2 | damage layout positions
+Rows: count 20, extent 5, header 1, anchor 8+0, thumb 0.5000/0.2000 | 8#8@1+1 9#9@2+1 10#10@3+1 11#11@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+8   8.0    8.1    8.2
+9   9.0    9.1    9.2
+10  10.0   10.1   10.2
+11  11.0   11.1   11.2
+--- 2. remove rows 2..5: the anchor follows record 8 to row 5
+gen 3 | damage layout positions
+Rows: count 17, extent 5, header 1, anchor 5+0, thumb 0.3846/0.2353 | 5#8@1+1 6#9@2+1 7#10@3+1 8#11@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+5   8.0    8.1    8.2
+6   9.0    9.1    9.2
+7   10.0   10.1   10.2
+8   11.0   11.1   11.2
+--- 3. remove rows 4..6, the anchor's row among them: the view starts at record 9, now row 4
+window Rows 2..10
+gen 4 | damage layout positions
+Rows: count 15, extent 5, header 1, anchor 4+0, thumb 0.3636/0.2667 | 4#9@1+1 5#10@2+1 6#11@3+1 7#12@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+4   9.0    9.1    9.2
+5   10.0   10.1   10.2
+6   11.0   11.1   11.2
+7   12.0   12.1   12.2

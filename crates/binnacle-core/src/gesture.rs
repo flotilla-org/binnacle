@@ -181,6 +181,8 @@ impl Grid {
         };
         let press = match self.hit(x, y) {
             Hit::Cell([r, c]) if !(r.in_gap || c.in_gap) => {
+                // Clicks never scroll, even to a focus move made just before.
+                self.reveal = false;
                 let cell = self.cell_at(r.position, c.position);
                 if modifiers.toggle() {
                     self.toggle_pick(cell);
@@ -435,6 +437,7 @@ impl Grid {
         {
             return;
         }
+        self.reveal = false;
         let mut cell = self.focus.unwrap_or_else(|| {
             let at = |a: Axis| self.axis(a).anchor.position;
             self.cell_at(at(Axis::Rows), at(Axis::Cols))

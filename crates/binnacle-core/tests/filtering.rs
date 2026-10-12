@@ -33,7 +33,7 @@ fn click(s: &mut Scenario<RecordTable>, x: f32, y: f32, modifiers: Modifiers) {
     });
 }
 
-fn filter(s: &mut Scenario<RecordTable>, keep: impl Fn(&Vec<Option<i64>>) -> bool) {
+fn filter(s: &mut Scenario<RecordTable>, keep: impl Fn(&Vec<Option<i64>>) -> bool + 'static) {
     let notice = s.source.filter(keep);
     s.input(|g| g.notify(Axis::Rows, notice));
 }

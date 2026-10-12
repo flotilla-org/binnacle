@@ -22,9 +22,10 @@ use crate::types::{Axis, Generation, Key, Position, Viewport};
 /// minimum-size hint from [`Grid::set_window_sized`] are clamped into it, and
 /// the Gap is capped at `max_size`. The range keeps layout precise in `f32`
 /// and bounds each Window at about the viewport's length over `min_size`
-/// items, plus overscan. A `min_size` below the `f32` spacing at the
-/// viewport's far edge cannot be laid out reliably: the Strip ends where
-/// offsets stop advancing.
+/// items, plus overscan. Layout steps in `f32`, so where the `f32` spacing at
+/// the viewport's far edge is a sizeable share of `min_size` each item
+/// advances a little less and a few more fit. A `min_size` below that spacing
+/// cannot be laid out reliably: the Strip ends where offsets stop advancing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AxisConfig {
     pub count: u64,
@@ -103,7 +104,7 @@ impl IntoIterator for WindowRequests {
 
 /// The view controller for one table.
 pub struct Grid {
-    axes: [AxisState; 2],
+    pub(crate) axes: [AxisState; 2],
     pub(crate) generation: Generation,
     pub(crate) effects: VecDeque<Stamped>,
     pub(crate) pending_damage: Damage,

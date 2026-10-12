@@ -66,6 +66,82 @@ impl ScenarioSource for IdentityTable {
     }
 }
 
+/// A table holding the Key at every Position on each axis, so items can be
+/// inserted and removed anywhere. New items get Keys never used before.
+pub struct KeyedTable {
+    pub axes: [Vec<Key>; 2],
+    next: u64,
+}
+
+impl KeyedTable {
+    /// `rows` rows keyed 0.. and `cols` columns keyed 0.. (the axes' Keys
+    /// are independent).
+    pub fn new(rows: u64, cols: u64) -> Self {
+        KeyedTable {
+            axes: [(0..rows).map(Key).collect(), (0..cols).map(Key).collect()],
+            next: rows.max(cols),
+        }
+    }
+
+    fn keys(&mut self, axis: Axis) -> &mut Vec<Key> {
+        &mut self.axes[at_index(axis)]
+    }
+
+    /// Inserts `n` new items before Position `at` (clamped to the count);
+    /// returns the Change Notice the Grid needs.
+    pub fn insert(&mut self, axis: Axis, at: Position, n: u64) -> ChangeNotice {
+        let at = at.min(self.axes[at_index(axis)].len() as u64);
+        let fresh: Vec<Key> = (self.next..self.next + n).map(Key).collect();
+        self.next += n;
+        let keys = self.keys(axis);
+        keys.splice(at as usize..at as usize, fresh);
+        ChangeNotice::Inserted { at, n }
+    }
+
+    /// Removes the `n` items from Position `at` (both clipped to the count);
+    /// returns the Change Notice the Grid needs.
+    pub fn remove(&mut self, axis: Axis, at: Position, n: u64) -> ChangeNotice {
+        let keys = self.keys(axis);
+        let len = keys.len() as u64;
+        let at = at.min(len);
+        let n = n.min(len - at);
+        keys.drain(at as usize..(at + n) as usize);
+        ChangeNotice::Removed { at, n }
+    }
+}
+
+impl KeyedTable {
+    /// Reverses the order of `axis`; returns the Change Notice the Grid
+    /// needs.
+    pub fn reverse(&mut self, axis: Axis) -> ChangeNotice {
+        self.keys(axis).reverse();
+        ChangeNotice::Reordered
+    }
+}
+
+impl ScenarioSource for KeyedTable {
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        let keys = &self.axes[at_index(axis)];
+        let end = (range.end as usize).min(keys.len());
+        let start = (range.start as usize).min(end);
+        keys[start..end].to_vec()
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        match self.axes[at_index(axis)].iter().position(|&k| k == key) {
+            Some(p) => Located::Found(p as u64),
+            None => Located::Gone { suggest: None },
+        }
+    }
+}
+
+fn at_index(axis: Axis) -> usize {
+    match axis {
+        Axis::Rows => 0,
+        Axis::Cols => 1,
+    }
+}
+
 /// A row of a [`RecordTable`]: one integer per column, `None` for null.
 pub type Record = Vec<Option<i64>>;
 
@@ -90,8 +166,29 @@ impl RecordTable {
 
     /// Keeps only the records for which `keep` is true; the Grid needs the
     /// returned Change Notice.
-    pub fn filter(&mut self, keep: impl Fn(&Record) -> bool) -> ChangeNotice {
+    pub fn filter(&mut self, keep: impl Fn(&Record) -> bool + 'static) -> ChangeNotice {
         self.source.filter(&self.rows, keep)
+    }
+
+    /// Appends `records` to the base data; the Grid needs the returned
+    /// Change Notice.
+    pub fn append(&mut self, records: Vec<Record>) -> ChangeNotice {
+        self.rows.extend(records);
+        self.source.appended(&self.rows, &[])
+    }
+
+    /// Sets base row `row`'s value in column `col`; the Grid needs the
+    /// returned Change Notice, if any.
+    pub fn edit(&mut self, row: usize, col: usize, value: Option<i64>) -> Option<ChangeNotice> {
+        self.rows[row][col] = value;
+        self.source.edited(&self.rows, row, Key(col as u64))
+    }
+
+    /// Replaces the base data with `rows`; the Grid needs the returned
+    /// Change Notice.
+    pub fn replace(&mut self, rows: Vec<Record>) -> ChangeNotice {
+        self.rows = rows;
+        self.source.replaced(&self.rows, None)
     }
 }
 

@@ -1,15 +1,20 @@
 //! Change Notices: the Table Source telling the Grid how an axis changed, and
 //! keyed state following its Keys through the change.
 
+use std::ops::Range;
+
 use crate::effect::Effect;
 use crate::focus::FocusEnd;
-use crate::gesture::{Before, Gesture, Mode};
+use crate::gesture::{Before, Gesture, Mode, Press};
 use crate::grid::Grid;
+use crate::measure::AxisMeasure;
+use crate::selection::Span;
+use crate::snapshot::ScrollAnchor;
 use crate::sort::Located;
 use crate::types::{Axis, Key, Position};
 
 /// A message from the Table Source telling the Grid how an axis changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ChangeNotice {
     /// The items are in a new order and the count is unchanged. Focus and
     /// picks follow their Keys (the Grid sends `Locate` for the focused Key),
@@ -23,6 +28,19 @@ pub enum ChangeNotice {
     /// dropped unless it spans the whole axis; row Size Overrides are dropped
     /// (column ones kept); the Scroll Anchor keeps its Position, clamped.
     Reset(u64),
+    /// `n` items were inserted before the item at Position `at` (the count
+    /// for the end). Everything from `at` on moves `n` later: focus, the
+    /// range and the Scroll Anchor move with their items, so the view stays
+    /// steady.
+    Inserted { at: Position, n: u64 },
+    /// The `n` items from Position `at` were removed and those after them
+    /// move `n` earlier. Focus on a removed item falls back as for a `Gone`
+    /// answer, to the item that took its place; removed Keys the Grid can
+    /// see leave the picks and, on the rows, lose their Size Overrides.
+    Removed { at: Position, n: u64 },
+    /// The content of the items at these Positions changed; their Keys and
+    /// order did not. Their Keys and content sizes are fetched again.
+    ContentChanged(Range<Position>),
 }
 
 /// Where a focused Key went after a Change Notice, as far as the Grid knows.
@@ -41,6 +59,181 @@ impl Grid {
         match notice {
             ChangeNotice::Reordered => self.changed(axis, None),
             ChangeNotice::Reset(count) => self.changed(axis, Some(count)),
+            ChangeNotice::Inserted { at, n } => {
+                let at = at.min(self.axis(axis).measure.count());
+                if n > 0 {
+                    self.shifted(axis, Shift::Inserted { at, n });
+                }
+            }
+            ChangeNotice::Removed { at, n } => {
+                let count = self.axis(axis).measure.count();
+                let at = at.min(count);
+                let n = n.min(count - at);
+                if n > 0 {
+                    self.shifted(axis, Shift::Removed { at, n });
+                }
+            }
+            ChangeNotice::ContentChanged(range) => self.content_changed(axis, range),
+        }
+    }
+
+    /// Ends the gestures a change on `axis` invalidates: a range drag, and a
+    /// header move on that axis, whose Positions are stale.
+    fn cancel_drags(&mut self, axis: Axis) {
+        if self.gesture.mode() == Mode::DraggingSelection {
+            self.cancel();
+            self.relocate();
+        }
+        if matches!(self.gesture.mode(), Mode::MovingHeaders { axis: a, .. } if a == axis) {
+            self.cancel();
+        }
+    }
+
+    /// A press in progress can no longer restore Positions from before a
+    /// notice: Cancel restores the state as it is now.
+    fn rebase_press(&mut self) {
+        let now = Before {
+            focus: self.focus,
+            selection: self.selection.clone(),
+        };
+        if let Gesture::Pressed { before, .. } = &mut self.gesture {
+            *before = now;
+        }
+    }
+
+    /// Items were inserted or removed on `axis`: everything keyed or placed
+    /// by Position moves with its item.
+    fn shifted(&mut self, axis: Axis, shift: Shift) {
+        let i = axis.index();
+        self.cancel_drags(axis);
+        if let Gesture::Pressed {
+            press: Press::Header {
+                axis: a, position, ..
+            },
+            ..
+        } = &mut self.gesture
+            && *a == axis
+        {
+            match shift.map(*position) {
+                Some(p) => *position = p,
+                // Its header is gone: the release clicks nothing. A header
+                // press changed no focus or selection, so nothing to restore.
+                None => {
+                    self.gesture = Gesture::Idle;
+                    self.pending_damage.selection = true;
+                }
+            }
+        }
+        let gone = match shift {
+            Shift::Inserted { at, n } => {
+                self.axis_mut(axis).measure.insert(at, n);
+                Vec::new()
+            }
+            Shift::Removed { at, n } => self.axis_mut(axis).measure.remove(at, n),
+        };
+        let count = self.axis(axis).measure.count();
+        let mut selection = self.selection.clone();
+        if axis == Axis::Rows {
+            for &key in &gone {
+                self.axis_mut(axis).measure.clear_size(key);
+            }
+            selection.picks.retain(|k| !gone.contains(k));
+        }
+        selection.span = selection
+            .span
+            .and_then(|span| shift_span(span, axis, shift, &self.axis(axis).measure));
+        if count == 0 {
+            selection.span = None;
+        }
+        self.set_selection(selection);
+        if let Some(w) = &mut self.whereabouts[i] {
+            match w.at.map(|p| shift.map(p)) {
+                Some(Some(p)) => w.at = Some(p),
+                Some(None) => self.whereabouts[i] = None,
+                None => {}
+            }
+        }
+        if let Shift::Removed { .. } = shift {
+            self.edit_removed(axis, &gone);
+        }
+        self.shift_focus(axis, shift, count);
+        self.rebase_press();
+        let st = self.axis_mut(axis);
+        st.anchor = match shift.map(st.anchor.position) {
+            Some(position) if position == st.anchor.position => st.anchor,
+            Some(position) => ScrollAnchor {
+                position,
+                ..st.anchor
+            },
+            None => ScrollAnchor {
+                position: shift.at(),
+                offset: 0.0,
+            },
+        };
+        st.clamp_anchor();
+        self.pending_damage.layout = true;
+        self.pending_damage.positions = true;
+    }
+
+    /// Items on `axis` were removed, `gone` being the Keys the Window held:
+    /// an edit whose Key went is cancelled, one whose Key the Window cannot
+    /// vouch for asks where it is.
+    fn edit_removed(&mut self, axis: Axis, gone: &[Key]) {
+        let Gesture::Editing { keys, .. } = &self.gesture else {
+            return;
+        };
+        let key = keys[axis.index()];
+        let measure = &self.axis(axis).measure;
+        if measure.count() == 0 || gone.contains(&key) {
+            self.end_edit();
+        } else if measure.position_of(key).is_none() {
+            self.locate_edit(axis);
+        }
+    }
+
+    /// Moves the focused end on `axis` with its item. If its item was
+    /// removed it falls back to the item that took its place; while its
+    /// Position is being located, the fallback moves and the Key is located
+    /// again, since an answer on its way may predate the change.
+    fn shift_focus(&mut self, axis: Axis, shift: Shift, count: u64) {
+        let i = axis.index();
+        if count == 0 {
+            return self.clamp_positions(axis, 0);
+        }
+        let fallback = FocusEnd::at(self.axis(axis), shift.at().min(count - 1));
+        let Some(f) = &mut self.focus else { return };
+        let end = f[i];
+        let moved = shift.map(end.position);
+        if self.locating[i] {
+            f[i].position = moved.unwrap_or(shift.at()).min(count - 1);
+            if let Some(key) = end.key {
+                self.locate(axis, key);
+            }
+            return;
+        }
+        match (moved, end.key) {
+            (Some(p), _) => f[i].position = p,
+            (None, Some(key)) => {
+                self.pending_damage.selection = true;
+                self.left(axis, key, true, Some(shift.at()));
+            }
+            (None, None) => {
+                f[i] = fallback;
+                self.pending_damage.selection = true;
+                self.announce_focus();
+            }
+        }
+    }
+
+    /// The content of the items at `range` on `axis` changed: any of them in
+    /// the Window are fetched again, with their content sizes.
+    fn content_changed(&mut self, axis: Axis, range: Range<Position>) {
+        let m = &self.axis(axis).measure;
+        let start = m.window_start();
+        let end = start + m.window_len() as u64;
+        if range.start < end && start < range.end {
+            self.axis_mut(axis).measure.set_keys(0, &[]);
+            self.pending_damage.positions = true;
         }
     }
 
@@ -48,14 +241,7 @@ impl Grid {
     /// too (a `Reset`).
     fn changed(&mut self, axis: Axis, count: Option<u64>) {
         let i = axis.index();
-        if self.gesture.mode() == Mode::DraggingSelection {
-            self.cancel();
-            self.relocate();
-        }
-        // The drop Position and the moved items' Positions are stale.
-        if matches!(self.gesture.mode(), Mode::MovingHeaders { axis: a, .. } if a == axis) {
-            self.cancel();
-        }
+        self.cancel_drags(axis);
         if self.selection.span.is_some_and(|s| !s.whole[i]) || count == Some(0) {
             self.set_span(None);
         }
@@ -77,15 +263,7 @@ impl Grid {
                 }
             }
         }
-        // A press in progress can no longer restore Positions from before the
-        // notice: Cancel restores the state as it is now.
-        let now = Before {
-            focus: self.focus,
-            selection: self.selection.clone(),
-        };
-        if let Gesture::Pressed { before, .. } = &mut self.gesture {
-            *before = now;
-        }
+        self.rebase_press();
         self.axis_mut(axis).clamp_anchor();
         self.pending_damage.layout = true;
         self.pending_damage.positions = true;
@@ -188,36 +366,51 @@ impl Grid {
     /// picks, and if it was focused move focus to `suggest`, else to its last
     /// known Position, clamped to the count.
     fn left(&mut self, axis: Axis, key: Key, focused: bool, suggest: Option<Position>) {
-        let i = axis.index();
-        self.whereabouts[i] = None;
+        self.whereabouts[axis.index()] = None;
         if axis == Axis::Rows && self.selection.picked(key) {
             let mut selection = self.selection.clone();
             selection.toggle_pick(key);
             self.set_selection(selection);
         }
-        if focused && let Some(mut f) = self.focus {
-            let st = self.axis(axis);
-            let count = st.measure.count();
-            if count == 0 {
-                self.focus = None;
-            } else {
-                let p = suggest.unwrap_or(f[i].position).min(count - 1);
-                f[i] = FocusEnd::at(st, p);
-                self.focus = Some(f);
-            }
-            self.announce_focus();
+        self.forget_before(axis, key, suggest);
+        if !focused {
+            return;
         }
-        // A gesture under way since the notice would restore the Key on
-        // Cancel: it restores where focus went instead, without the pick.
-        let focus = self.focus;
-        if let Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before } =
+        let st = self.axis(axis);
+        let count = st.measure.count();
+        let Some(mut f) = self.focus else { return };
+        if count == 0 {
+            self.focus = None;
+        } else {
+            let p = suggest.unwrap_or(f[axis.index()].position).min(count - 1);
+            f[axis.index()] = FocusEnd::at(st, p);
+            self.focus = Some(f);
+        }
+        self.announce_focus();
+    }
+
+    /// The state a press would restore on `Cancel` must not bring back a Key
+    /// that has left: its focus end falls back as the focus would, and the
+    /// Key leaves its picks.
+    fn forget_before(&mut self, axis: Axis, key: Key, suggest: Option<Position>) {
+        let i = axis.index();
+        let st = &self.axes[i];
+        let count = st.measure.count();
+        let (Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before }) =
             &mut self.gesture
+        else {
+            return;
+        };
+        if axis == Axis::Rows {
+            before.selection.picks.retain(|&k| k != key);
+        }
+        if let Some(f) = &mut before.focus
+            && f[i].key == Some(key)
         {
-            if before.focus.is_some_and(|b| b[i].key == Some(key)) {
-                before.focus = focus;
-            }
-            if axis == Axis::Rows && before.selection.picked(key) {
-                before.selection.toggle_pick(key);
+            if count == 0 {
+                before.focus = None;
+            } else {
+                f[i] = FocusEnd::at(st, suggest.unwrap_or(f[i].position).min(count - 1));
             }
         }
     }
@@ -280,4 +473,61 @@ impl Grid {
             }
         }
     }
+}
+
+/// Items inserted or removed on an axis, as a map of old Positions to new.
+#[derive(Clone, Copy, Debug)]
+enum Shift {
+    Inserted { at: Position, n: u64 },
+    Removed { at: Position, n: u64 },
+}
+
+impl Shift {
+    fn at(self) -> Position {
+        match self {
+            Shift::Inserted { at, .. } | Shift::Removed { at, .. } => at,
+        }
+    }
+
+    /// Where the item at `p` is now, or `None` if it was removed.
+    fn map(self, p: Position) -> Option<Position> {
+        match self {
+            Shift::Inserted { at, n } if p >= at => Some(p.saturating_add(n)),
+            Shift::Removed { at, n } if p >= at + n => Some(p - n),
+            Shift::Removed { at, .. } if p >= at => None,
+            _ => Some(p),
+        }
+    }
+}
+
+/// The range after `shift` on `axis`. A corner whose item was removed moves
+/// to the nearest survivor inside the range; a range whose items on `axis`
+/// were all removed is dropped, unless it spans the whole axis.
+fn shift_span(mut span: Span, axis: Axis, shift: Shift, measure: &AxisMeasure) -> Option<Span> {
+    let i = axis.index();
+    let (a, h) = (span.anchor[i].position, span.head[i].position);
+    let (lo, hi) = (a.min(h), a.max(h));
+    if shift.map(lo).is_none() && shift.map(hi).is_none() && !span.whole[i] {
+        return None;
+    }
+    let last = measure.count().saturating_sub(1);
+    for corner in [&mut span.anchor, &mut span.head] {
+        let end = &mut corner[i];
+        match shift.map(end.position) {
+            Some(p) => end.position = p,
+            None => {
+                let low = end.position == lo;
+                let p = if low {
+                    shift.at()
+                } else {
+                    shift.at().saturating_sub(1)
+                };
+                *end = FocusEnd {
+                    position: p.min(last),
+                    key: measure.key_at(p.min(last)),
+                };
+            }
+        }
+    }
+    Some(span)
 }

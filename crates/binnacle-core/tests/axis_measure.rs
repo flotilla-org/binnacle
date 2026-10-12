@@ -300,3 +300,46 @@ fn an_offset_just_inside_the_last_window_item_locates_it() {
     let just_inside = 0.25 - 6.668321e-17;
     assert_eq!(m.locate(3, just_inside).map(|l| l.position), Some(3));
 }
+
+/// Inserting and removing items keeps the Window's Keys at their items' new
+/// Positions, against a model holding the Key known at every Position.
+#[hegel::test(test_cases = 1000)]
+fn inserts_and_removals_keep_window_keys_at_their_items(tc: hegel::TestCase) {
+    use hegel::generators as gs;
+    let count = tc.draw(gs::integers::<u64>().max_value(40));
+    let start = tc.draw(gs::integers::<u64>().max_value(count));
+    let len = tc.draw(gs::integers::<u64>().max_value(count - start));
+    let mut m = AxisMeasure::new(count, 1.0, 0.0);
+    let keys: Vec<Key> = (start..start + len).map(Key).collect();
+    m.set_keys(start, &keys);
+    let mut model: Vec<Option<Key>> = (0..count)
+        .map(|p| (start..start + len).contains(&p).then_some(Key(p)))
+        .collect();
+    let ops = tc.draw(gs::vecs(hegel::tuples!(
+        gs::booleans(),
+        gs::integers::<u64>().max_value(45),
+        gs::integers::<u64>().max_value(6)
+    )));
+    for (insert, at, n) in ops {
+        let at = at.min(model.len() as u64);
+        if insert {
+            m.insert(at, n);
+            model.splice(at as usize..at as usize, (0..n).map(|_| None));
+        } else {
+            let n = n.min(model.len() as u64 - at);
+            let held: Vec<Key> = (at..at + n).filter_map(|p| m.key_at(p)).collect();
+            assert_eq!(m.remove(at, n), held, "the Keys removed from the Window");
+            model.drain(at as usize..(at + n) as usize);
+        }
+        assert_eq!(m.count(), model.len() as u64);
+        for (p, &key) in model.iter().enumerate() {
+            // The Window may forget Keys (an insert inside it truncates it),
+            // but never puts one at the wrong Position.
+            if let Some(k) = m.key_at(p as u64) {
+                assert_eq!(Some(k), key, "Position {p}");
+            }
+        }
+        let window = m.window_start()..m.window_start() + m.window_len() as u64;
+        assert!(window.end <= model.len() as u64);
+    }
+}

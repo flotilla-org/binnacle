@@ -438,3 +438,27 @@ fn the_end_clamp_stays_inside_the_window_when_content_sizes_are_smaller() {
         assert_eq!(snap.rows().last().unwrap().position, 19);
     }
 }
+
+/// Found by Hegel: past a 2048-unit header an f32 offset steps by 2^-12, so
+/// each 0.0040097977 item advances the layout by only 0.00390625 (16 steps),
+/// and a one-unit body holds 256 of them, not 249. The Window bound shares
+/// that stepping with the Strip, so it asks for exactly those 256 plus
+/// overscan: what is laid out, no more.
+#[test]
+fn the_window_holds_what_f32_layout_reaches_past_a_large_header() {
+    let size = 0.004_009_797_7;
+    let mut s = Scenario::identity(
+        AxisConfig::new(999_999_999_999_000, size)
+            .min_size(size)
+            .max_size(size)
+            .header(2048.0),
+        AxisConfig::new(1, 1.0),
+    );
+    let requests = s.grid.begin_frame(Viewport::new(1.0, 2049.0));
+    assert_eq!(requests.get(Axis::Rows), Some(0..258));
+    let snap = s.frame(Viewport::new(1.0, 2049.0));
+    let rows = snap.rows();
+    assert_eq!(rows.len(), 256);
+    assert_eq!(rows[1].offset - rows[0].offset, 0.003_906_25);
+    assert!(rows.iter().all(|r| r.key == Some(Key(r.position))));
+}
