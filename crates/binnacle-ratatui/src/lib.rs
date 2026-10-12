@@ -10,7 +10,7 @@ mod mouse;
 pub use keymap::Keymap;
 pub use mouse::Mouse;
 
-use binnacle_core::{Action, Axis, HeaderSort, Key, Snapshot, SortDirection};
+use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -45,7 +45,9 @@ pub trait Content {
 /// clipped to its item, to `area`, and for cells to the body past both header
 /// bands, so a part-scrolled item shows only its visible part. The focused
 /// cell is drawn reversed, other selected cells on a dark grey background,
-/// and the header under the pointer underlined. A sorted column's header ends
+/// and the header under the pointer underlined. Header Gaps are drawn as
+/// lines, the handles a resize drag grabs, and a resize in progress draws its
+/// guide line across the area in yellow. A sorted column's header ends
 /// in its direction (and place, in a multi-column sort), and `~` marks a sort
 /// change still pending.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
@@ -124,6 +126,72 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
                 style = style.bg(Color::DarkGray);
             }
             put(c.offset, r.offset, left, c.end(), top, &text, style);
+        }
+    }
+    let mut mark = |x: i64, y: i64, ch: char, style: Style| {
+        if (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y) {
+            let (x, y) = (area.x + x as u16, area.y + y as u16);
+            if let Some(c) = buf.cell_mut((x, y)) {
+                c.set_char(ch).set_style(style);
+            }
+        }
+    };
+    let handle = Style::default().fg(Color::DarkGray);
+    if snapshot.gap(Axis::Cols) > 0.0 {
+        for c in snapshot.cols().iter().filter(|c| c.end() >= left) {
+            for y in 0..cell(top) {
+                mark(cell(c.end()), y, '│', handle);
+            }
+        }
+    }
+    if snapshot.gap(Axis::Rows) > 0.0 {
+        for r in snapshot.rows().iter().filter(|r| r.end() >= top) {
+            for x in 0..cell(left) {
+                mark(x, cell(r.end()), '─', handle);
+            }
+        }
+    }
+    if let Some(guide) = snapshot.resize_guide() {
+        let style = Style::default().fg(Color::Yellow);
+        let at = cell(guide.offset);
+        match guide.axis {
+            Axis::Cols if at >= cell(left) => {
+                for y in 0..i64::from(area.height) {
+                    mark(at, y, '│', style);
+                }
+            }
+            Axis::Rows if at >= cell(top) => {
+                for x in 0..i64::from(area.width) {
+                    mark(x, at, '─', style);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A status line for `snapshot`: the gesture in progress, or a hint when the
+/// pointer is over a header border. A terminal cannot change the pointer's
+/// shape, so this stands in for the cursor hint. Empty when there is nothing
+/// to say.
+pub fn status(snapshot: &Snapshot) -> String {
+    let noun = |axis| match axis {
+        Axis::Rows => "row",
+        Axis::Cols => "column",
+    };
+    match snapshot.mode() {
+        Mode::Resizing { axis, key, .. } => match snapshot.resize_guide() {
+            Some(guide) => format!("resizing {} {}: {}", noun(axis), key.0, guide.size),
+            None => format!("resizing {} {}", noun(axis), key.0),
+        },
+        Mode::DraggingSelection => "selecting".to_string(),
+        Mode::Idle => {
+            let axis = match snapshot.cursor() {
+                Cursor::ResizeCol => Axis::Cols,
+                Cursor::ResizeRow => Axis::Rows,
+                Cursor::Default => return String::new(),
+            };
+            format!("drag to resize the {}, double-click to fit", noun(axis))
         }
     }
 }

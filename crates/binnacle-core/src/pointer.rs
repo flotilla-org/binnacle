@@ -1,6 +1,6 @@
 use crate::axis::AxisState;
 use crate::measure::ItemAt;
-use crate::types::Axis;
+use crate::types::{Axis, Position};
 
 /// A pointer button. v1 gestures use only [`Button::Primary`]; the others are
 /// ignored.
@@ -156,6 +156,41 @@ impl AxisState {
         match self.measure.locate(self.anchor.position, delta) {
             Some(at) => AxisHit::Item(at),
             None => AxisHit::Outside,
+        }
+    }
+}
+
+impl AxisState {
+    /// The Position of the item whose trailing border `v` is on, if any: the
+    /// Gap after the item, widened by `grab` into the items either side. The
+    /// first item's leading edge is no border; the last item's border is the
+    /// length of a Gap (or `grab`) past its end.
+    pub(crate) fn border(&self, v: f32, grab: f32) -> Option<Position> {
+        if !(v >= self.header && v < self.extent) {
+            return None;
+        }
+        let (grab, m) = (f64::from(grab), &self.measure);
+        let delta = f64::from(self.anchor.offset) + (f64::from(v) - f64::from(self.header));
+        match m.locate(self.anchor.position, delta) {
+            Some(at) => {
+                // Past the item's size is its Gap.
+                if at.within >= f64::from(m.size_at(at.position)) - grab {
+                    Some(at.position)
+                } else if at.within < grab && at.position > 0 {
+                    Some(at.position - 1)
+                } else {
+                    None
+                }
+            }
+            // Past the last item: `locate` found nothing, so this is beyond
+            // its end.
+            None if m.count() > 0 && delta >= 0.0 => {
+                let last = m.count() - 1;
+                let past =
+                    delta - m.distance(self.anchor.position, last) - f64::from(m.size_at(last));
+                (past < f64::from(m.gap()).max(grab)).then_some(last)
+            }
+            None => None,
         }
     }
 }

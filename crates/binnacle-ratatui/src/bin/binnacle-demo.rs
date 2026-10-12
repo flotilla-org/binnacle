@@ -10,17 +10,20 @@
 //! The wheel scrolls; the adapter's default keymap moves focus (arrows,
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
 //! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
-//! column, Esc cancels a drag; `m` scrolls to the middle. Click to focus,
-//! Shift-click or drag to select, Ctrl-click to pick rows, click a row number
-//! to select its row. Press `q` or Ctrl-C to quit.
+//! column, Esc cancels a drag or a resize; `m` scrolls to the middle. Click to
+//! focus, Shift-click or drag to select, Ctrl-click to pick rows, click a row
+//! number to select its row. Drag a column header's border (the line in the
+//! one-cell Gap) to resize the column; double-click it to fit the column to
+//! its visible text. The bottom line shows the gesture in progress. Press `q`
+//! or Ctrl-C to quit.
 
 use std::borrow::Cow;
 use std::io;
 use std::time::Instant;
 
-use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Viewport};
+use binnacle_core::{Action, Axis, AxisConfig, Effect, Grid, Key, Stamped, Viewport};
 use binnacle_memory::{IdentitySource, MemorySource};
-use binnacle_ratatui::{Content, Keymap, Mouse, render, wheel};
+use binnacle_ratatui::{Content, Keymap, Mouse, render, status, wheel};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
@@ -79,19 +82,58 @@ impl Table {
     }
 
     /// Drains the Grid's Effects, answering sorts and `Locate` from the
-    /// source. Nothing here acts on the rest (focus and selection changes).
-    fn pump(&mut self, grid: &mut Grid) {
+    /// source and auto-size by measuring the text drawn for `shown` rows. The
+    /// other Effects need nothing here.
+    fn pump(&mut self, grid: &mut Grid, shown: &[Key]) {
         match self {
-            Table::Records { rows, source } => source.pump(rows, grid, |_, _| {}),
-            Table::Huge { .. } => while grid.poll_effect().is_some() {},
+            Table::Records { rows, source } => {
+                let text = Text::Records(rows);
+                source.pump(rows, grid, |grid, stamped| {
+                    auto_size(&text, shown, grid, stamped)
+                });
+            }
+            Table::Huge { .. } => {
+                while let Some(stamped) = grid.poll_effect() {
+                    auto_size(&Text::Huge, shown, grid, stamped);
+                }
+            }
+        }
+    }
+
+    fn text(&self) -> Text<'_> {
+        match self {
+            Table::Records { rows, .. } => Text::Records(rows),
+            Table::Huge { .. } => Text::Huge,
         }
     }
 }
 
-impl Content for Table {
+/// Answers `AutoSizeRequested` for a column with the widest text drawn in
+/// it: the `shown` rows' cells and its header.
+fn auto_size(text: &Text, shown: &[Key], grid: &mut Grid, stamped: Stamped) {
+    if let Effect::AutoSizeRequested { axis, key } = stamped.effect {
+        let width = match axis {
+            Axis::Cols => (shown.iter())
+                .map(|&row| text.cell(row, key).chars().count())
+                .chain([text.column_header(key).chars().count()])
+                .max()
+                .unwrap_or(1),
+            Axis::Rows => 1,
+        };
+        grid.set_size(axis, key, width as f32);
+    }
+}
+
+/// The text a [`Table`] draws, borrowed apart from its source.
+enum Text<'a> {
+    Records(&'a [Record]),
+    Huge,
+}
+
+impl Content for Text<'_> {
     fn cell(&self, row: Key, col: Key) -> String {
         match self {
-            Table::Records { rows, .. } => {
+            Text::Records(rows) => {
                 let r = &rows[row.0 as usize];
                 match col.0 {
                     0 => r.id.to_string(),
@@ -100,14 +142,14 @@ impl Content for Table {
                     _ => r.crew.to_string(),
                 }
             }
-            Table::Huge { .. } => format!("r{}c{}", row.0, col.0),
+            Text::Huge => format!("r{}c{}", row.0, col.0),
         }
     }
 
     fn column_header(&self, col: Key) -> String {
         match self {
-            Table::Records { .. } => HEADERS[col.0 as usize].to_string(),
-            Table::Huge { .. } => format!("col {}", col.0),
+            Text::Records(_) => HEADERS[col.0 as usize].to_string(),
+            Text::Huge => format!("col {}", col.0),
         }
     }
 }
@@ -157,19 +199,33 @@ fn main() -> io::Result<()> {
     );
     let mut mouse = Mouse::default();
     let mut area = ratatui::layout::Rect::default();
+    // The row Keys last drawn, which auto-size measures.
+    let mut shown_rows: Vec<Key> = Vec::new();
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
     let result = (|| {
         loop {
             terminal.draw(|frame| {
-                area = frame.area();
-                table.pump(&mut grid);
+                // The Grid takes all but the bottom line, the status line.
+                let full = frame.area();
+                area = full;
+                area.height = full.height.saturating_sub(1);
+                table.pump(&mut grid, &shown_rows);
                 let viewport = Viewport::new(area.width.into(), area.height.into());
                 for (axis, range) in grid.begin_frame(viewport) {
                     let keys = table.window(axis, range.clone());
                     grid.set_window(axis, range.start, &keys);
                 }
-                render(&grid.snapshot(), &table, area, frame.buffer_mut());
+                let snapshot = grid.snapshot();
+                shown_rows.clear();
+                shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
+                render(&snapshot, &table.text(), area, frame.buffer_mut());
+                let line = ratatui::layout::Rect {
+                    y: full.y + area.height,
+                    height: full.height - area.height,
+                    ..full
+                };
+                frame.render_widget(ratatui::text::Line::from(status(&snapshot)), line);
             })?;
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {

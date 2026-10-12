@@ -9,3 +9,9 @@ publish = false
 
 [dependencies]
 binnacle-core.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dev-dependencies]
+hegeltest.workspace = true

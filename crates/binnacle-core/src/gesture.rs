@@ -1,21 +1,35 @@
 //! Pointer gestures: what a press, the moves after it and its release mean,
 //! given what they land on.
 
+use crate::effect::Effect;
 use crate::focus::FocusEnd;
 use crate::grid::Grid;
 use crate::measure::ItemAt;
 use crate::pointer::{Button, Hit, Modifiers, PointerEvent, PointerKind};
 use crate::selection::{Cell, HeaderClick, Selection};
-use crate::types::{Axis, Position};
+use crate::types::{Axis, Key, Position};
+
+/// The smallest size a resize drag gives an item, unless the item started
+/// smaller. Stands in for the per-axis size contract (`min_size`, branch
+/// fix/16-reveal): replace it with that clamp once both have landed.
+const MIN_RESIZE: f32 = 1.0;
 
 /// The single interaction the Grid is in the middle of.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Mode {
     #[default]
     Idle,
     /// A press on a cell moved past the drag threshold; the range follows the
     /// pointer until release.
     DraggingSelection,
+    /// A header border is being dragged: the item with `key` on `axis`, which
+    /// was `start_size` when the press began, follows the pointer until
+    /// release.
+    Resizing {
+        axis: Axis,
+        key: Key,
+        start_size: f32,
+    },
 }
 
 /// Focus and selection from before a gesture, which `Cancel` restores.
@@ -59,23 +73,40 @@ pub(crate) enum Gesture {
     DraggingSelection {
         before: Before,
     },
+    /// A press on the border after the item with `key` on `axis`, at
+    /// coordinate `from` along that axis. `start_override` is the item's Size
+    /// Override before the press, which `Cancel` puts back.
+    Resizing {
+        axis: Axis,
+        key: Key,
+        from: f32,
+        start_size: f32,
+        start_override: Option<f32>,
+    },
 }
 
 impl Gesture {
     pub fn mode(&self) -> Mode {
         match self {
             Gesture::DraggingSelection { .. } => Mode::DraggingSelection,
-            _ => Mode::Idle,
+            &Gesture::Resizing {
+                axis,
+                key,
+                start_size,
+                ..
+            } => Mode::Resizing {
+                axis,
+                key,
+                start_size,
+            },
+            Gesture::Idle | Gesture::Pressed { .. } => Mode::Idle,
         }
     }
 
     /// Whether the Grid is following a held button, so the host should keep
     /// pointer events coming even outside the viewport.
     pub fn capturing(&self) -> bool {
-        matches!(
-            self,
-            Gesture::Pressed { .. } | Gesture::DraggingSelection { .. }
-        )
+        !matches!(self, Gesture::Idle)
     }
 }
 
@@ -92,16 +123,34 @@ impl Grid {
             PointerKind::Up if event.button == Button::Primary => self.release(),
             _ if !finite => {}
             PointerKind::Down if event.button == Button::Primary => {
-                self.press(x, y, event.modifiers)
+                self.press(x, y, event.modifiers, event.clicks)
             }
             PointerKind::Move => self.drag(x, y),
             _ => {}
         }
     }
 
-    fn press(&mut self, x: f32, y: f32, modifiers: Modifiers) {
-        // A press while another is held (a lost release) ends the old one.
+    fn press(&mut self, x: f32, y: f32, modifiers: Modifiers, clicks: u32) {
+        // A press while another is held (a lost release) ends the old one,
+        // keeping a resize made so far.
+        self.end_resize();
         self.gesture = Gesture::Idle;
+        if let Some((axis, position, key)) = self.border_at(x, y) {
+            if clicks >= 2 {
+                self.push(Effect::AutoSizeRequested { axis, key });
+                return;
+            }
+            let measure = &self.axis(axis).measure;
+            self.gesture = Gesture::Resizing {
+                axis,
+                key,
+                from: along(axis, x, y),
+                start_size: measure.size_at(position),
+                start_override: measure.size_override(key),
+            };
+            self.pending_damage.selection = true;
+            return;
+        }
         let before = Before {
             focus: self.focus,
             selection: self.selection.clone(),
@@ -159,7 +208,52 @@ impl Grid {
                 }
             }
             Gesture::DraggingSelection { .. } => self.drag_selection(x, y),
-            _ => {}
+            &mut Gesture::Resizing {
+                axis,
+                key,
+                from,
+                start_size,
+                start_override,
+            } => {
+                let moved = f64::from(along(axis, x, y)) - f64::from(from);
+                let size = (f64::from(start_size) + moved)
+                    .max(f64::from(start_size.min(MIN_RESIZE)))
+                    .min(f64::from(f32::MAX)) as f32;
+                if size == start_size {
+                    self.restore_size(axis, key, start_override);
+                } else {
+                    self.set_size(axis, key, size);
+                }
+            }
+            Gesture::Idle => {}
+        }
+    }
+
+    /// Puts back the Size Override `size` (or none) for `key` on `axis`.
+    fn restore_size(&mut self, axis: Axis, key: Key, size: Option<f32>) {
+        match size {
+            Some(size) => self.set_size(axis, key, size),
+            None => self.clear_size(axis, key),
+        }
+    }
+
+    /// Ends a resize in progress where it is, reporting the new size if it
+    /// changed.
+    fn end_resize(&mut self) {
+        let Gesture::Resizing {
+            axis,
+            key,
+            start_override,
+            ..
+        } = self.gesture
+        else {
+            return;
+        };
+        self.gesture = Gesture::Idle;
+        self.pending_damage.selection = true;
+        let size = self.size_override(axis, key);
+        if let Some(size) = size.filter(|_| size != start_override) {
+            self.push(Effect::SizeChanged { axis, key, size });
         }
     }
 
@@ -189,6 +283,7 @@ impl Grid {
     }
 
     fn release(&mut self) {
+        self.end_resize();
         let gesture = std::mem::take(&mut self.gesture);
         if gesture.capturing() {
             self.pending_damage.selection = true;
@@ -246,15 +341,22 @@ impl Grid {
     }
 
     /// Ends any gesture in progress, restoring focus and selection from before
-    /// it. The rest of the press (moves, the release) then finds the Grid idle
+    /// it, or the resized item's size. The rest of the press (moves, the release) then finds the Grid idle
     /// and does nothing.
     pub(crate) fn cancel(&mut self) {
         let before = match std::mem::take(&mut self.gesture) {
             Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before } => before,
-            other => {
-                self.gesture = other;
+            Gesture::Resizing {
+                axis,
+                key,
+                start_override,
+                ..
+            } => {
+                self.pending_damage.selection = true;
+                self.restore_size(axis, key, start_override);
                 return;
             }
+            Gesture::Idle => return,
         };
         self.pending_damage.selection = true;
         if self.focus != before.focus {
@@ -262,5 +364,13 @@ impl Grid {
             self.announce_focus();
         }
         self.set_selection(before.selection);
+    }
+}
+
+/// The coordinate of (`x`, `y`) along `axis`.
+fn along(axis: Axis, x: f32, y: f32) -> f32 {
+    match axis {
+        Axis::Rows => y,
+        Axis::Cols => x,
     }
 }
