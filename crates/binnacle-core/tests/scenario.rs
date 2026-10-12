@@ -109,3 +109,14 @@ fn layout_ends_when_items_are_too_small_to_advance_an_f32_offset() {
     let snap = s.frame(Viewport::new(1.0, 100.002));
     assert_eq!(snap.rows(), &[]);
 }
+
+/// An empty axis needs no Keys, wherever the host last filled its Window, so
+/// steady frames never ask for an empty Window.
+#[test]
+fn an_empty_axis_never_requests_a_window() {
+    let mut grid = Grid::new(AxisConfig::new(0, 1.0), AxisConfig::new(3, 4.0));
+    let viewport = Viewport::new(12.0, 5.0);
+    grid.set_window(Axis::Rows, 3, &[]);
+    let requests = grid.begin_frame(viewport);
+    assert_eq!(requests.get(Axis::Rows), None);
+}
