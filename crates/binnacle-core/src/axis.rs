@@ -1,96 +1,272 @@
 use std::ops::Range;
 
-use crate::snapshot::StripItem;
-use crate::types::{Key, Position};
+use crate::measure::{AxisMeasure, Located};
+use crate::snapshot::{ScrollAnchor, StripItem, Thumb};
+use crate::types::Position;
 
-/// Positions fetched beyond the visible ones, so small scrolls need no new Window.
+/// Positions fetched either side of the visible ones, so small scrolls need no
+/// new Window.
 const OVERSCAN: u64 = 2;
 
-/// One axis's layout and Window. Holds nothing proportional to the count.
+/// One axis's layout, Scroll Anchor and Window. Holds nothing proportional to
+/// the count.
 pub(crate) struct AxisState {
-    pub count: u64,
-    pub default_size: f32,
+    pub measure: AxisMeasure,
     pub header: f32,
     /// The viewport's length along this axis, header band included.
     pub extent: f32,
-    window_start: Position,
-    window_keys: Vec<Key>,
+    pub anchor: ScrollAnchor,
     pub strip: Vec<StripItem>,
 }
 
 impl AxisState {
-    pub fn new(count: u64, default_size: f32, header: f32) -> Self {
+    pub fn new(measure: AxisMeasure, header: f32) -> Self {
         AxisState {
-            count,
-            default_size,
+            measure,
             header,
             extent: 0.0,
-            window_start: 0,
-            window_keys: Vec::new(),
+            anchor: ScrollAnchor::default(),
             strip: Vec::new(),
         }
     }
 
-    /// The Window this axis needs for the current viewport: the visible items
-    /// plus overscan. Counted by the same stepping as [`AxisState::layout`], so
-    /// the two agree even where f32 rounding drifts.
-    pub fn needed(&self) -> Range<Position> {
-        let visible = self.placements().last().map_or(0, |(p, _)| p + 1);
-        0..visible.saturating_add(OVERSCAN).min(self.count)
+    /// The length past the header band where items show.
+    fn body(&self) -> f32 {
+        (self.extent - self.header).max(0.0)
     }
 
-    /// The Position and offset of each visible item, in order. Stops early if an
+    /// The Window this axis needs for the current viewport: the visible items
+    /// plus overscan either side. Counted by stepping with the smallest size an
+    /// item can have, so it holds every item a real layout can reach.
+    pub fn needed(&self) -> Range<Position> {
+        let count = self.measure.count();
+        let start = self.anchor.position.saturating_sub(OVERSCAN);
+        let end = self.visible_end().saturating_add(OVERSCAN).min(count);
+        start.min(end)..end
+    }
+
+    /// One past the last Position a layout can reach, stepping with the smallest
+    /// size. The anchor's own item may be larger than that, so its offset is
+    /// capped at the smallest stride: the next item then starts no later than
+    /// it really does. The anchor's item always counts, as it may be the one
+    /// larger item.
+    fn visible_end(&self) -> Position {
+        let smallest = self.measure.smallest_size();
+        let offset = self.anchor.offset.min(smallest + self.measure.gap());
+        let anchor_end = (self.anchor.position + 1).min(self.measure.count());
+        self.placements(offset, |_| smallest)
+            .last()
+            .map_or(anchor_end, |(p, _, _)| p + 1)
+    }
+
+    /// The Position, offset and size of each visible item from the Scroll
+    /// Anchor's Position, `anchor_offset` into it, in order. Stops early if an
     /// item is too small to advance an f32 offset, rather than spin.
-    fn placements(&self) -> impl Iterator<Item = (Position, f32)> + '_ {
-        let size = self.default_size;
-        let mut next = Some((0, self.header));
+    fn placements(
+        &self,
+        anchor_offset: f32,
+        size_at: impl Fn(Position) -> f32,
+    ) -> impl Iterator<Item = (Position, f32, f32)> {
+        let (count, header, extent) = (self.measure.count(), self.header, self.extent);
+        let gap = self.measure.gap();
+        let (first, off) = (self.anchor.position, f64::from(anchor_offset));
+        let first_size = f64::from(size_at(first));
+        // An anchor in the Gap after its item starts at the next item, placed
+        // straight from the anchor so a tiny item cannot stall the stepping.
+        let start = if off >= first_size {
+            (
+                first + 1,
+                f64::from(header) + first_size + f64::from(gap) - off,
+            )
+        } else {
+            (first, f64::from(header) - off)
+        };
+        let mut next = Some((start.0, start.1 as f32));
         std::iter::from_fn(move || {
-            let (position, offset) = next?;
-            let end = offset + size;
-            if position >= self.count || offset >= self.extent || end <= offset {
-                next = None;
-                return None;
+            loop {
+                let (position, offset) = next?;
+                let size = size_at(position);
+                let end = offset + size;
+                if position >= count || offset.max(header) >= extent || end <= offset {
+                    next = None;
+                    return None;
+                }
+                next = Some((position + 1, end + gap));
+                if end > header {
+                    return Some((position, offset, size));
+                }
             }
-            next = Some((position + 1, end));
-            Some((position, offset))
         })
     }
 
     pub fn window_covers(&self, range: &Range<Position>) -> bool {
-        range.is_empty()
-            || (self.window_start <= range.start
-                && range.end <= self.window_start + self.window_keys.len() as u64)
+        let start = self.measure.window_start();
+        let end = start + self.measure.window_len() as u64;
+        range.is_empty() || (start <= range.start && range.end <= end)
     }
 
-    /// Replaces the Window, returning whether any Key at any Position changed.
-    pub fn set_window(&mut self, start: Position, keys: &[Key]) -> bool {
-        let fit = self.count.saturating_sub(start);
-        let keys = &keys[..keys.len().min(usize::try_from(fit).unwrap_or(usize::MAX))];
-        if start == self.window_start && keys == self.window_keys.as_slice() {
-            return false;
-        }
-        self.window_start = start;
-        self.window_keys.clear();
-        self.window_keys.extend_from_slice(keys);
-        true
-    }
-
-    fn key_at(&self, pos: Position) -> Option<Key> {
-        let i = pos.checked_sub(self.window_start)?;
-        self.window_keys.get(usize::try_from(i).ok()?).copied()
-    }
-
-    /// Lays out the visible items into `strip`, reusing its buffer.
+    /// Lays out the visible items into `strip`, reusing its buffer. Never past
+    /// what the Window bound reaches, so a Strip item lacks a Key only if the
+    /// Table Source left it unfilled.
     pub fn layout(&mut self) {
         let mut strip = std::mem::take(&mut self.strip);
         strip.clear();
-        let size = self.default_size;
-        strip.extend(self.placements().map(|(position, offset)| StripItem {
-            position,
-            key: self.key_at(position),
-            offset,
-            size,
-        }));
+        let bound = self.visible_end();
+        let m = &self.measure;
+        strip.extend(
+            self.placements(self.anchor.offset, |p| m.size_at(p))
+                .take_while(|&(p, _, _)| p < bound)
+                .map(|(position, offset, size)| StripItem {
+                    position,
+                    key: m.key_at(position),
+                    offset,
+                    size,
+                }),
+        );
         self.strip = strip;
+    }
+
+    /// The anchor for a located offset, rounded toward the axis start so a
+    /// clamped view never shows space past the last item.
+    fn anchor_at(&self, l: Located) -> ScrollAnchor {
+        let stride = self.measure.size_at(l.position) + self.measure.gap();
+        let mut offset = l.within as f32;
+        if f64::from(offset) > l.within {
+            offset = f32::from_bits(offset.to_bits() - 1);
+        }
+        if offset >= stride {
+            offset = f32::from_bits(stride.to_bits() - 1);
+        }
+        ScrollAnchor {
+            position: l.position,
+            offset,
+        }
+    }
+
+    /// The furthest the anchor may go: where the last item ends the viewport.
+    fn max_anchor(&self) -> ScrollAnchor {
+        let count = self.measure.count();
+        let body = self.body();
+        if count == 0 {
+            return ScrollAnchor::default();
+        }
+        let last = count - 1;
+        if body <= 0.0 {
+            return ScrollAnchor {
+                position: last,
+                offset: 0.0,
+            };
+        }
+        let size = self.measure.size_at(last);
+        let back = f64::from(size) - f64::from(body);
+        match self.measure.locate(last, back) {
+            Some(l) => self.anchor_at(l),
+            // The body is shorter than the whole axis.
+            None if back < 0.0 => ScrollAnchor::default(),
+            // A body too thin to register against the last item's size: go as
+            // deep into that item as an anchor can.
+            None => ScrollAnchor {
+                position: last,
+                offset: f32::from_bits(size.to_bits() - 1),
+            },
+        }
+    }
+
+    /// Moves the anchor `offset` past the start of item `position`, kept
+    /// between the start and [`Self::max_anchor`] with its offset inside its
+    /// item. Returns whether it moved.
+    fn move_to(&mut self, position: Position, offset: f64) -> bool {
+        let max = self.max_anchor();
+        let to = match self.measure.locate(position, offset) {
+            Some(l) => self.anchor_at(l),
+            None if offset < 0.0 => ScrollAnchor::default(),
+            None => max,
+        };
+        let to = if (to.position, to.offset) > (max.position, max.offset) {
+            max
+        } else {
+            to
+        };
+        let moved = to != self.anchor;
+        self.anchor = to;
+        moved
+    }
+
+    /// Re-applies the anchor's bounds after the viewport or sizes changed. The
+    /// anchor keeps its Position: an offset its item no longer reaches is
+    /// pulled back inside the item, and only the end clamp moves it further.
+    pub fn clamp_anchor(&mut self) -> bool {
+        let count = self.measure.count();
+        let position = self.anchor.position.min(count.saturating_sub(1));
+        let stride = self.measure.size_at(position) + self.measure.gap();
+        let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
+        let max = self.max_anchor();
+        let to = if (position, offset) > (max.position, max.offset) {
+            max
+        } else {
+            ScrollAnchor { position, offset }
+        };
+        let moved = to != self.anchor;
+        self.anchor = to;
+        moved
+    }
+
+    /// Scrolls by `delta` in the host's unit. Non-finite deltas are ignored.
+    pub fn scroll(&mut self, delta: f32) -> bool {
+        if !delta.is_finite() || delta == 0.0 {
+            return false;
+        }
+        let offset = f64::from(self.anchor.offset) + f64::from(delta);
+        self.move_to(self.anchor.position, offset)
+    }
+
+    /// Scrolls by whole items from the anchor's item, landing on an item start.
+    pub fn scroll_items(&mut self, items: i64) -> bool {
+        let count = self.measure.count();
+        if count == 0 {
+            return false;
+        }
+        let target =
+            (i128::from(self.anchor.position) + i128::from(items)).clamp(0, i128::from(count - 1));
+        self.move_to(target as Position, 0.0)
+    }
+
+    /// The anchor's distance from the axis start and the most it can be.
+    fn scrolled(&self) -> (f64, f64) {
+        let at = |a: ScrollAnchor| self.measure.distance(0, a.position) + f64::from(a.offset);
+        (at(self.anchor), at(self.max_anchor()))
+    }
+
+    /// Scrolls so the thumb sits at `fraction` (clamped to 0..=1). NaN is
+    /// ignored.
+    pub fn scroll_to(&mut self, fraction: f64) -> bool {
+        if fraction.is_nan() {
+            return false;
+        }
+        if fraction >= 1.0 {
+            let max = self.max_anchor();
+            return self.move_to(max.position, f64::from(max.offset));
+        }
+        let (_, scrollable) = self.scrolled();
+        self.move_to(0, fraction.max(0.0) * scrollable)
+    }
+
+    /// The scrollbar thumb, estimated from the measure: sizes outside the
+    /// Window are assumed default.
+    pub fn thumb(&self) -> Thumb {
+        let (scrolled, scrollable) = self.scrolled();
+        let extent = self.measure.extent();
+        Thumb {
+            fraction: if scrollable > 0.0 {
+                (scrolled / scrollable).clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            size: if extent > 0.0 {
+                (f64::from(self.body()) / extent).min(1.0)
+            } else {
+                1.0
+            },
+        }
     }
 }

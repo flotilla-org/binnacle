@@ -10,6 +10,12 @@ use crate::render::render;
 /// host learns to answer Effects.
 pub trait ScenarioSource {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key>;
+
+    /// Content sizes for the Keys just fetched on `axis`, with the smallest
+    /// content size the axis can have. `None` (the default) sends Keys only.
+    fn sizes(&mut self, _axis: Axis, _keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        None
+    }
 }
 
 /// A table whose Keys are their Positions on both axes.
@@ -84,7 +90,13 @@ impl<S: ScenarioSource> Scenario<S> {
         for (axis, range) in self.grid.begin_frame(viewport) {
             let _ = writeln!(self.log, "window {axis:?} {range:?}");
             let keys = self.source.window(axis, range.clone());
-            self.grid.set_window(axis, range.start, &keys);
+            match self.source.sizes(axis, &keys) {
+                Some((sizes, min_size)) => {
+                    self.grid
+                        .set_window_sized(axis, range.start, &keys, &sizes, min_size)
+                }
+                None => self.grid.set_window(axis, range.start, &keys),
+            }
         }
         self.grid.snapshot()
     }

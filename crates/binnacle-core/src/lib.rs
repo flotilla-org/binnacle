@@ -11,10 +11,12 @@
 mod axis;
 mod effect;
 mod grid;
+mod measure;
 mod snapshot;
 mod types;
 
 pub use effect::{Action, Effect, Stamped};
 pub use grid::{AxisConfig, Grid, WindowRequests};
-pub use snapshot::{Damage, Snapshot, StripItem};
+pub use measure::{AxisMeasure, Located, WindowChange};
+pub use snapshot::{Damage, ScrollAnchor, Snapshot, StripItem, Thumb};
 pub use types::{Axis, Generation, Key, Position, Viewport};

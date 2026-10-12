@@ -4,13 +4,29 @@
 //! `Buffer`; the host supplies the text through [`Content`], since the Grid
 //! never reads cell values.
 
-use binnacle_core::{Axis, Key, Snapshot};
+use binnacle_core::{Action, Axis, Key, Snapshot};
 use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 /// Shown in a cell or header whose Key the Table Source has not filled yet.
 const LOADING: &str = "…";
+
+/// Cells one wheel notch scrolls.
+const WHEEL_STEP: f32 = 3.0;
+
+/// The scroll Action for a mouse wheel event, if it is one.
+pub fn wheel(event: &MouseEvent) -> Option<Action> {
+    let (dx, dy) = match event.kind {
+        MouseEventKind::ScrollDown => (0.0, WHEEL_STEP),
+        MouseEventKind::ScrollUp => (0.0, -WHEEL_STEP),
+        MouseEventKind::ScrollRight => (WHEEL_STEP, 0.0),
+        MouseEventKind::ScrollLeft => (-WHEEL_STEP, 0.0),
+        _ => return None,
+    };
+    Some(Action::Scroll { dx, dy })
+}
 
 /// The host's text for the Keys the Grid places.
 pub trait Content {
@@ -20,29 +36,30 @@ pub trait Content {
 
 /// Draws `snapshot` into `area` of `buf`: column headers along the top band,
 /// row numbers (Position plus one) down the left band, then each cell. Text is
-/// clipped to its item and to `area`.
+/// clipped to its item, to `area`, and for cells to the body past both header
+/// bands, so a part-scrolled item shows only its visible part.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
     let area = area.intersection(buf.area);
     let header = Style::default().add_modifier(Modifier::BOLD);
-    let row_band = snapshot.header(Axis::Cols);
-    let mut put = |x: f32, y: f32, end: f32, text: &str, style: Style| {
-        let (Some(x), Some(y), Some(end)) = (cell(x), cell(y), cell(end)) else {
-            return;
-        };
-        let y = area.y.saturating_add(y);
-        let end = area.x.saturating_add(end).min(area.right());
-        if y >= area.bottom() {
+    let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
+    // Writes `text` from (x, y), keeping the characters in `[x_min, x_end)` on
+    // rows at or below `y_min`, all in cells relative to `area`.
+    let mut put = |x: f32, y: f32, x_min: f32, x_end: f32, y_min: f32, text: &str, style| {
+        let y = cell(y.max(y_min));
+        let (x, x_min, x_end) = (cell(x), cell(x_min), cell(x_end).min(i64::from(area.width)));
+        if y >= i64::from(area.height) {
             return;
         }
         for (i, ch) in text.chars().enumerate() {
-            let x = area
-                .x
-                .saturating_add(x)
-                .saturating_add(i.try_into().unwrap_or(u16::MAX));
-            if x >= end {
+            let cx = x.saturating_add(i as i64);
+            if cx >= x_end {
                 break;
             }
-            if let Some(c) = buf.cell_mut((x, y)) {
+            if cx < x_min.max(0) {
+                continue;
+            }
+            let (cx, cy) = (area.x + cx as u16, area.y + y as u16);
+            if let Some(c) = buf.cell_mut((cx, cy)) {
                 c.set_char(ch).set_style(style);
             }
         }
@@ -51,27 +68,38 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
         let label = c
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
-        put(c.offset, 0.0, c.end(), &label, header);
+        put(c.offset, 0.0, left, c.end(), 0.0, &label, header);
     }
     for r in snapshot.rows() {
-        put(
-            0.0,
-            r.offset,
-            row_band,
-            &(r.position + 1).to_string(),
-            header,
-        );
+        let number = r.position.saturating_add(1).to_string();
+        put(0.0, r.offset, 0.0, left, top, &number, header);
         for c in snapshot.cols() {
             let text = match (r.key, c.key) {
                 (Some(row), Some(col)) => content.cell(row, col),
                 _ => LOADING.to_string(),
             };
-            put(c.offset, r.offset, c.end(), &text, Style::default());
+            put(
+                c.offset,
+                r.offset,
+                left,
+                c.end(),
+                top,
+                &text,
+                Style::default(),
+            );
         }
     }
 }
 
-/// A viewport-relative coordinate as a whole terminal cell, if it is on screen.
-fn cell(v: f32) -> Option<u16> {
-    (v.is_finite() && v >= 0.0).then(|| v.floor().min(f32::from(u16::MAX)) as u16)
+/// A viewport-relative coordinate as a whole terminal cell (negative when
+/// before the area's edge). Rounding up maps contiguous part-scrolled items to
+/// distinct cells, each starting at the first cell it reaches.
+fn cell(v: f32) -> i64 {
+    if v.is_finite() {
+        v.ceil() as i64
+    } else if v > 0.0 {
+        i64::MAX
+    } else {
+        i64::MIN
+    }
 }

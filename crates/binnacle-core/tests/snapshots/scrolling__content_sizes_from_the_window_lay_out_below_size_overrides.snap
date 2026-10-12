@@ -1,0 +1,41 @@
+---
+source: crates/binnacle-core/tests/scrolling.rs
+expression: out
+---
+--- 1. first frame: bounded by the default, then content sizes
+window Rows 0..5
+window Cols 0..2
+gen 1 | damage layout selection positions
+Rows: count 20, extent 8, header 1, anchor 0+0, thumb 0.0000/0.1346 | 0#0@1+1 1#1@2+2 2#2@4+1 3#3@5+2 4#4@7+1
+Cols: count 2, extent 16, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@10+6
+    0     1
+0   0.0   0.1
+1   1.0   1.1
+
+2   2.0   2.1
+3   3.0   3.1
+
+4   4.0   4.1
+--- 2. next frame: bounded by the hint
+window Rows 0..9
+gen 2 | damage layout positions
+Rows: count 20, extent 8, header 1, anchor 0+0, thumb 0.0000/0.1522 | 0#0@1+1 1#1@2+2 2#2@4+1 3#3@5+2 4#4@7+1
+Cols: count 2, extent 16, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@10+6
+    0     1
+0   0.0   0.1
+1   1.0   1.1
+
+2   2.0   2.1
+3   3.0   3.1
+
+4   4.0   4.1
+--- 3. row 3 overridden
+gen 3 | damage layout
+Rows: count 20, extent 8, header 1, anchor 0+0, thumb 0.0000/0.1458 | 0#0@1+1 1#1@2+2 2#2@4+1 3#3@5+4
+Cols: count 2, extent 16, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@10+6
+    0     1
+0   0.0   0.1
+1   1.0   1.1
+
+2   2.0   2.1
+3   3.0   3.1

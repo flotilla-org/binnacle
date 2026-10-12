@@ -6,8 +6,10 @@ use binnacle_core::{Axis, Snapshot, StripItem};
 const MAX_CANVAS: (usize, usize) = (160, 60);
 
 /// Renders a Snapshot as text: a summary line, each Strip as
-/// `position#key@offset+size` (key `?` while unfilled), then a character
-/// picture treating one unit as one character. Column headers show the column
+/// `position#key@offset+size` after its Scroll Anchor (`position+offset`) and
+/// thumb (`fraction/size`) (key `?` while unfilled), then a character
+/// picture treating one unit as one character, each item starting at the first
+/// whole character it reaches. Column headers show the column
 /// Key, row headers the row Position, cells `rowkey.colkey`.
 pub fn render(snap: &Snapshot) -> String {
     let mut out = String::new();
@@ -31,11 +33,15 @@ pub fn render(snap: &Snapshot) -> String {
     for axis in Axis::ALL {
         let _ = write!(
             out,
-            "{:?}: count {}, extent {}, header {} |",
+            "{:?}: count {}, extent {}, header {}, anchor {}+{}, thumb {:.4}/{:.4} |",
             axis,
             snap.count(axis),
             snap.extent(axis),
-            snap.header(axis)
+            snap.header(axis),
+            snap.scroll_anchor(axis).position,
+            snap.scroll_anchor(axis).offset,
+            snap.thumb(axis).fraction,
+            snap.thumb(axis).size,
         );
         for item in snap.strip(axis) {
             let _ = write!(
@@ -62,38 +68,37 @@ fn picture(snap: &Snapshot) -> String {
     let width = (snap.extent(Axis::Cols).ceil() as usize).min(MAX_CANVAS.0);
     let height = (snap.extent(Axis::Rows).ceil() as usize).min(MAX_CANVAS.1);
     let mut canvas = vec![vec![' '; width]; height];
-    let mut put = |x: f32, y: f32, limit: f32, text: &str| {
-        let (x, y, limit) = (
-            x.floor() as usize,
-            y.floor() as usize,
-            limit.floor() as usize,
-        );
-        let Some(line) = canvas.get_mut(y) else {
+    // Writes `text` from (x, y), keeping only the characters inside the clip
+    // `[x_min, x_end) x [y_min, ..)`: cells stay out of the header bands.
+    let mut put = |x: f32, y: f32, x_min: f32, x_end: f32, y_min: f32, text: &str| {
+        let y = y.max(y_min).ceil();
+        let Some(line) = canvas.get_mut(y as usize) else {
             return;
         };
+        let (x, x_min, x_end) = (x.ceil() as i64, x_min.ceil() as i64, x_end.ceil() as i64);
         for (i, ch) in text.chars().enumerate() {
-            let cx = x + i;
-            if cx >= limit || cx >= line.len() {
+            let cx = x + i as i64;
+            if cx >= x_end || cx >= line.len() as i64 {
                 break;
             }
-            line[cx] = ch;
+            if cx >= x_min {
+                line[cx as usize] = ch;
+            }
         }
     };
+    let (top, left) = (snap.header(Axis::Rows), snap.header(Axis::Cols));
     for c in snap.cols() {
-        put(c.offset, 0.0, c.end(), &key_text(c));
+        put(c.offset, 0.0, left, c.end(), 0.0, &key_text(c));
     }
     for r in snap.rows() {
-        put(
-            0.0,
-            r.offset,
-            snap.header(Axis::Cols),
-            &r.position.to_string(),
-        );
+        put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
         for c in snap.cols() {
             put(
                 c.offset,
                 r.offset,
+                left,
                 c.end(),
+                top,
                 &format!("{}.{}", key_text(r), key_text(c)),
             );
         }
