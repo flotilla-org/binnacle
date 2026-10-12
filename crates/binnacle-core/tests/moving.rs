@@ -257,3 +257,24 @@ fn a_move_is_cancelled_when_its_axis_is_reordered_but_not_the_other() {
             .any(|e| matches!(e.effect, Effect::MoveRequested { .. }))
     );
 }
+
+#[test]
+fn a_move_request_drains_before_focus_and_selection_news() {
+    let mut s = table();
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(6.0, 3.0));
+        g.pointer(PointerEvent::up(6.0, 3.0));
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(30.0, 0.5));
+        g.pointer(PointerEvent::up(30.0, 0.5));
+    });
+    let drained = effects(&mut s);
+    assert!(
+        matches!(
+            drained[..],
+            [Effect::MoveRequested { .. }, Effect::FocusChanged { .. }]
+        ),
+        "{drained:?}"
+    );
+}
