@@ -334,7 +334,7 @@ impl Host {
             }
             Input::Filter(keep) => {
                 let notice = match keep {
-                    Some(keep) => self.s.source.filter(|r| keep.keeps(r)),
+                    Some(keep) => self.s.source.filter(move |r| keep.keeps(r)),
                     None => self.s.source.source.clear_filter(),
                 };
                 self.s.input(|g| g.notify(Axis::Rows, notice));

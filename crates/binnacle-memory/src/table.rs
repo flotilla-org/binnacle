@@ -108,22 +108,11 @@ impl AxisOrder {
         let Some(logical) = self.logical(key) else {
             return Located::Gone { suggest: None };
         };
-        let Some(remap) = &self.remap else {
-            return Located::Found(logical as u64);
-        };
-        let len = self.len;
-        let positions = self.positions.get_or_insert_with(|| {
-            let mut positions = vec![GONE; len];
-            for (position, &i) in remap.iter().enumerate() {
-                positions[i as usize] = position as u32;
-            }
-            positions
-        });
-        match positions[logical as usize] {
-            GONE => Located::Gone {
+        match self.position(logical as usize) {
+            Some(position) => Located::Found(position),
+            None => Located::Gone {
                 suggest: self.nearest_kept(logical),
             },
-            position => Located::Found(position as u64),
         }
     }
 
@@ -154,6 +143,58 @@ impl AxisOrder {
 
     fn count(&self) -> u64 {
         self.remap.as_ref().map_or(self.len, Vec::len) as u64
+    }
+
+    /// Adds `n` base items after the last, keyed by `keys` if the axis has
+    /// host Keys. They join the end of the sorted order and the filter keeps
+    /// them.
+    fn append(&mut self, n: usize, keys: &[Key]) {
+        let len = self.len + n;
+        assert!(
+            u32::try_from(len).is_ok(),
+            "an In-Memory Table Source holds at most u32::MAX items per axis, got {len}"
+        );
+        match &mut self.keys {
+            Some(own) => {
+                assert_eq!(keys.len(), n, "one Key per appended item");
+                own.extend_from_slice(keys);
+                if let Some(logical) = &mut self.logical {
+                    logical.extend(keys.iter().zip(self.len as u32..).map(|(&k, i)| (k, i)));
+                }
+            }
+            None => assert!(keys.is_empty(), "the items have no host Keys"),
+        }
+        let new = self.len as u32..len as u32;
+        self.len = len;
+        if let Some(sorted) = &mut self.sorted {
+            sorted.extend(new.clone());
+            self.ranks = None;
+        }
+        if let Some(keep) = &mut self.keep {
+            keep.extend(new.map(|_| true));
+        }
+        self.rebuild();
+    }
+
+    /// The Position of the item with Logical Index `logical`, if it is kept.
+    fn position(&mut self, logical: usize) -> Option<Position> {
+        if logical >= self.len {
+            return None;
+        }
+        let Some(remap) = &self.remap else {
+            return Some(logical as u64);
+        };
+        let len = self.len;
+        let positions = self.positions.get_or_insert_with(|| {
+            let mut positions = vec![GONE; len];
+            for (position, &i) in remap.iter().enumerate() {
+                positions[i as usize] = position as u32;
+            }
+            positions
+        });
+        Some(positions[logical])
+            .filter(|&p| p != GONE)
+            .map(u64::from)
     }
 
     /// Moves the items with `keys`, in that order, to just before the item at
@@ -338,6 +379,60 @@ impl InMemoryTableSource {
         let rows = self.axis_mut(Axis::Rows);
         rows.set_keep(None);
         ChangeNotice::Reset(rows.count())
+    }
+
+    /// The number of base rows, kept or not.
+    pub fn base_rows(&self) -> usize {
+        self.axis(Axis::Rows).len
+    }
+
+    /// The Position of base row `row` (a Logical Index), or `None` if the
+    /// filter drops it or there is no such row.
+    pub fn row_position(&mut self, row: usize) -> Option<Position> {
+        self.axis_mut(Axis::Rows).position(row)
+    }
+
+    /// `n` rows were appended to the base data, keyed by `keys` if the rows
+    /// have host Keys ([`InMemoryTableSource::with_keys`]; empty otherwise).
+    /// With no sort or filter active they are `Inserted` at the end. With
+    /// either active they join the end of the sorted order, kept, and the
+    /// rows need a `Reset`: re-apply the sort and filter to place them (a
+    /// [`crate::MemorySource`] does both).
+    ///
+    /// # Panics
+    ///
+    /// If `keys` does not hold one Key per new row on a keyed axis, or is
+    /// not empty on an axis keyed by Logical Index.
+    pub fn append_rows(&mut self, n: usize, keys: &[Key]) -> ChangeNotice {
+        let rows = self.axis_mut(Axis::Rows);
+        let at = rows.count();
+        let ordered = rows.sorted.is_some() || rows.keep.is_some();
+        rows.append(n, keys);
+        if ordered {
+            ChangeNotice::Reset(rows.count())
+        } else {
+            ChangeNotice::Inserted { at, n: n as u64 }
+        }
+    }
+
+    /// The base rows changed in some other way: there are now `len`, keyed
+    /// by `keys` (or by Logical Index if `None`). The sort and filter are
+    /// dropped, since their keys and flags no longer line up with the rows:
+    /// re-apply them (a [`crate::MemorySource`] does). Returns the `Reset`
+    /// the rows need.
+    ///
+    /// # Panics
+    ///
+    /// As [`InMemoryTableSource::new`] and [`InMemoryTableSource::with_keys`].
+    pub fn replace_rows(&mut self, len: usize, keys: Option<Vec<Key>>) -> ChangeNotice {
+        let mut rows = AxisOrder::new(len);
+        if let Some(keys) = keys {
+            assert_eq!(keys.len(), len, "one Key per base item");
+            rows.keys = Some(keys);
+        }
+        self.axes[0] = rows;
+        self.sort = SortSpec::unsorted();
+        ChangeNotice::Reset(len as u64)
     }
 
     /// The Sort Spec the rows are in, as last applied.
