@@ -324,7 +324,10 @@ unsafe fn borrowed<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 ///
 /// # Safety
 /// `grid` is NULL or a live handle from [`binnacle_grid_new`].
-unsafe fn with(grid: *mut BinnacleGrid, f: impl FnOnce(&mut BinnacleGrid) -> Option<()>) -> i32 {
+unsafe fn with_handle(
+    grid: *mut BinnacleGrid,
+    f: impl FnOnce(&mut BinnacleGrid) -> Option<()>,
+) -> i32 {
     // SAFETY: the caller's contract.
     let Some(h) = (unsafe { grid.as_mut() }) else {
         return 0;
@@ -336,7 +339,7 @@ unsafe fn with(grid: *mut BinnacleGrid, f: impl FnOnce(&mut BinnacleGrid) -> Opt
 ///
 /// # Safety
 /// `out` is NULL or valid for a write.
-unsafe fn put<T>(out: *mut T, value: T) -> Option<()> {
+unsafe fn write_out<T>(out: *mut T, value: T) -> Option<()> {
     // SAFETY: the caller's contract.
     *unsafe { out.as_mut() }? = value;
     Some(())
@@ -515,7 +518,7 @@ pub unsafe extern "C" fn binnacle_grid_set_selection_unit(
     };
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             h.grid.set_selection_unit(unit);
             Some(())
         })
@@ -538,7 +541,7 @@ pub unsafe extern "C" fn binnacle_grid_set_header_click(
     };
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_header_click(axis, click))
         })
     }
@@ -553,7 +556,7 @@ pub unsafe extern "C" fn binnacle_grid_set_drag_threshold(
 ) -> i32 {
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             h.grid.set_drag_threshold(threshold);
             Some(())
         })
@@ -574,7 +577,7 @@ pub unsafe extern "C" fn binnacle_grid_begin_frame(
     }
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             let mut requests = BinnacleWindowRequests::default();
             for (axis, range) in h.grid.begin_frame(Viewport::new(width, height)) {
                 requests.axes[index(axis)] = BinnacleWindowRequest {
@@ -583,7 +586,7 @@ pub unsafe extern "C" fn binnacle_grid_begin_frame(
                     end: range.end,
                 };
             }
-            put(out, requests)
+            write_out(out, requests)
         })
     }
 }
@@ -605,7 +608,7 @@ pub unsafe extern "C" fn binnacle_grid_set_window(
         .collect();
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_window(axis, start, &keys))
         })
     }
@@ -633,7 +636,7 @@ pub unsafe extern "C" fn binnacle_grid_set_window_sized(
     let sizes = unsafe { borrowed(sizes, len) };
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_window_sized(axis, start, &keys, sizes, min_size))
         })
     }
@@ -650,7 +653,7 @@ pub unsafe extern "C" fn binnacle_grid_set_size(
 ) -> i32 {
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_size(axis, Key(key), size))
         })
     }
@@ -667,7 +670,7 @@ pub unsafe extern "C" fn binnacle_grid_snapshot(
         return 0;
     }
     // SAFETY: the caller's contract.
-    unsafe { with(grid, |h| put(out, h.snapshot())) }
+    unsafe { with_handle(grid, |h| write_out(out, h.snapshot())) }
 }
 
 impl BinnacleGrid {
@@ -828,7 +831,7 @@ pub unsafe extern "C" fn binnacle_grid_poll_effect(
         return 0;
     }
     // SAFETY: the caller's contract.
-    unsafe { with(grid, |h| put(out, h.poll_effect()?)) }
+    unsafe { with_handle(grid, |h| write_out(out, h.poll_effect()?)) }
 }
 
 /// # Safety
@@ -847,7 +850,7 @@ pub unsafe extern "C" fn binnacle_grid_sort_applied(
         .collect();
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             spec.map(|s| h.grid.sort_applied(SortSpec::new(s)))
         })
     }
@@ -873,7 +876,7 @@ pub unsafe extern "C" fn binnacle_grid_located(
     };
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.located(axis, Key(key), answer))
         })
     }
@@ -899,7 +902,7 @@ pub unsafe extern "C" fn binnacle_grid_notify(
     };
     // SAFETY: the caller's contract.
     unsafe {
-        with(grid, |h| {
+        with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.notify(axis, notice))
         })
     }
@@ -913,7 +916,7 @@ pub unsafe extern "C" fn binnacle_grid_pointer(
     event: BinnaclePointerEvent,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { with(grid, |h| event.to_core().map(|e| h.grid.pointer(e))) }
+    unsafe { with_handle(grid, |h| event.to_core().map(|e| h.grid.pointer(e))) }
 }
 
 /// Sends `action`, or returns 0 if it is `None` (an invalid tag).
@@ -922,7 +925,7 @@ pub unsafe extern "C" fn binnacle_grid_pointer(
 /// `grid` is NULL or a live handle.
 unsafe fn act(grid: *mut BinnacleGrid, action: Option<Action>) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { with(grid, |h| action.map(|a| h.grid.action(a))) }
+    unsafe { with_handle(grid, |h| action.map(|a| h.grid.action(a))) }
 }
 
 /// # Safety
