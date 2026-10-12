@@ -3,8 +3,8 @@
 //! mean; a host that calls `edit_started` puts it in `Editing`.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, EditEnd, Effect, FocusEnd, FocusStep, Grid, Key, Mode, Modifiers,
-    PointerEvent, SelectionUnit, SortColumn, SortSpec, Stamped, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, EditEnd, Effect, FocusEnd, FocusStep, Grid, Key, Mode,
+    Modifiers, PointerEvent, SelectionUnit, SortColumn, SortSpec, Stamped, Viewport,
 };
 use binnacle_testkit::{IdentityTable, RecordTable, Scenario, ScenarioSource};
 
@@ -415,4 +415,48 @@ fn a_located_position_past_the_count_counts_as_the_edited_key_leaving() {
         col: Key(1)
     }));
     assert_eq!(s.frame(V).mode(), Mode::Idle);
+}
+
+#[test]
+fn a_drag_cancelled_after_set_focus_named_a_departed_key_restores_a_real_cell() {
+    let mut s = table();
+    s.frame(V);
+    // Row Key 50 does not exist; the press lands on row 2, column 1 before
+    // `located` answers, and the drag holds the focus from before it.
+    s.input(|g| {
+        g.set_focus(Key(50), Key(0));
+        g.pointer(PointerEvent::down(12.0, 3.0));
+        g.pointer(PointerEvent::moved(19.0, 4.0));
+    });
+    let mut out = s.step("set_focus to a departed row Key, then a drag", V);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    out += &s.step(
+        "a notice cancels the drag: focus goes back to where set_focus left it once Key 50 was found gone (row 0), not to Key 50",
+        V,
+    );
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_drag_cancelled_after_its_pick_was_filtered_out_does_not_restore_the_pick() {
+    let mut s = records();
+    s.frame(TALL);
+    // Ctrl-click picks and focuses record 3 (row 3).
+    press(&mut s, 5.0, 4.0, Modifiers::CTRL, 1);
+    s.frame(TALL);
+    let notice = s.source.filter(|r| r[0] != Some(1));
+    s.input(|g| {
+        g.notify(Axis::Rows, notice);
+        g.pointer(PointerEvent::down(12.0, 2.0));
+        g.pointer(PointerEvent::moved(19.0, 3.0));
+    });
+    s.frame(TALL);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    let snap = s.frame(TALL);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert_eq!(
+        snap.picked(),
+        &[] as &[Key],
+        "record 3 left while the drag was held"
+    );
 }
