@@ -104,7 +104,7 @@ impl IntoIterator for WindowRequests {
 
 /// The view controller for one table.
 pub struct Grid {
-    axes: [AxisState; 2],
+    pub(crate) axes: [AxisState; 2],
     pub(crate) generation: Generation,
     pub(crate) effects: VecDeque<Stamped>,
     pub(crate) pending_damage: Damage,

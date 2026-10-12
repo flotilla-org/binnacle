@@ -194,6 +194,46 @@ impl AxisMeasure {
         self.set_keys(0, &[]);
     }
 
+    /// `n` items were inserted before Position `at` (at most the count): the
+    /// count grows, and the Window keeps the Keys whose Positions it still
+    /// knows: all of them, `n` later, if `at` is at or before its start,
+    /// else those before `at`.
+    pub fn insert(&mut self, at: Position, n: u64) {
+        let at = at.min(self.count);
+        self.count = self.count.saturating_add(n);
+        if at <= self.window_start {
+            self.window_start = self.window_start.saturating_add(n);
+        } else if let Some(i) = self.index(at) {
+            self.keys.truncate(i);
+            self.content.truncate(i);
+        }
+        self.rebuild();
+    }
+
+    /// The `n` items from Position `at` were removed (both clipped to the
+    /// count): the count shrinks, and the Window drops their Keys and closes
+    /// up around them. Returns the Keys the Window dropped.
+    pub fn remove(&mut self, at: Position, n: u64) -> Vec<Key> {
+        let at = at.min(self.count);
+        let n = n.min(self.count - at);
+        let w = self.window();
+        let (lo, hi) = (at.max(w.start), (at + n).min(w.end));
+        let mut gone = Vec::new();
+        if lo < hi {
+            let r = (lo - w.start) as usize..(hi - w.start) as usize;
+            gone = self.keys.drain(r.clone()).collect();
+            self.content.drain(r);
+        }
+        self.window_start = if w.start >= at + n {
+            w.start - n
+        } else {
+            w.start.min(at)
+        };
+        self.count -= n;
+        self.rebuild();
+        gone
+    }
+
     /// The Size Override set for `key`, if any.
     pub fn size_override(&self, key: Key) -> Option<f32> {
         self.overrides.get(&key).copied()

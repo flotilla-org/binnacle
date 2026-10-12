@@ -619,9 +619,6 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         if tc.draw(gs::weighted_booleans(0.5)) {
             inputs.extend(tc.draw(gesture()).into_iter().map(Input::Pointer));
         }
-        // Whether a notice came earlier in the step: focus moves after it wait
-        // for `located`, and a click discards them unapplied.
-        let mut noticed = false;
         for input in inputs {
             match &input {
                 Input::Action(Action::MoveFocus { .. }) => {
@@ -634,22 +631,19 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                     reveals_focus = false;
                 }
                 Input::Action(_) => reveals_focus = false,
-                // A click focuses what is under the pointer without scrolling.
+                // A click focuses what is under the pointer without scrolling,
+                // and drops a reveal a focus move left pending.
                 Input::Pointer(_) => {
                     moved_focus = true;
-                    reveals_focus &= !noticed;
+                    reveals_focus = false;
                 }
                 // A notice cancels a selection drag, restoring the focus from
                 // before its press.
-                Input::Notice(_) => {
-                    moved_focus = true;
-                    noticed = true;
-                }
+                Input::Notice(_) => moved_focus = true,
                 // A Reset also may move focus to a suggestion or unplace it,
                 // and a move made before it may not have placed focus at all.
                 Input::Reset(..) => {
                     moved_focus = true;
-                    noticed = true;
                     reveals_focus = false;
                 }
                 // `set_focus` reveals once placed, unless an axis is empty.

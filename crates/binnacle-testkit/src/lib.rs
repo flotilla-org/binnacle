@@ -8,4 +8,4 @@ mod render;
 mod scenario;
 
 pub use render::render;
-pub use scenario::{IdentityTable, Record, RecordTable, Scenario, ScenarioSource};
+pub use scenario::{IdentityTable, KeyedTable, Record, RecordTable, Scenario, ScenarioSource};
