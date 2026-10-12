@@ -12,4 +12,3 @@ Status: planning. The design is being worked out as a wayfinder map: the issue l
 - `crates/binnacle-ffi/`: the internal C API for wheelhouse (empty for now).
 - `crates/binnacle-testkit/`: the scenario harness and Snapshot text renderer that tests share (not published).
 - `docs/research/`: cited research notes that feed the map's decisions.
-- `legacy/druid_table/`: the original druid widget, kept as reference for harvesting (remap, selection, axis measures). It depends on a 2021 druid git master and is not expected to build as-is. Its charting/animation code (`vis.rs`, `interp.rs`) was left out as out of scope.

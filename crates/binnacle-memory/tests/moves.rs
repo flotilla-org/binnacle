@@ -54,3 +54,19 @@ fn host_column_keys_move_and_row_sorts_leave_the_column_order_alone() {
     assert_eq!(columns(&source), keys(&[30, 10, 20]));
     assert_eq!(source.locate(Axis::Cols, Key(20)), Located::Found(2));
 }
+
+/// The legacy column remap computed `columns - 1` and underflowed on an empty
+/// table.
+#[test]
+fn an_empty_table_moves_and_sorts_nothing() {
+    let mut source = InMemoryTableSource::new(0, 0);
+    source.move_columns(&keys(&[0]), 0);
+    source.move_columns(&keys(&[0]), 1);
+    source.apply_sort(&SortSpec::unsorted(), vec![]);
+    assert_eq!(columns(&source), keys(&[]));
+    assert_eq!(source.window(Axis::Rows, 0..u64::MAX), keys(&[]));
+    assert_eq!(
+        source.locate(Axis::Cols, Key(0)),
+        Located::Gone { suggest: None }
+    );
+}

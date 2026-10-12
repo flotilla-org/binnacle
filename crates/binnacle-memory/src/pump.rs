@@ -26,7 +26,7 @@ pub trait PumpSource {
 /// has answered it.
 pub fn pump(
     grid: &mut Grid,
-    source: &mut impl PumpSource,
+    source: &mut (impl PumpSource + ?Sized),
     mut seen: impl FnMut(&mut Grid, Stamped),
 ) {
     while let Some(stamped) = grid.poll_effect() {
