@@ -25,6 +25,8 @@ enum Input {
     /// A move to fractions of the viewport.
     Move(f32, f32),
     Release,
+    /// The host starts editing the cell at fractions of the counts.
+    Edit(f32, f32),
     /// The source inserts `n` items before `at` (a fraction of the count).
     Insert(Axis, f32, u64),
     /// The source removes `n` items from `at` (a fraction of the count).
@@ -67,6 +69,7 @@ fn input(tc: &TestCase) -> Input {
         gs::integers::<usize>().max_value(4).map(Input::BorderPress),
         hegel::tuples!(fraction(), fraction()).map(|(x, y)| Input::Move(x, y)),
         gs::just(Input::Release),
+        hegel::tuples!(fraction(), fraction()).map(|(r, c)| Input::Edit(r, c)),
         gs::sampled_from(vec![
             Input::Action(Action::SelectAll),
             Input::Action(Action::Cancel),
@@ -186,6 +189,14 @@ impl Host {
                 .s
                 .input(|g| g.pointer(PointerEvent::moved(x * width, y * height))),
             Input::Release => self.s.input(|g| g.pointer(PointerEvent::up(0.0, 0.0))),
+            Input::Edit(r, c) => {
+                let [rows, cols] = &self.s.source.axes;
+                let pick =
+                    |keys: &[Key], f: f32| keys.get((f * keys.len() as f32) as usize).copied();
+                if let (Some(row), Some(col)) = (pick(rows, r), pick(cols, c)) {
+                    self.s.input(|g| g.edit_started(row, col));
+                }
+            }
             Input::Insert(axis, f, n) => {
                 let at = at(self, axis, f);
                 let n = self.s.source.insert(axis, at, n);
@@ -212,7 +223,8 @@ impl Host {
 /// The Mode a Change Notice on `axis` leaves, given the Mode before it: a
 /// selection drag is cancelled if items moved (not if only content changed,
 /// or nothing was inserted or removed), a resize carries on, and a header
-/// move is cancelled if items on its own axis moved.
+/// move is cancelled if items on its own axis moved. (An edit is checked
+/// apart: it ends only if its Keys left.)
 fn expected_mode(before: Mode, axis: Axis, notice: &ChangeNotice) -> Mode {
     let moves = match notice {
         ChangeNotice::Inserted { n, .. } | ChangeNotice::Removed { n, .. } => *n > 0,
@@ -229,14 +241,14 @@ fn expected_mode(before: Mode, axis: Axis, notice: &ChangeNotice) -> Mode {
 /// Draws a table, then steps of inputs mixed with Change Notices, each
 /// followed by a frame; `check` sees the Host after every frame.
 fn runs(tc: &TestCase, check: impl FnMut(&mut Host)) {
-    run_checking_notices(tc, |_, _, _| {}, check)
+    run_checking_notices(tc, |_, _, _, _| {}, check)
 }
 
 /// Like [`runs`], also handing `on_notice` the Mode before and after each
 /// Change Notice (read from a Snapshot taken either side of it).
 fn run_checking_notices(
     tc: &TestCase,
-    mut on_notice: impl FnMut(Mode, Mode, (Axis, ChangeNotice)),
+    mut on_notice: impl FnMut(Mode, Mode, (Axis, ChangeNotice), &Host),
     mut check: impl FnMut(&mut Host),
 ) {
     let mut host = Host::new(tc);
@@ -250,7 +262,8 @@ fn run_checking_notices(
             ) {
                 let before = host.mode();
                 let sent = host.input(input).expect("a notice");
-                on_notice(before, host.mode(), sent);
+                let after = host.mode();
+                on_notice(before, after, sent, &host);
             } else {
                 host.input(input);
             }
@@ -264,10 +277,25 @@ fn run_checking_notices(
 fn the_mode_after_a_change_notice_follows_the_rules(tc: TestCase) {
     run_checking_notices(
         &tc,
-        |before, after, (axis, notice)| {
-            assert_eq!(after, expected_mode(before, axis, &notice), "{notice:?}");
+        |before, after, (axis, notice), host| {
+            if let Mode::Editing { row, col } = before {
+                let [rows, cols] = &host.s.source.axes;
+                let left = !rows.contains(&row) || !cols.contains(&col);
+                assert!(
+                    after == before || (after == Mode::Idle && left),
+                    "{notice:?}: {before:?} to {after:?}"
+                );
+            } else {
+                assert_eq!(after, expected_mode(before, axis, &notice), "{notice:?}");
+            }
         },
-        |_| {},
+        // Once the pump has answered, an edit names only Keys still there.
+        |host| {
+            if let Mode::Editing { row, col } = host.mode() {
+                let [rows, cols] = &host.s.source.axes;
+                assert!(rows.contains(&row) && cols.contains(&col));
+            }
+        },
     );
 }
 

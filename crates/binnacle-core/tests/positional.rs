@@ -348,3 +348,65 @@ fn a_click_after_a_focus_move_in_the_same_frame_scrolls_nothing() {
         assert_eq!(snap.scroll_anchor(Axis::Rows).position, 0, "x {x}");
     }
 }
+
+fn edit_effects(s: &mut Scenario<KeyedTable>) -> Vec<Effect> {
+    s.pump().into_iter().map(|e| e.effect).collect()
+}
+
+#[test]
+fn an_edit_follows_its_row_through_inserts_and_is_cancelled_when_its_row_or_column_is_removed() {
+    // Removed in the Window, removed out of sight (found by Locate), and the
+    // column removed.
+    for (axis, at, scroll) in [(Axis::Rows, 3, 0), (Axis::Rows, 3, 10), (Axis::Cols, 1, 0)] {
+        let mut s = table();
+        s.frame(V);
+        s.input(|g| g.edit_started(Key(3), Key(1)));
+        insert(&mut s, Axis::Rows, 0, 2);
+        remove(&mut s, Axis::Rows, 0, 2);
+        scroll_rows(&mut s, scroll);
+        assert_eq!(
+            s.frame(V).mode(),
+            Mode::Editing {
+                row: Key(3),
+                col: Key(1)
+            }
+        );
+        assert_eq!(edit_effects(&mut s), vec![], "{axis:?} {scroll}");
+        remove(&mut s, axis, at, 1);
+        let drained = edit_effects(&mut s);
+        assert!(
+            drained.contains(&Effect::EditCancelled {
+                row: Key(3),
+                col: Key(1)
+            }),
+            "{axis:?} {scroll}: {drained:?}"
+        );
+        assert_eq!(s.frame(V).mode(), Mode::Idle);
+    }
+}
+
+#[test]
+fn an_edit_survives_the_removal_of_other_rows_in_and_out_of_sight() {
+    let mut s = table();
+    s.frame(V);
+    s.input(|g| g.edit_started(Key(3), Key(1)));
+    remove(&mut s, Axis::Rows, 1, 1);
+    remove(&mut s, Axis::Rows, 15, 2);
+    scroll_rows(&mut s, 10);
+    s.frame(V);
+    remove(&mut s, Axis::Rows, 0, 1);
+    let drained = edit_effects(&mut s);
+    assert!(
+        !drained
+            .iter()
+            .any(|e| matches!(e, Effect::EditCancelled { .. })),
+        "{drained:?}"
+    );
+    assert_eq!(
+        s.frame(V).mode(),
+        Mode::Editing {
+            row: Key(3),
+            col: Key(1)
+        }
+    );
+}

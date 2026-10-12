@@ -153,6 +153,9 @@ impl Grid {
                 None => {}
             }
         }
+        if let Shift::Removed { .. } = shift {
+            self.edit_removed(axis, &gone);
+        }
         self.shift_focus(axis, shift, count);
         self.rebase_press();
         let st = self.axis_mut(axis);
@@ -170,6 +173,22 @@ impl Grid {
         st.clamp_anchor();
         self.pending_damage.layout = true;
         self.pending_damage.positions = true;
+    }
+
+    /// Items on `axis` were removed, `gone` being the Keys the Window held:
+    /// an edit whose Key went is cancelled, one whose Key the Window cannot
+    /// vouch for asks where it is.
+    fn edit_removed(&mut self, axis: Axis, gone: &[Key]) {
+        let Gesture::Editing { keys, .. } = &self.gesture else {
+            return;
+        };
+        let key = keys[axis.index()];
+        let measure = &self.axis(axis).measure;
+        if measure.count() == 0 || gone.contains(&key) {
+            self.end_edit();
+        } else if measure.position_of(key).is_none() {
+            self.locate_edit(axis);
+        }
     }
 
     /// Moves the focused end on `axis` with its item. If its item was
