@@ -764,3 +764,95 @@ fn focus_changed_comes_once_per_drain_and_names_the_focused_cell(tc: TestCase) {
         shown = keys.and_then(|(r, c)| r.key.zip(c.key));
     });
 }
+
+/// Focus moves land where the spec says, on a fresh Grid where nothing else
+/// scrolls: the first move takes the first visible cell (the Scroll Anchor,
+/// at the start) or goes to its edge; an item move steps one, clamped; an
+/// edge move goes to the first or last item; a page move goes at least one
+/// item that way and no further than a body's length of the smallest items.
+#[hegel::test(test_cases = 2000)]
+fn focus_moves_land_one_item_a_page_or_an_edge_away(tc: TestCase) {
+    let rows = tc.draw(axis_config());
+    let cols = tc.draw(axis_config());
+    let (w, h) = tc.draw(hegel::tuples!(
+        extent(cols, cols.default_size),
+        extent(rows, rows.default_size)
+    ));
+    let viewport = Viewport::new(w, h);
+    let mut s = Scenario::identity(rows, cols);
+    let mut snap_body = [0.0f32; 2];
+    {
+        let snap = s.frame(viewport);
+        for axis in Axis::ALL {
+            snap_body[index(axis)] = snap.extent(axis) - snap.header(axis);
+        }
+    }
+    let counts = [rows.count, cols.count];
+    let mut model: Option<[u64; 2]> = None;
+    let moves = tc.draw(
+        gs::vecs(hegel::tuples!(
+            axis(),
+            gs::sampled_from(vec![FocusStep::Item, FocusStep::Page, FocusStep::Edge]),
+            gs::booleans()
+        ))
+        .min_size(1)
+        .max_size(8),
+    );
+    for (axis, by, forward) in moves {
+        s.input(|g| {
+            g.action(Action::MoveFocus {
+                axis,
+                by,
+                forward,
+                extend: false,
+            })
+        });
+        let snap = s.frame(viewport);
+        let got = snap
+            .focus(Axis::Rows)
+            .zip(snap.focus(Axis::Cols))
+            .map(|(r, c)| [r.position, c.position]);
+        if counts.contains(&0) {
+            assert_eq!(got, None, "focus placed in an empty table");
+            continue;
+        }
+        let i = index(axis);
+        let last = counts[i] - 1;
+        let Some(before) = model else {
+            let mut expected = [0, 0];
+            if by == FocusStep::Edge && forward {
+                expected[i] = last;
+            }
+            assert_eq!(got, Some(expected), "first {by:?} move on {axis:?}");
+            model = got;
+            continue;
+        };
+        let got = got.expect("focus became unplaced");
+        assert_eq!(got[1 - i], before[1 - i], "the other axis moved");
+        let from = before[i];
+        match by {
+            FocusStep::Item if forward => assert_eq!(got[i], (from + 1).min(last)),
+            FocusStep::Item => assert_eq!(got[i], from.saturating_sub(1)),
+            FocusStep::Edge => assert_eq!(got[i], if forward { last } else { 0 }),
+            FocusStep::Page => {
+                let config = [rows, cols][i];
+                let stride = f64::from(config.default_size) + f64::from(config.gap);
+                let most = (f64::from(snap_body[i].max(0.0)) / stride).ceil() as u64 + 1;
+                let moved = got[i].abs_diff(from);
+                let edge = if forward { last } else { 0 };
+                assert!(
+                    (if forward {
+                        got[i] >= from
+                    } else {
+                        got[i] <= from
+                    }) && (moved >= 1 || from == edge)
+                        && (moved <= most.max(1)),
+                    "page {forward} from {from} landed on {} (body {})",
+                    got[i],
+                    snap_body[i]
+                );
+            }
+        }
+        model = Some(got);
+    }
+}
