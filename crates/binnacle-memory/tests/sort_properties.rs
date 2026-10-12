@@ -367,3 +367,50 @@ fn logical_order(table: &Table, source: &InMemoryTableSource) -> Vec<usize> {
         .map(|key| (0..table.rows).find(|&i| table.key(i) == key).unwrap())
         .collect()
 }
+
+/// Column moves alone, over wider tables than the sort properties draw, with
+/// Logical Index or host column Keys and moves naming any Keys.
+#[hegel::test(test_cases = 1000)]
+fn column_moves_match_the_model(tc: TestCase) {
+    let width = tc.draw(gs::integers::<usize>().max_value(40));
+    let host = tc.draw(gs::optional(
+        gs::vecs(gs::integers::<u64>())
+            .min_size(width)
+            .max_size(width)
+            .unique(true),
+    ));
+    let mut columns: Vec<Key> = match &host {
+        None => (0..width as u64).map(Key).collect(),
+        Some(keys) => keys.iter().copied().map(Key).collect(),
+    };
+    let mut source = InMemoryTableSource::new(0, width);
+    if host.is_some() {
+        source = source.with_keys(Axis::Cols, columns.clone());
+    }
+    for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(5)) {
+        let known = columns.clone();
+        let key = hegel::one_of!(
+            gs::sampled_from(if known.is_empty() {
+                vec![Key(0)]
+            } else {
+                known
+            }),
+            gs::integers::<u64>().map(Key),
+        );
+        let keys = tc.draw(gs::vecs(key).max_size(6));
+        let to = tc.draw(hegel::one_of!(
+            gs::integers::<u64>().max_value(width as u64 + 1),
+            gs::integers::<u64>()
+        ));
+        source.move_columns(&keys, to);
+        columns = moved(&columns, &keys, to);
+        assert_eq!(source.count(Axis::Cols), width as u64);
+        assert_eq!(source.window(Axis::Cols, 0..u64::MAX), columns);
+        for (position, &key) in columns.iter().enumerate() {
+            assert_eq!(
+                source.locate(Axis::Cols, key),
+                Located::Found(position as u64)
+            );
+        }
+    }
+}

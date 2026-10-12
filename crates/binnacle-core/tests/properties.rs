@@ -6,9 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, CellRange, Cursor, DEFAULT_DRAG_THRESHOLD, Effect, FocusStep,
-    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, SelectionUnit,
-    Snapshot, Viewport,
+    Action, Axis, AxisConfig, Button, CellRange, Cursor, Effect, FocusStep, Grid, HeaderClick, Key,
+    Mode, Modifiers, PointerEvent, PointerKind, Position, SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
@@ -1714,13 +1713,10 @@ fn check_resize_feedback(tc: &TestCase, snap: &Snapshot, axis: Axis, key: Key) {
     );
 }
 
-/// A header move in progress moves column headers only, captures, shows the
-/// move cursor and a drop indicator in the middle of the Gap before the drop
-/// Position. Every `MoveRequested` names distinct columns and a drop that
-/// changes their order. The identity table never moves anything, so a Key is
-/// its Position.
+/// Every `MoveRequested` names distinct columns and a drop that changes their
+/// order. The identity table never moves anything, so a Key is its Position.
 #[hegel::test(test_cases = 2000)]
-fn a_header_move_shows_its_drop_and_requests_only_real_moves(tc: TestCase) {
+fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) {
     frames(&tc, BODIES, |snap, step| {
         for effect in step.drained {
             let Effect::MoveRequested { axis, keys, to } = effect else {
@@ -1737,6 +1733,15 @@ fn a_header_move_shows_its_drop_and_requests_only_real_moves(tc: TestCase) {
                 "{keys:?} to {to} moves nothing"
             );
         }
+    });
+}
+
+/// A header move in progress moves column headers only, captures, shows the
+/// move cursor and a drop indicator in the middle of the Gap before the drop
+/// Position.
+#[hegel::test(test_cases = 2000)]
+fn a_header_move_in_progress_shows_its_drop(tc: TestCase) {
+    frames(&tc, BODIES, |snap, _| {
         let Mode::MovingHeaders { axis, key, to } = snap.mode() else {
             assert!(snap.moving_keys().is_empty());
             assert_eq!(snap.drop_indicator(), None);
@@ -1785,12 +1790,23 @@ fn check_moved_keys(keys: &[Key]) {
 /// Dragging a column header and dropping it over another column's first half
 /// (or Gap-free start) asks to move it before that column, over its second
 /// half or the Gap after it, after it; a drop beside itself asks nothing.
-/// The pointer may be in the header band or the body.
+/// The pointer may be in the header band or the body; what a header click
+/// does makes no difference.
 #[hegel::test(test_cases = 2000)]
 fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: TestCase) {
     let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_borders()));
     let viewport = Viewport::new(cols.1, rows.1);
     let mut s = Scenario::identity(rows.0, cols.0);
+    let click = tc.draw(gs::sampled_from(vec![
+        HeaderClick::Sort,
+        HeaderClick::Select,
+        HeaderClick::None,
+    ]));
+    let threshold = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(5.0));
+    s.input(|g| {
+        g.set_header_click(Axis::Cols, click);
+        g.set_drag_threshold(threshold);
+    });
     s.frame(viewport);
     let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
     s.input(|g| {
@@ -1822,7 +1838,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
     let edges = [over.offset, mid, over.end() + gap];
     if edges.iter().any(|&e| (x - e).abs() <= 4.0 * drift)
         || !(start..stop).contains(&x)
-        || (x - from).abs() < DEFAULT_DRAG_THRESHOLD
+        || (x - from).abs() < threshold
     {
         return;
     }
