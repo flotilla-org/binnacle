@@ -226,9 +226,13 @@ impl AxisState {
     }
 
     /// Scrolls the least distance that shows all of item `p`, or its start if
-    /// it is longer than the body. Returns whether the anchor moved.
+    /// it is longer than the body. With no body (no viewport yet) nothing can
+    /// show, so the anchor stays. Returns whether the anchor moved.
     pub fn reveal(&mut self, p: Position) -> bool {
         let body = f64::from(self.body());
+        if body <= 0.0 {
+            return false;
+        }
         let start = self.measure.distance(self.anchor.position, p) - f64::from(self.anchor.offset);
         let size = f64::from(self.measure.size_at(p));
         if start < 0.0 || size >= body {

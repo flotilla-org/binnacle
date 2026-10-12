@@ -4,6 +4,10 @@
 //! `Buffer`; the host supplies the text through [`Content`], since the Grid
 //! never reads cell values.
 
+mod keymap;
+
+pub use keymap::Keymap;
+
 use binnacle_core::{Action, Axis, Key, Snapshot};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -37,7 +41,8 @@ pub trait Content {
 /// Draws `snapshot` into `area` of `buf`: column headers along the top band,
 /// row numbers (Position plus one) down the left band, then each cell. Text is
 /// clipped to its item, to `area`, and for cells to the body past both header
-/// bands, so a part-scrolled item shows only its visible part.
+/// bands, so a part-scrolled item shows only its visible part. The focused
+/// cell is drawn reversed.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
     let area = area.intersection(buf.area);
     let header = Style::default().add_modifier(Modifier::BOLD);
@@ -74,19 +79,18 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
         let number = r.position.saturating_add(1).to_string();
         put(0.0, r.offset, 0.0, left, top, &number, header);
         for c in snapshot.cols() {
-            let text = match (r.key, c.key) {
+            let mut text = match (r.key, c.key) {
                 (Some(row), Some(col)) => content.cell(row, col),
                 _ => LOADING.to_string(),
             };
-            put(
-                c.offset,
-                r.offset,
-                left,
-                c.end(),
-                top,
-                &text,
-                Style::default(),
-            );
+            let mut style = Style::default();
+            if snapshot.cell_state(r, c).focused {
+                // Pad so the highlight fills the cell; `put` clips it.
+                let width = usize::from(area.width);
+                text = format!("{text:<width$}");
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            put(c.offset, r.offset, left, c.end(), top, &text, style);
         }
     }
 }

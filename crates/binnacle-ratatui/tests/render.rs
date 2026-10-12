@@ -1,6 +1,6 @@
 //! The adapter's Snapshot renderer, drawn into a `TestBackend`.
 
-use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Viewport};
+use binnacle_core::{Action, Axis, AxisConfig, FocusStep, Grid, Key, Viewport};
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{Content, render, wheel};
 use ratatui::Terminal;
@@ -8,6 +8,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 
 struct Labels;
 
@@ -46,6 +47,10 @@ fn draw(rows: u64, cols: u64, w: u16, h: u16, area: Rect) -> String {
 
 /// Runs one host frame of `grid` over identity sources and draws it.
 fn frame(grid: &mut Grid, w: u16, h: u16, area: Rect) -> String {
+    text(&frame_buffer(grid, w, h, area))
+}
+
+fn frame_buffer(grid: &mut Grid, w: u16, h: u16, area: Rect) -> Buffer {
     for (axis, range) in grid.begin_frame(Viewport::new(area.width.into(), area.height.into())) {
         let keys = IdentitySource::new(range.end).window(range.clone());
         grid.set_window(axis, range.start, &keys);
@@ -54,7 +59,7 @@ fn frame(grid: &mut Grid, w: u16, h: u16, area: Rect) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| render(&snapshot, &Labels, area, f.buffer_mut()))
         .unwrap();
-    text(term.backend().buffer())
+    term.backend().buffer().clone()
 }
 
 #[test]
@@ -121,4 +126,30 @@ fn the_wheel_scrolls_three_cells_and_other_mouse_events_do_not() {
     assert_eq!(wheel(&mouse(MouseEventKind::ScrollRight)), scroll(3.0, 0.0));
     assert_eq!(wheel(&mouse(MouseEventKind::ScrollLeft)), scroll(-3.0, 0.0));
     assert_eq!(wheel(&mouse(MouseEventKind::Moved)), None);
+}
+
+#[test]
+fn the_focused_cell_is_drawn_reversed_across_its_width() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let down = Action::MoveFocus {
+        axis: Axis::Rows,
+        by: FocusStep::Item,
+        forward: true,
+        extend: false,
+    };
+    grid.action(down.clone());
+    grid.action(down);
+    let buf = frame_buffer(&mut grid, 30, 5, Rect::new(0, 0, 30, 5));
+    let reversed: Vec<(u16, u16)> = buf
+        .area
+        .positions()
+        .filter(|&p| buf[p].modifier.contains(Modifier::REVERSED))
+        .map(|p| (p.x, p.y))
+        .collect();
+    // Row 1 sits on line 2, under the header line; column 0 spans x 5..13.
+    assert_eq!(reversed, (5..13).map(|x| (x, 2)).collect::<Vec<_>>());
+    assert!(text(&buf).lines().nth(2).unwrap().starts_with("2    r1c0"));
 }
