@@ -275,3 +275,38 @@ fn a_press_while_resizing_ends_the_resize_where_it_is() {
         ]
     );
 }
+
+/// Scale probe for a resize drag (the legacy measure rebuilt every item's
+/// offset on each pointer move): on a quadrillion rows with thousands of Size
+/// Overrides, a drag of thousands of moves, a frame each, finishes at once.
+#[test]
+fn a_long_resize_drag_on_a_quadrillion_rows_with_thousands_of_overrides_stays_cheap() {
+    let n = 1_000_000_000_000_000u64;
+    let mut s = Scenario::identity(
+        AxisConfig::new(n, 1.0).header(1.0).gap(1.0),
+        AxisConfig::new(5, 6.0).header(4.0).gap(1.0),
+    );
+    let v = Viewport::new(30.0, 40.0);
+    s.frame(v);
+    for i in 0..5_000u64 {
+        let key = Key(i.wrapping_mul(0x9E37_79B9_7F4A_7C15) % n);
+        s.input(|g| g.set_size(Axis::Rows, key, 1.0 + (i % 3) as f32));
+    }
+    s.frame(v);
+    let started = std::time::Instant::now();
+    // Row 0 spans y 1..2 and its border y 2..3.
+    s.input(|g| g.pointer(PointerEvent::down(1.0, 2.5)));
+    for step in 0..5_000u32 {
+        let y = 2.5 + (step % 30) as f32;
+        s.input(|g| g.pointer(PointerEvent::moved(1.0, y)));
+        assert!(matches!(s.frame(v).mode(), Mode::Resizing { .. }));
+    }
+    // The last move is 19 down: row 0 is 20 high.
+    s.input(|g| g.pointer(PointerEvent::up(1.0, 21.5)));
+    assert_eq!(s.frame(v).rows()[0].size, 20.0);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "took {:?}",
+        started.elapsed()
+    );
+}
