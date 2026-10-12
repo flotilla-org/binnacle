@@ -12,9 +12,11 @@ mod axis;
 mod effect;
 mod grid;
 mod snapshot;
+mod sort;
 mod types;
 
 pub use effect::{Action, Effect, Stamped};
 pub use grid::{AxisConfig, Grid, WindowRequests};
 pub use snapshot::{Damage, Snapshot, StripItem};
+pub use sort::{Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};
