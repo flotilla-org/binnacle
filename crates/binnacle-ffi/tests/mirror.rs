@@ -40,6 +40,16 @@ enum Op {
     BadTag(u32),
 }
 
+/// A size inside the Grid's per-axis size contract (default min 1.0, max
+/// 2^20), usually a few units.
+#[hegel::composite]
+fn sane_size(tc: &TestCase) -> f32 {
+    tc.draw(hegel::one_of!(
+        gs::floats::<f32>().min_value(1.0).max_value(12.0),
+        gs::floats::<f32>().min_value(1.0).max_value(1_048_576.0),
+    ))
+}
+
 #[hegel::composite]
 fn axis_config(tc: &TestCase) -> AxisConfig {
     let count = tc.draw(hegel::one_of!(
@@ -47,12 +57,7 @@ fn axis_config(tc: &TestCase) -> AxisConfig {
         gs::integers::<u64>().min_value(1).max_value(40),
         gs::integers::<u64>(),
     ));
-    // Sizes stay at or above 0.25 so a 60-unit viewport shows at most a few
-    // hundred items per axis (the cell states grow with their product).
-    let size = tc.draw(hegel::one_of!(
-        gs::floats::<f32>().min_value(1.0).max_value(12.0),
-        gs::floats::<f32>().min_value(0.25).allow_infinity(false),
-    ));
+    let size = tc.draw(sane_size());
     let header = tc.draw(hegel::one_of!(
         gs::floats::<f32>().min_value(0.0).max_value(4.0),
         gs::floats::<f32>(),
@@ -171,11 +176,10 @@ fn op(tc: &TestCase) -> Op {
         6 => Op::SetSize(
             tc.draw(axes()),
             tc.draw(gs::integers::<u64>().max_value(10)),
-            // Ignored sizes, or sane ones: a Size Override far below the
-            // default makes the Window bound, and so each frame, huge.
+            // Ignored sizes, or ones inside the size contract.
             tc.draw(hegel::one_of!(
                 gs::sampled_from(vec![0.0f32, -1.0, f32::NAN, f32::INFINITY]),
-                gs::floats::<f32>().min_value(0.5).max_value(10.0),
+                sane_size(),
             )),
         ),
         7 => match tc.draw(gs::integers::<u8>().max_value(2)) {
