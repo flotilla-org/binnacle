@@ -388,3 +388,53 @@ fn a_body_holding_only_a_sliver_and_a_gap_has_an_empty_strip() {
     );
     assert_eq!(snap.cols(), &[]);
 }
+
+/// Rows whose content is 12 tall (also the minimum-size hint) under a default
+/// of 38.
+struct ShortRows;
+
+impl ScenarioSource for ShortRows {
+    fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {
+        range.map(Key).collect()
+    }
+
+    fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        (axis == Axis::Rows).then(|| (vec![12.0; keys.len()], 12.0))
+    }
+}
+
+/// Found by Hegel (at 1e18 times the scale): the end clamp is first placed
+/// with default sizes, and once the Window brings smaller content sizes it
+/// needs more rows than that Window holds. The Window at the end reaches back
+/// far enough for the smallest sizes, so once the minimum-size hint is known
+/// the clamped view has every Key and size in one frame.
+#[test]
+fn the_end_clamp_stays_inside_the_window_when_content_sizes_are_smaller() {
+    for height in [89.8, 140.0, 200.0, 260.0] {
+        let grid = Grid::new(AxisConfig::new(20, 38.0).gap(13.8), AxisConfig::new(1, 5.0));
+        let mut s = Scenario::new(grid, ShortRows);
+        let v = Viewport::new(5.0, height);
+        // The first frame brings the minimum-size hint, which bounds Windows.
+        s.frame(v);
+        s.input(|g| {
+            g.action(Action::ScrollTo {
+                axis: Axis::Rows,
+                fraction: 1.0,
+            })
+        });
+        let snap = s.frame(v);
+        let anchor = snap.scroll_anchor(Axis::Rows);
+        assert!(
+            anchor.offset < 12.0 + 13.8,
+            "height {height}: {anchor:?} past its item's stride"
+        );
+        for item in snap.rows() {
+            assert_eq!(
+                (item.key, item.size),
+                (Some(Key(item.position)), 12.0),
+                "height {height}"
+            );
+        }
+        assert_eq!(snap.rows().last().unwrap().position, 19);
+    }
+}
