@@ -56,6 +56,7 @@ Cols: count 5, extent 40, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 2   2.0    2.1    2.2    2.3    2.4
 --- 6. release: MoveRequested, idle
 effect (gen 5): MoveRequested { axis: Cols, keys: [Key(0)], to: 3 }
+  move Cols [Key(0)] to 3: None
 gen 6 | damage selection
 Rows: count 20, extent 6, header 1, anchor 0+0, thumb 0.0000/0.1282 | 0#0@1+1 1#1@3+1 2#2@5+1
 Cols: count 5, extent 40, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6 4#4@32+6

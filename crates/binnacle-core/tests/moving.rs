@@ -2,8 +2,10 @@
 //! threshold, the drop indicator, the move cursor, `MoveRequested` and
 //! `Cancel`.
 
-use binnacle_core::{Action, Axis, AxisConfig, Cursor, Effect, Key, Mode, PointerEvent, Viewport};
-use binnacle_testkit::{IdentityTable, Scenario};
+use binnacle_core::{
+    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, Grid, Key, Mode, PointerEvent, Viewport,
+};
+use binnacle_testkit::{IdentityTable, RecordTable, Scenario};
 
 /// 20 rows of 1 with a Gap of 1 under a 1-high header band; 5 columns of 6
 /// with a Gap of 1 after a 4-wide row header band. Column p spans x
@@ -188,5 +190,70 @@ fn dragging_a_selected_column_moves_every_selected_column() {
             keys: vec![Key(0)],
             to: 5
         }]
+    );
+}
+
+/// Three records of four integer columns behind an In-Memory Table Source,
+/// laid out like [`table`].
+fn records() -> Scenario<RecordTable> {
+    let rows = vec![
+        vec![Some(3), Some(30), Some(300), Some(3000)],
+        vec![Some(1), Some(10), Some(100), Some(1000)],
+        vec![Some(2), Some(20), Some(200), Some(2000)],
+    ];
+    Scenario::new(
+        Grid::new(
+            AxisConfig::new(3, 1.0).header(1.0).gap(1.0),
+            AxisConfig::new(4, 6.0).header(4.0).gap(1.0),
+        ),
+        RecordTable::new(rows, 4, [0, 1, 2, 3]),
+    )
+}
+
+#[test]
+fn a_dropped_column_moves_in_the_source_and_its_width_and_focus_follow_it() {
+    let mut s = records();
+    s.input(|g| g.set_size(Axis::Cols, Key(0), 8.0));
+    s.frame(V);
+    // Column 0 now spans x 4..12, column 1 13..19, column 2 20..26.
+    s.input(|g| {
+        g.pointer(PointerEvent::down(6.0, 3.0));
+        g.pointer(PointerEvent::up(6.0, 3.0));
+    });
+    let mut out = s.step("focus row 1 of column 0, which is 8 wide", V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(24.0, 0.5));
+    });
+    out += &s.step("drag its header past column 2's middle", V);
+    s.input(|g| g.pointer(PointerEvent::up(24.0, 0.5)));
+    out += &s.step(
+        "drop: the source moves it, the Grid refetches the columns and locates the focus",
+        V,
+    );
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_move_is_cancelled_when_its_axis_is_reordered_but_not_the_other() {
+    let mut s = records();
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(24.0, 0.5));
+        g.notify(Axis::Rows, ChangeNotice::Reordered);
+    });
+    let snap = s.frame(V);
+    assert!(matches!(snap.mode(), Mode::MovingHeaders { .. }));
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    let snap = s.frame(V);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert!(!snap.capturing());
+    assert_eq!(snap.drop_indicator(), None);
+    s.input(|g| g.pointer(PointerEvent::up(24.0, 0.5)));
+    assert!(
+        !s.pump()
+            .iter()
+            .any(|e| matches!(e.effect, Effect::MoveRequested { .. }))
     );
 }

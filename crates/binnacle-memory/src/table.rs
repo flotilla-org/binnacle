@@ -204,8 +204,10 @@ impl InMemoryTableSource {
     /// column at Position `to` (the count for the end), Positions as they
     /// were before the move: the answer to `MoveRequested` on the columns.
     /// Keys no column has, and repeats, are skipped. Row order is untouched.
-    pub fn move_columns(&mut self, keys: &[Key], to: Position) {
+    /// Returns the Change Notice the columns need.
+    pub fn move_columns(&mut self, keys: &[Key], to: Position) -> ChangeNotice {
         self.axis_mut(Axis::Cols).move_items(keys, to);
+        ChangeNotice::Reordered
     }
 
     /// Sorts the rows by `spec`, with `keys[i]` holding the sort keys of

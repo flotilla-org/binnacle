@@ -1,4 +1,4 @@
-use binnacle_core::{Axis, ChangeNotice, Effect, Grid, Key, Located, SortSpec, Stamped};
+use binnacle_core::{Axis, ChangeNotice, Effect, Grid, Key, Located, Position, SortSpec, Stamped};
 
 /// What [`pump`] asks of a Table Source.
 pub trait PumpSource {
@@ -8,12 +8,20 @@ pub trait PumpSource {
 
     /// Where `key` sits on `axis` now.
     fn locate(&mut self, axis: Axis, key: Key) -> Located;
+
+    /// Moves the items with `keys` on `axis` to before Position `to`.
+    /// Returns the Change Notice the axis needs, or `None` to refuse (the
+    /// default: the Table Source moves nothing).
+    fn move_items(&mut self, _axis: Axis, _keys: &[Key], _to: Position) -> Option<ChangeNotice> {
+        None
+    }
 }
 
 /// Drains the Grid's Effects until the queue is empty, answering those the
 /// Table Source handles: `SortRequested` with `sort_applied` and the rows'
 /// Change Notice (or `sort_applied` of the previous spec to reject it), and
-/// `Locate` with `located`. Answers can queue more Effects, which the same
+/// `Locate` with `located`, and `MoveRequested` with the axis's Change
+/// Notice if the source moves the items. Answers can queue more Effects, which the same
 /// loop drains. `seen` gets every Effect drained, in order, after the pump
 /// has answered it.
 pub fn pump(
@@ -33,6 +41,11 @@ pub fn pump(
             &Effect::Locate { axis, key } => {
                 let answer = source.locate(axis, key);
                 grid.located(axis, key, answer);
+            }
+            Effect::MoveRequested { axis, keys, to } => {
+                if let Some(notice) = source.move_items(*axis, keys, *to) {
+                    grid.notify(*axis, notice);
+                }
             }
             _ => {}
         }
