@@ -1,15 +1,15 @@
 //! The binnacle ratatui demo: a table from identity Table Sources.
 //!
 //! `binnacle-demo` shows 1000 rows; `binnacle-demo --huge` shows 10^15. The
-//! wheel scrolls; arrows scroll by one item, PageUp and PageDown by a page,
-//! Home and End jump to the first and last row, `m` to the middle. Press `q`,
-//! Esc or Ctrl-C to quit.
+//! wheel scrolls; the adapter's default keymap moves focus (arrows, PageUp and
+//! PageDown, Home and End, Ctrl with an arrow) and the view follows it; `m`
+//! scrolls to the middle. Press `q`, Esc or Ctrl-C to quit.
 
 use std::io;
 
 use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Viewport};
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{Content, render, wheel};
+use binnacle_ratatui::{Content, Keymap, render, wheel};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
@@ -31,30 +31,6 @@ impl Content for Identity {
     }
 }
 
-/// The Action for a key press, or `None` to quit. `page` is the rows visible.
-fn key_action(code: KeyCode, page: i64) -> Option<Option<Action>> {
-    let by = |axis, items| Some(Some(Action::ScrollBy { axis, items }));
-    let to = |fraction| {
-        Some(Some(Action::ScrollTo {
-            axis: Axis::Rows,
-            fraction,
-        }))
-    };
-    match code {
-        KeyCode::Char('q') | KeyCode::Esc => None,
-        KeyCode::Down => by(Axis::Rows, 1),
-        KeyCode::Up => by(Axis::Rows, -1),
-        KeyCode::Right => by(Axis::Cols, 1),
-        KeyCode::Left => by(Axis::Cols, -1),
-        KeyCode::PageDown => by(Axis::Rows, page),
-        KeyCode::PageUp => by(Axis::Rows, -page),
-        KeyCode::Home => to(0.0),
-        KeyCode::End => to(1.0),
-        KeyCode::Char('m') => to(0.5),
-        _ => Some(None),
-    }
-}
-
 fn main() -> io::Result<()> {
     let rows = if std::env::args().any(|a| a == "--huge") {
         HUGE_ROWS
@@ -71,14 +47,23 @@ fn main() -> io::Result<()> {
             .header(digits + 1.0)
             .gap(1.0),
     );
+    let mut keymap = Keymap::default();
+    keymap.bind(
+        KeyCode::Char('m'),
+        KeyModifiers::NONE,
+        Action::ScrollTo {
+            axis: Axis::Rows,
+            fraction: 0.5,
+        },
+    );
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
-    let mut page = 1;
     let result = (|| {
         loop {
             terminal.draw(|frame| {
                 let area = frame.area();
-                page = i64::from(area.height.saturating_sub(1)).max(1);
+                // Nothing here acts on Effects (FocusChanged) yet; drain them.
+                while grid.poll_effect().is_some() {}
                 let viewport = Viewport::new(area.width.into(), area.height.into());
                 for (axis, range) in grid.begin_frame(viewport) {
                     let keys = match axis {
@@ -93,11 +78,11 @@ fn main() -> io::Result<()> {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let ctrl_c = key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL);
-                    match key_action(key.code, page) {
-                        _ if ctrl_c => return Ok(()),
-                        None => return Ok(()),
-                        Some(Some(action)) => grid.action(action),
-                        Some(None) => {}
+                    if ctrl_c || matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+                        return Ok(());
+                    }
+                    if let Some(action) = keymap.action(&key) {
+                        grid.action(action);
                     }
                 }
                 Event::Mouse(m) => {
