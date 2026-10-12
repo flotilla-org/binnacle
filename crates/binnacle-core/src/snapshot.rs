@@ -60,6 +60,25 @@ pub struct CellState {
     pub editing: bool,
 }
 
+/// One header to draw, from [`Snapshot::headers`]: the header of a visible
+/// item on `axis` (a row header is on [`Axis::Rows`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeaderPlacement {
+    pub axis: Axis,
+    pub position: Position,
+    /// `None` while the Table Source has not filled the item's Position.
+    pub key: Option<Key>,
+    /// The header's rectangle in its band, unclipped like the Strip item.
+    pub rect: Rect,
+    /// How it shows the sort; always unsorted on row headers.
+    pub sort: HeaderSort,
+    /// Its whole item is selected: the range spans every item across it, or
+    /// (on a row header) its row is picked.
+    pub selected: bool,
+    /// The pointer is over it (see [`Snapshot::hovered_header`]).
+    pub hovered: bool,
+}
+
 /// The pointer shape the host should show, if its toolkit can change it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Cursor {
@@ -285,6 +304,44 @@ impl<'a> Snapshot<'a> {
     /// How the header of column `key` shows the sort.
     pub fn header_sort(&self, key: Key) -> HeaderSort {
         self.grid.sort.header(key)
+    }
+
+    /// The headers of the visible items on `axis`, in Strip order: column
+    /// headers for [`Axis::Cols`], row headers for [`Axis::Rows`].
+    pub fn headers(&self, axis: Axis) -> impl Iterator<Item = HeaderPlacement> + 'a {
+        let grid = self.grid;
+        let across = axis.other();
+        let thickness = self.header(across);
+        let range = self.selection_range();
+        let whole = range
+            .as_ref()
+            .filter(|r| *r.span(across) == (0..self.count(across)))
+            .map(|r| r.span(axis).clone());
+        let hovered = grid.hovered;
+        self.strip(axis).iter().map(move |item| {
+            let (x, y, width, height) = match axis {
+                Axis::Rows => (0.0, item.offset, thickness, item.size),
+                Axis::Cols => (item.offset, 0.0, item.size, thickness),
+            };
+            let picked = axis == Axis::Rows && item.key.is_some_and(|k| grid.selection.picked(k));
+            HeaderPlacement {
+                axis,
+                position: item.position,
+                key: item.key,
+                rect: Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+                sort: match (axis, item.key) {
+                    (Axis::Cols, Some(key)) => grid.sort.header(key),
+                    _ => HeaderSort::default(),
+                },
+                selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
+                hovered: hovered == Some((axis, item.position)),
+            }
+        })
     }
 
     pub fn mode(&self) -> Mode {
