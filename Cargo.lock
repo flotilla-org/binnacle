@@ -68,6 +68,7 @@ name = "binnacle-ffi"
 version = "0.1.0"
 dependencies = [
  "binnacle-core",
+ "hegeltest",
 ]
 
 [[package]]
