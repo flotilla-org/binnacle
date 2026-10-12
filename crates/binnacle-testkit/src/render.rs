@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use binnacle_core::{Axis, FocusEnd, Mode, Snapshot, StripItem};
+use binnacle_core::{Axis, Cursor, FocusEnd, Mode, Snapshot, StripItem};
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
 const MAX_CANVAS: (usize, usize) = (160, 60);
@@ -15,7 +15,9 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// marks the focused cell `*rowkey.colkey`. A range adds `range rows x cols`
 /// (half-open Positions), picks add `picks` (row Keys), and either adds the
 /// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
-/// its Mode and `capturing`, a hovered header `hover axis position`.
+/// its Mode and `capturing`, a hovered header `hover axis position`, a resize
+/// cursor hint `cursor C` and a resize guide `guide axis offset (key K size
+/// S)`.
 pub fn render(snap: &Snapshot) -> String {
     let mut out = String::new();
     let d = snap.damage();
@@ -69,6 +71,16 @@ pub fn render(snap: &Snapshot) -> String {
     }
     if let Some((axis, item)) = snap.hovered_header() {
         let _ = write!(out, " | hover {axis:?} {}", item.position);
+    }
+    if snap.cursor() != Cursor::Default {
+        let _ = write!(out, " | cursor {:?}", snap.cursor());
+    }
+    if let Some(g) = snap.resize_guide() {
+        let _ = write!(
+            out,
+            " | guide {:?} {} (key {} size {})",
+            g.axis, g.offset, g.key.0, g.size
+        );
     }
     out.push('\n');
     for axis in Axis::ALL {

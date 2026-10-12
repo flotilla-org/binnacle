@@ -13,6 +13,14 @@ pub enum Effect {
     /// The range or the picks changed; read them from the next Snapshot. At
     /// most one is queued at a time.
     SelectionChanged,
+    /// A resize of the item with `key` on `axis` ended at `size` (its new Size
+    /// Override). Hosts that persist layouts save it and restore it with
+    /// [`crate::Grid::set_size`].
+    SizeChanged { axis: Axis, key: Key, size: f32 },
+    /// The user double-clicked the border after the item with `key` on
+    /// `axis`. The Grid never measures: the host measures the content and
+    /// answers with [`crate::Grid::set_size`].
+    AutoSizeRequested { axis: Axis, key: Key },
 }
 
 /// An Effect stamped with the generation of the Snapshot it was based on.
@@ -40,8 +48,8 @@ pub enum Action {
     SelectAll,
     /// Selects every row of the range's columns, or of the focused column.
     SelectColumn,
-    /// Ends the gesture in progress and restores focus and selection from
-    /// before it.
+    /// Ends the gesture in progress and restores the state from before it:
+    /// focus and selection, or the size of an item being resized.
     Cancel,
     /// Scrolls by a distance in the host's unit along each axis (a wheel or
     /// trackpad): `dx` across the columns, `dy` down the rows.
