@@ -213,6 +213,22 @@ fn column_header_gaps_are_drawn_as_handles_and_a_resize_draws_its_guide() {
 }
 
 #[test]
+fn a_column_move_draws_its_drop_indicator() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let area = Rect::new(0, 0, 32, 4);
+    frame(&mut grid, 32, 4, area);
+    // Column 0 spans x 5..13 and column 1 x 14..22; dropping past column 1's
+    // middle puts the indicator on the Gap at x 22.
+    grid.pointer(binnacle_core::PointerEvent::down(8.0, 0.0));
+    grid.pointer(binnacle_core::PointerEvent::moved(19.0, 0.0));
+    let out = frame(&mut grid, 32, 4, area);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn the_status_line_names_the_mode_and_hints_at_borders() {
     let mut grid = Grid::new(
         AxisConfig::new(100, 1.0).header(1.0).gap(1.0),
@@ -246,5 +262,9 @@ fn the_status_line_names_the_mode_and_hints_at_borders() {
     assert_eq!(
         status_after(&[P::down(7.0, 1.0), P::moved(16.0, 3.0)]),
         "selecting"
+    );
+    assert_eq!(
+        status_after(&[P::up(16.0, 3.0), P::down(9.0, 0.0), P::moved(20.0, 0.0)]),
+        "moving column 0 to 2"
     );
 }

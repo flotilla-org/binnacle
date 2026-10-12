@@ -1,4 +1,4 @@
-use crate::types::{Axis, Generation, Key};
+use crate::types::{Axis, Generation, Key, Position};
 
 /// A request the Grid emits for its host or Table Source to act on. Effects
 /// carry no continuations: answers come back later as ordinary inputs.
@@ -21,6 +21,16 @@ pub enum Effect {
     /// `axis`. The Grid never measures: the host measures the content and
     /// answers with [`crate::Grid::set_size`].
     AutoSizeRequested { axis: Axis, key: Key },
+    /// The user dropped the headers of the items with `keys` on `axis` before
+    /// the item at Position `to` (the count for the end), Positions as they
+    /// were before the move. The Grid reorders nothing itself: the Table
+    /// Source decides, and answers with a `Reordered` Change Notice if it
+    /// moves them.
+    MoveRequested {
+        axis: Axis,
+        keys: Vec<Key>,
+        to: Position,
+    },
 }
 
 /// An Effect stamped with the generation of the Snapshot it was based on.

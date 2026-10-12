@@ -47,7 +47,8 @@ pub trait Content {
 /// cell is drawn reversed, other selected cells on a dark grey background,
 /// and the header under the pointer underlined. Header Gaps are drawn as
 /// lines, the handles a resize drag grabs, and a resize in progress draws its
-/// guide line across the area in yellow.
+/// guide line across the area in yellow, a header move its drop indicator in
+/// cyan.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
     let area = area.intersection(buf.area);
     let header = Style::default().add_modifier(Modifier::BOLD);
@@ -137,6 +138,23 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
             }
         }
     }
+    if let Some(drop) = snapshot.drop_indicator() {
+        let style = Style::default().fg(Color::Cyan);
+        // The middle of a Gap rounds down onto the Gap's cell.
+        let at = drop.offset.floor() as i64;
+        match drop.axis {
+            Axis::Cols => {
+                for y in 0..i64::from(area.height) {
+                    mark(at, y, '┃', style);
+                }
+            }
+            Axis::Rows => {
+                for x in 0..i64::from(area.width) {
+                    mark(x, at, '━', style);
+                }
+            }
+        }
+    }
     if let Some(guide) = snapshot.resize_guide() {
         let style = Style::default().fg(Color::Yellow);
         let at = cell(guide.offset);
@@ -171,11 +189,20 @@ pub fn status(snapshot: &Snapshot) -> String {
             None => format!("resizing {} {}", noun(axis), key.0),
         },
         Mode::DraggingSelection => "selecting".to_string(),
+        Mode::MovingHeaders { axis, to, .. } => {
+            let keys: Vec<String> = snapshot
+                .moving_keys()
+                .iter()
+                .map(|k| k.0.to_string())
+                .collect();
+            let plural = if keys.len() == 1 { "" } else { "s" };
+            format!("moving {}{plural} {} to {to}", noun(axis), keys.join(","))
+        }
         Mode::Idle => {
             let axis = match snapshot.cursor() {
                 Cursor::ResizeCol => Axis::Cols,
                 Cursor::ResizeRow => Axis::Rows,
-                Cursor::Default => return String::new(),
+                Cursor::Default | Cursor::Move => return String::new(),
             };
             format!("drag to resize the {}, double-click to fit", noun(axis))
         }

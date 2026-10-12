@@ -16,8 +16,9 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// (half-open Positions), picks add `picks` (row Keys), and either adds the
 /// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
 /// its Mode and `capturing`, a hovered header `hover axis position`, a resize
-/// cursor hint `cursor C` and a resize guide `guide axis offset (key K size
-/// S)`.
+/// cursor hint `cursor C`, a resize guide `guide axis offset (key K size
+/// S)` and a move `moving keys to axis position at offset` (the drop
+/// indicator, also drawn across the header band).
 pub fn render(snap: &Snapshot) -> String {
     let mut out = String::new();
     let d = snap.damage();
@@ -80,6 +81,17 @@ pub fn render(snap: &Snapshot) -> String {
             out,
             " | guide {:?} {} (key {} size {})",
             g.axis, g.offset, g.key.0, g.size
+        );
+    }
+    if let Some(d) = snap.drop_indicator() {
+        let keys: Vec<String> = snap.moving_keys().iter().map(|k| k.0.to_string()).collect();
+        let _ = write!(
+            out,
+            " | moving {} to {:?} {} at {}",
+            keys.join(","),
+            d.axis,
+            d.to,
+            d.offset
         );
     }
     out.push('\n');
@@ -162,6 +174,27 @@ fn picture(snap: &Snapshot) -> String {
                 top,
                 &format!("{mark}{}.{}", key_text(r), key_text(c)),
             );
+        }
+    }
+    if let Some(d) = snap.drop_indicator() {
+        // A `|` or `-` on the indicator, in the header band only.
+        let at = d.offset.floor();
+        match d.axis {
+            Axis::Cols if at >= 0.0 => {
+                for line in canvas.iter_mut().take(top.ceil() as usize) {
+                    if let Some(ch) = line.get_mut(at as usize) {
+                        *ch = '|';
+                    }
+                }
+            }
+            Axis::Rows if at >= 0.0 => {
+                if let Some(line) = canvas.get_mut(at as usize) {
+                    for ch in line.iter_mut().take(left.ceil() as usize) {
+                        *ch = '-';
+                    }
+                }
+            }
+            _ => {}
         }
     }
     let mut out = String::new();

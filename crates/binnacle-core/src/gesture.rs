@@ -30,6 +30,10 @@ pub enum Mode {
         key: Key,
         start_size: f32,
     },
+    /// Column headers are being dragged: the header grabbed has `key` on
+    /// `axis`, and the dragged items would drop before Position `to` (see
+    /// [`crate::Snapshot::moving_keys`] for all of them).
+    MovingHeaders { axis: Axis, key: Key, to: Position },
 }
 
 /// Focus and selection from before a gesture, which `Cancel` restores.
@@ -83,6 +87,16 @@ pub(crate) enum Gesture {
         start_size: f32,
         start_override: Option<f32>,
     },
+    /// The headers of the items with `keys` on `axis`, at `positions` when
+    /// the drag began (both in Position order), are being dragged by the
+    /// header of `key` and would drop before Position `to`.
+    MovingHeaders {
+        axis: Axis,
+        key: Key,
+        keys: Vec<Key>,
+        positions: Vec<Position>,
+        to: Position,
+    },
 }
 
 impl Gesture {
@@ -99,6 +113,7 @@ impl Gesture {
                 key,
                 start_size,
             },
+            &Gesture::MovingHeaders { axis, key, to, .. } => Mode::MovingHeaders { axis, key, to },
             Gesture::Idle | Gesture::Pressed { .. } => Mode::Idle,
         }
     }
@@ -200,11 +215,29 @@ impl Grid {
                     return;
                 }
                 *dragged = true;
-                if *press == Press::Cell {
-                    let before = before.clone();
-                    self.gesture = Gesture::DraggingSelection { before };
+                match *press {
+                    Press::Cell => {
+                        let before = before.clone();
+                        self.gesture = Gesture::DraggingSelection { before };
+                        self.pending_damage.selection = true;
+                        self.drag_selection(x, y);
+                    }
+                    Press::Header {
+                        axis: Axis::Cols,
+                        position,
+                        ..
+                    } => self.start_move(Axis::Cols, position, x, y),
+                    _ => {}
+                }
+            }
+            Gesture::MovingHeaders { axis, .. } => {
+                let axis = *axis;
+                let to = self.drop_position(axis, along(axis, x, y));
+                if let Gesture::MovingHeaders { to: old, .. } = &mut self.gesture
+                    && *old != to
+                {
+                    *old = to;
                     self.pending_damage.selection = true;
-                    self.drag_selection(x, y);
                 }
             }
             Gesture::DraggingSelection { .. } => self.drag_selection(x, y),
@@ -257,6 +290,55 @@ impl Grid {
         }
     }
 
+    /// Turns a press on the header at `position` on `axis` into a move of
+    /// that item, or of every selected item if it is in a range spanning
+    /// whole items on that axis whose Keys are all known. An item without a
+    /// Key cannot be moved.
+    fn start_move(&mut self, axis: Axis, position: Position, x: f32, y: f32) {
+        let i = axis.index();
+        let measure = &self.axis(axis).measure;
+        let Some(key) = measure.key_at(position) else {
+            return;
+        };
+        let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
+        let selected = self
+            .selection
+            .span
+            .filter(|s| s.whole[axis.other().index()] && !s.whole[i])
+            .map(|s| s.range(counts).span(axis).clone())
+            .filter(|r| r.contains(&position));
+        let (keys, positions) = selected
+            .and_then(|r| {
+                let keys: Option<Vec<Key>> = r.clone().map(|p| measure.key_at(p)).collect();
+                Some((keys?, r.collect()))
+            })
+            .unwrap_or_else(|| (vec![key], vec![position]));
+        self.gesture = Gesture::MovingHeaders {
+            axis,
+            key,
+            keys,
+            positions,
+            to: self.drop_position(axis, along(axis, x, y)),
+        };
+        self.pending_damage.selection = true;
+    }
+
+    /// Where items dragged to `v` along `axis` would drop: before the item
+    /// under it if `v` is in its first half, else after it. A point beyond
+    /// the body counts as over the nearest end of it.
+    fn drop_position(&self, axis: Axis, v: f32) -> Position {
+        let st = self.axis(axis);
+        let body_end = f32::from_bits(st.extent.to_bits().saturating_sub(1));
+        match st.hit(v.min(body_end).max(st.header)) {
+            crate::pointer::AxisHit::Item(at) => {
+                let after =
+                    at.in_gap || at.within >= f64::from(st.measure.size_at(at.position)) / 2.0;
+                at.position + u64::from(after)
+            }
+            _ => st.measure.count(),
+        }
+    }
+
     /// Stretches the range to the cell nearest (`x`, `y`): a pointer beyond
     /// the body on an axis counts as over the nearest visible item there.
     fn drag_selection(&mut self, x: f32, y: f32) {
@@ -288,18 +370,32 @@ impl Grid {
         if gesture.capturing() {
             self.pending_damage.selection = true;
         }
-        if let Gesture::Pressed {
-            press:
-                Press::Header {
-                    axis,
-                    position,
-                    modifiers,
-                },
-            dragged: false,
-            ..
-        } = gesture
-        {
-            self.header_click(axis, position, modifiers);
+        match gesture {
+            Gesture::Pressed {
+                press:
+                    Press::Header {
+                        axis,
+                        position,
+                        modifiers,
+                    },
+                dragged: false,
+                ..
+            } => self.header_click(axis, position, modifiers),
+            Gesture::MovingHeaders {
+                axis,
+                keys,
+                positions,
+                to,
+                ..
+            } => {
+                let (first, last) = (positions[0], positions[positions.len() - 1]);
+                let in_place =
+                    last - first + 1 == positions.len() as u64 && (first..=last + 1).contains(&to);
+                if !in_place {
+                    self.push(Effect::MoveRequested { axis, keys, to });
+                }
+            }
+            _ => {}
         }
     }
 
@@ -351,6 +447,10 @@ impl Grid {
             } => {
                 self.pending_damage.selection = true;
                 self.restore_size(axis, key, start_override);
+                return;
+            }
+            Gesture::MovingHeaders { .. } => {
+                self.pending_damage.selection = true;
                 return;
             }
             Gesture::Idle => return,

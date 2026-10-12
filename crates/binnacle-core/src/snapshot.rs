@@ -66,6 +66,8 @@ pub enum Cursor {
     ResizeCol,
     /// Over a row header border, or resizing a row.
     ResizeRow,
+    /// Moving headers.
+    Move,
 }
 
 /// Where a resize in progress puts the resized item's trailing edge: a line
@@ -77,6 +79,17 @@ pub struct ResizeGuide {
     pub key: Key,
     pub offset: f32,
     pub size: f32,
+}
+
+/// Where headers being moved would drop: before the item at Position `to` on
+/// `axis` (the count for the end), drawn as a line across the viewport at
+/// `offset` along `axis` (viewport-relative, like Strip offsets), the middle
+/// of the Gap before that item, as if a Gap also led the first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DropIndicator {
+    pub axis: Axis,
+    pub to: Position,
+    pub offset: f32,
 }
 
 /// What changed since the previous Snapshot, so a host can skip work.
@@ -239,10 +252,11 @@ impl<'a> Snapshot<'a> {
     }
 
     /// The pointer shape for this frame: a resize shape while resizing, or
-    /// while idle over a header border.
+    /// while idle over a header border; the move shape while moving headers.
     pub fn cursor(&self) -> Cursor {
         let axis = match self.mode() {
             Mode::Resizing { axis, .. } => Some(axis),
+            Mode::MovingHeaders { .. } => return Cursor::Move,
             _ if self.capturing() => None,
             _ => self.grid.hovered_border,
         };
@@ -269,6 +283,30 @@ impl<'a> Snapshot<'a> {
             key,
             offset: (start + f64::from(size)) as f32,
             size,
+        })
+    }
+
+    /// The Keys of the items whose headers are being moved, in Position
+    /// order; empty unless the Mode is [`Mode::MovingHeaders`].
+    pub fn moving_keys(&self) -> &'a [Key] {
+        match &self.grid.gesture {
+            crate::gesture::Gesture::MovingHeaders { keys, .. } => keys,
+            _ => &[],
+        }
+    }
+
+    /// Where the headers being moved would drop, while moving headers.
+    pub fn drop_indicator(&self) -> Option<DropIndicator> {
+        let Mode::MovingHeaders { axis, to, .. } = self.mode() else {
+            return None;
+        };
+        let st = self.grid.axis(axis);
+        let start = f64::from(st.header) - f64::from(st.anchor.offset)
+            + st.measure.distance(st.anchor.position, to);
+        Some(DropIndicator {
+            axis,
+            to,
+            offset: (start - f64::from(st.measure.gap()) / 2.0) as f32,
         })
     }
 

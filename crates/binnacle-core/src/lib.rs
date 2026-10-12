@@ -28,7 +28,8 @@ pub use measure::{AxisMeasure, ItemAt, WindowChange};
 pub use pointer::{Button, Modifiers, PointerEvent, PointerKind};
 pub use selection::{CellRange, HeaderClick, SelectionUnit};
 pub use snapshot::{
-    CellState, Cursor, Damage, Rect, ResizeGuide, ScrollAnchor, Snapshot, StripItem, Thumb,
+    CellState, Cursor, Damage, DropIndicator, Rect, ResizeGuide, ScrollAnchor, Snapshot, StripItem,
+    Thumb,
 };
 pub use sort::{Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};
