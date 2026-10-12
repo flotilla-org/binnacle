@@ -10,7 +10,8 @@ use crate::selection::{Cell, HeaderClick, Selection};
 use crate::types::{Axis, Key, Position};
 
 /// The smallest size a resize drag gives an item, unless the item started
-/// smaller.
+/// smaller. Stands in for the per-axis size contract (`min_size`, branch
+/// fix/16-reveal): replace it with that clamp once both have landed.
 const MIN_RESIZE: f32 = 1.0;
 
 /// The single interaction the Grid is in the middle of.
