@@ -5,14 +5,16 @@
 //! never reads cell values.
 
 mod keymap;
+mod mouse;
 
 pub use keymap::Keymap;
+pub use mouse::Mouse;
 
 use binnacle_core::{Action, Axis, Key, Snapshot};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 /// Shown in a cell or header whose Key the Table Source has not filled yet.
 const LOADING: &str = "…";
@@ -42,7 +44,8 @@ pub trait Content {
 /// row numbers (Position plus one) down the left band, then each cell. Text is
 /// clipped to its item, to `area`, and for cells to the body past both header
 /// bands, so a part-scrolled item shows only its visible part. The focused
-/// cell is drawn reversed.
+/// cell is drawn reversed, other selected cells on a dark grey background,
+/// and the header under the pointer underlined.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
     let area = area.intersection(buf.area);
     let header = Style::default().add_modifier(Modifier::BOLD);
@@ -69,26 +72,42 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
             }
         }
     };
+    // Pads `text` so a style fills its item; `put` clips it.
+    let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
+    let hovered = snapshot
+        .hovered_header()
+        .map(|(axis, item)| (axis, item.position));
+    let header_style = |axis, position| {
+        if hovered == Some((axis, position)) {
+            header.add_modifier(Modifier::UNDERLINED)
+        } else {
+            header
+        }
+    };
     for c in snapshot.cols() {
         let label = c
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
-        put(c.offset, 0.0, left, c.end(), 0.0, &label, header);
+        let style = header_style(Axis::Cols, c.position);
+        put(c.offset, 0.0, left, c.end(), 0.0, &pad(label), style);
     }
     for r in snapshot.rows() {
         let number = r.position.saturating_add(1).to_string();
-        put(0.0, r.offset, 0.0, left, top, &number, header);
+        let style = header_style(Axis::Rows, r.position);
+        put(0.0, r.offset, 0.0, left, top, &pad(number), style);
         for c in snapshot.cols() {
             let mut text = match (r.key, c.key) {
                 (Some(row), Some(col)) => content.cell(row, col),
                 _ => LOADING.to_string(),
             };
+            let state = snapshot.cell_state(r, c);
             let mut style = Style::default();
-            if snapshot.cell_state(r, c).focused {
-                // Pad so the highlight fills the cell; `put` clips it.
-                let width = usize::from(area.width);
-                text = format!("{text:<width$}");
+            if state.focused {
+                text = pad(text);
                 style = style.add_modifier(Modifier::REVERSED);
+            } else if state.selected {
+                text = pad(text);
+                style = style.bg(Color::DarkGray);
             }
             put(c.offset, r.offset, left, c.end(), top, &text, style);
         }

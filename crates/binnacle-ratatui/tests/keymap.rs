@@ -114,3 +114,24 @@ fn hosts_rebind_and_unbind_keys() {
         None
     );
 }
+
+#[test]
+fn the_default_keymap_selects_all_selects_columns_and_cancels() {
+    let keys = Keymap::default();
+    let cases = [
+        (KeyCode::Char('a'), KeyModifiers::CONTROL, Action::SelectAll),
+        (
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            Action::SelectColumn,
+        ),
+        (KeyCode::Esc, KeyModifiers::NONE, Action::Cancel),
+    ];
+    for (code, modifiers, expected) in cases {
+        assert_eq!(
+            keys.action(&press(code, modifiers)),
+            Some(expected),
+            "{code:?}"
+        );
+    }
+}

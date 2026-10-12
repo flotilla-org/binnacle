@@ -9,7 +9,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 ///
 /// Default bindings: arrows move focus one item, PageUp and PageDown a page of
 /// rows, Home and End to the first and last row, Ctrl with an arrow to the
-/// edge that way. Shift with any of these extends the selection.
+/// edge that way. Shift with any of these extends the selection. Ctrl+A
+/// selects all, Ctrl+Space selects the whole column, Esc cancels.
 #[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: HashMap<(KeyCode, KeyModifiers), Action>,
@@ -78,6 +79,13 @@ impl Default for Keymap {
                 keymap.bind(code, modifiers, action);
             }
         }
+        keymap.bind(KeyCode::Char('a'), KeyModifiers::CONTROL, Action::SelectAll);
+        keymap.bind(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+            Action::SelectColumn,
+        );
+        keymap.bind(KeyCode::Esc, KeyModifiers::NONE, Action::Cancel);
         keymap
     }
 }

@@ -8,7 +8,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 
 struct Labels;
 
@@ -152,4 +152,45 @@ fn the_focused_cell_is_drawn_reversed_across_its_width() {
     // Row 1 sits on line 2, under the header line; column 0 spans x 5..13.
     assert_eq!(reversed, (5..13).map(|x| (x, 2)).collect::<Vec<_>>());
     assert!(text(&buf).lines().nth(2).unwrap().starts_with("2    r1c0"));
+}
+
+#[test]
+fn selected_cells_get_a_background_across_their_width_and_the_hovered_header_is_underlined() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let extend = |axis| Action::MoveFocus {
+        axis,
+        by: FocusStep::Item,
+        forward: true,
+        extend: true,
+    };
+    grid.action(extend(Axis::Rows));
+    grid.action(extend(Axis::Rows));
+    grid.action(extend(Axis::Cols));
+    // Hover column 2's header (x 23..31).
+    grid.pointer(binnacle_core::PointerEvent::moved(24.0, 0.0));
+    let buf = frame_buffer(&mut grid, 30, 5, Rect::new(0, 0, 30, 5));
+    let with = |f: &dyn Fn(&ratatui::buffer::Cell) -> bool| -> Vec<(u16, u16)> {
+        buf.area
+            .positions()
+            .filter(|&p| f(&buf[p]))
+            .map(|p| (p.x, p.y))
+            .collect()
+    };
+    // Rows 0 and 1 (lines 1 and 2), columns 0 and 1 (x 5..13 and 14..22);
+    // the focused cell, row 1 column 1, is drawn reversed instead.
+    let selected: Vec<(u16, u16)> = [(5..13, 1), (14..22, 1), (5..13, 2)]
+        .into_iter()
+        .flat_map(|(xs, y)| xs.map(move |x| (x, y)))
+        .collect();
+    assert_eq!(with(&|c| c.bg == Color::DarkGray), selected);
+    let focused: Vec<(u16, u16)> = (14..22).map(|x| (x, 2)).collect();
+    assert_eq!(with(&|c| c.modifier.contains(Modifier::REVERSED)), focused);
+    let hovered: Vec<(u16, u16)> = (23..30).map(|x| (x, 0)).collect();
+    assert_eq!(
+        with(&|c| c.modifier.contains(Modifier::UNDERLINED)),
+        hovered
+    );
 }

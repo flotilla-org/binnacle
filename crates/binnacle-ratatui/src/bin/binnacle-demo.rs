@@ -2,14 +2,18 @@
 //!
 //! `binnacle-demo` shows 1000 rows; `binnacle-demo --huge` shows 10^15. The
 //! wheel scrolls; the adapter's default keymap moves focus (arrows, PageUp and
-//! PageDown, Home and End, Ctrl with an arrow) and the view follows it; `m`
-//! scrolls to the middle. Press `q`, Esc or Ctrl-C to quit.
+//! PageDown, Home and End, Ctrl with an arrow; Shift extends the selection) and
+//! the view follows it; Ctrl+A selects all, Ctrl+Space the column, Esc
+//! cancels a drag; `m` scrolls to the middle. Click to focus, Shift-click or
+//! drag to select, Ctrl-click to pick rows, click a row number to select its
+//! row. Press `q` or Ctrl-C to quit.
 
 use std::io;
+use std::time::Instant;
 
 use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Viewport};
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{Content, Keymap, render, wheel};
+use binnacle_ratatui::{Content, Keymap, Mouse, render, wheel};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
@@ -56,13 +60,16 @@ fn main() -> io::Result<()> {
             fraction: 0.5,
         },
     );
+    let mut mouse = Mouse::default();
+    let mut area = ratatui::layout::Rect::default();
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
     let result = (|| {
         loop {
             terminal.draw(|frame| {
-                let area = frame.area();
-                // Nothing here acts on Effects (FocusChanged) yet; drain them.
+                area = frame.area();
+                // Nothing here acts on Effects (FocusChanged, SelectionChanged)
+                // yet; drain them.
                 while grid.poll_effect().is_some() {}
                 let viewport = Viewport::new(area.width.into(), area.height.into());
                 for (axis, range) in grid.begin_frame(viewport) {
@@ -78,7 +85,7 @@ fn main() -> io::Result<()> {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let ctrl_c = key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL);
-                    if ctrl_c || matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+                    if ctrl_c || key.code == KeyCode::Char('q') {
                         return Ok(());
                     }
                     if let Some(action) = keymap.action(&key) {
@@ -88,6 +95,8 @@ fn main() -> io::Result<()> {
                 Event::Mouse(m) => {
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
+                    } else if let Some(pointer) = mouse.event(&m, area, Instant::now()) {
+                        grid.pointer(pointer);
                     }
                 }
                 _ => {}
