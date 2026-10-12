@@ -9,6 +9,7 @@
 //! [`Effect`] and drained with [`Grid::poll_effect`].
 
 mod axis;
+mod edit;
 mod effect;
 mod focus;
 mod gesture;
@@ -21,6 +22,7 @@ mod snapshot;
 mod sort;
 mod types;
 
+pub use edit::EditEnd;
 pub use effect::{Action, Effect, FocusStep, Stamped};
 pub use focus::FocusEnd;
 pub use gesture::Mode;

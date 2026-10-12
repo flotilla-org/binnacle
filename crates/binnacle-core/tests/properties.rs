@@ -108,6 +108,10 @@ enum Input {
     /// The identity source now has this many items on the axis; the Grid
     /// hears `Reset`.
     Reset(Axis, u64),
+    /// The host calls `set_focus` with a row and a column Key.
+    SetFocus(Key, Key),
+    /// The host opens its editor on a cell (`edit_started`), or closes it.
+    Edit(Option<(Key, Key)>),
 }
 
 /// A pointer event whose coordinates are resolved against the previous frame
@@ -305,7 +309,8 @@ fn input(tc: &TestCase) -> Input {
             gs::floats::<f32>()
         )
     };
-    let key = hegel::one_of!(gs::integers::<u64>().max_value(60), gs::integers::<u64>()).map(Key);
+    let key =
+        || hegel::one_of!(gs::integers::<u64>().max_value(60), gs::integers::<u64>()).map(Key);
     let size = hegel::one_of!(
         gs::floats::<f32>()
             .min_value_exclusive(0.0)
@@ -342,7 +347,7 @@ fn input(tc: &TestCase) -> Input {
             )
         )
         .map(|(axis, items)| Input::Action(Action::ScrollBy { axis, items })),
-        hegel::tuples!(axis(), key, size).map(|(a, k, s)| Input::SetSize(a, k, s)),
+        hegel::tuples!(axis(), key(), size).map(|(a, k, s)| Input::SetSize(a, k, s)),
         pointer().map(Input::Pointer),
         pointer().map(Input::Pointer),
         axis().map(Input::Notice),
@@ -355,7 +360,12 @@ fn input(tc: &TestCase) -> Input {
             Input::Action(Action::SelectAll),
             Input::Action(Action::SelectColumn),
             Input::Action(Action::Cancel),
+            Input::Action(Action::Activate),
+            Input::Action(Action::BeginEdit),
+            Input::Edit(None),
         ]),
+        hegel::tuples!(key(), key()).map(|(r, c)| Input::SetFocus(r, c)),
+        hegel::tuples!(key(), key()).map(|(r, c)| Input::Edit(Some((r, c)))),
     ))
 }
 
@@ -642,7 +652,12 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                     noticed = true;
                     reveals_focus = false;
                 }
-                Input::SetSize(..) => {}
+                // `set_focus` reveals once placed, unless an axis is empty.
+                Input::SetFocus(..) => {
+                    moved_focus = true;
+                    reveals_focus = false;
+                }
+                Input::SetSize(..) | Input::Edit(_) => {}
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
@@ -671,6 +686,9 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                     }
                     s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reset(count)))
                 }
+                Input::SetFocus(row, col) => s.input(|g| g.set_focus(row, col)),
+                Input::Edit(Some((row, col))) => s.input(|g| g.edit_started(row, col)),
+                Input::Edit(None) => s.input(|g| g.edit_ended(binnacle_core::EditEnd::Commit)),
             }
         }
         let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
@@ -1525,6 +1543,9 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
             Input::Notice(axis) => {
                 s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reordered))
             }
+            Input::SetFocus(row, col) => s.input(|g| g.set_focus(row, col)),
+            Input::Edit(Some((row, col))) => s.input(|g| g.edit_started(row, col)),
+            Input::Edit(None) => s.input(|g| g.edit_ended(binnacle_core::EditEnd::Commit)),
             // The resize below needs the drawn counts.
             Input::SetSize(..) | Input::Reset(..) => {}
         }

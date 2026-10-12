@@ -12,23 +12,31 @@
 //! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
 //! which neither sort, move nor filter.
 //!
+//! Typing jumps to the next record whose name starts with what was typed
+//! (type-ahead through `set_focus`; pause a second to start over); in the
+//! huge table, typing digits goes to that row number. Enter, F2 or a
+//! double-click on a name opens a minimal inline editor: type, Backspace,
+//! Enter to keep the new name, Esc to drop it. A click elsewhere keeps it.
+//!
 //! The wheel scrolls; the adapter's default keymap moves focus (arrows,
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
 //! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
-//! column, Esc cancels a drag or a resize; `m` scrolls to the middle. Click to
-//! focus, Shift-click or drag to select, Ctrl-click to pick rows, click a row
-//! number to select its row. Drag a column header's border (the line in the
-//! one-cell Gap) to resize the column; double-click it to fit the column to
-//! its visible text. The bottom line shows the gesture in progress. Press `q`
-//! or Ctrl-C to quit.
+//! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
+//! Ctrl+F toggles the filter. Click to focus, Shift-click or drag to select,
+//! Ctrl-click to pick rows, click a row number to select its row. Drag a
+//! column header's border (the line in the one-cell Gap) to resize the
+//! column; double-click it to fit the column to its visible text. The bottom
+//! line shows the gesture in progress. Press Ctrl+Q or Ctrl+C to quit.
 
 use std::borrow::Cow;
 use std::io;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use binnacle_core::{Action, Axis, AxisConfig, Effect, Grid, Key, Stamped, Viewport};
+use binnacle_core::{
+    Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Stamped, Viewport,
+};
 use binnacle_memory::{IdentitySource, MemorySource};
-use binnacle_ratatui::{Content, Keymap, Mouse, render, status, wheel};
+use binnacle_ratatui::{Content, Keymap, Mouse, render, render_editor, status, wheel};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
@@ -65,6 +73,12 @@ impl Record {
 
 const HEADERS: [&str; 4] = ["id", "name", "weight", "crew"];
 
+/// The one editable column.
+const NAME: Key = Key(1);
+
+/// How long a pause starts type-ahead over.
+const TYPE_AHEAD: Duration = Duration::from_secs(1);
+
 /// The table the demo shows: records, or a huge identity table.
 enum Table {
     Records {
@@ -88,21 +102,82 @@ impl Table {
     }
 
     /// Drains the Grid's Effects, answering sorts, column moves and `Locate`
-    /// from the source and auto-size by measuring the text drawn for `shown` rows. The
-    /// other Effects need nothing here.
-    fn pump(&mut self, grid: &mut Grid, shown: &[Key]) {
+    /// from the source and auto-size by measuring the text drawn for `shown`
+    /// rows. Returns the Effects the app itself acts on: activation, edits
+    /// and typing.
+    fn pump(&mut self, grid: &mut Grid, shown: &[Key]) -> Vec<Effect> {
+        let mut app = Vec::new();
+        let mut seen = |text: &Text, grid: &mut Grid, stamped: Stamped| match stamped.effect {
+            Effect::Activated { .. }
+            | Effect::EditRequested { .. }
+            | Effect::EditCancelled { .. }
+            | Effect::TextTyped { .. } => app.push(stamped.effect),
+            _ => auto_size(text, shown, grid, stamped),
+        };
         match self {
             Table::Records { rows, source, .. } => {
                 let text = Text::Records(rows);
-                source.pump(rows, grid, |grid, stamped| {
-                    auto_size(&text, shown, grid, stamped)
-                });
+                source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
             }
-            Table::Huge { .. } => {
+            Table::Huge { rows, cols } => {
                 while let Some(stamped) = grid.poll_effect() {
-                    auto_size(&Text::Huge, shown, grid, stamped);
+                    if let Effect::Locate { axis, key } = stamped.effect {
+                        let count = match axis {
+                            Axis::Rows => rows.count(),
+                            Axis::Cols => cols.count(),
+                        };
+                        let answer = if key.0 < count {
+                            Located::Found(key.0)
+                        } else {
+                            Located::Gone { suggest: None }
+                        };
+                        grid.located(axis, key, answer);
+                    }
+                    seen(&Text::Huge, grid, stamped);
                 }
             }
+        }
+        app
+    }
+
+    /// The row type-ahead lands on for `typed`: in the records, the first
+    /// whose name starts with it (ignoring case), searching from Position
+    /// `from` and wrapping; in the huge table, the row numbered `typed`.
+    fn type_ahead(&self, typed: &str, from: u64) -> Option<Key> {
+        match self {
+            Table::Records { rows, source, .. } => {
+                let count = source.count(Axis::Rows);
+                let order = source.window(Axis::Rows, 0..count);
+                let typed = typed.to_lowercase();
+                let matches = |k: &Key| rows[k.0 as usize].name.to_lowercase().starts_with(&typed);
+                let start = from.min(count) as usize;
+                let (after, before) = order.split_at(start);
+                after.iter().chain(before).copied().find(matches)
+            }
+            Table::Huge { rows, .. } => {
+                let n: u64 = typed.parse().ok()?;
+                (1..=rows.count()).contains(&n).then(|| Key(n - 1))
+            }
+        }
+    }
+
+    /// Stores an edited name and tells the Grid if the rows' order changed.
+    fn commit(&mut self, grid: &mut Grid, row: Key, text: String) {
+        if let Table::Records { rows, source, .. } = self {
+            rows[row.0 as usize].name = text;
+            let spec = source.sort_spec().clone();
+            if spec.find(NAME).is_some()
+                && let Ok(notice) = source.sort(rows, &spec)
+            {
+                grid.notify(Axis::Rows, notice);
+            }
+        }
+    }
+
+    fn name(&self, row: Key) -> Option<String> {
+        match self {
+            Table::Records { rows, .. } => Some(rows[row.0 as usize].name.clone()),
+            Table::Huge { .. } => None,
         }
     }
 
@@ -178,6 +253,97 @@ impl Content for Text<'_> {
     }
 }
 
+/// The host's own editor: the edited cell and the text so far.
+struct Editor {
+    row: Key,
+    col: Key,
+    text: String,
+}
+
+/// What the demo app keeps beside the Grid: its editor and type-ahead.
+#[derive(Default)]
+struct App {
+    editor: Option<Editor>,
+    typed: String,
+    typed_at: Option<Instant>,
+    /// The focused cell as of the last Snapshot.
+    focus: Option<(binnacle_core::FocusEnd, binnacle_core::FocusEnd)>,
+}
+
+impl App {
+    /// Pumps until the queue stays empty, acting on what the app owns:
+    /// activation and F2 open the editor on a name, `EditCancelled` drops
+    /// it, and typing jumps ahead.
+    fn pump(&mut self, table: &mut Table, grid: &mut Grid, shown: &[Key]) {
+        loop {
+            let effects = table.pump(grid, shown);
+            if effects.is_empty() {
+                return;
+            }
+            for effect in effects {
+                match effect {
+                    Effect::Activated { row, col } | Effect::EditRequested { row, col } => {
+                        if let (NAME, Some(text)) = (col, table.name(row)) {
+                            grid.edit_started(row, col);
+                            self.editor = Some(Editor { row, col, text });
+                        }
+                    }
+                    Effect::EditCancelled { .. } => self.editor = None,
+                    Effect::TextTyped { text } => self.type_ahead(table, grid, &text),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn type_ahead(&mut self, table: &Table, grid: &mut Grid, text: &str) {
+        let now = Instant::now();
+        let fresh = self.typed_at.is_none_or(|t| now - t > TYPE_AHEAD);
+        if fresh {
+            self.typed.clear();
+        }
+        self.typed.push_str(text);
+        self.typed_at = Some(now);
+        // A new search starts after the focused row; a longer prefix may
+        // still match it.
+        let (row, col) = self.focus.map_or((0, NAME), |(r, c)| {
+            (r.position + u64::from(fresh), c.key.unwrap_or(NAME))
+        });
+        if let Some(found) = table.type_ahead(&self.typed, row) {
+            grid.set_focus(found, col);
+        }
+    }
+
+    /// Takes a key press while the editor is open; false if it is closed.
+    fn edit_key(&mut self, table: &mut Table, grid: &mut Grid, code: KeyCode) -> bool {
+        let Some(editor) = &mut self.editor else {
+            return false;
+        };
+        match code {
+            KeyCode::Char(c) => editor.text.push(c),
+            KeyCode::Backspace => {
+                editor.text.pop();
+            }
+            KeyCode::Enter => self.commit(table, grid),
+            KeyCode::Esc => {
+                self.editor = None;
+                grid.edit_ended(EditEnd::Cancel);
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Keeps the editor's text, if it is open, and closes it.
+    fn commit(&mut self, table: &mut Table, grid: &mut Grid) {
+        if let Some(Editor { row, col, text }) = self.editor.take() {
+            debug_assert_eq!(col, NAME);
+            grid.edit_ended(EditEnd::Commit);
+            table.commit(grid, row, text);
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let (mut table, mut grid) = if std::env::args().any(|a| a == "--huge") {
         // The row header band and the columns fit the widest row number.
@@ -219,8 +385,8 @@ fn main() -> io::Result<()> {
     };
     let mut keymap = Keymap::default();
     keymap.bind(
-        KeyCode::Char('m'),
-        KeyModifiers::NONE,
+        KeyCode::Char('g'),
+        KeyModifiers::CONTROL,
         Action::ScrollTo {
             axis: Axis::Rows,
             fraction: 0.5,
@@ -230,6 +396,7 @@ fn main() -> io::Result<()> {
     let mut area = ratatui::layout::Rect::default();
     // The row Keys last drawn, which auto-size measures.
     let mut shown_rows: Vec<Key> = Vec::new();
+    let mut app = App::default();
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
     let result = (|| {
@@ -239,7 +406,7 @@ fn main() -> io::Result<()> {
                 let full = frame.area();
                 area = full;
                 area.height = full.height.saturating_sub(1);
-                table.pump(&mut grid, &shown_rows);
+                app.pump(&mut table, &mut grid, &shown_rows);
                 let viewport = Viewport::new(area.width.into(), area.height.into());
                 for (axis, range) in grid.begin_frame(viewport) {
                     let keys = table.window(axis, range.clone());
@@ -248,7 +415,11 @@ fn main() -> io::Result<()> {
                 let snapshot = grid.snapshot();
                 shown_rows.clear();
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
+                app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 render(&snapshot, &table.text(), area, frame.buffer_mut());
+                if let Some(editor) = &app.editor {
+                    render_editor(&snapshot, &editor.text, area, frame.buffer_mut());
+                }
                 let line = ratatui::layout::Rect {
                     y: full.y + area.height,
                     height: full.height - area.height,
@@ -258,12 +429,14 @@ fn main() -> io::Result<()> {
             })?;
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    let ctrl_c = key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL);
-                    if ctrl_c || key.code == KeyCode::Char('q') {
+                    let ctrl = key.modifiers == KeyModifiers::CONTROL;
+                    if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
                         return Ok(());
                     }
-                    if key.code == KeyCode::Char('f') && key.modifiers == KeyModifiers::NONE {
+                    if app.edit_key(&mut table, &mut grid, key.code) {
+                        continue;
+                    }
+                    if ctrl && key.code == KeyCode::Char('f') {
                         table.toggle_filter(&mut grid);
                         continue;
                     }
@@ -275,6 +448,10 @@ fn main() -> io::Result<()> {
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
                     } else if let Some(pointer) = mouse.event(&m, area, Instant::now()) {
+                        if pointer.kind == binnacle_core::PointerKind::Down {
+                            // A press would cancel the edit: keep it first.
+                            app.commit(&mut table, &mut grid);
+                        }
                         grid.pointer(pointer);
                     }
                 }

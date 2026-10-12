@@ -77,7 +77,7 @@ fn the_default_keymap_moves_focus_with_arrows_pages_and_edges() {
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
             focus(Axis::Cols, FocusStep::Edge, false, true),
         ),
-        (KeyCode::Char('x'), none, None),
+        (KeyCode::Char('x'), KeyModifiers::ALT, None),
     ];
     for (code, modifiers, expected) in cases {
         assert_eq!(
@@ -134,4 +134,46 @@ fn the_default_keymap_selects_all_selects_columns_and_cancels() {
             "{code:?}"
         );
     }
+}
+
+#[test]
+fn enter_activates_f2_begins_an_edit_and_unbound_characters_type() {
+    let keys = Keymap::default();
+    let none = KeyModifiers::NONE;
+    assert_eq!(
+        keys.action(&press(KeyCode::Enter, none)),
+        Some(Action::Activate)
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::F(2), none)),
+        Some(Action::BeginEdit)
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('q'), none)),
+        Some(Action::TypeText("q".into()))
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('Q'), KeyModifiers::SHIFT)),
+        Some(Action::TypeText("Q".into()))
+    );
+    // Control characters and bound characters do not type.
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('b'), KeyModifiers::CONTROL)),
+        None
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        Some(Action::SelectAll)
+    );
+    let mut rebound = Keymap::default();
+    rebound.bind(KeyCode::Char('m'), none, Action::SelectAll);
+    assert_eq!(
+        rebound.action(&press(KeyCode::Char('m'), none)),
+        Some(Action::SelectAll)
+    );
+    assert_eq!(
+        Keymap::empty().action(&press(KeyCode::Char('m'), none)),
+        None,
+        "typing is part of the default keymap"
+    );
 }

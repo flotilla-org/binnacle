@@ -122,6 +122,9 @@ pub struct Grid {
     pub(crate) whereabouts: [Option<Whereabouts>; 2],
     /// Focus moves made while locating, applied once it ends.
     pub(crate) moves: Vec<Move>,
+    /// A `set_focus` is waiting for `located`: once placed, the focus is
+    /// selected as a focus move would and revealed.
+    pub(crate) goto: bool,
     pub(crate) follow_focus_on_reorder: bool,
     pub(crate) selection: Selection,
     pub(crate) unit: SelectionUnit,
@@ -172,6 +175,7 @@ impl Grid {
             locating: [false; 2],
             whereabouts: [None; 2],
             moves: Vec::new(),
+            goto: false,
             follow_focus_on_reorder: false,
             selection: Selection::default(),
             unit: SelectionUnit::Cells,
@@ -336,6 +340,16 @@ impl Grid {
     pub fn action(&mut self, action: Action) {
         match action {
             Action::TypeText(text) => self.push(Effect::TextTyped { text }),
+            Action::Activate => {
+                if let Some((row, col)) = self.focused_keys() {
+                    self.push(Effect::Activated { row, col });
+                }
+            }
+            Action::BeginEdit => {
+                if let Some((row, col)) = self.focused_keys() {
+                    self.push(Effect::EditRequested { row, col });
+                }
+            }
             Action::MoveFocus {
                 axis,
                 by,
@@ -365,6 +379,8 @@ impl Grid {
                 if self.gesture.capturing() {
                     self.cancel();
                     self.relocate();
+                } else {
+                    self.end_edit();
                 }
             }
             Action::Scroll { dx, dy } => {
@@ -414,6 +430,48 @@ impl Grid {
         }
     }
 
+    /// Moves focus to the cell with `row` and `col` (type-ahead, "go to
+    /// row"), selecting as a focus move does and scrolling to show it. A Key
+    /// outside the Window is found with `Locate`; until `located` answers,
+    /// focus keeps its last Position on that axis and later focus moves wait.
+    /// A Key the Table Source no longer has leaves focus where it was on that
+    /// axis. Nothing happens while either axis is empty.
+    pub fn set_focus(&mut self, row: Key, col: Key) {
+        if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
+            return;
+        }
+        let keys = [row, col];
+        let mut cell = self.focus.unwrap_or_else(|| {
+            let at = |a: Axis| self.axis(a).anchor.position;
+            self.cell_at(at(Axis::Rows), at(Axis::Cols))
+        });
+        let mut unknown = Vec::new();
+        for axis in Axis::ALL {
+            let i = axis.index();
+            let st = self.axis(axis);
+            let position = st.measure.position_of(keys[i]).unwrap_or_else(|| {
+                unknown.push(axis);
+                cell[i].position.min(st.measure.count() - 1)
+            });
+            cell[i] = FocusEnd {
+                position,
+                key: Some(keys[i]),
+            };
+        }
+        self.set_focus_cell(cell);
+        for &axis in &unknown {
+            self.locate(axis, keys[axis.index()]);
+        }
+        if unknown.is_empty() {
+            self.set_span(self.unit_span(cell));
+            self.reveal = true;
+            self.reveal_focus();
+        } else {
+            self.set_span(None);
+            self.goto = true;
+        }
+    }
+
     /// A `MoveFocus`: moves focus, then replaces the range or stretches it.
     pub(crate) fn move_and_select(&mut self, m: Move) {
         let from = self.focus;
@@ -460,7 +518,7 @@ impl Grid {
 
     /// What selecting `cell` alone selects: nothing beyond focus for
     /// [`SelectionUnit::Cells`], its row for [`SelectionUnit::Rows`].
-    fn unit_span(&self, cell: Cell) -> Option<Span> {
+    pub(crate) fn unit_span(&self, cell: Cell) -> Option<Span> {
         match self.unit {
             SelectionUnit::Cells => None,
             SelectionUnit::Rows => Some(Span {
@@ -586,12 +644,9 @@ impl Grid {
         }
     }
 
-    /// Called whenever the focus changes: makes the queue hold at most one
-    /// `FocusChanged`, naming the focused cell once its Keys are known, unless
-    /// the host has already heard of it. A queued one naming an older cell is
-    /// dropped.
-    pub(crate) fn announce_focus(&mut self) {
-        let keys = match self.focus {
+    /// The focused cell's row and column Keys, once both are known.
+    pub(crate) fn focused_keys(&self) -> Option<(Key, Key)> {
+        match self.focus {
             Some(
                 [
                     FocusEnd { key: Some(row), .. },
@@ -599,7 +654,15 @@ impl Grid {
                 ],
             ) => Some((row, col)),
             _ => None,
-        };
+        }
+    }
+
+    /// Called whenever the focus changes: makes the queue hold at most one
+    /// `FocusChanged`, naming the focused cell once its Keys are known, unless
+    /// the host has already heard of it. A queued one naming an older cell is
+    /// dropped.
+    pub(crate) fn announce_focus(&mut self) {
+        let keys = self.focused_keys();
         let queued = self
             .effects
             .iter()

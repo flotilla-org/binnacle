@@ -56,6 +56,8 @@ pub struct CellState {
     pub focused: bool,
     /// Inside the range, or in a picked row.
     pub selected: bool,
+    /// The host's editor is open on this cell.
+    pub editing: bool,
 }
 
 /// The pointer shape the host should show, if its toolkit can change it.
@@ -213,6 +215,22 @@ impl<'a> Snapshot<'a> {
         })
     }
 
+    /// Where the host's editor goes while editing: the edited cell's
+    /// rectangle, unclipped, if it is visible.
+    pub fn editor_rect(&self) -> Option<Rect> {
+        let Mode::Editing { row, col } = self.mode() else {
+            return None;
+        };
+        let find = |axis, key| self.strip(axis).iter().find(|i| i.key == Some(key));
+        let (row, col) = (find(Axis::Rows, row)?, find(Axis::Cols, col)?);
+        Some(Rect {
+            x: col.offset,
+            y: row.offset,
+            width: col.size,
+            height: row.size,
+        })
+    }
+
     /// How to draw the cell where `row` and `col` from this Snapshot's Strips
     /// cross.
     pub fn cell_state(&self, row: &StripItem, col: &StripItem) -> CellState {
@@ -225,9 +243,14 @@ impl<'a> Snapshot<'a> {
             .selection_range()
             .is_some_and(|r| r.contains(row.position, col.position));
         let picked = row.key.is_some_and(|k| self.grid.selection.picked(k));
+        let editing = match self.mode() {
+            Mode::Editing { row: r, col: c } => row.key == Some(r) && col.key == Some(c),
+            _ => false,
+        };
         CellState {
             focused: on(Axis::Rows, row) && on(Axis::Cols, col),
             selected: in_range || picked,
+            editing,
         }
     }
 

@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-ratatui/tests/render.rs
+expression: text(&buf)
+---
+      0   │col 1   │col 2   │c
+1    0     r0c1     r0c2     r
+2    0     r1c1     r1c2     r
+3    0     ng name▏ r2c2     r
+4    0     r3c1     r3c2     r

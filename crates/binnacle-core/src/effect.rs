@@ -5,8 +5,21 @@ use crate::types::{Axis, Generation, Key, Position};
 /// carry no continuations: answers come back later as ordinary inputs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
-    /// The user typed text while the Grid had focus.
+    /// The user typed text while the Grid had focus. The host decides what it
+    /// means: start an edit, jump to a matching row, or nothing.
     TextTyped { text: String },
+    /// The user activated the cell with `row` and `col` (Enter, or a
+    /// double-click): the host decides whether that opens, edits or does
+    /// nothing.
+    Activated { row: Key, col: Key },
+    /// The user asked to edit the cell with `row` and `col` (F2). The host
+    /// starts its own editor and calls [`crate::Grid::edit_started`], or
+    /// ignores it (a read-only grid).
+    EditRequested { row: Key, col: Key },
+    /// The Grid ended the edit of the cell with `row` and `col` itself: its
+    /// Key left the Table Source, the user cancelled, or a press elsewhere
+    /// ended it. The host drops its editor without committing.
+    EditCancelled { row: Key, col: Key },
     /// Focus landed on a new cell, named by its row and column Keys. Sent once
     /// both Keys are known, and at most once per drain: a later change replaces
     /// a queued one.
@@ -52,7 +65,12 @@ pub struct Stamped {
 /// by the host's keymap.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// Text the user typed; the Grid passes it on as `TextTyped`.
     TypeText(String),
+    /// Activates the focused cell (Enter): emits `Activated`.
+    Activate,
+    /// Asks to edit the focused cell (F2): emits `EditRequested`.
+    BeginEdit,
     /// Moves focus along `axis` by one item, a page or to the edge, towards the
     /// end if `forward`, and scrolls to show the focused cell. `extend` asks
     /// for the move to stretch the selection range instead of replacing it.
@@ -71,21 +89,12 @@ pub enum Action {
     Cancel,
     /// Scrolls by a distance in the host's unit along each axis (a wheel or
     /// trackpad): `dx` across the columns, `dy` down the rows.
-    Scroll {
-        dx: f32,
-        dy: f32,
-    },
+    Scroll { dx: f32, dy: f32 },
     /// Scrolls `axis` so its thumb sits at `fraction` of its travel (a
     /// scrollbar drag): 0 is the start, 1 the end.
-    ScrollTo {
-        axis: Axis,
-        fraction: f64,
-    },
+    ScrollTo { axis: Axis, fraction: f64 },
     /// Scrolls `axis` by whole items, landing on an item start.
-    ScrollBy {
-        axis: Axis,
-        items: i64,
-    },
+    ScrollBy { axis: Axis, items: i64 },
 }
 
 /// How far a [`Action::MoveFocus`] goes.

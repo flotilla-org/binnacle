@@ -16,7 +16,8 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// Position is awaited. A range adds `range rows x cols`
 /// (half-open Positions), picks add `picks` (row Keys), and either adds the
 /// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
-/// its Mode and `capturing`, a hovered header `hover axis position`, a resize
+/// its Mode and `capturing`, an edit its Mode and `editor x,y wxh` (the
+/// edited cell is marked `=`, before focus), a hovered header `hover axis position`, a resize
 /// cursor hint `cursor C`, a resize guide `guide axis offset (key K size
 /// S)` and a move `moving keys to axis position at offset` (the drop
 /// indicator, also drawn across the header band). A non-empty applied Sort
@@ -80,6 +81,9 @@ pub fn render(snap: &Snapshot) -> String {
     }
     if snap.mode() != Mode::Idle {
         let _ = write!(out, " | mode {:?}", snap.mode());
+    }
+    if let Some(r) = snap.editor_rect() {
+        let _ = write!(out, " | editor {},{} {}x{}", r.x, r.y, r.width, r.height);
     }
     if snap.capturing() {
         out.push_str(" | capturing");
@@ -193,7 +197,9 @@ fn picture(snap: &Snapshot) -> String {
         put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
         for c in snap.cols() {
             let state = snap.cell_state(r, c);
-            let mark = if state.focused {
+            let mark = if state.editing {
+                "="
+            } else if state.focused {
                 "*"
             } else if state.selected {
                 "+"
