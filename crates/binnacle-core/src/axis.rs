@@ -43,10 +43,21 @@ impl AxisState {
     /// The Window this axis needs for the current viewport: the visible items
     /// plus overscan either side. Counted by stepping with the smallest size an
     /// item can have, so it holds every item a real layout can reach.
+    ///
+    /// When the last item can show, the end clamp may pull the anchor back once
+    /// the Window's sizes are known, so the Window also reaches back a body's
+    /// length of smallest items from the end.
     pub fn needed(&self) -> Range<Position> {
         let count = self.measure.count();
-        let start = self.anchor.position.saturating_sub(OVERSCAN);
-        let end = self.visible_end().saturating_add(OVERSCAN).min(count);
+        let visible_end = self.visible_end();
+        let mut first = self.anchor.position;
+        if visible_end == count {
+            let stride = f64::from(self.measure.smallest_size()) + f64::from(self.measure.gap());
+            let back = (f64::from(self.body()) / stride).ceil() as u64;
+            first = first.min(count.saturating_sub(back.saturating_add(1)));
+        }
+        let start = first.saturating_sub(OVERSCAN);
+        let end = visible_end.saturating_add(OVERSCAN).min(count);
         start.min(end)..end
     }
 

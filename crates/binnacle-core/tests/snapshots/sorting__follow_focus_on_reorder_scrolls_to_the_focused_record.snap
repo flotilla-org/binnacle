@@ -21,7 +21,7 @@ effect (gen 2): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key
   sort [SortColumn { key: Key(0), direction: Descending }]: Ok(Reordered)
 effect (gen 2): Locate { axis: Rows, key: Key(3) }
   locate Rows Key(3): Found(7)
-window Rows 2..8
+window Rows 1..8
 gen 3 | damage layout selection positions | focus 7#3,0#0 at 4,4 6x1 | sort 0v | hover Cols 0
 Rows: count 8, extent 5, header 1, anchor 4+0, thumb 1.0000/0.5000 | 4#7@1+1 5#1@2+1 6#5@3+1 7#3@4+1
 Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
