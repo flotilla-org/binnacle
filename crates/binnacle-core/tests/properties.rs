@@ -1802,7 +1802,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
     let snap = s.frame(viewport);
     let strip = snap.cols();
     // Column headers need a band to be pressed in.
-    if strip.is_empty() || snap.rows().is_empty() || !(snap.header(Axis::Rows) > 0.0) {
+    if strip.is_empty() || snap.rows().is_empty() || snap.header(Axis::Rows) <= 0.0 {
         return;
     }
     let pick = |tc: &TestCase| strip[tc.draw(gs::integers::<usize>().max_value(strip.len() - 1))];
