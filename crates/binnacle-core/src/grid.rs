@@ -78,8 +78,8 @@ pub struct Grid {
     pub(crate) damage: Damage,
     /// The focused cell, one end per axis; `None` while unplaced.
     pub(crate) focus: Option<[FocusEnd; 2]>,
-    /// The Keys the last `FocusChanged` named.
-    announced: Option<(Key, Key)>,
+    /// The Keys named by the last `FocusChanged` the host drained.
+    heard: Option<(Key, Key)>,
     /// A focus move asked for the focused cell to be shown and no scroll has
     /// overridden it; kept until the frame's Snapshot, since the viewport and
     /// sizes the move was made against may change before then.
@@ -101,7 +101,7 @@ impl Grid {
             pending_damage: Damage::ALL,
             damage: Damage::NONE,
             focus: None,
-            announced: None,
+            heard: None,
             reveal: false,
         }
     }
@@ -251,8 +251,9 @@ impl Grid {
         }
     }
 
-    /// Queues `FocusChanged` once the focused cell's Keys are known and differ
-    /// from the last ones sent, replacing any still queued.
+    /// Once the focused cell's Keys are known, makes the queue hold one
+    /// `FocusChanged` naming them, unless the host has already heard of them.
+    /// A queued one naming an older cell is dropped.
     fn announce_focus(&mut self) {
         let Some(
             [
@@ -263,13 +264,20 @@ impl Grid {
         else {
             return;
         };
-        if self.announced == Some((row, col)) {
-            return;
+        let changed = Effect::FocusChanged { row, col };
+        let queued = self
+            .effects
+            .iter()
+            .position(|s| matches!(s.effect, Effect::FocusChanged { .. }));
+        if let Some(i) = queued {
+            if self.effects[i].effect == changed {
+                return;
+            }
+            self.effects.remove(i);
         }
-        self.announced = Some((row, col));
-        self.effects
-            .retain(|s| !matches!(s.effect, Effect::FocusChanged { .. }));
-        self.push(Effect::FocusChanged { row, col });
+        if self.heard != Some((row, col)) {
+            self.push(changed);
+        }
     }
 
     fn push(&mut self, effect: Effect) {
@@ -281,7 +289,11 @@ impl Grid {
 
     /// Takes the oldest queued Effect, if any.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
-        self.effects.pop_front()
+        let stamped = self.effects.pop_front()?;
+        if let Effect::FocusChanged { row, col } = stamped.effect {
+            self.heard = Some((row, col));
+        }
+        Some(stamped)
     }
 
     /// Lays out the frame and returns the Snapshot, whose damage covers every
