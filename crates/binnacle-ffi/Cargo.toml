@@ -1,0 +1,11 @@
+[package]
+name = "binnacle-ffi"
+description = "Internal C API over the binnacle Grid, for wheelhouse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+binnacle-core.workspace = true

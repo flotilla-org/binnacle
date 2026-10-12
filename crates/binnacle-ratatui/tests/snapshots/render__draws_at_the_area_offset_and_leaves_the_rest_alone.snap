@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-ratatui/tests/render.rs
+expression: "draw(3, 2, 30, 7, Rect::new(2, 1, 25, 5))"
+---
+
+       col 0   col 1
+  1    r0c0    r0c1
+  2    r1c0    r1c1
+  3    r2c0    r2c1

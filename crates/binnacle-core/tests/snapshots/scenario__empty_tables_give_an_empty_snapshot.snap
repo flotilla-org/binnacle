@@ -1,0 +1,26 @@
+---
+source: crates/binnacle-core/tests/scenario.rs
+expression: out
+---
+--- 1. 0 rows, 3 cols
+window Cols 0..3
+gen 1 | damage layout selection positions
+Rows: count 0, extent 4, header 1 |
+Cols: count 3, extent 22, header 4 | 0#0@4+6 1#1@10+6 2#2@16+6
+    0     1     2
+
+
+
+--- 1. 5 rows, 0 cols
+window Rows 0..5
+gen 1 | damage layout selection positions
+Rows: count 5, extent 4, header 1 | 0#0@1+1 1#1@2+1 2#2@3+1
+Cols: count 0, extent 22, header 4 |
+
+0
+1
+2
+--- 1. 0 rows, 0 cols
+gen 1 | damage layout selection positions
+Rows: count 0, extent 4, header 1 |
+Cols: count 0, extent 22, header 4 |

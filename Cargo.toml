@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["legacy"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/flotilla-org/binnacle"
+
+[workspace.dependencies]
+binnacle-core = { path = "crates/binnacle-core" }
+binnacle-memory = { path = "crates/binnacle-memory" }
+binnacle-testkit = { path = "crates/binnacle-testkit" }
+hegeltest = "0.49.2"
+insta = "1.49.0"
+ratatui = "0.30"

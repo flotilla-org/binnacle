@@ -1,0 +1,5 @@
+---
+source: crates/binnacle-ratatui/tests/render.rs
+expression: "draw(0, 3, 30, 4, Rect::new(0, 0, 30, 4))"
+---
+     col 0   col 1   col 2
