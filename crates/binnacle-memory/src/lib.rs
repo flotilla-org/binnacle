@@ -2,6 +2,7 @@
 
 mod interner;
 mod memory_source;
+mod pump;
 mod sort_keys;
 mod table;
 
@@ -11,6 +12,7 @@ use binnacle_core::{Key, Position};
 
 pub use interner::KeyInterner;
 pub use memory_source::{MemorySource, Unsortable};
+pub use pump::{PumpSource, pump};
 pub use sort_keys::SortKeys;
 pub use table::InMemoryTableSource;
 

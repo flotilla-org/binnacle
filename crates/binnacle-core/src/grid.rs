@@ -3,12 +3,14 @@ use std::ops::Range;
 
 use crate::axis::AxisState;
 use crate::effect::{Action, Effect, FocusStep, Stamped};
-use crate::focus::{self, FocusEnd};
+use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
+use crate::notice::Whereabouts;
 use crate::pointer::Hit;
 use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
+use crate::sort::SortState;
 use crate::types::{Axis, Generation, Key, Position, Viewport};
 
 /// How one axis starts out: its count, default item size and header band.
@@ -76,7 +78,7 @@ impl IntoIterator for WindowRequests {
 pub struct Grid {
     axes: [AxisState; 2],
     pub(crate) generation: Generation,
-    effects: VecDeque<Stamped>,
+    pub(crate) effects: VecDeque<Stamped>,
     pub(crate) pending_damage: Damage,
     pub(crate) damage: Damage,
     /// The focused cell, one end per axis; `None` while unplaced.
@@ -86,7 +88,14 @@ pub struct Grid {
     /// A focus move asked for the focused cell to be shown and no scroll has
     /// overridden it; kept until the frame's Snapshot, since the viewport and
     /// sizes the move was made against may change before then.
-    reveal: bool,
+    pub(crate) reveal: bool,
+    /// Per axis, the focused end's Key is known but its Position is not:
+    /// a Change Notice moved it and `located` has not answered yet.
+    pub(crate) locating: [bool; 2],
+    pub(crate) whereabouts: [Option<Whereabouts>; 2],
+    /// Focus moves made while locating, applied once it ends.
+    pub(crate) moves: Vec<Move>,
+    pub(crate) follow_focus_on_reorder: bool,
     pub(crate) selection: Selection,
     pub(crate) unit: SelectionUnit,
     /// Indexed by the axis whose items' headers are clicked.
@@ -99,6 +108,7 @@ pub struct Grid {
     pub(crate) hovered: Option<(Axis, Position)>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
+    pub(crate) sort: SortState,
 }
 
 /// The drag threshold until [`Grid::set_drag_threshold`] changes it: one unit,
@@ -122,6 +132,10 @@ impl Grid {
             focus: None,
             heard: None,
             reveal: false,
+            locating: [false; 2],
+            whereabouts: [None; 2],
+            moves: Vec::new(),
+            follow_focus_on_reorder: false,
             selection: Selection::default(),
             unit: SelectionUnit::Cells,
             header_click: [HeaderClick::Select, HeaderClick::Sort],
@@ -130,6 +144,7 @@ impl Grid {
             pointer_at: None,
             hovered: None,
             fills: Vec::new(),
+            sort: SortState::default(),
         }
     }
 
@@ -153,11 +168,17 @@ impl Grid {
         }
     }
 
+    /// Whether a `Reordered` Change Notice scrolls to show the focused cell
+    /// once its new Position is known. Default off: the Scroll Anchor stays.
+    pub fn set_follow_focus_on_reorder(&mut self, follow: bool) {
+        self.follow_focus_on_reorder = follow;
+    }
+
     pub(crate) fn axis(&self, axis: Axis) -> &AxisState {
         &self.axes[axis.index()]
     }
 
-    fn axis_mut(&mut self, axis: Axis) -> &mut AxisState {
+    pub(crate) fn axis_mut(&mut self, axis: Axis) -> &mut AxisState {
         &mut self.axes[axis.index()]
     }
 
@@ -258,19 +279,31 @@ impl Grid {
                 forward,
                 extend,
             } => {
-                let from = self.focus;
-                if !self.move_focus(axis, by, forward) {
-                    return;
+                let m = Move {
+                    axis,
+                    by,
+                    forward,
+                    extend,
+                    times: 1,
+                };
+                if !self.locating.contains(&true) {
+                    return self.move_and_select(m);
                 }
-                match (extend, self.focus) {
-                    (true, Some(to)) if from.is_some() => self.extend_to(from, to),
-                    (_, Some(to)) => self.set_span(self.unit_span(to)),
-                    _ => {}
+                match self.moves.last_mut() {
+                    Some(last) if Move { times: 1, ..*last } == m => {
+                        last.times = last.times.saturating_add(1)
+                    }
+                    _ => self.moves.push(m),
                 }
             }
             Action::SelectAll => self.select_all(),
             Action::SelectColumn => self.select_column(),
-            Action::Cancel => self.cancel(),
+            Action::Cancel => {
+                if self.gesture.capturing() {
+                    self.cancel();
+                    self.relocate();
+                }
+            }
             Action::Scroll { dx, dy } => {
                 self.reveal = false;
                 let moved =
@@ -295,6 +328,7 @@ impl Grid {
     }
 
     pub(crate) fn set_focus_cell(&mut self, cell: [FocusEnd; 2]) {
+        self.before_focus_set(cell);
         if self.focus != Some(cell) {
             self.focus = Some(cell);
             self.pending_damage.selection = true;
@@ -302,8 +336,21 @@ impl Grid {
         }
     }
 
+    /// A `MoveFocus`: moves focus, then replaces the range or stretches it.
+    pub(crate) fn move_and_select(&mut self, m: Move) {
+        let from = self.focus;
+        if !self.move_focus(m.axis, m.by, m.forward, m.times) {
+            return;
+        }
+        match (m.extend, self.focus) {
+            (true, Some(to)) if from.is_some() => self.extend_to(from, to),
+            (_, Some(to)) => self.set_span(self.unit_span(to)),
+            _ => {}
+        }
+    }
+
     /// Moves focus; returns false if it cannot be placed (an empty axis).
-    fn move_focus(&mut self, axis: Axis, by: FocusStep, forward: bool) -> bool {
+    fn move_focus(&mut self, axis: Axis, by: FocusStep, forward: bool, times: u64) -> bool {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return false;
         }
@@ -311,11 +358,11 @@ impl Grid {
         let mut moved = self.focus.unwrap_or_else(|| {
             [Axis::Rows, Axis::Cols].map(|a| {
                 let st = self.axis(a);
-                FocusEnd::at(st, focus::target(st, None, FocusStep::Item, true))
+                FocusEnd::at(st, focus::target(st, None, FocusStep::Item, true, 1))
             })
         });
         let st = self.axis(axis);
-        let to = focus::target(st, from, by, forward);
+        let to = focus::target(st, from, by, forward, times);
         if from != Some(to) {
             moved[axis.index()] = FocusEnd::at(st, to);
         }
@@ -367,6 +414,8 @@ impl Grid {
     }
 
     pub(crate) fn extend_with(&mut self, from: Option<Cell>, head: Cell, whole: [bool; 2]) {
+        // A focus whose Position is unknown cannot anchor a range.
+        let from = from.filter(|_| !self.locating.contains(&true));
         let anchor = self
             .selection
             .span
@@ -394,6 +443,7 @@ impl Grid {
     }
 
     fn select_all(&mut self) {
+        self.moves.clear();
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return;
         }
@@ -407,6 +457,7 @@ impl Grid {
 
     /// Selects every row of the range's columns, or of the focused column.
     fn select_column(&mut self) {
+        self.moves.clear();
         let (anchor, head) = match (self.selection.span, self.focus) {
             (Some(s), _) if !s.whole[Axis::Cols.index()] => (s.anchor, s.head),
             (_, Some(f)) => (f, f),
@@ -419,7 +470,7 @@ impl Grid {
         }));
     }
 
-    fn set_span(&mut self, span: Option<Span>) {
+    pub(crate) fn set_span(&mut self, span: Option<Span>) {
         let mut selection = self.selection.clone();
         selection.span = span;
         self.set_selection(selection);
@@ -443,7 +494,7 @@ impl Grid {
     }
 
     /// Scrolls both axes to show the focused cell.
-    fn reveal_focus(&mut self) {
+    pub(crate) fn reveal_focus(&mut self) {
         let Some(f) = self.focus else { return };
         for axis in Axis::ALL {
             if self.axis_mut(axis).reveal(f[axis.index()].position) {
@@ -483,16 +534,28 @@ impl Grid {
         }
     }
 
-    fn push(&mut self, effect: Effect) {
+    pub(crate) fn push(&mut self, effect: Effect) {
         self.effects.push_back(Stamped {
             generation: self.generation,
             effect,
         });
     }
 
-    /// Takes the oldest queued Effect, if any.
+    /// Takes the oldest queued Effect, if any. Requests the Table Source
+    /// answers (`SortRequested`, `Locate`) come out before the rest, so a
+    /// host that answers as it drains does so before it hears of focus and
+    /// selection, which the answers may change again.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
-        let stamped = self.effects.pop_front()?;
+        let request = self.effects.iter().position(|s| {
+            matches!(
+                s.effect,
+                Effect::SortRequested { .. } | Effect::Locate { .. }
+            )
+        });
+        let stamped = match request {
+            Some(i) => self.effects.remove(i)?,
+            None => self.effects.pop_front()?,
+        };
         if let Effect::FocusChanged { row, col } = stamped.effect {
             self.heard = Some((row, col));
         }
