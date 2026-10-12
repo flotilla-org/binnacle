@@ -309,8 +309,10 @@ impl Grid {
         if self.header_click[axis.index()] == HeaderClick::Sort {
             return self.sort_click(axis, position, modifiers);
         }
+        // A Reset during the press may have left `position` past the count.
         if self.header_click[axis.index()] != HeaderClick::Select
             || Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0)
+            || position >= self.axis(axis).measure.count()
         {
             return;
         }

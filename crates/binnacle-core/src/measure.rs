@@ -123,6 +123,19 @@ impl AxisMeasure {
         }
     }
 
+    /// Drops every Size Override.
+    pub fn clear_sizes(&mut self) {
+        self.overrides.clear();
+        self.override_sizes.clear();
+        self.rebuild();
+    }
+
+    /// Sets the count and empties the Window, whose Keys may now sit anywhere.
+    pub fn set_count(&mut self, count: u64) {
+        self.count = count;
+        self.set_keys(0, &[]);
+    }
+
     /// The Size Override set for `key`, if any.
     pub fn size_override(&self, key: Key) -> Option<f32> {
         self.overrides.get(&key).copied()

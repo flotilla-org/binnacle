@@ -1,11 +1,12 @@
 //! Seam 2 properties: the In-Memory Table Source against a naive model of the
 //! spec's sort (tuple comparison in Sort Spec order, ties in base order, nulls
-//! and NaNs last in either direction), over random tables and sort sequences.
+//! and NaNs last in either direction) and filter (skip the rows the keep mask
+//! drops), over random tables and sequences of sorts and filters.
 
 use std::borrow::Cow;
 use std::ops::Range;
 
-use binnacle_core::{Axis, Key, Located, SortColumn, SortDirection, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, Key, Located, SortColumn, SortDirection, SortSpec};
 use binnacle_memory::{InMemoryTableSource, SortKeys};
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -67,13 +68,22 @@ impl Table {
         }
     }
 
-    fn apply(&self, source: &mut InMemoryTableSource, spec: &SortSpec) {
+    fn apply(&self, source: &mut InMemoryTableSource, spec: &SortSpec) -> ChangeNotice {
         let keys = spec
             .columns()
             .iter()
             .map(|c| self.columns[c.key.0 as usize].sort_keys())
             .collect();
-        source.apply_sort(spec, keys);
+        source.apply_sort(spec, keys)
+    }
+
+    /// The model's rows as Logical Indices: sorted by `state.spec`, then the
+    /// rows `state.keep` drops skipped.
+    fn kept(&self, state: &State) -> Vec<usize> {
+        self.sorted(&state.spec)
+            .into_iter()
+            .filter(|&i| state.keep.as_ref().is_none_or(|k| k[i]))
+            .collect()
     }
 
     /// The model: rows in sorted order as Logical Indices. Each value becomes
@@ -211,30 +221,92 @@ fn range(tc: &TestCase) -> Range<u64> {
     tc.draw(bound())..tc.draw(bound())
 }
 
-/// Draws a table and a sequence of sorts, applies each and hands `check` the
-/// table, the source and the spec just applied.
-fn sorts(
-    tc: &TestCase,
-    mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTableSource, &SortSpec),
-) {
+/// What the source was last told: the Sort Spec and keep mask in force.
+#[derive(Clone, Debug, Default)]
+struct State {
+    spec: SortSpec,
+    keep: Option<Vec<bool>>,
+}
+
+#[derive(Clone, Debug)]
+enum Op {
+    Sort(SortSpec),
+    /// A keep mask, or `None` to clear the filter.
+    Filter(Option<Vec<bool>>),
+}
+
+#[hegel::composite]
+fn op(tc: &TestCase, table: Table) -> Op {
+    if tc.draw(gs::booleans()) {
+        return Op::Sort(tc.draw(spec(table.columns.len())));
+    }
+    let mask = hegel::one_of!(
+        column(table.rows, gs::booleans()),
+        column(table.rows, gs::weighted_booleans(0.9)),
+        column(table.rows, gs::weighted_booleans(0.1)),
+    );
+    Op::Filter(tc.draw(gs::optional(mask)))
+}
+
+/// One op as `check` sees it: the op, if any (the first call sees the fresh
+/// source), the rows' Keys before it, and the state it left.
+struct Step<'a> {
+    op: Option<&'a Op>,
+    window_before: &'a [Key],
+    state: &'a State,
+}
+
+/// Draws a table and a sequence of sorts and filters, applies each and hands
+/// `check` the table, the source and the step. Asserts the Change Notice each
+/// op returns: `Reordered` for a sort, `Reset` with the new count for a
+/// filter.
+fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTableSource, &Step)) {
     let table = tc.draw(table());
     let mut source = table.source();
-    check(tc, &table, &mut source, &SortSpec::unsorted());
-    for spec in tc.draw(gs::vecs(spec(table.columns.len())).min_size(1).max_size(4)) {
-        table.apply(&mut source, &spec);
-        check(tc, &table, &mut source, &spec);
+    let mut state = State::default();
+    let window = source.window(Axis::Rows, 0..u64::MAX);
+    let first = Step {
+        op: None,
+        window_before: &window,
+        state: &state,
+    };
+    check(tc, &table, &mut source, &first);
+    for op in tc.draw(gs::vecs(op(table.clone())).min_size(1).max_size(5)) {
+        let window_before = source.window(Axis::Rows, 0..u64::MAX);
+        match &op {
+            Op::Sort(spec) => {
+                state.spec = spec.clone();
+                let notice = table.apply(&mut source, &state.spec);
+                assert_eq!(notice, ChangeNotice::Reordered);
+            }
+            Op::Filter(keep) => {
+                state.keep = keep.clone();
+                let notice = match keep {
+                    Some(keep) => source.apply_filter(keep.clone()),
+                    None => source.clear_filter(),
+                };
+                let kept = table.kept(&state).len() as u64;
+                assert_eq!(notice, ChangeNotice::Reset(kept));
+            }
+        }
+        let step = Step {
+            op: Some(&op),
+            window_before: &window_before,
+            state: &state,
+        };
+        check(tc, &table, &mut source, &step);
     }
 }
 
 #[hegel::test(test_cases = 2000)]
 fn window_matches_the_model(tc: TestCase) {
-    sorts(&tc, |tc, table, source, spec| {
+    ops(&tc, |tc, table, source, step| {
         let expected: Vec<Key> = table
-            .sorted(spec)
+            .kept(step.state)
             .into_iter()
             .map(|i| table.key(i))
             .collect();
-        assert_eq!(source.count(Axis::Rows), table.rows as u64);
+        assert_eq!(source.count(Axis::Rows), expected.len() as u64);
         assert_eq!(source.window(Axis::Rows, 0..u64::MAX), expected);
         let range = tc.draw(range());
         let end = range.end.min(expected.len() as u64);
@@ -248,7 +320,7 @@ fn window_matches_the_model(tc: TestCase) {
 
 #[hegel::test(test_cases = 2000)]
 fn locate_agrees_with_window(tc: TestCase) {
-    sorts(&tc, |tc, _, source, _| {
+    ops(&tc, |tc, table, source, _| {
         let window = source.window(Axis::Rows, 0..u64::MAX);
         for (position, &key) in window.iter().enumerate() {
             assert_eq!(
@@ -260,7 +332,7 @@ fn locate_agrees_with_window(tc: TestCase) {
             gs::integers::<u64>().max_value(MAX_ROWS as u64 + 2),
             gs::integers::<u64>(),
         )));
-        if !window.contains(&key) {
+        if !(0..table.rows).any(|i| table.key(i) == key) {
             assert_eq!(
                 source.locate(Axis::Rows, key),
                 Located::Gone { suggest: None }
@@ -270,8 +342,63 @@ fn locate_agrees_with_window(tc: TestCase) {
 }
 
 #[hegel::test(test_cases = 2000)]
+fn a_filtered_out_row_is_gone_suggesting_the_nearest_survivor_in_sort_order(tc: TestCase) {
+    ops(&tc, |_, table, source, step| {
+        let sorted = table.sorted(&step.state.spec);
+        let kept = table.kept(step.state);
+        for (rank, &i) in sorted.iter().enumerate() {
+            if kept.contains(&i) {
+                continue;
+            }
+            // Brute force over every survivor: the least distance in sorted
+            // order, the one after on a tie.
+            let suggest = kept
+                .iter()
+                .enumerate()
+                .min_by_key(|&(_, j)| {
+                    let r = sorted.iter().position(|k| k == j).unwrap();
+                    (r.abs_diff(rank), r < rank)
+                })
+                .map(|(position, _)| position as u64);
+            assert_eq!(
+                source.locate(Axis::Rows, table.key(i)),
+                Located::Gone { suggest },
+                "row {i} at rank {rank} of {sorted:?}, kept {kept:?}"
+            );
+        }
+    });
+}
+
+#[hegel::test(test_cases = 2000)]
+fn a_filter_never_reorders_kept_rows_and_a_sort_never_refilters(tc: TestCase) {
+    ops(&tc, |_, _, source, step| {
+        let after = source.window(Axis::Rows, 0..u64::MAX);
+        match step.op {
+            Some(Op::Filter(_)) => {
+                let in_both = |w: &[Key], other: &[Key]| -> Vec<Key> {
+                    w.iter().copied().filter(|k| other.contains(k)).collect()
+                };
+                assert_eq!(
+                    in_both(step.window_before, &after),
+                    in_both(&after, step.window_before)
+                );
+            }
+            Some(Op::Sort(_)) => {
+                let mut before = step.window_before.to_vec();
+                let mut after = after;
+                before.sort();
+                after.sort();
+                assert_eq!(before, after);
+            }
+            None => {}
+        }
+    });
+}
+
+#[hegel::test(test_cases = 2000)]
 fn nulls_and_nans_go_last_in_either_direction(tc: TestCase) {
-    sorts(&tc, |_, table, source, spec| {
+    ops(&tc, |_, table, source, step| {
+        let spec = &step.state.spec;
         let Some(first) = spec.columns().first() else {
             return;
         };
@@ -286,7 +413,8 @@ fn nulls_and_nans_go_last_in_either_direction(tc: TestCase) {
 
 #[hegel::test(test_cases = 2000)]
 fn rows_with_equal_keys_keep_base_order(tc: TestCase) {
-    sorts(&tc, |_, table, source, spec| {
+    ops(&tc, |_, table, source, step| {
+        let spec = &step.state.spec;
         let order = logical_order(table, source);
         let equal = |a: usize, b: usize| {
             spec.columns()
@@ -302,8 +430,8 @@ fn rows_with_equal_keys_keep_base_order(tc: TestCase) {
 }
 
 #[hegel::test(test_cases = 500)]
-fn columns_keep_base_order_through_row_sorts(tc: TestCase) {
-    sorts(&tc, |_, table, source, _| {
+fn columns_keep_base_order_through_row_sorts_and_filters(tc: TestCase) {
+    ops(&tc, |_, table, source, _| {
         let expected: Vec<Key> = (0..table.columns.len() as u64).map(Key).collect();
         assert_eq!(source.window(Axis::Cols, 0..u64::MAX), expected);
     });

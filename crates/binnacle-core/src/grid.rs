@@ -527,6 +527,11 @@ impl Grid {
             return;
         }
         self.selection = selection;
+        self.announce_selection();
+    }
+
+    /// Queues `SelectionChanged` unless one is already queued.
+    pub(crate) fn announce_selection(&mut self) {
         self.pending_damage.selection = true;
         if !self
             .effects

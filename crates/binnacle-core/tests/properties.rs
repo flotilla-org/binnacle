@@ -92,6 +92,9 @@ enum Input {
     Pointer(Pointer),
     /// A `Reordered` Change Notice that leaves the identity order as it was.
     Notice(Axis),
+    /// The identity source now has this many items on the axis; the Grid
+    /// hears `Reset`.
+    Reset(Axis, u64),
 }
 
 /// A pointer event whose coordinates are resolved against the previous frame
@@ -320,6 +323,11 @@ fn input(tc: &TestCase) -> Input {
         pointer().map(Input::Pointer),
         pointer().map(Input::Pointer),
         axis().map(Input::Notice),
+        hegel::tuples!(
+            axis(),
+            hegel::one_of!(gs::integers::<u64>().max_value(40), gs::integers::<u64>())
+        )
+        .map(|(axis, count)| Input::Reset(axis, count)),
         gs::sampled_from(vec![
             Input::Action(Action::SelectAll),
             Input::Action(Action::SelectColumn),
@@ -589,7 +597,16 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::Action(_) => reveals_focus = false,
                 // A click focuses what is under the pointer without scrolling.
                 Input::Pointer(_) => moved_focus = true,
-                Input::SetSize(..) | Input::Notice(_) => {}
+                // A notice cancels a drag, restoring the focus from before
+                // its press. A Reset may also move focus to a suggestion or
+                // unplace it, and a move made before it may not have placed
+                // focus at all.
+                Input::Notice(_) => moved_focus = true,
+                Input::Reset(..) => {
+                    moved_focus = true;
+                    reveals_focus = false;
+                }
+                Input::SetSize(..) => {}
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
@@ -603,6 +620,19 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::SetSize(..) => {}
                 Input::Notice(axis) => {
                     s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reordered))
+                }
+                Input::Reset(axis, count) => {
+                    let identity = IdentitySource::new(count);
+                    match axis {
+                        Axis::Rows => s.source.table.rows = identity,
+                        Axis::Cols => s.source.table.cols = identity,
+                    }
+                    let model = &mut models[index(axis)];
+                    model.config.count = count;
+                    if axis == Axis::Rows {
+                        model.overrides.clear();
+                    }
+                    s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reset(count)))
                 }
             }
         }
@@ -1445,7 +1475,8 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
             Input::Notice(axis) => {
                 s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reordered))
             }
-            Input::SetSize(..) => {}
+            // The resize below needs the drawn counts.
+            Input::SetSize(..) | Input::Reset(..) => {}
         }
     }
     // Release any press the setup left held, so the gesture starts fresh.
@@ -1714,4 +1745,32 @@ fn check_resize_feedback(tc: &TestCase, snap: &Snapshot, axis: Axis, key: Key) {
         (guide.offset - item.end()).abs() <= drift,
         "{guide:?} is not at the end of {item:?}"
     );
+}
+
+/// A `Reset` on the rows drops every row Size Override; one on the columns
+/// keeps theirs, as does the other axis either way.
+#[hegel::test(test_cases = 1000)]
+fn a_row_reset_drops_row_size_overrides_and_a_column_reset_keeps_them(tc: TestCase) {
+    let count = || gs::integers::<u64>().max_value(30);
+    let mut grid = Grid::new(
+        AxisConfig::new(tc.draw(count()), 1.0),
+        AxisConfig::new(tc.draw(count()), 1.0),
+    );
+    let set = hegel::tuples!(
+        axis(),
+        gs::integers::<u64>().max_value(40).map(Key),
+        gs::floats::<f32>().min_value(0.5).max_value(20.0)
+    );
+    let mut model: BTreeMap<(usize, Key), f32> = BTreeMap::new();
+    for (axis, key, size) in tc.draw(gs::vecs(set).max_size(8)) {
+        grid.set_size(axis, key, size);
+        model.insert((index(axis), key), size);
+    }
+    let reset = tc.draw(axis());
+    grid.notify(reset, binnacle_core::ChangeNotice::Reset(tc.draw(count())));
+    for (&(i, key), &size) in &model {
+        let axis = Axis::ALL[i];
+        let expected = (axis != Axis::Rows || reset != Axis::Rows).then_some(size);
+        assert_eq!(grid.size_override(axis, key), expected, "{axis:?} {key:?}");
+    }
 }

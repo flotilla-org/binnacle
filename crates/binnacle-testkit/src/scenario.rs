@@ -80,6 +80,12 @@ impl RecordTable {
         }
         RecordTable { rows, source }
     }
+
+    /// Keeps only the records for which `keep` is true; the Grid needs the
+    /// returned Change Notice.
+    pub fn filter(&mut self, keep: impl Fn(&Record) -> bool) -> ChangeNotice {
+        self.source.filter(&self.rows, keep)
+    }
 }
 
 impl ScenarioSource for RecordTable {

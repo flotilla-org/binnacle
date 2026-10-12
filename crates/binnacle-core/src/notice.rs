@@ -16,6 +16,12 @@ pub enum ChangeNotice {
     /// Size Overrides follow their items, the range is dropped unless it spans
     /// the whole axis, and the Scroll Anchor keeps its Position.
     Reordered,
+    /// Anything may have changed, and the axis now holds `count` items:
+    /// always safe to send. Focus follows its Key (the Grid sends `Locate`)
+    /// and falls back to its last Position clamped to the count; the range is
+    /// dropped unless it spans the whole axis; row Size Overrides are dropped
+    /// (column ones kept); the Scroll Anchor keeps its Position, clamped.
+    Reset(u64),
 }
 
 /// Where a focused Key went after a Change Notice, as far as the Grid knows.
@@ -32,18 +38,39 @@ impl Grid {
     /// Tells the Grid how `axis` changed in the Table Source.
     pub fn notify(&mut self, axis: Axis, notice: ChangeNotice) {
         match notice {
-            ChangeNotice::Reordered => self.reordered(axis),
+            ChangeNotice::Reordered => self.changed(axis, None),
+            ChangeNotice::Reset(count) => self.changed(axis, Some(count)),
         }
     }
 
-    fn reordered(&mut self, axis: Axis) {
+    /// The items on `axis` moved, and if `count` is given the count changed
+    /// too (a `Reset`).
+    fn changed(&mut self, axis: Axis, count: Option<u64>) {
         let i = axis.index();
         if self.gesture.mode() == Mode::DraggingSelection {
             self.cancel();
             self.relocate();
         }
-        if self.selection.span.is_some_and(|s| !s.whole[i]) {
+        if self.selection.span.is_some_and(|s| !s.whole[i]) || count == Some(0) {
             self.set_span(None);
+        }
+        let st = self.axis_mut(axis);
+        match count {
+            None => {
+                st.measure.set_keys(0, &[]);
+            }
+            Some(count) => {
+                let resized = st.measure.count() != count;
+                st.measure.set_count(count);
+                if axis == Axis::Rows {
+                    st.measure.clear_sizes();
+                }
+                self.clamp_positions(axis, count);
+                // A range whole on this axis now spans a different count.
+                if resized && self.selection.span.is_some() {
+                    self.announce_selection();
+                }
+            }
         }
         // A press in progress can no longer restore Positions from before the
         // notice: Cancel restores the state as it is now.
@@ -54,13 +81,32 @@ impl Grid {
         if let Gesture::Pressed { before, .. } = &mut self.gesture {
             *before = now;
         }
-        let st = self.axis_mut(axis);
-        st.measure.set_keys(0, &[]);
-        st.clamp_anchor();
+        self.axis_mut(axis).clamp_anchor();
         self.pending_damage.layout = true;
         self.pending_damage.positions = true;
         if let Some(key) = self.focus.and_then(|f| f[i].key) {
             self.locate(axis, key);
+        }
+    }
+
+    /// Keeps focus below a new `count` on `axis`: with no items it is
+    /// unplaced, otherwise it keeps its Key and its last known Position is
+    /// clamped, the fallback if that Key has left. (A range survives only if
+    /// whole on `axis`, where its corners do not count.)
+    fn clamp_positions(&mut self, axis: Axis, count: u64) {
+        let i = axis.index();
+        if count == 0 {
+            if self.focus.take().is_some() {
+                self.pending_damage.selection = true;
+                self.announce_focus();
+            }
+            self.locating = [false; 2];
+            self.whereabouts = [None; 2];
+            self.moves.clear();
+            return;
+        }
+        if let Some(f) = &mut self.focus {
+            f[i].position = f[i].position.min(count - 1);
         }
     }
 
@@ -112,8 +158,8 @@ impl Grid {
                     f[i].position = p;
                 }
             }
-            Located::Found(_) => self.left(axis, focused, None),
-            Located::Gone { suggest } => self.left(axis, focused, suggest),
+            Located::Found(_) => self.left(axis, key, focused, None),
+            Located::Gone { suggest } => self.left(axis, key, focused, suggest),
         }
         if focused {
             self.locating[i] = false;
@@ -122,11 +168,16 @@ impl Grid {
         }
     }
 
-    /// The Key being located on `axis` has left: forget it, and if it was
-    /// focused move focus to `suggest`, else to its last known Position,
-    /// clamped to the count.
-    fn left(&mut self, axis: Axis, focused: bool, suggest: Option<Position>) {
+    /// The Key being located on `axis` has left: forget it, drop it from the
+    /// picks, and if it was focused move focus to `suggest`, else to its last
+    /// known Position, clamped to the count.
+    fn left(&mut self, axis: Axis, key: Key, focused: bool, suggest: Option<Position>) {
         self.whereabouts[axis.index()] = None;
+        if axis == Axis::Rows && self.selection.picked(key) {
+            let mut selection = self.selection.clone();
+            selection.toggle_pick(key);
+            self.set_selection(selection);
+        }
         if !focused {
             return;
         }

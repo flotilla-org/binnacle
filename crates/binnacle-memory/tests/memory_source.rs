@@ -85,3 +85,34 @@ fn a_column_without_a_closure_is_unsortable_and_leaves_the_order_alone() {
     );
     assert_eq!(source.window(Axis::Rows, 0..2), vec![Key(1), Key(0)]);
 }
+
+#[test]
+fn filters_rows_by_a_closure_and_keeps_the_sort() {
+    let rows = [
+        rec("eve", Some(2.5), 3),
+        rec("gus", None, 1),
+        rec("ada", Some(9.0), 3),
+        rec("bob", Some(1.0), 0),
+    ];
+    let mut source = source(&rows);
+    source
+        .sort(&rows, &SortSpec::new(vec![SortColumn::ascending(Key(0))]))
+        .unwrap();
+    assert_eq!(
+        source.window(Axis::Rows, 0..4),
+        vec![Key(2), Key(3), Key(0), Key(1)]
+    );
+
+    assert_eq!(source.filter(&rows, |r| r.qty > 0), ChangeNotice::Reset(3));
+    assert_eq!(
+        source.window(Axis::Rows, 0..4),
+        vec![Key(2), Key(0), Key(1)]
+    );
+    assert_eq!(
+        source.locate(Axis::Rows, Key(3)),
+        Located::Gone { suggest: Some(1) }
+    );
+
+    assert_eq!(source.clear_filter(), ChangeNotice::Reset(4));
+    assert_eq!(source.count(Axis::Rows), 4);
+}

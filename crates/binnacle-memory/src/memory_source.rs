@@ -104,6 +104,21 @@ impl<R> MemorySource<R> {
         Ok(self.table.apply_sort(spec, keys))
     }
 
+    /// Keeps only the rows for which `keep` is true, in sort order, and
+    /// returns the Change Notice the rows need. The sort is not redone.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn filter(&mut self, rows: &[R], keep: impl Fn(&R) -> bool) -> ChangeNotice {
+        self.table.apply_filter(rows.iter().map(keep).collect())
+    }
+
+    /// See [`InMemoryTableSource::clear_filter`].
+    pub fn clear_filter(&mut self) -> ChangeNotice {
+        self.table.clear_filter()
+    }
+
     /// The Sort Spec the rows are in, as last applied.
     pub fn sort_spec(&self) -> &SortSpec {
         self.table.sort_spec()

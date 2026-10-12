@@ -1,7 +1,7 @@
-//! Seam 1 properties for sorting: a real Grid over an In-Memory Table Source
-//! of random records, driven through the frame loop and the shared pump with
-//! clicks, focus moves, header clicks, sorts made behind the Grid's back and
-//! bare `Reordered` notices.
+//! Seam 1 properties for sorting and filtering: a real Grid over an
+//! In-Memory Table Source of random records, driven through the frame loop
+//! and the shared pump with clicks, focus moves, header clicks, sorts and
+//! filters made behind the Grid's back and bare `Reordered` notices.
 
 use binnacle_core::{
     Action, Axis, AxisConfig, CellRange, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, Key,
@@ -84,6 +84,9 @@ enum Input {
     Header(u64, bool),
     /// The host sorts the source itself and tells the Grid.
     Sort(SortSpec),
+    /// The host filters the source (or clears the filter) and tells the
+    /// Grid.
+    Filter(Option<Keep>),
     Notice(Axis),
 }
 
@@ -137,6 +140,34 @@ fn header(tc: &TestCase, cols: usize) -> Input {
     Input::Header(c, tc.draw(gs::weighted_booleans(0.3)))
 }
 
+/// A filter predicate: keep records whose value in `col` is at least `min`,
+/// and nulls if `nulls`.
+#[derive(Clone, Copy, Debug)]
+struct Keep {
+    col: usize,
+    min: i64,
+    nulls: bool,
+}
+
+impl Keep {
+    fn keeps(&self, r: &Record) -> bool {
+        r[self.col].map_or(self.nulls, |v| v >= self.min)
+    }
+}
+
+/// A filter over columns `0..cols`, or none to clear it. Values run -3..=3,
+/// so thresholds keep anything from every record to none.
+#[hegel::composite]
+fn filter(tc: &TestCase, cols: usize) -> Input {
+    let keep = hegel::tuples!(
+        gs::integers::<usize>().max_value(cols - 1),
+        gs::integers::<i64>().min_value(-4).max_value(4),
+        gs::booleans()
+    )
+    .map(|(col, min, nulls)| Keep { col, min, nulls });
+    Input::Filter(tc.draw(gs::optional(keep)))
+}
+
 /// Anything a user or host might do.
 #[hegel::composite]
 fn user_input(tc: &TestCase, cols: usize) -> Input {
@@ -157,6 +188,7 @@ fn user_input(tc: &TestCase, cols: usize) -> Input {
             .map(|(axis, items)| Input::Action(Action::ScrollBy { axis, items })),
         header(cols),
         spec(cols).map(Input::Sort),
+        filter(cols),
         axis().map(Input::Notice),
     ))
 }
@@ -294,6 +326,13 @@ impl Host {
                     return vec![Axis::Rows];
                 }
             }
+            Input::Filter(keep) => {
+                let notice = match keep {
+                    Some(keep) => self.s.source.filter(|r| keep.keeps(r)),
+                    None => self.s.source.source.clear_filter(),
+                };
+                self.s.input(|g| g.notify(Axis::Rows, notice));
+            }
             Input::Notice(axis) => {
                 self.s.input(|g| g.notify(axis, ChangeNotice::Reordered));
                 return vec![axis];
@@ -331,9 +370,19 @@ fn runs(tc: &TestCase, mut check: impl FnMut(&mut Host, &Step)) {
     let mut host = Host::new(table);
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
     for _ in 0..steps {
-        let sorting = tc.draw(gs::booleans());
+        let kind = tc.draw(gs::integers::<u8>().max_value(4));
+        let sorting = kind < 2;
         let inputs = if sorting {
             tc.draw(gs::vecs(sort_input(cols)).min_size(1).max_size(3))
+        } else if kind == 2 {
+            // Often pick and focus a row first, so the filter may drop a
+            // picked, focused row.
+            if tc.draw(gs::booleans()) {
+                let (x, y) = (tc.draw(fraction()), tc.draw(fraction()));
+                host.input(Input::Click(x, y, Modifiers::CTRL));
+                host.frame();
+            }
+            vec![tc.draw(filter(cols))]
         } else {
             let mut inputs = tc.draw(gs::vecs(user_input(cols)).max_size(5));
             // Often leave a drag in progress for the next step to meet.
@@ -480,4 +529,44 @@ fn buffered_focus_moves_land_where_moves_after_located_would(tc: TestCase) {
     assert_eq!(early.view.focus, late.view.focus);
     assert_eq!(early.view.range, late.view.range);
     assert_eq!(early.view.picks, late.view.picks);
+}
+
+#[hegel::test(test_cases = 1000)]
+fn a_filtered_out_focus_moves_to_the_suggestion_and_leaves_the_picks(tc: TestCase) {
+    runs(&tc, |host, step| {
+        let ([Input::Filter(_)], Some(before)) = (step.inputs.as_slice(), step.before.focus) else {
+            return;
+        };
+        // A drag the notice cancels restores the focus from before its press.
+        if step.before.mode == Mode::DraggingSelection {
+            return;
+        }
+        let Some(key) = before[0].key else { return };
+        let after = host.view.focus;
+        let mut picks = step.before.picks.clone();
+        match host.s.source.source.locate(Axis::Rows, key) {
+            Located::Found(p) => assert_eq!(
+                after.map(|f| f[0]),
+                Some(FocusEnd {
+                    position: p,
+                    key: Some(key)
+                })
+            ),
+            Located::Gone { suggest: None } => {
+                assert_eq!(host.view.counts[0], 0);
+                assert_eq!(after, None);
+                return;
+            }
+            Located::Gone { suggest: Some(p) } => {
+                let end = after.expect("focus stays placed")[0];
+                assert_eq!(end.position, p);
+                // The suggested item's Key is known once a Window holds it.
+                let to = host.s.source.source.window(Axis::Rows, p..p + 1);
+                assert!(end.key.is_none_or(|k| Some(&k) == to.first()), "{end:?}");
+                picks.retain(|&k| k != key);
+            }
+        }
+        assert_eq!(after.map(|f| f[1]), Some(before[1]));
+        assert_eq!(host.view.picks, picks);
+    });
 }
