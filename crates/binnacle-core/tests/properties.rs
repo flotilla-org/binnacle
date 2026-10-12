@@ -322,31 +322,44 @@ fn strips_are_ordered_separated_by_the_gap_and_cover_the_viewport(tc: TestCase) 
             let anchor_size = seen_size(snap, axis, model, anchor.position);
             // An anchor in the Gap after its item starts the Strip at the next.
             let in_gap = count > 0 && anchor.offset >= anchor_size;
+            // What is left of the anchor's item past the header can be too thin
+            // to register in f32; then the Strip starts at the next item.
+            let sliver = !in_gap
+                && (f64::from(start) - f64::from(anchor.offset)) as f32 + anchor_size <= start;
             let Some(first) = strip.first() else {
                 // The item after the anchor's Gap starts at the header plus what
-                // remains of the Gap.
+                // remains of the Gap; after a sliver, the Strip steps from the
+                // rounded sliver end, up to one f32 step later.
                 let next_start = (f64::from(start) + f64::from(anchor_size) + f64::from(gap)
                     - f64::from(anchor.offset)) as f32;
+                let rounding = if sliver { next_f32(end) - end } else { 0.0 };
                 assert!(
                     count == 0
                         || start >= end
                         || !resolvable
-                        || (in_gap && (anchor.position + 1 == count || next_start >= end)),
+                        || ((in_gap || sliver)
+                            && (anchor.position + 1 == count || next_start + rounding >= end)),
                     "{axis:?}: empty Strip with content and room"
                 );
                 continue;
             };
-            // What is left of the anchor's item past the header can be too thin
-            // to register in f32; then the Strip starts at the next item.
-            let sliver =
-                (f64::from(start) - f64::from(anchor.offset)) as f32 + anchor_size <= start;
             let expected = anchor.position + u64::from(in_gap);
             assert!(
                 first.position == expected || (sliver && first.position == expected + 1),
                 "{axis:?}: Strip starts at {first:?}, not the Scroll Anchor {anchor:?}"
             );
+            // After the anchor's Gap the next item starts within the Gap; after
+            // an undrawable sliver, within the Gap plus that sliver, which is
+            // under one f32 step at the body's start.
+            let latest = if first.position == anchor.position {
+                start
+            } else if in_gap {
+                start + gap
+            } else {
+                start + gap + (next_f32(start) - start)
+            };
             assert!(
-                first.offset <= if in_gap { start + gap } else { start },
+                first.offset <= latest,
                 "{axis:?}: Strip starts after the body"
             );
             for pair in strip.windows(2) {

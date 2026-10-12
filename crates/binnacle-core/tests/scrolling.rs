@@ -325,3 +325,66 @@ fn the_end_stays_the_end_when_the_window_moves() {
     assert_eq!(snap.thumb(Axis::Cols).fraction, 1.0);
     assert_eq!(snap.cols().last().unwrap().position, 1015);
 }
+
+/// Found by Hegel: at a header of 2^21 the f32 step is 0.25, so the 0.09375 of
+/// the anchor's item left past the header cannot be drawn. The Strip starts at
+/// the next item, after the Gap and that sliver.
+#[test]
+fn an_anchor_item_too_thin_to_draw_past_the_header_is_skipped() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(999_999_999_999_000, 1.0)
+            .header(2_097_152.0)
+            .gap(1.65625),
+        AxisConfig::new(0, 1.0),
+    );
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Rows,
+            fraction: 1.0,
+        })
+    });
+    let snap = s.frame(Viewport::new(0.0, 2_097_176.0));
+    assert_eq!(
+        snap.scroll_anchor(Axis::Rows),
+        ScrollAnchor {
+            position: 999_999_999_998_990,
+            offset: 0.90625
+        }
+    );
+    let first = snap.rows()[0];
+    assert_eq!(
+        (first.position, first.offset),
+        (999_999_999_998_991, 2_097_152.0 + 1.75)
+    );
+    let last = snap.rows().last().unwrap();
+    assert_eq!(last.position, 999_999_999_998_999);
+    assert!(last.end() >= snap.extent(Axis::Rows));
+}
+
+/// Found by Hegel: past a header of 2^16 only an undrawable sliver of the
+/// anchor's item and its Gap fall inside a one-unit body, so the Strip is
+/// empty.
+#[test]
+fn a_body_holding_only_a_sliver_and_a_gap_has_an_empty_strip() {
+    let n = 999_999_999_999_000;
+    let mut s = Scenario::identity(
+        AxisConfig::new(0, 1.0),
+        AxisConfig::new(n, 1.0).header(65_536.0).gap(0.996_093_75),
+    );
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Cols,
+            fraction: 1.0,
+        });
+        g.action(Action::Scroll { dx: -1.0, dy: 0.0 });
+    });
+    let snap = s.frame(Viewport::new(65_537.0, 0.0));
+    assert_eq!(
+        snap.scroll_anchor(Axis::Cols),
+        ScrollAnchor {
+            position: n - 2,
+            offset: 0.996_093_75
+        }
+    );
+    assert_eq!(snap.cols(), &[]);
+}
