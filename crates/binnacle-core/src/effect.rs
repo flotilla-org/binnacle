@@ -10,6 +10,9 @@ pub enum Effect {
     /// both Keys are known, and at most once per drain: a later change replaces
     /// a queued one.
     FocusChanged { row: Key, col: Key },
+    /// The range or the picks changed; read them from the next Snapshot. At
+    /// most one is queued at a time.
+    SelectionChanged,
 }
 
 /// An Effect stamped with the generation of the Snapshot it was based on.
@@ -33,6 +36,13 @@ pub enum Action {
         forward: bool,
         extend: bool,
     },
+    /// Selects every cell, keeping focus where it is.
+    SelectAll,
+    /// Selects every row of the range's columns, or of the focused column.
+    SelectColumn,
+    /// Ends the gesture in progress and restores focus and selection from
+    /// before it.
+    Cancel,
     /// Scrolls by a distance in the host's unit along each axis (a wheel or
     /// trackpad): `dx` across the columns, `dy` down the rows.
     Scroll {

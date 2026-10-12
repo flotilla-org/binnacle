@@ -1,0 +1,63 @@
+---
+source: crates/binnacle-core/tests/pointer.rs
+expression: out
+---
+--- 1. start
+window Rows 0..6
+window Cols 0..5
+gen 1 | damage layout selection positions
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 2. click row 2 (y 3), column 0
+effect (gen 1): FocusChanged { row: Key(2), col: Key(0) }
+gen 2 | damage selection | focus 2#2,0#0 at 4,3 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   *2.0   2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 3. click the last sliver of row 2, column 1
+effect (gen 2): FocusChanged { row: Key(2), col: Key(1) }
+gen 3 | damage selection | focus 2#2,1#1 at 11,3 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    *2.1   2.2    2
+3   3.0    3.1    3.2    3
+--- 4. click the first unit of row 0, column 2
+effect (gen 3): FocusChanged { row: Key(0), col: Key(2) }
+gen 4 | damage selection | focus 0#0,2#2 at 18,1 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    *0.2   0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 5. click the column Gap: nothing changes
+gen 5 | damage none | focus 0#0,2#2 at 18,1 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    *0.2   0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 6. click outside the viewport: nothing changes
+gen 6 | damage none | focus 0#0,2#2 at 18,1 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    *0.2   0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3

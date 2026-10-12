@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Effect, FocusStep, Grid, Key, Position, Snapshot, Viewport,
+    Action, Axis, AxisConfig, Button, CellRange, Effect, FocusStep, Grid, HeaderClick, Key, Mode,
+    Modifiers, PointerEvent, PointerKind, Position, SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
@@ -88,6 +89,129 @@ fn axis(tc: &TestCase) -> Axis {
 enum Input {
     Action(Action),
     SetSize(Axis, Key, f32),
+    Pointer(Pointer),
+}
+
+/// A pointer event whose coordinates are resolved against the viewport of the
+/// previous frame, so most land on something.
+#[derive(Clone, Copy, Debug)]
+struct Pointer {
+    event: PointerEvent,
+    at: [Coord; 2],
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Coord {
+    /// A fraction of the viewport's length along that axis (may be outside 0..1).
+    Fraction(f32),
+    /// A fraction of the way through the body, past the header band.
+    Body(f32),
+    Raw(f32),
+}
+
+impl Pointer {
+    /// The event at its coordinates for a viewport whose header bands are
+    /// `headers` (columns' then rows', as `x` then `y`).
+    fn resolve(self, viewport: Viewport, headers: [f32; 2]) -> PointerEvent {
+        let lengths = [viewport.width, viewport.height];
+        let [x, y] = [0, 1].map(|i| {
+            let (len, header) = (lengths[i], headers[i]);
+            match self.at[i] {
+                Coord::Fraction(f) => f * len,
+                Coord::Body(f) => header + f * (len - header),
+                Coord::Raw(v) => v,
+            }
+        });
+        PointerEvent { x, y, ..self.event }
+    }
+}
+
+#[hegel::composite]
+fn coord(tc: &TestCase) -> Coord {
+    tc.draw(hegel::one_of!(
+        gs::floats::<f32>()
+            .min_value(-0.05)
+            .max_value(1.05)
+            .map(Coord::Fraction),
+        gs::floats::<f32>()
+            .min_value(0.0)
+            .max_value(1.0)
+            .map(Coord::Body),
+        gs::floats::<f32>()
+            .min_value(0.0)
+            .max_value(1.0)
+            .map(Coord::Body),
+        gs::floats::<f32>().map(Coord::Raw),
+    ))
+}
+
+#[hegel::composite]
+fn modifiers(tc: &TestCase) -> Modifiers {
+    let (shift, ctrl, alt, meta) = tc.draw(hegel::tuples!(
+        gs::weighted_booleans(0.3),
+        gs::weighted_booleans(0.2),
+        gs::weighted_booleans(0.1),
+        gs::weighted_booleans(0.1)
+    ));
+    Modifiers {
+        shift,
+        ctrl,
+        alt,
+        meta,
+    }
+}
+
+#[hegel::composite]
+fn pointer(tc: &TestCase) -> Pointer {
+    let kind = tc.draw(gs::sampled_from(vec![
+        PointerKind::Down,
+        PointerKind::Move,
+        PointerKind::Move,
+        PointerKind::Up,
+    ]));
+    let button = tc.draw(gs::sampled_from(vec![
+        Button::Primary,
+        Button::Primary,
+        Button::Primary,
+        Button::Secondary,
+        Button::Middle,
+    ]));
+    let event = PointerEvent::down(0.0, 0.0)
+        .button(button)
+        .modifiers(tc.draw(modifiers()))
+        .clicks(tc.draw(gs::integers::<u32>().max_value(3)));
+    Pointer {
+        event: PointerEvent { kind, ..event },
+        at: [tc.draw(coord()), tc.draw(coord())],
+    }
+}
+
+/// A press, a few moves and the release, as one input sequence.
+#[hegel::composite]
+fn gesture(tc: &TestCase) -> Vec<Pointer> {
+    let press = tc.draw(pointer());
+    let mut events = vec![Pointer {
+        event: PointerEvent {
+            kind: PointerKind::Down,
+            button: Button::Primary,
+            ..press.event
+        },
+        ..press
+    }];
+    for at in tc.draw(gs::vecs(hegel::tuples!(coord(), coord())).max_size(4)) {
+        events.push(Pointer {
+            event: PointerEvent::moved(0.0, 0.0),
+            at: [at.0, at.1],
+        });
+    }
+    if tc.draw(gs::booleans()) {
+        let at = tc.draw(hegel::tuples!(coord(), coord()));
+        events.push(Pointer {
+            event: PointerEvent::up(0.0, 0.0),
+            at: [at.0, at.1],
+        });
+    }
+    events
 }
 
 #[hegel::composite]
@@ -136,6 +260,13 @@ fn input(tc: &TestCase) -> Input {
         )
         .map(|(axis, items)| Input::Action(Action::ScrollBy { axis, items })),
         hegel::tuples!(axis(), key, size).map(|(a, k, s)| Input::SetSize(a, k, s)),
+        pointer().map(Input::Pointer),
+        pointer().map(Input::Pointer),
+        gs::sampled_from(vec![
+            Input::Action(Action::SelectAll),
+            Input::Action(Action::SelectColumn),
+            Input::Action(Action::Cancel),
+        ]),
     ))
 }
 
@@ -257,6 +388,29 @@ impl Model {
     }
 }
 
+/// An axis with at least one item and a finite header band.
+#[hegel::composite]
+fn axis_with_items(tc: &TestCase) -> AxisConfig {
+    let config = tc.draw(axis_config());
+    let header = tc.draw(gs::floats::<f32>().min_value(0.0).allow_infinity(false));
+    AxisConfig {
+        count: config.count.max(1),
+        ..config.header(header)
+    }
+}
+
+/// A viewport extent for `config` (whose header must be finite) leaving a body
+/// of up to [`MAX_VISIBLE`] items of size `smallest`.
+#[hegel::composite]
+fn body_extent(tc: &TestCase, config: AxisConfig, smallest: f32) -> f32 {
+    let body = tc.draw(
+        gs::floats::<f32>()
+            .min_value_exclusive(0.0)
+            .max_value((smallest * MAX_VISIBLE).min(1.0e30)),
+    );
+    config.header + body
+}
+
 /// Which knobs a run draws beyond the table and scroll inputs.
 #[derive(Clone, Copy)]
 struct Knobs {
@@ -264,11 +418,20 @@ struct Knobs {
     resize: bool,
     /// Answer some axes with content sizes.
     content: bool,
+    /// Draw only tables with items on both axes and viewports with a body,
+    /// where pointer events mostly land on cells.
+    bodies: bool,
 }
 
 const ALL: Knobs = Knobs {
     resize: true,
     content: true,
+    bodies: false,
+};
+
+const BODIES: Knobs = Knobs {
+    bodies: true,
+    ..ALL
 };
 
 /// What one step of [`frames`] did before its frame.
@@ -287,8 +450,26 @@ struct Step<'a> {
 /// and a frame at a random viewport, handing every Snapshot to `check` with
 /// what the step did.
 fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) {
-    let rows = tc.draw(axis_config());
-    let cols = tc.draw(axis_config());
+    let config = || {
+        if knobs.bodies {
+            tc.draw(axis_with_items())
+        } else {
+            tc.draw(axis_config())
+        }
+    };
+    let (rows, cols) = (config(), config());
+    let viewport_for = |models: &[Model; 2]| {
+        let [r, c] = models;
+        let along = |m: &Model| {
+            if knobs.bodies {
+                tc.draw(body_extent(m.config, m.smallest()))
+            } else {
+                tc.draw(extent(m.config, m.smallest()))
+            }
+        };
+        let w = along(c);
+        Viewport::new(w, along(r))
+    };
     let mut contents = [None, None];
     if knobs.content {
         for c in &mut contents {
@@ -309,21 +490,51 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         table,
         content: contents,
     };
-    let mut s = Scenario::new(Grid::new(rows, cols), source);
+    let mut grid = Grid::new(rows, cols);
+    configure(tc, &mut grid);
+    let mut s = Scenario::new(grid, source);
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+    let mut viewport = Viewport::default();
+    // Sometimes a frame before any input, so pointer events have a viewport
+    // to land in from the start.
+    if tc.draw(gs::booleans()) {
+        viewport = viewport_for(&models);
+        s.frame(viewport);
+        s.pump();
+    }
     for _ in 0..steps {
         let (mut moved_focus, mut reveals_focus) = (false, false);
-        for input in tc.draw(gs::vecs(input()).max_size(4)) {
+        let mut inputs = tc.draw(gs::vecs(input()).max_size(4));
+        if tc.draw(gs::weighted_booleans(0.5)) {
+            inputs.extend(tc.draw(gesture()).into_iter().map(Input::Pointer));
+        }
+        for input in inputs {
             match &input {
                 Input::Action(Action::MoveFocus { .. }) => {
                     moved_focus = true;
                     reveals_focus = true;
                 }
+                // Cancel may restore an earlier focus, even an unplaced one.
+                Input::Action(Action::Cancel) => {
+                    moved_focus = true;
+                    reveals_focus = false;
+                }
                 Input::Action(_) => reveals_focus = false,
+                // A click focuses what is under the pointer without scrolling.
+                Input::Pointer(_) => moved_focus = true,
                 Input::SetSize(..) => {}
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
+                Input::Pointer(p) => {
+                    let header = |m: &Model| {
+                        let h = m.config.header;
+                        if h.is_finite() { h.max(0.0) } else { 0.0 }
+                    };
+                    let headers = [header(&models[1]), header(&models[0])];
+                    let e = p.resolve(viewport, headers);
+                    s.input(|g| g.pointer(e))
+                }
                 Input::SetSize(axis, key, size) if knobs.resize => {
                     s.input(|g| g.set_size(axis, key, size));
                     if size.is_finite() && size > 0.0 {
@@ -333,11 +544,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::SetSize(..) => {}
             }
         }
-        let [r, c] = &models;
-        let (w, h) = tc.draw(hegel::tuples!(
-            extent(c.config, c.smallest()),
-            extent(r.config, r.smallest())
-        ));
+        let next = viewport_for(&models);
         let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
         let step = Step {
             models: &models,
@@ -345,8 +552,30 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             moved_focus,
             reveals_focus,
         };
-        check(&s.frame(Viewport::new(w, h)), &step);
+        viewport = next;
+        check(&s.frame(viewport), &step);
     }
+}
+
+/// Draws the Grid's selection settings.
+fn configure(tc: &TestCase, grid: &mut Grid) {
+    let unit = tc.draw(gs::sampled_from(vec![
+        SelectionUnit::Cells,
+        SelectionUnit::Rows,
+    ]));
+    grid.set_selection_unit(unit);
+    let clicks = vec![HeaderClick::Sort, HeaderClick::Select, HeaderClick::None];
+    for axis in Axis::ALL {
+        if tc.draw(gs::booleans()) {
+            grid.set_header_click(axis, tc.draw(gs::sampled_from(clicks.clone())));
+        }
+    }
+    let threshold = tc.draw(hegel::one_of!(
+        gs::just(1.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(5.0),
+        gs::floats::<f32>()
+    ));
+    grid.set_drag_threshold(threshold);
 }
 
 /// The size the Grid gives `pos`: as drawn in the Strip if it is there, else
@@ -469,6 +698,7 @@ fn every_strip_item_carries_the_key_the_source_gave_for_its_position(tc: TestCas
         Knobs {
             resize: true,
             content: false,
+            bodies: false,
         },
         |snap, _| {
             for axis in Axis::ALL {
@@ -518,6 +748,7 @@ fn scrolling_stops_where_the_last_item_ends_the_viewport(tc: TestCase) {
         Knobs {
             resize: false,
             content: false,
+            bodies: false,
         },
         |snap, step| {
             let models = step.models;
@@ -872,4 +1103,270 @@ fn focus_moves_land_one_item_a_page_or_an_edge_away(tc: TestCase) {
         }
         model = Some(got);
     }
+}
+
+/// The midpoint of the visible part of `item` along `axis`, if that part is
+/// wide enough that f32 placement of the Strip cannot move it onto a
+/// neighbour: the Strip steps in f32 from the anchor, each step rounding by up
+/// to one f32 step at the far edge, while hit testing measures in f64.
+fn clickable(snap: &Snapshot, axis: Axis, item: &binnacle_core::StripItem) -> Option<f32> {
+    let (start, stop) = body(snap, axis);
+    let lo = item.offset.max(start);
+    let hi = item.end().min(stop);
+    let reach = stop.max(snap.strip(axis)[0].offset.abs());
+    let drift = (snap.strip(axis).len() as f32 + 4.0) * (next_f32(reach) - reach);
+    (hi - lo > 4.0 * drift && hi > lo).then(|| lo + (hi - lo) / 2.0)
+}
+
+/// Hit testing agrees with the Strips: a click in the middle of the visible
+/// part of any cell focuses exactly that cell, whatever the sizes, Gaps and
+/// scroll (the prototype's hit test was off by one with row Gap 0).
+#[hegel::test(test_cases = 2000)]
+fn a_click_inside_a_visible_cell_focuses_that_cell(tc: TestCase) {
+    let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_a_body()));
+    let viewport = Viewport::new(cols.1, rows.1);
+    let (rows, cols) = (rows.0, cols.0);
+    let mut s = Scenario::identity(rows, cols);
+    s.frame(viewport);
+    for axis in Axis::ALL {
+        let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
+        s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
+    }
+    let picked = {
+        let snap = s.frame(viewport);
+        let (r, c) = (snap.rows(), snap.cols());
+        if r.is_empty() || c.is_empty() {
+            return;
+        }
+        let row = r[tc.draw(gs::integers::<usize>().max_value(r.len() - 1))];
+        let col = c[tc.draw(gs::integers::<usize>().max_value(c.len() - 1))];
+        let at = clickable(&snap, Axis::Cols, &col).zip(clickable(&snap, Axis::Rows, &row));
+        at.map(|xy| (xy, [row.position, col.position]))
+    };
+    let Some(((x, y), cell)) = picked else {
+        return;
+    };
+    s.input(|g| g.pointer(PointerEvent::down(x, y)));
+    let snap = s.frame(viewport);
+    let focus = Axis::ALL.map(|a| snap.focus(a).map(|f| f.position));
+    assert_eq!(
+        focus,
+        cell.map(Some),
+        "click at {x},{y} missed the cell it is inside"
+    );
+}
+
+/// An axis with items, a finite header band and a viewport extent leaving a
+/// body past it.
+#[hegel::composite]
+fn axis_with_a_body(tc: &TestCase) -> (AxisConfig, f32) {
+    let config = tc.draw(axis_with_items());
+    (config, tc.draw(body_extent(config, config.default_size)))
+}
+
+/// A press that lands in a Gap between cells, in the header corner, or
+/// outside the items leaves focus and selection alone (a Gap is part of
+/// layout and hit testing but belongs to no cell).
+#[hegel::test(test_cases = 2000)]
+fn a_click_on_no_cell_changes_nothing(tc: TestCase) {
+    let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_a_body()));
+    let viewport = Viewport::new(cols.1, rows.1);
+    let mut s = Scenario::identity(rows.0, cols.0);
+    s.frame(viewport);
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: FocusStep::Item,
+            forward: true,
+            extend: false,
+        })
+    });
+    let (before, point) = {
+        let snap = s.frame(viewport);
+        let seen = (Axis::ALL.map(|a| snap.focus(a)), seen_selection(&snap));
+        // A point in a Gap after a visible item, or beyond the last one.
+        let axis = tc.draw(axis());
+        let strip = snap.strip(axis);
+        let (start, stop) = body(&snap, axis);
+        let mut misses: Vec<f32> = strip
+            .iter()
+            .filter_map(|i| {
+                let (lo, hi) = (i.end().max(start), (i.end() + snap.gap(axis)).min(stop));
+                let reach = stop.max(strip[0].offset.abs());
+                let drift = (strip.len() as f32 + 4.0) * (next_f32(reach) - reach);
+                (hi - lo > 4.0 * drift).then(|| lo + (hi - lo) / 2.0)
+            })
+            .collect();
+        misses.push(-1.0);
+        misses.push(stop + 1.0);
+        if let Some(last) = strip
+            .last()
+            .filter(|l| l.position + 1 == snap.count(axis) && l.end() < stop)
+        {
+            misses.push(last.end() + (stop - last.end()) / 2.0);
+        }
+        let v = misses[tc.draw(gs::integers::<usize>().max_value(misses.len() - 1))];
+        let other = tc.draw(coord());
+        let across = Pointer {
+            event: PointerEvent::down(0.0, 0.0),
+            at: [other, other],
+        }
+        .resolve(viewport, [cols.0.header, rows.0.header]);
+        let point = match axis {
+            Axis::Rows => (across.x, v),
+            Axis::Cols => (v, across.y),
+        };
+        (seen, point)
+    };
+    let modifiers = tc.draw(modifiers());
+    s.input(|g| {
+        g.pointer(PointerEvent::down(point.0, point.1).modifiers(modifiers));
+        g.pointer(PointerEvent::up(point.0, point.1).modifiers(modifiers));
+    });
+    let snap = s.frame(viewport);
+    let after = (Axis::ALL.map(|a| snap.focus(a)), seen_selection(&snap));
+    assert_eq!(after, before, "press at {point:?} acted");
+}
+
+/// What the host can see of the selection.
+fn seen_selection(snap: &Snapshot) -> (Option<CellRange>, Vec<Key>) {
+    (snap.selection_range(), snap.picked().to_vec())
+}
+
+/// Picks are sorted and distinct, the range is not empty and inside the
+/// counts, and `DraggingSelection` always captures the pointer.
+#[hegel::test(test_cases = 2000)]
+fn the_selection_is_well_formed(tc: TestCase) {
+    frames(&tc, BODIES, |snap, _| {
+        let (range, picks) = seen_selection(snap);
+        assert!(picks.windows(2).all(|w| w[0] < w[1]), "{picks:?}");
+        if let Some(r) = &range {
+            for axis in Axis::ALL {
+                let span = r.span(axis);
+                assert!(
+                    span.start < span.end && span.end <= snap.count(axis),
+                    "{axis:?}: {r:?}"
+                );
+            }
+        }
+        if snap.mode() == Mode::DraggingSelection {
+            tc.event("dragging");
+            assert!(snap.capturing());
+        }
+    });
+}
+
+/// Every visible cell's `selected` flag says whether it is in the range or in
+/// a picked row, and the fill rects cover exactly the selected cells.
+#[hegel::test(test_cases = 2000)]
+fn cell_state_and_fill_rects_agree_with_the_range_and_picks(tc: TestCase) {
+    frames(&tc, BODIES, |snap, _| {
+        let (range, picks) = seen_selection(snap);
+        if !picks.is_empty() {
+            tc.event("picks");
+        }
+        if range.is_some() {
+            tc.event("range");
+        }
+        let rects = snap.selection_rects();
+        for row in snap.rows() {
+            for col in snap.cols() {
+                let in_range = range
+                    .as_ref()
+                    .is_some_and(|r| r.contains(row.position, col.position));
+                let picked = row.key.is_some_and(|k| picks.contains(&k));
+                let selected = snap.cell_state(row, col).selected;
+                assert_eq!(
+                    selected,
+                    in_range || picked,
+                    "cell {},{}",
+                    row.position,
+                    col.position
+                );
+                let (Some(x), Some(y)) = (
+                    clickable(snap, Axis::Cols, col),
+                    clickable(snap, Axis::Rows, row),
+                ) else {
+                    continue;
+                };
+                let filled = rects
+                    .iter()
+                    .any(|f| x >= f.x && x < f.x + f.width && y >= f.y && y < f.y + f.height);
+                assert_eq!(
+                    filled, selected,
+                    "cell {},{} at {x},{y} in {rects:?}",
+                    row.position, col.position
+                );
+            }
+        }
+    });
+}
+
+/// Each drain holds at most one `SelectionChanged`, and any change the host
+/// can see between frames was announced in the drain before the later one.
+#[hegel::test(test_cases = 2000)]
+fn selection_changed_comes_once_per_drain_and_for_every_change(tc: TestCase) {
+    let mut last: Option<(Option<CellRange>, Vec<Key>)> = None;
+    frames(&tc, BODIES, |snap, step| {
+        let announced = step
+            .drained
+            .iter()
+            .filter(|e| **e == Effect::SelectionChanged)
+            .count();
+        assert!(announced <= 1, "{:?}", step.drained);
+        let seen = seen_selection(snap);
+        if let Some(before) = last.as_ref().filter(|b| **b != seen) {
+            assert_eq!(announced, 1, "{before:?} became {seen:?} unannounced");
+        }
+        last = Some(seen);
+    });
+}
+
+/// `Cancel` during a press or drag restores focus, range and picks from
+/// before the press and ends the gesture; the release that follows changes
+/// nothing.
+#[hegel::test(test_cases = 2000)]
+fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
+    let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_a_body()));
+    let viewport = Viewport::new(cols.1, rows.1);
+    let headers = [cols.0.header, rows.0.header];
+    let mut grid = Grid::new(rows.0, cols.0);
+    configure(&tc, &mut grid);
+    let table = IdentityTable {
+        rows: IdentitySource::new(rows.0.count),
+        cols: IdentitySource::new(cols.0.count),
+    };
+    let mut s = Scenario::new(grid, table);
+    s.frame(viewport);
+    let seen = |snap: &Snapshot| {
+        let focus = Axis::ALL.map(|a| snap.focus(a));
+        (focus, seen_selection(snap))
+    };
+    for input in tc.draw(gs::vecs(input()).max_size(6)) {
+        match input {
+            Input::Action(action) => s.input(|g| g.action(action)),
+            Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(viewport, headers))),
+            Input::SetSize(..) => {}
+        }
+    }
+    // Release any press the setup left held, so the gesture starts fresh.
+    s.input(|g| g.pointer(PointerEvent::up(-1.0, -1.0)));
+    let before = seen(&s.frame(viewport));
+    let mut gesture = tc.draw(gesture());
+    gesture.retain(|p| p.event.kind != PointerKind::Up);
+    for p in gesture {
+        s.input(|g| g.pointer(p.resolve(viewport, headers)));
+    }
+    s.input(|g| g.action(Action::Cancel));
+    let snap = s.frame(viewport);
+    assert_eq!(seen(&snap), before, "Cancel did not restore");
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert!(!snap.capturing());
+    let release = tc.draw(hegel::tuples!(coord(), coord()));
+    let up = Pointer {
+        event: PointerEvent::up(0.0, 0.0),
+        at: [release.0, release.1],
+    };
+    s.input(|g| g.pointer(up.resolve(viewport, headers)));
+    assert_eq!(seen(&s.frame(viewport)), before, "the release acted");
 }

@@ -1,5 +1,7 @@
 use crate::focus::FocusEnd;
+use crate::gesture::Mode;
 use crate::grid::Grid;
+use crate::selection::CellRange;
 use crate::types::{Axis, Generation, Key, Position};
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
@@ -51,6 +53,8 @@ pub struct Rect {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellState {
     pub focused: bool,
+    /// Inside the range, or in a picked row.
+    pub selected: bool,
 }
 
 /// What changed since the previous Snapshot, so a host can skip work.
@@ -174,8 +178,50 @@ impl<'a> Snapshot<'a> {
                 f.key.is_some() && f.position == item.position && f.key == item.key
             })
         };
+        let in_range = self
+            .selection_range()
+            .is_some_and(|r| r.contains(row.position, col.position));
+        let picked = row.key.is_some_and(|k| self.grid.selection.picked(k));
         CellState {
             focused: on(Axis::Rows, row) && on(Axis::Cols, col),
+            selected: in_range || picked,
         }
+    }
+
+    /// The one contiguous range, if any, clamped to the counts.
+    pub fn selection_range(&self) -> Option<CellRange> {
+        let counts = Axis::ALL.map(|a| self.count(a));
+        self.grid.selection.span.map(|s| s.range(counts))
+    }
+
+    /// The picked row Keys, in Key order.
+    pub fn picked(&self) -> &'a [Key] {
+        &self.grid.selection.picks
+    }
+
+    /// Rects to fill for the selection: the visible part of the range, then
+    /// each visible picked row across the visible columns. They may overlap.
+    /// Edges are those of the Strip items, unclipped, like [`Self::focus_rect`].
+    pub fn selection_rects(&self) -> &'a [Rect] {
+        &self.grid.fills
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.grid.gesture.mode()
+    }
+
+    /// Whether a gesture is following a held button: the host should capture
+    /// the pointer so moves and the release arrive even outside the viewport.
+    pub fn capturing(&self) -> bool {
+        self.grid.gesture.capturing()
+    }
+
+    /// The header under the pointer: the axis whose item it heads (a row
+    /// header is on [`Axis::Rows`]) and that item in its Strip. The Gap after
+    /// a header is not part of it.
+    pub fn hovered_header(&self) -> Option<(Axis, &'a StripItem)> {
+        let (axis, position) = self.grid.hovered?;
+        let item = self.strip(axis).iter().find(|i| i.position == position)?;
+        Some((axis, item))
     }
 }

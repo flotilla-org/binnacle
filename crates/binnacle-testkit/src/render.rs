@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use binnacle_core::{Axis, FocusEnd, Snapshot, StripItem};
+use binnacle_core::{Axis, FocusEnd, Mode, Snapshot, StripItem};
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
 const MAX_CANVAS: (usize, usize) = (160, 60);
@@ -12,7 +12,10 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// whole character it reaches. Column headers show the column
 /// Key, row headers the row Position, cells `rowkey.colkey`. A placed focus
 /// adds `focus row,col` (each `position#key`) and its rect to the summary, and
-/// marks the focused cell `*rowkey.colkey`.
+/// marks the focused cell `*rowkey.colkey`. A range adds `range rows x cols`
+/// (half-open Positions), picks add `picks` (row Keys), and either adds the
+/// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
+/// its Mode and `capturing`, a hovered header `hover axis position`.
 pub fn render(snap: &Snapshot) -> String {
     let mut out = String::new();
     let d = snap.damage();
@@ -47,6 +50,25 @@ pub fn render(snap: &Snapshot) -> String {
             }
             None => out.push_str(" not drawn"),
         }
+    }
+    if let Some(r) = snap.selection_range() {
+        let _ = write!(out, " | range {:?} x {:?}", r.rows, r.cols);
+    }
+    if !snap.picked().is_empty() {
+        let keys: Vec<String> = snap.picked().iter().map(|k| k.0.to_string()).collect();
+        let _ = write!(out, " | picks {}", keys.join(","));
+    }
+    for f in snap.selection_rects() {
+        let _ = write!(out, " | fill {},{} {}x{}", f.x, f.y, f.width, f.height);
+    }
+    if snap.mode() != Mode::Idle {
+        let _ = write!(out, " | mode {:?}", snap.mode());
+    }
+    if snap.capturing() {
+        out.push_str(" | capturing");
+    }
+    if let Some((axis, item)) = snap.hovered_header() {
+        let _ = write!(out, " | hover {axis:?} {}", item.position);
     }
     out.push('\n');
     for axis in Axis::ALL {
@@ -112,8 +134,11 @@ fn picture(snap: &Snapshot) -> String {
     for r in snap.rows() {
         put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
         for c in snap.cols() {
-            let mark = if snap.cell_state(r, c).focused {
+            let state = snap.cell_state(r, c);
+            let mark = if state.focused {
                 "*"
+            } else if state.selected {
+                "+"
             } else {
                 ""
             };

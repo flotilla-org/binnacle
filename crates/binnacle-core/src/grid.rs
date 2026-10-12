@@ -4,8 +4,11 @@ use std::ops::Range;
 use crate::axis::AxisState;
 use crate::effect::{Action, Effect, FocusStep, Stamped};
 use crate::focus::{self, FocusEnd};
+use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
-use crate::snapshot::{Damage, Snapshot};
+use crate::pointer::Hit;
+use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
+use crate::snapshot::{Damage, Rect, Snapshot};
 use crate::types::{Axis, Generation, Key, Position, Viewport};
 
 /// How one axis starts out: its count, default item size and header band.
@@ -74,7 +77,7 @@ pub struct Grid {
     axes: [AxisState; 2],
     pub(crate) generation: Generation,
     effects: VecDeque<Stamped>,
-    pending_damage: Damage,
+    pub(crate) pending_damage: Damage,
     pub(crate) damage: Damage,
     /// The focused cell, one end per axis; `None` while unplaced.
     pub(crate) focus: Option<[FocusEnd; 2]>,
@@ -84,7 +87,23 @@ pub struct Grid {
     /// overridden it; kept until the frame's Snapshot, since the viewport and
     /// sizes the move was made against may change before then.
     reveal: bool,
+    pub(crate) selection: Selection,
+    pub(crate) unit: SelectionUnit,
+    /// Indexed by the axis whose items' headers are clicked.
+    pub(crate) header_click: [HeaderClick; 2],
+    pub(crate) drag_threshold: f32,
+    pub(crate) gesture: Gesture,
+    /// Where the last pointer event was, for hover.
+    pub(crate) pointer_at: Option<(f32, f32)>,
+    /// The header under the pointer as of the last Snapshot.
+    pub(crate) hovered: Option<(Axis, Position)>,
+    /// Selection fill rects for the last Snapshot.
+    pub(crate) fills: Vec<Rect>,
 }
+
+/// The drag threshold until [`Grid::set_drag_threshold`] changes it: one unit,
+/// a terminal cell. Pixel hosts usually want a few pixels.
+pub const DEFAULT_DRAG_THRESHOLD: f32 = 1.0;
 
 impl Grid {
     pub fn new(rows: AxisConfig, cols: AxisConfig) -> Self {
@@ -103,6 +122,34 @@ impl Grid {
             focus: None,
             heard: None,
             reveal: false,
+            selection: Selection::default(),
+            unit: SelectionUnit::Cells,
+            header_click: [HeaderClick::Select, HeaderClick::Sort],
+            drag_threshold: DEFAULT_DRAG_THRESHOLD,
+            gesture: Gesture::Idle,
+            pointer_at: None,
+            hovered: None,
+            fills: Vec::new(),
+        }
+    }
+
+    /// What a plain click on a cell selects. Default [`SelectionUnit::Cells`].
+    pub fn set_selection_unit(&mut self, unit: SelectionUnit) {
+        self.unit = unit;
+    }
+
+    /// What clicking the header of an item on `axis` does: `Axis::Rows` for
+    /// row headers, `Axis::Cols` for column headers.
+    pub fn set_header_click(&mut self, axis: Axis, click: HeaderClick) {
+        self.header_click[axis.index()] = click;
+    }
+
+    /// How far, in the host's unit, a pressed pointer must move before the
+    /// press becomes a drag. Values that are not finite and non-negative are
+    /// ignored.
+    pub fn set_drag_threshold(&mut self, threshold: f32) {
+        if threshold.is_finite() && threshold >= 0.0 {
+            self.drag_threshold = threshold;
         }
     }
 
@@ -173,6 +220,15 @@ impl Grid {
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {
         self.pending_damage.positions |= change.keys;
         self.pending_damage.layout |= change.sizes;
+        if let Some(span) = &mut self.selection.span {
+            let measure = &self.axes[axis.index()].measure;
+            for end in [&mut span.anchor, &mut span.head] {
+                let end = &mut end[axis.index()];
+                if end.key.is_none() {
+                    end.key = measure.key_at(end.position);
+                }
+            }
+        }
         if let Some(f) = &mut self.focus {
             let end = &mut f[axis.index()];
             if end.key.is_none() {
@@ -197,8 +253,24 @@ impl Grid {
         match action {
             Action::TypeText(text) => self.push(Effect::TextTyped { text }),
             Action::MoveFocus {
-                axis, by, forward, ..
-            } => self.move_focus(axis, by, forward),
+                axis,
+                by,
+                forward,
+                extend,
+            } => {
+                let from = self.focus;
+                if !self.move_focus(axis, by, forward) {
+                    return;
+                }
+                match (extend, self.focus) {
+                    (true, Some(to)) if from.is_some() => self.extend_to(from, to),
+                    (_, Some(to)) => self.set_span(self.unit_span(to)),
+                    _ => {}
+                }
+            }
+            Action::SelectAll => self.select_all(),
+            Action::SelectColumn => self.select_column(),
+            Action::Cancel => self.cancel(),
             Action::Scroll { dx, dy } => {
                 self.reveal = false;
                 let moved =
@@ -216,9 +288,24 @@ impl Grid {
         }
     }
 
-    fn move_focus(&mut self, axis: Axis, by: FocusStep, forward: bool) {
+    /// What the viewport point (`x`, `y`) lands on, against the current Scroll
+    /// Anchors.
+    pub(crate) fn hit(&self, x: f32, y: f32) -> Hit {
+        Hit::of(self.axis(Axis::Rows).hit(y), self.axis(Axis::Cols).hit(x))
+    }
+
+    pub(crate) fn set_focus_cell(&mut self, cell: [FocusEnd; 2]) {
+        if self.focus != Some(cell) {
+            self.focus = Some(cell);
+            self.pending_damage.selection = true;
+            self.announce_focus();
+        }
+    }
+
+    /// Moves focus; returns false if it cannot be placed (an empty axis).
+    fn move_focus(&mut self, axis: Axis, by: FocusStep, forward: bool) -> bool {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
-            return;
+            return false;
         }
         let from = self.focus.map(|f| f[axis.index()].position);
         let mut moved = self.focus.unwrap_or_else(|| {
@@ -232,13 +319,127 @@ impl Grid {
         if from != Some(to) {
             moved[axis.index()] = FocusEnd::at(st, to);
         }
-        if self.focus != Some(moved) {
-            self.focus = Some(moved);
-            self.pending_damage.selection = true;
-            self.announce_focus();
-        }
+        self.set_focus_cell(moved);
         self.reveal = true;
         self.reveal_focus();
+        true
+    }
+
+    /// The cell at `row` and `col`, with whatever Keys the Window holds.
+    pub(crate) fn cell_at(&self, row: Position, col: Position) -> Cell {
+        [
+            FocusEnd::at(self.axis(Axis::Rows), row),
+            FocusEnd::at(self.axis(Axis::Cols), col),
+        ]
+    }
+
+    /// What selecting `cell` alone selects: nothing beyond focus for
+    /// [`SelectionUnit::Cells`], its row for [`SelectionUnit::Rows`].
+    fn unit_span(&self, cell: Cell) -> Option<Span> {
+        match self.unit {
+            SelectionUnit::Cells => None,
+            SelectionUnit::Rows => Some(Span {
+                anchor: cell,
+                head: cell,
+                whole: [false, true],
+            }),
+        }
+    }
+
+    /// A plain click on `cell`: focus it and select it alone, dropping picks.
+    pub(crate) fn select_cell(&mut self, cell: Cell) {
+        self.set_focus_cell(cell);
+        self.set_selection(Selection {
+            span: self.unit_span(cell),
+            picks: Vec::new(),
+        });
+    }
+
+    /// Focuses `head` and stretches the range to it from its anchor, or from
+    /// `from` (the focus before the move) if there is no range yet. Whole axes
+    /// stay whole.
+    pub(crate) fn extend_to(&mut self, from: Option<Cell>, head: Cell) {
+        let whole = match (self.selection.span, self.unit_span(head)) {
+            (Some(span), _) | (None, Some(span)) => span.whole,
+            (None, None) => [false, false],
+        };
+        self.extend_with(from, head, whole);
+    }
+
+    pub(crate) fn extend_with(&mut self, from: Option<Cell>, head: Cell, whole: [bool; 2]) {
+        let anchor = self
+            .selection
+            .span
+            .map(|s| s.anchor)
+            .or(from)
+            .unwrap_or(head);
+        self.set_focus_cell(head);
+        let same = Axis::ALL
+            .iter()
+            .all(|a| anchor[a.index()].position == head[a.index()].position);
+        let span = (!same || whole != [false, false]).then_some(Span {
+            anchor,
+            head,
+            whole,
+        });
+        self.set_span(span);
+    }
+
+    pub(crate) fn toggle_pick(&mut self, cell: Cell) {
+        if let Some(key) = cell[Axis::Rows.index()].key {
+            let mut selection = self.selection.clone();
+            selection.toggle_pick(key);
+            self.set_selection(selection);
+        }
+    }
+
+    fn select_all(&mut self) {
+        if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
+            return;
+        }
+        let cell = self.focus.unwrap_or_else(|| self.cell_at(0, 0));
+        self.set_span(Some(Span {
+            anchor: cell,
+            head: cell,
+            whole: [true, true],
+        }));
+    }
+
+    /// Selects every row of the range's columns, or of the focused column.
+    fn select_column(&mut self) {
+        let (anchor, head) = match (self.selection.span, self.focus) {
+            (Some(s), _) if !s.whole[Axis::Cols.index()] => (s.anchor, s.head),
+            (_, Some(f)) => (f, f),
+            _ => return,
+        };
+        self.set_span(Some(Span {
+            anchor,
+            head,
+            whole: [true, false],
+        }));
+    }
+
+    fn set_span(&mut self, span: Option<Span>) {
+        let mut selection = self.selection.clone();
+        selection.span = span;
+        self.set_selection(selection);
+    }
+
+    /// Replaces the selection, queueing `SelectionChanged` if it changed and
+    /// none is queued yet.
+    pub(crate) fn set_selection(&mut self, selection: Selection) {
+        if self.selection == selection {
+            return;
+        }
+        self.selection = selection;
+        self.pending_damage.selection = true;
+        if !self
+            .effects
+            .iter()
+            .any(|s| s.effect == Effect::SelectionChanged)
+        {
+            self.push(Effect::SelectionChanged);
+        }
     }
 
     /// Scrolls both axes to show the focused cell.
@@ -255,7 +456,7 @@ impl Grid {
     /// `FocusChanged`, naming the focused cell once its Keys are known, unless
     /// the host has already heard of it. A queued one naming an older cell is
     /// dropped.
-    fn announce_focus(&mut self) {
+    pub(crate) fn announce_focus(&mut self) {
         let keys = match self.focus {
             Some(
                 [
@@ -298,6 +499,45 @@ impl Grid {
         Some(stamped)
     }
 
+    /// Computes the selection fill rects from the laid-out Strips: one for the
+    /// visible part of the range, one per visible picked row.
+    fn fill_selection(&mut self) {
+        let mut fills = std::mem::take(&mut self.fills);
+        fills.clear();
+        let (rows, cols) = (&self.axis(Axis::Rows).strip, &self.axis(Axis::Cols).strip);
+        let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
+        let extent = |items: &mut dyn Iterator<Item = &crate::snapshot::StripItem>| {
+            let first = items.next()?;
+            let last = items.last().unwrap_or(first);
+            Some((first.offset, last.end() - first.offset))
+        };
+        if let Some(range) = self.selection.span.map(|s| s.range(counts)) {
+            let r = extent(&mut rows.iter().filter(|i| range.rows.contains(&i.position)));
+            let c = extent(&mut cols.iter().filter(|i| range.cols.contains(&i.position)));
+            if let (Some((y, height)), Some((x, width))) = (r, c) {
+                fills.push(Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            }
+        }
+        if let Some((x, width)) = extent(&mut cols.iter()) {
+            for row in rows {
+                if row.key.is_some_and(|k| self.selection.picked(k)) {
+                    fills.push(Rect {
+                        x,
+                        y: row.offset,
+                        width,
+                        height: row.size,
+                    });
+                }
+            }
+        }
+        self.fills = fills;
+    }
+
     /// Lays out the frame and returns the Snapshot, whose damage covers every
     /// change since the previous Snapshot.
     pub fn snapshot(&mut self) -> Snapshot<'_> {
@@ -313,6 +553,15 @@ impl Grid {
         for st in &mut self.axes {
             st.layout();
         }
+        let hovered = self.pointer_at.and_then(|(x, y)| match self.hit(x, y) {
+            Hit::Header { axis, at } if !at.in_gap => Some((axis, at.position)),
+            _ => None,
+        });
+        if hovered != self.hovered {
+            self.hovered = hovered;
+            self.pending_damage.selection = true;
+        }
+        self.fill_selection();
         self.damage = std::mem::replace(&mut self.pending_damage, Damage::NONE);
         Snapshot { grid: self }
     }

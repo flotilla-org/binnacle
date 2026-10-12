@@ -11,16 +11,22 @@
 mod axis;
 mod effect;
 mod focus;
+mod gesture;
 mod grid;
 mod measure;
+mod pointer;
+mod selection;
 mod snapshot;
 mod sort;
 mod types;
 
 pub use effect::{Action, Effect, FocusStep, Stamped};
 pub use focus::FocusEnd;
-pub use grid::{AxisConfig, Grid, WindowRequests};
+pub use gesture::Mode;
+pub use grid::{AxisConfig, DEFAULT_DRAG_THRESHOLD, Grid, WindowRequests};
 pub use measure::{AxisMeasure, ItemAt, WindowChange};
+pub use pointer::{Button, Modifiers, PointerEvent, PointerKind};
+pub use selection::{CellRange, HeaderClick, SelectionUnit};
 pub use snapshot::{CellState, Damage, Rect, ScrollAnchor, Snapshot, StripItem, Thumb};
 pub use sort::{Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};
