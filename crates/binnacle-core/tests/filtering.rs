@@ -119,3 +119,21 @@ fn filtering_everything_out_unplaces_focus_and_clamps_the_anchor() {
     out += &s.step("clear the filter: focus stays unplaced until a move", V);
     insta::assert_snapshot!(out);
 }
+
+#[test]
+fn a_row_header_press_whose_row_a_filter_removes_selects_nothing_on_release() {
+    let mut s = records();
+    s.frame(V);
+    // Row header of row 3 (y = 1 + 3).
+    s.input(|g| g.pointer(PointerEvent::down(1.0, 4.5)));
+    filter(&mut s, |r| r[0] > Some(6));
+    s.input(|g| g.pointer(PointerEvent::up(1.0, 4.5)));
+    let out = s.step(
+        "press row 3's header, filter down to 3 rows, release: no row 3 to select",
+        V,
+    );
+    insta::assert_snapshot!(out);
+    let snap = s.grid.snapshot();
+    assert_eq!(snap.focus(Axis::Rows), None);
+    assert_eq!(snap.selection_range(), None);
+}

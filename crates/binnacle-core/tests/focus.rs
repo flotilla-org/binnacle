@@ -1,8 +1,12 @@
 //! Seam 1 scenarios for keyboard focus: `MoveFocus`, the view following the
 //! focused cell, and `FocusChanged`, seen through Snapshots and drained Effects.
 
-use binnacle_core::{Action, Axis, AxisConfig, Effect, FocusStep, Key, ScrollAnchor, Viewport};
-use binnacle_testkit::{IdentityTable, Scenario};
+use std::ops::Range;
+
+use binnacle_core::{
+    Action, Axis, AxisConfig, Effect, FocusStep, Grid, Key, Position, ScrollAnchor, Viewport,
+};
+use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
 
 fn table() -> Scenario<IdentityTable> {
     Scenario::identity(
@@ -158,5 +162,91 @@ fn focus_stays_unplaced_while_either_axis_is_empty() {
         assert_eq!(snap.focus(Axis::Rows), None);
         assert_eq!(snap.focus(Axis::Cols), None);
         assert!(s.pump().is_empty());
+    }
+}
+
+/// Identity Keys; row 1 is the largest size the default size range allows,
+/// 2^20, where an f32 anchor offset steps by 1/16, and every other row 8.
+struct TallMiddleRow;
+
+impl ScenarioSource for TallMiddleRow {
+    fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {
+        range.map(Key).collect()
+    }
+
+    fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        let size = |k: &Key| if k.0 == 1 { 1_048_576.0 } else { 8.0 };
+        (axis == Axis::Rows).then(|| (keys.iter().map(size).collect(), 8.0))
+    }
+}
+
+/// Revealing the last row anchors 13 1/32 before the end of the tall row above
+/// it, which an f32 offset there cannot hold: the anchor rounds toward the
+/// start (never showing space past the last item), so the focused row ends
+/// past the body by less than one f32 step of the tall row's stride, here
+/// 1/32 against a step of 1/16.
+#[test]
+fn a_revealed_row_after_a_far_larger_one_ends_within_one_anchor_step_of_the_body() {
+    let grid = Grid::new(AxisConfig::new(3, 8.0), AxisConfig::new(1, 6.0));
+    let mut s = Scenario::new(grid, TallMiddleRow);
+    let v = Viewport::new(6.0, 21.03125);
+    s.frame(v);
+    s.input(|g| g.action(step(Axis::Rows, FocusStep::Edge, true)));
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.scroll_anchor(Axis::Rows),
+        ScrollAnchor {
+            position: 1,
+            offset: 1_048_576.0 - 13.062_5
+        }
+    );
+    let last = *snap.rows().last().unwrap();
+    assert_eq!((last.position, last.offset, last.size), (2, 13.0625, 8.0));
+    assert!(snap.focus_rect().is_some());
+}
+
+/// Rows whose content is one unit tall (also the minimum-size hint) under a
+/// default of 513.
+struct OneUnitRows;
+
+impl ScenarioSource for OneUnitRows {
+    fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {
+        range.map(Key).collect()
+    }
+
+    fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        (axis == Axis::Rows).then(|| (vec![1.0; keys.len()], 1.0))
+    }
+}
+
+/// Found by Hegel: End placed the end clamp with the default size, the Window
+/// then brought one-unit rows and the clamp pulled the anchor onto a row
+/// outside the Window, still 513 tall. Its f32 offset there steps by 2^-14,
+/// so the focused last row ended past the body. With the Window reaching
+/// back from the end, the last row ends the body exactly, first frame or not.
+#[test]
+fn end_with_rows_smaller_than_the_default_ends_the_body_exactly() {
+    for first_frame in [false, true] {
+        let grid = Grid::new(
+            AxisConfig::new(999_999_999_999_000, 513.0),
+            AxisConfig::new(1, 1.0),
+        );
+        let mut s = Scenario::new(grid, OneUnitRows);
+        let v = Viewport::new(1.0, 3.000_030_5);
+        if first_frame {
+            s.frame(v);
+        }
+        s.input(|g| g.action(step(Axis::Rows, FocusStep::Edge, true)));
+        let snap = s.frame(v);
+        for item in snap.rows() {
+            assert_eq!((item.key, item.size), (Some(Key(item.position)), 1.0));
+        }
+        let last = *snap.rows().last().unwrap();
+        assert_eq!(last.position, 999_999_999_998_999);
+        assert_eq!(
+            last.end(),
+            snap.extent(Axis::Rows),
+            "first frame {first_frame}"
+        );
     }
 }

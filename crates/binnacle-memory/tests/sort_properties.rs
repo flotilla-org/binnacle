@@ -221,11 +221,39 @@ fn range(tc: &TestCase) -> Range<u64> {
     tc.draw(bound())..tc.draw(bound())
 }
 
-/// What the source was last told: the Sort Spec and keep mask in force.
+/// A column move: Keys (some unknown or repeated) and a drop Position, which
+/// may be past the count.
+#[hegel::composite]
+fn column_move(tc: &TestCase, width: usize) -> (Vec<Key>, u64) {
+    let keys = tc.draw(gs::vecs(gs::integers::<u64>().max_value(width as u64)).max_size(4));
+    let to = tc.draw(gs::integers::<u64>().max_value(width as u64 + 1));
+    (keys.into_iter().map(Key).collect(), to)
+}
+
+/// The model of a column move: the moved Keys, first sight of each that is a
+/// column, then the rest in order with those before `to` ahead of them.
+fn moved(order: &[Key], keys: &[Key], to: u64) -> Vec<Key> {
+    let mut moving: Vec<Key> = Vec::new();
+    for k in keys {
+        if order.contains(k) && !moving.contains(k) {
+            moving.push(*k);
+        }
+    }
+    let to = (to as usize).min(order.len());
+    let stays = |k: &&Key| !moving.contains(k);
+    let mut out: Vec<Key> = order[..to].iter().filter(stays).copied().collect();
+    out.extend(&moving);
+    out.extend(order[to..].iter().filter(stays));
+    out
+}
+
+/// What the source was last told: the Sort Spec and keep mask in force, and
+/// the column order the moves so far make.
 #[derive(Clone, Debug, Default)]
 struct State {
     spec: SortSpec,
     keep: Option<Vec<bool>>,
+    columns: Vec<Key>,
 }
 
 #[derive(Clone, Debug)]
@@ -233,12 +261,20 @@ enum Op {
     Sort(SortSpec),
     /// A keep mask, or `None` to clear the filter.
     Filter(Option<Vec<bool>>),
+    /// A column move: Keys and a drop Position.
+    Move(Vec<Key>, u64),
 }
 
 #[hegel::composite]
 fn op(tc: &TestCase, table: Table) -> Op {
-    if tc.draw(gs::booleans()) {
-        return Op::Sort(tc.draw(spec(table.columns.len())));
+    let width = table.columns.len();
+    match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => return Op::Sort(tc.draw(spec(width))),
+        1 => {
+            let (keys, to) = tc.draw(column_move(width));
+            return Op::Move(keys, to);
+        }
+        _ => {}
     }
     let mask = hegel::one_of!(
         column(table.rows, gs::booleans()),
@@ -256,14 +292,18 @@ struct Step<'a> {
     state: &'a State,
 }
 
-/// Draws a table and a sequence of sorts and filters, applies each and hands
-/// `check` the table, the source and the step. Asserts the Change Notice each
-/// op returns: `Reordered` for a sort, `Reset` with the new count for a
-/// filter.
+/// Draws a table and a sequence of sorts, filters and column moves, applies
+/// each and hands `check` the table, the source and the step. Asserts the
+/// Change Notice each op returns: `Reordered` for a sort or move, `Reset`
+/// with the new count for a filter.
 fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTableSource, &Step)) {
     let table = tc.draw(table());
+    let width = table.columns.len();
     let mut source = table.source();
-    let mut state = State::default();
+    let mut state = State {
+        columns: (0..width as u64).map(Key).collect(),
+        ..State::default()
+    };
     let window = source.window(Axis::Rows, 0..u64::MAX);
     let first = Step {
         op: None,
@@ -287,6 +327,11 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTabl
                 };
                 let kept = table.kept(&state).len() as u64;
                 assert_eq!(notice, ChangeNotice::Reset(kept));
+            }
+            Op::Move(keys, to) => {
+                let notice = source.move_columns(keys, *to);
+                assert_eq!(notice, ChangeNotice::Reordered);
+                state.columns = moved(&state.columns, keys, *to);
             }
         }
         let step = Step {
@@ -370,27 +415,33 @@ fn a_filtered_out_row_is_gone_suggesting_the_nearest_survivor_in_sort_order(tc: 
 }
 
 #[hegel::test(test_cases = 2000)]
-fn a_filter_never_reorders_kept_rows_and_a_sort_never_refilters(tc: TestCase) {
+fn a_filter_never_changes_the_relative_order_of_kept_rows(tc: TestCase) {
     ops(&tc, |_, _, source, step| {
+        let Some(Op::Filter(_)) = step.op else { return };
         let after = source.window(Axis::Rows, 0..u64::MAX);
+        let in_both = |w: &[Key], other: &[Key]| -> Vec<Key> {
+            w.iter().copied().filter(|k| other.contains(k)).collect()
+        };
+        assert_eq!(
+            in_both(step.window_before, &after),
+            in_both(&after, step.window_before)
+        );
+    });
+}
+
+#[hegel::test(test_cases = 2000)]
+fn a_sort_or_column_move_never_changes_which_rows_are_kept(tc: TestCase) {
+    ops(&tc, |_, _, source, step| {
+        let mut after = source.window(Axis::Rows, 0..u64::MAX);
         match step.op {
-            Some(Op::Filter(_)) => {
-                let in_both = |w: &[Key], other: &[Key]| -> Vec<Key> {
-                    w.iter().copied().filter(|k| other.contains(k)).collect()
-                };
-                assert_eq!(
-                    in_both(step.window_before, &after),
-                    in_both(&after, step.window_before)
-                );
-            }
             Some(Op::Sort(_)) => {
                 let mut before = step.window_before.to_vec();
-                let mut after = after;
                 before.sort();
                 after.sort();
                 assert_eq!(before, after);
             }
-            None => {}
+            Some(Op::Move(..)) => assert_eq!(after, step.window_before),
+            _ => {}
         }
     });
 }
@@ -429,11 +480,29 @@ fn rows_with_equal_keys_keep_base_order(tc: TestCase) {
     });
 }
 
-#[hegel::test(test_cases = 500)]
-fn columns_keep_base_order_through_row_sorts_and_filters(tc: TestCase) {
-    ops(&tc, |_, table, source, _| {
-        let expected: Vec<Key> = (0..table.columns.len() as u64).map(Key).collect();
-        assert_eq!(source.window(Axis::Cols, 0..u64::MAX), expected);
+#[hegel::test(test_cases = 1000)]
+fn columns_match_the_model_through_moves_sorts_and_filters(tc: TestCase) {
+    ops(&tc, |tc, _, source, step| {
+        let columns = step.state.columns.as_slice();
+        assert_eq!(source.count(Axis::Cols), columns.len() as u64);
+        assert_eq!(source.window(Axis::Cols, 0..u64::MAX), columns);
+        let range = tc.draw(range());
+        let end = range.end.min(columns.len() as u64);
+        let start = range.start.min(end);
+        assert_eq!(
+            source.window(Axis::Cols, range),
+            columns[start as usize..end as usize]
+        );
+        for (position, &key) in columns.iter().enumerate() {
+            assert_eq!(
+                source.locate(Axis::Cols, key),
+                Located::Found(position as u64)
+            );
+        }
+        assert_eq!(
+            source.locate(Axis::Cols, Key(columns.len() as u64)),
+            Located::Gone { suggest: None }
+        );
     });
 }
 
@@ -444,4 +513,51 @@ fn logical_order(table: &Table, source: &InMemoryTableSource) -> Vec<usize> {
         .into_iter()
         .map(|key| (0..table.rows).find(|&i| table.key(i) == key).unwrap())
         .collect()
+}
+
+/// Column moves alone, over wider tables than the sort properties draw, with
+/// Logical Index or host column Keys and moves naming any Keys.
+#[hegel::test(test_cases = 1000)]
+fn column_moves_match_the_model(tc: TestCase) {
+    let width = tc.draw(gs::integers::<usize>().max_value(40));
+    let host = tc.draw(gs::optional(
+        gs::vecs(gs::integers::<u64>())
+            .min_size(width)
+            .max_size(width)
+            .unique(true),
+    ));
+    let mut columns: Vec<Key> = match &host {
+        None => (0..width as u64).map(Key).collect(),
+        Some(keys) => keys.iter().copied().map(Key).collect(),
+    };
+    let mut source = InMemoryTableSource::new(0, width);
+    if host.is_some() {
+        source = source.with_keys(Axis::Cols, columns.clone());
+    }
+    for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(5)) {
+        let known = columns.clone();
+        let key = hegel::one_of!(
+            gs::sampled_from(if known.is_empty() {
+                vec![Key(0)]
+            } else {
+                known
+            }),
+            gs::integers::<u64>().map(Key),
+        );
+        let keys = tc.draw(gs::vecs(key).max_size(6));
+        let to = tc.draw(hegel::one_of!(
+            gs::integers::<u64>().max_value(width as u64 + 1),
+            gs::integers::<u64>()
+        ));
+        source.move_columns(&keys, to);
+        columns = moved(&columns, &keys, to);
+        assert_eq!(source.count(Axis::Cols), width as u64);
+        assert_eq!(source.window(Axis::Cols, 0..u64::MAX), columns);
+        for (position, &key) in columns.iter().enumerate() {
+            assert_eq!(
+                source.locate(Axis::Cols, key),
+                Located::Found(position as u64)
+            );
+        }
+    }
 }

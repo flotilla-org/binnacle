@@ -31,7 +31,7 @@ Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.6000 | 0#0@4+6 1#
 9   9.0   9.1   9.2
 10  10.0  10.1  10.2
 --- 4. to the end
-window Rows 15..20
+window Rows 14..20
 gen 4 | damage layout positions
 Rows: count 20, extent 4, header 1, anchor 17+0, thumb 1.0000/0.1500 | 17#17@1+1 18#18@2+1 19#19@3+1
 Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.6000 | 0#0@4+6 1#1@10+6 2#2@16+6

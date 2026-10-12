@@ -6,7 +6,7 @@ expression: out
 window Rows 0..6
 window Cols 0..3
 effect (gen 1): SelectionChanged
-window Rows 2..8
+window Rows 1..8
 gen 2 | damage layout selection positions | focus 7#7,0#0 at 4,4 6x1 | range 0..8 x 0..3 | fill 4,1 20x4
 Rows: count 8, extent 5, header 1, anchor 4+0, thumb 1.0000/0.5000 | 4#4@1+1 5#5@2+1 6#6@3+1 7#7@4+1
 Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6

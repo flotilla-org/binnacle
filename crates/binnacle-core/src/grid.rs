@@ -13,26 +13,52 @@ use crate::snapshot::{Damage, Rect, Snapshot};
 use crate::sort::SortState;
 use crate::types::{Axis, Generation, Key, Position, Viewport};
 
-/// How one axis starts out: its count, default item size and header band.
+/// How one axis starts out: its count, default item size, header band, Gap
+/// and size range.
+///
+/// Sizes are in the host's unit. Every item size the Grid uses lies in the
+/// size range `[min_size, max_size]` (by default 1 to 2^20): the default
+/// size, Size Overrides from [`Grid::set_size`], and content sizes and their
+/// minimum-size hint from [`Grid::set_window_sized`] are clamped into it, and
+/// the Gap is capped at `max_size`. The range keeps layout precise in `f32`
+/// and bounds each Window at about the viewport's length over `min_size`
+/// items, plus overscan. A `min_size` below the `f32` spacing at the
+/// viewport's far edge cannot be laid out reliably: the Strip ends where
+/// offsets stop advancing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AxisConfig {
     pub count: u64,
     pub default_size: f32,
     pub header: f32,
     pub gap: f32,
+    pub min_size: f32,
+    pub max_size: f32,
 }
 
 impl AxisConfig {
-    /// `default_size` is in the host's unit and must be positive and finite. Sizes
-    /// below the `f32` spacing at the viewport's far edge cannot be laid out
-    /// reliably: the Strip ends where offsets stop advancing, short of the edge.
+    /// `default_size` must be positive and finite; [`Grid::new`] panics
+    /// otherwise, then clamps it into the size range.
     pub fn new(count: u64, default_size: f32) -> Self {
         AxisConfig {
             count,
             default_size,
             header: 0.0,
             gap: 0.0,
+            min_size: AxisMeasure::DEFAULT_MIN_SIZE,
+            max_size: AxisMeasure::DEFAULT_MAX_SIZE,
         }
+    }
+
+    /// The smallest item size. Must be positive and finite ([`Grid::new`]
+    /// panics otherwise).
+    pub fn min_size(self, min_size: f32) -> Self {
+        AxisConfig { min_size, ..self }
+    }
+
+    /// The largest item size. Must be finite and at least `min_size`
+    /// ([`Grid::new`] panics otherwise).
+    pub fn max_size(self, max_size: f32) -> Self {
+        AxisConfig { max_size, ..self }
     }
 
     /// The thickness of the header band leading this axis (see [`Snapshot::header`]).
@@ -44,7 +70,8 @@ impl AxisConfig {
     }
 
     /// The gridline thickness between items (0 allowed). It sits only between
-    /// items, never after the last. Must be finite and not negative.
+    /// items, never after the last. Must be finite and not negative; capped at
+    /// `max_size`.
     pub fn gap(self, gap: f32) -> Self {
         AxisConfig { gap, ..self }
     }
@@ -123,7 +150,13 @@ impl Grid {
     pub fn new(rows: AxisConfig, cols: AxisConfig) -> Self {
         let axis = |c: AxisConfig| {
             AxisState::new(
-                AxisMeasure::new(c.count, c.default_size, c.gap),
+                AxisMeasure::with_size_range(
+                    c.count,
+                    c.default_size,
+                    c.gap,
+                    c.min_size,
+                    c.max_size,
+                ),
                 c.header.max(0.0),
             )
         };
@@ -240,6 +273,7 @@ impl Grid {
     /// example its wrapped text height) and a hint that no content size on this
     /// axis is below `min_size`, which bounds later Windows. A Size Override
     /// still wins over a content size; sizes below the hint are raised to it.
+    /// Sizes and hint are clamped into the axis's size range.
     pub fn set_window_sized(
         &mut self,
         axis: Axis,
@@ -280,8 +314,8 @@ impl Grid {
     }
 
     /// Sets the Size Override for the item with `key` on `axis`, which follows
-    /// that item wherever it moves. Sizes that are not positive and finite are
-    /// ignored.
+    /// that item wherever it moves, clamped into the axis's size range. Sizes
+    /// that are not positive and finite are ignored.
     pub fn set_size(&mut self, axis: Axis, key: Key, size: f32) {
         self.axis_mut(axis).measure.set_size(key, size);
         self.pending_damage.layout = true;
@@ -591,14 +625,14 @@ impl Grid {
     }
 
     /// Takes the oldest queued Effect, if any. Requests the Table Source
-    /// answers (`SortRequested`, `Locate`) come out before the rest, so a
+    /// answers (`SortRequested`, `Locate`, `MoveRequested`) come out before the rest, so a
     /// host that answers as it drains does so before it hears of focus and
     /// selection, which the answers may change again.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
         let request = self.effects.iter().position(|s| {
             matches!(
                 s.effect,
-                Effect::SortRequested { .. } | Effect::Locate { .. }
+                Effect::SortRequested { .. } | Effect::Locate { .. } | Effect::MoveRequested { .. }
             )
         });
         let stamped = match request {

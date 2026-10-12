@@ -1,0 +1,33 @@
+---
+source: crates/binnacle-core/tests/moving.rs
+expression: out
+---
+--- 1. drop column 1 first, then place focus before the pump
+window Rows 0..3
+window Cols 0..4
+effect (gen 1): MoveRequested { axis: Cols, keys: [Key(1)], to: 0 }
+  move Cols [Key(1)] to 0: Some(Reordered)
+effect (gen 1): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Found(1)
+effect (gen 1): FocusChanged { row: Key(0), col: Key(0) }
+window Cols 0..4
+gen 2 | damage layout selection positions | focus 0#0,1#0 at 11,1 6x1 | hover Cols 0
+Rows: count 3, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@3+1 2#2@5+1
+Cols: count 4, extent 40, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#1@4+6 1#0@11+6 2#2@18+6 3#3@25+6
+    1      0      2      3
+0   0.1    *0.0   0.2    0.3
+
+1   1.1    1.0    1.2    1.3
+
+2   2.1    2.0    2.2    2.3
+--- 2. focus stayed on column 0's Key, now at Position 1; move right
+effect (gen 2): FocusChanged { row: Key(0), col: Key(2) }
+gen 3 | damage selection | focus 0#0,2#2 at 18,1 6x1 | hover Cols 0
+Rows: count 3, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@3+1 2#2@5+1
+Cols: count 4, extent 40, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#1@4+6 1#0@11+6 2#2@18+6 3#3@25+6
+    1      0      2      3
+0   0.1    0.0    *0.2   0.3
+
+1   1.1    1.0    1.2    1.3
+
+2   2.1    2.0    2.2    2.3

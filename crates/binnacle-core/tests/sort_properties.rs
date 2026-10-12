@@ -216,8 +216,8 @@ struct View {
     mode: Mode,
     applied: SortSpec,
     requested: Option<SortSpec>,
-    /// Each visible column's Position and offset.
-    cols: Vec<(u64, f32)>,
+    /// Each visible column's Position, offset and end.
+    cols: Vec<(u64, f32, f32)>,
 }
 
 fn index(axis: Axis) -> usize {
@@ -285,7 +285,11 @@ impl Host {
             mode: snap.mode(),
             applied: snap.applied_sort().clone(),
             requested: snap.requested_sort().cloned(),
-            cols: snap.cols().iter().map(|c| (c.position, c.offset)).collect(),
+            cols: snap
+                .cols()
+                .iter()
+                .map(|c| (c.position, c.offset, c.end()))
+                .collect(),
         };
     }
 
@@ -307,14 +311,16 @@ impl Host {
             }),
             Input::Release => self.s.input(|g| g.pointer(PointerEvent::up(0.0, 0.0))),
             Input::Header(c, shift) => {
-                let at = self.view.cols.iter().find(|&&(p, _)| p == c);
-                if let Some(&(_, offset)) = at {
+                let at = self.view.cols.iter().find(|&&(p, _, _)| p == c);
+                if let Some(&(_, offset, end)) = at {
                     let m = if shift {
                         Modifiers::SHIFT
                     } else {
                         Modifiers::NONE
                     };
-                    click(&mut self.s, offset.max(ROW_HEADER) + 0.5, 0.5, m);
+                    // The middle of the header's visible part.
+                    let x = (offset.max(ROW_HEADER) + end.min(width)) / 2.0;
+                    click(&mut self.s, x, 0.5, m);
                 }
             }
             Input::Sort(spec) => {
@@ -431,8 +437,16 @@ fn focus_and_picks_keep_their_keys_across_any_sort(tc: TestCase) {
         if !step.sorting || before.mode == Mode::DraggingSelection {
             return;
         }
-        let keys = |v: &View| v.focus.map(|f| f.map(|e| e.key));
-        assert_eq!(keys(&host.view), keys(before));
+        // A Key the Grid did not know yet may be completed by the Window (a
+        // follow-focus scroll fetches it); a known one must stay.
+        assert_eq!(host.view.focus.is_some(), before.focus.is_some());
+        if let (Some(now), Some(then)) = (host.view.focus, before.focus) {
+            for (now, then) in now.iter().zip(then) {
+                if then.key.is_some() {
+                    assert_eq!(now.key, then.key);
+                }
+            }
+        }
         assert_eq!(host.view.picks, before.picks);
     });
 }
@@ -515,6 +529,9 @@ fn buffered_focus_moves_land_where_moves_after_located_would(tc: TestCase) {
         host.frame();
         // A press left held would make the moves stretch a drag.
         host.input(Input::Release);
+        // The release may drop dragged column headers: let the source move
+        // them now, so the sort is the only reorder the moves can precede.
+        host.frame();
         host.input(Input::Sort(sort.clone()));
     }
     for m in &moves {

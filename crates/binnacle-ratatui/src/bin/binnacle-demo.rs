@@ -4,8 +4,13 @@
 //! Source: click a column header to sort ascending, descending, then
 //! unsorted; Shift-click adds a column to the sort. A header ends in `▲` or
 //! `▼` (with its place in a multi-column sort) and `~` while a sort is
-//! pending. Focus and picks stay on their records. `binnacle-demo --huge`
-//! shows 10^15 identity rows, which do not sort.
+//! pending. Focus and picks stay on their records. Drag a column header to
+//! move the column (a selected column takes the other selected ones with
+//! it); a cyan line shows where it will drop, and widths go with their
+//! columns. Press `f` to show only records with a crew of 6 or more, and
+//! again to show them all: focus stays on its record, or moves to the nearest
+//! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
+//! which neither sort, move nor filter.
 //!
 //! The wheel scrolls; the adapter's default keymap moves focus (arrows,
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
@@ -65,6 +70,7 @@ enum Table {
     Records {
         rows: Vec<Record>,
         source: Box<MemorySource<Record>>,
+        filtered: bool,
     },
     Huge {
         rows: IdentitySource,
@@ -81,12 +87,12 @@ impl Table {
         }
     }
 
-    /// Drains the Grid's Effects, answering sorts and `Locate` from the
-    /// source and auto-size by measuring the text drawn for `shown` rows. The
+    /// Drains the Grid's Effects, answering sorts, column moves and `Locate`
+    /// from the source and auto-size by measuring the text drawn for `shown` rows. The
     /// other Effects need nothing here.
     fn pump(&mut self, grid: &mut Grid, shown: &[Key]) {
         match self {
-            Table::Records { rows, source } => {
+            Table::Records { rows, source, .. } => {
                 let text = Text::Records(rows);
                 source.pump(rows, grid, |grid, stamped| {
                     auto_size(&text, shown, grid, stamped)
@@ -97,6 +103,24 @@ impl Table {
                     auto_size(&Text::Huge, shown, grid, stamped);
                 }
             }
+        }
+    }
+
+    /// Turns the crew filter on or off and tells the Grid.
+    fn toggle_filter(&mut self, grid: &mut Grid) {
+        if let Table::Records {
+            rows,
+            source,
+            filtered,
+        } = self
+        {
+            *filtered = !*filtered;
+            let notice = if *filtered {
+                source.filter(rows, |r| r.crew >= 6)
+            } else {
+                source.clear_filter()
+            };
+            grid.notify(Axis::Rows, notice);
         }
     }
 
@@ -186,7 +210,12 @@ fn main() -> io::Result<()> {
                 .gap(1.0),
         );
         let source = Box::new(source);
-        (Table::Records { rows, source }, grid)
+        let table = Table::Records {
+            rows,
+            source,
+            filtered: false,
+        };
+        (table, grid)
     };
     let mut keymap = Keymap::default();
     keymap.bind(
@@ -233,6 +262,10 @@ fn main() -> io::Result<()> {
                         && key.modifiers.contains(KeyModifiers::CONTROL);
                     if ctrl_c || key.code == KeyCode::Char('q') {
                         return Ok(());
+                    }
+                    if key.code == KeyCode::Char('f') && key.modifiers == KeyModifiers::NONE {
+                        table.toggle_filter(&mut grid);
+                        continue;
                     }
                     if let Some(action) = keymap.action(&key) {
                         grid.action(action);

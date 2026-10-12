@@ -3,8 +3,8 @@
 //! `Reordered` Change Notice.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Effect, FocusStep, HeaderSort, Key, Modifiers, PointerEvent,
-    SortColumn, SortDirection, SortSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, HeaderSort, Key, Mode, Modifiers,
+    PointerEvent, SortColumn, SortDirection, SortSpec, Viewport,
 };
 use binnacle_testkit::{IdentityTable, RecordTable, Scenario, ScenarioSource, render};
 
@@ -338,4 +338,102 @@ fn a_press_held_through_a_reorder_cancels_to_the_state_after_it() {
     s.input(|g| g.action(Action::Cancel));
     out += &s.step("cancel: the dropped range does not come back", V);
     insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_resize_carries_on_through_a_reorder_of_either_axis() {
+    let mut s = records();
+    s.frame(V);
+    // Column 0 spans x 4..10; its border is the Gap at x 10..11.
+    s.input(|g| {
+        g.pointer(PointerEvent::down(10.5, 0.5));
+        g.pointer(PointerEvent::moved(12.5, 0.5));
+    });
+    let mut out = s.step("drag column 0's border 2 right: resizing", V);
+    sort_behind_the_grid(&mut s);
+    s.input(|g| g.notify(Axis::Cols, binnacle_core::ChangeNotice::Reordered));
+    s.input(|g| g.pointer(PointerEvent::moved(13.5, 0.5)));
+    out += &s.step(
+        "rows sorted and columns reordered underneath: still resizing column 0, now 9 wide",
+        V,
+    );
+    s.input(|g| g.pointer(PointerEvent::up(13.5, 0.5)));
+    out += &s.step("release: SizeChanged for column 0", V);
+    insta::assert_snapshot!(out);
+}
+
+/// Regression (found by the FocusChanged property): a focus whose Key a frame
+/// completed is announced at the next drain, unless something moves focus
+/// first. A Reordered that cancels a selection drag is such a move: it
+/// restores the focus from before the press, and the queued announcement of
+/// the abandoned cell goes with it.
+#[test]
+fn a_reorder_that_cancels_a_drag_withdraws_the_announcement_of_the_dragged_focus() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(1, 1.0),
+        AxisConfig::new(999_999_999_999_000, 1.0),
+    );
+    let v = Viewport::new(5.0, 3.0);
+    s.frame(v);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(0.5, 0.5));
+        g.pointer(PointerEvent::moved(3.5, 0.5));
+        g.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Edge,
+            forward: true,
+            extend: false,
+        });
+    });
+    s.pump();
+    let snap = s.frame(v);
+    let last = Key(999_999_999_998_999);
+    assert_eq!(snap.focus(Axis::Cols).and_then(|f| f.key), Some(last));
+    assert_eq!(snap.mode(), Mode::DraggingSelection);
+    s.input(|g| g.notify(Axis::Rows, ChangeNotice::Reordered));
+    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    assert!(
+        !drained
+            .iter()
+            .any(|e| matches!(e, Effect::FocusChanged { .. })),
+        "{drained:?}"
+    );
+    let snap = s.frame(v);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert_eq!(snap.focus(Axis::Rows), None);
+}
+
+/// Regression (found by the reveal property): a focus move made while
+/// `located` is pending waits, and a click before the answer discards it, so
+/// the click's cell is focused and, as clicks never scroll, nothing scrolls.
+#[test]
+fn a_click_discards_a_focus_move_waiting_for_located_and_scrolls_nothing() {
+    let mut s = Scenario::identity(AxisConfig::new(1, 1.0), AxisConfig::new(50, 1.0));
+    let wide = Viewport::new(4.0, 1.0);
+    s.frame(wide);
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Cols,
+            fraction: 1.0,
+        })
+    });
+    s.frame(wide);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(3.5, 0.5));
+        g.pointer(PointerEvent::up(3.5, 0.5));
+        g.notify(Axis::Cols, ChangeNotice::Reordered);
+        g.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Item,
+            forward: false,
+            extend: false,
+        });
+        g.pointer(PointerEvent::down(0.5, 0.5));
+        g.pointer(PointerEvent::up(0.5, 0.5));
+    });
+    // A narrower viewport keeps the end in view, leaving column 46 off screen.
+    let snap = s.frame(Viewport::new(2.0, 1.0));
+    assert_eq!(snap.focus(Axis::Cols).map(|f| f.position), Some(46));
+    assert_eq!(snap.scroll_anchor(Axis::Cols).position, 48);
+    assert_eq!(snap.focus_rect(), None);
 }

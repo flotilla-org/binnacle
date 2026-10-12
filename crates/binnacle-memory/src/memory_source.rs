@@ -126,9 +126,16 @@ impl<R> MemorySource<R> {
 
     /// Runs [`crate::pump`] with this source over the host's `rows`: sort
     /// requests are answered by sorting them (or rejected if a column has no
-    /// closure), `Locate` by the Remap. `seen` gets every Effect drained.
+    /// closure), `Locate` by the Remap, column moves by moving the columns.
+    /// `seen` gets every Effect drained.
     pub fn pump(&mut self, rows: &[R], grid: &mut Grid, seen: impl FnMut(&mut Grid, Stamped)) {
         crate::pump(grid, &mut Over { source: self, rows }, seen);
+    }
+
+    /// See [`InMemoryTableSource::move_columns`]. Sorting names columns by
+    /// Key, so it is unaffected by the column order.
+    pub fn move_columns(&mut self, keys: &[Key], to: Position) -> ChangeNotice {
+        self.table.move_columns(keys, to)
     }
 
     pub fn count(&self, axis: Axis) -> u64 {
@@ -163,5 +170,9 @@ impl<R> PumpSource for Over<'_, R> {
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
         self.source.locate(axis, key)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        (axis == Axis::Cols).then(|| self.source.move_columns(keys, to))
     }
 }
