@@ -3,13 +3,13 @@
 //! viewports.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::rc::Rc;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, CellRange, Effect, FocusStep, Grid, HeaderClick, Key, Mode,
-    Modifiers, PointerEvent, PointerKind, Position, SelectionUnit, Snapshot, Viewport,
+    Action, Axis, AxisConfig, Button, CellRange, Cursor, Effect, FocusStep, Grid, HeaderClick, Key,
+    Mode, Modifiers, PointerEvent, PointerKind, Position, SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
@@ -104,8 +104,8 @@ enum Input {
     Pointer(Pointer),
 }
 
-/// A pointer event whose coordinates are resolved against the viewport of the
-/// previous frame, so most land on something.
+/// A pointer event whose coordinates are resolved against the previous frame
+/// (a [`Target`]), so most land on something.
 #[derive(Clone, Copy, Debug)]
 struct Pointer {
     event: PointerEvent,
@@ -119,19 +119,57 @@ enum Coord {
     /// A fraction of the way through the body, past the header band.
     Body(f32),
     Raw(f32),
+    /// A fraction of the way through the header band.
+    Header(f32),
+    /// On the border after a visible item (in its Gap, else at its end),
+    /// picked by index; the middle of the viewport if none shows.
+    Border(usize),
+}
+
+/// What a pointer event's coordinates resolve against: the previous frame's
+/// viewport, its header bands and its item borders, each as `x` then `y`.
+#[derive(Clone, Debug, Default)]
+struct Target {
+    lengths: [f32; 2],
+    headers: [f32; 2],
+    borders: [Vec<f32>; 2],
+}
+
+impl Target {
+    fn of(snap: &Snapshot) -> Target {
+        let [x, y] = [Axis::Cols, Axis::Rows];
+        let header = |a| {
+            let h = snap.header(a);
+            if h.is_finite() { h } else { 0.0 }
+        };
+        let borders = |a| {
+            let gap = snap.gap(a);
+            (snap.strip(a).iter())
+                .map(|i| i.end() + gap / 2.0)
+                .collect()
+        };
+        Target {
+            lengths: [snap.extent(x), snap.extent(y)],
+            headers: [header(x), header(y)],
+            borders: [borders(x), borders(y)],
+        }
+    }
 }
 
 impl Pointer {
-    /// The event at its coordinates for a viewport whose header bands are
-    /// `headers` (columns' then rows', as `x` then `y`).
-    fn resolve(self, viewport: Viewport, headers: [f32; 2]) -> PointerEvent {
-        let lengths = [viewport.width, viewport.height];
+    /// The event at its coordinates against `target`.
+    fn resolve(self, target: &Target) -> PointerEvent {
         let [x, y] = [0, 1].map(|i| {
-            let (len, header) = (lengths[i], headers[i]);
+            let (len, header) = (target.lengths[i], target.headers[i]);
             match self.at[i] {
                 Coord::Fraction(f) => f * len,
                 Coord::Body(f) => header + f * (len - header),
                 Coord::Raw(v) => v,
+                Coord::Header(f) => f * header,
+                Coord::Border(n) => match &target.borders[i][..] {
+                    [] => len / 2.0,
+                    borders => borders[n % borders.len()],
+                },
             }
         });
         PointerEvent { x, y, ..self.event }
@@ -154,6 +192,11 @@ fn coord(tc: &TestCase) -> Coord {
             .max_value(1.0)
             .map(Coord::Body),
         gs::floats::<f32>().map(Coord::Raw),
+        gs::floats::<f32>()
+            .min_value(0.0)
+            .max_value(1.0)
+            .map(Coord::Header),
+        gs::integers::<usize>().max_value(8).map(Coord::Border),
     ))
 }
 
@@ -198,10 +241,22 @@ fn pointer(tc: &TestCase) -> Pointer {
     }
 }
 
-/// A press, a few moves and the release, as one input sequence.
+/// A press, a few moves and the release, as one input sequence. A third of
+/// presses aim at a header border.
 #[hegel::composite]
 fn gesture(tc: &TestCase) -> Vec<Pointer> {
-    let press = tc.draw(pointer());
+    let mut press = tc.draw(pointer());
+    if tc.draw(gs::weighted_booleans(0.3)) {
+        let (n, f) = (
+            tc.draw(gs::integers::<usize>().max_value(8)),
+            tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
+        );
+        press.at = if tc.draw(gs::booleans()) {
+            [Coord::Border(n), Coord::Header(f)]
+        } else {
+            [Coord::Header(f), Coord::Border(n)]
+        };
+    }
     let mut events = vec![Pointer {
         event: PointerEvent {
             kind: PointerKind::Down,
@@ -328,16 +383,20 @@ impl Content {
 /// The Windows a test source was asked for, by axis.
 type Requests = Rc<RefCell<Vec<(Axis, Range<Position>)>>>;
 
-/// An identity Table Source that also answers with content sizes.
+/// An identity Table Source that also answers with content sizes,
+/// remembers the last Window it filled on each axis and records every
+/// Window it was asked for.
 struct Sized {
     table: IdentityTable,
     content: [Option<Content>; 2],
+    windows: [Range<Position>; 2],
     /// Every Window the Grid asked for, by axis, since the test last cleared it.
     requests: Requests,
 }
 
 impl ScenarioSource for Sized {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        self.windows[index(axis)] = range.clone();
         self.requests.borrow_mut().push((axis, range.clone()));
         self.table.window(axis, range)
     }
@@ -348,8 +407,8 @@ impl ScenarioSource for Sized {
     }
 }
 
-/// What the test knows about one axis: its config, the Size Overrides it set
-/// and any content sizes. Keys are Positions (identity source), so it knows
+/// What the test knows about one axis: its config, its Size Overrides (set
+/// directly, or by pointer resizes and read back) and any content sizes. Keys are Positions (identity source), so it knows
 /// every item's size.
 #[derive(Clone, Debug)]
 struct Model {
@@ -464,7 +523,7 @@ struct Step<'a> {
 fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) {
     let config = || {
         if knobs.bodies {
-            tc.draw(axis_with_items())
+            tc.draw(hegel::one_of!(axis_with_items(), everyday_axis()))
         } else {
             tc.draw(axis_config())
         }
@@ -502,18 +561,20 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
     let source = Sized {
         table,
         content: contents,
+        windows: [0..0, 0..0],
         requests: requests.clone(),
     };
     let mut grid = Grid::new(rows, cols);
     configure(tc, &mut grid);
     let mut s = Scenario::new(grid, source);
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
-    let mut viewport = Viewport::default();
+    let mut target = Target::default();
+    // Every Key a pointer resize has been seen on, per axis.
+    let mut resized: [BTreeSet<Key>; 2] = Default::default();
     // Sometimes a frame before any input, so pointer events have a viewport
     // to land in from the start.
     if tc.draw(gs::booleans()) {
-        viewport = viewport_for(&models);
-        s.frame(viewport);
+        target = Target::of(&s.frame(viewport_for(&models)));
         s.pump();
     }
     for _ in 0..steps {
@@ -540,15 +601,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
-                Input::Pointer(p) => {
-                    let header = |m: &Model| {
-                        let h = m.config.header;
-                        if h.is_finite() { h.max(0.0) } else { 0.0 }
-                    };
-                    let headers = [header(&models[1]), header(&models[0])];
-                    let e = p.resolve(viewport, headers);
-                    s.input(|g| g.pointer(e))
-                }
+                Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(&target))),
                 Input::SetSize(axis, key, size) if knobs.resize => {
                     s.input(|g| g.set_size(axis, key, size));
                     let model = &mut models[index(axis)];
@@ -559,8 +612,25 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::SetSize(..) => {}
             }
         }
-        let next = viewport_for(&models);
         let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+        // A pointer resize changes Size Overrides of Keys in the Window (or of
+        // one seen resizing earlier): read those back.
+        for axis in Axis::ALL {
+            let i = index(axis);
+            let model = &mut models[i];
+            let window = s.source.windows[i].clone().map(Key);
+            let keys: BTreeSet<Key> = (model.overrides.keys().copied())
+                .chain(window)
+                .chain(resized[i].iter().copied())
+                .collect();
+            for key in keys {
+                match s.grid.size_override(axis, key) {
+                    Some(size) => model.overrides.insert(key, size),
+                    None => model.overrides.remove(&key),
+                };
+            }
+        }
+        let next = viewport_for(&models);
         requests.borrow_mut().clear();
         let step = Step {
             models: &models,
@@ -569,12 +639,16 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             reveals_focus,
             requests: &requests,
         };
-        viewport = next;
-        check(&s.frame(viewport), &step);
+        let snap = s.frame(next);
+        if let Mode::Resizing { axis, key, .. } = snap.mode() {
+            resized[index(axis)].insert(key);
+        }
+        target = Target::of(&snap);
+        check(&snap, &step);
     }
 }
 
-/// Draws the Grid's selection settings.
+/// Draws the Grid's selection and pointer settings.
 fn configure(tc: &TestCase, grid: &mut Grid) {
     let unit = tc.draw(gs::sampled_from(vec![
         SelectionUnit::Cells,
@@ -593,6 +667,12 @@ fn configure(tc: &TestCase, grid: &mut Grid) {
         gs::floats::<f32>()
     ));
     grid.set_drag_threshold(threshold);
+    let grab = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(3.0),
+        gs::floats::<f32>()
+    ));
+    grid.set_border_grab(grab);
 }
 
 /// The size the Grid gives `pos`: as drawn in the Strip if it is there, else
@@ -1239,7 +1319,7 @@ fn a_click_on_no_cell_changes_nothing(tc: TestCase) {
             event: PointerEvent::down(0.0, 0.0),
             at: [other, other],
         }
-        .resolve(viewport, [cols.0.header, rows.0.header]);
+        .resolve(&Target::of(&snap));
         let point = match axis {
             Axis::Rows => (across.x, v),
             Axis::Cols => (v, across.y),
@@ -1350,14 +1430,13 @@ fn selection_changed_comes_once_per_drain_and_for_every_change(tc: TestCase) {
     });
 }
 
-/// `Cancel` during a press or drag restores focus, range and picks from
-/// before the press and ends the gesture; the release that follows changes
-/// nothing.
+/// `Cancel` during a press, drag or resize restores focus, range, picks and
+/// Size Overrides from before the press and ends the gesture; the release
+/// that follows changes nothing.
 #[hegel::test(test_cases = 2000)]
 fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
     let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_a_body()));
     let viewport = Viewport::new(cols.1, rows.1);
-    let headers = [cols.0.header, rows.0.header];
     let mut grid = Grid::new(rows.0, cols.0);
     configure(&tc, &mut grid);
     let table = IdentityTable {
@@ -1365,29 +1444,51 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
         cols: IdentitySource::new(cols.0.count),
     };
     let mut s = Scenario::new(grid, table);
-    s.frame(viewport);
-    let seen = |snap: &Snapshot| {
+    let mut target = Target::of(&s.frame(viewport));
+    // Focus, selection and the Size Overrides of `shown` Keys.
+    let seen = |s: &mut Scenario<IdentityTable>, shown: &[Range<Position>; 2]| {
+        let snap = s.frame(viewport);
         let focus = Axis::ALL.map(|a| snap.focus(a));
-        (focus, seen_selection(snap))
+        let selection = seen_selection(&snap);
+        let sizes: Vec<_> = Axis::ALL
+            .into_iter()
+            .flat_map(|a| shown[index(a)].clone().map(move |p| (a, Key(p))))
+            .map(|(a, k)| s.grid.size_override(a, k))
+            .collect();
+        (focus, selection, sizes)
     };
     for input in tc.draw(gs::vecs(input()).max_size(6)) {
         match input {
             Input::Action(action) => s.input(|g| g.action(action)),
-            Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(viewport, headers))),
+            Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(&target))),
             Input::SetSize(..) => {}
         }
     }
     // Release any press the setup left held, so the gesture starts fresh.
     s.input(|g| g.pointer(PointerEvent::up(-1.0, -1.0)));
-    let before = seen(&s.frame(viewport));
+    // The Keys a pointer can resize: those shown and one either side.
+    let shown = {
+        let snap = s.frame(viewport);
+        target = Target::of(&snap);
+        Axis::ALL.map(|a| match (snap.strip(a).first(), snap.strip(a).last()) {
+            (Some(first), Some(last)) => {
+                first.position.saturating_sub(1)..last.position.saturating_add(2)
+            }
+            _ => 0..0,
+        })
+    };
+    let before = seen(&mut s, &shown);
     let mut gesture = tc.draw(gesture());
     gesture.retain(|p| p.event.kind != PointerKind::Up);
     for p in gesture {
-        s.input(|g| g.pointer(p.resolve(viewport, headers)));
+        s.input(|g| g.pointer(p.resolve(&target)));
+    }
+    if let Mode::Resizing { .. } = s.frame(viewport).mode() {
+        tc.event("resizing");
     }
     s.input(|g| g.action(Action::Cancel));
+    assert_eq!(seen(&mut s, &shown), before, "Cancel did not restore");
     let snap = s.frame(viewport);
-    assert_eq!(seen(&snap), before, "Cancel did not restore");
     assert_eq!(snap.mode(), Mode::Idle);
     assert!(!snap.capturing());
     let release = tc.draw(hegel::tuples!(coord(), coord()));
@@ -1395,8 +1496,239 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
         event: PointerEvent::up(0.0, 0.0),
         at: [release.0, release.1],
     };
-    s.input(|g| g.pointer(up.resolve(viewport, headers)));
-    assert_eq!(seen(&s.frame(viewport)), before, "the release acted");
+    s.input(|g| g.pointer(up.resolve(&target)));
+    assert_eq!(seen(&mut s, &shown), before, "the release acted");
+}
+
+/// The part of `lo..hi` along `axis` inside the body, as its midpoint, if it
+/// is wide enough that f32 placement of the Strip cannot move it (see
+/// [`clickable`]).
+fn inside_body(snap: &Snapshot, axis: Axis, lo: f32, hi: f32) -> Option<f32> {
+    let (start, stop) = body(snap, axis);
+    let strip = snap.strip(axis);
+    let (lo, hi) = (lo.max(start), hi.min(stop));
+    let reach = stop.max(strip.first()?.offset.abs());
+    let drift = (strip.len() as f32 + 4.0) * (next_f32(reach) - reach);
+    (hi - lo > 4.0 * drift && hi > lo).then(|| lo + (hi - lo) / 2.0)
+}
+
+/// A point at `v` along `axis`, halfway across the header band the other
+/// axis leads (where that axis's headers are drawn).
+fn in_header_band(snap: &Snapshot, axis: Axis, v: f32) -> (f32, f32) {
+    let band = snap.header(axis.other()) / 2.0;
+    match axis {
+        Axis::Rows => (band, v),
+        Axis::Cols => (v, band),
+    }
+}
+
+/// An axis with a body, usually of everyday sizes so several borders show,
+/// sometimes any.
+#[hegel::composite]
+fn axis_with_borders(tc: &TestCase) -> (AxisConfig, f32) {
+    if tc.draw(gs::weighted_booleans(0.3)) {
+        return tc.draw(axis_with_a_body());
+    }
+    let config = tc.draw(everyday_axis());
+    let body = tc.draw(gs::floats::<f32>().min_value(1.0).max_value(200.0));
+    (config, config.header + body)
+}
+
+/// An axis of everyday sizes: a few to fifty items or very many, sizes from
+/// one unit (the default smallest size) to 20, a Gap of 0, 1 or up to 2, a
+/// header band of at least half a unit.
+#[hegel::composite]
+fn everyday_axis(tc: &TestCase) -> AxisConfig {
+    let count = tc.draw(hegel::one_of!(
+        gs::integers::<u64>().min_value(1).max_value(50),
+        gs::integers::<u64>().min_value(1)
+    ));
+    let size = tc.draw(gs::floats::<f32>().min_value(1.0).max_value(20.0));
+    let gap = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::just(1.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(2.0)
+    ));
+    let header = tc.draw(gs::floats::<f32>().min_value(0.5).max_value(5.0));
+    AxisConfig::new(count, size).header(header).gap(gap)
+}
+
+/// A press on a header border (the Gap after an item, widened by the border
+/// grab) resizes that item; a press on a header away from its borders does
+/// not. While resizing, the item's size is its start size plus the pointer's
+/// travel along the axis, clamped into the axis's size range. A release reports the new size if it changed; `Cancel` restores
+/// the start size and reports nothing.
+#[hegel::test(test_cases = 2000)]
+fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase) {
+    let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_borders()));
+    let viewport = Viewport::new(cols.1, rows.1);
+    let grab = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(3.0),
+        gs::floats::<f32>().min_value(0.0).max_value(3.0),
+        gs::floats::<f32>().min_value(0.0).allow_infinity(false)
+    ));
+    let mut s = Scenario::identity(rows.0, cols.0);
+    s.input(|g| g.set_border_grab(grab));
+    s.frame(viewport);
+    for axis in Axis::ALL {
+        let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
+        s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
+    }
+    let axis = tc.draw(axis());
+    let (item, interior, border, last) = {
+        let snap = s.frame(viewport);
+        tc.assume(snap.header(axis.other()) > 0.0);
+        // Mostly items whose border shows, sometimes any visible item.
+        let (start, stop) = body(&snap, axis);
+        let ending: Vec<_> = (snap.strip(axis).iter())
+            .filter(|i| i.end() >= start && i.end() < stop)
+            .copied()
+            .collect();
+        let strip = if ending.is_empty() || tc.draw(gs::weighted_booleans(0.2)) {
+            snap.strip(axis).to_vec()
+        } else {
+            ending
+        };
+        tc.assume(!strip.is_empty());
+        let item = strip[tc.draw(gs::integers::<usize>().max_value(strip.len() - 1))];
+        let gap = snap.gap(axis);
+        let edge = grab.min(item.size);
+        let interior = inside_body(&snap, axis, item.offset + grab, item.end() - grab);
+        // The Gap after the item, or the grab's reach inside its end.
+        let zones: Vec<f32> = [
+            inside_body(&snap, axis, item.end(), item.end() + gap),
+            inside_body(&snap, axis, item.end() - edge, item.end()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let border = (!zones.is_empty())
+            .then(|| zones[tc.draw(gs::integers::<usize>().max_value(zones.len() - 1))]);
+        let last = item.position + 1 == snap.count(axis);
+        let point = |v: Option<f32>| v.map(|v| in_header_band(&snap, axis, v));
+        (item, point(interior), point(border), last)
+    };
+    // More than a grab inside both edges is the header itself.
+    if let Some((x, y)) = interior {
+        tc.event("interior press");
+        s.input(|g| g.pointer(PointerEvent::down(x, y)));
+        let mode = s.frame(viewport).mode();
+        assert_eq!(mode, Mode::Idle, "a press inside {item:?} resized");
+        s.input(|g| g.pointer(PointerEvent::up(x, y)));
+        s.frame(viewport);
+    }
+    let Some((x0, y0)) = border else {
+        return;
+    };
+    tc.event("border press");
+    if last {
+        tc.event("last item");
+    }
+    s.pump();
+    let key = item.key.expect("identity source fills every Position");
+    s.input(|g| g.pointer(PointerEvent::down(x0, y0)));
+    let snap = s.frame(viewport);
+    assert_eq!(
+        snap.mode(),
+        Mode::Resizing {
+            axis,
+            key,
+            start_size: item.size
+        },
+        "press at {x0},{y0} on the border of {item:?}"
+    );
+    assert!(snap.capturing());
+    let start = item.size;
+    let mut size = start;
+    for travel in tc.draw(
+        gs::vecs(hegel::one_of!(
+            gs::floats::<f32>().min_value(-50.0).max_value(50.0),
+            gs::floats::<f32>().allow_nan(false).allow_infinity(false)
+        ))
+        .min_size(1)
+        .max_size(4),
+    ) {
+        let (x, y) = match axis {
+            Axis::Rows => (x0, y0 + travel),
+            Axis::Cols => (x0 + travel, y0),
+        };
+        if !(x.is_finite() && y.is_finite()) {
+            continue;
+        }
+        let moved = match axis {
+            Axis::Rows => f64::from(y) - f64::from(y0),
+            Axis::Cols => f64::from(x) - f64::from(x0),
+        };
+        let config = [rows.0, cols.0][index(axis)];
+        size = (f64::from(start) + moved)
+            .clamp(f64::from(config.min_size), f64::from(config.max_size)) as f32;
+        s.input(|g| g.pointer(PointerEvent::moved(x, y)));
+        let expected = (size != start).then_some(size);
+        assert_eq!(s.grid.size_override(axis, key), expected, "after {travel}");
+        check_resize_feedback(&tc, &s.frame(viewport), axis, key);
+    }
+    if tc.draw(gs::booleans()) {
+        s.input(|g| g.pointer(PointerEvent::up(x0, y0)));
+        let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+        tc.event(if size != start {
+            "resized"
+        } else {
+            "unchanged"
+        });
+        let reported = (size != start).then_some(Effect::SizeChanged { axis, key, size });
+        assert_eq!(drained, Vec::from_iter(reported));
+        assert_eq!(
+            s.grid.size_override(axis, key),
+            (size != start).then_some(size)
+        );
+    } else {
+        s.input(|g| g.action(Action::Cancel));
+        assert_eq!(s.pump(), vec![]);
+        assert_eq!(s.grid.size_override(axis, key), None);
+    }
+    let snap = s.frame(viewport);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert!(!snap.capturing());
+}
+
+/// A resize in progress captures the pointer, shows the resize cursor for its
+/// axis, and puts its guide line at the resized item's trailing edge wherever
+/// the Strip shows that item.
+#[hegel::test(test_cases = 2000)]
+fn a_resize_in_progress_captures_and_guides(tc: TestCase) {
+    frames(&tc, BODIES, |snap, _| {
+        if let Mode::Resizing { axis, key, .. } = snap.mode() {
+            tc.event("resizing");
+            check_resize_feedback(&tc, snap, axis, key);
+        }
+    });
+}
+
+/// Mode feedback while resizing the item with `key` on `axis`: capturing,
+/// the axis's resize cursor, and the guide at the item's end in the Strip.
+fn check_resize_feedback(tc: &TestCase, snap: &Snapshot, axis: Axis, key: Key) {
+    assert!(snap.capturing());
+    let cursor = match axis {
+        Axis::Rows => Cursor::ResizeRow,
+        Axis::Cols => Cursor::ResizeCol,
+    };
+    assert_eq!(snap.cursor(), cursor);
+    let strip = snap.strip(axis);
+    let Some(item) = strip.iter().find(|i| i.key == Some(key)) else {
+        return;
+    };
+    tc.event("resized item shown");
+    let guide = snap.resize_guide().expect("no guide for a shown item");
+    assert_eq!((guide.axis, guide.key, guide.size), (axis, key, item.size));
+    // The Strip steps in f32 from the anchor; the guide is placed in f64.
+    let (_, stop) = body(snap, axis);
+    let reach = stop.max(strip[0].offset.abs()).max(item.end().abs());
+    let drift = (strip.len() as f32 + 4.0) * (next_f32(reach) - reach);
+    assert!(
+        (guide.offset - item.end()).abs() <= drift,
+        "{guide:?} is not at the end of {item:?}"
+    );
 }
 
 /// Each Window the Grid asks for holds at most what the body can show at the

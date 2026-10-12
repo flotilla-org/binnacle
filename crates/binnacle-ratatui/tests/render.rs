@@ -2,7 +2,7 @@
 
 use binnacle_core::{Action, Axis, AxisConfig, FocusStep, Grid, Key, Viewport};
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{Content, render, wheel};
+use binnacle_ratatui::{Content, render, status, wheel};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -192,5 +192,59 @@ fn selected_cells_get_a_background_across_their_width_and_the_hovered_header_is_
     assert_eq!(
         with(&|c| c.modifier.contains(Modifier::UNDERLINED)),
         hovered
+    );
+}
+
+#[test]
+fn column_header_gaps_are_drawn_as_handles_and_a_resize_draws_its_guide() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let area = Rect::new(0, 0, 32, 4);
+    let mut out = format!("--- idle\n{}\n", frame(&mut grid, 32, 4, area));
+    // Column 0 spans x 5..13; its border is the Gap at x 13.
+    grid.pointer(binnacle_core::PointerEvent::down(13.0, 0.0));
+    grid.pointer(binnacle_core::PointerEvent::moved(16.0, 0.0));
+    out += &format!("--- dragged 3 right\n{}\n", frame(&mut grid, 32, 4, area));
+    grid.pointer(binnacle_core::PointerEvent::up(16.0, 0.0));
+    out += &format!("--- released\n{}\n", frame(&mut grid, 32, 4, area));
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn the_status_line_names_the_mode_and_hints_at_borders() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0).gap(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let mut status_after = |events: &[binnacle_core::PointerEvent]| {
+        for &e in events {
+            grid.pointer(e);
+        }
+        for (axis, range) in grid.begin_frame(Viewport::new(30.0, 8.0)) {
+            let keys = IdentitySource::new(range.end).window(range.clone());
+            grid.set_window(axis, range.start, &keys);
+        }
+        status(&grid.snapshot())
+    };
+    use binnacle_core::PointerEvent as P;
+    assert_eq!(status_after(&[]), "");
+    assert_eq!(
+        status_after(&[P::moved(13.0, 0.0)]),
+        "drag to resize the column, double-click to fit"
+    );
+    assert_eq!(
+        status_after(&[P::moved(1.0, 2.0)]),
+        "drag to resize the row, double-click to fit"
+    );
+    assert_eq!(
+        status_after(&[P::down(13.0, 0.0), P::moved(15.0, 0.0)]),
+        "resizing column 0: 10"
+    );
+    assert_eq!(status_after(&[P::up(15.0, 0.0), P::moved(7.0, 1.0)]), "");
+    assert_eq!(
+        status_after(&[P::down(7.0, 1.0), P::moved(16.0, 3.0)]),
+        "selecting"
     );
 }

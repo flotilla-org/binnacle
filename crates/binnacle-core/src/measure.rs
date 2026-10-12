@@ -151,18 +151,39 @@ impl AxisMeasure {
             return;
         };
         if let Some(old) = self.overrides.insert(key, size) {
-            let bits = old.to_bits();
-            if let Some(n) = self.override_sizes.get_mut(&bits) {
-                *n -= 1;
-                if *n == 0 {
-                    self.override_sizes.remove(&bits);
-                }
-            }
+            self.forget_size(old);
         }
         *self.override_sizes.entry(size.to_bits()).or_default() += 1;
         if self.keys.contains(&key) {
             self.rebuild();
         }
+    }
+
+    /// Removes the Size Override for `key`, if any, so its content size or the
+    /// default applies again.
+    pub fn clear_size(&mut self, key: Key) {
+        let Some(old) = self.overrides.remove(&key) else {
+            return;
+        };
+        self.forget_size(old);
+        if self.keys.contains(&key) {
+            self.rebuild();
+        }
+    }
+
+    fn forget_size(&mut self, size: f32) {
+        let bits = size.to_bits();
+        if let Some(n) = self.override_sizes.get_mut(&bits) {
+            *n -= 1;
+            if *n == 0 {
+                self.override_sizes.remove(&bits);
+            }
+        }
+    }
+
+    /// The Size Override set for `key`, if any.
+    pub fn size_override(&self, key: Key) -> Option<f32> {
+        self.overrides.get(&key).copied()
     }
 
     /// The smallest size any item can have: the default, the smallest Size
@@ -266,6 +287,12 @@ impl AxisMeasure {
     /// How many Keys the Window holds.
     pub fn window_len(&self) -> usize {
         self.keys.len()
+    }
+
+    /// The Position of `key` if the Window holds it.
+    pub fn position_of(&self, key: Key) -> Option<Position> {
+        let i = self.keys.iter().position(|&k| k == key)?;
+        Some(self.window_start + i as u64)
     }
 
     /// The Key the Window holds at `pos`, if any.

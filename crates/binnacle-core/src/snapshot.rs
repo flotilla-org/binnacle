@@ -57,6 +57,28 @@ pub struct CellState {
     pub selected: bool,
 }
 
+/// The pointer shape the host should show, if its toolkit can change it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Cursor {
+    #[default]
+    Default,
+    /// Over a column header border, or resizing a column.
+    ResizeCol,
+    /// Over a row header border, or resizing a row.
+    ResizeRow,
+}
+
+/// Where a resize in progress puts the resized item's trailing edge: a line
+/// across the viewport at `offset` along `axis` (viewport-relative, like Strip
+/// offsets), with the item's Key and current size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResizeGuide {
+    pub axis: Axis,
+    pub key: Key,
+    pub offset: f32,
+    pub size: f32,
+}
+
 /// What changed since the previous Snapshot, so a host can skip work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Damage {
@@ -216,9 +238,43 @@ impl<'a> Snapshot<'a> {
         self.grid.gesture.capturing()
     }
 
+    /// The pointer shape for this frame: a resize shape while resizing, or
+    /// while idle over a header border.
+    pub fn cursor(&self) -> Cursor {
+        let axis = match self.mode() {
+            Mode::Resizing { axis, .. } => Some(axis),
+            _ if self.capturing() => None,
+            _ => self.grid.hovered_border,
+        };
+        match axis {
+            Some(Axis::Cols) => Cursor::ResizeCol,
+            Some(Axis::Rows) => Cursor::ResizeRow,
+            None => Cursor::Default,
+        }
+    }
+
+    /// The guide line for a resize in progress, while the resized item is in
+    /// the Window.
+    pub fn resize_guide(&self) -> Option<ResizeGuide> {
+        let Mode::Resizing { axis, key, .. } = self.mode() else {
+            return None;
+        };
+        let st = self.grid.axis(axis);
+        let position = st.measure.position_of(key)?;
+        let size = st.measure.size_at(position);
+        let start = f64::from(st.header) - f64::from(st.anchor.offset)
+            + st.measure.distance(st.anchor.position, position);
+        Some(ResizeGuide {
+            axis,
+            key,
+            offset: (start + f64::from(size)) as f32,
+            size,
+        })
+    }
+
     /// The header under the pointer: the axis whose item it heads (a row
     /// header is on [`Axis::Rows`]) and that item in its Strip. The Gap after
-    /// a header is not part of it.
+    /// a header, and a border, is not part of it.
     pub fn hovered_header(&self) -> Option<(Axis, &'a StripItem)> {
         let (axis, position) = self.grid.hovered?;
         let item = self.strip(axis).iter().find(|i| i.position == position)?;

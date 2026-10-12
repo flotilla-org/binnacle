@@ -6,7 +6,7 @@ use crate::effect::{Action, Effect, FocusStep, Stamped};
 use crate::focus::{self, FocusEnd};
 use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
-use crate::pointer::Hit;
+use crate::pointer::{AxisHit, Hit};
 use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
 use crate::types::{Axis, Generation, Key, Position, Viewport};
@@ -119,11 +119,15 @@ pub struct Grid {
     /// Indexed by the axis whose items' headers are clicked.
     pub(crate) header_click: [HeaderClick; 2],
     pub(crate) drag_threshold: f32,
+    border_grab: f32,
     pub(crate) gesture: Gesture,
     /// Where the last pointer event was, for hover.
     pub(crate) pointer_at: Option<(f32, f32)>,
     /// The header under the pointer as of the last Snapshot.
     pub(crate) hovered: Option<(Axis, Position)>,
+    /// The axis whose header border is under the pointer as of the last
+    /// Snapshot.
+    pub(crate) hovered_border: Option<Axis>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
 }
@@ -159,9 +163,11 @@ impl Grid {
             unit: SelectionUnit::Cells,
             header_click: [HeaderClick::Select, HeaderClick::Sort],
             drag_threshold: DEFAULT_DRAG_THRESHOLD,
+            border_grab: 0.0,
             gesture: Gesture::Idle,
             pointer_at: None,
             hovered: None,
+            hovered_border: None,
             fills: Vec::new(),
         }
     }
@@ -183,6 +189,17 @@ impl Grid {
     pub fn set_drag_threshold(&mut self, threshold: f32) {
         if threshold.is_finite() && threshold >= 0.0 {
             self.drag_threshold = threshold;
+        }
+    }
+
+    /// How far, in the host's unit, a header border reaches into the items
+    /// either side of the Gap between them. Default 0: only the Gap is the
+    /// border, so with Gap 0 nothing can be resized until this is set (pixel
+    /// hosts usually want a few pixels). Values that are not finite and
+    /// non-negative are ignored.
+    pub fn set_border_grab(&mut self, grab: f32) {
+        if grab.is_finite() && grab >= 0.0 {
+            self.border_grab = grab;
         }
     }
 
@@ -283,6 +300,18 @@ impl Grid {
         self.pending_damage.layout = true;
     }
 
+    /// Removes the Size Override for the item with `key` on `axis`, so its
+    /// content size or the default applies again.
+    pub fn clear_size(&mut self, axis: Axis, key: Key) {
+        self.axis_mut(axis).measure.clear_size(key);
+        self.pending_damage.layout = true;
+    }
+
+    /// The Size Override for the item with `key` on `axis`, if any.
+    pub fn size_override(&self, axis: Axis, key: Key) -> Option<f32> {
+        self.axis(axis).measure.size_override(key)
+    }
+
     pub fn action(&mut self, action: Action) {
         match action {
             Action::TypeText(text) => self.push(Effect::TextTyped { text }),
@@ -320,6 +349,21 @@ impl Grid {
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_items(items);
             }
         }
+    }
+
+    /// The header border under the viewport point (`x`, `y`), as the axis,
+    /// Position and Key of the item it ends. Only items with known Keys have
+    /// borders.
+    pub(crate) fn border_at(&self, x: f32, y: f32) -> Option<(Axis, Position, Key)> {
+        let (rows, cols) = (self.axis(Axis::Rows), self.axis(Axis::Cols));
+        let (axis, position) = match (rows.hit(y), cols.hit(x)) {
+            (AxisHit::Header, AxisHit::Header) => return None,
+            (AxisHit::Header, _) => (Axis::Cols, cols.border(x, self.border_grab)?),
+            (_, AxisHit::Header) => (Axis::Rows, rows.border(y, self.border_grab)?),
+            _ => return None,
+        };
+        let key = self.axis(axis).measure.key_at(position)?;
+        Some((axis, position, key))
     }
 
     /// What the viewport point (`x`, `y`) lands on, against the current Scroll
@@ -517,7 +561,7 @@ impl Grid {
         }
     }
 
-    fn push(&mut self, effect: Effect) {
+    pub(crate) fn push(&mut self, effect: Effect) {
         self.effects.push_back(Stamped {
             generation: self.generation,
             effect,
@@ -587,12 +631,17 @@ impl Grid {
         for st in &mut self.axes {
             st.layout();
         }
+        let border = self
+            .pointer_at
+            .and_then(|(x, y)| self.border_at(x, y))
+            .map(|(axis, ..)| axis);
         let hovered = self.pointer_at.and_then(|(x, y)| match self.hit(x, y) {
-            Hit::Header { axis, at } if !at.in_gap => Some((axis, at.position)),
+            Hit::Header { axis, at } if !at.in_gap && border.is_none() => Some((axis, at.position)),
             _ => None,
         });
-        if hovered != self.hovered {
+        if (hovered, border) != (self.hovered, self.hovered_border) {
             self.hovered = hovered;
+            self.hovered_border = border;
             self.pending_damage.selection = true;
         }
         self.fill_selection();
