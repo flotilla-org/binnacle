@@ -4,7 +4,7 @@ use binnacle_core::{
     Action, Axis, AxisConfig, FocusStep, Grid, Key, SortColumn, SortSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{Content, render, status, wheel};
+use binnacle_ratatui::{Content, render, render_editor, status, wheel};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -301,4 +301,34 @@ fn the_status_line_names_the_mode_and_hints_at_borders() {
         status_after(&[P::up(16.0, 3.0), P::down(9.0, 0.0), P::moved(20.0, 0.0)]),
         "moving column 0 to 2"
     );
+}
+
+#[test]
+fn the_editor_draws_its_text_over_the_edited_cell_ending_in_a_caret() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let area = Rect::new(0, 0, 30, 5);
+    frame(&mut grid, 30, 5, area);
+    grid.edit_started(Key(2), Key(1));
+    grid.action(Action::Scroll { dx: 3.0, dy: 0.0 });
+    for (axis, range) in grid.begin_frame(Viewport::new(30.0, 5.0)) {
+        let keys = IdentitySource::new(range.end).window(range.clone());
+        grid.set_window(axis, range.start, &keys);
+    }
+    let snapshot = grid.snapshot();
+    let mut term = Terminal::new(TestBackend::new(30, 5)).unwrap();
+    term.draw(|f| {
+        render(&snapshot, &Labels, area, f.buffer_mut());
+        render_editor(&snapshot, "a long name", area, f.buffer_mut());
+    })
+    .unwrap();
+    let buf = term.backend().buffer().clone();
+    insta::assert_snapshot!(text(&buf));
+    // Column 1 now starts at x 11: the editor fills its 8 cells.
+    assert_eq!(buf[(11, 3)].bg, Color::Yellow);
+    assert_eq!(buf[(18, 3)].symbol(), "▏");
+    assert_ne!(buf[(19, 3)].bg, Color::Yellow);
+    assert_eq!(status(&snapshot), "editing row 2 column 1");
 }

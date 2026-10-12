@@ -10,17 +10,28 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 /// Default bindings: arrows move focus one item, PageUp and PageDown a page of
 /// rows, Home and End to the first and last row, Ctrl with an arrow to the
 /// edge that way. Shift with any of these extends the selection. Ctrl+A
-/// selects all, Ctrl+Space selects the whole column, Esc cancels.
+/// selects all, Ctrl+Space selects the whole column, Esc cancels. Enter
+/// activates, F2 begins an edit, and any other character typed without Ctrl
+/// or Alt is sent as `TypeText` (see [`Keymap::set_typing`]).
 #[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: HashMap<(KeyCode, KeyModifiers), Action>,
+    typing: bool,
 }
 
 impl Keymap {
     pub fn empty() -> Self {
         Keymap {
             bindings: HashMap::new(),
+            typing: false,
         }
+    }
+
+    /// Whether characters with no binding, typed alone or with Shift, map to
+    /// `TypeText`. On in [`Keymap::default`], off in [`Keymap::empty`].
+    pub fn set_typing(&mut self, typing: bool) -> &mut Self {
+        self.typing = typing;
+        self
     }
 
     /// Binds `code` pressed with exactly `modifiers` to `action`, replacing any
@@ -40,7 +51,15 @@ impl Keymap {
         if event.kind == KeyEventKind::Release {
             return None;
         }
-        self.bindings.get(&(event.code, event.modifiers)).cloned()
+        if let Some(action) = self.bindings.get(&(event.code, event.modifiers)) {
+            return Some(action.clone());
+        }
+        match event.code {
+            KeyCode::Char(c) if self.typing && (KeyModifiers::SHIFT).contains(event.modifiers) => {
+                Some(Action::TypeText(c.to_string()))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -86,6 +105,9 @@ impl Default for Keymap {
             Action::SelectColumn,
         );
         keymap.bind(KeyCode::Esc, KeyModifiers::NONE, Action::Cancel);
+        keymap.bind(KeyCode::Enter, KeyModifiers::NONE, Action::Activate);
+        keymap.bind(KeyCode::F(2), KeyModifiers::NONE, Action::BeginEdit);
+        keymap.set_typing(true);
         keymap
     }
 }

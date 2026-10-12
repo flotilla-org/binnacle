@@ -251,6 +251,12 @@ impl Grid {
         if let Some(key) = self.focus.and_then(|f| f[i].key) {
             self.locate(axis, key);
         }
+        // An edit follows its Key; only a count change can take the Key away.
+        match count {
+            Some(0) => self.end_edit(),
+            Some(_) => self.locate_edit(axis),
+            None => {}
+        }
     }
 
     /// Keeps focus below a new `count` on `axis`: with no items it is
@@ -276,7 +282,7 @@ impl Grid {
 
     /// Asks the Table Source where `key`, focused on `axis`, is now. Focus is
     /// drawn nowhere until it answers.
-    fn locate(&mut self, axis: Axis, key: Key) {
+    pub(crate) fn locate(&mut self, axis: Axis, key: Key) {
         let i = axis.index();
         self.locating[i] = true;
         self.pending_damage.selection = true;
@@ -293,6 +299,10 @@ impl Grid {
         if !self.effects.iter().any(|s| s.effect == locate) {
             self.push(locate);
             w.due += 1;
+        } else if w.due == 0 {
+            // Queued for an edit, or for this Key before focus left it and
+            // came back: its answer is this one's.
+            w.due = 1;
         }
         self.whereabouts[i] = Some(w);
     }
@@ -300,10 +310,11 @@ impl Grid {
     /// The Table Source's answer to `Locate { axis, key }`. An answer that is
     /// not the last one due, or names a Key the Grid no longer asks about, is
     /// ignored. Once every focused Key is placed, focus moves made meanwhile
-    /// are applied.
+    /// are applied. An edit whose Key has left is cancelled (`EditCancelled`).
     pub fn located(&mut self, axis: Axis, key: Key, answer: Located) {
         let i = axis.index();
         let count = self.axis(axis).measure.count();
+        self.edit_located(axis, key, &answer);
         let focused = self.locating[i] && self.focus.and_then(|f| f[i].key) == Some(key);
         let Some(w) = &mut self.whereabouts[i] else {
             return;
@@ -365,6 +376,13 @@ impl Grid {
         if self.locating.iter().any(|&l| l) {
             return;
         }
+        if std::mem::take(&mut self.goto)
+            && let Some(f) = self.focus
+        {
+            self.set_span(self.unit_span(f));
+            self.reveal = true;
+            self.reveal_focus();
+        }
         for m in std::mem::take(&mut self.moves) {
             self.move_and_select(m);
         }
@@ -401,6 +419,7 @@ impl Grid {
     /// waiting for `located`.
     pub(crate) fn before_focus_set(&mut self, cell: [FocusEnd; 2]) {
         self.moves.clear();
+        self.goto = false;
         for axis in Axis::ALL {
             let i = axis.index();
             if self.focus.map(|f| f[i]) != Some(cell[i]) {

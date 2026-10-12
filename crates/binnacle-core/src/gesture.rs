@@ -29,6 +29,9 @@ pub enum Mode {
     /// `axis`, and the dragged items would drop before Position `to` (see
     /// [`crate::Snapshot::moving_keys`] for all of them).
     MovingHeaders { axis: Axis, key: Key, to: Position },
+    /// The host's editor is open on the cell with these row and column Keys
+    /// (see [`crate::Grid::edit_started`]).
+    Editing { row: Key, col: Key },
 }
 
 /// Focus and selection from before a gesture, which `Cancel` restores.
@@ -92,6 +95,12 @@ pub(crate) enum Gesture {
         positions: Vec<Position>,
         to: Position,
     },
+    /// The host's editor is open on the cell with `keys`. `due` counts, per
+    /// axis, the `Locate` answers still to come for its Key.
+    Editing {
+        keys: [Key; 2],
+        due: [u32; 2],
+    },
 }
 
 impl Gesture {
@@ -109,6 +118,9 @@ impl Gesture {
                 start_size,
             },
             &Gesture::MovingHeaders { axis, key, to, .. } => Mode::MovingHeaders { axis, key, to },
+            &Gesture::Editing {
+                keys: [row, col], ..
+            } => Mode::Editing { row, col },
             Gesture::Idle | Gesture::Pressed { .. } => Mode::Idle,
         }
     }
@@ -116,7 +128,7 @@ impl Gesture {
     /// Whether the Grid is following a held button, so the host should keep
     /// pointer events coming even outside the viewport.
     pub fn capturing(&self) -> bool {
-        !matches!(self, Gesture::Idle)
+        !matches!(self, Gesture::Idle | Gesture::Editing { .. })
     }
 }
 
@@ -142,8 +154,10 @@ impl Grid {
 
     fn press(&mut self, x: f32, y: f32, modifiers: Modifiers, clicks: u32) {
         // A press while another is held (a lost release) ends the old one,
-        // keeping a resize made so far.
+        // keeping a resize made so far. A press ends an edit too: a host that
+        // commits on a click elsewhere calls `edit_ended` before passing it on.
         self.end_resize();
+        self.end_edit();
         self.gesture = Gesture::Idle;
         if let Some((axis, position, key)) = self.border_at(x, y) {
             if clicks >= 2 {
@@ -179,6 +193,14 @@ impl Grid {
                     Press::Cell
                 } else {
                     self.select_cell(cell);
+                    if clicks >= 2
+                        && let [
+                            FocusEnd { key: Some(row), .. },
+                            FocusEnd { key: Some(col), .. },
+                        ] = cell
+                    {
+                        self.push(Effect::Activated { row, col });
+                    }
                     Press::Cell
                 }
             }
@@ -258,7 +280,7 @@ impl Grid {
                     self.set_size(axis, key, size);
                 }
             }
-            Gesture::Idle => {}
+            Gesture::Idle | Gesture::Editing { .. } => {}
         }
     }
 
@@ -272,7 +294,7 @@ impl Grid {
 
     /// Ends a resize in progress where it is, reporting the new size if it
     /// changed.
-    fn end_resize(&mut self) {
+    pub(crate) fn end_resize(&mut self) {
         let Gesture::Resizing {
             axis,
             key,
@@ -366,6 +388,9 @@ impl Grid {
 
     fn release(&mut self) {
         self.end_resize();
+        if matches!(self.gesture, Gesture::Editing { .. }) {
+            return;
+        }
         let gesture = std::mem::take(&mut self.gesture);
         if gesture.capturing() {
             self.pending_damage.selection = true;
@@ -440,7 +465,8 @@ impl Grid {
     }
 
     /// Ends any gesture in progress, restoring focus and selection from before
-    /// it, or the resized item's size. The rest of the press (moves, the release) then finds the Grid idle
+    /// it, or the resized item's size; an edit is cancelled with
+    /// `EditCancelled`. The rest of the press (moves, the release) then finds the Grid idle
     /// and does nothing.
     pub(crate) fn cancel(&mut self) {
         let before = match std::mem::take(&mut self.gesture) {
@@ -457,6 +483,11 @@ impl Grid {
             }
             Gesture::MovingHeaders { .. } => {
                 self.pending_damage.selection = true;
+                return;
+            }
+            editing @ Gesture::Editing { .. } => {
+                self.gesture = editing;
+                self.end_edit();
                 return;
             }
             Gesture::Idle => return,

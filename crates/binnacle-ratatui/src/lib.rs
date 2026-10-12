@@ -187,6 +187,38 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
     }
 }
 
+/// Draws a minimal inline editor over the edited cell, if it is visible:
+/// `text` in black on yellow across the cell, ending in a `▏` caret, showing
+/// its end when it is too long. Clipped like [`render`]'s cells. Call it
+/// after [`render`]; the host keeps the text and its own key handling.
+pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buffer) {
+    let Some(rect) = snapshot.editor_rect() else {
+        return;
+    };
+    let area = area.intersection(buf.area);
+    let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
+    let (x0, x1) = (cell(rect.x), cell(rect.x + rect.width));
+    let y = cell(rect.y);
+    let width = usize::try_from(x1 - x0).unwrap_or(0);
+    if width == 0 || y < cell(top) || y >= i64::from(area.height) {
+        return;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let shown = &chars[chars.len().saturating_sub(width - 1)..];
+    let line: String = shown.iter().chain(['▏'].iter()).collect();
+    let style = Style::default().fg(Color::Black).bg(Color::Yellow);
+    let line = format!("{line:<width$}");
+    for (i, ch) in line.chars().enumerate() {
+        let x = x0.saturating_add(i as i64);
+        if x < cell(left).max(0) || x >= i64::from(area.width) {
+            continue;
+        }
+        if let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
+            c.set_char(ch).set_style(style);
+        }
+    }
+}
+
 /// A status line for `snapshot`: the gesture in progress, or a hint when the
 /// pointer is over a header border. A terminal cannot change the pointer's
 /// shape, so this stands in for the cursor hint. Empty when there is nothing
@@ -202,6 +234,7 @@ pub fn status(snapshot: &Snapshot) -> String {
             None => format!("resizing {} {}", noun(axis), key.0),
         },
         Mode::DraggingSelection => "selecting".to_string(),
+        Mode::Editing { row, col } => format!("editing row {} column {}", row.0, col.0),
         Mode::MovingHeaders { axis, to, .. } => {
             let keys: Vec<String> = snapshot
                 .moving_keys()
