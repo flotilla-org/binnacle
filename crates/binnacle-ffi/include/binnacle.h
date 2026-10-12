@@ -37,6 +37,17 @@ extern "C" {
 /* Inside the range, or in a picked row. */
 #define BINNACLE_CELL_SELECTED 2u
 
+/* BinnacleHeader.flags bits. SORTED: the column is in the applied Sort Spec,
+ * DESCENDING says which way and sort_place where (0 first). PENDING: a
+ * requested sort that would change this column is unanswered. SELECTED: the
+ * whole item is selected (the range spans every item across it, or its row
+ * is picked). HOVERED: the pointer is over it. */
+#define BINNACLE_HEADER_SORTED 1u
+#define BINNACLE_HEADER_DESCENDING 2u
+#define BINNACLE_HEADER_PENDING 4u
+#define BINNACLE_HEADER_SELECTED 8u
+#define BINNACLE_HEADER_HOVERED 16u
+
 /* BinnacleSnapshot.mode. Modes the Grid gained after this header read as
  * BINNACLE_MODE_OTHER. */
 #define BINNACLE_MODE_OTHER 0
@@ -49,6 +60,33 @@ extern "C" {
 #define BINNACLE_EFFECT_TEXT_TYPED 1
 #define BINNACLE_EFFECT_FOCUS_CHANGED 2
 #define BINNACLE_EFFECT_SELECTION_CHANGED 3
+/* Answer with binnacle_grid_sort_applied, then tell the Grid how the rows
+ * moved with binnacle_grid_notify. */
+#define BINNACLE_EFFECT_SORT_REQUESTED 4
+/* Answer with binnacle_grid_located. */
+#define BINNACLE_EFFECT_LOCATE 5
+
+/* BinnacleSortColumn.direction. Nulls go last either way. */
+#define BINNACLE_SORT_ASCENDING 0
+#define BINNACLE_SORT_DESCENDING 1
+
+/* binnacle_grid_located's answer: the Key is at position, has left the axis,
+ * or has left and position is where focus should go instead. */
+#define BINNACLE_LOCATED_FOUND 0
+#define BINNACLE_LOCATED_GONE 1
+#define BINNACLE_LOCATED_GONE_SUGGEST 2
+
+/* binnacle_grid_notify's Change Notice: how an axis changed. */
+/* Anything may have changed; n is the new count. Always safe to send. */
+#define BINNACLE_NOTICE_RESET 0
+/* The items are in a new order; the count is unchanged. */
+#define BINNACLE_NOTICE_REORDERED 1
+/* n items inserted before the item at Position at (the count for the end). */
+#define BINNACLE_NOTICE_INSERTED 2
+/* The n items from Position at were removed. */
+#define BINNACLE_NOTICE_REMOVED 3
+/* The content of the n items from Position at changed. */
+#define BINNACLE_NOTICE_CONTENT_CHANGED 4
 
 /* How far binnacle_grid_move_focus goes. */
 #define BINNACLE_FOCUS_ITEM 0
@@ -135,6 +173,17 @@ typedef struct {
   float size;
 } BinnacleStripItem;
 
+/* The header of one visible item, in its band; unclipped like the strip. */
+typedef struct {
+  uint64_t position;
+  uint32_t has_key;
+  uint64_t key;
+  BinnacleRect rect;
+  /* BINNACLE_HEADER_* bits. */
+  uint32_t flags;
+  uint32_t sort_place;
+} BinnacleHeader;
+
 /* The item at the viewport's leading edge and how far into it the view is. */
 typedef struct {
   uint64_t position;
@@ -165,6 +214,10 @@ typedef struct {
   BinnacleThumb thumb;
   const BinnacleStripItem *strip;
   size_t strip_len;
+  /* The headers of the strip's items, in strip order (headers_len ==
+   * strip_len): column headers on BINNACLE_COLS, row headers on ROWS. */
+  const BinnacleHeader *headers;
+  size_t headers_len;
   /* Set when BinnacleSnapshot.has_focus is. */
   BinnacleFocusEnd focus;
   /* Set when BinnacleSnapshot.has_selection_range is. */
@@ -209,6 +262,12 @@ typedef struct {
   size_t hovered_index;
 } BinnacleSnapshot;
 
+/* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
+typedef struct {
+  uint64_t key;
+  uint32_t direction;
+} BinnacleSortColumn;
+
 /* UTF-8 text, length-delimited and not NUL-terminated. */
 typedef struct {
   const uint8_t *data;
@@ -228,6 +287,14 @@ typedef struct {
   /* FOCUS_CHANGED: the focused cell's row and column Keys. */
   uint64_t row;
   uint64_t col;
+  /* SORT_REQUESTED: the requested Sort Spec, columns in order (empty for
+   * unsorted), valid until the next binnacle_grid_poll_effect or
+   * binnacle_grid_free on the same Grid. */
+  const BinnacleSortColumn *sort;
+  size_t sort_len;
+  /* LOCATE: the axis and the Key to find. */
+  uint32_t axis;
+  uint64_t key;
 } BinnacleEffect;
 
 /* A raw pointer event in viewport coordinates (the host's unit, origin at the
@@ -291,6 +358,23 @@ int binnacle_grid_snapshot(BinnacleGrid *grid, BinnacleSnapshot *out);
 
 /* Takes the oldest queued Effect into out: 1 if there was one, else 0. */
 int binnacle_grid_poll_effect(BinnacleGrid *grid, BinnacleEffect *out);
+
+/* Answers. */
+
+/* The answer to SORT_REQUESTED: the Sort Spec now applied, the previous one if
+ * the request was rejected. 0 for an unknown direction. */
+int binnacle_grid_sort_applied(BinnacleGrid *grid, const BinnacleSortColumn *columns,
+                               size_t len);
+
+/* The answer to LOCATE for key on axis: BINNACLE_LOCATED_*, with position
+ * for FOUND and GONE_SUGGEST (ignored for GONE). */
+int binnacle_grid_located(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint32_t answer,
+                          uint64_t position);
+
+/* A Change Notice for axis: BINNACLE_NOTICE_*, with at and n as each
+ * describes (unused ones are ignored). */
+int binnacle_grid_notify(BinnacleGrid *grid, uint32_t axis, uint32_t notice, uint64_t at,
+                         uint64_t n);
 
 /* Input. */
 

@@ -9,8 +9,9 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, Effect, FocusEnd, FocusStep, Grid, HeaderClick, Key, Mode,
-    Modifiers, PointerEvent, PointerKind, Rect, SelectionUnit, StripItem, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, HeaderClick,
+    HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect, SelectionUnit,
+    SortColumn, SortDirection, SortSpec, StripItem, Viewport,
 };
 
 pub const BINNACLE_ROWS: u32 = 0;
@@ -23,6 +24,12 @@ pub const BINNACLE_DAMAGE_POSITIONS: u32 = 4;
 pub const BINNACLE_CELL_FOCUSED: u8 = 1;
 pub const BINNACLE_CELL_SELECTED: u8 = 2;
 
+pub const BINNACLE_HEADER_SORTED: u32 = 1;
+pub const BINNACLE_HEADER_DESCENDING: u32 = 2;
+pub const BINNACLE_HEADER_PENDING: u32 = 4;
+pub const BINNACLE_HEADER_SELECTED: u32 = 8;
+pub const BINNACLE_HEADER_HOVERED: u32 = 16;
+
 pub const BINNACLE_MODE_OTHER: u32 = 0;
 pub const BINNACLE_MODE_IDLE: u32 = 1;
 pub const BINNACLE_MODE_DRAGGING_SELECTION: u32 = 2;
@@ -31,6 +38,21 @@ pub const BINNACLE_EFFECT_OTHER: u32 = 0;
 pub const BINNACLE_EFFECT_TEXT_TYPED: u32 = 1;
 pub const BINNACLE_EFFECT_FOCUS_CHANGED: u32 = 2;
 pub const BINNACLE_EFFECT_SELECTION_CHANGED: u32 = 3;
+pub const BINNACLE_EFFECT_SORT_REQUESTED: u32 = 4;
+pub const BINNACLE_EFFECT_LOCATE: u32 = 5;
+
+pub const BINNACLE_SORT_ASCENDING: u32 = 0;
+pub const BINNACLE_SORT_DESCENDING: u32 = 1;
+
+pub const BINNACLE_LOCATED_FOUND: u32 = 0;
+pub const BINNACLE_LOCATED_GONE: u32 = 1;
+pub const BINNACLE_LOCATED_GONE_SUGGEST: u32 = 2;
+
+pub const BINNACLE_NOTICE_RESET: u32 = 0;
+pub const BINNACLE_NOTICE_REORDERED: u32 = 1;
+pub const BINNACLE_NOTICE_INSERTED: u32 = 2;
+pub const BINNACLE_NOTICE_REMOVED: u32 = 3;
+pub const BINNACLE_NOTICE_CONTENT_CHANGED: u32 = 4;
 
 pub const BINNACLE_FOCUS_ITEM: u32 = 0;
 pub const BINNACLE_FOCUS_PAGE: u32 = 1;
@@ -61,11 +83,14 @@ pub const BINNACLE_HEADER_CLICK_NONE: u32 = 2;
 pub struct BinnacleGrid {
     grid: Grid,
     strips: [Vec<BinnacleStripItem>; 2],
+    headers: [Vec<BinnacleHeader>; 2],
     picked: Vec<u64>,
     rects: Vec<BinnacleRect>,
     cells: Vec<u8>,
     /// The last polled Effect's text.
     text: String,
+    /// The last polled Effect's Sort Spec.
+    sort: Vec<BinnacleSortColumn>,
 }
 
 #[repr(C)]
@@ -119,6 +144,17 @@ pub struct BinnacleStripItem {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleHeader {
+    pub position: u64,
+    pub has_key: u32,
+    pub key: u64,
+    pub rect: BinnacleRect,
+    pub flags: u32,
+    pub sort_place: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BinnacleScrollAnchor {
     pub position: u64,
     pub offset: f32,
@@ -150,6 +186,8 @@ pub struct BinnacleAxisSnapshot {
     pub thumb: BinnacleThumb,
     pub strip: *const BinnacleStripItem,
     pub strip_len: usize,
+    pub headers: *const BinnacleHeader,
+    pub headers_len: usize,
     pub focus: BinnacleFocusEnd,
     pub selection_range: BinnacleRange,
 }
@@ -178,6 +216,13 @@ pub struct BinnacleSnapshot {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleSortColumn {
+    pub key: u64,
+    pub direction: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleText {
     pub data: *const u8,
@@ -194,13 +239,33 @@ impl Default for BinnacleText {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleEffect {
     pub generation: u64,
     pub kind: u32,
     pub text: BinnacleText,
     pub row: u64,
     pub col: u64,
+    pub sort: *const BinnacleSortColumn,
+    pub sort_len: usize,
+    pub axis: u32,
+    pub key: u64,
+}
+
+impl Default for BinnacleEffect {
+    fn default() -> Self {
+        BinnacleEffect {
+            generation: 0,
+            kind: BINNACLE_EFFECT_OTHER,
+            text: BinnacleText::default(),
+            row: 0,
+            col: 0,
+            sort: std::ptr::null(),
+            sort_len: 0,
+            axis: 0,
+            key: 0,
+        }
+    }
 }
 
 #[repr(C)]
@@ -312,6 +377,53 @@ impl From<Rect> for BinnacleRect {
     }
 }
 
+impl From<HeaderPlacement> for BinnacleHeader {
+    fn from(h: HeaderPlacement) -> Self {
+        let (direction, place) = h.sort.applied.unzip();
+        BinnacleHeader {
+            position: h.position,
+            has_key: flag(h.key.is_some()),
+            key: h.key.map_or(0, |k| k.0),
+            rect: h.rect.into(),
+            flags: bit(direction.is_some(), BINNACLE_HEADER_SORTED)
+                | bit(
+                    direction == Some(SortDirection::Descending),
+                    BINNACLE_HEADER_DESCENDING,
+                )
+                | bit(h.sort.pending, BINNACLE_HEADER_PENDING)
+                | bit(h.selected, BINNACLE_HEADER_SELECTED)
+                | bit(h.hovered, BINNACLE_HEADER_HOVERED),
+            sort_place: place.map_or(0, |p| u32::try_from(p).unwrap_or(u32::MAX)),
+        }
+    }
+}
+
+impl From<&SortColumn> for BinnacleSortColumn {
+    fn from(c: &SortColumn) -> Self {
+        BinnacleSortColumn {
+            key: c.key.0,
+            direction: match c.direction {
+                SortDirection::Ascending => BINNACLE_SORT_ASCENDING,
+                SortDirection::Descending => BINNACLE_SORT_DESCENDING,
+            },
+        }
+    }
+}
+
+impl BinnacleSortColumn {
+    fn to_core(self) -> Option<SortColumn> {
+        let direction = match self.direction {
+            BINNACLE_SORT_ASCENDING => SortDirection::Ascending,
+            BINNACLE_SORT_DESCENDING => SortDirection::Descending,
+            _ => return None,
+        };
+        Some(SortColumn {
+            key: Key(self.key),
+            direction,
+        })
+    }
+}
+
 impl From<FocusEnd> for BinnacleFocusEnd {
     fn from(end: FocusEnd) -> Self {
         BinnacleFocusEnd {
@@ -370,10 +482,12 @@ pub extern "C" fn binnacle_grid_new(
     Box::into_raw(Box::new(BinnacleGrid {
         grid: Grid::new(rows, cols),
         strips: Default::default(),
+        headers: Default::default(),
         picked: Vec::new(),
         rects: Vec::new(),
         cells: Vec::new(),
         text: String::new(),
+        sort: Vec::new(),
     }))
 }
 
@@ -565,6 +679,9 @@ impl BinnacleGrid {
             let strip = &mut self.strips[index(axis)];
             strip.clear();
             strip.extend(snap.strip(axis).iter().map(BinnacleStripItem::from));
+            let headers = &mut self.headers[index(axis)];
+            headers.clear();
+            headers.extend(snap.headers(axis).map(BinnacleHeader::from));
         }
         self.picked.clear();
         self.picked.extend(snap.picked().iter().map(|k| k.0));
@@ -589,6 +706,7 @@ impl BinnacleGrid {
             let anchor = snap.scroll_anchor(axis);
             let thumb = snap.thumb(axis);
             let strip = &self.strips[index(axis)];
+            let headers = &self.headers[index(axis)];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -604,6 +722,8 @@ impl BinnacleGrid {
                 },
                 strip: strip.as_ptr(),
                 strip_len: strip.len(),
+                headers: headers.as_ptr(),
+                headers_len: headers.len(),
                 focus: snap
                     .focus(axis)
                     .map(BinnacleFocusEnd::from)
@@ -678,6 +798,19 @@ impl BinnacleGrid {
                 effect.col = col.0;
             }
             Effect::SelectionChanged => effect.kind = BINNACLE_EFFECT_SELECTION_CHANGED,
+            Effect::SortRequested { spec } => {
+                self.sort.clear();
+                self.sort
+                    .extend(spec.columns().iter().map(BinnacleSortColumn::from));
+                effect.kind = BINNACLE_EFFECT_SORT_REQUESTED;
+                effect.sort = self.sort.as_ptr();
+                effect.sort_len = self.sort.len();
+            }
+            Effect::Locate { axis, key } => {
+                effect.kind = BINNACLE_EFFECT_LOCATE;
+                effect.axis = axis_tag(axis);
+                effect.key = key.0;
+            }
             _ => effect.kind = BINNACLE_EFFECT_OTHER,
         }
         Some(effect)
@@ -696,6 +829,80 @@ pub unsafe extern "C" fn binnacle_grid_poll_effect(
     }
     // SAFETY: the caller's contract.
     unsafe { with(grid, |h| put(out, h.poll_effect()?)) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; a non-NULL `columns` is valid for `len`
+/// reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_sort_applied(
+    grid: *mut BinnacleGrid,
+    columns: *const BinnacleSortColumn,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let spec: Option<Vec<SortColumn>> = unsafe { borrowed(columns, len) }
+        .iter()
+        .map(|c| c.to_core())
+        .collect();
+    // SAFETY: the caller's contract.
+    unsafe {
+        with(grid, |h| {
+            spec.map(|s| h.grid.sort_applied(SortSpec::new(s)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_located(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+    answer: u32,
+    position: u64,
+) -> i32 {
+    let answer = match answer {
+        BINNACLE_LOCATED_FOUND => Located::Found(position),
+        BINNACLE_LOCATED_GONE => Located::Gone { suggest: None },
+        BINNACLE_LOCATED_GONE_SUGGEST => Located::Gone {
+            suggest: Some(position),
+        },
+        _ => return 0,
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.located(axis, Key(key), answer))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_notify(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    notice: u32,
+    at: u64,
+    n: u64,
+) -> i32 {
+    let notice = match notice {
+        BINNACLE_NOTICE_RESET => ChangeNotice::Reset(n),
+        BINNACLE_NOTICE_REORDERED => ChangeNotice::Reordered,
+        BINNACLE_NOTICE_INSERTED => ChangeNotice::Inserted { at, n },
+        BINNACLE_NOTICE_REMOVED => ChangeNotice::Removed { at, n },
+        BINNACLE_NOTICE_CONTENT_CHANGED => ChangeNotice::ContentChanged(at..at.saturating_add(n)),
+        _ => return 0,
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.notify(axis, notice))
+        })
+    }
 }
 
 /// # Safety

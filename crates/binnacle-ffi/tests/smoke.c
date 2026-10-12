@@ -15,7 +15,14 @@
     }                                                                      \
   } while (0)
 
-/* The Table Source: row Keys are 1000 + Position, column Keys 2000 + Position. */
+/* The Table Source: row Keys are 1000 + Position, column Keys 2000 +
+ * Position; once sorted descending the 100 rows are in reverse. */
+static int reversed = 0;
+
+static uint64_t row_key(uint64_t position) {
+  return 1000 + (reversed ? 99 - position : position);
+}
+
 static void fill(BinnacleGrid *grid, const BinnacleWindowRequests *requests) {
   for (uint32_t axis = 0; axis < 2; axis++) {
     const BinnacleWindowRequest *r = &requests->axes[axis];
@@ -24,7 +31,7 @@ static void fill(BinnacleGrid *grid, const BinnacleWindowRequests *requests) {
     size_t len = (size_t)(r->end - r->start);
     CHECK(len <= 64);
     for (size_t i = 0; i < len; i++)
-      keys[i] = (axis == BINNACLE_ROWS ? 1000 : 2000) + r->start + i;
+      keys[i] = axis == BINNACLE_ROWS ? row_key(r->start + i) : 2000 + r->start + i;
     CHECK(binnacle_grid_set_window(grid, axis, r->start, keys, len));
   }
 }
@@ -179,6 +186,57 @@ int main(void) {
   frame(grid, &snap);
   CHECK(r->anchor.position == 95 && r->thumb.fraction == 1);
   CHECK(!binnacle_grid_scroll_to(grid, 2, 0.5));
+
+  /* A sort round trip. Two clicks on column 0's header ask for ascending,
+   * then descending. The source rejects the first (answering the previous,
+   * unsorted, spec) and applies the second by reversing the rows, says so,
+   * then answers where the focused row went. */
+  CHECK(binnacle_grid_scroll_to(grid, BINNACLE_ROWS, 0));
+  frame(grid, &snap);
+  click(grid, 6, 0.5f, 0);
+  click(grid, 6, 0.5f, 0);
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_SORT_REQUESTED && effect.sort_len == 1);
+  CHECK(effect.sort[0].key == 2000 && effect.sort[0].direction == BINNACLE_SORT_ASCENDING);
+  BinnacleSortColumn unknown[] = {{.key = 2000, .direction = 7}};
+  CHECK(!binnacle_grid_sort_applied(grid, unknown, 1));
+  CHECK(binnacle_grid_sort_applied(grid, NULL, 0));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_SORT_REQUESTED && effect.sort_len == 1);
+  CHECK(effect.sort[0].key == 2000 && effect.sort[0].direction == BINNACLE_SORT_DESCENDING);
+  frame(grid, &snap);
+  CHECK(c->headers_len == c->strip_len && c->headers[0].key == 2000);
+  CHECK(c->headers[0].flags & BINNACLE_HEADER_PENDING);
+  CHECK(!(c->headers[0].flags & BINNACLE_HEADER_SORTED));
+  BinnacleSortColumn spec = effect.sort[0];
+  reversed = 1;
+  CHECK(binnacle_grid_sort_applied(grid, &spec, 1));
+  CHECK(!binnacle_grid_notify(grid, BINNACLE_ROWS, 9, 0, 0));
+  CHECK(binnacle_grid_notify(grid, BINNACLE_ROWS, BINNACLE_NOTICE_REORDERED, 0, 0));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.axis == BINNACLE_ROWS);
+  uint64_t focused = effect.key;
+  CHECK(focused == 1004);
+  CHECK(!binnacle_grid_located(grid, BINNACLE_ROWS, focused, 9, 0));
+  CHECK(binnacle_grid_located(grid, BINNACLE_ROWS, focused, BINNACLE_LOCATED_FOUND,
+                              99 - (focused - 1000)));
+  drain(grid, &focus);
+  frame(grid, &snap);
+  CHECK(r->strip[0].key == 1099);
+  /* Answered: the arrow shows and nothing is pending. */
+  uint32_t sort_bits = BINNACLE_HEADER_SORTED | BINNACLE_HEADER_DESCENDING | BINNACLE_HEADER_PENDING;
+  CHECK((c->headers[0].flags & sort_bits) == (BINNACLE_HEADER_SORTED | BINNACLE_HEADER_DESCENDING));
+  CHECK(c->headers[0].sort_place == 0 && c->headers[0].rect.x == 4);
+  CHECK(c->headers[0].rect.height == 1 && r->headers[0].rect.width == 4);
+  CHECK(r->focus.position == 95 && r->focus.key == 1004);
+  /* Rows removed and a departed Key: focus takes the suggestion. */
+  CHECK(binnacle_grid_notify(grid, BINNACLE_ROWS, BINNACLE_NOTICE_RESET, 0, 100));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == 1004);
+  CHECK(binnacle_grid_located(grid, BINNACLE_ROWS, 1004, BINNACLE_LOCATED_GONE_SUGGEST, 7));
+  drain(grid, &focus);
+  frame(grid, &snap);
+  CHECK(r->focus.position == 7);
 
   /* Settings, sizes and content sizes. */
   CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_ROWS));

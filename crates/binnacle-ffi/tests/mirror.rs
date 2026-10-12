@@ -6,8 +6,9 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, Effect, FocusStep, Grid, HeaderClick, Key, Mode, Modifiers,
-    PointerEvent, PointerKind, SelectionUnit, Snapshot, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FocusStep, Grid, HeaderClick, Key,
+    Located, Mode, Modifiers, PointerEvent, PointerKind, SelectionUnit, Snapshot, SortColumn,
+    SortDirection, SortSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::TestCase;
@@ -34,6 +35,11 @@ enum Op {
     Unit(SelectionUnit),
     HeaderClick(Axis, HeaderClick),
     Threshold(f32),
+    SortApplied(SortSpec),
+    /// A `located` answer about this Key, or (`None`) about the Key of the
+    /// last `Locate` drained, if any.
+    Located(Option<(Axis, Key)>, Located),
+    Notify(Axis, ChangeNotice),
     /// Text that is not UTF-8: refused.
     BadText(Vec<u8>),
     /// An input with an unknown tag: refused.
@@ -155,10 +161,78 @@ fn len(tc: &TestCase) -> f32 {
     ))
 }
 
+/// A Key the Window on `axis` may hold (see [`keys`]).
+#[hegel::composite]
+fn key(tc: &TestCase, axis: Axis) -> Key {
+    let base: u64 = if axis == Axis::Rows { 1000 } else { 5000 };
+    Key(base + tc.draw(gs::integers::<u64>().max_value(12)))
+}
+
+/// A Position or a number of items, usually small enough to touch the
+/// Window.
+#[hegel::composite]
+fn position(tc: &TestCase) -> u64 {
+    tc.draw(hegel::one_of!(
+        gs::integers::<u64>().max_value(12),
+        gs::integers::<u64>().max_value(12),
+        gs::integers::<u64>()
+    ))
+}
+
+/// An answer the Table Source might send: a sort, a `located` (often for
+/// the Key the Grid asked about), or a Change Notice.
+#[hegel::composite]
+fn answer(tc: &TestCase) -> Op {
+    let axis = tc.draw(axes());
+    match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => {
+            let cols =
+                tc.draw(gs::vecs(hegel::tuples!(key(Axis::Cols), gs::booleans())).max_size(3));
+            Op::SortApplied(SortSpec::new(
+                cols.into_iter()
+                    .map(|(key, descending)| SortColumn {
+                        key,
+                        direction: if descending {
+                            SortDirection::Descending
+                        } else {
+                            SortDirection::Ascending
+                        },
+                    })
+                    .collect(),
+            ))
+        }
+        1 => {
+            let answer = match tc.draw(gs::integers::<u8>().max_value(2)) {
+                0 => Located::Found(tc.draw(position())),
+                1 => Located::Gone { suggest: None },
+                _ => Located::Gone {
+                    suggest: Some(tc.draw(position())),
+                },
+            };
+            let about = tc
+                .draw(gs::weighted_booleans(0.25))
+                .then(|| (axis, tc.draw(key(axis))));
+            Op::Located(about, answer)
+        }
+        _ => {
+            let (at, n) = (tc.draw(position()), tc.draw(position()));
+            let notice = match tc.draw(gs::integers::<u8>().max_value(4)) {
+                0 => ChangeNotice::Reset(n),
+                1 => ChangeNotice::Reordered,
+                2 => ChangeNotice::Inserted { at, n },
+                3 => ChangeNotice::Removed { at, n },
+                _ => ChangeNotice::ContentChanged(at..at.saturating_add(n)),
+            };
+            Op::Notify(axis, notice)
+        }
+    }
+}
+
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(13)) {
+    match tc.draw(gs::integers::<u8>().max_value(15)) {
+        14 | 15 => tc.draw(answer()),
         0 | 1 | 11 => Op::Frame(tc.draw(len()), tc.draw(len())),
         2 => Op::Pointer(tc.draw(pointer())),
         3 | 12 | 13 => {
@@ -204,7 +278,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(8))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(13))),
     }
 }
 
@@ -290,7 +364,18 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             5 => binnacle_grid_scroll_to(h, 2, 1.0),
             6 => binnacle_grid_set_selection_unit(h, 2),
             7 => binnacle_grid_set_header_click(h, ROWS, 3),
-            _ => binnacle_grid_set_size(h, 2, 0, 3.0),
+            8 => binnacle_grid_set_size(h, 2, 0, 3.0),
+            9 => {
+                let unknown = BinnacleSortColumn {
+                    key: 5000,
+                    direction: 2,
+                };
+                binnacle_grid_sort_applied(h, &unknown, 1)
+            }
+            10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
+            11 => binnacle_grid_located(h, 2, 1000, 0, 0),
+            12 => binnacle_grid_notify(h, ROWS, 5, 0, 0),
+            _ => binnacle_grid_notify(h, 2, 1, 0, 0),
         }
     }
 }
@@ -329,6 +414,29 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             }
             assert!(same_f32(got.offset, want.offset));
             assert!(same_f32(got.size, want.size));
+        }
+        let headers = unsafe { slice::from_raw_parts(a.headers, a.headers_len) };
+        let expected: Vec<_> = rust.headers(axis).collect();
+        assert_eq!(headers.len(), expected.len(), "{axis:?} headers length");
+        for (got, want) in headers.iter().zip(&expected) {
+            assert_eq!(got.position, want.position);
+            assert_eq!(got.has_key != 0, want.key.is_some());
+            assert_eq!(got.key, want.key.map_or(0, |k| k.0));
+            let r = &want.rect;
+            assert!(
+                same_f32(got.rect.x, r.x)
+                    && same_f32(got.rect.y, r.y)
+                    && same_f32(got.rect.width, r.width)
+                    && same_f32(got.rect.height, r.height)
+            );
+            let (direction, place) = want.sort.applied.unzip();
+            let flags = u32::from(direction.is_some())
+                | u32::from(direction == Some(SortDirection::Descending)) << 1
+                | u32::from(want.sort.pending) << 2
+                | u32::from(want.selected) << 3
+                | u32::from(want.hovered) << 4;
+            assert_eq!(got.flags, flags, "{want:?}");
+            assert_eq!(got.sort_place as usize, place.unwrap_or(0));
         }
         assert_eq!(c.has_focus != 0, rust.focus(axis).is_some());
         if let Some(f) = rust.focus(axis) {
@@ -397,29 +505,54 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     }
 }
 
-/// Drains both queues and checks they carried the same Effects.
-unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) {
+/// Drains both queues and checks they carried the same Effects; returns
+/// the last `Locate` drained.
+unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, Key)> {
+    let mut asked = None;
     loop {
         let mut c = BinnacleEffect::default();
         let polled = unsafe { binnacle_grid_poll_effect(h, &mut c) };
         let Some(want) = grid.poll_effect() else {
             assert_eq!(polled, 0, "an extra Effect: {c:?}");
-            return;
+            return asked;
         };
         assert_eq!(polled, 1, "missing {want:?}");
         assert_eq!(c.generation, want.generation);
-        let (kind, row, col) = match &want.effect {
+        let mut spec = Vec::new();
+        let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
                 let got = unsafe { slice::from_raw_parts(c.text.data, c.text.len) };
                 assert_eq!(got, text.as_bytes());
-                (1, 0, 0)
+                (1, 0, 0, 0, 0)
             }
-            Effect::FocusChanged { row, col } => (2, row.0, col.0),
-            Effect::SelectionChanged => (3, 0, 0),
+            Effect::FocusChanged { row, col } => (2, row.0, col.0, 0, 0),
+            Effect::SelectionChanged => (3, 0, 0, 0, 0),
+            Effect::SortRequested { spec: s } => {
+                spec = s.columns().to_vec();
+                (4, 0, 0, 0, 0)
+            }
+            Effect::Locate { axis, key } => {
+                asked = Some((*axis, *key));
+                (5, 0, 0, tag(*axis), key.0)
+            }
             #[allow(unreachable_patterns)] // Effects added to the Grid later are OTHER.
-            _ => (0, 0, 0),
+            _ => (0, 0, 0, 0, 0),
         };
-        assert_eq!((c.kind, c.row, c.col), (kind, row, col));
+        assert_eq!(
+            (c.kind, c.row, c.col, c.axis, c.key),
+            (kind, row, col, axis, key)
+        );
+        let sort = match c.sort.is_null() {
+            true => &[][..],
+            false => unsafe { slice::from_raw_parts(c.sort, c.sort_len) },
+        };
+        assert!(!c.sort.is_null() || c.sort_len == 0);
+        let sort: Vec<(u64, u32)> = sort.iter().map(|s| (s.key, s.direction)).collect();
+        let want: Vec<(u64, u32)> = spec
+            .iter()
+            .map(|s| (s.key.0, u32::from(s.direction == SortDirection::Descending)))
+            .collect();
+        assert_eq!(sort, want);
     }
 }
 
@@ -444,6 +577,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
     let mut grid = Grid::new(configs[0], configs[1]);
     // Start with a frame so pointer input can hit the laid-out Grid.
     let first = Op::Frame(tc.draw(len()), tc.draw(len()));
+    let mut asked = None;
     let ops = [first]
         .into_iter()
         .chain(tc.draw(gs::vecs(op()).min_size(5).max_size(60)));
@@ -529,6 +663,41 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_drag_threshold(t);
                     binnacle_grid_set_drag_threshold(h, t)
                 }
+                Op::SortApplied(spec) => {
+                    let c: Vec<BinnacleSortColumn> = spec
+                        .columns()
+                        .iter()
+                        .map(|s| BinnacleSortColumn {
+                            key: s.key.0,
+                            direction: u32::from(s.direction == SortDirection::Descending),
+                        })
+                        .collect();
+                    grid.sort_applied(spec);
+                    binnacle_grid_sort_applied(h, c.as_ptr(), c.len())
+                }
+                Op::Located(about, answer) => {
+                    let Some((axis, key)) = about.or(asked) else {
+                        continue;
+                    };
+                    grid.located(axis, key, answer);
+                    let (answer, position) = match answer {
+                        Located::Found(p) => (0, p),
+                        Located::Gone { suggest: None } => (1, 0),
+                        Located::Gone { suggest: Some(p) } => (2, p),
+                    };
+                    binnacle_grid_located(h, tag(axis), key.0, answer, position)
+                }
+                Op::Notify(axis, notice) => {
+                    let (kind, at, n) = match &notice {
+                        ChangeNotice::Reset(count) => (0, 0, *count),
+                        ChangeNotice::Reordered => (1, 0, 0),
+                        ChangeNotice::Inserted { at, n } => (2, *at, *n),
+                        ChangeNotice::Removed { at, n } => (3, *at, *n),
+                        ChangeNotice::ContentChanged(r) => (4, r.start, r.end - r.start),
+                    };
+                    grid.notify(axis, notice);
+                    binnacle_grid_notify(h, tag(axis), kind, at, n)
+                }
                 Op::BadText(bytes) => {
                     assert_eq!(binnacle_grid_type_text(h, bytes.as_ptr(), bytes.len()), 0);
                     1
@@ -539,7 +708,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 }
             };
             assert_eq!(ok, 1);
-            check_effects(h, &mut grid);
+            asked = check_effects(h, &mut grid).or(asked);
         }
     }
     unsafe { binnacle_grid_free(h) };
