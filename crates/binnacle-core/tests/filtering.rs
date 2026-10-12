@@ -137,3 +137,28 @@ fn a_row_header_press_whose_row_a_filter_removes_selects_nothing_on_release() {
     assert_eq!(snap.focus(Axis::Rows), None);
     assert_eq!(snap.selection_range(), None);
 }
+
+#[test]
+fn cancel_after_a_departed_key_is_located_keeps_focus_on_the_suggestion() {
+    let mut s = records();
+    s.frame(V);
+    click(&mut s, 5.0, 2.0, Modifiers::CTRL);
+    let mut out = s.step("pick and focus record 1 (value 3)", V);
+    // Filter it out behind the Grid, then press a row header before the
+    // pump answers `Locate`: the press saves record 1 as the focus to restore.
+    filter(&mut s, |r| r[0] != Some(3));
+    s.input(|g| g.pointer(PointerEvent::down(1.0, 3.5)));
+    out += &s.step(
+        "filter out record 1 and press row 2's header: focus moves to the suggestion, record 2",
+        V,
+    );
+    s.input(|g| g.action(Action::Cancel));
+    out += &s.step(
+        "cancel the press: focus stays on record 2 and the departed pick does not come back",
+        V,
+    );
+    insta::assert_snapshot!(out);
+    let snap = s.grid.snapshot();
+    assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(2)));
+    assert_eq!(snap.picked(), &[] as &[Key]);
+}
