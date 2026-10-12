@@ -104,6 +104,12 @@ impl<R> MemorySource<R> {
         Ok(())
     }
 
+    /// See [`InMemoryTableSource::move_columns`]. Sorting names columns by
+    /// Key, so it is unaffected by the column order.
+    pub fn move_columns(&mut self, keys: &[Key], to: Position) {
+        self.table.move_columns(keys, to);
+    }
+
     pub fn count(&self, axis: Axis) -> u64 {
         self.table.count(axis)
     }

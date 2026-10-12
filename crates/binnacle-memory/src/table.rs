@@ -48,8 +48,9 @@ impl AxisOrder {
         self.positions = None;
     }
 
-    fn locate(&mut self, key: Key) -> Located {
-        let logical = match &self.keys {
+    /// The Logical Index of the item with `key`, if any.
+    fn logical(&mut self, key: Key) -> Option<u32> {
+        match &self.keys {
             None => u32::try_from(key.0)
                 .ok()
                 .filter(|&i| (i as usize) < self.len),
@@ -63,8 +64,11 @@ impl AxisOrder {
                 })
                 .get(&key)
                 .copied(),
-        };
-        let Some(logical) = logical else {
+        }
+    }
+
+    fn locate(&mut self, key: Key) -> Located {
+        let Some(logical) = self.logical(key) else {
             return Located::Gone { suggest: None };
         };
         let position = match &self.remap {
@@ -82,6 +86,37 @@ impl AxisOrder {
 
     fn count(&self) -> u64 {
         self.len as u64
+    }
+
+    /// Moves the items with `keys`, in that order, to just before the item at
+    /// Position `to` in the current order.
+    fn move_items(&mut self, keys: &[Key], to: Position) {
+        let mut moving = vec![false; self.len];
+        let mut moved = Vec::with_capacity(keys.len());
+        for &key in keys {
+            if let Some(i) = self.logical(key)
+                && !std::mem::replace(&mut moving[i as usize], true)
+            {
+                moved.push(i);
+            }
+        }
+        if moved.is_empty() {
+            return;
+        }
+        let order: Vec<u32> = match &self.remap {
+            None => (0..self.len as u32).collect(),
+            Some(remap) => remap.clone(),
+        };
+        let to = (to.min(self.count())) as usize;
+        let stays = |i: &&u32| !moving[**i as usize];
+        let remap = order[..to]
+            .iter()
+            .filter(stays)
+            .chain(&moved)
+            .chain(order[to..].iter().filter(stays))
+            .copied()
+            .collect();
+        self.set_remap(Some(remap));
     }
 
     fn window(&self, range: Range<Position>) -> Vec<Key> {
@@ -161,6 +196,14 @@ impl InMemoryTableSource {
     /// change, so hosts that never locate never pay for them.
     pub fn locate(&mut self, axis: Axis, key: Key) -> Located {
         self.axis_mut(axis).locate(key)
+    }
+
+    /// Moves the columns with `keys`, in the order given, to just before the
+    /// column at Position `to` (the count for the end), Positions as they
+    /// were before the move: the answer to `MoveRequested` on the columns.
+    /// Keys no column has, and repeats, are skipped. Row order is untouched.
+    pub fn move_columns(&mut self, keys: &[Key], to: Position) {
+        self.axis_mut(Axis::Cols).move_items(keys, to);
     }
 
     /// Sorts the rows by `spec`, with `keys[i]` holding the sort keys of
