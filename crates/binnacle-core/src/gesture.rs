@@ -490,8 +490,17 @@ impl Grid {
             Gesture::Idle => return,
         };
         self.pending_damage.selection = true;
-        if self.focus != before.focus {
-            self.focus = before.focus;
+        // An end saved without its Key takes it from the Window, as
+        // `set_window` would have.
+        let focus = before.focus.map(|mut f| {
+            for axis in Axis::ALL {
+                let end = &mut f[axis.index()];
+                end.key = end.key.or(self.axis(axis).measure.key_at(end.position));
+            }
+            f
+        });
+        if self.focus != focus {
+            self.focus = focus;
             self.announce_focus();
         }
         self.set_selection(before.selection);

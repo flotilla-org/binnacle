@@ -188,26 +188,38 @@ impl Grid {
     /// picks, and if it was focused move focus to `suggest`, else to its last
     /// known Position, clamped to the count.
     fn left(&mut self, axis: Axis, key: Key, focused: bool, suggest: Option<Position>) {
-        self.whereabouts[axis.index()] = None;
+        let i = axis.index();
+        self.whereabouts[i] = None;
         if axis == Axis::Rows && self.selection.picked(key) {
             let mut selection = self.selection.clone();
             selection.toggle_pick(key);
             self.set_selection(selection);
         }
-        if !focused {
-            return;
+        if focused && let Some(mut f) = self.focus {
+            let st = self.axis(axis);
+            let count = st.measure.count();
+            if count == 0 {
+                self.focus = None;
+            } else {
+                let p = suggest.unwrap_or(f[i].position).min(count - 1);
+                f[i] = FocusEnd::at(st, p);
+                self.focus = Some(f);
+            }
+            self.announce_focus();
         }
-        let st = self.axis(axis);
-        let count = st.measure.count();
-        let Some(mut f) = self.focus else { return };
-        if count == 0 {
-            self.focus = None;
-        } else {
-            let p = suggest.unwrap_or(f[axis.index()].position).min(count - 1);
-            f[axis.index()] = FocusEnd::at(st, p);
-            self.focus = Some(f);
+        // A gesture under way since the notice would restore the Key on
+        // Cancel: it restores where focus went instead, without the pick.
+        let focus = self.focus;
+        if let Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before } =
+            &mut self.gesture
+        {
+            if before.focus.is_some_and(|b| b[i].key == Some(key)) {
+                before.focus = focus;
+            }
+            if axis == Axis::Rows && before.selection.picked(key) {
+                before.selection.toggle_pick(key);
+            }
         }
-        self.announce_focus();
     }
 
     /// Called once a `located` answer placed the focus: if no axis is still
