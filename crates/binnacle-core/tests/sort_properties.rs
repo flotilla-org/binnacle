@@ -480,6 +480,9 @@ fn buffered_focus_moves_land_where_moves_after_located_would(tc: TestCase) {
         host.frame();
         // A press left held would make the moves stretch a drag.
         host.input(Input::Release);
+        // The release may drop dragged column headers: let the source move
+        // them now, so the sort is the only reorder the moves can precede.
+        host.frame();
         host.input(Input::Sort(sort.clone()));
     }
     for m in &moves {

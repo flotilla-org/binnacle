@@ -402,3 +402,38 @@ fn a_reorder_that_cancels_a_drag_withdraws_the_announcement_of_the_dragged_focus
     assert_eq!(snap.mode(), Mode::Idle);
     assert_eq!(snap.focus(Axis::Rows), None);
 }
+
+/// Regression (found by the reveal property): a focus move made while
+/// `located` is pending waits, and a click before the answer discards it, so
+/// the click's cell is focused and, as clicks never scroll, nothing scrolls.
+#[test]
+fn a_click_discards_a_focus_move_waiting_for_located_and_scrolls_nothing() {
+    let mut s = Scenario::identity(AxisConfig::new(1, 1.0), AxisConfig::new(50, 1.0));
+    let wide = Viewport::new(4.0, 1.0);
+    s.frame(wide);
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Cols,
+            fraction: 1.0,
+        })
+    });
+    s.frame(wide);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(3.5, 0.5));
+        g.pointer(PointerEvent::up(3.5, 0.5));
+        g.notify(Axis::Cols, ChangeNotice::Reordered);
+        g.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Item,
+            forward: false,
+            extend: false,
+        });
+        g.pointer(PointerEvent::down(0.5, 0.5));
+        g.pointer(PointerEvent::up(0.5, 0.5));
+    });
+    // A narrower viewport keeps the end in view, leaving column 46 off screen.
+    let snap = s.frame(Viewport::new(2.0, 1.0));
+    assert_eq!(snap.focus(Axis::Cols).map(|f| f.position), Some(46));
+    assert_eq!(snap.scroll_anchor(Axis::Cols).position, 48);
+    assert_eq!(snap.focus_rect(), None);
+}

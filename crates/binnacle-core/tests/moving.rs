@@ -278,3 +278,37 @@ fn a_move_request_drains_before_focus_and_selection_news() {
         "{drained:?}"
     );
 }
+
+/// Regression (found by the buffered-moves property): focus placed while a
+/// dropped column's move is still unanswered is placed by Position, gets that
+/// column's Key, and follows the Key when the source moves the column.
+#[test]
+fn focus_placed_before_a_move_is_answered_follows_its_column() {
+    let mut s = records();
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(14.0, 0.5));
+        g.pointer(PointerEvent::moved(5.0, 0.5));
+        g.pointer(PointerEvent::up(5.0, 0.5));
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: binnacle_core::FocusStep::Item,
+            forward: true,
+            extend: false,
+        });
+    });
+    let mut out = s.step("drop column 1 first, then place focus before the pump", V);
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: binnacle_core::FocusStep::Item,
+            forward: true,
+            extend: false,
+        })
+    });
+    out += &s.step(
+        "focus stayed on column 0's Key, now at Position 1; move right",
+        V,
+    );
+    insta::assert_snapshot!(out);
+}
