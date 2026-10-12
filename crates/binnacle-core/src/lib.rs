@@ -10,15 +10,17 @@
 
 mod axis;
 mod effect;
+mod focus;
 mod grid;
 mod measure;
 mod snapshot;
 mod sort;
 mod types;
 
-pub use effect::{Action, Effect, Stamped};
+pub use effect::{Action, Effect, FocusStep, Stamped};
+pub use focus::FocusEnd;
 pub use grid::{AxisConfig, Grid, WindowRequests};
 pub use measure::{AxisMeasure, ItemAt, WindowChange};
-pub use snapshot::{Damage, ScrollAnchor, Snapshot, StripItem, Thumb};
+pub use snapshot::{CellState, Damage, Rect, ScrollAnchor, Snapshot, StripItem, Thumb};
 pub use sort::{Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};

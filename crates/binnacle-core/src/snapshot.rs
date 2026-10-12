@@ -1,3 +1,4 @@
+use crate::focus::FocusEnd;
 use crate::grid::Grid;
 use crate::types::{Axis, Generation, Key, Position};
 
@@ -35,6 +36,21 @@ pub struct ScrollAnchor {
 pub struct Thumb {
     pub fraction: f64,
     pub size: f64,
+}
+
+/// A viewport-relative rectangle in the host's unit.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// How to draw one cell, from [`Snapshot::cell_state`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CellState {
+    pub focused: bool,
 }
 
 /// What changed since the previous Snapshot, so a host can skip work.
@@ -119,5 +135,47 @@ impl<'a> Snapshot<'a> {
 
     pub fn cols(&self) -> &'a [StripItem] {
         self.strip(Axis::Cols)
+    }
+
+    /// The focused item on `axis`, `None` while focus is unplaced (on both
+    /// axes at once).
+    pub fn focus(&self, axis: Axis) -> Option<FocusEnd> {
+        self.grid.focus.map(|f| f[axis.index()])
+    }
+
+    /// The focused cell's item on `axis` in its Strip, if it is visible and its
+    /// Key is known.
+    fn focused_item(&self, axis: Axis) -> Option<&'a StripItem> {
+        let end = self.focus(axis)?;
+        let strip = self.strip(axis);
+        let i = end.position.checked_sub(strip.first()?.position)?;
+        let item = strip.get(usize::try_from(i).ok()?)?;
+        (end.key.is_some() && item.key == end.key).then_some(item)
+    }
+
+    /// The focused cell's rectangle, unclipped, if it is visible and its Keys
+    /// are known.
+    pub fn focus_rect(&self) -> Option<Rect> {
+        let row = self.focused_item(Axis::Rows)?;
+        let col = self.focused_item(Axis::Cols)?;
+        Some(Rect {
+            x: col.offset,
+            y: row.offset,
+            width: col.size,
+            height: row.size,
+        })
+    }
+
+    /// How to draw the cell where `row` and `col` from this Snapshot's Strips
+    /// cross.
+    pub fn cell_state(&self, row: &StripItem, col: &StripItem) -> CellState {
+        let on = |axis, item: &StripItem| {
+            self.focus(axis).is_some_and(|f| {
+                f.key.is_some() && f.position == item.position && f.key == item.key
+            })
+        };
+        CellState {
+            focused: on(Axis::Rows, row) && on(Axis::Cols, col),
+        }
     }
 }

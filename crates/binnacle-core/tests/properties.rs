@@ -5,7 +5,9 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Position, Snapshot, Viewport};
+use binnacle_core::{
+    Action, Axis, AxisConfig, Effect, FocusStep, Grid, Key, Position, Snapshot, Viewport,
+};
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
 use hegel::generators as gs;
@@ -105,7 +107,16 @@ fn input(tc: &TestCase) -> Input {
         gs::floats::<f32>().max_value(0.0),
         gs::sampled_from(vec![f32::NAN, f32::INFINITY]),
     );
+    let focus_step = gs::sampled_from(vec![FocusStep::Item, FocusStep::Page, FocusStep::Edge]);
     tc.draw(hegel::one_of!(
+        hegel::tuples!(axis(), focus_step, gs::booleans(), gs::booleans()).map(
+            |(axis, by, forward, extend)| Input::Action(Action::MoveFocus {
+                axis,
+                by,
+                forward,
+                extend
+            })
+        ),
         hegel::tuples!(distance(), distance())
             .map(|(dx, dy)| Input::Action(Action::Scroll { dx, dy })),
         hegel::tuples!(
@@ -215,6 +226,29 @@ impl Model {
             .unwrap_or(self.config.default_size)
     }
 
+    /// The largest item size plus the Gap: the most an anchor offset spans.
+    fn largest_stride(&self) -> f32 {
+        let content = self.content.as_ref().map_or(0.0, |c| {
+            c.sizes
+                .iter()
+                .filter(|s| s.is_finite() && **s > 0.0)
+                .fold(0.0f32, |a, &s| a.max(s.max(c.hint)))
+        });
+        let largest = self
+            .overrides
+            .values()
+            .fold(self.config.default_size.max(content), |a, &b| a.max(b));
+        (largest + self.config.gap).min(f32::MAX)
+    }
+
+    /// Whether an anchor offset, an f32 within its item's stride, can place
+    /// every item precisely: no item is thinner than one f32 step of the
+    /// largest stride, which the anchor's rounding may skip.
+    fn anchorable(&self) -> bool {
+        let stride = self.largest_stride();
+        self.smallest() >= next_f32(stride) - stride
+    }
+
     fn smallest(&self) -> f32 {
         let hint = self.content.as_ref().map_or(f32::INFINITY, |c| c.hint);
         self.overrides
@@ -237,10 +271,22 @@ const ALL: Knobs = Knobs {
     content: true,
 };
 
-/// Draws a table, then a few steps of random inputs each followed by a frame
-/// at a random viewport, handing every Snapshot to `check` with the models of
-/// both axes.
-fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &[Model; 2])) {
+/// What one step of [`frames`] did before its frame.
+struct Step<'a> {
+    models: &'a [Model; 2],
+    /// The Effects the host drained after this step's inputs.
+    drained: &'a [Effect],
+    /// Whether any input was a focus move.
+    moved_focus: bool,
+    /// Whether the last input that scrolls was a focus move, so the frame
+    /// must show the focused cell.
+    reveals_focus: bool,
+}
+
+/// Draws a table, then a few steps of random inputs, each followed by a pump
+/// and a frame at a random viewport, handing every Snapshot to `check` with
+/// what the step did.
+fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) {
     let rows = tc.draw(axis_config());
     let cols = tc.draw(axis_config());
     let mut contents = [None, None];
@@ -266,7 +312,16 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &[Model;
     let mut s = Scenario::new(Grid::new(rows, cols), source);
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
     for _ in 0..steps {
+        let (mut moved_focus, mut reveals_focus) = (false, false);
         for input in tc.draw(gs::vecs(input()).max_size(4)) {
+            match &input {
+                Input::Action(Action::MoveFocus { .. }) => {
+                    moved_focus = true;
+                    reveals_focus = true;
+                }
+                Input::Action(_) => reveals_focus = false,
+                Input::SetSize(..) => {}
+            }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
                 Input::SetSize(axis, key, size) if knobs.resize => {
@@ -283,7 +338,14 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &[Model;
             extent(c.config, c.smallest()),
             extent(r.config, r.smallest())
         ));
-        check(&s.frame(Viewport::new(w, h)), &models);
+        let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+        let step = Step {
+            models: &models,
+            drained: &drained,
+            moved_focus,
+            reveals_focus,
+        };
+        check(&s.frame(Viewport::new(w, h)), &step);
     }
 }
 
@@ -308,7 +370,8 @@ fn next_f32(x: f32) -> f32 {
 
 #[hegel::test(test_cases = 2000)]
 fn strips_are_ordered_separated_by_the_gap_and_cover_the_viewport(tc: TestCase) {
-    frames(&tc, ALL, |snap, models| {
+    frames(&tc, ALL, |snap, step| {
+        let models = step.models;
         for axis in Axis::ALL {
             let model = &models[index(axis)];
             let gap = snap.gap(axis);
@@ -419,7 +482,8 @@ fn every_strip_item_carries_the_key_the_source_gave_for_its_position(tc: TestCas
 
 #[hegel::test(test_cases = 2000)]
 fn the_scroll_anchor_and_thumb_stay_in_bounds(tc: TestCase) {
-    frames(&tc, ALL, |snap, models| {
+    frames(&tc, ALL, |snap, step| {
+        let models = step.models;
         for axis in Axis::ALL {
             let model = &models[index(axis)];
             let anchor = snap.scroll_anchor(axis);
@@ -455,7 +519,8 @@ fn scrolling_stops_where_the_last_item_ends_the_viewport(tc: TestCase) {
             resize: false,
             content: false,
         },
-        |snap, models| {
+        |snap, step| {
+            let models = step.models;
             for axis in Axis::ALL {
                 let (start, end) = body(snap, axis);
                 let count = snap.count(axis);
@@ -593,4 +658,218 @@ fn a_gap_that_is_not_finite_and_non_negative_is_rejected(tc: TestCase) {
     };
     let built = std::panic::catch_unwind(|| Grid::new(rows, cols));
     assert!(built.is_err(), "Grid accepted Gap {bad} on {axis:?}");
+}
+
+#[hegel::test(test_cases = 2000)]
+fn focus_is_unplaced_or_below_the_count_on_both_axes(tc: TestCase) {
+    frames(&tc, ALL, |snap, _| {
+        let ends = Axis::ALL.map(|axis| snap.focus(axis));
+        assert_eq!(
+            ends[0].is_some(),
+            ends[1].is_some(),
+            "focus placed on one axis only: {ends:?}"
+        );
+        for axis in Axis::ALL {
+            if let Some(end) = snap.focus(axis) {
+                assert!(
+                    end.position < snap.count(axis),
+                    "{axis:?}: {end:?} past the count {}",
+                    snap.count(axis)
+                );
+                // The identity source's Key for a Position is the Position.
+                assert!(
+                    end.key.is_none_or(|k| k == Key(end.position)),
+                    "{axis:?}: {end:?}"
+                );
+            }
+        }
+    });
+}
+
+/// A focus move not overridden by a later scroll shows the focused cell: its
+/// item on each axis is in the Strip with its Key, and lies wholly inside the
+/// body when it fits there.
+#[hegel::test(test_cases = 2000)]
+fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
+    frames(&tc, ALL, |snap, step| {
+        if !step.reveals_focus {
+            return;
+        }
+        let placed = Axis::ALL.iter().all(|&a| snap.count(a) > 0);
+        assert_eq!(snap.focus(Axis::Rows).is_some(), placed);
+        for axis in Axis::ALL {
+            let Some(end) = snap.focus(axis) else {
+                return;
+            };
+            let (start, stop) = body(snap, axis);
+            let model = &step.models[index(axis)];
+            let strip = snap.strip(axis);
+            // Strip offsets step in f32, each step rounding by up to one f32
+            // step at the far edge; items thinner than that drift can be laid
+            // out past the item the anchor shows.
+            let drift = (strip.len() as f32 + 2.0) * (next_f32(stop) - stop);
+            let resolvable = model.smallest() >= drift && model.anchorable();
+            if start >= stop || !resolvable {
+                continue;
+            }
+            let item = strip.iter().find(|i| i.position == end.position);
+            let Some(item) = item else {
+                panic!("{axis:?}: focused {end:?} not in the Strip {strip:?}");
+            };
+            assert_eq!(item.key, Some(Key(end.position)), "{axis:?}: {item:?}");
+            assert_eq!(end.key, item.key, "{axis:?}: focus Key not completed");
+            if item.size <= stop - start {
+                // Slack for f32 stepping across the Strip, and for the anchor
+                // offset, rounded toward the start within the item's stride.
+                let stride = (item.size + snap.gap(axis)).min(f32::MAX);
+                let slack = drift
+                    + (4.0 * f64::EPSILON * f64::from(stride)) as f32
+                    + (next_f32(stride) - stride);
+                assert!(
+                    item.offset >= start - slack && item.end() <= stop + slack,
+                    "{axis:?}: {item:?} not inside the body {start}..{stop}"
+                );
+            }
+        }
+        if snap.focus(Axis::Rows).is_some() {
+            assert!(snap.focus_rect().is_some() || !resolvable_body(snap, step));
+        }
+    });
+}
+
+/// Whether both axes have a body and sizes f32 offsets place precisely, so a
+/// Strip can show the focused cell (see the property above).
+fn resolvable_body(snap: &Snapshot, step: &Step) -> bool {
+    Axis::ALL.iter().all(|&axis| {
+        let (start, stop) = body(snap, axis);
+        let model = &step.models[index(axis)];
+        let drift = (snap.strip(axis).len() as f32 + 2.0) * (next_f32(stop) - stop);
+        start < stop && model.smallest() >= drift && model.anchorable()
+    })
+}
+
+/// Each drain holds at most one `FocusChanged`, naming the cell focused when
+/// drained; and once a frame shows the focused cell's Keys, the host has heard
+/// of them by the next drain unless focus moved again.
+#[hegel::test(test_cases = 2000)]
+fn focus_changed_comes_once_per_drain_and_names_the_focused_cell(tc: TestCase) {
+    let mut shown: Option<(Key, Key)> = None;
+    let mut heard: Option<(Key, Key)> = None;
+    frames(&tc, ALL, |snap, step| {
+        let changes: Vec<(Key, Key)> = step
+            .drained
+            .iter()
+            .filter_map(|e| match *e {
+                Effect::FocusChanged { row, col } => Some((row, col)),
+                _ => None,
+            })
+            .collect();
+        assert!(changes.len() <= 1, "{changes:?} in one drain");
+        let focused = snap
+            .focus(Axis::Rows)
+            .zip(snap.focus(Axis::Cols))
+            .map(|(r, c)| (Key(r.position), Key(c.position)));
+        if let Some(&change) = changes.first() {
+            assert_eq!(Some(change), focused, "FocusChanged names another cell");
+            assert_ne!(Some(change), heard, "the host already heard of this cell");
+            heard = Some(change);
+        }
+        if !step.moved_focus && shown.is_some() {
+            assert_eq!(heard, shown, "the host never heard of the focused cell");
+        }
+        let keys = snap.focus(Axis::Rows).zip(snap.focus(Axis::Cols));
+        shown = keys.and_then(|(r, c)| r.key.zip(c.key));
+    });
+}
+
+/// Focus moves land where the spec says, on a fresh Grid where nothing else
+/// scrolls: the first move takes the first visible cell (the Scroll Anchor,
+/// at the start) or goes to its edge; an item move steps one, clamped; an
+/// edge move goes to the first or last item; a page move goes at least one
+/// item that way and no further than a body's length of the smallest items.
+#[hegel::test(test_cases = 2000)]
+fn focus_moves_land_one_item_a_page_or_an_edge_away(tc: TestCase) {
+    let rows = tc.draw(axis_config());
+    let cols = tc.draw(axis_config());
+    let (w, h) = tc.draw(hegel::tuples!(
+        extent(cols, cols.default_size),
+        extent(rows, rows.default_size)
+    ));
+    let viewport = Viewport::new(w, h);
+    let mut s = Scenario::identity(rows, cols);
+    let mut snap_body = [0.0f32; 2];
+    {
+        let snap = s.frame(viewport);
+        for axis in Axis::ALL {
+            snap_body[index(axis)] = snap.extent(axis) - snap.header(axis);
+        }
+    }
+    let counts = [rows.count, cols.count];
+    let mut model: Option<[u64; 2]> = None;
+    let moves = tc.draw(
+        gs::vecs(hegel::tuples!(
+            axis(),
+            gs::sampled_from(vec![FocusStep::Item, FocusStep::Page, FocusStep::Edge]),
+            gs::booleans()
+        ))
+        .min_size(1)
+        .max_size(8),
+    );
+    for (axis, by, forward) in moves {
+        s.input(|g| {
+            g.action(Action::MoveFocus {
+                axis,
+                by,
+                forward,
+                extend: false,
+            })
+        });
+        let snap = s.frame(viewport);
+        let got = snap
+            .focus(Axis::Rows)
+            .zip(snap.focus(Axis::Cols))
+            .map(|(r, c)| [r.position, c.position]);
+        if counts.contains(&0) {
+            assert_eq!(got, None, "focus placed in an empty table");
+            continue;
+        }
+        let i = index(axis);
+        let last = counts[i] - 1;
+        let Some(before) = model else {
+            let mut expected = [0, 0];
+            if by == FocusStep::Edge && forward {
+                expected[i] = last;
+            }
+            assert_eq!(got, Some(expected), "first {by:?} move on {axis:?}");
+            model = got;
+            continue;
+        };
+        let got = got.expect("focus became unplaced");
+        assert_eq!(got[1 - i], before[1 - i], "the other axis moved");
+        let from = before[i];
+        match by {
+            FocusStep::Item if forward => assert_eq!(got[i], (from + 1).min(last)),
+            FocusStep::Item => assert_eq!(got[i], from.saturating_sub(1)),
+            FocusStep::Edge => assert_eq!(got[i], if forward { last } else { 0 }),
+            FocusStep::Page => {
+                let config = [rows, cols][i];
+                let stride = f64::from(config.default_size) + f64::from(config.gap);
+                let most = (f64::from(snap_body[i].max(0.0)) / stride).ceil() as u64 + 1;
+                let moved = got[i].abs_diff(from);
+                let edge = if forward { last } else { 0 };
+                assert!(
+                    (if forward {
+                        got[i] >= from
+                    } else {
+                        got[i] <= from
+                    }) && (moved >= 1 || from == edge)
+                        && (moved <= most.max(1)),
+                    "page {forward} from {from} landed on {} (body {})",
+                    got[i],
+                    snap_body[i]
+                );
+            }
+        }
+        model = Some(got);
+    }
 }

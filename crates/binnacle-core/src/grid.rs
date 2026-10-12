@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 use std::ops::Range;
 
 use crate::axis::AxisState;
-use crate::effect::{Action, Effect, Stamped};
+use crate::effect::{Action, Effect, FocusStep, Stamped};
+use crate::focus::{self, FocusEnd};
 use crate::measure::{AxisMeasure, WindowChange};
 use crate::snapshot::{Damage, Snapshot};
 use crate::types::{Axis, Generation, Key, Position, Viewport};
@@ -75,6 +76,14 @@ pub struct Grid {
     effects: VecDeque<Stamped>,
     pending_damage: Damage,
     pub(crate) damage: Damage,
+    /// The focused cell, one end per axis; `None` while unplaced.
+    pub(crate) focus: Option<[FocusEnd; 2]>,
+    /// The Keys named by the last `FocusChanged` the host drained.
+    heard: Option<(Key, Key)>,
+    /// A focus move asked for the focused cell to be shown and no scroll has
+    /// overridden it; kept until the frame's Snapshot, since the viewport and
+    /// sizes the move was made against may change before then.
+    reveal: bool,
 }
 
 impl Grid {
@@ -91,6 +100,9 @@ impl Grid {
             effects: VecDeque::new(),
             pending_damage: Damage::ALL,
             damage: Damage::NONE,
+            focus: None,
+            heard: None,
+            reveal: false,
         }
     }
 
@@ -118,6 +130,11 @@ impl Grid {
             if self.axis_mut(axis).clamp_anchor() {
                 self.pending_damage.layout = true;
             }
+        }
+        if self.reveal {
+            self.reveal_focus();
+        }
+        for axis in Axis::ALL {
             let st = self.axis(axis);
             let needed = st.needed();
             if !st.window_covers(&needed) {
@@ -131,7 +148,7 @@ impl Grid {
     /// past the count are ignored; Positions left unfilled draw as loading.
     pub fn set_window(&mut self, axis: Axis, start: Position, keys: &[Key]) {
         let change = self.axis_mut(axis).measure.set_keys(start, keys);
-        self.window_changed(change);
+        self.window_changed(axis, change);
     }
 
     /// Like [`Grid::set_window`], with the content size of each item (for
@@ -150,12 +167,22 @@ impl Grid {
             .axis_mut(axis)
             .measure
             .set_keys_sized(start, keys, sizes, min_size);
-        self.window_changed(change);
+        self.window_changed(axis, change);
     }
 
-    fn window_changed(&mut self, change: WindowChange) {
+    fn window_changed(&mut self, axis: Axis, change: WindowChange) {
         self.pending_damage.positions |= change.keys;
         self.pending_damage.layout |= change.sizes;
+        if let Some(f) = &mut self.focus {
+            let end = &mut f[axis.index()];
+            if end.key.is_none() {
+                end.key = self.axes[axis.index()].measure.key_at(end.position);
+                if end.key.is_some() {
+                    self.pending_damage.selection = true;
+                    self.announce_focus();
+                }
+            }
+        }
     }
 
     /// Sets the Size Override for the item with `key` on `axis`, which follows
@@ -169,17 +196,89 @@ impl Grid {
     pub fn action(&mut self, action: Action) {
         match action {
             Action::TypeText(text) => self.push(Effect::TextTyped { text }),
+            Action::MoveFocus {
+                axis, by, forward, ..
+            } => self.move_focus(axis, by, forward),
             Action::Scroll { dx, dy } => {
+                self.reveal = false;
                 let moved =
                     self.axis_mut(Axis::Cols).scroll(dx) | self.axis_mut(Axis::Rows).scroll(dy);
                 self.pending_damage.layout |= moved;
             }
             Action::ScrollTo { axis, fraction } => {
+                self.reveal = false;
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_to(fraction);
             }
             Action::ScrollBy { axis, items } => {
+                self.reveal = false;
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_items(items);
             }
+        }
+    }
+
+    fn move_focus(&mut self, axis: Axis, by: FocusStep, forward: bool) {
+        if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
+            return;
+        }
+        let from = self.focus.map(|f| f[axis.index()].position);
+        let mut moved = self.focus.unwrap_or_else(|| {
+            [Axis::Rows, Axis::Cols].map(|a| {
+                let st = self.axis(a);
+                FocusEnd::at(st, focus::target(st, None, FocusStep::Item, true))
+            })
+        });
+        let st = self.axis(axis);
+        let to = focus::target(st, from, by, forward);
+        if from != Some(to) {
+            moved[axis.index()] = FocusEnd::at(st, to);
+        }
+        if self.focus != Some(moved) {
+            self.focus = Some(moved);
+            self.pending_damage.selection = true;
+            self.announce_focus();
+        }
+        self.reveal = true;
+        self.reveal_focus();
+    }
+
+    /// Scrolls both axes to show the focused cell.
+    fn reveal_focus(&mut self) {
+        let Some(f) = self.focus else { return };
+        for axis in Axis::ALL {
+            if self.axis_mut(axis).reveal(f[axis.index()].position) {
+                self.pending_damage.layout = true;
+            }
+        }
+    }
+
+    /// Called whenever the focus changes: makes the queue hold at most one
+    /// `FocusChanged`, naming the focused cell once its Keys are known, unless
+    /// the host has already heard of it. A queued one naming an older cell is
+    /// dropped.
+    fn announce_focus(&mut self) {
+        let keys = match self.focus {
+            Some(
+                [
+                    FocusEnd { key: Some(row), .. },
+                    FocusEnd { key: Some(col), .. },
+                ],
+            ) => Some((row, col)),
+            _ => None,
+        };
+        let queued = self
+            .effects
+            .iter()
+            .position(|s| matches!(s.effect, Effect::FocusChanged { .. }));
+        if let Some(i) = queued {
+            if keys.is_some_and(|(row, col)| {
+                self.effects[i].effect == Effect::FocusChanged { row, col }
+            }) {
+                return;
+            }
+            self.effects.remove(i);
+        }
+        if let Some((row, col)) = keys.filter(|&k| self.heard != Some(k)) {
+            self.push(Effect::FocusChanged { row, col });
         }
     }
 
@@ -192,7 +291,11 @@ impl Grid {
 
     /// Takes the oldest queued Effect, if any.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
-        self.effects.pop_front()
+        let stamped = self.effects.pop_front()?;
+        if let Effect::FocusChanged { row, col } = stamped.effect {
+            self.heard = Some((row, col));
+        }
+        Some(stamped)
     }
 
     /// Lays out the frame and returns the Snapshot, whose damage covers every
@@ -203,6 +306,11 @@ impl Grid {
             if st.clamp_anchor() {
                 self.pending_damage.layout = true;
             }
+        }
+        if std::mem::take(&mut self.reveal) {
+            self.reveal_focus();
+        }
+        for st in &mut self.axes {
             st.layout();
         }
         self.damage = std::mem::replace(&mut self.pending_damage, Damage::NONE);
