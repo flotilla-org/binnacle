@@ -301,3 +301,27 @@ fn scrolling_to_the_end_never_shows_space_past_the_last_item() {
         "{last:?} ends before the viewport"
     );
 }
+
+/// Found by Hegel: ScrollTo 1 clamps to an end found while the Window sat at
+/// the start; once the Window moves to the end, the same end is summed along
+/// another path and rounds one f32 step further. The view must stay at the
+/// end and the thumb read exactly 1.
+#[test]
+fn the_end_stays_the_end_when_the_window_moves() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(0, 1.0),
+        AxisConfig::new(1016, 2.3984552e-13).gap(5.463464e-20),
+    );
+    let v = Viewport::new(2.3984553e-10, 0.0);
+    s.frame(v);
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Cols,
+            fraction: 1.0,
+        })
+    });
+    s.frame(v);
+    let snap = s.frame(v);
+    assert_eq!(snap.thumb(Axis::Cols).fraction, 1.0);
+    assert_eq!(snap.cols().last().unwrap().position, 1015);
+}

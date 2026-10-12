@@ -16,6 +16,10 @@ pub(crate) struct AxisState {
     /// The viewport's length along this axis, header band included.
     pub extent: f32,
     pub anchor: ScrollAnchor,
+    /// The last scroll reached the end clamp. Re-clamping then follows the end
+    /// rather than keep an anchor computed from older sizes: the end is found
+    /// in f64 along whatever path the Window allows, and paths round apart.
+    at_end: bool,
     pub strip: Vec<StripItem>,
 }
 
@@ -26,6 +30,7 @@ impl AxisState {
             header,
             extent: 0.0,
             anchor: ScrollAnchor::default(),
+            at_end: false,
             strip: Vec::new(),
         }
     }
@@ -187,6 +192,13 @@ impl AxisState {
         } else {
             to
         };
+        self.settle(to, max)
+    }
+
+    /// Sets the anchor, noting whether it is at a reachable end. Returns
+    /// whether it moved.
+    fn settle(&mut self, to: ScrollAnchor, max: ScrollAnchor) -> bool {
+        self.at_end = to == max && max != ScrollAnchor::default();
         let moved = to != self.anchor;
         self.anchor = to;
         moved
@@ -194,21 +206,20 @@ impl AxisState {
 
     /// Re-applies the anchor's bounds after the viewport or sizes changed. The
     /// anchor keeps its Position: an offset its item no longer reaches is
-    /// pulled back inside the item, and only the end clamp moves it further.
+    /// pulled back inside the item, and only the end clamp moves it further. An
+    /// anchor at the end stays at the end.
     pub fn clamp_anchor(&mut self) -> bool {
         let count = self.measure.count();
         let position = self.anchor.position.min(count.saturating_sub(1));
         let stride = self.measure.size_at(position) + self.measure.gap();
         let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
         let max = self.max_anchor();
-        let to = if (position, offset) > (max.position, max.offset) {
+        let to = if self.at_end || (position, offset) > (max.position, max.offset) {
             max
         } else {
             ScrollAnchor { position, offset }
         };
-        let moved = to != self.anchor;
-        self.anchor = to;
-        moved
+        self.settle(to, max)
     }
 
     /// Scrolls by `delta` in the host's unit. Non-finite deltas are ignored.

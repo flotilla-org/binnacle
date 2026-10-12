@@ -458,12 +458,16 @@ fn scrolling_stops_where_the_last_item_ends_the_viewport(tc: TestCase) {
                 {
                     continue;
                 }
-                // Slack for f32 stepping across the Strip, and for the clamp itself,
-                // which is found in f64 within the last item's stride.
-                let steps = snap.strip(axis).len() as f32 + 2.0;
+                // Slack for f32 stepping across the Strip, at the largest magnitude
+                // it passes through (the first offset sits an anchor offset
+                // before the header), and for the clamp itself, which is found in
+                // f64 within the last item's stride.
+                let strip = snap.strip(axis);
+                let steps = strip.len() as f32 + 2.0;
+                let reach = end.max(strip[0].offset.abs());
                 let stride = last.size + snap.gap(axis);
-                let slack =
-                    steps * (next_f32(end) - end) + (4.0 * f64::EPSILON * f64::from(stride)) as f32;
+                let slack = steps * (next_f32(reach) - reach)
+                    + (4.0 * f64::EPSILON * f64::from(stride)) as f32;
                 assert!(
                     last.end() >= end - slack,
                     "{axis:?}: {anchor:?} leaves {} empty after {last:?}",
