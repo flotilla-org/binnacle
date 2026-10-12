@@ -1,0 +1,58 @@
+---
+source: crates/binnacle-core/tests/sorting.rs
+expression: out
+---
+--- click column 1: requested, nothing applied
+gen 1 | damage selection | requested 1^ | hover Cols 1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- applied
+gen 1 | damage selection | sort 1^ | hover Cols 1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- shift-click column 2 twice: two requests out
+gen 1 | damage selection | sort 1^ | requested 1^,2v | hover Cols 2
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- first applied: the second is still pending
+gen 1 | damage selection | sort 1^,2^ | requested 1^,2v | hover Cols 2
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- second rejected: the first stays applied
+gen 1 | damage selection | sort 1^,2^ | hover Cols 2
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- column 0 is not sortable: no request
+gen 1 | damage selection | sort 1^,2^ | hover Cols 0
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3

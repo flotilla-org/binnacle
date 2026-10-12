@@ -10,7 +10,7 @@ mod mouse;
 pub use keymap::Keymap;
 pub use mouse::Mouse;
 
-use binnacle_core::{Action, Axis, Cursor, Key, Mode, Snapshot};
+use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -48,7 +48,8 @@ pub trait Content {
 /// and the header under the pointer underlined. Header Gaps are drawn as
 /// lines, the handles a resize drag grabs, and a resize in progress draws its
 /// guide line across the area in yellow, a header move its drop indicator in
-/// cyan.
+/// cyan. A sorted column's header ends in its direction (and place, in a
+/// multi-column sort), and `~` marks a sort change still pending.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
     let area = area.intersection(buf.area);
     let header = Style::default().add_modifier(Modifier::BOLD);
@@ -87,12 +88,24 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
             header
         }
     };
+    let multi = snapshot.applied_sort().columns().len() > 1;
     for c in snapshot.cols() {
         let label = c
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
+        let marker = c
+            .key
+            .map_or_else(String::new, |k| sort_marker(snapshot.header_sort(k), multi));
+        // The marker keeps the header's last cells; the label gets the rest.
+        let width = usize::try_from(cell(c.end()).saturating_sub(cell(c.offset))).unwrap_or(0);
+        let room = width.saturating_sub(marker.chars().count());
+        let text = if marker.is_empty() {
+            pad(label)
+        } else {
+            format!("{label:<room$.room$}{marker}")
+        };
         let style = header_style(Axis::Cols, c.position);
-        put(c.offset, 0.0, left, c.end(), 0.0, &pad(label), style);
+        put(c.offset, 0.0, left, c.end(), 0.0, &text, style);
     }
     for r in snapshot.rows() {
         let number = r.position.saturating_add(1).to_string();
@@ -207,6 +220,26 @@ pub fn status(snapshot: &Snapshot) -> String {
             format!("drag to resize the {}, double-click to fit", noun(axis))
         }
     }
+}
+
+/// How a column header shows the sort: `▲` ascending or `▼` descending, with
+/// the column's place when several columns sort, then `~` while a request
+/// that changes it is unanswered.
+fn sort_marker(sort: HeaderSort, multi: bool) -> String {
+    let mut marker = String::new();
+    if let Some((direction, order)) = sort.applied {
+        marker.push(match direction {
+            SortDirection::Ascending => '▲',
+            SortDirection::Descending => '▼',
+        });
+        if multi {
+            marker += &(order + 1).to_string();
+        }
+    }
+    if sort.pending {
+        marker.push('~');
+    }
+    marker
 }
 
 /// A viewport-relative coordinate as a whole terminal cell (negative when

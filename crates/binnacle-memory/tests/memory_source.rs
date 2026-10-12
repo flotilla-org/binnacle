@@ -1,6 +1,6 @@
 //! Seam 2: `MemorySource<R>` sorts a host's rows through per-column closures.
 
-use binnacle_core::{Axis, Key, Located, SortColumn, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, Key, Located, SortColumn, SortSpec};
 use binnacle_memory::{MemorySource, Unsortable};
 
 struct Rec {
@@ -37,7 +37,10 @@ fn sorts_rows_by_the_extracted_keys() {
         SortColumn::descending(Key(2)),
         SortColumn::descending(Key(1)),
     ]);
-    assert_eq!(source.sort(&rows, &by_qty_then_amount), Ok(()));
+    assert_eq!(
+        source.sort(&rows, &by_qty_then_amount),
+        Ok(ChangeNotice::Reordered)
+    );
     assert_eq!(
         source.window(Axis::Rows, 0..3),
         vec![Key(2), Key(0), Key(1)]
@@ -46,7 +49,7 @@ fn sorts_rows_by_the_extracted_keys() {
 
     assert_eq!(
         source.sort(&rows, &SortSpec::new(vec![SortColumn::ascending(Key(0))])),
-        Ok(())
+        Ok(ChangeNotice::Reordered)
     );
     assert_eq!(
         source.window(Axis::Rows, 0..3),
@@ -55,7 +58,7 @@ fn sorts_rows_by_the_extracted_keys() {
 
     assert_eq!(
         source.sort(&rows, &SortSpec::new(vec![SortColumn::ascending(Key(1))])),
-        Ok(())
+        Ok(ChangeNotice::Reordered)
     );
     assert_eq!(
         source.window(Axis::Rows, 0..3),

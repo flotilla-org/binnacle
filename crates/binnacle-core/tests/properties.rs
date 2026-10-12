@@ -90,6 +90,8 @@ enum Input {
     Action(Action),
     SetSize(Axis, Key, f32),
     Pointer(Pointer),
+    /// A `Reordered` Change Notice that leaves the identity order as it was.
+    Notice(Axis),
 }
 
 /// A pointer event whose coordinates are resolved against the previous frame
@@ -327,6 +329,7 @@ fn input(tc: &TestCase) -> Input {
         hegel::tuples!(axis(), key, size).map(|(a, k, s)| Input::SetSize(a, k, s)),
         pointer().map(Input::Pointer),
         pointer().map(Input::Pointer),
+        axis().map(Input::Notice),
         gs::sampled_from(vec![
             Input::Action(Action::SelectAll),
             Input::Action(Action::SelectColumn),
@@ -392,6 +395,10 @@ impl ScenarioSource for Sized {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
         self.windows[index(axis)] = range.clone();
         self.table.window(axis, range)
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> binnacle_core::Located {
+        self.table.locate(axis, key)
     }
 
     fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
@@ -592,7 +599,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::Action(_) => reveals_focus = false,
                 // A click focuses what is under the pointer without scrolling.
                 Input::Pointer(_) => moved_focus = true,
-                Input::SetSize(..) => {}
+                Input::SetSize(..) | Input::Notice(_) => {}
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
@@ -604,6 +611,9 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                     }
                 }
                 Input::SetSize(..) => {}
+                Input::Notice(axis) => {
+                    s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reordered))
+                }
             }
         }
         let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
@@ -1442,6 +1452,9 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
         match input {
             Input::Action(action) => s.input(|g| g.action(action)),
             Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(&target))),
+            Input::Notice(axis) => {
+                s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reordered))
+            }
             Input::SetSize(..) => {}
         }
     }

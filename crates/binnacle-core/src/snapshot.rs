@@ -2,6 +2,7 @@ use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
 use crate::selection::CellRange;
+use crate::sort::{HeaderSort, SortSpec};
 use crate::types::{Axis, Generation, Key, Position};
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
@@ -182,6 +183,13 @@ impl<'a> Snapshot<'a> {
         self.grid.focus.map(|f| f[axis.index()])
     }
 
+    /// Whether the focused Key on `axis` is waiting for `located` after a
+    /// Change Notice. Its [`FocusEnd::position`] is then the last known one,
+    /// and the focus is drawn only if the Window holds its Key there.
+    pub fn locating(&self, axis: Axis) -> bool {
+        self.grid.locating[axis.index()]
+    }
+
     /// The focused cell's item on `axis` in its Strip, if it is visible and its
     /// Key is known.
     fn focused_item(&self, axis: Axis) -> Option<&'a StripItem> {
@@ -239,6 +247,21 @@ impl<'a> Snapshot<'a> {
     /// Edges are those of the Strip items, unclipped, like [`Self::focus_rect`].
     pub fn selection_rects(&self) -> &'a [Rect] {
         &self.grid.fills
+    }
+
+    /// The Sort Spec the Table Source last applied: what the headers show.
+    pub fn applied_sort(&self) -> &'a SortSpec {
+        &self.grid.sort.applied
+    }
+
+    /// The latest requested Sort Spec while an answer is still due.
+    pub fn requested_sort(&self) -> Option<&'a SortSpec> {
+        self.grid.sort.requested.as_ref()
+    }
+
+    /// How the header of column `key` shows the sort.
+    pub fn header_sort(&self, key: Key) -> HeaderSort {
+        self.grid.sort.header(key)
     }
 
     pub fn mode(&self) -> Mode {

@@ -126,7 +126,10 @@ fn row_headers_select_rows_and_column_headers_follow_their_header_click_setting(
     click(&mut s, 1.0, 1.0, Modifiers::CTRL);
     out += &s.step("ctrl-click row header 0: picks the row", V);
     click(&mut s, 13.0, 0.0, Modifiers::NONE);
-    out += &s.step("click column header 1: Sort is not built here, nothing", V);
+    out += &s.step(
+        "click column header 1: Sort, which the identity source rejects",
+        V,
+    );
     s.input(|g| g.set_header_click(Axis::Cols, HeaderClick::Select));
     click(&mut s, 13.0, 0.0, Modifiers::NONE);
     out += &s.step("with Select: the whole column", V);

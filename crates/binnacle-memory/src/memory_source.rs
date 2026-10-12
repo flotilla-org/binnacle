@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 
-use binnacle_core::{Axis, Key, Located, Position, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, Grid, Key, Located, Position, SortSpec, Stamped};
 
-use crate::{InMemoryTableSource, SortKeys};
+use crate::{InMemoryTableSource, PumpSource, SortKeys};
 
 /// A Sort Spec named a column with no sort-key closure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,21 +87,33 @@ impl<R> MemorySource<R> {
         self
     }
 
-    /// Sorts by `spec`, extracting each spec column's keys from `rows`. If a
-    /// spec column has no closure, nothing changes.
+    /// Sorts by `spec`, extracting each spec column's keys from `rows`, and
+    /// returns the Change Notice the rows need. If a spec column has no
+    /// closure, nothing changes.
     ///
     /// # Panics
     ///
     /// If `rows` is not as long as the base row count.
-    pub fn sort(&mut self, rows: &[R], spec: &SortSpec) -> Result<(), Unsortable> {
+    pub fn sort(&mut self, rows: &[R], spec: &SortSpec) -> Result<ChangeNotice, Unsortable> {
         let columns = spec
             .columns()
             .iter()
             .map(|c| self.columns.get(&c.key).ok_or(Unsortable { column: c.key }))
             .collect::<Result<Vec<_>, _>>()?;
         let keys = columns.into_iter().map(|c| c.extract(rows)).collect();
-        self.table.apply_sort(spec, keys);
-        Ok(())
+        Ok(self.table.apply_sort(spec, keys))
+    }
+
+    /// The Sort Spec the rows are in, as last applied.
+    pub fn sort_spec(&self) -> &SortSpec {
+        self.table.sort_spec()
+    }
+
+    /// Runs [`crate::pump`] with this source over the host's `rows`: sort
+    /// requests are answered by sorting them (or rejected if a column has no
+    /// closure), `Locate` by the Remap. `seen` gets every Effect drained.
+    pub fn pump(&mut self, rows: &[R], grid: &mut Grid, seen: impl FnMut(&mut Grid, Stamped)) {
+        crate::pump(grid, &mut Over { source: self, rows }, seen);
     }
 
     /// See [`InMemoryTableSource::move_columns`]. Sorting names columns by
@@ -124,5 +136,23 @@ impl<R> MemorySource<R> {
 
     pub fn table(&self) -> &InMemoryTableSource {
         &self.table
+    }
+}
+
+/// A [`MemorySource`] with the rows it sorts, as the pump needs it.
+struct Over<'a, R> {
+    source: &'a mut MemorySource<R>,
+    rows: &'a [R],
+}
+
+impl<R> PumpSource for Over<'_, R> {
+    fn sort(&mut self, spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
+        self.source
+            .sort(self.rows, spec)
+            .map_err(|_| self.source.sort_spec().clone())
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.source.locate(axis, key)
     }
 }
