@@ -1,8 +1,18 @@
 //! binnacle-memory: Table Sources for hosts whose data lives in memory.
 
+mod interner;
+mod memory_source;
+mod sort_keys;
+mod table;
+
 use std::ops::Range;
 
 use binnacle_core::{Key, Position};
+
+pub use interner::KeyInterner;
+pub use memory_source::{MemorySource, Unsortable};
+pub use sort_keys::SortKeys;
+pub use table::InMemoryTableSource;
 
 /// A Table Source axis with no data behind it: the Key at each Position is the
 /// Position itself. It serves huge virtual tables and fixed column sets.

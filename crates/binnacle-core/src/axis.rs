@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::measure::{AxisMeasure, Located};
+use crate::measure::{AxisMeasure, ItemAt};
 use crate::snapshot::{ScrollAnchor, StripItem, Thumb};
 use crate::types::Position;
 
@@ -128,7 +128,7 @@ impl AxisState {
 
     /// The anchor for a located offset, rounded toward the axis start so a
     /// clamped view never shows space past the last item.
-    fn anchor_at(&self, l: Located) -> ScrollAnchor {
+    fn anchor_at(&self, l: ItemAt) -> ScrollAnchor {
         let stride = self.measure.size_at(l.position) + self.measure.gap();
         let mut offset = l.within as f32;
         if f64::from(offset) > l.within {

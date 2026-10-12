@@ -6,7 +6,7 @@ use crate::types::{Key, Position};
 /// Where an offset along an axis lands: the item at `position`, `within` its
 /// start. Past the item's size it is in the Gap that follows (`in_gap`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Located {
+pub struct ItemAt {
     pub position: Position,
     pub within: f64,
     pub in_gap: bool,
@@ -259,7 +259,7 @@ impl AxisMeasure {
     /// The item at `delta` past the start of item `from` (before it if
     /// negative), or `None` if that is outside the axis. The Gap after the last
     /// item is not part of the axis.
-    pub fn locate(&self, from: Position, delta: f64) -> Option<Located> {
+    pub fn locate(&self, from: Position, delta: f64) -> Option<ItemAt> {
         if self.count == 0 || !delta.is_finite() {
             return None;
         }
@@ -311,7 +311,7 @@ impl AxisMeasure {
         }
     }
 
-    fn landed(&self, position: Position, within: f64) -> Option<Located> {
+    fn landed(&self, position: Position, within: f64) -> Option<ItemAt> {
         let size = f64::from(self.size_at(position));
         let stride = size + f64::from(self.gap);
         let within = within.clamp(0.0, stride);
@@ -322,7 +322,7 @@ impl AxisMeasure {
         if in_gap && position + 1 == self.count {
             return None;
         }
-        Some(Located {
+        Some(ItemAt {
             position,
             within,
             in_gap,

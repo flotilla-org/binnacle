@@ -13,10 +13,12 @@ mod effect;
 mod grid;
 mod measure;
 mod snapshot;
+mod sort;
 mod types;
 
 pub use effect::{Action, Effect, Stamped};
 pub use grid::{AxisConfig, Grid, WindowRequests};
-pub use measure::{AxisMeasure, Located, WindowChange};
+pub use measure::{AxisMeasure, ItemAt, WindowChange};
 pub use snapshot::{Damage, ScrollAnchor, Snapshot, StripItem, Thumb};
+pub use sort::{Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};

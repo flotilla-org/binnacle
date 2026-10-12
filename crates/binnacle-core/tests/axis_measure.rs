@@ -2,7 +2,7 @@
 //! (`axis_measure.rs`, disabled with `#[cfg(not)]`) translated to the new
 //! measure: Gap only between items, half-open ranges, Size Overrides by Key.
 
-use binnacle_core::{AxisMeasure, Key, Located};
+use binnacle_core::{AxisMeasure, ItemAt, Key};
 
 /// The legacy fixture: default size 99, Gap 1, four items, Keys in order.
 fn equal_sized() -> AxisMeasure {
@@ -48,7 +48,7 @@ fn locate_reports_the_offset_into_the_item() {
     let m = equal_sized();
     assert_eq!(
         m.locate(1, 150.0),
-        Some(Located {
+        Some(ItemAt {
             position: 2,
             within: 50.0,
             in_gap: false
@@ -56,7 +56,7 @@ fn locate_reports_the_offset_into_the_item() {
     );
     assert_eq!(
         m.locate(3, -1.0),
-        Some(Located {
+        Some(ItemAt {
             position: 2,
             within: 99.0,
             in_gap: true
@@ -73,7 +73,7 @@ fn fixed_axis_at_a_quadrillion_items() {
     assert_eq!(m.extent(), 1.0e17 - 1.0);
     assert_eq!(
         m.locate(n - 2, 150.0),
-        Some(Located {
+        Some(ItemAt {
             position: n - 1,
             within: 50.0,
             in_gap: false
