@@ -31,6 +31,12 @@ pub trait ScenarioSource {
     fn locate(&mut self, _axis: Axis, _key: Key) -> Located {
         Located::Gone { suggest: None }
     }
+
+    /// Answers `MoveRequested` (see [`PumpSource::move_items`]). The default
+    /// moves nothing.
+    fn move_items(&mut self, _axis: Axis, _keys: &[Key], _to: Position) -> Option<ChangeNotice> {
+        None
+    }
 }
 
 /// A table whose Keys are their Positions on both axes.
@@ -64,7 +70,8 @@ impl ScenarioSource for IdentityTable {
 pub type Record = Vec<Option<i64>>;
 
 /// A table of integer records behind an In-Memory Table Source, keyed by
-/// Logical Index on both axes. Every column sorts unless left out.
+/// Logical Index on both axes. Every column sorts unless left out; columns
+/// move.
 pub struct RecordTable {
     pub rows: Vec<Record>,
     pub source: MemorySource<Record>,
@@ -96,6 +103,10 @@ impl ScenarioSource for RecordTable {
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
         self.source.locate(axis, key)
     }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        (axis == Axis::Cols).then(|| self.source.move_columns(keys, to))
+    }
 }
 
 /// A scenario's source seen by the shared pump, logging each answer.
@@ -120,6 +131,15 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
         let _ = writeln!(
             self.log.borrow_mut(),
             "  locate {axis:?} {key:?}: {answer:?}"
+        );
+        answer
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        let answer = self.source.move_items(axis, keys, to);
+        let _ = writeln!(
+            self.log.borrow_mut(),
+            "  move {axis:?} {keys:?} to {to}: {answer:?}"
         );
         answer
     }

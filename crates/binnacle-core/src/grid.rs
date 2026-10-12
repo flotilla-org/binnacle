@@ -620,14 +620,14 @@ impl Grid {
     }
 
     /// Takes the oldest queued Effect, if any. Requests the Table Source
-    /// answers (`SortRequested`, `Locate`) come out before the rest, so a
+    /// answers (`SortRequested`, `Locate`, `MoveRequested`) come out before the rest, so a
     /// host that answers as it drains does so before it hears of focus and
     /// selection, which the answers may change again.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
         let request = self.effects.iter().position(|s| {
             matches!(
                 s.effect,
-                Effect::SortRequested { .. } | Effect::Locate { .. }
+                Effect::SortRequested { .. } | Effect::Locate { .. } | Effect::MoveRequested { .. }
             )
         });
         let stamped = match request {

@@ -14,7 +14,8 @@ pub enum ChangeNotice {
     /// The items are in a new order and the count is unchanged. Focus and
     /// picks follow their Keys (the Grid sends `Locate` for the focused Key),
     /// Size Overrides follow their items, the range is dropped unless it spans
-    /// the whole axis, and the Scroll Anchor keeps its Position.
+    /// the whole axis, the Scroll Anchor keeps its Position, and a header
+    /// move on that axis is cancelled.
     Reordered,
 }
 
@@ -41,6 +42,10 @@ impl Grid {
         if self.gesture.mode() == Mode::DraggingSelection {
             self.cancel();
             self.relocate();
+        }
+        // The drop Position and the moved items' Positions are stale.
+        if matches!(self.gesture.mode(), Mode::MovingHeaders { axis: a, .. } if a == axis) {
+            self.cancel();
         }
         if self.selection.span.is_some_and(|s| !s.whole[i]) {
             self.set_span(None);

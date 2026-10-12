@@ -4,8 +4,11 @@
 //! Source: click a column header to sort ascending, descending, then
 //! unsorted; Shift-click adds a column to the sort. A header ends in `▲` or
 //! `▼` (with its place in a multi-column sort) and `~` while a sort is
-//! pending. Focus and picks stay on their records. `binnacle-demo --huge`
-//! shows 10^15 identity rows, which do not sort.
+//! pending. Focus and picks stay on their records. Drag a column header to
+//! move the column (a selected column takes the other selected ones with
+//! it); a cyan line shows where it will drop, and widths go with their
+//! columns. `binnacle-demo --huge` shows 10^15 identity rows, which neither
+//! sort nor move.
 //!
 //! The wheel scrolls; the adapter's default keymap moves focus (arrows,
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
@@ -81,8 +84,8 @@ impl Table {
         }
     }
 
-    /// Drains the Grid's Effects, answering sorts and `Locate` from the
-    /// source and auto-size by measuring the text drawn for `shown` rows. The
+    /// Drains the Grid's Effects, answering sorts, column moves and `Locate`
+    /// from the source and auto-size by measuring the text drawn for `shown` rows. The
     /// other Effects need nothing here.
     fn pump(&mut self, grid: &mut Grid, shown: &[Key]) {
         match self {

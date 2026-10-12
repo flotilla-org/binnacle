@@ -243,12 +243,22 @@ fn pointer(tc: &TestCase) -> Pointer {
     }
 }
 
-/// A press, a few moves and the release, as one input sequence. A third of
-/// presses aim at a header border.
+/// A press, a few moves and the release, as one input sequence. Some presses
+/// aim at a header border, some at a header.
 #[hegel::composite]
 fn gesture(tc: &TestCase) -> Vec<Pointer> {
     let mut press = tc.draw(pointer());
-    if tc.draw(gs::weighted_booleans(0.3)) {
+    if tc.draw(gs::weighted_booleans(0.2)) {
+        let (f, g) = (
+            tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
+            tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
+        );
+        press.at = if tc.draw(gs::booleans()) {
+            [Coord::Body(f), Coord::Header(g)]
+        } else {
+            [Coord::Header(g), Coord::Body(f)]
+        };
+    } else if tc.draw(gs::weighted_booleans(0.3)) {
         let (n, f) = (
             tc.draw(gs::integers::<usize>().max_value(8)),
             tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
@@ -1742,6 +1752,179 @@ fn check_resize_feedback(tc: &TestCase, snap: &Snapshot, axis: Axis, key: Key) {
         (guide.offset - item.end()).abs() <= drift,
         "{guide:?} is not at the end of {item:?}"
     );
+}
+
+/// Every `MoveRequested` names distinct columns and a drop that changes their
+/// order. The identity table never moves anything, so a Key is its Position.
+#[hegel::test(test_cases = 2000)]
+fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) {
+    frames(&tc, BODIES, |snap, step| {
+        for effect in step.drained {
+            let Effect::MoveRequested { axis, keys, to } = effect else {
+                continue;
+            };
+            tc.event("move requested");
+            assert_eq!(*axis, Axis::Cols);
+            check_moved_keys(keys);
+            let (first, last) = (keys[0].0, keys[keys.len() - 1].0);
+            let block = last - first + 1 == keys.len() as u64;
+            assert!(*to <= snap.count(Axis::Cols));
+            assert!(
+                !(block && (first..=last + 1).contains(to)),
+                "{keys:?} to {to} moves nothing"
+            );
+        }
+    });
+}
+
+/// A header move in progress moves column headers only, captures, shows the
+/// move cursor and a drop indicator in the middle of the Gap before the drop
+/// Position.
+#[hegel::test(test_cases = 2000)]
+fn a_header_move_in_progress_shows_its_drop(tc: TestCase) {
+    frames(&tc, BODIES, |snap, _| {
+        let Mode::MovingHeaders { axis, key, to } = snap.mode() else {
+            assert!(snap.moving_keys().is_empty());
+            assert_eq!(snap.drop_indicator(), None);
+            return;
+        };
+        tc.event("moving");
+        assert_eq!(axis, Axis::Cols);
+        assert!(snap.capturing());
+        assert_eq!(snap.cursor(), Cursor::Move);
+        assert!(to <= snap.count(axis));
+        let keys = snap.moving_keys();
+        check_moved_keys(keys);
+        assert!(keys.contains(&key));
+        let drop = snap
+            .drop_indicator()
+            .expect("no drop indicator while moving");
+        assert_eq!((drop.axis, drop.to), (axis, to));
+        let strip = snap.strip(axis);
+        let half = snap.gap(axis) / 2.0;
+        let at = match strip.iter().find(|i| i.position == to) {
+            Some(item) => item.offset - half,
+            None => match strip.last() {
+                Some(last) if last.position + 1 == to => last.end() + half,
+                _ => return,
+            },
+        };
+        tc.event("drop shown");
+        // The Strip steps in f32 from the anchor; the indicator is placed in
+        // f64.
+        let (_, stop) = body(snap, axis);
+        let reach = stop.max(strip[0].offset.abs()).max(at.abs());
+        let drift = (strip.len() as f32 + 4.0) * (next_f32(reach) - reach);
+        assert!(
+            (drop.offset - at).abs() <= drift,
+            "{drop:?} is not at {at} in {strip:?}"
+        );
+    });
+}
+
+/// Moved Keys are distinct and, in the identity table, in Position order.
+fn check_moved_keys(keys: &[Key]) {
+    assert!(!keys.is_empty());
+    assert!(keys.windows(2).all(|w| w[0].0 < w[1].0), "{keys:?}");
+}
+
+/// Dragging a column header and dropping it over another column's first half
+/// (or Gap-free start) asks to move it before that column, over its second
+/// half or the Gap after it, after it; a drop beside itself asks nothing.
+/// The pointer may be in the header band or the body; what a header click
+/// does makes no difference.
+#[hegel::test(test_cases = 2000)]
+fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: TestCase) {
+    let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_borders()));
+    let viewport = Viewport::new(cols.1, rows.1);
+    let mut s = Scenario::identity(rows.0, cols.0);
+    let click = tc.draw(gs::sampled_from(vec![
+        HeaderClick::Sort,
+        HeaderClick::Select,
+        HeaderClick::None,
+    ]));
+    let threshold = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(5.0));
+    s.input(|g| {
+        g.set_header_click(Axis::Cols, click);
+        g.set_drag_threshold(threshold);
+    });
+    s.frame(viewport);
+    let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Cols,
+            fraction,
+        })
+    });
+    let snap = s.frame(viewport);
+    let strip = snap.cols();
+    // Column headers need a band to be pressed in.
+    if strip.is_empty() || snap.rows().is_empty() || snap.header(Axis::Rows) <= 0.0 {
+        return;
+    }
+    let pick = |tc: &TestCase| strip[tc.draw(gs::integers::<usize>().max_value(strip.len() - 1))];
+    let (grabbed, over) = (pick(&tc), pick(&tc));
+    let Some(from) = clickable(&snap, Axis::Cols, &grabbed) else {
+        return;
+    };
+    // Somewhere over `over` or the Gap after it, away from its middle and its
+    // edges by more than f32 placement can move them.
+    let (start, stop) = body(&snap, Axis::Cols);
+    let gap = snap.gap(Axis::Cols);
+    let reach = stop.max(strip[0].offset.abs());
+    let drift = (strip.len() as f32 + 4.0) * (next_f32(reach) - reach);
+    let f = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0));
+    let x = over.offset + f * (over.size + gap);
+    let mid = over.offset + over.size / 2.0;
+    let edges = [over.offset, mid, over.end() + gap];
+    if edges.iter().any(|&e| (x - e).abs() <= 4.0 * drift)
+        || !(start..stop).contains(&x)
+        || (x - from).abs() < threshold
+    {
+        return;
+    }
+    let to = over.position + u64::from(x >= mid);
+    let y = if tc.draw(gs::booleans()) {
+        snap.header(Axis::Rows) / 2.0
+    } else {
+        let row = snap.rows()[0];
+        (row.offset.max(snap.header(Axis::Rows)) + row.end().min(viewport.height)) / 2.0
+    };
+    let key = grabbed.key.expect("a shown column has a Key");
+    let (px, py) = in_header_band(&snap, Axis::Cols, from);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(px, py));
+        g.pointer(PointerEvent::moved(x, y));
+    });
+    let snap = s.frame(viewport);
+    assert_eq!(
+        snap.mode(),
+        Mode::MovingHeaders {
+            axis: Axis::Cols,
+            key,
+            to
+        },
+        "dragged from {from} to {x} over {over:?}"
+    );
+    assert_eq!(snap.moving_keys(), &[key]);
+    s.input(|g| g.pointer(PointerEvent::up(x, y)));
+    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    let p = grabbed.position;
+    if to == p || to == p + 1 {
+        tc.event("in place");
+        assert_eq!(drained, vec![]);
+    } else {
+        tc.event("moved");
+        assert_eq!(
+            drained,
+            vec![Effect::MoveRequested {
+                axis: Axis::Cols,
+                keys: vec![key],
+                to
+            }]
+        );
+    }
+    assert_eq!(s.frame(viewport).mode(), Mode::Idle);
 }
 
 /// Each Window the Grid asks for holds at most what the body can show at the
