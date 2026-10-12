@@ -204,3 +204,49 @@ fn a_revealed_row_after_a_far_larger_one_ends_within_one_anchor_step_of_the_body
     assert_eq!((last.position, last.offset, last.size), (2, 13.0625, 8.0));
     assert!(snap.focus_rect().is_some());
 }
+
+/// Rows whose content is one unit tall (also the minimum-size hint) under a
+/// default of 513.
+struct OneUnitRows;
+
+impl ScenarioSource for OneUnitRows {
+    fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {
+        range.map(Key).collect()
+    }
+
+    fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        (axis == Axis::Rows).then(|| (vec![1.0; keys.len()], 1.0))
+    }
+}
+
+/// Found by Hegel: End placed the end clamp with the default size, the Window
+/// then brought one-unit rows and the clamp pulled the anchor onto a row
+/// outside the Window, still 513 tall. Its f32 offset there steps by 2^-14,
+/// so the focused last row ended past the body. With the Window reaching
+/// back from the end, the last row ends the body exactly, first frame or not.
+#[test]
+fn end_with_rows_smaller_than_the_default_ends_the_body_exactly() {
+    for first_frame in [false, true] {
+        let grid = Grid::new(
+            AxisConfig::new(999_999_999_999_000, 513.0),
+            AxisConfig::new(1, 1.0),
+        );
+        let mut s = Scenario::new(grid, OneUnitRows);
+        let v = Viewport::new(1.0, 3.000_030_5);
+        if first_frame {
+            s.frame(v);
+        }
+        s.input(|g| g.action(step(Axis::Rows, FocusStep::Edge, true)));
+        let snap = s.frame(v);
+        for item in snap.rows() {
+            assert_eq!((item.key, item.size), (Some(Key(item.position)), 1.0));
+        }
+        let last = *snap.rows().last().unwrap();
+        assert_eq!(last.position, 999_999_999_998_999);
+        assert_eq!(
+            last.end(),
+            snap.extent(Axis::Rows),
+            "first frame {first_frame}"
+        );
+    }
+}
