@@ -251,32 +251,34 @@ impl Grid {
         }
     }
 
-    /// Once the focused cell's Keys are known, makes the queue hold one
-    /// `FocusChanged` naming them, unless the host has already heard of them.
-    /// A queued one naming an older cell is dropped.
+    /// Called whenever the focus changes: makes the queue hold at most one
+    /// `FocusChanged`, naming the focused cell once its Keys are known, unless
+    /// the host has already heard of it. A queued one naming an older cell is
+    /// dropped.
     fn announce_focus(&mut self) {
-        let Some(
-            [
-                FocusEnd { key: Some(row), .. },
-                FocusEnd { key: Some(col), .. },
-            ],
-        ) = self.focus
-        else {
-            return;
+        let keys = match self.focus {
+            Some(
+                [
+                    FocusEnd { key: Some(row), .. },
+                    FocusEnd { key: Some(col), .. },
+                ],
+            ) => Some((row, col)),
+            _ => None,
         };
-        let changed = Effect::FocusChanged { row, col };
         let queued = self
             .effects
             .iter()
             .position(|s| matches!(s.effect, Effect::FocusChanged { .. }));
         if let Some(i) = queued {
-            if self.effects[i].effect == changed {
+            if keys.is_some_and(|(row, col)| {
+                self.effects[i].effect == Effect::FocusChanged { row, col }
+            }) {
                 return;
             }
             self.effects.remove(i);
         }
-        if self.heard != Some((row, col)) {
-            self.push(changed);
+        if let Some((row, col)) = keys.filter(|&k| self.heard != Some(k)) {
+            self.push(Effect::FocusChanged { row, col });
         }
     }
 
