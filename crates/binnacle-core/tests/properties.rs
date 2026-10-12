@@ -951,8 +951,12 @@ fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
             assert_eq!(end.key, item.key, "{axis:?}: focus Key not completed");
             if item.size <= stop - start {
                 // Slack for f32 stepping across the Strip, and for the anchor
-                // offset, rounded toward the start within the item's stride.
-                let stride = (item.size + snap.gap(axis)).min(f32::MAX);
+                // offset, rounded toward the start by up to one f32 step of
+                // the anchor item's stride. The anchor may sit in an item far
+                // larger than the focused one, so it is that stride that counts.
+                let anchor = snap.scroll_anchor(axis).position;
+                let anchor_size = seen_size(snap, axis, model, anchor);
+                let stride = (anchor_size + snap.gap(axis)).min(f32::MAX);
                 let slack = drift
                     + (4.0 * f64::EPSILON * f64::from(stride)) as f32
                     + (next_f32(stride) - stride);
