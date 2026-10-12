@@ -211,6 +211,35 @@ impl AxisState {
         moved
     }
 
+    /// The item a body's length before or after the start of item `p`, at
+    /// least one item away and inside the axis.
+    pub fn page_from(&self, p: Position, forward: bool) -> Position {
+        let last = self.measure.count().saturating_sub(1);
+        let body = f64::from(self.body());
+        let delta = if forward { body } else { -body };
+        let landed = self.measure.locate(p, delta).map(|at| at.position);
+        if forward {
+            landed.unwrap_or(last).max(p.saturating_add(1)).min(last)
+        } else {
+            landed.unwrap_or(0).min(p.saturating_sub(1))
+        }
+    }
+
+    /// Scrolls the least distance that shows all of item `p`, or its start if
+    /// it is longer than the body. Returns whether the anchor moved.
+    pub fn reveal(&mut self, p: Position) -> bool {
+        let body = f64::from(self.body());
+        let start = self.measure.distance(self.anchor.position, p) - f64::from(self.anchor.offset);
+        let size = f64::from(self.measure.size_at(p));
+        if start < 0.0 || size >= body {
+            self.move_to(p, 0.0)
+        } else if start + size > body {
+            self.move_to(p, size - body)
+        } else {
+            false
+        }
+    }
+
     /// Scrolls by `delta` in the host's unit. Non-finite deltas are ignored.
     pub fn scroll(&mut self, delta: f32) -> bool {
         if !delta.is_finite() || delta == 0.0 {

@@ -1,4 +1,4 @@
-use crate::types::{Axis, Generation};
+use crate::types::{Axis, Generation, Key};
 
 /// A request the Grid emits for its host or Table Source to act on. Effects
 /// carry no continuations: answers come back later as ordinary inputs.
@@ -6,6 +6,10 @@ use crate::types::{Axis, Generation};
 pub enum Effect {
     /// The user typed text while the Grid had focus.
     TextTyped { text: String },
+    /// Focus landed on a new cell, named by its row and column Keys. Sent once
+    /// both Keys are known, and at most once per drain: a later change replaces
+    /// a queued one.
+    FocusChanged { row: Key, col: Key },
 }
 
 /// An Effect stamped with the generation of the Snapshot it was based on.
@@ -20,6 +24,15 @@ pub struct Stamped {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     TypeText(String),
+    /// Moves focus along `axis` by one item, a page or to the edge, towards the
+    /// end if `forward`, and scrolls to show the focused cell. `extend` asks
+    /// for the move to stretch the selection range instead of replacing it.
+    MoveFocus {
+        axis: Axis,
+        by: FocusStep,
+        forward: bool,
+        extend: bool,
+    },
     /// Scrolls by a distance in the host's unit along each axis (a wheel or
     /// trackpad): `dx` across the columns, `dy` down the rows.
     Scroll {
@@ -37,4 +50,15 @@ pub enum Action {
         axis: Axis,
         items: i64,
     },
+}
+
+/// How far a [`Action::MoveFocus`] goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FocusStep {
+    /// To the neighbouring item.
+    Item,
+    /// To the item a viewport's length away (at least one item).
+    Page,
+    /// To the first or last item.
+    Edge,
 }

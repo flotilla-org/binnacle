@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use binnacle_core::{Axis, Snapshot, StripItem};
+use binnacle_core::{Axis, FocusEnd, Snapshot, StripItem};
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
 const MAX_CANVAS: (usize, usize) = (160, 60);
@@ -10,7 +10,9 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// thumb (`fraction/size`) (key `?` while unfilled), then a character
 /// picture treating one unit as one character, each item starting at the first
 /// whole character it reaches. Column headers show the column
-/// Key, row headers the row Position, cells `rowkey.colkey`.
+/// Key, row headers the row Position, cells `rowkey.colkey`. A placed focus
+/// adds `focus row,col` (each `position#key`) and its rect to the summary, and
+/// marks the focused cell `*rowkey.colkey`.
 pub fn render(snap: &Snapshot) -> String {
     let mut out = String::new();
     let d = snap.damage();
@@ -29,7 +31,24 @@ pub fn render(snap: &Snapshot) -> String {
     } else {
         damage.join(" ")
     };
-    let _ = writeln!(out, "gen {} | damage {damage}", snap.generation());
+    let _ = write!(out, "gen {} | damage {damage}", snap.generation());
+    if let (Some(row), Some(col)) = (snap.focus(Axis::Rows), snap.focus(Axis::Cols)) {
+        let end = |e: FocusEnd| {
+            format!(
+                "{}#{}",
+                e.position,
+                e.key.map_or("?".into(), |k| k.0.to_string())
+            )
+        };
+        let _ = write!(out, " | focus {},{}", end(row), end(col));
+        match snap.focus_rect() {
+            Some(r) => {
+                let _ = write!(out, " at {},{} {}x{}", r.x, r.y, r.width, r.height);
+            }
+            None => out.push_str(" not drawn"),
+        }
+    }
+    out.push('\n');
     for axis in Axis::ALL {
         let _ = write!(
             out,
@@ -93,13 +112,18 @@ fn picture(snap: &Snapshot) -> String {
     for r in snap.rows() {
         put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
         for c in snap.cols() {
+            let mark = if snap.cell_state(r, c).focused {
+                "*"
+            } else {
+                ""
+            };
             put(
                 c.offset,
                 r.offset,
                 left,
                 c.end(),
                 top,
-                &format!("{}.{}", key_text(r), key_text(c)),
+                &format!("{mark}{}.{}", key_text(r), key_text(c)),
             );
         }
     }
