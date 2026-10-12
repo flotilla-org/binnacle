@@ -1,6 +1,8 @@
 //! The adapter's Snapshot renderer, drawn into a `TestBackend`.
 
-use binnacle_core::{Action, Axis, AxisConfig, FocusStep, Grid, Key, Viewport};
+use binnacle_core::{
+    Action, Axis, AxisConfig, FocusStep, Grid, Key, SortColumn, SortSpec, Viewport,
+};
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{Content, render, wheel};
 use ratatui::Terminal;
@@ -193,4 +195,36 @@ fn selected_cells_get_a_background_across_their_width_and_the_hovered_header_is_
         with(&|c| c.modifier.contains(Modifier::UNDERLINED)),
         hovered
     );
+}
+
+#[test]
+fn column_headers_show_the_applied_sort_and_pending_requests() {
+    let mut grid = Grid::new(
+        AxisConfig::new(3, 1.0).header(1.0),
+        AxisConfig::new(4, 8.0).header(5.0).gap(1.0),
+    );
+    let area = Rect::new(0, 0, 41, 2);
+    let mut out = String::new();
+    grid.sort_applied(SortSpec::new(vec![SortColumn::descending(Key(1))]));
+    out += &format!(
+        "--- column 1 descending\n{}\n",
+        frame(&mut grid, 41, 2, area)
+    );
+    grid.sort_applied(SortSpec::new(vec![
+        SortColumn::descending(Key(1)),
+        SortColumn::ascending(Key(3)),
+    ]));
+    out += &format!(
+        "--- then column 3 ascending\n{}\n",
+        frame(&mut grid, 41, 2, area)
+    );
+    // Click column 0's header with Shift: a request, not yet answered.
+    let shift = binnacle_core::Modifiers::SHIFT;
+    grid.pointer(binnacle_core::PointerEvent::down(6.0, 0.0).modifiers(shift));
+    grid.pointer(binnacle_core::PointerEvent::up(6.0, 0.0).modifiers(shift));
+    out += &format!(
+        "--- shift-click column 0, unanswered\n{}\n",
+        frame(&mut grid, 41, 2, area)
+    );
+    insta::assert_snapshot!(out);
 }
