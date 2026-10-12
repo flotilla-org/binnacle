@@ -165,8 +165,8 @@ fn focus_stays_unplaced_while_either_axis_is_empty() {
     }
 }
 
-/// Identity Keys; row 1 is 2^26 tall, where an f32 anchor offset steps by 4,
-/// and every other row 8.
+/// Identity Keys; row 1 is the largest size the default size range allows,
+/// 2^20, where an f32 anchor offset steps by 1/16, and every other row 8.
 struct TallMiddleRow;
 
 impl ScenarioSource for TallMiddleRow {
@@ -175,20 +175,21 @@ impl ScenarioSource for TallMiddleRow {
     }
 
     fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
-        let size = |k: &Key| if k.0 == 1 { 67_108_864.0 } else { 8.0 };
+        let size = |k: &Key| if k.0 == 1 { 1_048_576.0 } else { 8.0 };
         (axis == Axis::Rows).then(|| (keys.iter().map(size).collect(), 8.0))
     }
 }
 
-/// Revealing the last row anchors 13 before the end of the tall row above it,
-/// which an f32 offset there cannot hold: the anchor rounds toward the start
-/// (never showing space past the last item), so the focused row ends past the
-/// body by less than one f32 step of the tall row's stride, here 3 of 4.
+/// Revealing the last row anchors 13 1/32 before the end of the tall row above
+/// it, which an f32 offset there cannot hold: the anchor rounds toward the
+/// start (never showing space past the last item), so the focused row ends
+/// past the body by less than one f32 step of the tall row's stride, here
+/// 1/32 against a step of 1/16.
 #[test]
 fn a_revealed_row_after_a_far_larger_one_ends_within_one_anchor_step_of_the_body() {
     let grid = Grid::new(AxisConfig::new(3, 8.0), AxisConfig::new(1, 6.0));
     let mut s = Scenario::new(grid, TallMiddleRow);
-    let v = Viewport::new(6.0, 21.0);
+    let v = Viewport::new(6.0, 21.03125);
     s.frame(v);
     s.input(|g| g.action(step(Axis::Rows, FocusStep::Edge, true)));
     let snap = s.frame(v);
@@ -196,10 +197,10 @@ fn a_revealed_row_after_a_far_larger_one_ends_within_one_anchor_step_of_the_body
         snap.scroll_anchor(Axis::Rows),
         ScrollAnchor {
             position: 1,
-            offset: 67_108_848.0
+            offset: 1_048_576.0 - 13.062_5
         }
     );
     let last = *snap.rows().last().unwrap();
-    assert_eq!((last.position, last.offset, last.size), (2, 16.0, 8.0));
+    assert_eq!((last.position, last.offset, last.size), (2, 13.0625, 8.0));
     assert!(snap.focus_rect().is_some());
 }
