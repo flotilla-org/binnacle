@@ -18,7 +18,8 @@ pub enum SelectionUnit {
 /// column headers to [`HeaderClick::Sort`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HeaderClick {
-    /// Cycles the column's sort.
+    /// Cycles the column's sort. Rows never sort: on row headers a click
+    /// does nothing and no `SortRequested` is sent.
     Sort,
     /// Selects the whole row or column; Shift extends, Ctrl/Cmd on a row
     /// header toggles the row's pick.

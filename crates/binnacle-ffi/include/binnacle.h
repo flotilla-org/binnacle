@@ -253,7 +253,8 @@ void binnacle_grid_free(BinnacleGrid *grid);
 int binnacle_grid_set_selection_unit(BinnacleGrid *grid, uint32_t unit);
 
 /* BINNACLE_HEADER_CLICK_* for the headers of items on axis (ROWS for row
- * headers). Row headers default to SELECT, column headers to SORT. */
+ * headers). Row headers default to SELECT, column headers to SORT. Only
+ * columns sort: SORT on row headers makes a click do nothing. */
 int binnacle_grid_set_header_click(BinnacleGrid *grid, uint32_t axis, uint32_t click);
 
 /* How far a pressed pointer must move to drag; default 1. Values that are not
