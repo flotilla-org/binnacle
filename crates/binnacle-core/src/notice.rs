@@ -3,8 +3,9 @@
 
 use std::ops::Range;
 
+use crate::axis::AxisState;
 use crate::effect::Effect;
-use crate::focus::FocusEnd;
+use crate::focus::{FocusEnd, Move};
 use crate::gesture::{Before, Gesture, Mode, Press};
 use crate::grid::Grid;
 use crate::measure::AxisMeasure;
@@ -53,16 +54,64 @@ pub(crate) struct Whereabouts {
     due: u32,
 }
 
+/// Focus waiting for `located`: which axes wait, where their Keys went, and
+/// the input held until every axis is placed.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Locating {
+    /// Per axis, the focused end's Key is known but its Position is not: a
+    /// Change Notice moved it, or `set_focus` named a Key outside the Window,
+    /// and `located` has not answered yet.
+    pub waiting: [bool; 2],
+    pub whereabouts: [Option<Whereabouts>; 2],
+    /// Focus moves made while waiting, applied once every axis is placed.
+    pub moves: Vec<Move>,
+    /// A `set_focus` is waiting: once placed, the focus is selected as a
+    /// focus move would and revealed.
+    pub select_when_placed: bool,
+}
+
+impl Locating {
+    pub fn any(&self) -> bool {
+        self.waiting.contains(&true)
+    }
+
+    /// Nothing is focused any more: nothing waits and no moves are held.
+    fn forget(&mut self) {
+        self.waiting = [false; 2];
+        self.whereabouts = [None; 2];
+        self.moves.clear();
+    }
+}
+
+/// Where a `located` answer puts the Key on an axis of `count` items:
+/// `Ok(position)`, or `Err(suggest)` if it has left (a `Found` past the count
+/// has left too, with no suggestion).
+pub(crate) fn placement(answer: Located, count: u64) -> Result<Position, Option<Position>> {
+    match answer {
+        Located::Found(p) if p < count => Ok(p),
+        Located::Found(_) => Err(None),
+        Located::Gone { suggest } => Err(suggest),
+    }
+}
+
+/// Where a focus end on `st`'s axis goes when its Key has left: `suggest`,
+/// else its last known `position`, clamped to the count; `None` when the
+/// axis is empty.
+fn fallback_end(st: &AxisState, position: Position, suggest: Option<Position>) -> Option<FocusEnd> {
+    let last = st.measure.count().checked_sub(1)?;
+    Some(FocusEnd::at(st, suggest.unwrap_or(position).min(last)))
+}
+
 impl Grid {
     /// Tells the Grid how `axis` changed in the Table Source.
     pub fn notify(&mut self, axis: Axis, notice: ChangeNotice) {
         match notice {
-            ChangeNotice::Reordered => self.changed(axis, None),
-            ChangeNotice::Reset(count) => self.changed(axis, Some(count)),
+            ChangeNotice::Reordered => self.reordered_or_reset(axis, None),
+            ChangeNotice::Reset(count) => self.reordered_or_reset(axis, Some(count)),
             ChangeNotice::Inserted { at, n } => {
                 let at = at.min(self.axis(axis).measure.count());
                 if n > 0 {
-                    self.shifted(axis, Shift::Inserted { at, n });
+                    self.inserted_or_removed(axis, Shift::Inserted { at, n });
                 }
             }
             ChangeNotice::Removed { at, n } => {
@@ -70,7 +119,7 @@ impl Grid {
                 let at = at.min(count);
                 let n = n.min(count - at);
                 if n > 0 {
-                    self.shifted(axis, Shift::Removed { at, n });
+                    self.inserted_or_removed(axis, Shift::Removed { at, n });
                 }
             }
             ChangeNotice::ContentChanged(range) => self.content_changed(axis, range),
@@ -103,7 +152,7 @@ impl Grid {
 
     /// Items were inserted or removed on `axis`: everything keyed or placed
     /// by Position moves with its item.
-    fn shifted(&mut self, axis: Axis, shift: Shift) {
+    fn inserted_or_removed(&mut self, axis: Axis, shift: Shift) {
         let i = axis.index();
         self.cancel_drags(axis);
         if let Gesture::Pressed {
@@ -146,10 +195,11 @@ impl Grid {
             selection.span = None;
         }
         self.set_selection(selection);
-        if let Some(w) = &mut self.whereabouts[i] {
+        let whereabouts = &mut self.locating.whereabouts[i];
+        if let Some(w) = whereabouts {
             match w.at.map(|p| shift.map(p)) {
                 Some(Some(p)) => w.at = Some(p),
-                Some(None) => self.whereabouts[i] = None,
+                Some(None) => *whereabouts = None,
                 None => {}
             }
         }
@@ -200,11 +250,11 @@ impl Grid {
         if count == 0 {
             return self.clamp_positions(axis, 0);
         }
-        let fallback = FocusEnd::at(self.axis(axis), shift.at().min(count - 1));
+        let fallback = fallback_end(self.axis(axis), shift.at(), None);
         let Some(f) = &mut self.focus else { return };
         let end = f[i];
         let moved = shift.map(end.position);
-        if self.locating[i] {
+        if self.locating.waiting[i] {
             f[i].position = moved.unwrap_or(shift.at()).min(count - 1);
             if let Some(key) = end.key {
                 self.locate(axis, key);
@@ -215,10 +265,10 @@ impl Grid {
             (Some(p), _) => f[i].position = p,
             (None, Some(key)) => {
                 self.pending_damage.selection = true;
-                self.left(axis, key, true, Some(shift.at()));
+                self.key_departed(axis, key, true, Some(shift.at()));
             }
             (None, None) => {
-                f[i] = fallback;
+                f[i] = fallback.expect("the axis is not empty");
                 self.pending_damage.selection = true;
                 self.announce_focus();
             }
@@ -239,7 +289,7 @@ impl Grid {
 
     /// The items on `axis` moved, and if `count` is given the count changed
     /// too (a `Reset`).
-    fn changed(&mut self, axis: Axis, count: Option<u64>) {
+    fn reordered_or_reset(&mut self, axis: Axis, count: Option<u64>) {
         let i = axis.index();
         self.cancel_drags(axis);
         if self.selection.span.is_some_and(|s| !s.whole[i]) || count == Some(0) {
@@ -289,9 +339,7 @@ impl Grid {
                 self.pending_damage.selection = true;
                 self.announce_focus();
             }
-            self.locating = [false; 2];
-            self.whereabouts = [None; 2];
-            self.moves.clear();
+            self.locating.forget();
             return;
         }
         if let Some(f) = &mut self.focus {
@@ -303,9 +351,9 @@ impl Grid {
     /// drawn nowhere until it answers.
     pub(crate) fn locate(&mut self, axis: Axis, key: Key) {
         let i = axis.index();
-        self.locating[i] = true;
+        self.locating.waiting[i] = true;
         self.pending_damage.selection = true;
-        let mut w = match self.whereabouts[i] {
+        let mut w = match self.locating.whereabouts[i] {
             Some(w) if w.key == key => w,
             _ => Whereabouts {
                 key,
@@ -314,16 +362,23 @@ impl Grid {
             },
         };
         w.at = None;
+        w.due = self.request_locate(axis, key, w.due);
+        self.locating.whereabouts[i] = Some(w);
+    }
+
+    /// Queues `Locate { axis, key }` unless it is already queued, and
+    /// returns how many answers a requester with `due` answers outstanding
+    /// now waits for: one more for a new request, at least one for a queued
+    /// one (queued for an edit, or for this Key before focus left it and came
+    /// back), whose answer is this one's too.
+    pub(crate) fn request_locate(&mut self, axis: Axis, key: Key, due: u32) -> u32 {
         let locate = Effect::Locate { axis, key };
-        if !self.effects.iter().any(|s| s.effect == locate) {
+        if self.effects.iter().any(|s| s.effect == locate) {
+            due.max(1)
+        } else {
             self.push(locate);
-            w.due += 1;
-        } else if w.due == 0 {
-            // Queued for an edit, or for this Key before focus left it and
-            // came back: its answer is this one's.
-            w.due = 1;
+            due + 1
         }
-        self.whereabouts[i] = Some(w);
     }
 
     /// The Table Source's answer to `Locate { axis, key }`. An answer that is
@@ -334,8 +389,8 @@ impl Grid {
         let i = axis.index();
         let count = self.axis(axis).measure.count();
         self.edit_located(axis, key, &answer);
-        let focused = self.locating[i] && self.focus.and_then(|f| f[i].key) == Some(key);
-        let Some(w) = &mut self.whereabouts[i] else {
+        let focused = self.locating.waiting[i] && self.focus.and_then(|f| f[i].key) == Some(key);
+        let Some(w) = &mut self.locating.whereabouts[i] else {
             return;
         };
         if w.key != key || w.due == 0 {
@@ -345,28 +400,30 @@ impl Grid {
         if w.due > 0 || w.at.is_some() {
             return;
         }
-        match answer {
-            Located::Found(p) if p < count => {
+        match placement(answer, count) {
+            Ok(p) => {
                 w.at = Some(p);
                 if focused && let Some(f) = &mut self.focus {
                     f[i].position = p;
                 }
             }
-            Located::Found(_) => self.left(axis, key, focused, None),
-            Located::Gone { suggest } => self.left(axis, key, focused, suggest),
+            Err(suggest) => self.key_departed(axis, key, focused, suggest),
         }
         if focused {
-            self.locating[i] = false;
+            self.locating.waiting[i] = false;
             self.pending_damage.selection = true;
-            self.settled(true);
+            if self.resume_focus() && self.follow_focus_on_reorder {
+                self.reveal = true;
+                self.reveal_focus();
+            }
         }
     }
 
     /// The Key being located on `axis` has left: forget it, drop it from the
     /// picks, and if it was focused move focus to `suggest`, else to its last
     /// known Position, clamped to the count.
-    fn left(&mut self, axis: Axis, key: Key, focused: bool, suggest: Option<Position>) {
-        self.whereabouts[axis.index()] = None;
+    fn key_departed(&mut self, axis: Axis, key: Key, focused: bool, suggest: Option<Position>) {
+        self.locating.whereabouts[axis.index()] = None;
         if axis == Axis::Rows && self.selection.picked(key) {
             let mut selection = self.selection.clone();
             selection.toggle_pick(key);
@@ -376,16 +433,12 @@ impl Grid {
         if !focused {
             return;
         }
-        let st = self.axis(axis);
-        let count = st.measure.count();
         let Some(mut f) = self.focus else { return };
-        if count == 0 {
-            self.focus = None;
-        } else {
-            let p = suggest.unwrap_or(f[axis.index()].position).min(count - 1);
-            f[axis.index()] = FocusEnd::at(st, p);
-            self.focus = Some(f);
-        }
+        let i = axis.index();
+        self.focus = fallback_end(self.axis(axis), f[i].position, suggest).map(|end| {
+            f[i] = end;
+            f
+        });
         self.announce_focus();
     }
 
@@ -395,7 +448,6 @@ impl Grid {
     fn forget_before(&mut self, axis: Axis, key: Key, suggest: Option<Position>) {
         let i = axis.index();
         let st = &self.axes[i];
-        let count = st.measure.count();
         let (Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before }) =
             &mut self.gesture
         else {
@@ -404,72 +456,68 @@ impl Grid {
         if axis == Axis::Rows {
             before.selection.picks.retain(|&k| k != key);
         }
-        if let Some(f) = &mut before.focus
+        if let Some(mut f) = before.focus
             && f[i].key == Some(key)
         {
-            if count == 0 {
-                before.focus = None;
-            } else {
-                f[i] = FocusEnd::at(st, suggest.unwrap_or(f[i].position).min(count - 1));
-            }
+            before.focus = fallback_end(st, f[i].position, suggest).map(|end| {
+                f[i] = end;
+                f
+            });
         }
     }
 
-    /// Called once a `located` answer placed the focus: if no axis is still
-    /// waiting, applies the focus moves buffered meanwhile and, if `follow`
-    /// and the `follow_focus_on_reorder` setting is on, reveals the focus.
-    pub(crate) fn settled(&mut self, follow: bool) {
-        if self.locating.iter().any(|&l| l) {
-            return;
+    /// Called when an axis stops waiting for `located`: once no axis
+    /// waits, finishes a waiting `set_focus` and applies the focus moves
+    /// held meanwhile. Returns false while an axis still waits.
+    pub(crate) fn resume_focus(&mut self) -> bool {
+        if self.locating.any() {
+            return false;
         }
-        if std::mem::take(&mut self.goto)
+        if std::mem::take(&mut self.locating.select_when_placed)
             && let Some(f) = self.focus
         {
             self.set_span(self.unit_span(f));
             self.reveal = true;
             self.reveal_focus();
         }
-        for m in std::mem::take(&mut self.moves) {
+        for m in std::mem::take(&mut self.locating.moves) {
             self.move_and_select(m);
         }
-        if follow && self.follow_focus_on_reorder {
-            self.reveal = true;
-            self.reveal_focus();
-        }
+        true
     }
 
     /// After `Cancel` restored an earlier focus: an end whose Key a Change
     /// Notice moved takes the Position learned since, or waits for it again.
     pub(crate) fn relocate(&mut self) {
         let Some(mut f) = self.focus else {
-            self.locating = [false; 2];
+            self.locating.waiting = [false; 2];
             return;
         };
         for axis in Axis::ALL {
             let i = axis.index();
-            self.locating[i] = false;
-            match self.whereabouts[i] {
+            self.locating.waiting[i] = false;
+            match self.locating.whereabouts[i] {
                 Some(w) if f[i].key == Some(w.key) => match w.at {
                     Some(p) => f[i].position = p,
-                    None => self.locating[i] = true,
+                    None => self.locating.waiting[i] = true,
                 },
                 _ => {}
             }
         }
         self.focus = Some(f);
-        self.settled(false);
+        self.resume_focus();
     }
 
     /// Focus is about to be set to `cell`, by direct input or a move made
     /// now: buffered moves are dropped, and an end that changes is no longer
     /// waiting for `located`.
     pub(crate) fn before_focus_set(&mut self, cell: [FocusEnd; 2]) {
-        self.moves.clear();
-        self.goto = false;
+        self.locating.moves.clear();
+        self.locating.select_when_placed = false;
         for axis in Axis::ALL {
             let i = axis.index();
             if self.focus.map(|f| f[i]) != Some(cell[i]) {
-                self.locating[i] = false;
+                self.locating.waiting[i] = false;
             }
         }
     }

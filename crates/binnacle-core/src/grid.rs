@@ -6,7 +6,7 @@ use crate::effect::{Action, Effect, FocusStep, Stamped};
 use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
-use crate::notice::Whereabouts;
+use crate::notice::Locating;
 use crate::pointer::{AxisHit, Hit};
 use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
@@ -117,15 +117,7 @@ pub struct Grid {
     /// overridden it; kept until the frame's Snapshot, since the viewport and
     /// sizes the move was made against may change before then.
     pub(crate) reveal: bool,
-    /// Per axis, the focused end's Key is known but its Position is not:
-    /// a Change Notice moved it and `located` has not answered yet.
-    pub(crate) locating: [bool; 2],
-    pub(crate) whereabouts: [Option<Whereabouts>; 2],
-    /// Focus moves made while locating, applied once it ends.
-    pub(crate) moves: Vec<Move>,
-    /// A `set_focus` is waiting for `located`: once placed, the focus is
-    /// selected as a focus move would and revealed.
-    pub(crate) goto: bool,
+    pub(crate) locating: Locating,
     pub(crate) follow_focus_on_reorder: bool,
     pub(crate) selection: Selection,
     pub(crate) unit: SelectionUnit,
@@ -173,10 +165,7 @@ impl Grid {
             focus: None,
             heard: None,
             reveal: false,
-            locating: [false; 2],
-            whereabouts: [None; 2],
-            moves: Vec::new(),
-            goto: false,
+            locating: Locating::default(),
             follow_focus_on_reorder: false,
             selection: Selection::default(),
             unit: SelectionUnit::Cells,
@@ -365,14 +354,15 @@ impl Grid {
                     extend,
                     times: 1,
                 };
-                if !self.locating.contains(&true) {
+                if !self.locating.any() {
                     return self.move_and_select(m);
                 }
-                match self.moves.last_mut() {
+                let moves = &mut self.locating.moves;
+                match moves.last_mut() {
                     Some(last) if Move { times: 1, ..*last } == m => {
                         last.times = last.times.saturating_add(1)
                     }
-                    _ => self.moves.push(m),
+                    _ => moves.push(m),
                 }
             }
             Action::SelectAll => self.select_all(),
@@ -470,7 +460,7 @@ impl Grid {
             self.reveal_focus();
         } else {
             self.set_span(None);
-            self.goto = true;
+            self.locating.select_when_placed = true;
         }
     }
 
@@ -553,7 +543,7 @@ impl Grid {
 
     pub(crate) fn extend_with(&mut self, from: Option<Cell>, head: Cell, whole: [bool; 2]) {
         // A focus whose Position is unknown cannot anchor a range.
-        let from = from.filter(|_| !self.locating.contains(&true));
+        let from = from.filter(|_| !self.locating.any());
         let anchor = self
             .selection
             .span
@@ -581,7 +571,7 @@ impl Grid {
     }
 
     fn select_all(&mut self) {
-        self.moves.clear();
+        self.locating.moves.clear();
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return;
         }
@@ -595,7 +585,7 @@ impl Grid {
 
     /// Selects every row of the range's columns, or of the focused column.
     fn select_column(&mut self) {
-        self.moves.clear();
+        self.locating.moves.clear();
         let (anchor, head) = match (self.selection.span, self.focus) {
             (Some(s), _) if !s.whole[Axis::Cols.index()] => (s.anchor, s.head),
             (_, Some(f)) => (f, f),

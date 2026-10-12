@@ -208,7 +208,7 @@ impl<'a> Snapshot<'a> {
     /// Change Notice. Its [`FocusEnd::position`] is then the last known one,
     /// and the focus is drawn only if the Window holds its Key there.
     pub fn locating(&self, axis: Axis) -> bool {
-        self.grid.locating[axis.index()]
+        self.grid.locating.waiting[axis.index()]
     }
 
     /// The focused cell's item on `axis` in its Strip, if it is visible and its

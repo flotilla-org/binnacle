@@ -4,6 +4,7 @@
 use crate::effect::Effect;
 use crate::gesture::Gesture;
 use crate::grid::Grid;
+use crate::notice::placement;
 use crate::sort::Located;
 use crate::types::{Axis, Key};
 
@@ -61,16 +62,12 @@ impl Grid {
     /// answer cancels the edit.
     pub(crate) fn locate_edit(&mut self, axis: Axis) {
         let i = axis.index();
-        let Gesture::Editing { keys, due } = &mut self.gesture else {
+        let Gesture::Editing { keys, due } = self.gesture else {
             return;
         };
-        let locate = Effect::Locate { axis, key: keys[i] };
-        if self.effects.iter().any(|s| s.effect == locate) {
-            // The queued one answers for the edit too.
-            due[i] = due[i].max(1);
-        } else {
-            due[i] += 1;
-            self.push(locate);
+        let due_now = self.request_locate(axis, keys[i], due[i]);
+        if let Gesture::Editing { due, .. } = &mut self.gesture {
+            due[i] = due_now;
         }
     }
 
@@ -86,11 +83,7 @@ impl Grid {
             return;
         }
         due[i] -= 1;
-        let left = match *answer {
-            Located::Found(p) => p >= count,
-            Located::Gone { .. } => true,
-        };
-        if due[i] == 0 && left {
+        if due[i] == 0 && placement(*answer, count).is_err() {
             self.end_edit();
         }
     }
