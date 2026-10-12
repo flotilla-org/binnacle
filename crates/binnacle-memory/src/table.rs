@@ -146,14 +146,25 @@ impl AxisOrder {
     }
 
     /// Adds `n` base items after the last, keyed by `keys` if the axis has
-    /// host Keys. They join the end of the sorted order and the filter keeps
-    /// them.
-    fn append(&mut self, n: usize, keys: &[Key]) {
+    /// host Keys. `place` merges the new Logical Indices into the sorted
+    /// order, if there is one; `keep` holds their flags while a filter is in
+    /// force.
+    fn append(
+        &mut self,
+        n: usize,
+        keys: &[Key],
+        place: impl FnOnce(&[u32], Vec<u32>) -> Vec<u32>,
+        keep: &[bool],
+    ) {
         let len = self.len + n;
         assert!(
             u32::try_from(len).is_ok(),
             "an In-Memory Table Source holds at most u32::MAX items per axis, got {len}"
         );
+        match &self.keep {
+            Some(_) => assert_eq!(keep.len(), n, "one keep flag per appended row"),
+            None => assert!(keep.is_empty(), "no filter is in force"),
+        }
         match &mut self.keys {
             Some(own) => {
                 assert_eq!(keys.len(), n, "one Key per appended item");
@@ -164,14 +175,14 @@ impl AxisOrder {
             }
             None => assert!(keys.is_empty(), "the items have no host Keys"),
         }
-        let new = self.len as u32..len as u32;
+        let new = (self.len as u32..len as u32).collect();
         self.len = len;
         if let Some(sorted) = &mut self.sorted {
-            sorted.extend(new.clone());
+            *sorted = place(sorted, new);
             self.ranks = None;
         }
-        if let Some(keep) = &mut self.keep {
-            keep.extend(new.map(|_| true));
+        if let Some(own) = &mut self.keep {
+            own.extend_from_slice(keep);
         }
         self.rebuild();
     }
@@ -239,6 +250,29 @@ impl AxisOrder {
                 .map(|&i| self.key(i))
                 .collect(),
         }
+    }
+}
+
+/// Compares base rows `a` and `b` by `spec`, as a tuple in spec order.
+fn compare(spec: &SortSpec, keys: &[SortKeys<'_>], a: u32, b: u32) -> Ordering {
+    spec.columns()
+        .iter()
+        .zip(keys)
+        .map(|(column, keys)| keys.compare(a as usize, b as usize, column.direction))
+        .find(|o| o.is_ne())
+        .unwrap_or(Ordering::Equal)
+}
+
+/// Checks that `keys` holds one entry per `spec` column, each with one key
+/// per base row of `len`.
+fn check_sort_keys(spec: &SortSpec, keys: &[SortKeys<'_>], len: usize) {
+    assert_eq!(
+        keys.len(),
+        spec.columns().len(),
+        "one SortKeys per Sort Spec column"
+    );
+    for column in keys {
+        assert_eq!(column.len(), len, "one sort key per base row");
     }
 }
 
@@ -333,28 +367,14 @@ impl InMemoryTableSource {
     /// hold one key per base row.
     pub fn apply_sort(&mut self, spec: &SortSpec, keys: Vec<SortKeys<'_>>) -> ChangeNotice {
         let rows = self.axis_mut(Axis::Rows);
-        assert_eq!(
-            keys.len(),
-            spec.columns().len(),
-            "one SortKeys per Sort Spec column"
-        );
-        for column in &keys {
-            assert_eq!(column.len(), rows.len, "one sort key per base row");
-        }
+        check_sort_keys(spec, &keys, rows.len);
         if spec.is_empty() {
             rows.set_sorted(None);
             self.sort = SortSpec::unsorted();
             return ChangeNotice::Reordered;
         }
         let mut remap: Vec<u32> = (0..rows.len as u32).collect();
-        remap.sort_by(|&a, &b| {
-            spec.columns()
-                .iter()
-                .zip(&keys)
-                .map(|(column, keys)| keys.compare(a as usize, b as usize, column.direction))
-                .find(|o| o.is_ne())
-                .unwrap_or(Ordering::Equal)
-        });
+        remap.sort_by(|&a, &b| compare(spec, &keys, a, b));
         rows.set_sorted(Some(remap));
         self.sort = spec.clone();
         ChangeNotice::Reordered
@@ -394,49 +414,103 @@ impl InMemoryTableSource {
 
     /// `n` rows were appended to the base data, keyed by `keys` if the rows
     /// have host Keys ([`InMemoryTableSource::with_keys`]; empty otherwise).
-    /// With no sort or filter active they are `Inserted` at the end. With
-    /// either active they join the end of the sorted order, kept, and the
-    /// rows need a `Reset`: re-apply the sort and filter to place them (a
-    /// [`crate::MemorySource`] does both).
+    /// They take their place in the sort in force, after rows they tie with,
+    /// and the filter in force drops those it rejects: `sort_keys` holds the
+    /// sort keys of every base row, new ones included, as for
+    /// [`InMemoryTableSource::apply_sort`] with the applied Sort Spec (empty
+    /// when unsorted), and `keep` the new rows' keep flags while a filter is
+    /// in force (empty otherwise). Returns `Inserted` if the rows kept land
+    /// together (`n` 0 if none is kept), else `Reset`.
     ///
     /// # Panics
     ///
-    /// If `keys` does not hold one Key per new row on a keyed axis, or is
-    /// not empty on an axis keyed by Logical Index.
-    pub fn append_rows(&mut self, n: usize, keys: &[Key]) -> ChangeNotice {
-        let rows = self.axis_mut(Axis::Rows);
-        let at = rows.count();
-        let ordered = rows.sorted.is_some() || rows.keep.is_some();
-        rows.append(n, keys);
-        if ordered {
-            ChangeNotice::Reset(rows.count())
+    /// If `keys`, `sort_keys` or `keep` does not hold what is described.
+    pub fn append_rows(
+        &mut self,
+        n: usize,
+        keys: &[Key],
+        sort_keys: Vec<SortKeys<'_>>,
+        keep: &[bool],
+    ) -> ChangeNotice {
+        let spec = &self.sort;
+        let rows = &mut self.axes[0];
+        let old = rows.len;
+        check_sort_keys(spec, &sort_keys, old + n);
+        let before = rows.count();
+        rows.append(
+            n,
+            keys,
+            |sorted, mut new| {
+                new.sort_by(|&a, &b| compare(spec, &sort_keys, a, b));
+                merge(sorted, &new, |&a, &b| compare(spec, &sort_keys, a, b))
+            },
+            keep,
+        );
+        let mut placed: Vec<Position> = (old..old + n)
+            .filter_map(|logical| rows.position(logical))
+            .collect();
+        placed.sort_unstable();
+        let at = placed.first().copied().unwrap_or(before);
+        let kept = placed.len() as u64;
+        if placed.last().is_none_or(|&last| last + 1 - at == kept) {
+            ChangeNotice::Inserted { at, n: kept }
         } else {
-            ChangeNotice::Inserted { at, n: n as u64 }
+            ChangeNotice::Reset(rows.count())
         }
     }
 
     /// The base rows changed in some other way: there are now `len`, keyed
-    /// by `keys` (or by Logical Index if `None`). The sort and filter are
-    /// dropped, since their keys and flags no longer line up with the rows:
-    /// re-apply them (a [`crate::MemorySource`] does). Returns the `Reset`
-    /// the rows need.
+    /// by `keys` (or by Logical Index if `None`). The sort and filter in
+    /// force are applied to them again: `sort_keys` holds every row's sort
+    /// keys for the applied Sort Spec (empty when unsorted) and `keep` every
+    /// row's keep flag while a filter is in force (empty otherwise). Returns
+    /// the `Reset` the rows need.
     ///
     /// # Panics
     ///
-    /// As [`InMemoryTableSource::new`] and [`InMemoryTableSource::with_keys`].
-    pub fn replace_rows(&mut self, len: usize, keys: Option<Vec<Key>>) -> ChangeNotice {
+    /// As [`InMemoryTableSource::new`] and [`InMemoryTableSource::with_keys`],
+    /// or if `sort_keys` or `keep` does not hold what is described.
+    pub fn replace_rows(
+        &mut self,
+        len: usize,
+        keys: Option<Vec<Key>>,
+        sort_keys: Vec<SortKeys<'_>>,
+        keep: Vec<bool>,
+    ) -> ChangeNotice {
         let mut rows = AxisOrder::new(len);
         if let Some(keys) = keys {
             assert_eq!(keys.len(), len, "one Key per base item");
             rows.keys = Some(keys);
         }
+        let filtered = self.axes[0].keep.is_some();
         self.axes[0] = rows;
-        self.sort = SortSpec::unsorted();
-        ChangeNotice::Reset(len as u64)
+        let spec = self.sort.clone();
+        self.apply_sort(&spec, sort_keys);
+        if filtered {
+            self.apply_filter(keep)
+        } else {
+            assert!(keep.is_empty(), "no filter is in force");
+            ChangeNotice::Reset(len as u64)
+        }
     }
 
     /// The Sort Spec the rows are in, as last applied.
     pub fn sort_spec(&self) -> &SortSpec {
         &self.sort
     }
+}
+
+/// Merges `new` into `sorted`, both ordered by `compare`; an item of `new`
+/// goes after the items of `sorted` it ties with.
+fn merge(sorted: &[u32], new: &[u32], compare: impl Fn(&u32, &u32) -> Ordering) -> Vec<u32> {
+    let mut merged = Vec::with_capacity(sorted.len() + new.len());
+    let mut rest = sorted;
+    for n in new {
+        let before = rest.partition_point(|s| compare(n, s).is_ge());
+        merged.extend_from_slice(&rest[..before]);
+        merged.push(*n);
+        rest = &rest[before..];
+    }
+    merged.extend_from_slice(rest);
+    merged
 }

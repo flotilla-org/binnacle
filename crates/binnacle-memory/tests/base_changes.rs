@@ -3,7 +3,7 @@
 //! the Grid needs.
 
 use binnacle_core::{Axis, ChangeNotice, Key, Located, SortColumn, SortSpec};
-use binnacle_memory::MemorySource;
+use binnacle_memory::{InMemoryTableSource, MemorySource, SortKeys};
 
 #[derive(Clone, Debug)]
 struct Rec {
@@ -48,7 +48,7 @@ fn an_append_with_no_sort_or_filter_is_inserted_at_the_end() {
 }
 
 #[test]
-fn an_append_while_sorted_or_filtered_places_the_rows_and_resets() {
+fn an_append_while_sorted_or_filtered_places_the_rows_in_order_and_filters_them() {
     let mut rows = recs(&[3, 1, 2]);
     let mut source = source(&rows);
     source.sort(&rows, &by_qty()).unwrap();
@@ -58,7 +58,11 @@ fn an_append_while_sorted_or_filtered_places_the_rows_and_resets() {
 
     source.filter(&rows, |r| r.qty % 2 == 1);
     rows.extend(recs(&[7, 6]));
-    assert_eq!(source.appended(&rows, &[]), ChangeNotice::Reset(4));
+    // The 7 lands at the end and the filter drops the 6.
+    assert_eq!(
+        source.appended(&rows, &[]),
+        ChangeNotice::Inserted { at: 3, n: 1 }
+    );
     assert_eq!(keys(&source), [1, 0, 4, 5]);
 }
 
@@ -141,19 +145,80 @@ fn any_other_change_with_no_sort_or_filter_resets_to_the_new_count() {
     assert_eq!(keys(&source), [0]);
 }
 
+fn table_keys(table: &InMemoryTableSource) -> Vec<u64> {
+    let count = table.count(Axis::Rows);
+    table
+        .window(Axis::Rows, 0..count)
+        .iter()
+        .map(|k| k.0)
+        .collect()
+}
+
+fn qty(values: &[i64]) -> Vec<SortKeys<'static>> {
+    vec![SortKeys::I64(values.iter().map(|&v| Some(v)).collect())]
+}
+
 #[test]
-fn the_bare_table_source_puts_rows_appended_while_sorted_at_the_end_until_resorted() {
-    let mut table = binnacle_memory::InMemoryTableSource::new(3, 1);
-    table.apply_sort(
-        &by_qty(),
-        vec![binnacle_memory::SortKeys::I64(vec![
-            Some(3),
-            Some(1),
-            Some(2),
-        ])],
+fn the_table_source_sorts_appended_rows_into_place_and_inserts_a_contiguous_run() {
+    let mut table = InMemoryTableSource::new(3, 1);
+    table.apply_sort(&by_qty(), qty(&[3, 1, 5]));
+    // Sorted 1, 3, 5. Two new rows of 4 land together before the 5.
+    assert_eq!(
+        table.append_rows(2, &[], qty(&[3, 1, 5, 4, 4]), &[]),
+        ChangeNotice::Inserted { at: 2, n: 2 }
     );
-    assert_eq!(table.append_rows(2, &[]), ChangeNotice::Reset(5));
-    let keys: Vec<u64> = table.window(Axis::Rows, 0..5).iter().map(|k| k.0).collect();
-    assert_eq!(keys, [1, 2, 0, 3, 4]);
-    assert_eq!(table.row_position(4), Some(4));
+    assert_eq!(table_keys(&table), [1, 0, 3, 4, 2]);
+    assert_eq!(table.row_position(4), Some(3));
+}
+
+#[test]
+fn the_table_source_resets_when_appended_rows_scatter_and_ties_keep_base_order() {
+    let mut table = InMemoryTableSource::new(3, 1);
+    table.apply_sort(&by_qty(), qty(&[3, 1, 5]));
+    assert_eq!(
+        table.append_rows(2, &[], qty(&[3, 1, 5, 9, 1]), &[]),
+        ChangeNotice::Reset(5)
+    );
+    assert_eq!(table_keys(&table), [1, 4, 0, 2, 3]);
+}
+
+#[test]
+fn the_table_source_keeps_appended_rows_out_when_the_filter_drops_them() {
+    let mut table = InMemoryTableSource::new(3, 1);
+    table.apply_filter(vec![true, false, true]);
+    assert_eq!(
+        table.append_rows(3, &[], vec![], &[false, true, true]),
+        ChangeNotice::Inserted { at: 2, n: 2 }
+    );
+    assert_eq!(table_keys(&table), [0, 2, 4, 5]);
+    // Nothing kept: nothing to tell the Grid.
+    assert_eq!(
+        table.append_rows(1, &[], vec![], &[false]),
+        ChangeNotice::Inserted { at: 4, n: 0 }
+    );
+    assert_eq!(table.count(Axis::Rows), 4);
+    assert_eq!(table.row_position(6), None);
+}
+
+#[test]
+fn the_table_source_keeps_its_sort_and_filter_when_the_rows_are_replaced() {
+    let mut table = InMemoryTableSource::new(3, 1);
+    table.apply_sort(&by_qty(), qty(&[3, 1, 5]));
+    table.apply_filter(vec![true; 3]);
+    assert_eq!(
+        table.replace_rows(4, None, qty(&[7, 2, 8, 1]), vec![true, true, false, true]),
+        ChangeNotice::Reset(3)
+    );
+    assert_eq!(table_keys(&table), [3, 1, 0]);
+    assert_eq!(table.sort_spec(), &by_qty());
+}
+
+#[test]
+fn the_table_source_replaces_unsorted_unfiltered_rows_in_base_order() {
+    let mut table = InMemoryTableSource::new(3, 1);
+    assert_eq!(
+        table.replace_rows(2, Some(vec![Key(9), Key(8)]), vec![], vec![]),
+        ChangeNotice::Reset(2)
+    );
+    assert_eq!(table_keys(&table), [9, 8]);
 }

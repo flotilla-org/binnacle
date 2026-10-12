@@ -128,23 +128,25 @@ impl<R> MemorySource<R> {
     }
 
     /// Rows were appended to the host's base data, now `rows`, keyed by
-    /// `keys` if the rows have host Keys (empty otherwise). With no sort or
-    /// filter active they are `Inserted` at the end; otherwise they are
-    /// sorted and filtered into place and the rows need a `Reset`.
+    /// `keys` if the rows have host Keys (empty otherwise). They take their
+    /// place in the sort in force and the filter in force drops those it
+    /// rejects. See [`InMemoryTableSource::append_rows`] for the notice.
     ///
     /// # Panics
     ///
     /// If `rows` is shorter than before, or as [`InMemoryTableSource::append_rows`].
     pub fn appended(&mut self, rows: &[R], keys: &[Key]) -> ChangeNotice {
+        let old = self.table.base_rows();
         let n = rows
             .len()
-            .checked_sub(self.table.base_rows())
+            .checked_sub(old)
             .expect("rows were appended, not removed");
-        let notice = self.table.append_rows(n, keys);
-        if !matches!(notice, ChangeNotice::Inserted { .. }) {
-            return self.reorder(rows);
-        }
-        notice
+        let keep: Vec<bool> = self
+            .keep
+            .as_ref()
+            .map_or_else(Vec::new, |keep| rows[old..].iter().map(keep).collect());
+        let sort_keys = self.sort_keys(rows);
+        self.table.append_rows(n, keys, sort_keys, &keep)
     }
 
     /// The value in `column` of base row `row` (a Logical Index into `rows`)
@@ -180,11 +182,22 @@ impl<R> MemorySource<R> {
     ///
     /// As [`InMemoryTableSource::replace_rows`].
     pub fn replaced(&mut self, rows: &[R], keys: Option<Vec<Key>>) -> ChangeNotice {
-        let spec = self.sort_spec().clone();
-        self.table.replace_rows(rows.len(), keys);
+        let keep: Vec<bool> = self
+            .keep
+            .as_ref()
+            .map_or_else(Vec::new, |keep| rows.iter().map(keep).collect());
+        let sort_keys = self.sort_keys(rows);
+        self.table.replace_rows(rows.len(), keys, sort_keys, keep)
+    }
+
+    /// The sort keys of `rows` for the Sort Spec in force.
+    fn sort_keys<'r>(&self, rows: &'r [R]) -> Vec<SortKeys<'r>> {
         // Every spec column had a closure when it was applied.
-        let _ = self.sort(rows, &spec);
-        self.reorder(rows)
+        self.sort_spec()
+            .columns()
+            .iter()
+            .map(|c| self.columns[&c.key].extract(rows))
+            .collect()
     }
 
     /// Sorts `rows` again by the Sort Spec in force.

@@ -230,13 +230,24 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
         } = step;
         match &step.notice {
             Some(ChangeNotice::Inserted { at, n }) => {
-                assert!(matches!(op, Op::Append(_)) && !step.ordered);
-                assert_eq!(*at, before.len() as u64);
-                assert_eq!(after[..*at as usize], before[..]);
-                assert_eq!(after.len() as u64, at + n);
-                let added =
-                    (step.rows.len() as u64 - n..step.rows.len() as u64).collect::<Vec<_>>();
-                assert_eq!(after[*at as usize..], added[..]);
+                let Op::Append(records) = op else {
+                    panic!("{op:?}")
+                };
+                // The rows kept from the append, spliced in at `at`.
+                let old = (step.rows.len() - records.len()) as u64;
+                let (at, n) = (*at as usize, *n as usize);
+                assert_eq!(after.len(), before.len() + n);
+                assert_eq!(after[..at], before[..at]);
+                assert_eq!(after[at + n..], before[at..]);
+                assert!(after[at..at + n].iter().all(|&i| i >= old));
+                assert_eq!(
+                    after.iter().filter(|&&i| i >= old).count(),
+                    n,
+                    "every kept new row is in the run"
+                );
+                if !step.ordered {
+                    assert_eq!((at, n), (before.len(), records.len()));
+                }
             }
             Some(ChangeNotice::ContentChanged(r)) => {
                 let Op::Edit { row, .. } = op else {
@@ -254,8 +265,17 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
             }
             Some(ChangeNotice::Reset(count)) => {
                 assert_eq!(*count, after.len() as u64);
-                // An append with nothing sorted or filtered is never a Reset.
-                assert!(!matches!(op, Op::Append(_)) || step.ordered, "{op:?}");
+                // An append resets only when the rows it kept do not land
+                // together, which needs a sort.
+                if let Op::Append(records) = op {
+                    let old = (step.rows.len() - records.len()) as u64;
+                    let new: Vec<usize> = (0..after.len()).filter(|&p| after[p] >= old).collect();
+                    assert!(step.ordered, "{op:?}");
+                    assert!(
+                        new.windows(2).any(|w| w[1] != w[0] + 1),
+                        "{op:?} kept rows together at {new:?}"
+                    );
+                }
             }
             Some(ChangeNotice::Removed { .. }) => panic!("{op:?}"),
             None => {
