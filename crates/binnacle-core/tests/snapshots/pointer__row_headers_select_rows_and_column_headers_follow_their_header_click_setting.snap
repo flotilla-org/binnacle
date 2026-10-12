@@ -47,7 +47,9 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 1   1.0    1.1    1.2    1
 2   +2.0   +2.1   +2.2   +
 3   +3.0   +3.1   +3.2   +
---- 5. click column header 1: Sort is not built here, nothing
+--- 5. click column header 1: Sort, which the identity source rejects
+effect (gen 5): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(1), direction: Ascending }] } }
+  sort [SortColumn { key: Key(1), direction: Ascending }]: Err(SortSpec { columns: [] })
 gen 6 | damage selection | focus 0#0,1#1 at 11,1 6x1 | range 2..4 x 0..5 | picks 0 | fill 4,3 27x2 | fill 4,1 27x1 | hover Cols 1
 Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
 Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6

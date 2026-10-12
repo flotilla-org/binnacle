@@ -1,0 +1,72 @@
+---
+source: crates/binnacle-core/tests/sorting.rs
+expression: out
+---
+--- 1. pick records 0 and 2, shift-click record 3, column 1; scroll down one
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): SelectionChanged
+effect (gen 1): FocusChanged { row: Key(3), col: Key(1) }
+window Rows 0..7
+gen 2 | damage layout selection positions | focus 3#3,1#1 at 11,3 6x1 | range 2..4 x 0..2 | picks 0,2 | fill 4,2 13x2 | fill 4,2 20x1
+Rows: count 8, extent 5, header 1, anchor 1+0, thumb 0.2500/0.5000 | 1#1@1+1 2#2@2+1 3#3@3+1 4#4@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+1   1.0    1.1    1.2
+2   +2.0   +2.1   +2.2
+3   +3.0   *3.1   3.2
+4   4.0    4.1    4.2
+--- 2. sort by column 0: focus follows record 3 off screen, picks follow, range gone, anchor stays
+effect (gen 2): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(0), direction: Ascending }] } }
+  sort [SortColumn { key: Key(0), direction: Ascending }]: Ok(Reordered)
+effect (gen 2): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(0)
+effect (gen 2): SelectionChanged
+window Rows 0..7
+gen 3 | damage layout selection positions | focus 0#3,1#1 not drawn | picks 0,2 | fill 4,4 20x1 | sort 0^ | hover Cols 0
+Rows: count 8, extent 5, header 1, anchor 1+0, thumb 0.2500/0.5000 | 1#5@1+1 2#1@2+1 3#7@3+1 4#0@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+1   5.0    5.1    5.2
+2   1.0    1.1    1.2
+3   7.0    7.1    7.2
+4   +0.0   +0.1   +0.2
+--- 3. again: descending
+effect (gen 3): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(0), direction: Descending }] } }
+  sort [SortColumn { key: Key(0), direction: Descending }]: Ok(Reordered)
+effect (gen 3): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(7)
+window Rows 0..7
+gen 4 | damage layout selection positions | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v | hover Cols 0
+Rows: count 8, extent 5, header 1, anchor 1+0, thumb 0.2500/0.5000 | 1#2@1+1 2#6@2+1 3#0@3+1 4#7@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+1   +2.0   +2.1   +2.2
+2   6.0    6.1    6.2
+3   +0.0   +0.1   +0.2
+4   7.0    7.1    7.2
+--- 4. shift-click column 1: added second; column 0 has no ties, so the order holds
+effect (gen 4): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(0), direction: Descending }, SortColumn { key: Key(1), direction: Ascending }] } }
+  sort [SortColumn { key: Key(0), direction: Descending }, SortColumn { key: Key(1), direction: Ascending }]: Ok(Reordered)
+effect (gen 4): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(7)
+window Rows 0..7
+gen 5 | damage layout selection positions | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | hover Cols 1
+Rows: count 8, extent 5, header 1, anchor 1+0, thumb 0.2500/0.5000 | 1#2@1+1 2#6@2+1 3#0@3+1 4#7@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+1   +2.0   +2.1   +2.2
+2   6.0    6.1    6.2
+3   +0.0   +0.1   +0.2
+4   7.0    7.1    7.2
+--- 5. column 2 has no sort keys: rejected, the sort stays
+effect (gen 5): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(2), direction: Ascending }] } }
+  sort [SortColumn { key: Key(2), direction: Ascending }]: Err(SortSpec { columns: [SortColumn { key: Key(0), direction: Descending }, SortColumn { key: Key(1), direction: Ascending }] })
+gen 6 | damage selection | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | hover Cols 2
+Rows: count 8, extent 5, header 1, anchor 1+0, thumb 0.2500/0.5000 | 1#2@1+1 2#6@2+1 3#0@3+1 4#7@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+1   +2.0   +2.1   +2.2
+2   6.0    6.1    6.2
+3   +0.0   +0.1   +0.2
+4   7.0    7.1    7.2

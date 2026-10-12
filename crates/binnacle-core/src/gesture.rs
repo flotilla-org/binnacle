@@ -30,8 +30,8 @@ pub enum Mode {
 /// Focus and selection from before a gesture, which `Cancel` restores.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Before {
-    focus: Option<Cell>,
-    selection: Selection,
+    pub focus: Option<Cell>,
+    pub selection: Selection,
 }
 
 /// What a press landed on, deciding what moving and releasing do.
@@ -304,6 +304,9 @@ impl Grid {
     /// A click on the header of the item at `position` on `axis`, acted on
     /// by that axis's `header_click` setting.
     fn header_click(&mut self, axis: Axis, position: Position, modifiers: Modifiers) {
+        if self.header_click[axis.index()] == HeaderClick::Sort {
+            return self.sort_click(axis, position, modifiers);
+        }
         if self.header_click[axis.index()] != HeaderClick::Select
             || Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0)
         {

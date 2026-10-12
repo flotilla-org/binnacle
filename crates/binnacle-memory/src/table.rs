@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use binnacle_core::{Axis, Key, Located, Position, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, Key, Located, Position, SortSpec};
 
 use crate::SortKeys;
 
@@ -103,6 +103,7 @@ impl AxisOrder {
 #[derive(Clone, Debug)]
 pub struct InMemoryTableSource {
     axes: [AxisOrder; 2],
+    sort: SortSpec,
 }
 
 impl InMemoryTableSource {
@@ -115,6 +116,7 @@ impl InMemoryTableSource {
     pub fn new(rows: usize, cols: usize) -> Self {
         InMemoryTableSource {
             axes: [AxisOrder::new(rows), AxisOrder::new(cols)],
+            sort: SortSpec::unsorted(),
         }
     }
 
@@ -166,12 +168,13 @@ impl InMemoryTableSource {
     /// Sorts the rows by `spec`, with `keys[i]` holding the sort keys of
     /// `spec.columns()[i]` for every base row. Rows compare as tuples in spec
     /// order and ties keep base order. An empty spec restores base order.
+    /// Returns the Change Notice the rows need.
     ///
     /// # Panics
     ///
     /// If `keys` does not hold one entry per spec column, or an entry does not
     /// hold one key per base row.
-    pub fn apply_sort(&mut self, spec: &SortSpec, keys: Vec<SortKeys<'_>>) {
+    pub fn apply_sort(&mut self, spec: &SortSpec, keys: Vec<SortKeys<'_>>) -> ChangeNotice {
         let rows = self.axis_mut(Axis::Rows);
         assert_eq!(
             keys.len(),
@@ -183,7 +186,8 @@ impl InMemoryTableSource {
         }
         if spec.is_empty() {
             rows.set_remap(None);
-            return;
+            self.sort = SortSpec::unsorted();
+            return ChangeNotice::Reordered;
         }
         let mut remap: Vec<u32> = (0..rows.len as u32).collect();
         remap.sort_by(|&a, &b| {
@@ -195,5 +199,12 @@ impl InMemoryTableSource {
                 .unwrap_or(Ordering::Equal)
         });
         rows.set_remap(Some(remap));
+        self.sort = spec.clone();
+        ChangeNotice::Reordered
+    }
+
+    /// The Sort Spec the rows are in, as last applied.
+    pub fn sort_spec(&self) -> &SortSpec {
+        &self.sort
     }
 }

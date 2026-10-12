@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use binnacle_core::{Axis, Cursor, FocusEnd, Mode, Snapshot, StripItem};
+use binnacle_core::{Axis, Cursor, FocusEnd, Mode, Snapshot, SortDirection, SortSpec, StripItem};
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
 const MAX_CANVAS: (usize, usize) = (160, 60);
@@ -12,12 +12,14 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// whole character it reaches. Column headers show the column
 /// Key, row headers the row Position, cells `rowkey.colkey`. A placed focus
 /// adds `focus row,col` (each `position#key`) and its rect to the summary, and
-/// marks the focused cell `*rowkey.colkey`. A range adds `range rows x cols`
+/// marks the focused cell `*rowkey.colkey`; `locating axis` while its new
+/// Position is awaited. A range adds `range rows x cols`
 /// (half-open Positions), picks add `picks` (row Keys), and either adds the
 /// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
 /// its Mode and `capturing`, a hovered header `hover axis position`, a resize
 /// cursor hint `cursor C` and a resize guide `guide axis offset (key K size
-/// S)`.
+/// S)`. A non-empty applied Sort Spec adds `sort` and an unanswered request
+/// `requested`, each as `key^` or `keyv` per column.
 pub fn render(snap: &Snapshot) -> String {
     let mut out = String::new();
     let d = snap.damage();
@@ -52,6 +54,11 @@ pub fn render(snap: &Snapshot) -> String {
             }
             None => out.push_str(" not drawn"),
         }
+        for axis in Axis::ALL {
+            if snap.locating(axis) {
+                let _ = write!(out, " | locating {axis:?}");
+            }
+        }
     }
     if let Some(r) = snap.selection_range() {
         let _ = write!(out, " | range {:?} x {:?}", r.rows, r.cols);
@@ -62,6 +69,12 @@ pub fn render(snap: &Snapshot) -> String {
     }
     for f in snap.selection_rects() {
         let _ = write!(out, " | fill {},{} {}x{}", f.x, f.y, f.width, f.height);
+    }
+    if !snap.applied_sort().is_empty() {
+        let _ = write!(out, " | sort {}", spec_text(snap.applied_sort()));
+    }
+    if let Some(spec) = snap.requested_sort() {
+        let _ = write!(out, " | requested {}", spec_text(spec));
     }
     if snap.mode() != Mode::Idle {
         let _ = write!(out, " | mode {:?}", snap.mode());
@@ -110,6 +123,26 @@ pub fn render(snap: &Snapshot) -> String {
     }
     out.push_str(&picture(snap));
     out
+}
+
+/// A Sort Spec as `key^` (ascending) or `keyv` (descending) per column, in
+/// order, or `unsorted`.
+fn spec_text(spec: &SortSpec) -> String {
+    if spec.is_empty() {
+        return "unsorted".into();
+    }
+    let columns: Vec<String> = spec
+        .columns()
+        .iter()
+        .map(|c| {
+            let arrow = match c.direction {
+                SortDirection::Ascending => '^',
+                SortDirection::Descending => 'v',
+            };
+            format!("{}{arrow}", c.key.0)
+        })
+        .collect();
+    columns.join(",")
 }
 
 fn key_text(item: &StripItem) -> String {
