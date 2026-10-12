@@ -3,8 +3,8 @@
 //! `Reordered` Change Notice.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Effect, FocusStep, HeaderSort, Key, Modifiers, PointerEvent,
-    SortColumn, SortDirection, SortSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, HeaderSort, Key, Mode, Modifiers,
+    PointerEvent, SortColumn, SortDirection, SortSpec, Viewport,
 };
 use binnacle_testkit::{IdentityTable, RecordTable, Scenario, ScenarioSource, render};
 
@@ -360,4 +360,45 @@ fn a_resize_carries_on_through_a_reorder_of_either_axis() {
     s.input(|g| g.pointer(PointerEvent::up(13.5, 0.5)));
     out += &s.step("release: SizeChanged for column 0", V);
     insta::assert_snapshot!(out);
+}
+
+/// Regression (found by the FocusChanged property): a focus whose Key a frame
+/// completed is announced at the next drain, unless something moves focus
+/// first. A Reordered that cancels a selection drag is such a move: it
+/// restores the focus from before the press, and the queued announcement of
+/// the abandoned cell goes with it.
+#[test]
+fn a_reorder_that_cancels_a_drag_withdraws_the_announcement_of_the_dragged_focus() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(1, 1.0),
+        AxisConfig::new(999_999_999_999_000, 1.0),
+    );
+    let v = Viewport::new(5.0, 3.0);
+    s.frame(v);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(0.5, 0.5));
+        g.pointer(PointerEvent::moved(3.5, 0.5));
+        g.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Edge,
+            forward: true,
+            extend: false,
+        });
+    });
+    s.pump();
+    let snap = s.frame(v);
+    let last = Key(999_999_999_998_999);
+    assert_eq!(snap.focus(Axis::Cols).and_then(|f| f.key), Some(last));
+    assert_eq!(snap.mode(), Mode::DraggingSelection);
+    s.input(|g| g.notify(Axis::Rows, ChangeNotice::Reordered));
+    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    assert!(
+        !drained
+            .iter()
+            .any(|e| matches!(e, Effect::FocusChanged { .. })),
+        "{drained:?}"
+    );
+    let snap = s.frame(v);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert_eq!(snap.focus(Axis::Rows), None);
 }

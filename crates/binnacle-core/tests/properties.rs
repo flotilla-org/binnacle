@@ -614,7 +614,10 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::Action(_) => reveals_focus = false,
                 // A click focuses what is under the pointer without scrolling.
                 Input::Pointer(_) => moved_focus = true,
-                Input::SetSize(..) | Input::Notice(_) => {}
+                // A notice cancels a selection drag, restoring the focus from
+                // before its press.
+                Input::Notice(_) => moved_focus = true,
+                Input::SetSize(..) => {}
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
