@@ -437,3 +437,15 @@ fn a_click_discards_a_focus_move_waiting_for_located_and_scrolls_nothing() {
     assert_eq!(snap.scroll_anchor(Axis::Cols).position, 48);
     assert_eq!(snap.focus_rect(), None);
 }
+
+#[test]
+fn a_sort_click_on_a_row_header_does_nothing() {
+    let mut s = table();
+    s.input(|g| g.set_header_click(Axis::Rows, binnacle_core::HeaderClick::Sort));
+    s.frame(V);
+    click(&mut s, 1.0, 2.5, Modifiers::NONE);
+    assert_eq!(s.pump(), vec![]);
+    let snap = s.frame(V);
+    assert_eq!(snap.requested_sort(), None);
+    assert_eq!(snap.focus(Axis::Rows), None);
+}
