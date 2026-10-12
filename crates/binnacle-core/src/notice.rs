@@ -372,6 +372,7 @@ impl Grid {
             selection.toggle_pick(key);
             self.set_selection(selection);
         }
+        self.forget_before(axis, key, suggest);
         if !focused {
             return;
         }
@@ -386,6 +387,32 @@ impl Grid {
             self.focus = Some(f);
         }
         self.announce_focus();
+    }
+
+    /// The state a press would restore on `Cancel` must not bring back a Key
+    /// that has left: its focus end falls back as the focus would, and the
+    /// Key leaves its picks.
+    fn forget_before(&mut self, axis: Axis, key: Key, suggest: Option<Position>) {
+        let i = axis.index();
+        let st = &self.axes[i];
+        let count = st.measure.count();
+        let (Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before }) =
+            &mut self.gesture
+        else {
+            return;
+        };
+        if axis == Axis::Rows {
+            before.selection.picks.retain(|&k| k != key);
+        }
+        if let Some(f) = &mut before.focus
+            && f[i].key == Some(key)
+        {
+            if count == 0 {
+                before.focus = None;
+            } else {
+                f[i] = FocusEnd::at(st, suggest.unwrap_or(f[i].position).min(count - 1));
+            }
+        }
     }
 
     /// Called once a `located` answer placed the focus: if no axis is still

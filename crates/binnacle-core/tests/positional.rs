@@ -410,3 +410,32 @@ fn an_edit_survives_the_removal_of_other_rows_in_and_out_of_sight() {
         }
     );
 }
+
+/// Regression (found by the FocusChanged property): a drag's press captured
+/// a focus whose Key `set_focus` had named and `Locate` then found gone. A
+/// notice cancelling the drag restored that departed Key and announced it.
+/// A Key that leaves now leaves the state a press would restore too.
+#[test]
+fn cancelling_a_drag_never_restores_a_key_that_has_left() {
+    let mut s = Scenario::identity(AxisConfig::new(1, 1.0), AxisConfig::new(1, 1.0));
+    let v = Viewport::new(1.0, 1.0);
+    s.frame(v);
+    s.input(|g| {
+        g.set_focus(Key(1), Key(0));
+        g.pointer(PointerEvent::down(0.5, 0.5));
+        g.pointer(PointerEvent::moved(0.5, 1.5));
+    });
+    s.frame(v);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    assert!(
+        !drained.contains(&Effect::FocusChanged {
+            row: Key(1),
+            col: Key(0)
+        }),
+        "{drained:?}"
+    );
+    let snap = s.frame(v);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(0)));
+}
