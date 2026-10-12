@@ -30,11 +30,19 @@ pub struct WindowChange {
 /// Scroll Anchor stays exact however far down a huge axis it is: default-sized
 /// runs are crossed by arithmetic, Window items one by one from the query's
 /// start (O(Window), never O(count) or O(overrides)).
+///
+/// Every size it uses lies in its size range `[min_size, max_size]`: the
+/// default size, Size Overrides, content sizes and the minimum-size hint are
+/// clamped into it, and the Gap is capped at `max_size`. The range keeps f32
+/// offsets precise and bounds the Window at about a viewport's length over
+/// `min_size` items.
 #[derive(Clone, Debug)]
 pub struct AxisMeasure {
     count: u64,
     default_size: f32,
     gap: f32,
+    min_size: f32,
+    max_size: f32,
     overrides: BTreeMap<Key, f32>,
     /// How many overrides have each size, keyed by its bits (positive floats
     /// order like their bits), so the smallest is found in O(log n).
@@ -49,9 +57,33 @@ pub struct AxisMeasure {
 }
 
 impl AxisMeasure {
-    /// `default_size` must be positive and finite, `gap` finite and not
-    /// negative.
+    /// The size range a measure uses unless given another.
+    pub const DEFAULT_MIN_SIZE: f32 = 1.0;
+    pub const DEFAULT_MAX_SIZE: f32 = 1_048_576.0;
+
+    /// A measure with the default size range. `default_size` must be positive
+    /// and finite, `gap` finite and not negative; both are then clamped as
+    /// the range says.
     pub fn new(count: u64, default_size: f32, gap: f32) -> Self {
+        Self::with_size_range(
+            count,
+            default_size,
+            gap,
+            Self::DEFAULT_MIN_SIZE,
+            Self::DEFAULT_MAX_SIZE,
+        )
+    }
+
+    /// Like [`AxisMeasure::new`] with the size range `[min_size, max_size]`.
+    /// `min_size` must be positive and finite, `max_size` finite and at least
+    /// `min_size`.
+    pub fn with_size_range(
+        count: u64,
+        default_size: f32,
+        gap: f32,
+        min_size: f32,
+        max_size: f32,
+    ) -> Self {
         assert!(
             default_size.is_finite() && default_size > 0.0,
             "default size must be positive and finite, got {default_size}"
@@ -60,10 +92,20 @@ impl AxisMeasure {
             gap.is_finite() && gap >= 0.0,
             "Gap must be finite and not negative, got {gap}"
         );
+        assert!(
+            min_size.is_finite() && min_size > 0.0,
+            "min size must be positive and finite, got {min_size}"
+        );
+        assert!(
+            max_size.is_finite() && max_size >= min_size,
+            "max size must be finite and at least the min size {min_size}, got {max_size}"
+        );
         AxisMeasure {
             count,
-            default_size,
-            gap,
+            default_size: default_size.clamp(min_size, max_size),
+            gap: gap.min(max_size),
+            min_size,
+            max_size,
             overrides: BTreeMap::new(),
             override_sizes: BTreeMap::new(),
             content_min: None,
@@ -86,12 +128,28 @@ impl AxisMeasure {
         self.gap
     }
 
-    /// Sets the Size Override for `key`. Sizes that are not positive and finite
-    /// are ignored.
+    /// The smallest size any item may have.
+    pub fn min_size(&self) -> f32 {
+        self.min_size
+    }
+
+    /// The largest size any item may have.
+    pub fn max_size(&self) -> f32 {
+        self.max_size
+    }
+
+    /// `size` clamped into the size range, or `None` if it is not positive and
+    /// finite.
+    fn in_range(&self, size: f32) -> Option<f32> {
+        (size.is_finite() && size > 0.0).then(|| size.clamp(self.min_size, self.max_size))
+    }
+
+    /// Sets the Size Override for `key`, clamped into the size range. Sizes
+    /// that are not positive and finite are ignored.
     pub fn set_size(&mut self, key: Key, size: f32) {
-        if !(size.is_finite() && size > 0.0) {
+        let Some(size) = self.in_range(size) else {
             return;
-        }
+        };
         if let Some(old) = self.overrides.insert(key, size) {
             self.forget_size(old);
         }
@@ -151,7 +209,8 @@ impl AxisMeasure {
     /// Like [`AxisMeasure::set_keys`], with the host's content size for each Key
     /// and a hint that no content size on this axis is below `min_size`. Sizes
     /// below the hint are raised to it; sizes that are not positive and finite
-    /// count as unknown. The hint stays until replaced.
+    /// count as unknown. The hint stays until replaced. Sizes and hint are
+    /// clamped into the size range.
     pub fn set_keys_sized(
         &mut self,
         start: Position,
@@ -159,15 +218,16 @@ impl AxisMeasure {
         sizes: &[f32],
         min_size: f32,
     ) -> WindowChange {
-        if min_size.is_finite() && min_size > 0.0 {
-            self.content_min = Some(min_size);
+        if let Some(hint) = self.in_range(min_size) {
+            self.content_min = Some(hint);
         }
-        let hint = self.content_min.unwrap_or(0.0);
+        let hint = self.content_min.unwrap_or(self.min_size);
+        let max = self.max_size;
         self.replace(start, keys, |i| {
             sizes
                 .get(i)
                 .filter(|s| s.is_finite() && **s > 0.0)
-                .map(|s| s.max(hint))
+                .map(|s| s.clamp(hint, max))
         })
     }
 

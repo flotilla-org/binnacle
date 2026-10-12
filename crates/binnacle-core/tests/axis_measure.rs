@@ -133,6 +133,25 @@ fn invalid_sizes_are_ignored() {
     assert_eq!(m.smallest_size(), 99.0);
 }
 
+#[test]
+fn sizes_outside_the_size_range_are_clamped_into_it() {
+    let mut m = AxisMeasure::with_size_range(6, 500.0, 300.0, 2.0, 100.0);
+    assert_eq!((m.default_size(), m.gap()), (100.0, 100.0));
+    m.set_size(Key(3), 1.0e-20);
+    m.set_size(Key(4), 1.0e20);
+    m.set_keys_sized(
+        0,
+        &[Key(0), Key(1), Key(2), Key(3), Key(4)],
+        &[0.5, 1.0e9, 50.0],
+        0.1,
+    );
+    let sizes: Vec<f32> = (0..6).map(|p| m.size_at(p)).collect();
+    // The hint 0.1 rises to 2; content 0.5 rises to it, 1e9 falls to 100.
+    assert_eq!(sizes, [2.0, 100.0, 50.0, 2.0, 100.0, 100.0]);
+    assert_eq!(m.smallest_size(), 2.0);
+    assert_eq!(AxisMeasure::new(1, 1.0e-3, 0.0).size_at(0), 1.0);
+}
+
 /// Gap 0 is allowed and has no border zone: every offset is in exactly one item
 /// (the prototype's hit test chose the item above).
 #[test]
@@ -195,7 +214,10 @@ mod properties {
             gs::just(0.0f32),
             gs::floats::<f32>().min_value(0.0).allow_infinity(false)
         ));
-        let mut m = AxisMeasure::new(count, tc.draw(size()), gap);
+        let (min, max) = tc.draw(
+            hegel::tuples!(size(), size()).map(|(a, b)| if a <= b { (a, b) } else { (b, a) }),
+        );
+        let mut m = AxisMeasure::with_size_range(count, tc.draw(size()), gap, min, max);
         let start = tc.draw(gs::integers::<u64>().max_value(count - 1));
         let start = tc.draw(hegel::one_of!(gs::just(0), gs::just(start)));
         let pool = || gs::integers::<u64>().max_value(60).map(Key);
@@ -273,7 +295,7 @@ mod properties {
 /// item's start, rounded onto the Window's end and located nothing.
 #[test]
 fn an_offset_just_inside_the_last_window_item_locates_it() {
-    let mut m = AxisMeasure::new(4, 0.25, 0.0);
+    let mut m = AxisMeasure::with_size_range(4, 0.25, 0.0, 0.25, 1.0);
     m.set_keys(1, &[Key(1), Key(2), Key(3)]);
     let just_inside = 0.25 - 6.668321e-17;
     assert_eq!(m.locate(3, just_inside).map(|l| l.position), Some(3));

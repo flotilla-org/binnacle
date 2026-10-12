@@ -2,8 +2,10 @@
 //! the frame loop with random tables, scroll inputs, Size Overrides and
 //! viewports.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::rc::Rc;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, CellRange, Cursor, Effect, FocusStep, Grid, HeaderClick, Key,
@@ -29,32 +31,42 @@ fn axis_config(tc: &TestCase) -> AxisConfig {
         gs::integers::<u64>(),
     ));
     let header = tc.draw(gs::floats::<f32>());
-    let size = tc.draw(size_near(header));
+    let (min, max) = tc.draw(size_range());
+    let size = tc.draw(hegel::one_of!(
+        gs::sampled_from(vec![min, max]),
+        gs::floats::<f32>().min_value(min).max_value(max)
+    ));
     let gap = tc.draw(hegel::one_of!(
         gs::just(0.0f32),
-        gs::floats::<f32>().min_value(0.0).allow_infinity(false),
-        gs::floats::<f32>().min_value(0.0).max_value(2.0),
+        gs::floats::<f32>().min_value(0.0).max_value(max),
+        gs::floats::<f32>()
+            .min_value(0.0)
+            .max_value(2.0f32.min(max)),
     ));
-    AxisConfig::new(count, size).header(header).gap(gap)
+    AxisConfig::new(count, size)
+        .min_size(min)
+        .max_size(max)
+        .header(header)
+        .gap(gap)
 }
 
-/// Any positive finite size, or one near the f32 spacing at the header, where
-/// an offset may not advance.
+/// An axis's size range: the default, or one whose smallest size is anywhere
+/// from 2^-10 to 2^10 and whose largest is up to 2^20 times that, the
+/// default's spread.
 #[hegel::composite]
-fn size_near(tc: &TestCase, header: f32) -> f32 {
-    let any_size = gs::floats::<f32>()
-        .min_value_exclusive(0.0)
-        .allow_infinity(false);
-    let scale = if header.is_finite() {
-        header.abs().max(1.0)
-    } else {
-        1.0
-    };
-    let tiny_size = gs::floats::<f32>()
-        .min_value(1.0e-9)
-        .max_value(1.0e-5)
-        .map(move |f| f * scale);
-    tc.draw(hegel::one_of!(any_size, tiny_size))
+fn size_range(tc: &TestCase) -> (f32, f32) {
+    let default = (
+        AxisConfig::new(0, 1.0).min_size,
+        AxisConfig::new(0, 1.0).max_size,
+    );
+    let custom = hegel::tuples!(
+        gs::floats::<f32>()
+            .min_value(1.0 / 1024.0)
+            .max_value(1024.0),
+        gs::floats::<f32>().min_value(1.0).max_value(1_048_576.0)
+    )
+    .map(|(min, spread)| (min, min * spread));
+    tc.draw(hegel::one_of!(gs::just(default), custom))
 }
 
 /// A viewport length for an axis: usually one that shows items past the header
@@ -375,25 +387,30 @@ fn content(tc: &TestCase) -> Content {
 }
 
 impl Content {
-    /// The content size the Grid should use for `key`: raised to the hint, or
-    /// unknown when not positive and finite.
-    fn size_of(&self, key: Key) -> Option<f32> {
-        let s = self.sizes[(key.0 % self.sizes.len() as u64) as usize];
-        (s.is_finite() && s > 0.0).then(|| s.max(self.hint))
+    /// The content size the source answers for `key`.
+    fn raw(&self, key: Key) -> f32 {
+        self.sizes[(key.0 % self.sizes.len() as u64) as usize]
     }
 }
 
-/// An identity Table Source that also answers with content sizes, and
-/// remembers the last Window it filled on each axis.
+/// The Windows a test source was asked for, by axis.
+type Requests = Rc<RefCell<Vec<(Axis, Range<Position>)>>>;
+
+/// An identity Table Source that also answers with content sizes,
+/// remembers the last Window it filled on each axis and records every
+/// Window it was asked for.
 struct Sized {
     table: IdentityTable,
     content: [Option<Content>; 2],
     windows: [Range<Position>; 2],
+    /// Every Window the Grid asked for, by axis, since the test last cleared it.
+    requests: Requests,
 }
 
 impl ScenarioSource for Sized {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
         self.windows[index(axis)] = range.clone();
+        self.requests.borrow_mut().push((axis, range.clone()));
         self.table.window(axis, range)
     }
 
@@ -403,10 +420,7 @@ impl ScenarioSource for Sized {
 
     fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
         let c = self.content[index(axis)].as_ref()?;
-        let raw = keys
-            .iter()
-            .map(|k| c.sizes[(k.0 % c.sizes.len() as u64) as usize]);
-        Some((raw.collect(), c.hint))
+        Some((keys.iter().map(|&k| c.raw(k)).collect(), c.hint))
     }
 }
 
@@ -421,6 +435,26 @@ struct Model {
 }
 
 impl Model {
+    /// `size` clamped into the axis's size range, or `None` if it is not
+    /// positive and finite.
+    fn in_range(&self, size: f32) -> Option<f32> {
+        (size.is_finite() && size > 0.0)
+            .then(|| size.clamp(self.config.min_size, self.config.max_size))
+    }
+
+    /// The content size hint as the Grid keeps it.
+    fn hint(&self) -> Option<f32> {
+        self.in_range(self.content.as_ref()?.hint)
+    }
+
+    /// The content size the Grid uses for `key`: raised to the hint and
+    /// clamped, or unknown when not positive and finite.
+    fn content_size(&self, key: Key) -> Option<f32> {
+        let raw = self.content.as_ref()?.raw(key);
+        let hint = self.hint().unwrap_or(self.config.min_size);
+        self.in_range(raw).map(|s| s.max(hint))
+    }
+
     /// The size of the item at `pos` once its Key is known: Size Override,
     /// else content size, else default.
     fn size_of(&self, pos: Position) -> f32 {
@@ -428,35 +462,12 @@ impl Model {
         self.overrides
             .get(&key)
             .copied()
-            .or_else(|| self.content.as_ref()?.size_of(key))
+            .or_else(|| self.content_size(key))
             .unwrap_or(self.config.default_size)
     }
 
-    /// The largest item size plus the Gap: the most an anchor offset spans.
-    fn largest_stride(&self) -> f32 {
-        let content = self.content.as_ref().map_or(0.0, |c| {
-            c.sizes
-                .iter()
-                .filter(|s| s.is_finite() && **s > 0.0)
-                .fold(0.0f32, |a, &s| a.max(s.max(c.hint)))
-        });
-        let largest = self
-            .overrides
-            .values()
-            .fold(self.config.default_size.max(content), |a, &b| a.max(b));
-        (largest + self.config.gap).min(f32::MAX)
-    }
-
-    /// Whether an anchor offset, an f32 within its item's stride, can place
-    /// every item precisely: no item is thinner than one f32 step of the
-    /// largest stride, which the anchor's rounding may skip.
-    fn anchorable(&self) -> bool {
-        let stride = self.largest_stride();
-        self.smallest() >= next_f32(stride) - stride
-    }
-
     fn smallest(&self) -> f32 {
-        let hint = self.content.as_ref().map_or(f32::INFINITY, |c| c.hint);
+        let hint = self.hint().unwrap_or(f32::INFINITY);
         self.overrides
             .values()
             .fold(self.config.default_size.min(hint), |a, &b| a.min(b))
@@ -519,6 +530,8 @@ struct Step<'a> {
     /// Whether the last input that scrolls was a focus move, so the frame
     /// must show the focused cell.
     reveals_focus: bool,
+    /// The Windows the Grid asked for in this step's frame.
+    requests: &'a RefCell<Vec<(Axis, Range<Position>)>>,
 }
 
 /// Draws a table, then a few steps of random inputs, each followed by a pump
@@ -561,10 +574,12 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         rows: IdentitySource::new(rows.count),
         cols: IdentitySource::new(cols.count),
     };
+    let requests = Rc::new(RefCell::new(Vec::new()));
     let source = Sized {
         table,
         content: contents,
         windows: [0..0, 0..0],
+        requests: requests.clone(),
     };
     let mut grid = Grid::new(rows, cols);
     configure(tc, &mut grid);
@@ -606,8 +621,9 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(&target))),
                 Input::SetSize(axis, key, size) if knobs.resize => {
                     s.input(|g| g.set_size(axis, key, size));
-                    if size.is_finite() && size > 0.0 {
-                        models[index(axis)].overrides.insert(key, size);
+                    let model = &mut models[index(axis)];
+                    if let Some(size) = model.in_range(size) {
+                        model.overrides.insert(key, size);
                     }
                 }
                 Input::SetSize(..) => {}
@@ -635,11 +651,13 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             }
         }
         let next = viewport_for(&models);
+        requests.borrow_mut().clear();
         let step = Step {
             models: &models,
             drained: &drained,
             moved_focus,
             reveals_focus,
+            requests: &requests,
         };
         let snap = s.frame(next);
         if let Mode::Resizing { axis, key, .. } = snap.mode() {
@@ -1038,7 +1056,11 @@ fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
             // step at the far edge; items thinner than that drift can be laid
             // out past the item the anchor shows.
             let drift = (strip.len() as f32 + 2.0) * (next_f32(stop) - stop);
-            let resolvable = model.smallest() >= drift && model.anchorable();
+            // The drawn size ranges spread at most 2^20, so one f32 step of
+            // the anchor's stride is always below the smallest size and the
+            // anchor's rounding never skips an item; a host spreading its range
+            // past 2^23 loses that.
+            let resolvable = model.smallest() >= drift;
             if start >= stop || !resolvable {
                 continue;
             }
@@ -1050,14 +1072,21 @@ fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
             assert_eq!(end.key, item.key, "{axis:?}: focus Key not completed");
             if item.size <= stop - start {
                 // Slack for f32 stepping across the Strip, and for the anchor
-                // offset, rounded toward the start within the item's stride.
-                let stride = (item.size + snap.gap(axis)).min(f32::MAX);
-                let slack = drift
-                    + (4.0 * f64::EPSILON * f64::from(stride)) as f32
-                    + (next_f32(stride) - stride);
+                // offset, rounded toward the start by up to one f32 step of
+                // the anchor item's stride. The anchor may sit in an item far
+                // larger than the focused one, so it is that stride that counts.
+                let anchor = snap.scroll_anchor(axis).position;
+                let anchor_size = seen_size(snap, axis, model, anchor);
+                let stride = (anchor_size + snap.gap(axis)).min(f32::MAX);
+                let slack = drift + (next_f32(stride) - stride);
                 assert!(
                     item.offset >= start - slack && item.end() <= stop + slack,
                     "{axis:?}: {item:?} not inside the body {start}..{stop}"
+                );
+            } else {
+                assert_eq!(
+                    item.offset, start,
+                    "{axis:?}: {item:?} longer than the body does not start it"
                 );
             }
         }
@@ -1074,7 +1103,7 @@ fn resolvable_body(snap: &Snapshot, step: &Step) -> bool {
         let (start, stop) = body(snap, axis);
         let model = &step.models[index(axis)];
         let drift = (snap.strip(axis).len() as f32 + 2.0) * (next_f32(stop) - stop);
-        start < stop && model.smallest() >= drift && model.anchorable()
+        start < stop && model.smallest() >= drift
     })
 }
 
@@ -1528,16 +1557,16 @@ fn axis_with_borders(tc: &TestCase) -> (AxisConfig, f32) {
     (config, config.header + body)
 }
 
-/// An axis of everyday sizes: a few to fifty items or very many, sizes from a
-/// quarter unit to 20, a Gap of 0, 1 or up to 2, a header band of at least
-/// half a unit.
+/// An axis of everyday sizes: a few to fifty items or very many, sizes from
+/// one unit (the default smallest size) to 20, a Gap of 0, 1 or up to 2, a
+/// header band of at least half a unit.
 #[hegel::composite]
 fn everyday_axis(tc: &TestCase) -> AxisConfig {
     let count = tc.draw(hegel::one_of!(
         gs::integers::<u64>().min_value(1).max_value(50),
         gs::integers::<u64>().min_value(1)
     ));
-    let size = tc.draw(gs::floats::<f32>().min_value(0.25).max_value(20.0));
+    let size = tc.draw(gs::floats::<f32>().min_value(1.0).max_value(20.0));
     let gap = tc.draw(hegel::one_of!(
         gs::just(0.0f32),
         gs::just(1.0f32),
@@ -1550,8 +1579,7 @@ fn everyday_axis(tc: &TestCase) -> AxisConfig {
 /// A press on a header border (the Gap after an item, widened by the border
 /// grab) resizes that item; a press on a header away from its borders does
 /// not. While resizing, the item's size is its start size plus the pointer's
-/// travel along the axis, never below one unit (or its start size, if
-/// smaller). A release reports the new size if it changed; `Cancel` restores
+/// travel along the axis, clamped into the axis's size range. A release reports the new size if it changed; `Cancel` restores
 /// the start size and reports nothing.
 #[hegel::test(test_cases = 2000)]
 fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase) {
@@ -1655,9 +1683,9 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
             Axis::Rows => f64::from(y) - f64::from(y0),
             Axis::Cols => f64::from(x) - f64::from(x0),
         };
+        let config = [rows.0, cols.0][index(axis)];
         size = (f64::from(start) + moved)
-            .max(f64::from(start.min(1.0)))
-            .min(f64::from(f32::MAX)) as f32;
+            .clamp(f64::from(config.min_size), f64::from(config.max_size)) as f32;
         s.input(|g| g.pointer(PointerEvent::moved(x, y)));
         let expected = (size != start).then_some(size);
         assert_eq!(s.grid.size_override(axis, key), expected, "after {travel}");
@@ -1897,4 +1925,100 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
         );
     }
     assert_eq!(s.frame(viewport).mode(), Mode::Idle);
+}
+
+/// Each Window the Grid asks for holds at most what the body can show at the
+/// axis's smallest size, one part-shown item at each end, the overscan either
+/// side (2 each) and one for f32 stepping: never proportional to the count or
+/// to how small a size was asked for.
+#[hegel::test(test_cases = 2000)]
+fn window_requests_are_bounded_by_the_body_over_the_min_size(tc: TestCase) {
+    frames(&tc, ALL, |snap, step| {
+        for (axis, range) in step.requests.borrow().iter() {
+            let config = step.models[index(*axis)].config;
+            let body = f64::from((snap.extent(*axis) - snap.header(*axis)).max(0.0));
+            let bound = (body / f64::from(config.min_size)).floor() + 2.0 + 4.0 + 1.0;
+            let len = (range.end - range.start) as f64;
+            assert!(
+                len <= bound,
+                "{axis:?}: asked for {range:?} ({len}) with a body of {body} and min size {}",
+                config.min_size
+            );
+        }
+    });
+}
+
+/// Every size the Grid lays out lies in the axis's size range, and the Gap is
+/// at most its largest size, whatever sizes the inputs and source give.
+#[hegel::test(test_cases = 2000)]
+fn every_strip_item_size_lies_in_the_size_range(tc: TestCase) {
+    frames(&tc, ALL, |snap, step| {
+        for axis in Axis::ALL {
+            let config = step.models[index(axis)].config;
+            let range = config.min_size..=config.max_size;
+            for item in snap.strip(axis) {
+                assert!(
+                    range.contains(&item.size),
+                    "{axis:?}: {item:?} outside {range:?}"
+                );
+            }
+            assert!(snap.gap(axis) <= config.max_size, "{axis:?}");
+        }
+    });
+}
+
+/// A default size or Gap outside the size range is clamped into it: every
+/// item takes the clamped default and the Gap is capped at the largest size.
+#[hegel::test(test_cases = 1000)]
+fn a_default_size_or_gap_outside_the_size_range_is_clamped(tc: TestCase) {
+    let (min, max) = tc.draw(size_range());
+    let any = || {
+        gs::floats::<f32>()
+            .min_value_exclusive(0.0)
+            .allow_infinity(false)
+    };
+    let default = tc.draw(any());
+    let gap = tc.draw(hegel::one_of!(gs::just(0.0f32), any()));
+    let axis = tc.draw(axis());
+    let config = AxisConfig::new(5, default)
+        .min_size(min)
+        .max_size(max)
+        .gap(gap);
+    let plain = AxisConfig::new(1, 1.0);
+    let (rows, cols) = match axis {
+        Axis::Rows => (config, plain),
+        Axis::Cols => (plain, config),
+    };
+    let mut s = Scenario::identity(rows, cols);
+    // Enough room for the first item at any size in the range.
+    let snap = s.frame(Viewport::new(max, max));
+    let first = snap.strip(axis)[0];
+    assert_eq!(first.size, default.clamp(min, max), "default {default}");
+    assert_eq!(snap.gap(axis), gap.min(max), "Gap {gap}");
+}
+
+/// A size range whose smallest size is not positive and finite, or whose
+/// largest is not finite or below the smallest, is rejected.
+#[hegel::test(test_cases = 1000)]
+fn a_size_range_that_is_not_positive_finite_and_ordered_is_rejected(tc: TestCase) {
+    let (min, max) = tc.draw(hegel::one_of!(
+        hegel::tuples!(
+            hegel::one_of!(
+                gs::floats::<f32>().max_value(0.0),
+                gs::sampled_from(vec![f32::NAN, f32::INFINITY])
+            ),
+            gs::floats::<f32>()
+        ),
+        hegel::tuples!(
+            gs::floats::<f32>().min_value(1.0).max_value(1.0e6),
+            gs::floats::<f32>().max_value(0.999)
+        ),
+        hegel::tuples!(
+            gs::floats::<f32>().min_value(1.0).max_value(1.0e6),
+            gs::sampled_from(vec![f32::NAN, f32::INFINITY])
+        )
+    ));
+    let config = AxisConfig::new(1, 1.0).min_size(min).max_size(max);
+    let built = std::panic::catch_unwind(|| Grid::new(config, AxisConfig::new(1, 1.0)));
+    assert!(built.is_err(), "Grid accepted the size range {min}..={max}");
 }

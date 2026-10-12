@@ -102,8 +102,11 @@ fn positions_left_unfilled_have_no_key() {
 #[test]
 fn layout_ends_when_items_are_too_small_to_advance_an_f32_offset() {
     // 3e-6 is below half the f32 spacing at 100, so 100.0 + 3e-6 == 100.0.
+    // Only a host that lowers the size range can get there.
     let mut s = Scenario::identity(
-        AxisConfig::new(1_000_000_000_000_000, 3e-6).header(100.0),
+        AxisConfig::new(1_000_000_000_000_000, 3e-6)
+            .min_size(3e-6)
+            .header(100.0),
         AxisConfig::new(1, 1.0),
     );
     let snap = s.frame(Viewport::new(1.0, 100.002));
@@ -119,4 +122,19 @@ fn an_empty_axis_never_requests_a_window() {
     grid.set_window(Axis::Rows, 3, &[]);
     let requests = grid.begin_frame(viewport);
     assert_eq!(requests.get(Axis::Rows), None);
+}
+
+/// Found by #25: a tiny Size Override made the Window bound step at that size
+/// and ask for 17M column Positions. Overrides are clamped into the size
+/// range, so the Window stays near the viewport's width over `min_size`.
+#[test]
+fn a_tiny_size_override_cannot_blow_up_the_window() {
+    let mut grid = Grid::new(
+        AxisConfig::new(10, 1.0),
+        AxisConfig::new(2_147_483_647, 3.37),
+    );
+    grid.set_size(Axis::Cols, Key(4), 9.9e-23);
+    let requests = grid.begin_frame(Viewport::new(80.0, 10.0));
+    let cols = requests.get(Axis::Cols).unwrap();
+    assert!(cols.end - cols.start <= 80 + 7, "asked for {cols:?}");
 }

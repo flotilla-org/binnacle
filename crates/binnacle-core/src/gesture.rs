@@ -9,11 +9,6 @@ use crate::pointer::{Button, Hit, Modifiers, PointerEvent, PointerKind};
 use crate::selection::{Cell, HeaderClick, Selection};
 use crate::types::{Axis, Key, Position};
 
-/// The smallest size a resize drag gives an item, unless the item started
-/// smaller. Stands in for the per-axis size contract (`min_size`, branch
-/// fix/16-reveal): replace it with that clamp once both have landed.
-const MIN_RESIZE: f32 = 1.0;
-
 /// The single interaction the Grid is in the middle of.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Mode {
@@ -249,9 +244,12 @@ impl Grid {
                 start_override,
             } => {
                 let moved = f64::from(along(axis, x, y)) - f64::from(from);
+                // Clamped here as `set_size` would, so a drag pinned at the
+                // range's edge compares equal to an item that started there.
+                let m = &self.axis(axis).measure;
                 let size = (f64::from(start_size) + moved)
-                    .max(f64::from(start_size.min(MIN_RESIZE)))
-                    .min(f64::from(f32::MAX)) as f32;
+                    .clamp(f64::from(m.min_size()), f64::from(m.max_size()))
+                    as f32;
                 if size == start_size {
                     self.restore_size(axis, key, start_override);
                 } else {
