@@ -8,8 +8,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, Effect, FocusStep, Grid,
-    HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, SelectionUnit,
+    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, Effect, FocusEnd, FocusStep,
+    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, SelectionUnit,
     Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
@@ -1567,7 +1567,26 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
         tc.event("resizing");
     }
     s.input(|g| g.action(Action::Cancel));
-    assert_eq!(seen(&mut s, &shown), before, "Cancel did not restore");
+    let (focus, selection, sizes) = seen(&mut s, &shown);
+    assert_eq!(
+        (&selection, &sizes),
+        (&before.1, &before.2),
+        "Cancel did not restore"
+    );
+    // A restored focus end saved without its Key may take it from the Window,
+    // as the next `set_window` would; the identity source's Key there is the
+    // Position.
+    for (after, saved) in focus.iter().zip(&before.0) {
+        let completed = saved.map(|e| FocusEnd {
+            key: e.key.or(Some(Key(e.position))),
+            ..e
+        });
+        assert!(
+            after == saved || *after == completed,
+            "Cancel did not restore focus: {after:?} for {saved:?}"
+        );
+    }
+    let before = (focus, selection, sizes);
     let snap = s.frame(viewport);
     assert_eq!(snap.mode(), Mode::Idle);
     assert!(!snap.capturing());

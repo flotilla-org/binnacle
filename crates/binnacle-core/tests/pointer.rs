@@ -242,3 +242,35 @@ fn selection_changed_comes_at_most_once_per_drain() {
         1
     );
 }
+
+#[test]
+fn cancel_restores_a_focus_saved_before_its_key_was_known_with_the_key_the_window_holds() {
+    let mut s = table();
+    s.frame(V);
+    // End focuses row 19 before any Window holds it; the press saves that
+    // focus with no Key, and the drag frame's Window then fills row 19.
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: FocusStep::Edge,
+            forward: true,
+            extend: false,
+        });
+        g.pointer(PointerEvent::down(5.0, 2.0));
+        g.pointer(PointerEvent::moved(12.0, 3.0));
+    });
+    let mut out = s.step(
+        "End, then press a cell and drag: the drag focuses the cell it reaches",
+        V,
+    );
+    s.input(|g| g.action(Action::Cancel));
+    out += &s.step(
+        "cancel: focus is back on row 19, with its Key from the Window, and drawn",
+        V,
+    );
+    out += &s.step("a steady frame: still drawn", V);
+    insta::assert_snapshot!(out);
+    let snap = s.grid.snapshot();
+    assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(19)));
+    assert!(snap.focus_rect().is_some());
+}
