@@ -339,3 +339,25 @@ fn a_press_held_through_a_reorder_cancels_to_the_state_after_it() {
     out += &s.step("cancel: the dropped range does not come back", V);
     insta::assert_snapshot!(out);
 }
+
+#[test]
+fn a_resize_carries_on_through_a_reorder_of_either_axis() {
+    let mut s = records();
+    s.frame(V);
+    // Column 0 spans x 4..10; its border is the Gap at x 10..11.
+    s.input(|g| {
+        g.pointer(PointerEvent::down(10.5, 0.5));
+        g.pointer(PointerEvent::moved(12.5, 0.5));
+    });
+    let mut out = s.step("drag column 0's border 2 right: resizing", V);
+    sort_behind_the_grid(&mut s);
+    s.input(|g| g.notify(Axis::Cols, binnacle_core::ChangeNotice::Reordered));
+    s.input(|g| g.pointer(PointerEvent::moved(13.5, 0.5)));
+    out += &s.step(
+        "rows sorted and columns reordered underneath: still resizing column 0, now 9 wide",
+        V,
+    );
+    s.input(|g| g.pointer(PointerEvent::up(13.5, 0.5)));
+    out += &s.step("release: SizeChanged for column 0", V);
+    insta::assert_snapshot!(out);
+}
