@@ -1990,21 +1990,37 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
     assert_eq!(s.frame(viewport).mode(), Mode::Idle);
 }
 
-/// Each Window the Grid asks for holds at most what the body can show at the
-/// axis's smallest size, one part-shown item at each end, the overscan either
-/// side (2 each) and one for f32 stepping: never proportional to the count or
-/// to how small a size was asked for.
+/// Each Window the Grid asks for is proportional to the body over the axis's
+/// smallest stride (`min_size` plus the Gap), never to the count or to how
+/// small a size was asked for. Exactly: the Window bound steps from the anchor,
+/// at most one stride before the header, until it passes the viewport's end,
+/// so it spans at most `ceil((body + stride) / step)` items, plus the overscan
+/// (2 each side). `step` is the stride less what f32 rounding can lose per
+/// item: half an f32 step at the far edge for each addition (the size, then
+/// the Gap). At the end of the axis the Window reaches back
+/// `ceil(body / stride) + 1` items plus overscan, which is within the same
+/// bound.
 #[hegel::test(test_cases = 2000)]
 fn window_requests_are_bounded_by_the_body_over_the_min_size(tc: TestCase) {
     frames(&tc, ALL, |snap, step| {
         for (axis, range) in step.requests.borrow().iter() {
             let config = step.models[index(*axis)].config;
-            let body = f64::from((snap.extent(*axis) - snap.header(*axis)).max(0.0));
-            let bound = (body / f64::from(config.min_size)).floor() + 2.0 + 4.0 + 1.0;
+            let (extent, gap) = (snap.extent(*axis), snap.gap(*axis));
+            let body = f64::from((extent - snap.header(*axis)).max(0.0));
+            let stride = config.min_size + gap;
+            let far = (extent + stride).min(f32::MAX);
+            let additions = if gap > 0.0 { 2.0 } else { 1.0 };
+            let shortfall = additions * f64::from(next_f32(far) - far) / 2.0;
+            let item_step = f64::from(stride) - shortfall;
+            if item_step <= 0.0 {
+                continue;
+            }
+            let bound = ((body + f64::from(stride)) / item_step).ceil() + 4.0;
             let len = (range.end - range.start) as f64;
             assert!(
                 len <= bound,
-                "{axis:?}: asked for {range:?} ({len}) with a body of {body} and min size {}",
+                "{axis:?}: asked for {range:?} ({len}) with a body of {body}, \
+                 min size {} and Gap {gap}: bound {bound}",
                 config.min_size
             );
         }
