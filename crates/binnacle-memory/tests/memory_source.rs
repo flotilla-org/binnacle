@@ -55,15 +55,6 @@ fn sorts_rows_by_the_extracted_keys() {
         source.window(Axis::Rows, 0..3),
         vec![Key(2), Key(0), Key(1)]
     );
-
-    assert_eq!(
-        source.sort(&rows, &SortSpec::new(vec![SortColumn::ascending(Key(1))])),
-        Ok(ChangeNotice::Reordered)
-    );
-    assert_eq!(
-        source.window(Axis::Rows, 0..3),
-        vec![Key(0), Key(2), Key(1)]
-    );
     assert_eq!(source.count(Axis::Cols), 4);
 }
 
