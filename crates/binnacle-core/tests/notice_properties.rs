@@ -7,7 +7,8 @@ use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, FocusEnd, FocusStep, Grid, Key, Mode, Modifiers,
     PointerEvent, ScrollAnchor, Viewport,
 };
-use binnacle_testkit::{KeyedTable, Scenario};
+use binnacle_memory::IdentitySource;
+use binnacle_testkit::{IdentityTable, KeyedTable, Scenario};
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
 
@@ -419,6 +420,91 @@ fn a_range_keeps_the_rows_between_its_ends_through_inserts_and_removals(tc: Test
                 let after = after.expect("some of the range is left");
                 assert_eq!(after.rows, first as u64..last as u64 + 1);
                 assert_eq!(after.cols, before.cols);
+            }
+        }
+    }
+}
+
+/// An item count anywhere in `u64`, often within a few items of the
+/// largest.
+#[hegel::composite]
+fn huge_count(tc: &TestCase) -> u64 {
+    tc.draw(hegel::one_of!(
+        gs::integers::<u64>().max_value(20).map(|d| u64::MAX - d),
+        gs::integers::<u64>(),
+        gs::integers::<u64>().max_value(20),
+    ))
+}
+
+/// Positional notices on axes of up to `u64::MAX` items: an `Inserted`
+/// that would take the count past `u64::MAX` gains only the items that fit,
+/// a `Removed` is clipped to the count, nothing panics, and focus, the
+/// anchor and the range stay below the count.
+#[hegel::test(test_cases = 1000)]
+fn positional_notices_near_the_largest_count_keep_everything_in_bounds(tc: TestCase) {
+    let mut counts = [tc.draw(huge_count()), tc.draw(huge_count())];
+    let mut s = Scenario::new(
+        Grid::new(
+            AxisConfig::new(counts[0], 1.0).header(1.0),
+            AxisConfig::new(counts[1], 3.0).header(2.0),
+        ),
+        IdentityTable {
+            rows: IdentitySource::new(counts[0]),
+            cols: IdentitySource::new(counts[1]),
+        },
+    );
+    let v = Viewport::new(20.0, 10.0);
+    let steps = [FocusStep::Item, FocusStep::Page, FocusStep::Edge];
+    for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(12)) {
+        let axis = tc.draw(axis());
+        let i = index(axis);
+        match tc.draw(gs::integers::<u8>().max_value(3)) {
+            0 => {
+                let at = tc.draw(hegel::one_of!(huge_count(), gs::just(counts[i])));
+                let n = tc.draw(huge_count());
+                counts[i] += n.min(u64::MAX - counts[i]);
+                s.input(|g| g.notify(axis, ChangeNotice::Inserted { at, n }));
+            }
+            1 => {
+                let at = tc.draw(huge_count());
+                let n = tc.draw(huge_count());
+                let at = at.min(counts[i]);
+                counts[i] -= n.min(counts[i] - at);
+                s.input(|g| g.notify(axis, ChangeNotice::Removed { at, n }));
+            }
+            2 => {
+                let (by, forward, extend) = tc.draw(hegel::tuples!(
+                    gs::sampled_from(steps.to_vec()),
+                    gs::booleans(),
+                    gs::booleans()
+                ));
+                s.input(|g| {
+                    g.action(Action::MoveFocus {
+                        axis,
+                        by,
+                        forward,
+                        extend,
+                    })
+                });
+            }
+            _ => {
+                let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
+                s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
+            }
+        }
+        s.source.rows = IdentitySource::new(counts[0]);
+        s.source.cols = IdentitySource::new(counts[1]);
+        let snap = s.frame(v);
+        for axis in Axis::ALL {
+            let i = index(axis);
+            assert_eq!(snap.count(axis), counts[i], "count on {axis:?}");
+            if let Some(f) = snap.focus(axis) {
+                assert!(f.position < counts[i], "focus on {axis:?} {f:?}");
+            }
+            let anchor = snap.scroll_anchor(axis);
+            assert!(anchor.position < counts[i].max(1), "{axis:?} {anchor:?}");
+            if let Some(range) = snap.selection_range() {
+                assert!(range.span(axis).end <= counts[i], "{axis:?} {range:?}");
             }
         }
     }

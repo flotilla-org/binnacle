@@ -32,7 +32,7 @@ pub enum ChangeNotice {
     /// `n` items were inserted before the item at Position `at` (the count
     /// for the end). Everything from `at` on moves `n` later: focus, the
     /// range and the Scroll Anchor move with their items, so the view stays
-    /// steady.
+    /// steady. Items that would take the count past `u64::MAX` are ignored.
     Inserted { at: Position, n: u64 },
     /// The `n` items from Position `at` were removed and those after them
     /// move `n` earlier. Focus on a removed item falls back as for a `Gone`
@@ -109,7 +109,9 @@ impl Grid {
             ChangeNotice::Reordered => self.reordered_or_reset(axis, None),
             ChangeNotice::Reset(count) => self.reordered_or_reset(axis, Some(count)),
             ChangeNotice::Inserted { at, n } => {
-                let at = at.min(self.axis(axis).measure.count());
+                let count = self.axis(axis).measure.count();
+                let at = at.min(count);
+                let n = n.min(u64::MAX - count);
                 if n > 0 {
                     self.inserted_or_removed(axis, Shift::Inserted { at, n });
                 }

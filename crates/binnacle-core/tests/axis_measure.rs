@@ -343,3 +343,15 @@ fn inserts_and_removals_keep_window_keys_at_their_items(tc: hegel::TestCase) {
         assert!(window.end <= model.len() as u64);
     }
 }
+
+/// An insert that would take the count past `u64::MAX` gains only the items
+/// that fit, and the Window moves by that many.
+#[test]
+fn an_insert_past_the_largest_count_is_clipped() {
+    let mut m = AxisMeasure::new(u64::MAX - 2, 1.0, 0.0);
+    m.set_keys(u64::MAX - 4, &[Key(7), Key(8)]);
+    m.insert(0, 10);
+    assert_eq!(m.count(), u64::MAX);
+    assert_eq!(m.window_start(), u64::MAX - 2);
+    assert_eq!(m.key_at(u64::MAX - 1), Some(Key(8)));
+}

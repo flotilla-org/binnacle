@@ -197,12 +197,14 @@ impl AxisMeasure {
     /// `n` items were inserted before Position `at` (at most the count): the
     /// count grows, and the Window keeps the Keys whose Positions it still
     /// knows: all of them, `n` later, if `at` is at or before its start,
-    /// else those before `at`.
+    /// else those before `at`. Items that would take the count past
+    /// `u64::MAX` are ignored.
     pub fn insert(&mut self, at: Position, n: u64) {
         let at = at.min(self.count);
-        self.count = self.count.saturating_add(n);
+        let n = n.min(u64::MAX - self.count);
+        self.count += n;
         if at <= self.window_start {
-            self.window_start = self.window_start.saturating_add(n);
+            self.window_start += n;
         } else if let Some(i) = self.index(at) {
             self.keys.truncate(i);
             self.content.truncate(i);

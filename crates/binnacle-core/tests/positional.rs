@@ -548,3 +548,28 @@ fn cancel_after_a_reset_keeps_focus_below_the_count() {
         })
     );
 }
+
+/// Regression (found by review): an Inserted past `u64::MAX` items
+/// overflowed the count (a panic in debug builds, focus at the count in
+/// release). The Grid ignores the items that would not fit.
+#[test]
+fn an_insert_past_the_largest_count_is_clipped() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(u64::MAX, 1.0).header(1.0),
+        AxisConfig::new(5, 3.0).header(2.0),
+    );
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: FocusStep::Edge,
+            forward: true,
+            extend: false,
+        })
+    });
+    s.frame(TALL);
+    s.input(|g| g.notify(Axis::Rows, ChangeNotice::Inserted { at: 0, n: 5 }));
+    let snap = s.frame(TALL);
+    assert_eq!(snap.count(Axis::Rows), u64::MAX);
+    let f = snap.focus(Axis::Rows).expect("focus is placed");
+    assert_eq!(f.position, u64::MAX - 1);
+}
