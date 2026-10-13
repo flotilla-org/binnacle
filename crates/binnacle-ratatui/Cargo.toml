@@ -12,4 +12,5 @@ binnacle-memory.workspace = true
 ratatui.workspace = true
 
 [dev-dependencies]
+hegeltest.workspace = true
 insta.workspace = true

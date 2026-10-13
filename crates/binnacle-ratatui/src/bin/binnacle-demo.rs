@@ -26,7 +26,9 @@
 //! Ctrl-click to pick rows, click a row number to select its row. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to its visible text. The bottom
-//! line shows the gesture in progress. Press Ctrl+Q or Ctrl+C to quit.
+//! line shows the gesture in progress and, on the right, the Theme: Ctrl+T
+//! cycles the Themes (`classic`, `catppuccin_mocha`, `mono`), and the demo
+//! starts in `mono` when `NO_COLOR` is set. Press Ctrl+Q or Ctrl+C to quit.
 
 use std::borrow::Cow;
 use std::io;
@@ -36,7 +38,10 @@ use binnacle_core::{
     Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Stamped, Viewport,
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
-use binnacle_ratatui::{Content, Keymap, Mouse, render, render_editor, status, wheel};
+use binnacle_ratatui::{
+    ColorSupport, Content, Keymap, Mouse, RenderContext, Theme, render_editor, render_with, status,
+    wheel,
+};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
@@ -397,6 +402,10 @@ fn main() -> io::Result<()> {
     // The row Keys last drawn, which auto-size measures.
     let mut shown_rows: Vec<Key> = Vec::new();
     let mut app = App::default();
+    let themes = Theme::presets();
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let mut theme = if no_color { themes.len() - 1 } else { 0 };
+    let colors = ColorSupport::from_colorterm(std::env::var("COLORTERM").ok().as_deref());
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
     let result = (|| {
@@ -416,7 +425,8 @@ fn main() -> io::Result<()> {
                 shown_rows.clear();
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
-                render(&snapshot, &table.text(), area, frame.buffer_mut());
+                let ctx = RenderContext::new(&themes[theme]).colors(colors);
+                render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, area, frame.buffer_mut());
                 }
@@ -426,6 +436,8 @@ fn main() -> io::Result<()> {
                     ..full
                 };
                 frame.render_widget(ratatui::text::Line::from(status(&snapshot)), line);
+                let name = ratatui::text::Line::from(themes[theme].name).right_aligned();
+                frame.render_widget(name, line);
             })?;
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -434,6 +446,10 @@ fn main() -> io::Result<()> {
                         return Ok(());
                     }
                     if app.edit_key(&mut table, &mut grid, key.code) {
+                        continue;
+                    }
+                    if ctrl && key.code == KeyCode::Char('t') {
+                        theme = (theme + 1) % themes.len();
                         continue;
                     }
                     if ctrl && key.code == KeyCode::Char('f') {
