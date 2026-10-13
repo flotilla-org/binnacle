@@ -138,14 +138,18 @@ impl Grid {
         }
     }
 
-    /// A press in progress can no longer restore Positions from before a
-    /// notice: Cancel restores the state as it is now.
-    fn rebase_press(&mut self) {
+    /// A gesture in progress can no longer restore the state from before a
+    /// notice (its Positions are stale) or a `set_focus` (the host moved
+    /// focus; Cancel undoes only the gesture): Cancel restores the state as it
+    /// is now.
+    pub(crate) fn rebase_gesture(&mut self) {
         let now = Before {
             focus: self.focus,
             selection: self.selection.clone(),
         };
-        if let Gesture::Pressed { before, .. } = &mut self.gesture {
+        if let Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before } =
+            &mut self.gesture
+        {
             *before = now;
         }
     }
@@ -207,7 +211,7 @@ impl Grid {
             self.edit_removed(axis, &gone);
         }
         self.shift_focus(axis, shift, count);
-        self.rebase_press();
+        self.rebase_gesture();
         let st = self.axis_mut(axis);
         st.anchor = match shift.map(st.anchor.position) {
             Some(position) if position == st.anchor.position => st.anchor,
@@ -313,12 +317,14 @@ impl Grid {
                 }
             }
         }
-        self.rebase_press();
+        self.rebase_gesture();
         self.axis_mut(axis).clamp_anchor();
         self.pending_damage.layout = true;
         self.pending_damage.positions = true;
-        if let Some(key) = self.focus.and_then(|f| f[i].key) {
-            self.locate(axis, key);
+        match self.focus.and_then(|f| f[i].key) {
+            Some(key) => self.locate(axis, key),
+            // A Position learned before the change is stale.
+            None => self.locating.whereabouts[i] = None,
         }
         // An edit follows its Key; only a count change can take the Key away.
         match count {

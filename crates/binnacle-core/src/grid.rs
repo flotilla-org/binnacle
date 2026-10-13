@@ -427,7 +427,8 @@ impl Grid {
     /// outside the Window is found with `Locate`; until `located` answers,
     /// focus keeps its last Position on that axis and later focus moves wait.
     /// A Key the Table Source no longer has leaves focus where it was on that
-    /// axis. Nothing happens while either axis is empty.
+    /// axis. A gesture in progress keeps going, but `Cancel` no longer undoes
+    /// this. Nothing happens while either axis is empty.
     pub fn set_focus(&mut self, row: Key, col: Key) {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return;
@@ -462,6 +463,7 @@ impl Grid {
             self.set_span(None);
             self.locating.select_when_placed = true;
         }
+        self.rebase_gesture();
     }
 
     /// A `MoveFocus`: moves focus, then replaces the range or stretches it.

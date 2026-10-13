@@ -3,8 +3,8 @@
 //! Scroll Anchor and the active Mode follow the rules.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, Grid, Key, Mode, Modifiers,
-    PointerEvent, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, Key, Mode,
+    Modifiers, PointerEvent, Viewport,
 };
 use binnacle_testkit::{KeyedTable, Scenario};
 
@@ -438,4 +438,113 @@ fn cancelling_a_drag_never_restores_a_key_that_has_left() {
     let snap = s.frame(v);
     assert_eq!(snap.mode(), Mode::Idle);
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(0)));
+}
+
+/// 40 rows of 1 under a 1-high header band; 5 columns of 3 after a 2-wide
+/// row header band.
+fn tall() -> Scenario<KeyedTable> {
+    let grid = Grid::new(
+        AxisConfig::new(40, 1.0).header(1.0),
+        AxisConfig::new(5, 3.0).header(2.0),
+    );
+    Scenario::new(grid, KeyedTable::new(40, 5))
+}
+
+const TALL: Viewport = Viewport {
+    width: 20.0,
+    height: 10.0,
+};
+
+/// Regression (found by the reviewer's chaos driver): a press saved the
+/// focus while its row Key was being located, and `set_focus` during the
+/// press then located another Key. Cancel restored the first Key at its
+/// stale Position with nobody locating it. A `set_focus` during a press now
+/// replaces what Cancel restores.
+#[test]
+fn cancel_after_set_focus_during_a_press_keeps_the_focus_set() {
+    let mut s = tall();
+    s.frame(TALL);
+    click(&mut s, 3.0, 4.5, Modifiers::NONE);
+    s.frame(TALL);
+    s.source.axes[0].swap(3, 5);
+    s.input(|g| {
+        g.notify(Axis::Rows, ChangeNotice::Reordered);
+        g.pointer(PointerEvent::down(9.0, 7.5));
+    });
+    s.frame(TALL);
+    s.input(|g| {
+        g.set_focus(Key(30), Key(2));
+        g.action(Action::Cancel);
+    });
+    let snap = s.frame(TALL);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert!(!snap.locating(Axis::Rows));
+    assert_eq!(
+        snap.focus(Axis::Rows),
+        Some(FocusEnd {
+            position: 30,
+            key: Some(Key(30))
+        })
+    );
+}
+
+/// The same with Keys the Table Source never had: Cancel must not leave
+/// focus on a phantom Key nobody is locating, nor announce it.
+#[test]
+fn cancel_after_set_focus_to_missing_keys_during_a_press_never_announces_them() {
+    let mut s = tall();
+    s.frame(TALL);
+    click(&mut s, 3.0, 4.5, Modifiers::NONE);
+    s.frame(TALL);
+    s.pump();
+    s.input(|g| {
+        g.pointer(PointerEvent::down(9.0, 7.5));
+        g.set_focus(Key(683), Key(2));
+    });
+    insert(&mut s, Axis::Rows, 0, 1);
+    s.input(|g| {
+        g.set_focus(Key(139), Key(2));
+        g.action(Action::Cancel);
+    });
+    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    assert!(
+        !drained
+            .iter()
+            .any(|e| matches!(e, Effect::FocusChanged { row, .. } if row.0 >= 100)),
+        "{drained:?}"
+    );
+    let snap = s.frame(TALL);
+    let f = snap.focus(Axis::Rows).expect("focus is placed");
+    assert!(!snap.locating(Axis::Rows));
+    assert_eq!(f.key, s.source.axes[0].get(f.position as usize).copied());
+}
+
+/// Regression (found by the reviewer's chaos driver): a Reset while a press
+/// held a focus end with no Key kept a Position learned from an earlier
+/// `located`, and Cancel put focus there, past the new count.
+#[test]
+fn cancel_after_a_reset_keeps_focus_below_the_count() {
+    let grid = Grid::new(
+        AxisConfig::new(8, 1.0).header(1.0),
+        AxisConfig::new(5, 3.0).header(2.0),
+    );
+    let mut s = Scenario::new(grid, KeyedTable::new(8, 5));
+    s.frame(TALL);
+    click(&mut s, 12.0, 2.5, Modifiers::NONE);
+    s.frame(TALL);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    s.pump();
+    s.input(|g| g.pointer(PointerEvent::down(6.0, 2.5)));
+    s.source.axes[1] = vec![Key(0), Key(3)];
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reset(2)));
+    s.frame(TALL);
+    s.input(|g| g.action(Action::Cancel));
+    let snap = s.frame(TALL);
+    assert_eq!(
+        snap.focus(Axis::Cols),
+        Some(FocusEnd {
+            position: 1,
+            key: Some(Key(3))
+        })
+    );
 }
