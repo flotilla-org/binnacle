@@ -6,7 +6,7 @@ use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, EditEnd, Effect, FocusEnd, FocusStep, Grid, Key, Mode,
     Modifiers, PointerEvent, SelectionUnit, SortColumn, SortSpec, Stamped, Viewport,
 };
-use binnacle_testkit::{IdentityTable, RecordTable, Scenario, ScenarioSource};
+use binnacle_testkit::{IdentityTable, PumpSource, RecordTable, Scenario, ScenarioSource};
 
 const V: Viewport = Viewport {
     width: 26.0,
@@ -391,7 +391,9 @@ impl ScenarioSource for PastTheEnd {
     fn window(&mut self, axis: Axis, range: std::ops::Range<u64>) -> Vec<Key> {
         self.0.window(axis, range)
     }
+}
 
+impl PumpSource for PastTheEnd {
     fn locate(&mut self, _axis: Axis, _key: Key) -> binnacle_core::Located {
         binnacle_core::Located::Found(1000)
     }

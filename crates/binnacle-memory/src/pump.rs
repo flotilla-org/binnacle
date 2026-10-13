@@ -3,11 +3,17 @@ use binnacle_core::{Axis, ChangeNotice, Effect, Grid, Key, Located, Position, So
 /// What [`pump`] asks of a Table Source.
 pub trait PumpSource {
     /// Sorts the rows by `spec`. Returns the Change Notice the rows need, or
-    /// the Sort Spec still in force to reject the request.
-    fn sort(&mut self, spec: &SortSpec) -> Result<ChangeNotice, SortSpec>;
+    /// the Sort Spec still in force to reject the request (the default: the
+    /// Table Source cannot sort and keeps base order).
+    fn sort(&mut self, _spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
+        Err(SortSpec::unsorted())
+    }
 
-    /// Where `key` sits on `axis` now.
-    fn locate(&mut self, axis: Axis, key: Key) -> Located;
+    /// Where `key` sits on `axis` now. The default knows no Keys and answers
+    /// `Gone`.
+    fn locate(&mut self, _axis: Axis, _key: Key) -> Located {
+        Located::Gone { suggest: None }
+    }
 
     /// Moves the items with `keys` on `axis` to before Position `to`.
     /// Returns the Change Notice the axis needs, or `None` to refuse (the

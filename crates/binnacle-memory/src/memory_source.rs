@@ -228,7 +228,14 @@ impl<R> MemorySource<R> {
     /// closure), `Locate` by the Remap, column moves by moving the columns.
     /// `seen` gets every Effect drained.
     pub fn pump(&mut self, rows: &[R], grid: &mut Grid, seen: impl FnMut(&mut Grid, Stamped)) {
-        crate::pump(grid, &mut Over { source: self, rows }, seen);
+        crate::pump(grid, &mut self.over(rows), seen);
+    }
+
+    /// This source with the host's `rows`, as [`crate::pump`] needs it: the
+    /// answers [`MemorySource::pump`] gives, for hosts that drive the pump
+    /// themselves.
+    pub fn over<'a>(&'a mut self, rows: &'a [R]) -> impl PumpSource + 'a {
+        Over { source: self, rows }
     }
 
     /// See [`InMemoryTableSource::move_columns`]. Sorting names columns by

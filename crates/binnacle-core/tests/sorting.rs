@@ -6,7 +6,7 @@ use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, HeaderSort, Key, Mode, Modifiers,
     PointerEvent, SortColumn, SortDirection, SortSpec, Viewport,
 };
-use binnacle_testkit::{IdentityTable, RecordTable, Scenario, ScenarioSource, render};
+use binnacle_testkit::{IdentityTable, PumpSource, RecordTable, Scenario, ScenarioSource, render};
 
 /// 20 rows of 1 with no Gap under a 1-high header band; 5 columns of 6 with a
 /// Gap of 1 after a 4-wide row header band.

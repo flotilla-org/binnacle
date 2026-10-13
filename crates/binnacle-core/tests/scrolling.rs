@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Position, ScrollAnchor, Viewport};
 use binnacle_memory::IdentitySource;
-use binnacle_testkit::{Scenario, ScenarioSource};
+use binnacle_testkit::{PumpSource, Scenario, ScenarioSource};
 
 fn table() -> Scenario<binnacle_testkit::IdentityTable> {
     Scenario::identity(
@@ -174,6 +174,8 @@ fn size_overrides_follow_keys_and_bound_the_window() {
 /// Answers row Windows with a content size per row (odd rows are 2 tall) and a
 /// hint that no row is under 1.
 struct TallOddRows(binnacle_testkit::IdentityTable);
+
+impl PumpSource for TallOddRows {}
 
 impl ScenarioSource for TallOddRows {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
@@ -392,6 +394,8 @@ fn a_body_holding_only_a_sliver_and_a_gap_has_an_empty_strip() {
 /// Rows whose content is 12 tall (also the minimum-size hint) under a default
 /// of 38.
 struct ShortRows;
+
+impl PumpSource for ShortRows {}
 
 impl ScenarioSource for ShortRows {
     fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {

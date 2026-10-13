@@ -8,7 +8,7 @@ mod table;
 
 use std::ops::Range;
 
-use binnacle_core::{Key, Position};
+use binnacle_core::{Key, Located, Position};
 
 pub use interner::KeyInterner;
 pub use memory_source::{MemorySource, Unsortable};
@@ -35,5 +35,15 @@ impl IdentitySource {
     /// The Keys for `range`, clipped to the count.
     pub fn window(&self, range: Range<Position>) -> Vec<Key> {
         (range.start..range.end.min(self.count)).map(Key).collect()
+    }
+
+    /// Answers `Locate`: a Key is at the Position it names, if that is below
+    /// the count.
+    pub fn locate(&self, key: Key) -> Located {
+        if key.0 < self.count {
+            Located::Found(key.0)
+        } else {
+            Located::Gone { suggest: None }
+        }
     }
 }

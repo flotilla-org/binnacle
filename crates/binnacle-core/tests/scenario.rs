@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use binnacle_core::{Action, Axis, AxisConfig, Effect, Grid, Key, Position, Viewport};
 use binnacle_memory::IdentitySource;
-use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
+use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
 
 #[test]
 fn identity_table_first_frame() {
@@ -74,6 +74,8 @@ fn empty_tables_give_an_empty_snapshot() {
 
 /// Fills only the first two Positions of each requested row Window.
 struct SlowRows(IdentityTable);
+
+impl PumpSource for SlowRows {}
 
 impl ScenarioSource for SlowRows {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {

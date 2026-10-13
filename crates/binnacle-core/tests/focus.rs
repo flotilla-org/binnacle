@@ -6,7 +6,7 @@ use std::ops::Range;
 use binnacle_core::{
     Action, Axis, AxisConfig, Effect, FocusStep, Grid, Key, Position, ScrollAnchor, Viewport,
 };
-use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
+use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
 
 fn table() -> Scenario<IdentityTable> {
     Scenario::identity(
@@ -169,6 +169,8 @@ fn focus_stays_unplaced_while_either_axis_is_empty() {
 /// 2^20, where an f32 anchor offset steps by 1/16, and every other row 8.
 struct TallMiddleRow;
 
+impl PumpSource for TallMiddleRow {}
+
 impl ScenarioSource for TallMiddleRow {
     fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {
         range.map(Key).collect()
@@ -208,6 +210,8 @@ fn a_revealed_row_after_a_far_larger_one_ends_within_one_anchor_step_of_the_body
 /// Rows whose content is one unit tall (also the minimum-size hint) under a
 /// default of 513.
 struct OneUnitRows;
+
+impl PumpSource for OneUnitRows {}
 
 impl ScenarioSource for OneUnitRows {
     fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {

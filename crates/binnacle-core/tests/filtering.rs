@@ -4,7 +4,7 @@
 use binnacle_core::{
     Action, Axis, AxisConfig, FocusStep, Grid, Key, Modifiers, PointerEvent, Viewport,
 };
-use binnacle_testkit::{RecordTable, Scenario, ScenarioSource};
+use binnacle_testkit::{PumpSource, RecordTable, Scenario};
 
 const V: Viewport = Viewport {
     width: 26.0,

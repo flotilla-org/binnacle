@@ -174,7 +174,7 @@ fn an_insert_while_locating_asks_again_and_ignores_the_stale_answer() {
     let Effect::Locate { axis, key } = locate.effect else {
         unreachable!()
     };
-    let stale = binnacle_testkit::ScenarioSource::locate(&mut s.source, axis, key);
+    let stale = binnacle_testkit::PumpSource::locate(&mut s.source, axis, key);
     assert_eq!(stale, binnacle_core::Located::Found(18));
     insert(&mut s, Axis::Rows, 0, 3);
     s.input(|g| g.located(axis, key, stale));

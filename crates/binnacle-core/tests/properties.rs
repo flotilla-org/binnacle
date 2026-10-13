@@ -13,7 +13,7 @@ use binnacle_core::{
     Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
-use binnacle_testkit::{IdentityTable, Scenario, ScenarioSource};
+use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
 
@@ -426,13 +426,15 @@ impl ScenarioSource for Sized {
         self.table.window(axis, range)
     }
 
-    fn locate(&mut self, axis: Axis, key: Key) -> binnacle_core::Located {
-        self.table.locate(axis, key)
-    }
-
     fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
         let c = self.content[axis.index()].as_ref()?;
         Some((keys.iter().map(|&k| c.raw(k)).collect(), c.hint))
+    }
+}
+
+impl PumpSource for Sized {
+    fn locate(&mut self, axis: Axis, key: Key) -> binnacle_core::Located {
+        self.table.locate(axis, key)
     }
 }
 

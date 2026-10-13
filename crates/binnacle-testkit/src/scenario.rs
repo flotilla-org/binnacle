@@ -10,31 +10,14 @@ use binnacle_memory::{IdentitySource, MemorySource, PumpSource};
 
 use crate::render::render;
 
-/// What a scenario's host fetches Keys from. Later tickets extend it as the
-/// host learns to answer Effects.
-pub trait ScenarioSource {
+/// What a scenario's host fetches Keys from, on top of the Effects it answers
+/// through the shared pump.
+pub trait ScenarioSource: PumpSource {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key>;
 
     /// Content sizes for the Keys just fetched on `axis`, with the smallest
     /// content size the axis can have. `None` (the default) sends Keys only.
     fn sizes(&mut self, _axis: Axis, _keys: &[Key]) -> Option<(Vec<f32>, f32)> {
-        None
-    }
-
-    /// Answers `SortRequested` (see [`PumpSource::sort`]). The default
-    /// cannot sort and rejects every request, keeping base order.
-    fn sort(&mut self, _spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
-        Err(SortSpec::unsorted())
-    }
-
-    /// Answers `Locate`. The default knows no Keys and answers `Gone`.
-    fn locate(&mut self, _axis: Axis, _key: Key) -> Located {
-        Located::Gone { suggest: None }
-    }
-
-    /// Answers `MoveRequested` (see [`PumpSource::move_items`]). The default
-    /// moves nothing.
-    fn move_items(&mut self, _axis: Axis, _keys: &[Key], _to: Position) -> Option<ChangeNotice> {
         None
     }
 }
@@ -45,24 +28,24 @@ pub struct IdentityTable {
     pub cols: IdentitySource,
 }
 
-impl ScenarioSource for IdentityTable {
-    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+impl IdentityTable {
+    fn axis(&self, axis: Axis) -> &IdentitySource {
         match axis {
-            Axis::Rows => self.rows.window(range),
-            Axis::Cols => self.cols.window(range),
+            Axis::Rows => &self.rows,
+            Axis::Cols => &self.cols,
         }
     }
+}
 
+impl ScenarioSource for IdentityTable {
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        self.axis(axis).window(range)
+    }
+}
+
+impl PumpSource for IdentityTable {
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
-        let count = match axis {
-            Axis::Rows => self.rows.count(),
-            Axis::Cols => self.cols.count(),
-        };
-        if key.0 < count {
-            Located::Found(key.0)
-        } else {
-            Located::Gone { suggest: None }
-        }
+        self.axis(axis).locate(key)
     }
 }
 
@@ -126,7 +109,9 @@ impl ScenarioSource for KeyedTable {
         let start = (range.start as usize).min(end);
         keys[start..end].to_vec()
     }
+}
 
+impl PumpSource for KeyedTable {
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
         match self.axes[axis.index()].iter().position(|&k| k == key) {
             Some(p) => Located::Found(p as u64),
@@ -189,19 +174,19 @@ impl ScenarioSource for RecordTable {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
         self.source.window(axis, range)
     }
+}
 
+impl PumpSource for RecordTable {
     fn sort(&mut self, spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
-        self.source
-            .sort(&self.rows, spec)
-            .map_err(|_| self.source.sort_spec().clone())
+        self.source.over(&self.rows).sort(spec)
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
-        self.source.locate(axis, key)
+        self.source.over(&self.rows).locate(axis, key)
     }
 
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
-        (axis == Axis::Cols).then(|| self.source.move_columns(keys, to))
+        self.source.over(&self.rows).move_items(axis, keys, to)
     }
 }
 
