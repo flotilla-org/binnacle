@@ -299,3 +299,33 @@ fn set_gap_does_not_follow_an_end_the_window_only_estimates() {
     let anchor = s.frame(v).scroll_anchor(Axis::Rows);
     assert_eq!((anchor.position, anchor.offset), (1, 0.0));
 }
+
+/// Found by `machine.rs`: a smaller Gap put the anchor past the end clamp as
+/// estimated from the Window, which did not yet hold the tall row 7. The
+/// clamp pulled the anchor back to that estimate and made it follow the end,
+/// so the next Window's real sizes carried it two Positions forward.
+#[test]
+fn set_gap_does_not_clamp_to_an_end_the_window_only_estimates() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(8, 1.0).gap(2.0),
+        AxisConfig::new(1, 3.0).header(2.0),
+    );
+    let v = Viewport::new(6.0, 10.0);
+    s.frame(v);
+    s.input(|g| {
+        g.action(Action::Scroll { dx: 0.0, dy: 3.5 });
+        g.set_size(Axis::Rows, binnacle_core::Key(7), 4.5);
+    });
+    let mut out = s.step(
+        "scroll to row 1 + 0.5; row 7, outside the Window, is 4.5 high",
+        v,
+    );
+    s.input(|g| g.set_gap(Axis::Rows, 0.5));
+    out += &s.step(
+        "set_gap(Rows, 0.5): row 1 stays the anchor as row 7 arrives",
+        v,
+    );
+    insta::assert_snapshot!(out);
+    let anchor = s.frame(v).scroll_anchor(Axis::Rows);
+    assert_eq!((anchor.position, anchor.offset), (1, 0.5));
+}

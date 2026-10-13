@@ -220,7 +220,9 @@ impl AxisState {
     /// pulled back inside the item, and only the end clamp moves it further. An
     /// anchor at the end stays at the end. While the Window does not hold the
     /// anchor's item (a notice emptied it) its size is only the default, so
-    /// the offset is kept until the Window brings the real one.
+    /// the offset is kept until the Window brings the real one; likewise the
+    /// end clamp pulls the anchor back only once the Window holds the items
+    /// it is measured over.
     pub fn clamp_anchor(&mut self) -> bool {
         let count = self.measure.count();
         let position = self.anchor.position.min(count.saturating_sub(1));
@@ -235,7 +237,11 @@ impl AxisState {
         } else {
             let stride = self.measure.size_at(position) + self.measure.gap();
             let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
-            if (position, offset) > (max.position, max.offset) {
+            // The end clamp is exact only once the Window holds every item
+            // from it to the end; until then the anchor waits for the Window
+            // the next frame asks for, which reaches the end.
+            let exact = self.window_covers(&(max.position..count));
+            if (position, offset) > (max.position, max.offset) && exact {
                 max
             } else {
                 ScrollAnchor { position, offset }
