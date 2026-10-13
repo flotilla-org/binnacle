@@ -6,7 +6,7 @@ use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, HeaderSort, Key, Mode, Modifiers,
     PointerEvent, SortColumn, SortDirection, SortSpec, Viewport,
 };
-use binnacle_testkit::{PumpSource, RecordTable, Scenario, ScenarioSource, render};
+use binnacle_testkit::{PumpSource, RecordTable, Scenario, ScenarioSource};
 
 mod support;
 
@@ -68,7 +68,7 @@ fn a_column_header_click_cycles_ascending_descending_none_and_shift_adds_a_colum
 /// Renders the Grid as it stands, without pumping, so unanswered requests
 /// show.
 fn unanswered<S: ScenarioSource>(s: &mut Scenario<S>, label: &str) -> String {
-    format!("--- {label}\n{}", render(&s.grid.snapshot()))
+    format!("--- {label}\n{}", s.render())
 }
 
 #[test]

@@ -22,7 +22,7 @@ effect (gen 2): SelectionChanged
 window Rows 0..6
 gen 3 | damage layout selection positions | focus 1#2,0#0 at 4,2 6x1 | capturing | hover Rows 2
 Rows: count 7, extent 5, header 1, anchor 0+0, thumb 0.0000/0.5714 | 0#0@1+1 1#2@2+1 2#3@3+1 3#4@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Cols: (unchanged)
     0      1      2
 0   0.0    0.1    0.2
 1   *2.0   2.1    2.2
@@ -31,10 +31,6 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 --- 3. cancel the press: focus stays on record 2 and the departed pick does not come back
 effect (gen 3): FocusChanged { row: Key(2), col: Key(0) }
 gen 4 | damage selection | focus 1#2,0#0 at 4,2 6x1 | hover Rows 2
-Rows: count 7, extent 5, header 1, anchor 0+0, thumb 0.0000/0.5714 | 0#0@1+1 1#2@2+1 2#3@3+1 3#4@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
-    0      1      2
-0   0.0    0.1    0.2
-1   *2.0   2.1    2.2
-2   3.0    3.1    3.2
-3   4.0    4.1    4.2
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

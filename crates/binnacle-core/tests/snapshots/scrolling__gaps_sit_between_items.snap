@@ -18,7 +18,7 @@ Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.5294 | 0#0@4+6 1#
 window Rows 14..20
 gen 2 | damage layout positions
 Rows: count 20, extent 6, header 1, anchor 17+0, thumb 1.0000/0.1282 | 17#17@1+1 18#18@3+1 19#19@5+1
-Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.5294 | 0#0@4+6 1#1@11+6 2#2@18+6
+Cols: (unchanged)
     0      1      2
 17  17.0   17.1   17.2
 

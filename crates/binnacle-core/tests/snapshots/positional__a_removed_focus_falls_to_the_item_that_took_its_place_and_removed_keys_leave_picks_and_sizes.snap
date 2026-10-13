@@ -21,7 +21,7 @@ effect (gen 3): FocusChanged { row: Key(3), col: Key(1) }
 window Rows 0..6
 gen 4 | damage layout selection positions | focus 1#3,1#1 at 11,2 4x1 | picks 0 | fill 4,1 18x1
 Rows: count 18, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2222 | 0#0@1+1 1#3@2+1 2#4@3+1 3#5@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+4 2#2@16+6
+Cols: (unchanged)
     0      1    2
 0   +0.0   +0.1 +0.2
 1   3.0    *3.1 3.2
@@ -30,7 +30,7 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 --- 3. remove column 1: focus falls to column 2, now column 1; column sizes are kept
 effect (gen 4): FocusChanged { row: Key(3), col: Key(2) }
 gen 5 | damage layout selection positions | focus 1#3,1#2 at 11,2 6x1 | picks 0 | fill 4,1 13x1
-Rows: count 18, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2222 | 0#0@1+1 1#3@2+1 2#4@3+1 3#5@4+1
+Rows: (unchanged)
 Cols: count 2, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#2@11+6
     0      2
 0   +0.0   +0.2
@@ -40,7 +40,7 @@ Cols: count 2, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 --- 4. remove the last column: focus falls back to column 0
 effect (gen 5): FocusChanged { row: Key(3), col: Key(0) }
 gen 6 | damage layout selection positions | focus 1#3,0#0 at 4,2 6x1 | picks 0 | fill 4,1 6x1
-Rows: count 18, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2222 | 0#0@1+1 1#3@2+1 2#4@3+1 3#5@4+1
+Rows: (unchanged)
 Cols: count 1, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6
     0
 0   +0.0
@@ -51,5 +51,5 @@ Cols: count 1, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6
 effect (gen 6): SelectionChanged
 gen 7 | damage layout selection positions
 Rows: count 0, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 |
-Cols: count 1, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6
+Cols: (unchanged)
     0

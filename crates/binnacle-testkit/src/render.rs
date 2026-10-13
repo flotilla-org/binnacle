@@ -24,6 +24,48 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// Spec adds `sort` and an unanswered request `requested`, each as `key^` or
 /// `keyv` per column.
 pub fn render(snap: &Snapshot) -> String {
+    Rendered::of(snap).since(None)
+}
+
+/// A Snapshot rendered as [`render`] does, in parts, so a sequence of them
+/// can leave out what did not change.
+pub(crate) struct Rendered {
+    summary: String,
+    strips: [String; 2],
+    picture: String,
+}
+
+impl Rendered {
+    /// The text of this rendering, with each Strip line and the picture that
+    /// match `last` written as `(unchanged)`.
+    pub(crate) fn since(&self, last: Option<&Rendered>) -> String {
+        let mut out = format!("{}\n", self.summary);
+        for (axis, strip) in Axis::ALL.into_iter().zip(&self.strips) {
+            if last.is_some_and(|l| l.strips[axis.index()] == *strip) {
+                let _ = writeln!(out, "{axis:?}: (unchanged)");
+            } else {
+                let _ = writeln!(out, "{strip}");
+            }
+        }
+        if last.is_some_and(|l| l.picture == self.picture) {
+            out.push_str("(picture unchanged)\n");
+        } else {
+            out.push_str(&self.picture);
+        }
+        out
+    }
+
+    pub(crate) fn of(snap: &Snapshot) -> Rendered {
+        Rendered {
+            summary: summary(snap),
+            strips: Axis::ALL.map(|axis| strip(snap, axis)),
+            picture: picture(snap),
+        }
+    }
+}
+
+/// The summary line, without its newline.
+fn summary(snap: &Snapshot) -> String {
     let mut out = String::new();
     let d = snap.damage();
     let mut damage: Vec<&str> = Vec::new();
@@ -112,33 +154,32 @@ pub fn render(snap: &Snapshot) -> String {
             d.offset
         );
     }
-    out.push('\n');
-    for axis in Axis::ALL {
+    out
+}
+
+/// The line for the Strip on `axis`, without its newline.
+fn strip(snap: &Snapshot, axis: Axis) -> String {
+    let mut out = format!(
+        "{:?}: count {}, extent {}, header {}, anchor {}+{}, thumb {:.4}/{:.4} |",
+        axis,
+        snap.count(axis),
+        snap.extent(axis),
+        snap.header(axis),
+        snap.scroll_anchor(axis).position,
+        snap.scroll_anchor(axis).offset,
+        snap.thumb(axis).fraction,
+        snap.thumb(axis).size,
+    );
+    for item in snap.strip(axis) {
         let _ = write!(
             out,
-            "{:?}: count {}, extent {}, header {}, anchor {}+{}, thumb {:.4}/{:.4} |",
-            axis,
-            snap.count(axis),
-            snap.extent(axis),
-            snap.header(axis),
-            snap.scroll_anchor(axis).position,
-            snap.scroll_anchor(axis).offset,
-            snap.thumb(axis).fraction,
-            snap.thumb(axis).size,
+            " {}#{}@{}+{}",
+            item.position,
+            key_text(item),
+            item.offset,
+            item.size
         );
-        for item in snap.strip(axis) {
-            let _ = write!(
-                out,
-                " {}#{}@{}+{}",
-                item.position,
-                key_text(item),
-                item.offset,
-                item.size
-            );
-        }
-        out.push('\n');
     }
-    out.push_str(&picture(snap));
     out
 }
 

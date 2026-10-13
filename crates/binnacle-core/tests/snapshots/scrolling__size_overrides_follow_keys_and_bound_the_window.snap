@@ -30,7 +30,7 @@ Cols: count 5, extent 30, header 4, anchor 0+0, thumb 0.0000/0.8387 | 0#0@4+6 1#
 --- 3. row 1 back to 2: the bound remembers nothing smaller
 gen 3 | damage layout
 Rows: count 20, extent 7, header 1, anchor 0+0, thumb 0.0000/0.1500 | 0#0@1+2 1#1@3+2 2#2@5+2
-Cols: count 5, extent 30, header 4, anchor 0+0, thumb 0.0000/0.8387 | 0#0@4+6 1#1@11+3 2#2@15+6 3#3@22+6 4#4@29+6
+Cols: (unchanged)
     0      1   2      3      4
 0   0.0    0.1 0.2    0.3    0
 

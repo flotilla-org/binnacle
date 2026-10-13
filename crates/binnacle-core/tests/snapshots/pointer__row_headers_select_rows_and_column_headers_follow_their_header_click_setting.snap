@@ -18,8 +18,8 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 effect (gen 2): FocusChanged { row: Key(2), col: Key(1) }
 effect (gen 2): SelectionChanged
 gen 3 | damage selection | focus 2#2,1#1 at 11,3 6x1 | range 2..3 x 0..5 | fill 4,3 27x1 | hover Rows 2
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2      3
 0   0.0    0.1    0.2    0
 1   1.0    1.1    1.2    1
@@ -29,8 +29,8 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 effect (gen 3): FocusChanged { row: Key(3), col: Key(1) }
 effect (gen 3): SelectionChanged
 gen 4 | damage selection | focus 3#3,1#1 at 11,4 6x1 | range 2..4 x 0..5 | fill 4,3 27x2 | hover Rows 3
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2      3
 0   0.0    0.1    0.2    0
 1   1.0    1.1    1.2    1
@@ -40,8 +40,8 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 effect (gen 4): SelectionChanged
 effect (gen 4): FocusChanged { row: Key(0), col: Key(1) }
 gen 5 | damage selection | focus 0#0,1#1 at 11,1 6x1 | range 2..4 x 0..5 | picks 0 | fill 4,3 27x2 | fill 4,1 27x1 | hover Rows 0
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2      3
 0   +0.0   *0.1   +0.2   +
 1   1.0    1.1    1.2    1
@@ -51,18 +51,14 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 effect (gen 5): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(1), direction: Ascending }] } }
   sort [SortColumn { key: Key(1), direction: Ascending }]: Err(SortSpec { columns: [] })
 gen 6 | damage selection | focus 0#0,1#1 at 11,1 6x1 | range 2..4 x 0..5 | picks 0 | fill 4,3 27x2 | fill 4,1 27x1 | hover Cols 1
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
-    0      1      2      3
-0   +0.0   *0.1   +0.2   +
-1   1.0    1.1    1.2    1
-2   +2.0   +2.1   +2.2   +
-3   +3.0   +3.1   +3.2   +
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
 --- 6. with Select: the whole column
 effect (gen 6): SelectionChanged
 gen 7 | damage selection | focus 0#0,1#1 at 11,1 6x1 | range 0..20 x 1..2 | fill 11,1 6x4 | hover Cols 1
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2      3
 0   0.0    *0.1   0.2    0
 1   1.0    +1.1   1.2    1
@@ -70,10 +66,6 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 3   3.0    +3.1   3.2    3
 --- 7. row headers set to None; hover the Gap after a header
 gen 8 | damage selection | focus 0#0,1#1 at 11,1 6x1 | range 0..20 x 1..2 | fill 11,1 6x4 | cursor ResizeCol
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
-    0      1      2      3
-0   0.0    *0.1   0.2    0
-1   1.0    +1.1   1.2    1
-2   2.0    +2.1   2.2    2
-3   3.0    +3.1   3.2    3
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

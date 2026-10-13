@@ -19,8 +19,8 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 effect (gen 2): FocusChanged { row: Key(19), col: Key(0) }
 effect (gen 2): SelectionChanged
 gen 3 | damage selection | focus 19#19,0#0 at 4,4 6x1
-Rows: count 20, extent 5, header 1, anchor 16+0, thumb 1.0000/0.2000 | 16#16@1+1 17#17@2+1 18#18@3+1 19#19@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2      3
 16  16.0   16.1   16.2   1
 17  17.0   17.1   17.2   1
@@ -28,10 +28,6 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 19  *19.0  19.1   19.2   1
 --- 3. a steady frame: still drawn
 gen 4 | damage none | focus 19#19,0#0 at 4,4 6x1
-Rows: count 20, extent 5, header 1, anchor 16+0, thumb 1.0000/0.2000 | 16#16@1+1 17#17@2+1 18#18@3+1 19#19@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
-    0      1      2      3
-16  16.0   16.1   16.2   1
-17  17.0   17.1   17.2   1
-18  18.0   18.1   18.2   1
-19  *19.0  19.1   19.2   1
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

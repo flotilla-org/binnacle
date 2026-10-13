@@ -21,7 +21,7 @@ effect (gen 2): FocusChanged { row: Key(500), col: Key(2) }
 window Rows 495..503
 gen 3 | damage layout selection positions | focus 500#500,2#2 at 18,4 6x1
 Rows: count 1000, extent 5, header 1, anchor 497+0, thumb 0.4990/0.0040 | 497#497@1+1 498#498@2+1 499#499@3+1 500#500@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Cols: (unchanged)
     0      1      2
 497 497.0  497.1  497.2
 498 498.0  498.1  498.2
@@ -32,8 +32,8 @@ effect (gen 3): Locate { axis: Rows, key: Key(5000) }
   locate Rows Key(5000): Gone { suggest: None }
 effect (gen 3): FocusChanged { row: Key(500), col: Key(0) }
 gen 4 | damage selection | focus 500#500,0#0 at 4,4 6x1
-Rows: count 1000, extent 5, header 1, anchor 497+0, thumb 0.4990/0.0040 | 497#497@1+1 498#498@2+1 499#499@3+1 500#500@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2
 497 497.0  497.1  497.2
 498 498.0  498.1  498.2

@@ -19,7 +19,7 @@ effect (gen 2): SelectionChanged
 window Rows 0..6
 gen 3 | damage layout selection positions | range 0..15 x 0..3 | fill 4,1 20x4
 Rows: count 15, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2667 | 0#5@1+1 1#6@2+1 2#7@3+1 3#8@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Cols: (unchanged)
     0      1      2
 0   +5.0   +5.1   +5.2
 1   +6.0   +6.1   +6.2
@@ -29,5 +29,5 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 effect (gen 3): SelectionChanged
 gen 4 | damage layout selection positions
 Rows: count 0, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 |
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Cols: (unchanged)
     0      1      2

@@ -16,7 +16,7 @@ Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.6000 | 0#0@4+6 1#
 window Rows 3..10
 gen 2 | damage layout positions
 Rows: count 20, extent 4, header 1, anchor 5+0, thumb 0.2941/0.1500 | 5#5@1+1 6#6@2+1 7#7@3+1
-Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.6000 | 0#0@4+6 1#1@10+6 2#2@16+6
+Cols: (unchanged)
     0     1     2
 5   5.0   5.1   5.2
 6   6.0   6.1   6.2
@@ -25,14 +25,11 @@ Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.6000 | 0#0@4+6 1#
 window Rows 3..11
 gen 3 | damage layout positions
 Rows: count 20, extent 4, header 1, anchor 5+0.5, thumb 0.3235/0.1500 | 5#5@0.5+1 6#6@1.5+1 7#7@2.5+1 8#8@3.5+1
-Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.6000 | 0#0@4+6 1#1@10+6 2#2@16+6
-    0     1     2
-5   5.0   5.1   5.2
-6   6.0   6.1   6.2
-7   7.0   7.1   7.2
+Cols: (unchanged)
+(picture unchanged)
 --- 4. right 3
 gen 4 | damage layout
-Rows: count 20, extent 4, header 1, anchor 5+0.5, thumb 0.3235/0.1500 | 5#5@0.5+1 6#6@1.5+1 7#7@2.5+1 8#8@3.5+1
+Rows: (unchanged)
 Cols: count 5, extent 22, header 4, anchor 0+3, thumb 0.2500/0.6000 | 0#0@1+6 1#1@7+6 2#2@13+6 3#3@19+6
        1     2     3
 5      5.1   5.2   5.3
@@ -42,7 +39,7 @@ Cols: count 5, extent 22, header 4, anchor 0+3, thumb 0.2500/0.6000 | 0#0@1+6 1#
 window Rows 14..20
 gen 5 | damage layout positions
 Rows: count 20, extent 4, header 1, anchor 17+0, thumb 1.0000/0.1500 | 17#17@1+1 18#18@2+1 19#19@3+1
-Cols: count 5, extent 22, header 4, anchor 0+3, thumb 0.2500/0.6000 | 0#0@1+6 1#1@7+6 2#2@13+6 3#3@19+6
+Cols: (unchanged)
        1     2     3
 17  0  17.1  17.2  17.
 18  0  18.1  18.2  18.

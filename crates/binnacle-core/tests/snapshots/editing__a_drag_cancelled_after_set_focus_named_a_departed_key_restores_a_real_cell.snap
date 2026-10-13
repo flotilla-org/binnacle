@@ -24,8 +24,8 @@ effect (gen 2): FocusChanged { row: Key(0), col: Key(0) }
 effect (gen 2): SelectionChanged
 window Cols 0..3
 gen 3 | damage layout selection positions | focus 0#0,0#0 at 4,1 6x1
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2
 0   *0.0   0.1    0.2
 1   1.0    1.1    1.2

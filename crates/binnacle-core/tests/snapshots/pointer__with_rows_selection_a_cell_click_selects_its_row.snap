@@ -19,8 +19,8 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 effect (gen 2): FocusChanged { row: Key(3), col: Key(0) }
 effect (gen 2): SelectionChanged
 gen 3 | damage selection | focus 3#3,0#0 at 4,4 6x1 | range 1..4 x 0..5 | fill 4,2 27x3
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2      3
 0   0.0    0.1    0.2    0
 1   +1.0   +1.1   +1.2   +
@@ -30,8 +30,8 @@ Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#
 effect (gen 3): FocusChanged { row: Key(2), col: Key(0) }
 effect (gen 3): SelectionChanged
 gen 4 | damage selection | focus 2#2,0#0 at 4,3 6x1 | range 2..3 x 0..5 | fill 4,3 27x1
-Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
-Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+Rows: (unchanged)
+Cols: (unchanged)
     0      1      2      3
 0   0.0    0.1    0.2    0
 1   1.0    1.1    1.2    1

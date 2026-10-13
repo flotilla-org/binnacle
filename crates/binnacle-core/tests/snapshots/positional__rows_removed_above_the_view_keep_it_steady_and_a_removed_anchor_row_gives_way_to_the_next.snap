@@ -17,7 +17,7 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 --- 2. remove rows 2..5: the anchor follows record 8 to row 5
 gen 3 | damage layout positions
 Rows: count 17, extent 5, header 1, anchor 5+0, thumb 0.3846/0.2353 | 5#8@1+1 6#9@2+1 7#10@3+1 8#11@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Cols: (unchanged)
     0      1      2
 5   8.0    8.1    8.2
 6   9.0    9.1    9.2
@@ -27,7 +27,7 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 window Rows 2..10
 gen 4 | damage layout positions
 Rows: count 15, extent 5, header 1, anchor 4+0, thumb 0.3636/0.2667 | 4#9@1+1 5#10@2+1 6#11@3+1 7#12@4+1
-Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+Cols: (unchanged)
     0      1      2
 4   9.0    9.1    9.2
 5   10.0   10.1   10.2

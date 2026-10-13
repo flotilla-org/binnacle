@@ -8,7 +8,7 @@ use binnacle_core::{
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource};
 
-use crate::render::render;
+use crate::render::Rendered;
 
 /// What a scenario's host fetches Keys from, on top of the Effects it answers
 /// through the shared pump.
@@ -233,6 +233,8 @@ pub struct Scenario<S> {
     pub source: S,
     log: String,
     steps: usize,
+    /// The last rendering, which the next leaves out what matches.
+    shown: Option<Rendered>,
 }
 
 impl Scenario<IdentityTable> {
@@ -253,6 +255,7 @@ impl<S: ScenarioSource> Scenario<S> {
             source,
             log: String::new(),
             steps: 0,
+            shown: None,
         }
     }
 
@@ -319,13 +322,26 @@ impl<S: ScenarioSource> Scenario<S> {
     }
 
     /// Runs a frame and returns a numbered, labelled text rendering of it with
-    /// everything logged since the previous step.
+    /// everything logged since the previous step. Strip lines and the picture
+    /// unchanged since the last rendering read `(unchanged)`.
     pub fn step(&mut self, label: &str, viewport: Viewport) -> String {
         self.steps += 1;
         let header = format!("--- {}. {label}\n", self.steps);
-        let snapshot = self.frame(viewport);
-        let picture = render(&snapshot);
+        let rendered = Rendered::of(&self.frame(viewport));
         let log = std::mem::take(&mut self.log);
-        format!("{header}{log}{picture}")
+        format!("{header}{log}{}", self.show(rendered))
+    }
+
+    /// Renders the Grid as it stands, without pumping or a frame, leaving
+    /// out what is unchanged as [`Scenario::step`] does.
+    pub fn render(&mut self) -> String {
+        let rendered = Rendered::of(&self.grid.snapshot());
+        self.show(rendered)
+    }
+
+    fn show(&mut self, rendered: Rendered) -> String {
+        let text = rendered.since(self.shown.as_ref());
+        self.shown = Some(rendered);
+        text
     }
 }
