@@ -255,10 +255,6 @@ impl<R> MemorySource<R> {
     pub fn locate(&mut self, axis: Axis, key: Key) -> Located {
         self.table.locate(axis, key)
     }
-
-    pub fn table(&self) -> &InMemoryTableSource {
-        &self.table
-    }
 }
 
 /// A [`MemorySource`] with the rows it sorts, as the pump needs it.
