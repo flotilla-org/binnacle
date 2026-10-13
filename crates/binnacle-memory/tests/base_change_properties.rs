@@ -4,6 +4,8 @@
 //! last, then skip what the filter drops). Each Change Notice must describe
 //! what happened to the visible order.
 
+mod support;
+
 use binnacle_core::{Axis, ChangeNotice, Key, SortColumn, SortSpec};
 use binnacle_memory::MemorySource;
 use hegel::generators as gs;
@@ -92,24 +94,10 @@ fn op(tc: &TestCase) -> Op {
 
 /// The model's visible order as Logical Indices.
 fn model(rows: &[Record], spec: &SortSpec, keep: Option<Keep>) -> Vec<u64> {
-    let rank = |r: &Record| -> Vec<(bool, i64)> {
-        spec.columns()
-            .iter()
-            .map(|c| {
-                let v = r[c.key.0 as usize];
-                let v = match c.direction {
-                    binnacle_core::SortDirection::Ascending => v,
-                    binnacle_core::SortDirection::Descending => v.map(|x| -x),
-                };
-                (v.is_none(), v.unwrap_or(0))
-            })
-            .collect()
-    };
-    let mut order: Vec<usize> = (0..rows.len()).collect();
-    order.sort_by_key(|&i| rank(&rows[i]));
-    order
+    let rank = |c: usize, i: usize| rows[i][c].map_or((2, 0), |v| (0, i128::from(v)));
+    let kept = |i: usize| keep.is_none_or(|k| k.keeps(&rows[i]));
+    support::model(rows.len(), spec, rank, kept)
         .into_iter()
-        .filter(|&i| keep.is_none_or(|k| k.keeps(&rows[i])))
         .map(|i| i as u64)
         .collect()
 }
