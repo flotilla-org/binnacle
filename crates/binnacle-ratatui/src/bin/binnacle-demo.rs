@@ -38,9 +38,13 @@
 //! Ctrl-click to pick rows, click a row number to select its row. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to what it draws. The bottom
-//! line shows the gesture in progress and, on the right, the source and the
-//! Theme: Ctrl+T cycles the Themes (`classic`, `catppuccin_mocha`, `mono`),
-//! and the demo starts in `mono` when `NO_COLOR` is set. Press Ctrl+Q or Ctrl+C to quit.
+//! line shows the gesture in progress and, on the right, the source, the
+//! Theme and the Border Style: Ctrl+T cycles the Themes (`classic`,
+//! `catppuccin_mocha`, `mono`), and the demo starts in `mono` when `NO_COLOR`
+//! is set. Ctrl+B cycles the Border Styles: header handles only, column lines,
+//! a full grid (which turns on a one-cell row Gap through `set_gap`) or none,
+//! in light, heavy and double lines, some with band rules (which give the
+//! column header band a second line for its rule). Press Ctrl+Q or Ctrl+C to quit.
 
 use std::borrow::Cow;
 use std::io;
@@ -52,9 +56,9 @@ use binnacle_core::{
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    Align, BarRenderer, CellCanvas, CellRenderer, ColorSupport, Content, Keymap, Mouse,
-    RenderContext, SparklineRenderer, TextRenderer, Theme, animating, fit_width, render_editor,
-    render_with, status, wheel,
+    Align, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas, CellRenderer,
+    ColorSupport, Content, Keymap, Mouse, RenderContext, SparklineRenderer, TextRenderer, Theme,
+    animating, fit_width, render_editor, render_with, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -64,6 +68,24 @@ use ratatui::crossterm::execute;
 const RECORDS: usize = 1000;
 const HUGE_ROWS: u64 = 1_000_000_000_000_000;
 const HUGE_COLS: u64 = 12;
+
+/// The Border Styles Ctrl+B cycles through, from today's look.
+const BORDERS: [BorderStyle; 10] = {
+    use BorderExtent::{Columns, Grid, Headers, None};
+    use BorderWeight::{Double, Heavy, Light};
+    [
+        BorderStyle::new(Headers, Light),
+        BorderStyle::new(Headers, Light).band_rules(true),
+        BorderStyle::new(Columns, Light),
+        BorderStyle::new(Columns, Heavy),
+        BorderStyle::new(Columns, Double).band_rules(true),
+        BorderStyle::new(Grid, Light),
+        BorderStyle::new(Grid, Heavy),
+        BorderStyle::new(Grid, Double),
+        BorderStyle::new(Grid, Light).band_rules(true),
+        BorderStyle::new(None, Light),
+    ]
+};
 
 const NAMES: [&str; 8] = [
     "anchor", "bosun", "capstan", "davit", "ensign", "fathom", "galley", "hawser",
@@ -523,9 +545,39 @@ struct App {
     /// Whether the row-number band follows the row numbers shown: from a
     /// double-click on its edge until the user drags it.
     fit_rows: bool,
+    /// The Border Style drawn, an index into [`BORDERS`].
+    border: usize,
 }
 
 impl App {
+    /// The column header band's fitted thickness: one line for the headers,
+    /// and one more for a band rule.
+    fn header_lines(&self) -> f32 {
+        if BORDERS[self.border].band_rules {
+            2.0
+        } else {
+            1.0
+        }
+    }
+
+    /// Moves to the next Border Style: a row Gap of 1 for `Grid` and 0
+    /// otherwise, and the column header band refitted when band rules turn
+    /// on or off.
+    fn next_border(&mut self, grid: &mut Grid) {
+        let was = BORDERS[self.border];
+        self.border = (self.border + 1) % BORDERS.len();
+        let border = BORDERS[self.border];
+        let gap = if border.extent == BorderExtent::Grid {
+            1.0
+        } else {
+            0.0
+        };
+        grid.set_gap(Axis::Rows, gap);
+        if border.band_rules != was.band_rules {
+            grid.set_header(Axis::Rows, self.header_lines());
+        }
+    }
+
     /// Pumps until the queue stays empty, acting on what the app owns:
     /// activation and F2 open the editor on a name, `EditCancelled` drops
     /// it, and typing jumps ahead.
@@ -546,7 +598,7 @@ impl App {
                     Effect::EditCancelled { .. } => self.editor = None,
                     Effect::BandAutoSizeRequested { axis: Axis::Cols } => self.fit_rows = true,
                     Effect::BandAutoSizeRequested { axis: Axis::Rows } => {
-                        grid.set_header(Axis::Rows, 1.0)
+                        grid.set_header(Axis::Rows, self.header_lines())
                     }
                     Effect::BandSizeChanged {
                         axis: Axis::Cols, ..
@@ -727,7 +779,9 @@ fn main() -> io::Result<()> {
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 moving = animating(&snapshot);
+                let border = BORDERS[app.border];
                 let ctx = RenderContext::new(&themes[theme])
+                    .border(border)
                     .colors(colors)
                     .at(start.elapsed());
                 render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
@@ -740,7 +794,7 @@ fn main() -> io::Result<()> {
                     ..full
                 };
                 frame.render_widget(ratatui::text::Line::from(status(&snapshot)), line);
-                let names = format!("{} | {}", table.source(), themes[theme].name);
+                let names = format!("{} | {} | {border}", table.source(), themes[theme].name);
                 let name = ratatui::text::Line::from(names).right_aligned();
                 frame.render_widget(name, line);
             })?;
@@ -774,6 +828,10 @@ fn main() -> io::Result<()> {
                     }
                     if ctrl && key.code == KeyCode::Char('t') {
                         theme = (theme + 1) % themes.len();
+                        continue;
+                    }
+                    if ctrl && key.code == KeyCode::Char('b') {
+                        app.next_border(&mut grid);
                         continue;
                     }
                     if ctrl && key.code == KeyCode::Char('f') {

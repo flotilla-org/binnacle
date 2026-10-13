@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use crate::{ColorSupport, Theme};
+use crate::{BorderStyle, ColorSupport, Theme};
 
 /// How [`render_with`](crate::render_with) draws: the Theme, the Border
 /// Style, the current time and the terminal's colour capability.
@@ -38,18 +38,5 @@ impl<'a> RenderContext<'a> {
 
     pub fn colors(self, colors: ColorSupport) -> Self {
         RenderContext { colors, ..self }
-    }
-}
-
-/// Which lines are drawn in the Gaps. Today there is one: handles in the
-/// header band's Gaps only.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct BorderStyle {}
-
-impl BorderStyle {
-    /// Lines in the header band only: the handles a resize grabs.
-    pub fn headers() -> Self {
-        BorderStyle {}
     }
 }

@@ -4,6 +4,7 @@
 //! `Buffer` in a [`Theme`]'s palette; the host supplies the text through [`Content`], since the Grid
 //! never reads cell values.
 
+mod border;
 mod context;
 mod keymap;
 mod mouse;
@@ -11,7 +12,8 @@ mod renderer;
 mod shimmer;
 mod theme;
 
-pub use context::{BorderStyle, RenderContext};
+pub use border::{BorderExtent, BorderStyle, BorderWeight};
+pub use context::RenderContext;
 pub use keymap::Keymap;
 pub use mouse::Mouse;
 pub use renderer::{
@@ -83,9 +85,10 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
 /// the top band, row numbers (Position plus one) down the left band, then
 /// each cell. Text is clipped to its item, to `area`, and for cells to the
 /// body past both header bands, so a part-scrolled item shows only its
-/// visible part. Header Gaps are drawn as lines, the handles a resize drag
-/// grabs; a resize in progress draws its guide line across the area, a
-/// header move its drop indicator. A sorted column's header ends in its
+/// visible part. Gaps are drawn as `ctx.border` says (by default the header
+/// band's Gaps only, the handles a resize drag grabs); a resize in progress
+/// draws its guide line across the area, a header move its drop indicator,
+/// both over the borders. A sorted column's header ends in its
 /// direction (and place, in a multi-column sort), and `~` marks a sort
 /// change still pending. Every style comes from the Theme. A Shimmer at
 /// `ctx.now` sweeps across the headers of a pending sort and across the
@@ -243,6 +246,7 @@ pub fn render_with(
             }
         }
     }
+    border::draw(snapshot, ctx.border, theme, area, buf);
     let mut mark = |x: i64, y: i64, ch: char, style: Style| {
         if (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y) {
             let (x, y) = (area.x + x as u16, area.y + y as u16);
@@ -251,20 +255,6 @@ pub fn render_with(
             }
         }
     };
-    if snapshot.gap(Axis::Cols) > 0.0 {
-        for c in snapshot.cols().iter().filter(|c| c.end() >= left) {
-            for y in 0..cell(top) {
-                mark(cell(c.end()), y, '│', theme.handle);
-            }
-        }
-    }
-    if snapshot.gap(Axis::Rows) > 0.0 {
-        for r in snapshot.rows().iter().filter(|r| r.end() >= top) {
-            for x in 0..cell(left) {
-                mark(x, cell(r.end()), '─', theme.handle);
-            }
-        }
-    }
     if let Some(drop) = snapshot.drop_indicator() {
         let style = theme.drop_indicator;
         // The middle of a Gap rounds down onto the Gap's cell.
