@@ -1,0 +1,21 @@
+---
+source: crates/binnacle-core/tests/sorting.rs
+expression: out
+---
+--- 1. focus column 1 and drag column 0's border 2.25 right: column 1 stays put
+window Rows 0..1
+window Cols 0..3
+effect (gen 1): FocusChanged { row: Key(0), col: Key(1) }
+gen 2 | damage layout selection | focus 0#0,1#1 at 5,1 4x1 | mode Resizing { axis: Cols, key: Key(0), start_size: 4.0 } | capturing | hover Cols 1 | cursor ResizeCol | guide Cols 4 (key 0 size 6.25)
+Rows: count 1, extent 2, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1
+Cols: count 3, extent 9, header 3, anchor 0+5.25, thumb 0.5122/0.3692 | 0#0@-2.25+6.25 1#1@5+4
+     1
+0    *0.1
+--- 2. columns reordered: the anchor and column 1 stay
+effect (gen 3): Locate { axis: Cols, key: Key(1) }
+  locate Cols Key(1): Found(1)
+window Cols 0..3
+gen 4 | damage layout selection positions | focus 0#0,1#1 at 5,1 4x1 | mode Resizing { axis: Cols, key: Key(0), start_size: 4.0 } | capturing | hover Cols 1 | cursor ResizeCol | guide Cols 4 (key 0 size 6.25)
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

@@ -432,3 +432,61 @@ fn a_sort_click_on_a_row_header_does_nothing() {
     assert_eq!(snap.requested_sort(), None);
     assert_eq!(snap.focus(Axis::Rows), None);
 }
+
+/// One row over three columns 4 wide with Gap 1 behind a row header 3 wide,
+/// in a viewport 9 by 2: a body 6 wide.
+fn narrow() -> (Scenario<RecordTable>, Viewport) {
+    let grid = binnacle_core::Grid::new(
+        AxisConfig::new(1, 1.0).header(1.0),
+        AxisConfig::new(3, 4.0).header(3.0).gap(1.0),
+    );
+    let rows = vec![vec![None, None, None]];
+    let s = Scenario::new(grid, RecordTable::new(rows, 3, Vec::<u64>::new()));
+    (s, Viewport::new(9.0, 2.0))
+}
+
+/// Regression (found by `a_reorder_drops_the_range_and_any_drag_and_leaves_the_anchor`):
+/// a `Reordered` empties the Window, so until it is refetched every item has
+/// the default size. The anchor was clamped against that default and lost
+/// what it had scrolled into a wider column.
+#[test]
+fn a_reorder_leaves_an_anchor_deep_in_a_column_being_resized() {
+    let (mut s, v) = narrow();
+    s.frame(v);
+    s.input(|g| {
+        // The first move places focus at row 0, column 0.
+        for axis in [Axis::Rows, Axis::Cols] {
+            g.action(Action::MoveFocus {
+                axis,
+                by: FocusStep::Item,
+                forward: true,
+                extend: false,
+            });
+        }
+        // The Gap after column 0, at x 7..8 before the reveal scrolls.
+        g.pointer(PointerEvent::down(4.5, 0.0));
+        g.pointer(PointerEvent::moved(6.75, 0.0));
+    });
+    let mut out = s.step(
+        "focus column 1 and drag column 0's border 2.25 right: column 1 stays put",
+        v,
+    );
+    let before = s.frame(v).scroll_anchor(Axis::Cols);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    out += &s.step("columns reordered: the anchor and column 1 stay", v);
+    insta::assert_snapshot!(out);
+    assert_eq!(s.frame(v).scroll_anchor(Axis::Cols), before);
+}
+
+/// The same with a Size Override instead of a resize in progress.
+#[test]
+fn a_reorder_leaves_an_anchor_deep_in_a_wide_column() {
+    let (mut s, v) = narrow();
+    s.input(|g| g.set_size(Axis::Cols, Key(0), 10.0));
+    s.frame(v);
+    s.input(|g| g.action(Action::Scroll { dx: 8.0, dy: 0.0 }));
+    let before = s.frame(v).scroll_anchor(Axis::Cols);
+    assert_eq!((before.position, before.offset), (0, 8.0));
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    assert_eq!(s.frame(v).scroll_anchor(Axis::Cols), before);
+}
