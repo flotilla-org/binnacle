@@ -269,3 +269,33 @@ fn set_gap_that_lets_the_whole_axis_fit_scrolls_back_to_the_start() {
     assert_eq!((anchor.position, anchor.offset), (0, 0.0));
     assert!(snap.thumb(Axis::Rows).size >= 1.0);
 }
+
+/// Found by `machine.rs`: after `set_gap`, the anchor sat exactly where the
+/// end clamp lay as estimated from the Window, which did not yet hold the
+/// taller row 9. That made it follow the end, and the next Window's true
+/// sizes moved it forward a whole Position.
+#[test]
+fn set_gap_does_not_follow_an_end_the_window_only_estimates() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(11, 1.0).header(1.0).gap(1.0),
+        AxisConfig::new(1, 3.0).header(2.0),
+    );
+    let v = Viewport::new(6.0, 11.0);
+    s.frame(v);
+    s.input(|g| {
+        g.action(Action::ScrollBy {
+            axis: Axis::Rows,
+            items: 1,
+        });
+        g.set_size(Axis::Rows, binnacle_core::Key(9), 2.0);
+    });
+    let mut out = s.step("scroll to row 1; row 9, outside the Window, is 2 high", v);
+    s.input(|g| g.set_gap(Axis::Rows, 0.0));
+    out += &s.step(
+        "set_gap(Rows, 0): row 1 stays the anchor as row 9 arrives",
+        v,
+    );
+    insta::assert_snapshot!(out);
+    let anchor = s.frame(v).scroll_anchor(Axis::Rows);
+    assert_eq!((anchor.position, anchor.offset), (1, 0.0));
+}

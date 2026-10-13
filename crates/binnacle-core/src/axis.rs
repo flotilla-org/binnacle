@@ -241,7 +241,14 @@ impl AxisState {
                 ScrollAnchor { position, offset }
             }
         };
-        self.settle(to, max)
+        let following = self.at_end;
+        let moved = self.settle(to, max);
+        // An anchor left where it was follows the end only if it already
+        // did: the end may be an estimate the next Window's sizes move.
+        if !moved && !following {
+            self.at_end = false;
+        }
+        moved
     }
 
     /// Sets the Gap, keeping the anchor's Position and offset as far as the
