@@ -10,7 +10,10 @@
 //! columns. Press Ctrl+F to show only records with a crew of 6 or more, and
 //! again to show them all: focus stays on its record, or moves to the nearest
 //! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
-//! which neither sort, move nor filter.
+//! which neither sort, move nor filter. Its row-number band fits the
+//! largest row number shown and refits as you scroll; dragging the band's
+//! edge (the corner cell above its last column) sets it by hand, and
+//! double-clicking the edge fits it again.
 //!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
@@ -35,7 +38,8 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Stamped, Viewport,
+    Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Mode, Snapshot, Stamped,
+    Viewport,
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
@@ -133,7 +137,9 @@ impl Table {
             Effect::Activated { .. }
             | Effect::EditRequested { .. }
             | Effect::EditCancelled { .. }
-            | Effect::TextTyped { .. } => app.push(stamped.effect),
+            | Effect::TextTyped { .. }
+            | Effect::BandSizeChanged { .. }
+            | Effect::BandAutoSizeRequested { .. } => app.push(stamped.effect),
             _ => auto_size(text, shown, grid, stamped),
         };
         match self {
@@ -273,6 +279,9 @@ struct App {
     typed_at: Option<Instant>,
     /// The focused cell as of the last Snapshot.
     focus: Option<(binnacle_core::FocusEnd, binnacle_core::FocusEnd)>,
+    /// Whether the row-number band follows the row numbers shown: from a
+    /// double-click on its edge until the user drags it.
+    fit_rows: bool,
 }
 
 impl App {
@@ -294,6 +303,13 @@ impl App {
                         }
                     }
                     Effect::EditCancelled { .. } => self.editor = None,
+                    Effect::BandAutoSizeRequested { axis: Axis::Cols } => self.fit_rows = true,
+                    Effect::BandAutoSizeRequested { axis: Axis::Rows } => {
+                        grid.set_header(Axis::Rows, 1.0)
+                    }
+                    Effect::BandSizeChanged {
+                        axis: Axis::Cols, ..
+                    } => self.fit_rows = false,
                     Effect::TextTyped { text } => self.type_ahead(table, grid, &text),
                     _ => {}
                 }
@@ -349,9 +365,25 @@ impl App {
     }
 }
 
+/// Asks for the Windows the next Snapshot needs and fills them.
+fn fill(grid: &mut Grid, table: &Table, viewport: Viewport) {
+    for (axis, range) in grid.begin_frame(viewport) {
+        let keys = table.window(axis, range.clone());
+        grid.set_window(axis, range.start, &keys);
+    }
+}
+
+/// The row-number band's width for `snapshot`: the digits of the largest row
+/// number shown, and a cell after them.
+fn row_band_fit(snapshot: &Snapshot) -> Option<f32> {
+    let last = snapshot.rows().last()?.position.saturating_add(1);
+    Some(last.to_string().len() as f32 + 1.0)
+}
+
 fn main() -> io::Result<()> {
     let (mut table, mut grid) = if std::env::args().any(|a| a == "--huge") {
-        // The row header band and the columns fit the widest row number.
+        // The columns fit the widest row number; the row-number band starts
+        // there and then fits the rows shown.
         let digits = HUGE_ROWS.to_string().len() as f32;
         let mut grid = Grid::new(
             AxisConfig::new(HUGE_ROWS, 1.0).header(1.0),
@@ -401,7 +433,10 @@ fn main() -> io::Result<()> {
     let mut area = ratatui::layout::Rect::default();
     // The row Keys last drawn, which auto-size measures.
     let mut shown_rows: Vec<Key> = Vec::new();
-    let mut app = App::default();
+    let mut app = App {
+        fit_rows: matches!(table, Table::Huge(_)),
+        ..App::default()
+    };
     let themes = Theme::presets();
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let mut theme = if no_color { themes.len() - 1 } else { 0 };
@@ -417,9 +452,16 @@ fn main() -> io::Result<()> {
                 area.height = full.height.saturating_sub(1);
                 app.pump(&mut table, &mut grid, &shown_rows);
                 let viewport = Viewport::new(area.width.into(), area.height.into());
-                for (axis, range) in grid.begin_frame(viewport) {
-                    let keys = table.window(axis, range.clone());
-                    grid.set_window(axis, range.start, &keys);
+                fill(&mut grid, &table, viewport);
+                if app.fit_rows {
+                    // Fit to the rows this frame shows, then lay it out again.
+                    let snapshot = grid.snapshot();
+                    let fit = row_band_fit(&snapshot)
+                        .filter(|_| !matches!(snapshot.mode(), Mode::ResizingBand { .. }));
+                    if let Some(width) = fit.filter(|&w| w != snapshot.header(Axis::Cols)) {
+                        grid.set_header(Axis::Cols, width);
+                        fill(&mut grid, &table, viewport);
+                    }
                 }
                 let snapshot = grid.snapshot();
                 shown_rows.clear();

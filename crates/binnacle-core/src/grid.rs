@@ -347,6 +347,12 @@ impl Grid {
         }
     }
 
+    /// The thickness of the Header Band leading `axis`, as the next
+    /// Snapshot will show it.
+    pub fn header(&self, axis: Axis) -> f32 {
+        self.axis(axis).header
+    }
+
     /// Sets the Gap between items on `axis`, keeping the Scroll Anchor's item
     /// where it is in the viewport unless the end clamp pulls the view back.
     /// Capped at the axis's `max_size`; values that are not finite and

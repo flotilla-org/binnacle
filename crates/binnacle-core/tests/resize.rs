@@ -190,8 +190,10 @@ fn with_no_gap_the_border_grab_widens_the_border_into_the_items() {
     assert_eq!(cursor_at(&mut s, 10.4), Cursor::ResizeCol);
     assert_eq!(cursor_at(&mut s, 9.4), Cursor::Default);
     assert_eq!(cursor_at(&mut s, 10.6), Cursor::Default);
-    // The leading edge of the first column is no border.
-    assert_eq!(cursor_at(&mut s, 4.2), Cursor::Default);
+    // The leading edge of the first column is no item border; within the
+    // grab of the row-number band's end it is the band's edge.
+    assert_eq!(cursor_at(&mut s, 4.6), Cursor::Default);
+    assert_eq!(cursor_at(&mut s, 4.2), Cursor::ResizeCol);
     // Column 4, the last, ends at x 34: its grab reaches past its end.
     let wide = Viewport { width: 40.0, ..V };
     s.input(|g| g.pointer(PointerEvent::moved(34.4, 0.5)));

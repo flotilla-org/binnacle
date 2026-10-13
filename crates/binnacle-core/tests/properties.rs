@@ -692,10 +692,8 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         }
         let drained: Vec<Effect> = s.effects();
         // A band resize moves where the body starts: viewports follow it.
-        for effect in &drained {
-            if let Effect::BandSizeChanged { axis, thickness } = *effect {
-                models[axis.index()].config.header = thickness;
-            }
+        for axis in Axis::ALL {
+            models[axis.index()].config.header = s.grid.header(axis);
         }
         // A pointer resize changes Size Overrides of Keys in the Window (or of
         // one seen resizing earlier): read those back. The model takes the
@@ -1831,7 +1829,13 @@ fn dragging_a_band_edge_resizes_the_band_by_the_pointer_travel(tc: TestCase) {
     // Everyday axes: a band shrunk from a huge thickness would leave a body
     // of millions of items to fetch each frame.
     let [rows, cols] = [0, 1].map(|_| {
-        let config = tc.draw(everyday_axis());
+        let max = tc.draw(hegel::one_of!(
+            gs::just(AxisMeasure::DEFAULT_MAX_SIZE),
+            gs::floats::<f32>()
+                .min_value(1.0)
+                .max_value(AxisMeasure::DEFAULT_MAX_SIZE)
+        ));
+        let config = tc.draw(everyday_axis()).max_size(max);
         let body = tc.draw(gs::floats::<f32>().min_value(1.0).max_value(200.0));
         (config, config.header + body)
     });
