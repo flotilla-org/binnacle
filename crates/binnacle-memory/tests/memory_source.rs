@@ -116,3 +116,78 @@ fn filters_rows_by_a_closure_and_keeps_the_sort() {
     assert_eq!(source.clear_filter(), ChangeNotice::Reset(4));
     assert_eq!(source.count(Axis::Rows), 4);
 }
+
+/// Story 37: sort and filter are independent state. Changing the filter
+/// never asks a column closure for sort keys, and sorting never calls the
+/// filter's predicate; each asks only what it needs, once per row.
+#[hegel::test(test_cases = 500)]
+fn filtering_never_asks_for_sort_keys_and_sorting_never_runs_the_filter(tc: hegel::TestCase) {
+    use hegel::generators as gs;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let values = tc.draw(gs::vecs(gs::integers::<i64>().min_value(-5).max_value(5)).max_size(30));
+    let rows: Vec<Rec> = values.iter().map(|&v| rec("", Some(v as f64), v)).collect();
+    // Calls made to each column's closure (Key(0), Key(1)) and the filters'.
+    let extracted = [Rc::new(Cell::new(0)), Rc::new(Cell::new(0))];
+    let kept = Rc::new(Cell::new(0));
+    let (a, b) = (Rc::clone(&extracted[0]), Rc::clone(&extracted[1]));
+    let mut source = MemorySource::<Rec>::new(rows.len(), 2)
+        .i64_column(Key(0), move |r| {
+            a.set(a.get() + 1);
+            Some(r.qty)
+        })
+        .f64_column(Key(1), move |r| {
+            b.set(b.get() + 1);
+            r.amount
+        });
+    let n = rows.len();
+    for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(8)) {
+        let before = [extracted[0].get(), extracted[1].get(), kept.get()];
+        let mut expected = before;
+        match tc.draw(gs::integers::<u8>().max_value(2)) {
+            0 => {
+                let columns = tc.draw(
+                    gs::vecs(hegel::tuples!(
+                        gs::integers::<u64>().max_value(1),
+                        gs::booleans()
+                    ))
+                    .max_size(3),
+                );
+                let spec = SortSpec::new(
+                    columns
+                        .iter()
+                        .map(|&(key, up)| match up {
+                            true => SortColumn::ascending(Key(key)),
+                            false => SortColumn::descending(Key(key)),
+                        })
+                        .collect(),
+                );
+                tc.note(&format!("sort {spec:?}"));
+                for &(key, _) in &columns {
+                    expected[key as usize] += n;
+                }
+                assert_eq!(source.sort(&rows, &spec), Ok(ChangeNotice::Reordered));
+            }
+            1 => {
+                let at_least = tc.draw(gs::integers::<i64>().min_value(-6).max_value(6));
+                tc.note(&format!("filter qty >= {at_least}"));
+                let k = Rc::clone(&kept);
+                source.filter(&rows, move |r| {
+                    k.set(k.get() + 1);
+                    r.qty >= at_least
+                });
+                expected[2] += n;
+            }
+            _ => {
+                tc.note("clear filter");
+                source.clear_filter();
+            }
+        }
+        let after = [extracted[0].get(), extracted[1].get(), kept.get()];
+        assert_eq!(
+            after, expected,
+            "calls to the Key(0), Key(1) and filter closures"
+        );
+    }
+}
