@@ -680,7 +680,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::Edit(None) => s.input(|g| g.edit_ended(binnacle_core::EditEnd::Commit)),
             }
         }
-        let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+        let drained: Vec<Effect> = s.effects();
         // A pointer resize changes Size Overrides of Keys in the Window (or of
         // one seen resizing earlier): read those back.
         for axis in Axis::ALL {
@@ -1771,7 +1771,7 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
     }
     if tc.draw(gs::booleans()) {
         s.input(|g| g.pointer(PointerEvent::up(x0, y0)));
-        let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+        let drained: Vec<Effect> = s.effects();
         tc.event(if size != start {
             "resized"
         } else {
@@ -1986,7 +1986,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
     );
     assert_eq!(snap.moving_keys(), &[key]);
     s.input(|g| g.pointer(PointerEvent::up(x, y)));
-    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    let drained: Vec<Effect> = s.effects();
     let p = grabbed.position;
     if to == p || to == p + 1 {
         tc.event("in place");

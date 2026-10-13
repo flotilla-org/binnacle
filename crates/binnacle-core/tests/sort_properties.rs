@@ -265,7 +265,7 @@ impl Host {
     }
 
     fn frame(&mut self) {
-        self.drained = self.s.pump().into_iter().map(|e| e.effect).collect();
+        self.drained = self.s.effects();
         let snap = self.s.frame(self.table.viewport);
         let focus = snap.focus(Axis::Rows).zip(snap.focus(Axis::Cols));
         self.view = View {

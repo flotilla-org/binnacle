@@ -6,30 +6,13 @@ use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, HeaderSort, Key, Mode, Modifiers,
     PointerEvent, SortColumn, SortDirection, SortSpec, Viewport,
 };
-use binnacle_testkit::{IdentityTable, PumpSource, RecordTable, Scenario, ScenarioSource, render};
+use binnacle_testkit::{PumpSource, RecordTable, Scenario, ScenarioSource, render};
 
-/// 20 rows of 1 with no Gap under a 1-high header band; 5 columns of 6 with a
-/// Gap of 1 after a 4-wide row header band.
-fn table() -> Scenario<IdentityTable> {
-    Scenario::identity(
-        AxisConfig::new(20, 1.0).header(1.0),
-        AxisConfig::new(5, 6.0).header(4.0).gap(1.0),
-    )
-}
+mod support;
 
-const V: Viewport = Viewport {
-    width: 26.0,
-    height: 5.0,
-};
+use support::{V, table};
 
-fn click<S: ScenarioSource>(s: &mut Scenario<S>, x: f32, y: f32, modifiers: Modifiers) {
-    s.input(|g| {
-        g.pointer(PointerEvent::down(x, y).modifiers(modifiers));
-        g.pointer(PointerEvent::up(x, y).modifiers(modifiers));
-    });
-}
-
-/// The x of the middle of column header `c` in [`table`].
+/// The x of the middle of column header `c` in [`support::table`].
 fn header_x(c: u64) -> f32 {
     4.0 + 7.0 * c as f32 + 3.0
 }
@@ -52,7 +35,7 @@ fn a_column_header_click_cycles_ascending_descending_none_and_shift_adds_a_colum
     let spec = |c: Vec<SortColumn>| SortSpec::new(c);
     let mut seen = Vec::new();
     for _ in 0..3 {
-        click(&mut s, header_x(1), 0.0, Modifiers::NONE);
+        s.click(header_x(1), 0.0, Modifiers::NONE);
         seen.extend(requested(&mut s));
     }
     assert_eq!(
@@ -64,11 +47,11 @@ fn a_column_header_click_cycles_ascending_descending_none_and_shift_adds_a_colum
         ]
     );
     let mut seen = Vec::new();
-    click(&mut s, header_x(1), 0.0, Modifiers::NONE);
-    click(&mut s, header_x(2), 0.0, Modifiers::SHIFT);
-    click(&mut s, header_x(1), 0.0, Modifiers::SHIFT);
-    click(&mut s, header_x(1), 0.0, Modifiers::SHIFT);
-    click(&mut s, header_x(2), 0.0, Modifiers::NONE);
+    s.click(header_x(1), 0.0, Modifiers::NONE);
+    s.click(header_x(2), 0.0, Modifiers::SHIFT);
+    s.click(header_x(1), 0.0, Modifiers::SHIFT);
+    s.click(header_x(1), 0.0, Modifiers::SHIFT);
+    s.click(header_x(2), 0.0, Modifiers::NONE);
     seen.extend(requested(&mut s));
     assert_eq!(
         seen,
@@ -92,13 +75,13 @@ fn unanswered<S: ScenarioSource>(s: &mut Scenario<S>, label: &str) -> String {
 fn headers_show_the_applied_sort_and_a_pending_flag_until_answered() {
     let mut s = table();
     s.frame(V);
-    click(&mut s, header_x(1), 0.0, Modifiers::NONE);
+    s.click(header_x(1), 0.0, Modifiers::NONE);
     let mut out = unanswered(&mut s, "click column 1: requested, nothing applied");
     let spec = requested(&mut s).pop().unwrap();
     s.input(|g| g.sort_applied(spec));
     out += &unanswered(&mut s, "applied");
-    click(&mut s, header_x(2), 0.0, Modifiers::SHIFT);
-    click(&mut s, header_x(2), 0.0, Modifiers::SHIFT);
+    s.click(header_x(2), 0.0, Modifiers::SHIFT);
+    s.click(header_x(2), 0.0, Modifiers::SHIFT);
     out += &unanswered(&mut s, "shift-click column 2 twice: two requests out");
     let specs = requested(&mut s);
     s.input(|g| g.sort_applied(specs[0].clone()));
@@ -117,7 +100,7 @@ fn headers_show_the_applied_sort_and_a_pending_flag_until_answered() {
     s.input(|g| g.sort_applied(specs[0].clone()));
     out += &unanswered(&mut s, "second rejected: the first stays applied");
     s.input(|g| g.set_sortable(Key(0), false));
-    click(&mut s, header_x(0), 0.0, Modifiers::NONE);
+    s.click(header_x(0), 0.0, Modifiers::NONE);
     out += &unanswered(&mut s, "column 0 is not sortable: no request");
     assert_eq!(requested(&mut s), vec![]);
     insta::assert_snapshot!(out);
@@ -151,9 +134,9 @@ fn records() -> Scenario<RecordTable> {
 fn focus_and_picks_follow_their_records_through_a_sort_and_the_range_is_dropped() {
     let mut s = records();
     s.frame(V);
-    click(&mut s, 5.0, 1.0, Modifiers::CTRL);
-    click(&mut s, 5.0, 3.0, Modifiers::CTRL);
-    click(&mut s, 12.0, 4.0, Modifiers::SHIFT);
+    s.click(5.0, 1.0, Modifiers::CTRL);
+    s.click(5.0, 3.0, Modifiers::CTRL);
+    s.click(12.0, 4.0, Modifiers::SHIFT);
     s.input(|g| {
         g.action(Action::ScrollBy {
             axis: Axis::Rows,
@@ -164,19 +147,19 @@ fn focus_and_picks_follow_their_records_through_a_sort_and_the_range_is_dropped(
         "pick records 0 and 2, shift-click record 3, column 1; scroll down one",
         V,
     );
-    click(&mut s, header_x(0), 0.0, Modifiers::NONE);
+    s.click(header_x(0), 0.0, Modifiers::NONE);
     out += &s.step(
         "sort by column 0: focus follows record 3 off screen, picks follow, range gone, anchor stays",
         V,
     );
-    click(&mut s, header_x(0), 0.0, Modifiers::NONE);
+    s.click(header_x(0), 0.0, Modifiers::NONE);
     out += &s.step("again: descending", V);
-    click(&mut s, header_x(1), 0.0, Modifiers::SHIFT);
+    s.click(header_x(1), 0.0, Modifiers::SHIFT);
     out += &s.step(
         "shift-click column 1: added second; column 0 has no ties, so the order holds",
         V,
     );
-    click(&mut s, header_x(2), 0.0, Modifiers::NONE);
+    s.click(header_x(2), 0.0, Modifiers::NONE);
     out += &s.step("column 2 has no sort keys: rejected, the sort stays", V);
     insta::assert_snapshot!(out);
 }
@@ -202,7 +185,7 @@ fn sort_behind_the_grid(s: &mut Scenario<RecordTable>) {
 fn focus_moves_made_while_locating_are_applied_once_located_answers() {
     let mut s = records();
     s.frame(V);
-    click(&mut s, 5.0, 2.0, Modifiers::NONE);
+    s.click(5.0, 2.0, Modifiers::NONE);
     let mut out = s.step("focus record 1 at row 1", V);
     sort_behind_the_grid(&mut s);
     s.input(|g| {
@@ -225,7 +208,7 @@ fn focus_moves_made_while_locating_are_applied_once_located_answers() {
     );
     sort_behind_the_grid(&mut s);
     s.input(|g| g.action(down()));
-    click(&mut s, 5.0, 1.0, Modifiers::NONE);
+    s.click(5.0, 1.0, Modifiers::NONE);
     out += &s.step(
         "again, with a click before the answer: the click wins and the buffered move is dropped",
         V,
@@ -243,10 +226,10 @@ fn follow_focus_on_reorder_scrolls_to_the_focused_record() {
     let mut s = records();
     s.input(|g| g.set_follow_focus_on_reorder(true));
     s.frame(V);
-    click(&mut s, 5.0, 4.0, Modifiers::NONE);
+    s.click(5.0, 4.0, Modifiers::NONE);
     let mut out = s.step("focus record 3 at row 3", V);
-    click(&mut s, header_x(0), 0.0, Modifiers::NONE);
-    click(&mut s, header_x(0), 0.0, Modifiers::NONE);
+    s.click(header_x(0), 0.0, Modifiers::NONE);
+    s.click(header_x(0), 0.0, Modifiers::NONE);
     out += &s.step(
         "sort by column 0 descending: record 3 is last, the view follows it",
         V,
@@ -258,7 +241,7 @@ fn follow_focus_on_reorder_scrolls_to_the_focused_record() {
 fn select_all_and_shift_click_while_locating_do_not_use_the_old_position() {
     let mut s = records();
     s.frame(V);
-    click(&mut s, 5.0, 2.0, Modifiers::NONE);
+    s.click(5.0, 2.0, Modifiers::NONE);
     s.frame(V);
     sort_behind_the_grid(&mut s);
     s.input(|g| {
@@ -269,10 +252,10 @@ fn select_all_and_shift_click_while_locating_do_not_use_the_old_position() {
         "record 1 sorted to row 2 behind the Grid; down, then select all: the move is dropped",
         V,
     );
-    click(&mut s, 5.0, 1.0, Modifiers::NONE);
+    s.click(5.0, 1.0, Modifiers::NONE);
     out += &s.step("click record 3 at row 0", V);
     s.input(|g| g.notify(Axis::Rows, binnacle_core::ChangeNotice::Reordered));
-    click(&mut s, 12.0, 4.0, Modifiers::SHIFT);
+    s.click(12.0, 4.0, Modifiers::SHIFT);
     out += &s.step(
         "Reordered, then a shift-click before the answer: no known focus to stretch from, so the cell alone",
         V,
@@ -284,7 +267,7 @@ fn select_all_and_shift_click_while_locating_do_not_use_the_old_position() {
 fn only_the_answer_to_the_latest_locate_places_the_focus() {
     let mut s = records();
     s.frame(V);
-    click(&mut s, 5.0, 2.0, Modifiers::NONE);
+    s.click(5.0, 2.0, Modifiers::NONE);
     s.frame(V);
     sort_behind_the_grid(&mut s);
     // The host takes the Locate but has not answered when the order changes
@@ -312,7 +295,7 @@ fn only_the_answer_to_the_latest_locate_places_the_focus() {
 fn cancel_after_a_reorder_restores_the_focused_record_at_its_new_position() {
     let mut s = records();
     s.frame(V);
-    click(&mut s, 5.0, 2.0, Modifiers::NONE);
+    s.click(5.0, 2.0, Modifiers::NONE);
     let mut out = s.step("focus record 1 at row 1", V);
     sort_behind_the_grid(&mut s);
     s.input(|g| g.pointer(PointerEvent::down(12.0, 4.0)));
@@ -329,8 +312,8 @@ fn cancel_after_a_reorder_restores_the_focused_record_at_its_new_position() {
 fn a_press_held_through_a_reorder_cancels_to_the_state_after_it() {
     let mut s = records();
     s.frame(V);
-    click(&mut s, 5.0, 2.0, Modifiers::NONE);
-    click(&mut s, 12.0, 4.0, Modifiers::SHIFT);
+    s.click(5.0, 2.0, Modifiers::NONE);
+    s.click(12.0, 4.0, Modifiers::SHIFT);
     s.input(|g| g.pointer(PointerEvent::down(1.0, 3.0)));
     let mut out = s.step("range rows 1 to 3; press row header 2 and hold", V);
     sort_behind_the_grid(&mut s);
@@ -391,7 +374,7 @@ fn a_reorder_that_cancels_a_drag_withdraws_the_announcement_of_the_dragged_focus
     assert_eq!(snap.focus(Axis::Cols).and_then(|f| f.key), Some(last));
     assert_eq!(snap.mode(), Mode::DraggingSelection);
     s.input(|g| g.notify(Axis::Rows, ChangeNotice::Reordered));
-    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    let drained: Vec<Effect> = s.effects();
     assert!(
         !drained
             .iter()
@@ -443,7 +426,7 @@ fn a_sort_click_on_a_row_header_does_nothing() {
     let mut s = table();
     s.input(|g| g.set_header_click(Axis::Rows, binnacle_core::HeaderClick::Sort));
     s.frame(V);
-    click(&mut s, 1.0, 2.5, Modifiers::NONE);
+    s.click(1.0, 2.5, Modifiers::NONE);
     assert_eq!(s.pump(), vec![]);
     let snap = s.frame(V);
     assert_eq!(snap.requested_sort(), None);

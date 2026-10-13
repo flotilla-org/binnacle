@@ -277,7 +277,7 @@ fn steps(tc: &TestCase, mut check: impl FnMut(&binnacle_core::Snapshot, &Step)) 
             }
             moved |= !leaves;
         }
-        let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+        let drained: Vec<Effect> = s.effects();
         model.answered(counts);
         let snap = s.frame(viewport);
         focused = Axis::ALL.map(|a| snap.focus(a).map(|f| f.position));
@@ -415,7 +415,7 @@ fn activate_and_begin_edit_name_the_focused_cell(tc: TestCase) {
         g.action(action.clone());
         g.action(Action::TypeText(text.clone()));
     });
-    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    let drained: Vec<Effect> = s.effects();
     let mut expected = Vec::new();
     if let Some((r, c)) = cell {
         let (row, col) = (Key(r), Key(c));

@@ -23,13 +23,6 @@ const V: Viewport = Viewport {
     height: 5.0,
 };
 
-fn click(s: &mut Scenario<KeyedTable>, x: f32, y: f32, modifiers: Modifiers) {
-    s.input(|g| {
-        g.pointer(PointerEvent::down(x, y).modifiers(modifiers));
-        g.pointer(PointerEvent::up(x, y).modifiers(modifiers));
-    });
-}
-
 fn insert(s: &mut Scenario<KeyedTable>, axis: Axis, at: u64, n: u64) {
     let notice = s.source.insert(axis, at, n);
     s.input(|g| g.notify(axis, notice));
@@ -55,7 +48,7 @@ fn rows_inserted_above_the_view_move_the_anchor_and_focus_with_their_items() {
     s.frame(V);
     scroll_rows(&mut s, 5);
     s.frame(V);
-    click(&mut s, 12.0, 2.5, Modifiers::NONE);
+    s.click(12.0, 2.5, Modifiers::NONE);
     let mut out = s.step("scroll to row 5, click row 6 column 1", V);
     insert(&mut s, Axis::Rows, 3, 2);
     out += &s.step(
@@ -79,8 +72,8 @@ fn a_removed_focus_falls_to_the_item_that_took_its_place_and_removed_keys_leave_
         g.set_size(Axis::Cols, Key(1), 4.0);
     });
     s.frame(V);
-    click(&mut s, 5.0, 1.5, Modifiers::CTRL);
-    click(&mut s, 12.0, 4.5, Modifiers::CTRL);
+    s.click(5.0, 1.5, Modifiers::CTRL);
+    s.click(12.0, 4.5, Modifiers::CTRL);
     let mut out = s.step(
         "row 2 sized 2, column 1 sized 4; pick rows 0 and 2 (record 2), focus record 2 in column 1",
         V,
@@ -124,8 +117,8 @@ fn rows_removed_above_the_view_keep_it_steady_and_a_removed_anchor_row_gives_way
 fn the_range_shifts_and_shrinks_with_its_rows_and_goes_when_they_all_go() {
     let mut s = table();
     s.frame(V);
-    click(&mut s, 5.0, 1.5, Modifiers::NONE);
-    click(&mut s, 12.0, 4.5, Modifiers::SHIFT);
+    s.click(5.0, 1.5, Modifiers::NONE);
+    s.click(12.0, 4.5, Modifiers::SHIFT);
     let mut out = s.step("select rows 0..4, columns 0..2", V);
     insert(&mut s, Axis::Rows, 0, 1);
     out += &s.step("insert a row at 0: the range moves to rows 1..5", V);
@@ -163,7 +156,7 @@ fn removed_rows_shrink_a_whole_selection_and_select_all_stays() {
 fn an_insert_while_locating_asks_again_and_ignores_the_stale_answer() {
     let mut s = table();
     s.frame(V);
-    click(&mut s, 5.0, 2.5, Modifiers::NONE);
+    s.click(5.0, 2.5, Modifiers::NONE);
     s.frame(V);
     let notice = s.source.reverse(Axis::Rows);
     s.input(|g| g.notify(Axis::Rows, notice));
@@ -193,7 +186,7 @@ fn an_insert_cancels_a_selection_drag_and_restores_the_focus_from_before_the_pre
  {
     let mut s = table();
     s.frame(V);
-    click(&mut s, 5.0, 1.5, Modifiers::NONE);
+    s.click(5.0, 1.5, Modifiers::NONE);
     s.input(|g| {
         g.pointer(PointerEvent::down(12.0, 2.5));
         g.pointer(PointerEvent::moved(19.0, 4.5));
@@ -349,10 +342,6 @@ fn a_click_after_a_focus_move_in_the_same_frame_scrolls_nothing() {
     }
 }
 
-fn edit_effects(s: &mut Scenario<KeyedTable>) -> Vec<Effect> {
-    s.pump().into_iter().map(|e| e.effect).collect()
-}
-
 #[test]
 fn an_edit_follows_its_row_through_inserts_and_is_cancelled_when_its_row_or_column_is_removed() {
     // Removed in the Window, removed out of sight (found by Locate), and the
@@ -371,9 +360,9 @@ fn an_edit_follows_its_row_through_inserts_and_is_cancelled_when_its_row_or_colu
                 col: Key(1)
             }
         );
-        assert_eq!(edit_effects(&mut s), vec![], "{axis:?} {scroll}");
+        assert_eq!(s.effects(), vec![], "{axis:?} {scroll}");
         remove(&mut s, axis, at, 1);
-        let drained = edit_effects(&mut s);
+        let drained = s.effects();
         assert!(
             drained.contains(&Effect::EditCancelled {
                 row: Key(3),
@@ -395,7 +384,7 @@ fn an_edit_survives_the_removal_of_other_rows_in_and_out_of_sight() {
     scroll_rows(&mut s, 10);
     s.frame(V);
     remove(&mut s, Axis::Rows, 0, 1);
-    let drained = edit_effects(&mut s);
+    let drained = s.effects();
     assert!(
         !drained
             .iter()
@@ -427,7 +416,7 @@ fn cancelling_a_drag_never_restores_a_key_that_has_left() {
     });
     s.frame(v);
     s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
-    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    let drained: Vec<Effect> = s.effects();
     assert!(
         !drained.contains(&Effect::FocusChanged {
             row: Key(1),
@@ -464,7 +453,7 @@ const TALL: Viewport = Viewport {
 fn cancel_after_set_focus_during_a_press_keeps_the_focus_set() {
     let mut s = tall();
     s.frame(TALL);
-    click(&mut s, 3.0, 4.5, Modifiers::NONE);
+    s.click(3.0, 4.5, Modifiers::NONE);
     s.frame(TALL);
     s.source.axes[0].swap(3, 5);
     s.input(|g| {
@@ -494,7 +483,7 @@ fn cancel_after_set_focus_during_a_press_keeps_the_focus_set() {
 fn cancel_after_set_focus_to_missing_keys_during_a_press_never_announces_them() {
     let mut s = tall();
     s.frame(TALL);
-    click(&mut s, 3.0, 4.5, Modifiers::NONE);
+    s.click(3.0, 4.5, Modifiers::NONE);
     s.frame(TALL);
     s.pump();
     s.input(|g| {
@@ -506,7 +495,7 @@ fn cancel_after_set_focus_to_missing_keys_during_a_press_never_announces_them() 
         g.set_focus(Key(139), Key(2));
         g.action(Action::Cancel);
     });
-    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    let drained: Vec<Effect> = s.effects();
     assert!(
         !drained
             .iter()
@@ -530,7 +519,7 @@ fn cancel_after_a_reset_keeps_focus_below_the_count() {
     );
     let mut s = Scenario::new(grid, KeyedTable::new(8, 5));
     s.frame(TALL);
-    click(&mut s, 12.0, 2.5, Modifiers::NONE);
+    s.click(12.0, 2.5, Modifiers::NONE);
     s.frame(TALL);
     s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
     s.pump();

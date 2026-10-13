@@ -4,7 +4,7 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, EditEnd, Effect, FocusEnd, FocusStep, Grid, Key, Mode,
-    Modifiers, PointerEvent, SelectionUnit, SortColumn, SortSpec, Stamped, Viewport,
+    Modifiers, PointerEvent, SelectionUnit, SortColumn, SortSpec, Viewport,
 };
 use binnacle_testkit::{IdentityTable, PumpSource, RecordTable, Scenario, ScenarioSource};
 
@@ -20,10 +20,6 @@ fn table() -> Scenario<IdentityTable> {
         AxisConfig::new(20, 1.0).header(1.0),
         AxisConfig::new(3, 6.0).header(4.0).gap(1.0),
     )
-}
-
-fn effects(drained: Vec<Stamped>) -> Vec<Effect> {
-    drained.into_iter().map(|s| s.effect).collect()
 }
 
 fn down(s: &mut Scenario<IdentityTable>) {
@@ -42,11 +38,7 @@ fn activate_and_begin_edit_name_the_focused_cell() {
     let mut s = table();
     s.frame(V);
     s.input(|g| g.action(Action::Activate));
-    assert_eq!(
-        effects(s.pump()),
-        vec![],
-        "unplaced focus activates nothing"
-    );
+    assert_eq!(s.effects(), vec![], "unplaced focus activates nothing");
     down(&mut s);
     down(&mut s);
     s.frame(V);
@@ -57,7 +49,7 @@ fn activate_and_begin_edit_name_the_focused_cell() {
     });
     let cell = (Key(1), Key(0));
     assert_eq!(
-        effects(s.pump()),
+        s.effects(),
         vec![
             Effect::Activated {
                 row: cell.0,
@@ -91,11 +83,11 @@ fn a_plain_double_click_on_a_cell_activates_it() {
     s.frame(V);
     // Row 2 (y 3), column 1 (x 11..17).
     press(&mut s, 12.0, 3.0, Modifiers::NONE, 1);
-    let first = effects(s.pump());
+    let first = s.effects();
     assert!(!first.iter().any(|e| matches!(e, Effect::Activated { .. })));
     press(&mut s, 12.0, 3.0, Modifiers::NONE, 2);
     assert_eq!(
-        effects(s.pump()),
+        s.effects(),
         vec![Effect::Activated {
             row: Key(2),
             col: Key(1)
@@ -107,7 +99,7 @@ fn a_plain_double_click_on_a_cell_activates_it() {
     press(&mut s, 10.5, 3.0, Modifiers::NONE, 2);
     press(&mut s, 12.0, 3.0, Modifiers::SHIFT, 2);
     press(&mut s, 12.0, 3.0, Modifiers::CTRL, 2);
-    let rest = effects(s.pump());
+    let rest = s.effects();
     assert!(
         !rest.iter().any(|e| matches!(e, Effect::Activated { .. })),
         "{rest:?}"
@@ -147,7 +139,7 @@ fn the_grid_cancels_an_edit_on_cancel_or_a_press_and_says_so() {
     s.frame(V);
     // A double-click whose release comes after the host started editing.
     s.input(|g| g.pointer(PointerEvent::down(12.0, 3.0).clicks(2)));
-    assert!(effects(s.pump()).contains(&Effect::Activated {
+    assert!(s.effects().contains(&Effect::Activated {
         row: Key(2),
         col: Key(1)
     }));
@@ -167,7 +159,7 @@ fn the_grid_cancels_an_edit_on_cancel_or_a_press_and_says_so() {
     assert!(!snap.capturing(), "an edit holds no button");
     s.input(|g| g.action(Action::Cancel));
     assert_eq!(
-        effects(s.pump()),
+        s.effects(),
         vec![Effect::EditCancelled {
             row: Key(2),
             col: Key(1)
@@ -175,15 +167,11 @@ fn the_grid_cancels_an_edit_on_cancel_or_a_press_and_says_so() {
     );
     assert_eq!(s.frame(V).mode(), Mode::Idle);
     s.input(|g| g.action(Action::Cancel));
-    assert_eq!(
-        effects(s.pump()),
-        vec![],
-        "Cancel with no edit sends nothing"
-    );
+    assert_eq!(s.effects(), vec![], "Cancel with no edit sends nothing");
 
     s.input(|g| g.edit_started(Key(2), Key(1)));
     press(&mut s, 5.0, 4.0, Modifiers::NONE, 1);
-    let drained = effects(s.pump());
+    let drained = s.effects();
     assert_eq!(
         drained[0],
         Effect::EditCancelled {
@@ -412,7 +400,7 @@ fn a_located_position_past_the_count_counts_as_the_edited_key_leaving() {
         g.edit_started(Key(1), Key(1));
         g.notify(Axis::Rows, binnacle_core::ChangeNotice::Reset(20));
     });
-    assert!(effects(s.pump()).contains(&Effect::EditCancelled {
+    assert!(s.effects().contains(&Effect::EditCancelled {
         row: Key(1),
         col: Key(1)
     }));

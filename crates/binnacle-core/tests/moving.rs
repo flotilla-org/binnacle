@@ -22,10 +22,6 @@ const V: Viewport = Viewport {
     height: 6.0,
 };
 
-fn effects(s: &mut Scenario<IdentityTable>) -> Vec<Effect> {
-    s.pump().into_iter().map(|e| e.effect).collect()
-}
-
 #[test]
 fn dragging_a_column_header_moves_it_with_a_drop_indicator() {
     let mut s = table();
@@ -90,7 +86,7 @@ fn cancel_ends_the_move_and_the_release_requests_nothing() {
     assert_eq!(snap.drop_indicator(), None);
     assert_eq!(snap.cursor(), Cursor::Default);
     s.input(|g| g.pointer(PointerEvent::up(30.0, 0.5)));
-    assert_eq!(effects(&mut s), vec![]);
+    assert_eq!(s.effects(), vec![]);
 }
 
 #[test]
@@ -104,7 +100,7 @@ fn a_drop_that_leaves_the_order_unchanged_requests_nothing() {
             g.pointer(PointerEvent::moved(x, 0.5));
             g.pointer(PointerEvent::up(x, 0.5));
         });
-        assert_eq!(effects(&mut s), vec![]);
+        assert_eq!(s.effects(), vec![]);
     }
 }
 
@@ -119,7 +115,7 @@ fn a_header_drag_is_no_click_and_a_border_drag_resizes_instead() {
         g.pointer(PointerEvent::up(22.0, 0.5));
     });
     assert_eq!(
-        effects(&mut s),
+        s.effects(),
         vec![Effect::MoveRequested {
             axis: Axis::Cols,
             keys: vec![Key(0)],
@@ -133,7 +129,7 @@ fn a_header_drag_is_no_click_and_a_border_drag_resizes_instead() {
     });
     assert!(matches!(s.frame(V).mode(), Mode::Resizing { .. }));
     s.input(|g| g.pointer(PointerEvent::up(22.0, 0.5)));
-    assert!(matches!(effects(&mut s)[..], [Effect::SizeChanged { .. }]));
+    assert!(matches!(s.effects()[..], [Effect::SizeChanged { .. }]));
 }
 
 #[test]
@@ -146,7 +142,7 @@ fn row_header_drags_move_nothing() {
     });
     assert_eq!(s.frame(V).mode(), Mode::Idle);
     s.input(|g| g.pointer(PointerEvent::up(1.0, 5.5)));
-    assert_eq!(effects(&mut s), vec![]);
+    assert_eq!(s.effects(), vec![]);
 }
 
 #[test]
@@ -170,7 +166,7 @@ fn dragging_a_selected_column_moves_every_selected_column() {
     assert_eq!(snap.moving_keys(), &[Key(1), Key(2)]);
     s.input(|g| g.pointer(PointerEvent::up(37.0, 0.5)));
     assert_eq!(
-        effects(&mut s),
+        s.effects(),
         vec![Effect::MoveRequested {
             axis: Axis::Cols,
             keys: vec![Key(1), Key(2)],
@@ -184,7 +180,7 @@ fn dragging_a_selected_column_moves_every_selected_column() {
         g.pointer(PointerEvent::up(37.0, 0.5));
     });
     assert_eq!(
-        effects(&mut s),
+        s.effects(),
         vec![Effect::MoveRequested {
             axis: Axis::Cols,
             keys: vec![Key(0)],
@@ -269,7 +265,7 @@ fn a_move_request_drains_before_focus_and_selection_news() {
         g.pointer(PointerEvent::moved(30.0, 0.5));
         g.pointer(PointerEvent::up(30.0, 0.5));
     });
-    let drained = effects(&mut s);
+    let drained = s.effects();
     assert!(
         matches!(
             drained[..],

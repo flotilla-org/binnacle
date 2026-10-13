@@ -104,7 +104,7 @@ fn focus_changed_is_sent_at_most_once_per_drain_naming_the_latest_cell() {
         g.action(Action::TypeText("a".into()));
         g.action(step(Axis::Cols, FocusStep::Item, true));
     });
-    let drained: Vec<Effect> = s.pump().into_iter().map(|e| e.effect).collect();
+    let drained: Vec<Effect> = s.effects();
     assert_eq!(
         drained,
         vec![
@@ -118,7 +118,7 @@ fn focus_changed_is_sent_at_most_once_per_drain_naming_the_latest_cell() {
     s.input(|g| g.action(step(Axis::Rows, FocusStep::Item, false)));
     s.input(|g| g.action(step(Axis::Rows, FocusStep::Item, true)));
     assert_eq!(
-        s.pump().into_iter().map(|e| e.effect).collect::<Vec<_>>(),
+        s.effects(),
         vec![],
         "back where the host last heard it was: nothing to report"
     );

@@ -20,10 +20,6 @@ const V: Viewport = Viewport {
     height: 6.0,
 };
 
-fn effects(s: &mut Scenario<IdentityTable>) -> Vec<Effect> {
-    s.pump().into_iter().map(|e| e.effect).collect()
-}
-
 #[test]
 fn dragging_a_column_border_resizes_the_column_and_reports_the_size_on_release() {
     let mut s = table();
@@ -78,7 +74,7 @@ fn cancel_restores_the_start_size_and_reports_nothing() {
         g.pointer(PointerEvent::moved(20.5, 0.5));
         g.pointer(PointerEvent::up(20.5, 0.5));
     });
-    assert_eq!(effects(&mut s), vec![]);
+    assert_eq!(s.effects(), vec![]);
     assert_eq!(s.grid.size_override(Axis::Cols, Key(0)), None);
     let snap = s.frame(V);
     assert_eq!(snap.mode(), Mode::Idle);
@@ -96,7 +92,7 @@ fn a_resize_that_ends_where_it_started_reports_nothing() {
         g.pointer(PointerEvent::moved(10.5, 0.5));
         g.pointer(PointerEvent::up(10.5, 0.5));
     });
-    assert_eq!(effects(&mut s), vec![]);
+    assert_eq!(s.effects(), vec![]);
     assert_eq!(s.grid.size_override(Axis::Cols, Key(0)), None);
 }
 
@@ -110,7 +106,7 @@ fn a_drag_never_shrinks_an_item_below_one_unit() {
         g.pointer(PointerEvent::up(-40.0, 0.5));
     });
     assert_eq!(
-        effects(&mut s),
+        s.effects(),
         vec![Effect::SizeChanged {
             axis: Axis::Cols,
             key: Key(0),
@@ -129,7 +125,7 @@ fn set_size_restores_a_saved_size() {
         g.pointer(PointerEvent::moved(12.5, 0.5));
         g.pointer(PointerEvent::up(12.5, 0.5));
     });
-    let saved = effects(&mut s);
+    let saved = s.effects();
     let [Effect::SizeChanged { axis, key, size }] = saved[..] else {
         panic!("{saved:?}");
     };
@@ -149,7 +145,7 @@ fn double_clicking_a_border_requests_auto_size() {
         g.pointer(PointerEvent::down(17.5, 0.5).clicks(2));
     });
     assert_eq!(
-        effects(&mut s),
+        s.effects(),
         vec![Effect::AutoSizeRequested {
             axis: Axis::Cols,
             key: Key(1)
@@ -238,14 +234,14 @@ fn dragging_back_to_a_restored_size_reports_nothing_and_keeps_it() {
         g.pointer(PointerEvent::moved(12.5, 0.5));
         g.pointer(PointerEvent::up(12.5, 0.5));
     });
-    assert_eq!(effects(&mut s), vec![]);
+    assert_eq!(s.effects(), vec![]);
     assert_eq!(s.grid.size_override(Axis::Cols, Key(0)), Some(8.0));
     s.input(|g| {
         g.pointer(PointerEvent::down(12.5, 0.5));
         g.pointer(PointerEvent::moved(15.5, 0.5));
         g.action(Action::Cancel);
     });
-    assert_eq!(effects(&mut s), vec![]);
+    assert_eq!(s.effects(), vec![]);
     assert_eq!(s.grid.size_override(Axis::Cols, Key(0)), Some(8.0));
 }
 
@@ -261,7 +257,7 @@ fn a_press_while_resizing_ends_the_resize_where_it_is() {
         g.pointer(PointerEvent::down(20.0, 3.0));
     });
     assert_eq!(
-        effects(&mut s),
+        s.effects(),
         vec![
             Effect::SizeChanged {
                 axis: Axis::Cols,

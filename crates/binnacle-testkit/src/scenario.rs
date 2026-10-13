@@ -3,8 +3,8 @@ use std::fmt::Write;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, AxisConfig, ChangeNotice, Grid, Key, Located, Position, Snapshot, SortSpec, Stamped,
-    Viewport,
+    Axis, AxisConfig, ChangeNotice, Effect, Grid, Key, Located, Modifiers, PointerEvent, Position,
+    Snapshot, SortSpec, Stamped, Viewport,
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource};
 
@@ -284,6 +284,20 @@ impl<S: ScenarioSource> Scenario<S> {
             drained.push(stamped);
         });
         drained
+    }
+
+    /// Drains the Effect queue as [`Scenario::pump`] does; returns the
+    /// Effects without their stamps.
+    pub fn effects(&mut self) -> Vec<Effect> {
+        self.pump().into_iter().map(|e| e.effect).collect()
+    }
+
+    /// A press and release at `(x, y)` with `modifiers`.
+    pub fn click(&mut self, x: f32, y: f32, modifiers: Modifiers) {
+        self.input(|g| {
+            g.pointer(PointerEvent::down(x, y).modifiers(modifiers));
+            g.pointer(PointerEvent::up(x, y).modifiers(modifiers));
+        });
     }
 
     /// Runs one host frame: pump, `begin_frame`, fill each requested Window from

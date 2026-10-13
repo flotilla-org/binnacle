@@ -26,13 +26,6 @@ fn records() -> Scenario<RecordTable> {
     Scenario::new(grid, RecordTable::new(rows, 3, [0]))
 }
 
-fn click(s: &mut Scenario<RecordTable>, x: f32, y: f32, modifiers: Modifiers) {
-    s.input(|g| {
-        g.pointer(PointerEvent::down(x, y).modifiers(modifiers));
-        g.pointer(PointerEvent::up(x, y).modifiers(modifiers));
-    });
-}
-
 fn filter(s: &mut Scenario<RecordTable>, keep: impl Fn(&Vec<Option<i64>>) -> bool + 'static) {
     let notice = s.source.filter(keep);
     s.input(|g| g.notify(Axis::Rows, notice));
@@ -46,8 +39,8 @@ fn a_filtered_out_focus_moves_to_the_nearest_survivor_and_leaves_the_picks() {
         g.set_size(Axis::Rows, Key(0), 2.0);
         g.set_size(Axis::Cols, Key(0), 5.0);
     });
-    click(&mut s, 5.0, 4.0, Modifiers::CTRL);
-    click(&mut s, 12.0, 3.0, Modifiers::CTRL);
+    s.click(5.0, 4.0, Modifiers::CTRL);
+    s.click(12.0, 3.0, Modifiers::CTRL);
     let mut out = s.step(
         "row 0 sized 2, column 0 sized 5; pick records 2 and 1, focus record 1",
         V,
@@ -79,7 +72,7 @@ fn a_sorted_and_filtered_focus_lands_on_the_nearest_survivor_in_sort_order() {
         .unwrap();
     s.input(|g| g.notify(Axis::Rows, notice));
     // Sorted values 1 2 3 4 5 7 8 9 are records 3 5 1 7 0 6 2 4.
-    click(&mut s, 5.0, 3.0, Modifiers::NONE);
+    s.click(5.0, 3.0, Modifiers::NONE);
     let mut out = s.step("sort by column 0; focus value 3 (record 1) at row 2", V);
     filter(&mut s, |r| matches!(r[0], Some(1 | 2 | 7 | 8 | 9)));
     out += &s.step(
@@ -142,7 +135,7 @@ fn a_row_header_press_whose_row_a_filter_removes_selects_nothing_on_release() {
 fn cancel_after_a_departed_key_is_located_keeps_focus_on_the_suggestion() {
     let mut s = records();
     s.frame(V);
-    click(&mut s, 5.0, 2.0, Modifiers::CTRL);
+    s.click(5.0, 2.0, Modifiers::CTRL);
     let mut out = s.step("pick and focus record 1 (value 3)", V);
     // Filter it out behind the Grid, then press a row header before the
     // pump answers `Locate`: the press saves record 1 as the focus to restore.
