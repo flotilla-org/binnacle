@@ -11,22 +11,23 @@ expression: styled(&buf)
 8       …      …      …      …
 9       …      …      …      …
 
-aaabbbbcbbbbbdcbbbbbdceeeeeecb
-cccffffaffffffaffffffaffffffaf
-cccggggggggggggggggggggggggggg
-ccchhhhahhhhhhahhhhhhahhhhhhah
-cccggggghhhhhhghhhhhhggggggggg
-cccffffahhhhhhaiiiiiiaffffffaf
-cccgggggjggggggjggggggjggggggj
-cccffffacfffffacfffffacfffffac
+aaabbbbcbbbbbdceeeeeecffffffcb
+cccggggaggggggaggggggaggggggag
+ccchhhhhhhhhhhhhhhhhhhhhhhhhhh
+ccciiiiaiiiiiiaiiiiiiaiiiiiiai
+ccchhhhhiiiiiihiiiiiihhhhhhhhh
+cccggggaiiiiiiajjjjjjaggggggag
+ccchhhhhkhhhhhhkhhhhhhkhhhhhhk
+cccggggacgggggacgggggacgggggac
 
 a: fg Reset bg Reset
 b: fg LightBlue bg Reset BOLD
 c: fg DarkGray bg Reset
 d: fg Gray bg Reset BOLD
-e: fg LightBlue bg Reset BOLD | UNDERLINED
-f: fg Gray bg Reset
-g: fg Gray bg Black
-h: fg Gray bg DarkGray
-i: fg Black bg LightBlue
-j: fg DarkGray bg Black
+e: fg Gray bg Reset DIM
+f: fg LightBlue bg Reset BOLD | UNDERLINED
+g: fg Gray bg Reset
+h: fg Gray bg Black
+i: fg Gray bg DarkGray
+j: fg Black bg LightBlue
+k: fg DarkGray bg Black

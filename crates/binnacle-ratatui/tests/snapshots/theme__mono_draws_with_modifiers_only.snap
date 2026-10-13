@@ -12,7 +12,7 @@ expression: out
 8       …      …      …      …
 9       …      …      …      …
 
-aaabbbbcbbbbbbcbbbbbbcddddddcb
+aaabbbbcbbbbbbccccccccddddddcb
 cccaaaaaaaaaaaaaaaaaaaaaaaaaaa
 cccaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ccceeeeaeeeeeeaeeeeeeaeeeeeeae
@@ -38,20 +38,20 @@ f: fg Reset bg Reset REVERSED
 8       …      …      …      …
 9       …      …      …      …
 
-aaabbbbcbbbbbbcbbbbbbcddddddcb
-eeeaaaaaaaaaaaaaaaaaaaaaaaaaaa
-eeeccccccccccccccccccccccccccc
-eeeffffaffffffaffffffaffffffaf
-eeecccccggggggcggggggccccccccc
-eeeaaaaaffffffahhhhhhaaaaaaaaa
-eeeccccccccccccccccccccccccccc
-eeeaaaaacaaaaaacaaaaaacaaaaaac
+aaabbbbcbbbbbbcddddddceeeeeecb
+dddaaaaaaaaaaaaaaaaaaaaaaaaaaa
+dddccccccccccccccccccccccccccc
+dddffffaffffffaffffffaffffffaf
+dddcccccggggggcggggggccccccccc
+dddaaaaaffffffahhhhhhaaaaaaaaa
+dddccccccccccccccccccccccccccc
+dddaaaaacaaaaaacaaaaaacaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD | REVERSED
 c: fg Reset bg Reset DIM
-d: fg Reset bg Reset BOLD | UNDERLINED | REVERSED
-e: fg Reset bg Reset DIM | REVERSED
+d: fg Reset bg Reset DIM | REVERSED
+e: fg Reset bg Reset BOLD | UNDERLINED | REVERSED
 f: fg Reset bg Reset UNDERLINED
 g: fg Reset bg Reset DIM | UNDERLINED
 h: fg Reset bg Reset REVERSED

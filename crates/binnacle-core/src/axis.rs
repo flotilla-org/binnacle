@@ -218,17 +218,28 @@ impl AxisState {
     /// Re-applies the anchor's bounds after the viewport or sizes changed. The
     /// anchor keeps its Position: an offset its item no longer reaches is
     /// pulled back inside the item, and only the end clamp moves it further. An
-    /// anchor at the end stays at the end.
+    /// anchor at the end stays at the end. While the Window does not hold the
+    /// anchor's item (a notice emptied it) its size is only the default, so
+    /// the offset is kept until the Window brings the real one.
     pub fn clamp_anchor(&mut self) -> bool {
         let count = self.measure.count();
         let position = self.anchor.position.min(count.saturating_sub(1));
-        let stride = self.measure.size_at(position) + self.measure.gap();
-        let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
         let max = self.max_anchor();
-        let to = if self.at_end || (position, offset) > (max.position, max.offset) {
+        let to = if self.at_end {
             max
+        } else if !self.window_covers(&(position..position + 1)) {
+            ScrollAnchor {
+                position,
+                ..self.anchor
+            }
         } else {
-            ScrollAnchor { position, offset }
+            let stride = self.measure.size_at(position) + self.measure.gap();
+            let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
+            if (position, offset) > (max.position, max.offset) {
+                max
+            } else {
+                ScrollAnchor { position, offset }
+            }
         };
         self.settle(to, max)
     }
