@@ -1,0 +1,233 @@
+//! Themes: the palette [`render_with`](crate::render_with) draws in, and the
+//! colour capability it degrades RGB colours for.
+
+use ratatui::style::{Color, Modifier, Style};
+
+/// The styles the table is drawn in. Most are patched over another: the
+/// hovered header over the header (or row number), the zebra stripe over the
+/// body, selection, picks and focus over a cell, the sort marker and the
+/// loading marker over where they sit. Build your own by overriding fields
+/// of a preset: `Theme { zebra: Some(stripe), ..Theme::classic() }`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Theme {
+    pub name: &'static str,
+    /// Column headers.
+    pub header: Style,
+    /// The header (or row number) under the pointer.
+    pub header_hovered: Style,
+    /// Row numbers, down the left band.
+    pub row_number: Style,
+    pub body: Style,
+    /// Every other row, by Position; `None` leaves rows unstriped.
+    pub zebra: Option<Style>,
+    pub focus: Style,
+    pub selection: Style,
+    /// Cells in a picked row.
+    pub picks: Style,
+    pub sort_marker: Style,
+    /// The lines a resize grabs, in the header band's Gaps.
+    pub handle: Style,
+    /// The line a resize in progress draws across the area.
+    pub guide: Style,
+    pub drop_indicator: Style,
+    pub border: Style,
+    /// The `…` shown where a Key is not filled yet.
+    pub loading: Style,
+    pub shimmer_base: Color,
+    pub shimmer_highlight: Color,
+    /// Draws headers and row numbers reversed, so the bands stand out.
+    pub invert_headers: bool,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Theme::classic()
+    }
+}
+
+impl Theme {
+    /// The v1 look: bold headers, a reversed focus, a dark grey selection.
+    pub fn classic() -> Theme {
+        let none = Style::default();
+        Theme {
+            name: "classic",
+            header: none.add_modifier(Modifier::BOLD),
+            header_hovered: none.add_modifier(Modifier::UNDERLINED),
+            row_number: none.add_modifier(Modifier::BOLD),
+            body: none,
+            zebra: None,
+            focus: none.add_modifier(Modifier::REVERSED),
+            selection: none.bg(Color::DarkGray),
+            picks: none.bg(Color::DarkGray),
+            sort_marker: none,
+            handle: none.fg(Color::DarkGray),
+            guide: none.fg(Color::Yellow),
+            drop_indicator: none.fg(Color::Cyan),
+            border: none.fg(Color::DarkGray),
+            loading: none,
+            shimmer_base: Color::Rgb(140, 130, 40),
+            shimmer_highlight: Color::Rgb(255, 240, 120),
+            invert_headers: false,
+        }
+    }
+
+    /// Catppuccin's Mocha flavour, with zebra stripes.
+    pub fn catppuccin_mocha() -> Theme {
+        let none = Style::default();
+        Theme {
+            name: "catppuccin_mocha",
+            header: none.fg(mocha::BLUE).add_modifier(Modifier::BOLD),
+            header_hovered: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::UNDERLINED),
+            row_number: none.fg(mocha::OVERLAY0),
+            body: none.fg(mocha::TEXT),
+            zebra: Some(none.bg(mocha::MANTLE)),
+            focus: none.fg(mocha::CRUST).bg(mocha::BLUE),
+            selection: none.bg(mocha::SURFACE1),
+            picks: none.fg(mocha::MAUVE).bg(mocha::SURFACE1),
+            sort_marker: none.fg(mocha::PEACH),
+            handle: none.fg(mocha::SURFACE2),
+            guide: none.fg(mocha::YELLOW),
+            drop_indicator: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::BOLD),
+            border: none.fg(mocha::SURFACE1),
+            loading: none.fg(mocha::OVERLAY0),
+            shimmer_base: mocha::PEACH,
+            shimmer_highlight: mocha::YELLOW,
+            invert_headers: false,
+        }
+    }
+
+    /// Modifiers only, for `NO_COLOR` and monochrome terminals.
+    pub fn mono() -> Theme {
+        let none = Style::default();
+        Theme {
+            name: "mono",
+            header: none.add_modifier(Modifier::BOLD),
+            header_hovered: none.add_modifier(Modifier::UNDERLINED),
+            row_number: none.add_modifier(Modifier::DIM),
+            body: none,
+            zebra: None,
+            focus: none.add_modifier(Modifier::REVERSED),
+            selection: none.add_modifier(Modifier::UNDERLINED),
+            picks: none.add_modifier(Modifier::UNDERLINED),
+            sort_marker: none.add_modifier(Modifier::BOLD),
+            handle: none.add_modifier(Modifier::DIM),
+            guide: none.add_modifier(Modifier::BOLD),
+            drop_indicator: none.add_modifier(Modifier::BOLD),
+            border: none.add_modifier(Modifier::DIM),
+            loading: none.add_modifier(Modifier::DIM),
+            shimmer_base: Color::Reset,
+            shimmer_highlight: Color::Reset,
+            invert_headers: false,
+        }
+    }
+
+    /// Every preset, in the order a host cycles them.
+    pub fn presets() -> [Theme; 3] {
+        [Theme::classic(), Theme::catppuccin_mocha(), Theme::mono()]
+    }
+
+    /// This Theme with its RGB colours replaced by what `colors` can show.
+    pub(crate) fn for_colors(&self, colors: ColorSupport) -> Theme {
+        if colors == ColorSupport::TrueColor {
+            return self.clone();
+        }
+        let s = |style: Style| Style {
+            fg: style.fg.map(nearest_ansi),
+            bg: style.bg.map(nearest_ansi),
+            underline_color: style.underline_color.map(nearest_ansi),
+            ..style
+        };
+        Theme {
+            header: s(self.header),
+            header_hovered: s(self.header_hovered),
+            row_number: s(self.row_number),
+            body: s(self.body),
+            zebra: self.zebra.map(s),
+            focus: s(self.focus),
+            selection: s(self.selection),
+            picks: s(self.picks),
+            sort_marker: s(self.sort_marker),
+            handle: s(self.handle),
+            guide: s(self.guide),
+            drop_indicator: s(self.drop_indicator),
+            border: s(self.border),
+            loading: s(self.loading),
+            shimmer_base: nearest_ansi(self.shimmer_base),
+            shimmer_highlight: nearest_ansi(self.shimmer_highlight),
+            ..self.clone()
+        }
+    }
+}
+
+/// What colours the terminal can show. The host decides (see
+/// [`ColorSupport::from_colorterm`]); the adapter never reads the environment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorSupport {
+    /// Full 24-bit RGB.
+    #[default]
+    TrueColor,
+    /// The 16 ANSI colours (and the indexed palette, which passes through).
+    Ansi16,
+}
+
+impl ColorSupport {
+    /// The capability a `COLORTERM` value announces: `truecolor` and `24bit`
+    /// mean full RGB.
+    pub fn from_colorterm(colorterm: Option<&str>) -> ColorSupport {
+        match colorterm {
+            Some("truecolor" | "24bit") => ColorSupport::TrueColor,
+            _ => ColorSupport::Ansi16,
+        }
+    }
+}
+
+/// The 16 ANSI colours with xterm's default RGB values.
+const ANSI: [(Color, (u8, u8, u8)); 16] = [
+    (Color::Black, (0, 0, 0)),
+    (Color::Red, (205, 0, 0)),
+    (Color::Green, (0, 205, 0)),
+    (Color::Yellow, (205, 205, 0)),
+    (Color::Blue, (0, 0, 238)),
+    (Color::Magenta, (205, 0, 205)),
+    (Color::Cyan, (0, 205, 205)),
+    (Color::Gray, (229, 229, 229)),
+    (Color::DarkGray, (127, 127, 127)),
+    (Color::LightRed, (255, 0, 0)),
+    (Color::LightGreen, (0, 255, 0)),
+    (Color::LightYellow, (255, 255, 0)),
+    (Color::LightBlue, (92, 92, 255)),
+    (Color::LightMagenta, (255, 0, 255)),
+    (Color::LightCyan, (0, 255, 255)),
+    (Color::White, (255, 255, 255)),
+];
+
+/// The ANSI colour nearest an RGB colour; other colours are kept.
+fn nearest_ansi(color: Color) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    let distance = |(ar, ag, ab): (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+        d(ar, r) + d(ag, g) + d(ab, b)
+    };
+    ANSI.iter()
+        .min_by_key(|(_, rgb)| distance(*rgb))
+        .map_or(color, |&(ansi, _)| ansi)
+}
+
+/// The Catppuccin Mocha colours the preset uses.
+mod mocha {
+    use ratatui::style::Color;
+
+    pub const CRUST: Color = Color::Rgb(17, 17, 27);
+    pub const MANTLE: Color = Color::Rgb(24, 24, 37);
+    pub const SURFACE1: Color = Color::Rgb(69, 71, 90);
+    pub const SURFACE2: Color = Color::Rgb(88, 91, 112);
+    pub const OVERLAY0: Color = Color::Rgb(108, 112, 134);
+    pub const TEXT: Color = Color::Rgb(205, 214, 244);
+    pub const MAUVE: Color = Color::Rgb(203, 166, 247);
+    pub const PEACH: Color = Color::Rgb(250, 179, 135);
+    pub const YELLOW: Color = Color::Rgb(249, 226, 175);
+    pub const SAPPHIRE: Color = Color::Rgb(116, 199, 236);
+    pub const BLUE: Color = Color::Rgb(137, 180, 250);
+}

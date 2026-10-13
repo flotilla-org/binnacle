@@ -1,14 +1,18 @@
 //! binnacle-ratatui: the reference ratatui adapter for the binnacle Grid.
 //!
 //! Sizes are whole terminal cells. [`render`] draws a Snapshot into a ratatui
-//! `Buffer`; the host supplies the text through [`Content`], since the Grid
+//! `Buffer` in a [`Theme`]'s palette; the host supplies the text through [`Content`], since the Grid
 //! never reads cell values.
 
+mod context;
 mod keymap;
 mod mouse;
+mod theme;
 
+pub use context::{BorderStyle, RenderContext};
 pub use keymap::Keymap;
 pub use mouse::Mouse;
+pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
 use ratatui::buffer::Buffer;
@@ -40,27 +44,44 @@ pub trait Content {
     fn column_header(&self, col: Key) -> String;
 }
 
-/// Draws `snapshot` into `area` of `buf`: column headers along the top band,
-/// row numbers (Position plus one) down the left band, then each cell. Text is
-/// clipped to its item, to `area`, and for cells to the body past both header
-/// bands, so a part-scrolled item shows only its visible part. The focused
-/// cell is drawn reversed, other selected cells on a dark grey background,
-/// and the header under the pointer underlined. Header Gaps are drawn as
-/// lines, the handles a resize drag grabs, and a resize in progress draws its
-/// guide line across the area in yellow, a header move its drop indicator in
-/// cyan. A sorted column's header ends in its direction (and place, in a
-/// multi-column sort), and `~` marks a sort change still pending.
+/// Draws `snapshot` into `area` of `buf` in the `classic` Theme with
+/// header-only lines: [`render_with`] for a host that picks neither.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
+    let theme = Theme::classic();
+    render_with(snapshot, content, &RenderContext::new(&theme), area, buf);
+}
+
+/// Draws `snapshot` into `area` of `buf` as `ctx` says: column headers along
+/// the top band, row numbers (Position plus one) down the left band, then
+/// each cell. Text is clipped to its item, to `area`, and for cells to the
+/// body past both header bands, so a part-scrolled item shows only its
+/// visible part. Header Gaps are drawn as lines, the handles a resize drag
+/// grabs; a resize in progress draws its guide line across the area, a
+/// header move its drop indicator. A sorted column's header ends in its
+/// direction (and place, in a multi-column sort), and `~` marks a sort
+/// change still pending. Every style comes from the Theme.
+pub fn render_with(
+    snapshot: &Snapshot,
+    content: &impl Content,
+    ctx: &RenderContext,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let theme = &ctx.theme.for_colors(ctx.colors);
     let area = area.intersection(buf.area);
-    let header = Style::default().add_modifier(Modifier::BOLD);
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
-    let header_style = |hovered| {
-        if hovered {
-            header.add_modifier(Modifier::UNDERLINED)
+    let band = |style: Style, hovered: bool| {
+        let style = if theme.invert_headers {
+            style.add_modifier(Modifier::REVERSED)
         } else {
-            header
+            style
+        };
+        if hovered {
+            style.patch(theme.header_hovered)
+        } else {
+            style
         }
     };
     let multi = snapshot.applied_sort().columns().len() > 1;
@@ -73,17 +94,26 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
-        let text = if marker.is_empty() {
-            pad(label)
+        let style = band(theme.header, h.hovered);
+        let clip = (left, end, 0.0);
+        if marker.is_empty() {
+            put(buf, area, (start, 0.0), clip, &pad(label), style);
         } else {
-            format!("{label:<room$.room$}{marker}")
-        };
-        let style = header_style(h.hovered);
-        put(buf, area, (start, 0.0), (left, end, 0.0), &text, style);
+            let label = format!("{label:<room$.room$}");
+            put(buf, area, (start, 0.0), clip, &label, style);
+            let at = start + room as f32;
+            let style = style.patch(theme.sort_marker);
+            put(buf, area, (at, 0.0), clip, &marker, style);
+        }
+        if h.key.is_none() {
+            let style = style.patch(theme.loading);
+            put(buf, area, (start, 0.0), clip, LOADING, style);
+        }
     }
+    let picked = snapshot.picked();
     for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
         let number = r.position.saturating_add(1).to_string();
-        let style = header_style(h.hovered);
+        let style = band(theme.row_number, h.hovered);
         put(
             buf,
             area,
@@ -92,22 +122,35 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
             &pad(number),
             style,
         );
-        for c in snapshot.cols() {
-            let mut text = match (r.key, c.key) {
-                (Some(row), Some(col)) => content.cell(row, col),
-                _ => LOADING.to_string(),
-            };
-            let state = snapshot.cell_state(r, c);
-            let mut style = Style::default();
-            if state.focused {
-                text = pad(text);
-                style = style.add_modifier(Modifier::REVERSED);
-            } else if state.selected {
-                text = pad(text);
-                style = style.bg(Color::DarkGray);
+        let mut row_style = theme.body;
+        if let Some(zebra) = theme.zebra.filter(|_| r.position % 2 == 1) {
+            row_style = row_style.patch(zebra);
+            let blank = " ".repeat(usize::from(area.width));
+            for y in cell(r.offset.max(top))..cell(r.end()) {
+                let clip = (left, f32::INFINITY, top);
+                put(buf, area, (0.0, y as f32), clip, &blank, row_style);
             }
+        }
+        let in_picked = r.key.is_some_and(|k| picked.contains(&k));
+        for c in snapshot.cols() {
+            let key = r.key.zip(c.key);
+            let text = key.map_or_else(|| LOADING.to_string(), |(row, col)| content.cell(row, col));
+            let state = snapshot.cell_state(r, c);
+            let style = if state.focused {
+                row_style.patch(theme.focus)
+            } else if in_picked {
+                row_style.patch(theme.picks)
+            } else if state.selected {
+                row_style.patch(theme.selection)
+            } else {
+                row_style
+            };
             let clip = (left, c.end(), top);
-            put(buf, area, (c.offset, r.offset), clip, &text, style);
+            put(buf, area, (c.offset, r.offset), clip, &pad(text), style);
+            if key.is_none() {
+                let style = style.patch(theme.loading);
+                put(buf, area, (c.offset, r.offset), clip, LOADING, style);
+            }
         }
     }
     let mut mark = |x: i64, y: i64, ch: char, style: Style| {
@@ -118,23 +161,22 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
             }
         }
     };
-    let handle = Style::default().fg(Color::DarkGray);
     if snapshot.gap(Axis::Cols) > 0.0 {
         for c in snapshot.cols().iter().filter(|c| c.end() >= left) {
             for y in 0..cell(top) {
-                mark(cell(c.end()), y, '│', handle);
+                mark(cell(c.end()), y, '│', theme.handle);
             }
         }
     }
     if snapshot.gap(Axis::Rows) > 0.0 {
         for r in snapshot.rows().iter().filter(|r| r.end() >= top) {
             for x in 0..cell(left) {
-                mark(x, cell(r.end()), '─', handle);
+                mark(x, cell(r.end()), '─', theme.handle);
             }
         }
     }
     if let Some(drop) = snapshot.drop_indicator() {
-        let style = Style::default().fg(Color::Cyan);
+        let style = theme.drop_indicator;
         // The middle of a Gap rounds down onto the Gap's cell.
         let at = drop.offset.floor() as i64;
         match drop.axis {
@@ -151,7 +193,7 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
         }
     }
     if let Some(guide) = snapshot.resize_guide() {
-        let style = Style::default().fg(Color::Yellow);
+        let style = theme.guide;
         let at = cell(guide.offset);
         match guide.axis {
             Axis::Cols if at >= cell(left) => {
