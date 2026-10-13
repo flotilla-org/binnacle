@@ -12,21 +12,22 @@ expression: "both_ways(Theme::classic(), stripe)"
 8       …      …      …      …
 9       …      …      …      …
 
-aaabbbbcbbbbbbcbbbbbbcddddddcb
+aaabbbbcbbbbbbcddddddceeeeeecb
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
-bbbeeeeaeeeeeeaeeeeeeaeeeeeeae
-bbbaaaaaeeeeeeaeeeeeeaaaaaaaaa
-bbbaaaaaeeeeeeaffffffaaaaaaaaa
+bbbffffaffffffaffffffaffffffaf
+bbbaaaaaffffffaffffffaaaaaaaaa
+bbbaaaaaffffffaggggggaaaaaaaaa
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
 c: fg DarkGray bg Reset
-d: fg Reset bg Reset BOLD | UNDERLINED
-e: fg Reset bg DarkGray
-f: fg Reset bg Reset REVERSED
+d: fg #8C8228 bg Reset BOLD
+e: fg Reset bg Reset BOLD | UNDERLINED
+f: fg Reset bg DarkGray
+g: fg Reset bg Reset REVERSED
 
 --- inverted headers, zebra
    l 0 │col 1▲│col 2~│col 3 │c
@@ -38,19 +39,20 @@ f: fg Reset bg Reset REVERSED
 8       …      …      …      …
 9       …      …      …      …
 
-aaabbbbcbbbbbbcbbbbbbcddddddcb
+aaabbbbcbbbbbbcddddddceeeeeecb
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
-bbbeeeeeeeeeeeeeeeeeeeeeeeeeee
-bbbffffaffffffaffffffaffffffaf
-bbbeeeeeffffffeffffffeeeeeeeee
-bbbaaaaaffffffaggggggaaaaaaaaa
-bbbeeeeeeeeeeeeeeeeeeeeeeeeeee
+bbbfffffffffffffffffffffffffff
+bbbggggaggggggaggggggaggggggag
+bbbfffffggggggfggggggfffffffff
+bbbaaaaaggggggahhhhhhaaaaaaaaa
+bbbfffffffffffffffffffffffffff
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD | REVERSED
 c: fg DarkGray bg Reset
-d: fg Reset bg Reset BOLD | UNDERLINED | REVERSED
-e: fg Reset bg 235
-f: fg Reset bg DarkGray
-g: fg Reset bg Reset REVERSED
+d: fg #8C8228 bg Reset BOLD | REVERSED
+e: fg Reset bg Reset BOLD | UNDERLINED | REVERSED
+f: fg Reset bg 235
+g: fg Reset bg DarkGray
+h: fg Reset bg Reset REVERSED

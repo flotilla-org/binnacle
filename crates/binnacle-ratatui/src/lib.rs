@@ -8,6 +8,7 @@ mod context;
 mod keymap;
 mod mouse;
 mod renderer;
+mod shimmer;
 mod theme;
 
 pub use context::{BorderStyle, RenderContext};
@@ -17,6 +18,7 @@ pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
 };
+pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
@@ -56,6 +58,20 @@ pub trait Content {
     }
 }
 
+/// Whether anything [`render_with`] draws from `snapshot` moves with time:
+/// the Shimmer on a visible header whose requested sort is not applied yet,
+/// or on the visible focused cell while its Locate is pending. A host
+/// redraws on a timer only while this is true (or its own data ticks).
+pub fn animating(snapshot: &Snapshot) -> bool {
+    let sorting = snapshot.headers(Axis::Cols).any(|h| h.sort.pending);
+    sorting || locating(snapshot) && snapshot.focus_rect().is_some()
+}
+
+/// Whether the focused cell is waiting for a Locate on either axis.
+fn locating(snapshot: &Snapshot) -> bool {
+    Axis::ALL.into_iter().any(|a| snapshot.locating(a))
+}
+
 /// Draws `snapshot` into `area` of `buf` in the `classic` Theme with
 /// header-only lines: [`render_with`] for a host that picks neither.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
@@ -71,7 +87,9 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
 /// grabs; a resize in progress draws its guide line across the area, a
 /// header move its drop indicator. A sorted column's header ends in its
 /// direction (and place, in a multi-column sort), and `~` marks a sort
-/// change still pending. Every style comes from the Theme.
+/// change still pending. Every style comes from the Theme. A Shimmer at
+/// `ctx.now` sweeps across the headers of a pending sort and across the
+/// focused cell while its Locate is pending (see [`animating`]).
 pub fn render_with(
     snapshot: &Snapshot,
     content: &impl Content,
@@ -97,6 +115,8 @@ pub fn render_with(
         }
     };
     let multi = snapshot.applied_sort().columns().len() > 1;
+    let sweep = Shimmer::new(ctx, area.width);
+    let area_end = i64::from(area.width);
     for h in snapshot.headers(Axis::Cols) {
         let label = h
             .key
@@ -121,7 +141,12 @@ pub fn render_with(
             let style = style.patch(theme.loading);
             put(buf, area, (start, 0.0), clip, LOADING, style);
         }
+        if h.sort.pending {
+            let (x0, x1) = (cell(start).max(cell(left)), cell(end).min(area_end));
+            shimmer(buf, area, (x0..x1, 0), &sweep, 0);
+        }
     }
+    let locating = locating(snapshot);
     let picked = snapshot.picked();
     let renderers: Vec<_> = (snapshot.cols().iter())
         .map(|c| c.key.map(|k| content.renderer(k)))
@@ -210,6 +235,12 @@ pub fn render_with(
                     canvas.print(0, y, LOADING, row_style.patch(over).patch(theme.loading));
                 }
             }
+            if state.focused && locating {
+                let (x0, x1) = (cell(c.offset).max(cell(left)), cell(c.end()).min(area_end));
+                let pulse = Shimmer::new(ctx, c.size.ceil().clamp(0.0, 65535.0) as u16);
+                let y = cell(r.offset.max(top));
+                shimmer(buf, area, (x0..x1, y), &pulse, cell(c.offset));
+            }
         }
     }
     let mut mark = |x: i64, y: i64, ch: char, style: Style| {
@@ -293,6 +324,26 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     let line = format!("{line:<width$}");
     let clip = (left, f32::INFINITY, top);
     put(buf, area, (rect.x, rect.y), clip, &line, style);
+}
+
+/// Patches `sweep` over the cells `xs` of line `y` in `area` (relative to
+/// it), each by its place from `origin`.
+fn shimmer(
+    buf: &mut Buffer,
+    area: Rect,
+    (xs, y): (std::ops::Range<i64>, i64),
+    sweep: &Shimmer,
+    origin: i64,
+) {
+    if !(0..i64::from(area.height)).contains(&y) {
+        return;
+    }
+    for x in xs.start.max(0)..xs.end.min(i64::from(area.width)) {
+        let at = u16::try_from(x - origin).unwrap_or(u16::MAX);
+        if let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
+            c.set_style(sweep.style(at));
+        }
+    }
 }
 
 /// Writes `text` from `(x, y)` into `area` of `buf`, keeping the characters
