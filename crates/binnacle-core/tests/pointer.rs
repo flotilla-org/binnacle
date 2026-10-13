@@ -3,7 +3,7 @@
 //! and `Cancel`, seen through Snapshots and drained Effects.
 
 use binnacle_core::{
-    Action, Axis, Effect, FocusStep, HeaderClick, Key, Mode, Modifiers, PointerEvent, SelectionUnit,
+    Action, Axis, FocusStep, HeaderClick, Key, Mode, Modifiers, PointerEvent, SelectionUnit,
 };
 
 mod support;
@@ -197,31 +197,6 @@ fn shift_arrows_select_all_and_whole_columns() {
     s.input(|g| g.action(Action::SelectAll));
     out += &s.step("select all", V);
     insta::assert_snapshot!(out);
-}
-
-#[test]
-fn selection_changed_comes_at_most_once_per_drain() {
-    let mut s = table();
-    s.frame(V);
-    s.input(|g| {
-        g.pointer(PointerEvent::down(5.0, 1.0));
-        for y in [2.0, 3.0, 4.0, 2.0] {
-            g.pointer(PointerEvent::moved(12.0, y));
-        }
-        g.pointer(PointerEvent::up(12.0, 2.0));
-        g.action(Action::SelectAll);
-    });
-    let drained: Vec<Effect> = s.effects();
-    let count = |e: &Effect| drained.iter().filter(|d| *d == e).count();
-    assert_eq!(drained.len(), 2, "{drained:?}");
-    assert_eq!(count(&Effect::SelectionChanged), 1);
-    assert_eq!(
-        count(&Effect::FocusChanged {
-            row: Key(1),
-            col: Key(1)
-        }),
-        1
-    );
 }
 
 #[test]

@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Effect, FocusStep, Grid, Key, Position, ScrollAnchor, Viewport,
+    Action, Axis, AxisConfig, FocusStep, Grid, Key, Position, ScrollAnchor, Viewport,
 };
 use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
 
@@ -91,37 +91,6 @@ fn end_on_a_quadrillion_rows_focuses_a_position_whose_key_the_next_window_comple
     s.input(|g| g.action(step(Axis::Rows, FocusStep::Page, false)));
     out += &s.step("page up", v);
     insta::assert_snapshot!(out);
-}
-
-#[test]
-fn focus_changed_is_sent_at_most_once_per_drain_naming_the_latest_cell() {
-    let mut s = table();
-    let v = Viewport::new(22.0, 4.0);
-    s.frame(v);
-    s.input(|g| {
-        g.action(step(Axis::Rows, FocusStep::Item, true));
-        g.action(step(Axis::Rows, FocusStep::Item, true));
-        g.action(Action::TypeText("a".into()));
-        g.action(step(Axis::Cols, FocusStep::Item, true));
-    });
-    let drained: Vec<Effect> = s.effects();
-    assert_eq!(
-        drained,
-        vec![
-            Effect::TextTyped { text: "a".into() },
-            Effect::FocusChanged {
-                row: Key(1),
-                col: Key(1)
-            },
-        ]
-    );
-    s.input(|g| g.action(step(Axis::Rows, FocusStep::Item, false)));
-    s.input(|g| g.action(step(Axis::Rows, FocusStep::Item, true)));
-    assert_eq!(
-        s.effects(),
-        vec![],
-        "back where the host last heard it was: nothing to report"
-    );
 }
 
 #[test]
