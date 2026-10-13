@@ -54,63 +54,44 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
     let area = area.intersection(buf.area);
     let header = Style::default().add_modifier(Modifier::BOLD);
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
-    // Writes `text` from (x, y), keeping the characters in `[x_min, x_end)` on
-    // rows at or below `y_min`, all in cells relative to `area`.
-    let mut put = |x: f32, y: f32, x_min: f32, x_end: f32, y_min: f32, text: &str, style| {
-        let y = cell(y.max(y_min));
-        let (x, x_min, x_end) = (cell(x), cell(x_min), cell(x_end).min(i64::from(area.width)));
-        if y >= i64::from(area.height) {
-            return;
-        }
-        for (i, ch) in text.chars().enumerate() {
-            let cx = x.saturating_add(i as i64);
-            if cx >= x_end {
-                break;
-            }
-            if cx < x_min.max(0) {
-                continue;
-            }
-            let (cx, cy) = (area.x + cx as u16, area.y + y as u16);
-            if let Some(c) = buf.cell_mut((cx, cy)) {
-                c.set_char(ch).set_style(style);
-            }
-        }
-    };
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
-    let hovered = snapshot
-        .hovered_header()
-        .map(|(axis, item)| (axis, item.position));
-    let header_style = |axis, position| {
-        if hovered == Some((axis, position)) {
+    let header_style = |hovered| {
+        if hovered {
             header.add_modifier(Modifier::UNDERLINED)
         } else {
             header
         }
     };
     let multi = snapshot.applied_sort().columns().len() > 1;
-    for c in snapshot.cols() {
-        let label = c
+    for h in snapshot.headers(Axis::Cols) {
+        let label = h
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
-        let marker = c
-            .key
-            .map_or_else(String::new, |k| sort_marker(snapshot.header_sort(k), multi));
+        let marker = sort_marker(h.sort, multi);
         // The marker keeps the header's last cells; the label gets the rest.
-        let width = usize::try_from(cell(c.end()).saturating_sub(cell(c.offset))).unwrap_or(0);
+        let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
+        let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
         let text = if marker.is_empty() {
             pad(label)
         } else {
             format!("{label:<room$.room$}{marker}")
         };
-        let style = header_style(Axis::Cols, c.position);
-        put(c.offset, 0.0, left, c.end(), 0.0, &text, style);
+        let style = header_style(h.hovered);
+        put(buf, area, (start, 0.0), (left, end, 0.0), &text, style);
     }
-    for r in snapshot.rows() {
+    for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
         let number = r.position.saturating_add(1).to_string();
-        let style = header_style(Axis::Rows, r.position);
-        put(0.0, r.offset, 0.0, left, top, &pad(number), style);
+        let style = header_style(h.hovered);
+        put(
+            buf,
+            area,
+            (0.0, r.offset),
+            (0.0, left, top),
+            &pad(number),
+            style,
+        );
         for c in snapshot.cols() {
             let mut text = match (r.key, c.key) {
                 (Some(row), Some(col)) => content.cell(row, col),
@@ -125,7 +106,8 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
                 text = pad(text);
                 style = style.bg(Color::DarkGray);
             }
-            put(c.offset, r.offset, left, c.end(), top, &text, style);
+            let clip = (left, c.end(), top);
+            put(buf, area, (c.offset, r.offset), clip, &text, style);
         }
     }
     let mut mark = |x: i64, y: i64, ch: char, style: Style| {
@@ -208,12 +190,36 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     let line: String = shown.iter().chain(['▏'].iter()).collect();
     let style = Style::default().fg(Color::Black).bg(Color::Yellow);
     let line = format!("{line:<width$}");
-    for (i, ch) in line.chars().enumerate() {
-        let x = x0.saturating_add(i as i64);
-        if x < cell(left).max(0) || x >= i64::from(area.width) {
+    let clip = (left, f32::INFINITY, top);
+    put(buf, area, (rect.x, rect.y), clip, &line, style);
+}
+
+/// Writes `text` from `(x, y)` into `area` of `buf`, keeping the characters
+/// in `[x_min, x_end)` on rows at or below `y_min`, all in cells relative to
+/// `area`.
+fn put(
+    buf: &mut Buffer,
+    area: Rect,
+    (x, y): (f32, f32),
+    (x_min, x_end, y_min): (f32, f32, f32),
+    text: &str,
+    style: Style,
+) {
+    let y = cell(y.max(y_min));
+    let (x, x_min, x_end) = (cell(x), cell(x_min), cell(x_end).min(i64::from(area.width)));
+    if y >= i64::from(area.height) {
+        return;
+    }
+    for (i, ch) in text.chars().enumerate() {
+        let cx = x.saturating_add(i as i64);
+        if cx >= x_end {
+            break;
+        }
+        if cx < x_min.max(0) {
             continue;
         }
-        if let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
+        let (cx, cy) = (area.x + cx as u16, area.y + y as u16);
+        if let Some(c) = buf.cell_mut((cx, cy)) {
             c.set_char(ch).set_style(style);
         }
     }
