@@ -1,8 +1,9 @@
 //! Seam 1 state machine: a real Grid against an honest model Table Source,
 //! with every kind of input mixed in any order. Change Notices, `located`
 //! answers (some held back and answered late), sorts, header moves, edits,
-//! pointer gestures, Actions, Size Overrides and `set_focus` (with Keys the
-//! source has and Keys it never had). Every frame's Snapshot is checked
+//! pointer gestures (band edge drags among them), Actions, Size Overrides,
+//! `set_header`, `set_gap` and `set_focus` (with Keys the source has and Keys
+//! it never had). Every frame's Snapshot is checked
 //! against the model.
 //!
 //! Ported from the seeded chaos driver of the correctness review, which
@@ -12,7 +13,8 @@ use std::collections::VecDeque;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, EditEnd, Effect, FocusStep, Grid, HeaderClick,
-    Key, Located, Modifiers, PointerEvent, PointerKind, SelectionUnit, Viewport,
+    Key, Located, Mode, Modifiers, PointerEvent, PointerKind, ScrollAnchor, SelectionUnit,
+    Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -30,6 +32,9 @@ struct Host {
     /// Effects drained but not answered yet.
     pending: VecDeque<Effect>,
     viewport: Viewport,
+    /// Each axis's band thickness and Gap as of the last frame.
+    headers: [f32; 2],
+    gaps: [f32; 2],
 }
 
 fn axis() -> impl hegel::PrintableGenerator<Axis> {
@@ -100,7 +105,22 @@ impl Host {
             self.grid.set_window(axis, range.start, &window);
         }
         let snap = self.grid.snapshot();
+        self.headers = Axis::ALL.map(|a| snap.header(a));
+        self.gaps = Axis::ALL.map(|a| snap.gap(a));
         for axis in Axis::ALL {
+            let header = snap.header(axis);
+            assert!(
+                header.is_finite() && header >= 0.0,
+                "band {header} on {axis:?}"
+            );
+            // Items start where the band ends, less the anchor's offset (or
+            // a Gap after it, when the anchor is in the Gap).
+            if let Some(first) = snap.strip(axis).first() {
+                assert!(
+                    first.offset <= header + snap.gap(axis) && first.end() > header,
+                    "{first:?} does not start the body after the band {header} on {axis:?}"
+                );
+            }
             let keys = &self.keys[axis.index()];
             let count = keys.len() as u64;
             assert_eq!(snap.count(axis), count, "count on {axis:?}");
@@ -142,7 +162,27 @@ impl Host {
         let _ = snap.selection_rects();
         let _ = snap.headers(Axis::Rows).count() + snap.headers(Axis::Cols).count();
         let _ = (snap.focus_rect(), snap.editor_rect());
-        let _ = (snap.resize_guide(), snap.drop_indicator());
+        let _ = snap.drop_indicator();
+        match (snap.mode(), snap.resize_guide()) {
+            (
+                Mode::ResizingBand {
+                    axis,
+                    start_thickness,
+                },
+                guide,
+            ) => {
+                let h = snap.header(axis);
+                assert!(
+                    h == start_thickness || (1.0..=1_048_576.0).contains(&h),
+                    "a band drag left {h} on {axis:?}"
+                );
+                assert!(snap.capturing());
+                let guide = guide.expect("no guide while resizing a band");
+                assert_eq!((guide.axis, guide.key, guide.offset), (axis, None, h));
+            }
+            (_, Some(guide)) => assert!(guide.key.is_some(), "band guide while not resizing one"),
+            _ => {}
+        }
     }
 
     fn answer(&mut self, tc: &TestCase, effect: Effect) {
@@ -177,6 +217,12 @@ impl Host {
                 *order = before.into_iter().chain(moved).chain(after).collect();
                 tc.note(&format!("moved: {axis:?} {order:?}"));
                 self.grid.notify(axis, ChangeNotice::Reordered);
+            }
+            // The host fits the band to content it measured.
+            Effect::BandAutoSizeRequested { axis } => {
+                let fit = tc.draw(gs::sampled_from(vec![0.0, 1.0, 2.0, 4.5]));
+                tc.note(&format!("set_header({axis:?}, {fit})"));
+                self.grid.set_header(axis, fit);
             }
             // The host usually opens its editor when asked.
             Effect::EditRequested { row, col } | Effect::Activated { row, col }
@@ -289,6 +335,71 @@ impl Host {
         self.grid.set_focus(row, col);
     }
 
+    /// A press inside the last unit of a band, where its edge is when the
+    /// axis has a Gap or the Grid a border grab, halfway across the other band.
+    fn band_press(&mut self, tc: &TestCase) {
+        let axis = tc.draw(axis());
+        let along = self.headers[axis.index()] - 0.25;
+        let across = self.headers[axis.other().index()] / 2.0;
+        let (x, y) = match axis {
+            Axis::Rows => (across, along),
+            Axis::Cols => (along, across),
+        };
+        let clicks = tc.draw(gs::integers::<u32>().min_value(1).max_value(2));
+        self.grid.pointer(PointerEvent::down(x, y).clicks(clicks));
+    }
+
+    /// `set_header` takes a thickness the Snapshot then shows, 0 included;
+    /// one that is not finite and non-negative changes nothing.
+    fn band_thickness(&mut self, tc: &TestCase) {
+        let axis = tc.draw(axis());
+        let thickness = tc.draw(hegel::one_of!(
+            gs::sampled_from(vec![0.0f32, 1.0, 2.0, -1.0, f32::NAN]),
+            gs::floats::<f32>().min_value(0.0).max_value(8.0)
+        ));
+        self.frame_and_check();
+        let before = self.headers[axis.index()];
+        self.grid.set_header(axis, thickness);
+        self.frame_and_check();
+        let expected = if thickness.is_finite() && thickness >= 0.0 {
+            thickness
+        } else {
+            before
+        };
+        assert_eq!(
+            self.headers[axis.index()],
+            expected,
+            "set_header({thickness})"
+        );
+    }
+
+    /// `set_gap` changes the Gap and never scrolls forward or across: the
+    /// anchor stays, or the end clamp or a shrunk Gap pulls it back.
+    fn gap(&mut self, tc: &TestCase) {
+        let axis = tc.draw(axis());
+        let gap = tc.draw(gs::sampled_from(vec![0.0f32, 0.5, 1.0, 2.0]));
+        let anchors = |grid: &mut Grid| -> [ScrollAnchor; 2] {
+            let snap = grid.snapshot();
+            Axis::ALL.map(|a| snap.scroll_anchor(a))
+        };
+        self.frame_and_check();
+        let before = anchors(&mut self.grid);
+        self.grid.set_gap(axis, gap);
+        self.frame_and_check();
+        let after = anchors(&mut self.grid);
+        assert_eq!(self.gaps[axis.index()], gap);
+        let (b, a) = (before[axis.index()], after[axis.index()]);
+        assert!(
+            (a.position, a.offset) <= (b.position, b.offset),
+            "set_gap({gap}) moved {b:?} forward to {a:?}"
+        );
+        let other = axis.other().index();
+        assert_eq!(
+            after[other], before[other],
+            "set_gap scrolled the other axis"
+        );
+    }
+
     fn resize(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
         let key = self.key(tc, axis);
@@ -395,6 +506,22 @@ impl Host {
     fn set_size(&mut self, tc: TestCase) {
         self.resize(&tc);
     }
+
+    /// A press on a band's edge; the drag rule then moves it.
+    #[rule]
+    fn press_band_edge(&mut self, tc: TestCase) {
+        self.band_press(&tc);
+    }
+
+    #[rule(weight = 0.5)]
+    fn set_header(&mut self, tc: TestCase) {
+        self.band_thickness(&tc);
+    }
+
+    #[rule(weight = 0.5)]
+    fn set_gap(&mut self, tc: TestCase) {
+        self.gap(&tc);
+    }
 }
 
 /// 5000 test cases, or `HEGEL_TEST_CASES` to soak: the bugs this found need
@@ -447,6 +574,8 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         next: 1000,
         pending: VecDeque::new(),
         viewport,
+        headers: [1.0, 2.0],
+        gaps: [gap; 2],
     };
     hegel::stateful::machine(host).steps(300).run(tc);
 }

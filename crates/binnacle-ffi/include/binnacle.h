@@ -53,6 +53,9 @@ extern "C" {
 #define BINNACLE_MODE_OTHER 0
 #define BINNACLE_MODE_IDLE 1
 #define BINNACLE_MODE_DRAGGING_SELECTION 2
+/* The edge of a Header Band is being dragged; the band's axis snapshot shows
+ * its thickness as it follows the pointer. */
+#define BINNACLE_MODE_RESIZING_BAND 3
 
 /* BinnacleEffect.kind. Effects the Grid gained after this header arrive as
  * BINNACLE_EFFECT_OTHER: skip them. */
@@ -65,6 +68,11 @@ extern "C" {
 #define BINNACLE_EFFECT_SORT_REQUESTED 4
 /* Answer with binnacle_grid_located. */
 #define BINNACLE_EFFECT_LOCATE 5
+/* A drag of the edge of the Header Band leading axis ended at size. */
+#define BINNACLE_EFFECT_BAND_SIZE_CHANGED 6
+/* The edge of the Header Band leading axis was double-clicked: measure its
+ * content and answer with binnacle_grid_set_header. */
+#define BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED 7
 
 /* BinnacleSortColumn.direction. Nulls go last either way. */
 #define BINNACLE_SORT_ASCENDING 0
@@ -292,9 +300,12 @@ typedef struct {
    * binnacle_grid_free on the same Grid. */
   const BinnacleSortColumn *sort;
   size_t sort_len;
-  /* LOCATE: the axis and the Key to find. */
+  /* LOCATE: the axis and the Key to find. BAND_SIZE_CHANGED and
+   * BAND_AUTO_SIZE_REQUESTED: the axis the band leads. */
   uint32_t axis;
   uint64_t key;
+  /* BAND_SIZE_CHANGED: the band's new thickness. */
+  float size;
 } BinnacleEffect;
 
 /* A raw pointer event in viewport coordinates (the host's unit, origin at the
@@ -352,6 +363,11 @@ int binnacle_grid_set_window_sized(BinnacleGrid *grid, uint32_t axis, uint64_t s
 /* The Size Override for the item with key on axis. Sizes that are not positive
  * and finite are ignored. */
 int binnacle_grid_set_size(BinnacleGrid *grid, uint32_t axis, uint64_t key, float size);
+
+/* The thickness of the Header Band leading axis: ROWS for the column header
+ * band, COLS for the row-number band. 0 hides the band. Values that are not
+ * finite and non-negative are ignored. */
+int binnacle_grid_set_header(BinnacleGrid *grid, uint32_t axis, float thickness);
 
 /* Lays out the frame and fills out. */
 int binnacle_grid_snapshot(BinnacleGrid *grid, BinnacleSnapshot *out);

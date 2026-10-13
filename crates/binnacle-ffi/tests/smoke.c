@@ -258,6 +258,33 @@ int main(void) {
   CHECK(binnacle_grid_snapshot(grid, &snap));
   CHECK(r->strip[0].size == 2 && r->strip[1].offset == 3);
 
+  /* The row-number band's edge is its last Gap's width, x 3..4, in the column
+   * header band: dragging it resizes the band, reported on release. */
+  drain(grid, &focus);
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_DOWN, 3.5f, 0.5f, 0)));
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 6.5f, 0.5f, 0)));
+  frame(grid, &snap);
+  CHECK(snap.mode == BINNACLE_MODE_RESIZING_BAND && snap.capturing);
+  CHECK(c->header == 7 && c->strip[0].offset == 7);
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_UP, 6.5f, 0.5f, 0)));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_BAND_SIZE_CHANGED);
+  CHECK(effect.axis == BINNACLE_COLS && effect.size == 7);
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
+  /* A double-click on the edge asks the host to fit the band. */
+  BinnaclePointerEvent twice = at(BINNACLE_POINTER_DOWN, 6.5f, 0.5f, 0);
+  twice.clicks = 2;
+  CHECK(binnacle_grid_pointer(grid, twice));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED);
+  CHECK(effect.axis == BINNACLE_COLS);
+  CHECK(binnacle_grid_set_header(grid, BINNACLE_COLS, 0));
+  CHECK(!binnacle_grid_set_header(grid, 2, 3));
+  frame(grid, &snap);
+  CHECK(snap.mode == BINNACLE_MODE_IDLE);
+  CHECK(c->header == 0 && c->strip[0].offset == 0);
+  CHECK(snap.damage & BINNACLE_DAMAGE_LAYOUT);
+
   binnacle_grid_free(grid);
   binnacle_grid_free(NULL);
   printf("ok\n");

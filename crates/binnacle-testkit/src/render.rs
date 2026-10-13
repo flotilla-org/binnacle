@@ -137,11 +137,18 @@ fn summary(snap: &Snapshot) -> String {
         let _ = write!(out, " | cursor {:?}", snap.cursor());
     }
     if let Some(g) = snap.resize_guide() {
-        let _ = write!(
-            out,
-            " | guide {:?} {} (key {} size {})",
-            g.axis, g.offset, g.key.0, g.size
-        );
+        let _ = match g.key {
+            Some(key) => write!(
+                out,
+                " | guide {:?} {} (key {} size {})",
+                g.axis, g.offset, key.0, g.size
+            ),
+            None => write!(
+                out,
+                " | guide {:?} {} (band size {})",
+                g.axis, g.offset, g.size
+            ),
+        };
     }
     if let Some(d) = snap.drop_indicator() {
         let keys: Vec<String> = snap.moving_keys().iter().map(|k| k.0.to_string()).collect();

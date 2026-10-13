@@ -42,6 +42,14 @@ pub enum Effect {
     /// `axis`. The Grid never measures: the host measures the content and
     /// answers with [`crate::Grid::set_size`].
     AutoSizeRequested { axis: Axis, key: Key },
+    /// A resize of the Header Band leading `axis` ended at `thickness`.
+    /// Hosts that persist layouts save it and restore it with
+    /// [`crate::Grid::set_header`].
+    BandSizeChanged { axis: Axis, thickness: f32 },
+    /// The user double-clicked the edge of the Header Band leading `axis`.
+    /// The host measures the band's content and answers with
+    /// [`crate::Grid::set_header`].
+    BandAutoSizeRequested { axis: Axis },
     /// The user dropped the headers of the items with `keys` on `axis` before
     /// the item at Position `to` (the count for the end), Positions as they
     /// were before the move. The Grid reorders nothing itself: the Table
@@ -85,7 +93,7 @@ pub enum Action {
     /// Selects every row of the range's columns, or of the focused column.
     SelectColumn,
     /// Ends the gesture in progress and restores the state from before it:
-    /// focus and selection, or the size of an item being resized.
+    /// focus and selection, or the size of an item or band being resized.
     Cancel,
     /// Scrolls by a distance in the host's unit along each axis (a wheel or
     /// trackpad): `dx` across the columns, `dy` down the rows.

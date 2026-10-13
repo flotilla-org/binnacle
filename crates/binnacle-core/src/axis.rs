@@ -233,6 +233,19 @@ impl AxisState {
         self.settle(to, max)
     }
 
+    /// Sets the Gap, keeping the anchor's Position and offset as far as the
+    /// new Gap and end clamp allow. An anchor that was following the end
+    /// stops following it, so its item stays put. Returns whether anything
+    /// changed.
+    pub fn set_gap(&mut self, gap: f32) -> bool {
+        if !self.measure.set_gap(gap) {
+            return false;
+        }
+        self.at_end = false;
+        self.clamp_anchor();
+        true
+    }
+
     /// The item a body's length before or after the start of item `p`, at
     /// least one item away and inside the axis.
     pub fn page_from(&self, p: Position, forward: bool) -> Position {

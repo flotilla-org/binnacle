@@ -25,6 +25,10 @@ pub enum Mode {
         key: Key,
         start_size: f32,
     },
+    /// The edge of the Header Band leading `axis` is being dragged: the band,
+    /// `start_thickness` thick when the press began, follows the pointer until
+    /// release.
+    ResizingBand { axis: Axis, start_thickness: f32 },
     /// Column headers are being dragged: the header grabbed has `key` on
     /// `axis`, and the dragged items would drop before Position `to` (see
     /// [`crate::Snapshot::moving_keys`] for all of them).
@@ -85,6 +89,14 @@ pub(crate) enum Gesture {
         start_size: f32,
         start_override: Option<f32>,
     },
+    /// A press on the edge of the Header Band leading `axis`, at coordinate
+    /// `from` along that axis, when the band was `start_thickness` thick
+    /// (which `Cancel` puts back).
+    ResizingBand {
+        axis: Axis,
+        from: f32,
+        start_thickness: f32,
+    },
     /// The headers of the items with `keys` on `axis`, at `positions` when
     /// the drag began (both in Position order), are being dragged by the
     /// header of `key` and would drop before Position `to`.
@@ -116,6 +128,14 @@ impl Gesture {
                 axis,
                 key,
                 start_size,
+            },
+            &Gesture::ResizingBand {
+                axis,
+                start_thickness,
+                ..
+            } => Mode::ResizingBand {
+                axis,
+                start_thickness,
             },
             &Gesture::MovingHeaders { axis, key, to, .. } => Mode::MovingHeaders { axis, key, to },
             &Gesture::Editing {
@@ -159,6 +179,19 @@ impl Grid {
         self.end_resize();
         self.end_edit();
         self.gesture = Gesture::Idle;
+        if let Some(axis) = self.band_edge_at(x, y) {
+            if clicks >= 2 {
+                self.push(Effect::BandAutoSizeRequested { axis });
+                return;
+            }
+            self.gesture = Gesture::ResizingBand {
+                axis,
+                from: along(axis, x, y),
+                start_thickness: self.axis(axis).header,
+            };
+            self.pending_damage.selection = true;
+            return;
+        }
         if let Some((axis, position, key)) = self.border_at(x, y) {
             if clicks >= 2 {
                 self.push(Effect::AutoSizeRequested { axis, key });
@@ -280,7 +313,41 @@ impl Grid {
                     self.set_size(axis, key, size);
                 }
             }
+            &mut Gesture::ResizingBand {
+                axis,
+                from,
+                start_thickness,
+            } => {
+                let moved = f64::from(along(axis, x, y)) - f64::from(from);
+                let m = &self.axis(axis).measure;
+                // A band the host set outside the size range keeps its
+                // thickness until the pointer moves along the axis.
+                let thickness = if moved == 0.0 {
+                    start_thickness
+                } else {
+                    (f64::from(start_thickness) + moved)
+                        .clamp(f64::from(m.min_size()), f64::from(m.max_size()))
+                        as f32
+                };
+                self.put_header(axis, thickness);
+            }
             Gesture::Idle | Gesture::Editing { .. } => {}
+        }
+    }
+
+    /// Restarts a drag of the edge of the band leading `axis`, if one is in
+    /// progress, from `thickness` and the pointer's last point.
+    pub(crate) fn rebase_band_drag(&mut self, axis: Axis, thickness: f32) {
+        let at = self.pointer_at.map(|(x, y)| along(axis, x, y));
+        if let Gesture::ResizingBand {
+            axis: a,
+            from,
+            start_thickness,
+        } = &mut self.gesture
+            && *a == axis
+        {
+            *start_thickness = thickness;
+            *from = at.unwrap_or(*from);
         }
     }
 
@@ -295,6 +362,20 @@ impl Grid {
     /// Ends a resize in progress where it is, reporting the new size if it
     /// changed.
     pub(crate) fn end_resize(&mut self) {
+        if let Gesture::ResizingBand {
+            axis,
+            start_thickness,
+            ..
+        } = self.gesture
+        {
+            self.gesture = Gesture::Idle;
+            self.pending_damage.selection = true;
+            let thickness = self.axis(axis).header;
+            if thickness != start_thickness {
+                self.push(Effect::BandSizeChanged { axis, thickness });
+            }
+            return;
+        }
         let Gesture::Resizing {
             axis,
             key,
@@ -465,9 +546,9 @@ impl Grid {
     }
 
     /// Ends any gesture in progress, restoring focus and selection from before
-    /// it, or the resized item's size; an edit is cancelled with
-    /// `EditCancelled`. The rest of the press (moves, the release) then finds the Grid idle
-    /// and does nothing.
+    /// it, or the resized item's size or band's thickness; an edit is
+    /// cancelled with `EditCancelled`. The rest of the press (moves, the
+    /// release) then finds the Grid idle and does nothing.
     pub(crate) fn cancel(&mut self) {
         let before = match std::mem::take(&mut self.gesture) {
             Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before } => before,
@@ -479,6 +560,15 @@ impl Grid {
             } => {
                 self.pending_damage.selection = true;
                 self.restore_size(axis, key, start_override);
+                return;
+            }
+            Gesture::ResizingBand {
+                axis,
+                start_thickness,
+                ..
+            } => {
+                self.pending_damage.selection = true;
+                self.put_header(axis, start_thickness);
                 return;
             }
             Gesture::MovingHeaders { .. } => {

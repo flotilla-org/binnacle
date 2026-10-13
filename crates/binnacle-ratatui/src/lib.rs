@@ -239,6 +239,13 @@ pub fn status(snapshot: &Snapshot) -> String {
             Some(guide) => format!("resizing {} {}: {}", noun(axis), key.0, guide.size),
             None => format!("resizing {} {}", noun(axis), key.0),
         },
+        Mode::ResizingBand { axis, .. } => {
+            let band = match axis {
+                Axis::Rows => "column header",
+                Axis::Cols => "row-number",
+            };
+            format!("resizing the {band} band: {}", snapshot.header(axis))
+        }
         Mode::DraggingSelection => "selecting".to_string(),
         Mode::Editing { row, col } => format!("editing row {} column {}", row.0, col.0),
         Mode::MovingHeaders { axis, to, .. } => {

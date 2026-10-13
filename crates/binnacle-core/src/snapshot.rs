@@ -94,11 +94,12 @@ pub enum Cursor {
 
 /// Where a resize in progress puts the resized item's trailing edge: a line
 /// across the viewport at `offset` along `axis` (viewport-relative, like Strip
-/// offsets), with the item's Key and current size.
+/// offsets), with the item's Key and current size. Resizing the Header Band
+/// leading `axis`, `key` is `None` and `size` is the band's thickness.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResizeGuide {
     pub axis: Axis,
-    pub key: Key,
+    pub key: Option<Key>,
     pub offset: f32,
     pub size: f32,
 }
@@ -354,11 +355,11 @@ impl<'a> Snapshot<'a> {
         self.grid.gesture.capturing()
     }
 
-    /// The pointer shape for this frame: a resize shape while resizing, or
-    /// while idle over a header border; the move shape while moving headers.
+    /// The pointer shape for this frame: a resize shape while resizing an
+    /// item or band, or while idle over a header border or band edge; the move shape while moving headers.
     pub fn cursor(&self) -> Cursor {
         let axis = match self.mode() {
-            Mode::Resizing { axis, .. } => Some(axis),
+            Mode::Resizing { axis, .. } | Mode::ResizingBand { axis, .. } => Some(axis),
             Mode::MovingHeaders { .. } => return Cursor::Move,
             _ if self.capturing() => None,
             _ => self.grid.hovered_border,
@@ -371,10 +372,20 @@ impl<'a> Snapshot<'a> {
     }
 
     /// The guide line for a resize in progress, while the resized item is in
-    /// the Window.
+    /// the Window, or for a band resize: at the band's trailing edge.
     pub fn resize_guide(&self) -> Option<ResizeGuide> {
-        let Mode::Resizing { axis, key, .. } = self.mode() else {
-            return None;
+        let (axis, key) = match self.mode() {
+            Mode::Resizing { axis, key, .. } => (axis, key),
+            Mode::ResizingBand { axis, .. } => {
+                let thickness = self.header(axis);
+                return Some(ResizeGuide {
+                    axis,
+                    key: None,
+                    offset: thickness,
+                    size: thickness,
+                });
+            }
+            _ => return None,
         };
         let st = self.grid.axis(axis);
         let position = st.measure.position_of(key)?;
@@ -383,7 +394,7 @@ impl<'a> Snapshot<'a> {
             + st.measure.distance(st.anchor.position, position);
         Some(ResizeGuide {
             axis,
-            key,
+            key: Some(key),
             offset: (start + f64::from(size)) as f32,
             size,
         })

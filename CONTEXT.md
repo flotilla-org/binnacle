@@ -72,6 +72,10 @@ _Avoid_: Custom width, stored width
 The gridline thickness between items on an axis, part of the Grid's layout and hit testing.
 _Avoid_: Border, padding, gutter
 
+**Header Band**:
+The band of headers leading an axis, whose thickness the host sets and the user can drag or fit: the column header band leads the row axis (it runs along the top), and the row-number band leads the column axis (it runs down the left).
+_Avoid_: Header row, header column, gutter
+
 **Sort Spec**:
 The ordered list of columns and directions the user has asked to sort by, held by the Grid as header state and requested from the Table Source.
 _Avoid_: Sort order, remap spec

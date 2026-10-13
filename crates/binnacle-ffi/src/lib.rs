@@ -33,6 +33,7 @@ pub const BINNACLE_HEADER_HOVERED: u32 = 16;
 pub const BINNACLE_MODE_OTHER: u32 = 0;
 pub const BINNACLE_MODE_IDLE: u32 = 1;
 pub const BINNACLE_MODE_DRAGGING_SELECTION: u32 = 2;
+pub const BINNACLE_MODE_RESIZING_BAND: u32 = 3;
 
 pub const BINNACLE_EFFECT_OTHER: u32 = 0;
 pub const BINNACLE_EFFECT_TEXT_TYPED: u32 = 1;
@@ -40,6 +41,8 @@ pub const BINNACLE_EFFECT_FOCUS_CHANGED: u32 = 2;
 pub const BINNACLE_EFFECT_SELECTION_CHANGED: u32 = 3;
 pub const BINNACLE_EFFECT_SORT_REQUESTED: u32 = 4;
 pub const BINNACLE_EFFECT_LOCATE: u32 = 5;
+pub const BINNACLE_EFFECT_BAND_SIZE_CHANGED: u32 = 6;
+pub const BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED: u32 = 7;
 
 pub const BINNACLE_SORT_ASCENDING: u32 = 0;
 pub const BINNACLE_SORT_DESCENDING: u32 = 1;
@@ -239,7 +242,7 @@ impl Default for BinnacleText {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BinnacleEffect {
     pub generation: u64,
     pub kind: u32,
@@ -250,6 +253,7 @@ pub struct BinnacleEffect {
     pub sort_len: usize,
     pub axis: u32,
     pub key: u64,
+    pub size: f32,
 }
 
 impl Default for BinnacleEffect {
@@ -264,6 +268,7 @@ impl Default for BinnacleEffect {
             sort_len: 0,
             axis: 0,
             key: 0,
+            size: 0.0,
         }
     }
 }
@@ -656,6 +661,22 @@ pub unsafe extern "C" fn binnacle_grid_set_size(
 }
 
 /// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_header(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    thickness: f32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.set_header(axis, thickness))
+        })
+    }
+}
+
+/// # Safety
 /// `grid` is NULL or a live handle; `out` is NULL or valid for a write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_snapshot(
@@ -748,6 +769,7 @@ impl BinnacleGrid {
         let mode = match snap.mode() {
             Mode::Idle => BINNACLE_MODE_IDLE,
             Mode::DraggingSelection => BINNACLE_MODE_DRAGGING_SELECTION,
+            Mode::ResizingBand { .. } => BINNACLE_MODE_RESIZING_BAND,
             _ => BINNACLE_MODE_OTHER,
         };
         BinnacleSnapshot {
@@ -809,6 +831,15 @@ impl BinnacleGrid {
                 effect.kind = BINNACLE_EFFECT_LOCATE;
                 effect.axis = axis_tag(axis);
                 effect.key = key.0;
+            }
+            Effect::BandSizeChanged { axis, thickness } => {
+                effect.kind = BINNACLE_EFFECT_BAND_SIZE_CHANGED;
+                effect.axis = axis_tag(axis);
+                effect.size = thickness;
+            }
+            Effect::BandAutoSizeRequested { axis } => {
+                effect.kind = BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED;
+                effect.axis = axis_tag(axis);
             }
             _ => effect.kind = BINNACLE_EFFECT_OTHER,
         }

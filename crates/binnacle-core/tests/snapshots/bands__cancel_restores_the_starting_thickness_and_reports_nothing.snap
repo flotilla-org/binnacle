@@ -1,0 +1,26 @@
+---
+source: crates/binnacle-core/tests/bands.rs
+expression: out
+---
+--- 1. drag the row-number band's edge 5 right
+window Rows 0..5
+window Cols 0..5
+gen 2 | damage layout selection | mode ResizingBand { axis: Cols, start_thickness: 4.0 } | capturing | cursor ResizeCol | guide Cols 9 (band size 9)
+Rows: count 20, extent 6, header 1, anchor 0+0, thumb 0.0000/0.1282 | 0#0@1+1 1#1@3+1 2#2@5+1
+Cols: count 5, extent 30, header 9, anchor 0+0, thumb 0.0000/0.6176 | 0#0@9+6 1#1@16+6 2#2@23+6
+         0      1      2
+0        0.0    0.1    0.2
+
+1        1.0    1.1    1.2
+
+2        2.0    2.1    2.2
+--- 2. Cancel, then move on and release: back to 4, nothing reported
+gen 3 | damage layout selection | hover Cols 1
+Rows: (unchanged)
+Cols: count 5, extent 30, header 4, anchor 0+0, thumb 0.0000/0.7647 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0.3
+
+1   1.0    1.1    1.2    1.3
+
+2   2.0    2.1    2.2    2.3

@@ -128,6 +128,18 @@ impl AxisMeasure {
         self.gap
     }
 
+    /// Sets the Gap, capped at `max_size`. A Gap that is not finite and
+    /// non-negative is ignored. Returns whether it changed.
+    pub fn set_gap(&mut self, gap: f32) -> bool {
+        if !(gap.is_finite() && gap >= 0.0) {
+            return false;
+        }
+        let gap = gap.min(self.max_size);
+        let changed = gap != self.gap;
+        self.gap = gap;
+        changed
+    }
+
     /// The smallest size any item may have.
     pub fn min_size(&self) -> f32 {
         self.min_size

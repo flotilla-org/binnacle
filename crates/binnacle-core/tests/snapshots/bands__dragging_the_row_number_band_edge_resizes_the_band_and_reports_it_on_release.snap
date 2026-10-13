@@ -1,0 +1,42 @@
+---
+source: crates/binnacle-core/tests/bands.rs
+expression: out
+---
+--- 1. start
+window Rows 0..5
+window Cols 0..5
+gen 1 | damage layout selection positions
+Rows: count 20, extent 6, header 1, anchor 0+0, thumb 0.0000/0.1282 | 0#0@1+1 1#1@3+1 2#2@5+1
+Cols: count 5, extent 30, header 4, anchor 0+0, thumb 0.0000/0.7647 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0.3
+
+1   1.0    1.1    1.2    1.3
+
+2   2.0    2.1    2.2    2.3
+--- 2. hover the row-number band's edge: resize cursor
+gen 2 | damage selection | cursor ResizeCol
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 3. press on it: resizing the band, capturing
+gen 3 | damage selection | mode ResizingBand { axis: Cols, start_thickness: 4.0 } | capturing | cursor ResizeCol | guide Cols 4 (band size 4)
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 4. move 3 right: the band is 7 wide, the guide follows
+gen 4 | damage layout selection | mode ResizingBand { axis: Cols, start_thickness: 4.0 } | capturing | hover Rows 1 | cursor ResizeCol | guide Cols 7 (band size 7)
+Rows: (unchanged)
+Cols: count 5, extent 30, header 7, anchor 0+0, thumb 0.0000/0.6765 | 0#0@7+6 1#1@14+6 2#2@21+6 3#3@28+6
+       0      1      2      3
+0      0.0    0.1    0.2    0.
+
+1      1.0    1.1    1.2    1.
+
+2      2.0    2.1    2.2    2.
+--- 5. release: BandSizeChanged, idle
+effect (gen 4): BandSizeChanged { axis: Cols, thickness: 7.0 }
+gen 5 | damage selection | hover Rows 1
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
