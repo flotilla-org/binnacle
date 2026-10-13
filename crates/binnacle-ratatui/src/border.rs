@@ -12,14 +12,17 @@ use crate::{Theme, cell};
 
 /// Which lines are drawn in the Gaps, in what weight, and whether each
 /// Header Band ends in a rule. The default is today's look: light handles
-/// in the header bands' Gaps only, and no band rules.
+/// in the header bands' Gaps only, and no band rules. `Columns` and `Grid`
+/// always draw the band rules and close the table after its last column
+/// (and, for `Grid`, its last row).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BorderStyle {
     pub extent: BorderExtent,
     pub weight: BorderWeight,
-    /// A rule in the last cell of each Header Band, under the column headers
-    /// and beside the row numbers, with the band edge handle where it
-    /// crosses the other band.
+    /// For `Headers`: a rule in the last cell of each Header Band, under the
+    /// column headers and beside the row numbers, with the band edge handle
+    /// where it crosses the other band. `Columns` and `Grid` draw the rules
+    /// whatever this says; `None` never does.
     pub band_rules: bool,
 }
 
@@ -31,10 +34,10 @@ pub enum BorderExtent {
     /// Handles in the header bands' Gaps only.
     #[default]
     Headers,
-    /// Handles, and column lines down the body.
+    /// Handles, and column lines down the body and after the last column.
     Columns,
     /// Column lines, and rules between rows (where the row Gap is at least
-    /// one cell), joined at the crossings.
+    /// one cell) and under the last row, joined at the crossings.
     Grid,
 }
 
@@ -67,9 +70,21 @@ impl BorderStyle {
             band_rules,
         }
     }
+
+    /// Whether each Header Band ends in a rule (when it is at least two
+    /// cells thick): always for `Columns` and `Grid`, for `Headers` only
+    /// with `band_rules`.
+    pub const fn draws_band_rules(self) -> bool {
+        match self.extent {
+            BorderExtent::None => false,
+            BorderExtent::Headers => self.band_rules,
+            BorderExtent::Columns | BorderExtent::Grid => true,
+        }
+    }
 }
 
-/// Names the style as `<extent> <weight>`, then ` + band rules` when on.
+/// Names the style as `<extent> <weight>`, then ` + band rules` for
+/// `Headers` with them on.
 impl fmt::Display for BorderStyle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let extent = match self.extent {
@@ -84,7 +99,7 @@ impl fmt::Display for BorderStyle {
             BorderWeight::Double => "double",
         };
         write!(f, "{extent} {weight}")?;
-        if self.band_rules {
+        if self.extent == BorderExtent::Headers && self.band_rules {
             write!(f, " + band rules")?;
         }
         Ok(())
@@ -216,14 +231,31 @@ pub(crate) fn draw(
             cell(it.end() + if more { snapshot.gap(axis) } else { 0.0 }).max(header)
         })
     };
-    let (bottom, right) = (end(Axis::Rows, rows, top), end(Axis::Cols, cols, left));
+    let (mut bottom, mut right) = (end(Axis::Rows, rows, top), end(Axis::Cols, cols, left));
+    let handles = style.extent != BorderExtent::None;
+    let columns = matches!(style.extent, BorderExtent::Columns | BorderExtent::Grid);
+    let grid = style.extent == BorderExtent::Grid;
+    // The cell past the axis's last item, when that item is shown.
+    let closing = |axis: Axis, strip: &[StripItem], band: f32| {
+        let count = snapshot.count(axis);
+        strip
+            .last()
+            .filter(|it| it.position.saturating_add(1) >= count && it.end() >= band)
+            .map(|it| cell(it.end()))
+    };
+    let close_x = closing(Axis::Cols, cols, left_f).filter(|_| columns);
+    let close_y = closing(Axis::Rows, rows, top_f).filter(|_| grid);
+    // The lines a closing line crosses reach it.
+    if let Some(x) = close_x {
+        right = right.max(x + 1);
+    }
+    if let Some(y) = close_y {
+        bottom = bottom.max(y + 1);
+    }
     let mut lines = Lines {
         size: (i64::from(area.width), i64::from(area.height)),
         marks: HashMap::new(),
     };
-    let handles = style.extent != BorderExtent::None;
-    let columns = matches!(style.extent, BorderExtent::Columns | BorderExtent::Grid);
-    let grid = style.extent == BorderExtent::Grid;
     if handles {
         let (gap, count) = (snapshot.gap(Axis::Cols), snapshot.count(Axis::Cols));
         for c in cols.iter().filter(|c| c.end() >= left_f) {
@@ -240,12 +272,25 @@ pub(crate) fn draw(
             }
         }
     }
-    if style.band_rules {
-        if left > 0 {
-            lines.vertical(left - 1, 0..bottom, top);
+    if let Some(x) = close_x {
+        lines.vertical(x, 0..bottom, top);
+    }
+    if let Some(y) = close_y {
+        lines.horizontal(y, 0..right, left);
+    }
+    // A band too thin for a rule keeps its only cell for its text. A rule
+    // reaches the handle after the last item, where there is one.
+    if style.draws_band_rules() {
+        let handle = |axis: Axis, strip: &[StripItem], band: f32| {
+            closing(axis, strip, band).filter(|_| snapshot.gap(axis) > 0.0)
+        };
+        if left >= 2 {
+            let reach = handle(Axis::Rows, rows, top_f).map_or(bottom, |y| bottom.max(y + 1));
+            lines.vertical(left - 1, 0..reach, top);
         }
-        if top > 0 {
-            lines.horizontal(top - 1, 0..right, left);
+        if top >= 2 {
+            let reach = handle(Axis::Cols, cols, left_f).map_or(right, |x| right.max(x + 1));
+            lines.horizontal(top - 1, 0..reach, left);
         }
     }
     let (vertical, horizontal, junctions) = glyphs(style.weight);

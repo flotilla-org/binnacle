@@ -332,3 +332,44 @@ fn the_editor_draws_its_text_over_the_edited_cell_ending_in_a_caret() {
     assert_ne!(buf[(19, 3)].bg, Color::Yellow);
     assert_eq!(status(&snapshot), "editing row 2 column 1");
 }
+
+/// Labels its rows with their Keys, as a host whose rows have an identity.
+struct Keyed;
+
+impl Content for Keyed {
+    fn cell(&self, row: Key, col: Key) -> String {
+        Labels.cell(row, col)
+    }
+
+    fn column_header(&self, col: Key) -> String {
+        Labels.column_header(col)
+    }
+
+    fn row_header(&self, row: Key, _position: u64) -> String {
+        format!("#{}", row.0)
+    }
+}
+
+/// Under a sort the row header shows the host's label for each row's Key,
+/// which stays with the row; a row still loading shows its Position plus
+/// one.
+#[test]
+fn row_headers_show_the_host_s_label_for_each_row_s_key() {
+    let mut grid = Grid::new(
+        AxisConfig::new(6, 1.0).header(1.0),
+        AxisConfig::new(2, 6.0).header(4.0),
+    );
+    let area = Rect::new(0, 0, 18, 7);
+    for (axis, range) in grid.begin_frame(Viewport::new(area.width.into(), area.height.into())) {
+        let keys: Vec<Key> = match axis {
+            // Sorted descending, and the last row not loaded yet.
+            Axis::Rows => range.clone().rev().skip(1).map(Key).collect(),
+            Axis::Cols => range.clone().map(Key).collect(),
+        };
+        grid.set_window(axis, range.start, &keys);
+    }
+    let snapshot = grid.snapshot();
+    let mut buf = Buffer::empty(area);
+    render(&snapshot, &Keyed, area, &mut buf);
+    insta::assert_snapshot!(text(&buf));
+}

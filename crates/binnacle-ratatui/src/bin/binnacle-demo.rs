@@ -10,7 +10,9 @@
 //! columns. Press Ctrl+F to show only records with a crew of 6 or more, and
 //! again to show them all: focus stays on its record, or moves to the nearest
 //! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
-//! which neither sort, move nor filter. Its row-number band fits the
+//! which neither sort, move nor filter. The records and tickers label their
+//! rows with their Keys, which stay with them through sorts and filters; the
+//! huge table numbers its rows. Its row-number band fits the
 //! largest row number shown and refits as you scroll; dragging the band's
 //! edge (the corner cell above its last column) sets it by hand, and
 //! double-clicking the edge fits it again. `binnacle-demo --live` shows 200
@@ -41,10 +43,11 @@
 //! line shows the gesture in progress and, on the right, the source, the
 //! Theme and the Border Style: Ctrl+T cycles the Themes (`classic`,
 //! `catppuccin_mocha`, `mono`), and the demo starts in `mono` when `NO_COLOR`
-//! is set. Ctrl+B cycles the Border Styles: header handles only, column lines,
-//! a full grid (which turns on a one-cell row Gap through `set_gap`) or none,
-//! in light, heavy and double lines, some with band rules (which give the
-//! column header band a second line for its rule). Press Ctrl+Q or Ctrl+C to quit.
+//! is set. Ctrl+B cycles the Border Styles: header handles only (with or
+//! without band rules), column lines, a full grid (which turns on a one-cell
+//! row Gap through `set_gap`) or none, in light, heavy and double lines.
+//! Column lines and the grid close the table and always draw the band rules;
+//! with band rules the column header band gets a second line for its rule. Press Ctrl+Q or Ctrl+C to quit.
 
 use std::borrow::Cow;
 use std::io;
@@ -70,7 +73,7 @@ const HUGE_ROWS: u64 = 1_000_000_000_000_000;
 const HUGE_COLS: u64 = 12;
 
 /// The Border Styles Ctrl+B cycles through, from today's look.
-const BORDERS: [BorderStyle; 10] = {
+const BORDERS: [BorderStyle; 9] = {
     use BorderExtent::{Columns, Grid, Headers, None};
     use BorderWeight::{Double, Heavy, Light};
     [
@@ -78,11 +81,10 @@ const BORDERS: [BorderStyle; 10] = {
         BorderStyle::new(Headers, Light).band_rules(true),
         BorderStyle::new(Columns, Light),
         BorderStyle::new(Columns, Heavy),
-        BorderStyle::new(Columns, Double).band_rules(true),
+        BorderStyle::new(Columns, Double),
         BorderStyle::new(Grid, Light),
         BorderStyle::new(Grid, Heavy),
         BorderStyle::new(Grid, Double),
-        BorderStyle::new(Grid, Light).band_rules(true),
         BorderStyle::new(None, Light),
     ]
 };
@@ -497,6 +499,13 @@ impl Content for Text<'_> {
         }
     }
 
+    fn row_header(&self, row: Key, position: u64) -> String {
+        match self {
+            Text::Records(_) | Text::Live(_) => row.0.to_string(),
+            Text::Huge => position.saturating_add(1).to_string(),
+        }
+    }
+
     fn column_header(&self, col: Key) -> String {
         match self {
             Text::Records(_) => HEADERS[col.0 as usize].to_string(),
@@ -553,7 +562,7 @@ impl App {
     /// The column header band's fitted thickness: one line for the headers,
     /// and one more for a band rule.
     fn header_lines(&self) -> f32 {
-        if BORDERS[self.border].band_rules {
+        if BORDERS[self.border].draws_band_rules() {
             2.0
         } else {
             1.0
@@ -573,7 +582,7 @@ impl App {
             0.0
         };
         grid.set_gap(Axis::Rows, gap);
-        if border.band_rules != was.band_rules {
+        if border.draws_band_rules() != was.draws_band_rules() {
             grid.set_header(Axis::Rows, self.header_lines());
         }
     }
@@ -666,11 +675,20 @@ fn fill(grid: &mut Grid, table: &Table, viewport: Viewport) {
     }
 }
 
-/// The row-number band's width for `snapshot`: the digits of the largest row
-/// number shown, and a cell after them.
-fn row_band_fit(snapshot: &Snapshot) -> Option<f32> {
-    let last = snapshot.rows().last()?.position.saturating_add(1);
-    Some(last.to_string().len() as f32 + 1.0)
+/// The row-number band's width for `snapshot`: the widest row header label
+/// shown, and a cell after it for the band rule (or a blank when none is
+/// drawn).
+fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
+    let widest = (snapshot.rows().iter())
+        .map(|r| {
+            let label = r.key.map_or_else(
+                || r.position.saturating_add(1).to_string(),
+                |k| content.row_header(k, r.position),
+            );
+            label.chars().count()
+        })
+        .max()?;
+    Some(widest as f32 + 1.0)
 }
 
 fn main() -> io::Result<()> {
@@ -767,7 +785,7 @@ fn main() -> io::Result<()> {
                 if app.fit_rows {
                     // Fit to the rows this frame shows, then lay it out again.
                     let snapshot = grid.snapshot();
-                    let fit = row_band_fit(&snapshot)
+                    let fit = row_band_fit(&snapshot, &table.text())
                         .filter(|_| !matches!(snapshot.mode(), Mode::ResizingBand { .. }));
                     if let Some(width) = fit.filter(|&w| w != snapshot.header(Axis::Cols)) {
                         grid.set_header(Axis::Cols, width);

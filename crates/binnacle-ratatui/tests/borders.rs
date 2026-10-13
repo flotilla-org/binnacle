@@ -167,6 +167,41 @@ fn handles_and_borders_take_their_theme_styles() {
     insta::assert_snapshot!(styled(&draw_in(&mut fixture(), &ctx, AREA)));
 }
 
+/// A table smaller than the area: 3 columns 6 wide and 3 rows, in the same
+/// bands and Gaps as [`fixture`], so the cells past the last column and row
+/// are inside the area.
+fn small() -> Grid {
+    Grid::new(
+        AxisConfig::new(3, 1.0).header(2.0).gap(1.0),
+        AxisConfig::new(3, 6.0).header(4.0).gap(1.0),
+    )
+}
+
+/// `Columns` closes the last column with a line in the cell past its end,
+/// and `Grid` the last row too, joined to the band rules.
+#[test]
+fn columns_and_grid_close_the_last_column_and_row() {
+    let mut out = String::new();
+    for extent in EXTENTS {
+        for weight in WEIGHTS {
+            let style = BorderStyle::new(extent, weight);
+            out += &format!("--- {style}\n{}\n", text(&draw(&mut small(), style)));
+        }
+    }
+    insta::assert_snapshot!(out);
+}
+
+/// A band one cell thick keeps its text: no band rule takes its only cell.
+#[test]
+fn a_band_too_thin_for_a_rule_keeps_its_text() {
+    let mut grid = Grid::new(
+        AxisConfig::new(3, 1.0).header(1.0).gap(1.0),
+        AxisConfig::new(3, 6.0).header(1.0).gap(1.0),
+    );
+    let style = BorderStyle::new(BorderExtent::Grid, BorderWeight::Light);
+    insta::assert_snapshot!(text(&draw(&mut grid, style)));
+}
+
 /// A resize guide and a drop indicator draw over the borders.
 #[test]
 fn drags_draw_over_the_borders() {
@@ -204,8 +239,10 @@ fn covers(offset: f32, end: f32, at: i64) -> bool {
     (offset.ceil() as i64..end.ceil() as i64).contains(&at)
 }
 
-/// Without band rules, every Border Style changes only Gap cells: cells no
-/// column or no row covers.
+/// Every Border Style changes only Gap cells (cells no column or no row
+/// covers), the closing lines past the last column and row among them. The
+/// band rules are the only exception: they take each Header Band's last
+/// cell, which a part-scrolled item may lie under.
 #[hegel::test(test_cases = 300)]
 fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
     // Quarter cells, so items and Gaps start and end part-way into cells.
@@ -228,6 +265,7 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
     let area = Rect::new(dim(3), dim(3), dim(30), dim(16));
     let extent = tc.draw(gs::sampled_from(EXTENTS.to_vec()));
     let weight = tc.draw(gs::sampled_from(WEIGHTS.to_vec()));
+    let style = BorderStyle::new(extent, weight).band_rules(tc.draw(gs::booleans()));
     window(&mut grid, area);
     let snapshot = grid.snapshot();
     let theme = Theme::classic();
@@ -245,7 +283,12 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
         buf
     };
     let plain = drawn(BorderStyle::new(BorderExtent::None, weight));
-    let lined = drawn(BorderStyle::new(extent, weight));
+    let lined = drawn(style);
+    let band_last = |axis| {
+        let thickness = snapshot.header(axis).ceil() as i64;
+        (style.draws_band_rules() && thickness >= 2).then_some(thickness - 1)
+    };
+    let (rule_x, rule_y) = (band_last(Axis::Cols), band_last(Axis::Rows));
 
     for p in plain.area.positions() {
         if plain[p] == lined[p] {
@@ -256,6 +299,9 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
             "{extent:?} drew outside the area at {p:?}"
         );
         let (x, y) = (i64::from(p.x - area.x), i64::from(p.y - area.y));
+        if rule_x == Some(x) || rule_y == Some(y) {
+            continue;
+        }
         let in_col = snapshot.cols().iter().any(|c| covers(c.offset, c.end(), x));
         let in_row = snapshot.rows().iter().any(|r| covers(r.offset, r.end(), y));
         assert!(!(in_col && in_row), "{extent:?} drew over an item at {p:?}");

@@ -52,6 +52,14 @@ pub trait Content {
     fn cell(&self, row: Key, col: Key) -> String;
     fn column_header(&self, col: Key) -> String;
 
+    /// The row header label for the row with Key `row` at `position`:
+    /// Position plus one unless overridden. A row whose Key the Table
+    /// Source has not filled yet always shows Position plus one.
+    fn row_header(&self, row: Key, position: u64) -> String {
+        let _ = row;
+        position.saturating_add(1).to_string()
+    }
+
     /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
     /// unless overridden.
     fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
@@ -82,7 +90,8 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
 }
 
 /// Draws `snapshot` into `area` of `buf` as `ctx` says: column headers along
-/// the top band, row numbers (Position plus one) down the left band, then
+/// the top band, row header labels ([`Content::row_header`]) down the left
+/// band, then
 /// each cell. Text is clipped to its item, to `area`, and for cells to the
 /// body past both header bands, so a part-scrolled item shows only its
 /// visible part. Gaps are drawn as `ctx.border` says (by default the header
@@ -159,7 +168,10 @@ pub fn render_with(
         _ => None,
     };
     for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
-        let number = r.position.saturating_add(1).to_string();
+        let number = r.key.map_or_else(
+            || r.position.saturating_add(1).to_string(),
+            |k| content.row_header(k, r.position),
+        );
         let style = band(theme.row_number, h.hovered);
         put(
             buf,
