@@ -1198,7 +1198,9 @@ fn focus_changed_comes_once_per_drain_and_names_the_focused_cell(tc: TestCase) {
 /// scrolls: the first move takes the first visible cell (the Scroll Anchor,
 /// at the start) or goes to its edge; an item move steps one, clamped; an
 /// edge move goes to the first or last item; a page move goes at least one
-/// item that way and no further than a body's length of the smallest items.
+/// item that way, to the item a body's length on (no nearer than a body
+/// less one item, no further than a body's length of the smallest items),
+/// or to the edge.
 #[hegel::test(test_cases = 2000)]
 fn focus_moves_land_one_item_a_page_or_an_edge_away(tc: TestCase) {
     let rows = tc.draw(axis_config());
@@ -1266,19 +1268,24 @@ fn focus_moves_land_one_item_a_page_or_an_edge_away(tc: TestCase) {
             FocusStep::Page => {
                 let config = [rows, cols][i];
                 let stride = f64::from(config.default_size) + f64::from(config.gap);
-                let most = (f64::from(snap_body[i].max(0.0)) / stride).ceil() as u64 + 1;
+                let body = f64::from(snap_body[i].max(0.0));
+                let most = (body / stride).ceil() as u64 + 1;
                 let moved = got[i].abs_diff(from);
                 let edge = if forward { last } else { 0 };
+                // The landing item holds the point a body's length on, so
+                // it starts less than one stride (its size and Gap) before
+                // that point, unless the edge came first.
+                let far_enough = moved as f64 * stride >= body - stride || got[i] == edge;
                 assert!(
                     (if forward {
                         got[i] >= from
                     } else {
                         got[i] <= from
                     }) && (moved >= 1 || from == edge)
-                        && (moved <= most.max(1)),
-                    "page {forward} from {from} landed on {} (body {})",
+                        && (moved <= most.max(1))
+                        && far_enough,
+                    "page {forward} from {from} landed on {} (body {body}, stride {stride})",
                     got[i],
-                    snap_body[i]
                 );
             }
         }
