@@ -10,7 +10,11 @@
 //! columns. Press Ctrl+F to show only records with a crew of 6 or more, and
 //! again to show them all: focus stays on its record, or moves to the nearest
 //! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
-//! which neither sort, move nor filter.
+//! which neither sort, move nor filter. `binnacle-demo --slow` shows the
+//! records with sorts and Locates answered only after 1.5 s: a Shimmer
+//! sweeps across a header while its sort is pending, and the focused cell
+//! pulses while its Locate is. The demo redraws on a timer only while
+//! something animates or an answer is due, and otherwise waits for input.
 //!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
@@ -39,8 +43,8 @@ use binnacle_core::{
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    ColorSupport, Content, Keymap, Mouse, RenderContext, Theme, render_editor, render_with, status,
-    wheel,
+    ColorSupport, Content, Keymap, Mouse, RenderContext, Theme, animating, render_editor,
+    render_with, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -84,12 +88,24 @@ const NAME: Key = Key(1);
 /// How long a pause starts type-ahead over.
 const TYPE_AHEAD: Duration = Duration::from_secs(1);
 
+/// How long the slow source holds back its sort and Locate answers.
+const SLOW: Duration = Duration::from_millis(1500);
+
+/// How often the demo redraws while something animates.
+const FRAME: Duration = Duration::from_millis(33);
+
+/// Sort requests and Locates the slow source has not answered yet, each
+/// with the time its answer is due.
+type Held = Vec<(Instant, Effect)>;
+
 /// The table the demo shows: records, or a huge identity table.
 enum Table {
     Records {
         rows: Vec<Record>,
         source: Box<MemorySource<Record>>,
         filtered: bool,
+        /// `Some` for the slow source.
+        held: Option<Held>,
     },
     Huge(Huge),
 }
@@ -137,6 +153,35 @@ impl Table {
             _ => auto_size(text, shown, grid, stamped),
         };
         match self {
+            Table::Records {
+                rows,
+                source,
+                held: Some(held),
+                ..
+            } => {
+                let text = Text::Records(rows);
+                let now = Instant::now();
+                let mut source = source.over(rows);
+                let (due, later) = held.drain(..).partition(|&(at, _)| at <= now);
+                *held = later;
+                for (_, effect) in due {
+                    answer(&mut source, grid, effect);
+                }
+                while let Some(stamped) = grid.poll_effect() {
+                    match &stamped.effect {
+                        Effect::SortRequested { .. } | Effect::Locate { .. } => {
+                            held.push((now + SLOW, stamped.effect.clone()));
+                        }
+                        Effect::MoveRequested { axis, keys, to } => {
+                            if let Some(notice) = source.move_items(*axis, keys, *to) {
+                                grid.notify(*axis, notice);
+                            }
+                        }
+                        _ => {}
+                    }
+                    seen(&text, grid, stamped);
+                }
+            }
             Table::Records { rows, source, .. } => {
                 let text = Text::Records(rows);
                 source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
@@ -146,6 +191,16 @@ impl Table {
             }
         }
         app
+    }
+
+    /// When the slow source's next held answer is due.
+    fn next_answer(&self) -> Option<Instant> {
+        match self {
+            Table::Records {
+                held: Some(held), ..
+            } => held.iter().map(|&(at, _)| at).min(),
+            _ => None,
+        }
     }
 
     /// The row type-ahead lands on for `typed`: in the records, the first
@@ -192,6 +247,7 @@ impl Table {
             rows,
             source,
             filtered,
+            ..
         } = self
         {
             *filtered = !*filtered;
@@ -209,6 +265,25 @@ impl Table {
             Table::Records { rows, .. } => Text::Records(rows),
             Table::Huge(_) => Text::Huge,
         }
+    }
+}
+
+/// Answers a sort request or a Locate the slow source held, as
+/// [`pump`] would have at once.
+fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
+    match effect {
+        Effect::SortRequested { spec } => match source.sort(&spec) {
+            Ok(notice) => {
+                grid.sort_applied(spec);
+                grid.notify(Axis::Rows, notice);
+            }
+            Err(previous) => grid.sort_applied(previous),
+        },
+        Effect::Locate { axis, key } => {
+            let located = source.locate(axis, key);
+            grid.located(axis, key, located);
+        }
+        _ => {}
     }
 }
 
@@ -381,10 +456,12 @@ fn main() -> io::Result<()> {
                 .gap(1.0),
         );
         let source = Box::new(source);
+        let slow = std::env::args().any(|a| a == "--slow");
         let table = Table::Records {
             rows,
             source,
             filtered: false,
+            held: slow.then(Vec::new),
         };
         (table, grid)
     };
@@ -406,6 +483,9 @@ fn main() -> io::Result<()> {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let mut theme = if no_color { themes.len() - 1 } else { 0 };
     let colors = ColorSupport::from_colorterm(std::env::var("COLORTERM").ok().as_deref());
+    let start = Instant::now();
+    // Whether the last frame drawn animates.
+    let mut moving = false;
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
     let result = (|| {
@@ -425,7 +505,10 @@ fn main() -> io::Result<()> {
                 shown_rows.clear();
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
-                let ctx = RenderContext::new(&themes[theme]).colors(colors);
+                moving = animating(&snapshot);
+                let ctx = RenderContext::new(&themes[theme])
+                    .colors(colors)
+                    .at(start.elapsed());
                 render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, area, frame.buffer_mut());
@@ -439,6 +522,17 @@ fn main() -> io::Result<()> {
                 let name = ratatui::text::Line::from(themes[theme].name).right_aligned();
                 frame.render_widget(name, line);
             })?;
+            // Wait for input, but only until the next frame while something
+            // animates, or until a held answer is due.
+            let due = table
+                .next_answer()
+                .map(|at| at.saturating_duration_since(Instant::now()));
+            let wake = [moving.then_some(FRAME), due].into_iter().flatten().min();
+            if let Some(timeout) = wake
+                && !event::poll(timeout)?
+            {
+                continue;
+            }
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let ctrl = key.modifiers == KeyModifiers::CONTROL;

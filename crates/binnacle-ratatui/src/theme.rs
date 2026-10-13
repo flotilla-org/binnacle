@@ -202,7 +202,7 @@ const ANSI: [(Color, (u8, u8, u8)); 16] = [
 ];
 
 /// The ANSI colour nearest an RGB colour; other colours are kept.
-fn nearest_ansi(color: Color) -> Color {
+pub(crate) fn nearest_ansi(color: Color) -> Color {
     let Color::Rgb(r, g, b) = color else {
         return color;
     };
