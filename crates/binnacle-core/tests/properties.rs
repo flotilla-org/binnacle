@@ -682,7 +682,10 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         }
         let drained: Vec<Effect> = s.effects();
         // A pointer resize changes Size Overrides of Keys in the Window (or of
-        // one seen resizing earlier): read those back.
+        // one seen resizing earlier): read those back. The model takes the
+        // Grid's word here, so only
+        // `dragging_a_header_border_resizes_its_item_by_the_pointer_travel`
+        // catches a wrong pointer resize.
         for axis in Axis::ALL {
             let i = axis.index();
             let model = &mut models[i];
