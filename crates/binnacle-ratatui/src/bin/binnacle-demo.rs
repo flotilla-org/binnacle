@@ -7,7 +7,7 @@
 //! pending. Focus and picks stay on their records. Drag a column header to
 //! move the column (a selected column takes the other selected ones with
 //! it); a cyan line shows where it will drop, and widths go with their
-//! columns. Press `f` to show only records with a crew of 6 or more, and
+//! columns. Press Ctrl+F to show only records with a crew of 6 or more, and
 //! again to show them all: focus stays on its record, or moves to the nearest
 //! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
 //! which neither sort, move nor filter.
@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use binnacle_core::{
     Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Stamped, Viewport,
 };
-use binnacle_memory::{IdentitySource, MemorySource};
+use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{Content, Keymap, Mouse, render, render_editor, status, wheel};
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -86,18 +86,35 @@ enum Table {
         source: Box<MemorySource<Record>>,
         filtered: bool,
     },
-    Huge {
-        rows: IdentitySource,
-        cols: IdentitySource,
-    },
+    Huge(Huge),
+}
+
+/// The huge table: Keys are Positions on both axes.
+struct Huge {
+    rows: IdentitySource,
+    cols: IdentitySource,
+}
+
+impl Huge {
+    fn axis(&self, axis: Axis) -> &IdentitySource {
+        match axis {
+            Axis::Rows => &self.rows,
+            Axis::Cols => &self.cols,
+        }
+    }
+}
+
+impl PumpSource for Huge {
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.axis(axis).locate(key)
+    }
 }
 
 impl Table {
     fn window(&self, axis: Axis, range: std::ops::Range<u64>) -> Vec<Key> {
-        match (self, axis) {
-            (Table::Records { source, .. }, _) => source.window(axis, range),
-            (Table::Huge { rows, .. }, Axis::Rows) => rows.window(range),
-            (Table::Huge { cols, .. }, Axis::Cols) => cols.window(range),
+        match self {
+            Table::Records { source, .. } => source.window(axis, range),
+            Table::Huge(huge) => huge.axis(axis).window(range),
         }
     }
 
@@ -119,22 +136,8 @@ impl Table {
                 let text = Text::Records(rows);
                 source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
             }
-            Table::Huge { rows, cols } => {
-                while let Some(stamped) = grid.poll_effect() {
-                    if let Effect::Locate { axis, key } = stamped.effect {
-                        let count = match axis {
-                            Axis::Rows => rows.count(),
-                            Axis::Cols => cols.count(),
-                        };
-                        let answer = if key.0 < count {
-                            Located::Found(key.0)
-                        } else {
-                            Located::Gone { suggest: None }
-                        };
-                        grid.located(axis, key, answer);
-                    }
-                    seen(&Text::Huge, grid, stamped);
-                }
+            Table::Huge(huge) => {
+                pump(grid, huge, |grid, stamped| seen(&Text::Huge, grid, stamped));
             }
         }
         app
@@ -154,21 +157,18 @@ impl Table {
                 let (after, before) = order.split_at(start);
                 after.iter().chain(before).copied().find(matches)
             }
-            Table::Huge { rows, .. } => {
+            Table::Huge(huge) => {
                 let n: u64 = typed.parse().ok()?;
-                (1..=rows.count()).contains(&n).then(|| Key(n - 1))
+                (1..=huge.rows.count()).contains(&n).then(|| Key(n - 1))
             }
         }
     }
 
-    /// Stores an edited name and tells the Grid if the rows' order changed.
+    /// Stores an edited name and tells the Grid what changed.
     fn commit(&mut self, grid: &mut Grid, row: Key, text: String) {
         if let Table::Records { rows, source, .. } = self {
             rows[row.0 as usize].name = text;
-            let spec = source.sort_spec().clone();
-            if spec.find(NAME).is_some()
-                && let Ok(notice) = source.sort(rows, &spec)
-            {
+            if let Some(notice) = source.edited(rows, row.0 as usize, NAME) {
                 grid.notify(Axis::Rows, notice);
             }
         }
@@ -177,7 +177,7 @@ impl Table {
     fn name(&self, row: Key) -> Option<String> {
         match self {
             Table::Records { rows, .. } => Some(rows[row.0 as usize].name.clone()),
-            Table::Huge { .. } => None,
+            Table::Huge(_) => None,
         }
     }
 
@@ -202,7 +202,7 @@ impl Table {
     fn text(&self) -> Text<'_> {
         match self {
             Table::Records { rows, .. } => Text::Records(rows),
-            Table::Huge { .. } => Text::Huge,
+            Table::Huge(_) => Text::Huge,
         }
     }
 }
@@ -357,10 +357,10 @@ fn main() -> io::Result<()> {
         for c in 0..HUGE_COLS {
             grid.set_sortable(Key(c), false);
         }
-        let table = Table::Huge {
+        let table = Table::Huge(Huge {
             rows: IdentitySource::new(HUGE_ROWS),
             cols: IdentitySource::new(HUGE_COLS),
-        };
+        });
         (table, grid)
     } else {
         let rows: Vec<Record> = (0..RECORDS).map(Record::generate).collect();
