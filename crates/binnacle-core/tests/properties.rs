@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, Effect, FocusEnd, FocusStep,
-    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, SelectionUnit,
-    Snapshot, Viewport,
+    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, ScrollAnchor,
+    SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
@@ -2403,10 +2403,11 @@ fn set_gap_keeps_the_scroll_anchors_item_at_its_offset(tc: TestCase) {
     // Every item has the default size: nothing set others.
     let size = config.default_size.clamp(config.min_size, config.max_size);
     let past_the_gap = before.offset >= size + new_gap;
-    let at_end = snap
-        .strip(axis)
-        .last()
-        .is_some_and(|l| l.position + 1 == snap.count(axis));
+    // The end clamp binds: the thumb (from the measure, in f64) is at the
+    // end of its travel, or the whole axis fits and nothing scrolls. The
+    // Strip cannot say, as f32 placement past a huge header may drop items.
+    let thumb = snap.thumb(axis);
+    let at_end = thumb.fraction == 1.0 || (thumb.size >= 1.0 && after == ScrollAnchor::default());
     tc.event(if past_the_gap {
         "pulled inside the stride"
     } else {

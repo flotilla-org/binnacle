@@ -247,3 +247,25 @@ fn set_header_during_a_band_drag_rebases_it_and_cancel_keeps_the_hosts_thickness
     assert_eq!(s.frame(V).header(Axis::Cols), 9.0);
     assert_eq!(s.effects(), vec![]);
 }
+
+/// Found by `set_gap_keeps_the_scroll_anchors_item_at_its_offset`: dropping
+/// the Gap makes the whole axis fit the body, so the end clamp scrolls back to
+/// the start, past a header so thick that f32 placement drops the Strip.
+#[test]
+fn set_gap_that_lets_the_whole_axis_fit_scrolls_back_to_the_start() {
+    let rows = AxisConfig::new(2, 0.5)
+        .min_size(0.5)
+        .header(8_388_608.0)
+        .gap(0.5);
+    let mut s = Scenario::identity(rows, AxisConfig::new(1, 1.0));
+    let v = Viewport::new(4.0, 8_388_609.0);
+    s.frame(v);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 0.25 }));
+    let anchor = s.frame(v).scroll_anchor(Axis::Rows);
+    assert_eq!((anchor.position, anchor.offset), (0, 0.25));
+    s.input(|g| g.set_gap(Axis::Rows, 0.0));
+    let snap = s.frame(v);
+    let anchor = snap.scroll_anchor(Axis::Rows);
+    assert_eq!((anchor.position, anchor.offset), (0, 0.0));
+    assert!(snap.thumb(Axis::Rows).size >= 1.0);
+}
