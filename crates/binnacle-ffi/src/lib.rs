@@ -294,10 +294,6 @@ fn axis_tag(axis: Axis) -> u32 {
     }
 }
 
-fn index(axis: Axis) -> usize {
-    axis_tag(axis) as usize
-}
-
 fn flag(b: bool) -> u32 {
     b.into()
 }
@@ -580,7 +576,7 @@ pub unsafe extern "C" fn binnacle_grid_begin_frame(
         with_handle(grid, |h| {
             let mut requests = BinnacleWindowRequests::default();
             for (axis, range) in h.grid.begin_frame(Viewport::new(width, height)) {
-                requests.axes[index(axis)] = BinnacleWindowRequest {
+                requests.axes[axis.index()] = BinnacleWindowRequest {
                     requested: 1,
                     start: range.start,
                     end: range.end,
@@ -679,10 +675,10 @@ impl BinnacleGrid {
         let snap = self.grid.snapshot();
         let damage = snap.damage();
         for axis in Axis::ALL {
-            let strip = &mut self.strips[index(axis)];
+            let strip = &mut self.strips[axis.index()];
             strip.clear();
             strip.extend(snap.strip(axis).iter().map(BinnacleStripItem::from));
-            let headers = &mut self.headers[index(axis)];
+            let headers = &mut self.headers[axis.index()];
             headers.clear();
             headers.extend(snap.headers(axis).map(BinnacleHeader::from));
         }
@@ -708,8 +704,8 @@ impl BinnacleGrid {
         let axis_snapshot = |axis: Axis| {
             let anchor = snap.scroll_anchor(axis);
             let thumb = snap.thumb(axis);
-            let strip = &self.strips[index(axis)];
-            let headers = &self.headers[index(axis)];
+            let strip = &self.strips[axis.index()];
+            let headers = &self.headers[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),

@@ -220,13 +220,6 @@ struct View {
     cols: Vec<(u64, f32, f32)>,
 }
 
-fn index(axis: Axis) -> usize {
-    match axis {
-        Axis::Rows => 0,
-        Axis::Cols => 1,
-    }
-}
-
 struct Host {
     s: Scenario<RecordTable>,
     table: Table,
@@ -419,8 +412,8 @@ fn the_focused_position_always_holds_the_focused_key(tc: TestCase) {
     runs(&tc, |host, _| {
         let Some(focus) = host.view.focus else { return };
         for axis in Axis::ALL {
-            let end = focus[index(axis)];
-            assert!(end.position < host.view.counts[index(axis)]);
+            let end = focus[axis.index()];
+            assert!(end.position < host.view.counts[axis.index()]);
             if let Some(key) = end.key {
                 assert_eq!(host.position(axis, key), end.position, "{axis:?}");
             }
@@ -459,7 +452,7 @@ fn a_reorder_drops_the_range_and_any_drag_and_leaves_the_anchor(tc: TestCase) {
             return;
         }
         for &axis in &step.reordered {
-            let i = index(axis);
+            let i = axis.index();
             if let Some(range) = &host.view.range {
                 assert_eq!(*range.span(axis), 0..host.view.counts[i], "{axis:?}");
             }

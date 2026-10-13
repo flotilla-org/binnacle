@@ -369,13 +369,6 @@ fn input(tc: &TestCase) -> Input {
     ))
 }
 
-fn index(axis: Axis) -> usize {
-    match axis {
-        Axis::Rows => 0,
-        Axis::Cols => 1,
-    }
-}
-
 /// Content sizes a test source answers with on one axis: a table indexed by
 /// Key (wrapping) and the minimum-size hint.
 #[derive(Clone, Debug)]
@@ -428,7 +421,7 @@ struct Sized {
 
 impl ScenarioSource for Sized {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
-        self.windows[index(axis)] = range.clone();
+        self.windows[axis.index()] = range.clone();
         self.requests.borrow_mut().push((axis, range.clone()));
         self.table.window(axis, range)
     }
@@ -438,7 +431,7 @@ impl ScenarioSource for Sized {
     }
 
     fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
-        let c = self.content[index(axis)].as_ref()?;
+        let c = self.content[axis.index()].as_ref()?;
         Some((keys.iter().map(|&k| c.raw(k)).collect(), c.hint))
     }
 }
@@ -658,7 +651,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(&target))),
                 Input::SetSize(axis, key, size) if knobs.resize => {
                     s.input(|g| g.set_size(axis, key, size));
-                    let model = &mut models[index(axis)];
+                    let model = &mut models[axis.index()];
                     if let Some(size) = model.in_range(size) {
                         model.overrides.insert(key, size);
                     }
@@ -673,7 +666,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                         Axis::Rows => s.source.table.rows = identity,
                         Axis::Cols => s.source.table.cols = identity,
                     }
-                    let model = &mut models[index(axis)];
+                    let model = &mut models[axis.index()];
                     model.config.count = count;
                     if axis == Axis::Rows {
                         model.overrides.clear();
@@ -689,7 +682,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         // A pointer resize changes Size Overrides of Keys in the Window (or of
         // one seen resizing earlier): read those back.
         for axis in Axis::ALL {
-            let i = index(axis);
+            let i = axis.index();
             let model = &mut models[i];
             let window = s.source.windows[i].clone().map(Key);
             let keys: BTreeSet<Key> = (model.overrides.keys().copied())
@@ -714,7 +707,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         };
         let snap = s.frame(next);
         if let Mode::Resizing { axis, key, .. } = snap.mode() {
-            resized[index(axis)].insert(key);
+            resized[axis.index()].insert(key);
         }
         target = Target::of(&snap);
         check(&snap, &step);
@@ -772,7 +765,7 @@ fn strips_are_ordered_separated_by_the_gap_and_cover_the_viewport(tc: TestCase) 
     frames(&tc, ALL, |snap, step| {
         let models = step.models;
         for axis in Axis::ALL {
-            let model = &models[index(axis)];
+            let model = &models[axis.index()];
             let gap = snap.gap(axis);
             let strip = snap.strip(axis);
             let (start, end) = body(snap, axis);
@@ -885,7 +878,7 @@ fn the_scroll_anchor_and_thumb_stay_in_bounds(tc: TestCase) {
     frames(&tc, ALL, |snap, step| {
         let models = step.models;
         for axis in Axis::ALL {
-            let model = &models[index(axis)];
+            let model = &models[axis.index()];
             let anchor = snap.scroll_anchor(axis);
             let count = snap.count(axis);
             assert!(
@@ -926,7 +919,7 @@ fn scrolling_stops_where_the_last_item_ends_the_viewport(tc: TestCase) {
                 let (start, end) = body(snap, axis);
                 let count = snap.count(axis);
                 let anchor = snap.scroll_anchor(axis);
-                let resolvable = models[index(axis)].smallest() >= next_f32(end) - end;
+                let resolvable = models[axis.index()].smallest() >= next_f32(end) - end;
                 let Some(last) = snap.strip(axis).last() else {
                     continue;
                 };
@@ -962,7 +955,7 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
     let rows = tc.draw(axis_config());
     let cols = tc.draw(axis_config());
     let axis = tc.draw(axis());
-    let config = [rows, cols][index(axis)];
+    let config = [rows, cols][axis.index()];
     let fraction = tc.draw(hegel::one_of!(
         gs::sampled_from(vec![0.0, 0.5, 1.0]),
         gs::floats::<f64>().min_value(0.0).max_value(1.0),
@@ -1103,7 +1096,7 @@ fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
                 return;
             };
             let (start, stop) = body(snap, axis);
-            let model = &step.models[index(axis)];
+            let model = &step.models[axis.index()];
             let strip = snap.strip(axis);
             // Strip offsets step in f32, each step rounding by up to one f32
             // step at the far edge; items thinner than that drift can be laid
@@ -1154,7 +1147,7 @@ fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
 fn resolvable_body(snap: &Snapshot, step: &Step) -> bool {
     Axis::ALL.iter().all(|&axis| {
         let (start, stop) = body(snap, axis);
-        let model = &step.models[index(axis)];
+        let model = &step.models[axis.index()];
         let drift = (snap.strip(axis).len() as f32 + 2.0) * (next_f32(stop) - stop);
         start < stop && model.smallest() >= drift
     })
@@ -1215,7 +1208,7 @@ fn focus_moves_land_one_item_a_page_or_an_edge_away(tc: TestCase) {
     {
         let snap = s.frame(viewport);
         for axis in Axis::ALL {
-            snap_body[index(axis)] = snap.extent(axis) - snap.header(axis);
+            snap_body[axis.index()] = snap.extent(axis) - snap.header(axis);
         }
     }
     let counts = [rows.count, cols.count];
@@ -1247,7 +1240,7 @@ fn focus_moves_land_one_item_a_page_or_an_edge_away(tc: TestCase) {
             assert_eq!(got, None, "focus placed in an empty table");
             continue;
         }
-        let i = index(axis);
+        let i = axis.index();
         let last = counts[i] - 1;
         let Some(before) = model else {
             let mut expected = [0, 0];
@@ -1532,7 +1525,7 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
         let selection = seen_selection(&snap);
         let sizes: Vec<_> = Axis::ALL
             .into_iter()
-            .flat_map(|a| shown[index(a)].clone().map(move |p| (a, Key(p))))
+            .flat_map(|a| shown[a.index()].clone().map(move |p| (a, Key(p))))
             .map(|(a, k)| s.grid.size_override(a, k))
             .collect();
         (focus, selection, sizes)
@@ -1766,7 +1759,7 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
             Axis::Rows => f64::from(y) - f64::from(y0),
             Axis::Cols => f64::from(x) - f64::from(x0),
         };
-        let config = [rows.0, cols.0][index(axis)];
+        let config = [rows.0, cols.0][axis.index()];
         size = (f64::from(start) + moved)
             .clamp(f64::from(config.min_size), f64::from(config.max_size)) as f32;
         s.input(|g| g.pointer(PointerEvent::moved(x, y)));
@@ -2024,7 +2017,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
 fn window_requests_are_bounded_by_the_body_over_the_min_size(tc: TestCase) {
     frames(&tc, ALL, |snap, step| {
         for (axis, range) in step.requests.borrow().iter() {
-            let config = step.models[index(*axis)].config;
+            let config = step.models[axis.index()].config;
             let (extent, gap) = (snap.extent(*axis), snap.gap(*axis));
             let body = f64::from((extent - snap.header(*axis)).max(0.0));
             let stride = config.min_size + gap;
@@ -2053,7 +2046,7 @@ fn window_requests_are_bounded_by_the_body_over_the_min_size(tc: TestCase) {
 fn every_strip_item_size_lies_in_the_size_range(tc: TestCase) {
     frames(&tc, ALL, |snap, step| {
         for axis in Axis::ALL {
-            let config = step.models[index(axis)].config;
+            let config = step.models[axis.index()].config;
             let range = config.min_size..=config.max_size;
             for item in snap.strip(axis) {
                 assert!(
@@ -2142,7 +2135,7 @@ fn a_row_reset_drops_row_size_overrides_and_a_column_reset_keeps_them(tc: TestCa
     let mut model: BTreeMap<(usize, Key), f32> = BTreeMap::new();
     for (axis, key, size) in tc.draw(gs::vecs(set).max_size(8)) {
         grid.set_size(axis, key, size);
-        model.insert((index(axis), key), size);
+        model.insert((axis.index(), key), size);
     }
     let reset = tc.draw(axis());
     grid.notify(reset, binnacle_core::ChangeNotice::Reset(tc.draw(count())));

@@ -28,7 +28,8 @@ impl Axis {
         }
     }
 
-    pub(crate) fn index(self) -> usize {
+    /// 0 for Rows, 1 for Cols: a slot in per-axis pairs.
+    pub fn index(self) -> usize {
         match self {
             Axis::Rows => 0,
             Axis::Cols => 1,

@@ -39,13 +39,6 @@ enum Input {
     Reset(Axis, u64),
 }
 
-fn ix(axis: Axis) -> usize {
-    match axis {
-        Axis::Rows => 0,
-        Axis::Cols => 1,
-    }
-}
-
 fn axis() -> impl Generator<Axis> {
     gs::sampled_from(vec![Axis::Rows, Axis::Cols])
 }
@@ -255,7 +248,7 @@ fn steps(tc: &TestCase, mut check: impl FnMut(&binnacle_core::Snapshot, &Step)) 
                 }
                 Input::SetFocus(row, col) => {
                     let before = Axis::ALL.map(|a| {
-                        let i = ix(a);
+                        let i = a.index();
                         let p = focused[i].unwrap_or(anchors[i]);
                         (!moved).then_some(p)
                     });
@@ -268,7 +261,7 @@ fn steps(tc: &TestCase, mut check: impl FnMut(&binnacle_core::Snapshot, &Step)) 
                     s.input(|g| g.notify(axis, ChangeNotice::Reordered));
                 }
                 Input::Reset(axis, count) => {
-                    counts[ix(axis)] = count;
+                    counts[axis.index()] = count;
                     let identity = IdentitySource::new(count);
                     match axis {
                         Axis::Rows => s.source.rows = identity,
@@ -277,7 +270,7 @@ fn steps(tc: &TestCase, mut check: impl FnMut(&binnacle_core::Snapshot, &Step)) 
                     if count == 0 {
                         model.cancel();
                     } else if model.cell.is_some() {
-                        model.checking[ix(axis)] = true;
+                        model.checking[axis.index()] = true;
                     }
                     s.input(|g| g.notify(axis, ChangeNotice::Reset(count)));
                 }
@@ -367,7 +360,7 @@ fn set_focus_lands_on_the_keys_the_source_has_and_shows_them(tc: TestCase) {
         };
         let mut present = true;
         for axis in Axis::ALL {
-            let i = ix(axis);
+            let i = axis.index();
             let end = snap.focus(axis).expect("set_focus places focus");
             assert!(!snap.locating(axis), "{axis:?} still locating");
             if keys[i].0 < snap.count(axis) {

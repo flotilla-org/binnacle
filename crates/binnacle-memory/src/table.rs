@@ -315,17 +315,11 @@ impl InMemoryTableSource {
     }
 
     fn axis(&self, axis: Axis) -> &AxisOrder {
-        match axis {
-            Axis::Rows => &self.axes[0],
-            Axis::Cols => &self.axes[1],
-        }
+        &self.axes[axis.index()]
     }
 
     fn axis_mut(&mut self, axis: Axis) -> &mut AxisOrder {
-        match axis {
-            Axis::Rows => &mut self.axes[0],
-            Axis::Cols => &mut self.axes[1],
-        }
+        &mut self.axes[axis.index()]
     }
 
     pub fn count(&self, axis: Axis) -> u64 {

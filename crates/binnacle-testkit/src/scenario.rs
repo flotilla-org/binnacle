@@ -84,13 +84,13 @@ impl KeyedTable {
     }
 
     fn keys(&mut self, axis: Axis) -> &mut Vec<Key> {
-        &mut self.axes[at_index(axis)]
+        &mut self.axes[axis.index()]
     }
 
     /// Inserts `n` new items before Position `at` (clamped to the count);
     /// returns the Change Notice the Grid needs.
     pub fn insert(&mut self, axis: Axis, at: Position, n: u64) -> ChangeNotice {
-        let at = at.min(self.axes[at_index(axis)].len() as u64);
+        let at = at.min(self.axes[axis.index()].len() as u64);
         let fresh: Vec<Key> = (self.next..self.next + n).map(Key).collect();
         self.next += n;
         let keys = self.keys(axis);
@@ -121,24 +121,17 @@ impl KeyedTable {
 
 impl ScenarioSource for KeyedTable {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
-        let keys = &self.axes[at_index(axis)];
+        let keys = &self.axes[axis.index()];
         let end = (range.end as usize).min(keys.len());
         let start = (range.start as usize).min(end);
         keys[start..end].to_vec()
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
-        match self.axes[at_index(axis)].iter().position(|&k| k == key) {
+        match self.axes[axis.index()].iter().position(|&k| k == key) {
             Some(p) => Located::Found(p as u64),
             None => Located::Gone { suggest: None },
         }
-    }
-}
-
-fn at_index(axis: Axis) -> usize {
-    match axis {
-        Axis::Rows => 0,
-        Axis::Cols => 1,
     }
 }
 

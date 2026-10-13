@@ -32,13 +32,6 @@ struct Host {
     viewport: Viewport,
 }
 
-fn index(axis: Axis) -> usize {
-    match axis {
-        Axis::Rows => 0,
-        Axis::Cols => 1,
-    }
-}
-
 fn axis() -> impl hegel::PrintableGenerator<Axis> {
     gs::sampled_from(vec![Axis::Rows, Axis::Cols])
 }
@@ -52,13 +45,13 @@ impl Host {
 
     /// A Position on `axis`, up to and including the count.
     fn position(&self, tc: &TestCase, axis: Axis) -> u64 {
-        let len = self.keys[index(axis)].len() as u64;
+        let len = self.keys[axis.index()].len() as u64;
         tc.draw(gs::integers::<u64>().max_value(len))
     }
 
     /// A Key the source has on `axis`, or one it never had.
     fn key(&self, tc: &TestCase, axis: Axis) -> Key {
-        let keys = &self.keys[index(axis)];
+        let keys = &self.keys[axis.index()];
         if !keys.is_empty() && tc.draw(gs::weighted_booleans(0.7)) {
             Key(*tc.draw(gs::sampled_from(keys.iter().collect::<Vec<_>>())))
         } else {
@@ -100,7 +93,7 @@ impl Host {
     fn frame_and_check(&mut self) {
         let requests: Vec<_> = self.grid.begin_frame(self.viewport).into_iter().collect();
         for (axis, range) in requests {
-            let keys = &self.keys[index(axis)];
+            let keys = &self.keys[axis.index()];
             let end = (range.end as usize).min(keys.len());
             let start = (range.start as usize).min(end);
             let window: Vec<Key> = keys[start..end].iter().map(|&k| Key(k)).collect();
@@ -108,7 +101,7 @@ impl Host {
         }
         let snap = self.grid.snapshot();
         for axis in Axis::ALL {
-            let keys = &self.keys[index(axis)];
+            let keys = &self.keys[axis.index()];
             let count = keys.len() as u64;
             assert_eq!(snap.count(axis), count, "count on {axis:?}");
             for item in snap.strip(axis) {
@@ -155,7 +148,7 @@ impl Host {
     fn answer(&mut self, tc: &TestCase, effect: Effect) {
         match effect {
             Effect::Locate { axis, key } => {
-                let answer = match self.keys[index(axis)].iter().position(|&k| k == key.0) {
+                let answer = match self.keys[axis.index()].iter().position(|&k| k == key.0) {
                     Some(p) => Located::Found(p as u64),
                     None => Located::Gone { suggest: None },
                 };
@@ -171,7 +164,7 @@ impl Host {
                 self.grid.notify(Axis::Rows, ChangeNotice::Reordered);
             }
             Effect::MoveRequested { axis, keys, to } => {
-                let order = &mut self.keys[index(axis)];
+                let order = &mut self.keys[axis.index()];
                 let to = (to as usize).min(order.len());
                 let stays = |k: &&u64| !keys.contains(&Key(**k));
                 let before: Vec<u64> = order[..to].iter().filter(stays).copied().collect();
@@ -203,13 +196,13 @@ impl Host {
         let at = self.position(tc, axis);
         let n = tc.draw(gs::integers::<u64>().min_value(1).max_value(3));
         let fresh = self.fresh(n);
-        self.keys[index(axis)].splice(at as usize..at as usize, fresh);
+        self.keys[axis.index()].splice(at as usize..at as usize, fresh);
         self.grid.notify(axis, ChangeNotice::Inserted { at, n });
     }
 
     fn remove(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
-        let len = self.keys[index(axis)].len() as u64;
+        let len = self.keys[axis.index()].len() as u64;
         // An empty axis has nothing to remove (an assumption would end the
         // whole test case).
         if len == 0 {
@@ -217,14 +210,14 @@ impl Host {
         }
         let at = tc.draw(gs::integers::<u64>().max_value(len - 1));
         let n = tc.draw(gs::integers::<u64>().min_value(1).max_value(len - at));
-        self.keys[index(axis)].drain(at as usize..(at + n) as usize);
+        self.keys[axis.index()].drain(at as usize..(at + n) as usize);
         self.grid.notify(axis, ChangeNotice::Removed { at, n });
     }
 
     fn reorder(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
-        let keys = std::mem::take(&mut self.keys[index(axis)]);
-        self.keys[index(axis)] = tc.draw(gs::permutations(keys));
+        let keys = std::mem::take(&mut self.keys[axis.index()]);
+        self.keys[axis.index()] = tc.draw(gs::permutations(keys));
         self.grid.notify(axis, ChangeNotice::Reordered);
     }
 
@@ -232,7 +225,7 @@ impl Host {
     /// replaced); now and then everything is reordered too.
     fn replace(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
-        let mut keys = tc.draw(gs::subsequences(self.keys[index(axis)].clone()));
+        let mut keys = tc.draw(gs::subsequences(self.keys[axis.index()].clone()));
         for _ in 0..tc.draw(gs::integers::<u64>().max_value(3)) {
             let at = tc.draw(gs::integers::<usize>().max_value(keys.len()));
             let fresh = self.fresh(1);
@@ -241,8 +234,8 @@ impl Host {
         if tc.draw(gs::weighted_booleans(0.2)) {
             keys = tc.draw(gs::permutations(keys));
         }
-        self.keys[index(axis)] = keys;
-        let count = self.keys[index(axis)].len() as u64;
+        self.keys[axis.index()] = keys;
+        let count = self.keys[axis.index()].len() as u64;
         self.grid.notify(axis, ChangeNotice::Reset(count));
     }
 

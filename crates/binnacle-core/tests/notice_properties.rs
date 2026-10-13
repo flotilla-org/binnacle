@@ -85,13 +85,6 @@ fn input(tc: &TestCase) -> Input {
     ))
 }
 
-fn index(axis: Axis) -> usize {
-    match axis {
-        Axis::Rows => 0,
-        Axis::Cols => 1,
-    }
-}
-
 /// What a check needs from a Snapshot, owned so the source can be queried
 /// beside it.
 #[derive(Clone, Debug)]
@@ -160,7 +153,7 @@ impl Host {
     }
 
     fn count(&self, axis: Axis) -> u64 {
-        self.s.source.axes[index(axis)].len() as u64
+        self.s.source.axes[axis.index()].len() as u64
     }
 
     /// Pushes `input`; returns the Change Notice it sent, if any.
@@ -305,7 +298,7 @@ fn focus_and_the_anchor_stay_in_bounds(tc: TestCase) {
     runs(&tc, |host| {
         let v = &host.view;
         for axis in Axis::ALL {
-            let i = index(axis);
+            let i = axis.index();
             assert_eq!(v.counts[i], host.count(axis));
             if let Some(f) = v.focus {
                 assert!(f[i].position < v.counts[i], "{axis:?} {f:?}");
@@ -325,9 +318,9 @@ fn the_focused_position_holds_the_focused_key(tc: TestCase) {
         let Some(focus) = host.view.focus else { return };
         assert_eq!(host.view.locating, [false; 2]);
         for axis in Axis::ALL {
-            let end = focus[index(axis)];
+            let end = focus[axis.index()];
             if let Some(key) = end.key {
-                let keys = &host.s.source.axes[index(axis)];
+                let keys = &host.s.source.axes[axis.index()];
                 assert_eq!(keys[end.position as usize], key, "{axis:?} {end:?}");
             }
         }
@@ -457,7 +450,7 @@ fn positional_notices_near_the_largest_count_keep_everything_in_bounds(tc: TestC
     let steps = [FocusStep::Item, FocusStep::Page, FocusStep::Edge];
     for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(12)) {
         let axis = tc.draw(axis());
-        let i = index(axis);
+        let i = axis.index();
         match tc.draw(gs::integers::<u8>().max_value(3)) {
             0 => {
                 let at = tc.draw(hegel::one_of!(huge_count(), gs::just(counts[i])));
@@ -496,7 +489,7 @@ fn positional_notices_near_the_largest_count_keep_everything_in_bounds(tc: TestC
         s.source.cols = IdentitySource::new(counts[1]);
         let snap = s.frame(v);
         for axis in Axis::ALL {
-            let i = index(axis);
+            let i = axis.index();
             assert_eq!(snap.count(axis), counts[i], "count on {axis:?}");
             if let Some(f) = snap.focus(axis) {
                 assert!(f.position < counts[i], "focus on {axis:?} {f:?}");
