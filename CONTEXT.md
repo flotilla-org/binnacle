@@ -79,8 +79,8 @@ _Avoid_: Sort order, remap spec
 ### Inside an In-Memory Table Source
 
 **In-Memory Table Source**:
-The shared Table Source implementation for simple sources: it holds no cell data, only the Remap and the machinery to sort, filter and move from keys and results the host feeds it.
-_Avoid_: Memory source, default source, engine
+The shared Table Source implementation for simple sources: it holds no cell data, only the Remap and the machinery to sort, filter and move from keys and results the host feeds it. In Rust it is `InMemoryTableSource`, and `MemorySource<R>` is its type name when wrapped with closures over the host's rows; both type names are fine in code and prose about code.
+_Avoid_: Memory source (as a prose term), default source, engine
 
 **Logical Index**:
 The index of a base row or column in the host's data, as an In-Memory Table Source tracks it; never seen by the Grid.

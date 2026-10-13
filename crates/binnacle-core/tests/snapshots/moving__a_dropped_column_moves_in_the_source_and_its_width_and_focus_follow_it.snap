@@ -1,0 +1,42 @@
+---
+source: crates/binnacle-core/tests/moving.rs
+expression: out
+---
+--- 1. focus row 1 of column 0, which is 8 wide
+window Rows 0..3
+window Cols 0..4
+effect (gen 1): FocusChanged { row: Key(1), col: Key(0) }
+gen 2 | damage selection | focus 1#1,0#0 at 4,3 8x1
+Rows: count 3, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@3+1 2#2@5+1
+Cols: count 4, extent 40, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+8 1#1@13+6 2#2@20+6 3#3@27+6
+    0        1      2      3
+0   0.0      0.1    0.2    0.3
+
+1   *1.0     1.1    1.2    1.3
+
+2   2.0      2.1    2.2    2.3
+--- 2. drag its header past column 2's middle
+gen 3 | damage selection | focus 1#1,0#0 at 4,3 8x1 | mode MovingHeaders { axis: Cols, key: Key(0), to: 3 } | capturing | hover Cols 2 | cursor Move | moving 0 to Cols 3 at 26.5
+Rows: (unchanged)
+Cols: (unchanged)
+    0        1      2     |3
+0   0.0      0.1    0.2    0.3
+
+1   *1.0     1.1    1.2    1.3
+
+2   2.0      2.1    2.2    2.3
+--- 3. drop: the source moves it, the Grid refetches the columns and locates the focus
+effect (gen 3): MoveRequested { axis: Cols, keys: [Key(0)], to: 3 }
+  move Cols [Key(0)] to 3: Some(Reordered)
+effect (gen 3): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Found(2)
+window Cols 0..4
+gen 4 | damage layout selection positions | focus 1#1,2#0 at 18,3 8x1 | hover Cols 2
+Rows: (unchanged)
+Cols: count 4, extent 40, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#1@4+6 1#2@11+6 2#0@18+8 3#3@27+6
+    1      2      0        3
+0   0.1    0.2    0.0      0.3
+
+1   1.1    1.2    *1.0     1.3
+
+2   2.1    2.2    2.0      2.3

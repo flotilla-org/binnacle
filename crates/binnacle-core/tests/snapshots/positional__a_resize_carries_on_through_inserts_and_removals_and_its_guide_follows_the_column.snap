@@ -1,0 +1,31 @@
+---
+source: crates/binnacle-core/tests/positional.rs
+expression: out
+---
+--- 1. drag column 1's border 1 right: 7 wide
+window Rows 0..6
+window Cols 0..3
+gen 2 | damage layout selection | mode Resizing { axis: Cols, key: Key(1), start_size: 6.0 } | capturing | cursor ResizeCol | guide Cols 18 (key 1 size 7)
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+7 2#2@19+6
+    0      1       2
+0   0.0    0.1     0.2
+1   1.0    1.1     1.2
+2   2.0    2.1     2.2
+3   3.0    3.1     3.2
+--- 2. remove column 0, insert and remove rows: still resizing column 1 (now at Position 0), 8 wide, the guide at its new end
+window Rows 1..9
+gen 3 | damage layout positions | mode Resizing { axis: Cols, key: Key(1), start_size: 6.0 } | capturing | cursor ResizeCol | guide Cols 12 (key 1 size 8)
+Rows: count 21, extent 5, header 1, anchor 3+0, thumb 0.1765/0.1905 | 3#0@1+1 4#1@2+1 5#4@3+1 6#5@4+1
+Cols: count 2, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#1@4+8 1#2@13+6
+    1        2
+3   0.1      0.2
+4   1.1      1.2
+5   4.1      4.2
+6   5.1      5.2
+--- 3. release: SizeChanged for column 1
+effect (gen 3): SizeChanged { axis: Cols, key: Key(1), size: 8.0 }
+gen 4 | damage selection | cursor ResizeCol
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

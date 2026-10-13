@@ -1,0 +1,15 @@
+[package]
+name = "binnacle-core"
+description = "The binnacle Grid: a toolkit-agnostic table view controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+binnacle-memory.workspace = true
+binnacle-testkit.workspace = true
+hegeltest.workspace = true
+insta.workspace = true

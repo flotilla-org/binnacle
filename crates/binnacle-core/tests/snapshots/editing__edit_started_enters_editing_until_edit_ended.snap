@@ -1,0 +1,56 @@
+---
+source: crates/binnacle-core/tests/editing.rs
+expression: out
+---
+--- 1. focus row 1, F2: EditRequested, but no edit yet
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): FocusChanged { row: Key(1), col: Key(0) }
+effect (gen 1): EditRequested { row: Key(1), col: Key(0) }
+gen 2 | damage selection | focus 1#1,0#0 at 4,2 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   0.0    0.1    0.2
+1   *1.0   1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+--- 2. the host starts editing: Editing, editor rect, cell marked =
+gen 3 | damage selection | focus 1#1,0#0 at 4,2 6x1 | mode Editing { row: Key(1), col: Key(0) } | editor 4,2 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   =1.0   1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+--- 3. scrolling a row carries the editor rect up
+window Rows 0..7
+gen 4 | damage layout positions | focus 1#1,0#0 at 4,1 6x1 | mode Editing { row: Key(1), col: Key(0) } | editor 4,1 6x1
+Rows: count 20, extent 5, header 1, anchor 1+0, thumb 0.0625/0.2000 | 1#1@1+1 2#2@2+1 3#3@3+1 4#4@4+1
+Cols: (unchanged)
+    0      1      2
+1   =1.0   1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+--- 4. scrolled out of view: still editing, no rect
+window Rows 0..8
+gen 5 | damage layout positions | focus 1#1,0#0 not drawn | mode Editing { row: Key(1), col: Key(0) }
+Rows: count 20, extent 5, header 1, anchor 2+0, thumb 0.1250/0.2000 | 2#2@1+1 3#3@2+1 4#4@3+1 5#5@4+1
+Cols: (unchanged)
+    0      1      2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+5   5.0    5.1    5.2
+--- 5. the host commits: Idle, no Effect
+gen 6 | damage selection | focus 1#1,0#0 not drawn
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 6. an edit the host cancels itself sends nothing either
+gen 7 | damage selection | focus 1#1,0#0 not drawn
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

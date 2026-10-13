@@ -1,0 +1,15 @@
+[package]
+name = "binnacle-ratatui"
+description = "ratatui adapter and demo for the binnacle Grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+binnacle-core.workspace = true
+binnacle-memory.workspace = true
+ratatui.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

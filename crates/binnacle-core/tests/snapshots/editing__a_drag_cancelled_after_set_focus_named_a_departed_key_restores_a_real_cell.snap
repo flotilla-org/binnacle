@@ -1,0 +1,33 @@
+---
+source: crates/binnacle-core/tests/editing.rs
+expression: out
+---
+--- 1. set_focus to a departed row Key, then a drag
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): Locate { axis: Rows, key: Key(50) }
+  locate Rows Key(50): Gone { suggest: None }
+effect (gen 1): FocusChanged { row: Key(3), col: Key(2) }
+effect (gen 1): SelectionChanged
+gen 2 | damage selection | focus 3#3,2#2 at 18,4 6x1 | range 2..4 x 1..3 | fill 11,3 13x2 | mode DraggingSelection | capturing
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    +2.1   +2.2
+3   3.0    +3.1   *3.2
+--- 2. a notice cancels the drag: focus goes back to where set_focus left it once Key 50 was found gone (row 0), not to Key 50
+effect (gen 2): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Found(0)
+effect (gen 2): FocusChanged { row: Key(0), col: Key(0) }
+effect (gen 2): SelectionChanged
+window Cols 0..3
+gen 3 | damage layout selection positions | focus 0#0,0#0 at 4,1 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2
+0   *0.0   0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2

@@ -1,0 +1,46 @@
+---
+source: crates/binnacle-core/tests/editing.rs
+expression: out
+---
+--- 1. focus and edit record 3
+window Rows 0..8
+window Cols 0..3
+effect (gen 1): FocusChanged { row: Key(3), col: Key(0) }
+gen 2 | damage selection | focus 3#3,0#0 at 4,4 6x1 | mode Editing { row: Key(3), col: Key(0) } | editor 4,4 6x1
+Rows: count 8, extent 10, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1 4#4@5+1 5#5@6+1 6#6@7+1 7#7@8+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   =3.0   3.1    3.2
+4   4.0    4.1    4.2
+5   5.0    5.1    5.2
+6   6.0    6.1    6.2
+7   7.0    7.1    7.2
+
+--- 2. filter out record 3: one Locate answers for focus and edit; focus falls back to row 3, the edit is cancelled
+effect (gen 2): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: Some(3) }
+effect (gen 2): EditCancelled { row: Key(3), col: Key(0) }
+window Rows 0..7
+gen 3 | damage layout selection positions | focus 3#4,0#0 at 4,4 6x1
+Rows: count 7, extent 10, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#4@4+1 4#5@5+1 5#6@6+1 6#7@7+1
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   *4.0   4.1    4.2
+4   5.0    5.1    5.2
+5   6.0    6.1    6.2
+6   7.0    7.1    7.2
+
+
+--- 3. editing record 4, then nothing left: cancelled at once
+effect (gen 3): FocusChanged { row: Key(4), col: Key(0) }
+effect (gen 4): EditCancelled { row: Key(4), col: Key(1) }
+gen 5 | damage layout selection positions
+Rows: count 0, extent 10, header 1, anchor 0+0, thumb 0.0000/1.0000 |
+Cols: (unchanged)
+    0      1      2

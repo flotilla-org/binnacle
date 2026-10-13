@@ -1,0 +1,33 @@
+---
+source: crates/binnacle-core/tests/positional.rs
+expression: out
+---
+--- 1. select all
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): SelectionChanged
+gen 2 | damage selection | range 0..20 x 0..3 | fill 4,1 20x4
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   +0.0   +0.1   +0.2
+1   +1.0   +1.1   +1.2
+2   +2.0   +2.1   +2.2
+3   +3.0   +3.1   +3.2
+--- 2. remove 5 rows: still every row, SelectionChanged
+effect (gen 2): SelectionChanged
+window Rows 0..6
+gen 3 | damage layout selection positions | range 0..15 x 0..3 | fill 4,1 20x4
+Rows: count 15, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2667 | 0#5@1+1 1#6@2+1 2#7@3+1 3#8@4+1
+Cols: (unchanged)
+    0      1      2
+0   +5.0   +5.1   +5.2
+1   +6.0   +6.1   +6.2
+2   +7.0   +7.1   +7.2
+3   +8.0   +8.1   +8.2
+--- 3. remove every row: no range
+effect (gen 3): SelectionChanged
+gen 4 | damage layout selection positions
+Rows: count 0, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 |
+Cols: (unchanged)
+    0      1      2

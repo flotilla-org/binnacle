@@ -1,0 +1,26 @@
+---
+source: crates/binnacle-core/tests/positional.rs
+expression: out
+---
+--- 1. scroll to the end
+window Rows 0..6
+window Cols 0..3
+window Rows 13..20
+gen 2 | damage layout positions
+Rows: count 20, extent 5, header 1, anchor 16+0, thumb 1.0000/0.2000 | 16#16@1+1 17#17@2+1 18#18@3+1 19#19@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+16  16.0   16.1   16.2
+17  17.0   17.1   17.2
+18  18.0   18.1   18.2
+19  19.0   19.1   19.2
+--- 2. append 2 rows: the view follows the end
+window Rows 15..22
+gen 3 | damage layout positions
+Rows: count 22, extent 5, header 1, anchor 18+0, thumb 1.0000/0.1818 | 18#18@1+1 19#19@2+1 20#20@3+1 21#21@4+1
+Cols: (unchanged)
+    0      1      2
+18  18.0   18.1   18.2
+19  19.0   19.1   19.2
+20  20.0   20.1   20.2
+21  21.0   21.1   21.2

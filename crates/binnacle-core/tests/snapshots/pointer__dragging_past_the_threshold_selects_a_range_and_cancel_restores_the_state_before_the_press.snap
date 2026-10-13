@@ -1,0 +1,75 @@
+---
+source: crates/binnacle-core/tests/pointer.rs
+expression: out
+---
+--- 1. focus row 0, column 0; threshold 2
+window Rows 0..6
+window Cols 0..5
+effect (gen 1): FocusChanged { row: Key(0), col: Key(0) }
+gen 2 | damage selection | focus 0#0,0#0 at 4,1 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   *0.0   0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 2. press row 1, column 1 and move 1.5: still a press
+effect (gen 2): FocusChanged { row: Key(1), col: Key(1) }
+gen 3 | damage selection | focus 1#1,1#1 at 11,2 6x1 | capturing
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    *1.1   1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 3. move on to row 2, column 2: dragging
+effect (gen 3): FocusChanged { row: Key(2), col: Key(2) }
+effect (gen 3): SelectionChanged
+gen 4 | damage selection | focus 2#2,2#2 at 18,3 6x1 | range 1..3 x 1..3 | fill 11,2 13x2 | mode DraggingSelection | capturing
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    +1.1   +1.2   1
+2   2.0    +2.1   *2.2   2
+3   3.0    3.1    3.2    3
+--- 4. past the viewport: the nearest visible cell
+effect (gen 4): FocusChanged { row: Key(3), col: Key(3) }
+effect (gen 4): SelectionChanged
+gen 5 | damage selection | focus 3#3,3#3 at 25,4 6x1 | range 1..4 x 1..4 | fill 11,2 20x3 | mode DraggingSelection | capturing
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    +1.1   +1.2   +
+2   2.0    +2.1   +2.2   +
+3   3.0    +3.1   +3.2   *
+--- 5. cancel: focus and selection as before the press
+effect (gen 5): FocusChanged { row: Key(0), col: Key(0) }
+effect (gen 5): SelectionChanged
+gen 6 | damage selection | focus 0#0,0#0 at 4,1 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   *0.0   0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 6. the rest of the cancelled press is ignored
+gen 7 | damage none | focus 0#0,0#0 at 4,1 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 7. drag again and release: the range stays
+effect (gen 7): FocusChanged { row: Key(2), col: Key(2) }
+effect (gen 7): SelectionChanged
+gen 8 | damage selection | focus 2#2,2#2 at 18,3 6x1 | range 1..3 x 1..3 | fill 11,2 13x2
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    +1.1   +1.2   1
+2   2.0    +2.1   *2.2   2
+3   3.0    3.1    3.2    3

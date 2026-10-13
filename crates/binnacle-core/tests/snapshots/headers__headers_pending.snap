@@ -1,0 +1,12 @@
+---
+source: crates/binnacle-core/tests/headers.rs
+expression: headers(&s.grid.snapshot())
+---
+Rows 0#0 at 0,1 4x1
+Rows 1#1 at 0,2 4x1
+Rows 2#2 at 0,3 4x1
+Rows 3#3 at 0,4 4x1 selected
+Cols 0#0 at 4,0 6x1 pending hovered
+Cols 1#1 at 11,0 6x1 sort ^0 pending
+Cols 2#2 at 18,0 6x1 selected
+Cols 3#3 at 25,0 6x1 sort v1 pending

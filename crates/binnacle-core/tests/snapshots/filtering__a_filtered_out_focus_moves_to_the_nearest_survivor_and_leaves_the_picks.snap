@@ -1,0 +1,43 @@
+---
+source: crates/binnacle-core/tests/filtering.rs
+expression: out
+---
+--- 1. row 0 sized 2, column 0 sized 5; pick records 2 and 1, focus record 1
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): SelectionChanged
+effect (gen 1): FocusChanged { row: Key(1), col: Key(1) }
+gen 2 | damage layout selection | focus 1#1,1#1 at 10,3 6x1 | picks 1,2 | fill 4,3 19x1 | fill 4,4 19x1
+Rows: count 8, extent 5, header 1, anchor 0+0, thumb 0.0000/0.4444 | 0#0@1+2 1#1@3+1 2#2@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+5 1#1@10+6 2#2@17+6
+    0     1      2
+0   0.0   0.1    0.2
+
+1   +1.0  *1.1   +1.2
+2   +2.0  +2.1   +2.2
+--- 2. filter out record 1 (value 3): focus goes to record 2, the next one, which is now row 1; the pick of 1 goes; row sizes drop, column sizes stay
+effect (gen 2): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: Some(1) }
+effect (gen 2): SelectionChanged
+window Rows 0..6
+gen 3 | damage layout selection positions | focus 1#2,1#1 at 10,2 6x1 | picks 2 | fill 4,2 19x1
+Rows: count 7, extent 5, header 1, anchor 0+0, thumb 0.0000/0.5714 | 0#0@1+1 1#2@2+1 2#3@3+1 3#4@4+1
+Cols: (unchanged)
+    0     1      2
+0   0.0   0.1    0.2
+1   +2.0  *2.1   +2.2
+2   3.0   3.1    3.2
+3   4.0   4.1    4.2
+--- 3. keep values of 5 and up: record 2 stays and focus follows it (FocusChanged for record 2 was queued when the last frame's Window named it)
+effect (gen 3): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(1)
+effect (gen 3): FocusChanged { row: Key(2), col: Key(1) }
+window Rows 0..4
+gen 4 | damage layout selection positions | focus 1#2,1#1 at 10,2 6x1 | picks 2 | fill 4,2 19x1
+Rows: count 4, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#2@2+1 2#4@3+1 3#6@4+1
+Cols: (unchanged)
+    0     1      2
+0   0.0   0.1    0.2
+1   +2.0  *2.1   +2.2
+2   4.0   4.1    4.2
+3   6.0   6.1    6.2

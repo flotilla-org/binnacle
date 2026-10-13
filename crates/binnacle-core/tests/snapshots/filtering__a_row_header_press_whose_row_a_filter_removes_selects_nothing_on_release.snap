@@ -1,0 +1,15 @@
+---
+source: crates/binnacle-core/tests/filtering.rs
+expression: out
+---
+--- 1. press row 3's header, filter down to 3 rows, release: no row 3 to select
+window Rows 0..6
+window Cols 0..3
+window Rows 0..3
+gen 2 | damage layout selection positions
+Rows: count 3, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#2@1+1 1#4@2+1 2#6@3+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   2.0    2.1    2.2
+1   4.0    4.1    4.2
+2   6.0    6.1    6.2

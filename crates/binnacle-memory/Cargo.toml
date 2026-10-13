@@ -1,0 +1,13 @@
+[package]
+name = "binnacle-memory"
+description = "The In-Memory Table Source for binnacle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+binnacle-core.workspace = true
+
+[dev-dependencies]
+hegeltest.workspace = true

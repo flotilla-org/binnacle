@@ -1,0 +1,50 @@
+---
+source: crates/binnacle-core/tests/pointer.rs
+expression: out
+---
+--- 1. ctrl-click row 0, cmd-click row 2
+window Rows 0..6
+window Cols 0..5
+effect (gen 1): SelectionChanged
+effect (gen 1): FocusChanged { row: Key(2), col: Key(1) }
+gen 2 | damage selection | focus 2#2,1#1 at 11,3 6x1 | picks 0,2 | fill 4,1 27x1 | fill 4,3 27x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   +0.0   +0.1   +0.2   +
+1   1.0    1.1    1.2    1
+2   +2.0   *2.1   +2.2   +
+3   3.0    3.1    3.2    3
+--- 2. shift-click row 3: range from row 2, picks kept
+effect (gen 2): FocusChanged { row: Key(3), col: Key(1) }
+effect (gen 2): SelectionChanged
+gen 3 | damage selection | focus 3#3,1#1 at 11,4 6x1 | range 2..4 x 1..2 | picks 0,2 | fill 11,3 6x2 | fill 4,1 27x1 | fill 4,3 27x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   +0.0   +0.1   +0.2   +
+1   1.0    1.1    1.2    1
+2   +2.0   +2.1   +2.2   +
+3   3.0    *3.1   3.2    3
+--- 3. ctrl-click row 0 again: unpicked
+effect (gen 3): SelectionChanged
+effect (gen 3): FocusChanged { row: Key(0), col: Key(1) }
+gen 4 | damage selection | focus 0#0,1#1 at 11,1 6x1 | range 2..4 x 1..2 | picks 2 | fill 11,3 6x2 | fill 4,3 27x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    *0.1   0.2    0
+1   1.0    1.1    1.2    1
+2   +2.0   +2.1   +2.2   +
+3   3.0    +3.1   3.2    3
+--- 4. plain click: range and picks gone
+effect (gen 4): FocusChanged { row: Key(1), col: Key(1) }
+effect (gen 4): SelectionChanged
+gen 5 | damage selection | focus 1#1,1#1 at 11,2 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    *1.1   1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
