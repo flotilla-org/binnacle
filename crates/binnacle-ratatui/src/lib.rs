@@ -7,11 +7,16 @@
 mod context;
 mod keymap;
 mod mouse;
+mod renderer;
 mod theme;
 
 pub use context::{BorderStyle, RenderContext};
 pub use keymap::Keymap;
 pub use mouse::Mouse;
+pub use renderer::{
+    Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
+    TextRenderer, fit_width, flashing,
+};
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
@@ -38,10 +43,17 @@ pub fn wheel(event: &MouseEvent) -> Option<Action> {
     Some(Action::Scroll { dx, dy })
 }
 
-/// The host's text for the Keys the Grid places.
+/// The host's text for the Keys the Grid places, and how each column draws.
 pub trait Content {
     fn cell(&self, row: Key, col: Key) -> String;
     fn column_header(&self, col: Key) -> String;
+
+    /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
+    /// unless overridden.
+    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+        let _ = col;
+        Box::new(TextRenderer::new(move |row, col| self.cell(row, col)))
+    }
 }
 
 /// Draws `snapshot` into `area` of `buf` in the `classic` Theme with
@@ -111,6 +123,13 @@ pub fn render_with(
         }
     }
     let picked = snapshot.picked();
+    let renderers: Vec<_> = (snapshot.cols().iter())
+        .map(|c| c.key.map(|k| content.renderer(k)))
+        .collect();
+    let hovered_col = match snapshot.hovered_header() {
+        Some((Axis::Cols, c)) => Some(c.position),
+        _ => None,
+    };
     for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
         let number = r.position.saturating_add(1).to_string();
         let style = band(theme.row_number, h.hovered);
@@ -132,24 +151,64 @@ pub fn render_with(
             }
         }
         let in_picked = r.key.is_some_and(|k| picked.contains(&k));
-        for c in snapshot.cols() {
-            let key = r.key.zip(c.key);
-            let text = key.map_or_else(|| LOADING.to_string(), |(row, col)| content.cell(row, col));
+        let row_hovered = h.hovered;
+        for (c, renderer) in snapshot.cols().iter().zip(&renderers) {
             let state = snapshot.cell_state(r, c);
-            let style = if state.focused {
-                row_style.patch(theme.focus)
-            } else if in_picked {
-                row_style.patch(theme.picks)
-            } else if state.selected {
-                row_style.patch(theme.selection)
-            } else {
-                row_style
+            let status = CellStatus {
+                focused: state.focused,
+                selected: state.selected && !in_picked,
+                picked: in_picked,
+                hovered: row_hovered || hovered_col == Some(c.position),
             };
-            let clip = (left, c.end(), top);
-            put(buf, area, (c.offset, r.offset), clip, &pad(text), style);
-            if key.is_none() {
-                let style = style.patch(theme.loading);
-                put(buf, area, (c.offset, r.offset), clip, LOADING, style);
+            let over = if status.focused {
+                theme.focus
+            } else if status.picked {
+                theme.picks
+            } else if status.selected {
+                theme.selection
+            } else {
+                Style::default()
+            };
+            let (x0, y0) = (cell(c.offset), cell(r.offset));
+            let (x1, y1) = (cell(c.end()), cell(r.end()));
+            let clip = |lo: i64, hi: i64, min: i64, max: u16| {
+                let lo = lo.max(min).max(0).min(i64::from(max));
+                (lo, hi.min(i64::from(max)).max(lo))
+            };
+            let (vx0, vx1) = clip(x0, x1, cell(left), area.width);
+            let (vy0, vy1) = clip(y0, y1, cell(top), area.height);
+            let visible = Rect::new(
+                area.x + vx0 as u16,
+                area.y + vy0 as u16,
+                (vx1 - vx0) as u16,
+                (vy1 - vy0) as u16,
+            );
+            let size = |lo: i64, hi: i64| u32::try_from(hi - lo).unwrap_or(0);
+            let mut canvas = CellCanvas {
+                buf,
+                origin: (i64::from(area.x) + x0, i64::from(area.y) + y0),
+                size: (size(x0, x1), size(y0, y1)),
+                visible,
+                status,
+                theme,
+                now: ctx.now,
+                colors: ctx.colors,
+            };
+            let blank = " ".repeat(visible.width.into());
+            for y in canvas.visible_y() {
+                let x = canvas.visible_x().start;
+                canvas.print(x, y, &blank, row_style);
+            }
+            match (r.key, c.key, renderer) {
+                (Some(row), Some(col), Some(renderer)) => {
+                    renderer.draw(row, col, &mut canvas);
+                    canvas.patch(over);
+                }
+                _ => {
+                    let y = canvas.visible_y().start;
+                    canvas.patch(over);
+                    canvas.print(0, y, LOADING, row_style.patch(over).patch(theme.loading));
+                }
             }
         }
     }

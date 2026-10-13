@@ -10,7 +10,11 @@
 //! columns. Press Ctrl+F to show only records with a crew of 6 or more, and
 //! again to show them all: focus stays on its record, or moves to the nearest
 //! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
-//! which neither sort, move nor filter.
+//! which neither sort, move nor filter. `binnacle-demo --live` shows 200
+//! tickers whose prices and loads change four times a second: the price
+//! right-aligned, its recent history as a sparkline, the load as a bar, and
+//! changed cells flashing. Each tick sends Change Notices through the
+//! In-Memory Table Source, so a sort by price or load holds as values move.
 //!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
@@ -39,8 +43,9 @@ use binnacle_core::{
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    ColorSupport, Content, Keymap, Mouse, RenderContext, Theme, render_editor, render_with, status,
-    wheel,
+    Align, BarRenderer, CellCanvas, CellRenderer, ColorSupport, Content, Keymap, Mouse,
+    RenderContext, SparklineRenderer, TextRenderer, Theme, fit_width, render_editor, render_with,
+    status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -78,6 +83,112 @@ impl Record {
 
 const HEADERS: [&str; 4] = ["id", "name", "weight", "crew"];
 
+const TICKERS: usize = 200;
+const TICKER_HEADERS: [&str; 4] = ["ticker", "price", "trend", "load"];
+/// How many prices a ticker's sparkline remembers.
+const HISTORY: usize = 24;
+const TICK: Duration = Duration::from_millis(250);
+
+/// A row of the live table.
+struct Ticker {
+    name: String,
+    price: f64,
+    /// Recent prices, oldest first, ending with `price`.
+    history: Vec<f64>,
+    /// Between 0 and 1.
+    load: f64,
+    /// When the price and load last changed, on the demo's clock.
+    changed: Duration,
+}
+
+/// The live table: tickers whose values change every [`TICK`].
+struct Live {
+    rows: Vec<Ticker>,
+    source: Box<MemorySource<Ticker>>,
+    /// A xorshift state, so runs repeat.
+    seed: u64,
+    next_tick: Instant,
+}
+
+impl Live {
+    fn new() -> Live {
+        let mut live = Live {
+            rows: Vec::new(),
+            source: Box::new(
+                MemorySource::<Ticker>::new(TICKERS, TICKER_HEADERS.len())
+                    .bytes_column(Key(0), |t| Some(Cow::Borrowed(t.name.as_bytes())))
+                    .f64_column(Key(1), |t| Some(t.price))
+                    .f64_column(Key(3), |t| Some(t.load)),
+            ),
+            seed: 0x2545_F491_4F6C_DD1D,
+            next_tick: Instant::now(),
+        };
+        live.rows = (0..TICKERS)
+            .map(|i| {
+                let price = 10.0 + live.random() * 990.0;
+                Ticker {
+                    name: format!("{} {}", NAMES[i % 8].to_uppercase(), i / 8),
+                    price,
+                    history: vec![price],
+                    load: live.random(),
+                    changed: Duration::ZERO,
+                }
+            })
+            .collect();
+        live
+    }
+
+    /// A number in `0..1`.
+    fn random(&mut self) -> f64 {
+        self.seed ^= self.seed << 13;
+        self.seed ^= self.seed >> 7;
+        self.seed ^= self.seed << 17;
+        (self.seed >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// Moves about a quarter of the tickers, at `now` on the demo's clock,
+    /// and tells the Grid what changed.
+    fn tick(&mut self, grid: &mut Grid, now: Duration) {
+        self.next_tick += TICK;
+        for i in 0..self.rows.len() {
+            if self.random() >= 0.25 {
+                continue;
+            }
+            let (step, load) = (self.random() - 0.5, self.random() - 0.5);
+            let t = &mut self.rows[i];
+            t.price = (t.price * (1.0 + step * 0.04)).max(0.01);
+            t.history.push(t.price);
+            if t.history.len() > HISTORY {
+                t.history.remove(0);
+            }
+            t.load = (t.load + load * 0.2).clamp(0.0, 1.0);
+            t.changed = now;
+            for col in [Key(1), Key(3)] {
+                if let Some(notice) = self.source.edited(&self.rows, i, col) {
+                    grid.notify(Axis::Rows, notice);
+                }
+            }
+        }
+    }
+}
+
+/// Draws another renderer, then flashes the cell if its ticker just changed.
+struct Flash<'a, R> {
+    inner: R,
+    rows: &'a [Ticker],
+}
+
+impl<R: CellRenderer> CellRenderer for Flash<'_, R> {
+    fn draw(&self, row: Key, col: Key, canvas: &mut CellCanvas) {
+        self.inner.draw(row, col, canvas);
+        canvas.flash(self.rows[row.0 as usize].changed);
+    }
+
+    fn preferred_width(&self, row: Key, col: Key) -> u32 {
+        self.inner.preferred_width(row, col)
+    }
+}
+
 /// The one editable column.
 const NAME: Key = Key(1);
 
@@ -92,6 +203,7 @@ enum Table {
         filtered: bool,
     },
     Huge(Huge),
+    Live(Live),
 }
 
 /// The huge table: Keys are Positions on both axes.
@@ -120,6 +232,7 @@ impl Table {
         match self {
             Table::Records { source, .. } => source.window(axis, range),
             Table::Huge(huge) => huge.axis(axis).window(range),
+            Table::Live(live) => live.source.window(axis, range),
         }
     }
 
@@ -144,6 +257,10 @@ impl Table {
             Table::Huge(huge) => {
                 pump(grid, huge, |grid, stamped| seen(&Text::Huge, grid, stamped));
             }
+            Table::Live(Live { rows, source, .. }) => {
+                let text = Text::Live(rows);
+                source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
+            }
         }
         app
     }
@@ -166,6 +283,7 @@ impl Table {
                 let n: u64 = typed.parse().ok()?;
                 (1..=huge.rows.count()).contains(&n).then(|| Key(n - 1))
             }
+            Table::Live(_) => None,
         }
     }
 
@@ -182,7 +300,7 @@ impl Table {
     fn name(&self, row: Key) -> Option<String> {
         match self {
             Table::Records { rows, .. } => Some(rows[row.0 as usize].name.clone()),
-            Table::Huge(_) => None,
+            Table::Huge(_) | Table::Live(_) => None,
         }
     }
 
@@ -208,20 +326,25 @@ impl Table {
         match self {
             Table::Records { rows, .. } => Text::Records(rows),
             Table::Huge(_) => Text::Huge,
+            Table::Live(live) => Text::Live(&live.rows),
+        }
+    }
+
+    /// How long until the table next changes by itself, if it ever does.
+    fn until_tick(&self) -> Option<Duration> {
+        match self {
+            Table::Live(live) => Some(live.next_tick.saturating_duration_since(Instant::now())),
+            _ => None,
         }
     }
 }
 
-/// Answers `AutoSizeRequested` for a column with the widest text drawn in
-/// it: the `shown` rows' cells and its header.
+/// Answers `AutoSizeRequested` for a column with the widest it draws: the
+/// `shown` rows' preferred widths and its header.
 fn auto_size(text: &Text, shown: &[Key], grid: &mut Grid, stamped: Stamped) {
     if let Effect::AutoSizeRequested { axis, key } = stamped.effect {
         let width = match axis {
-            Axis::Cols => (shown.iter())
-                .map(|&row| text.cell(row, key).chars().count())
-                .chain([text.column_header(key).chars().count()])
-                .max()
-                .unwrap_or(1),
+            Axis::Cols => fit_width(text, shown, key).max(1),
             Axis::Rows => 1,
         };
         grid.set_size(axis, key, width as f32);
@@ -232,6 +355,7 @@ fn auto_size(text: &Text, shown: &[Key], grid: &mut Grid, stamped: Stamped) {
 enum Text<'a> {
     Records(&'a [Record]),
     Huge,
+    Live(&'a [Ticker]),
 }
 
 impl Content for Text<'_> {
@@ -247,6 +371,15 @@ impl Content for Text<'_> {
                 }
             }
             Text::Huge => format!("r{}c{}", row.0, col.0),
+            Text::Live(rows) => {
+                let t = &rows[row.0 as usize];
+                match col.0 {
+                    0 => t.name.clone(),
+                    1 => format!("{:.2}", t.price),
+                    2 => String::new(),
+                    _ => format!("{:.0}%", t.load * 100.0),
+                }
+            }
         }
     }
 
@@ -254,6 +387,28 @@ impl Content for Text<'_> {
         match self {
             Text::Records(_) => HEADERS[col.0 as usize].to_string(),
             Text::Huge => format!("col {}", col.0),
+            Text::Live(_) => TICKER_HEADERS[col.0 as usize].to_string(),
+        }
+    }
+
+    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+        let text = TextRenderer::new(move |row, col| self.cell(row, col));
+        let Text::Live(rows) = *self else {
+            return Box::new(text);
+        };
+        match col.0 {
+            1 => Box::new(Flash {
+                inner: text.align(Align::Right),
+                rows,
+            }),
+            2 => Box::new(SparklineRenderer::new(move |row: Key, _| {
+                &rows[row.0 as usize].history[..]
+            })),
+            3 => Box::new(Flash {
+                inner: BarRenderer::new(move |row: Key, _| rows[row.0 as usize].load),
+                rows,
+            }),
+            _ => Box::new(text),
         }
     }
 }
@@ -350,7 +505,16 @@ impl App {
 }
 
 fn main() -> io::Result<()> {
-    let (mut table, mut grid) = if std::env::args().any(|a| a == "--huge") {
+    let live = std::env::args().any(|a| a == "--live");
+    let (mut table, mut grid) = if live {
+        let grid = Grid::new(
+            AxisConfig::new(TICKERS as u64, 1.0).header(1.0),
+            AxisConfig::new(TICKER_HEADERS.len() as u64, 12.0)
+                .header(5.0)
+                .gap(1.0),
+        );
+        (Table::Live(Live::new()), grid)
+    } else if std::env::args().any(|a| a == "--huge") {
         // The row header band and the columns fit the widest row number.
         let digits = HUGE_ROWS.to_string().len() as f32;
         let mut grid = Grid::new(
@@ -406,6 +570,11 @@ fn main() -> io::Result<()> {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let mut theme = if no_color { themes.len() - 1 } else { 0 };
     let colors = ColorSupport::from_colorterm(std::env::var("COLORTERM").ok().as_deref());
+    if live {
+        grid.set_sortable(Key(2), false);
+    }
+    // The demo's clock, which the render context and the flashes share.
+    let start = Instant::now();
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableMouseCapture)?;
     let result = (|| {
@@ -425,7 +594,9 @@ fn main() -> io::Result<()> {
                 shown_rows.clear();
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
-                let ctx = RenderContext::new(&themes[theme]).colors(colors);
+                let ctx = RenderContext::new(&themes[theme])
+                    .colors(colors)
+                    .at(start.elapsed());
                 render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, area, frame.buffer_mut());
@@ -439,6 +610,14 @@ fn main() -> io::Result<()> {
                 let name = ratatui::text::Line::from(themes[theme].name).right_aligned();
                 frame.render_widget(name, line);
             })?;
+            if let Some(wait) = table.until_tick()
+                && !event::poll(wait)?
+            {
+                if let Table::Live(live) = &mut table {
+                    live.tick(&mut grid, start.elapsed());
+                }
+                continue;
+            }
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let ctrl = key.modifiers == KeyModifiers::CONTROL;

@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-ratatui/tests/renderers.rs
+expression: text(&buf)
+---
+  col 0    │col 1    │col 2    │col 3    │
+1         7     7     ▁▂▄▅▇█
+2      12.5   12.5    █▇▅▄▂▁    ██▋
+3       300    300    ▁█▁█▁█    ████▉
+4   4096.25  4096.25  ▄▄▄▄▄▄    █████████

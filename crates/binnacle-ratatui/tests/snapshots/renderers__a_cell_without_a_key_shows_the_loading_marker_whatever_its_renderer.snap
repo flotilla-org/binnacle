@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-ratatui/tests/renderers.rs
+expression: text(&buf)
+---
+  col 0 │col 1 │
+1 XXXXXX XXXXXX
+2 XXXXXX XXXXXX
+3 …      …
+4 …      …

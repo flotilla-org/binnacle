@@ -33,6 +33,9 @@ pub struct Theme {
     pub border: Style,
     /// The `…` shown where a Key is not filled yet.
     pub loading: Style,
+    /// Patched over a cell whose value just changed (see
+    /// [`CellCanvas::flash`](crate::CellCanvas::flash)).
+    pub flash: Style,
     pub shimmer_base: Color,
     pub shimmer_highlight: Color,
     /// Draws headers and row numbers reversed, so the bands stand out.
@@ -65,6 +68,7 @@ impl Theme {
             drop_indicator: none.fg(Color::Cyan),
             border: none.fg(Color::DarkGray),
             loading: none,
+            flash: none.fg(Color::Black).bg(Color::Yellow),
             shimmer_base: Color::Rgb(140, 130, 40),
             shimmer_highlight: Color::Rgb(255, 240, 120),
             invert_headers: false,
@@ -90,6 +94,7 @@ impl Theme {
             drop_indicator: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::BOLD),
             border: none.fg(mocha::SURFACE1),
             loading: none.fg(mocha::OVERLAY0),
+            flash: none.fg(mocha::CRUST).bg(mocha::YELLOW),
             shimmer_base: mocha::PEACH,
             shimmer_highlight: mocha::YELLOW,
             invert_headers: false,
@@ -115,6 +120,7 @@ impl Theme {
             drop_indicator: none.add_modifier(Modifier::BOLD),
             border: none.add_modifier(Modifier::DIM),
             loading: none.add_modifier(Modifier::DIM),
+            flash: none.add_modifier(Modifier::BOLD),
             shimmer_base: Color::Reset,
             shimmer_highlight: Color::Reset,
             invert_headers: false,
@@ -152,6 +158,7 @@ impl Theme {
             drop_indicator: s(self.drop_indicator),
             border: s(self.border),
             loading: s(self.loading),
+            flash: s(self.flash),
             shimmer_base: nearest_ansi(self.shimmer_base),
             shimmer_highlight: nearest_ansi(self.shimmer_highlight),
             ..self.clone()
