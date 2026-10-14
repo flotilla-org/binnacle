@@ -130,8 +130,8 @@ pub struct Grid {
     pub(crate) pointer_at: Option<(f32, f32)>,
     /// The header under the pointer as of the last Snapshot.
     pub(crate) hovered: Option<(Axis, Position)>,
-    /// The axis whose header border is under the pointer as of the last
-    /// Snapshot.
+    /// The axis whose header border or band edge is under the pointer as of
+    /// the last Snapshot.
     pub(crate) hovered_border: Option<Axis>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
@@ -323,6 +323,46 @@ impl Grid {
         self.pending_damage.layout = true;
     }
 
+    /// Sets the thickness of the Header Band leading `axis` (see
+    /// [`Snapshot::header`]). 0 hides the band, and a hidden band has no edge
+    /// to drag. A drag of that band's edge in progress carries on from here,
+    /// and `Cancel` no longer undoes this. Capped at the axis's `max_size`;
+    /// values that are not finite and non-negative are ignored.
+    pub fn set_header(&mut self, axis: Axis, thickness: f32) {
+        if !(thickness.is_finite() && thickness >= 0.0) {
+            return;
+        }
+        let thickness = thickness.min(self.axis(axis).measure.max_size());
+        self.put_header(axis, thickness);
+        self.rebase_band_drag(axis, thickness);
+    }
+
+    /// Sets the band's thickness as given, which may be one the Grid was
+    /// built with outside the size range.
+    pub(crate) fn put_header(&mut self, axis: Axis, thickness: f32) {
+        let st = self.axis_mut(axis);
+        if st.header != thickness {
+            st.header = thickness;
+            self.pending_damage.layout = true;
+        }
+    }
+
+    /// The thickness of the Header Band leading `axis`, as the next
+    /// Snapshot will show it.
+    pub fn header(&self, axis: Axis) -> f32 {
+        self.axis(axis).header
+    }
+
+    /// Sets the Gap between items on `axis`, keeping the Scroll Anchor's item
+    /// where it is in the viewport unless the end clamp pulls the view back.
+    /// Capped at the axis's `max_size`; values that are not finite and
+    /// non-negative are ignored.
+    pub fn set_gap(&mut self, axis: Axis, gap: f32) {
+        if self.axis_mut(axis).set_gap(gap) {
+            self.pending_damage.layout = true;
+        }
+    }
+
     /// The Size Override for the item with `key` on `axis`, if any.
     pub fn size_override(&self, axis: Axis, key: Key) -> Option<f32> {
         self.axis(axis).measure.size_override(key)
@@ -405,6 +445,26 @@ impl Grid {
         };
         let key = self.axis(axis).measure.key_at(position)?;
         Some((axis, position, key))
+    }
+
+    /// The axis whose Header Band has its edge under the viewport point (`x`,
+    /// `y`). Like an item border, a band edge is grabbed in the other band,
+    /// where the two meet: the last Gap's length of the band, widened by the
+    /// border grab either side. A band of thickness 0 has no edge. Where both
+    /// edges reach, the row-number band's (on [`Axis::Cols`]) wins.
+    pub(crate) fn band_edge_at(&self, x: f32, y: f32) -> Option<Axis> {
+        [(Axis::Cols, x, y), (Axis::Rows, y, x)]
+            .into_iter()
+            .find(|&(axis, along, across)| {
+                let (st, other) = (self.axis(axis), self.axis(axis.other()));
+                let (h, grab) = (st.header, self.border_grab);
+                let start = h - st.measure.gap() - grab;
+                h > 0.0
+                    && matches!(other.hit(across), AxisHit::Header)
+                    && along >= start.max(0.0)
+                    && along < (h + grab).min(st.extent)
+            })
+            .map(|(axis, ..)| axis)
     }
 
     /// What the viewport point (`x`, `y`) lands on, against the current Scroll
@@ -756,10 +816,10 @@ impl Grid {
         for st in &mut self.axes {
             st.layout();
         }
-        let border = self
-            .pointer_at
-            .and_then(|(x, y)| self.border_at(x, y))
-            .map(|(axis, ..)| axis);
+        let border = self.pointer_at.and_then(|(x, y)| {
+            self.band_edge_at(x, y)
+                .or_else(|| self.border_at(x, y).map(|(axis, ..)| axis))
+        });
         let hovered = self.pointer_at.and_then(|(x, y)| match self.hit(x, y) {
             Hit::Header { axis, at } if !at.in_gap && border.is_none() => Some((axis, at.position)),
             _ => None,

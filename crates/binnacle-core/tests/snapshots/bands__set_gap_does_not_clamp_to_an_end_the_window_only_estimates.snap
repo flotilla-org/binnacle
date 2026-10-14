@@ -1,0 +1,36 @@
+---
+source: crates/binnacle-core/tests/bands.rs
+expression: out
+---
+--- 1. scroll to row 1 + 0.5; row 7, outside the Window, is 4.5 high
+window Rows 0..6
+window Cols 0..1
+window Rows 0..7
+gen 2 | damage layout positions
+Rows: count 8, extent 10, header 0, anchor 1+0.5, thumb 0.2917/0.4545 | 1#1@-0.5+1 2#2@2.5+1 3#3@5.5+1 4#4@8.5+1
+Cols: count 1, extent 6, header 2, anchor 0+0, thumb 0.0000/1.0000 | 0#0@2+3
+1 1.0
+
+
+2 2.0
+
+
+3 3.0
+
+
+4 4.0
+--- 2. set_gap(Rows, 0.5): row 1 stays the anchor as row 7 arrives
+window Rows 0..8
+gen 3 | damage layout positions
+Rows: count 8, extent 10, header 0, anchor 1+0.5, thumb 0.4000/0.6667 | 1#1@-0.5+1 2#2@1+1 3#3@2.5+1 4#4@4+1 5#5@5.5+1 6#6@7+1 7#7@8.5+4.5
+Cols: (unchanged)
+1 1.0
+2 2.0
+
+3 3.0
+4 4.0
+
+5 5.0
+6 6.0
+
+7 7.0

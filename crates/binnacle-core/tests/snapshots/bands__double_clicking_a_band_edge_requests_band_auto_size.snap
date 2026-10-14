@@ -1,0 +1,27 @@
+---
+source: crates/binnacle-core/tests/bands.rs
+expression: out
+---
+--- 1. double-click the row-number band's edge
+window Rows 0..5
+window Cols 0..5
+effect (gen 1): BandAutoSizeRequested { axis: Cols }
+gen 2 | damage selection | cursor ResizeCol
+Rows: count 20, extent 6, header 1, anchor 0+0, thumb 0.0000/0.1282 | 0#0@1+1 1#1@3+1 2#2@5+1
+Cols: count 5, extent 30, header 4, anchor 0+0, thumb 0.0000/0.7647 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0.3
+
+1   1.0    1.1    1.2    1.3
+
+2   2.0    2.1    2.2    2.3
+--- 2. the host measures the band and answers with set_header(9)
+gen 3 | damage layout selection | cursor ResizeRow
+Rows: (unchanged)
+Cols: count 5, extent 30, header 9, anchor 0+0, thumb 0.0000/0.6176 | 0#0@9+6 1#1@16+6 2#2@23+6
+         0      1      2
+0        0.0    0.1    0.2
+
+1        1.0    1.1    1.2
+
+2        2.0    2.1    2.2

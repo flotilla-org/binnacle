@@ -1,14 +1,27 @@
 //! binnacle-ratatui: the reference ratatui adapter for the binnacle Grid.
 //!
 //! Sizes are whole terminal cells. [`render`] draws a Snapshot into a ratatui
-//! `Buffer`; the host supplies the text through [`Content`], since the Grid
+//! `Buffer` in a [`Theme`]'s palette; the host supplies the text through [`Content`], since the Grid
 //! never reads cell values.
 
+mod border;
+mod context;
 mod keymap;
 mod mouse;
+mod renderer;
+mod shimmer;
+mod theme;
 
+pub use border::{BorderExtent, BorderStyle, BorderWeight};
+pub use context::RenderContext;
 pub use keymap::Keymap;
 pub use mouse::Mouse;
+pub use renderer::{
+    Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
+    TextRenderer, fit_width, flashing,
+};
+pub use shimmer::Shimmer;
+pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
 use ratatui::buffer::Buffer;
@@ -34,36 +47,88 @@ pub fn wheel(event: &MouseEvent) -> Option<Action> {
     Some(Action::Scroll { dx, dy })
 }
 
-/// The host's text for the Keys the Grid places.
+/// The host's text for the Keys the Grid places, and how each column draws.
 pub trait Content {
     fn cell(&self, row: Key, col: Key) -> String;
     fn column_header(&self, col: Key) -> String;
+
+    /// The row header label for the row with Key `row` at `position`:
+    /// Position plus one unless overridden. A row whose Key the Table
+    /// Source has not filled yet always shows Position plus one.
+    fn row_header(&self, row: Key, position: u64) -> String {
+        let _ = row;
+        position.saturating_add(1).to_string()
+    }
+
+    /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
+    /// unless overridden.
+    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+        let _ = col;
+        Box::new(TextRenderer::new(move |row, col| self.cell(row, col)))
+    }
 }
 
-/// Draws `snapshot` into `area` of `buf`: column headers along the top band,
-/// row numbers (Position plus one) down the left band, then each cell. Text is
-/// clipped to its item, to `area`, and for cells to the body past both header
-/// bands, so a part-scrolled item shows only its visible part. The focused
-/// cell is drawn reversed, other selected cells on a dark grey background,
-/// and the header under the pointer underlined. Header Gaps are drawn as
-/// lines, the handles a resize drag grabs, and a resize in progress draws its
-/// guide line across the area in yellow, a header move its drop indicator in
-/// cyan. A sorted column's header ends in its direction (and place, in a
-/// multi-column sort), and `~` marks a sort change still pending.
+/// Whether anything [`render_with`] draws from `snapshot` moves with time:
+/// the Shimmer on a visible header whose requested sort is not applied yet,
+/// or on the visible focused cell while its Locate is pending. A host
+/// redraws on a timer only while this is true (or its own data ticks).
+pub fn animating(snapshot: &Snapshot) -> bool {
+    let sorting = snapshot.headers(Axis::Cols).any(|h| h.sort.pending);
+    sorting || locating(snapshot) && snapshot.focus_rect().is_some()
+}
+
+/// Whether the focused cell is waiting for a Locate on either axis.
+fn locating(snapshot: &Snapshot) -> bool {
+    Axis::ALL.into_iter().any(|a| snapshot.locating(a))
+}
+
+/// Draws `snapshot` into `area` of `buf` in the `classic` Theme with
+/// header-only lines: [`render_with`] for a host that picks neither.
 pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut Buffer) {
+    let theme = Theme::classic();
+    render_with(snapshot, content, &RenderContext::new(&theme), area, buf);
+}
+
+/// Draws `snapshot` into `area` of `buf` as `ctx` says: column headers along
+/// the top band, row header labels ([`Content::row_header`]) down the left
+/// band, then
+/// each cell. Text is clipped to its item, to `area`, and for cells to the
+/// body past both header bands, so a part-scrolled item shows only its
+/// visible part. Gaps are drawn as `ctx.border` says (by default the header
+/// band's Gaps only, the handles a resize drag grabs); a resize in progress
+/// draws its guide line across the area, a header move its drop indicator,
+/// both over the borders. A sorted column's header ends in its
+/// direction (and place, in a multi-column sort), and `~` marks a sort
+/// change still pending. Every style comes from the Theme. A Shimmer at
+/// `ctx.now` sweeps across the headers of a pending sort and across the
+/// focused cell while its Locate is pending (see [`animating`]).
+pub fn render_with(
+    snapshot: &Snapshot,
+    content: &impl Content,
+    ctx: &RenderContext,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let theme = &ctx.theme.for_colors(ctx.colors);
     let area = area.intersection(buf.area);
-    let header = Style::default().add_modifier(Modifier::BOLD);
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
-    let header_style = |hovered| {
-        if hovered {
-            header.add_modifier(Modifier::UNDERLINED)
+    let band = |style: Style, hovered: bool| {
+        let style = if theme.invert_headers {
+            style.add_modifier(Modifier::REVERSED)
         } else {
-            header
+            style
+        };
+        if hovered {
+            style.patch(theme.header_hovered)
+        } else {
+            style
         }
     };
     let multi = snapshot.applied_sort().columns().len() > 1;
+    let sweep = Shimmer::new(ctx, area.width);
+    let area_end = i64::from(area.width);
     for h in snapshot.headers(Axis::Cols) {
         let label = h
             .key
@@ -73,17 +138,41 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
-        let text = if marker.is_empty() {
-            pad(label)
+        let style = band(theme.header, h.hovered);
+        let clip = (left, end, 0.0);
+        if marker.is_empty() {
+            put(buf, area, (start, 0.0), clip, &pad(label), style);
         } else {
-            format!("{label:<room$.room$}{marker}")
-        };
-        let style = header_style(h.hovered);
-        put(buf, area, (start, 0.0), (left, end, 0.0), &text, style);
+            let label = format!("{label:<room$.room$}");
+            put(buf, area, (start, 0.0), clip, &label, style);
+            let at = start + room as f32;
+            let style = style.patch(theme.sort_marker);
+            put(buf, area, (at, 0.0), clip, &marker, style);
+        }
+        if h.key.is_none() {
+            let style = style.patch(theme.loading);
+            put(buf, area, (start, 0.0), clip, LOADING, style);
+        }
+        if h.sort.pending {
+            let (x0, x1) = (cell(start).max(cell(left)), cell(end).min(area_end));
+            shimmer(buf, area, (x0..x1, 0), &sweep, 0);
+        }
     }
+    let locating = locating(snapshot);
+    let picked = snapshot.picked();
+    let renderers: Vec<_> = (snapshot.cols().iter())
+        .map(|c| c.key.map(|k| content.renderer(k)))
+        .collect();
+    let hovered_col = match snapshot.hovered_header() {
+        Some((Axis::Cols, c)) => Some(c.position),
+        _ => None,
+    };
     for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
-        let number = r.position.saturating_add(1).to_string();
-        let style = header_style(h.hovered);
+        let number = r.key.map_or_else(
+            || r.position.saturating_add(1).to_string(),
+            |k| content.row_header(k, r.position),
+        );
+        let style = band(theme.row_number, h.hovered);
         put(
             buf,
             area,
@@ -92,24 +181,84 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
             &pad(number),
             style,
         );
-        for c in snapshot.cols() {
-            let mut text = match (r.key, c.key) {
-                (Some(row), Some(col)) => content.cell(row, col),
-                _ => LOADING.to_string(),
-            };
-            let state = snapshot.cell_state(r, c);
-            let mut style = Style::default();
-            if state.focused {
-                text = pad(text);
-                style = style.add_modifier(Modifier::REVERSED);
-            } else if state.selected {
-                text = pad(text);
-                style = style.bg(Color::DarkGray);
+        let mut row_style = theme.body;
+        if let Some(zebra) = theme.zebra.filter(|_| r.position % 2 == 1) {
+            row_style = row_style.patch(zebra);
+            let blank = " ".repeat(usize::from(area.width));
+            for y in cell(r.offset.max(top))..cell(r.end()) {
+                let clip = (left, f32::INFINITY, top);
+                put(buf, area, (0.0, y as f32), clip, &blank, row_style);
             }
-            let clip = (left, c.end(), top);
-            put(buf, area, (c.offset, r.offset), clip, &text, style);
+        }
+        let in_picked = r.key.is_some_and(|k| picked.contains(&k));
+        let row_hovered = h.hovered;
+        for (c, renderer) in snapshot.cols().iter().zip(&renderers) {
+            let state = snapshot.cell_state(r, c);
+            let status = CellStatus {
+                focused: state.focused,
+                selected: state.selected && !in_picked,
+                picked: in_picked,
+                hovered: row_hovered || hovered_col == Some(c.position),
+            };
+            let over = if status.focused {
+                theme.focus
+            } else if status.picked {
+                theme.picks
+            } else if status.selected {
+                theme.selection
+            } else {
+                Style::default()
+            };
+            let (x0, y0) = (cell(c.offset), cell(r.offset));
+            let (x1, y1) = (cell(c.end()), cell(r.end()));
+            let clip = |lo: i64, hi: i64, min: i64, max: u16| {
+                let lo = lo.max(min).max(0).min(i64::from(max));
+                (lo, hi.min(i64::from(max)).max(lo))
+            };
+            let (vx0, vx1) = clip(x0, x1, cell(left), area.width);
+            let (vy0, vy1) = clip(y0, y1, cell(top), area.height);
+            let visible = Rect::new(
+                area.x + vx0 as u16,
+                area.y + vy0 as u16,
+                (vx1 - vx0) as u16,
+                (vy1 - vy0) as u16,
+            );
+            let size = |lo: i64, hi: i64| u32::try_from(hi - lo).unwrap_or(0);
+            let mut canvas = CellCanvas {
+                buf,
+                origin: (i64::from(area.x) + x0, i64::from(area.y) + y0),
+                size: (size(x0, x1), size(y0, y1)),
+                visible,
+                status,
+                theme,
+                now: ctx.now,
+                colors: ctx.colors,
+            };
+            let blank = " ".repeat(visible.width.into());
+            for y in canvas.visible_y() {
+                let x = canvas.visible_x().start;
+                canvas.print(x, y, &blank, row_style);
+            }
+            match (r.key, c.key, renderer) {
+                (Some(row), Some(col), Some(renderer)) => {
+                    renderer.draw(row, col, &mut canvas);
+                    canvas.patch(over);
+                }
+                _ => {
+                    let y = canvas.visible_y().start;
+                    canvas.patch(over);
+                    canvas.print(0, y, LOADING, row_style.patch(over).patch(theme.loading));
+                }
+            }
+            if state.focused && locating {
+                let (x0, x1) = (cell(c.offset).max(cell(left)), cell(c.end()).min(area_end));
+                let pulse = Shimmer::new(ctx, c.size.ceil().clamp(0.0, 65535.0) as u16);
+                let y = cell(r.offset.max(top));
+                shimmer(buf, area, (x0..x1, y), &pulse, cell(c.offset));
+            }
         }
     }
+    border::draw(snapshot, ctx.border, theme, area, buf);
     let mut mark = |x: i64, y: i64, ch: char, style: Style| {
         if (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y) {
             let (x, y) = (area.x + x as u16, area.y + y as u16);
@@ -118,23 +267,8 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
             }
         }
     };
-    let handle = Style::default().fg(Color::DarkGray);
-    if snapshot.gap(Axis::Cols) > 0.0 {
-        for c in snapshot.cols().iter().filter(|c| c.end() >= left) {
-            for y in 0..cell(top) {
-                mark(cell(c.end()), y, '│', handle);
-            }
-        }
-    }
-    if snapshot.gap(Axis::Rows) > 0.0 {
-        for r in snapshot.rows().iter().filter(|r| r.end() >= top) {
-            for x in 0..cell(left) {
-                mark(x, cell(r.end()), '─', handle);
-            }
-        }
-    }
     if let Some(drop) = snapshot.drop_indicator() {
-        let style = Style::default().fg(Color::Cyan);
+        let style = theme.drop_indicator;
         // The middle of a Gap rounds down onto the Gap's cell.
         let at = drop.offset.floor() as i64;
         match drop.axis {
@@ -151,7 +285,7 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
         }
     }
     if let Some(guide) = snapshot.resize_guide() {
-        let style = Style::default().fg(Color::Yellow);
+        let style = theme.guide;
         let at = cell(guide.offset);
         match guide.axis {
             Axis::Cols if at >= cell(left) => {
@@ -192,6 +326,26 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     let line = format!("{line:<width$}");
     let clip = (left, f32::INFINITY, top);
     put(buf, area, (rect.x, rect.y), clip, &line, style);
+}
+
+/// Patches `sweep` over the cells `xs` of line `y` in `area` (relative to
+/// it), each by its place from `origin`.
+fn shimmer(
+    buf: &mut Buffer,
+    area: Rect,
+    (xs, y): (std::ops::Range<i64>, i64),
+    sweep: &Shimmer,
+    origin: i64,
+) {
+    if !(0..i64::from(area.height)).contains(&y) {
+        return;
+    }
+    for x in xs.start.max(0)..xs.end.min(i64::from(area.width)) {
+        let at = u16::try_from(x - origin).unwrap_or(u16::MAX);
+        if let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
+            c.set_style(sweep.style(at));
+        }
+    }
 }
 
 /// Writes `text` from `(x, y)` into `area` of `buf`, keeping the characters
@@ -239,6 +393,13 @@ pub fn status(snapshot: &Snapshot) -> String {
             Some(guide) => format!("resizing {} {}: {}", noun(axis), key.0, guide.size),
             None => format!("resizing {} {}", noun(axis), key.0),
         },
+        Mode::ResizingBand { axis, .. } => {
+            let band = match axis {
+                Axis::Rows => "column header",
+                Axis::Cols => "row-number",
+            };
+            format!("resizing the {band} band: {}", snapshot.header(axis))
+        }
         Mode::DraggingSelection => "selecting".to_string(),
         Mode::Editing { row, col } => format!("editing row {} column {}", row.0, col.0),
         Mode::MovingHeaders { axis, to, .. } => {

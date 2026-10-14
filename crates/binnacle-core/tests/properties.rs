@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, Effect, FocusEnd, FocusStep,
-    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, SelectionUnit,
-    Snapshot, Viewport,
+    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, ScrollAnchor,
+    SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
@@ -252,11 +252,21 @@ fn pointer(tc: &TestCase) -> Pointer {
 }
 
 /// A press, a few moves and the release, as one input sequence. Some presses
-/// aim at a header border, some at a header.
+/// aim at a header border, some at a header, some near a band's edge.
 #[hegel::composite]
 fn gesture(tc: &TestCase) -> Vec<Pointer> {
     let mut press = tc.draw(pointer());
-    if tc.draw(gs::weighted_booleans(0.2)) {
+    if tc.draw(gs::weighted_booleans(0.1)) {
+        let (f, g) = (
+            tc.draw(gs::floats::<f32>().min_value(0.8).max_value(1.0)),
+            tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
+        );
+        press.at = if tc.draw(gs::booleans()) {
+            [Coord::Header(f), Coord::Header(g)]
+        } else {
+            [Coord::Header(g), Coord::Header(f)]
+        };
+    } else if tc.draw(gs::weighted_booleans(0.2)) {
         let (f, g) = (
             tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
             tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
@@ -681,6 +691,10 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             }
         }
         let drained: Vec<Effect> = s.effects();
+        // A band resize moves where the body starts: viewports follow it.
+        for axis in Axis::ALL {
+            models[axis.index()].config.header = s.grid.header(axis);
+        }
         // A pointer resize changes Size Overrides of Keys in the Window (or of
         // one seen resizing earlier): read those back. The model takes the
         // Grid's word here, so only
@@ -1508,8 +1522,8 @@ fn selection_changed_comes_once_per_drain_and_for_every_change(tc: TestCase) {
     });
 }
 
-/// `Cancel` during a press, drag or resize restores focus, range, picks and
-/// Size Overrides from before the press and ends the gesture; the release
+/// `Cancel` during a press, drag or resize restores focus, range, picks,
+/// Size Overrides and band thicknesses from before the press and ends the gesture; the release
 /// that follows changes nothing.
 #[hegel::test(test_cases = 2000)]
 fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
@@ -1528,12 +1542,13 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
         let snap = s.frame(viewport);
         let focus = Axis::ALL.map(|a| snap.focus(a));
         let selection = seen_selection(&snap);
+        let headers = Axis::ALL.map(|a| snap.header(a));
         let sizes: Vec<_> = Axis::ALL
             .into_iter()
             .flat_map(|a| shown[a.index()].clone().map(move |p| (a, Key(p))))
             .map(|(a, k)| s.grid.size_override(a, k))
             .collect();
-        (focus, selection, sizes)
+        (focus, selection, (headers, sizes))
     };
     for input in tc.draw(gs::vecs(input()).max_size(6)) {
         match input {
@@ -1568,8 +1583,10 @@ fn cancel_restores_the_state_from_before_the_gesture(tc: TestCase) {
     for p in gesture {
         s.input(|g| g.pointer(p.resolve(&target)));
     }
-    if let Mode::Resizing { .. } = s.frame(viewport).mode() {
-        tc.event("resizing");
+    match s.frame(viewport).mode() {
+        Mode::Resizing { .. } => tc.event("resizing"),
+        Mode::ResizingBand { .. } => tc.event("resizing a band"),
+        _ => {}
     }
     s.input(|g| g.action(Action::Cancel));
     let (focus, selection, sizes) = seen(&mut s, &shown);
@@ -1707,6 +1724,10 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
         .into_iter()
         .flatten()
         .collect();
+        // Within a grab of the band's end, the band's edge wins.
+        let band_end = snap.header(axis) + grab;
+        let zones: Vec<f32> = zones.into_iter().filter(|&v| v >= band_end).collect();
+        let interior = interior.filter(|&v| v >= band_end);
         let border = (!zones.is_empty())
             .then(|| zones[tc.draw(gs::integers::<usize>().max_value(zones.len() - 1))]);
         let last = item.position + 1 == snap.count(axis);
@@ -1796,16 +1817,185 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
     assert!(!snap.capturing());
 }
 
+/// A press on a Header Band's edge (in the other band, the band's last Gap's
+/// length widened by the border grab either side) resizes the band; a press
+/// deeper in the band does not, and a band of thickness 0 has no edge. While
+/// resizing, the thickness is the start thickness plus the pointer's travel
+/// along the axis, clamped into the axis's size range. A release reports the
+/// new thickness if it changed; `Cancel` restores the start thickness and
+/// reports nothing.
+#[hegel::test(test_cases = 2000)]
+fn dragging_a_band_edge_resizes_the_band_by_the_pointer_travel(tc: TestCase) {
+    // Everyday axes: a band shrunk from a huge thickness would leave a body
+    // of millions of items to fetch each frame.
+    let [rows, cols] = [0, 1].map(|_| {
+        let max = tc.draw(hegel::one_of!(
+            gs::just(AxisMeasure::DEFAULT_MAX_SIZE),
+            gs::floats::<f32>()
+                .min_value(1.0)
+                .max_value(AxisMeasure::DEFAULT_MAX_SIZE)
+        ));
+        let config = tc.draw(everyday_axis()).max_size(max);
+        let body = tc.draw(gs::floats::<f32>().min_value(1.0).max_value(200.0));
+        (config, config.header + body)
+    });
+    let viewport = Viewport::new(cols.1, rows.1);
+    let grab = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(3.0),
+        gs::floats::<f32>().min_value(0.0).allow_infinity(false)
+    ));
+    let axis = tc.draw(axis());
+    let mut s = Scenario::identity(rows.0, cols.0);
+    s.input(|g| g.set_border_grab(grab));
+    if tc.draw(gs::weighted_booleans(0.1)) {
+        s.input(|g| g.set_header(axis, 0.0));
+    }
+    let snap = s.frame(viewport);
+    let (h, gap, extent) = (snap.header(axis), snap.gap(axis), snap.extent(axis));
+    let across_band = snap.header(axis.other());
+    tc.assume(across_band > 0.0);
+    // Where the row-number band's edge reaches into the corner, it wins.
+    let other_edge = {
+        let o = axis.other();
+        let ho = snap.header(o);
+        (ho > 0.0).then(|| (ho - snap.gap(o) - grab).max(0.0)..(ho + grab))
+    };
+    let across = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)) * across_band;
+    tc.assume(across < across_band);
+    if axis == Axis::Rows {
+        tc.assume(!other_edge.is_some_and(|e| e.contains(&across)));
+    }
+    let point = |v: f32| match axis {
+        Axis::Rows => (across, v),
+        Axis::Cols => (v, across),
+    };
+    let (lo, hi) = ((h - gap - grab).max(0.0), (h + grab).min(extent));
+    let resizing_band = |mode| matches!(mode, Mode::ResizingBand { axis: a, .. } if a == axis);
+    // Deeper in the band than its edge reaches.
+    if lo > 0.0 {
+        let v = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)) * lo;
+        if v < lo {
+            tc.event("press inside the band");
+            let (x, y) = point(v);
+            s.input(|g| g.pointer(PointerEvent::down(x, y)));
+            assert!(
+                !resizing_band(s.frame(viewport).mode()),
+                "press at {v} of {h}"
+            );
+            s.input(|g| g.pointer(PointerEvent::up(x, y)));
+            s.frame(viewport);
+            s.pump();
+        }
+    }
+    let f = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0));
+    let v0 = lo + f * (hi - lo);
+    tc.assume(v0 >= lo && v0 < hi);
+    let (x0, y0) = point(v0);
+    s.input(|g| g.pointer(PointerEvent::down(x0, y0)));
+    let snap = s.frame(viewport);
+    if h == 0.0 {
+        tc.event("no band");
+        assert!(
+            !resizing_band(snap.mode()),
+            "a 0-thickness band was grabbed"
+        );
+        return;
+    }
+    tc.event("edge press");
+    assert_eq!(
+        snap.mode(),
+        Mode::ResizingBand {
+            axis,
+            start_thickness: h
+        },
+        "press at {x0},{y0} on the edge of the band {h} thick"
+    );
+    check_band_feedback(&snap, axis);
+    let config = [rows.0, cols.0][axis.index()];
+    let mut thickness = h;
+    for travel in tc.draw(
+        gs::vecs(hegel::one_of!(
+            gs::floats::<f32>().min_value(-50.0).max_value(50.0),
+            gs::floats::<f32>().allow_nan(false).allow_infinity(false)
+        ))
+        .min_size(1)
+        .max_size(4),
+    ) {
+        let (x, y) = match axis {
+            Axis::Rows => (x0, y0 + travel),
+            Axis::Cols => (x0 + travel, y0),
+        };
+        if !(x.is_finite() && y.is_finite()) {
+            continue;
+        }
+        let moved = match axis {
+            Axis::Rows => f64::from(y) - f64::from(y0),
+            Axis::Cols => f64::from(x) - f64::from(x0),
+        };
+        thickness = if moved == 0.0 {
+            h
+        } else {
+            (f64::from(h) + moved).clamp(f64::from(config.min_size), f64::from(config.max_size))
+                as f32
+        };
+        s.input(|g| g.pointer(PointerEvent::moved(x, y)));
+        let snap = s.frame(viewport);
+        assert_eq!(snap.header(axis), thickness, "after {travel}");
+        check_band_feedback(&snap, axis);
+    }
+    if tc.draw(gs::booleans()) {
+        s.input(|g| g.pointer(PointerEvent::up(x0, y0)));
+        tc.event(if thickness != h {
+            "resized"
+        } else {
+            "unchanged"
+        });
+        let reported = (thickness != h).then_some(Effect::BandSizeChanged { axis, thickness });
+        assert_eq!(s.effects(), Vec::from_iter(reported));
+        assert_eq!(s.frame(viewport).header(axis), thickness);
+    } else {
+        s.input(|g| g.action(Action::Cancel));
+        assert_eq!(s.pump(), vec![]);
+        assert_eq!(s.frame(viewport).header(axis), h);
+    }
+    let snap = s.frame(viewport);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert!(!snap.capturing());
+}
+
+/// Mode feedback while resizing the band leading `axis`: capturing, the
+/// axis's resize cursor, and the guide at the band's end.
+fn check_band_feedback(snap: &Snapshot, axis: Axis) {
+    assert!(snap.capturing());
+    let cursor = match axis {
+        Axis::Rows => Cursor::ResizeRow,
+        Axis::Cols => Cursor::ResizeCol,
+    };
+    assert_eq!(snap.cursor(), cursor);
+    let h = snap.header(axis);
+    let guide = snap.resize_guide().expect("no guide for a band resize");
+    assert_eq!(
+        (guide.axis, guide.key, guide.offset, guide.size),
+        (axis, None, h, h)
+    );
+}
+
 /// A resize in progress captures the pointer, shows the resize cursor for its
 /// axis, and puts its guide line at the resized item's trailing edge wherever
-/// the Strip shows that item.
+/// the Strip shows that item, or at the end of the band being resized.
 #[hegel::test(test_cases = 2000)]
 fn a_resize_in_progress_captures_and_guides(tc: TestCase) {
-    frames(&tc, BODIES, |snap, _| {
-        if let Mode::Resizing { axis, key, .. } = snap.mode() {
+    frames(&tc, BODIES, |snap, _| match snap.mode() {
+        Mode::Resizing { axis, key, .. } => {
             tc.event("resizing");
             check_resize_feedback(&tc, snap, axis, key);
         }
+        Mode::ResizingBand { axis, .. } => {
+            tc.event("resizing a band");
+            check_band_feedback(snap, axis);
+        }
+        _ => assert_eq!(snap.resize_guide(), None),
     });
 }
 
@@ -1824,7 +2014,10 @@ fn check_resize_feedback(tc: &TestCase, snap: &Snapshot, axis: Axis, key: Key) {
     };
     tc.event("resized item shown");
     let guide = snap.resize_guide().expect("no guide for a shown item");
-    assert_eq!((guide.axis, guide.key, guide.size), (axis, key, item.size));
+    assert_eq!(
+        (guide.axis, guide.key, guide.size),
+        (axis, Some(key), item.size)
+    );
     // The Strip steps in f32 from the anchor; the guide is placed in f64.
     let (_, stop) = body(snap, axis);
     let reach = stop.max(strip[0].offset.abs()).max(item.end().abs());
@@ -2149,4 +2342,79 @@ fn a_row_reset_drops_row_size_overrides_and_a_column_reset_keeps_them(tc: TestCa
         let expected = (axis != Axis::Rows || reset != Axis::Rows).then_some(size);
         assert_eq!(grid.size_override(axis, key), expected, "{axis:?} {key:?}");
     }
+}
+
+/// `set_gap` keeps the Scroll Anchor's item where it is: the anchor, and so
+/// the item's Strip offset, stays the same. Only two things move it back:
+/// an anchor in the Gap past where the new Gap ends is pulled inside its
+/// item's new stride, and the end clamp pulls the view back to show the last
+/// item. The other axis is untouched. A changed Gap is layout damage.
+#[hegel::test(test_cases = 2000)]
+fn set_gap_keeps_the_scroll_anchors_item_at_its_offset(tc: TestCase) {
+    let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_borders()));
+    let viewport = Viewport::new(cols.1, rows.1);
+    let mut s = Scenario::identity(rows.0, cols.0);
+    s.frame(viewport);
+    for axis in Axis::ALL {
+        let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
+        s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
+    }
+    let axis = tc.draw(axis());
+    let (before, other, first, old_gap) = {
+        let snap = s.frame(viewport);
+        let first = snap.strip(axis).first().copied();
+        (
+            snap.scroll_anchor(axis),
+            snap.scroll_anchor(axis.other()),
+            first,
+            snap.gap(axis),
+        )
+    };
+    let config = [rows.0, cols.0][axis.index()];
+    let gap = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::just(1.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(3.0),
+        gs::floats::<f32>().min_value(0.0).allow_infinity(false)
+    ));
+    s.input(|g| g.set_gap(axis, gap));
+    let snap = s.frame(viewport);
+    let new_gap = gap.min(config.max_size);
+    assert_eq!(snap.gap(axis), new_gap);
+    assert_eq!(snap.damage().layout, new_gap != old_gap);
+    assert_eq!(snap.scroll_anchor(axis.other()), other);
+    let after = snap.scroll_anchor(axis);
+    if after == before {
+        tc.event("anchor kept");
+        // An anchor inside its item puts that item first in the Strip.
+        if let Some(first) = first.filter(|f| f.position == before.position) {
+            let now = snap.strip(axis).first().copied();
+            assert_eq!(
+                now.map(|i| (i.position, i.offset)),
+                Some((first.position, first.offset))
+            );
+        }
+        return;
+    }
+    assert!(
+        (after.position, after.offset) < (before.position, before.offset),
+        "{before:?} moved forward to {after:?}"
+    );
+    // Every item has the default size: nothing set others.
+    let size = config.default_size.clamp(config.min_size, config.max_size);
+    let past_the_gap = before.offset >= size + new_gap;
+    // The end clamp binds: the thumb (from the measure, in f64) is at the
+    // end of its travel, or the whole axis fits and nothing scrolls. The
+    // Strip cannot say, as f32 placement past a huge header may drop items.
+    let thumb = snap.thumb(axis);
+    let at_end = thumb.fraction == 1.0 || (thumb.size >= 1.0 && after == ScrollAnchor::default());
+    tc.event(if past_the_gap {
+        "pulled inside the stride"
+    } else {
+        "end clamp"
+    });
+    assert!(
+        at_end || (past_the_gap && after.position == before.position),
+        "{before:?} moved to {after:?} with the Gap {old_gap} -> {new_gap}"
+    );
 }

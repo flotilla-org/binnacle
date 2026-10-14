@@ -1,0 +1,44 @@
+---
+source: crates/binnacle-ratatui/tests/borders.rs
+expression: out
+---
+--- resizing column 1, columns heavy
+   ┃l 0 ┃col 1    │col 2 ┃col
+━━━╋━━━━╋━━━━━━━━━│━━━━━━╋━━━━
+3  ┃c0  ┃r2c1     │r2c2  ┃r2c3
+━━━┫    ┃         │      ┃
+4  ┃c0  ┃r3c1     │r3c2  ┃r3c3
+━━━┫    ┃         │      ┃
+5  ┃c0  ┃r4c1     │r4c2  ┃r4c3
+━━━┫    ┃         │      ┃
+6  ┃c0  ┃r5c1     │r5c2  ┃r5c3
+--- resizing column 1, grid double
+   ║l 0 ║col 1    │col 2 ║col
+═══╬════╬═════════│══════╬════
+3  ║c0  ║r2c1     │r2c2  ║r2c3
+═══╬════╬═════════│══════╬════
+4  ║c0  ║r3c1     │r3c2  ║r3c3
+═══╬════╬═════════│══════╬════
+5  ║c0  ║r4c1     │r4c2  ║r4c3
+═══╬════╬═════════│══════╬════
+6  ║c0  ║r5c1     │r5c2  ║r5c3
+--- moving column 1, columns heavy
+   ┃l 0 ┃col 1 ┃col 2 ┃col 3 ┃
+━━━╋━━━━╋━━━━━━╋━━━━━━┃━━━━━━╋
+3  ┃c0  ┃r2c1  ┃r2c2  ┃r2c3  ┃
+━━━┫    ┃      ┃      ┃      ┃
+4  ┃c0  ┃r3c1  ┃r3c2  ┃r3c3  ┃
+━━━┫    ┃      ┃      ┃      ┃
+5  ┃c0  ┃r4c1  ┃r4c2  ┃r4c3  ┃
+━━━┫    ┃      ┃      ┃      ┃
+6  ┃c0  ┃r5c1  ┃r5c2  ┃r5c3  ┃
+--- moving column 1, grid double
+   ║l 0 ║col 1 ║col 2 ┃col 3 ║
+═══╬════╬══════╬══════┃══════╬
+3  ║c0  ║r2c1  ║r2c2  ┃r2c3  ║
+═══╬════╬══════╬══════┃══════╬
+4  ║c0  ║r3c1  ║r3c2  ┃r3c3  ║
+═══╬════╬══════╬══════┃══════╬
+5  ║c0  ║r4c1  ║r4c2  ┃r4c3  ║
+═══╬════╬══════╬══════┃══════╬
+6  ║c0  ║r5c1  ║r5c2  ┃r5c3  ║

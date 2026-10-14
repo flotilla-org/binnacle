@@ -1,0 +1,13 @@
+---
+source: crates/binnacle-ratatui/tests/borders.rs
+expression: grid
+---
+   │l 0 │col 1 │col 2 │col 3 │
+───┼────┼──────┼──────┼──────┼
+3  │c0  │r2c1  │r2c2  │r2c3  │
+4  │c0  │r3c1  │r3c2  │r3c3  │
+5  │c0  │r4c1  │r4c2  │r4c3  │
+6  │c0  │r5c1  │r5c2  │r5c3  │
+7  │c0  │r6c1  │r6c2  │r6c3  │
+8  │c0  │r7c1  │r7c2  │r7c3  │
+9  │c0  │r8c1  │r8c2  │r8c3  │

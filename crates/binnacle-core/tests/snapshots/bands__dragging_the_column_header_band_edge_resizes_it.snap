@@ -1,0 +1,22 @@
+---
+source: crates/binnacle-core/tests/bands.rs
+expression: out
+---
+--- 1. drag the column header band's edge down 2: 3 high
+window Rows 0..5
+window Cols 0..5
+gen 2 | damage layout selection | mode ResizingBand { axis: Rows, start_thickness: 1.0 } | capturing | cursor ResizeRow | guide Rows 3 (band size 3)
+Rows: count 20, extent 6, header 3, anchor 0+0, thumb 0.0000/0.0769 | 0#0@3+1 1#1@5+1
+Cols: count 5, extent 30, header 4, anchor 0+0, thumb 0.0000/0.7647 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+
+
+0   0.0    0.1    0.2    0.3
+
+1   1.0    1.1    1.2    1.3
+--- 2. release
+effect (gen 2): BandSizeChanged { axis: Rows, thickness: 3.0 }
+gen 3 | damage selection | cursor ResizeRow
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

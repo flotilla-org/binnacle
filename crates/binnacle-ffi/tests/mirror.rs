@@ -32,6 +32,16 @@ enum Op {
     Gesture([PointerEvent; 2]),
     Action(Action),
     SetSize(Axis, u64, f32),
+    SetHeader(Axis, f32),
+    /// A press `inset` inside the end of the band leading the axis (where its
+    /// edge is, given a Gap), halfway across the other band as of the last
+    /// frame, with this click count; then a move by `travel` along the axis.
+    BandDrag {
+        axis: Axis,
+        inset: f32,
+        clicks: u32,
+        travel: f32,
+    },
     Unit(SelectionUnit),
     HeaderClick(Axis, HeaderClick),
     Threshold(f32),
@@ -231,7 +241,20 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(15)) {
+    match tc.draw(gs::integers::<u8>().max_value(17)) {
+        16 => Op::SetHeader(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![0.0f32, -1.0, f32::NAN, f32::INFINITY]),
+                gs::floats::<f32>().min_value(0.0).max_value(8.0),
+            )),
+        ),
+        17 => Op::BandDrag {
+            axis: tc.draw(axes()),
+            inset: tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
+            clicks: tc.draw(gs::integers::<u32>().min_value(1).max_value(2)),
+            travel: tc.draw(gs::floats::<f32>().min_value(-6.0).max_value(6.0)),
+        },
         14 | 15 => tc.draw(answer()),
         0 | 1 | 11 => Op::Frame(tc.draw(len()), tc.draw(len())),
         2 => Op::Pointer(tc.draw(pointer())),
@@ -278,7 +301,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(13))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(14))),
     }
 }
 
@@ -375,6 +398,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
             11 => binnacle_grid_located(h, 2, 1000, 0, 0),
             12 => binnacle_grid_notify(h, ROWS, 5, 0, 0),
+            13 => binnacle_grid_set_header(h, 2, 1.0),
             _ => binnacle_grid_notify(h, 2, 1, 0, 0),
         }
     }
@@ -491,6 +515,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     let mode = match rust.mode() {
         Mode::Idle => 1,
         Mode::DraggingSelection => 2,
+        Mode::ResizingBand { .. } => 3,
         _ => 0,
     };
     assert_eq!(c.mode, mode);
@@ -519,6 +544,7 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         assert_eq!(polled, 1, "missing {want:?}");
         assert_eq!(c.generation, want.generation);
         let mut spec = Vec::new();
+        let mut size = 0.0;
         let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
                 let got = unsafe { slice::from_raw_parts(c.text.data, c.text.len) };
@@ -535,6 +561,11 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 asked = Some((*axis, *key));
                 (5, 0, 0, tag(*axis), key.0)
             }
+            Effect::BandSizeChanged { axis, thickness } => {
+                size = *thickness;
+                (6, 0, 0, tag(*axis), 0)
+            }
+            Effect::BandAutoSizeRequested { axis } => (7, 0, 0, tag(*axis), 0),
             #[allow(unreachable_patterns)] // Effects added to the Grid later are OTHER.
             _ => (0, 0, 0, 0, 0),
         };
@@ -542,6 +573,7 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             (c.kind, c.row, c.col, c.axis, c.key),
             (kind, row, col, axis, key)
         );
+        assert!(same_f32(c.size, size), "size {} for {want:?}", c.size);
         let sort = match c.sort.is_null() {
             true => &[][..],
             false => unsafe { slice::from_raw_parts(c.sort, c.sort_len) },
@@ -578,6 +610,8 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
     // Start with a frame so pointer input can hit the laid-out Grid.
     let first = Op::Frame(tc.draw(len()), tc.draw(len()));
     let mut asked = None;
+    // Each band's thickness as of the last frame.
+    let mut bands = [0.0f32; 2];
     let ops = [first]
         .into_iter()
         .chain(tc.draw(gs::vecs(op()).min_size(5).max_size(60)));
@@ -615,7 +649,9 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     }
                     let mut snap = std::mem::zeroed::<BinnacleSnapshot>();
                     assert_eq!(binnacle_grid_snapshot(h, &mut snap), 1);
-                    check_snapshot(&snap, &grid.snapshot());
+                    let rust = grid.snapshot();
+                    check_snapshot(&snap, &rust);
+                    bands = Axis::ALL.map(|a| rust.header(a));
                     1
                 }
                 Op::Pointer(e) => {
@@ -642,6 +678,33 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                         key + 5000 * u64::from(axis == Axis::Cols),
                         size,
                     )
+                }
+                Op::SetHeader(axis, thickness) => {
+                    grid.set_header(axis, thickness);
+                    binnacle_grid_set_header(h, tag(axis), thickness)
+                }
+                Op::BandDrag {
+                    axis,
+                    inset,
+                    clicks,
+                    travel,
+                } => {
+                    let along = bands[axis.index()] - inset;
+                    let across = bands[axis.other().index()] / 2.0;
+                    let at = |v: f32| match axis {
+                        Axis::Rows => (across, v),
+                        Axis::Cols => (v, across),
+                    };
+                    let (x, y) = at(along);
+                    let (mx, my) = at(along + travel);
+                    for e in [
+                        PointerEvent::down(x, y).clicks(clicks),
+                        PointerEvent::moved(mx, my),
+                    ] {
+                        grid.pointer(e);
+                        assert_eq!(binnacle_grid_pointer(h, pointer_event(e)), 1);
+                    }
+                    1
                 }
                 Op::Unit(unit) => {
                     grid.set_selection_unit(unit);

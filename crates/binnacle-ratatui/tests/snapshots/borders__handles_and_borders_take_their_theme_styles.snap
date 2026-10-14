@@ -1,0 +1,32 @@
+---
+source: crates/binnacle-ratatui/tests/borders.rs
+expression: "styled(&draw_in(&mut fixture(), &ctx, AREA))"
+---
+   │l 0 │col 1 │col 2 │col 3 │
+───┼────┼──────┼──────┼──────┼
+3  │c0  │r2c1  │r2c2  │r2c3  │
+───┼────┼──────┼──────┼──────┼
+4  │c0  │r3c1  │r3c2  │r3c3  │
+───┼────┼──────┼──────┼──────┼
+5  │c0  │r4c1  │r4c2  │r4c3  │
+───┼────┼──────┼──────┼──────┼
+6  │c0  │r5c1  │r5c2  │r5c3  │
+
+aaabccccbccccccbccccccbccccccb
+bbbbddddbddddddbddddddbddddddb
+eeedffffdffffffdffffffdffffffd
+bbbbdddddddddddddddddddddddddd
+eeedgggghgggggghgggggghggggggh
+bbbbdddddddddddddddddddddddddd
+eeedffffdffffffdffffffdffffffd
+bbbbdddddddddddddddddddddddddd
+eeedgggghgggggghgggggghggggggh
+
+a: fg Reset bg Reset
+b: fg #585B70 bg Reset
+c: fg #89B4FA bg Reset BOLD
+d: fg #45475A bg Reset
+e: fg #6C7086 bg Reset
+f: fg #CDD6F4 bg Reset
+g: fg #CDD6F4 bg #181825
+h: fg #45475A bg #181825

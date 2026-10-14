@@ -1,0 +1,68 @@
+---
+source: crates/binnacle-ratatui/tests/theme.rs
+expression: "both_ways(theme, stripe)"
+---
+--- catppuccin_mocha
+   l 0 │col 1▲│col 2~│col 3 │c
+3  c0   r2c1   r2c2   r2c3   r
+4  c0   r3c1   r3c2   r3c3   r
+5  c0   r4c1   r4c2   r4c3   r
+6  c0   r5c1   r5c2   r5c3   r
+7  c0   r6c1   r6c2   r6c3   r
+8       …      …      …      …
+9       …      …      …      …
+
+aaabbbbcbbbbbdcddddddceeeeeecb
+fffggggaggggggaggggggaggggggag
+fffhhhhhhhhhhhhhhhhhhhhhhhhhhh
+fffiiiiaiiiiiiaiiiiiiaiiiiiiai
+fffhhhhhjjjjjjhjjjjjjhhhhhhhhh
+fffggggajjjjjjakkkkkkaggggggag
+fffhhhhhlhhhhhhlhhhhhhlhhhhhhl
+fffggggafgggggafgggggafgggggaf
+
+a: fg Reset bg Reset
+b: fg #89B4FA bg Reset BOLD
+c: fg #585B70 bg Reset
+d: fg #FAB387 bg Reset BOLD
+e: fg #74C7EC bg Reset BOLD | UNDERLINED
+f: fg #6C7086 bg Reset
+g: fg #CDD6F4 bg Reset
+h: fg #CDD6F4 bg #181825
+i: fg #CBA6F7 bg #45475A
+j: fg #CDD6F4 bg #45475A
+k: fg #11111B bg #89B4FA
+l: fg #6C7086 bg #181825
+
+--- inverted headers, zebra
+   l 0 │col 1▲│col 2~│col 3 │c
+3  c0   r2c1   r2c2   r2c3   r
+4  c0   r3c1   r3c2   r3c3   r
+5  c0   r4c1   r4c2   r4c3   r
+6  c0   r5c1   r5c2   r5c3   r
+7  c0   r6c1   r6c2   r6c3   r
+8       …      …      …      …
+9       …      …      …      …
+
+aaabbbbcbbbbbdcddddddceeeeeecb
+fffggggaggggggaggggggaggggggag
+fffhhhhhhhhhhhhhhhhhhhhhhhhhhh
+fffiiiiaiiiiiiaiiiiiiaiiiiiiai
+fffhhhhhjjjjjjhjjjjjjhhhhhhhhh
+fffggggajjjjjjakkkkkkaggggggag
+fffhhhhhlhhhhhhlhhhhhhlhhhhhhl
+fffggggamgggggamgggggamgggggam
+
+a: fg Reset bg Reset
+b: fg #89B4FA bg Reset BOLD | REVERSED
+c: fg #585B70 bg Reset
+d: fg #FAB387 bg Reset BOLD | REVERSED
+e: fg #74C7EC bg Reset BOLD | UNDERLINED | REVERSED
+f: fg #6C7086 bg Reset REVERSED
+g: fg #CDD6F4 bg Reset
+h: fg #CDD6F4 bg #181825
+i: fg #CBA6F7 bg #45475A
+j: fg #CDD6F4 bg #45475A
+k: fg #11111B bg #89B4FA
+l: fg #6C7086 bg #181825
+m: fg #6C7086 bg Reset
