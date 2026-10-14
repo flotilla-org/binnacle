@@ -80,4 +80,10 @@ Real wheel input (60 Playwright wheel ticks): A 0.7 / 1.2 ms, B 1.9 / 3.2 ms, C 
 
 ## Verdict
 
-_For the user to fill in after trying it: which drawing mode first, which scroller, and whether the textarea design holds._
+Decided 2026-10-14 after trying all three variants (both painters looked good by eye):
+
+- **Canvas first, with the capped native scroller (A).** It is much cheaper on fast scrolls (about 1 ms against 5 to 8 ms for DOM) and closest to how ratatui and wheelhouse draw.
+- **A DOM painter (B) stays a later option** behind the same `paint(snapshot, content)` call, for when text selection, CSS theming or native accessibility matter more than scroll cost.
+- **The drawn scrollbar (C) is dropped.** It loses the OS's native behaviour (macOS overlay scrollbars, momentum) and has to correct the wheel scaling mismatch itself.
+- **Into the wasm boundary ticket:** the bridge list above; take in a pending scroll offset before writing `scrollTop` back; drain Effects after each key Action so fast typing after F2 loses nothing.
+- **Still to try by hand:** a real OS IME and Firefox.
