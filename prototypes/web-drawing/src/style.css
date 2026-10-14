@@ -1,0 +1,56 @@
+/* PROTOTYPE (#45) styles. */
+html, body { margin: 0; height: 100%; overflow: hidden; font: 13px system-ui, -apple-system, sans-serif; color: #0f172a; }
+#host { position: absolute; inset: 0; }
+
+.scroller { position: absolute; inset: 0; overflow: auto; overscroll-behavior: none; }
+.sizer { position: relative; }
+.layer { position: sticky; top: 0; left: 0; overflow: hidden; }
+.custom { position: absolute; inset: 0; overflow: hidden; touch-action: none; }
+
+.ime {
+  position: absolute; left: 0; top: 0; margin: 0; padding: 0 6px; border: 0; outline: none;
+  resize: none; overflow: hidden; white-space: pre; box-sizing: border-box;
+  font: 13px system-ui, -apple-system, sans-serif; line-height: 24px;
+  opacity: 0; background: transparent; color: transparent; caret-color: transparent; z-index: 2;
+}
+.ime.editing {
+  opacity: 1; background: #fff; color: #0f172a; caret-color: auto;
+  box-shadow: 0 0 0 2px #2563eb, 0 4px 14px rgba(15, 23, 42, 0.18);
+}
+
+.dom-grid { position: relative; overflow: hidden; background: #fff; }
+.dom-grid > div { position: absolute; left: 0; top: 0; overflow: hidden; }
+.dom-body { background: #fff; }
+.dom-overlay { pointer-events: none; }
+.c, .h, .rh, .dom-fill, .dom-focus, .dom-guide { position: absolute; left: 0; top: 0; box-sizing: border-box; }
+.c { padding: 0 6px; line-height: 24px; white-space: nowrap; overflow: hidden; background: #fff; box-shadow: 1px 1px 0 #e2e8f0; }
+.c.alt { background: #f8fafc; }
+.c.num { text-align: right; }
+.c.loading { color: #94a3b8; }
+.c.focused { box-shadow: inset 0 0 0 2px #2563eb, 1px 1px 0 #e2e8f0; }
+.c svg { position: absolute; left: 4px; top: 3px; width: calc(100% - 8px); height: calc(100% - 6px); overflow: visible; }
+.c polyline { fill: none; stroke: #059669; stroke-width: 1.25; vector-effect: non-scaling-stroke; }
+.dom-colband, .dom-rowband, .dom-corner { background: #f1f5f9; }
+.dom-colband { border-bottom: 1px solid #e2e8f0; box-sizing: border-box; }
+.dom-rowband { border-right: 1px solid #e2e8f0; box-sizing: border-box; }
+.h { padding: 0 6px; font-weight: 600; font-size: 12px; color: #334155; line-height: 28px; border-right: 1px solid #e2e8f0; white-space: nowrap; overflow: hidden; }
+.h.hover { background: #e2e8f0; }
+.h.sel, .rh.sel { background: #dbeafe; }
+.rh { padding: 0 8px; text-align: right; color: #334155; line-height: 24px; white-space: nowrap; }
+.dom-fill { background: rgba(37, 99, 235, 0.13); }
+.dom-focus { display: none; }
+.dom-guide { background: #2563eb; }
+
+#overlay {
+  position: fixed; right: 12px; top: 40px; margin: 0; z-index: 10; pointer-events: none;
+  background: rgba(15, 23, 42, 0.86); color: #e2e8f0; padding: 10px 12px; border-radius: 8px;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; min-width: 340px; max-width: 420px; white-space: pre-wrap;
+}
+#switcher {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 11;
+  display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+  background: #111827; color: #f9fafb; border-radius: 999px; box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+  font: 600 12px system-ui, sans-serif;
+}
+#switcher button { background: #374151; color: #f9fafb; border: 0; border-radius: 999px; width: 28px; height: 28px; cursor: pointer; font-size: 14px; }
+#switcher button:hover { background: #4b5563; }

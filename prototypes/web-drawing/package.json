@@ -1,0 +1,14 @@
+{
+  "name": "binnacle-web-drawing-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "wasm": "CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-wasm/target} wasm-pack build wasm --target web --release --no-pack",
+    "dev": "pnpm wasm && vite --port 5745 --strictPort --host 127.0.0.1",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
+  }
+}
