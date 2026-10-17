@@ -1388,20 +1388,23 @@ fn a_click_on_no_cell_changes_nothing(tc: TestCase) {
         let axis = tc.draw(axis());
         let strip = snap.strip(axis);
         let (start, stop) = body(&snap, axis);
+        // How far f32 Strip ends can sit from the true item ends.
+        let drift = || {
+            let reach = stop.max(strip[0].offset.abs());
+            (strip.len() as f32 + 4.0) * (next_f32(reach) - reach)
+        };
         let mut misses: Vec<f32> = strip
             .iter()
             .filter_map(|i| {
                 let (lo, hi) = (i.end().max(start), (i.end() + snap.gap(axis)).min(stop));
-                let reach = stop.max(strip[0].offset.abs());
-                let drift = (strip.len() as f32 + 4.0) * (next_f32(reach) - reach);
-                (hi - lo > 4.0 * drift).then(|| lo + (hi - lo) / 2.0)
+                (hi - lo > 4.0 * drift()).then(|| lo + (hi - lo) / 2.0)
             })
             .collect();
         misses.push(-1.0);
         misses.push(stop + 1.0);
         if let Some(last) = strip
             .last()
-            .filter(|l| l.position + 1 == snap.count(axis) && l.end() < stop)
+            .filter(|l| l.position + 1 == snap.count(axis) && stop - l.end() > 4.0 * drift())
         {
             misses.push(last.end() + (stop - last.end()) / 2.0);
         }
