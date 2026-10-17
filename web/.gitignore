@@ -1,0 +1,6 @@
+node_modules/
+wasm/
+test-results/
+playwright-report/
+dist/
+.hegel/

@@ -1,0 +1,51 @@
+// Seam 2: the wasm boundary. The decoder and the Effect union are checked
+// against Rust's own view of the same frame, never against constants.
+
+import { beforeAll, describe, expect, test } from "vitest";
+import { decodeSnapshot } from "../src/snapshot";
+import { isEffect } from "../src/effects";
+import { bridge } from "../src/wasm";
+import { loadForTests } from "./wasm";
+
+beforeAll(loadForTests);
+
+interface DebugFrame {
+  numbers: number[];
+  keys: bigint[];
+  dump: Record<string, unknown>;
+}
+
+describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
+  const scenarios = ["plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled"];
+
+  test("the scenario list matches Rust's", () => {
+    expect(bridge().debug_scenarios()).toEqual(scenarios);
+  });
+
+  test.each(scenarios)("%s", (name) => {
+    const grid = bridge().WebGrid.debug_scenario(name);
+    try {
+      const frame = grid.debug_frame() as DebugFrame;
+      const decoded = decodeSnapshot(new Float64Array(frame.numbers), new BigUint64Array(frame.keys));
+      expect({ ...decoded, cells: Array.from(decoded.cells) }).toEqual(frame.dump);
+    } finally {
+      grid.free();
+    }
+  });
+});
+
+describe("Effects", () => {
+  test("every Effect variant passes the union's guard", () => {
+    const effects = bridge().debug_every_effect() as unknown[];
+    const types = effects.map((e) => (e as { type: string }).type);
+    expect(new Set(types).size).toBe(effects.length);
+    for (const effect of effects) expect(isEffect(effect), JSON.stringify(effect, (_, v) => (typeof v === "bigint" ? `${v}n` : v))).toBe(true);
+  });
+
+  test("the guard rejects what is not an Effect", () => {
+    expect(isEffect({ type: "Nope" })).toBe(false);
+    expect(isEffect({ type: "FocusChanged", generation: 1, row: 1, col: 2n })).toBe(false);
+    expect(isEffect({ type: "Locate", generation: 1, axis: "diagonal", key: 1n })).toBe(false);
+    expect(isEffect(null)).toBe(false);
+  });
+});

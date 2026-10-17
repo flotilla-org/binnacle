@@ -1,0 +1,37 @@
+{
+  "name": "@flotilla-org/binnacle",
+  "version": "0.1.0",
+  "description": "binnacle's web adapter: the binnacle Grid in wasm, painted on a canvas",
+  "private": true,
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "wasm"
+  ],
+  "scripts": {
+    "wasm": "wasm-pack build ../crates/binnacle-wasm --target web --release --no-pack --out-dir ../../web/wasm",
+    "wasm:debug": "wasm-pack build ../crates/binnacle-wasm --target web --dev --no-pack --out-dir ../../web/wasm",
+    "dev": "pnpm wasm && vite --port 5754 --strictPort --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm wasm && vitest run && pnpm test:wasm",
+    "test:wasm": "wasm-pack test --node ../crates/binnacle-wasm",
+    "e2e": "pnpm wasm && playwright test"
+  },
+  "devDependencies": {
+    "@hegeldev/hegel": "^0.4.10",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "koffi"
+    ]
+  }
+}
