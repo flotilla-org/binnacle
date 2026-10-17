@@ -103,7 +103,7 @@ async function show(source: DemoSource) {
   remember();
   change = null;
   changes = 0;
-  current = await source.mount(host, toolbar, {
+  const mounted = await source.mount(host, toolbar, {
     label: `${source.name} table`,
     theme: themeChoice(),
     border,
@@ -114,6 +114,10 @@ async function show(source: DemoSource) {
       if (lastFrame) status.textContent = describe(lastFrame);
     },
   });
+  // A Theme or Border Style picked while the source mounted wins over the one it was given.
+  mounted.theme = themeChoice();
+  mounted.border = border;
+  current = mounted;
 }
 
 for (const source of SOURCES) {
