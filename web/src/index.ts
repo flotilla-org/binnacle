@@ -2,6 +2,7 @@
 
 export { GridWidget, type FrameInfo, type GridOptions } from "./widget";
 export type { Editor } from "./editing";
+export type { AxisSelection, SelectionChange } from "./selection";
 export { defaultBindings, type Action, type FocusStep, type KeyBindings, type Platform } from "./keymap";
 export type {
   AxisSink,

@@ -65,6 +65,20 @@ test.beforeEach(async ({ page }) => {
   await expect(status(page)).toContainText(`of ${rows.length.toLocaleString("en")}`);
 });
 
+test("onSelectionChange fires once per change, and its IDs survive a re-sort", async ({ page }) => {
+  const changes = () => status(page).getAttribute("data-selection-changes");
+  await cell(page, 2, 1);
+  await expect(status(page)).toContainText(focus(2, 2, "name", 1));
+  expect(await changes()).toBe("1");
+  // Two re-sorts move the record but not the focus by ID, so nothing fires.
+  await header(page, 2);
+  const at = sorted([["weight", "asc"]]).indexOf(2);
+  await expect(status(page)).toContainText(focus(at, 2, "name", 1));
+  await header(page, 2);
+  await expect(status(page)).toContainText(focus(sorted([["weight", "desc"]]).indexOf(2), 2, "name", 1));
+  expect(await changes()).toBe("1");
+});
+
 test("a header click sorts, and focus follows its record through a re-sort", async ({ page }) => {
   await header(page, 2);
   const ascending = sorted([["weight", "asc"]]);

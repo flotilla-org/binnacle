@@ -19,3 +19,12 @@ test("a Vite app built against the package loads the wasm and shows the grid", a
   expect(wasm[0]).toMatch(/^\/assets\/binnacle_wasm_bg-[\w-]+\.wasm$/);
   await expect(page.locator(".binnacle canvas")).toBeVisible();
 });
+
+test("the React wrapper hands onSelectionChange the focused row's own ID", async ({ page }) => {
+  await page.goto(CONSUMER);
+  await expect(page.locator("#status")).toHaveText("rows 1 to 3 of 3");
+  const box = (await page.locator(".binnacle canvas").boundingBox())!;
+  // The third body row, in the first column, past the row-number band.
+  await page.mouse.click(box.x + 80, box.y + 28 + 2 * 24 + 12);
+  await expect(page.locator("#focused")).toHaveText("Discovery.name (0 rows)");
+});

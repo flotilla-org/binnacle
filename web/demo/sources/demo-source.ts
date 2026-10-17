@@ -1,6 +1,14 @@
 // What the demo page needs from a source: a name and a way to mount it.
 
-import { GridWidget, type BorderStyle, type FrameInfo, type GridOptions, type Theme, type ThemeChoice } from "../../src";
+import {
+  GridWidget,
+  type BorderStyle,
+  type FrameInfo,
+  type GridOptions,
+  type SelectionChange,
+  type Theme,
+  type ThemeChoice,
+} from "../../src";
 
 /** What the page chooses for every source: the look and where frames are reported. */
 export interface Look {
@@ -9,6 +17,7 @@ export interface Look {
   theme: ThemeChoice;
   border: BorderStyle;
   onFrame(frame: FrameInfo): void;
+  onSelectionChange(change: SelectionChange): void;
 }
 
 /** A mounted source, as far as the page's toolbar drives it. */

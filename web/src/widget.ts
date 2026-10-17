@@ -15,6 +15,7 @@ import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
 import { plainText, type RendererChoice } from "./renderer";
+import { createSelectionEvents, type SelectionChange } from "./selection";
 import type { Snapshot, Span } from "./snapshot";
 import type { TableSource } from "./source";
 import { AXIS_CODE } from "./codes";
@@ -50,6 +51,11 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   editor?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>): Editor<NoInfer<V>> | null | undefined;
   /** The grid's accessible name, read by screen readers. */
   label?: string;
+  /**
+   * Called when the focus, Selection or Picks change, after the frame that
+   * shows the change, with the selection by the Table Source's own IDs.
+   */
+  onSelectionChange?(change: SelectionChange<NoInfer<RowId>, NoInfer<ColId>>): void;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
 }
@@ -95,6 +101,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly input: Input;
   private readonly aria: Aria;
   private last: Snapshot | null = null;
+  private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
   private raf = 0;
   private force = true;
@@ -141,6 +148,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
     this.feed = createFeed(options.source, { schedule: () => this.schedule() });
     this.grid = this.createGrid();
+    this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);
     const { scroller, sizer } = this;
     const port: ScrollPort = {
@@ -366,6 +374,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       animating: again,
       editing: snapshot.mode.type === "Editing" ? this.ids(snapshot.mode.row, snapshot.mode.col) : null,
     });
+    this.selectionEvents(snapshot);
   }
 
   private dispatch(effect: Effect): void {

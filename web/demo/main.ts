@@ -9,6 +9,7 @@ import {
   systemTheme,
   type BorderStyle,
   type FrameInfo,
+  type SelectionChange,
   type Theme,
   type ThemeChoice,
 } from "../src";
@@ -25,6 +26,10 @@ const aria = document.querySelector<HTMLInputElement>("#aria")!;
 
 const number = new Intl.NumberFormat("en");
 let current: Mounted | null = null;
+let lastFrame: FrameInfo | null = null;
+/** The latest `onSelectionChange`, and how many the grid has sent (end-to-end tests read the count). */
+let change: SelectionChange | null = null;
+let changes = 0;
 let shown: DemoSource | null = null;
 const params = new URL(location.href).searchParams;
 let pickedTheme: Theme = presets.find((t) => t.name === params.get("theme")) ?? presets[0]!;
@@ -44,7 +49,7 @@ function describe(frame: FrameInfo): string {
     `columns ${number.format(cols.first + 1)} to ${number.format(cols.last + 1)} of ${number.format(cols.count)}`,
   ];
   if (focus) {
-    const ids = shown?.showIds && frame.focusIds ? ` (${String(frame.focusIds.row)} / ${String(frame.focusIds.col)})` : "";
+    const ids = shown?.showIds && change?.focus ? ` (${String(change.focus.rowId)} / ${String(change.focus.colId)})` : "";
     parts.push(`focus row ${number.format(focus.row + 1)}, column ${number.format(focus.col + 1)}${ids}`);
   }
   if (selection) {
@@ -59,6 +64,7 @@ function describe(frame: FrameInfo): string {
 
 /** Mirrors the grid's Theme in the toolbar and the page's own colours. */
 function reflect(frame: FrameInfo): void {
+  lastFrame = frame;
   const theme = current?.theme;
   if (theme) {
     themes.value = theme.name;
@@ -95,11 +101,18 @@ async function show(source: DemoSource) {
   shown = source;
   for (const tab of tabs.querySelectorAll("button")) tab.setAttribute("aria-pressed", String(tab.dataset.source === source.name));
   remember();
+  change = null;
+  changes = 0;
   current = await source.mount(host, toolbar, {
     label: `${source.name} table`,
     theme: themeChoice(),
     border,
     onFrame: reflect,
+    onSelectionChange: (c) => {
+      change = c;
+      status.dataset.selectionChanges = String(++changes);
+      if (lastFrame) status.textContent = describe(lastFrame);
+    },
   });
 }
 
