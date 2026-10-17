@@ -66,13 +66,27 @@ from `"light" | "dark"` to one; it follows the system by default), `border`
 (a Border Style), `keymap`, `platform`, `renderer` (a Cell Renderer per
 cell, for example `byColumn(...)` over `textRenderer`, `sparklineRenderer`
 and `barRenderer`), `onCommit` (makes cells editable; without it the grid is
-read-only), `editor` (a custom editor per cell), `emptyMessage` (what the
-body says when an axis has no items, "No rows" by default; a source's own
-`emptyMessage()`, such as "No rows match the filter", wins) and `onError`
-(called with what a failed source request threw and which request it was;
-the cells of a failed `window` or `cells` request show an error marker until
-a Change Notice through the source's sink asks again). `grid.theme`,
-`grid.border` and `grid.emptyMessage` change them later.
+read-only), `editor` (a custom editor per cell), `selectionUnit`
+(`"rows"` makes focus select its whole row, for list-style views),
+`emptyMessage` (what the body says when an axis has no items, "No rows" by
+default; a source's own `emptyMessage()`, such as "No rows match the
+filter", wins) and `onError` (called with what a failed source request threw
+and which request it was; the cells of a failed `window` or `cells` request
+show an error marker until a Change Notice through the source's sink asks
+again). `grid.theme`, `grid.border` and `grid.emptyMessage` change them
+later.
+
+To move around from code:
+
+- `grid.focus(rowId, colId?)` focuses a cell by your IDs (by default in the
+  focused column) and scrolls it into view. A row outside the rows the grid
+  holds is found with the Table Source's `locate`, so the returned Promise
+  settles once focus lands, and is rejected if the source no longer has the
+  row or focus moves on first.
+- `grid.reveal(rowId, colId?)` scrolls a row (and column) into view without
+  moving focus; it too returns a Promise.
+- `grid.scrollTo(row, col?)` scrolls so the row at that Position (and the
+  column) starts the grid.
 
 ### React
 
@@ -90,7 +104,8 @@ function Ships({ rows }: { rows: Ship[] }) {
 ```
 
 `BinnacleGrid` takes every `GridWidget` option as a prop, plus `className`,
-`style` and `widgetRef` (receives the `GridWidget`, then `null`). The widget
+`style` and `widgetRef` (receives the `GridWidget`, then `null`; call
+`focus`, `reveal` and `scrollTo` through it). The widget
 runs its own frame loop: React renders the container once and never on
 frames. Props reach it like this:
 

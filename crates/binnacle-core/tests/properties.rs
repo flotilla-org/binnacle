@@ -2433,3 +2433,146 @@ fn set_gap_keeps_the_scroll_anchors_item_at_its_offset(tc: TestCase) {
         "{before:?} moved to {after:?} with the Gap {old_gap} -> {new_gap}"
     );
 }
+
+/// A table for the reveal properties: whole-number sizes and Gaps, so f32
+/// layout is exact, a viewport with a body, the axis under test, where it is
+/// scrolled to (a thumb fraction, then whole units past that item's start),
+/// and a Position on it to scroll to.
+#[hegel::composite]
+fn reveal_case(tc: &TestCase) -> (AxisConfig, Viewport, Axis, (f64, u32), Position) {
+    let count = tc.draw(hegel::one_of!(
+        gs::integers::<u64>().min_value(1).max_value(50),
+        gs::integers::<u64>()
+            .min_value(1)
+            .max_value(1_000_000_000_000_000),
+    ));
+    let whole = |lo: u32, hi: u32| {
+        gs::integers::<u32>()
+            .min_value(lo)
+            .max_value(hi)
+            .map(|n| n as f32)
+    };
+    let header = tc.draw(whole(0, 40));
+    let config = AxisConfig::new(count, tc.draw(whole(1, 50)))
+        .header(header)
+        .gap(tc.draw(whole(0, 3)));
+    // A body at least one unit long on the axis under test.
+    let length = header + tc.draw(whole(1, 2000));
+    let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+    let v = match axis {
+        Axis::Rows => Viewport::new(40.0, length),
+        Axis::Cols => Viewport::new(length, 40.0),
+    };
+    let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
+    let units = tc.draw(gs::integers::<u32>().max_value(100));
+    let p = tc.draw(gs::integers::<u64>().max_value(count - 1));
+    (config, v, axis, (fraction, units), p)
+}
+
+/// The scenario a `reveal_case` describes, scrolled and framed; the other
+/// axis is small. The scroll lands on a whole unit: a fraction can leave the
+/// anchor a sub-f32-step past an item start, which the f32 Strip cannot show.
+fn revealing(
+    config: AxisConfig,
+    v: Viewport,
+    axis: Axis,
+    (fraction, units): (f64, u32),
+) -> Scenario<IdentityTable> {
+    let other = AxisConfig::new(3, 10.0);
+    let mut s = match axis {
+        Axis::Rows => Scenario::identity(config, other),
+        Axis::Cols => Scenario::identity(other, config),
+    };
+    s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
+    let at = s.frame(v).scroll_anchor(axis).position;
+    s.input(|g| g.scroll_to_item(axis, at));
+    s.frame(v);
+    let (dx, dy) = match axis {
+        Axis::Rows => (0.0, units as f32),
+        Axis::Cols => (units as f32, 0.0),
+    };
+    s.input(|g| g.action(Action::Scroll { dx, dy }));
+    s.frame(v);
+    s
+}
+
+/// The item at `p` on `axis`, and the item whose layout a failed lookup reports.
+fn item_at(snap: &Snapshot, axis: Axis, p: Position) -> binnacle_core::StripItem {
+    match snap.strip(axis).iter().find(|i| i.position == p) {
+        Some(item) => *item,
+        None => panic!("{p} not in the Strip {:?}", snap.strip(axis)),
+    }
+}
+
+/// `reveal` scrolls the least distance that shows the item: wholly inside the
+/// body when it fits there (else starting the body), and not at all when it
+/// is already wholly shown.
+#[hegel::test(test_cases = 1000)]
+fn reveal_shows_the_item_with_the_least_scroll(tc: TestCase) {
+    let (config, v, axis, scroll, p) = tc.draw(reveal_case());
+    let mut s = revealing(config, v, axis, scroll);
+    let before = s.frame(v);
+    let (start, stop) = body(&before, axis);
+    let anchor = before.scroll_anchor(axis);
+    let shown = before
+        .strip(axis)
+        .iter()
+        .any(|i| i.position == p && i.offset >= start && i.end() <= stop);
+    s.input(|g| g.reveal(axis, p));
+    let after = s.frame(v);
+    if shown {
+        assert_eq!(
+            after.scroll_anchor(axis),
+            anchor,
+            "already shown: no scroll"
+        );
+    }
+    let item = item_at(&after, axis, p);
+    if item.size <= stop - start {
+        assert!(
+            item.offset >= start && item.end() <= stop,
+            "{item:?} not inside {start}..{stop}"
+        );
+    } else {
+        assert_eq!(
+            item.offset, start,
+            "{item:?} longer than the body does not start it"
+        );
+    }
+}
+
+/// `reveal` never moves focus, placed or not.
+#[hegel::test(test_cases = 500)]
+fn reveal_leaves_focus(tc: TestCase) {
+    let (config, v, axis, scroll, p) = tc.draw(reveal_case());
+    let mut s = revealing(config, v, axis, scroll);
+    if tc.draw(gs::booleans()) {
+        s.input(|g| g.set_focus(Key(0), Key(0)));
+        s.frame(v);
+    }
+    let focus = Axis::ALL.map(|a| s.frame(v).focus(a));
+    s.input(|g| g.reveal(axis, p));
+    assert_eq!(Axis::ALL.map(|a| s.frame(v).focus(a)), focus);
+}
+
+/// `scroll_to_item` starts the body with the item, unless that would scroll
+/// past the end, where the last item ends the body instead.
+#[hegel::test(test_cases = 1000)]
+fn scroll_to_item_starts_the_body_with_the_item_or_reaches_the_end(tc: TestCase) {
+    let (config, v, axis, scroll, p) = tc.draw(reveal_case());
+    let mut s = revealing(config, v, axis, scroll);
+    s.input(|g| g.scroll_to_item(axis, p));
+    let after = s.frame(v);
+    let (start, stop) = body(&after, axis);
+    let strip = after.strip(axis);
+    let item = strip.iter().find(|i| i.position == p);
+    let last = strip.last().filter(|i| i.position == after.count(axis) - 1);
+    match (item, last) {
+        (Some(item), _) if item.offset == start => {}
+        (_, Some(last)) => assert!(
+            last.end() <= stop && strip.first().is_some_and(|f| f.position <= p),
+            "neither starts the body with {p} nor reaches the end: {strip:?}"
+        ),
+        _ => panic!("{p} does not start the body {start}..{stop}: {strip:?}"),
+    }
+}

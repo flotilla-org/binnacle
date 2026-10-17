@@ -16,9 +16,9 @@ import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
-import type { Snapshot, Span } from "./snapshot";
-import type { FailedRequest, TableSource } from "./source";
-import { AXIS_CODE } from "./codes";
+import type { AxisSnapshot, Snapshot, Span } from "./snapshot";
+import type { FailedRequest, Located, TableSource } from "./source";
+import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -68,6 +68,11 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   onError?(error: unknown, request: FailedRequest<NoInfer<RowId>, NoInfer<ColId>>): void;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
+  /**
+   * What a click or a focus move selects besides the focused cell: nothing
+   * (`"cells"`, the default) or its whole row (`"rows"`, for list-style views).
+   */
+  selectionUnit?: "cells" | "rows";
 }
 
 export interface FrameInfo<RowId = unknown, ColId = unknown> {
@@ -127,6 +132,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private empty: string;
   private readonly dark = matchMedia("(prefers-color-scheme: dark)");
   private readonly still = matchMedia("(prefers-reduced-motion: reduce)");
+  /** The `focus` call waiting for focus to land. */
+  private focusing: Focusing | null = null;
+  /** Waiting for the next frame to run. */
+  private framed: (() => void)[] = [];
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -164,8 +173,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.feed = createFeed(options.source, {
       schedule: () => this.schedule(),
       ...(options.onError ? { failed: (error, request) => options.onError?.(error, request) } : {}),
+      located: (axis, key, answer) => this.located(axis, key, answer),
     });
     this.grid = this.createGrid();
+    if (options.selectionUnit) this.grid.set_selection_unit(SELECTION_UNIT[options.selectionUnit]);
     this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);
     const { scroller, sizer } = this;
@@ -289,6 +300,72 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.painter.destroy?.();
     this.grid.free();
     this.element.remove();
+    this.focusing?.reject(new Error("binnacle: the grid was destroyed"));
+    this.focusing = null;
+    for (const waiting of this.framed.splice(0)) waiting();
+  }
+
+  /**
+   * Moves focus to the cell at `rowId` and `colId` (by default the focused
+   * column, else the first one in view), selecting as a focus move does, and
+   * scrolls it into view. A row or column outside the Window is found with
+   * the Table Source's `locate`. Settles after the frame that shows focus
+   * there; rejected if the Table Source no longer has the row or column, or
+   * if focus moves on first (another `focus` call, a key press).
+   */
+  async focus(rowId: RowId, colId?: ColId): Promise<void> {
+    await this.started();
+    const col = colId === undefined ? this.focusColumn() : this.feed.colKey(colId);
+    if (col === null) throw new Error("binnacle: there is no column to focus");
+    const row = this.feed.rowKey(rowId);
+    const name = colId === undefined ? String(rowId) : `${String(rowId)} / ${String(colId)}`;
+    this.focusing?.reject(new Error(`binnacle: focus moved on before it reached ${this.focusing.name}`));
+    return new Promise((resolve, reject) => {
+      this.focusing = { keys: { rows: row, cols: col }, name, gone: false, resolve, reject };
+      this.grid.set_focus(row, col);
+      drainEffects(this.parts);
+      this.schedule();
+    });
+  }
+
+  /**
+   * Scrolls the row with `rowId`, and the column with `colId` if given, into
+   * view without moving focus; one outside the Window is found with the Table
+   * Source's `locate`. Settles after the frame that shows it; rejected if the
+   * Table Source no longer has it.
+   */
+  async reveal(rowId: RowId, colId?: ColId): Promise<void> {
+    await this.started();
+    const wanted: [AxisName, bigint, unknown][] = [["rows", this.feed.rowKey(rowId), rowId]];
+    if (colId !== undefined) wanted.push(["cols", this.feed.colKey(colId), colId]);
+    const found = await Promise.all(wanted.map(([axis, key]) => this.feed.find(axis, key)));
+    if (this.destroyed) throw new Error("binnacle: the grid was destroyed");
+    wanted.forEach(([axis, , id], i) => {
+      const at = found[i]!;
+      if (at.type === "Gone") throw new Error(`binnacle: ${String(id)} is gone from the Table Source`);
+      this.grid.reveal(AXIS_CODE[axis], at.position);
+    });
+    drainEffects(this.parts);
+    await this.nextFrame();
+  }
+
+  /**
+   * Scrolls so the row at Position `row`, and the column at `col` if given,
+   * starts the body, or as near as the end allows. Focus does not move.
+   * Throws a RangeError for a Position that is not a whole number from 0.
+   */
+  scrollTo(row: number, col?: number): void {
+    const asked: [AxisName, number | undefined][] = [
+      ["rows", row],
+      ["cols", col],
+    ];
+    for (const [, p] of asked) {
+      if (p !== undefined && !(Number.isSafeInteger(p) && p >= 0)) throw new RangeError(`binnacle: ${p} is not a Position`);
+    }
+    if (this.destroyed) return;
+    for (const [axis, p] of asked) if (p !== undefined) this.grid.scroll_to_item(AXIS_CODE[axis], p);
+    drainEffects(this.parts);
+    this.schedule();
   }
 
   /**
@@ -393,6 +470,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.input.place(snapshot);
     this.aria.frame(snapshot, painted, () => this.feed.content(snapshot));
     if (again) this.schedule();
+    this.settleFocus(snapshot);
+    for (const waiting of this.framed.splice(0)) waiting();
     this.options.onFrame?.({
       painted,
       rows: span(snapshot, "rows"),
@@ -404,6 +483,39 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       editing: snapshot.mode.type === "Editing" ? this.ids(snapshot.mode.row, snapshot.mode.col) : null,
     });
     this.selectionEvents(snapshot);
+  }
+
+  /** Waits for a frame if none has run or one is due, so the Strips are those of what is in view. */
+  private async started(): Promise<void> {
+    if ((!this.last || this.raf) && !this.destroyed) await this.nextFrame();
+    if (this.destroyed) throw new Error("binnacle: the grid was destroyed");
+  }
+
+  private nextFrame(): Promise<void> {
+    return new Promise((resolve) => {
+      this.framed.push(resolve);
+      this.schedule();
+    });
+  }
+
+  /** The focused column's Key, else the first one in view. */
+  private focusColumn(): bigint | null {
+    const cols = this.last?.cols;
+    return cols?.focus?.key ?? (cols ? visible(cols).find((i) => i.key !== null)?.key : null) ?? null;
+  }
+
+  private located(axis: AxisName, key: bigint, answer: Located): void {
+    if (answer.type === "Gone" && this.focusing?.keys[axis] === key) this.focusing.gone = true;
+  }
+
+  /** Settles a waiting `focus` once neither axis is locating: landed, or not. */
+  private settleFocus(s: Snapshot): void {
+    const f = this.focusing;
+    if (!f || s.rows.locating || s.cols.locating) return;
+    this.focusing = null;
+    if (s.rows.focus?.key === f.keys.rows && s.cols.focus?.key === f.keys.cols) f.resolve();
+    else if (f.gone) f.reject(new Error(`binnacle: ${f.name} is gone from the Table Source`));
+    else f.reject(new Error(`binnacle: focus moved on before it reached ${f.name}`));
   }
 
   private dispatch(effect: Effect): void {
@@ -448,6 +560,21 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     target.addEventListener(type, handler);
     this.cleanup.push(() => target.removeEventListener(type, handler));
   }
+}
+
+interface Focusing {
+  keys: Record<AxisName, bigint>;
+  /** The IDs asked for, for messages. */
+  name: string;
+  /** The Table Source answered a Locate for one of the Keys with `Gone`. */
+  gone: boolean;
+  resolve(): void;
+  reject(error: Error): void;
+}
+
+/** The Strip's items the viewport shows (the Strip includes overscan). */
+function visible(axis: AxisSnapshot) {
+  return axis.strip.filter((i) => i.offset + i.size > axis.header && i.offset < axis.extent);
 }
 
 function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked"> {

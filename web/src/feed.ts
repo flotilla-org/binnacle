@@ -38,6 +38,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   /** The Key for a user's ID, issuing one if it has none yet. */
   rowKey(id: RowId): bigint;
   colKey(id: ColId): bigint;
+  /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
+  find(axis: AxisName, key: bigint): Promise<Located>;
   /** Detaches from the source and aborts outstanding requests. */
   destroy(): void;
 }
@@ -47,6 +49,8 @@ export interface FeedHooks<RowId = unknown, ColId = unknown> {
   schedule?(): void;
   /** The Table Source failed a request; by default it is logged. */
   failed?(error: unknown, request: FailedRequest<RowId, ColId>): void;
+  /** The Table Source answered a Locate the Grid asked for. */
+  located?(axis: AxisName, key: bigint, answer: Located): void;
 }
 
 const NOTICE_CODE: Record<ChangeNotice["type"], number> = {
@@ -87,6 +91,8 @@ interface Block {
 }
 
 const known = <T>(v: T | undefined): v is T => v !== undefined;
+
+const GONE: Located = { type: "Gone", suggest: null };
 
 export function createFeed<RowId, ColId, V>(
   source: TableSource<RowId, ColId, V>,
@@ -247,28 +253,47 @@ export function createFeed<RowId, ColId, V>(
     grid?.located(AXIS_CODE[axis], key, code, position);
   };
 
-  const answerLocate = (axis: AxisName, key: bigint) => {
+  /** Asks where `key` sits now; `unanswered` runs if the source cannot say (aborted, failed, no such ID). */
+  const whereIs = (
+    axis: AxisName,
+    key: bigint,
+    answer: (located: Located) => void,
+    unanswered: () => void,
+  ): Request | null => {
     const { source: s, interner, position } = axes[axis];
     const id = interner.id(key);
-    const gone: Located = { type: "Gone", suggest: null };
-    if (id === undefined) return located(axis, key, gone);
+    if (id === undefined) {
+      unanswered();
+      return null;
+    }
     if (s.locate) {
-      // The Grid acts on the last answer it is due for this Key, so a
-      // superseded request is answered at once, and ignored.
-      const at = `${axis}:${key}`;
-      locating.get(at)?.abort();
-      const done = () => locating.delete(at);
-      const request = settle(
-        (signal) => s.locate!(id, signal),
-        (answer) => (done(), located(axis, key, answer)),
-        { otherwise: () => (done(), located(axis, key, gone)), failed: report({ type: "locate", axis }) },
-      );
-      if (request.pending) locating.set(at, request);
-      return;
+      return settle((signal) => s.locate!(id, signal), answer, {
+        otherwise: unanswered,
+        failed: report({ type: "locate", axis }),
+      });
     }
     // Like the Rust IdentitySource: a Position identity is where it says.
     const count = shown?.[axis].count ?? 0;
-    located(axis, key, position && Number(key) < count ? { type: "Found", position: Number(key) } : gone);
+    answer(position && Number(key) < count ? { type: "Found", position: Number(key) } : GONE);
+    return null;
+  };
+
+  const answerLocate = (axis: AxisName, key: bigint) => {
+    // The Grid acts on the last answer it is due for this Key, so a
+    // superseded request is answered at once, and ignored.
+    const at = `${axis}:${key}`;
+    locating.get(at)?.abort();
+    const request = whereIs(
+      axis,
+      key,
+      (answer) => {
+        locating.delete(at);
+        hooks.located?.(axis, key, answer);
+        located(axis, key, answer);
+      },
+      () => (locating.delete(at), located(axis, key, GONE)),
+    );
+    if (request?.pending) locating.set(at, request);
   };
 
   const answerMove = (axis: AxisName, keys: bigint[], to: number) => {
@@ -464,6 +489,11 @@ export function createFeed<RowId, ColId, V>(
     colId: (key) => cols.interner.id(key),
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
+    find(axis, key) {
+      const item = shown?.[axis].strip.find((i) => i.key === key);
+      if (item) return Promise.resolve({ type: "Found", position: item.position });
+      return new Promise((resolve) => whereIs(axis, key, resolve, () => resolve(GONE)));
+    },
     destroy() {
       detach?.();
       settler.close();

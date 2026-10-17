@@ -63,6 +63,13 @@ test("the panel follows focus by ID through a sort and a filter", async ({ page 
   await expect(panel(page)).toHaveAttribute("data-feature", other.id);
 });
 
+test("a click selects the feature's whole row, as in a list", async ({ page }) => {
+  await cell(page, 2);
+  await expect(page.locator("#status")).toContainText(`focus row 3, column 1  ·  selected 1 × ${COLUMNS}`);
+  await page.keyboard.press("ArrowDown");
+  await expect(page.locator("#status")).toContainText(`focus row 4, column 1  ·  selected 1 × ${COLUMNS}`);
+});
+
 test("the status filter keeps the features with that status in that adapter", async ({ page }) => {
   await page.getByLabel("Filter by status").selectOption("web:missing");
   const kept = features.filter((f) => f.web === "missing");

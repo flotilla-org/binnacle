@@ -1,6 +1,7 @@
 // A consumer's whole use of the package: the in-memory source from the main
 // entry; the React wrapper, a Cell Renderer and editing from the /react
-// subpath (which re-exports the main entry); typed IDs in the callbacks.
+// subpath (which re-exports the main entry); typed IDs in the callbacks; the
+// row selection unit; the widget's methods through a ref.
 
 import { fromRows, type FrameInfo, type SelectionChange } from "@flotilla-org/binnacle";
 import {
@@ -10,8 +11,9 @@ import {
   type AxisSelection,
   type CellRenderer,
   type Editor,
+  type GridWidget,
 } from "@flotilla-org/binnacle/react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 interface Ship {
@@ -35,6 +37,7 @@ function App() {
   const source = useMemo(() => fromRows(ships, [{ key: "name" }, { key: "tonnage" }]), []);
   const [status, setStatus] = useState("loading");
   const [focused, setFocused] = useState("none");
+  const grid = useRef<GridWidget<number, keyof Ship, Value> | null>(null);
   const described = (f: FrameInfo<number, keyof Ship>) => `rows ${f.rows.first + 1} to ${f.rows.last + 1} of ${f.rows.count}`;
   const rowsOf = (s: AxisSelection<number> | undefined) => s?.count ?? 0;
   const selected = (c: SelectionChange<number, keyof Ship>) =>
@@ -44,12 +47,17 @@ function App() {
       <BinnacleGrid
         source={source}
         style={{ height: 300 }}
+        widgetRef={grid}
+        selectionUnit="rows"
         renderer={renderer}
         editor={noEditor}
         onCommit={(row, col, value) => console.log(ships[row]?.name, col, value)}
         onFrame={(f) => setStatus(described(f))}
         onSelectionChange={(c) => setFocused(selected(c))}
       />
+      <button type="button" onClick={() => void grid.current?.focus(1, "tonnage")}>
+        Go to Fram
+      </button>
       <p id="status">{status}</p>
       <p id="focused">{focused}</p>
     </>

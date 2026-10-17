@@ -6,7 +6,7 @@ use std::fmt;
 
 use binnacle_core::{
     Axis, Button, ChangeNotice, EditEnd, FocusStep, Key, Located, Modifiers, PointerKind, Position,
-    SortColumn, SortSpec,
+    SelectionUnit, SortColumn, SortSpec,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -59,6 +59,14 @@ pub fn focus_step(code: u8) -> FocusStep {
         0 => FocusStep::Item,
         1 => FocusStep::Page,
         _ => FocusStep::Edge,
+    }
+}
+
+/// What a plain click selects: 0 the cell, anything else its row.
+pub fn selection_unit(code: u8) -> SelectionUnit {
+    match code {
+        0 => SelectionUnit::Cells,
+        _ => SelectionUnit::Rows,
     }
 }
 
@@ -200,6 +208,12 @@ mod tests {
         assert_eq!(modifiers(ALT), Modifiers::ALT);
         assert_eq!(modifiers(META), Modifiers::META);
         assert_eq!(modifiers(SHIFT | META), Modifiers::SHIFT | Modifiers::META);
+    }
+
+    #[test]
+    fn selection_units_are_cells_or_rows() {
+        assert_eq!(selection_unit(0), SelectionUnit::Cells);
+        assert_eq!(selection_unit(1), SelectionUnit::Rows);
     }
 
     #[test]

@@ -384,6 +384,8 @@ export const gaps: DemoSource = {
     const widget = await GridWidget.create(master, {
       source,
       columnWidth,
+      // A list of features: focus picks a whole row, as in a list view.
+      selectionUnit: "rows",
       renderer: (_row, col) => renderers.get(col) ?? plain,
       ...look,
       onSelectionChange(change) {

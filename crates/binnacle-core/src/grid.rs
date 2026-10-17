@@ -526,6 +526,27 @@ impl Grid {
         self.rebase_gesture();
     }
 
+    /// Scrolls `axis` the least distance that shows the item at `position`
+    /// (its start, if it is longer than the body), leaving focus where it is.
+    /// A Position past the end is ignored.
+    pub fn reveal(&mut self, axis: Axis, position: Position) {
+        if position >= self.axis(axis).measure.count() {
+            return;
+        }
+        self.reveal = false;
+        self.pending_damage.layout |= self.axis_mut(axis).reveal(position);
+    }
+
+    /// Scrolls `axis` so the item at `position` starts the body, or as near
+    /// as the end allows. A Position past the end is ignored.
+    pub fn scroll_to_item(&mut self, axis: Axis, position: Position) {
+        if position >= self.axis(axis).measure.count() {
+            return;
+        }
+        self.reveal = false;
+        self.pending_damage.layout |= self.axis_mut(axis).scroll_to_item(position);
+    }
+
     /// A `MoveFocus`: moves focus, then replaces the range or stretches it.
     pub(crate) fn move_and_select(&mut self, m: Move) {
         let from = self.focus;

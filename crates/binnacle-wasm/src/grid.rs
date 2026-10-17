@@ -214,6 +214,21 @@ impl WebGrid {
         self.grid.edit_ended(codes::edit_end(end));
     }
 
+    /// Scrolls `a` the least distance that shows the item at `position`.
+    pub fn reveal(&mut self, a: u8, position: f64) {
+        self.grid.reveal(axis(a), codes::position(position));
+    }
+
+    /// Scrolls `a` so the item at `position` starts the body.
+    pub fn scroll_to_item(&mut self, a: u8, position: f64) {
+        self.grid.scroll_to_item(axis(a), codes::position(position));
+    }
+
+    /// What a plain click selects; `unit` as [`codes::selection_unit`].
+    pub fn set_selection_unit(&mut self, unit: u8) {
+        self.grid.set_selection_unit(codes::selection_unit(unit));
+    }
+
     pub fn scroll_by(&mut self, a: u8, items: f64) {
         self.grid.action(Action::ScrollBy {
             axis: axis(a),

@@ -324,6 +324,11 @@ impl AxisState {
         self.move_to(target as Position, 0.0)
     }
 
+    /// Scrolls so the item at `p` starts the body, clamped at the end.
+    pub fn scroll_to_item(&mut self, p: Position) -> bool {
+        self.move_to(p, 0.0)
+    }
+
     /// The anchor's distance from the axis start and the most it can be.
     fn scrolled(&self) -> (f64, f64) {
         let at = |a: ScrollAnchor| self.measure.distance(0, a.position) + f64::from(a.offset);

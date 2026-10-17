@@ -118,7 +118,8 @@ footer {
 #tools:empty { display: none; }
 #tools:not(:empty) + #look { margin-left: 16px; }
 
-#tools input[type="search"] {
+#tools input[type="search"],
+.go-to input {
   font: inherit;
   width: 150px;
   padding: 4px 8px;
@@ -128,7 +129,10 @@ footer {
   color: var(--ink);
 }
 
-#tools input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#tools input[type="search"]:focus,
+.go-to input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.go-to input[aria-invalid="true"] { outline: 2px solid #dc2626; outline-offset: -1px; }
 
 #tools select {
   font: inherit;
