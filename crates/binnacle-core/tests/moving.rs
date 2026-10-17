@@ -3,7 +3,8 @@
 //! `Cancel`.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, Grid, Key, Mode, PointerEvent, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, Grid, Key, Mode, Modifiers,
+    PointerEvent, SortColumn, SortSpec, Viewport,
 };
 use binnacle_testkit::{IdentityTable, RecordTable, Scenario};
 
@@ -228,6 +229,32 @@ fn a_dropped_column_moves_in_the_source_and_its_width_and_focus_follow_it() {
         V,
     );
     insta::assert_snapshot!(out);
+}
+
+#[test]
+fn an_unsortable_column_stays_unsortable_at_the_position_it_moves_to() {
+    let mut s = records();
+    s.input(|g| g.set_sortable(Key(0), false));
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(24.0, 0.5));
+        g.pointer(PointerEvent::up(24.0, 0.5));
+    });
+    let snap = s.frame(V);
+    let keys: Vec<_> = snap.cols().iter().map(|c| c.key).collect();
+    assert_eq!(keys, [1, 2, 0, 3].map(|k| Some(Key(k))));
+    // Key 0's header is now at Position 2, x 18..24.
+    s.click(21.0, 0.5, Modifiers::NONE);
+    assert_eq!(s.effects(), vec![]);
+    // Position 0 now holds Key 1, which sorts.
+    s.click(7.0, 0.5, Modifiers::NONE);
+    assert_eq!(
+        s.effects(),
+        vec![Effect::SortRequested {
+            spec: SortSpec::new(vec![SortColumn::ascending(Key(1))])
+        }]
+    );
 }
 
 #[test]

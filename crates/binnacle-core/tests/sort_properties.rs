@@ -80,7 +80,8 @@ enum Input {
     /// A press, and a move to a second point, left held.
     Drag([f32; 2], [f32; 2]),
     Release,
-    /// A click on column `c`'s header, if it is in the Strip.
+    /// A click on the header of the column with Key `c`, if it is in the
+    /// Strip.
     Header(u64, bool),
     /// The host sorts the source itself and tells the Grid.
     Sort(SortSpec),
@@ -216,8 +217,8 @@ struct View {
     mode: Mode,
     applied: SortSpec,
     requested: Option<SortSpec>,
-    /// Each visible column's Position, offset and end.
-    cols: Vec<(u64, f32, f32)>,
+    /// Each visible column's Key, offset and end.
+    cols: Vec<(Option<Key>, f32, f32)>,
 }
 
 struct Host {
@@ -281,7 +282,7 @@ impl Host {
             cols: snap
                 .cols()
                 .iter()
-                .map(|c| (c.position, c.offset, c.end()))
+                .map(|c| (c.key, c.offset, c.end()))
                 .collect(),
         };
     }
@@ -304,7 +305,8 @@ impl Host {
             }),
             Input::Release => self.s.input(|g| g.pointer(PointerEvent::up(0.0, 0.0))),
             Input::Header(c, shift) => {
-                let at = self.view.cols.iter().find(|&&(p, _, _)| p == c);
+                // By Key: a column move leaves Key `c` at another Position.
+                let at = self.view.cols.iter().find(|&&(k, _, _)| k == Some(Key(c)));
                 if let Some(&(_, offset, end)) = at {
                     let m = if shift {
                         Modifiers::SHIFT
