@@ -53,6 +53,7 @@ interface Cell {
   el: HTMLTableCellElement;
   value: unknown;
   renderer: unknown;
+  failed: boolean;
 }
 
 interface Row {
@@ -201,13 +202,15 @@ export function createAria(options: AriaOptions): Aria {
         set(el, "aria-colindex", String(colItem.position + 2));
         set(el, "aria-selected", String(cellState(s, i, j).selected));
         const value = content.value(i, j);
-        set(el, "aria-busy", value === undefined ? "true" : null);
+        const failed = content.failed(i, j);
+        set(el, "aria-busy", value === undefined && !failed ? "true" : null);
         const colId = content.id("cols", colItem);
         const renderer = rowId === undefined || colId === undefined ? plainText : choose(rowId, colId);
-        if (value !== cell.value || renderer !== cell.renderer) {
+        if (value !== cell.value || renderer !== cell.renderer || failed !== cell.failed) {
           cell.value = value;
           cell.renderer = renderer;
-          text(el, value === undefined ? "Loading" : cellText(renderer, value));
+          cell.failed = failed;
+          text(el, failed ? "Failed to load" : value === undefined ? "Loading" : cellText(renderer, value));
         }
       }
       row.cells = cells;
@@ -303,5 +306,5 @@ function newRow(): Row {
 function newCell(): Cell {
   const el = document.createElement("td");
   el.setAttribute("role", "gridcell");
-  return { el, value: undefined, renderer: undefined };
+  return { el, value: undefined, renderer: undefined, failed: false };
 }

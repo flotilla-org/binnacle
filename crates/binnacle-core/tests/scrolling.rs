@@ -466,3 +466,95 @@ fn the_window_holds_what_f32_layout_reaches_past_a_large_header() {
     assert_eq!(rows[1].offset - rows[0].offset, 0.003_906_25);
     assert!(rows.iter().all(|r| r.key == Some(Key(r.position))));
 }
+
+#[test]
+fn revealing_a_position_scrolls_the_least_distance_and_leaves_focus() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 4.0);
+    let at = |s: &mut Scenario<_>| s.frame(v).scroll_anchor(Axis::Rows);
+    s.input(|g| g.set_focus(Key(0), Key(0)));
+    s.frame(v);
+    // A pending focus reveal does not take the scroll back.
+    s.input(|g| {
+        g.set_focus(Key(1), Key(0));
+        g.reveal(Axis::Rows, 10);
+    });
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 8,
+            offset: 0.0
+        },
+        "below: the row ends the body"
+    );
+    assert_eq!(s.frame(v).focus(Axis::Rows).map(|f| f.position), Some(1));
+    s.input(|g| g.reveal(Axis::Rows, 9));
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 8,
+            offset: 0.0
+        },
+        "in view: no scroll"
+    );
+    s.input(|g| g.reveal(Axis::Rows, 2));
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 2,
+            offset: 0.0
+        },
+        "above: the row starts the body"
+    );
+    s.input(|g| g.reveal(Axis::Rows, 99));
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 2,
+            offset: 0.0
+        },
+        "past the end: ignored"
+    );
+}
+
+#[test]
+fn scrolling_to_a_position_puts_it_at_the_start() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 4.0);
+    let at = |s: &mut Scenario<_>| s.frame(v).scroll_anchor(Axis::Rows);
+    s.input(|g| g.scroll_to_item(Axis::Rows, 10));
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 10,
+            offset: 0.0
+        }
+    );
+    s.input(|g| g.scroll_to_item(Axis::Rows, 3));
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 3,
+            offset: 0.0
+        },
+        "back up"
+    );
+    s.input(|g| g.scroll_to_item(Axis::Rows, 19));
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 17,
+            offset: 0.0
+        },
+        "near the end: clamped so the last row ends the body"
+    );
+    s.input(|g| g.scroll_to_item(Axis::Rows, 99));
+    assert_eq!(
+        at(&mut s),
+        ScrollAnchor {
+            position: 17,
+            offset: 0.0
+        },
+        "past the end: ignored"
+    );
+}

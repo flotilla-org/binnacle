@@ -26,5 +26,12 @@ test("the React wrapper hands onSelectionChange the focused row's own ID", async
   const box = (await page.locator(".binnacle canvas").boundingBox())!;
   // The third body row, in the first column, past the row-number band.
   await page.mouse.click(box.x + 80, box.y + 28 + 2 * 24 + 12);
-  await expect(page.locator("#focused")).toHaveText("Discovery.name (0 rows)");
+  await expect(page.locator("#focused")).toHaveText("Discovery.name (1 rows)");
+});
+
+test("the widget's methods reach React through widgetRef", async ({ page }) => {
+  await page.goto(CONSUMER);
+  await expect(page.locator("#status")).toHaveText("rows 1 to 3 of 3");
+  await page.getByRole("button", { name: "Go to Fram" }).click();
+  await expect(page.locator("#focused")).toHaveText("Fram.tonnage (1 rows)");
 });

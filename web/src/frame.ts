@@ -17,6 +17,8 @@ export interface FrameParts {
   /** The Grid's viewport in CSS px. */
   viewport(): { width: number; height: number };
   onEffect(effect: Effect): void;
+  /** Sets sizes the Snapshot makes possible; `true` skips this frame's paint for another frame. */
+  settle?(s: Snapshot): boolean;
 }
 
 export interface FrameResult {
@@ -43,6 +45,10 @@ export function runFrame(parts: FrameParts, force: boolean): FrameResult {
   parts.feed.fill(grid, grid.begin_frame(width, height));
   drainEffects(parts);
   const snapshot = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+  if (parts.settle?.(snapshot)) {
+    parts.scroll.writeBack(snapshot);
+    return { snapshot, painted: false, again: true };
+  }
   const { damage } = snapshot;
   let painted = false;
   let again = false;

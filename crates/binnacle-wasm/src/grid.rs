@@ -117,6 +117,13 @@ impl WebGrid {
         self.grid.set_size(axis(a), Key(key), size);
     }
 
+    /// The Size Override for the item with `key` on axis `a`; NaN for none.
+    pub fn size_override(&self, a: u8, key: u64) -> f64 {
+        self.grid
+            .size_override(axis(a), Key(key))
+            .map_or(f64::NAN, f64::from)
+    }
+
     pub fn set_sortable(&mut self, key: u64, sortable: bool) {
         self.grid.set_sortable(Key(key), sortable);
     }
@@ -212,6 +219,21 @@ impl WebGrid {
     /// The widget closed its editor; `end` as [`codes::edit_end`].
     pub fn edit_ended(&mut self, end: u8) {
         self.grid.edit_ended(codes::edit_end(end));
+    }
+
+    /// Scrolls `a` the least distance that shows the item at `position`.
+    pub fn reveal(&mut self, a: u8, position: f64) {
+        self.grid.reveal(axis(a), codes::position(position));
+    }
+
+    /// Scrolls `a` so the item at `position` starts the body.
+    pub fn scroll_to_item(&mut self, a: u8, position: f64) {
+        self.grid.scroll_to_item(axis(a), codes::position(position));
+    }
+
+    /// What a plain click selects; `unit` as [`codes::selection_unit`].
+    pub fn set_selection_unit(&mut self, unit: u8) {
+        self.grid.set_selection_unit(codes::selection_unit(unit));
     }
 
     pub fn scroll_by(&mut self, a: u8, items: f64) {

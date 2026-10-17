@@ -11,6 +11,7 @@ import {
   textRenderer,
   type CellCanvas,
   type CellRenderer,
+  type InitialSize,
   type RowsSource,
   type Theme,
   type ThemeChoice,
@@ -177,15 +178,15 @@ function scoreRenderer(colour: Tone): CellRenderer<Value> {
 const DEMAND: Tone = ["#2563eb", "#89b4fa"];
 const FIT: Tone = ["#0d9488", "#94e2d5"];
 
-/** The grid's columns: the Feature row's key, header text and renderer. */
-const COLUMNS: { key: keyof Feature; label: string; renderer?: CellRenderer<Value> }[] = [
-  { key: "name", label: "Feature" },
-  { key: "kind", label: "Kind" },
-  { key: "category", label: "Category" },
-  { key: "binnacle", label: "core · ratatui · web", renderer: binnacleRenderer },
-  { key: "demand", label: "Demand", renderer: scoreRenderer(DEMAND) },
-  { key: "fit", label: "Fit", renderer: scoreRenderer(FIT) },
-  { key: "products", label: "Products", renderer: textRenderer<Value>({ align: "end" }) },
+/** The grid's columns: the Feature row's key, header text, starting width and renderer. */
+const COLUMNS: { key: keyof Feature; label: string; width: InitialSize; renderer?: CellRenderer<Value> }[] = [
+  { key: "name", label: "Feature", width: "fill" },
+  { key: "kind", label: "Kind", width: "fit" },
+  { key: "category", label: "Category", width: "fit" },
+  { key: "binnacle", label: "core · ratatui · web", width: "fit", renderer: binnacleRenderer },
+  { key: "demand", label: "Demand", width: 150, renderer: scoreRenderer(DEMAND) },
+  { key: "fit", label: "Fit", width: 150, renderer: scoreRenderer(FIT) },
+  { key: "products", label: "Products", width: "fit", renderer: textRenderer<Value>({ align: "end" }) },
 ];
 
 /** Builds an element with a class and children. */
@@ -279,6 +280,7 @@ function createPanel(look: { theme: ThemeChoice; border: GridWidget["border"] })
     source,
     label: "Product support",
     columnWidth: 150,
+    initialColumnWidth: (col) => (col === "support" ? "fill" : "fit"),
     theme: look.theme,
     border: look.border,
   });
@@ -379,11 +381,13 @@ export const gaps: DemoSource = {
 
     const plain = textRenderer<Value>();
     const renderers = new Map(COLUMNS.map((c) => [c.key, c.renderer ?? plain]));
-    // Columns share the width the grid gets, so wide screens show whole names.
-    const columnWidth = Math.max(110, Math.floor((master.clientWidth - 48) / COLUMNS.length));
+    const widths = new Map(COLUMNS.map((c) => [c.key, c.width]));
     const widget = await GridWidget.create(master, {
       source,
-      columnWidth,
+      columnWidth: 200,
+      initialColumnWidth: (col) => widths.get(col),
+      // A list of features: focus picks a whole row, as in a list view.
+      selectionUnit: "rows",
       renderer: (_row, col) => renderers.get(col) ?? plain,
       ...look,
       onSelectionChange(change) {

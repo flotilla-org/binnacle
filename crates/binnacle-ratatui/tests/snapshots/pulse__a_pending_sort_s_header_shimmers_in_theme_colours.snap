@@ -1,41 +1,43 @@
 ---
 source: crates/binnacle-ratatui/tests/pulse.rs
+assertion_line: 227
 expression: out
 ---
 --- at 0 ms
-   col 0 │col 1~│col 2 │
-1  r0c0   r0c1   r0c2
-2  r1c0   r1c1   r1c2
-3  r2c0   r2c1   r2c2
-4  r3c0   r3c1   r3c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1~│col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcddddddcbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaeeeeeeaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcddddddcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaffffffaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
 c: fg DarkGray bg Reset
 d: fg #8C8228 bg Reset BOLD
-e: fg Reset bg Reset REVERSED
+e: fg Gray bg Reset
+f: fg Reset bg Reset REVERSED
 --- at 1000 ms
-   col 0 │col 1~│col 2 │
-1  r0c0   r0c1   r0c2
-2  r1c0   r1c1   r1c2
-3  r2c0   r2c1   r2c2
-4  r3c0   r3c1   r3c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1~│col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcdefedgcbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaahhhhhhaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcdefedgcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaah
+bbbaaaaaaaaaaaaaaaaaaaah
+bbbaaaaaaaiiiiiiaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
@@ -44,21 +46,22 @@ d: fg #D7CA5C bg Reset BOLD
 e: fg #F4E570 bg Reset BOLD
 f: fg #FFF078 bg Reset BOLD
 g: fg #B4A844 bg Reset BOLD
-h: fg Reset bg Reset REVERSED
+h: fg Gray bg Reset
+i: fg Reset bg Reset REVERSED
 --- at 1200 ms
-   col 0 │col 1~│col 2 │
-1  r0c0   r0c1   r0c2
-2  r1c0   r1c1   r1c2
-3  r2c0   r2c1   r2c2
-4  r3c0   r3c1   r3c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1~│col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcdefghicbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaajjjjjjaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcdefghicbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaaj
+bbbaaaaaaaaaaaaaaaaaaaaj
+bbbaaaaaaakkkkkkaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
@@ -69,4 +72,5 @@ f: fg #A79C3B bg Reset BOLD
 g: fg #C9BC53 bg Reset BOLD
 h: fg #EADC69 bg Reset BOLD
 i: fg #FDEE77 bg Reset BOLD
-j: fg Reset bg Reset REVERSED
+j: fg Gray bg Reset
+k: fg Reset bg Reset REVERSED

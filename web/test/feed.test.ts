@@ -381,6 +381,7 @@ interface Held {
   what: unknown;
   signal: AbortSignal;
   answer(): void;
+  fail(): void;
 }
 
 /**
@@ -397,7 +398,15 @@ class Slow {
     this.order = Array.from({ length: rows }, (_, i) => `r${i}`);
     const colIds = Array.from({ length: cols }, (_, i) => `c${i}`);
     const hold = <T,>(kind: Held["kind"], what: unknown, signal: AbortSignal, value: () => T) =>
-      new Promise<T>((resolve) => this.held.push({ kind, what, signal, answer: () => resolve(value()) }));
+      new Promise<T>((resolve, reject) =>
+        this.held.push({
+          kind,
+          what,
+          signal,
+          answer: () => resolve(value()),
+          fail: () => reject(new Error(`${kind} failed`)),
+        }),
+      );
     this.source = {
       rows: {
         count: () => this.order.length,
@@ -426,10 +435,20 @@ class Slow {
 
   /** Answers every request of `kind` in flight and lets the answers land. */
   async answer(kind: Held["kind"]): Promise<void> {
+    for (const h of this.take(kind)) h.answer();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  /** Rejects every request of `kind` in flight and lets the failures land. */
+  async fail(kind: Held["kind"]): Promise<void> {
+    for (const h of this.take(kind)) h.fail();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  private take(kind: Held["kind"]): Held[] {
     const due = this.open(kind);
     this.held.splice(0, this.held.length, ...this.held.filter((h) => !due.includes(h)));
-    for (const h of due) h.answer();
-    await new Promise((r) => setTimeout(r, 0));
+    return due;
   }
 }
 
@@ -572,6 +591,108 @@ describe("slow sources", () => {
     expect(inFlight.map((x) => x.kind).sort()).toEqual(["cells", "sort"]);
     h.destroy();
     expect(inFlight.every((x) => x.signal.aborted)).toBe(true);
+  });
+});
+
+describe("failed requests", () => {
+  test("a rejected Window shows its cells failed and is reported; it is asked again only after a Change Notice, whose answer clears it", async () => {
+    const slow = new Slow(3, 2);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      await slow.fail("window");
+      h.frame();
+      expect(h.failed()).toEqual([
+        [true, true],
+        [true, true],
+        [true, true],
+      ]);
+      expect(h.feed.loading(h.snapshot)).toBe(false);
+      expect(h.errors).toEqual([{ message: "window failed", request: { type: "window", axis: "rows", start: 0, end: 3 } }]);
+      h.frame();
+      expect(slow.open("window")).toEqual([]);
+      slow.sinks.rows.notify({ type: "Reset" });
+      h.frame();
+      expect(slow.open("window")).toHaveLength(1);
+      await slow.answer("window");
+      h.frame();
+      expect(h.failed().flat().some(Boolean)).toBe(false);
+      await slow.answer("cells");
+      h.frame();
+      expect(h.values()[2]).toEqual(["r2/c0", "r2/c1"]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("rejected cells show failed until a ContentChanged over them asks again and the answer lands", async () => {
+    const slow = new Slow(3, 2);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      await slow.fail("cells");
+      h.frame();
+      expect(h.failed().flat().every(Boolean)).toBe(true);
+      expect(h.values().flat().every((v) => v === undefined)).toBe(true);
+      expect(h.errors).toEqual([
+        { message: "cells failed", request: { type: "cells", rowIds: ["r0", "r1", "r2"], colIds: ["c0", "c1"] } },
+      ]);
+      expect(slow.open("cells")).toEqual([]);
+      slow.sinks.rows.notify({ type: "ContentChanged", start: 1, end: 2 });
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      expect(slow.open("cells").map((c) => c.what)).toEqual([["r1"]]);
+      await slow.answer("cells");
+      h.frame();
+      expect(h.failed()).toEqual([
+        [true, true],
+        [false, false],
+        [true, true],
+      ]);
+      expect(h.values()[1]).toEqual(["r1/c0", "r1/c1"]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a source that throws fails its request as a rejection would", async () => {
+    const source: TableSource<string, string, string> = {
+      rows: { count: () => 2, window: (s, e) => ["x", "y"].slice(s, e) },
+      cols: { count: () => 1, window: () => ["k"] },
+      cells: () => {
+        throw new Error("no cells");
+      },
+    };
+    const h = new Harness(source);
+    try {
+      h.frame();
+      await new Promise((r) => setTimeout(r, 0));
+      h.frame();
+      expect(h.failed()).toEqual([[true], [true]]);
+      expect(h.errors.map((e) => e.message)).toEqual(["no cells"]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a rejected sort is reported, and the headers keep the spec in force", async () => {
+    const slow = new Slow(3, 2);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      h.click(BAND + COL_WIDTH / 2, HEADER / 2);
+      await slow.fail("sort");
+      h.frame();
+      expect(h.snapshot.cols.headers.every((c) => c.sort.applied === null && !c.sort.pending)).toBe(true);
+      expect(h.errors).toEqual([{ message: "sort failed", request: { type: "sort" } }]);
+    } finally {
+      h.destroy();
+    }
   });
 });
 

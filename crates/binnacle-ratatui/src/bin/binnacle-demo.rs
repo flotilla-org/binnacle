@@ -7,9 +7,10 @@
 //! pending. Focus and picks stay on their records. Drag a column header to
 //! move the column (a selected column takes the other selected ones with
 //! it); a cyan line shows where it will drop, and widths go with their
-//! columns. Press Ctrl+F to show only records with a crew of 6 or more, and
-//! again to show them all: focus stays on its record, or moves to the nearest
-//! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
+//! columns. Press Ctrl+F to show only records with a crew of 6 or more, again
+//! for a crew of 13 or more (there are none, so the body says "No rows match
+//! the filter"), and again to show them all: focus stays on its record, or
+//! moves to the nearest one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
 //! which neither sort, move nor filter. The records and tickers label their
 //! rows with their Keys, which stay with them through sorts and filters; the
 //! huge table numbers its rows. Its row-number band fits the
@@ -32,11 +33,13 @@
 //! double-click on a name opens a minimal inline editor: type, Backspace,
 //! Enter to keep the new name, Esc to drop it. A click elsewhere keeps it.
 //!
-//! The wheel scrolls; the adapter's default keymap moves focus (arrows,
+//! The wheel scrolls, and so do the scrollbars: one down the right edge and,
+//! when the columns overflow, one along the bottom. Click a track to page;
+//! drag a thumb. The adapter's default keymap moves focus (arrows,
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
 //! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
 //! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
-//! Ctrl+F toggles the filter. Click to focus, Shift-click or drag to select,
+//! Ctrl+F cycles the filter. Click to focus, Shift-click or drag to select,
 //! Ctrl-click to pick rows, click a row number to select its row. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to what it draws. The bottom
@@ -59,9 +62,10 @@ use binnacle_core::{
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    Align, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas, CellRenderer,
-    ColorSupport, Content, Keymap, Mouse, RenderContext, SparklineRenderer, TextRenderer, Theme,
-    animating, fit_width, render_editor, render_with, status, wheel,
+    Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
+    CellRenderer, ColorSupport, Content, Keymap, Layout, Mouse, RenderContext, SparklineRenderer,
+    TextRenderer, Theme, animating, begin_frame, fit_width, render_editor, render_with, status,
+    wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -113,6 +117,9 @@ impl Record {
         }
     }
 }
+
+/// The minimum crew each Ctrl+F filter keeps, in turn; `None` keeps all.
+const CREW_FILTERS: [Option<i64>; 3] = [None, Some(6), Some(13)];
 
 const HEADERS: [&str; 4] = ["id", "name", "weight", "crew"];
 
@@ -243,7 +250,8 @@ enum Table {
     Records {
         rows: Vec<Record>,
         source: Box<MemorySource<Record>>,
-        filtered: bool,
+        /// The index into [`CREW_FILTERS`] in force.
+        filter: usize,
         /// `Some` for the slow source.
         held: Option<Held>,
     },
@@ -400,22 +408,29 @@ impl Table {
         }
     }
 
-    /// Turns the crew filter on or off and tells the Grid.
-    fn toggle_filter(&mut self, grid: &mut Grid) {
+    /// Moves to the next crew filter and tells the Grid.
+    fn next_filter(&mut self, grid: &mut Grid) {
         if let Table::Records {
             rows,
             source,
-            filtered,
+            filter,
             ..
         } = self
         {
-            *filtered = !*filtered;
-            let notice = if *filtered {
-                source.filter(rows, |r| r.crew >= 6)
-            } else {
-                source.clear_filter()
+            *filter = (*filter + 1) % CREW_FILTERS.len();
+            let notice = match CREW_FILTERS[*filter] {
+                Some(min) => source.filter(rows, move |r| r.crew >= min),
+                None => source.clear_filter(),
             };
             grid.notify(Axis::Rows, notice);
+        }
+    }
+
+    /// What the body says when no rows are left.
+    fn empty(&self) -> &'static str {
+        match self {
+            Table::Records { filter, .. } if *filter > 0 => "No rows match the filter",
+            _ => "No rows",
         }
     }
 
@@ -737,7 +752,7 @@ fn main() -> io::Result<()> {
         let table = Table::Records {
             rows,
             source,
-            filtered: false,
+            filter: 0,
             held: slow.then(Vec::new),
         };
         (table, grid)
@@ -752,7 +767,7 @@ fn main() -> io::Result<()> {
         },
     );
     let mut mouse = Mouse::default();
-    let mut area = ratatui::layout::Rect::default();
+    let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
     let mut shown_rows: Vec<Key> = Vec::new();
     let mut app = App {
@@ -777,11 +792,17 @@ fn main() -> io::Result<()> {
             terminal.draw(|frame| {
                 // The Grid takes all but the bottom line, the status line.
                 let full = frame.area();
-                area = full;
+                let mut area = full;
                 area.height = full.height.saturating_sub(1);
                 app.pump(&mut table, &mut grid, &shown_rows);
-                let viewport = Viewport::new(area.width.into(), area.height.into());
-                fill(&mut grid, &table, viewport);
+                let border = BORDERS[app.border];
+                let ctx = RenderContext::new(&themes[theme])
+                    .border(border)
+                    .colors(colors)
+                    .at(start.elapsed())
+                    .empty(table.empty());
+                let fill = |grid: &mut Grid, viewport| fill(grid, &table, viewport);
+                layout = begin_frame(&mut grid, &ctx, area, fill);
                 if app.fit_rows {
                     // Fit to the rows this frame shows, then lay it out again.
                     let snapshot = grid.snapshot();
@@ -789,7 +810,7 @@ fn main() -> io::Result<()> {
                         .filter(|_| !matches!(snapshot.mode(), Mode::ResizingBand { .. }));
                     if let Some(width) = fit.filter(|&w| w != snapshot.header(Axis::Cols)) {
                         grid.set_header(Axis::Cols, width);
-                        fill(&mut grid, &table, viewport);
+                        layout = begin_frame(&mut grid, &ctx, area, fill);
                     }
                 }
                 let snapshot = grid.snapshot();
@@ -797,14 +818,9 @@ fn main() -> io::Result<()> {
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 moving = animating(&snapshot);
-                let border = BORDERS[app.border];
-                let ctx = RenderContext::new(&themes[theme])
-                    .border(border)
-                    .colors(colors)
-                    .at(start.elapsed());
                 render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
-                    render_editor(&snapshot, &editor.text, area, frame.buffer_mut());
+                    render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
                 let line = ratatui::layout::Rect {
                     y: full.y + area.height,
@@ -853,7 +869,7 @@ fn main() -> io::Result<()> {
                         continue;
                     }
                     if ctrl && key.code == KeyCode::Char('f') {
-                        table.toggle_filter(&mut grid);
+                        table.next_filter(&mut grid);
                         continue;
                     }
                     if let Some(action) = keymap.action(&key) {
@@ -861,9 +877,14 @@ fn main() -> io::Result<()> {
                     }
                 }
                 Event::Mouse(m) => {
+                    let bar = mouse.scrollbar(&m, &grid.snapshot(), &layout);
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
-                    } else if let Some(pointer) = mouse.event(&m, area, Instant::now()) {
+                    } else if let BarEvent::Took(action) = bar {
+                        if let Some(action) = action {
+                            grid.action(action);
+                        }
+                    } else if let Some(pointer) = mouse.event(&m, layout.grid, Instant::now()) {
                         if pointer.kind == binnacle_core::PointerKind::Down {
                             // A press would cancel the edit: keep it first.
                             app.commit(&mut table, &mut grid);

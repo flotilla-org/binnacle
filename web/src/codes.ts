@@ -17,3 +17,5 @@ export function modifierBits(e: { shiftKey: boolean; ctrlKey: boolean; altKey: b
 export const FOCUS_STEP = { item: 0, page: 1, edge: 2 } as const;
 
 export const EDIT_END = { commit: 0, cancel: 1 } as const;
+
+export const SELECTION_UNIT = { cells: 0, rows: 1 } as const;

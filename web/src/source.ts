@@ -31,6 +31,20 @@ export type ChangeNotice =
   /** The values of the items at Positions `start..end` changed; their IDs and order did not. */
   | { type: "ContentChanged"; start: number; end: number };
 
+/**
+ * A Table Source request that failed (rejected, or threw), as `onError`
+ * reports it. The cells of a failed `window` or `cells` request show an
+ * error marker until a Change Notice covering them, or a scroll to a new
+ * Window, asks again and the answer lands.
+ */
+export type FailedRequest<RowId = unknown, ColId = unknown> =
+  | { type: "count"; axis: "rows" | "cols" }
+  | { type: "window"; axis: "rows" | "cols"; start: number; end: number }
+  | { type: "cells"; rowIds: RowId[]; colIds: ColId[] }
+  | { type: "sort" }
+  | { type: "locate"; axis: "rows" | "cols" }
+  | { type: "move"; axis: "rows" | "cols" };
+
 export interface AxisSink<_Id> {
   notify(notice: ChangeNotice): void;
 }
@@ -71,6 +85,12 @@ export interface TableSource<RowId, ColId, V = unknown> {
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
   /** How each cell draws unless the widget is given its own `renderer`; plain text by default. */
   renderer?: RendererChoice<RowId, ColId, V>;
+  /**
+   * What the body says when an axis has no items, such as "No rows match the
+   * filter"; `undefined` leaves the widget's `emptyMessage`. Asked on each
+   * paint of an empty table.
+   */
+  emptyMessage?(): string | undefined;
   /** Hands the source its sinks for Change Notices; returns how to detach. */
   attach?(sink: { rows: AxisSink<RowId>; cols: AxisSink<ColId> }): () => void;
 }

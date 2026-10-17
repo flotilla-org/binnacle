@@ -1,58 +1,62 @@
 ---
 source: crates/binnacle-ratatui/tests/theme.rs
+assertion_line: 149
 expression: "both_ways(Theme::classic(), stripe)"
 ---
 --- classic
-   l 0 │col 1▲│col 2~│col 3 │c
-3  c0   r2c1   r2c2   r2c3   r
-4  c0   r3c1   r3c2   r3c3   r
-5  c0   r4c1   r4c2   r4c3   r
-6  c0   r5c1   r5c2   r5c3   r
-7  c0   r6c1   r6c2   r6c3   r
-8       …      …      …      …
-9       …      …      …      …
+   l 0 │col 1▲│col 2~│col 3 │
+3  c0   r2c1   r2c2   r2c3   │
+4  c0   r3c1   r3c2   r3c3   █
+5  c0   r4c1   r4c2   r4c3   █
+6  c0   r5c1   r5c2   r5c3   │
+7  c0   r6c1   r6c2   r6c3   │
+8       …      …      …      │
+   ─█████████████████████────
 
 aaabbbbcbbbbbbcddddddceeeeeecb
-bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
-bbbffffaffffffaffffffaffffffaf
-bbbaaaaaffffffaffffffaaaaaaaaa
-bbbaaaaaffffffaggggggaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
+bbbaaaaaaaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaaaaaaaaf
+bbbggggaggggggaggggggaggggggaf
+bbbaaaaaggggggaggggggaaaaaaaac
+bbbaaaaaggggggahhhhhhaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaaaaaaaac
+aaacfffffffffffffffffffffcccca
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
 c: fg DarkGray bg Reset
 d: fg #8C8228 bg Reset BOLD
 e: fg Reset bg Reset BOLD | UNDERLINED
-f: fg Reset bg DarkGray
-g: fg Reset bg Reset REVERSED
+f: fg Gray bg Reset
+g: fg Reset bg DarkGray
+h: fg Reset bg Reset REVERSED
 
 --- inverted headers, zebra
-   l 0 │col 1▲│col 2~│col 3 │c
-3  c0   r2c1   r2c2   r2c3   r
-4  c0   r3c1   r3c2   r3c3   r
-5  c0   r4c1   r4c2   r4c3   r
-6  c0   r5c1   r5c2   r5c3   r
-7  c0   r6c1   r6c2   r6c3   r
-8       …      …      …      …
-9       …      …      …      …
+   l 0 │col 1▲│col 2~│col 3 │
+3  c0   r2c1   r2c2   r2c3   │
+4  c0   r3c1   r3c2   r3c3   █
+5  c0   r4c1   r4c2   r4c3   █
+6  c0   r5c1   r5c2   r5c3   │
+7  c0   r6c1   r6c2   r6c3   │
+8       …      …      …      │
+   ─█████████████████████────
 
-aaabbbbcbbbbbbcddddddceeeeeecb
-bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
-bbbfffffffffffffffffffffffffff
-bbbggggaggggggaggggggaggggggag
-bbbfffffggggggfggggggfffffffff
-bbbaaaaaggggggahhhhhhaaaaaaaaa
-bbbfffffffffffffffffffffffffff
-bbbaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaabbbbcbbbbbbcddddddceeeeeecf
+bbbaaaaaaaaaaaaaaaaaaaaaaaaaac
+bbbggggggggggggggggggggggggggh
+bbbiiiiaiiiiiiaiiiiiiaiiiiiiah
+bbbgggggiiiiiigiiiiiiggggggggc
+bbbaaaaaiiiiiiajjjjjjaaaaaaaac
+bbbggggggggggggggggggggggggggc
+aaachhhhhhhhhhhhhhhhhhhhhcccca
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD | REVERSED
 c: fg DarkGray bg Reset
 d: fg #8C8228 bg Reset BOLD | REVERSED
 e: fg Reset bg Reset BOLD | UNDERLINED | REVERSED
-f: fg Reset bg 235
-g: fg Reset bg DarkGray
-h: fg Reset bg Reset REVERSED
+f: fg Reset bg Reset BOLD
+g: fg Reset bg 235
+h: fg Gray bg Reset
+i: fg Reset bg DarkGray
+j: fg Reset bg Reset REVERSED

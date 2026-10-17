@@ -12,6 +12,12 @@ export interface RecordRow {
 }
 
 export const RECORDS = 5000;
+
+/** Each column's starting width in CSS px, in order; the port, last, takes the width left over. */
+export const WIDTHS = { id: 64, name: 128, weight: 96, crew: 64, port: "fill" } as const satisfies Record<
+  keyof RecordRow,
+  number | "fill"
+>;
 const NAMES = ["anchor", "bosun", "capstan", "davit", "ensign", "fathom", "galley", "hawser"];
 export const PORTS = ["Aberdeen", "Bergen", "Cádiz", "Dunedin", "Esbjerg", "Funchal", "Gdańsk", "Halifax", "Île d'Yeu"];
 

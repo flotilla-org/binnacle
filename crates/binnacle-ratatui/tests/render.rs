@@ -4,7 +4,9 @@ use binnacle_core::{
     Action, Axis, AxisConfig, FocusStep, Grid, Key, SortColumn, SortSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{Content, render, render_editor, status, wheel};
+use binnacle_ratatui::{
+    Content, RenderContext, Theme, begin_frame, render, render_editor, render_with, status, wheel,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -75,8 +77,38 @@ fn draws_at_the_area_offset_and_leaves_the_rest_alone() {
 }
 
 #[test]
-fn draws_only_headers_for_an_empty_table() {
+fn an_empty_table_shows_its_headers_and_no_rows_centred_in_the_body() {
     insta::assert_snapshot!(draw(0, 3, 30, 4, Rect::new(0, 0, 30, 4)));
+}
+
+/// The host's own message, for an axis with no items, in the loading
+/// style, cut to the body's width: the grid's, left of the rows bar.
+#[test]
+fn the_empty_message_is_the_host_s_and_fits_the_body() {
+    let mut grid = Grid::new(
+        AxisConfig::new(5, 1.0).header(1.0),
+        AxisConfig::new(0, 8.0).header(5.0),
+    );
+    let theme = Theme::catppuccin_mocha();
+    let ctx = RenderContext::new(&theme).empty("No rows match the filter");
+    let draw = |grid: &mut Grid, area: Rect| {
+        begin_frame(grid, &ctx, area, |grid, viewport| {
+            for (axis, range) in grid.begin_frame(viewport) {
+                let keys = IdentitySource::new(range.end).window(range.clone());
+                grid.set_window(axis, range.start, &keys);
+            }
+        });
+        let mut buf = Buffer::empty(area);
+        render_with(&grid.snapshot(), &Labels, &ctx, area, &mut buf);
+        buf
+    };
+    let buf = draw(&mut grid, Rect::new(0, 0, 35, 7));
+    let lines: Vec<String> = text(&buf).lines().map(String::from).collect();
+    assert_eq!(lines[3], "3      No rows match the filter   █");
+    assert_eq!(buf[(7, 3)].fg, theme.loading.fg.unwrap());
+    assert_eq!(buf[(7, 3)].bg, buf[(7, 5)].bg, "on the body's background");
+    let buf = draw(&mut grid, Rect::new(0, 0, 15, 7));
+    assert_eq!(text(&buf).lines().nth(3), Some("3    No rows …█"));
 }
 
 #[test]
@@ -190,7 +222,8 @@ fn selected_cells_get_a_background_across_their_width_and_the_hovered_header_is_
     assert_eq!(with(&|c| c.bg == Color::DarkGray), selected);
     let focused: Vec<(u16, u16)> = (14..22).map(|x| (x, 2)).collect();
     assert_eq!(with(&|c| c.modifier.contains(Modifier::REVERSED)), focused);
-    let hovered: Vec<(u16, u16)> = (23..30).map(|x| (x, 0)).collect();
+    // The scrollbar takes the last column.
+    let hovered: Vec<(u16, u16)> = (23..29).map(|x| (x, 0)).collect();
     assert_eq!(
         with(&|c| c.modifier.contains(Modifier::UNDERLINED)),
         hovered
@@ -372,4 +405,39 @@ fn row_headers_show_the_host_s_label_for_each_row_s_key() {
     let mut buf = Buffer::empty(area);
     render(&snapshot, &Keyed, area, &mut buf);
     insta::assert_snapshot!(text(&buf));
+}
+
+/// Headers and row labels too long for their header end in `…`, which a
+/// sort marker follows.
+#[test]
+fn header_text_too_long_for_its_header_ends_in_an_ellipsis() {
+    struct Long;
+    impl Content for Long {
+        fn cell(&self, row: Key, col: Key) -> String {
+            Labels.cell(row, col)
+        }
+        fn column_header(&self, col: Key) -> String {
+            format!("column number {}", col.0)
+        }
+        fn row_header(&self, row: Key, _position: u64) -> String {
+            format!("row {}", row.0)
+        }
+    }
+    let mut grid = Grid::new(
+        AxisConfig::new(2, 1.0).header(1.0),
+        AxisConfig::new(2, 8.0).header(4.0).gap(1.0),
+    );
+    grid.sort_applied(SortSpec::new(vec![SortColumn::ascending(Key(1))]));
+    let area = Rect::new(0, 0, 22, 3);
+    for (axis, range) in grid.begin_frame(Viewport::new(area.width.into(), area.height.into())) {
+        let keys = IdentitySource::new(range.end).window(range.clone());
+        grid.set_window(axis, range.start, &keys);
+    }
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::classic();
+    let ctx = RenderContext::new(&theme).scrollbars(false);
+    render_with(&grid.snapshot(), &Long, &ctx, area, &mut buf);
+    let lines: Vec<String> = text(&buf).lines().map(String::from).collect();
+    assert_eq!(lines[0], "    column …│column…▲│");
+    assert_eq!(lines[1], "row…r0c0     r0c1");
 }

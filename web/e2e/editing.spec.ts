@@ -6,12 +6,10 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
+import { column } from "./records-columns";
 
 const HEADER = 28;
 const ROW = 24;
-const COLUMN = 141;
-/** Inside the first column whatever the row-number band's width (40 to 60 px). */
-const FIRST = 62;
 const COLS = ["id", "name", "weight", "crew", "port"] as const;
 
 const status = (page: Page) => page.locator("#status");
@@ -22,7 +20,7 @@ const editor = (page: Page) => page.locator(".binnacle-input");
 async function cell(page: Page, row: number, col: number) {
   const box = await page.locator(".binnacle-layer").boundingBox();
   if (!box) throw new Error("no grid");
-  await page.mouse.click(box.x + FIRST + col * COLUMN, box.y + HEADER + row * ROW + ROW / 2);
+  await page.mouse.click(box.x + column(col), box.y + HEADER + row * ROW + ROW / 2);
 }
 
 const focus = (row: number, col: number) =>
@@ -84,9 +82,9 @@ test.describe("the records source", () => {
     await page.keyboard.press("Shift+Tab");
     await expect(committed(page)).toHaveText("crew of 0 = 7");
     await expect(status(page)).toContainText(focus(0, 2));
-    // Not editing, Tab leaves the grid (for the toolbar's last control, the ARIA table checkbox).
+    // Not editing, Shift+Tab leaves the grid for the toolbar.
     await page.keyboard.press("Shift+Tab");
-    await expect(page.locator("#aria")).toBeFocused();
+    await expect(page.locator("header :focus")).toHaveCount(1);
   });
 
   test("clicking another cell commits, and so does clicking outside the grid", async ({ page }) => {
@@ -101,9 +99,13 @@ test.describe("the records source", () => {
     await expectEditing(page, false);
   });
 
-  test("a value that does not fit its column is not kept", async ({ page }) => {
+  test("a value that does not fit its column is not kept, not even for a moment", async ({ page }) => {
     await cell(page, 1, 3);
     await page.keyboard.type("lots");
+    await expect(editor(page)).toHaveValue("lots");
+    // No frame runs from here, so the source answers nothing until F2 has opened the editor.
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 60_000);
     await page.keyboard.press("Enter");
     await expect(committed(page)).toHaveText("crew of 1 kept");
     await page.keyboard.press("F2");
@@ -134,7 +136,7 @@ test.describe("the records source", () => {
   test("an edit that changes the sorted column re-sorts, and focus follows the record", async ({ page }) => {
     const box = (await page.locator(".binnacle-layer").boundingBox())!;
     // Sort by weight, then give the top record the heaviest weight.
-    await page.mouse.click(box.x + FIRST + 2 * COLUMN, box.y + HEADER / 2);
+    await page.mouse.click(box.x + column(2), box.y + HEADER / 2);
     await cell(page, 0, 2);
     await expect(status(page)).toContainText("focus row 1, column 3");
     const id = Number((await status(page).textContent())!.match(/\((\d+) \//)![1]);

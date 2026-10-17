@@ -25,7 +25,7 @@ import {
   type ThemeChoice,
 } from "../../src/react";
 import { parse, portPicker, type Value } from "../sources/records";
-import { matches, rows, type RecordRow } from "../sources/records-data";
+import { matches, rows, WIDTHS, type RecordRow } from "../sources/records-data";
 import "./style.css";
 
 const SYSTEM = "system";
@@ -68,11 +68,12 @@ function App() {
     setEdits(edit);
     if (parsed === undefined) {
       setCommitted(`${col} of ${id} kept (edit ${edit})`);
-    } else {
-      (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
-      setCommitted(`${col} of ${id} = ${JSON.stringify(parsed)} (edit ${edit})`);
+      return false;
     }
+    (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
+    setCommitted(`${col} of ${id} = ${JSON.stringify(parsed)} (edit ${edit})`);
     source.changed(id);
+    return true;
   };
 
   const onFilter = (text: string) => {
@@ -133,6 +134,7 @@ function App() {
             source={source}
             label="Records"
             columnWidth={140}
+            initialColumnWidth={(col) => WIDTHS[col]}
             rowHeight={compact ? 20 : 24}
             theme={theme}
             border={border}

@@ -31,6 +31,10 @@ pub struct Theme {
     pub guide: Style,
     pub drop_indicator: Style,
     pub border: Style,
+    /// A scrollbar's track, drawn as a line.
+    pub scrollbar_track: Style,
+    /// A scrollbar's thumb, drawn as full blocks.
+    pub scrollbar_thumb: Style,
     /// The `…` shown where a Key is not filled yet.
     pub loading: Style,
     /// Patched over a cell whose value just changed (see
@@ -67,6 +71,8 @@ impl Theme {
             guide: none.fg(Color::Yellow),
             drop_indicator: none.fg(Color::Cyan),
             border: none.fg(Color::DarkGray),
+            scrollbar_track: none.fg(Color::DarkGray),
+            scrollbar_thumb: none.fg(Color::Gray),
             loading: none,
             flash: none.fg(Color::Black).bg(Color::Yellow),
             shimmer_base: Color::Rgb(140, 130, 40),
@@ -93,6 +99,8 @@ impl Theme {
             guide: none.fg(mocha::YELLOW),
             drop_indicator: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::BOLD),
             border: none.fg(mocha::SURFACE1),
+            scrollbar_track: none.fg(mocha::SURFACE1),
+            scrollbar_thumb: none.fg(mocha::OVERLAY0),
             loading: none.fg(mocha::OVERLAY0),
             flash: none.fg(mocha::CRUST).bg(mocha::YELLOW),
             shimmer_base: mocha::PEACH,
@@ -119,6 +127,8 @@ impl Theme {
             guide: none.add_modifier(Modifier::BOLD),
             drop_indicator: none.add_modifier(Modifier::BOLD),
             border: none.add_modifier(Modifier::DIM),
+            scrollbar_track: none.add_modifier(Modifier::DIM),
+            scrollbar_thumb: none,
             loading: none.add_modifier(Modifier::DIM),
             flash: none.add_modifier(Modifier::BOLD),
             shimmer_base: Color::Reset,
@@ -157,6 +167,8 @@ impl Theme {
             guide: s(self.guide),
             drop_indicator: s(self.drop_indicator),
             border: s(self.border),
+            scrollbar_track: s(self.scrollbar_track),
+            scrollbar_thumb: s(self.scrollbar_thumb),
             loading: s(self.loading),
             flash: s(self.flash),
             shimmer_base: nearest_ansi(self.shimmer_base),

@@ -6,7 +6,7 @@
 
 import { fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
-import { matches, PORTS, RECORDS, rows, type RecordRow } from "./records-data";
+import { matches, PORTS, RECORDS, rows, WIDTHS, type RecordRow } from "./records-data";
 
 export type Value = RecordRow[keyof RecordRow];
 
@@ -72,17 +72,18 @@ export const records: DemoSource = {
     const widget = await GridWidget.create(host, {
       source,
       columnWidth: 140,
+      initialColumnWidth: (col) => WIDTHS[col],
       ...look,
       onCommit(id, col, value) {
         const parsed = parse(col, value);
         if (parsed === undefined) {
           committed.textContent = `${col} of ${id} kept`;
-        } else {
-          (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
-          committed.textContent = `${col} of ${id} = ${JSON.stringify(parsed)}`;
+          return false;
         }
-        // Either way the cell shows the source's value again.
+        (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
+        committed.textContent = `${col} of ${id} = ${JSON.stringify(parsed)}`;
         source.changed(id);
+        return true;
       },
       editor: (_id, col) => (col === "port" ? portPicker() : null),
     });

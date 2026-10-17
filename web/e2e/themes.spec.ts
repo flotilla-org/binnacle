@@ -36,6 +36,8 @@ test("following the system theme switches light and dark as the colour scheme fl
 test("a Theme picked by hand stays when the colour scheme flips", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/?source=huge");
+  // Mounting adds the source's own controls to the toolbar, shifting the checkbox under a click in flight.
+  await expect(status(page)).toContainText("theme light (system)");
   await page.getByLabel("Follow the system theme").uncheck();
   await page.getByLabel("Theme", { exact: true }).selectOption("mono");
   await expect(status(page)).toContainText("theme mono");
@@ -44,6 +46,22 @@ test("a Theme picked by hand stays when the colour scheme flips", async ({ page 
   await page.waitForTimeout(200);
   await expect(status(page)).toContainText("theme mono");
   expect(await bodyColour(page)).toBe("#ffffff");
+});
+
+test("a Theme picked while the grid is still loading is the one it shows", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/*.wasm", async (route) => {
+    await held;
+    await route.continue();
+  });
+  await page.goto("/?source=huge");
+  await page.getByLabel("Follow the system theme").uncheck();
+  await page.getByLabel("Theme", { exact: true }).selectOption("mono");
+  release();
+  await expect(status(page)).toContainText("theme mono");
+  await expect(page.getByLabel("Theme", { exact: true })).toHaveValue("mono");
 });
 
 test("the Border Style switcher names the style in the status line", async ({ page }) => {

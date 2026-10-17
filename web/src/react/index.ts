@@ -13,7 +13,7 @@ export interface BinnacleGridProps<RowId, ColId, V = unknown> extends GridOption
   /** Class of the element the grid fills; give it a size. */
   className?: string;
   style?: CSSProperties;
-  /** Receives the widget once it is created, and `null` when it is destroyed. */
+  /** Receives the widget once it is created, and `null` when it is destroyed; `focus`, `reveal` and `scrollTo` are called through it. */
   widgetRef?: Ref<GridWidget<RowId, ColId, V> | null>;
 }
 

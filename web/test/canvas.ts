@@ -5,6 +5,8 @@
 export interface DrawCall {
   name: string;
   args: unknown[];
+  /** The fill style in force when the call was made. */
+  fill: unknown;
 }
 
 export function fakeContext(calls: DrawCall[] = []): CanvasRenderingContext2D {
@@ -14,7 +16,7 @@ export function fakeContext(calls: DrawCall[] = []): CanvasRenderingContext2D {
       if (prop in target) return target[prop];
       if (prop === "measureText") return (text: string) => ({ width: text.length * 7 });
       return (...args: unknown[]) => {
-        calls.push({ name: String(prop), args });
+        calls.push({ name: String(prop), args, fill: target.fillStyle });
       };
     },
     set(target, prop, value) {

@@ -1,18 +1,22 @@
 use std::time::{Duration, Instant};
 
-use binnacle_core::{Button, Modifiers, PointerEvent};
+use binnacle_core::{Button, Modifiers, PointerEvent, Snapshot};
 use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+
+use crate::scrollbar::{self, BarEvent, Held, Layout};
 
 /// Turns crossterm mouse events into Grid pointer events relative to the
 /// Grid's area. crossterm reports no click count, so this counts presses of
 /// the same button on the same cell within [`Mouse::interval`] of each other.
-/// The wheel is left to [`crate::wheel`].
+/// The wheel is left to [`crate::wheel`], and [`Mouse::scrollbar`] takes
+/// what lands on the scrollbars.
 #[derive(Clone, Debug)]
 pub struct Mouse {
     /// The longest pause between presses that still counts as one multi-click.
     pub interval: Duration,
     last: Option<(Instant, MouseButton, u16, u16, u32)>,
+    held: Option<Held>,
 }
 
 impl Default for Mouse {
@@ -20,11 +24,52 @@ impl Default for Mouse {
         Mouse {
             interval: Duration::from_millis(400),
             last: None,
+            held: None,
         }
     }
 }
 
 impl Mouse {
+    /// What `event` does to the scrollbars of `snapshot` drawn in `layout`.
+    /// A left press on a track pages towards it; one on a thumb grabs it, and
+    /// dragging then scrolls with [`Action::ScrollTo`](binnacle_core::Action)
+    /// until the release. Hand a [`BarEvent::Missed`] event to [`Mouse::event`].
+    pub fn scrollbar(
+        &mut self,
+        event: &MouseEvent,
+        snapshot: &Snapshot,
+        layout: &Layout,
+    ) -> BarEvent {
+        let at = (event.column, event.row);
+        if let Some(held) = self.held {
+            return match event.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    BarEvent::Took(Some(scrollbar::drag(snapshot, layout, held, at)))
+                }
+                MouseEventKind::Up(_) | MouseEventKind::Moved | MouseEventKind::Down(_) => {
+                    self.held = None;
+                    if matches!(event.kind, MouseEventKind::Down(_)) {
+                        self.scrollbar(event, snapshot, layout)
+                    } else {
+                        BarEvent::Took(None)
+                    }
+                }
+                _ => BarEvent::Missed,
+            };
+        }
+        if event.kind != MouseEventKind::Down(MouseButton::Left) {
+            return BarEvent::Missed;
+        }
+        match scrollbar::press(snapshot, layout, at) {
+            None => BarEvent::Missed,
+            Some(Ok(page)) => BarEvent::Took(Some(page)),
+            Some(Err(held)) => {
+                self.held = Some(held);
+                BarEvent::Took(None)
+            }
+        }
+    }
+
     /// The pointer event for `event` with the Grid drawn at `area`, at time
     /// `now`, if it is a press, a release or a move.
     pub fn event(&mut self, event: &MouseEvent, area: Rect, now: Instant) -> Option<PointerEvent> {

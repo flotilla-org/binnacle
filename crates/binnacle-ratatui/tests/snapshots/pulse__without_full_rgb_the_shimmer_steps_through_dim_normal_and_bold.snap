@@ -1,41 +1,43 @@
 ---
 source: crates/binnacle-ratatui/tests/pulse.rs
+assertion_line: 235
 expression: out
 ---
 --- at 0 ms
-   col 0 │col 1~│col 2 │
-1  r0c0   r0c1   r0c2
-2  r1c0   r1c1   r1c2
-3  r2c0   r2c1   r2c2
-4  r3c0   r3c1   r3c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1~│col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcddddddcbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaeeeeeeaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcddddddcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaffffffaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
 c: fg DarkGray bg Reset
 d: fg Gray bg Reset DIM
-e: fg Reset bg Reset REVERSED
+e: fg Gray bg Reset
+f: fg Reset bg Reset REVERSED
 --- at 1000 ms
-   col 0 │col 1~│col 2 │
-1  r0c0   r0c1   r0c2
-2  r1c0   r1c1   r1c2
-3  r2c0   r2c1   r2c2
-4  r3c0   r3c1   r3c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1~│col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcdddddecbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaffffffaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcdddddecbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaffffffaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
@@ -44,19 +46,19 @@ d: fg Gray bg Reset BOLD
 e: fg Gray bg Reset
 f: fg Reset bg Reset REVERSED
 --- at 1200 ms
-   col 0 │col 1~│col 2 │
-1  r0c0   r0c1   r0c2
-2  r1c0   r1c1   r1c2
-3  r2c0   r2c1   r2c2
-4  r3c0   r3c1   r3c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1~│col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcddeeffcbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaggggggaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcddeeffcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaggggggaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD

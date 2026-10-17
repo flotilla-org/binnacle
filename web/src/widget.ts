@@ -3,7 +3,7 @@
 // frees the wasm Grid on destroy.
 
 import { createAria, type Aria } from "./aria";
-import { answerAutoSize } from "./autosize";
+import { answerAutoSize, fitWidth, type SizingParts } from "./autosize";
 import { borderGaps, headersBorder, type BorderStyle } from "./border";
 import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
@@ -16,9 +16,10 @@ import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
-import type { Snapshot, Span } from "./snapshot";
-import type { TableSource } from "./source";
-import { AXIS_CODE } from "./codes";
+import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
+import type { AxisSnapshot, Snapshot, Span } from "./snapshot";
+import type { FailedRequest, Located, TableSource } from "./source";
+import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -30,6 +31,15 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   columnWidth?: number;
   /** The column header band's height, CSS px. */
   headerHeight?: number;
+  /**
+   * Each column's starting width, by its ID: CSS px, `"fit"` to its header
+   * and the values in view, `"fill"` for an equal share of the width the
+   * other columns leave, or `undefined` for `columnWidth`. Asked once per
+   * column, when it first arrives; a width the user sets wins.
+   */
+  initialColumnWidth?(colId: NoInfer<ColId>): InitialSize;
+  /** Each row's starting height, by its ID, as `initialColumnWidth`; rows hold one line, so `"fit"` is `rowHeight`. */
+  initialRowHeight?(rowId: NoInfer<RowId>): InitialSize;
   /** A Theme, or one per colour scheme; by default light or Catppuccin Mocha, following the system. */
   theme?: ThemeChoice;
   /** The lines drawn in the Gaps; the widget lays out Gaps that fit them. Default: handles in the header bands. */
@@ -44,9 +54,10 @@ export interface GridOptions<RowId, ColId, V = unknown> {
    * Called when an edit is committed, with the textarea's text or a custom
    * editor's value. The app updates its data and tells the source's sink
    * `ContentChanged`; the cell shows the committed value until the source
-   * answers for it again. Without `onCommit` the grid is read-only.
+   * answers for it again. Returning `false` refuses the value: the cell keeps
+   * the value it had, at once. Without `onCommit` the grid is read-only.
    */
-  onCommit?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>, value: NoInfer<V> | string): void;
+  onCommit?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>, value: NoInfer<V> | string): boolean | void;
   /** A custom editor for a cell, mounted over it in place of the textarea; `null` or `undefined` for the textarea. */
   editor?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>): Editor<NoInfer<V>> | null | undefined;
   /** The grid's accessible name, read by screen readers. */
@@ -56,8 +67,23 @@ export interface GridOptions<RowId, ColId, V = unknown> {
    * shows the change, with the selection by the Table Source's own IDs.
    */
   onSelectionChange?(change: SelectionChange<NoInfer<RowId>, NoInfer<ColId>>): void;
+  /** What the body says when an axis has no items, unless the source's `emptyMessage` says otherwise. Default "No rows". */
+  emptyMessage?: string;
+  /**
+   * Called when the Table Source fails a request (a rejected Promise, or a
+   * throw), with what it threw and which request it was. The cells of a
+   * failed `window` or `cells` request show an error marker; the app retries
+   * by sending a Change Notice (a `Reset`, or `ContentChanged` over them)
+   * through the source's sink. Without `onError` failures are logged.
+   */
+  onError?(error: unknown, request: FailedRequest<NoInfer<RowId>, NoInfer<ColId>>): void;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
+  /**
+   * What a click or a focus move selects besides the focused cell: nothing
+   * (`"cells"`, the default) or its whole row (`"rows"`, for list-style views).
+   */
+  selectionUnit?: "cells" | "rows";
 }
 
 export interface FrameInfo<RowId = unknown, ColId = unknown> {
@@ -103,6 +129,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly grid: WebGrid;
   private readonly input: Input;
   private readonly aria: Aria;
+  private readonly sizes: InitialSizes | null;
   private last: Snapshot | null = null;
   private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
@@ -114,8 +141,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private size = { width: 0, height: 0 };
   private destroyed = false;
   private themeChoice: ThemeChoice;
+  private empty: string;
   private readonly dark = matchMedia("(prefers-color-scheme: dark)");
   private readonly still = matchMedia("(prefers-reduced-motion: reduce)");
+  /** The `focus` call waiting for focus to land. */
+  private focusing: Focusing | null = null;
+  /** Waiting for the next frame to run. */
+  private framed: (() => void)[] = [];
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -137,6 +169,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.sizer = div("binnacle-sizer", SIZER_STYLE);
     this.layer = div("binnacle-layer", LAYER_STYLE);
     this.themeChoice = options.theme ?? systemTheme;
+    this.empty = options.emptyMessage ?? "No rows";
     this.painter = createCanvasPainter(this.resolveTheme());
     this.painter.border = options.border ?? headersBorder;
     const renderer = options.renderer ?? options.source.renderer;
@@ -149,8 +182,15 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.element.append(this.scroller);
     container.append(this.element);
 
-    this.feed = createFeed(options.source, { schedule: () => this.schedule() });
+    this.feed = createFeed(options.source, {
+      schedule: () => this.schedule(),
+      ...(options.onError ? { failed: (error, request) => options.onError?.(error, request) } : {}),
+      located: (axis, key, answer) => this.located(axis, key, answer),
+      windowed: (axis, keys) => this.sizes?.arrived(axis, keys),
+    });
     this.grid = this.createGrid();
+    if (options.selectionUnit) this.grid.set_selection_unit(SELECTION_UNIT[options.selectionUnit]);
+    this.sizes = this.createSizes();
     this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);
     const { scroller, sizer } = this;
@@ -186,6 +226,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       painter: this.painter,
       viewport: () => this.size,
       onEffect: (e) => this.dispatch(e),
+      settle: (s) => this.sizes?.settle(s, this.feed.content(s)) ?? false,
     };
 
     this.input = createInput({
@@ -221,8 +262,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         commit: (row, col, value) => {
           const ids = this.ids(row, col);
           if (!ids) return;
+          if (options.onCommit?.(ids.row, ids.col, value as V | string) === false) return;
           this.feed.edited(row, col, value);
-          options.onCommit?.(ids.row, ids.col, value as V | string);
         },
         theme: () => this.painter.theme,
       },
@@ -274,6 +315,72 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.painter.destroy?.();
     this.grid.free();
     this.element.remove();
+    this.focusing?.reject(new Error("binnacle: the grid was destroyed"));
+    this.focusing = null;
+    for (const waiting of this.framed.splice(0)) waiting();
+  }
+
+  /**
+   * Moves focus to the cell at `rowId` and `colId` (by default the focused
+   * column, else the first one in view), selecting as a focus move does, and
+   * scrolls it into view. A row or column outside the Window is found with
+   * the Table Source's `locate`. Settles after the frame that shows focus
+   * there; rejected if the Table Source no longer has the row or column, or
+   * if focus moves on first (another `focus` call, a key press).
+   */
+  async focus(rowId: RowId, colId?: ColId): Promise<void> {
+    await this.started();
+    const col = colId === undefined ? this.focusColumn() : this.feed.colKey(colId);
+    if (col === null) throw new Error("binnacle: there is no column to focus");
+    const row = this.feed.rowKey(rowId);
+    const name = colId === undefined ? String(rowId) : `${String(rowId)} / ${String(colId)}`;
+    this.focusing?.reject(new Error(`binnacle: focus moved on before it reached ${this.focusing.name}`));
+    return new Promise((resolve, reject) => {
+      this.focusing = { keys: { rows: row, cols: col }, name, gone: false, resolve, reject };
+      this.grid.set_focus(row, col);
+      drainEffects(this.parts);
+      this.schedule();
+    });
+  }
+
+  /**
+   * Scrolls the row with `rowId`, and the column with `colId` if given, into
+   * view without moving focus; one outside the Window is found with the Table
+   * Source's `locate`. Settles after the frame that shows it; rejected if the
+   * Table Source no longer has it.
+   */
+  async reveal(rowId: RowId, colId?: ColId): Promise<void> {
+    await this.started();
+    const wanted: [AxisName, bigint, unknown][] = [["rows", this.feed.rowKey(rowId), rowId]];
+    if (colId !== undefined) wanted.push(["cols", this.feed.colKey(colId), colId]);
+    const found = await Promise.all(wanted.map(([axis, key]) => this.feed.find(axis, key)));
+    if (this.destroyed) throw new Error("binnacle: the grid was destroyed");
+    wanted.forEach(([axis, , id], i) => {
+      const at = found[i]!;
+      if (at.type === "Gone") throw new Error(`binnacle: ${String(id)} is gone from the Table Source`);
+      this.grid.reveal(AXIS_CODE[axis], at.position);
+    });
+    drainEffects(this.parts);
+    await this.nextFrame();
+  }
+
+  /**
+   * Scrolls so the row at Position `row`, and the column at `col` if given,
+   * starts the body, or as near as the end allows. Focus does not move.
+   * Throws a RangeError for a Position that is not a whole number from 0.
+   */
+  scrollTo(row: number, col?: number): void {
+    const asked: [AxisName, number | undefined][] = [
+      ["rows", row],
+      ["cols", col],
+    ];
+    for (const [, p] of asked) {
+      if (p !== undefined && !(Number.isSafeInteger(p) && p >= 0)) throw new RangeError(`binnacle: ${p} is not a Position`);
+    }
+    if (this.destroyed) return;
+    for (const [axis, p] of asked) if (p !== undefined) this.grid.scroll_to_item(AXIS_CODE[axis], p);
+    drainEffects(this.parts);
+    this.schedule();
   }
 
   /**
@@ -297,6 +404,16 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   set theme(choice: ThemeChoice) {
     this.themeChoice = choice;
     this.painter.theme = this.resolveTheme();
+    this.invalidate();
+  }
+
+  /** What the body says when an axis has no items, unless the source's `emptyMessage` says otherwise. */
+  get emptyMessage(): string {
+    return this.empty;
+  }
+
+  set emptyMessage(message: string) {
+    this.empty = message;
     this.invalidate();
   }
 
@@ -360,6 +477,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       this.painter.resize(width, height, dpr);
       this.force = true;
     }
+    this.painter.empty = this.options.source.emptyMessage?.() ?? this.empty;
     const { snapshot, painted, again } = runFrame(this.parts, this.force || this.repaint);
     this.force = false;
     this.repaint = again;
@@ -367,6 +485,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.input.place(snapshot);
     this.aria.frame(snapshot, painted, () => this.feed.content(snapshot));
     if (again) this.schedule();
+    this.settleFocus(snapshot);
+    for (const waiting of this.framed.splice(0)) waiting();
     this.options.onFrame?.({
       painted,
       rows: span(snapshot, "rows"),
@@ -380,18 +500,70 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.selectionEvents(snapshot);
   }
 
-  private dispatch(effect: Effect): void {
-    if (effect.type === "Locate") this.aria.locate(effect.axis, effect.key);
-    const s = this.last;
-    const sizing = {
+  /** Waits for a frame if none has run or one is due, so the Strips are those of what is in view. */
+  private async started(): Promise<void> {
+    if ((!this.last || this.raf) && !this.destroyed) await this.nextFrame();
+    if (this.destroyed) throw new Error("binnacle: the grid was destroyed");
+  }
+
+  private nextFrame(): Promise<void> {
+    return new Promise((resolve) => {
+      this.framed.push(resolve);
+      this.schedule();
+    });
+  }
+
+  /** The focused column's Key, else the first one in view. */
+  private focusColumn(): bigint | null {
+    const cols = this.last?.cols;
+    return cols?.focus?.key ?? (cols ? visible(cols).find((i) => i.key !== null)?.key : null) ?? null;
+  }
+
+  private located(axis: AxisName, key: bigint, answer: Located): void {
+    if (answer.type === "Gone" && this.focusing?.keys[axis] === key) this.focusing.gone = true;
+  }
+
+  /** Settles a waiting `focus` once neither axis is locating: landed, or not. */
+  private settleFocus(s: Snapshot): void {
+    const f = this.focusing;
+    if (!f || s.rows.locating || s.cols.locating) return;
+    this.focusing = null;
+    if (s.rows.focus?.key === f.keys.rows && s.cols.focus?.key === f.keys.cols) f.resolve();
+    else if (f.gone) f.reject(new Error(`binnacle: ${f.name} is gone from the Table Source`));
+    else f.reject(new Error(`binnacle: focus moved on before it reached ${f.name}`));
+  }
+
+  private createSizes(): InitialSizes | null {
+    const { initialColumnWidth: cols, initialRowHeight: rows } = this.options;
+    if (!cols && !rows) return null;
+    return createInitialSizes(
+      {
+        ...(cols ? { cols: cols as (id: unknown) => InitialSize } : {}),
+        ...(rows ? { rows: rows as (id: unknown) => InitialSize } : {}),
+      },
+      {
+        grid: this.grid,
+        id: (axis, key) => (axis === "rows" ? this.feed.rowId(key) : this.feed.colId(key)),
+        fit: (s, content, key) => fitWidth(s, content, key, this.sizing(), true),
+      },
+    );
+  }
+
+  private sizing(): SizingParts {
+    return {
       grid: this.grid,
       measure: this.painter.measure,
       theme: this.painter.theme,
       headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
       renderer: this.painter.renderer,
     };
+  }
+
+  private dispatch(effect: Effect): void {
+    if (effect.type === "Locate") this.aria.locate(effect.axis, effect.key);
+    const s = this.last;
     if (this.input.answer(effect)) return;
-    if (answerAutoSize(effect, s, s && this.feed.content(s), sizing)) return;
+    if (answerAutoSize(effect, s, s && this.feed.content(s), this.sizing())) return;
     this.feed.answer(effect);
   }
 
@@ -422,6 +594,21 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     target.addEventListener(type, handler);
     this.cleanup.push(() => target.removeEventListener(type, handler));
   }
+}
+
+interface Focusing {
+  keys: Record<AxisName, bigint>;
+  /** The IDs asked for, for messages. */
+  name: string;
+  /** The Table Source answered a Locate for one of the Keys with `Gone`. */
+  gone: boolean;
+  resolve(): void;
+  reject(error: Error): void;
+}
+
+/** The Strip's items the viewport shows (the Strip includes overscan). */
+function visible(axis: AxisSnapshot) {
+  return axis.strip.filter((i) => i.offset + i.size > axis.header && i.offset < axis.extent);
 }
 
 function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked"> {

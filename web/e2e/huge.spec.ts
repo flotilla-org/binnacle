@@ -1,5 +1,6 @@
 // The huge source end to end: the native scroller and the wheel reach every
-// row of 10^15, and the widget draws nothing while idle.
+// row of 10^15, the "Go to row" box focuses any of them, and the widget
+// draws nothing while idle.
 
 import { expect, test, type Page } from "@playwright/test";
 
@@ -109,4 +110,28 @@ test("destroy removes the grid and stops its frames", async ({ page }) => {
     return { mounted, left: host.childElementCount, framesAfter: w.frames_requested - frames };
   });
   expect(result).toEqual({ mounted: true, left: 0, framesAfter: 0 });
+});
+
+test("the Go to row box focuses a row deep in the table and hands the keyboard to the grid", async ({ page }) => {
+  const box = page.getByLabel("Go to row");
+  await box.fill("123,456,789,012");
+  await box.press("Enter");
+  await expect(status(page)).toContainText("focus row 123,456,789,012, column 1");
+  await expect(status(page)).toContainText("rows 123,456,789,012 to");
+  // The grid has the keyboard: arrows move on from the row gone to.
+  await page.keyboard.press("ArrowDown");
+  await expect(status(page)).toContainText("focus row 123,456,789,013, column 1");
+});
+
+test("the Go to row box takes e-notation and refuses what is not a row", async ({ page }) => {
+  const box = page.getByLabel("Go to row");
+  await box.fill("1e15");
+  await box.press("Enter");
+  await expect(status(page)).toContainText("focus row 1,000,000,000,000,000, column 1");
+  for (const bad of ["0", "1e16", "abc"]) {
+    await box.fill(bad);
+    await box.press("Enter");
+    await expect(box).toHaveAttribute("aria-invalid", "true");
+  }
+  await expect(status(page)).toContainText("focus row 1,000,000,000,000,000, column 1");
 });

@@ -13,8 +13,8 @@ export default defineConfig({
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] }, testIgnore: "webkit.spec.ts" },
     { name: "firefox", use: { ...devices["Desktop Firefox"] }, testIgnore: "webkit.spec.ts" },
-    // Only WebKit tints a selected canvas; the rest of the suite stays on the two above.
-    { name: "webkit", use: { ...devices["Desktop Safari"] }, testMatch: "webkit.spec.ts" },
+    // The whole suite, plus checks for what only WebKit does (it tints a selected canvas).
+    { name: "webkit", use: { ...devices["Desktop Safari"] } },
   ],
   webServer: [
     {

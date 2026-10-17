@@ -1,6 +1,7 @@
 //! Cell Renderers: per-column drawing into a canvas clipped to the cell's
 //! visible part.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ops::Range;
 use std::time::Duration;
@@ -176,7 +177,8 @@ pub enum Align {
 }
 
 /// Text from a closure, aligned in the first visible line of the cell. Text
-/// longer than the cell shows its start, whatever the alignment.
+/// longer than the cell shows its start, whatever the alignment, ending in
+/// `…` in the cell's last column.
 pub struct TextRenderer<F> {
     text: F,
     align: Align,
@@ -204,6 +206,7 @@ impl<F: Fn(Key, Key) -> String> TextRenderer<F> {
 impl<F: Fn(Key, Key) -> String> CellRenderer for TextRenderer<F> {
     fn draw(&self, row: Key, col: Key, canvas: &mut CellCanvas) {
         let text = (self.text)(row, col);
+        let text = fit(&text, canvas.width());
         let room = canvas.width().saturating_sub(char_count(&text));
         let x = match self.align {
             Align::Left => 0,
@@ -219,7 +222,20 @@ impl<F: Fn(Key, Key) -> String> CellRenderer for TextRenderer<F> {
     }
 }
 
-fn char_count(text: &str) -> u32 {
+/// `text` cut to `width` characters, ending in `…` when cut.
+pub(crate) fn fit(text: &str, width: u32) -> Cow<'_, str> {
+    if char_count(text) <= width {
+        return Cow::Borrowed(text);
+    }
+    let kept = usize::try_from(width.saturating_sub(1)).unwrap_or(usize::MAX);
+    let mut cut: String = text.chars().take(kept).collect();
+    if width > 0 {
+        cut.push('…');
+    }
+    Cow::Owned(cut)
+}
+
+pub(crate) fn char_count(text: &str) -> u32 {
     u32::try_from(text.chars().count()).unwrap_or(u32::MAX)
 }
 

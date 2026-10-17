@@ -4,13 +4,13 @@
 // move). Every answer goes through one `settle`.
 
 import { AXES, AXIS_CODE, type AxisName } from "./codes";
-import { createValueCache, PENDING } from "./cache";
+import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
 import { createSettler, type Request } from "./settle";
 import type { Snapshot, SortColumn, StripItem } from "./snapshot";
-import type { AxisMethods, ChangeNotice, Located, SortSpec, TableSource } from "./source";
+import type { AxisMethods, ChangeNotice, FailedRequest, Located, SortSpec, TableSource } from "./source";
 import type { WebGrid } from "./wasm";
 
 export interface Feed<RowId = unknown, ColId = unknown> {
@@ -24,7 +24,7 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   answer(effect: Effect): boolean;
   /** The values and labels for the Snapshot's visible items, asking for missing values. */
   content(s: Snapshot): Content;
-  /** Whether a cell in the viewport still waits for its Keys or its value. */
+  /** Whether a cell in the viewport still waits for its Keys or its value (one whose request failed does not). */
   loading(s: Snapshot): boolean;
   /** The value shown for the cell with these Keys: an edit not yet answered for, or the cache's; `undefined` if neither. */
   value(row: bigint, col: bigint): unknown;
@@ -38,13 +38,21 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   /** The Key for a user's ID, issuing one if it has none yet. */
   rowKey(id: RowId): bigint;
   colKey(id: ColId): bigint;
+  /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
+  find(axis: AxisName, key: bigint): Promise<Located>;
   /** Detaches from the source and aborts outstanding requests. */
   destroy(): void;
 }
 
-export interface FeedHooks {
+export interface FeedHooks<RowId = unknown, ColId = unknown> {
   /** A late answer landed or a Change Notice arrived: run a frame. */
   schedule?(): void;
+  /** The Table Source failed a request; by default it is logged. */
+  failed?(error: unknown, request: FailedRequest<RowId, ColId>): void;
+  /** The Table Source answered a Locate the Grid asked for. */
+  located?(axis: AxisName, key: bigint, answer: Located): void;
+  /** Keys arrived in a Window on `axis` and the Grid has them. */
+  windowed?(axis: AxisName, keys: BigUint64Array): void;
 }
 
 const NOTICE_CODE: Record<ChangeNotice["type"], number> = {
@@ -63,6 +71,8 @@ interface Axis<Id> {
   position: boolean;
   /** The Window asked for and not answered yet: not asked again, and aborted once another is asked. */
   waiting: { asked: string; request: Request } | null;
+  /** The Window the source last failed: not asked again until a Change Notice on the axis. */
+  failed: { asked: string; start: number; end: number } | null;
 }
 
 function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => string | number | bigint }): Axis<Id> {
@@ -72,6 +82,7 @@ function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => str
     interner: position ? (positionInterner as unknown as KeyInterner<Id>) : createInterner(source.idKey),
     position,
     waiting: null,
+    failed: null,
   };
 }
 
@@ -83,11 +94,18 @@ interface Block {
 
 const known = <T>(v: T | undefined): v is T => v !== undefined;
 
+const GONE: Located = { type: "Gone", suggest: null };
+
 export function createFeed<RowId, ColId, V>(
   source: TableSource<RowId, ColId, V>,
-  hooks: FeedHooks = {},
+  hooks: FeedHooks<RowId, ColId> = {},
 ): Feed<RowId, ColId> {
   const schedule = () => hooks.schedule?.();
+  /** Reports a failure of `request` to the hook, or the console. */
+  const report = (request: FailedRequest<RowId, ColId>) => (error: unknown) => {
+    if (hooks.failed) hooks.failed(error, request);
+    else console.error("binnacle: a Table Source request failed", request, error);
+  };
   let landed = false;
   const settler = createSettler(
     () => {
@@ -128,10 +146,14 @@ export function createFeed<RowId, ColId, V>(
   const askCount = (axis: AxisName): number | undefined => {
     let now: number | undefined;
     let late = false;
-    settle(() => axes[axis].source.count(), (count) => {
-      if (late) reset(axis, count);
-      else now = count;
-    });
+    settle(
+      () => axes[axis].source.count(),
+      (count) => {
+        if (late) reset(axis, count);
+        else now = count;
+      },
+      { failed: report({ type: "count", axis }) },
+    );
     late = true;
     return now;
   };
@@ -153,11 +175,15 @@ export function createFeed<RowId, ColId, V>(
     // Aborts the Windows and cells in flight; their `otherwise` forgets them.
     settler.bump();
     const { interner, position } = axes[axis];
+    axes[axis].failed = null;
     switch (notice.type) {
       case "Reset":
         cache.clear();
         interner.rebuild();
-        settle(() => axes[axis].source.count(), (count) => reset(axis, count), { fresh: true });
+        settle(() => axes[axis].source.count(), (count) => reset(axis, count), {
+          fresh: true,
+          failed: report({ type: "count", axis }),
+        });
         return;
       case "ContentChanged": {
         // Visible items outside the range keep their values; the rest, which
@@ -220,7 +246,7 @@ export function createFeed<RowId, ColId, V>(
     sorting = settle(
       (signal) => sort.call(source.rows, spec, signal),
       (now) => sortApplied(now.map((c) => ({ key: cols.interner.key(c.id), direction: c.direction }))),
-      { otherwise: () => sortApplied(previous) },
+      { otherwise: () => sortApplied(previous), failed: report({ type: "sort" }) },
     );
   };
 
@@ -229,37 +255,60 @@ export function createFeed<RowId, ColId, V>(
     grid?.located(AXIS_CODE[axis], key, code, position);
   };
 
-  const answerLocate = (axis: AxisName, key: bigint) => {
+  /** Asks where `key` sits now; `unanswered` runs if the source cannot say (aborted, failed, no such ID). */
+  const whereIs = (
+    axis: AxisName,
+    key: bigint,
+    answer: (located: Located) => void,
+    unanswered: () => void,
+  ): Request | null => {
     const { source: s, interner, position } = axes[axis];
     const id = interner.id(key);
-    const gone: Located = { type: "Gone", suggest: null };
-    if (id === undefined) return located(axis, key, gone);
+    if (id === undefined) {
+      unanswered();
+      return null;
+    }
     if (s.locate) {
-      // The Grid acts on the last answer it is due for this Key, so a
-      // superseded request is answered at once, and ignored.
-      const at = `${axis}:${key}`;
-      locating.get(at)?.abort();
-      const done = () => locating.delete(at);
-      const request = settle(
-        (signal) => s.locate!(id, signal),
-        (answer) => (done(), located(axis, key, answer)),
-        { otherwise: () => (done(), located(axis, key, gone)) },
-      );
-      if (request.pending) locating.set(at, request);
-      return;
+      return settle((signal) => s.locate!(id, signal), answer, {
+        otherwise: unanswered,
+        failed: report({ type: "locate", axis }),
+      });
     }
     // Like the Rust IdentitySource: a Position identity is where it says.
     const count = shown?.[axis].count ?? 0;
-    located(axis, key, position && Number(key) < count ? { type: "Found", position: Number(key) } : gone);
+    answer(position && Number(key) < count ? { type: "Found", position: Number(key) } : GONE);
+    return null;
+  };
+
+  const answerLocate = (axis: AxisName, key: bigint) => {
+    // The Grid acts on the last answer it is due for this Key, so a
+    // superseded request is answered at once, and ignored.
+    const at = `${axis}:${key}`;
+    locating.get(at)?.abort();
+    const request = whereIs(
+      axis,
+      key,
+      (answer) => {
+        locating.delete(at);
+        hooks.located?.(axis, key, answer);
+        located(axis, key, answer);
+      },
+      () => (locating.delete(at), located(axis, key, GONE)),
+    );
+    if (request?.pending) locating.set(at, request);
   };
 
   const answerMove = (axis: AxisName, keys: bigint[], to: number) => {
     const { source: s, interner } = axes[axis];
     const ids = keys.map((k) => interner.id(k));
     if (!s.move || !ids.every(known)) return;
-    settle(() => s.move!(ids, to), (moved) => {
-      if (moved) notify(axis, { type: "Reordered" });
-    });
+    settle(
+      () => s.move!(ids, to),
+      (moved) => {
+        if (moved) notify(axis, { type: "Reordered" });
+      },
+      { failed: report({ type: "move", axis }) },
+    );
   };
 
   /** Asks for the block `rowKeys` by `colKeys`, marking it pending until it lands. */
@@ -270,6 +319,7 @@ export function createFeed<RowId, ColId, V>(
     for (const r of rowKeys) for (const c of colKeys) cache.set(r, c, PENDING);
     let block: Block | undefined;
     const done = () => block && blocks.delete(block);
+    const failed = report({ type: "cells", rowIds, colIds });
     const request = settle(
       (signal) => source.cells(rowIds, colIds, signal),
       (block) => {
@@ -287,6 +337,10 @@ export function createFeed<RowId, ColId, V>(
         otherwise: () => {
           done();
           for (const r of rowKeys) for (const c of colKeys) cache.unpend(r, c);
+        },
+        failed: (error) => {
+          for (const r of rowKeys) for (const c of colKeys) if (cache.get(r, c) === PENDING) cache.set(r, c, FAILED);
+          failed(error);
         },
       },
     );
@@ -324,7 +378,19 @@ export function createFeed<RowId, ColId, V>(
     const p = pair(row, col);
     if (edits.has(p)) return edits.get(p);
     const v = cache.get(row, col);
-    return v === PENDING ? undefined : v;
+    return v === PENDING || v === FAILED ? undefined : v;
+  };
+
+  /** Whether the Window covering `item` failed, while its Key is missing. */
+  const windowFailed = (axis: AxisName, item: StripItem) => {
+    const failed = axes[axis].failed;
+    return item.key === null && failed !== null && item.position >= failed.start && item.position < failed.end;
+  };
+
+  const failedAt = (row: StripItem | undefined, col: StripItem | undefined): boolean => {
+    if (!row || !col) return false;
+    if (windowFailed("rows", row) || windowFailed("cols", col)) return true;
+    return row.key !== null && col.key !== null && cache.get(row.key, col.key) === FAILED;
   };
 
   const value = (row: StripItem | undefined, col: StripItem | undefined): unknown =>
@@ -332,6 +398,7 @@ export function createFeed<RowId, ColId, V>(
 
   const content: Content = {
     value: (i, j) => value(shown?.rows.strip[i], shown?.cols.strip[j]),
+    failed: (i, j) => failedAt(shown?.rows.strip[i], shown?.cols.strip[j]),
     label: (axis, item) => {
       const { source: s, interner } = axes[axis];
       const id = item.key === null ? undefined : interner.id(item.key);
@@ -360,17 +427,26 @@ export function createFeed<RowId, ColId, V>(
         if (Number.isNaN(start)) continue;
         const axis = axes[name];
         const asked = `${start}:${end}`;
-        if (axis.waiting?.asked === asked) continue;
+        if (axis.waiting?.asked === asked || axis.failed?.asked === asked) continue;
         axis.waiting?.request.abort();
         const request = settle(
           (signal) => axis.source.window(start, end, signal),
           (ids) => {
             axis.waiting = null;
+            axis.failed = null;
             const keys = keysOf(axis, ids);
             (grid ?? g).set_window(i, start, keys);
             if (name === "cols") markSortable(keys);
+            hooks.windowed?.(name, keys);
           },
-          { fresh: true, otherwise: () => (axis.waiting = null) },
+          {
+            fresh: true,
+            otherwise: () => (axis.waiting = null),
+            failed: (error) => {
+              axis.failed = { asked, start, end };
+              report({ type: "window", axis: name, start, end })(error);
+            },
+          },
         );
         if (request.pending) axis.waiting = { asked, request };
       }
@@ -400,7 +476,7 @@ export function createFeed<RowId, ColId, V>(
       const inView = (axis: AxisName) =>
         s[axis].strip.filter((i) => i.offset + i.size > s[axis].header && i.offset < s[axis].extent);
       const cols = inView("cols");
-      return inView("rows").some((r) => cols.some((c) => value(r, c) === undefined));
+      return inView("rows").some((r) => cols.some((c) => value(r, c) === undefined && !failedAt(r, c)));
     },
     value: valueAt,
     edited(row, col, value) {
@@ -416,6 +492,11 @@ export function createFeed<RowId, ColId, V>(
     colId: (key) => cols.interner.id(key),
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
+    find(axis, key) {
+      const item = shown?.[axis].strip.find((i) => i.key === key);
+      if (item) return Promise.resolve({ type: "Found", position: item.position });
+      return new Promise((resolve) => whereIs(axis, key, resolve, () => resolve(GONE)));
+    },
     destroy() {
       detach?.();
       settler.close();

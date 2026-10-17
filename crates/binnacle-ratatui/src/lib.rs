@@ -9,6 +9,7 @@ mod context;
 mod keymap;
 mod mouse;
 mod renderer;
+mod scrollbar;
 mod shimmer;
 mod theme;
 
@@ -20,6 +21,8 @@ pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
 };
+use renderer::{char_count, fit};
+pub use scrollbar::{BarEvent, Layout, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
@@ -97,7 +100,9 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
 /// visible part. Gaps are drawn as `ctx.border` says (by default the header
 /// band's Gaps only, the handles a resize drag grabs); a resize in progress
 /// draws its guide line across the area, a header move its drop indicator,
-/// both over the borders. A sorted column's header ends in its
+/// both over the borders. Unless `ctx` turns them off, scrollbars take the
+/// area's right column and, when the columns overflow, its bottom line (see
+/// [`layout`]; [`begin_frame`] gives the Grid the Viewport left over). A sorted column's header ends in its
 /// direction (and place, in a multi-column sort), and `~` marks a sort
 /// change still pending. Every style comes from the Theme. A Shimmer at
 /// `ctx.now` sweeps across the headers of a pending sort and across the
@@ -111,6 +116,11 @@ pub fn render_with(
 ) {
     let theme = &ctx.theme.for_colors(ctx.colors);
     let area = area.intersection(buf.area);
+    // The sweep keeps its pace across the whole area, scrollbars or not.
+    let sweep = Shimmer::new(ctx, area.width);
+    let bars = layout(snapshot, ctx, area);
+    scrollbar::draw(snapshot, &bars, theme, buf);
+    let area = bars.grid;
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
@@ -127,7 +137,6 @@ pub fn render_with(
         }
     };
     let multi = snapshot.applied_sort().columns().len() > 1;
-    let sweep = Shimmer::new(ctx, area.width);
     let area_end = i64::from(area.width);
     for h in snapshot.headers(Axis::Cols) {
         let label = h
@@ -140,10 +149,18 @@ pub fn render_with(
         let room = width.saturating_sub(marker.chars().count());
         let style = band(theme.header, h.hovered);
         let clip = (left, end, 0.0);
+        let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
         if marker.is_empty() {
-            put(buf, area, (start, 0.0), clip, &pad(label), style);
+            put(
+                buf,
+                area,
+                (start, 0.0),
+                clip,
+                &pad(label.into_owned()),
+                style,
+            );
         } else {
-            let label = format!("{label:<room$.room$}");
+            let label = format!("{label:<room$}");
             put(buf, area, (start, 0.0), clip, &label, style);
             let at = start + room as f32;
             let style = style.patch(theme.sort_marker);
@@ -172,6 +189,7 @@ pub fn render_with(
             || r.position.saturating_add(1).to_string(),
             |k| content.row_header(k, r.position),
         );
+        let number = fit(&number, u32::try_from(cell(left)).unwrap_or(0)).into_owned();
         let style = band(theme.row_number, h.hovered);
         put(
             buf,
@@ -258,6 +276,9 @@ pub fn render_with(
             }
         }
     }
+    if Axis::ALL.into_iter().any(|a| snapshot.count(a) == 0) {
+        empty(ctx.empty, theme, (left, top), area, buf);
+    }
     border::draw(snapshot, ctx.border, theme, area, buf);
     let mut mark = |x: i64, y: i64, ch: char, style: Style| {
         if (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y) {
@@ -326,6 +347,21 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     let line = format!("{line:<width$}");
     let clip = (left, f32::INFINITY, top);
     put(buf, area, (rect.x, rect.y), clip, &line, style);
+}
+
+/// Writes `message` centred in the body, the part of `area` past the header
+/// bands that end at `(left, top)`, on its middle line.
+fn empty(message: &str, theme: &Theme, (left, top): (f32, f32), area: Rect, buf: &mut Buffer) {
+    let (x0, y0) = (cell(left).max(0), cell(top).max(0));
+    let (width, height) = (i64::from(area.width) - x0, i64::from(area.height) - y0);
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let message = fit(message, u32::try_from(width).unwrap_or(u32::MAX));
+    let room = width - i64::from(char_count(&message));
+    let at = ((x0 + room / 2) as f32, (y0 + (height - 1) / 2) as f32);
+    let style = theme.body.patch(theme.loading);
+    put(buf, area, at, (left, f32::INFINITY, top), &message, style);
 }
 
 /// Patches `sweep` over the cells `xs` of line `y` in `area` (relative to
