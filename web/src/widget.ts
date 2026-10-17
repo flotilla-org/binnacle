@@ -83,7 +83,10 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
 }
 
 const HEADER_HEIGHT = 28;
-const ROOT_STYLE = "position: relative; width: 100%; height: 100%; overflow: hidden;";
+// The grid's surfaces are not text: WebKit would tint a selected canvas. Custom
+// editors and the ARIA table opt back in; the textarea is editable, so it stays selectable.
+const ROOT_STYLE =
+  "position: relative; width: 100%; height: 100%; overflow: hidden; user-select: none; -webkit-user-select: none;";
 const SCROLLER_STYLE = "position: absolute; inset: 0; overflow: auto; overscroll-behavior: none;";
 const SIZER_STYLE = "position: relative;";
 const LAYER_STYLE = "position: sticky; top: 0; left: 0; overflow: hidden;";

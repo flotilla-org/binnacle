@@ -11,8 +11,10 @@ export default defineConfig({
   reporter: "list",
   use: { baseURL: `http://127.0.0.1:${port}` },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    { name: "chromium", use: { ...devices["Desktop Chrome"] }, testIgnore: "webkit.spec.ts" },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] }, testIgnore: "webkit.spec.ts" },
+    // Only WebKit tints a selected canvas; the rest of the suite stays on the two above.
+    { name: "webkit", use: { ...devices["Desktop Safari"] }, testMatch: "webkit.spec.ts" },
   ],
   webServer: [
     {

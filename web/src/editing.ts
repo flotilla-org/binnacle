@@ -67,7 +67,8 @@ export interface Editing {
   destroy(): void;
 }
 
-const OVERLAY_STYLE = "position: absolute; z-index: 2; box-sizing: border-box; display: none;";
+const OVERLAY_STYLE =
+  "position: absolute; z-index: 2; box-sizing: border-box; display: none; user-select: text; -webkit-user-select: text;";
 
 interface Open {
   row: bigint;
