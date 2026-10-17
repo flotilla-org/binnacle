@@ -131,6 +131,7 @@ function App() {
           <BinnacleGrid
             className="fill"
             source={source}
+            label="Records"
             columnWidth={140}
             rowHeight={compact ? 20 : 24}
             theme={theme}

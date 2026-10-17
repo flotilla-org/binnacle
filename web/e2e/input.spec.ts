@@ -72,9 +72,9 @@ test.describe("keys on the huge table", () => {
   test("Tab leaves the grid, and tabbing back in keeps its focus", async ({ page }) => {
     const input = page.locator(".binnacle-input");
     await expect(input).toBeFocused();
-    // The toolbar comes before the grid in tab order; the Border select is its last control.
+    // The toolbar comes before the grid in tab order; the ARIA table checkbox is its last control.
     await page.keyboard.press("Shift+Tab");
-    await expect(page.locator("#border")).toBeFocused();
+    await expect(page.locator("#aria")).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(input).toBeFocused();
     await expect(status(page)).toContainText("focus row 3,");

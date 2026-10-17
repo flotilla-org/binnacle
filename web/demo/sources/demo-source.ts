@@ -4,6 +4,8 @@ import { GridWidget, type BorderStyle, type FrameInfo, type GridOptions, type Th
 
 /** What the page chooses for every source: the look and where frames are reported. */
 export interface Look {
+  /** The grid's accessible name. */
+  label: string;
   theme: ThemeChoice;
   border: BorderStyle;
   onFrame(frame: FrameInfo): void;

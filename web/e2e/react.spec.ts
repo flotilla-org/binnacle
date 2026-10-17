@@ -34,6 +34,8 @@ test.beforeEach(async ({ page }) => {
 
 test("mounts one grid, and the status line follows its frames", async ({ page }) => {
   await expect(grids(page)).toHaveCount(1);
+  // The `label` prop names the grid for assistive technology.
+  await expect(page.getByRole("grid", { name: "Records" })).toHaveCount(1);
   await cell(page, 0);
   await expect(status(page)).toContainText("focus row 1 (0 / id)");
   await page.keyboard.press("ArrowDown");

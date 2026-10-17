@@ -32,6 +32,8 @@ export interface InputHost {
 }
 
 export interface Input {
+  /** The textarea that holds DOM focus. */
+  readonly element: HTMLTextAreaElement;
   /** Whether the widget has DOM focus. */
   readonly focused: boolean;
   /** Answers the edit Effects; `false` for the rest. */
@@ -292,6 +294,7 @@ export function createInput(host: InputHost): Input {
   }
 
   return {
+    element: textarea,
     get focused() {
       return focused;
     },

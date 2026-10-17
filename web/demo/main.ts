@@ -21,6 +21,7 @@ const themes = document.querySelector<HTMLSelectElement>("#theme")!;
 const follow = document.querySelector<HTMLInputElement>("#follow")!;
 const borders = document.querySelector<HTMLSelectElement>("#border")!;
 const toolbar = document.querySelector<HTMLElement>("#tools")!;
+const aria = document.querySelector<HTMLInputElement>("#aria")!;
 
 const number = new Intl.NumberFormat("en");
 let current: Mounted | null = null;
@@ -64,6 +65,17 @@ function reflect(frame: FrameInfo): void {
     document.documentElement.dataset.scheme = theme === catppuccinMocha ? "dark" : "light";
   }
   status.textContent = describe(frame);
+  if (aria.checked) markActive();
+}
+
+/** Outlines the cell the grid's textarea names as its active descendant, in the open ARIA table. */
+function markActive(): void {
+  const id = host.querySelector("textarea")?.getAttribute("aria-activedescendant");
+  const active = id ? document.getElementById(id) : null;
+  const was = host.querySelector(".binnacle-aria .active");
+  if (was === active) return;
+  was?.classList.remove("active");
+  active?.classList.add("active");
 }
 
 function remember(): void {
@@ -72,6 +84,8 @@ function remember(): void {
   if (following) url.searchParams.delete("theme");
   else url.searchParams.set("theme", pickedTheme.name);
   url.searchParams.set("border", borderName(border));
+  if (aria.checked) url.searchParams.set("aria", "show");
+  else url.searchParams.delete("aria");
   history.replaceState(null, "", url);
 }
 
@@ -82,6 +96,7 @@ async function show(source: DemoSource) {
   for (const tab of tabs.querySelectorAll("button")) tab.setAttribute("aria-pressed", String(tab.dataset.source === source.name));
   remember();
   current = await source.mount(host, toolbar, {
+    label: `${source.name} table`,
     theme: themeChoice(),
     border,
     onFrame: reflect,
@@ -121,6 +136,14 @@ borders.value = borderName(border);
 borders.addEventListener("change", () => {
   border = borderStyles.find((b) => borderName(b) === borders.value) ?? border;
   if (current) current.border = border;
+  remember();
+});
+
+// The widget's hidden ARIA table, laid open over the grid to inspect.
+aria.checked = params.get("aria") === "show";
+document.body.classList.toggle("show-aria", aria.checked);
+aria.addEventListener("change", () => {
+  document.body.classList.toggle("show-aria", aria.checked);
   remember();
 });
 

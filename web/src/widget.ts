@@ -2,6 +2,7 @@
 // (idle unless something changed), the native scroller and the painter, and
 // frees the wasm Grid on destroy.
 
+import { createAria, type Aria } from "./aria";
 import { answerAutoSize } from "./autosize";
 import { borderGaps, headersBorder, type BorderStyle } from "./border";
 import type { Editor } from "./editing";
@@ -47,6 +48,8 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   onCommit?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>, value: NoInfer<V> | string): void;
   /** A custom editor for a cell, mounted over it in place of the textarea; `null` or `undefined` for the textarea. */
   editor?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>): Editor<NoInfer<V>> | null | undefined;
+  /** The grid's accessible name, read by screen readers. */
+  label?: string;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
 }
@@ -90,6 +93,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly feed: Feed<RowId, ColId>;
   private readonly grid: WebGrid;
   private readonly input: Input;
+  private readonly aria: Aria;
   private last: Snapshot | null = null;
   private readonly cleanup: (() => void)[] = [];
   private raf = 0;
@@ -128,6 +132,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const renderer = options.renderer ?? options.source.renderer;
     if (renderer) this.painter.renderer = renderer as RendererChoice<unknown, unknown, unknown>;
     this.painter.motion = !this.still.matches;
+    this.painter.element.setAttribute("aria-hidden", "true");
     this.layer.append(this.painter.element);
     this.sizer.append(this.layer);
     this.scroller.append(this.sizer);
@@ -211,6 +216,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         theme: () => this.painter.theme,
       },
     });
+    this.aria = createAria({
+      ...(options.label ? { label: options.label } : {}),
+      focus: this.input.element,
+      editable: options.onCommit !== undefined,
+      renderer: () => this.painter.renderer,
+    });
+    this.element.append(this.aria.element);
 
     this.listen(this.scroller, "scroll", () => {
       if (this.scroll.take(this.grid)) {
@@ -246,6 +258,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     cancelAnimationFrame(this.raf);
     for (const undo of this.cleanup) undo();
     this.input.destroy();
+    this.aria.destroy();
     this.feed.destroy();
     this.painter.destroy?.();
     this.grid.free();
@@ -341,6 +354,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.repaint = again;
     this.last = snapshot;
     this.input.place(snapshot);
+    this.aria.frame(snapshot, painted, () => this.feed.content(snapshot));
     if (again) this.schedule();
     this.options.onFrame?.({
       painted,
@@ -355,6 +369,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   private dispatch(effect: Effect): void {
+    if (effect.type === "Locate") this.aria.locate(effect.axis, effect.key);
     const s = this.last;
     const sizing = {
       grid: this.grid,
