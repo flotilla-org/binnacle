@@ -17,7 +17,7 @@ import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scro
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import type { Snapshot, Span } from "./snapshot";
-import type { TableSource } from "./source";
+import type { FailedRequest, TableSource } from "./source";
 import { AXIS_CODE } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -56,6 +56,16 @@ export interface GridOptions<RowId, ColId, V = unknown> {
    * shows the change, with the selection by the Table Source's own IDs.
    */
   onSelectionChange?(change: SelectionChange<NoInfer<RowId>, NoInfer<ColId>>): void;
+  /** What the body says when an axis has no items, unless the source's `emptyMessage` says otherwise. Default "No rows". */
+  emptyMessage?: string;
+  /**
+   * Called when the Table Source fails a request (a rejected Promise, or a
+   * throw), with what it threw and which request it was. The cells of a
+   * failed `window` or `cells` request show an error marker; the app retries
+   * by sending a Change Notice (a `Reset`, or `ContentChanged` over them)
+   * through the source's sink. Without `onError` failures are logged.
+   */
+  onError?(error: unknown, request: FailedRequest<NoInfer<RowId>, NoInfer<ColId>>): void;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
 }
@@ -114,6 +124,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private size = { width: 0, height: 0 };
   private destroyed = false;
   private themeChoice: ThemeChoice;
+  private empty: string;
   private readonly dark = matchMedia("(prefers-color-scheme: dark)");
   private readonly still = matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -137,6 +148,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.sizer = div("binnacle-sizer", SIZER_STYLE);
     this.layer = div("binnacle-layer", LAYER_STYLE);
     this.themeChoice = options.theme ?? systemTheme;
+    this.empty = options.emptyMessage ?? "No rows";
     this.painter = createCanvasPainter(this.resolveTheme());
     this.painter.border = options.border ?? headersBorder;
     const renderer = options.renderer ?? options.source.renderer;
@@ -149,7 +161,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.element.append(this.scroller);
     container.append(this.element);
 
-    this.feed = createFeed(options.source, { schedule: () => this.schedule() });
+    this.feed = createFeed(options.source, {
+      schedule: () => this.schedule(),
+      ...(options.onError ? { failed: (error, request) => options.onError?.(error, request) } : {}),
+    });
     this.grid = this.createGrid();
     this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);
@@ -300,6 +315,16 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.invalidate();
   }
 
+  /** What the body says when an axis has no items, unless the source's `emptyMessage` says otherwise. */
+  get emptyMessage(): string {
+    return this.empty;
+  }
+
+  set emptyMessage(message: string) {
+    this.empty = message;
+    this.invalidate();
+  }
+
   /** The lines drawn in the Gaps. Setting it lays the Gaps out to fit. */
   get border(): BorderStyle {
     return this.painter.border;
@@ -360,6 +385,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       this.painter.resize(width, height, dpr);
       this.force = true;
     }
+    this.painter.empty = this.options.source.emptyMessage?.() ?? this.empty;
     const { snapshot, painted, again } = runFrame(this.parts, this.force || this.repaint);
     this.force = false;
     this.repaint = again;

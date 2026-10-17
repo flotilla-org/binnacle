@@ -41,8 +41,10 @@ export interface Theme {
   dropIndicator: Line;
   /** The Border Style's lines in the body, and the band rules. */
   border: string;
-  /** The marker where a Key or value is not there yet. */
+  /** The marker where a Key or value is not there yet, and the message in an empty table's body. */
   loading: string;
+  /** The marker on a cell whose request the Table Source failed. */
+  error: string;
   /** A cell whose value just changed. */
   flash: Style;
   /**
@@ -74,6 +76,7 @@ export const light: Theme = {
   dropIndicator: { color: "#0891b2", width: 2 },
   border: "#d8dee6",
   loading: "#94a3b8",
+  error: "#dc2626",
   flash: { color: "#0f172a", background: "#fef08a" },
   shimmerBase: "#dbeafe",
   shimmerHighlight: "#ffffff",
@@ -91,6 +94,7 @@ const mocha = {
   text: "#cdd6f4",
   mauve: "#cba6f7",
   peach: "#fab387",
+  red: "#f38ba8",
   yellow: "#f9e2af",
   sapphire: "#74c7ec",
   blue: "#89b4fa",
@@ -114,6 +118,7 @@ export const catppuccinMocha: Theme = {
   dropIndicator: { color: mocha.sapphire, width: 2 },
   border: mocha.surface0,
   loading: mocha.overlay0,
+  error: mocha.red,
   flash: { color: mocha.crust, background: mocha.yellow },
   shimmerBase: mocha.surface0,
   shimmerHighlight: mocha.surface2,
@@ -138,6 +143,7 @@ export const mono: Theme = {
   dropIndicator: { color: "#000000", width: 2 },
   border: "#bfbfbf",
   loading: "#8c8c8c",
+  error: "#000000",
   flash: { color: "#ffffff", background: "#000000" },
   shimmerBase: "#d4d4d4",
   shimmerHighlight: "#f5f5f5",

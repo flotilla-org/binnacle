@@ -3,9 +3,10 @@
 // after a longer one, so loading cells, a shimmering pending sort and a
 // pulsing locate all show before the grid settles. Every request honours its
 // AbortSignal: one the widget no longer wants is never answered, and the
-// toolbar counts both.
+// toolbar counts both. "Fail" makes Windows and cells fail instead: the
+// failed cells show the error marker, and Retry asks again with a Reset.
 
-import { fromRows, GridWidget, type MaybePromise, type TableSource } from "../../src";
+import { fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, RECORDS, rows, type RecordRow } from "./records-data";
 
@@ -35,6 +36,8 @@ export const slow: DemoSource = {
     if (!(pace in PACES)) pace = "slow";
     let inFlight = 0;
     let aborted = 0;
+    let failing = false;
+    let sinks: { rows: AxisSink<number> } | null = null;
 
     const counter = document.createElement("span");
     counter.className = "requests";
@@ -43,7 +46,7 @@ export const slow: DemoSource = {
     count();
 
     /** `answer()` after the pace's delay, or never if `signal` aborts first. */
-    const later = <T,>(kind: "data" | "order", signal: AbortSignal, answer: () => MaybePromise<T>) =>
+    const later = <T,>(kind: "data" | "order", signal: AbortSignal, answer: () => MaybePromise<T>): Promise<T> =>
       new Promise<T>((resolve, reject) => {
         inFlight++;
         count();
@@ -51,7 +54,8 @@ export const slow: DemoSource = {
           signal.removeEventListener("abort", stop);
           inFlight--;
           count();
-          resolve(answer());
+          if (failing && kind === "data") reject(new Error("the source is failing on purpose"));
+          else resolve(answer());
         }, PACES[pace][kind]);
         const stop = () => {
           clearTimeout(timer);
@@ -72,7 +76,11 @@ export const slow: DemoSource = {
       },
       cols: inner.cols,
       cells: (rowIds, colIds, signal) => later("data", signal, () => inner.cells(rowIds, colIds, signal)),
-      attach: (sink) => inner.attach!(sink),
+      emptyMessage: () => (box.value.trim() ? "No records match the filter" : undefined),
+      attach: (sink) => {
+        sinks = sink;
+        return inner.attach!(sink);
+      },
     };
 
     const speed = document.createElement("select");
@@ -95,8 +103,25 @@ export const slow: DemoSource = {
       const text = box.value.trim();
       inner.filter(text ? (r) => matches(r, text) : null);
     });
-    toolbar.append(speed, box, counter);
-    const widget = await GridWidget.create(host, { source, columnWidth: 140, ...look });
+    const fail = document.createElement("label");
+    const failBox = document.createElement("input");
+    failBox.type = "checkbox";
+    failBox.addEventListener("change", () => (failing = failBox.checked));
+    fail.append(failBox, " Fail");
+    const retry = document.createElement("button");
+    retry.textContent = "Retry";
+    retry.hidden = true;
+    retry.addEventListener("click", () => {
+      retry.hidden = true;
+      sinks?.rows.notify({ type: "Reset" });
+    });
+    toolbar.append(speed, box, fail, retry, counter);
+    const widget = await GridWidget.create(host, {
+      source,
+      columnWidth: 140,
+      onError: () => (retry.hidden = false),
+      ...look,
+    });
     return {
       get theme() {
         return widget.theme;
@@ -115,6 +140,8 @@ export const slow: DemoSource = {
         inner.destroy();
         speed.remove();
         box.remove();
+        fail.remove();
+        retry.remove();
         counter.remove();
       },
     };

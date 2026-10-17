@@ -1,13 +1,17 @@
 // The value cache: cell values by Key pair, so scrolling asks the Table
 // Source only for cells it lacks. A cell asked for and not yet answered holds
-// `PENDING`, so it is not asked for again meanwhile.
+// `PENDING`, so it is not asked for again meanwhile; one whose request failed
+// holds `FAILED` until a Change Notice drops it.
 
 export const PENDING: unique symbol = Symbol("pending");
+export const FAILED: unique symbol = Symbol("failed");
+
+type Held<V> = V | typeof PENDING | typeof FAILED;
 
 export interface ValueCache<V> {
-  /** The value, `PENDING` while asked for, or `undefined` if never asked. */
-  get(row: bigint, col: bigint): V | typeof PENDING | undefined;
-  set(row: bigint, col: bigint, value: V | typeof PENDING): void;
+  /** The value, `PENDING` while asked for, `FAILED` if the request failed, or `undefined` if never asked. */
+  get(row: bigint, col: bigint): Held<V> | undefined;
+  set(row: bigint, col: bigint, value: Held<V>): void;
   /** Removes the pair if it still holds `PENDING` (its answer was dropped). */
   unpend(row: bigint, col: bigint): void;
   /** Keeps only the items on `axis` that `keep` accepts. */
@@ -22,7 +26,7 @@ const SLACK = 4;
 const FLOOR = 256;
 
 export function createValueCache<V>(): ValueCache<V> {
-  const byRow = new Map<bigint, Map<bigint, V | typeof PENDING>>();
+  const byRow = new Map<bigint, Map<bigint, Held<V>>>();
   let cols = 0;
   const retain: ValueCache<V>["retain"] = (axis, keep) => {
     if (axis === "rows") {

@@ -10,7 +10,7 @@ import { plainText, type RendererChoice } from "../renderer";
 import type { Snapshot } from "../snapshot";
 import type { Theme } from "../theme";
 import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
-import { paintBody } from "./body";
+import { paintBody, paintEmpty } from "./body";
 import { paintBorders, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
 import { paintPulse, sorting } from "./pending";
@@ -29,6 +29,8 @@ export interface CanvasPainter extends Painter {
   renderer: RendererChoice<unknown, unknown, unknown>;
   /** The value-change flashes the host marked. */
   readonly flashes: Flashes;
+  /** Centred in the body when an axis has no items. */
+  empty: string;
 }
 
 export function createCanvasPainter(theme: Theme): CanvasPainter {
@@ -51,6 +53,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     border: headersBorder,
     renderer: () => plainText,
     flashes: createFlashes(),
+    empty: "No rows",
     resize(w, h, ratio) {
       width = w;
       height = h;
@@ -88,6 +91,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       };
       const animating = paintBody(p);
       const pulsing = paintPulse(p);
+      if (s.rows.count === 0 || s.cols.count === 0) paintEmpty(p, painter.empty);
       paintSelection(p);
       paintColumnHeaders(p);
       paintRowNumbers(p);

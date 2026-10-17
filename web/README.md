@@ -66,8 +66,13 @@ from `"light" | "dark"` to one; it follows the system by default), `border`
 (a Border Style), `keymap`, `platform`, `renderer` (a Cell Renderer per
 cell, for example `byColumn(...)` over `textRenderer`, `sparklineRenderer`
 and `barRenderer`), `onCommit` (makes cells editable; without it the grid is
-read-only) and `editor` (a custom editor per cell). `grid.theme` and
-`grid.border` change them later.
+read-only), `editor` (a custom editor per cell), `emptyMessage` (what the
+body says when an axis has no items, "No rows" by default; a source's own
+`emptyMessage()`, such as "No rows match the filter", wins) and `onError`
+(called with what a failed source request threw and which request it was;
+the cells of a failed `window` or `cells` request show an error marker until
+a Change Notice through the source's sink asks again). `grid.theme`,
+`grid.border` and `grid.emptyMessage` change them later.
 
 ### React
 

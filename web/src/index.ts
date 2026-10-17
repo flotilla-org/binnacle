@@ -8,6 +8,7 @@ export type {
   AxisSink,
   AxisSource,
   ChangeNotice,
+  FailedRequest,
   Located,
   MaybePromise,
   Primitive,

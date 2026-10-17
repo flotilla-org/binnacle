@@ -6,7 +6,7 @@ import { createFeed, type Feed } from "../src/feed";
 import { runFrame, type FrameParts } from "../src/frame";
 import type { ScrollMapping } from "../src/scroller";
 import type { Snapshot } from "../src/snapshot";
-import type { TableSource } from "../src/source";
+import type { FailedRequest, TableSource } from "../src/source";
 import { bridge } from "../src/wasm";
 
 export const ROW_HEIGHT = 20;
@@ -21,13 +21,17 @@ export class Harness<RowId, ColId, V> {
   readonly parts: FrameParts;
   snapshot!: Snapshot;
   content: Content | null = null;
+  /** Every failed request the feed reported, with its error's message. */
+  readonly errors: { message: string; request: FailedRequest<RowId, ColId> }[] = [];
 
   constructor(
     source: TableSource<RowId, ColId, V>,
     readonly width = 500,
     readonly height = 300,
   ) {
-    this.feed = createFeed(source);
+    this.feed = createFeed(source, {
+      failed: (error, request) => this.errors.push({ message: (error as Error).message, request }),
+    });
     const counts = this.feed.counts();
     const b = bridge();
     const grid = new b.WebGrid(
@@ -76,6 +80,12 @@ export class Harness<RowId, ColId, V> {
   values(): unknown[][] {
     const s = this.snapshot;
     return s.rows.strip.map((_, i) => s.cols.strip.map((_, j) => this.content?.value(i, j)));
+  }
+
+  /** Whether each visible cell shows its request failed, row by row. */
+  failed(): boolean[][] {
+    const s = this.snapshot;
+    return s.rows.strip.map((_, i) => s.cols.strip.map((_, j) => this.content?.failed(i, j) ?? false));
   }
 
   destroy(): void {

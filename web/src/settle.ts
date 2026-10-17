@@ -13,6 +13,8 @@ export interface SettleOptions {
   fresh?: boolean;
   /** Runs for an answer not applied: aborted (at once), dropped, or a rejected Promise. */
   otherwise?(): void;
+  /** Runs before `otherwise` when the source fails the request, in place of the settler's own report. */
+  failed?(error: unknown): void;
 }
 
 /** A request in flight, or already answered. */
@@ -57,7 +59,13 @@ export function createSettler(landed: () => void, failed: (error: unknown) => vo
     },
     settle(ask, apply, options = {}) {
       const controller = new AbortController();
-      const answer = ask(controller.signal);
+      let answer: ReturnType<typeof ask>;
+      // A source that throws fails like one that rejects.
+      try {
+        answer = ask(controller.signal);
+      } catch (error) {
+        answer = Promise.reject(error);
+      }
       if (!isPromise(answer)) {
         apply(answer);
         return { signal: controller.signal, pending: false, abort() {} };
@@ -80,8 +88,8 @@ export function createSettler(landed: () => void, failed: (error: unknown) => vo
         },
         (error: unknown) => {
           if (!inFlight.delete(entry)) return;
+          (options.failed ?? failed)(error);
           options.otherwise?.();
-          failed(error);
           landed();
         },
       );
