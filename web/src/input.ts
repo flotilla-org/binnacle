@@ -158,6 +158,7 @@ export function createInput(host: InputHost): Input {
     grid.pointer(kind, x, y, e.button < 0 ? 0 : e.button, modifierBits(e), count);
 
   const press = (e: PointerEvent, x: number, y: number) => {
+    clearSelection();
     send(POINTER.down, e, x, y, clicks.press({ time: e.timeStamp, x, y, button: e.button }));
   };
 
@@ -281,6 +282,18 @@ export function createInput(host: InputHost): Input {
   grab();
   coarse.addEventListener("change", grab);
   cleanup.push(() => coarse.removeEventListener("change", grab));
+
+  /**
+   * Preventing a press's default keeps DOM focus, but also stops the browser
+   * collapsing the page's selection, so a press does it here. In WebKit the
+   * focused textarea's caret is that selection: it gets its caret back.
+   */
+  function clearSelection() {
+    const selection = getSelection();
+    if (!selection || selection.isCollapsed) return;
+    selection.removeAllRanges();
+    if (document.activeElement === textarea) textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
 
   /** Tabbing in with no cell focused focuses the first visible one. */
   function focusFirstCell() {

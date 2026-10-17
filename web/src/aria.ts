@@ -38,6 +38,8 @@ const HIDDEN_STYLE = [
   "overflow: hidden",
   "clip-path: inset(50%)",
   "white-space: nowrap",
+  "user-select: text",
+  "-webkit-user-select: text",
 ].join("; ");
 
 /** While only the visible Keys change (a scroll), the table waits for this long a pause, ms... */
