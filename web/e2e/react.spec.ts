@@ -6,11 +6,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import { matches, rows } from "../demo/sources/records-data";
 import { dblclick } from "./dblclick";
+import { column, FIRST } from "./records-columns";
 
 const HEADER = 28;
 const ROW = 24;
-/** Inside the first column whatever the row-number band's width. */
-const FIRST = 62;
 
 const status = (page: Page) => page.locator("#status");
 const grids = (page: Page) => page.locator(".binnacle");
@@ -93,7 +92,7 @@ test("onCommit and editor props reach the widget: an edit commits through the la
   await tag(page);
   const box = await page.locator(".binnacle-layer").boundingBox();
   // The name column of the first row.
-  await page.mouse.click(box!.x + FIRST + 141, box!.y + HEADER + ROW / 2);
+  await page.mouse.click(box!.x + column(1), box!.y + HEADER + ROW / 2);
   await page.keyboard.type("Zed");
   await page.keyboard.press("Enter");
   await expect(page.locator("#committed")).toHaveText('name of 0 = "Zed" (edit 1)');
@@ -105,7 +104,7 @@ test("onCommit and editor props reach the widget: an edit commits through the la
   // the grid's Keys for the edited row until its next frame asks again, and a
   // double-click before then has no cell to activate.
   await settled(page);
-  await dblclick(page, box!.x + FIRST + 4 * 141, box!.y + HEADER + ROW / 2);
+  await dblclick(page, box!.x + column(4), box!.y + HEADER + ROW / 2);
   await page.getByRole("combobox", { name: "Port" }).selectOption("Bergen");
   await page.keyboard.press("Enter");
   await expect(page.locator("#committed")).toHaveText('port of 0 = "Bergen" (edit 3)');

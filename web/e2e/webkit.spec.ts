@@ -6,11 +6,10 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
+import { column } from "./records-columns";
 
 const HEADER = 28;
 const ROW = 24;
-const COLUMN = 141;
-const FIRST = 62;
 
 const status = (page: Page) => page.locator("#status");
 const editor = (page: Page) => page.locator(".binnacle-input");
@@ -18,7 +17,7 @@ const editor = (page: Page) => page.locator(".binnacle-input");
 async function at(page: Page, row: number, col: number) {
   const box = await page.locator(".binnacle-layer").boundingBox();
   if (!box) throw new Error("no grid");
-  return { x: box.x + FIRST + col * COLUMN, y: box.y + HEADER + row * ROW + ROW / 2 };
+  return { x: box.x + column(col), y: box.y + HEADER + row * ROW + ROW / 2 };
 }
 
 /** The page's selection: whether it is collapsed, and its text. */

@@ -117,6 +117,13 @@ impl WebGrid {
         self.grid.set_size(axis(a), Key(key), size);
     }
 
+    /// The Size Override for the item with `key` on axis `a`; NaN for none.
+    pub fn size_override(&self, a: u8, key: u64) -> f64 {
+        self.grid
+            .size_override(axis(a), Key(key))
+            .map_or(f64::NAN, f64::from)
+    }
+
     pub fn set_sortable(&mut self, key: u64, sortable: bool) {
         self.grid.set_sortable(Key(key), sortable);
     }

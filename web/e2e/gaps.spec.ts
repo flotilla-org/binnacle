@@ -26,10 +26,10 @@ async function cell(page: Page, row: number) {
   await page.mouse.click(b.x + FIRST, b.y + HEADER + row * ROW + ROW / 2);
 }
 
-async function header(page: Page, col: number) {
+/** Clicks the Feature column's header. */
+async function featureHeader(page: Page) {
   const b = await layer(page);
-  const width = (b.width - 48) / COLUMNS;
-  await page.mouse.click(b.x + 48 + col * width + width / 2, b.y + HEADER / 2);
+  await page.mouse.click(b.x + FIRST, b.y + HEADER / 2);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -48,7 +48,7 @@ test("the panel follows focus by ID through a sort and a filter", async ({ page 
   await expect(panel(page).locator("h2")).toHaveText(chosen.name);
 
   // Sorting by name moves the row; the panel stays on its feature.
-  await header(page, 0);
+  await featureHeader(page);
   const byName = [...features].sort((a, b) => (a.name < b.name ? -1 : 1));
   await expect(page.locator("#status")).toContainText(`focus row ${byName.indexOf(chosen) + 1},`);
   await expect(panel(page)).toHaveAttribute("data-feature", chosen.id);

@@ -25,7 +25,7 @@ import {
   type ThemeChoice,
 } from "../../src/react";
 import { parse, portPicker, type Value } from "../sources/records";
-import { matches, rows, type RecordRow } from "../sources/records-data";
+import { matches, rows, WIDTHS, type RecordRow } from "../sources/records-data";
 import "./style.css";
 
 const SYSTEM = "system";
@@ -133,6 +133,7 @@ function App() {
             source={source}
             label="Records"
             columnWidth={140}
+            initialColumnWidth={(col) => WIDTHS[col]}
             rowHeight={compact ? 20 : 24}
             theme={theme}
             border={border}

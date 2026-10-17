@@ -3,7 +3,7 @@
 // frees the wasm Grid on destroy.
 
 import { createAria, type Aria } from "./aria";
-import { answerAutoSize } from "./autosize";
+import { answerAutoSize, fitWidth, type SizingParts } from "./autosize";
 import { borderGaps, headersBorder, type BorderStyle } from "./border";
 import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
@@ -16,6 +16,7 @@ import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
+import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
 import type { AxisSnapshot, Snapshot, Span } from "./snapshot";
 import type { FailedRequest, Located, TableSource } from "./source";
 import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
@@ -30,6 +31,15 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   columnWidth?: number;
   /** The column header band's height, CSS px. */
   headerHeight?: number;
+  /**
+   * Each column's starting width, by its ID: CSS px, `"fit"` to its header
+   * and the values in view, `"fill"` for an equal share of the width the
+   * other columns leave, or `undefined` for `columnWidth`. Asked once per
+   * column, when it first arrives; a width the user sets wins.
+   */
+  initialColumnWidth?(colId: NoInfer<ColId>): InitialSize;
+  /** Each row's starting height, by its ID, as `initialColumnWidth`; rows hold one line, so `"fit"` is `rowHeight`. */
+  initialRowHeight?(rowId: NoInfer<RowId>): InitialSize;
   /** A Theme, or one per colour scheme; by default light or Catppuccin Mocha, following the system. */
   theme?: ThemeChoice;
   /** The lines drawn in the Gaps; the widget lays out Gaps that fit them. Default: handles in the header bands. */
@@ -118,6 +128,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly grid: WebGrid;
   private readonly input: Input;
   private readonly aria: Aria;
+  private readonly sizes: InitialSizes | null;
   private last: Snapshot | null = null;
   private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
@@ -174,9 +185,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       schedule: () => this.schedule(),
       ...(options.onError ? { failed: (error, request) => options.onError?.(error, request) } : {}),
       located: (axis, key, answer) => this.located(axis, key, answer),
+      windowed: (axis, keys) => this.sizes?.arrived(axis, keys),
     });
     this.grid = this.createGrid();
     if (options.selectionUnit) this.grid.set_selection_unit(SELECTION_UNIT[options.selectionUnit]);
+    this.sizes = this.createSizes();
     this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);
     const { scroller, sizer } = this;
@@ -212,6 +225,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       painter: this.painter,
       viewport: () => this.size,
       onEffect: (e) => this.dispatch(e),
+      settle: (s) => this.sizes?.settle(s, this.feed.content(s)) ?? false,
     };
 
     this.input = createInput({
@@ -518,18 +532,37 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     else f.reject(new Error(`binnacle: focus moved on before it reached ${f.name}`));
   }
 
-  private dispatch(effect: Effect): void {
-    if (effect.type === "Locate") this.aria.locate(effect.axis, effect.key);
-    const s = this.last;
-    const sizing = {
+  private createSizes(): InitialSizes | null {
+    const { initialColumnWidth: cols, initialRowHeight: rows } = this.options;
+    if (!cols && !rows) return null;
+    return createInitialSizes(
+      {
+        ...(cols ? { cols: cols as (id: unknown) => InitialSize } : {}),
+        ...(rows ? { rows: rows as (id: unknown) => InitialSize } : {}),
+      },
+      {
+        grid: this.grid,
+        id: (axis, key) => (axis === "rows" ? this.feed.rowId(key) : this.feed.colId(key)),
+        fit: (s, content, key) => fitWidth(s, content, key, this.sizing(), true),
+      },
+    );
+  }
+
+  private sizing(): SizingParts {
+    return {
       grid: this.grid,
       measure: this.painter.measure,
       theme: this.painter.theme,
       headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
       renderer: this.painter.renderer,
     };
+  }
+
+  private dispatch(effect: Effect): void {
+    if (effect.type === "Locate") this.aria.locate(effect.axis, effect.key);
+    const s = this.last;
     if (this.input.answer(effect)) return;
-    if (answerAutoSize(effect, s, s && this.feed.content(s), sizing)) return;
+    if (answerAutoSize(effect, s, s && this.feed.content(s), this.sizing())) return;
     this.feed.answer(effect);
   }
 

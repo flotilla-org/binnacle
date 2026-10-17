@@ -51,6 +51,8 @@ export interface FeedHooks<RowId = unknown, ColId = unknown> {
   failed?(error: unknown, request: FailedRequest<RowId, ColId>): void;
   /** The Table Source answered a Locate the Grid asked for. */
   located?(axis: AxisName, key: bigint, answer: Located): void;
+  /** Keys arrived in a Window on `axis` and the Grid has them. */
+  windowed?(axis: AxisName, keys: BigUint64Array): void;
 }
 
 const NOTICE_CODE: Record<ChangeNotice["type"], number> = {
@@ -435,6 +437,7 @@ export function createFeed<RowId, ColId, V>(
             const keys = keysOf(axis, ids);
             (grid ?? g).set_window(i, start, keys);
             if (name === "cols") markSortable(keys);
+            hooks.windowed?.(name, keys);
           },
           {
             fresh: true,

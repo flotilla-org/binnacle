@@ -6,12 +6,10 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
+import { column } from "./records-columns";
 
 const HEADER = 28;
 const ROW = 24;
-const COLUMN = 141;
-/** Inside the first column whatever the row-number band's width (40 to 60 px). */
-const FIRST = 62;
 const COLS = ["id", "name", "weight", "crew", "port"] as const;
 
 const status = (page: Page) => page.locator("#status");
@@ -22,7 +20,7 @@ const editor = (page: Page) => page.locator(".binnacle-input");
 async function cell(page: Page, row: number, col: number) {
   const box = await page.locator(".binnacle-layer").boundingBox();
   if (!box) throw new Error("no grid");
-  await page.mouse.click(box.x + FIRST + col * COLUMN, box.y + HEADER + row * ROW + ROW / 2);
+  await page.mouse.click(box.x + column(col), box.y + HEADER + row * ROW + ROW / 2);
 }
 
 const focus = (row: number, col: number) =>
@@ -134,7 +132,7 @@ test.describe("the records source", () => {
   test("an edit that changes the sorted column re-sorts, and focus follows the record", async ({ page }) => {
     const box = (await page.locator(".binnacle-layer").boundingBox())!;
     // Sort by weight, then give the top record the heaviest weight.
-    await page.mouse.click(box.x + FIRST + 2 * COLUMN, box.y + HEADER / 2);
+    await page.mouse.click(box.x + column(2), box.y + HEADER / 2);
     await cell(page, 0, 2);
     await expect(status(page)).toContainText("focus row 1, column 3");
     const id = Number((await status(page).textContent())!.match(/\((\d+) \//)![1]);

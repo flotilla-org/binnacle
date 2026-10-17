@@ -31,19 +31,8 @@ export function answerAutoSize(effect: Effect, s: Snapshot | null, content: Cont
         return true;
       }
       if (!s || !content) return true;
-      const j = s.cols.strip.findIndex((i) => i.key === effect.key);
-      if (j < 0) return true;
-      const col = s.cols.strip[j]!;
-      const cells = cellMeasure(measure, theme);
-      const colId = content.id("cols", col);
-      let width = measure.width(content.label("cols", col), theme.headerFont) + 2 * PAD;
-      s.rows.strip.forEach((row, i) => {
-        const value = row.key === null ? undefined : content.value(i, j);
-        if (value === undefined) return;
-        const renderer = parts.renderer(content.id("rows", row), colId);
-        width = Math.max(width, preferredWidth(renderer, value, cells));
-      });
-      grid.set_size(AXIS_CODE.cols, effect.key, Math.ceil(width));
+      const width = fitWidth(s, content, effect.key, parts, false);
+      if (width !== null) grid.set_size(AXIS_CODE.cols, effect.key, Math.ceil(width));
       return true;
     }
     case "BandAutoSizeRequested": {
@@ -60,4 +49,29 @@ export function answerAutoSize(effect: Effect, s: Snapshot | null, content: Cont
     default:
       return false;
   }
+}
+
+/**
+ * The width that shows column `key`'s header and the values of the rows in
+ * the Strip whole; `null` if the column is not in the Strip, or, when
+ * `complete`, while any of those values is still to come.
+ */
+export function fitWidth(s: Snapshot, content: Content, key: bigint, parts: SizingParts, complete: boolean): number | null {
+  const { measure, theme } = parts;
+  const j = s.cols.strip.findIndex((i) => i.key === key);
+  if (j < 0) return null;
+  const col = s.cols.strip[j]!;
+  const cells = cellMeasure(measure, theme);
+  const colId = content.id("cols", col);
+  let width = measure.width(content.label("cols", col), theme.headerFont) + 2 * PAD;
+  for (const [i, row] of s.rows.strip.entries()) {
+    const value = row.key === null ? undefined : content.value(i, j);
+    if (value === undefined) {
+      if (complete) return null;
+      continue;
+    }
+    const renderer = parts.renderer(content.id("rows", row), colId);
+    width = Math.max(width, preferredWidth(renderer, value, cells));
+  }
+  return width;
 }

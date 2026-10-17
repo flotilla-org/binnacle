@@ -6,7 +6,7 @@
 
 import { fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
-import { matches, PORTS, RECORDS, rows, type RecordRow } from "./records-data";
+import { matches, PORTS, RECORDS, rows, WIDTHS, type RecordRow } from "./records-data";
 
 export type Value = RecordRow[keyof RecordRow];
 
@@ -72,6 +72,7 @@ export const records: DemoSource = {
     const widget = await GridWidget.create(host, {
       source,
       columnWidth: 140,
+      initialColumnWidth: (col) => WIDTHS[col],
       ...look,
       onCommit(id, col, value) {
         const parsed = parse(col, value);

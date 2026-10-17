@@ -6,12 +6,10 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { matches, rows, type RecordRow } from "../demo/sources/records-data";
+import { column, FIRST } from "./records-columns";
 
 const HEADER = 28;
 const ROW = 24;
-const COLUMN = 141;
-/** Inside the first column whatever the row-number band's width (40 to 60 px). */
-const FIRST = 62;
 
 const status = (page: Page) => page.locator("#status");
 
@@ -25,14 +23,14 @@ async function layer(page: Page) {
 async function header(page: Page, col: number, modifiers: ("Shift" | "Alt")[] = []) {
   const b = await layer(page);
   for (const m of modifiers) await page.keyboard.down(m);
-  await page.mouse.click(b.x + FIRST + col * COLUMN, b.y + HEADER / 2);
+  await page.mouse.click(b.x + column(col), b.y + HEADER / 2);
   for (const m of modifiers) await page.keyboard.up(m);
 }
 
 /** Clicks the visible cell at screen row `row` (0 first) of column `col`. */
 async function cell(page: Page, row: number, col = 0) {
   const b = await layer(page);
-  await page.mouse.click(b.x + FIRST + col * COLUMN, b.y + HEADER + row * ROW + ROW / 2);
+  await page.mouse.click(b.x + column(col), b.y + HEADER + row * ROW + ROW / 2);
 }
 
 const focus = (position: number, id: number, col: string, colPosition = 0) =>
@@ -120,13 +118,14 @@ test("the filter box keeps the matching records, in the sort in force", async ({
 
 test("dragging a header moves its column", async ({ page }) => {
   const b = await layer(page);
-  await page.mouse.move(b.x + FIRST + 4 * COLUMN, b.y + HEADER / 2);
+  await page.mouse.move(b.x + column(4), b.y + HEADER / 2);
   await page.mouse.down();
-  await page.mouse.move(b.x + FIRST + 2 * COLUMN, b.y + HEADER / 2, { steps: 5 });
+  await page.mouse.move(b.x + column(2), b.y + HEADER / 2, { steps: 5 });
   await page.mouse.move(b.x + FIRST - 10, b.y + HEADER / 2, { steps: 5 });
   await page.mouse.up();
   await cell(page, 0, 0);
   await expect(status(page)).toContainText(focus(0, 0, "port"));
-  await cell(page, 0, 1);
+  // The port column now starts wider than its old place: step right by key.
+  await page.keyboard.press("ArrowRight");
   await expect(status(page)).toContainText(focus(0, 0, "id", 1));
 });
