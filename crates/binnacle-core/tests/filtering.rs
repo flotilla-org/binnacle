@@ -114,6 +114,24 @@ fn filtering_everything_out_unplaces_focus_and_clamps_the_anchor() {
 }
 
 #[test]
+fn filtering_everything_out_returns_the_anchor_to_the_start() {
+    let mut s = records();
+    s.frame(V);
+    s.input(|g| {
+        g.set_size(Axis::Rows, Key(0), 4.0);
+        g.action(Action::Scroll { dx: 0.0, dy: 2.5 });
+    });
+    let mut out = s.step("row 0 sized 4; scroll 2.5 into it, past a default row", V);
+    filter(&mut s, |_| false);
+    out += &s.step(
+        "filter out everything: with no item to hold it, the anchor goes back to 0",
+        V,
+    );
+    assert_eq!(s.grid.snapshot().scroll_anchor(Axis::Rows).offset, 0.0);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn a_row_header_press_whose_row_a_filter_removes_selects_nothing_on_release() {
     let mut s = records();
     s.frame(V);

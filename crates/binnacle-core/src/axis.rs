@@ -222,12 +222,13 @@ impl AxisState {
     /// anchor's item (a notice emptied it) its size is only the default, so
     /// the offset is kept until the Window brings the real one; likewise the
     /// end clamp pulls the anchor back only once the Window holds the items
-    /// it is measured over.
+    /// it is measured over. An empty axis has no item to wait for: its anchor
+    /// goes back to the start.
     pub fn clamp_anchor(&mut self) -> bool {
         let count = self.measure.count();
         let position = self.anchor.position.min(count.saturating_sub(1));
         let max = self.max_anchor();
-        let to = if self.at_end {
+        let to = if self.at_end || count == 0 {
             max
         } else if !self.window_covers(&(position..position + 1)) {
             ScrollAnchor {
