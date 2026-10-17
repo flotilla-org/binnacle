@@ -10,11 +10,14 @@ import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
 import { paintBody } from "./body";
 import type { PaintContext } from "./context";
 import { paintGaps } from "./gaps";
+import { paintFocus, paintGuides, paintHandles, paintHeaderStates, paintSelection } from "./selection";
 
 export interface CanvasPainter extends Painter {
   readonly element: HTMLCanvasElement;
   readonly measure: Measure;
   theme: Theme;
+  /** Whether the widget has DOM focus: the Grid's focus is drawn only then. */
+  focused: boolean;
 }
 
 export function createCanvasPainter(theme: Theme): CanvasPainter {
@@ -31,6 +34,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     element: canvas,
     measure,
     theme,
+    focused: false,
     resize(w, h, ratio) {
       width = w;
       height = h;
@@ -60,12 +64,18 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         right: Math.min(width, lastCol ? lastCol.offset + lastCol.size : s.cols.header),
         bottom: Math.min(height, lastRow ? lastRow.offset + lastRow.size : s.rows.header),
         pixel: 1 / dpr,
+        focused: painter.focused,
       };
       paintBody(p);
+      paintSelection(p);
       paintColumnHeaders(p);
       paintRowNumbers(p);
       paintCorner(p);
+      paintHeaderStates(p);
       paintGaps(p);
+      paintHandles(p);
+      paintFocus(p);
+      paintGuides(p);
       return false;
     },
   };

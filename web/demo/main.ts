@@ -12,12 +12,19 @@ let current: GridWidget | null = null;
 let shown: DemoSource | null = null;
 
 function describe(frame: FrameInfo): string {
-  const { rows, cols } = frame;
-  return [
+  const { rows, cols, focus, selection, picked } = frame;
+  const parts = [
     shown?.name ?? "",
     `rows ${number.format(rows.first + 1)} to ${number.format(rows.last + 1)} of ${number.format(rows.count)}`,
     `columns ${number.format(cols.first + 1)} to ${number.format(cols.last + 1)} of ${number.format(cols.count)}`,
-  ].join("  ·  ");
+  ];
+  if (focus) parts.push(`focus row ${number.format(focus.row + 1)}, column ${number.format(focus.col + 1)}`);
+  if (selection) {
+    const size = (s: { start: number; end: number }) => number.format(s.end - s.start);
+    parts.push(`selected ${size(selection.rows)} × ${size(selection.cols)}`);
+  }
+  if (picked) parts.push(`${number.format(picked)} picked`);
+  return parts.join("  ·  ");
 }
 
 async function show(source: DemoSource) {

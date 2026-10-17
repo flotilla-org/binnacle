@@ -1,6 +1,7 @@
 // @flotilla-org/binnacle: the binnacle Grid on a web page.
 
 export { GridWidget, type FrameInfo, type GridOptions } from "./widget";
+export { defaultBindings, type Action, type FocusStep, type KeyBindings, type Platform } from "./keymap";
 export type { AxisSource, MaybePromise, TableSource } from "./source";
 export { light, type Style, type Theme } from "./theme";
 export type { Content } from "./content";

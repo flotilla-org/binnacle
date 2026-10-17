@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use binnacle_core::{Axis, Position};
+use binnacle_core::{Axis, Button, FocusStep, Modifiers, PointerKind, Position};
 
 /// The largest count or Position that crosses as an `f64` exactly
 /// (`Number.MAX_SAFE_INTEGER`).
@@ -14,6 +14,48 @@ pub fn axis(code: u8) -> Axis {
     match code {
         0 => Axis::Rows,
         _ => Axis::Cols,
+    }
+}
+
+/// A pointer event's kind: 0 down, 1 move, anything else up.
+pub fn pointer_kind(code: u8) -> PointerKind {
+    match code {
+        0 => PointerKind::Down,
+        1 => PointerKind::Move,
+        _ => PointerKind::Up,
+    }
+}
+
+/// A DOM `PointerEvent.button`: 0 primary, 1 middle, anything else secondary.
+pub fn button(code: u8) -> Button {
+    match code {
+        0 => Button::Primary,
+        1 => Button::Middle,
+        _ => Button::Secondary,
+    }
+}
+
+pub const SHIFT: u8 = 1;
+pub const CTRL: u8 = 2;
+pub const ALT: u8 = 4;
+pub const META: u8 = 8;
+
+/// The modifier bitmask: [`SHIFT`], [`CTRL`], [`ALT`] and [`META`] or'd.
+pub fn modifiers(bits: u8) -> Modifiers {
+    Modifiers {
+        shift: bits & SHIFT != 0,
+        ctrl: bits & CTRL != 0,
+        alt: bits & ALT != 0,
+        meta: bits & META != 0,
+    }
+}
+
+/// How far a focus move goes: 0 an item, 1 a page, anything else the edge.
+pub fn focus_step(code: u8) -> FocusStep {
+    match code {
+        0 => FocusStep::Item,
+        1 => FocusStep::Page,
+        _ => FocusStep::Edge,
     }
 }
 
@@ -65,6 +107,23 @@ mod tests {
         for n in [9_007_199_254_740_992.0, 1e300, f64::INFINITY] {
             assert_eq!(count(n), Err(NotACount(n)));
         }
+    }
+
+    #[test]
+    fn each_modifier_bit_sets_its_modifier() {
+        assert_eq!(modifiers(0), Modifiers::NONE);
+        assert_eq!(modifiers(SHIFT), Modifiers::SHIFT);
+        assert_eq!(modifiers(CTRL), Modifiers::CTRL);
+        assert_eq!(modifiers(ALT), Modifiers::ALT);
+        assert_eq!(modifiers(META), Modifiers::META);
+        assert_eq!(modifiers(SHIFT | META), Modifiers::SHIFT | Modifiers::META);
+    }
+
+    #[test]
+    fn dom_buttons_map_to_grid_buttons() {
+        assert_eq!(button(0), Button::Primary);
+        assert_eq!(button(1), Button::Middle);
+        assert_eq!(button(2), Button::Secondary);
     }
 
     #[test]

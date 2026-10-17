@@ -2,13 +2,16 @@
 // (idle unless something changed), the native scroller and the painter, and
 // frees the wasm Grid on destroy.
 
+import { answerAutoSize } from "./autosize";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
 import { createFeed, type Feed } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
+import { createInput, type Input } from "./input";
+import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
-import type { Snapshot } from "./snapshot";
+import type { Snapshot, Span } from "./snapshot";
 import type { TableSource } from "./source";
 import { light, type Theme } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -22,6 +25,10 @@ export interface GridOptions<V> {
   /** The column header band's height, CSS px. */
   headerHeight?: number;
   theme?: Theme;
+  /** Key bindings merged over the defaults; `null` unbinds a chord (see `KeyBindings`). */
+  keymap?: KeyBindings;
+  /** Whose key conventions the defaults follow; detected from the browser if omitted. */
+  platform?: Platform;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo): void;
 }
@@ -32,8 +39,15 @@ export interface FrameInfo {
   /** The rows in view: the first and last visible Positions, and the count. */
   rows: { first: number; last: number; count: number };
   cols: { first: number; last: number; count: number };
+  /** The focused cell's Positions, if any. */
+  focus: { row: number; col: number } | null;
+  /** The selection range as half-open Position spans, if any. */
+  selection: { rows: Span; cols: Span } | null;
+  /** How many rows are picked. */
+  picked: number;
 }
 
+const HEADER_HEIGHT = 28;
 const ROOT_STYLE = "position: relative; width: 100%; height: 100%; overflow: hidden;";
 const SCROLLER_STYLE = "position: absolute; inset: 0; overflow: auto; overscroll-behavior: none;";
 const SIZER_STYLE = "position: relative;";
@@ -49,6 +63,8 @@ export class GridWidget<V = unknown> {
   private readonly scroll: ScrollMapping;
   private readonly feed: Feed;
   private readonly grid: WebGrid;
+  private readonly input: Input;
+  private last: Snapshot | null = null;
   private readonly cleanup: (() => void)[] = [];
   private raf = 0;
   private force = true;
@@ -68,6 +84,8 @@ export class GridWidget<V = unknown> {
   ) {
     this.element = div("binnacle", ROOT_STYLE);
     this.scroller = div("binnacle-scroller", SCROLLER_STYLE);
+    // The textarea is the widget's one Tab stop, not the scroller.
+    this.scroller.tabIndex = -1;
     this.sizer = div("binnacle-sizer", SIZER_STYLE);
     this.layer = div("binnacle-layer", LAYER_STYLE);
     this.painter = createCanvasPainter(options.theme ?? light);
@@ -114,6 +132,24 @@ export class GridWidget<V = unknown> {
       onEffect: (e) => this.dispatch(e),
     };
 
+    this.input = createInput({
+      grid: this.grid,
+      layer: this.layer,
+      keymap: createKeymap({
+        ...(options.keymap ? { bindings: options.keymap } : {}),
+        ...(options.platform ? { platform: options.platform } : {}),
+      }),
+      changed: () => {
+        drainEffects(this.parts);
+        this.schedule();
+      },
+      focusChanged: () => {
+        this.painter.focused = this.input.focused;
+        this.invalidate();
+      },
+      snapshot: () => this.last,
+    });
+
     this.listen(this.scroller, "scroll", () => {
       if (this.scroll.take(this.grid)) {
         drainEffects(this.parts);
@@ -140,6 +176,7 @@ export class GridWidget<V = unknown> {
     this.destroyed = true;
     cancelAnimationFrame(this.raf);
     for (const undo of this.cleanup) undo();
+    this.input.destroy();
     this.feed.destroy();
     this.painter.destroy?.();
     this.grid.free();
@@ -164,7 +201,7 @@ export class GridWidget<V = unknown> {
     const theme = o.theme ?? light;
     // The row-number band fits the widest default label, the row count.
     const band = Math.ceil(this.painter.measure.width(String(counts.rows), theme.font)) + 2 * PAD;
-    const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? 28).min_size(rowHeight);
+    const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? HEADER_HEIGHT).min_size(rowHeight);
     const cols = new b.WebAxis(counts.cols, o.columnWidth ?? 120).header(Math.max(40, band)).gap(1).min_size(24);
     return new b.WebGrid(rows, cols);
   }
@@ -194,12 +231,26 @@ export class GridWidget<V = unknown> {
     }
     const { snapshot, painted, again } = runFrame(this.parts, this.force);
     this.force = false;
+    this.last = snapshot;
+    this.input.place(snapshot);
     if (again) this.schedule();
-    this.options.onFrame?.({ painted, rows: span(snapshot, "rows"), cols: span(snapshot, "cols") });
+    this.options.onFrame?.({
+      painted,
+      rows: span(snapshot, "rows"),
+      cols: span(snapshot, "cols"),
+      ...selection(snapshot),
+    });
   }
 
-  private dispatch(_effect: Effect): void {
-    // No Effect needs an answer in this slice: there are no inputs that emit them yet.
+  private dispatch(effect: Effect): void {
+    const s = this.last;
+    const sizing = {
+      grid: this.grid,
+      measure: this.painter.measure,
+      theme: this.painter.theme,
+      headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
+    };
+    if (answerAutoSize(effect, s, s && this.feed.content(s), sizing)) return;
   }
 
   private watchDpr(): void {
@@ -216,6 +267,15 @@ export class GridWidget<V = unknown> {
     target.addEventListener(type, handler);
     this.cleanup.push(() => target.removeEventListener(type, handler));
   }
+}
+
+function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked"> {
+  const { rows, cols } = s;
+  return {
+    focus: rows.focus && cols.focus ? { row: rows.focus.position, col: cols.focus.position } : null,
+    selection: s.selectionRange,
+    picked: s.picked.length,
+  };
 }
 
 function span(s: Snapshot, axis: "rows" | "cols"): FrameInfo["rows"] {

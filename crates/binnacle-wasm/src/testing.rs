@@ -383,8 +383,8 @@ pub fn every_effect() -> Vec<WireStamped> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 8] = [
-    "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled",
+pub const SCENARIOS: [&str; 9] = [
+    "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -481,6 +481,11 @@ pub fn scenario(name: &str) -> Grid {
                 dy: 333.0,
             });
         }
+        "dragging" => {
+            // Pressed on row 1, column 0 and dragged to row 4, column 2.
+            grid.pointer(PointerEvent::down(60.0, 24.0 + 21.0 + 5.0));
+            grid.pointer(PointerEvent::moved(220.0, 24.0 + 21.0 * 4.0 + 5.0));
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -521,6 +526,10 @@ mod tests {
                     assert!(s.rows().iter().any(|i| i.key.is_none()));
                 }
                 "scrolled" => assert!(s.scroll_anchor(Axis::Rows).position > 0),
+                "dragging" => {
+                    let range = s.selection_range().unwrap();
+                    assert_eq!((range.rows, range.cols), (1..5, 0..3));
+                }
                 _ => {}
             }
         }
@@ -534,7 +543,8 @@ mod tests {
                 "MovingHeaders",
                 "Editing",
                 "Idle",
-                "Idle"
+                "Idle",
+                "DraggingSelection"
             ]
         );
     }

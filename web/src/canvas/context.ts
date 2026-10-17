@@ -23,6 +23,8 @@ export interface PaintContext {
   bottom: number;
   /** One device pixel in CSS px, for snapping hairlines. */
   pixel: number;
+  /** The widget has DOM focus, so the Grid's focus is drawn. */
+  focused: boolean;
 }
 
 /** Horizontal text padding inside a cell or header, CSS px. */

@@ -1,11 +1,11 @@
 //! The Grid as a wasm-bindgen class. Each input is one typed method: a new
 //! Action or setting is a few lines here plus its call in `web/src`.
 
-use binnacle_core::{Action, AxisConfig, Grid, Key, Viewport};
+use binnacle_core::{Action, AxisConfig, Grid, Key, PointerEvent, Viewport};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use crate::codes::{self, axis, position};
+use crate::codes::{self, axis, focus_step, position};
 use crate::effect::WireStamped;
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
@@ -129,6 +129,68 @@ impl WebGrid {
         self.grid.action(Action::ScrollTo {
             axis: axis(a),
             fraction,
+        });
+    }
+
+    /// A raw pointer event: `kind` and `button` as [`codes::pointer_kind`] and
+    /// [`codes::button`], `modifiers` as [`codes::modifiers`], `clicks` the
+    /// widget's own count.
+    pub fn pointer(&mut self, kind: u8, x: f32, y: f32, button: u8, modifiers: u8, clicks: u32) {
+        self.grid.pointer(PointerEvent {
+            kind: codes::pointer_kind(kind),
+            x,
+            y,
+            button: codes::button(button),
+            modifiers: codes::modifiers(modifiers),
+            clicks,
+        });
+    }
+
+    pub fn set_border_grab(&mut self, grab: f32) {
+        self.grid.set_border_grab(grab);
+    }
+
+    pub fn set_focus(&mut self, row: u64, col: u64) {
+        self.grid.set_focus(Key(row), Key(col));
+    }
+
+    pub fn clear_size(&mut self, a: u8, key: u64) {
+        self.grid.clear_size(axis(a), Key(key));
+    }
+
+    pub fn move_focus(&mut self, a: u8, by: u8, forward: bool, extend: bool) {
+        self.grid.action(Action::MoveFocus {
+            axis: axis(a),
+            by: focus_step(by),
+            forward,
+            extend,
+        });
+    }
+
+    pub fn select_all(&mut self) {
+        self.grid.action(Action::SelectAll);
+    }
+
+    pub fn select_column(&mut self) {
+        self.grid.action(Action::SelectColumn);
+    }
+
+    pub fn cancel(&mut self) {
+        self.grid.action(Action::Cancel);
+    }
+
+    pub fn activate(&mut self) {
+        self.grid.action(Action::Activate);
+    }
+
+    pub fn begin_edit(&mut self) {
+        self.grid.action(Action::BeginEdit);
+    }
+
+    pub fn scroll_by(&mut self, a: u8, items: f64) {
+        self.grid.action(Action::ScrollBy {
+            axis: axis(a),
+            items: items as i64,
         });
     }
 
