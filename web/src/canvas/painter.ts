@@ -13,6 +13,7 @@ import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
 import { paintBody } from "./body";
 import { paintBorders, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
+import { paintPulse, sorting } from "./pending";
 import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
 
 export interface CanvasPainter extends Painter {
@@ -21,6 +22,8 @@ export interface CanvasPainter extends Painter {
   theme: Theme;
   /** Whether the widget has DOM focus: the Grid's focus is drawn only then. */
   focused: boolean;
+  /** Whether pending states animate (and so ask for frames); the widget clears it under `prefers-reduced-motion`. */
+  motion: boolean;
   border: BorderStyle;
   /** Chooses each cell's Cell Renderer, by the Table Source's IDs. */
   renderer: RendererChoice<unknown, unknown, unknown>;
@@ -44,6 +47,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     measure,
     theme,
     focused: false,
+    motion: true,
     border: headersBorder,
     renderer: () => plainText,
     flashes: createFlashes(),
@@ -80,8 +84,10 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         renderer: painter.renderer,
         flashes: painter.flashes,
         now: performance.now(),
+        motion: painter.motion,
       };
       const animating = paintBody(p);
+      const pulsing = paintPulse(p);
       paintSelection(p);
       paintColumnHeaders(p);
       paintRowNumbers(p);
@@ -90,7 +96,8 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintBorders(p, painter.border, layer);
       paintFocus(p);
       paintGuides(p);
-      return animating || painter.flashes.sweep(p.now);
+      const pending = painter.motion && (pulsing || sorting(s));
+      return animating || painter.flashes.sweep(p.now) || pending;
     },
   };
   return painter;

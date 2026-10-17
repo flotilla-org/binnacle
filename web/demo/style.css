@@ -127,3 +127,19 @@ footer {
 }
 
 #tools input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+#tools select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+#tools .requests {
+  align-self: center;
+  min-width: 11em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

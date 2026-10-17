@@ -24,6 +24,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   answer(effect: Effect): boolean;
   /** The values and labels for the Snapshot's visible items, asking for missing values. */
   content(s: Snapshot): Content;
+  /** Whether a cell in the viewport still waits for its Keys or its value. */
+  loading(s: Snapshot): boolean;
   /** Whether values landed since the last call, so the frame should paint. */
   takeLanded(): boolean;
   /** The user's ID for a Key, if known. */
@@ -377,6 +379,13 @@ export function createFeed<RowId, ColId, V>(
       shown = s;
       request(s);
       return content;
+    },
+    loading(s) {
+      // The Strips include overscan; only what the viewport shows counts.
+      const inView = (axis: AxisName) =>
+        s[axis].strip.filter((i) => i.offset + i.size > s[axis].header && i.offset < s[axis].extent);
+      const cols = inView("cols");
+      return inView("rows").some((r) => cols.some((c) => value(r, c) === undefined));
     },
     takeLanded() {
       const was = landed;

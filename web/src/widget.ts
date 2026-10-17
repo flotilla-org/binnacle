@@ -55,6 +55,10 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   picked: number;
   /** The focused cell by the Table Source's own IDs, if any. */
   focusIds: { row: RowId; col: ColId } | null;
+  /** Whether a cell in view still waits for the Table Source: its row or column, or its value. */
+  loading: boolean;
+  /** Whether the painter asked for another frame to animate a pending state. */
+  animating: boolean;
 }
 
 const HEADER_HEIGHT = 28;
@@ -85,6 +89,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private destroyed = false;
   private themeChoice: ThemeChoice;
   private readonly dark = matchMedia("(prefers-color-scheme: dark)");
+  private readonly still = matchMedia("(prefers-reduced-motion: reduce)");
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -110,6 +115,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.painter.border = options.border ?? headersBorder;
     const renderer = options.renderer ?? options.source.renderer;
     if (renderer) this.painter.renderer = renderer as RendererChoice<unknown, unknown, unknown>;
+    this.painter.motion = !this.still.matches;
     this.layer.append(this.painter.element);
     this.sizer.append(this.layer);
     this.scroller.append(this.sizer);
@@ -184,6 +190,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.watchDpr();
     this.listen(this.dark, "change", () => {
       if (typeof this.themeChoice === "function") this.theme = this.themeChoice;
+    });
+    this.listen(this.still, "change", () => {
+      this.painter.motion = !this.still.matches;
+      this.invalidate();
     });
     const fonts = document.fonts;
     if (fonts) {
@@ -304,6 +314,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       cols: span(snapshot, "cols"),
       ...selection(snapshot),
       focusIds: this.focusIds(snapshot),
+      loading: this.feed.loading(snapshot),
+      animating: again,
     });
   }
 
@@ -334,9 +346,6 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const changed = () => {
       this.invalidate();
       this.watchDpr();
-    this.listen(this.dark, "change", () => {
-      if (typeof this.themeChoice === "function") this.theme = this.themeChoice;
-    });
     };
     query.addEventListener("change", changed, { once: true });
     this.cleanup.push(() => query.removeEventListener("change", changed));

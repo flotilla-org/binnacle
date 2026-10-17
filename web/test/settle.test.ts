@@ -9,16 +9,23 @@ import { createSettler } from "../src/settle";
 
 /** A request the test answers when it chooses, as a slow source would. */
 interface Asked {
+  /** Stamped with the epoch it was asked in (Windows, cells, counts), or not (sorts, Locates). */
+  fresh: boolean;
   epoch: number;
   signal: AbortSignal;
   resolve(value: number): void;
   reject(error: unknown): void;
   /** Whether the source has answered yet (it may answer even after an abort). */
   answered: boolean;
-  /** No Change Notice and no abort came between asking and the answer landing; `null` until it lands. */
+  /**
+   * Whether the answer should apply when it lands: not aborted, and for a
+   * fresh request no Change Notice since it was asked. `null` until it lands.
+   */
   wanted: boolean | null;
   /** The source rejected it. */
   failed: boolean;
+  /** The test aborted it, as the feed does a superseded request. */
+  aborted: boolean;
   applied: number;
   otherwise: number;
   abort(): void;
@@ -28,101 +35,122 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 type Step = "ask" | "notice" | "answer" | "fail" | "abort";
 
+/**
+ * Runs a random interleaving of requests (fresh or not), Change Notices,
+ * answers, failures and aborts, with answers landing between any two steps,
+ * then answers whatever is left. Records every fresh answer applied in an
+ * epoch other than its own in `stale`.
+ */
+async function interleave(tc: hegel.TestCase) {
+  const settler = createSettler(
+    () => {},
+    () => {},
+  );
+  const asked: Asked[] = [];
+  const stale: string[] = [];
+  /** Lets answered requests land, judging first whether each is still wanted. */
+  const land = async () => {
+    for (const a of asked) {
+      if (a.answered && a.wanted === null) a.wanted = !a.signal.aborted && (!a.fresh || a.epoch === settler.epoch);
+    }
+    await flush();
+  };
+  const steps = tc.draw(
+    gs.arrays(gs.sampledFrom<Step>(["ask", "notice", "answer", "fail", "abort"]), { minSize: 1, maxSize: 40 }),
+  );
+  for (const step of steps) {
+    const open = asked.filter((a) => !a.answered);
+    const pick = () => open[tc.draw(gs.integers({ minValue: 0, maxValue: open.length - 1 }))]!;
+    switch (step) {
+      case "ask": {
+        const value = asked.length;
+        let resolve!: (v: number) => void;
+        let reject!: (e: unknown) => void;
+        let signal!: AbortSignal;
+        const promise = new Promise<number>((res, rej) => ((resolve = res), (reject = rej)));
+        const fresh = tc.draw(gs.booleans());
+        const a = {
+          fresh,
+          epoch: settler.epoch,
+          resolve,
+          reject,
+          answered: false,
+          wanted: null,
+          failed: false,
+          aborted: false,
+          applied: 0,
+          otherwise: 0,
+        } as Omit<Asked, "signal" | "abort"> as Asked;
+        const request = settler.settle(
+          (s) => ((signal = s), promise),
+          (v) => {
+            // Recorded, not thrown, as this runs inside a Promise callback.
+            if (v !== value || (fresh && a.epoch !== settler.epoch)) {
+              stale.push(`#${value} from epoch ${a.epoch} in ${settler.epoch}`);
+            }
+            a.applied++;
+          },
+          { fresh, otherwise: () => a.otherwise++ },
+        );
+        a.signal = signal;
+        a.abort = () => request.abort();
+        asked.push(a);
+        tc.note(`ask #${value}${fresh ? " (fresh)" : ""} in epoch ${a.epoch}`);
+        break;
+      }
+      case "notice":
+        settler.bump();
+        tc.note(`notice: epoch ${settler.epoch}`);
+        break;
+      case "answer":
+      case "fail": {
+        if (!open.length) break;
+        const a = pick();
+        a.answered = true;
+        a.failed = step === "fail";
+        if (a.failed) a.wanted = false;
+        tc.note(`${step} #${asked.indexOf(a)}`);
+        if (step === "answer") a.resolve(asked.indexOf(a));
+        else a.reject(new Error("source failed"));
+        break;
+      }
+      case "abort": {
+        if (!open.length) break;
+        const a = pick();
+        tc.note(`abort #${asked.indexOf(a)}`);
+        a.aborted = true;
+        a.abort();
+        break;
+      }
+    }
+    // Answers land at any point between steps, or several steps later.
+    if (tc.draw(gs.booleans())) await land();
+  }
+  for (const a of asked.filter((a) => !a.answered)) {
+    a.answered = true;
+    a.resolve(asked.indexOf(a));
+  }
+  await land();
+  return { settler, asked, stale };
+}
+
 test("settle never applies an answer from an older epoch, under any interleaving of notices and answers", () =>
   hegel.testAsync(async (tc) => {
-    const settler = createSettler(
-      () => {},
-      () => {},
-    );
-    const asked: Asked[] = [];
-    let id = 0;
-    const stale: string[] = [];
-    /** Lets answered requests land, judging first whether each is still wanted. */
-    const land = async () => {
-      for (const a of asked) {
-        if (a.answered && a.wanted === null) a.wanted = a.epoch === settler.epoch && !a.signal.aborted;
-      }
-      await flush();
-    };
-    const steps = tc.draw(
-      gs.arrays(gs.sampledFrom<Step>(["ask", "notice", "answer", "fail", "abort"]), { minSize: 1, maxSize: 40 }),
-    );
-    for (const step of steps) {
-      const open = asked.filter((a) => !a.answered);
-      const pick = () => open[tc.draw(gs.integers({ minValue: 0, maxValue: open.length - 1 }))]!;
-      switch (step) {
-        case "ask": {
-          const value = id++;
-          let resolve!: (v: number) => void;
-          let reject!: (e: unknown) => void;
-          let signal!: AbortSignal;
-          const promise = new Promise<number>((res, rej) => ((resolve = res), (reject = rej)));
-          const a = {
-            epoch: settler.epoch,
-            resolve,
-            reject,
-            answered: false,
-            wanted: null,
-            failed: false,
-            applied: 0,
-            otherwise: 0,
-          } as Omit<Asked, "signal" | "abort"> as Asked;
-          const request = settler.settle(
-            (s) => ((signal = s), promise),
-            (v) => {
-              // The property: the epoch the answer was asked in is the current
-              // one. Recorded, not thrown, as this runs inside a Promise callback.
-              if (v !== value || a.epoch !== settler.epoch) stale.push(`#${value} from epoch ${a.epoch} in ${settler.epoch}`);
-              a.applied++;
-            },
-            { fresh: true, otherwise: () => a.otherwise++ },
-          );
-          a.signal = signal;
-          a.abort = () => request.abort();
-          asked.push(a);
-          tc.note(`ask #${value} in epoch ${a.epoch}`);
-          break;
-        }
-        case "notice":
-          settler.bump();
-          tc.note(`notice: epoch ${settler.epoch}`);
-          break;
-        case "answer":
-        case "fail": {
-          if (!open.length) break;
-          const a = pick();
-          a.answered = true;
-          a.failed = step === "fail";
-          if (a.failed) a.wanted = false;
-          tc.note(`${step} ask from epoch ${a.epoch}`);
-          if (step === "answer") a.resolve(asked.indexOf(a));
-          else a.reject(new Error("source failed"));
-          break;
-        }
-        case "abort": {
-          if (!open.length) break;
-          pick().abort();
-          break;
-        }
-      }
-      // Answers land at any point between steps, or several steps later.
-      if (tc.draw(gs.booleans())) await land();
-    }
-    for (const a of asked.filter((a) => !a.answered)) {
-      a.answered = true;
-      a.resolve(asked.indexOf(a));
-    }
-    await land();
+    const { stale } = await interleave(tc);
     expect(stale).toEqual([]);
+  }));
+
+test("every request is settled once: applied if still wanted when it lands, its signal aborted if not", () =>
+  hegel.testAsync(async (tc) => {
+    const { settler, asked } = await interleave(tc);
     for (const a of asked) {
-      // Exactly one of applied or otherwise, for every request.
       expect(a.applied + a.otherwise).toBe(1);
-      // An answer arriving in its own epoch to a request not aborted is not lost.
       expect(a.applied).toBe(a.wanted ? 1 : 0);
-      // A request's signal is aborted once a Change Notice makes its answer unwanted
-      // (unless the source failed it first).
-      if (!a.failed && a.epoch !== settler.epoch) expect(a.signal.aborted).toBe(a.applied === 0);
-      if (a.applied === 1) expect(a.signal.aborted).toBe(false);
+      if (a.applied) expect(a.signal.aborted).toBe(false);
+      // A Change Notice aborts a fresh request in flight, unless the source failed it first.
+      else if (a.fresh && !a.failed && a.epoch !== settler.epoch) expect(a.signal.aborted).toBe(true);
+      // Only an explicit abort stops one that is not fresh: sorts and Locates outlive notices.
+      if (!a.fresh) expect(a.signal.aborted).toBe(a.aborted);
     }
   }));
 

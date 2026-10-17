@@ -4,9 +4,10 @@
 import { huge } from "./huge";
 import { live } from "./live";
 import { records } from "./records";
+import { slow } from "./slow";
 
 import type { DemoSource } from "./demo-source";
 
 export type { DemoSource, Mounted } from "./demo-source";
 
-export const SOURCES: readonly DemoSource[] = [records, huge, live];
+export const SOURCES: readonly DemoSource[] = [records, slow, huge, live];

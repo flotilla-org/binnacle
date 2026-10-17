@@ -45,6 +45,11 @@ export interface Theme {
   loading: string;
   /** A cell whose value just changed. */
   flash: Style;
+  /**
+   * Fills for pending states: a band of `shimmerHighlight` sweeps over
+   * `shimmerBase` across the header of a sort not answered yet, and the
+   * focused cell pulses in `shimmerBase` while its Locate is pending.
+   */
   shimmerBase: string;
   shimmerHighlight: string;
 }
@@ -70,8 +75,8 @@ export const light: Theme = {
   border: "#d8dee6",
   loading: "#94a3b8",
   flash: { color: "#0f172a", background: "#fef08a" },
-  shimmerBase: "#e2e8f0",
-  shimmerHighlight: "#f8fafc",
+  shimmerBase: "#dbeafe",
+  shimmerHighlight: "#ffffff",
 };
 
 /** Catppuccin's Mocha flavour, with zebra stripes. */
@@ -110,8 +115,8 @@ export const catppuccinMocha: Theme = {
   border: mocha.surface0,
   loading: mocha.overlay0,
   flash: { color: mocha.crust, background: mocha.yellow },
-  shimmerBase: mocha.peach,
-  shimmerHighlight: mocha.yellow,
+  shimmerBase: mocha.surface0,
+  shimmerHighlight: mocha.surface2,
 };
 
 /** Greys only, for printing and for pages that want no colour. */

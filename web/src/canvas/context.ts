@@ -32,6 +32,8 @@ export interface PaintContext {
   flashes: Flashes;
   /** The frame's time, `performance.now()` ms. */
   now: number;
+  /** Whether pending states animate; `false` under `prefers-reduced-motion`. */
+  motion: boolean;
 }
 
 /** Horizontal text padding inside a cell or header, CSS px. */

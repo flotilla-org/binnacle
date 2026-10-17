@@ -3,6 +3,7 @@
 
 import type { HeaderPlacement, Snapshot, SortDirection } from "../snapshot";
 import { PAD, clip, type PaintContext } from "./context";
+import { paintShimmer } from "./pending";
 
 /** The sort marker's triangle, CSS px. */
 const MARKER = 7;
@@ -65,6 +66,7 @@ export function paintColumnHeaders(p: PaintContext): void {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
+    if (h.sort.pending) paintShimmer(p, h.rect);
     const mark = marker(s, h);
     const room = h.rect.width - 2 * PAD - (mark ? MARKED : 0);
     ctx.fillStyle = loading ? theme.loading : h.hovered ? theme.headerHovered.color : theme.header.color;

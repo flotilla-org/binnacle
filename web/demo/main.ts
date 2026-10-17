@@ -51,6 +51,7 @@ function describe(frame: FrameInfo): string {
     parts.push(`selected ${size(selection.rows)} × ${size(selection.cols)}`);
   }
   if (picked) parts.push(`${number.format(picked)} picked`);
+  if (frame.loading) parts.push("loading");
   return parts.join("  ·  ");
 }
 
