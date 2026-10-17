@@ -78,12 +78,12 @@ export const records: DemoSource = {
         const parsed = parse(col, value);
         if (parsed === undefined) {
           committed.textContent = `${col} of ${id} kept`;
-        } else {
-          (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
-          committed.textContent = `${col} of ${id} = ${JSON.stringify(parsed)}`;
+          return false;
         }
-        // Either way the cell shows the source's value again.
+        (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
+        committed.textContent = `${col} of ${id} = ${JSON.stringify(parsed)}`;
         source.changed(id);
+        return true;
       },
       editor: (_id, col) => (col === "port" ? portPicker() : null),
     });

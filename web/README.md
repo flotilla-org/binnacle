@@ -66,7 +66,7 @@ from `"light" | "dark"` to one; it follows the system by default), `border`
 (a Border Style), `keymap`, `platform`, `renderer` (a Cell Renderer per
 cell, for example `byColumn(...)` over `textRenderer`, `sparklineRenderer`
 and `barRenderer`), `onCommit` (makes cells editable; without it the grid is
-read-only), `editor` (a custom editor per cell), `selectionUnit`
+read-only; returning `false` refuses the value, and the cell keeps its own), `editor` (a custom editor per cell), `selectionUnit`
 (`"rows"` makes focus select its whole row, for list-style views),
 `emptyMessage` (what the body says when an axis has no items, "No rows" by
 default; a source's own `emptyMessage()`, such as "No rows match the

@@ -99,9 +99,13 @@ test.describe("the records source", () => {
     await expectEditing(page, false);
   });
 
-  test("a value that does not fit its column is not kept", async ({ page }) => {
+  test("a value that does not fit its column is not kept, not even for a moment", async ({ page }) => {
     await cell(page, 1, 3);
     await page.keyboard.type("lots");
+    await expect(editor(page)).toHaveValue("lots");
+    // No frame runs from here, so the source answers nothing until F2 has opened the editor.
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 60_000);
     await page.keyboard.press("Enter");
     await expect(committed(page)).toHaveText("crew of 1 kept");
     await page.keyboard.press("F2");

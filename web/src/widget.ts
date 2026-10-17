@@ -54,9 +54,10 @@ export interface GridOptions<RowId, ColId, V = unknown> {
    * Called when an edit is committed, with the textarea's text or a custom
    * editor's value. The app updates its data and tells the source's sink
    * `ContentChanged`; the cell shows the committed value until the source
-   * answers for it again. Without `onCommit` the grid is read-only.
+   * answers for it again. Returning `false` refuses the value: the cell keeps
+   * the value it had, at once. Without `onCommit` the grid is read-only.
    */
-  onCommit?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>, value: NoInfer<V> | string): void;
+  onCommit?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>, value: NoInfer<V> | string): boolean | void;
   /** A custom editor for a cell, mounted over it in place of the textarea; `null` or `undefined` for the textarea. */
   editor?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>): Editor<NoInfer<V>> | null | undefined;
   /** The grid's accessible name, read by screen readers. */
@@ -261,8 +262,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         commit: (row, col, value) => {
           const ids = this.ids(row, col);
           if (!ids) return;
+          if (options.onCommit?.(ids.row, ids.col, value as V | string) === false) return;
           this.feed.edited(row, col, value);
-          options.onCommit?.(ids.row, ids.col, value as V | string);
         },
         theme: () => this.painter.theme,
       },

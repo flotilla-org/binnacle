@@ -68,11 +68,12 @@ function App() {
     setEdits(edit);
     if (parsed === undefined) {
       setCommitted(`${col} of ${id} kept (edit ${edit})`);
-    } else {
-      (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
-      setCommitted(`${col} of ${id} = ${JSON.stringify(parsed)} (edit ${edit})`);
+      return false;
     }
+    (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
+    setCommitted(`${col} of ${id} = ${JSON.stringify(parsed)} (edit ${edit})`);
     source.changed(id);
+    return true;
   };
 
   const onFilter = (text: string) => {
