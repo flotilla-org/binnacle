@@ -532,11 +532,14 @@ fn a_bar_fills_floor_fraction_times_width_times_eight_eighths(tc: TestCase) {
 /// whatever the alignment.
 #[hegel::test(test_cases = 300)]
 fn text_too_long_for_its_cell_ends_in_an_ellipsis(tc: TestCase) {
+    // One terminal cell a character, as `TextRenderer` counts them; spaces
+    // included, so leading and trailing blanks must land where they belong.
+    let alphabet = vec!['a', 'Z', '7', '.', ' ', 'é', '…'];
     let text: String = tc
-        .draw(gs::vecs(gs::sampled_from(vec!['a', 'b', 'Z', '7', '.'])).max_size(30))
+        .draw(gs::vecs(gs::sampled_from(alphabet)).max_size(30))
         .into_iter()
         .collect();
-    let width = tc.draw(gs::integers::<u16>().min_value(1).max_value(20));
+    let width = tc.draw(gs::integers::<u16>().min_value(1).max_value(40));
     let align = tc.draw(gs::sampled_from(vec![
         Align::Left,
         Align::Right,
@@ -550,11 +553,20 @@ fn text_too_long_for_its_cell_ends_in_an_ellipsis(tc: TestCase) {
     let drawn: String = glyphs(&content, width).into_iter().collect();
     let len = text.chars().count();
     let room = usize::from(width);
-    if len <= room {
-        assert_eq!(drawn.trim(), text.trim(), "{text:?} in {width}");
-        assert!(!drawn.contains('…'));
+    let expected = if len <= room {
+        let before = match align {
+            Align::Left => 0,
+            Align::Right => room - len,
+            Align::Center => (room - len) / 2,
+        };
+        format!(
+            "{}{text}{}",
+            " ".repeat(before),
+            " ".repeat(room - len - before)
+        )
     } else {
         let kept: String = text.chars().take(room - 1).collect();
-        assert_eq!(drawn, format!("{kept}…"), "{text:?} in {width}");
-    }
+        format!("{kept}…")
+    };
+    assert_eq!(drawn, expected, "{text:?} in {width}, {align:?}");
 }
