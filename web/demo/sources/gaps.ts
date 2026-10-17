@@ -1,12 +1,11 @@
 // The gaps source: the grid feature-gap research as a master/detail page.
 // One row per feature, first by demand times fit; every column sorts, and the
-// toolbar filters by a status in either adapter and by kind. The panel
-// beside the grid follows `onSelectionChange` by row ID, so it stays on its
-// feature through a sort or a filter. Its product table is a second grid.
+// toolbar filters by status and kind. The panel beside the grid follows
+// `onSelectionChange` by row ID, so it stays on its feature through a sort or
+// a filter. Its product table is a second grid.
 
 import { PAD } from "../../src/canvas/context";
 import {
-  byColumn,
   fromRows,
   GridWidget,
   textRenderer,
@@ -17,7 +16,20 @@ import {
   type ThemeChoice,
 } from "../../src";
 import type { DemoSource } from "./demo-source";
-import { ADAPTERS, features, keeps, KINDS, PRODUCTS, sample, SCALE, STATUSES, type Feature, type GapFilter } from "./gaps-data";
+import {
+  ADAPTERS,
+  codeStatus,
+  features,
+  keeps,
+  KINDS,
+  PRODUCTS,
+  SCALE,
+  STATUSES,
+  type Feature,
+  type GapFilter,
+  type Status,
+  type Support,
+} from "./gaps-data";
 
 type Value = Feature[keyof Feature];
 
@@ -31,87 +43,150 @@ function dark(theme: Theme): boolean {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5;
 }
 
-/** A colour for each light and dark Theme. */
+/** A colour for light Themes and one for dark. */
 type Tone = readonly [light: string, dark: string];
 
-const TONES: Record<string, Tone> = {
-  shipped: ["#15803d", "#a6e3a1"],
-  yes: ["#15803d", "#a6e3a1"],
-  partial: ["#b45309", "#f9e2af"],
-  planned: ["#1d4ed8", "#89b4fa"],
-  plugin: ["#1d4ed8", "#89b4fa"],
-  paid: ["#7e22ce", "#cba6f7"],
-  missing: ["#be123c", "#f38ba8"],
-};
-const QUIET: Tone = ["#94a3b8", "#6c7086"];
+const GREEN: Tone = ["#15803d", "#a6e3a1"];
+const AMBER: Tone = ["#b45309", "#f9e2af"];
+const RED: Tone = ["#be123c", "#f38ba8"];
+const BLUE: Tone = ["#1d4ed8", "#89b4fa"];
+const VIOLET: Tone = ["#7e22ce", "#cba6f7"];
+const GREY: Tone = ["#94a3b8", "#7f849c"];
 
-const tone = (status: string): Tone => TONES[status] ?? QUIET;
 const pick = (t: Tone, theme: Theme) => t[dark(theme) ? 1 : 0];
 
-/** A status as a coloured dot and its word. */
-const statusRenderer: CellRenderer<Value> = {
-  draw(cell, value) {
-    if (value == null) return;
-    const { ctx } = cell;
-    const r = 4;
-    ctx.fillStyle = pick(tone(String(value)), cell.theme);
-    ctx.beginPath();
-    ctx.arc(PAD + r, cell.height / 2, r, 0, 2 * Math.PI);
-    ctx.fill();
-    ctx.save();
-    ctx.translate(2 * r + 4, 0);
-    cell.text(String(value));
-    ctx.restore();
-  },
-  preferredWidth: (value, measure) => measure.text(String(value)) + 12,
-  text: (value) => String(value ?? ""),
+/** How a mark draws: filled, half filled, a ring, a struck ring, or a dash. */
+type Shape = "fill" | "half" | "ring" | "struck" | "dash";
+
+const STATUS_MARK: Record<Status, [Shape, Tone]> = {
+  has: ["fill", GREEN],
+  partial: ["half", AMBER],
+  missing: ["ring", RED],
+  "out-of-scope": ["struck", GREY],
+  "n/a": ["dash", GREY],
 };
 
-/** A score out of SCALE as a bar with its number after it. */
+const SUPPORT_MARK: Record<Support, [Shape, Tone]> = {
+  core: ["fill", GREEN],
+  plugin: ["fill", BLUE],
+  paid: ["fill", VIOLET],
+  partial: ["half", AMBER],
+  no: ["ring", RED],
+  unknown: ["dash", GREY],
+};
+
+const R = 4.5;
+
+/** Draws a mark centred at (x, y). */
+function mark(ctx: CanvasRenderingContext2D, x: number, y: number, shape: Shape, colour: string): void {
+  ctx.fillStyle = colour;
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  switch (shape) {
+    case "fill":
+      ctx.arc(x, y, R, 0, 2 * Math.PI);
+      ctx.fill();
+      return;
+    case "half":
+      ctx.arc(x, y, R - 0.75, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(x, y, R, Math.PI / 2, (3 * Math.PI) / 2);
+      ctx.fill();
+      return;
+    case "ring":
+      ctx.arc(x, y, R - 0.75, 0, 2 * Math.PI);
+      ctx.stroke();
+      return;
+    case "struck":
+      ctx.arc(x, y, R - 0.75, 0, 2 * Math.PI);
+      ctx.moveTo(x - R * 0.7, y + R * 0.7);
+      ctx.lineTo(x + R * 0.7, y - R * 0.7);
+      ctx.stroke();
+      return;
+    case "dash":
+      ctx.moveTo(x - R, y);
+      ctx.lineTo(x + R, y);
+      ctx.stroke();
+  }
+}
+
+/** The three adapters' statuses as marks in a row, core then ratatui then web. */
+const binnacleRenderer: CellRenderer<Value> = {
+  draw(cell, value) {
+    const code = String(value);
+    const step = 3 * R + 6;
+    [...code].forEach((c, i) => {
+      const [shape, tone] = STATUS_MARK[codeStatus(c)];
+      mark(cell.ctx, PAD + R + i * step, cell.height / 2, shape, pick(tone, cell.theme));
+    });
+  },
+  preferredWidth: () => 2 * PAD + 9 * R + 12,
+  text: (value) => [...String(value)].map((c, i) => `${ADAPTERS[i]} ${codeStatus(c)}`).join(", "),
+};
+
+/** A support level as a mark and its word; `unknown` faint, so it reads apart from `no`. */
+const supportRenderer: CellRenderer<unknown> = {
+  draw(cell, value) {
+    const support = String(value) as Support;
+    const [shape, tone] = SUPPORT_MARK[support] ?? SUPPORT_MARK.unknown;
+    const { ctx } = cell;
+    mark(ctx, PAD + R, cell.height / 2, shape, pick(tone, cell.theme));
+    ctx.save();
+    if (support === "unknown") ctx.globalAlpha = 0.55;
+    ctx.translate(2 * R + 6, 0);
+    cell.text(support);
+    ctx.restore();
+  },
+  text: (value) => String(value),
+};
+
+const number = new Intl.NumberFormat("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** A score from 0 to SCALE as a bar over a track ticked at each whole step, with the number after it. */
 function scoreRenderer(colour: Tone): CellRenderer<Value> {
-  const NUMBER = 18;
+  const NUMBER = 34;
   return {
     draw(cell: CellCanvas, value) {
       const score = Number(value);
-      const { ctx } = cell;
-      const across = Math.max(0, cell.width - 2 * PAD - NUMBER - 6);
+      const { ctx, theme } = cell;
+      const across = Math.max(0, cell.width - 2 * PAD - NUMBER);
       const thick = 8;
       const y = (cell.height - thick) / 2;
-      ctx.fillStyle = cell.theme.border;
+      ctx.fillStyle = theme.border;
       ctx.beginPath();
       ctx.roundRect(PAD, y, across, thick, thick / 2);
       ctx.fill();
       if (score > 0) {
-        ctx.fillStyle = pick(colour, cell.theme);
+        ctx.fillStyle = pick(colour, theme);
         ctx.beginPath();
         ctx.roundRect(PAD, y, Math.max(thick, (score / SCALE) * across), thick, thick / 2);
         ctx.fill();
       }
-      cell.text(String(score), "end");
+      // Ticks cut through bar and track alike, so a score just past a step reads as past it.
+      ctx.fillStyle = theme.body.background;
+      for (let t = 1; t < SCALE; t++) ctx.fillRect(Math.round(PAD + (t / SCALE) * across) - 1, y - 2, 2, thick + 4);
+      cell.text(number.format(score), "end");
     },
-    preferredWidth: () => 120,
-    text: (value) => `${String(value)} of ${SCALE}`,
+    preferredWidth: () => 140,
+    text: (value) => `${number.format(Number(value))} of ${SCALE}`,
   };
 }
 
 const DEMAND: Tone = ["#2563eb", "#89b4fa"];
 const FIT: Tone = ["#0d9488", "#94e2d5"];
-const productCount = textRenderer<Value>({ align: "end", format: (v) => `${String(v)} of ${PRODUCTS.length}` });
 
-const renderers: Partial<Record<keyof Feature, CellRenderer<Value>>> = {
-  ratatui: statusRenderer,
-  web: statusRenderer,
-  demand: scoreRenderer(DEMAND),
-  fit: scoreRenderer(FIT),
-  products: productCount,
-};
-
-interface Support {
-  product: string;
-  support: string;
-}
-
-const supportRenderer = statusRenderer as CellRenderer<unknown>;
+/** The grid's columns: the Feature row's key, header text and renderer. */
+const COLUMNS: { key: keyof Feature; label: string; renderer?: CellRenderer<Value> }[] = [
+  { key: "name", label: "Feature" },
+  { key: "kind", label: "Kind" },
+  { key: "category", label: "Category" },
+  { key: "binnacle", label: "core · ratatui · web", renderer: binnacleRenderer },
+  { key: "demand", label: "Demand", renderer: scoreRenderer(DEMAND) },
+  { key: "fit", label: "Fit", renderer: scoreRenderer(FIT) },
+  { key: "products", label: "Products", renderer: textRenderer<Value>({ align: "end" }) },
+];
 
 /** Builds an element with a class and children. */
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -134,22 +209,32 @@ function chip(text: string, status?: string): HTMLElement {
 function meter(label: string, score: number, kind: string): HTMLElement {
   const bar = el("span", "meter-bar");
   bar.style.setProperty("--fill", `${(score / SCALE) * 100}%`);
-  return el("div", `meter ${kind}`, el("span", "meter-label", label), bar, el("span", "meter-value", `${score} of ${SCALE}`));
+  return el("div", `meter ${kind}`, el("span", "meter-label", label), bar, el("span", "meter-value", number.format(score)));
 }
 
-function link(href: string, text: string): HTMLAnchorElement {
-  const a = el("a", "", text);
+function link(href: string, ...text: (Node | string)[]): HTMLAnchorElement {
+  const a = el("a", "", ...text);
   a.href = href;
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   return a;
 }
 
+/** `#78, #80` as links to the issues, keeping the text between them. */
+function issueLinks(refs: string): (Node | string)[] {
+  return refs.split(/(#\d+)/).filter(Boolean).map((part) => (/^#\d+$/.test(part) ? link(`${ISSUES}${part.slice(1)}`, part) : part));
+}
+
+/** A row of the product table: a product and its support for the feature shown. */
+interface ProductRow {
+  product: string;
+  support: Support;
+}
+
 /** The detail panel: a feature's description, binnacle's status, its products and its evidence. */
 function createPanel(look: { theme: ThemeChoice; border: GridWidget["border"] }) {
   const aside = el("aside", "gap-detail");
   aside.setAttribute("aria-label", "Feature detail");
-  aside.setAttribute("aria-live", "polite");
   const empty = el("p", "gap-empty", "Pick a feature in the table to read its research.");
   const body = el("div", "gap-body");
   const title = el("h2", "");
@@ -158,9 +243,12 @@ function createPanel(look: { theme: ThemeChoice; border: GridWidget["border"] })
   const description = el("p", "gap-description");
   const statuses = el("dl", "gap-status");
   const note = el("p", "gap-note");
-  const issue = el("p", "gap-issue");
+  const refs = el("p", "gap-refs");
+  const surveyed = el("span", "gap-count");
   const table = el("div", "gap-products");
+  const productNotes = el("ul", "gap-product-notes");
   const evidence = el("ol", "gap-evidence");
+  const research = el("p", "gap-research");
   body.append(
     title,
     tags,
@@ -169,20 +257,21 @@ function createPanel(look: { theme: ThemeChoice; border: GridWidget["border"] })
     el("h3", "", "binnacle"),
     statuses,
     note,
-    issue,
-    el("h3", "", "Products"),
+    refs,
+    el("h3", "", "Products ", surveyed),
     table,
+    productNotes,
     el("h3", "", "Evidence"),
     evidence,
+    research,
   );
   aside.append(empty, body);
-  if (sample) aside.prepend(el("p", "gap-sample", "Sample data: the research has not landed yet."));
   body.hidden = true;
 
   // Fits every product's row under the header band.
   table.style.height = `${30 + PRODUCTS.length * 24}px`;
-  const support: Support[] = PRODUCTS.map((p) => ({ product: p.name, support: "" }));
-  const source: RowsSource<Support> = fromRows(support, [
+  const rows: ProductRow[] = PRODUCTS.map((p) => ({ product: p.name, support: "unknown" }));
+  const source: RowsSource<ProductRow> = fromRows(rows, [
     { key: "product", label: "Product" },
     { key: "support", label: "Support", renderer: supportRenderer },
   ]);
@@ -198,9 +287,6 @@ function createPanel(look: { theme: ThemeChoice; border: GridWidget["border"] })
   return {
     element: aside,
     grid,
-    get feature() {
-      return shown;
-    },
     show(f: Feature) {
       if (f === shown) return;
       shown = f;
@@ -208,27 +294,32 @@ function createPanel(look: { theme: ThemeChoice; border: GridWidget["border"] })
       body.hidden = false;
       aside.dataset.feature = f.id;
       title.textContent = f.name;
-      tags.replaceChildren(chip(f.kind), chip(f.category));
-      meters.replaceChildren(meter("Demand", f.demand, "demand"), meter("Fit", f.fit, "fit"));
+      tags.replaceChildren(chip(f.kind), chip(f.category), ...(f.gap ? [chip("gap", "gap")] : []));
+      meters.replaceChildren(
+        meter("Demand", f.demand, "demand"),
+        meter("Fit", f.fit, "fit"),
+        el("div", "meter-total", `Demand × fit ${number.format(f.priority)} of ${SCALE * SCALE}`),
+      );
       description.textContent = f.description;
       statuses.replaceChildren(...ADAPTERS.flatMap((a) => [el("dt", "", a), el("dd", "", chip(f[a], f[a]))]));
       note.textContent = f.note;
-      issue.replaceChildren(
-        ...(f.issue === null
-          ? ["No issue filed yet."]
-          : [
-              "Tracked in ",
-              typeof f.issue === "number" ? link(`${ISSUES}${f.issue}`, `#${f.issue}`) : link(f.issue, f.issue),
-              ".",
-            ]),
+      refs.replaceChildren(
+        ...(f.issue ? [el("span", "", "Issues ", ...issueLinks(f.issue))] : []),
+        ...(f.scope ? [el("span", "gap-scope", `Scope: ${f.scope}`)] : []),
       );
+      refs.hidden = !f.issue && !f.scope;
+      surveyed.textContent = `${f.products} of ${f.surveyed} surveyed have it`;
       PRODUCTS.forEach((p, i) => {
-        support[i]!.support = f.support[p.id] ?? "unknown";
+        rows[i]!.support = f.support[p.id] ?? "unknown";
         source.changed(i);
       });
-      evidence.replaceChildren(
-        ...f.evidence.map((e) => el("li", "", link(e.url, e.title), el("span", "gap-host", new URL(e.url).host))),
+      productNotes.replaceChildren(
+        ...PRODUCTS.filter((p) => f.productNotes[p.id]).map((p) => el("li", "", el("b", "", p.name), ` ${f.productNotes[p.id]}`)),
       );
+      evidence.replaceChildren(
+        ...f.evidence.map((e) => el("li", "", link(e.url, e.signal), el("span", "gap-host", `${e.kind} · ${new URL(e.url).host}`))),
+      );
+      research.textContent = f.notes;
     },
     destroy() {
       void grid.then((g) => g.destroy());
@@ -237,11 +328,13 @@ function createPanel(look: { theme: ThemeChoice; border: GridWidget["border"] })
   };
 }
 
-/** The status and kind selects, writing the filter they choose. */
+/** The status and kind selects, reporting the filter they choose. */
 function createFilters(changed: (filter: GapFilter) => void) {
   const status = el("select", "");
   status.setAttribute("aria-label", "Filter by status");
   status.add(new Option("Any status", ""));
+  status.add(new Option("Gaps: missing or partial", "gap"));
+  status.add(new Option("Out of scope anywhere", "out-of-scope"));
   for (const adapter of ADAPTERS) {
     const group = el("optgroup", "");
     group.label = adapter;
@@ -253,9 +346,14 @@ function createFilters(changed: (filter: GapFilter) => void) {
   kind.add(new Option("Any kind", ""));
   for (const k of KINDS) kind.add(new Option(k, k));
   const read = (): GapFilter => {
-    const [adapter, s] = status.value.split(":");
-    const known = ADAPTERS.find((a) => a === adapter);
-    return { status: known && s !== undefined ? { adapter: known, status: s } : null, kind: kind.value || null };
+    const v = status.value;
+    const [adapter, s] = v.split(":");
+    const a = ADAPTERS.find((x) => x === adapter);
+    const st = STATUSES.find((x) => x === s);
+    return {
+      status: v === "gap" || v === "out-of-scope" ? { type: v } : a && st ? { type: "is", adapter: a, status: st } : null,
+      kind: kind.value || null,
+    };
   };
   status.addEventListener("change", () => changed(read()));
   kind.addEventListener("change", () => changed(read()));
@@ -264,18 +362,12 @@ function createFilters(changed: (filter: GapFilter) => void) {
 
 export const gaps: DemoSource = {
   name: "gaps",
-  description: `${features.length} grid features: demand, fit and binnacle's status, with the evidence${sample ? " (sample data)" : ""}`,
+  description: `${features.length} grid features: demand, fit and binnacle's status, with the evidence`,
   async mount(host, toolbar, look) {
-    const source = fromRows(features as Feature[], [
-      { key: "name", label: "Feature" },
-      { key: "kind", label: "Kind" },
-      { key: "category", label: "Category" },
-      { key: "ratatui", label: "ratatui" },
-      { key: "web", label: "web" },
-      { key: "demand", label: "Demand" },
-      { key: "fit", label: "Fit" },
-      { key: "products", label: "Products" },
-    ]);
+    const source = fromRows(
+      features as Feature[],
+      COLUMNS.map(({ key, label }) => ({ key, label })),
+    );
     const filters = createFilters((filter) => source.filter((f) => keeps(f, filter)));
     toolbar.append(...filters);
 
@@ -285,13 +377,14 @@ export const gaps: DemoSource = {
     layout.append(master, panel.element);
     host.append(layout);
 
+    const plain = textRenderer<Value>();
+    const renderers = new Map(COLUMNS.map((c) => [c.key, c.renderer ?? plain]));
     // Columns share the width the grid gets, so wide screens show whole names.
-    const columns = 8;
-    const columnWidth = Math.max(110, Math.floor((master.clientWidth - 48) / columns));
+    const columnWidth = Math.max(110, Math.floor((master.clientWidth - 48) / COLUMNS.length));
     const widget = await GridWidget.create(master, {
       source,
       columnWidth,
-      renderer: byColumn<keyof Feature, Value>((col) => renderers[col]),
+      renderer: (_row, col) => renderers.get(col) ?? plain,
       ...look,
       onSelectionChange(change) {
         look.onSelectionChange(change);

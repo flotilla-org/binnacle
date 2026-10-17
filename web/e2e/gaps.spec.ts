@@ -10,6 +10,9 @@ const ROW = 24;
 /** Inside the first column whatever the row-number band's width. */
 const FIRST = 62;
 
+/** The grid's column count: Feature, Kind, Category, the statuses, Demand, Fit, Products. */
+const COLUMNS = 7;
+
 const panel = (page: Page) => page.locator(".gap-detail");
 
 async function layer(page: Page) {
@@ -25,7 +28,7 @@ async function cell(page: Page, row: number) {
 
 async function header(page: Page, col: number) {
   const b = await layer(page);
-  const width = (b.width - 48) / 8;
+  const width = (b.width - 48) / COLUMNS;
   await page.mouse.click(b.x + 48 + col * width + width / 2, b.y + HEADER / 2);
 }
 
@@ -38,8 +41,9 @@ test.beforeEach(async ({ page }) => {
 
 test("the panel follows focus by ID through a sort and a filter", async ({ page }) => {
   await expect(panel(page)).toContainText("Pick a feature");
-  const chosen = features[1]!;
-  await cell(page, 1);
+  // The first app feature: its kind's filter keeps few enough rows to show them all.
+  const chosen = features.find((f) => f.kind === "app")!;
+  await cell(page, features.indexOf(chosen));
   await expect(panel(page)).toHaveAttribute("data-feature", chosen.id);
   await expect(panel(page).locator("h2")).toHaveText(chosen.name);
 
@@ -62,9 +66,17 @@ test("the panel follows focus by ID through a sort and a filter", async ({ page 
 test("the status filter keeps the features with that status in that adapter", async ({ page }) => {
   await page.getByLabel("Filter by status").selectOption("web:missing");
   const kept = features.filter((f) => f.web === "missing");
-  await expect(page.locator("#status")).toContainText(`rows 1 to ${kept.length} of ${kept.length}`);
+  await expect(page.locator("#status")).toContainText(`of ${kept.length}  ·`);
   await cell(page, 0);
   await expect(panel(page)).toHaveAttribute("data-feature", kept[0]!.id);
+});
+
+test("the gap and kind filters combine", async ({ page }) => {
+  await page.getByLabel("Filter by status").selectOption("gap");
+  await page.getByLabel("Filter by kind").selectOption("app");
+  const kept = features.filter((f) => keeps(f, { status: { type: "gap" }, kind: "app" }));
+  expect(kept.length).toBeGreaterThan(0);
+  await expect(page.locator("#status")).toContainText(`rows 1 to ${kept.length} of ${kept.length}`);
 });
 
 test("evidence links open in a new tab", async ({ page }) => {
