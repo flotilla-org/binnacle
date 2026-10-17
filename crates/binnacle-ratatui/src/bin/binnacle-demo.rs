@@ -32,7 +32,9 @@
 //! double-click on a name opens a minimal inline editor: type, Backspace,
 //! Enter to keep the new name, Esc to drop it. A click elsewhere keeps it.
 //!
-//! The wheel scrolls; the adapter's default keymap moves focus (arrows,
+//! The wheel scrolls, and so do the scrollbars: one down the right edge and,
+//! when the columns overflow, one along the bottom. Click a track to page;
+//! drag a thumb. The adapter's default keymap moves focus (arrows,
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
 //! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
 //! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
@@ -59,9 +61,10 @@ use binnacle_core::{
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    Align, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas, CellRenderer,
-    ColorSupport, Content, Keymap, Mouse, RenderContext, SparklineRenderer, TextRenderer, Theme,
-    animating, fit_width, render_editor, render_with, status, wheel,
+    Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
+    CellRenderer, ColorSupport, Content, Keymap, Layout, Mouse, RenderContext, SparklineRenderer,
+    TextRenderer, Theme, animating, begin_frame, fit_width, render_editor, render_with, status,
+    wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -752,7 +755,7 @@ fn main() -> io::Result<()> {
         },
     );
     let mut mouse = Mouse::default();
-    let mut area = ratatui::layout::Rect::default();
+    let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
     let mut shown_rows: Vec<Key> = Vec::new();
     let mut app = App {
@@ -777,11 +780,16 @@ fn main() -> io::Result<()> {
             terminal.draw(|frame| {
                 // The Grid takes all but the bottom line, the status line.
                 let full = frame.area();
-                area = full;
+                let mut area = full;
                 area.height = full.height.saturating_sub(1);
                 app.pump(&mut table, &mut grid, &shown_rows);
-                let viewport = Viewport::new(area.width.into(), area.height.into());
-                fill(&mut grid, &table, viewport);
+                let border = BORDERS[app.border];
+                let ctx = RenderContext::new(&themes[theme])
+                    .border(border)
+                    .colors(colors)
+                    .at(start.elapsed());
+                let fill = |grid: &mut Grid, viewport| fill(grid, &table, viewport);
+                layout = begin_frame(&mut grid, &ctx, area, fill);
                 if app.fit_rows {
                     // Fit to the rows this frame shows, then lay it out again.
                     let snapshot = grid.snapshot();
@@ -789,7 +797,7 @@ fn main() -> io::Result<()> {
                         .filter(|_| !matches!(snapshot.mode(), Mode::ResizingBand { .. }));
                     if let Some(width) = fit.filter(|&w| w != snapshot.header(Axis::Cols)) {
                         grid.set_header(Axis::Cols, width);
-                        fill(&mut grid, &table, viewport);
+                        layout = begin_frame(&mut grid, &ctx, area, fill);
                     }
                 }
                 let snapshot = grid.snapshot();
@@ -797,14 +805,9 @@ fn main() -> io::Result<()> {
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 moving = animating(&snapshot);
-                let border = BORDERS[app.border];
-                let ctx = RenderContext::new(&themes[theme])
-                    .border(border)
-                    .colors(colors)
-                    .at(start.elapsed());
                 render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
-                    render_editor(&snapshot, &editor.text, area, frame.buffer_mut());
+                    render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
                 let line = ratatui::layout::Rect {
                     y: full.y + area.height,
@@ -861,9 +864,14 @@ fn main() -> io::Result<()> {
                     }
                 }
                 Event::Mouse(m) => {
+                    let bar = mouse.scrollbar(&m, &grid.snapshot(), &layout);
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
-                    } else if let Some(pointer) = mouse.event(&m, area, Instant::now()) {
+                    } else if let BarEvent::Took(action) = bar {
+                        if let Some(action) = action {
+                            grid.action(action);
+                        }
+                    } else if let Some(pointer) = mouse.event(&m, layout.grid, Instant::now()) {
                         if pointer.kind == binnacle_core::PointerKind::Down {
                             // A press would cancel the edit: keep it first.
                             app.commit(&mut table, &mut grid);

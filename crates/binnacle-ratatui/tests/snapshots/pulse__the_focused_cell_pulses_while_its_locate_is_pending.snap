@@ -1,66 +1,70 @@
 ---
 source: crates/binnacle-ratatui/tests/pulse.rs
+assertion_line: 246
 expression: out
 ---
 --- at 0 ms
-   col 0 │col 1▲│col 2 │
-1  r0c0   r0c1   r0c2
-2  r7c0   r7c1   r7c2
-3  r2c0   r2c1   r2c2
-4  r9c0   r9c1   r9c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1▲│col 2
+1  r0c0   r0c1   r0c2  █
+2  r7c0   r7c1   r7c2  █
+3  r2c0   r2c1   r2c2  │
+4  r9c0   r9c1   r9c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcbbbbbbcbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaddddddaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcbbbbbbcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaeeeeeeaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
 c: fg DarkGray bg Reset
-d: fg #8C8228 bg Reset REVERSED
+d: fg Gray bg Reset
+e: fg #8C8228 bg Reset REVERSED
 --- at 200 ms
-   col 0 │col 1▲│col 2 │
-1  r0c0   r0c1   r0c2
-2  r7c0   r7c1   r7c2
-3  r2c0   r2c1   r2c2
-4  r9c0   r9c1   r9c2
-5  r4c0   r4c1   r4c2
+   col 0 │col 1▲│col 2
+1  r0c0   r0c1   r0c2  █
+2  r7c0   r7c1   r7c2  █
+3  r2c0   r2c1   r2c2  │
+4  r9c0   r9c1   r9c2  │
+5  r4c0   r4c1   r4c2  │
 
-aaabbbbbbcbbbbbbcbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaadeffffaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-
-a: fg Reset bg Reset
-b: fg Reset bg Reset BOLD
-c: fg DarkGray bg Reset
-d: fg #A79C3B bg Reset REVERSED
-e: fg #90862B bg Reset REVERSED
-f: fg #8C8228 bg Reset REVERSED
---- at 400 ms
-   col 0 │col 1▲│col 2 │
-1  r0c0   r0c1   r0c2
-2  r7c0   r7c1   r7c2
-3  r2c0   r2c1   r2c2
-4  r9c0   r9c1   r9c2
-5  r4c0   r4c1   r4c2
-
-aaabbbbbbcbbbbbbcbbbbbbc
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaadefgggaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
-bbbaaaaaaaaaaaaaaaaaaaaa
+aaabbbbbbcbbbbbbcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaefggggaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
 c: fg DarkGray bg Reset
-d: fg #DED061 bg Reset REVERSED
-e: fg #BBAF49 bg Reset REVERSED
-f: fg #9C9133 bg Reset REVERSED
+d: fg Gray bg Reset
+e: fg #A79C3B bg Reset REVERSED
+f: fg #90862B bg Reset REVERSED
 g: fg #8C8228 bg Reset REVERSED
+--- at 400 ms
+   col 0 │col 1▲│col 2
+1  r0c0   r0c1   r0c2  █
+2  r7c0   r7c1   r7c2  █
+3  r2c0   r2c1   r2c2  │
+4  r9c0   r9c1   r9c2  │
+5  r4c0   r4c1   r4c2  │
+
+aaabbbbbbcbbbbbbcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaefghhhaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+
+a: fg Reset bg Reset
+b: fg Reset bg Reset BOLD
+c: fg DarkGray bg Reset
+d: fg Gray bg Reset
+e: fg #DED061 bg Reset REVERSED
+f: fg #BBAF49 bg Reset REVERSED
+g: fg #9C9133 bg Reset REVERSED
+h: fg #8C8228 bg Reset REVERSED

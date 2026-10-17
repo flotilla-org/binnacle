@@ -8,7 +8,7 @@ use binnacle_core::{
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
     Align, BarRenderer, CellCanvas, CellRenderer, Content, RenderContext, SparklineRenderer,
-    TextRenderer, Theme, fit_width, render, render_with,
+    TextRenderer, Theme, fit_width, render_with,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -48,6 +48,7 @@ fn window(grid: &mut Grid, area: Rect, loaded: u64) {
     }
 }
 
+/// Draws with scrollbars off, as every test here does: they look inside cells.
 fn draw(snapshot: &Snapshot, content: &impl Content, ctx: &RenderContext, area: Rect) -> Buffer {
     let mut buf = Buffer::empty(area);
     render_with(snapshot, content, ctx, area, &mut buf);
@@ -107,7 +108,7 @@ fn built_in_renderers_draw_aligned_text_sparklines_and_bars() {
     let buf = draw(
         &grid.snapshot(),
         &ticker(),
-        &RenderContext::new(&theme),
+        &RenderContext::new(&theme).scrollbars(false),
         area,
     );
     insta::assert_snapshot!(text(&buf));
@@ -125,7 +126,7 @@ fn a_part_scrolled_cell_draws_only_its_visible_part() {
     let buf = draw(
         &grid.snapshot(),
         &ticker(),
-        &RenderContext::new(&theme),
+        &RenderContext::new(&theme).scrollbars(false),
         area,
     );
     insta::assert_snapshot!(text(&buf));
@@ -184,7 +185,9 @@ fn a_renderer_sees_the_cell_status_and_the_time_and_focus_is_patched_over_it() {
         renderers: vec![Box::new(Flags), Box::new(Flags), Box::new(Flags)],
     };
     let theme = Theme::classic();
-    let ctx = RenderContext::new(&theme).at(Duration::from_secs(7));
+    let ctx = RenderContext::new(&theme)
+        .scrollbars(false)
+        .at(Duration::from_secs(7));
     let buf = draw(&grid.snapshot(), &flags, &ctx, area);
     insta::assert_snapshot!(text(&buf));
     // The focused cell is reversed across its width, over the green glyphs.
@@ -224,7 +227,12 @@ fn a_cell_without_a_key_shows_the_loading_marker_whatever_its_renderer() {
         renderers: vec![Box::new(Never), Box::new(Never)],
     };
     let theme = Theme::classic();
-    let buf = draw(&grid.snapshot(), &never, &RenderContext::new(&theme), area);
+    let buf = draw(
+        &grid.snapshot(),
+        &never,
+        &RenderContext::new(&theme).scrollbars(false),
+        area,
+    );
     insta::assert_snapshot!(text(&buf));
 }
 
@@ -257,8 +265,9 @@ fn the_default_renderer_is_the_cells_text() {
     let area = Rect::new(0, 0, 20, 3);
     let mut grid = ticker_grid();
     window(&mut grid, area, 4);
-    let mut buf = Buffer::empty(area);
-    render(&grid.snapshot(), &Plain, area, &mut buf);
+    let theme = Theme::classic();
+    let no_scrollbars = RenderContext::new(&theme).scrollbars(false);
+    let buf = draw(&grid.snapshot(), &Plain, &no_scrollbars, area);
     assert_eq!(text(&buf).lines().nth(1), Some("1 r0c0      r0c1"));
 }
 
@@ -290,7 +299,9 @@ fn a_changed_value_flashes_in_the_theme_flash_style_for_a_while() {
     let snapshot = grid.snapshot();
     let theme = Theme::classic();
     let bg_at = |ms| {
-        let ctx = RenderContext::new(&theme).at(Duration::from_millis(ms));
+        let ctx = RenderContext::new(&theme)
+            .scrollbars(false)
+            .at(Duration::from_millis(ms));
         let buf = draw(&snapshot, &content, &ctx, area);
         (2..6).map(|x| buf[(x, 1)].bg).collect::<Vec<_>>()
     };
@@ -367,7 +378,7 @@ fn a_hostile_renderer_writes_only_inside_its_cells_visible_part(tc: TestCase) {
     render_with(
         &snapshot,
         &content,
-        &RenderContext::new(&theme),
+        &RenderContext::new(&theme).scrollbars(false),
         area,
         &mut buf,
     );
@@ -404,7 +415,12 @@ fn glyphs(content: &impl Content, width: u16) -> Vec<char> {
     );
     window(&mut grid, area, 1);
     let theme = Theme::classic();
-    let buf = draw(&grid.snapshot(), content, &RenderContext::new(&theme), area);
+    let buf = draw(
+        &grid.snapshot(),
+        content,
+        &RenderContext::new(&theme).scrollbars(false),
+        area,
+    );
     (2..width + 2)
         .map(|x| buf[(x, 1)].symbol().chars().next().unwrap())
         .collect()

@@ -1,25 +1,26 @@
 ---
 source: crates/binnacle-ratatui/tests/theme.rs
+assertion_line: 163
 expression: out
 ---
 --- mono
-   l 0 │col 1▲│col 2~│col 3 │c
-3  c0   r2c1   r2c2   r2c3   r
-4  c0   r3c1   r3c2   r3c3   r
-5  c0   r4c1   r4c2   r4c3   r
-6  c0   r5c1   r5c2   r5c3   r
-7  c0   r6c1   r6c2   r6c3   r
-8       …      …      …      …
-9       …      …      …      …
+   l 0 │col 1▲│col 2~│col 3 │
+3  c0   r2c1   r2c2   r2c3   │
+4  c0   r3c1   r3c2   r3c3   █
+5  c0   r4c1   r4c2   r4c3   █
+6  c0   r5c1   r5c2   r5c3   │
+7  c0   r6c1   r6c2   r6c3   │
+8       …      …      …      │
+   ─█████████████████████────
 
 aaabbbbcbbbbbbccccccccddddddcb
+cccaaaaaaaaaaaaaaaaaaaaaaaaaac
 cccaaaaaaaaaaaaaaaaaaaaaaaaaaa
-cccaaaaaaaaaaaaaaaaaaaaaaaaaaa
-ccceeeeaeeeeeeaeeeeeeaeeeeeeae
-cccaaaaaeeeeeeaeeeeeeaaaaaaaaa
-cccaaaaaeeeeeeaffffffaaaaaaaaa
+ccceeeeaeeeeeeaeeeeeeaeeeeeeaa
+cccaaaaaeeeeeeaeeeeeeaaaaaaaac
+cccaaaaaeeeeeeaffffffaaaaaaaac
 cccaaaaacaaaaaacaaaaaacaaaaaac
-cccaaaaacaaaaaacaaaaaacaaaaaac
+aaacaaaaaaaaaaaaaaaaaaaaacccca
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
@@ -29,29 +30,30 @@ e: fg Reset bg Reset UNDERLINED
 f: fg Reset bg Reset REVERSED
 
 --- inverted headers, zebra
-   l 0 │col 1▲│col 2~│col 3 │c
-3  c0   r2c1   r2c2   r2c3   r
-4  c0   r3c1   r3c2   r3c3   r
-5  c0   r4c1   r4c2   r4c3   r
-6  c0   r5c1   r5c2   r5c3   r
-7  c0   r6c1   r6c2   r6c3   r
-8       …      …      …      …
-9       …      …      …      …
+   l 0 │col 1▲│col 2~│col 3 │
+3  c0   r2c1   r2c2   r2c3   │
+4  c0   r3c1   r3c2   r3c3   █
+5  c0   r4c1   r4c2   r4c3   █
+6  c0   r5c1   r5c2   r5c3   │
+7  c0   r6c1   r6c2   r6c3   │
+8       …      …      …      │
+   ─█████████████████████────
 
-aaabbbbcbbbbbbcddddddceeeeeecb
-dddaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaabbbbcbbbbbbcddddddceeeeeecf
+dddaaaaaaaaaaaaaaaaaaaaaaaaaac
+dddcccccccccccccccccccccccccca
+dddggggaggggggaggggggaggggggaa
+dddccccchhhhhhchhhhhhccccccccc
+dddaaaaaggggggaiiiiiiaaaaaaaac
 dddccccccccccccccccccccccccccc
-dddffffaffffffaffffffaffffffaf
-dddcccccggggggcggggggccccccccc
-dddaaaaaffffffahhhhhhaaaaaaaaa
-dddccccccccccccccccccccccccccc
-dddaaaaacaaaaaacaaaaaacaaaaaac
+aaacaaaaaaaaaaaaaaaaaaaaacccca
 
 a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD | REVERSED
 c: fg Reset bg Reset DIM
 d: fg Reset bg Reset DIM | REVERSED
 e: fg Reset bg Reset BOLD | UNDERLINED | REVERSED
-f: fg Reset bg Reset UNDERLINED
-g: fg Reset bg Reset DIM | UNDERLINED
-h: fg Reset bg Reset REVERSED
+f: fg Reset bg Reset BOLD
+g: fg Reset bg Reset UNDERLINED
+h: fg Reset bg Reset DIM | UNDERLINED
+i: fg Reset bg Reset REVERSED

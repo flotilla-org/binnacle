@@ -1,13 +1,14 @@
 ---
 source: crates/binnacle-ratatui/tests/render.rs
+assertion_line: 230
 expression: out
 ---
 --- column 1 descending
-     col 0   │col 1  ▼│col 2   │col 3   │
-1    r0c0     r0c1     r0c2     r0c3
+     col 0   │col 1  ▼│col 2   │col 3
+1    r0c0     r0c1     r0c2     r0c3    █
 --- then column 3 ascending
-     col 0   │col 1 ▼1│col 2   │col 3 ▲2│
-1    r0c0     r0c1     r0c2     r0c3
+     col 0   │col 1 ▼1│col 2   │col 3 ▲2
+1    r0c0     r0c1     r0c2     r0c3    █
 --- shift-click column 0, unanswered
-     col 0  ~│col 1 ▼1│col 2   │col 3 ▲2│
-1    r0c0     r0c1     r0c2     r0c3
+     col 0  ~│col 1 ▼1│col 2   │col 3 ▲2
+1    r0c0     r0c1     r0c2     r0c3    █

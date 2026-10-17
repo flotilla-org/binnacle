@@ -1,19 +1,20 @@
 ---
 source: crates/binnacle-ratatui/tests/render.rs
+assertion_line: 247
 expression: out
 ---
 --- idle
-     col 0   │col 1   │col 2   │
-1    r0c0     r0c1     r0c2
-2    r1c0     r1c1     r1c2
-3    r2c0     r2c1     r2c2
+     col 0   │col 1   │col 2
+1    r0c0     r0c1     r0c2    █
+2    r1c0     r1c1     r1c2    │
+     ████████──────────────────
 --- dragged 3 right
      col 0      │col 1   │col 2
-1    r0c0       │r0c1     r0c2
-2    r1c0       │r1c1     r1c2
-3    r2c0       │r2c1     r2c2
+1    r0c0       │r0c1     r0c2 █
+2    r1c0       │r1c1     r1c2 │
+     ████████──────────────────
 --- released
      col 0      │col 1   │col 2
-1    r0c0        r0c1     r0c2
-2    r1c0        r1c1     r1c2
-3    r2c0        r2c1     r2c2
+1    r0c0        r0c1     r0c2 █
+2    r1c0        r1c1     r1c2 │
+     ████████──────────────────

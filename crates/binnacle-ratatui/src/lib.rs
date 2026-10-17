@@ -9,6 +9,7 @@ mod context;
 mod keymap;
 mod mouse;
 mod renderer;
+mod scrollbar;
 mod shimmer;
 mod theme;
 
@@ -20,6 +21,7 @@ pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
 };
+pub use scrollbar::{BarEvent, Layout, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
@@ -97,7 +99,9 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
 /// visible part. Gaps are drawn as `ctx.border` says (by default the header
 /// band's Gaps only, the handles a resize drag grabs); a resize in progress
 /// draws its guide line across the area, a header move its drop indicator,
-/// both over the borders. A sorted column's header ends in its
+/// both over the borders. Unless `ctx` turns them off, scrollbars take the
+/// area's right column and, when the columns overflow, its bottom line (see
+/// [`layout`]; [`begin_frame`] gives the Grid the Viewport left over). A sorted column's header ends in its
 /// direction (and place, in a multi-column sort), and `~` marks a sort
 /// change still pending. Every style comes from the Theme. A Shimmer at
 /// `ctx.now` sweeps across the headers of a pending sort and across the
@@ -111,6 +115,11 @@ pub fn render_with(
 ) {
     let theme = &ctx.theme.for_colors(ctx.colors);
     let area = area.intersection(buf.area);
+    // The sweep keeps its pace across the whole area, scrollbars or not.
+    let sweep = Shimmer::new(ctx, area.width);
+    let bars = layout(snapshot, ctx, area);
+    scrollbar::draw(snapshot, &bars, theme, buf);
+    let area = bars.grid;
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
@@ -127,7 +136,6 @@ pub fn render_with(
         }
     };
     let multi = snapshot.applied_sort().columns().len() > 1;
-    let sweep = Shimmer::new(ctx, area.width);
     let area_end = i64::from(area.width);
     for h in snapshot.headers(Axis::Cols) {
         let label = h

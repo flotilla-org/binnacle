@@ -1,11 +1,14 @@
 ---
 source: crates/binnacle-ratatui/tests/borders.rs
+assertion_line: 202
 expression: "text(&draw(&mut grid, style))"
 ---
  col 0 │col 1 │col 2 │
-1r0c0  │r0c1  │r0c2  │
-───────┼──────┼──────┤
-2r1c0  │r1c1  │r1c2  │
-───────┼──────┼──────┤
-3r2c0  │r2c1  │r2c2  │
-───────┴──────┴──────┘
+1r0c0  │r0c1  │r0c2  │       █
+───────┼──────┼──────┤       █
+2r1c0  │r1c1  │r1c2  │       █
+───────┼──────┼──────┤       █
+3r2c0  │r2c1  │r2c2  │       █
+───────┴──────┴──────┘       █
+                             █
+                             █

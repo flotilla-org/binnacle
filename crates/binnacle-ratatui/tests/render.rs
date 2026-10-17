@@ -190,7 +190,8 @@ fn selected_cells_get_a_background_across_their_width_and_the_hovered_header_is_
     assert_eq!(with(&|c| c.bg == Color::DarkGray), selected);
     let focused: Vec<(u16, u16)> = (14..22).map(|x| (x, 2)).collect();
     assert_eq!(with(&|c| c.modifier.contains(Modifier::REVERSED)), focused);
-    let hovered: Vec<(u16, u16)> = (23..30).map(|x| (x, 0)).collect();
+    // The scrollbar takes the last column.
+    let hovered: Vec<(u16, u16)> = (23..29).map(|x| (x, 0)).collect();
     assert_eq!(
         with(&|c| c.modifier.contains(Modifier::UNDERLINED)),
         hovered
