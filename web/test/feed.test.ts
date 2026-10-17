@@ -373,3 +373,204 @@ describe("late answers", () => {
     }
   });
 });
+
+/** A request a slow source holds until the test answers it. */
+interface Held {
+  kind: "count" | "window" | "cells" | "sort" | "locate";
+  /** What was asked: the Window's range, the cells' row IDs, the Sort Spec, the located ID. */
+  what: unknown;
+  signal: AbortSignal;
+  answer(): void;
+}
+
+/**
+ * A keyed table whose Windows, cells, sorts and Locates all answer with
+ * Promises the test settles. Rows are `r<i>` in `order`; cells read `<row>/<col>`.
+ */
+class Slow {
+  readonly held: Held[] = [];
+  order: string[];
+  sinks!: Sinks;
+  readonly source: TableSource<string, string, string>;
+
+  constructor(rows: number, cols: number) {
+    this.order = Array.from({ length: rows }, (_, i) => `r${i}`);
+    const colIds = Array.from({ length: cols }, (_, i) => `c${i}`);
+    const hold = <T,>(kind: Held["kind"], what: unknown, signal: AbortSignal, value: () => T) =>
+      new Promise<T>((resolve) => this.held.push({ kind, what, signal, answer: () => resolve(value()) }));
+    this.source = {
+      rows: {
+        count: () => this.order.length,
+        window: (s, e, signal) => hold("window", [s, e], signal, () => this.order.slice(s, e)),
+        sort: (spec, signal) =>
+          hold("sort", spec, signal, () => {
+            const by = spec[0];
+            this.order = [...this.order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+            if (by?.direction === "descending") this.order.reverse();
+            this.sinks.rows.notify({ type: "Reordered" });
+            return spec;
+          }),
+        locate: (id, signal) =>
+          hold("locate", id, signal, (): Located => ({ type: "Found", position: this.order.indexOf(id) })),
+      },
+      cols: { count: () => colIds.length, window: (s, e) => colIds.slice(s, e) },
+      cells: (rs, cs, signal) => hold("cells", rs, signal, () => rs.map((r) => cs.map((c) => `${r}/${c}`))),
+      attach: (sinks) => ((this.sinks = sinks), () => {}),
+    };
+  }
+
+  /** The requests of `kind` still in flight, oldest first. */
+  open(kind: Held["kind"]): Held[] {
+    return this.held.filter((h) => h.kind === kind && !h.signal.aborted);
+  }
+
+  /** Answers every request of `kind` in flight and lets the answers land. */
+  async answer(kind: Held["kind"]): Promise<void> {
+    const due = this.open(kind);
+    this.held.splice(0, this.held.length, ...this.held.filter((h) => !due.includes(h)));
+    for (const h of due) h.answer();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+
+describe("slow sources", () => {
+  const header = (col: number) => BAND + col * COL_WIDTH + COL_WIDTH / 2;
+
+  test("a Change Notice aborts the cells in flight, and asks again with a fresh signal", async () => {
+    const slow = new Slow(5, 2);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      const [first] = slow.open("cells");
+      expect(first).toBeDefined();
+      slow.sinks.rows.notify({ type: "ContentChanged", start: 0, end: 5 });
+      expect(first!.signal.aborted).toBe(true);
+      // ContentChanged asks for the rows' Window again too.
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      const again = slow.open("cells");
+      expect(again.map((c) => c.what)).toEqual([["r0", "r1", "r2", "r3", "r4"]]);
+      // The source ignores the abort and answers anyway: nothing lands from it.
+      first!.answer();
+      await new Promise((r) => setTimeout(r, 0));
+      h.frame();
+      expect(h.values().flat().every((v) => v === undefined)).toBe(true);
+      await slow.answer("cells");
+      h.frame();
+      expect(h.values()[0]).toEqual(["r0/c0", "r0/c1"]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("cells scrolled out of view before they land are no longer wanted", async () => {
+    const slow = new Slow(200, 2);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      const [top] = slow.open("cells");
+      h.grid.scroll(0, 150 * ROW_HEIGHT);
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      expect(top!.signal.aborted).toBe(true);
+      // Back at the top, the cells are asked for again.
+      h.grid.scroll(0, -150 * ROW_HEIGHT);
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      expect(slow.open("cells").some((c) => (c.what as string[]).includes("r0"))).toBe(true);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a Window superseded by another before it lands is aborted", async () => {
+    const slow = new Slow(500, 2);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      const [first] = slow.open("window");
+      h.grid.scroll(0, 300 * ROW_HEIGHT);
+      h.frame();
+      expect(first!.signal.aborted).toBe(true);
+      expect(slow.open("window")).toHaveLength(1);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a re-sort while the first sort is in flight aborts it, and the headers end on the latest", async () => {
+    const slow = new Slow(5, 3);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      h.click(header(0), HEADER / 2);
+      h.frame();
+      expect(h.snapshot.cols.headers[0]!.sort.pending).toBe(true);
+      // Clicking again asks for descending; the ascending request is no longer wanted.
+      h.click(header(0), HEADER / 2);
+      const [ascending, descending] = slow.held.filter((x) => x.kind === "sort");
+      expect(ascending!.signal.aborted).toBe(true);
+      expect(descending!.signal.aborted).toBe(false);
+      h.frame();
+      expect(h.snapshot.cols.headers[0]!.sort.pending).toBe(true);
+      await slow.answer("sort");
+      h.drain();
+      h.frame();
+      const sort = h.snapshot.cols.headers[0]!.sort;
+      expect(sort).toEqual({ applied: { direction: "descending", index: 0 }, pending: false });
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a Locate superseded by a newer one for the same row is aborted, and focus lands where the newer says", async () => {
+    const slow = new Slow(6, 2);
+    const h = new Harness(slow.source);
+    try {
+      h.frame();
+      await slow.answer("window");
+      h.frame();
+      h.click(BAND + 10, HEADER + ROW_HEIGHT + ROW_HEIGHT / 2);
+      h.frame();
+      expect(h.snapshot.rows.focus).toMatchObject({ position: 1 });
+      slow.sinks.rows.notify({ type: "Reordered" });
+      h.frame();
+      expect(h.snapshot.rows.locating).toBe(true);
+      const [first] = slow.open("locate");
+      slow.order.reverse();
+      slow.sinks.rows.notify({ type: "Reordered" });
+      h.frame();
+      expect(first!.signal.aborted).toBe(true);
+      expect(h.snapshot.rows.locating).toBe(true);
+      await slow.answer("locate");
+      await slow.answer("window");
+      h.frame();
+      expect(h.snapshot.rows.locating).toBe(false);
+      expect(h.snapshot.rows.focus).toMatchObject({ position: 4 });
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("destroying the widget aborts every request in flight", async () => {
+    const slow = new Slow(5, 2);
+    const h = new Harness(slow.source);
+    h.frame();
+    await slow.answer("window");
+    h.frame();
+    h.click(header(0), HEADER / 2);
+    const inFlight = slow.held.filter((x) => !x.signal.aborted);
+    expect(inFlight.map((x) => x.kind).sort()).toEqual(["cells", "sort"]);
+    h.destroy();
+    expect(inFlight.every((x) => x.signal.aborted)).toBe(true);
+  });
+});

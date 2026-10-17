@@ -8,7 +8,7 @@ import { createValueCache, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
-import { createSettler } from "./settle";
+import { createSettler, type Request } from "./settle";
 import type { Snapshot, SortColumn, StripItem } from "./snapshot";
 import type { AxisMethods, ChangeNotice, Located, SortSpec, TableSource } from "./source";
 import type { WebGrid } from "./wasm";
@@ -55,8 +55,8 @@ interface Axis<Id> {
   source: AxisMethods<Id, unknown>;
   interner: KeyInterner<Id>;
   position: boolean;
-  /** The Window asked for and not answered yet, so it is not asked again. */
-  waiting: string | null;
+  /** The Window asked for and not answered yet: not asked again, and aborted once another is asked. */
+  waiting: { asked: string; request: Request } | null;
 }
 
 function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => string | number | bigint }): Axis<Id> {
@@ -69,14 +69,18 @@ function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => str
   };
 }
 
+interface Block {
+  rows: bigint[];
+  cols: bigint[];
+  request: Request;
+}
+
 const known = <T>(v: T | undefined): v is T => v !== undefined;
 
 export function createFeed<RowId, ColId, V>(
   source: TableSource<RowId, ColId, V>,
   hooks: FeedHooks = {},
 ): Feed<RowId, ColId> {
-  const abort = new AbortController();
-  const { signal } = abort;
   const schedule = () => hooks.schedule?.();
   let landed = false;
   const settler = createSettler(
@@ -98,6 +102,12 @@ export function createFeed<RowId, ColId, V>(
   let applied: SortColumn[] = [];
   /** Counts that arrived before the Grid did. */
   const early: Partial<Record<AxisName, number>> = {};
+  /** Cell blocks in flight, aborted once none of their rows or columns is in view. */
+  const blocks = new Set<Block>();
+  /** The sort in flight, aborted when a newer one is asked for. */
+  let sorting: Request | null = null;
+  /** Locates in flight by axis and Key, each aborted when the same Key is asked for again. */
+  const locating = new Map<string, Request>();
 
   const reset = (axis: AxisName, count: number) => {
     if (grid) grid.notify(AXIS_CODE[axis], NOTICE_CODE.Reset, count, NaN);
@@ -109,7 +119,7 @@ export function createFeed<RowId, ColId, V>(
   const askCount = (axis: AxisName): number | undefined => {
     let now: number | undefined;
     let late = false;
-    settle(axes[axis].source.count(), (count) => {
+    settle(() => axes[axis].source.count(), (count) => {
       if (late) reset(axis, count);
       else now = count;
     });
@@ -131,14 +141,14 @@ export function createFeed<RowId, ColId, V>(
 
   /** Applies a Change Notice on `axis`: the cache, the interner, then the Grid. */
   const notify = (axis: AxisName, notice: ChangeNotice) => {
+    // Aborts the Windows and cells in flight; their `otherwise` forgets them.
     settler.bump();
-    for (const a of AXES) axes[a].waiting = null;
     const { interner, position } = axes[axis];
     switch (notice.type) {
       case "Reset":
         cache.clear();
         interner.rebuild();
-        settle(axes[axis].source.count(), (count) => reset(axis, count), { fresh: true });
+        settle(() => axes[axis].source.count(), (count) => reset(axis, count), { fresh: true });
         return;
       case "ContentChanged": {
         // Visible items outside the range keep their values; the rest, which
@@ -192,8 +202,11 @@ export function createFeed<RowId, ColId, V>(
       spec.push({ id, direction: c.direction });
     }
     const previous = applied;
-    settle(
-      sort.call(source.rows, spec, signal),
+    // The Grid still counts the superseded request's answer: aborting it
+    // answers with the spec in force.
+    sorting?.abort();
+    sorting = settle(
+      (signal) => sort.call(source.rows, spec, signal),
       (now) => sortApplied(now.map((c) => ({ key: cols.interner.key(c.id), direction: c.direction }))),
       { otherwise: () => sortApplied(previous) },
     );
@@ -210,11 +223,17 @@ export function createFeed<RowId, ColId, V>(
     const gone: Located = { type: "Gone", suggest: null };
     if (id === undefined) return located(axis, key, gone);
     if (s.locate) {
-      settle(
-        s.locate(id, signal),
-        (answer) => located(axis, key, answer),
-        { otherwise: () => located(axis, key, gone) },
+      // The Grid acts on the last answer it is due for this Key, so a
+      // superseded request is answered at once, and ignored.
+      const at = `${axis}:${key}`;
+      locating.get(at)?.abort();
+      const done = () => locating.delete(at);
+      const request = settle(
+        (signal) => s.locate!(id, signal),
+        (answer) => (done(), located(axis, key, answer)),
+        { otherwise: () => (done(), located(axis, key, gone)) },
       );
+      if (request.pending) locating.set(at, request);
       return;
     }
     // Like the Rust IdentitySource: a Position identity is where it says.
@@ -226,7 +245,7 @@ export function createFeed<RowId, ColId, V>(
     const { source: s, interner } = axes[axis];
     const ids = keys.map((k) => interner.id(k));
     if (!s.move || !ids.every(known)) return;
-    settle(s.move(ids, to), (moved) => {
+    settle(() => s.move!(ids, to), (moved) => {
       if (moved) notify(axis, { type: "Reordered" });
     });
   };
@@ -237,9 +256,12 @@ export function createFeed<RowId, ColId, V>(
     const colIds = colKeys.map((k) => cols.interner.id(k));
     if (!rowIds.every(known) || !colIds.every(known)) return;
     for (const r of rowKeys) for (const c of colKeys) cache.set(r, c, PENDING);
-    settle(
-      source.cells(rowIds, colIds, signal),
+    let block: Block | undefined;
+    const done = () => block && blocks.delete(block);
+    const request = settle(
+      (signal) => source.cells(rowIds, colIds, signal),
       (block) => {
+        done();
         rowKeys.forEach((r, i) => {
           const values = block[i] ?? [];
           colKeys.forEach((c, j) => {
@@ -250,10 +272,12 @@ export function createFeed<RowId, ColId, V>(
       {
         fresh: true,
         otherwise: () => {
+          done();
           for (const r of rowKeys) for (const c of colKeys) cache.unpend(r, c);
         },
       },
     );
+    if (request.pending) blocks.add((block = { rows: rowKeys, cols: colKeys, request }));
   };
 
   /**
@@ -264,17 +288,23 @@ export function createFeed<RowId, ColId, V>(
   const request = (s: Snapshot) => {
     const rowKeys = s.rows.strip.flatMap((i) => (i.key === null ? [] : [i.key]));
     const colKeys = s.cols.strip.flatMap((i) => (i.key === null ? [] : [i.key]));
-    const blocks = new Map<string, { rows: bigint[]; cols: bigint[] }>();
-    for (const r of rowKeys) {
-      const missing = colKeys.filter((c) => cache.get(r, c) === undefined);
-      if (!missing.length) continue;
-      const id = missing.join(",");
-      const block = blocks.get(id);
-      if (block) block.rows.push(r);
-      else blocks.set(id, { rows: [r], cols: missing });
+    const shownRows = new Set(rowKeys);
+    const shownCols = new Set(colKeys);
+    // A block none of whose rows (or columns) is in view any more is not wanted.
+    for (const b of blocks) {
+      if (!b.rows.some((r) => shownRows.has(r)) || !b.cols.some((c) => shownCols.has(c))) b.request.abort();
     }
-    cache.prune(new Set(rowKeys), new Set(colKeys));
-    for (const block of blocks.values()) ask(block.rows, block.cols);
+    const missing = new Map<string, { rows: bigint[]; cols: bigint[] }>();
+    for (const r of rowKeys) {
+      const lacking = colKeys.filter((c) => cache.get(r, c) === undefined);
+      if (!lacking.length) continue;
+      const id = lacking.join(",");
+      const block = missing.get(id);
+      if (block) block.rows.push(r);
+      else missing.set(id, { rows: [r], cols: lacking });
+    }
+    cache.prune(shownRows, shownCols);
+    for (const block of missing.values()) ask(block.rows, block.cols);
   };
 
   const value = (row: StripItem | undefined, col: StripItem | undefined): unknown => {
@@ -313,10 +343,10 @@ export function createFeed<RowId, ColId, V>(
         if (Number.isNaN(start)) continue;
         const axis = axes[name];
         const asked = `${start}:${end}`;
-        if (axis.waiting === asked) continue;
-        axis.waiting = asked;
-        settle(
-          axis.source.window(start, end, signal),
+        if (axis.waiting?.asked === asked) continue;
+        axis.waiting?.request.abort();
+        const request = settle(
+          (signal) => axis.source.window(start, end, signal),
           (ids) => {
             axis.waiting = null;
             const keys = keysOf(axis, ids);
@@ -325,6 +355,7 @@ export function createFeed<RowId, ColId, V>(
           },
           { fresh: true, otherwise: () => (axis.waiting = null) },
         );
+        if (request.pending) axis.waiting = { asked, request };
       }
     },
     answer(effect) {
@@ -358,7 +389,7 @@ export function createFeed<RowId, ColId, V>(
     colKey: (id) => cols.interner.key(id),
     destroy() {
       detach?.();
-      abort.abort();
+      settler.close();
     },
   };
 }
