@@ -1,0 +1,191 @@
+{
+  "sample": true,
+  "note": "A hand-made sample in the shape the research is expected to take, until research/grid-feature-gaps lands.",
+  "products": {
+    "ag-grid": { "name": "AG Grid", "url": "https://www.ag-grid.com/" },
+    "mui-x": { "name": "MUI X Data Grid", "url": "https://mui.com/x/react-data-grid/" },
+    "tanstack": { "name": "TanStack Table", "url": "https://tanstack.com/table/latest" },
+    "glide": { "name": "Glide Data Grid", "url": "https://grid.glideapps.com/" },
+    "handsontable": { "name": "Handsontable", "url": "https://handsontable.com/" },
+    "visidata": { "name": "VisiData", "url": "https://www.visidata.org/" }
+  },
+  "features": [
+    {
+      "id": "column-pinning",
+      "name": "Column pinning",
+      "kind": "layout",
+      "category": "Columns",
+      "description": "Keep chosen columns fixed at the start or end while the rest scroll horizontally.",
+      "demand": 5,
+      "fit": 4,
+      "binnacle": { "ratatui": "missing", "web": "missing", "note": "The Strip already separates header bands; a pinned band is a second fixed region on the column axis.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "paid", "tanstack": "yes", "glide": "yes", "handsontable": "yes", "visidata": "no" },
+      "evidence": [
+        { "title": "AG Grid: column pinning", "url": "https://www.ag-grid.com/javascript-data-grid/column-pinning/" },
+        { "title": "MUI X: column pinning", "url": "https://mui.com/x/react-data-grid/column-pinning/" },
+        { "title": "TanStack Table: column pinning guide", "url": "https://tanstack.com/table/latest/docs/guide/column-pinning" }
+      ]
+    },
+    {
+      "id": "row-grouping",
+      "name": "Row grouping",
+      "kind": "data",
+      "category": "Rows",
+      "description": "Group rows by a column's value into collapsible sections with aggregate summaries.",
+      "demand": 4,
+      "fit": 2,
+      "binnacle": { "ratatui": "missing", "web": "missing", "note": "Needs a tree-shaped Table Source; out of scope for v1.", "issue": null },
+      "products": { "ag-grid": "paid", "mui-x": "paid", "tanstack": "yes", "glide": "no", "handsontable": "partial", "visidata": "yes" },
+      "evidence": [
+        { "title": "AG Grid: row grouping", "url": "https://www.ag-grid.com/javascript-data-grid/grouping/" },
+        { "title": "TanStack Table: grouping guide", "url": "https://tanstack.com/table/latest/docs/guide/grouping" }
+      ]
+    },
+    {
+      "id": "multi-sort",
+      "name": "Multi-column sort",
+      "kind": "interaction",
+      "category": "Sorting",
+      "description": "Sort by several columns at once, each with its own direction, shown in the headers.",
+      "demand": 4,
+      "fit": 5,
+      "binnacle": { "ratatui": "shipped", "web": "shipped", "note": "Shift-click adds a column to the Sort Spec.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "paid", "tanstack": "yes", "glide": "partial", "handsontable": "yes", "visidata": "yes" },
+      "evidence": [
+        { "title": "AG Grid: multi-column sorting", "url": "https://www.ag-grid.com/javascript-data-grid/row-sorting/" },
+        { "title": "MUI X: sorting", "url": "https://mui.com/x/react-data-grid/sorting/" }
+      ]
+    },
+    {
+      "id": "cell-editing",
+      "name": "In-place cell editing",
+      "kind": "interaction",
+      "category": "Editing",
+      "description": "Edit a cell where it sits, with a text editor or a custom one, and commit or cancel from the keyboard.",
+      "demand": 5,
+      "fit": 4,
+      "binnacle": { "ratatui": "missing", "web": "shipped", "note": "The web adapter edits in place; the ratatui adapter has no editor yet.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "yes", "tanstack": "no", "glide": "yes", "handsontable": "yes", "visidata": "yes" },
+      "evidence": [
+        { "title": "AG Grid: cell editing", "url": "https://www.ag-grid.com/javascript-data-grid/cell-editing/" },
+        { "title": "Handsontable: cell editor", "url": "https://handsontable.com/docs/javascript-data-grid/cell-editor/" }
+      ]
+    },
+    {
+      "id": "column-filter-ui",
+      "name": "Column filter menus",
+      "kind": "interaction",
+      "category": "Filtering",
+      "description": "Per-column filter controls in the header, with conditions suited to the column's type.",
+      "demand": 4,
+      "fit": 3,
+      "binnacle": { "ratatui": "missing", "web": "partial", "note": "Filtering belongs to the Table Source; the demo shows a quick filter, not header menus.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "yes", "tanstack": "partial", "glide": "no", "handsontable": "yes", "visidata": "yes" },
+      "evidence": [
+        { "title": "AG Grid: column filters", "url": "https://www.ag-grid.com/javascript-data-grid/filtering/" },
+        { "title": "MUI X: filtering", "url": "https://mui.com/x/react-data-grid/filtering/" }
+      ]
+    },
+    {
+      "id": "clipboard",
+      "name": "Copy and paste ranges",
+      "kind": "interaction",
+      "category": "Selection",
+      "description": "Copy the selected range as tab-separated text, and paste a block of text into the grid.",
+      "demand": 4,
+      "fit": 5,
+      "binnacle": { "ratatui": "missing", "web": "missing", "note": "The Selection is already a range of Keys; copying needs the values for it from the Table Source.", "issue": null },
+      "products": { "ag-grid": "paid", "mui-x": "paid", "tanstack": "no", "glide": "yes", "handsontable": "yes", "visidata": "yes" },
+      "evidence": [
+        { "title": "AG Grid: clipboard", "url": "https://www.ag-grid.com/javascript-data-grid/clipboard/" },
+        { "title": "Glide Data Grid: copy and paste", "url": "https://grid.glideapps.com/" }
+      ]
+    },
+    {
+      "id": "virtual-rows",
+      "name": "Virtualised rows and columns",
+      "kind": "performance",
+      "category": "Scale",
+      "description": "Draw only what is in view, so a table of millions of rows and many columns stays smooth.",
+      "demand": 5,
+      "fit": 5,
+      "binnacle": { "ratatui": "shipped", "web": "shipped", "note": "The Grid asks the Table Source only for the Windows in view.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "yes", "tanstack": "partial", "glide": "yes", "handsontable": "yes", "visidata": "yes" },
+      "evidence": [
+        { "title": "AG Grid: DOM virtualisation", "url": "https://www.ag-grid.com/javascript-data-grid/dom-virtualisation/" },
+        { "title": "TanStack Virtual", "url": "https://tanstack.com/virtual/latest" }
+      ]
+    },
+    {
+      "id": "tree-data",
+      "name": "Tree data",
+      "kind": "data",
+      "category": "Rows",
+      "description": "Show hierarchical rows with expand and collapse, indented by depth.",
+      "demand": 3,
+      "fit": 2,
+      "binnacle": { "ratatui": "missing", "web": "missing", "note": "Shares its model with row grouping.", "issue": null },
+      "products": { "ag-grid": "paid", "mui-x": "paid", "tanstack": "yes", "glide": "no", "handsontable": "yes", "visidata": "no" },
+      "evidence": [
+        { "title": "MUI X: tree data", "url": "https://mui.com/x/react-data-grid/tree-data/" }
+      ]
+    },
+    {
+      "id": "accessibility",
+      "name": "Screen reader support",
+      "kind": "accessibility",
+      "category": "Accessibility",
+      "description": "Expose the grid as an ARIA grid, announce focus and sort changes, and support keyboard-only use.",
+      "demand": 3,
+      "fit": 4,
+      "binnacle": { "ratatui": "n/a", "web": "shipped", "note": "The web adapter keeps a hidden ARIA table in step with the view.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "yes", "tanstack": "partial", "glide": "partial", "handsontable": "yes", "visidata": "no" },
+      "evidence": [
+        { "title": "AG Grid: accessibility", "url": "https://www.ag-grid.com/javascript-data-grid/accessibility/" },
+        { "title": "WAI-ARIA grid pattern", "url": "https://www.w3.org/WAI/ARIA/apg/patterns/grid/" }
+      ]
+    },
+    {
+      "id": "export-csv",
+      "name": "Export to CSV",
+      "kind": "data",
+      "category": "Export",
+      "description": "Download the rows as shown, sorted and filtered, as a CSV file.",
+      "demand": 3,
+      "fit": 3,
+      "binnacle": { "ratatui": "missing", "web": "missing", "note": "An app concern over the Table Source, not the Grid's; a helper could live beside fromRows.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "yes", "tanstack": "no", "glide": "no", "handsontable": "yes", "visidata": "yes" },
+      "evidence": [
+        { "title": "AG Grid: CSV export", "url": "https://www.ag-grid.com/javascript-data-grid/csv-export/" }
+      ]
+    },
+    {
+      "id": "sparklines",
+      "name": "In-cell charts",
+      "kind": "rendering",
+      "category": "Rendering",
+      "description": "Small charts drawn inside cells: sparklines, bars and progress.",
+      "demand": 2,
+      "fit": 5,
+      "binnacle": { "ratatui": "partial", "web": "shipped", "note": "The web adapter ships bar and sparkline Cell Renderers.", "issue": null },
+      "products": { "ag-grid": "paid", "mui-x": "no", "tanstack": "no", "glide": "yes", "handsontable": "no", "visidata": "no" },
+      "evidence": [
+        { "title": "AG Grid: sparklines", "url": "https://www.ag-grid.com/javascript-data-grid/sparklines-overview/" }
+      ]
+    },
+    {
+      "id": "column-resize",
+      "name": "Column resizing",
+      "kind": "layout",
+      "category": "Columns",
+      "description": "Drag a header edge to resize a column; double-click to fit its content.",
+      "demand": 4,
+      "fit": 5,
+      "binnacle": { "ratatui": "shipped", "web": "shipped", "note": "Both adapters resize from the header Gaps and auto-size on double-click.", "issue": null },
+      "products": { "ag-grid": "yes", "mui-x": "yes", "tanstack": "yes", "glide": "yes", "handsontable": "yes", "visidata": "yes" },
+      "evidence": [
+        { "title": "MUI X: column dimensions", "url": "https://mui.com/x/react-data-grid/column-dimensions/" }
+      ]
+    }
+  ]
+}

@@ -138,29 +138,56 @@ test("the focused row's IDs survive a reorder, so a reorder alone does not fire"
   }
 });
 
-test("over any clicks, each change differs from the one before, the last matches the grid, and quiet frames send nothing", () =>
+/** Up to eight clicks on visible cells, each plain, Shift or Ctrl, with a frame after each. */
+function clicks(tc: hegel.TestCase) {
+  const w = watched(table(tc.draw(gs.integers({ minValue: 1, maxValue: 40 }))).source);
+  w.frame();
+  // Only rows on screen can be clicked: 300 px tall less the header shows 14.
+  const onScreen = Math.min(w.h.snapshot.rows.count, 14);
+  for (let i = tc.draw(gs.integers({ minValue: 1, maxValue: 8 })); i > 0; i--) {
+    const row = tc.draw(gs.integers({ minValue: 0, maxValue: onScreen - 1 }));
+    const col = tc.draw(gs.integers({ minValue: 0, maxValue: 2 }));
+    w.h.click(...cell(row, col), tc.draw(gs.sampledFrom([0, SHIFT, CTRL])));
+    w.frame();
+  }
+  return w;
+}
+
+test("over any clicks, no change repeats the one before, and quiet frames send nothing", () =>
   hegel.test((tc) => {
-    const { h, changes, frame } = watched(table(tc.draw(gs.integers({ minValue: 1, maxValue: 40 }))).source);
+    const { h, changes, frame } = clicks(tc);
     try {
-      frame();
-      const s0 = h.snapshot;
-      for (let i = tc.draw(gs.integers({ minValue: 1, maxValue: 8 })); i > 0; i--) {
-        const row = tc.draw(gs.integers({ minValue: 0, maxValue: Math.min(s0.rows.count, 12) - 1 }));
-        const col = tc.draw(gs.integers({ minValue: 0, maxValue: 2 }));
-        h.click(...cell(row, col), tc.draw(gs.sampledFrom([0, SHIFT, CTRL])));
-        frame();
-      }
       const sent = changes.length;
       frame();
       frame();
       expect(changes).toHaveLength(sent);
       for (let i = 1; i < changes.length; i++) expect(changes[i]).not.toEqual(changes[i - 1]);
+    } finally {
+      h.destroy();
+    }
+  }));
+
+test("over any clicks, the last change describes the grid's focus, range and Picks", () =>
+  hegel.test((tc) => {
+    const { h, changes } = clicks(tc);
+    try {
       const s = h.snapshot;
-      const last = changes.at(-1);
+      const last = changes.at(-1) ?? { focus: null, selection: null, picked: [] };
       const focus = s.rows.focus && s.cols.focus ? { rowId: h.feed.rowId(s.rows.focus.key!), colId: h.feed.colId(s.cols.focus.key!) } : null;
-      expect(last?.focus ?? null).toEqual(focus);
-      expect(new Set(last?.picked ?? [])).toEqual(new Set(s.picked.map((k) => h.feed.rowId(k))));
-      expect(last?.selection?.rows.count ?? 0).toBe(s.selectionRange ? s.selectionRange.rows.end - s.selectionRange.rows.start : 0);
+      expect(last.focus).toEqual(focus);
+      expect(new Set(last.picked)).toEqual(new Set(s.picked.map((k) => h.feed.rowId(k))));
+      const range = s.selectionRange;
+      if (range === null) {
+        expect(last.selection).toBeNull();
+      } else {
+        // Every row clicked is on screen, so the range's IDs are all known.
+        const rows = Array.from({ length: range.rows.end - range.rows.start }, (_, i) => `r${range.rows.start + i}`);
+        const cols = ["a", "b", "c"].slice(range.cols.start, range.cols.end);
+        expect(last.selection).toEqual({
+          rows: { count: rows.length, first: rows[0], last: rows.at(-1), ids: rows },
+          cols: { count: cols.length, first: cols[0], last: cols.at(-1), ids: cols },
+        });
+      }
     } finally {
       h.destroy();
     }
