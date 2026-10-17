@@ -1,0 +1,19 @@
+// The one place TypeScript encodes small enums as the integers the wasm
+// inputs take. `crates/binnacle-wasm/src/codes.rs` is the other side.
+
+export type AxisName = "rows" | "cols";
+
+export const AXIS_CODE: Record<AxisName, number> = { rows: 0, cols: 1 };
+
+export const AXES: readonly AxisName[] = ["rows", "cols"];
+
+export const POINTER = { down: 0, move: 1, up: 2 } as const;
+
+/** The modifier bitmask the wasm `pointer` input takes. */
+export function modifierBits(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }): number {
+  return (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+}
+
+export const FOCUS_STEP = { item: 0, page: 1, edge: 2 } as const;
+
+export const EDIT_END = { commit: 0, cancel: 1 } as const;

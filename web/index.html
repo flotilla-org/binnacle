@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>binnacle web demo</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/demo/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>binnacle</h1>
+      <nav id="sources" aria-label="Source"></nav>
+      <a id="page-link" href="/react.html">React page</a>
+      <div id="tools"></div>
+      <div id="look">
+        <label for="theme">Theme</label>
+        <select id="theme"></select>
+        <label class="check"><input type="checkbox" id="follow" /> Follow the system theme</label>
+        <label for="border">Border</label>
+        <select id="border"></select>
+        <label class="check"><input type="checkbox" id="aria" /> ARIA table</label>
+      </div>
+    </header>
+    <main id="grid"></main>
+    <footer id="status"></footer>
+    <script type="module" src="/demo/main.ts"></script>
+  </body>
+</html>

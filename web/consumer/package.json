@@ -1,0 +1,21 @@
+{
+  "name": "binnacle-consumer",
+  "private": true,
+  "description": "A fixture app that uses @flotilla-org/binnacle as a consumer would: through the workspace, by its exports",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@flotilla-org/binnacle": "workspace:*",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

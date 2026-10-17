@@ -1,0 +1,424 @@
+// Plumbing between a Table Source and the Grid: counts, Window answers
+// interned into Keys, the value cache, Change Notices from the source's
+// sinks, and the answers to the Effects a Table Source owns (sort, Locate,
+// move). Every answer goes through one `settle`.
+
+import { AXES, AXIS_CODE, type AxisName } from "./codes";
+import { createValueCache, PENDING } from "./cache";
+import type { Content } from "./content";
+import type { Effect } from "./effects";
+import { createInterner, positionInterner, type KeyInterner } from "./interner";
+import { createSettler, type Request } from "./settle";
+import type { Snapshot, SortColumn, StripItem } from "./snapshot";
+import type { AxisMethods, ChangeNotice, Located, SortSpec, TableSource } from "./source";
+import type { WebGrid } from "./wasm";
+
+export interface Feed<RowId = unknown, ColId = unknown> {
+  /** The counts to create the Grid with; 0 for one still on the way, which lands as a Reset. */
+  counts(): { rows: number; cols: number };
+  /** Takes Change Notices for `grid` from now on and attaches the source's sinks. */
+  connect(grid: WebGrid): void;
+  /** Answers the Windows `begin_frame` asked for (`[rowStart, rowEnd, colStart, colEnd]`, `NaN` for none). */
+  fill(grid: WebGrid, requests: Float64Array): void;
+  /** Answers the Effects the Table Source owns (sort, Locate, move); `false` for the rest. */
+  answer(effect: Effect): boolean;
+  /** The values and labels for the Snapshot's visible items, asking for missing values. */
+  content(s: Snapshot): Content;
+  /** Whether a cell in the viewport still waits for its Keys or its value. */
+  loading(s: Snapshot): boolean;
+  /** The value shown for the cell with these Keys: an edit not yet answered for, or the cache's; `undefined` if neither. */
+  value(row: bigint, col: bigint): unknown;
+  /** A value committed by an edit, shown for its cell until the source answers for the cell again. */
+  edited(row: bigint, col: bigint, value: unknown): void;
+  /** Whether values landed since the last call, so the frame should paint. */
+  takeLanded(): boolean;
+  /** The user's ID for a Key, if known. */
+  rowId(key: bigint): RowId | undefined;
+  colId(key: bigint): ColId | undefined;
+  /** The Key for a user's ID, issuing one if it has none yet. */
+  rowKey(id: RowId): bigint;
+  colKey(id: ColId): bigint;
+  /** Detaches from the source and aborts outstanding requests. */
+  destroy(): void;
+}
+
+export interface FeedHooks {
+  /** A late answer landed or a Change Notice arrived: run a frame. */
+  schedule?(): void;
+}
+
+const NOTICE_CODE: Record<ChangeNotice["type"], number> = {
+  Reordered: 0,
+  Reset: 1,
+  Inserted: 2,
+  Removed: 3,
+  ContentChanged: 4,
+};
+
+const DIRECTION_CODE = { ascending: 0, descending: 1 } as const;
+
+interface Axis<Id> {
+  source: AxisMethods<Id, unknown>;
+  interner: KeyInterner<Id>;
+  position: boolean;
+  /** The Window asked for and not answered yet: not asked again, and aborted once another is asked. */
+  waiting: { asked: string; request: Request } | null;
+}
+
+function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => string | number | bigint }): Axis<Id> {
+  const position = source.identity === "position";
+  return {
+    source,
+    interner: position ? (positionInterner as unknown as KeyInterner<Id>) : createInterner(source.idKey),
+    position,
+    waiting: null,
+  };
+}
+
+interface Block {
+  rows: bigint[];
+  cols: bigint[];
+  request: Request;
+}
+
+const known = <T>(v: T | undefined): v is T => v !== undefined;
+
+export function createFeed<RowId, ColId, V>(
+  source: TableSource<RowId, ColId, V>,
+  hooks: FeedHooks = {},
+): Feed<RowId, ColId> {
+  const schedule = () => hooks.schedule?.();
+  let landed = false;
+  const settler = createSettler(
+    () => {
+      landed = true;
+      schedule();
+    },
+    (error) => console.error("binnacle: a Table Source request failed", error),
+  );
+  const { settle } = settler;
+  const rows = axisOf<RowId>(source.rows as AxisMethods<RowId, unknown>);
+  const cols = axisOf<ColId>(source.cols as AxisMethods<ColId, unknown>);
+  const axes: Record<AxisName, Axis<unknown>> = { rows: rows as Axis<unknown>, cols: cols as Axis<unknown> };
+  const cache = createValueCache<V>();
+  /** Committed edits by Key pair, until a fresh answer for the cell lands. */
+  const edits = new Map<string, unknown>();
+  const pair = (row: bigint, col: bigint) => `${row}:${col}`;
+  let grid: WebGrid | null = null;
+  let detach: (() => void) | undefined;
+  let shown: Snapshot | null = null;
+  /** The Sort Spec last applied, to restore if a sort fails. */
+  let applied: SortColumn[] = [];
+  /** Counts that arrived before the Grid did. */
+  const early: Partial<Record<AxisName, number>> = {};
+  /** Cell blocks in flight, aborted once none of their rows or columns is in view. */
+  const blocks = new Set<Block>();
+  /** The sort in flight, aborted when a newer one is asked for. */
+  let sorting: Request | null = null;
+  /** Locates in flight by axis and Key, each aborted when the same Key is asked for again. */
+  const locating = new Map<string, Request>();
+
+  const reset = (axis: AxisName, count: number) => {
+    if (grid) grid.notify(AXIS_CODE[axis], NOTICE_CODE.Reset, count, NaN);
+    else early[axis] = count;
+    schedule();
+  };
+
+  /** The count now if the source answers at once; a late one lands as a Reset. */
+  const askCount = (axis: AxisName): number | undefined => {
+    let now: number | undefined;
+    let late = false;
+    settle(() => axes[axis].source.count(), (count) => {
+      if (late) reset(axis, count);
+      else now = count;
+    });
+    late = true;
+    return now;
+  };
+
+  /** Positions to the visible Keys at them, on `axis`, as the last painted Snapshot had them. */
+  const visibleAt = (axis: AxisName, start: number, end: number) => {
+    const keys = new Set<bigint>();
+    const all = new Set<bigint>();
+    for (const item of shown?.[axis].strip ?? []) {
+      if (item.key === null) continue;
+      all.add(item.key);
+      if (item.position >= start && item.position < end) keys.add(item.key);
+    }
+    return { keys, all };
+  };
+
+  /** Applies a Change Notice on `axis`: the cache, the interner, then the Grid. */
+  const notify = (axis: AxisName, notice: ChangeNotice) => {
+    // Aborts the Windows and cells in flight; their `otherwise` forgets them.
+    settler.bump();
+    const { interner, position } = axes[axis];
+    switch (notice.type) {
+      case "Reset":
+        cache.clear();
+        interner.rebuild();
+        settle(() => axes[axis].source.count(), (count) => reset(axis, count), { fresh: true });
+        return;
+      case "ContentChanged": {
+        // Visible items outside the range keep their values; the rest, which
+        // cannot be placed, are asked for again when they come into view.
+        const { keys, all } = visibleAt(axis, notice.start, notice.end);
+        cache.retain(axis, (k) => all.has(k) && !keys.has(k));
+        break;
+      }
+      default:
+        // Values follow Keys through a reorder, unless the Keys are Positions.
+        if (position) {
+          cache.clear();
+          edits.clear();
+        }
+    }
+    const [a, b] =
+      notice.type === "Inserted" || notice.type === "Removed"
+        ? [notice.at, notice.n]
+        : notice.type === "ContentChanged"
+          ? [notice.start, notice.end]
+          : [NaN, NaN];
+    grid?.notify(AXIS_CODE[axis], NOTICE_CODE[notice.type], a, b);
+    schedule();
+  };
+
+  const sinkFor = (axis: AxisName) => ({ notify: (notice: ChangeNotice) => notify(axis, notice) });
+
+  const keysOf = <Id>(axis: Axis<Id>, ids: Id[]) => BigUint64Array.from(ids, (id) => axis.interner.key(id));
+
+  const markSortable = (keys: BigUint64Array) => {
+    const sort = source.rows.sort;
+    for (const key of keys) {
+      const id = cols.interner.id(key);
+      const sortable = sort !== undefined && id !== undefined && (source.rows.sortable?.(id) ?? true);
+      grid?.set_sortable(key, sortable);
+    }
+  };
+
+  const sortApplied = (spec: SortColumn[]) => {
+    applied = spec;
+    grid?.sort_applied(
+      BigUint64Array.from(spec, (c) => c.key),
+      Uint8Array.from(spec, (c) => DIRECTION_CODE[c.direction]),
+    );
+  };
+
+  const answerSort = (requested: SortColumn[]) => {
+    const sort = source.rows.sort;
+    if (!sort) return sortApplied([]);
+    const spec: SortSpec<ColId> = [];
+    for (const c of requested) {
+      const id = cols.interner.id(c.key);
+      if (id === undefined) return sortApplied(applied);
+      spec.push({ id, direction: c.direction });
+    }
+    const previous = applied;
+    // The Grid still counts the superseded request's answer: aborting it
+    // answers with the spec in force.
+    sorting?.abort();
+    sorting = settle(
+      (signal) => sort.call(source.rows, spec, signal),
+      (now) => sortApplied(now.map((c) => ({ key: cols.interner.key(c.id), direction: c.direction }))),
+      { otherwise: () => sortApplied(previous) },
+    );
+  };
+
+  const located = (axis: AxisName, key: bigint, answer: Located) => {
+    const [code, position] = answer.type === "Found" ? [0, answer.position] : [1, answer.suggest ?? NaN];
+    grid?.located(AXIS_CODE[axis], key, code, position);
+  };
+
+  const answerLocate = (axis: AxisName, key: bigint) => {
+    const { source: s, interner, position } = axes[axis];
+    const id = interner.id(key);
+    const gone: Located = { type: "Gone", suggest: null };
+    if (id === undefined) return located(axis, key, gone);
+    if (s.locate) {
+      // The Grid acts on the last answer it is due for this Key, so a
+      // superseded request is answered at once, and ignored.
+      const at = `${axis}:${key}`;
+      locating.get(at)?.abort();
+      const done = () => locating.delete(at);
+      const request = settle(
+        (signal) => s.locate!(id, signal),
+        (answer) => (done(), located(axis, key, answer)),
+        { otherwise: () => (done(), located(axis, key, gone)) },
+      );
+      if (request.pending) locating.set(at, request);
+      return;
+    }
+    // Like the Rust IdentitySource: a Position identity is where it says.
+    const count = shown?.[axis].count ?? 0;
+    located(axis, key, position && Number(key) < count ? { type: "Found", position: Number(key) } : gone);
+  };
+
+  const answerMove = (axis: AxisName, keys: bigint[], to: number) => {
+    const { source: s, interner } = axes[axis];
+    const ids = keys.map((k) => interner.id(k));
+    if (!s.move || !ids.every(known)) return;
+    settle(() => s.move!(ids, to), (moved) => {
+      if (moved) notify(axis, { type: "Reordered" });
+    });
+  };
+
+  /** Asks for the block `rowKeys` by `colKeys`, marking it pending until it lands. */
+  const ask = (rowKeys: bigint[], colKeys: bigint[]) => {
+    const rowIds = rowKeys.map((k) => rows.interner.id(k));
+    const colIds = colKeys.map((k) => cols.interner.id(k));
+    if (!rowIds.every(known) || !colIds.every(known)) return;
+    for (const r of rowKeys) for (const c of colKeys) cache.set(r, c, PENDING);
+    let block: Block | undefined;
+    const done = () => block && blocks.delete(block);
+    const request = settle(
+      (signal) => source.cells(rowIds, colIds, signal),
+      (block) => {
+        done();
+        rowKeys.forEach((r, i) => {
+          const values = block[i] ?? [];
+          colKeys.forEach((c, j) => {
+            if (cache.get(r, c) === PENDING) cache.set(r, c, values[j] as V);
+            edits.delete(pair(r, c));
+          });
+        });
+      },
+      {
+        fresh: true,
+        otherwise: () => {
+          done();
+          for (const r of rowKeys) for (const c of colKeys) cache.unpend(r, c);
+        },
+      },
+    );
+    if (request.pending) blocks.add((block = { rows: rowKeys, cols: colKeys, request }));
+  };
+
+  /**
+   * Asks for the visible cells the cache lacks, one block per set of missing
+   * columns: scrolling down asks for new rows by every column, across for
+   * every row by new columns, diagonally for both.
+   */
+  const request = (s: Snapshot) => {
+    const rowKeys = s.rows.strip.flatMap((i) => (i.key === null ? [] : [i.key]));
+    const colKeys = s.cols.strip.flatMap((i) => (i.key === null ? [] : [i.key]));
+    const shownRows = new Set(rowKeys);
+    const shownCols = new Set(colKeys);
+    // A block none of whose rows (or columns) is in view any more is not wanted.
+    for (const b of blocks) {
+      if (!b.rows.some((r) => shownRows.has(r)) || !b.cols.some((c) => shownCols.has(c))) b.request.abort();
+    }
+    const missing = new Map<string, { rows: bigint[]; cols: bigint[] }>();
+    for (const r of rowKeys) {
+      const lacking = colKeys.filter((c) => cache.get(r, c) === undefined);
+      if (!lacking.length) continue;
+      const id = lacking.join(",");
+      const block = missing.get(id);
+      if (block) block.rows.push(r);
+      else missing.set(id, { rows: [r], cols: lacking });
+    }
+    cache.prune(shownRows, shownCols);
+    for (const block of missing.values()) ask(block.rows, block.cols);
+  };
+
+  const valueAt = (row: bigint, col: bigint): unknown => {
+    const p = pair(row, col);
+    if (edits.has(p)) return edits.get(p);
+    const v = cache.get(row, col);
+    return v === PENDING ? undefined : v;
+  };
+
+  const value = (row: StripItem | undefined, col: StripItem | undefined): unknown =>
+    row?.key == null || col?.key == null ? undefined : valueAt(row.key, col.key);
+
+  const content: Content = {
+    value: (i, j) => value(shown?.rows.strip[i], shown?.cols.strip[j]),
+    label: (axis, item) => {
+      const { source: s, interner } = axes[axis];
+      const id = item.key === null ? undefined : interner.id(item.key);
+      const label = id === undefined ? undefined : s.label?.(id, item.position);
+      if (label !== undefined) return label;
+      return axis === "rows" || id === undefined ? String(item.position + 1) : String(id);
+    },
+    id: (axis, item) => (item.key === null ? undefined : axes[axis].interner.id(item.key)),
+  };
+
+  return {
+    counts: () => ({ rows: askCount("rows") ?? 0, cols: askCount("cols") ?? 0 }),
+    connect(g) {
+      grid = g;
+      for (const axis of AXES) {
+        const count = early[axis];
+        if (count !== undefined) reset(axis, count);
+      }
+      detach = source.attach?.({ rows: sinkFor("rows"), cols: sinkFor("cols") });
+    },
+    fill(g, requests) {
+      for (const name of AXES) {
+        const i = AXIS_CODE[name];
+        const start = requests[i * 2]!;
+        const end = requests[i * 2 + 1]!;
+        if (Number.isNaN(start)) continue;
+        const axis = axes[name];
+        const asked = `${start}:${end}`;
+        if (axis.waiting?.asked === asked) continue;
+        axis.waiting?.request.abort();
+        const request = settle(
+          (signal) => axis.source.window(start, end, signal),
+          (ids) => {
+            axis.waiting = null;
+            const keys = keysOf(axis, ids);
+            (grid ?? g).set_window(i, start, keys);
+            if (name === "cols") markSortable(keys);
+          },
+          { fresh: true, otherwise: () => (axis.waiting = null) },
+        );
+        if (request.pending) axis.waiting = { asked, request };
+      }
+    },
+    answer(effect) {
+      switch (effect.type) {
+        case "SortRequested":
+          answerSort(effect.spec);
+          return true;
+        case "Locate":
+          answerLocate(effect.axis, effect.key);
+          return true;
+        case "MoveRequested":
+          answerMove(effect.axis, effect.keys, effect.to);
+          return true;
+        default:
+          return false;
+      }
+    },
+    content(s) {
+      shown = s;
+      request(s);
+      return content;
+    },
+    loading(s) {
+      // The Strips include overscan; only what the viewport shows counts.
+      const inView = (axis: AxisName) =>
+        s[axis].strip.filter((i) => i.offset + i.size > s[axis].header && i.offset < s[axis].extent);
+      const cols = inView("cols");
+      return inView("rows").some((r) => cols.some((c) => value(r, c) === undefined));
+    },
+    value: valueAt,
+    edited(row, col, value) {
+      edits.set(pair(row, col), value);
+      landed = true;
+    },
+    takeLanded() {
+      const was = landed;
+      landed = false;
+      return was;
+    },
+    rowId: (key) => rows.interner.id(key),
+    colId: (key) => cols.interner.id(key),
+    rowKey: (id) => rows.interner.key(id),
+    colKey: (id) => cols.interner.key(id),
+    destroy() {
+      detach?.();
+      settler.close();
+    },
+  };
+}

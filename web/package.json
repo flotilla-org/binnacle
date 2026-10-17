@@ -1,0 +1,60 @@
+{
+  "name": "@flotilla-org/binnacle",
+  "version": "0.1.0",
+  "description": "binnacle's web adapter: the binnacle Grid in wasm, painted on a canvas",
+  "private": true,
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm/binnacle_wasm.js",
+    "wasm/binnacle_wasm.d.ts",
+    "wasm/binnacle_wasm_bg.wasm"
+  ],
+  "scripts": {
+    "wasm": "wasm-pack build ../crates/binnacle-wasm --target web --release --no-pack --out-dir ../../web/wasm",
+    "wasm:debug": "wasm-pack build ../crates/binnacle-wasm --target web --dev --no-pack --out-dir ../../web/wasm",
+    "build": "pnpm wasm && rolldown -c && tsc -p tsconfig.build.json",
+    "dev": "pnpm wasm && vite --port 5754 --strictPort --host 127.0.0.1",
+    "typecheck": "pnpm wasm && tsc --noEmit",
+    "test": "pnpm wasm && vitest run && pnpm test:wasm",
+    "test:wasm": "wasm-pack test --node ../crates/binnacle-wasm",
+    "e2e": "pnpm build && playwright test"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@hegeldev/hegel": "^0.4.10",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "rolldown": "1.2.14",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "koffi"
+    ]
+  }
+}
