@@ -16,7 +16,7 @@
     "wasm": "wasm-pack build ../crates/binnacle-wasm --target web --release --no-pack --out-dir ../../web/wasm",
     "wasm:debug": "wasm-pack build ../crates/binnacle-wasm --target web --dev --no-pack --out-dir ../../web/wasm",
     "dev": "pnpm wasm && vite --port 5754 --strictPort --host 127.0.0.1",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm wasm && tsc --noEmit",
     "test": "pnpm wasm && vitest run && pnpm test:wasm",
     "test:wasm": "wasm-pack test --node ../crates/binnacle-wasm",
     "e2e": "pnpm wasm && playwright test"
