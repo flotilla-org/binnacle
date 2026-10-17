@@ -29,6 +29,9 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   /** The user's ID for a Key, if known. */
   rowId(key: bigint): RowId | undefined;
   colId(key: bigint): ColId | undefined;
+  /** The Key for a user's ID, issuing one if it has none yet. */
+  rowKey(id: RowId): bigint;
+  colKey(id: ColId): bigint;
   /** Detaches from the source and aborts outstanding requests. */
   destroy(): void;
 }
@@ -289,6 +292,7 @@ export function createFeed<RowId, ColId, V>(
       if (label !== undefined) return label;
       return axis === "rows" || id === undefined ? String(item.position + 1) : String(id);
     },
+    id: (axis, item) => (item.key === null ? undefined : axes[axis].interner.id(item.key)),
   };
 
   return {
@@ -350,6 +354,8 @@ export function createFeed<RowId, ColId, V>(
     },
     rowId: (key) => rows.interner.id(key),
     colId: (key) => cols.interner.id(key),
+    rowKey: (id) => rows.interner.key(id),
+    colKey: (id) => cols.interner.key(id),
     destroy() {
       detach?.();
       abort.abort();

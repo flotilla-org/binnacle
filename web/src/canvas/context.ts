@@ -2,7 +2,9 @@
 // the areas it divides into.
 
 import type { Content } from "../content";
+import type { Flashes } from "../flash";
 import type { Measure } from "../measure";
+import type { RendererChoice } from "../renderer";
 import type { Snapshot } from "../snapshot";
 import type { Theme } from "../theme";
 
@@ -25,6 +27,11 @@ export interface PaintContext {
   pixel: number;
   /** The widget has DOM focus, so the Grid's focus is drawn. */
   focused: boolean;
+  /** Chooses each cell's Cell Renderer. */
+  renderer: RendererChoice<unknown, unknown, unknown>;
+  flashes: Flashes;
+  /** The frame's time, `performance.now()` ms. */
+  now: number;
 }
 
 /** Horizontal text padding inside a cell or header, CSS px. */

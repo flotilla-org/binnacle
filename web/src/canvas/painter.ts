@@ -3,8 +3,10 @@
 
 import { headersBorder, type BorderStyle } from "../border";
 import type { Content } from "../content";
+import { createFlashes, type Flashes } from "../flash";
 import { createMeasure, type Measure } from "../measure";
 import type { Painter } from "../painter";
+import { plainText, type RendererChoice } from "../renderer";
 import type { Snapshot } from "../snapshot";
 import type { Theme } from "../theme";
 import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
@@ -20,6 +22,10 @@ export interface CanvasPainter extends Painter {
   /** Whether the widget has DOM focus: the Grid's focus is drawn only then. */
   focused: boolean;
   border: BorderStyle;
+  /** Chooses each cell's Cell Renderer, by the Table Source's IDs. */
+  renderer: RendererChoice<unknown, unknown, unknown>;
+  /** The value-change flashes the host marked. */
+  readonly flashes: Flashes;
 }
 
 export function createCanvasPainter(theme: Theme): CanvasPainter {
@@ -39,6 +45,8 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     theme,
     focused: false,
     border: headersBorder,
+    renderer: () => plainText,
+    flashes: createFlashes(),
     resize(w, h, ratio) {
       width = w;
       height = h;
@@ -69,8 +77,11 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         bottom: Math.min(height, lastRow ? lastRow.offset + lastRow.size : s.rows.header),
         pixel: 1 / dpr,
         focused: painter.focused,
+        renderer: painter.renderer,
+        flashes: painter.flashes,
+        now: performance.now(),
       };
-      paintBody(p);
+      const animating = paintBody(p);
       paintSelection(p);
       paintColumnHeaders(p);
       paintRowNumbers(p);
@@ -79,7 +90,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintBorders(p, painter.border, layer);
       paintFocus(p);
       paintGuides(p);
-      return false;
+      return animating || painter.flashes.sweep(p.now);
     },
   };
   return painter;

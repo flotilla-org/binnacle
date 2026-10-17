@@ -35,6 +35,20 @@ export {
   type BorderStyle,
   type BorderWeight,
 } from "./border";
+export {
+  byColumn,
+  byRow,
+  plainText,
+  type Align,
+  type CellCanvas,
+  type CellMeasure,
+  type CellRenderer,
+  type CellStatus,
+  type RendererChoice,
+} from "./renderer";
+export { textRenderer, type TextOptions } from "./renderers/text";
+export { sparklineRenderer, type SparklineOptions } from "./renderers/sparkline";
+export { barRenderer, type BarOptions } from "./renderers/bar";
 export type { Content } from "./content";
 export type { Painter } from "./painter";
 export type { Snapshot } from "./snapshot";

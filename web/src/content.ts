@@ -9,4 +9,6 @@ export interface Content {
   value(row: number, col: number): unknown;
   /** The header text for a visible item on `axis`. */
   label(axis: AxisName, item: StripItem): string;
+  /** The Table Source's own ID for a visible item; `undefined` while its Key has not arrived. */
+  id(axis: AxisName, item: StripItem): unknown;
 }

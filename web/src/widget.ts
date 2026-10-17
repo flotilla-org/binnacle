@@ -12,6 +12,7 @@ import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
+import type { RendererChoice } from "./renderer";
 import type { Snapshot, Span } from "./snapshot";
 import type { TableSource } from "./source";
 import { AXIS_CODE } from "./codes";
@@ -34,6 +35,8 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   keymap?: KeyBindings;
   /** Whose key conventions the defaults follow; detected from the browser if omitted. */
   platform?: Platform;
+  /** Chooses each cell's Cell Renderer by the Table Source's IDs; the source's `renderer`, else plain text, by default. */
+  renderer?: RendererChoice<NoInfer<RowId>, NoInfer<ColId>, NoInfer<V>>;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
 }
@@ -75,6 +78,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly cleanup: (() => void)[] = [];
   private raf = 0;
   private force = true;
+  /** Paint next frame without Damage: the last paint asked, or a flash was marked. */
+  private repaint = false;
   private dpr = 1;
   private size = { width: 0, height: 0 };
   private destroyed = false;
@@ -103,6 +108,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.themeChoice = options.theme ?? systemTheme;
     this.painter = createCanvasPainter(this.resolveTheme());
     this.painter.border = options.border ?? headersBorder;
+    const renderer = options.renderer ?? options.source.renderer;
+    if (renderer) this.painter.renderer = renderer as RendererChoice<unknown, unknown, unknown>;
     this.layer.append(this.painter.element);
     this.sizer.append(this.layer);
     this.scroller.append(this.sizer);
@@ -201,6 +208,19 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.element.remove();
   }
 
+  /**
+   * Flashes the cell at `rowId` and `colId` (or the whole row, with no
+   * column) in the Theme's flash style, fading over 800 ms: call it when the
+   * host sees a value change.
+   */
+  flash(rowId: RowId, colId?: ColId): void {
+    if (this.destroyed) return;
+    const col = colId === undefined ? null : this.feed.colKey(colId);
+    this.painter.flashes.mark(this.feed.rowKey(rowId), col, performance.now());
+    this.repaint = true;
+    this.schedule();
+  }
+
   /** The Theme the grid draws in, for the current colour scheme when set to one per scheme. */
   get theme(): Theme {
     return this.painter.theme;
@@ -272,8 +292,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       this.painter.resize(width, height, dpr);
       this.force = true;
     }
-    const { snapshot, painted, again } = runFrame(this.parts, this.force);
+    const { snapshot, painted, again } = runFrame(this.parts, this.force || this.repaint);
     this.force = false;
+    this.repaint = again;
     this.last = snapshot;
     this.input.place(snapshot);
     if (again) this.schedule();
@@ -293,6 +314,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       measure: this.painter.measure,
       theme: this.painter.theme,
       headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
+      renderer: this.painter.renderer,
     };
     if (answerAutoSize(effect, s, s && this.feed.content(s), sizing)) return;
     this.feed.answer(effect);

@@ -5,6 +5,7 @@
 // defaults: no sort, every Locate `Gone`, every move refused.
 
 import type { Primitive } from "./interner";
+import type { RendererChoice } from "./renderer";
 import type { SortDirection } from "./snapshot";
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -68,6 +69,8 @@ export interface TableSource<RowId, ColId, V = unknown> {
   cols: AxisSource<ColId, RowId>;
   /** The values where `rows` and `cols` cross, one array per row. */
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
+  /** How each cell draws unless the widget is given its own `renderer`; plain text by default. */
+  renderer?: RendererChoice<RowId, ColId, V>;
   /** Hands the source its sinks for Change Notices; returns how to detach. */
   attach?(sink: { rows: AxisSink<RowId>; cols: AxisSink<ColId> }): () => void;
 }

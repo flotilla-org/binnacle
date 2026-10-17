@@ -2,10 +2,11 @@
 // listing it here.
 
 import { huge } from "./huge";
+import { live } from "./live";
 import { records } from "./records";
 
 import type { DemoSource } from "./demo-source";
 
 export type { DemoSource, Mounted } from "./demo-source";
 
-export const SOURCES: readonly DemoSource[] = [records, huge];
+export const SOURCES: readonly DemoSource[] = [records, huge, live];

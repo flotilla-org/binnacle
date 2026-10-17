@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const port = 5755;
+// BINNACLE_E2E_PORT lets parallel worktrees run end-to-end tests at once.
+const port = Number(process.env.BINNACLE_E2E_PORT ?? 5755);
 
 export default defineConfig({
   testDir: "e2e",

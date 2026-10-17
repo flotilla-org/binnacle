@@ -7,19 +7,24 @@
 // Row IDs are the rows' indices in the array (their Logical Indices); column
 // IDs are the property names.
 
+import { byColumn, type CellRenderer } from "./renderer";
 import type { AxisSink, ChangeNotice, Located, SortSpec, TableSource } from "./source";
 import { bridge } from "./wasm";
 
 type WebMemory = InstanceType<ReturnType<typeof bridge>["WebMemory"]>;
 
 /** A column of `fromRows`: a property of the rows. */
-export interface RowsColumn<R> {
-  key: keyof R & string;
-  /** Header text; the property name by default. */
-  label?: string;
-  /** Whether its header sorts; `true` by default. */
-  sortable?: boolean;
-}
+export type RowsColumn<R> = {
+  [K in RowsColumnId<R>]: {
+    key: K;
+    /** Header text; the property name by default. */
+    label?: string;
+    /** Whether its header sorts; `true` by default. */
+    sortable?: boolean;
+    /** How its cells draw; plain text by default. */
+    renderer?: CellRenderer<R[K]>;
+  };
+}[RowsColumnId<R>];
 
 export type RowsColumnId<R> = keyof R & string;
 
@@ -117,6 +122,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       label: (id) => columns[index.get(id) ?? -1]?.label ?? id,
     },
     cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => rows[r]![c])),
+    renderer: byColumn((id: ColId) => columns[index.get(id) ?? -1]?.renderer as CellRenderer<R[keyof R]> | undefined),
     attach(sink) {
       sinks.add(sink);
       return () => sinks.delete(sink);
