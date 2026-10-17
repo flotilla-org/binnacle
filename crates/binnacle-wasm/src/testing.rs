@@ -383,8 +383,9 @@ pub fn every_effect() -> Vec<WireStamped> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 9] = [
+pub const SCENARIOS: [&str; 10] = [
     "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
+    "sorted",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -486,6 +487,15 @@ pub fn scenario(name: &str) -> Grid {
             grid.pointer(PointerEvent::down(60.0, 24.0 + 21.0 + 5.0));
             grid.pointer(PointerEvent::moved(220.0, 24.0 + 21.0 * 4.0 + 5.0));
         }
+        "sorted" => {
+            // Applied: column 2 descending, then column 0; column 1 pending.
+            grid.sort_applied(SortSpec::new(vec![
+                SortColumn::descending(key(2)),
+                SortColumn::ascending(key(0)),
+            ]));
+            grid.pointer(PointerEvent::down(150.0, 10.0).modifiers(Modifiers::SHIFT));
+            grid.pointer(PointerEvent::up(150.0, 10.0).modifiers(Modifiers::SHIFT));
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -530,6 +540,10 @@ mod tests {
                     let range = s.selection_range().unwrap();
                     assert_eq!((range.rows, range.cols), (1..5, 0..3));
                 }
+                "sorted" => {
+                    assert_eq!(s.applied_sort().columns().len(), 2);
+                    assert_eq!(s.requested_sort().map(|r| r.columns().len()), Some(3));
+                }
                 _ => {}
             }
         }
@@ -544,7 +558,8 @@ mod tests {
                 "Editing",
                 "Idle",
                 "Idle",
-                "DraggingSelection"
+                "DraggingSelection",
+                "Idle"
             ]
         );
     }

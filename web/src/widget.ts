@@ -18,8 +18,8 @@ import { AXIS_CODE } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
-export interface GridOptions<V> {
-  source: TableSource<number, number, V>;
+export interface GridOptions<RowId, ColId, V = unknown> {
+  source: TableSource<RowId, ColId, V>;
   /** Row height, CSS px. */
   rowHeight?: number;
   /** Default column width, CSS px. */
@@ -35,10 +35,10 @@ export interface GridOptions<V> {
   /** Whose key conventions the defaults follow; detected from the browser if omitted. */
   platform?: Platform;
   /** Called after every frame the widget runs. */
-  onFrame?(frame: FrameInfo): void;
+  onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
 }
 
-export interface FrameInfo {
+export interface FrameInfo<RowId = unknown, ColId = unknown> {
   /** Whether the frame painted. */
   painted: boolean;
   /** The rows in view: the first and last visible Positions, and the count. */
@@ -50,6 +50,8 @@ export interface FrameInfo {
   selection: { rows: Span; cols: Span } | null;
   /** How many rows are picked. */
   picked: number;
+  /** The focused cell by the Table Source's own IDs, if any. */
+  focusIds: { row: RowId; col: ColId } | null;
 }
 
 const HEADER_HEIGHT = 28;
@@ -58,7 +60,7 @@ const SCROLLER_STYLE = "position: absolute; inset: 0; overflow: auto; overscroll
 const SIZER_STYLE = "position: relative;";
 const LAYER_STYLE = "position: sticky; top: 0; left: 0; overflow: hidden;";
 
-export class GridWidget<V = unknown> {
+export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   readonly element: HTMLElement;
   private readonly scroller: HTMLDivElement;
   private readonly sizer: HTMLDivElement;
@@ -66,7 +68,7 @@ export class GridWidget<V = unknown> {
   private readonly painter: CanvasPainter;
   private readonly parts: FrameParts;
   private readonly scroll: ScrollMapping;
-  private readonly feed: Feed;
+  private readonly feed: Feed<RowId, ColId>;
   private readonly grid: WebGrid;
   private readonly input: Input;
   private last: Snapshot | null = null;
@@ -80,14 +82,17 @@ export class GridWidget<V = unknown> {
   private readonly dark = matchMedia("(prefers-color-scheme: dark)");
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
-  static async create<V>(container: HTMLElement, options: GridOptions<V>): Promise<GridWidget<V>> {
+  static async create<RowId, ColId, V>(
+    container: HTMLElement,
+    options: GridOptions<RowId, ColId, V>,
+  ): Promise<GridWidget<RowId, ColId, V>> {
     await loadBinnacle();
     return new GridWidget(container, options);
   }
 
   private constructor(
     container: HTMLElement,
-    private readonly options: GridOptions<V>,
+    private readonly options: GridOptions<RowId, ColId, V>,
   ) {
     this.element = div("binnacle", ROOT_STYLE);
     this.scroller = div("binnacle-scroller", SCROLLER_STYLE);
@@ -104,8 +109,9 @@ export class GridWidget<V = unknown> {
     this.element.append(this.scroller);
     container.append(this.element);
 
-    this.feed = createFeed(options.source);
+    this.feed = createFeed(options.source, { schedule: () => this.schedule() });
     this.grid = this.createGrid();
+    this.feed.connect(this.grid);
     const { scroller, sizer } = this;
     const port: ScrollPort = {
       get scrollTop() {
@@ -233,8 +239,11 @@ export class GridWidget<V = unknown> {
     const rowHeight = o.rowHeight ?? 24;
     const theme = this.painter.theme;
     const gaps = borderGaps(this.painter.border);
-    // The row-number band fits the widest default label, the row count.
-    const band = Math.ceil(this.painter.measure.width(String(counts.rows), theme.font)) + 2 * PAD;
+    // The row-number band fits the widest default label: as many digits as
+    // the row count, each as wide as the widest digit.
+    const digits = String(counts.rows).length;
+    const digit = Math.max(...Array.from("0123456789", (d) => this.painter.measure.width(d, theme.font)));
+    const band = Math.ceil(digit * digits) + 2 * PAD;
     const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? HEADER_HEIGHT).gap(gaps.rows).min_size(rowHeight);
     const cols = new b.WebAxis(counts.cols, o.columnWidth ?? 120).header(Math.max(40, band)).gap(gaps.cols).min_size(24);
     return new b.WebGrid(rows, cols);
@@ -273,6 +282,7 @@ export class GridWidget<V = unknown> {
       rows: span(snapshot, "rows"),
       cols: span(snapshot, "cols"),
       ...selection(snapshot),
+      focusIds: this.focusIds(snapshot),
     });
   }
 
@@ -285,6 +295,16 @@ export class GridWidget<V = unknown> {
       headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
     };
     if (answerAutoSize(effect, s, s && this.feed.content(s), sizing)) return;
+    this.feed.answer(effect);
+  }
+
+  private focusIds(s: Snapshot): FrameInfo<RowId, ColId>["focusIds"] {
+    const row = s.rows.focus?.key;
+    const col = s.cols.focus?.key;
+    if (row == null || col == null) return null;
+    const rowId = this.feed.rowId(row);
+    const colId = this.feed.colId(col);
+    return rowId === undefined || colId === undefined ? null : { row: rowId, col: colId };
   }
 
   private watchDpr(): void {

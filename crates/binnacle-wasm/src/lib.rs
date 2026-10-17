@@ -9,10 +9,12 @@
 pub mod codes;
 pub mod effect;
 mod grid;
+mod memory;
 pub mod snapshot;
 pub mod testing;
 
 pub use grid::{WebAxis, WebGrid, debug_every_effect, debug_scenarios};
+pub use memory::WebMemory;
 
 use wasm_bindgen::prelude::*;
 

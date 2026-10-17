@@ -2,7 +2,7 @@
 // values made up from the Position, like the ratatui demo's `--huge`.
 
 import type { TableSource } from "../../src";
-import type { DemoSource } from "./index";
+import { plain } from "./demo-source";
 
 const ROWS = 1e15;
 const COLS = 12;
@@ -17,8 +17,4 @@ const source: TableSource<number, number, string> = {
   cells: (rows, cols) => rows.map((r) => cols.map((c) => `r${r}c${c}`)),
 };
 
-export const huge: DemoSource = {
-  name: "huge",
-  description: "10^15 rows, position identity",
-  options: { source, columnWidth: 168 },
-};
+export const huge = plain("huge", "10^15 rows, position identity", { source, columnWidth: 168 });

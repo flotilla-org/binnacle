@@ -1,13 +1,11 @@
 // The demo's sources, one module each. Add a source by adding its module and
 // listing it here.
 
-import type { GridOptions } from "../../src";
 import { huge } from "./huge";
+import { records } from "./records";
 
-export interface DemoSource {
-  name: string;
-  description: string;
-  options: GridOptions<unknown>;
-}
+import type { DemoSource } from "./demo-source";
 
-export const SOURCES: readonly DemoSource[] = [huge];
+export type { DemoSource, Mounted } from "./demo-source";
+
+export const SOURCES: readonly DemoSource[] = [records, huge];

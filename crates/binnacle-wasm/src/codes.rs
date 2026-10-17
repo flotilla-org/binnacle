@@ -4,7 +4,10 @@
 
 use std::fmt;
 
-use binnacle_core::{Axis, Button, FocusStep, Modifiers, PointerKind, Position};
+use binnacle_core::{
+    Axis, Button, ChangeNotice, FocusStep, Key, Located, Modifiers, PointerKind, Position,
+    SortColumn, SortSpec,
+};
 
 /// The largest count or Position that crosses as an `f64` exactly
 /// (`Number.MAX_SAFE_INTEGER`).
@@ -91,9 +94,81 @@ pub fn position(n: f64) -> Position {
     count(n).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// A Change Notice from its code and up to two Positions (`NaN` where the
+/// notice takes fewer): Reordered 0, Reset 1 (count), Inserted 2 (at, n),
+/// Removed 3 (at, n), ContentChanged 4 (start, end).
+pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
+    match code {
+        0 => ChangeNotice::Reordered,
+        1 => ChangeNotice::Reset(position(a)),
+        2 => ChangeNotice::Inserted {
+            at: position(a),
+            n: position(b),
+        },
+        3 => ChangeNotice::Removed {
+            at: position(a),
+            n: position(b),
+        },
+        _ => ChangeNotice::ContentChanged(position(a)..position(b)),
+    }
+}
+
+/// A `Locate` answer: Found 0 (at `position`) or Gone 1 (suggesting
+/// `position`, `NaN` for no suggestion).
+pub fn located(code: u8, position: f64) -> Located {
+    match code {
+        0 => Located::Found(self::position(position)),
+        _ => Located::Gone {
+            suggest: (!position.is_nan()).then(|| self::position(position)),
+        },
+    }
+}
+
+/// A Sort Spec from parallel lists of column Keys and directions
+/// (ascending 0, descending 1).
+pub fn sort_spec(keys: &[u64], directions: &[u8]) -> SortSpec {
+    SortSpec::new(
+        keys.iter()
+            .zip(directions)
+            .map(|(&k, &d)| match d {
+                0 => SortColumn::ascending(Key(k)),
+                _ => SortColumn::descending(Key(k)),
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notices_decode_with_their_positions() {
+        assert_eq!(notice(0, f64::NAN, f64::NAN), ChangeNotice::Reordered);
+        assert_eq!(notice(1, 12.0, f64::NAN), ChangeNotice::Reset(12));
+        assert_eq!(notice(2, 3.0, 4.0), ChangeNotice::Inserted { at: 3, n: 4 });
+        assert_eq!(notice(3, 3.0, 4.0), ChangeNotice::Removed { at: 3, n: 4 });
+        assert_eq!(notice(4, 3.0, 7.0), ChangeNotice::ContentChanged(3..7));
+    }
+
+    #[test]
+    fn located_answers_decode_with_an_optional_suggestion() {
+        assert_eq!(located(0, 9.0), Located::Found(9));
+        assert_eq!(located(1, 4.0), Located::Gone { suggest: Some(4) });
+        assert_eq!(located(1, f64::NAN), Located::Gone { suggest: None });
+    }
+
+    #[test]
+    fn sort_specs_pair_keys_with_directions() {
+        let spec = sort_spec(&[7, 2], &[1, 0]);
+        assert_eq!(
+            spec.columns(),
+            &[
+                SortColumn::descending(Key(7)),
+                SortColumn::ascending(Key(2))
+            ]
+        );
+    }
 
     #[test]
     fn whole_numbers_up_to_the_safe_limit_are_counts() {

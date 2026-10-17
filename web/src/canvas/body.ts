@@ -20,7 +20,7 @@ export function paintBody(p: PaintContext): void {
     cols.forEach((col, j) => {
       const value = row.key === null || col.key === null ? undefined : p.content.value(i, j);
       const loading = value === undefined;
-      const text = loading ? "…" : String(value);
+      const text = loading ? "…" : value === null ? "" : String(value);
       ctx.fillStyle = loading ? theme.loading : theme.body.color;
       ctx.fillText(measure.fit(text, theme.font, col.size - 2 * PAD), col.offset + PAD, y);
     });

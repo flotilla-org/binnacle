@@ -16,7 +16,18 @@ interface DebugFrame {
 }
 
 describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
-  const scenarios = ["plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging"];
+  const scenarios = [
+    "plain",
+    "busy",
+    "resizing",
+    "band",
+    "moving",
+    "editing",
+    "locating",
+    "scrolled",
+    "dragging",
+    "sorted",
+  ];
 
   test("the scenario list matches Rust's", () => {
     expect(bridge().debug_scenarios()).toEqual(scenarios);

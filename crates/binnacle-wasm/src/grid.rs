@@ -121,6 +121,23 @@ impl WebGrid {
         self.grid.set_sortable(Key(key), sortable);
     }
 
+    /// A Change Notice on axis `a`; see [`codes::notice`].
+    pub fn notify(&mut self, a: u8, code: u8, first: f64, second: f64) {
+        self.grid
+            .notify(axis(a), codes::notice(code, first, second));
+    }
+
+    /// The Sort Spec the Table Source now applies; see [`codes::sort_spec`].
+    pub fn sort_applied(&mut self, keys: &[u64], directions: &[u8]) {
+        self.grid.sort_applied(codes::sort_spec(keys, directions));
+    }
+
+    /// The answer to `Locate`; see [`codes::located`].
+    pub fn located(&mut self, a: u8, key: u64, code: u8, position: f64) {
+        self.grid
+            .located(axis(a), Key(key), codes::located(code, position));
+    }
+
     pub fn scroll(&mut self, dx: f32, dy: f32) {
         self.grid.action(Action::Scroll { dx, dy });
     }

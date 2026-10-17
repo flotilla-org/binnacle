@@ -46,7 +46,7 @@ export function runFrame(parts: FrameParts, force: boolean): FrameResult {
   const { damage } = snapshot;
   let painted = false;
   let again = false;
-  if (parts.painter && (force || damage.layout || damage.selection || damage.positions)) {
+  if (parts.painter && (parts.feed.takeLanded() || force || damage.layout || damage.selection || damage.positions)) {
     again = parts.painter.paint(snapshot, parts.feed.content(snapshot));
     painted = true;
   }

@@ -2,7 +2,18 @@
 
 export { GridWidget, type FrameInfo, type GridOptions } from "./widget";
 export { defaultBindings, type Action, type FocusStep, type KeyBindings, type Platform } from "./keymap";
-export type { AxisSource, MaybePromise, TableSource } from "./source";
+export type {
+  AxisSink,
+  AxisSource,
+  ChangeNotice,
+  Located,
+  MaybePromise,
+  Primitive,
+  SortDirection,
+  SortSpec,
+  TableSource,
+} from "./source";
+export { fromRows, type RowsColumn, type RowsColumnId, type RowsSource } from "./rows";
 export {
   catppuccinMocha,
   light,

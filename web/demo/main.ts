@@ -5,7 +5,6 @@ import {
   borderName,
   borderStyles,
   catppuccinMocha,
-  GridWidget,
   presets,
   systemTheme,
   type BorderStyle,
@@ -13,7 +12,7 @@ import {
   type Theme,
   type ThemeChoice,
 } from "../src";
-import { SOURCES, type DemoSource } from "./sources";
+import { SOURCES, type DemoSource, type Mounted } from "./sources";
 
 const host = document.querySelector<HTMLElement>("#grid")!;
 const tabs = document.querySelector<HTMLElement>("#sources")!;
@@ -21,9 +20,10 @@ const status = document.querySelector<HTMLElement>("#status")!;
 const themes = document.querySelector<HTMLSelectElement>("#theme")!;
 const follow = document.querySelector<HTMLInputElement>("#follow")!;
 const borders = document.querySelector<HTMLSelectElement>("#border")!;
+const toolbar = document.querySelector<HTMLElement>("#tools")!;
 
 const number = new Intl.NumberFormat("en");
-let current: GridWidget | null = null;
+let current: Mounted | null = null;
 let shown: DemoSource | null = null;
 const params = new URL(location.href).searchParams;
 let pickedTheme: Theme = presets.find((t) => t.name === params.get("theme")) ?? presets[0]!;
@@ -42,7 +42,10 @@ function describe(frame: FrameInfo): string {
     `rows ${number.format(rows.first + 1)} to ${number.format(rows.last + 1)} of ${number.format(rows.count)}`,
     `columns ${number.format(cols.first + 1)} to ${number.format(cols.last + 1)} of ${number.format(cols.count)}`,
   ];
-  if (focus) parts.push(`focus row ${number.format(focus.row + 1)}, column ${number.format(focus.col + 1)}`);
+  if (focus) {
+    const ids = shown?.showIds && frame.focusIds ? ` (${String(frame.focusIds.row)} / ${String(frame.focusIds.col)})` : "";
+    parts.push(`focus row ${number.format(focus.row + 1)}, column ${number.format(focus.col + 1)}${ids}`);
+  }
   if (selection) {
     const size = (s: { start: number; end: number }) => number.format(s.end - s.start);
     parts.push(`selected ${size(selection.rows)} × ${size(selection.cols)}`);
@@ -72,11 +75,11 @@ function remember(): void {
 
 async function show(source: DemoSource) {
   current?.destroy();
+  current = null;
   shown = source;
   for (const tab of tabs.querySelectorAll("button")) tab.setAttribute("aria-pressed", String(tab.dataset.source === source.name));
   remember();
-  current = await GridWidget.create(host, {
-    ...source.options,
+  current = await source.mount(host, toolbar, {
     theme: themeChoice(),
     border,
     onFrame: reflect,

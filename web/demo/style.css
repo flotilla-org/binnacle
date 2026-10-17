@@ -111,3 +111,19 @@ footer {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+#tools { display: flex; gap: 8px; margin-left: auto; }
+#tools:empty { display: none; }
+#tools:not(:empty) + #look { margin-left: 16px; }
+
+#tools input[type="search"] {
+  font: inherit;
+  width: 150px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--ink);
+}
+
+#tools input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
