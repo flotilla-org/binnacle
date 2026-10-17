@@ -5,6 +5,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { matches, rows } from "../demo/sources/records-data";
+import { dblclick } from "./dblclick";
 
 const HEADER = 28;
 const ROW = 24;
@@ -24,6 +25,10 @@ async function cell(page: Page, row: number) {
 const shownRows = async (page: Page) => /rows [\d,]+ to [\d,]+/.exec((await status(page).textContent()) ?? "")?.[0];
 const tag = (page: Page) => grids(page).evaluate((el) => (el.dataset.tagged = "yes"));
 const tagged = (page: Page) => grids(page).evaluate((el) => el.dataset.tagged === "yes");
+
+/** Waits until the widget has run the frame for the input so far. */
+const settled = (page: Page) =>
+  page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1000, height: 600 });
@@ -96,8 +101,11 @@ test("onCommit and editor props reach the widget: an edit commits through the la
   await page.keyboard.type("Ahoy");
   await page.keyboard.press("Enter");
   await expect(page.locator("#committed")).toHaveText('name of 0 = "Ahoy" (edit 2)');
-  // The port column picks from a list: the custom editor.
-  await page.mouse.dblclick(box!.x + FIRST + 4 * 141, box!.y + HEADER + ROW / 2);
+  // The port column picks from a list: the custom editor. The commit dropped
+  // the grid's Keys for the edited row until its next frame asks again, and a
+  // double-click before then has no cell to activate.
+  await settled(page);
+  await dblclick(page, box!.x + FIRST + 4 * 141, box!.y + HEADER + ROW / 2);
   await page.getByRole("combobox", { name: "Port" }).selectOption("Bergen");
   await page.keyboard.press("Enter");
   await expect(page.locator("#committed")).toHaveText('port of 0 = "Bergen" (edit 3)');

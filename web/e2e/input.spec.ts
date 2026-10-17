@@ -6,6 +6,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import type { FrameInfo } from "../src";
+import { dblclick } from "./dblclick";
 
 const status = (page: Page) => page.locator("#status");
 
@@ -185,7 +186,7 @@ test.describe("pointer", () => {
   });
 
   test("double-clicking a column border fits the column to its visible text", async ({ page }) => {
-    await page.mouse.dblclick(140, 15);
+    await dblclick(page, 140, 15);
     // "r99c0" in 13 px type is far narrower than 100 px.
     await page.mouse.move(300, 300);
     expect(await onBorder(page, 140)).toBe(false);

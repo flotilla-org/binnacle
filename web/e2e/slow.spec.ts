@@ -99,15 +99,25 @@ test("cells show as loading until the slow source answers, then settle", async (
 });
 
 test("a re-sort while the first sort is in flight aborts it, and the grid settles on the latest", async ({ page }) => {
+  await page.clock.install();
   await open(page, "slow");
-  await expect(status(page)).not.toContainText("loading");
   await cell(page, 0);
-  await header(page, 2);
-  await expect(requests(page)).toContainText("1 in flight");
+  await expect(status(page)).toContainText(focus(0, 0));
+  await expect(status(page)).not.toContainText("loading");
+  await expect(requests(page)).toContainText("0 in flight");
+  // The page's clock stops while both sorts are asked, so the first cannot
+  // land first however slowly the browser takes the second click. Clicks
+  // reach the source at once; only its answers wait on the clock. Pausing
+  // jumps the clock a minute ahead, so the jump is still ahead when it lands
+  // on a loaded machine; nothing is in flight to fire on the way.
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 60_000);
   const before = Number((await requests(page).textContent())!.match(/(\d+) aborted/)![1]);
+  await header(page, 2);
+  await expect(requests(page)).toHaveText(`1 in flight · ${before} aborted`);
   // Ascending is still in flight: ask for descending.
   await header(page, 2);
-  await expect(requests(page)).toContainText(`${before + 1} aborted`);
+  await expect(requests(page)).toHaveText(`1 in flight · ${before + 1} aborted`);
+  await page.clock.resume();
   await expect(status(page)).not.toContainText("loading");
   await expect(requests(page)).toContainText("0 in flight", { timeout: 10_000 });
   const descending = byWeight("desc");
