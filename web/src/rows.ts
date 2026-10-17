@@ -4,6 +4,8 @@
 // and a column's sort keys cross only when it is first sorted (numbers as a
 // Float64Array, strings UTF-8 encoded once, so they sort by code point).
 //
+// Rows are treated as immutable until `changed` says one was edited.
+//
 // Row IDs are the rows' indices in the array (their Logical Indices); column
 // IDs are the property names.
 
@@ -33,6 +35,12 @@ export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[ke
   filter(keep: ((row: R) => boolean) | null): void;
   /** The row a row ID names. */
   row(id: number): R;
+  /**
+   * The row `id` names was changed in place: shows its new values and
+   * re-sorts by the sort in force. The filter is not applied again, so a
+   * changed row stays shown.
+   */
+  changed(id: number): void;
   /** Frees the wasm side. */
   destroy(): void;
 }
@@ -76,6 +84,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
   const keys = new Map<ColId, SortKeys>();
   const sinks = new Set<{ rows: AxisSink<number>; cols: AxisSink<ColId> }>();
   let wasm: WebMemory | undefined;
+  let applied: SortSpec<ColId> = [];
   // Created on first use, once the widget has loaded the wasm module.
   const memory = () => (wasm ??= new (bridge().WebMemory)(rows.length, columns.length));
   const tell = (notice: ChangeNotice) => {
@@ -86,26 +95,31 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       ? { type: "Found", position: position! }
       : { type: "Gone", suggest: Number.isNaN(position) ? null : position! };
 
+  const sort = (spec: SortSpec<ColId>) => {
+    const m = memory();
+    for (const { id } of spec) {
+      let k = keys.get(id);
+      if (!k) keys.set(id, (k = extract(rows.map((r) => r[id]))));
+      if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
+      else m.stage_strings(k.bytes, k.ends, k.nulls);
+    }
+    m.sort(
+      BigUint64Array.from(spec, (c) => BigInt(index.get(c.id)!)),
+      Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
+    );
+    applied = spec;
+    tell({ type: "Reordered" });
+  };
+
   return {
     rows: {
       count: () => memory().count(ROWS),
       window: (start, end) => Array.from(memory().window(ROWS, start, end)),
       sort(spec: SortSpec<ColId>) {
-        const m = memory();
         if (spec.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
           throw new Error(`binnacle: fromRows cannot sort by ${spec.map((c) => c.id).join(", ")}`);
         }
-        for (const { id } of spec) {
-          let k = keys.get(id);
-          if (!k) keys.set(id, (k = extract(rows.map((r) => r[id]))));
-          if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
-          else m.stage_strings(k.bytes, k.ends, k.nulls);
-        }
-        m.sort(
-          BigUint64Array.from(spec, (c) => BigInt(index.get(c.id)!)),
-          Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
-        );
-        tell({ type: "Reordered" });
+        sort(spec);
         return spec;
       },
       sortable: (by) => columns[index.get(by) ?? -1]?.sortable !== false,
@@ -133,6 +147,12 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       tell({ type: "Reset" });
     },
     row: (id) => rows[id]!,
+    changed(id) {
+      const at = located(memory().locate(ROWS, id));
+      if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
+      keys.clear();
+      if (applied.length) sort(applied);
+    },
     destroy() {
       wasm?.free();
       wasm = undefined;

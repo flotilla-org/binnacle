@@ -574,3 +574,43 @@ describe("slow sources", () => {
     expect(inFlight.every((x) => x.signal.aborted)).toBe(true);
   });
 });
+
+describe("edited values", () => {
+  test("a committed value shows until the source's fresh answer for the cell lands", async () => {
+    const pending: (() => void)[] = [];
+    const data: Record<string, string> = { x: "old x", y: "old y" };
+    let late = false;
+    let sinks!: Sinks;
+    const source: TableSource<string, string, string> = {
+      rows: { count: () => 2, window: (s, e) => ["x", "y"].slice(s, e) },
+      cols: { count: () => 1, window: () => ["k"] },
+      cells: (rs) => {
+        const answer = () => rs.map((r) => [data[r]!]);
+        return late ? new Promise((resolve) => pending.push(() => resolve(answer()))) : answer();
+      },
+      attach: (s) => ((sinks = s), () => {}),
+    };
+    const h = new Harness(source);
+    try {
+      h.frame();
+      const [x] = h.snapshot.rows.strip;
+      const [k] = h.snapshot.cols.strip;
+      h.feed.edited(x!.key!, k!.key!, "typed");
+      h.frame();
+      expect(h.values()).toEqual([["typed"], ["old y"]]);
+      expect(h.feed.value(x!.key!, k!.key!)).toBe("typed");
+      // The app saves slowly: while the fresh answer is on its way the edit still shows.
+      late = true;
+      data.x = "saved";
+      sinks.rows.notify({ type: "ContentChanged", start: 0, end: 1 });
+      h.frame();
+      expect(h.values()).toEqual([["typed"], ["old y"]]);
+      for (const p of pending.splice(0)) p();
+      await Promise.resolve();
+      h.frame();
+      expect(h.values()).toEqual([["saved"], ["old y"]]);
+    } finally {
+      h.destroy();
+    }
+  });
+});

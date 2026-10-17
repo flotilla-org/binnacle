@@ -1,6 +1,7 @@
 // @flotilla-org/binnacle: the binnacle Grid on a web page.
 
 export { GridWidget, type FrameInfo, type GridOptions } from "./widget";
+export type { Editor } from "./editing";
 export { defaultBindings, type Action, type FocusStep, type KeyBindings, type Platform } from "./keymap";
 export type {
   AxisSink,

@@ -26,6 +26,10 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   content(s: Snapshot): Content;
   /** Whether a cell in the viewport still waits for its Keys or its value. */
   loading(s: Snapshot): boolean;
+  /** The value shown for the cell with these Keys: an edit not yet answered for, or the cache's; `undefined` if neither. */
+  value(row: bigint, col: bigint): unknown;
+  /** A value committed by an edit, shown for its cell until the source answers for the cell again. */
+  edited(row: bigint, col: bigint, value: unknown): void;
   /** Whether values landed since the last call, so the frame should paint. */
   takeLanded(): boolean;
   /** The user's ID for a Key, if known. */
@@ -97,6 +101,9 @@ export function createFeed<RowId, ColId, V>(
   const cols = axisOf<ColId>(source.cols as AxisMethods<ColId, unknown>);
   const axes: Record<AxisName, Axis<unknown>> = { rows: rows as Axis<unknown>, cols: cols as Axis<unknown> };
   const cache = createValueCache<V>();
+  /** Committed edits by Key pair, until a fresh answer for the cell lands. */
+  const edits = new Map<string, unknown>();
+  const pair = (row: bigint, col: bigint) => `${row}:${col}`;
   let grid: WebGrid | null = null;
   let detach: (() => void) | undefined;
   let shown: Snapshot | null = null;
@@ -161,7 +168,10 @@ export function createFeed<RowId, ColId, V>(
       }
       default:
         // Values follow Keys through a reorder, unless the Keys are Positions.
-        if (position) cache.clear();
+        if (position) {
+          cache.clear();
+          edits.clear();
+        }
     }
     const [a, b] =
       notice.type === "Inserted" || notice.type === "Removed"
@@ -268,6 +278,7 @@ export function createFeed<RowId, ColId, V>(
           const values = block[i] ?? [];
           colKeys.forEach((c, j) => {
             if (cache.get(r, c) === PENDING) cache.set(r, c, values[j] as V);
+            edits.delete(pair(r, c));
           });
         });
       },
@@ -309,11 +320,15 @@ export function createFeed<RowId, ColId, V>(
     for (const block of missing.values()) ask(block.rows, block.cols);
   };
 
-  const value = (row: StripItem | undefined, col: StripItem | undefined): unknown => {
-    if (row?.key == null || col?.key == null) return undefined;
-    const v = cache.get(row.key, col.key);
+  const valueAt = (row: bigint, col: bigint): unknown => {
+    const p = pair(row, col);
+    if (edits.has(p)) return edits.get(p);
+    const v = cache.get(row, col);
     return v === PENDING ? undefined : v;
   };
+
+  const value = (row: StripItem | undefined, col: StripItem | undefined): unknown =>
+    row?.key == null || col?.key == null ? undefined : valueAt(row.key, col.key);
 
   const content: Content = {
     value: (i, j) => value(shown?.rows.strip[i], shown?.cols.strip[j]),
@@ -386,6 +401,11 @@ export function createFeed<RowId, ColId, V>(
         s[axis].strip.filter((i) => i.offset + i.size > s[axis].header && i.offset < s[axis].extent);
       const cols = inView("cols");
       return inView("rows").some((r) => cols.some((c) => value(r, c) === undefined));
+    },
+    value: valueAt,
+    edited(row, col, value) {
+      edits.set(pair(row, col), value);
+      landed = true;
     },
     takeLanded() {
       const was = landed;

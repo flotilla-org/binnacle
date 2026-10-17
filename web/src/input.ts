@@ -1,6 +1,7 @@
 // DOM input into the Grid: a persistent transparent textarea at the focused
 // cell holds DOM focus and takes keys through the keymap; pointer events go
-// to the Grid's raw pointer input with the widget's own click count.
+// to the Grid's raw pointer input with the widget's own click count. Typing,
+// composing and the edit keys go to the editor (see `editing.ts`).
 //
 // Touch pans the native scroller (`touch-action: pan-x pan-y`), so a touch on
 // the body becomes a press only once it ends as a tap. The header bands are
@@ -9,6 +10,8 @@
 
 import { createClickCounter } from "./clicks";
 import { AXIS_CODE, FOCUS_STEP, POINTER, modifierBits } from "./codes";
+import { createEditing, type EditHost, type Editing } from "./editing";
+import type { Effect } from "./effects";
 import type { Action, Keymap } from "./keymap";
 import type { Cursor, Rect, Snapshot } from "./snapshot";
 import type { WebGrid } from "./wasm";
@@ -24,12 +27,16 @@ export interface InputHost {
   focusChanged(): void;
   /** The last frame's Snapshot. */
   snapshot(): Snapshot | null;
+  /** What the editor needs from the widget. */
+  edits: Pick<EditHost, "editable" | "value" | "text" | "editor" | "commit" | "theme">;
 }
 
 export interface Input {
   /** Whether the widget has DOM focus. */
   readonly focused: boolean;
-  /** Follows a frame: moves the textarea to the focused cell, sets the pointer shape. */
+  /** Answers the edit Effects; `false` for the rest. */
+  answer(effect: Effect): boolean;
+  /** Follows a frame: moves the textarea to the focused cell (or the editor to the edited one), sets the pointer shape. */
   place(s: Snapshot): void;
   destroy(): void;
 }
@@ -101,6 +108,17 @@ export function createInput(host: InputHost): Input {
   textarea.rows = 1;
   const bands = { top: band("binnacle-band-top"), left: band("binnacle-band-left") };
   layer.append(textarea, bands.top, bands.left);
+  const editing: Editing = createEditing(
+    {
+      ...host.edits,
+      grid,
+      layer,
+      textarea,
+      refocus: () => takeFocus(),
+      changed: () => host.changed(),
+    },
+    TEXTAREA_STYLE,
+  );
 
   const clicks = createClickCounter();
   const cleanup: (() => void)[] = [];
@@ -143,29 +161,54 @@ export function createInput(host: InputHost): Input {
 
   on(textarea, "keydown", (e) => {
     if (e.isComposing) return;
+    if (editing.open) {
+      if (editing.key(e)) host.changed();
+      return;
+    }
     const action = host.keymap.lookup(e);
     if (!action) return;
     e.preventDefault();
     perform(grid, action);
     host.changed();
   });
-  // Until editing lands, typed text has nowhere to go.
-  on(textarea, "input", () => {
-    textarea.value = "";
+  // Typing starts an edit with the typed text; read-only, the text goes nowhere.
+  on(textarea, "input", (e) => {
+    if (editing.open || (e as InputEvent).isComposing) return;
+    if (textarea.value) editing.type();
+    if (!editing.open) textarea.value = "";
+  });
+  // Composing starts an edit at once, so the candidate window opens at the cell.
+  on(textarea, "compositionstart", () => editing.type());
+  on(textarea, "compositionend", () => {
+    if (!editing.open) textarea.value = "";
   });
   on(textarea, "focus", () => {
-    focused = true;
     if (!pressing) focusFirstCell();
-    host.focusChanged();
     host.changed();
   });
-  on(textarea, "blur", () => {
+  // DOM focus may move between the textarea and a custom editor: the widget
+  // has it while it is anywhere inside.
+  on(layer, "focusin", () => {
+    if (focused) return;
+    focused = true;
+    host.focusChanged();
+  });
+  on(layer, "focusout", (e) => {
+    const to = e.relatedTarget;
+    if (to instanceof Node && layer.contains(to)) return;
+    // Focus leaving the page (another window) keeps the edit open; leaving the widget commits it.
+    if (editing.open && document.hasFocus()) {
+      editing.commit();
+      host.changed();
+    }
     focused = false;
     host.focusChanged();
   });
 
   on(layer, "pointerdown", (e) => {
-    if (e.target === textarea) return;
+    if (e.target === textarea || editing.owns(e.target)) return;
+    // A press elsewhere commits the edit before the Grid sees it.
+    editing.commit();
     const { x, y } = at(e);
     const finger = e.pointerType === "touch" && e.target !== bands.top && e.target !== bands.left;
     if (finger) {
@@ -183,6 +226,7 @@ export function createInput(host: InputHost): Input {
     host.changed();
   });
   on(layer, "pointermove", (e) => {
+    if (editing.owns(e.target)) return;
     const { x, y } = at(e);
     if (touch?.id === e.pointerId) {
       touch.moved ||= Math.hypot(x - touch.x, y - touch.y) > 8;
@@ -193,6 +237,7 @@ export function createInput(host: InputHost): Input {
     host.changed();
   });
   on(layer, "pointerup", (e) => {
+    if (editing.owns(e.target)) return;
     const { x, y } = at(e);
     if (touch?.id === e.pointerId) {
       const tap = !touch.moved;
@@ -209,7 +254,9 @@ export function createInput(host: InputHost): Input {
     host.changed();
   });
   // A mouse press, real or made up after a tap, would move DOM focus off the textarea.
-  on(layer, "mousedown", (e) => e.preventDefault());
+  on(layer, "mousedown", (e) => {
+    if (!editing.owns(e.target)) e.preventDefault();
+  });
   // The browser took the pointer away (a pan, a lost capture): end the gesture as if cancelled.
   const lost = (e: PointerEvent) => {
     if (touch?.id === e.pointerId) touch = null;
@@ -248,9 +295,14 @@ export function createInput(host: InputHost): Input {
     get focused() {
       return focused;
     },
+    answer: (effect) => editing.answer(effect),
     place(s) {
+      if (editing.open) {
+        editing.place(s);
+        placed = { x: NaN, y: NaN, width: NaN, height: NaN };
+      }
       const r = within(s.focusRect, s) ?? { x: s.cols.header, y: s.rows.header, width: 1, height: 1 };
-      if (r.x !== placed.x || r.y !== placed.y || r.width !== placed.width || r.height !== placed.height) {
+      if (!editing.open && (r.x !== placed.x || r.y !== placed.y || r.width !== placed.width || r.height !== placed.height)) {
         placed = r;
         Object.assign(textarea.style, {
           left: `${r.x}px`,
@@ -266,6 +318,7 @@ export function createInput(host: InputHost): Input {
     },
     destroy() {
       for (const undo of cleanup) undo();
+      editing.destroy();
       textarea.remove();
       bands.top.remove();
       bands.left.remove();

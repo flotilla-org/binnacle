@@ -52,6 +52,7 @@ function describe(frame: FrameInfo): string {
   }
   if (picked) parts.push(`${number.format(picked)} picked`);
   if (frame.loading) parts.push("loading");
+  if (frame.editing) parts.push("editing");
   return parts.join("  ·  ");
 }
 

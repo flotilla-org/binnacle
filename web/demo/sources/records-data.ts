@@ -13,7 +13,7 @@ export interface RecordRow {
 
 export const RECORDS = 5000;
 const NAMES = ["anchor", "bosun", "capstan", "davit", "ensign", "fathom", "galley", "hawser"];
-const PORTS = ["Aberdeen", "Bergen", "Cádiz", "Dunedin", "Esbjerg", "Funchal", "Gdańsk", "Halifax", "Île d'Yeu"];
+export const PORTS = ["Aberdeen", "Bergen", "Cádiz", "Dunedin", "Esbjerg", "Funchal", "Gdańsk", "Halifax", "Île d'Yeu"];
 
 function generate(i: number): RecordRow {
   // A cheap scramble so the columns are not already in order.

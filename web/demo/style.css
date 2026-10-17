@@ -143,3 +143,6 @@ footer {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+#committed { align-self: center; font-size: 12px; color: var(--muted); min-width: 10em; white-space: nowrap; }
+.port-picker { width: 100%; height: 100%; font: inherit; border: 0; margin: 0; }

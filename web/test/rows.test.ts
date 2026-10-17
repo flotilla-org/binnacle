@@ -20,14 +20,13 @@ interface Rec {
 
 const COLUMNS = [{ key: "n" }, { key: "s" }, { key: "b" }] as const;
 
-const records = gs.arrays(
-  gs.record({
-    n: gs.oneOf(gs.just(null), gs.just(Number.NaN), gs.integers({ minValue: -5, maxValue: 5 }), gs.floats({ allowNan: false })),
-    s: gs.oneOf(gs.just(null), gs.text({ maxSize: 3 }), gs.sampledFrom(["a", "B", "é", "😀", "ﬀ", ""])),
-    b: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 })),
-  }),
-  { maxSize: 40 },
-);
+const fields = {
+  n: gs.oneOf(gs.just(null), gs.just(Number.NaN), gs.integers({ minValue: -5, maxValue: 5 }), gs.floats({ allowNan: false })),
+  s: gs.oneOf(gs.just(null), gs.text({ maxSize: 3 }), gs.sampledFrom(["a", "B", "é", "😀", "ﬀ", ""])),
+  b: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 })),
+};
+
+const records = gs.arrays(gs.record(fields), { maxSize: 40 });
 
 const specs = gs.arrays(
   gs.tuples(gs.sampledFrom<"n" | "s" | "b">(["n", "s", "b"]), gs.sampledFrom<SortDirection>(["ascending", "descending"])),
@@ -81,6 +80,38 @@ describe("fromRows", () => {
         expect(source.rows.sort!(spec, new AbortController().signal)).toEqual(spec);
         if (filtered) source.filter((r) => keep(r));
         expect(order(source)).toEqual(reference(rows, spec, keep));
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("after rows change in place, a sort in force re-sorts by their new values, and each change is told", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+        tc.assume(rows.length > 0);
+      const source = fromRows(rows, COLUMNS);
+      const notices: ChangeNotice[] = [];
+      source.attach!({ rows: { notify: (n) => notices.push(n) }, cols: { notify: () => {} } });
+      try {
+        const spec: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+        const filtered = tc.draw(gs.booleans());
+        const keep = (r: Rec) => !filtered || r.b !== 1;
+        if (filtered) source.filter((r) => keep(r));
+        // The filter is not applied again on a change: the rows shown stay shown.
+        const shown = new Set(rows.filter(keep));
+        source.rows.sort!(spec, new AbortController().signal);
+        const changes = tc.draw(gs.integers({ minValue: 1, maxValue: 4 }));
+        for (let i = 0; i < changes; i++) {
+          const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+          const before = order(source).indexOf(id);
+          Object.assign(rows[id]!, tc.draw(gs.record(fields)));
+          notices.length = 0;
+          source.changed(id);
+          expect(order(source)).toEqual(reference(rows, spec, (r) => shown.has(r)));
+          const told: ChangeNotice[] = before < 0 ? [] : [{ type: "ContentChanged", start: before, end: before + 1 }];
+          if (spec.length) told.push({ type: "Reordered" });
+          expect(notices).toEqual(told);
+        }
       } finally {
         source.destroy();
       }

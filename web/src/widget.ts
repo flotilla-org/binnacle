@@ -4,6 +4,7 @@
 
 import { answerAutoSize } from "./autosize";
 import { borderGaps, headersBorder, type BorderStyle } from "./border";
+import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
@@ -12,7 +13,7 @@ import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
-import type { RendererChoice } from "./renderer";
+import { plainText, type RendererChoice } from "./renderer";
 import type { Snapshot, Span } from "./snapshot";
 import type { TableSource } from "./source";
 import { AXIS_CODE } from "./codes";
@@ -37,6 +38,15 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   platform?: Platform;
   /** Chooses each cell's Cell Renderer by the Table Source's IDs; the source's `renderer`, else plain text, by default. */
   renderer?: RendererChoice<NoInfer<RowId>, NoInfer<ColId>, NoInfer<V>>;
+  /**
+   * Called when an edit is committed, with the textarea's text or a custom
+   * editor's value. The app updates its data and tells the source's sink
+   * `ContentChanged`; the cell shows the committed value until the source
+   * answers for it again. Without `onCommit` the grid is read-only.
+   */
+  onCommit?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>, value: NoInfer<V> | string): void;
+  /** A custom editor for a cell, mounted over it in place of the textarea; `null` or `undefined` for the textarea. */
+  editor?(rowId: NoInfer<RowId>, colId: NoInfer<ColId>): Editor<NoInfer<V>> | null | undefined;
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
 }
@@ -59,6 +69,8 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   loading: boolean;
   /** Whether the painter asked for another frame to animate a pending state. */
   animating: boolean;
+  /** The cell being edited, by the Table Source's own IDs, if an editor is open. */
+  editing: { row: RowId; col: ColId } | null;
 }
 
 const HEADER_HEIGHT = 28;
@@ -176,6 +188,28 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         this.invalidate();
       },
       snapshot: () => this.last,
+      edits: {
+        editable: options.onCommit !== undefined,
+        value: (row, col) => this.feed.value(row, col),
+        text: (row, col) => {
+          const value = this.feed.value(row, col);
+          const ids = this.ids(row, col);
+          if (value === undefined || !ids) return "";
+          const renderer = this.painter.renderer(ids.row, ids.col);
+          return (renderer.text ?? plainText.text!)(value);
+        },
+        editor: (row, col) => {
+          const ids = this.ids(row, col);
+          return (ids && (options.editor?.(ids.row, ids.col) as Editor | null | undefined)) ?? null;
+        },
+        commit: (row, col, value) => {
+          const ids = this.ids(row, col);
+          if (!ids) return;
+          this.feed.edited(row, col, value);
+          options.onCommit?.(ids.row, ids.col, value as V | string);
+        },
+        theme: () => this.painter.theme,
+      },
     });
 
     this.listen(this.scroller, "scroll", () => {
@@ -316,6 +350,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       focusIds: this.focusIds(snapshot),
       loading: this.feed.loading(snapshot),
       animating: again,
+      editing: snapshot.mode.type === "Editing" ? this.ids(snapshot.mode.row, snapshot.mode.col) : null,
     });
   }
 
@@ -328,6 +363,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
       renderer: this.painter.renderer,
     };
+    if (this.input.answer(effect)) return;
     if (answerAutoSize(effect, s, s && this.feed.content(s), sizing)) return;
     this.feed.answer(effect);
   }
@@ -335,7 +371,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private focusIds(s: Snapshot): FrameInfo<RowId, ColId>["focusIds"] {
     const row = s.rows.focus?.key;
     const col = s.cols.focus?.key;
-    if (row == null || col == null) return null;
+    return row == null || col == null ? null : this.ids(row, col);
+  }
+
+  /** The Table Source's IDs for a cell's Keys, if both are known. */
+  private ids(row: bigint, col: bigint): { row: RowId; col: ColId } | null {
     const rowId = this.feed.rowId(row);
     const colId = this.feed.colId(col);
     return rowId === undefined || colId === undefined ? null : { row: rowId, col: colId };

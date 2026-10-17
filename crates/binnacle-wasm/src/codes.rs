@@ -5,7 +5,7 @@
 use std::fmt;
 
 use binnacle_core::{
-    Axis, Button, ChangeNotice, FocusStep, Key, Located, Modifiers, PointerKind, Position,
+    Axis, Button, ChangeNotice, EditEnd, FocusStep, Key, Located, Modifiers, PointerKind, Position,
     SortColumn, SortSpec,
 };
 
@@ -59,6 +59,14 @@ pub fn focus_step(code: u8) -> FocusStep {
         0 => FocusStep::Item,
         1 => FocusStep::Page,
         _ => FocusStep::Edge,
+    }
+}
+
+/// How an edit ended: 0 commit, anything else cancel.
+pub fn edit_end(code: u8) -> EditEnd {
+    match code {
+        0 => EditEnd::Commit,
+        _ => EditEnd::Cancel,
     }
 }
 
@@ -192,6 +200,12 @@ mod tests {
         assert_eq!(modifiers(ALT), Modifiers::ALT);
         assert_eq!(modifiers(META), Modifiers::META);
         assert_eq!(modifiers(SHIFT | META), Modifiers::SHIFT | Modifiers::META);
+    }
+
+    #[test]
+    fn edits_end_in_a_commit_or_a_cancel() {
+        assert_eq!(edit_end(0), EditEnd::Commit);
+        assert_eq!(edit_end(1), EditEnd::Cancel);
     }
 
     #[test]

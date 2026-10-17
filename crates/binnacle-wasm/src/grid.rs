@@ -204,6 +204,16 @@ impl WebGrid {
         self.grid.action(Action::BeginEdit);
     }
 
+    /// The widget opened its editor on the cell with `row` and `col`.
+    pub fn edit_started(&mut self, row: u64, col: u64) {
+        self.grid.edit_started(Key(row), Key(col));
+    }
+
+    /// The widget closed its editor; `end` as [`codes::edit_end`].
+    pub fn edit_ended(&mut self, end: u8) {
+        self.grid.edit_ended(codes::edit_end(end));
+    }
+
     pub fn scroll_by(&mut self, a: u8, items: f64) {
         self.grid.action(Action::ScrollBy {
             axis: axis(a),
