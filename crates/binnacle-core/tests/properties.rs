@@ -612,6 +612,10 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
     let mut target = Target::default();
     // Every Key a pointer resize has been seen on, per axis.
     let mut resized: [BTreeSet<Key>; 2] = Default::default();
+    // Whether a selection drag is in progress. Pointer inputs come last in a
+    // step, so before them it is the last frame's Mode, less any drag a
+    // Cancel or notice earlier in the step ended.
+    let mut dragging = false;
     // Sometimes a frame before any input, so pointer events have a viewport
     // to land in from the start.
     if tc.draw(gs::booleans()) {
@@ -634,6 +638,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                 Input::Action(Action::Cancel) => {
                     moved_focus = true;
                     reveals_focus = false;
+                    dragging = false;
                 }
                 Input::Action(_) => reveals_focus = false,
                 // A click focuses what is under the pointer without scrolling,
@@ -643,13 +648,19 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                     reveals_focus = false;
                 }
                 // A notice cancels a selection drag, restoring the focus from
-                // before its press.
-                Input::Notice(_) => moved_focus = true,
+                // before its press as Cancel does: unplaced, or not revealed.
+                Input::Notice(_) => {
+                    moved_focus = true;
+                    if std::mem::take(&mut dragging) {
+                        reveals_focus = false;
+                    }
+                }
                 // A Reset also may move focus to a suggestion or unplace it,
                 // and a move made before it may not have placed focus at all.
                 Input::Reset(..) => {
                     moved_focus = true;
                     reveals_focus = false;
+                    dragging = false;
                 }
                 // `set_focus` reveals once placed, unless an axis is empty.
                 Input::SetFocus(..) => {
@@ -729,6 +740,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             resized[axis.index()].insert(key);
         }
         target = Target::of(&snap);
+        dragging = snap.mode() == Mode::DraggingSelection;
         check(&snap, &step);
     }
 }
