@@ -8,10 +8,10 @@ import { fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, PORTS, RECORDS, rows, type RecordRow } from "./records-data";
 
-type Value = RecordRow[keyof RecordRow];
+export type Value = RecordRow[keyof RecordRow];
 
 /** The new value for a column from the editor, or `undefined` if it does not fit the column. */
-function parse(col: keyof RecordRow, value: Value | string): Value | undefined {
+export function parse(col: keyof RecordRow, value: Value | string): Value | undefined {
   const text = typeof value === "string" ? value.trim() : value;
   switch (col) {
     case "id":
@@ -30,7 +30,7 @@ function parse(col: keyof RecordRow, value: Value | string): Value | undefined {
 }
 
 /** A list of the ports, for the port column. */
-function portPicker(): Editor<Value> {
+export function portPicker(): Editor<Value> {
   const select = document.createElement("select");
   select.className = "port-picker";
   select.setAttribute("aria-label", "Port");

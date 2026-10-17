@@ -4,6 +4,7 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "lib": ["es2022", "dom", "dom.iterable"],
+    "jsx": "react-jsx",
     "types": ["node", "vite/client"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
