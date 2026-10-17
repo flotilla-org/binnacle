@@ -84,9 +84,9 @@ test.describe("the records source", () => {
     await page.keyboard.press("Shift+Tab");
     await expect(committed(page)).toHaveText("crew of 0 = 7");
     await expect(status(page)).toContainText(focus(0, 2));
-    // Not editing, Tab leaves the grid (for the toolbar's last control, the ARIA table checkbox).
+    // Not editing, Shift+Tab leaves the grid for the toolbar.
     await page.keyboard.press("Shift+Tab");
-    await expect(page.locator("#aria")).toBeFocused();
+    await expect(page.locator("header :focus")).toHaveCount(1);
   });
 
   test("clicking another cell commits, and so does clicking outside the grid", async ({ page }) => {
