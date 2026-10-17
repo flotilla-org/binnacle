@@ -6,8 +6,8 @@ use std::time::Duration;
 use crate::{BorderStyle, ColorSupport, Theme};
 
 /// How [`render_with`](crate::render_with) draws: the Theme, the Border
-/// Style, the current time, the terminal's colour capability and whether to
-/// draw scrollbars.
+/// Style, the current time, the terminal's colour capability, whether to draw
+/// scrollbars and the message for a table with nothing to show.
 #[derive(Clone, Debug)]
 pub struct RenderContext<'a> {
     pub theme: &'a Theme,
@@ -18,6 +18,8 @@ pub struct RenderContext<'a> {
     pub colors: ColorSupport,
     /// Whether to draw scrollbars (see [`layout`](crate::layout)).
     pub scrollbars: bool,
+    /// Centred in the body when an axis has no items: "No rows" unless set.
+    pub empty: &'a str,
 }
 
 impl<'a> RenderContext<'a> {
@@ -30,6 +32,7 @@ impl<'a> RenderContext<'a> {
             now: Duration::ZERO,
             colors: ColorSupport::TrueColor,
             scrollbars: true,
+            empty: "No rows",
         }
     }
 
@@ -47,5 +50,9 @@ impl<'a> RenderContext<'a> {
 
     pub fn scrollbars(self, scrollbars: bool) -> Self {
         RenderContext { scrollbars, ..self }
+    }
+
+    pub fn empty(self, empty: &'a str) -> Self {
+        RenderContext { empty, ..self }
     }
 }

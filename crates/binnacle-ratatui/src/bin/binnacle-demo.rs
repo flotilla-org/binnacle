@@ -7,9 +7,10 @@
 //! pending. Focus and picks stay on their records. Drag a column header to
 //! move the column (a selected column takes the other selected ones with
 //! it); a cyan line shows where it will drop, and widths go with their
-//! columns. Press Ctrl+F to show only records with a crew of 6 or more, and
-//! again to show them all: focus stays on its record, or moves to the nearest
-//! one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
+//! columns. Press Ctrl+F to show only records with a crew of 6 or more, again
+//! for a crew of 13 or more (there are none, so the body says "No rows match
+//! the filter"), and again to show them all: focus stays on its record, or
+//! moves to the nearest one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
 //! which neither sort, move nor filter. The records and tickers label their
 //! rows with their Keys, which stay with them through sorts and filters; the
 //! huge table numbers its rows. Its row-number band fits the
@@ -38,7 +39,7 @@
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
 //! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
 //! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
-//! Ctrl+F toggles the filter. Click to focus, Shift-click or drag to select,
+//! Ctrl+F cycles the filter. Click to focus, Shift-click or drag to select,
 //! Ctrl-click to pick rows, click a row number to select its row. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to what it draws. The bottom
@@ -116,6 +117,9 @@ impl Record {
         }
     }
 }
+
+/// The minimum crew each Ctrl+F filter keeps, in turn; `None` keeps all.
+const CREW_FILTERS: [Option<i64>; 3] = [None, Some(6), Some(13)];
 
 const HEADERS: [&str; 4] = ["id", "name", "weight", "crew"];
 
@@ -246,7 +250,8 @@ enum Table {
     Records {
         rows: Vec<Record>,
         source: Box<MemorySource<Record>>,
-        filtered: bool,
+        /// The index into [`CREW_FILTERS`] in force.
+        filter: usize,
         /// `Some` for the slow source.
         held: Option<Held>,
     },
@@ -403,22 +408,29 @@ impl Table {
         }
     }
 
-    /// Turns the crew filter on or off and tells the Grid.
-    fn toggle_filter(&mut self, grid: &mut Grid) {
+    /// Moves to the next crew filter and tells the Grid.
+    fn next_filter(&mut self, grid: &mut Grid) {
         if let Table::Records {
             rows,
             source,
-            filtered,
+            filter,
             ..
         } = self
         {
-            *filtered = !*filtered;
-            let notice = if *filtered {
-                source.filter(rows, |r| r.crew >= 6)
-            } else {
-                source.clear_filter()
+            *filter = (*filter + 1) % CREW_FILTERS.len();
+            let notice = match CREW_FILTERS[*filter] {
+                Some(min) => source.filter(rows, move |r| r.crew >= min),
+                None => source.clear_filter(),
             };
             grid.notify(Axis::Rows, notice);
+        }
+    }
+
+    /// What the body says when no rows are left.
+    fn empty(&self) -> &'static str {
+        match self {
+            Table::Records { filter, .. } if *filter > 0 => "No rows match the filter",
+            _ => "No rows",
         }
     }
 
@@ -740,7 +752,7 @@ fn main() -> io::Result<()> {
         let table = Table::Records {
             rows,
             source,
-            filtered: false,
+            filter: 0,
             held: slow.then(Vec::new),
         };
         (table, grid)
@@ -787,7 +799,8 @@ fn main() -> io::Result<()> {
                 let ctx = RenderContext::new(&themes[theme])
                     .border(border)
                     .colors(colors)
-                    .at(start.elapsed());
+                    .at(start.elapsed())
+                    .empty(table.empty());
                 let fill = |grid: &mut Grid, viewport| fill(grid, &table, viewport);
                 layout = begin_frame(&mut grid, &ctx, area, fill);
                 if app.fit_rows {
@@ -856,7 +869,7 @@ fn main() -> io::Result<()> {
                         continue;
                     }
                     if ctrl && key.code == KeyCode::Char('f') {
-                        table.toggle_filter(&mut grid);
+                        table.next_filter(&mut grid);
                         continue;
                     }
                     if let Some(action) = keymap.action(&key) {

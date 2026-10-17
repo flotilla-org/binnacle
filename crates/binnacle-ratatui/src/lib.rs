@@ -17,11 +17,11 @@ pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
 pub use keymap::Keymap;
 pub use mouse::Mouse;
-use renderer::fit;
 pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
 };
+use renderer::{char_count, fit};
 pub use scrollbar::{BarEvent, Layout, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
@@ -276,6 +276,9 @@ pub fn render_with(
             }
         }
     }
+    if Axis::ALL.into_iter().any(|a| snapshot.count(a) == 0) {
+        empty(ctx.empty, theme, (left, top), area, buf);
+    }
     border::draw(snapshot, ctx.border, theme, area, buf);
     let mut mark = |x: i64, y: i64, ch: char, style: Style| {
         if (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y) {
@@ -344,6 +347,21 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     let line = format!("{line:<width$}");
     let clip = (left, f32::INFINITY, top);
     put(buf, area, (rect.x, rect.y), clip, &line, style);
+}
+
+/// Writes `message` centred in the body, the part of `area` past the header
+/// bands that end at `(left, top)`, on its middle line.
+fn empty(message: &str, theme: &Theme, (left, top): (f32, f32), area: Rect, buf: &mut Buffer) {
+    let (x0, y0) = (cell(left).max(0), cell(top).max(0));
+    let (width, height) = (i64::from(area.width) - x0, i64::from(area.height) - y0);
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let message = fit(message, u32::try_from(width).unwrap_or(u32::MAX));
+    let room = width - i64::from(char_count(&message));
+    let at = ((x0 + room / 2) as f32, (y0 + (height - 1) / 2) as f32);
+    let style = theme.body.patch(theme.loading);
+    put(buf, area, at, (left, f32::INFINITY, top), &message, style);
 }
 
 /// Patches `sweep` over the cells `xs` of line `y` in `area` (relative to

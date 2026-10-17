@@ -176,9 +176,10 @@ fn dragging_the_thumb_to_the_end_scrolls_to_the_end_and_a_release_lets_go() {
     assert_eq!(m.scrollbar(&drag, &snapshot, &layout), BarEvent::Missed);
 }
 
-/// On any axis, however long, the thumb is one unbroken run of at least one
-/// cell inside its track, at the track's start when scrolled to the start and
-/// at its end when scrolled to the end.
+/// On any axis with items, however many, the thumb is one unbroken run of at
+/// least one cell inside its track, at the track's start when scrolled to the
+/// start and at its end when scrolled to the end. An axis with no items has a
+/// bare track.
 #[hegel::test(test_cases = 300)]
 fn the_thumb_is_one_run_of_at_least_a_cell_on_any_axis(tc: TestCase) {
     let count = |max| tc.draw(gs::integers::<u64>().min_value(0).max_value(max));
@@ -208,6 +209,10 @@ fn the_thumb_is_one_run_of_at_least_a_cell_on_any_axis(tc: TestCase) {
         };
         let cells = thumb(&buf, bar);
         let track = bar.width.max(bar.height);
+        if snapshot.count(axis) == 0 {
+            assert!(cells.is_empty(), "{axis:?} has no items but a thumb");
+            continue;
+        }
         assert!(!cells.is_empty(), "{axis:?} has no thumb in {bar:?}");
         let (first, last) = (cells[0], cells[cells.len() - 1]);
         assert_eq!(

@@ -5,7 +5,7 @@ use binnacle_core::{
 };
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
-    Content, RenderContext, Theme, render, render_editor, render_with, status, wheel,
+    Content, RenderContext, Theme, begin_frame, render, render_editor, render_with, status, wheel,
 };
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -77,8 +77,38 @@ fn draws_at_the_area_offset_and_leaves_the_rest_alone() {
 }
 
 #[test]
-fn draws_only_headers_for_an_empty_table() {
+fn an_empty_table_shows_its_headers_and_no_rows_centred_in_the_body() {
     insta::assert_snapshot!(draw(0, 3, 30, 4, Rect::new(0, 0, 30, 4)));
+}
+
+/// The host's own message, for an axis with no items, in the loading
+/// style, cut to the body's width: the grid's, left of the rows bar.
+#[test]
+fn the_empty_message_is_the_host_s_and_fits_the_body() {
+    let mut grid = Grid::new(
+        AxisConfig::new(5, 1.0).header(1.0),
+        AxisConfig::new(0, 8.0).header(5.0),
+    );
+    let theme = Theme::catppuccin_mocha();
+    let ctx = RenderContext::new(&theme).empty("No rows match the filter");
+    let draw = |grid: &mut Grid, area: Rect| {
+        begin_frame(grid, &ctx, area, |grid, viewport| {
+            for (axis, range) in grid.begin_frame(viewport) {
+                let keys = IdentitySource::new(range.end).window(range.clone());
+                grid.set_window(axis, range.start, &keys);
+            }
+        });
+        let mut buf = Buffer::empty(area);
+        render_with(&grid.snapshot(), &Labels, &ctx, area, &mut buf);
+        buf
+    };
+    let buf = draw(&mut grid, Rect::new(0, 0, 35, 7));
+    let lines: Vec<String> = text(&buf).lines().map(String::from).collect();
+    assert_eq!(lines[3], "3      No rows match the filter   █");
+    assert_eq!(buf[(7, 3)].fg, theme.loading.fg.unwrap());
+    assert_eq!(buf[(7, 3)].bg, buf[(7, 5)].bg, "on the body's background");
+    let buf = draw(&mut grid, Rect::new(0, 0, 15, 7));
+    assert_eq!(text(&buf).lines().nth(3), Some("3    No rows …█"));
 }
 
 #[test]

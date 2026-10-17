@@ -235,7 +235,7 @@ pub(crate) fn fit(text: &str, width: u32) -> Cow<'_, str> {
     Cow::Owned(cut)
 }
 
-fn char_count(text: &str) -> u32 {
+pub(crate) fn char_count(text: &str) -> u32 {
     u32::try_from(text.chars().count()).unwrap_or(u32::MAX)
 }
 

@@ -103,6 +103,15 @@ pub(crate) fn thumb_cells(thumb: Thumb, track: u16) -> (u16, u16) {
     (start, len)
 }
 
+/// The thumb on `axis` along a track `track` cells long: none (a bare
+/// track) while the axis has no items.
+fn thumb(snapshot: &Snapshot, axis: Axis, track: u16) -> (u16, u16) {
+    if snapshot.count(axis) == 0 {
+        return (0, 0);
+    }
+    thumb_cells(snapshot.thumb(axis), track)
+}
+
 /// Draws `layout`'s scrollbars for `snapshot` in `theme`, with the corners
 /// beside the header bands and between the bars left blank.
 pub(crate) fn draw(snapshot: &Snapshot, layout: &Layout, theme: &Theme, buf: &mut Buffer) {
@@ -114,7 +123,7 @@ pub(crate) fn draw(snapshot: &Snapshot, layout: &Layout, theme: &Theme, buf: &mu
             Axis::Rows => ('│', track.height),
             Axis::Cols => ('─', track.width),
         };
-        let (start, len) = thumb_cells(snapshot.thumb(axis), length);
+        let (start, len) = thumb(snapshot, axis, length);
         for (i, p) in track.positions().enumerate() {
             let on = (start..start + len).contains(&(i as u16));
             let (ch, style) = if on {
@@ -182,7 +191,7 @@ pub(crate) fn press(
         .find(|&a| layout.bar(a).is_some_and(|t| t.contains(at.into())))?;
     let track = layout.bar(axis)?;
     let length = track.width.max(track.height);
-    let (start, len) = thumb_cells(snapshot.thumb(axis), length);
+    let (start, len) = thumb(snapshot, axis, length);
     let i = along(track, axis, at) as u16;
     let page = snapshot.extent(axis) - snapshot.header(axis);
     let by = if i < start {
@@ -207,7 +216,7 @@ pub(crate) fn drag(snapshot: &Snapshot, layout: &Layout, held: Held, at: (u16, u
     let axis = held.axis;
     let fraction = layout.bar(axis).map_or(0.0, |track| {
         let length = track.width.max(track.height);
-        let (_, len) = thumb_cells(snapshot.thumb(axis), length);
+        let (_, len) = thumb(snapshot, axis, length);
         let travel = f64::from(length - len);
         let start = f64::from(along(track, axis, at) - i32::from(held.grab));
         if travel > 0.0 {
