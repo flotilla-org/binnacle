@@ -3,6 +3,7 @@
 // frees the wasm Grid on destroy.
 
 import { answerAutoSize } from "./autosize";
+import { borderGaps, headersBorder, type BorderStyle } from "./border";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
@@ -13,7 +14,8 @@ import { createKeymap, type KeyBindings, type Platform } from "./keymap";
 import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scroller";
 import type { Snapshot, Span } from "./snapshot";
 import type { TableSource } from "./source";
-import { light, type Theme } from "./theme";
+import { AXIS_CODE } from "./codes";
+import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
 export interface GridOptions<V> {
@@ -24,7 +26,10 @@ export interface GridOptions<V> {
   columnWidth?: number;
   /** The column header band's height, CSS px. */
   headerHeight?: number;
-  theme?: Theme;
+  /** A Theme, or one per colour scheme; by default light or Catppuccin Mocha, following the system. */
+  theme?: ThemeChoice;
+  /** The lines drawn in the Gaps; the widget lays out Gaps that fit them. Default: handles in the header bands. */
+  border?: BorderStyle;
   /** Key bindings merged over the defaults; `null` unbinds a chord (see `KeyBindings`). */
   keymap?: KeyBindings;
   /** Whose key conventions the defaults follow; detected from the browser if omitted. */
@@ -71,6 +76,8 @@ export class GridWidget<V = unknown> {
   private dpr = 1;
   private size = { width: 0, height: 0 };
   private destroyed = false;
+  private themeChoice: ThemeChoice;
+  private readonly dark = matchMedia("(prefers-color-scheme: dark)");
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<V>(container: HTMLElement, options: GridOptions<V>): Promise<GridWidget<V>> {
@@ -88,7 +95,9 @@ export class GridWidget<V = unknown> {
     this.scroller.tabIndex = -1;
     this.sizer = div("binnacle-sizer", SIZER_STYLE);
     this.layer = div("binnacle-layer", LAYER_STYLE);
-    this.painter = createCanvasPainter(options.theme ?? light);
+    this.themeChoice = options.theme ?? systemTheme;
+    this.painter = createCanvasPainter(this.resolveTheme());
+    this.painter.border = options.border ?? headersBorder;
     this.layer.append(this.painter.element);
     this.sizer.append(this.layer);
     this.scroller.append(this.sizer);
@@ -160,6 +169,9 @@ export class GridWidget<V = unknown> {
     resize.observe(this.element);
     this.cleanup.push(() => resize.disconnect());
     this.watchDpr();
+    this.listen(this.dark, "change", () => {
+      if (typeof this.themeChoice === "function") this.theme = this.themeChoice;
+    });
     const fonts = document.fonts;
     if (fonts) {
       this.listen(fonts, "loadingdone", () => {
@@ -183,14 +195,35 @@ export class GridWidget<V = unknown> {
     this.element.remove();
   }
 
-  /** The Theme the grid draws in. */
+  /** The Theme the grid draws in, for the current colour scheme when set to one per scheme. */
   get theme(): Theme {
     return this.painter.theme;
   }
 
-  set theme(theme: Theme) {
-    this.painter.theme = theme;
+  set theme(choice: ThemeChoice) {
+    this.themeChoice = choice;
+    this.painter.theme = this.resolveTheme();
     this.invalidate();
+  }
+
+  /** The lines drawn in the Gaps. Setting it lays the Gaps out to fit. */
+  get border(): BorderStyle {
+    return this.painter.border;
+  }
+
+  set border(style: BorderStyle) {
+    this.painter.border = style;
+    const gaps = borderGaps(style);
+    this.grid.set_gap(AXIS_CODE.rows, gaps.rows);
+    this.grid.set_gap(AXIS_CODE.cols, gaps.cols);
+    this.invalidate();
+  }
+
+  private resolveTheme(): Theme {
+    const choice = this.themeChoice;
+    if (typeof choice !== "function") return choice;
+    const scheme: ColorScheme = this.dark.matches ? "dark" : "light";
+    return choice(scheme);
   }
 
   private createGrid(): WebGrid {
@@ -198,11 +231,12 @@ export class GridWidget<V = unknown> {
     const counts = this.feed.counts();
     const o = this.options;
     const rowHeight = o.rowHeight ?? 24;
-    const theme = o.theme ?? light;
+    const theme = this.painter.theme;
+    const gaps = borderGaps(this.painter.border);
     // The row-number band fits the widest default label, the row count.
     const band = Math.ceil(this.painter.measure.width(String(counts.rows), theme.font)) + 2 * PAD;
-    const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? HEADER_HEIGHT).min_size(rowHeight);
-    const cols = new b.WebAxis(counts.cols, o.columnWidth ?? 120).header(Math.max(40, band)).gap(1).min_size(24);
+    const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? HEADER_HEIGHT).gap(gaps.rows).min_size(rowHeight);
+    const cols = new b.WebAxis(counts.cols, o.columnWidth ?? 120).header(Math.max(40, band)).gap(gaps.cols).min_size(24);
     return new b.WebGrid(rows, cols);
   }
 
@@ -258,6 +292,9 @@ export class GridWidget<V = unknown> {
     const changed = () => {
       this.invalidate();
       this.watchDpr();
+    this.listen(this.dark, "change", () => {
+      if (typeof this.themeChoice === "function") this.theme = this.themeChoice;
+    });
     };
     query.addEventListener("change", changed, { once: true });
     this.cleanup.push(() => query.removeEventListener("change", changed));

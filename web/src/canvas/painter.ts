@@ -1,6 +1,7 @@
 // The canvas painter: one canvas with a backing store at CSS size times the
 // device pixel ratio, repainted from scratch each frame by the stages below.
 
+import { headersBorder, type BorderStyle } from "../border";
 import type { Content } from "../content";
 import { createMeasure, type Measure } from "../measure";
 import type { Painter } from "../painter";
@@ -8,9 +9,9 @@ import type { Snapshot } from "../snapshot";
 import type { Theme } from "../theme";
 import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
 import { paintBody } from "./body";
+import { paintBorders, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
-import { paintGaps } from "./gaps";
-import { paintFocus, paintGuides, paintHandles, paintHeaderStates, paintSelection } from "./selection";
+import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
 
 export interface CanvasPainter extends Painter {
   readonly element: HTMLCanvasElement;
@@ -18,6 +19,7 @@ export interface CanvasPainter extends Painter {
   theme: Theme;
   /** Whether the widget has DOM focus: the Grid's focus is drawn only then. */
   focused: boolean;
+  border: BorderStyle;
 }
 
 export function createCanvasPainter(theme: Theme): CanvasPainter {
@@ -29,12 +31,14 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
   let width = 0;
   let height = 0;
   let dpr = 1;
+  const layer: BorderLayer = { canvas: null };
 
   const painter: CanvasPainter = {
     element: canvas,
     measure,
     theme,
     focused: false,
+    border: headersBorder,
     resize(w, h, ratio) {
       width = w;
       height = h;
@@ -72,8 +76,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintRowNumbers(p);
       paintCorner(p);
       paintHeaderStates(p);
-      paintGaps(p);
-      paintHandles(p);
+      paintBorders(p, painter.border, layer);
       paintFocus(p);
       paintGuides(p);
       return false;

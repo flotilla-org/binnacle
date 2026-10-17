@@ -15,7 +15,11 @@ export function paintColumnHeaders(p: PaintContext): void {
     const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width };
     const loading = h.key === null;
     const text = loading ? "…" : p.content.label("cols", item);
-    ctx.fillStyle = loading ? theme.loading : theme.header.color;
+    if (h.hovered) {
+      ctx.fillStyle = theme.headerHovered.background;
+      ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
+    }
+    ctx.fillStyle = loading ? theme.loading : h.hovered ? theme.headerHovered.color : theme.header.color;
     ctx.fillText(measure.fit(text, theme.headerFont, h.rect.width - 2 * PAD), h.rect.x + PAD, top / 2);
   }
   ctx.restore();
@@ -30,10 +34,14 @@ export function paintRowNumbers(p: PaintContext): void {
   ctx.fillRect(0, top, left, p.height - top);
   ctx.font = theme.font;
   ctx.textAlign = "right";
-  ctx.fillStyle = theme.rowNumber.color;
   for (const h of s.rows.headers) {
     const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height };
     const text = p.content.label("rows", item);
+    if (h.hovered) {
+      ctx.fillStyle = theme.headerHovered.background;
+      ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
+    }
+    ctx.fillStyle = h.hovered ? theme.headerHovered.color : theme.rowNumber.color;
     ctx.fillText(measure.fit(text, theme.font, left - 2 * PAD), left - PAD, h.rect.y + h.rect.height / 2);
   }
   ctx.restore();

@@ -1,20 +1,44 @@
-// The demo page: a toolbar to pick a source, the grid, and a status line.
+// The demo page: a toolbar to pick a source, a Theme and a Border Style, the
+// grid, and a status line. The choices live in the URL, so a reload keeps them.
 
-import { GridWidget, type FrameInfo } from "../src";
+import {
+  borderName,
+  borderStyles,
+  catppuccinMocha,
+  GridWidget,
+  presets,
+  systemTheme,
+  type BorderStyle,
+  type FrameInfo,
+  type Theme,
+  type ThemeChoice,
+} from "../src";
 import { SOURCES, type DemoSource } from "./sources";
 
 const host = document.querySelector<HTMLElement>("#grid")!;
 const tabs = document.querySelector<HTMLElement>("#sources")!;
 const status = document.querySelector<HTMLElement>("#status")!;
+const themes = document.querySelector<HTMLSelectElement>("#theme")!;
+const follow = document.querySelector<HTMLInputElement>("#follow")!;
+const borders = document.querySelector<HTMLSelectElement>("#border")!;
 
 const number = new Intl.NumberFormat("en");
 let current: GridWidget | null = null;
 let shown: DemoSource | null = null;
+const params = new URL(location.href).searchParams;
+let pickedTheme: Theme = presets.find((t) => t.name === params.get("theme")) ?? presets[0]!;
+let following = params.get("theme") === null;
+let border: BorderStyle = borderStyles.find((b) => borderName(b) === params.get("border")) ?? borderStyles[2]!;
+
+const themeChoice = (): ThemeChoice => (following ? systemTheme : pickedTheme);
 
 function describe(frame: FrameInfo): string {
   const { rows, cols, focus, selection, picked } = frame;
+  const theme = current?.theme;
   const parts = [
     shown?.name ?? "",
+    `theme ${theme?.name ?? ""}${following ? " (system)" : ""}`,
+    `border ${borderName(border)}`,
     `rows ${number.format(rows.first + 1)} to ${number.format(rows.last + 1)} of ${number.format(rows.count)}`,
     `columns ${number.format(cols.first + 1)} to ${number.format(cols.last + 1)} of ${number.format(cols.count)}`,
   ];
@@ -27,18 +51,35 @@ function describe(frame: FrameInfo): string {
   return parts.join("  ·  ");
 }
 
+/** Mirrors the grid's Theme in the toolbar and the page's own colours. */
+function reflect(frame: FrameInfo): void {
+  const theme = current?.theme;
+  if (theme) {
+    themes.value = theme.name;
+    document.documentElement.dataset.scheme = theme === catppuccinMocha ? "dark" : "light";
+  }
+  status.textContent = describe(frame);
+}
+
+function remember(): void {
+  const url = new URL(location.href);
+  url.searchParams.set("source", shown?.name ?? "");
+  if (following) url.searchParams.delete("theme");
+  else url.searchParams.set("theme", pickedTheme.name);
+  url.searchParams.set("border", borderName(border));
+  history.replaceState(null, "", url);
+}
+
 async function show(source: DemoSource) {
   current?.destroy();
   shown = source;
   for (const tab of tabs.querySelectorAll("button")) tab.setAttribute("aria-pressed", String(tab.dataset.source === source.name));
-  const url = new URL(location.href);
-  url.searchParams.set("source", source.name);
-  history.replaceState(null, "", url);
+  remember();
   current = await GridWidget.create(host, {
     ...source.options,
-    onFrame: (frame) => {
-      status.textContent = describe(frame);
-    },
+    theme: themeChoice(),
+    border,
+    onFrame: reflect,
   });
 }
 
@@ -52,5 +93,30 @@ for (const source of SOURCES) {
   tabs.append(tab);
 }
 
-const wanted = new URL(location.href).searchParams.get("source");
-void show(SOURCES.find((s) => s.name === wanted) ?? SOURCES[0]!);
+for (const theme of presets) themes.add(new Option(theme.name, theme.name));
+themes.value = pickedTheme.name;
+themes.disabled = following;
+follow.checked = following;
+themes.addEventListener("change", () => {
+  pickedTheme = presets.find((t) => t.name === themes.value) ?? pickedTheme;
+  if (current) current.theme = themeChoice();
+  remember();
+});
+follow.addEventListener("change", () => {
+  following = follow.checked;
+  themes.disabled = following;
+  // Unfollowing keeps the Theme on screen until another is picked.
+  if (!following && current) pickedTheme = current.theme;
+  if (current) current.theme = themeChoice();
+  remember();
+});
+
+for (const style of borderStyles) borders.add(new Option(borderName(style), borderName(style)));
+borders.value = borderName(border);
+borders.addEventListener("change", () => {
+  border = borderStyles.find((b) => borderName(b) === borders.value) ?? border;
+  if (current) current.border = border;
+  remember();
+});
+
+void show(SOURCES.find((s) => s.name === params.get("source")) ?? SOURCES[0]!);
