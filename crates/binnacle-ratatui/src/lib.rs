@@ -17,6 +17,7 @@ pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
 pub use keymap::Keymap;
 pub use mouse::Mouse;
+use renderer::fit;
 pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
@@ -148,10 +149,18 @@ pub fn render_with(
         let room = width.saturating_sub(marker.chars().count());
         let style = band(theme.header, h.hovered);
         let clip = (left, end, 0.0);
+        let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
         if marker.is_empty() {
-            put(buf, area, (start, 0.0), clip, &pad(label), style);
+            put(
+                buf,
+                area,
+                (start, 0.0),
+                clip,
+                &pad(label.into_owned()),
+                style,
+            );
         } else {
-            let label = format!("{label:<room$.room$}");
+            let label = format!("{label:<room$}");
             put(buf, area, (start, 0.0), clip, &label, style);
             let at = start + room as f32;
             let style = style.patch(theme.sort_marker);
@@ -180,6 +189,7 @@ pub fn render_with(
             || r.position.saturating_add(1).to_string(),
             |k| content.row_header(k, r.position),
         );
+        let number = fit(&number, u32::try_from(cell(left)).unwrap_or(0)).into_owned();
         let style = band(theme.row_number, h.hovered);
         put(
             buf,

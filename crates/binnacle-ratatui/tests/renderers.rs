@@ -526,3 +526,35 @@ fn a_bar_fills_floor_fraction_times_width_times_eight_eighths(tc: TestCase) {
     let partial = eighths.iter().position(|&e| e < 8).unwrap_or(eighths.len());
     assert!(eighths[partial..].iter().skip(1).all(|&e| e == 0));
 }
+
+/// Text that fits its cell is drawn whole, where its alignment puts it;
+/// longer text keeps its start and ends in `…` in the cell's last column,
+/// whatever the alignment.
+#[hegel::test(test_cases = 300)]
+fn text_too_long_for_its_cell_ends_in_an_ellipsis(tc: TestCase) {
+    let text: String = tc
+        .draw(gs::vecs(gs::sampled_from(vec!['a', 'b', 'Z', '7', '.'])).max_size(30))
+        .into_iter()
+        .collect();
+    let width = tc.draw(gs::integers::<u16>().min_value(1).max_value(20));
+    let align = tc.draw(gs::sampled_from(vec![
+        Align::Left,
+        Align::Right,
+        Align::Center,
+    ]));
+    let content = Columns {
+        renderers: vec![Box::new(
+            TextRenderer::new(|_, _| text.clone()).align(align),
+        )],
+    };
+    let drawn: String = glyphs(&content, width).into_iter().collect();
+    let len = text.chars().count();
+    let room = usize::from(width);
+    if len <= room {
+        assert_eq!(drawn.trim(), text.trim(), "{text:?} in {width}");
+        assert!(!drawn.contains('…'));
+    } else {
+        let kept: String = text.chars().take(room - 1).collect();
+        assert_eq!(drawn, format!("{kept}…"), "{text:?} in {width}");
+    }
+}

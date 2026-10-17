@@ -4,7 +4,9 @@ use binnacle_core::{
     Action, Axis, AxisConfig, FocusStep, Grid, Key, SortColumn, SortSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{Content, render, render_editor, status, wheel};
+use binnacle_ratatui::{
+    Content, RenderContext, Theme, render, render_editor, render_with, status, wheel,
+};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -373,4 +375,39 @@ fn row_headers_show_the_host_s_label_for_each_row_s_key() {
     let mut buf = Buffer::empty(area);
     render(&snapshot, &Keyed, area, &mut buf);
     insta::assert_snapshot!(text(&buf));
+}
+
+/// Headers and row labels too long for their header end in `…`, which a
+/// sort marker follows.
+#[test]
+fn header_text_too_long_for_its_header_ends_in_an_ellipsis() {
+    struct Long;
+    impl Content for Long {
+        fn cell(&self, row: Key, col: Key) -> String {
+            Labels.cell(row, col)
+        }
+        fn column_header(&self, col: Key) -> String {
+            format!("column number {}", col.0)
+        }
+        fn row_header(&self, row: Key, _position: u64) -> String {
+            format!("row {}", row.0)
+        }
+    }
+    let mut grid = Grid::new(
+        AxisConfig::new(2, 1.0).header(1.0),
+        AxisConfig::new(2, 8.0).header(4.0).gap(1.0),
+    );
+    grid.sort_applied(SortSpec::new(vec![SortColumn::ascending(Key(1))]));
+    let area = Rect::new(0, 0, 22, 3);
+    for (axis, range) in grid.begin_frame(Viewport::new(area.width.into(), area.height.into())) {
+        let keys = IdentitySource::new(range.end).window(range.clone());
+        grid.set_window(axis, range.start, &keys);
+    }
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::classic();
+    let ctx = RenderContext::new(&theme).scrollbars(false);
+    render_with(&grid.snapshot(), &Long, &ctx, area, &mut buf);
+    let lines: Vec<String> = text(&buf).lines().map(String::from).collect();
+    assert_eq!(lines[0], "    column …│column…▲│");
+    assert_eq!(lines[1], "row…r0c0     r0c1");
 }
