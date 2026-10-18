@@ -1936,5 +1936,10 @@ pub unsafe extern "C" fn binnacle_grid_find_stepped(
     // SAFETY: the caller's contract.
     let found = unsafe { found.as_ref() }.map(|m| FindMatch::new(Key(m.row), Key(m.col)));
     // SAFETY: the caller's contract.
-    unsafe { with_handle(grid, |h| Some(h.grid.find_stepped(found))) }
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.find_stepped(found);
+            Some(())
+        })
+    }
 }
