@@ -94,6 +94,12 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   unmatched(axis: AxisName, key: bigint): boolean;
   /** The count for the Find Query in force (`null` until the source gives one), and where the last step landed among the matches. */
   findState(): FindState;
+  /**
+   * The Table Source's message for the last View Spec it failed or answered
+   * with part of the request left out; `null` once an answer leaves nothing
+   * out.
+   */
+  viewError(): string | null;
   /** Detaches from the source and aborts outstanding requests. */
   destroy(): void;
 }
@@ -101,8 +107,12 @@ export interface Feed<RowId = unknown, ColId = unknown> {
 /** What the Table Source last said about the Find Query in force. */
 export interface FindState {
   count: FindCount | null;
+  /** Whether the count is asked for and not answered yet. */
+  counting: boolean;
   /** The last step's 0-based index among the matches (`null` if the source gave none) and whether it wrapped; `null` before a step lands. */
   step: { index: number | null; wrapped: boolean } | null;
+  /** The Table Source's message if it failed a find request for the Find Query in force (an invalid regex, say). */
+  error: string | null;
 }
 
 /**
@@ -243,7 +253,10 @@ export function createFeed<RowId, ColId, V>(
   const markBlocks = new Set<Block>();
   const marking = new Set<string>();
   let counting: Request | null = null;
-  let findState: FindState = { count: null, step: null };
+  /** Whether the count should be asked for again at the next frame (the rows or the View Spec changed). */
+  let recount = false;
+  let findState: FindState = { count: null, counting: false, step: null, error: null };
+  let viewError: string | null = null;
 
   /** Tells the Grid the count on `axis`, with a Reset unless another counted notice is given. */
   const reset = (axis: AxisName, count: number, notice: "Reset" | "Refiltered" = "Reset") => {
@@ -337,7 +350,23 @@ export function createFeed<RowId, ColId, V>(
     schedule();
   };
 
-  const sinkFor = (axis: AxisName) => ({ notify: (notice: ChangeNotice) => notify(axis, notice) });
+  /** Asks the source again how the rows may be viewed by the columns `ids`, or by every column in view. */
+  const supportChanged = (axis: AxisName, ids?: unknown[]) => {
+    if (axis !== "rows") return;
+    const keys = ids
+      ? ids.map((id) => cols.interner.key(id as ColId))
+      : (shown?.cols.strip ?? []).flatMap((i) => (i.key === null ? [] : [i.key]));
+    markSupport(BigUint64Array.from(keys));
+    schedule();
+  };
+
+  const sinkFor = (axis: AxisName) => ({
+    notify: (notice: ChangeNotice) => notify(axis, notice),
+    supportChanged: (ids?: unknown[]) => supportChanged(axis, ids),
+  });
+
+  /** What a failure says, for the control it came from. */
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
   const keysOf = <Id>(axis: Axis<Id>, ids: Id[]) => BigUint64Array.from(ids, (id) => axis.interner.key(id));
 
@@ -411,27 +440,65 @@ export function createFeed<RowId, ColId, V>(
     if (request.pending) a.flagging = asking = { keys: new Set(lacking), round, request };
   };
 
+  /** The source's news: what it applies now, or new totals; answers due stay due. */
+  const viewChanged = (view: AppliedView<RowId, ColId>) => {
+    applied = { rows: partKeys(cols, view.rows), cols: partKeys(rows, view.cols) };
+    totals = view.totals ?? totals;
+    grid?.view_changed(applied, totals.rows ?? NaN, totals.cols ?? NaN);
+    if (view.error !== undefined) viewError = view.error;
+    remark(true);
+    landed = true;
+    schedule();
+  };
+
+  /** A failure of a find request for the query `epoch` names, shown on the find bar while that query is in force. */
+  const findFailed = (request: "marks" | "next" | "count", epoch: number) => (error: unknown) => {
+    report({ type: "find", request })(error);
+    if (epoch === findEpoch) findState = { ...findState, error: message(error) };
+  };
+
   /** Asks for the count of the Find Query in force, in place of any asked before. */
   const askFindCount = () => {
+    recount = false;
     counting?.abort();
     counting = null;
     const query = finding;
     if (!finder?.count || !query) return;
-    counting = settle(
+    const request = settle(
       (signal) => finder.count!.call(finder, query, signal),
       (count) => {
         counting = null;
-        findState = { ...findState, count };
+        findState = { ...findState, count, counting: false };
       },
-      { failed: report({ type: "find", request: "count" }) },
+      {
+        otherwise: () => {
+          if (counting === request) counting = null;
+          findState = { ...findState, counting: counting !== null };
+        },
+        failed: findFailed("count", findEpoch),
+      },
     );
+    counting = request.pending ? request : null;
+    findState = { ...findState, counting: counting !== null };
   };
 
-  /** The marks may have changed: each visible cell is asked again, its old mark shown meanwhile; with `recount`, the count too. */
-  const remark = (recount: boolean) => {
+  /** A running count pushed for `query`, kept while it is the query in force. */
+  const findCounted = (query: FindQuery<ColId>, count: FindCount) => {
+    if (query !== finding) return;
+    findState = { ...findState, count };
+    landed = true;
+    schedule();
+  };
+
+  /**
+   * The marks may have changed: each visible cell is asked again, its old
+   * mark shown meanwhile; with `again`, the count too, once at the next
+   * frame however many changes arrive before it.
+   */
+  const remark = (again: boolean) => {
     if (!finding) return;
     markRound++;
-    if (recount) askFindCount();
+    if (again) recount = true;
   };
 
   /** A new Find Query, or find closed: the old marks go at once. */
@@ -441,7 +508,7 @@ export function createFeed<RowId, ColId, V>(
     markRound++;
     findEpoch++;
     finding = (query && findIds(query)) ?? null;
-    findState = { count: null, step: null };
+    findState = { count: null, counting: false, step: null, error: null };
     askFindCount();
     landed = true;
     schedule();
@@ -467,7 +534,7 @@ export function createFeed<RowId, ColId, V>(
         }
         answer(step && { row: rows.interner.key(step.row), col: cols.interner.key(step.col) });
       },
-      { otherwise: () => answer(null), failed: report({ type: "find", request: "next" }) },
+      { otherwise: () => answer(null), failed: findFailed("next", epoch) },
     );
   };
 
@@ -573,6 +640,7 @@ export function createFeed<RowId, ColId, V>(
     if (!view) return viewApplied(BASE_VIEW);
     const [rowPart, colPart] = [partIds(cols, requested.rows), partIds(rows, requested.cols)];
     if (!rowPart || !colPart) return viewApplied(applied, totals);
+    const failed = report({ type: "view" });
     const spec: ViewSpec<RowId, ColId> = { rows: rowPart, cols: colPart };
     const previous = { applied, totals };
     // The Grid still counts the superseded request's answer: aborting it
@@ -580,10 +648,17 @@ export function createFeed<RowId, ColId, V>(
     viewing?.abort();
     viewing = settle(
       (signal) => view.call(source, spec, signal),
-      (now) => viewApplied({ rows: partKeys(cols, now.rows), cols: partKeys(rows, now.cols) }, now.totals ?? {}),
+      (now) => {
+        viewError = now.error ?? null;
+        if (now.error !== undefined) failed(new Error(now.error));
+        viewApplied({ rows: partKeys(cols, now.rows), cols: partKeys(rows, now.cols) }, now.totals ?? {});
+      },
       {
         otherwise: () => viewApplied(previous.applied, previous.totals),
-        failed: report({ type: "view" }),
+        failed: (error) => {
+          viewError = message(error);
+          failed(error);
+        },
       },
     );
   };
@@ -709,7 +784,7 @@ export function createFeed<RowId, ColId, V>(
           colKeys.forEach((c, j) => marks.set(pair(r, c), { marked: answer[i]?.[j] === true, round })),
         );
       },
-      { fresh: true, otherwise: done, failed: report({ type: "find", request: "marks" }) },
+      { fresh: true, otherwise: done, failed: findFailed("marks", findEpoch) },
     );
     if (request.pending) markBlocks.add((block = { rows: rowKeys, cols: colKeys, request }));
   };
@@ -830,7 +905,7 @@ export function createFeed<RowId, ColId, V>(
         const count = early[axis];
         if (count !== undefined) reset(axis, count);
       }
-      detach = source.attach?.({ rows: sinkFor("rows"), cols: sinkFor("cols") });
+      detach = source.attach?.({ rows: sinkFor("rows"), cols: sinkFor("cols"), viewChanged, findCounted });
     },
     fill(g, requests) {
       for (const name of AXES) {
@@ -888,6 +963,7 @@ export function createFeed<RowId, ColId, V>(
     content(s) {
       shown = s;
       request(s);
+      if (recount) askFindCount();
       return content;
     },
     loading(s) {
@@ -926,6 +1002,7 @@ export function createFeed<RowId, ColId, V>(
     findIds,
     findState: () => findState,
     unmatched,
+    viewError: () => viewError,
     destroy() {
       detach?.();
       settler.close();

@@ -126,7 +126,10 @@ export interface FindMethods<RowId, ColId> {
     query: FindQuery<ColId>,
     signal: AbortSignal,
   ): MaybePromise<FindStep<RowId, ColId> | null>;
-  /** How many cells in the view match. */
+  /**
+   * How many cells in the view match: a partial count to start with is fine,
+   * with running counts pushed through the sink's `findCounted`.
+   */
   count?(query: FindQuery<ColId>, signal: AbortSignal): MaybePromise<FindCount>;
 }
 
@@ -139,11 +142,16 @@ export interface Totals {
 /** One axis's part of the View Spec a Table Source applies; an omitted filter, or part of one, is none. */
 export type AppliedAxisView<CrossId> = Omit<AxisView<CrossId>, "filter"> & { filter?: Partial<FilterSpec<CrossId>> };
 
-/** The View Spec a Table Source applies, with its totals for "1,204 of 5,001". */
+/**
+ * The View Spec a Table Source applies, with its totals for "1,204 of 5,001",
+ * and why it left out part of what was asked for (an invalid regex, say),
+ * which the control the part came from shows.
+ */
 export interface AppliedView<RowId, ColId> {
   rows: AppliedAxisView<ColId>;
   cols: AppliedAxisView<RowId>;
   totals?: Totals;
+  error?: string;
 }
 
 /** How an axis takes a quick filter. */
@@ -239,8 +247,32 @@ export type FailedRequest<RowId = unknown, ColId = unknown> =
   | { type: "move"; axis: "rows" | "cols" }
   | { type: "find"; request: "marks" | "next" | "count" };
 
-export interface AxisSink<_Id> {
+export interface AxisSink<_Id, CrossId = unknown> {
   notify(notice: ChangeNotice): void;
+  /**
+   * How this axis may be viewed by the items `ids` of the other axis (every
+   * item, without `ids`) changed: the widget asks `support` again for those
+   * in view. A condition in force that is no longer supported stays until
+   * `viewChanged` leaves it out, then shows as not applied.
+   */
+  supportChanged(ids?: CrossId[]): void;
+}
+
+/** The sinks a Table Source pushes its news through. */
+export interface TableSink<RowId, ColId> {
+  rows: AxisSink<RowId, ColId>;
+  cols: AxisSink<ColId, RowId>;
+  /**
+   * The View Spec the source applies now, unprompted (not an answer to
+   * `view`), or new totals for the one in force. A part of the request it
+   * leaves out shows as not applied; answers still due stay due.
+   */
+  viewChanged(view: AppliedView<RowId, ColId>): void;
+  /**
+   * A running count for `query` (the object `find.count` was asked with):
+   * push one as counting goes, with `partial` until the last.
+   */
+  findCounted(query: FindQuery<ColId>, count: FindCount): void;
 }
 
 export interface AxisMethods<Id, CrossId> {
@@ -302,6 +334,6 @@ export interface TableSource<RowId, ColId, V = unknown> {
   emptyMessage?(): string | undefined;
   /** Set if the source finds: the widget offers find only then. */
   find?: FindMethods<RowId, ColId>;
-  /** Hands the source its sinks for Change Notices; returns how to detach. */
-  attach?(sink: { rows: AxisSink<RowId>; cols: AxisSink<ColId> }): () => void;
+  /** Hands the source its sinks for Change Notices and news; returns how to detach. */
+  attach?(sink: TableSink<RowId, ColId>): () => void;
 }

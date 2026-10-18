@@ -41,6 +41,25 @@ test.describe("records", () => {
     await expect(shown(page)).toHaveText(`${en(rows.length)} rows`);
   });
 
+  test("a regex the source rejects turns the menu's field and its chip red with the message, the text kept", async ({
+    page,
+  }) => {
+    await bar(page).getByRole("button", { name: "+ Filter" }).click();
+    await page.getByRole("menuitem", { name: "port" }).click();
+    await menu(page, "port").getByRole("button", { name: "Use regular expression" }).click();
+    await menuField(page, "port").fill("berg(");
+    const error = menu(page, "port").locator(".binnacle-column-menu-error");
+    // RegExp's own words, which differ between browsers.
+    await expect(error).toHaveText(/\w/);
+    await expect(menuField(page, "port")).toHaveAttribute("aria-invalid", "");
+    await expect(menuField(page, "port")).toHaveValue("berg(");
+    await expect(shown(page)).toHaveText(`${en(rows.length)} rows`);
+    await expect(chips(page).first()).toHaveAttribute("title", /^Not applied: \w/);
+    await menuField(page, "port").fill("berg");
+    await expect(error).toBeHidden();
+    await expect(shown(page)).toHaveText(`${en(count(["port", has("berg")]))} of ${en(rows.length)}`);
+  });
+
   test("a funnel opens the column menu, and contains and not-contains AND with the quick filter as chips", async ({
     page,
   }) => {

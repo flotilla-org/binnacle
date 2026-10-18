@@ -18,7 +18,7 @@ import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scro
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
-import type { AxisSnapshot, ConditionState, HeaderPlacement, Snapshot, Span } from "./snapshot";
+import type { AxisSnapshot, ConditionState, HeaderPlacement, KeyedTextQuery, Snapshot, Span } from "./snapshot";
 import type { Condition, Distinct, FailedRequest, FindMatch, FindQuery, Located, TableSource, TextQuery, ViewSpec } from "./source";
 import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
@@ -81,6 +81,13 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
   /**
+   * How long the fields that write a Text Query (the filter bar's quick
+   * filter, the find bar, the column menu's contains field) wait after the
+   * last key typed before asking the Table Source, in ms; 150 by default.
+   * Enter, toggles, ticks and steps ask at once.
+   */
+  typingPause?: number;
+  /**
    * What a click or a focus move selects besides the focused cell: nothing
    * (`"cells"`, the default) or its whole row (`"rows"`, for list-style views).
    */
@@ -95,8 +102,19 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   cols: AxisInfo;
   /** Whether the rows take a quick filter (the Table Source's `rows.quickFilter`), and with regexes; `null` if not. */
   quickFilter: { regex: boolean } | null;
-  /** The rows' quick filter as last asked for: the request still unanswered, else the one applied. */
+  /** The rows' quick filter as last asked for: the request still unanswered (or not applied), else the one applied. */
   quick: TextQuery<ColId> | null;
+  /**
+   * Where `quick` stands: applied, being set (`adding`) or cleared
+   * (`removing`) while the answer is due, or `notApplied` when the Table
+   * Source answered without it (an invalid regex, say); `null` with no quick
+   * filter asked for or applied.
+   */
+  quickState: ConditionState | null;
+  /** Whether a View Spec request is unanswered: the count says "filtering…" while it changes the rows' filter. */
+  viewPending: boolean;
+  /** The Table Source's message for the part of the View Spec it did not apply, if any; shown on that part's control. */
+  viewError: string | null;
   /** The focused cell's Positions, if any. */
   focus: { row: number; col: number } | null;
   /** The selection range as half-open Position spans, if any. */
@@ -151,8 +169,8 @@ export interface FindInfo<RowId = unknown, ColId = unknown> extends FindState {
 export interface ColumnHeader<ColId = unknown> {
   id: ColId;
   label: string;
-  /** Whether an applied condition reads this column, and whether a request would change them. */
-  filter: { filtered: boolean; pending: boolean };
+  /** Whether an applied condition reads this column, whether a request would change them, and whether one asked for is not applied. */
+  filter: { filtered: boolean; pending: boolean; notApplied: boolean };
   support: ColumnSupport;
 }
 
@@ -696,6 +714,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /** The Theme the grid draws in, for the current colour scheme when set to one per scheme. */
+  /** How long text fields wait after typing before asking the Table Source, in ms (`GridOptions.typingPause`). */
+  get typingPause(): number {
+    return this.options.typingPause ?? 150;
+  }
+
   get theme(): Theme {
     return this.painter.theme;
   }
@@ -799,6 +822,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       cols: span(snapshot, "cols", (key) => this.feed.unmatched("cols", key)),
       quickFilter: snapshot.rows.quickFilter,
       quick: this.quick(snapshot),
+      quickState: quickState(snapshot),
+      viewPending: snapshot.viewPending,
+      viewError: this.feed.viewError(),
       ...selection(snapshot),
       focusIds: this.focusIds(snapshot),
       loading: this.feed.loading(snapshot),
@@ -968,4 +994,19 @@ function div(className: string, style: string): HTMLDivElement {
   el.className = className;
   el.style.cssText = style;
   return el;
+}
+
+/** Where the rows' quick filter stands between the latest request and the applied View Spec. */
+function quickState(s: Snapshot): ConditionState | null {
+  const applied = s.appliedView.rows.filter.quick;
+  const asked = s.requestedView ? s.requestedView.rows.filter.quick : applied;
+  if (sameQuery(asked, applied)) return asked ? "applied" : null;
+  if (!s.viewPending) return "notApplied";
+  return asked ? "adding" : "removing";
+}
+
+function sameQuery(a: KeyedTextQuery | null, b: KeyedTextQuery | null): boolean {
+  if (!a || !b) return a === b;
+  const keys = (q: KeyedTextQuery) => q.searches?.join(",") ?? null;
+  return a.text === b.text && a.caseSensitive === b.caseSensitive && a.regex === b.regex && keys(a) === keys(b);
 }

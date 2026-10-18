@@ -68,6 +68,8 @@ cell, for example `byColumn(...)` over `textRenderer`, `sparklineRenderer`
 and `barRenderer`), `onCommit` (makes cells editable; without it the grid is
 read-only; returning `false` refuses the value, and the cell keeps its own), `editor` (a custom editor per cell), `selectionUnit`
 (`"rows"` makes focus select its whole row, for list-style views),
+`typingPause` (how long, in ms, the filter bar, column menu and find bar
+wait after the last key before sending what was typed; 150 by default),
 `emptyMessage` (what the body says when an axis has no items, "No rows" by
 default; a source's own `emptyMessage()`, such as "No rows match the
 filter", wins) and `onError` (called with what a failed source request threw
@@ -113,9 +115,14 @@ To filter and view from code:
   the source gave one), `frame.rows.unmatched` how many rows in view are
   unmatched, `frame.quickFilter` says whether the rows take a
   quick filter, `frame.conditions` lists the conditions with their state
-  (`applied`, or `adding` and `removing` until the source answers), and
-  `frame.columns` the column headers in view, each with whether it is
-  filtered (and pending) and what it supports.
+  (`applied`, `adding` and `removing` until the source answers, or
+  `notApplied` once it answers without one), `frame.quickState` does the
+  same for the quick filter, `frame.viewPending` says whether a View Spec is
+  still to be answered, `frame.viewError` holds the source's message for the
+  part it left out, and `frame.columns` the column headers in view, each
+  with whether it is filtered (and pending, or not applied) and what it
+  supports. While a View Spec is pending the rows shown stay as they are; a
+  newer one aborts the request in flight, so only the latest answer paints.
 - `grid.columnSupport(colId)` says whether a column sorts and takes Text
   conditions (and regexes) and OneOf conditions; `grid.columns()` lists the
   table's columns with their labels and support.
@@ -130,8 +137,11 @@ row count ("1,204 of 5,001", or "5,001 rows"), and "Re-apply" while rows in
 view are unmatched. Place `bar.element` where you
 like, usually above the grid; it draws in the grid's Theme and stays hidden
 while the source's rows take no quick filter. Typing sets the quick filter
-as each key lands, and the grid's live region announces the count once the
-filter applies.
+once the typing pause has passed (Enter, the toggles and clear at once), the
+count reads "filtering…" while the source works, and the grid's live region
+announces the count once the filter applies. A quick filter the source did
+not apply turns the field red with the source's message, the text kept; a
+condition it did not apply shows a red chip.
 
 `createColumnMenu(grid)` mounts the column menu: every column header whose
 column takes Text or OneOf conditions then draws a funnel (solid once
@@ -146,7 +156,8 @@ the column's first Text condition and first OneOf at once, writing whichever
 condition is exact: unticking from all excludes the values unticked, ticking
 from none includes those ticked, and "select all matching" keeps the
 search as a Text condition. A value the Text condition rejects is shown
-disabled. Escape, a press outside or Close shuts it. Pass it to the filter bar,
+disabled. The text waits for the typing pause, and a Text condition the
+source did not apply turns the field red with its message. Escape, a press outside or Close shuts it. Pass it to the filter bar,
 `createFilterBar(grid, { columnMenu })`, and the bar shows a chip for each
 condition ("port: not Bergen ×": the label reopens the menu, × removes the
 condition) and "+ Filter", which picks a column and opens its menu. With a
@@ -191,15 +202,20 @@ To find from code (when the Table Source has `find`):
   down each column in turn. `null` closes find and clears the marks.
 - `grid.findNext()` and `grid.findPrevious()` step to the next or previous
   match, wrapping round, and focus it without changing the selection. A step
-  asked while one is due waits for it.
+  asked while one is due waits for it: before a query's first step lands,
+  further presses are dropped, and after it at most one waits.
 - `frame.find` holds what find shows: `support`, the `query` in force, the
-  `current` match, the source's `count`, and where the last `step` landed
-  (its `index` among the matches and whether it `wrapped`).
+  `current` match, the source's `count` (and whether it is `counting`), the
+  source's `error` if it failed the query, and where the last `step` landed
+  (its `index` among the matches and whether it `wrapped`). The current match
+  stays until the first step for a new query lands.
 
 `createFindBar(grid)` builds the find bar: the find field with match case
 and regex (when the source takes regexes) toggles, the order (by rows or by
-columns), the count ("3 of 120", "120 matches", "No matches"), a note when a
-step wraps, Previous and Next, "Show only matching rows" (which copies the
+columns), the count ("3 of 120", "3 of 120+" while the source is still
+counting, "120 matches", "No matches", "finding…" until it answers), a note
+when a step wraps (or the source's message, in red, when it fails the
+query), Previous and Next, "Show only matching rows" (which copies the
 text to the quick filter) and close. Place `bar.element` above the grid,
 full width. Ctrl+F (Cmd+F on macOS) in the grid opens it, Enter steps to the
 next match and Shift+Enter to the previous, F3 and Shift+F3 step from the
@@ -223,12 +239,22 @@ interface TableSource<RowId, ColId, V = unknown> {
    * it, an omitted filter being none), with `totals: { rows?, cols? }`, the counts before any filter.
    */
   view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<AppliedView<RowId, ColId>>;
+  // An answer may carry `error`: why it left part of `spec` out (an invalid regex, say).
   /** The values where `rows` and `cols` cross, one array per row. */
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
   /** Find: which cells match a Find Query, the next match, and how many there are. */
   find?: FindMethods<RowId, ColId>;
-  /** Hands the source its sinks for Change Notices; returns how to detach. */
-  attach?(sink: { rows: AxisSink<RowId>; cols: AxisSink<ColId> }): () => void;
+  /** Hands the source its sinks for Change Notices and news; returns how to detach. */
+  attach?(sink: TableSink<RowId, ColId>): () => void;
+}
+
+interface TableSink<RowId, ColId> {
+  rows: AxisSink<RowId, ColId>; // notify(notice), supportChanged(ids?)
+  cols: AxisSink<ColId, RowId>;
+  /** The View Spec the source applies now, unprompted, or new totals; answers due stay due. */
+  viewChanged(view: AppliedView<RowId, ColId>): void;
+  /** A running count for `query` (the object `find.count` was asked with), `partial` until the last. */
+  findCounted(query: FindQuery<ColId>, count: FindCount): void;
 }
 
 interface AxisSource<Id, CrossId> {
@@ -323,7 +349,11 @@ interface FindMethods<RowId, ColId> {
     query: FindQuery<ColId>,
     signal: AbortSignal,
   ): MaybePromise<FindStep<RowId, ColId> | null>;
-  /** How many cells in the view match: `{ total, partial? }`, `partial` if counting stopped early. */
+  /**
+   * How many cells in the view match: `{ total, partial? }`, `partial` if counting stopped early.
+   * Running counts may follow through the sink's `findCounted`. A failure (an invalid regex) shows
+   * as "No matches" with its message.
+   */
   count?(query: FindQuery<ColId>, signal: AbortSignal): MaybePromise<FindCount>;
 }
 ```
@@ -332,7 +362,7 @@ Find never sees a value: the source decides which cells match, in the view
 in force, and the grid asks for the marks of the cells it draws. A step to a
 match outside the rows the grid holds is placed with the axis's `locate`.
 Marks are asked for again after a Change Notice or a new View Spec, and the
-count with them.
+count with them, once a frame however many arrive.
 
 A row the user's edit stops matching may stay where it is until the next
 View Spec, as in a spreadsheet's filter: the source keeps it in the rows it
@@ -351,7 +381,12 @@ A filter of the host's own needs no View Spec: filter however you like, then
 notify `Refiltered`, which keeps focus, picks, row heights and the scroll
 position with their rows (`fromRows` has `filter(keep)` for this). A sort or
 quick filter the source applies arrives as a reorder or a `Refiltered`
-through the sink too. Only the rows sort and filter for now: a source may
+through the sink too, and `sink.viewChanged(view)` says the View Spec in
+force changed without being asked (a condition dropped, new totals): what
+the source left out of what was asked for shows as not applied, and stays
+until the user removes it. `sink.rows.supportChanged(colIds?)` says how
+the rows may be viewed by those columns (or all of them) changed, and the
+grid asks `support` again. Only the rows sort and filter for now: a source may
 drop the columns' part from its answer. When the columns shown change (a
 `Refiltered`, `Reset`, `Inserted` or `Removed` on the columns), a quick
 filter searching the shown columns is asked for again.
@@ -362,7 +397,7 @@ indices, column IDs property names, every column sorts unless
 filter, regexes included (JavaScript `RegExp` syntax, with the `u` flag),
 matched against each cell's text as its column's renderer gives it; a
 missing value never matches, and a pattern `RegExp` rejects leaves the quick
-filter in force. It applies Text conditions the same way, in their own
+filter in force, the answer's `error` saying why. It applies Text conditions the same way, in their own
 column: a blank never matches, so a `not` condition keeps blanks, and a
 condition whose pattern `RegExp` rejects is left out of the View Spec it
 answers. OneOf conditions match the same text exactly. Its `distinct` lists
@@ -371,7 +406,8 @@ a column's values as its renderer gives them, with counts, in sort order
 `filterable: false` takes no conditions. The host's `filter(keep)` applies
 as well. Its `find` matches the same way across the
 shown columns, steps in the rows' order (and the columns'), gives each
-step's index and counts every match. Rows are read as they are until you
+step's index and counts every match; a pattern `RegExp` rejects fails the
+step and the count, and marks nothing. Rows are read as they are until you
 say one changed in place: `edited(id)` for the user's edit (from `onCommit`),
 which leaves a row that stops matching in view, unmatched, until the next
 View Spec, and `changed(id)` for a change from the data itself, which the

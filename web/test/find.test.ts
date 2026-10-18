@@ -83,6 +83,17 @@ function matches(query: TextQuery<Col>, text: string): boolean {
   }
 }
 
+/** Whether RegExp takes the Find Query's pattern. */
+function valid(find: FindQuery<Col>): boolean {
+  if (!find.query.regex) return true;
+  try {
+    new RegExp(find.query.text, "u");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function shown(source: RowsSource<Rec>): { rowIds: number[]; colIds: Col[] } {
   return {
     rowIds: source.rows.window(0, source.rows.count() as number, signal) as number[],
@@ -148,7 +159,10 @@ describe("find in fromRows", () => {
       try {
         const find = tc.draw(finds);
         const all = model(rows, source, find);
-        expect(source.find.count!(find, signal)).toEqual({ total: all.length });
+        if (!valid(find)) {
+          // A pattern RegExp rejects fails the count, marking nothing.
+          expect(() => source.find.count!(find, signal)).toThrow();
+        } else expect(source.find.count!(find, signal)).toEqual({ total: all.length });
         const { rowIds, colIds } = shown(source);
         const marks = source.find.marks(rowIds, colIds, find, signal) as boolean[][];
         const marked = new Set(all.map((m) => `${m.row}:${m.col}`));
@@ -166,7 +180,8 @@ describe("find in fromRows", () => {
         const all = model(rows, source, find);
         const from = tc.draw(froms(rows.length));
         const direction = tc.draw(gs.sampledFrom<"next" | "previous">(["next", "previous"]));
-        expect(source.find.next(from, direction, find, signal)).toEqual(modelStep(source, find, all, from, direction));
+        if (!valid(find)) expect(() => source.find.next(from, direction, find, signal)).toThrow();
+        else expect(source.find.next(from, direction, find, signal)).toEqual(modelStep(source, find, all, from, direction));
       } finally {
         source.destroy();
       }
@@ -177,6 +192,7 @@ describe("find in fromRows", () => {
       const { rows, source } = tc.draw(viewed);
       try {
         const find = tc.draw(finds);
+        tc.assume(valid(find));
         const { total } = source.find.count!(find, signal) as { total: number };
         let at: FindMatch<number, Col> | null = null;
         const visited: FindMatch<number, Col>[] = [];
@@ -376,7 +392,9 @@ describe("find in the feed", () => {
       h.drain();
       h.frame();
       expect(h.snapshot.findMatch).toEqual({ row: h.feed.rowKey("r0"), col: h.feed.colKey("c0") });
-      // A step asked for under "a", answered after the query changed, is ignored.
+      // A step asked for under "a", answered after the query changed, is
+      // ignored: the current match stays until a step for "b" lands.
+      const current = h.snapshot.findMatch;
       h.grid.find_next();
       h.drain();
       h.grid.set_find(h.feed.findKeys(findText("b")));
@@ -384,7 +402,7 @@ describe("find in the feed", () => {
       next().resolve();
       h.drain();
       h.frame();
-      expect(h.snapshot.findMatch).toBeNull();
+      expect(h.snapshot.findMatch).toEqual(current);
       expect(h.feed.findState().step).toBeNull();
     } finally {
       h.destroy();

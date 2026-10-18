@@ -3,16 +3,20 @@
 // toggles and a clear button, a chip for each column condition (× removes
 // it), "+ Filter" to add one through a column menu, "Re-apply" while rows in
 // view were left unmatched by the user's edits, and the row count. Each
-// change to the field sets the widget's quick filter; the widget announces
-// the count to assistive technology once the filter is applied. Drawn in the
-// widget's Theme; hidden while the rows take no quick filter, have no
-// conditions and no column menu is given.
+// change to the field sets the widget's quick filter, typing once a pause
+// has passed (`typingPause`) and Enter, the toggles and × at once; the widget
+// announces the count to assistive technology once the filter is applied.
+// While a filter is pending the count reads "filtering…" and its chips fade;
+// a quick filter or condition the Table Source did not apply turns red with
+// its message, the text kept. Drawn in the widget's Theme; hidden while the
+// rows take no quick filter, have no conditions and no column menu is given.
 
 import { rowCount } from "./aria";
 import type { ColumnMenu } from "./columnmenu";
 import type { Condition } from "./source";
 import type { ConditionState } from "./snapshot";
 import type { FrameInfo, GridWidget } from "./widget";
+import { createPause } from "./pause";
 
 export interface FilterBarOptions<ColId = unknown> {
   /** What the empty field says; "Filter rows…" by default. */
@@ -54,6 +58,11 @@ const PICK_STYLE =
 const REAPPLY_STYLE =
   "font: inherit; border-radius: 999px; padding: 3px 10px; cursor: pointer; background: transparent; white-space: nowrap;";
 const COUNT_STYLE = "margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap;";
+const ERROR_STYLE =
+  "font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 28em;";
+
+/** Numbers each bar's error message, for `aria-describedby`. */
+let errors = 0;
 
 export function createFilterBar<RowId, ColId, V>(
   widget: GridWidget<RowId, ColId, V>,
@@ -75,6 +84,10 @@ export function createFilterBar<RowId, ColId, V>(
   clearButton.setAttribute("aria-label", "Clear filter");
   clearButton.hidden = true;
   field.append(input, caseToggle, regexToggle, clearButton);
+  const error = el("span", "binnacle-filter-error", ERROR_STYLE);
+  error.id = `binnacle-filter-error-${++errors}`;
+  error.setAttribute("role", "status");
+  error.hidden = true;
   const chips = el("div", "binnacle-chips", CHIPS_STYLE);
   chips.setAttribute("role", "list");
   chips.setAttribute("aria-label", "Column filters");
@@ -90,7 +103,7 @@ export function createFilterBar<RowId, ColId, V>(
   reapply.hidden = true;
   reapply.addEventListener("click", () => widget.reapplyView());
   const count = el("span", "binnacle-row-count", COUNT_STYLE);
-  element.append(field, chips, add, reapply, count);
+  element.append(field, error, chips, add, reapply, count);
 
   let picker: HTMLElement | null = null;
   const closePicker = () => {
@@ -151,8 +164,11 @@ export function createFilterBar<RowId, ColId, V>(
   };
   add.addEventListener("click", () => (picker ? closePicker() : void openPicker()));
 
-  /** One chip: "port: not Bergen", faded while pending; the label opens the column menu, × removes it. */
-  const chip = (condition: Condition<ColId>, state: ConditionState) => {
+  /**
+   * One chip: "port: not Bergen", faded while pending, red with `message`
+   * when not applied; the label opens the column menu, × removes it.
+   */
+  const chip = (condition: Condition<ColId>, state: ConditionState, message: string) => {
     const t = widget.theme;
     const item = el("div", "binnacle-chip", CHIP_STYLE);
     item.setAttribute("role", "listitem");
@@ -174,29 +190,47 @@ export function createFilterBar<RowId, ColId, V>(
     item.style.border = `1px solid ${t.sortMarker}`;
     item.style.background = t.picks.background;
     item.style.color = t.picks.color;
-    if (state !== "applied") item.style.opacity = "0.55";
+    if (state === "adding" || state === "removing") {
+      item.style.opacity = "0.55";
+      item.setAttribute("aria-busy", "true");
+    }
     if (state === "removing") label.style.textDecoration = "line-through";
-    if (state !== "applied") item.setAttribute("aria-busy", "true");
+    if (state === "notApplied") {
+      item.style.border = `1px solid ${t.error}`;
+      item.style.color = t.error;
+      item.style.background = t.body.background;
+      item.title = `Not applied: ${message}`;
+      label.setAttribute("aria-invalid", "true");
+      label.setAttribute("aria-description", `Not applied: ${message}`);
+    }
     return item;
   };
   let shownChips = "";
   let shownQuick = "null";
 
   let regexAllowed = false;
+  /** The last frame, for repainting the field's state. */
+  let info: FrameInfo<RowId, ColId> | null = null;
   const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
-  const send = () => {
-    clearButton.hidden = input.value === "";
-    widget.setQuickFilter(
-      input.value === ""
-        ? null
-        : {
-            text: input.value,
-            caseSensitive: pressed(caseToggle),
-            regex: regexAllowed && pressed(regexToggle),
-            searches: "shown",
-          },
-    );
-  };
+  const pause = createPause(
+    () => widget.typingPause,
+    () => {
+      clearButton.hidden = input.value === "";
+      widget.setQuickFilter(
+        input.value === ""
+          ? null
+          : {
+              text: input.value,
+              caseSensitive: pressed(caseToggle),
+              regex: regexAllowed && pressed(regexToggle),
+              searches: "shown",
+            },
+      );
+      paint();
+    },
+  );
+  /** Sends the field's quick filter now, dropping any wait. */
+  const send = pause.now;
   for (const b of [caseToggle, regexToggle]) {
     b.addEventListener("click", () => {
       b.setAttribute("aria-pressed", String(!pressed(b)));
@@ -210,7 +244,11 @@ export function createFilterBar<RowId, ColId, V>(
     input.focus();
   };
   clearButton.addEventListener("click", clear);
-  input.addEventListener("input", send);
+  input.addEventListener("input", () => {
+    clearButton.hidden = input.value === "";
+    pause.typed();
+    paint();
+  });
   input.addEventListener("focus", () => paint());
   input.addEventListener("blur", () => paint());
   input.addEventListener("keydown", (e) => {
@@ -234,7 +272,16 @@ export function createFilterBar<RowId, ColId, V>(
     field.style.color = t.body.color;
     // The field's border stands in for the input's focus ring.
     const lit = input.value !== "" || document.activeElement === input;
-    field.style.border = `1px solid ${lit ? t.focus.color : t.border}`;
+    const rejected = !pause.waiting && info?.quickState === "notApplied";
+    field.style.border = `1px solid ${rejected ? t.error : lit ? t.focus.color : t.border}`;
+    input.style.color = rejected ? t.error : "inherit";
+    input.toggleAttribute("aria-invalid", rejected);
+    if (rejected) input.setAttribute("aria-describedby", error.id);
+    else input.removeAttribute("aria-describedby");
+    error.hidden = !rejected;
+    error.textContent = rejected ? (info?.viewError ?? "Not applied") : "";
+    error.title = error.textContent;
+    error.style.color = t.error;
     count.style.color = t.rowNumber.color;
     add.style.color = t.rowNumber.color;
     add.style.border = `1px dashed ${t.border}`;
@@ -248,6 +295,7 @@ export function createFilterBar<RowId, ColId, V>(
   };
 
   const frame = (f: FrameInfo<RowId, ColId>) => {
+    info = f;
     // Inline styles would win over the `hidden` attribute.
     element.style.display = f.quickFilter === null && f.conditions.length === 0 && !menu ? "none" : "flex";
     field.style.display = f.quickFilter === null ? "none" : "flex";
@@ -263,13 +311,17 @@ export function createFilterBar<RowId, ColId, V>(
       clearButton.hidden = input.value === "";
     }
     // Rebuilt only when they change, so a press on a chip is not lost to a repaint.
+    const message = f.viewError ?? "the source did not apply it";
     const key = [
       widget.theme.name,
-      ...f.conditions.map(({ condition, state }) => `${state} ${chipText(widget.columnLabel(condition.id), condition)}`),
+      message,
+      ...f.conditions.map(
+        ({ condition, state }) => `${state} ${chipText(widget.columnLabel(condition.id), condition)}`,
+      ),
     ].join("\n");
     if (key !== shownChips) {
       shownChips = key;
-      chips.replaceChildren(...f.conditions.map(({ condition, state }) => chip(condition, state)));
+      chips.replaceChildren(...f.conditions.map(({ condition, state }) => chip(condition, state, message)));
     }
     regexToggle.hidden = !regexAllowed;
     const unmatched = f.rows.unmatched;
@@ -278,9 +330,14 @@ export function createFilterBar<RowId, ColId, V>(
     reapply.title = `${rows} the filter: apply it again`;
     reapply.setAttribute("aria-label", `Re-apply the filter: ${rows}`);
     const filtered = f.rows.total !== null && f.rows.total !== f.rows.count;
-    count.textContent = filtered
-      ? `${f.rows.count.toLocaleString("en")} of ${f.rows.total!.toLocaleString("en")}`
-      : rowCount(f.rows.count, null);
+    const changing = (s: ConditionState | null) => s === "adding" || s === "removing";
+    const filtering = f.viewPending && (changing(f.quickState) || f.conditions.some((c) => changing(c.state)));
+    count.toggleAttribute("aria-busy", filtering);
+    count.textContent = filtering
+      ? "filtering…"
+      : filtered
+        ? `${f.rows.count.toLocaleString("en")} of ${f.rows.total!.toLocaleString("en")}`
+        : rowCount(f.rows.count, null);
     paint();
   };
   const unsubscribe = widget.subscribe(frame);
@@ -291,6 +348,7 @@ export function createFilterBar<RowId, ColId, V>(
     focus: () => input.focus(),
     destroy() {
       unsubscribe();
+      pause.cancel();
       closePicker();
       element.remove();
     },

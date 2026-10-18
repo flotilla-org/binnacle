@@ -14,6 +14,7 @@ export type {
   AppliedAxisView,
   AppliedView,
   AxisSink,
+  TableSink,
   AxisSource,
   AxisView,
   ChangeNotice,

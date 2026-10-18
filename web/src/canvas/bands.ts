@@ -26,7 +26,8 @@ export function filterButtonRect(h: HeaderPlacement): Rect {
 
 /** How a header shows its column's conditions: filtered (where the latest request leaves it) and whether that is pending. */
 function filterMark(s: Snapshot, h: HeaderPlacement): { filtered: boolean; pending: boolean } {
-  if (!h.filter.pending) return { filtered: h.filter.filtered, pending: false };
+  // A condition asked for and not applied marks the header too.
+  if (!h.filter.pending) return { filtered: h.filter.filtered || h.filter.notApplied, pending: false };
   // A pending change shows where it is going, faded.
   const requested = s.requestedView?.rows.filter.conditions.some((c) => c.key === h.key) ?? false;
   return { filtered: requested, pending: true };
@@ -49,7 +50,8 @@ function funnel(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: num
  * filtered column. With a menu, an unfiltered column's funnel is a faint
  * outline, brighter while hovered, and a filtered one is solid on a tinted
  * square; without one, a filtered column's funnel is small and solid in the
- * header's text colour. A pending change shows faded. Returns the room it took.
+ * header's text colour. A pending change shows faded; a condition the Table
+ * Source did not apply, in the error colour. Returns the room it took.
  */
 function paintFilter(p: PaintContext, h: HeaderPlacement): number {
   const { ctx, s, theme } = p;
@@ -61,12 +63,13 @@ function paintFilter(p: PaintContext, h: HeaderPlacement): number {
   const cy = r.y + r.height / 2;
   ctx.save();
   if (mark.pending) ctx.globalAlpha = 0.4;
+  const colour = h.filter.notApplied ? theme.error : theme.sortMarker;
   if (!button) {
-    ctx.fillStyle = theme.header.color;
+    ctx.fillStyle = h.filter.notApplied ? theme.error : theme.header.color;
     funnel(ctx, cx, cy, FUNNEL - 2);
     ctx.fill();
   } else if (mark.filtered) {
-    ctx.fillStyle = theme.sortMarker;
+    ctx.fillStyle = colour;
     ctx.globalAlpha *= 0.16;
     ctx.beginPath();
     ctx.roundRect(r.x, r.y, r.width, r.height, 4);

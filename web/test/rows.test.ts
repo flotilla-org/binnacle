@@ -17,12 +17,24 @@ import type {
   FilterSpec,
   SortDirection,
   SortSpec,
+  TableSink,
   TextMatch,
   TextQuery,
   ViewSpec,
 } from "../src/source";
 import { BAND, COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
 import { loadForTests } from "./wasm";
+
+/** Sinks that keep the rows' Change Notices in `notices` and drop the rest. */
+function sinksTo<RowId, ColId>(notices: ChangeNotice[]): TableSink<RowId, ColId> {
+  const ignore = () => {};
+  return {
+    rows: { notify: (n) => void notices.push(n), supportChanged: ignore },
+    cols: { notify: ignore, supportChanged: ignore },
+    viewChanged: ignore,
+    findCounted: ignore,
+  };
+}
 
 beforeAll(loadForTests);
 
@@ -207,7 +219,7 @@ describe("fromRows", () => {
       tc.assume(rows.length > 0);
       const source = fromRows(rows, COLUMNS);
       const notices: ChangeNotice[] = [];
-      source.attach!({ rows: { notify: (n) => notices.push(n) }, cols: { notify: () => {} } });
+      source.attach!(sinksTo(notices));
       try {
         const spec: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
         const filtered = tc.draw(gs.booleans());
@@ -245,12 +257,12 @@ describe("fromRows", () => {
       }
     }));
 
-  test("whatever View Specs and host filters arrive, the rows shown are the model's; an invalid pattern leaves the quick filter in force and drops a condition", () =>
+  test("whatever View Specs and host filters arrive, the rows shown are the model's; an invalid pattern leaves the quick filter in force, drops a condition and says why", () =>
     hegel.test((tc) => {
       const rows = tc.draw(texts);
       const source = fromRows(rows, COLUMNS);
       const notices: ChangeNotice[] = [];
-      source.attach!({ rows: { notify: (n) => notices.push(n) }, cols: { notify: () => {} } });
+      source.attach!(sinksTo(notices));
       let [sort, quick, min]: [SortSpec<keyof Rec>, TextQuery<keyof Rec> | null, number | null] = [[], null, null];
       let applied: Condition<keyof Rec>[] = [];
       try {
@@ -269,7 +281,11 @@ describe("fromRows", () => {
             const kept = conditions.filter(applicable);
             const refiltered = (changed && valid) || JSON.stringify(kept) !== JSON.stringify(applied);
             applied = kept;
-            expect(answer).toEqual(answered(rows.length, sort, quick, applied));
+            const { error, ...rest } = answer as AppliedView<number, keyof Rec>;
+            expect(rest).toEqual(answered(rows.length, sort, quick, applied));
+            // What RegExp said of the first pattern it rejected.
+            expect(error !== undefined).toBe(!valid || kept.length < conditions.length);
+            if (error !== undefined) expect(error).toMatch(/^(?!Invalid regular expression)\S/);
             expect(notices).toEqual([{ type: refiltered ? "Refiltered" : "Reordered" }]);
           } else {
             const m = tc.draw(gs.oneOf(gs.just(null), gs.integers({ minValue: -12, maxValue: 12 })));
@@ -384,7 +400,7 @@ describe("fromRows", () => {
   test("sorting and filtering tell the attached sinks", () => {
     const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }, { n: 1, s: null, b: 0 }], COLUMNS);
     const notices: ChangeNotice[] = [];
-    const detach = source.attach!({ rows: { notify: (n) => notices.push(n) }, cols: { notify: () => {} } });
+    const detach = source.attach!(sinksTo(notices));
     source.view!(rowsSorted([{ id: "n", direction: "ascending" }]), new AbortController().signal);
     source.filter((r) => r.b === 0);
     source.filter(null);

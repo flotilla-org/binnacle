@@ -830,7 +830,7 @@ describe("the quick filter", () => {
     }
   });
 
-  test("a rejected quick filter keeps the filter and totals in force, and one naming an unknown column is not asked", async () => {
+  test("a rejected quick filter keeps the filter and totals in force and stays asked for, not applied; one naming an unknown column is not asked", async () => {
     let calls = 0;
     const { h } = filtering((spec) => (++calls > 1 ? Promise.reject(new Error("no")) : { ...spec, totals: { rows: 40 } }));
     try {
@@ -844,7 +844,8 @@ describe("the quick filter", () => {
       h.frame();
       expect(h.snapshot.appliedView.rows.filter.quick).toEqual(first);
       expect(h.snapshot.rows.total).toBe(40);
-      expect(h.snapshot.requestedView).toBeNull();
+      expect(h.snapshot.requestedView?.rows.filter.quick).toEqual(query(h, "b", null));
+      expect(h.snapshot.viewPending).toBe(false);
       h.grid.set_quick_filter(0, { ...first, searches: [12345n] });
       h.drain();
       h.frame();
@@ -865,7 +866,7 @@ describe("column conditions", () => {
     return { key, kind: { type: "Text" as const, query }, not };
   };
 
-  test("a condition reaches the source by its column's ID, and the source's answer reaches the headers and the list", () => {
+  test("a condition reaches the source by its column's ID, and the source's answer reaches the headers and the list, one it left out not applied", () => {
     const asked: Spec[] = [];
     // Applies only the conditions on c1.
     const rec = new Recorder(10, 3, {
@@ -888,11 +889,14 @@ describe("column conditions", () => {
       ]);
       expect(h.snapshot.appliedView.rows.filter.conditions).toEqual([textOn(h, "c1", "Bér", true)]);
       expect(h.snapshot.cols.headers.map((x) => x.filter)).toEqual([
-        { filtered: false, pending: false },
-        { filtered: true, pending: false },
-        { filtered: false, pending: false },
+        { filtered: false, pending: false, notApplied: false },
+        { filtered: true, pending: false, notApplied: false },
+        { filtered: false, pending: false, notApplied: true },
       ]);
-      expect(h.snapshot.rows.conditions).toEqual([{ condition: textOn(h, "c1", "Bér", true), state: "applied" }]);
+      expect(h.snapshot.rows.conditions).toEqual([
+        { condition: textOn(h, "c1", "Bér", true), state: "applied" },
+        { condition: textOn(h, "c2", "x"), state: "notApplied" },
+      ]);
     } finally {
       h.destroy();
     }
@@ -931,7 +935,7 @@ describe("column conditions", () => {
     }
   });
 
-  test("a condition naming a column the feed has no ID for is not asked, and the spec in force stays", () => {
+  test("a condition naming a column the feed has no ID for is not asked, the spec in force stays and it shows not applied", () => {
     let calls = 0;
     const rec = new Recorder(4, 3, { view: (spec) => (calls++, spec) });
     const h = new Harness(rec.source);
@@ -943,7 +947,8 @@ describe("column conditions", () => {
       h.frame();
       expect(calls).toBe(0);
       expect(h.snapshot.appliedView.rows.filter.conditions).toEqual([]);
-      expect(h.snapshot.requestedView).toBeNull();
+      expect(h.snapshot.viewPending).toBe(false);
+      expect(h.snapshot.rows.conditions.map((c) => c.state)).toEqual(["notApplied"]);
     } finally {
       h.destroy();
     }
@@ -1029,7 +1034,7 @@ describe("distinct values", () => {
         { id: "c2", kind: { type: "OneOf", values: [null, "", "Ø🚢"] }, not: false },
       ]);
       expect(h.snapshot.rows.conditions).toEqual([{ condition: listed, state: "applied" }]);
-      expect(h.snapshot.cols.headers[2]?.filter).toEqual({ filtered: true, pending: false });
+      expect(h.snapshot.cols.headers[2]?.filter).toEqual({ filtered: true, pending: false, notApplied: false });
     } finally {
       h.destroy();
     }

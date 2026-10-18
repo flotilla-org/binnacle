@@ -7,8 +7,10 @@
 // search, counts, "(Blanks)" and a note on whether the list is capped and
 // narrowed, and Clear. A column that takes only OneOf shows just the
 // checklist. Each change edits the column's conditions at once, the
-// checklist's by the rules in `checklist.ts`; Escape, a press outside, or
-// Close shuts the menu. Drawn in the widget's Theme.
+// checklist's by the rules in `checklist.ts`, typing in the text field once
+// the widget's typing pause has passed; a Text condition the Table Source did
+// not apply shows red with its message under the field. Escape, a press
+// outside, or Close shuts the menu. Drawn in the widget's Theme.
 
 import {
   columnConditions,
@@ -24,6 +26,7 @@ import {
 } from "./checklist";
 import type { Condition, Distinct, ListedValue, TextMatch } from "./source";
 import type { FrameInfo, GridWidget } from "./widget";
+import { createPause } from "./pause";
 
 export interface ColumnMenu<ColId = unknown> {
   /** The popover while it is open, else `null`. */
@@ -58,6 +61,10 @@ const ITEM_STYLE = "display: flex; align-items: center; gap: 6px; padding: 2px 8
 const ITEM_TEXT_STYLE = "flex: 1; overflow: hidden; text-overflow: ellipsis;";
 const COUNT_STYLE = "font-size: 11px; font-variant-numeric: tabular-nums;";
 const NOTICE_STYLE = "font-size: 11px; min-height: 14px; margin: 0 2px;";
+const ERROR_STYLE = "font-size: 11px; margin: 4px 2px 0;";
+
+/** Numbers each menu's error message, for `aria-describedby`. */
+let errors = 0;
 
 export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColId, V>): ColumnMenu<ColId> {
   let menu: { element: HTMLElement; close(): void } | null = null;
@@ -110,6 +117,10 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const regexToggle = toggle(".*", "Use regular expression");
     regexToggle.hidden = !regexAllowed;
     textRow.append(how, field, caseToggle, regexToggle);
+    const error = el("div", "binnacle-column-menu-error", ERROR_STYLE);
+    error.id = `binnacle-column-menu-error-${++errors}`;
+    error.setAttribute("role", "status");
+    error.hidden = true;
 
     const values = el("div", "binnacle-column-menu-values", "");
     values.hidden = !support.oneOf;
@@ -131,7 +142,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const spacer = el("span", "", "flex: 1;");
     const closeButton = action("Close");
     foot.append(clearButton, spacer, closeButton);
-    element.append(title, textRow, values, foot);
+    element.append(title, textRow, error, values, foot);
 
     const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
     /** Shows the column's Text condition in the text row. */
@@ -145,16 +156,21 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     };
     showText();
 
-    const sendText = () => {
-      const query: TextMatch = {
-        text: field.value,
-        caseSensitive: pressed(caseToggle),
-        regex: regexAllowed && pressed(regexToggle),
-      };
-      const to: Condition<ColId> = { id: colId, kind: { type: "Text", query }, not: how.value === "not" };
-      write({ text: query.text === "" ? null : to, oneOf: column.oneOf });
-      showValues();
-    };
+    const pause = createPause(
+      () => widget.typingPause,
+      () => {
+        const query: TextMatch = {
+          text: field.value,
+          caseSensitive: pressed(caseToggle),
+          regex: regexAllowed && pressed(regexToggle),
+        };
+        const to: Condition<ColId> = { id: colId, kind: { type: "Text", query }, not: how.value === "not" };
+        write({ text: query.text === "" ? null : to, oneOf: column.oneOf });
+        showValues();
+        paint();
+      },
+    );
+    const sendText = pause.now;
     for (const b of [caseToggle, regexToggle]) {
       b.addEventListener("click", () => {
         b.setAttribute("aria-pressed", String(!pressed(b)));
@@ -163,7 +179,10 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       });
     }
     how.addEventListener("change", sendText);
-    field.addEventListener("input", sendText);
+    field.addEventListener("input", () => {
+      pause.typed();
+      paint();
+    });
     clearButton.addEventListener("click", () => {
       widget.clearConditions(colId);
       column = columnConditions([], colId);
@@ -272,6 +291,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       if (menu?.element !== element) return;
       menu = null;
       asking?.abort();
+      if (pause.waiting) sendText();
+      unwatch();
       document.removeEventListener("pointerdown", outside, true);
       element.remove();
       if (returnFocus?.isConnected) returnFocus.focus();
@@ -300,7 +321,22 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;
       }
-      field.style.borderColor = t.focus.color;
+      // The column's Text condition, once nothing typed waits, as the latest frame has it.
+      const text = column.text;
+      const rejected =
+        !pause.waiting &&
+        text !== null &&
+        (latest?.conditions ?? []).some(
+          ({ condition, state }) => state === "notApplied" && JSON.stringify(condition) === JSON.stringify(text),
+        );
+      field.style.borderColor = rejected ? t.error : t.focus.color;
+      field.style.color = rejected ? t.error : "inherit";
+      field.toggleAttribute("aria-invalid", rejected);
+      if (rejected) field.setAttribute("aria-describedby", error.id);
+      else field.removeAttribute("aria-describedby");
+      error.hidden = !rejected;
+      error.textContent = rejected ? (latest?.viewError ?? "Not applied") : "";
+      error.style.color = t.error;
       list.style.border = `1px solid ${t.border}`;
       separator.style.background = t.border;
       for (const b of [caseToggle, regexToggle]) {
@@ -310,6 +346,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       }
     };
     paint();
+    const unwatch = widget.subscribe(() => paint());
     if (support.oneOf) ask();
 
     document.body.append(element);

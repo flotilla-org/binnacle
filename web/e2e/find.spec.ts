@@ -150,7 +150,7 @@ test("the slow source's marks, steps and count arrive late", async ({ page }) =>
   await expect(status(page)).toContainText("rows 1 to");
   await openFind(page);
   await field(page).fill("dunedin");
-  await expect(counted(page)).toHaveText("");
+  await expect(counted(page)).toHaveText("finding…");
   await expect(counted(page)).toHaveText(`${en(all.length)} matches`);
   await page.keyboard.press("Enter");
   await expect(counted(page)).toHaveText(`1 of ${en(all.length)}`);

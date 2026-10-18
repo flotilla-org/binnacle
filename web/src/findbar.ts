@@ -5,11 +5,15 @@
 // a note when a step wraps, Previous and Next, "Show only matching rows"
 // (which copies the query to the rows' quick filter) and a close button.
 // Enter steps to the next match, Shift+Enter to the previous, Escape closes.
-// Closing clears the Find Query and its marks. Drawn in the widget's Theme;
+// Typing sets the Find Query once a pause has passed (`typingPause`); Enter,
+// the toggles and the order at once. The count reads "finding…" until the
+// source counts, and "No matches" in the error colour, with the source's
+// message, when it fails. Closing clears the Find Query and its marks. Drawn in the widget's Theme;
 // it never opens while the Table Source does not find.
 
 import type { FindQuery } from "./source";
 import type { FindInfo, FrameInfo, GridWidget } from "./widget";
+import { createPause } from "./pause";
 
 export interface FindBarOptions {
   /** What the empty field says; "Find in table" by default. */
@@ -37,7 +41,8 @@ const TOGGLE_STYLE =
 const SELECT_STYLE = "font: inherit; color: inherit; border-radius: 6px; padding: 3px 4px;";
 const COUNT_STYLE = "font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 6.5em; text-align: center;";
 const NOTE_STYLE = "white-space: nowrap; font-size: 0.9em;";
-const BUTTON_STYLE = "font: inherit; color: inherit; border-radius: 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap;";
+const BUTTON_STYLE =
+  "font: inherit; color: inherit; border-radius: 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap;";
 const ONLY_STYLE = `${BUTTON_STYLE} margin-left: auto;`;
 const CLOSE_STYLE =
   "width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; " +
@@ -98,7 +103,15 @@ export function createFindBar<RowId, ColId, V>(
           },
           by: order.value === "cols" ? "cols" : "rows",
         };
-  const send = () => widget.setFind(opened ? query() : null);
+  const pause = createPause(
+    () => widget.typingPause,
+    () => {
+      widget.setFind(opened ? query() : null);
+      if (info) frame(info);
+    },
+  );
+  /** Sends the bar's Find Query now, dropping any wait. */
+  const send = pause.now;
   const step = (direction: "next" | "previous") => {
     send();
     stepped = direction;
@@ -130,7 +143,10 @@ export function createFindBar<RowId, ColId, V>(
       send();
     });
   }
-  input.addEventListener("input", send);
+  input.addEventListener("input", () => {
+    pause.typed();
+    if (info) frame(info);
+  });
   input.addEventListener("focus", () => paint());
   input.addEventListener("blur", () => paint());
   input.addEventListener("keydown", (e) => {
@@ -178,9 +194,10 @@ export function createFindBar<RowId, ColId, V>(
       b.style.background = t.body.background;
       b.style.border = `1px solid ${t.border}`;
     }
-    const none = info?.find.count?.total === 0;
+    const failed = !pause.waiting && info?.find.query != null && info.find.error !== null;
+    const none = failed || (info?.find.count?.total === 0 && !info.find.count.partial);
     count.style.color = none ? t.error : t.rowNumber.color;
-    note.style.color = t.findCurrent.color;
+    note.style.color = failed ? t.error : t.findCurrent.color;
   };
 
   const frame = (f: FrameInfo<RowId, ColId>) => {
@@ -190,8 +207,17 @@ export function createFindBar<RowId, ColId, V>(
     only.hidden = f.quickFilter === null;
     const q = query();
     only.disabled = !q || (q.query.regex && !f.quickFilter?.regex);
-    count.textContent = f.find.query ? countText(f.find) : "";
-    note.textContent = f.find.query && f.find.step?.wrapped ? (stepped === "next" ? "Wrapped to the start" : "Wrapped to the end") : "";
+    const finding = pause.waiting || (f.find.query !== null && f.find.count === null && f.find.counting);
+    const failed = !finding && f.find.query !== null && f.find.error !== null;
+    count.textContent = finding ? "finding…" : failed ? "No matches" : f.find.query ? countText(f.find) : "";
+    count.toggleAttribute("aria-busy", finding);
+    note.textContent = failed
+      ? f.find.error!
+      : f.find.query && f.find.step?.wrapped
+        ? stepped === "next"
+          ? "Wrapped to the start"
+          : "Wrapped to the end"
+        : "";
     if (opened && !f.find.support) close();
     paint();
   };
@@ -208,6 +234,7 @@ export function createFindBar<RowId, ColId, V>(
     destroy() {
       unsubscribe();
       detach();
+      pause.cancel();
       element.remove();
     },
   };

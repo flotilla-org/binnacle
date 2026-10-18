@@ -14,7 +14,8 @@
 // cell's text as its column's renderer gives it, and hand binnacle-memory
 // the rows to keep. Distinct values are counted in JS too.
 // Find matches the same way, once per Find Query, and walks the view's order
-// for steps and the count.
+// for steps and the count; a pattern RegExp rejects fails both and marks
+// nothing.
 //
 // Row IDs are the rows' indices in the array (their Logical Indices); column
 // IDs are the property names.
@@ -114,6 +115,17 @@ function extract(values: unknown[]): SortKeys {
 }
 
 const DIRECTION = { ascending: 0, descending: 1 } as const;
+
+/** Why `RegExp` rejects `query`'s pattern, without its preamble; `undefined` if it takes it. */
+function invalid(query: TextMatch): string | undefined {
+  if (!query.regex) return undefined;
+  try {
+    new RegExp(query.text, "u");
+    return undefined;
+  } catch (e) {
+    return String((e as Error).message).replace(/^Invalid regular expression: \/.*\/[a-z]*: /, "");
+  }
+}
 
 /** Whether some text matches `query`, or `undefined` if its pattern is not a valid `RegExp`. */
 function matcher(query: TextMatch): ((text: string) => boolean) | undefined {
@@ -226,6 +238,8 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
   const hitsFor = (find: FindQuery<ColId>): Uint8Array => {
     const id = JSON.stringify(find.query);
     if (hits?.query === id) return hits.cells;
+    const error = invalid(find.query);
+    if (error !== undefined) throw new Error(error);
     const match = matcher(find.query);
     const n = columns.length;
     const cells = new Uint8Array(rows.length * n);
@@ -359,7 +373,8 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     // Columns never sort or filter by rows, so their part of the spec is
     // dropped. A quick filter whose pattern is not a valid RegExp leaves the
     // one in force; a condition with one, or on a column that takes none, is
-    // left out.
+    // left out. The answer's error says what RegExp made of the first pattern
+    // it rejected.
     view(spec: ViewSpec<number, ColId>) {
       const by = spec.rows.sort;
       if (by.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
@@ -378,6 +393,11 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
         conditions.map((k) => k.condition),
       );
       if (conditionsChanged) conditions = kept;
+      const patterns = [
+        asked,
+        ...(spec.rows.filter?.conditions ?? []).map((c) => c.kind.type === "Text" && c.kind.query),
+      ];
+      const error = patterns.flatMap((q) => (q ? [invalid(q)] : [])).find((e) => e !== undefined);
       sort(by);
       // Any View Spec, even the one in force, filters the unmatched rows.
       const refiltered = quickChanged || conditionsChanged || memory().has_unmatched();
@@ -387,12 +407,14 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
         rows: { filter: { quick, conditions: conditions.map((k) => k.condition) }, sort: by },
         cols: { filter: { quick: null, conditions: [] }, sort: [] },
         totals: { rows: rows.length, cols: columns.length },
+        ...(error === undefined ? {} : { error }),
       };
     },
     cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => rows[r]![c])),
     find: {
       regex: true,
       marks(rowIds, colIds, query) {
+        if (invalid(query.query) !== undefined) return rowIds.map(() => colIds.map(() => false));
         const cells = hitsFor(query);
         const n = columns.length;
         return rowIds.map((r) => colIds.map((c) => index.has(c) && cells[r * n + index.get(c)!] === 1));

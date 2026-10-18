@@ -1,6 +1,7 @@
 // The huge source end to end: the native scroller and the wheel reach every
-// row of 10^15, the "Go to row" box focuses any of them, and the widget
-// draws nothing while idle.
+// row of 10^15, the "Go to row" box focuses any of them, the widget draws
+// nothing while idle, and find counts like a source that cannot count
+// everything at once.
 
 import { expect, test, type Page } from "@playwright/test";
 
@@ -134,4 +135,16 @@ test("the Go to row box takes e-notation and refuses what is not a row", async (
     await expect(box).toHaveAttribute("aria-invalid", "true");
   }
   await expect(status(page)).toContainText("focus row 1,000,000,000,000,000, column 1");
+});
+
+test("find answers with a partial count, then the counts the source pushes grow to the last", async ({ page }) => {
+  await page.getByRole("button", { name: "Find" }).click();
+  await page.keyboard.type("77");
+  await page.keyboard.press("Enter");
+  const count = page.locator(".binnacle-find-count");
+  await expect(count).toHaveText(/^1 of [\d,]+\+$/);
+  const first = Number((await count.textContent())!.match(/of ([\d,]+)/)![1]!.replaceAll(",", ""));
+  await expect(count).toHaveText("1 of 1,459,738,939,225,188", { timeout: 10_000 });
+  expect(first).toBeLessThan(1_459_738_939_225_188);
+  await expect(status(page)).toContainText("focus row 78, column 1");
 });
