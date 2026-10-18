@@ -90,13 +90,9 @@ export interface GridOptions<RowId, ColId, V = unknown> {
 export interface FrameInfo<RowId = unknown, ColId = unknown> {
   /** Whether the frame painted. */
   painted: boolean;
-  /**
-   * The rows in view: the first and last visible Positions, the count, and
-   * the count before any filter as the Table Source last gave it (`null` if
-   * it gave none).
-   */
-  rows: { first: number; last: number; count: number; total: number | null };
-  cols: { first: number; last: number; count: number; total: number | null };
+  /** The rows in view. */
+  rows: AxisInfo;
+  cols: AxisInfo;
   /** Whether the rows take a quick filter (the Table Source's `rows.quickFilter`), and with regexes; `null` if not. */
   quickFilter: { regex: boolean } | null;
   /** The rows' quick filter as last asked for: the request still unanswered, else the one applied. */
@@ -125,6 +121,20 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   columns: ColumnHeader<ColId>[];
   /** Find: whether the Table Source finds, the Find Query in force, the current match, and what the source said of them. */
   find: FindInfo<RowId, ColId>;
+}
+
+/**
+ * An axis in view, as `FrameInfo` gives it: the first and last visible
+ * Positions, the count, the count before any filter as the Table Source last
+ * gave it (`null` if it gave none), and how many visible items are unmatched
+ * (kept after the user's edit though the filter drops them).
+ */
+export interface AxisInfo {
+  first: number;
+  last: number;
+  count: number;
+  total: number | null;
+  unmatched: number;
 }
 
 /** Find as `FrameInfo.find` gives it. */
@@ -659,6 +669,17 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return new DOMRect(box.left + r.x, box.top + r.y, r.width, r.height);
   }
 
+  /**
+   * Asks the Table Source for the View Spec in force again, so rows the
+   * user's edits left in view though they no longer match are filtered.
+   */
+  reapplyView(): void {
+    if (this.destroyed) return;
+    this.grid.reapply_view();
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
   /** Asks the Table Source for the whole of `spec`, such as a saved view, in place of the View Spec in force. */
   requestView(spec: ViewSpec<RowId, ColId>): void {
     if (this.destroyed) return;
@@ -774,8 +795,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private frameInfo(snapshot: Snapshot, painted: boolean, again: boolean): FrameInfo<RowId, ColId> {
     return {
       painted,
-      rows: span(snapshot, "rows"),
-      cols: span(snapshot, "cols"),
+      rows: span(snapshot, "rows", (key) => this.feed.unmatched("rows", key)),
+      cols: span(snapshot, "cols", (key) => this.feed.unmatched("cols", key)),
       quickFilter: snapshot.rows.quickFilter,
       quick: this.quick(snapshot),
       ...selection(snapshot),
@@ -927,7 +948,7 @@ function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked
   };
 }
 
-function span(s: Snapshot, axis: "rows" | "cols"): FrameInfo["rows"] {
+function span(s: Snapshot, axis: "rows" | "cols", unmatched: (key: bigint) => boolean): AxisInfo {
   const strip = s[axis].strip;
   // The Strip includes overscan; report what the viewport shows.
   const start = s[axis].header;
@@ -938,6 +959,7 @@ function span(s: Snapshot, axis: "rows" | "cols"): FrameInfo["rows"] {
     last: visible.at(-1)?.position ?? 0,
     count: s[axis].count,
     total: s[axis].total,
+    unmatched: visible.filter((i) => i.key !== null && unmatched(i.key)).length,
   };
 }
 

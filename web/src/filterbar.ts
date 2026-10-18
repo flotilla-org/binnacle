@@ -1,7 +1,8 @@
 // The filter bar: a part the embedder places beside a GridWidget, usually
 // above it. It holds the rows' quick filter field with its case and regex
 // toggles and a clear button, a chip for each column condition (× removes
-// it), "+ Filter" to add one through a column menu, and the row count. Each
+// it), "+ Filter" to add one through a column menu, "Re-apply" while rows in
+// view were left unmatched by the user's edits, and the row count. Each
 // change to the field sets the widget's quick filter; the widget announces
 // the count to assistive technology once the filter is applied. Drawn in the
 // widget's Theme; hidden while the rows take no quick filter, have no
@@ -50,6 +51,8 @@ const PICKER_STYLE =
 const PICK_STYLE =
   "display: block; width: 100%; text-align: left; font: inherit; color: inherit; border: 0; " +
   "background: transparent; padding: 4px 12px; cursor: pointer;";
+const REAPPLY_STYLE =
+  "font: inherit; border-radius: 999px; padding: 3px 10px; cursor: pointer; background: transparent; white-space: nowrap;";
 const COUNT_STYLE = "margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap;";
 
 export function createFilterBar<RowId, ColId, V>(
@@ -81,8 +84,13 @@ export function createFilterBar<RowId, ColId, V>(
   add.textContent = "+ Filter";
   add.setAttribute("aria-haspopup", "menu");
   add.hidden = !menu;
+  const reapply = el("button", "binnacle-reapply", REAPPLY_STYLE);
+  reapply.type = "button";
+  reapply.textContent = "Re-apply";
+  reapply.hidden = true;
+  reapply.addEventListener("click", () => widget.reapplyView());
   const count = el("span", "binnacle-row-count", COUNT_STYLE);
-  element.append(field, chips, add, count);
+  element.append(field, chips, add, reapply, count);
 
   let picker: HTMLElement | null = null;
   const closePicker = () => {
@@ -230,6 +238,8 @@ export function createFilterBar<RowId, ColId, V>(
     count.style.color = t.rowNumber.color;
     add.style.color = t.rowNumber.color;
     add.style.border = `1px dashed ${t.border}`;
+    reapply.style.color = t.focus.color;
+    reapply.style.border = `1px solid ${t.focus.color}`;
     for (const b of [caseToggle, regexToggle]) {
       const on = pressed(b);
       b.style.color = on ? t.focus.color : t.loading;
@@ -262,6 +272,11 @@ export function createFilterBar<RowId, ColId, V>(
       chips.replaceChildren(...f.conditions.map(({ condition, state }) => chip(condition, state)));
     }
     regexToggle.hidden = !regexAllowed;
+    const unmatched = f.rows.unmatched;
+    reapply.hidden = unmatched === 0;
+    const rows = unmatched === 1 ? "1 edited row no longer matches" : `${unmatched} edited rows no longer match`;
+    reapply.title = `${rows} the filter: apply it again`;
+    reapply.setAttribute("aria-label", `Re-apply the filter: ${rows}`);
     const filtered = f.rows.total !== null && f.rows.total !== f.rows.count;
     count.textContent = filtered
       ? `${f.rows.count.toLocaleString("en")} of ${f.rows.total!.toLocaleString("en")}`

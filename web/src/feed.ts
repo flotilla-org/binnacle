@@ -90,6 +90,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   findKeys(query: FindQuery<ColId>): KeyedFindQuery;
   /** A Find Query by IDs, if every column it names is known. */
   findIds(query: KeyedFindQuery): FindQuery<ColId> | undefined;
+  /** Whether the item with `key` on `axis` is unmatched, as the Table Source last said. */
+  unmatched(axis: AxisName, key: bigint): boolean;
   /** The count for the Find Query in force (`null` until the source gives one), and where the last step landed among the matches. */
   findState(): FindState;
   /** Detaches from the source and aborts outstanding requests. */
@@ -789,6 +791,8 @@ export function createFeed<RowId, ColId, V>(
   const value = (row: StripItem | undefined, col: StripItem | undefined): unknown =>
     row?.key == null || col?.key == null ? undefined : valueAt(row.key, col.key);
 
+  const unmatched = (axis: AxisName, key: bigint) => axes[axis].unmatched.get(key)?.unmatched === true;
+
   const content: Content = {
     value: (i, j) => value(shown?.rows.strip[i], shown?.cols.strip[j]),
     failed: (i, j) => failedAt(shown?.rows.strip[i], shown?.cols.strip[j]),
@@ -807,7 +811,7 @@ export function createFeed<RowId, ColId, V>(
     },
     unmatched: (axis, i) => {
       const key = shown?.[axis].strip[i]?.key;
-      return key != null && axes[axis].unmatched.get(key)?.unmatched === true;
+      return key != null && unmatched(axis, key);
     },
   };
 
@@ -916,6 +920,7 @@ export function createFeed<RowId, ColId, V>(
     findKeys: (q) => ({ query: queryKeys(cols, q.query), by: q.by }),
     findIds,
     findState: () => findState,
+    unmatched,
     destroy() {
       detach?.();
       settler.close();
