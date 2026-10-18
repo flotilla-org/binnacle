@@ -1,7 +1,7 @@
 //! Seam 1 state machine: a real Grid against an honest model Table Source,
 //! with every kind of input mixed in any order. Change Notices, `located`
-//! answers (some held back and answered late), refilters, sorts and quick
-//! filters (answered by a sort or a refilter), header
+//! answers (some held back and answered late), refilters, sorts, quick
+//! filters and column conditions (answered by a sort or a refilter), header
 //! moves, edits,
 //! pointer gestures (band edge drags among them), Actions, Size Overrides,
 //! `set_header`, `set_gap` and `set_focus` (with Keys the source has and Keys
@@ -14,7 +14,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, EditEnd, Effect, FocusStep, Grid, HeaderClick,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, EditEnd, Effect, FocusStep, Grid, HeaderClick,
     Key, Located, Mode, Modifiers, PointerEvent, PointerKind, ScrollAnchor, Searched,
     SelectionUnit, TextQuery, Totals, ViewSpec, Viewport,
 };
@@ -113,6 +113,19 @@ impl Host {
             self.grid.set_window(axis, range.start, &window);
         }
         let snap = self.grid.snapshot();
+        // The chips list the applied conditions, each Applied or Removing,
+        // and the headers mark the columns they read.
+        let applied = snap.applied_view().rows.filter.conditions.conditions();
+        let listed = (snap.conditions(Axis::Rows).into_iter())
+            .filter(|(_, state)| *state != ConditionState::Adding)
+            .count();
+        assert_eq!(listed, applied.len(), "conditions listed as applied");
+        for h in snap.headers(Axis::Cols) {
+            if let Some(key) = h.key {
+                let filtered = applied.iter().any(|c| c.key == key);
+                assert_eq!(h.filter.filtered, filtered, "filter mark on column {key:?}");
+            }
+        }
         self.headers = Axis::ALL.map(|a| snap.header(a));
         self.gaps = Axis::ALL.map(|a| snap.gap(a));
         for axis in Axis::ALL {
@@ -615,6 +628,23 @@ impl Host {
         }
         tc.note(&format!("set_quick_filter({query:?})"));
         self.grid.set_quick_filter(Axis::Rows, Some(query));
+    }
+
+    /// A Text condition added on a column, or the first one listed removed.
+    #[rule(weight = 0.5)]
+    fn column_condition(&mut self, tc: TestCase) {
+        let listed = self.grid.snapshot().conditions(Axis::Rows);
+        if tc.draw(gs::booleans()) && !listed.is_empty() {
+            let condition = listed[0].0.clone();
+            tc.note(&format!("remove_condition({condition:?})"));
+            self.grid.remove_condition(Axis::Rows, &condition);
+            return;
+        }
+        let text = tc.draw(gs::sampled_from(vec!["", "a", "ab"]));
+        let key = self.key(&tc, Axis::Cols);
+        let condition = Condition::text(key, TextQuery::new(text)).not(tc.draw(gs::booleans()));
+        tc.note(&format!("add_condition({condition:?})"));
+        self.grid.add_condition(Axis::Rows, condition);
     }
 
     /// The host restores the base view.
