@@ -3,8 +3,8 @@
 //! directions as strings. `web/src/effects.ts` holds the matching union.
 
 use binnacle_core::{
-    Axis, Effect, FilterSpec, Key, Searched, SortColumn, SortDirection, SortSpec, Stamped,
-    TextQuery, ViewEdit, ViewSpec,
+    Axis, Condition, ConditionKind, Effect, FilterSpec, Key, Searched, SortColumn, SortDirection,
+    SortSpec, Stamped, TextQuery, ViewEdit, ViewSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -102,11 +102,59 @@ impl From<WireTextQuery> for TextQuery {
     }
 }
 
-/// One axis's filter: its quick filter, or `null`.
+/// What a condition asks of its item's values, tagged like the Effects.
+/// `Other` is a kind this bridge does not carry yet; it never comes back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum WireConditionKind {
+    Text {
+        query: WireTextQuery,
+    },
+    #[serde(skip_deserializing)]
+    Other,
+}
+
+/// One condition: its item's Key, its kind and `not`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WireCondition {
+    pub key: u64,
+    pub kind: WireConditionKind,
+    pub not: bool,
+}
+
+impl From<&Condition> for WireCondition {
+    fn from(c: &Condition) -> Self {
+        WireCondition {
+            key: c.key.0,
+            kind: match &c.kind {
+                ConditionKind::Text(q) => WireConditionKind::Text { query: q.into() },
+                _ => WireConditionKind::Other,
+            },
+            not: c.not,
+        }
+    }
+}
+
+impl WireCondition {
+    /// The condition, or `None` for a kind this bridge does not carry.
+    pub fn into_core(self) -> Option<Condition> {
+        match self.kind {
+            WireConditionKind::Text { query } => {
+                Some(Condition::text(Key(self.key), query.into()).not(self.not))
+            }
+            WireConditionKind::Other => None,
+        }
+    }
+}
+
+/// One axis's filter: its quick filter, or `null`, and its conditions. A
+/// filter coming back without conditions has none.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WireFilter {
     #[serde(default)]
     pub quick: Option<WireTextQuery>,
+    #[serde(default)]
+    pub conditions: Vec<WireCondition>,
 }
 
 /// One axis's part of a View Spec. A spec coming back without a filter has
@@ -131,6 +179,9 @@ impl From<&ViewSpec> for WireViewSpec {
         let axis = |a: Axis| WireAxisView {
             filter: WireFilter {
                 quick: spec.axis(a).filter.quick.as_ref().map(WireTextQuery::from),
+                conditions: (spec.axis(a).filter.conditions.conditions().iter())
+                    .map(WireCondition::from)
+                    .collect(),
             },
             sort: sort_columns(&spec.axis(a).sort),
         };
@@ -153,7 +204,14 @@ impl From<WireViewSpec> for ViewSpec {
                     .collect(),
             )
         };
-        let filter = |f: WireFilter| FilterSpec::default().with_quick(f.quick.map(TextQuery::from));
+        let filter = |f: WireFilter| {
+            let conditions: Vec<Condition> = (f.conditions.into_iter())
+                .filter_map(WireCondition::into_core)
+                .collect();
+            FilterSpec::default()
+                .with_quick(f.quick.map(TextQuery::from))
+                .with_conditions(conditions.into())
+        };
         let mut view = ViewSpec::default();
         for (axis, part) in [(Axis::Rows, spec.rows), (Axis::Cols, spec.cols)] {
             view = view
@@ -182,6 +240,19 @@ pub enum WireViewEdit {
     ShownChanged {
         axis: WireAxis,
     },
+    AddCondition {
+        axis: WireAxis,
+        condition: WireCondition,
+    },
+    RemoveCondition {
+        axis: WireAxis,
+        condition: WireCondition,
+    },
+    ReplaceCondition {
+        axis: WireAxis,
+        from: WireCondition,
+        to: WireCondition,
+    },
     Other,
 }
 
@@ -199,6 +270,19 @@ impl From<ViewEdit> for WireViewEdit {
             },
             ViewEdit::Replace => WireViewEdit::Replace,
             ViewEdit::ShownChanged { axis } => WireViewEdit::ShownChanged { axis: axis.into() },
+            ViewEdit::AddCondition { axis, condition } => WireViewEdit::AddCondition {
+                axis: axis.into(),
+                condition: (&condition).into(),
+            },
+            ViewEdit::RemoveCondition { axis, condition } => WireViewEdit::RemoveCondition {
+                axis: axis.into(),
+                condition: (&condition).into(),
+            },
+            ViewEdit::ReplaceCondition { axis, from, to } => WireViewEdit::ReplaceCondition {
+                axis: axis.into(),
+                from: (&from).into(),
+                to: (&to).into(),
+            },
             _ => WireViewEdit::Other,
         }
     }
@@ -388,11 +472,11 @@ mod tests {
             wire(Effect::ViewRequested { spec, edit }),
             json!({ "generation": 7.0, "type": "ViewRequested",
                 "spec": {
-                    "rows": { "filter": { "quick": null }, "sort": [
+                    "rows": { "filter": { "quick": null, "conditions": [] }, "sort": [
                         { "key": 2, "direction": "descending" },
                         { "key": 0, "direction": "ascending" },
                     ] },
-                    "cols": { "filter": { "quick": null }, "sort": [] },
+                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [] },
                 },
                 "edit": { "type": "CycleSort", "axis": "rows", "key": 2, "multi": true },
             })
@@ -418,11 +502,51 @@ mod tests {
             wire(Effect::ViewRequested { spec, edit }),
             json!({ "generation": 7.0, "type": "ViewRequested",
                 "spec": {
-                    "rows": { "filter": { "quick": quick }, "sort": [] },
-                    "cols": { "filter": { "quick": null }, "sort": [] },
+                    "rows": { "filter": { "quick": quick, "conditions": [] }, "sort": [] },
+                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [] },
                 },
                 "edit": { "type": "SetQuickFilter", "axis": "rows", "query": quick },
             })
+        );
+    }
+
+    #[test]
+    fn a_condition_and_its_edit_carry_the_key_kind_and_not() {
+        let not_ber = Condition::text(Key(4), TextQuery::new("Bér")).not(true);
+        let spec = ViewSpec::default().with_filter(
+            Axis::Rows,
+            FilterSpec::default().with_conditions(vec![not_ber.clone()].into()),
+        );
+        let edit = ViewEdit::AddCondition {
+            axis: Axis::Rows,
+            condition: not_ber,
+        };
+        let condition = json!({ "key": 4, "not": true, "kind": { "type": "Text", "query":
+            { "text": "Bér", "caseSensitive": false, "regex": false, "searches": [4] } } });
+        assert_eq!(
+            wire(Effect::ViewRequested { spec, edit }),
+            json!({ "generation": 7.0, "type": "ViewRequested",
+                "spec": {
+                    "rows": { "filter": { "quick": null, "conditions": [condition] }, "sort": [] },
+                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [] },
+                },
+                "edit": { "type": "AddCondition", "axis": "rows", "condition": condition },
+            })
+        );
+    }
+
+    #[test]
+    fn a_condition_coming_back_searches_its_own_column() {
+        let back: WireCondition = serde_json::from_value(json!({ "key": 3, "not": false,
+            "kind": { "type": "Text", "query":
+                { "text": "a", "caseSensitive": true, "regex": false, "searches": null } } }))
+        .unwrap();
+        assert_eq!(
+            back.into_core(),
+            Some(Condition::text(
+                Key(3),
+                TextQuery::new("a").case_sensitive(true)
+            ))
         );
     }
 
@@ -438,7 +562,15 @@ mod tests {
     fn a_view_spec_comes_back_as_it_went_out() {
         let quick = TextQuery::new("x").case_sensitive(true);
         let spec = ViewSpec::default()
-            .with_filter(Axis::Rows, FilterSpec::default().with_quick(Some(quick)))
+            .with_filter(
+                Axis::Rows,
+                FilterSpec::default()
+                    .with_quick(Some(quick))
+                    .with_conditions(
+                        vec![Condition::text(Key(5), TextQuery::new("^y").regex(true)).not(true)]
+                            .into(),
+                    ),
+            )
             .with_sort(
                 Axis::Rows,
                 SortSpec::new(vec![SortColumn::descending(Key(2))]),

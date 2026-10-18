@@ -142,10 +142,29 @@ pub fn located(code: u8, position: f64) -> Located {
 }
 
 pub const SUPPORT_SORT: u8 = 1;
+pub const SUPPORT_TEXT: u8 = 2;
+pub const SUPPORT_TEXT_REGEX: u8 = 4;
 
-/// Support from its bits: [`SUPPORT_SORT`].
+/// Support from its bits: [`SUPPORT_SORT`], and [`SUPPORT_TEXT`] with
+/// [`SUPPORT_TEXT_REGEX`] if Text conditions take regexes (regex alone is no
+/// text support).
 pub fn support(bits: u8) -> Support {
-    Support::default().with_sort(bits & SUPPORT_SORT != 0)
+    let text = (bits & SUPPORT_TEXT != 0).then(|| TextSupport::new(bits & SUPPORT_TEXT_REGEX != 0));
+    Support::default()
+        .with_sort(bits & SUPPORT_SORT != 0)
+        .with_text(text)
+}
+
+/// The bits of `support`, as [`support`] reads them.
+pub fn support_bits(support: Support) -> u8 {
+    let mut bits = if support.sort { SUPPORT_SORT } else { 0 };
+    if let Some(t) = support.text {
+        bits |= SUPPORT_TEXT;
+        if t.regex {
+            bits |= SUPPORT_TEXT_REGEX;
+        }
+    }
+    bits
 }
 
 /// A Sort Spec from parallel lists of column Keys and directions
@@ -258,6 +277,15 @@ mod tests {
         assert!(count(-1.0).is_err());
         assert!(count(2.5).is_err());
         assert!(count(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn support_bits_round_trip_and_regex_needs_text() {
+        for bits in [0, 1, 2, 3, 6, 7] {
+            assert_eq!(support_bits(support(bits)), bits);
+        }
+        assert_eq!(support(SUPPORT_TEXT_REGEX).text, None);
+        assert_eq!(support(SUPPORT_TEXT).text, Some(TextSupport::new(false)));
     }
 
     #[test]

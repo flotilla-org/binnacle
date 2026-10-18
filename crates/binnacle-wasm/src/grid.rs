@@ -6,7 +6,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, focus_step, position};
-use crate::effect::{WireStamped, WireTextQuery, WireViewSpec};
+use crate::effect::{WireCondition, WireStamped, WireTextQuery, WireViewSpec};
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -171,6 +171,28 @@ impl WebGrid {
         Ok(())
     }
 
+    /// Adds `condition`, shaped as `ViewRequested` carries it, to the
+    /// conditions of axis `a`.
+    pub fn add_condition(&mut self, a: u8, condition: JsValue) -> Result<(), JsError> {
+        let condition = self::condition(condition)?;
+        self.grid.add_condition(axis(a), condition);
+        Ok(())
+    }
+
+    /// Removes the first condition of axis `a` equal to `condition`.
+    pub fn remove_condition(&mut self, a: u8, condition: JsValue) -> Result<(), JsError> {
+        let condition = self::condition(condition)?;
+        self.grid.remove_condition(axis(a), &condition);
+        Ok(())
+    }
+
+    /// Puts `to` in place of the first condition of axis `a` equal to `from`.
+    pub fn replace_condition(&mut self, a: u8, from: JsValue, to: JsValue) -> Result<(), JsError> {
+        let (from, to) = (self::condition(from)?, self::condition(to)?);
+        self.grid.replace_condition(axis(a), &from, to);
+        Ok(())
+    }
+
     /// Whether axis `a` has a quick filter; see [`codes::quick_filter`].
     pub fn set_quick_filter_support(&mut self, a: u8, bits: u8) {
         self.grid
@@ -326,6 +348,14 @@ fn view_spec(spec: JsValue) -> Result<binnacle_core::ViewSpec, JsError> {
     let spec: WireViewSpec =
         serde_wasm_bindgen::from_value(spec).map_err(|e| JsError::new(&e.to_string()))?;
     Ok(spec.into())
+}
+
+fn condition(condition: JsValue) -> Result<binnacle_core::Condition, JsError> {
+    let condition: WireCondition =
+        serde_wasm_bindgen::from_value(condition).map_err(|e| JsError::new(&e.to_string()))?;
+    condition
+        .into_core()
+        .ok_or_else(|| JsError::new("a condition of a kind binnacle does not know"))
 }
 
 /// Test only: one of every View Edit, as `ViewRequested` carries them.

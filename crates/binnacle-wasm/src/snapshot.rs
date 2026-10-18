@@ -7,9 +7,11 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Cursor, HeaderPlacement, Key, Mode, Rect, Searched, Snapshot, SortDirection,
-    SortSpec, TextQuery, ViewSpec,
+    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, HeaderPlacement, Key, Mode,
+    Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, ViewSpec,
 };
+
+use crate::codes::support_bits;
 
 /// The flat form of one Snapshot. Buffers are reused frame to frame.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -117,6 +119,22 @@ impl Writer<'_> {
         self.flag(h.sort.pending);
         self.flag(h.selected);
         self.flag(h.hovered);
+        self.flag(h.filter.filtered);
+        self.flag(h.filter.pending);
+    }
+
+    /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
+    /// this bridge does not carry 1) and a Text condition's query.
+    fn condition(&mut self, c: &Condition) {
+        self.key(c.key);
+        self.flag(c.not);
+        match &c.kind {
+            ConditionKind::Text(q) => {
+                self.num(0);
+                self.text_query(q);
+            }
+            _ => self.num(1),
+        }
     }
 
     fn sort(&mut self, spec: &SortSpec) {
@@ -156,13 +174,19 @@ impl Writer<'_> {
         }
     }
 
-    /// Each axis's part, rows first: its filter, then its sort.
+    /// Each axis's part, rows first: its filter (the quick filter, then the
+    /// conditions), then its sort.
     fn view(&mut self, spec: &ViewSpec) {
         for axis in Axis::ALL {
             let part = spec.axis(axis);
             self.flag(part.filter.quick.is_some());
             if let Some(q) = &part.filter.quick {
                 self.text_query(q);
+            }
+            let conditions = part.filter.conditions.conditions();
+            self.len(conditions.len());
+            for c in conditions {
+                self.condition(c);
             }
             self.sort(&part.sort);
         }
@@ -243,7 +267,21 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         }
         w.len(strip.len());
         for h in s.headers(axis) {
+            let support = h
+                .key
+                .map_or(0, |k| support_bits(s.support(axis.other(), k)));
             w.header(h);
+            w.num(support);
+        }
+        let conditions = s.conditions(axis);
+        w.len(conditions.len());
+        for (c, state) in &conditions {
+            w.num(match state {
+                ConditionState::Applied => 0,
+                ConditionState::Adding => 1,
+                ConditionState::Removing => 2,
+            });
+            w.condition(c);
         }
         let total = s.total(axis);
         w.flag(total.is_some());

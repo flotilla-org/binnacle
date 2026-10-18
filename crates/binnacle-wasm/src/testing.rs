@@ -3,13 +3,16 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, FilterSpec, FocusStep, Grid,
-    HeaderPlacement, Key, Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn,
-    SortSpec, Stamped, TextQuery, TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Effect, FilterSpec,
+    FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot,
+    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, ViewEdit, ViewSpec,
+    Viewport,
 };
 use serde::Serialize;
 
-use crate::effect::{WireAxis, WireDirection, WireStamped, WireViewEdit, WireViewSpec};
+use crate::effect::{
+    WireAxis, WireCondition, WireDirection, WireStamped, WireViewEdit, WireViewSpec,
+};
 use crate::snapshot::cell_bits;
 
 #[derive(Serialize)]
@@ -77,11 +80,39 @@ struct DumpAxis {
     headers: Vec<DumpHeader>,
     total: Option<f64>,
     quick_filter: Option<DumpTextSupport>,
+    conditions: Vec<DumpListed>,
 }
 
 #[derive(Serialize)]
 struct DumpTextSupport {
     regex: bool,
+}
+
+#[derive(Serialize)]
+struct DumpListed {
+    condition: WireCondition,
+    state: &'static str,
+}
+
+#[derive(Serialize)]
+struct DumpSupport {
+    sort: bool,
+    text: Option<DumpTextSupport>,
+}
+
+impl From<Support> for DumpSupport {
+    fn from(s: Support) -> Self {
+        DumpSupport {
+            sort: s.sort,
+            text: s.text.map(|t| DumpTextSupport { regex: t.regex }),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DumpHeaderFilter {
+    filtered: bool,
+    pending: bool,
 }
 
 #[derive(Serialize)]
@@ -118,6 +149,9 @@ struct DumpHeader {
     sort: DumpHeaderSort,
     selected: bool,
     hovered: bool,
+    filter: DumpHeaderFilter,
+    /// The support of the item's Key, or none (all off) for an unfilled one.
+    support: DumpSupport,
 }
 
 #[derive(Serialize)]
@@ -132,8 +166,8 @@ struct DumpApplied {
     index: f64,
 }
 
-impl From<HeaderPlacement> for DumpHeader {
-    fn from(h: HeaderPlacement) -> Self {
+impl DumpHeader {
+    fn new(h: HeaderPlacement, support: Support) -> Self {
         DumpHeader {
             position: h.position as f64,
             key: h.key.map(|k| k.0),
@@ -147,6 +181,11 @@ impl From<HeaderPlacement> for DumpHeader {
             },
             selected: h.selected,
             hovered: h.hovered,
+            filter: DumpHeaderFilter {
+                filtered: h.filter.filtered,
+                pending: h.filter.pending,
+            },
+            support: support.into(),
         }
     }
 }
@@ -278,7 +317,26 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 size: i.size,
             })
             .collect(),
-        headers: s.headers(axis).map(DumpHeader::from).collect(),
+        headers: s
+            .headers(axis)
+            .map(|h| {
+                let none = Support::default().with_sort(false).with_text(None);
+                let support = h.key.map_or(none, |k| s.support(axis.other(), k));
+                DumpHeader::new(h, support)
+            })
+            .collect(),
+        conditions: s
+            .conditions(axis)
+            .iter()
+            .map(|(c, state)| DumpListed {
+                condition: c.into(),
+                state: match state {
+                    ConditionState::Applied => "applied",
+                    ConditionState::Adding => "adding",
+                    ConditionState::Removing => "removing",
+                },
+            })
+            .collect(),
     }
 }
 
@@ -356,13 +414,19 @@ pub fn every_effect() -> Vec<WireStamped> {
             ]),
         )
         .with_sort(Axis::Cols, SortSpec::new(vec![SortColumn::descending(row)]));
+    let conditions = vec![
+        Condition::text(col, TextQuery::new("Ø🚢").case_sensitive(true)).not(true),
+        Condition::text(Key(7), TextQuery::new("^a").regex(true)),
+    ];
     let spec = spec.with_filter(
         Axis::Rows,
-        FilterSpec::default().with_quick(Some(
-            TextQuery::new("Bér 🚢")
-                .regex(true)
-                .searching(Searched::Keys(vec![col])),
-        )),
+        FilterSpec::default()
+            .with_quick(Some(
+                TextQuery::new("Bér 🚢")
+                    .regex(true)
+                    .searching(Searched::Keys(vec![col])),
+            ))
+            .with_conditions(conditions.into()),
     );
     let edit = ViewEdit::CycleSort {
         axis: Axis::Rows,
@@ -416,6 +480,9 @@ pub fn every_effect() -> Vec<WireStamped> {
 /// One of every View Edit, as `ViewRequested` carries them.
 pub fn every_view_edit() -> Vec<WireViewEdit> {
     let query = TextQuery::new("ber").case_sensitive(true);
+    let col = Key((1 << 53) + 1);
+    let not_ber = Condition::text(col, query.clone()).not(true);
+    let regex = Condition::text(Key(2), TextQuery::new("^b").regex(true));
     [
         ViewEdit::CycleSort {
             axis: Axis::Rows,
@@ -432,6 +499,19 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
         },
         ViewEdit::Replace,
         ViewEdit::ShownChanged { axis: Axis::Cols },
+        ViewEdit::AddCondition {
+            axis: Axis::Rows,
+            condition: not_ber.clone(),
+        },
+        ViewEdit::RemoveCondition {
+            axis: Axis::Rows,
+            condition: regex.clone(),
+        },
+        ViewEdit::ReplaceCondition {
+            axis: Axis::Rows,
+            from: not_ber,
+            to: regex,
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -566,16 +646,30 @@ pub fn scenario(name: &str) -> Grid {
         }
         "filtered" => {
             // The rows' quick filter applied with a total of 900 rows, and a
-            // new one (with a surrogate pair) requested.
+            // new one (with a surrogate pair) requested. Column 1 has a
+            // condition applied and another being added; column 2 one being
+            // removed. Column 0 cannot be filtered, column 1 takes regexes.
             grid.set_quick_filter_support(Axis::Rows, Some(TextSupport::new(true)));
+            grid.set_support(Axis::Rows, key(0), Support::default().with_text(None));
+            let regex = Some(TextSupport::new(true));
+            grid.set_support(Axis::Rows, key(1), Support::default().with_text(regex));
             let applied = TextQuery::new("ber").searching(Searched::Keys(vec![key(0), key(2)]));
+            let kept = Condition::text(key(1), TextQuery::new("Ø"));
+            let dropped = Condition::text(key(2), TextQuery::new("x")).not(true);
+            let filter = FilterSpec::default()
+                .with_quick(Some(applied))
+                .with_conditions(vec![kept.clone(), dropped.clone()].into());
             grid.view_applied(
-                ViewSpec::default()
-                    .with_filter(Axis::Rows, FilterSpec::default().with_quick(Some(applied))),
+                ViewSpec::default().with_filter(Axis::Rows, filter),
                 Totals::unknown().with(Axis::Rows, Some(900)),
             );
             let requested = TextQuery::new("Bé🚢").case_sensitive(true).regex(true);
             grid.set_quick_filter(Axis::Rows, Some(requested));
+            grid.add_condition(
+                Axis::Rows,
+                Condition::text(key(1), TextQuery::new("^b").regex(true)),
+            );
+            grid.remove_condition(Axis::Rows, &dropped);
         }
         other => panic!("no scenario {other}"),
     }
@@ -633,6 +727,19 @@ mod tests {
                     assert!(requested.is_some_and(|q| q.regex));
                     assert_eq!(s.total(Axis::Rows), Some(900));
                     assert!(s.quick_filter(Axis::Rows).is_some());
+                    let states: Vec<ConditionState> = s
+                        .conditions(Axis::Rows)
+                        .into_iter()
+                        .map(|(_, st)| st)
+                        .collect();
+                    assert_eq!(
+                        states,
+                        [
+                            ConditionState::Applied,
+                            ConditionState::Adding,
+                            ConditionState::Removing
+                        ]
+                    );
                 }
                 _ => {}
             }
