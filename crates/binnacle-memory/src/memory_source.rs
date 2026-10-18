@@ -425,8 +425,11 @@ impl<R> MemorySource<R> {
     /// conditions, as last applied.
     pub fn view_spec(&self) -> ViewSpec {
         let quick = self.quick.as_ref().map(|q| q.query.clone());
-        let conditions: Vec<Condition> =
-            self.conditions.iter().map(|k| k.condition.clone()).collect();
+        let conditions: Vec<Condition> = self
+            .conditions
+            .iter()
+            .map(|k| k.condition.clone())
+            .collect();
         let filter = FilterSpec::default()
             .with_quick(quick)
             .with_conditions(conditions.into());

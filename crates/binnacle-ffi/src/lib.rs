@@ -9,10 +9,11 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FilterSpec, FocusEnd, FocusStep, Grid,
-    HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect,
-    Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
-    TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
+    Effect, FilterSpec, FocusEnd, FocusStep, Grid, HeaderClick, HeaderPlacement, Key, Located,
+    Mode, Modifiers, PointerEvent, PointerKind, Rect, Searched, SelectionUnit, SortColumn,
+    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, ViewEdit,
+    ViewSpec, Viewport,
 };
 
 pub const BINNACLE_ROWS: u32 = 0;
@@ -30,6 +31,8 @@ pub const BINNACLE_HEADER_DESCENDING: u32 = 2;
 pub const BINNACLE_HEADER_PENDING: u32 = 4;
 pub const BINNACLE_HEADER_SELECTED: u32 = 8;
 pub const BINNACLE_HEADER_HOVERED: u32 = 16;
+pub const BINNACLE_HEADER_FILTERED: u32 = 32;
+pub const BINNACLE_HEADER_FILTER_PENDING: u32 = 64;
 
 pub const BINNACLE_MODE_OTHER: u32 = 0;
 pub const BINNACLE_MODE_IDLE: u32 = 1;
@@ -53,6 +56,16 @@ pub const BINNACLE_VIEW_EDIT_CYCLE_SORT: u32 = 1;
 pub const BINNACLE_VIEW_EDIT_SET_QUICK_FILTER: u32 = 2;
 pub const BINNACLE_VIEW_EDIT_REPLACE: u32 = 3;
 pub const BINNACLE_VIEW_EDIT_SHOWN_CHANGED: u32 = 4;
+pub const BINNACLE_VIEW_EDIT_ADD_CONDITION: u32 = 5;
+pub const BINNACLE_VIEW_EDIT_REMOVE_CONDITION: u32 = 6;
+pub const BINNACLE_VIEW_EDIT_REPLACE_CONDITION: u32 = 7;
+
+pub const BINNACLE_CONDITION_OTHER: u32 = 0;
+pub const BINNACLE_CONDITION_TEXT: u32 = 1;
+
+pub const BINNACLE_CONDITION_APPLIED: u32 = 0;
+pub const BINNACLE_CONDITION_ADDING: u32 = 1;
+pub const BINNACLE_CONDITION_REMOVING: u32 = 2;
 
 pub const BINNACLE_TEXT_CASE_SENSITIVE: u32 = 1;
 pub const BINNACLE_TEXT_REGEX: u32 = 2;
@@ -61,6 +74,8 @@ pub const BINNACLE_SEARCHED_SHOWN: u32 = 0;
 pub const BINNACLE_SEARCHED_KEYS: u32 = 1;
 
 pub const BINNACLE_SUPPORT_SORT: u32 = 1;
+pub const BINNACLE_SUPPORT_TEXT: u32 = 2;
+pub const BINNACLE_SUPPORT_TEXT_REGEX: u32 = 4;
 
 pub const BINNACLE_QUICK_FILTER: u32 = 1;
 pub const BINNACLE_QUICK_FILTER_REGEX: u32 = 2;
@@ -116,6 +131,67 @@ pub struct BinnacleGrid {
     sorts: [Vec<BinnacleSortColumn>; 2],
     quick_texts: [String; 2],
     quick_keys: [Vec<u64>; 2],
+    conditions: [CConditions; 2],
+    /// The last Snapshot's conditions per axis, with their states.
+    listed: [CConditions; 2],
+    listed_states: [Vec<BinnacleListedCondition>; 2],
+}
+
+/// Conditions in C form, with the texts and Keys they point into.
+#[derive(Default)]
+struct CConditions {
+    texts: String,
+    keys: Vec<u64>,
+    items: Vec<BinnacleCondition>,
+}
+
+impl CConditions {
+    /// Replaces the contents with `conditions`.
+    fn fill<'a>(&mut self, conditions: impl IntoIterator<Item = &'a Condition>) {
+        self.texts.clear();
+        self.keys.clear();
+        self.items.clear();
+        // Texts and Keys first, so the pointers taken after stay valid.
+        let mut spans = Vec::new();
+        for c in conditions {
+            #[allow(unreachable_patterns)] // Kinds added to the Grid later are OTHER.
+            let (kind, query) = match &c.kind {
+                ConditionKind::Text(q) => (BINNACLE_CONDITION_TEXT, Some(q)),
+                _ => (BINNACLE_CONDITION_OTHER, None),
+            };
+            let text = self.texts.len();
+            let keys = self.keys.len();
+            if let Some(q) = query {
+                self.texts.push_str(&q.text);
+                if let Searched::Keys(ks) = &q.searches {
+                    self.keys.extend(ks.iter().map(|k| k.0));
+                }
+            }
+            spans.push((c, kind, query, text, keys));
+        }
+        for (c, kind, query, text, keys) in spans {
+            let mut q = BinnacleTextQuery::default();
+            if let Some(query) = query {
+                q.flags = bit(query.case_sensitive, BINNACLE_TEXT_CASE_SENSITIVE)
+                    | bit(query.regex, BINNACLE_TEXT_REGEX);
+                q.text = BinnacleText {
+                    data: self.texts.as_ptr().wrapping_add(text),
+                    len: query.text.len(),
+                };
+                if let Searched::Keys(ks) = &query.searches {
+                    q.searched = BINNACLE_SEARCHED_KEYS;
+                    q.keys = self.keys.as_ptr().wrapping_add(keys);
+                    q.keys_len = ks.len();
+                }
+            }
+            self.items.push(BinnacleCondition {
+                key: c.key.0,
+                kind,
+                negated: flag(c.not),
+                text: q,
+            });
+        }
+    }
 }
 
 #[repr(C)]
@@ -176,6 +252,7 @@ pub struct BinnacleHeader {
     pub rect: BinnacleRect,
     pub flags: u32,
     pub sort_place: u32,
+    pub support: u32,
 }
 
 #[repr(C)]
@@ -218,6 +295,8 @@ pub struct BinnacleAxisSnapshot {
     pub has_total: u32,
     pub total: u64,
     pub quick_filter: u32,
+    pub conditions: *const BinnacleListedCondition,
+    pub conditions_len: usize,
 }
 
 #[repr(C)]
@@ -273,12 +352,30 @@ impl Default for BinnacleTextQuery {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleCondition {
+    pub key: u64,
+    pub kind: u32,
+    pub negated: u32,
+    pub text: BinnacleTextQuery,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleListedCondition {
+    pub state: u32,
+    pub condition: BinnacleCondition,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleAxisView {
     pub sort: *const BinnacleSortColumn,
     pub sort_len: usize,
     pub has_quick: u32,
     pub quick: BinnacleTextQuery,
+    pub conditions: *const BinnacleCondition,
+    pub conditions_len: usize,
 }
 
 impl Default for BinnacleAxisView {
@@ -288,6 +385,8 @@ impl Default for BinnacleAxisView {
             sort_len: 0,
             has_quick: 0,
             quick: BinnacleTextQuery::default(),
+            conditions: std::ptr::null(),
+            conditions_len: 0,
         }
     }
 }
@@ -476,6 +575,14 @@ impl From<Rect> for BinnacleRect {
     }
 }
 
+/// `BINNACLE_SUPPORT_*` bits for an item's support.
+fn support_bits(support: Support) -> u32 {
+    bit(support.sort, BINNACLE_SUPPORT_SORT)
+        | support.text.map_or(0, |t| {
+            BINNACLE_SUPPORT_TEXT | bit(t.regex, BINNACLE_SUPPORT_TEXT_REGEX)
+        })
+}
+
 impl From<HeaderPlacement> for BinnacleHeader {
     fn from(h: HeaderPlacement) -> Self {
         let (direction, place) = h.sort.applied.unzip();
@@ -491,8 +598,11 @@ impl From<HeaderPlacement> for BinnacleHeader {
                 )
                 | bit(h.sort.pending, BINNACLE_HEADER_PENDING)
                 | bit(h.selected, BINNACLE_HEADER_SELECTED)
-                | bit(h.hovered, BINNACLE_HEADER_HOVERED),
+                | bit(h.hovered, BINNACLE_HEADER_HOVERED)
+                | bit(h.filter.filtered, BINNACLE_HEADER_FILTERED)
+                | bit(h.filter.pending, BINNACLE_HEADER_FILTER_PENDING),
             sort_place: place.map_or(0, |p| u32::try_from(p).unwrap_or(u32::MAX)),
+            support: 0,
         }
     }
 }
@@ -556,13 +666,37 @@ impl BinnacleTextQuery {
     }
 }
 
+impl BinnacleCondition {
+    /// The condition, or `None` if its kind or a tag or flag is unknown or
+    /// its text is not UTF-8. A Text condition searches its own item,
+    /// whatever its query names.
+    ///
+    /// # Safety
+    /// As [`BinnacleTextQuery::to_core`] for `text`.
+    unsafe fn to_core(self) -> Option<Condition> {
+        let not = match self.negated {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        match self.kind {
+            // SAFETY: the caller's contract.
+            BINNACLE_CONDITION_TEXT => {
+                Some(Condition::text(Key(self.key), unsafe { self.text.to_core() }?).not(not))
+            }
+            _ => None,
+        }
+    }
+}
+
 impl BinnacleViewSpec {
     /// The View Spec, or `None` if a direction, tag or flag is unknown or
     /// text is not UTF-8.
     ///
     /// # Safety
-    /// Each non-NULL `sort` is valid for `sort_len` reads, and each quick
-    /// filter present as [`BinnacleTextQuery::to_core`] requires.
+    /// Each non-NULL `sort` is valid for `sort_len` reads and `conditions`
+    /// for `conditions_len`, and each quick filter present and condition as
+    /// [`BinnacleTextQuery::to_core`] requires.
     unsafe fn to_core(self) -> Option<ViewSpec> {
         let mut spec = ViewSpec::default();
         for axis in Axis::ALL {
@@ -578,9 +712,18 @@ impl BinnacleViewSpec {
                 1 => Some(unsafe { view.quick.to_core() }?),
                 _ => return None,
             };
+            // SAFETY: the caller's contract.
+            let conditions = unsafe { borrowed(view.conditions, view.conditions_len) }
+                .iter()
+                // SAFETY: the caller's contract.
+                .map(|c| unsafe { c.to_core() })
+                .collect::<Option<Vec<_>>>()?;
+            let filter = FilterSpec::default()
+                .with_quick(quick)
+                .with_conditions(conditions.into());
             spec = spec
                 .with_sort(axis, SortSpec::new(columns))
-                .with_filter(axis, FilterSpec::default().with_quick(quick));
+                .with_filter(axis, filter);
         }
         Some(spec)
     }
@@ -672,6 +815,9 @@ pub extern "C" fn binnacle_grid_new(
         sorts: [Vec::new(), Vec::new()],
         quick_texts: [String::new(), String::new()],
         quick_keys: [Vec::new(), Vec::new()],
+        conditions: Default::default(),
+        listed: Default::default(),
+        listed_states: Default::default(),
     }))
 }
 
@@ -881,7 +1027,30 @@ impl BinnacleGrid {
             strip.extend(snap.strip(axis).iter().map(BinnacleStripItem::from));
             let headers = &mut self.headers[axis.index()];
             headers.clear();
-            headers.extend(snap.headers(axis).map(BinnacleHeader::from));
+            headers.extend(snap.headers(axis).map(|h| {
+                let support = h
+                    .key
+                    .map_or(0, |k| support_bits(snap.support(axis.other(), k)));
+                BinnacleHeader {
+                    support,
+                    ..BinnacleHeader::from(h)
+                }
+            }));
+            let listed = snap.conditions(axis);
+            let c = &mut self.listed[axis.index()];
+            c.fill(listed.iter().map(|(c, _)| c));
+            let states = &mut self.listed_states[axis.index()];
+            states.clear();
+            states.extend(listed.iter().zip(&c.items).map(|((_, state), &condition)| {
+                BinnacleListedCondition {
+                    state: match state {
+                        ConditionState::Applied => BINNACLE_CONDITION_APPLIED,
+                        ConditionState::Adding => BINNACLE_CONDITION_ADDING,
+                        ConditionState::Removing => BINNACLE_CONDITION_REMOVING,
+                    },
+                    condition,
+                }
+            }));
         }
         self.picked.clear();
         self.picked.extend(snap.picked().iter().map(|k| k.0));
@@ -907,6 +1076,7 @@ impl BinnacleGrid {
             let thumb = snap.thumb(axis);
             let strip = &self.strips[axis.index()];
             let headers = &self.headers[axis.index()];
+            let listed = &self.listed_states[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -931,6 +1101,8 @@ impl BinnacleGrid {
                 has_total: flag(snap.total(axis).is_some()),
                 total: snap.total(axis).unwrap_or(0),
                 quick_filter: quick_filter_bits(snap.quick_filter(axis)),
+                conditions: listed.as_ptr(),
+                conditions_len: listed.len(),
                 selection_range: range.as_ref().map_or_else(Default::default, |r| {
                     let span = r.span(axis);
                     BinnacleRange {
@@ -1035,11 +1207,15 @@ impl BinnacleGrid {
                         query.keys = keys.as_ptr();
                         query.keys_len = keys.len();
                     }
+                    let conditions = &mut self.conditions[axis.index()];
+                    conditions.fill(spec.axis(axis).filter.conditions.conditions());
                     effect.view.axes[axis.index()] = BinnacleAxisView {
                         sort: sort.as_ptr(),
                         sort_len: sort.len(),
                         has_quick: flag(quick.is_some()),
                         quick: query,
+                        conditions: conditions.items.as_ptr(),
+                        conditions_len: conditions.items.len(),
                     };
                 }
                 let on = |kind, axis| BinnacleViewEdit {
@@ -1062,6 +1238,18 @@ impl BinnacleGrid {
                         ..BinnacleViewEdit::default()
                     },
                     ViewEdit::ShownChanged { axis } => on(BINNACLE_VIEW_EDIT_SHOWN_CHANGED, axis),
+                    ViewEdit::AddCondition { axis, condition } => BinnacleViewEdit {
+                        key: condition.key.0,
+                        ..on(BINNACLE_VIEW_EDIT_ADD_CONDITION, axis)
+                    },
+                    ViewEdit::RemoveCondition { axis, condition } => BinnacleViewEdit {
+                        key: condition.key.0,
+                        ..on(BINNACLE_VIEW_EDIT_REMOVE_CONDITION, axis)
+                    },
+                    ViewEdit::ReplaceCondition { axis, to, .. } => BinnacleViewEdit {
+                        key: to.key.0,
+                        ..on(BINNACLE_VIEW_EDIT_REPLACE_CONDITION, axis)
+                    },
                     _ => BinnacleViewEdit::default(),
                 };
             }
@@ -1206,11 +1394,94 @@ pub unsafe extern "C" fn binnacle_grid_set_support(
     key: u64,
     support: u32,
 ) -> i32 {
-    let support = Support::default().with_sort(support & BINNACLE_SUPPORT_SORT != 0);
+    let known = BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX;
+    let text = match support & (BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX) {
+        0 => Some(None),
+        BINNACLE_SUPPORT_TEXT => Some(Some(TextSupport::new(false))),
+        s if s == BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX => {
+            Some(Some(TextSupport::new(true)))
+        }
+        _ => None,
+    };
+    let support = text.filter(|_| support & !known == 0).map(|text| {
+        Support::default()
+            .with_sort(support & BINNACLE_SUPPORT_SORT != 0)
+            .with_text(text)
+    });
     // SAFETY: the caller's contract.
     unsafe {
         with_handle(grid, |h| {
-            axis(axis_tag).map(|axis| h.grid.set_support(axis, Key(key), support))
+            let (axis, support) = (axis(axis_tag)?, support?);
+            h.grid.set_support(axis, Key(key), support);
+            Some(())
+        })
+    }
+}
+
+/// A condition from C, or `None` if NULL or invalid.
+///
+/// # Safety
+/// `condition` is NULL or valid for a read, its text for `text.len` reads
+/// and its keys for `keys_len`.
+unsafe fn condition(condition: *const BinnacleCondition) -> Option<Condition> {
+    // SAFETY: the caller's contract.
+    unsafe { condition.as_ref()?.to_core() }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `condition` as for [`condition`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_add_condition(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    condition: *const BinnacleCondition,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let c = unsafe { self::condition(condition) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.add_condition(axis(axis_tag)?, c?);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `condition` as for [`condition`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_remove_condition(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    condition: *const BinnacleCondition,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let c = unsafe { self::condition(condition) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.remove_condition(axis(axis_tag)?, &c?);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `from` and `to` as for [`condition`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_replace_condition(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    from: *const BinnacleCondition,
+    to: *const BinnacleCondition,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let (from, to) = unsafe { (condition(from), condition(to)) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.replace_condition(axis(axis_tag)?, &from?, to?);
+            Some(())
         })
     }
 }

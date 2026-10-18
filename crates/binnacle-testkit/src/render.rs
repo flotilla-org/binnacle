@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, ConditionKind, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection, SortSpec,
-    StripItem, TextQuery, ViewSpec,
+    Axis, ConditionKind, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection,
+    SortSpec, StripItem, TextQuery, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.

@@ -161,8 +161,7 @@ fn satisfies(condition: &Condition, record: &Record) -> bool {
     let ConditionKind::Text(query) = &condition.kind else {
         unreachable!("only Text conditions are drawn");
     };
-    let matched =
-        text_of(record, condition.key).is_some_and(|t| matches(query, &t) == Some(true));
+    let matched = text_of(record, condition.key).is_some_and(|t| matches(query, &t) == Some(true));
     matched != condition.not
 }
 

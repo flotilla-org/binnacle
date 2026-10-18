@@ -14,9 +14,9 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, EditEnd, Effect, FocusStep, Grid, HeaderClick,
-    Key, Located, Mode, Modifiers, PointerEvent, PointerKind, ScrollAnchor, Searched,
-    SelectionUnit, TextQuery, Totals, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, EditEnd, Effect,
+    FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers, PointerEvent, PointerKind,
+    ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, ViewSpec, Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};

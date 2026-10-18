@@ -42,12 +42,16 @@ extern "C" {
  * first). PENDING: a requested View Spec that would change this item's part
  * of that sort is unanswered. SELECTED: the
  * whole item is selected (the range spans every item across it, or its row
- * is picked). HOVERED: the pointer is over it. */
+ * is picked). HOVERED: the pointer is over it. FILTERED: the applied View
+ * Spec has a condition read in this item; FILTER_PENDING: a requested View
+ * Spec that would change those conditions is unanswered. */
 #define BINNACLE_HEADER_SORTED 1u
 #define BINNACLE_HEADER_DESCENDING 2u
 #define BINNACLE_HEADER_PENDING 4u
 #define BINNACLE_HEADER_SELECTED 8u
 #define BINNACLE_HEADER_HOVERED 16u
+#define BINNACLE_HEADER_FILTERED 32u
+#define BINNACLE_HEADER_FILTER_PENDING 64u
 
 /* BinnacleSnapshot.mode. Modes the Grid gained after this header read as
  * BINNACLE_MODE_OTHER. */
@@ -92,6 +96,23 @@ extern "C" {
 /* Items were shown or hidden on axis and a quick filter searches the shown
  * ones: the same spec, to apply again. */
 #define BINNACLE_VIEW_EDIT_SHOWN_CHANGED 4
+/* A condition on axis, read in item key, was added, removed (the first equal
+ * one), or put in place of another (key is the new one's). */
+#define BINNACLE_VIEW_EDIT_ADD_CONDITION 5
+#define BINNACLE_VIEW_EDIT_REMOVE_CONDITION 6
+#define BINNACLE_VIEW_EDIT_REPLACE_CONDITION 7
+
+/* BinnacleCondition.kind. Kinds the Grid gained after this header read as
+ * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
+ * matches the condition's text query. */
+#define BINNACLE_CONDITION_OTHER 0
+#define BINNACLE_CONDITION_TEXT 1
+
+/* BinnacleListedCondition.state: applied and still requested, requested and
+ * not yet applied, or applied and no longer requested. */
+#define BINNACLE_CONDITION_APPLIED 0
+#define BINNACLE_CONDITION_ADDING 1
+#define BINNACLE_CONDITION_REMOVING 2
 
 /* BinnacleTextQuery.flags bits. Without CASE_SENSITIVE, case is ignored;
  * with REGEX, the text is a pattern in the Table Source's own syntax. */
@@ -103,8 +124,12 @@ extern "C" {
 #define BINNACLE_SEARCHED_SHOWN 0
 #define BINNACLE_SEARCHED_KEYS 1
 
-/* binnacle_grid_set_support bits. SORT: the axis may be sorted by the item. */
+/* binnacle_grid_set_support bits and BinnacleHeader.support. SORT: the axis
+ * may be sorted by the item. TEXT: it may be filtered by Text conditions on
+ * the item, and with TEXT_REGEX they take regexes. REGEX needs TEXT. */
 #define BINNACLE_SUPPORT_SORT 1u
+#define BINNACLE_SUPPORT_TEXT 2u
+#define BINNACLE_SUPPORT_TEXT_REGEX 4u
 
 /* binnacle_grid_set_quick_filter_support bits and
  * BinnacleAxisSnapshot.quick_filter: the axis has a quick filter, and it
@@ -227,6 +252,9 @@ typedef struct {
   /* BINNACLE_HEADER_* bits. */
   uint32_t flags;
   uint32_t sort_place;
+  /* BINNACLE_SUPPORT_* bits: what the Table Source supports when viewing the
+   * other axis by this item. Adapters offer only these controls. */
+  uint32_t support;
 } BinnacleHeader;
 
 /* The item at the viewport's leading edge and how far into it the view is. */
@@ -248,6 +276,9 @@ typedef struct {
   uint32_t has_key;
   uint64_t key;
 } BinnacleFocusEnd;
+
+/* Defined with BinnacleCondition, below. */
+typedef struct BinnacleListedCondition BinnacleListedCondition;
 
 typedef struct {
   uint64_t count;
@@ -273,6 +304,10 @@ typedef struct {
   uint64_t total;
   /* BINNACLE_QUICK_FILTER* bits: whether the axis has a quick filter. */
   uint32_t quick_filter;
+  /* The axis's conditions, as a filter's chips list them: the latest
+   * request's, then the applied ones it drops. */
+  const BinnacleListedCondition *conditions;
+  size_t conditions_len;
 } BinnacleAxisSnapshot;
 
 /*
@@ -337,14 +372,35 @@ typedef struct {
   size_t keys_len;
 } BinnacleTextQuery;
 
+/* One condition on the items of an axis, read in item key of the other axis
+ * (a column, for the rows): the items whose value there matches are kept, or
+ * with negated 1 those whose value does not. A TEXT condition matches text;
+ * its query searches key alone (as input, searched and keys are ignored). */
+typedef struct {
+  uint64_t key;
+  /* BINNACLE_CONDITION_*. */
+  uint32_t kind;
+  uint32_t negated;
+  BinnacleTextQuery text;
+} BinnacleCondition;
+
+struct BinnacleListedCondition {
+  /* BINNACLE_CONDITION_APPLIED, ADDING or REMOVING. */
+  uint32_t state;
+  BinnacleCondition condition;
+};
+
 /* One axis's part of a View Spec: its sort, by items of the other axis in
  * order (empty for unsorted), and its filter: the quick filter, which keeps
- * the items with a match for it, when has_quick is 1. */
+ * the items with a match for it, when has_quick is 1, and the conditions,
+ * which keep the items every one of them keeps. */
 typedef struct {
   const BinnacleSortColumn *sort;
   size_t sort_len;
   uint32_t has_quick;
   BinnacleTextQuery quick;
+  const BinnacleCondition *conditions;
+  size_t conditions_len;
 } BinnacleAxisView;
 
 /* The view the Table Source should present: axes[BINNACLE_ROWS] and
@@ -480,8 +536,9 @@ int binnacle_grid_set_quick_filter_support(BinnacleGrid *grid, uint32_t axis,
                                            uint32_t support);
 
 /* What the Table Source supports when viewing axis by key, an item of the
- * other axis: BINNACLE_SUPPORT_* bits. Every item supports everything until
- * set otherwise. */
+ * other axis: BINNACLE_SUPPORT_* bits, the whole declaration. Every item
+ * supports SORT | TEXT until set otherwise. 0 for unknown bits, or REGEX
+ * without TEXT. */
 int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
                               uint32_t support);
 
@@ -504,6 +561,23 @@ int binnacle_grid_pointer(BinnacleGrid *grid, BinnaclePointerEvent event);
  * it is unchanged). 0 for an unknown tag or flag, or text that is not UTF-8. */
 int binnacle_grid_set_quick_filter(BinnacleGrid *grid, uint32_t axis,
                                    const BinnacleTextQuery *query);
+
+/* Adds condition to the conditions of axis and requests the result; a TEXT
+ * condition with no text asks for nothing. 0 for NULL, an unknown kind, tag
+ * or flag, or text that is not UTF-8, as for each condition below. */
+int binnacle_grid_add_condition(BinnacleGrid *grid, uint32_t axis,
+                                const BinnacleCondition *condition);
+
+/* Removes the first condition of axis equal to condition, if the latest
+ * request has one, and requests the result. */
+int binnacle_grid_remove_condition(BinnacleGrid *grid, uint32_t axis,
+                                   const BinnacleCondition *condition);
+
+/* Puts to in place of the first condition of axis equal to from and requests
+ * the result: adds to if there is none, removes from if to asks for nothing. */
+int binnacle_grid_replace_condition(BinnacleGrid *grid, uint32_t axis,
+                                    const BinnacleCondition *from,
+                                    const BinnacleCondition *to);
 
 /* Requests the whole of spec (NULL for the base view), say to restore a saved
  * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */

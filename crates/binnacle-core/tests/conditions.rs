@@ -109,7 +109,10 @@ fn each_condition_edit_is_named_and_one_that_changes_nothing_asks_for_nothing() 
         requests(&mut s),
         vec![
             (conditions(vec![ber.clone()]), add(&ber)),
-            (conditions(vec![ber.clone(), not_ber.clone()]), add(&not_ber)),
+            (
+                conditions(vec![ber.clone(), not_ber.clone()]),
+                add(&not_ber)
+            ),
             (
                 conditions(vec![other.clone(), not_ber.clone()]),
                 ViewEdit::ReplaceCondition {

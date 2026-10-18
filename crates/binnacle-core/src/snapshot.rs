@@ -371,8 +371,9 @@ impl<'a> Snapshot<'a> {
                 sort: item
                     .key
                     .map_or(HeaderSort::default(), |key| grid.view.header(axis, key)),
-                filter: (item.key)
-                    .map_or(HeaderFilter::default(), |key| grid.view.header_filter(axis, key)),
+                filter: (item.key).map_or(HeaderFilter::default(), |key| {
+                    grid.view.header_filter(axis, key)
+                }),
                 selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
                 hovered: hovered == Some((axis, item.position)),
             }

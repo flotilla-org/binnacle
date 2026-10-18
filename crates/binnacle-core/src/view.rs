@@ -394,7 +394,12 @@ impl ViewState {
     pub fn header_filter(&self, header_axis: Axis, key: Key) -> HeaderFilter {
         let filtered = header_axis.other();
         let on = |spec: &ViewSpec| -> Vec<Condition> {
-            spec.axis(filtered).filter.conditions.on(key).cloned().collect()
+            spec.axis(filtered)
+                .filter
+                .conditions
+                .on(key)
+                .cloned()
+                .collect()
         };
         let applied = on(&self.applied);
         let pending = self.requested.as_ref().is_some_and(|r| on(r) != applied);
@@ -407,9 +412,19 @@ impl ViewState {
     /// The conditions of `axis`: the latest request's, each `Applied` or
     /// `Adding`, then the applied ones it drops, `Removing`.
     pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
-        let mut applied: Vec<&Condition> = self.applied.axis(axis).filter.conditions.conditions().iter().collect();
+        let mut applied: Vec<&Condition> = self
+            .applied
+            .axis(axis)
+            .filter
+            .conditions
+            .conditions()
+            .iter()
+            .collect();
         let Some(requested) = &self.requested else {
-            return applied.into_iter().map(|c| (c.clone(), ConditionState::Applied)).collect();
+            return applied
+                .into_iter()
+                .map(|c| (c.clone(), ConditionState::Applied))
+                .collect();
         };
         let mut out = Vec::new();
         for c in requested.axis(axis).filter.conditions.conditions() {
@@ -422,7 +437,11 @@ impl ViewState {
             };
             out.push((c.clone(), state));
         }
-        out.extend(applied.into_iter().map(|c| (c.clone(), ConditionState::Removing)));
+        out.extend(
+            applied
+                .into_iter()
+                .map(|c| (c.clone(), ConditionState::Removing)),
+        );
         out
     }
 

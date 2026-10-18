@@ -274,6 +274,33 @@ int main(void) {
   CHECK(binnacle_grid_view_applied(grid, &effect.view, &totals));
   frame(grid, &snap);
   CHECK(r->has_total && r->total == 100 && !c->has_total);
+  /* A column condition: does not contain "x" in column 2001, which supports
+   * Text with regexes; column 2000 was declared sortable only. */
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2001,
+                                  BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_TEXT |
+                                      BINNACLE_SUPPORT_TEXT_REGEX));
+  CHECK(!binnacle_grid_set_support(grid, BINNACLE_ROWS, 2001, BINNACLE_SUPPORT_TEXT_REGEX));
+  BinnacleCondition not_x = {.key = 2001, .kind = BINNACLE_CONDITION_TEXT, .negated = 1,
+                             .text = {.text = {(const uint8_t *)"x", 1}}};
+  CHECK(binnacle_grid_add_condition(grid, BINNACLE_ROWS, &not_x));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_ADD_CONDITION && effect.edit.key == 2001);
+  filtered = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(filtered->has_quick && filtered->conditions_len == 1);
+  CHECK(filtered->conditions[0].key == 2001 && filtered->conditions[0].negated);
+  CHECK(filtered->conditions[0].text.searched == BINNACLE_SEARCHED_KEYS);
+  CHECK(filtered->conditions[0].text.keys_len == 1 && filtered->conditions[0].text.keys[0] == 2001);
+  frame(grid, &snap);
+  CHECK(c->headers[1].flags & BINNACLE_HEADER_FILTER_PENDING);
+  CHECK(!(c->headers[1].flags & BINNACLE_HEADER_FILTERED));
+  CHECK(r->conditions_len == 1 && r->conditions[0].state == BINNACLE_CONDITION_ADDING);
+  CHECK(c->headers[0].support == BINNACLE_SUPPORT_SORT);
+  CHECK(c->headers[1].support ==
+        (BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX));
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, &totals));
+  frame(grid, &snap);
+  CHECK(c->headers[1].flags & BINNACLE_HEADER_FILTERED);
+  CHECK(r->conditions_len == 1 && r->conditions[0].state == BINNACLE_CONDITION_APPLIED);
   /* Restoring a saved view: the base one. */
   CHECK(binnacle_grid_request_view(grid, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
