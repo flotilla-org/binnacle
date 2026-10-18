@@ -121,6 +121,10 @@ extern "C" {
 #define BINNACLE_VIEW_EDIT_ADD_CONDITION 5
 #define BINNACLE_VIEW_EDIT_REMOVE_CONDITION 6
 #define BINNACLE_VIEW_EDIT_REPLACE_CONDITION 7
+/* The user asked for the same spec to be applied again
+ * (binnacle_grid_reapply_view), so rows their edits left unmatched are
+ * filtered. */
+#define BINNACLE_VIEW_EDIT_REAPPLY 8
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
@@ -657,6 +661,11 @@ int binnacle_grid_replace_condition(BinnacleGrid *grid, uint32_t axis,
 /* Requests the whole of spec (NULL for the base view), say to restore a saved
  * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */
 int binnacle_grid_request_view(BinnacleGrid *grid, const BinnacleViewSpec *spec);
+
+/* Requests the latest View Spec again with BINNACLE_VIEW_EDIT_REAPPLY: the
+ * Table Source filters rows the user's edits left in view though they no
+ * longer match. 0 for NULL. */
+int binnacle_grid_reapply_view(BinnacleGrid *grid);
 
 /* Sets the Find Query, or closes find with NULL or empty text, emitting
  * FIND_REQUESTED (nothing if it is unchanged). 0 for an unknown tag or flag,

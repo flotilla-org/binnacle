@@ -50,6 +50,7 @@ enum Op {
     Threshold(f32),
     ViewApplied(ViewSpec, Totals),
     RequestView(ViewSpec),
+    ReapplyView,
     SetQuickFilter(Axis, Option<TextQuery>),
     QuickFilterSupport(Axis, Option<TextSupport>),
     SetSupport(Axis, Key, Support),
@@ -326,6 +327,7 @@ fn answer(tc: &TestCase) -> Op {
         // Often one the latest request has, so it goes.
         8 => Op::RemoveCondition(axis, tc.draw(condition(axis))),
         9 => Op::ReplaceCondition(axis, tc.draw(condition(axis)), tc.draw(condition(axis))),
+        4 if tc.draw(gs::weighted_booleans(0.25)) => Op::ReapplyView,
         4 => Op::RequestView(tc.draw(view_spec())),
         5 => {
             let query = tc
@@ -877,6 +879,7 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                     ViewEdit::SetQuickFilter { axis, .. } => on(2, axis),
                     ViewEdit::Replace => on(3, Axis::Rows),
                     ViewEdit::ShownChanged { axis } => on(4, axis),
+                    ViewEdit::Reapply => on(8, Axis::Rows),
                     ViewEdit::AddCondition {
                         axis,
                         ref condition,
@@ -1332,6 +1335,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     let ok = with_c_view(&spec, |c| binnacle_grid_request_view(h, c));
                     grid.request_view(spec);
                     ok
+                }
+                Op::ReapplyView => {
+                    grid.reapply_view();
+                    binnacle_grid_reapply_view(h)
                 }
                 Op::SetQuickFilter(axis, query) => {
                     let ok = match &query {

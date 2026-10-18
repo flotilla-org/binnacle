@@ -68,6 +68,7 @@ pub const BINNACLE_VIEW_EDIT_SHOWN_CHANGED: u32 = 4;
 pub const BINNACLE_VIEW_EDIT_ADD_CONDITION: u32 = 5;
 pub const BINNACLE_VIEW_EDIT_REMOVE_CONDITION: u32 = 6;
 pub const BINNACLE_VIEW_EDIT_REPLACE_CONDITION: u32 = 7;
+pub const BINNACLE_VIEW_EDIT_REAPPLY: u32 = 8;
 
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
@@ -1429,6 +1430,10 @@ impl BinnacleGrid {
                         ..BinnacleViewEdit::default()
                     },
                     ViewEdit::ShownChanged { axis } => on(BINNACLE_VIEW_EDIT_SHOWN_CHANGED, axis),
+                    ViewEdit::Reapply => BinnacleViewEdit {
+                        kind: BINNACLE_VIEW_EDIT_REAPPLY,
+                        ..BinnacleViewEdit::default()
+                    },
                     ViewEdit::AddCondition { axis, condition } => BinnacleViewEdit {
                         key: condition.key.0,
                         ..on(BINNACLE_VIEW_EDIT_ADD_CONDITION, axis)
@@ -1544,6 +1549,14 @@ pub unsafe extern "C" fn binnacle_grid_request_view(
     let spec = unsafe { view_spec(spec) };
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| spec.map(|s| h.grid.request_view(s))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_reapply_view(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| Some(h.grid.reapply_view())) }
 }
 
 /// # Safety

@@ -323,6 +323,11 @@ int main(void) {
   CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_REPLACE);
   CHECK(!effect.view.axes[BINNACLE_ROWS].has_quick);
   CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
+  /* Re-applying asks for the same spec again. */
+  CHECK(binnacle_grid_reapply_view(grid));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_REAPPLY);
+  CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
 
   /* Find: the host declares it, sets a query, steps, and answers the step;
    * the match takes focus, and closing find drops it. */

@@ -120,6 +120,7 @@ describe("View Specs", () => {
         "AddCondition",
         "RemoveCondition",
         "ReplaceCondition",
+        "Reapply",
       ]),
     );
     const unsorted = { filter: { quick: null, conditions: [] }, sort: [] };
@@ -165,6 +166,11 @@ describe("View Specs", () => {
       expect(s.appliedView).toEqual(spec);
       expect([s.rows.total, s.cols.total]).toEqual([40, null]);
       expect([s.rows.quickFilter, s.cols.quickFilter]).toEqual([{ regex: true }, null]);
+      grid.reapply_view();
+      const again = (grid.poll_effects() as { type: string; spec?: unknown; edit?: unknown }[]).filter(
+        (e) => e.type === "ViewRequested",
+      );
+      expect(again.map((e) => [e.spec, e.edit])).toEqual([[spec, { type: "Reapply" }]]);
     } finally {
       grid.free();
     }

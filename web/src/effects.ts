@@ -20,6 +20,8 @@ export type KeyedViewEdit =
   | { type: "RemoveCondition"; axis: AxisName; condition: KeyedCondition }
   /** The first condition of `axis` equal to `from` became `to`, in place. */
   | { type: "ReplaceCondition"; axis: AxisName; from: KeyedCondition; to: KeyedCondition }
+  /** The user asked for the same View Spec again, so rows their edits left unmatched are filtered. */
+  | { type: "Reapply" }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -123,6 +125,7 @@ function isEdit(v: unknown): v is KeyedViewEdit {
     case "ReplaceCondition":
       return isAxis(v.axis) && isCondition(v.from) && isCondition(v.to);
     case "Replace":
+    case "Reapply":
     case "Other":
       return true;
     default:

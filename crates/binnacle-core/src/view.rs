@@ -285,6 +285,10 @@ pub enum ViewEdit {
     /// Items were shown or hidden on `axis`, and a Text Query searches the
     /// shown ones: the same spec, to apply again.
     ShownChanged { axis: Axis },
+    /// The user asked for the same spec to be applied again
+    /// ([`Grid::reapply_view`]), so rows their edits left unmatched are
+    /// filtered.
+    Reapply,
     /// `condition` was added to the conditions of `axis`.
     AddCondition { axis: Axis, condition: Condition },
     /// The first condition of `axis` equal to `condition` was removed.
@@ -581,6 +585,13 @@ impl Grid {
         self.request(spec, ViewEdit::Replace);
     }
 
+    /// Requests the latest View Spec again, with the View Edit
+    /// [`ViewEdit::Reapply`]: the Table Source filters rows the user's edits
+    /// left in view though they no longer match.
+    pub fn reapply_view(&mut self) {
+        self.edit_view(ViewEdit::Reapply);
+    }
+
     /// The View Spec the latest request asks for, else the applied one.
     fn latest_view(&self) -> &ViewSpec {
         self.view.requested.as_ref().unwrap_or(&self.view.applied)
@@ -626,7 +637,7 @@ impl Grid {
                     tree.list_mut()[i] = to.clone();
                 }
             }
-            ViewEdit::Replace | ViewEdit::ShownChanged { .. } => {}
+            ViewEdit::Replace | ViewEdit::ShownChanged { .. } | ViewEdit::Reapply => {}
         }
         self.request(spec, edit);
     }

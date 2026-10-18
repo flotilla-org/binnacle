@@ -265,6 +265,7 @@ pub enum WireViewEdit {
     ShownChanged {
         axis: WireAxis,
     },
+    Reapply,
     AddCondition {
         axis: WireAxis,
         condition: WireCondition,
@@ -295,6 +296,7 @@ impl From<ViewEdit> for WireViewEdit {
             },
             ViewEdit::Replace => WireViewEdit::Replace,
             ViewEdit::ShownChanged { axis } => WireViewEdit::ShownChanged { axis: axis.into() },
+            ViewEdit::Reapply => WireViewEdit::Reapply,
             ViewEdit::AddCondition { axis, condition } => WireViewEdit::AddCondition {
                 axis: axis.into(),
                 condition: (&condition).into(),

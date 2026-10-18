@@ -527,6 +527,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
         },
         ViewEdit::Replace,
         ViewEdit::ShownChanged { axis: Axis::Cols },
+        ViewEdit::Reapply,
         ViewEdit::AddCondition {
             axis: Axis::Rows,
             condition: not_ber.clone(),

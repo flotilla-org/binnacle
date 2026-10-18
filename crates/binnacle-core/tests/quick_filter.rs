@@ -182,3 +182,17 @@ fn the_snapshot_shows_the_quick_filter_support_and_the_totals() {
     s.input(|g| g.view_applied(ViewSpec::default(), Totals::unknown()));
     assert_eq!(s.frame(V).total(Axis::Rows), None);
 }
+
+#[test]
+fn an_edited_row_the_filter_drops_stays_until_the_view_spec_is_applied_again() {
+    let mut s = records();
+    s.input(|g| g.set_quick_filter(Axis::Rows, Some(TextQuery::new("3"))));
+    let mut out = s.step("quick filter \"3\": 13, 31, 23, 3 and the 30", V);
+    // The user edits 13 (base row 1) to 12: it no longer matches, and stays.
+    let notice = s.source.edit(1, 0, Some(12)).unwrap();
+    s.input(|g| g.notify(Axis::Rows, notice));
+    out += &s.step("13 edited to 12 stays, unmatched", V);
+    s.input(|g| g.reapply_view());
+    out += &s.step("re-apply: the same View Spec, and 12 goes", V);
+    insta::assert_snapshot!(out);
+}

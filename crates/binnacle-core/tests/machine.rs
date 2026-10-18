@@ -732,6 +732,12 @@ impl Host {
         self.grid.request_view(ViewSpec::default());
     }
 
+    /// The user asks for the View Spec to be applied again.
+    #[rule(weight = 0.25)]
+    fn reapply_view(&mut self, _: TestCase) {
+        self.grid.reapply_view();
+    }
+
     #[rule(weight = 0.5)]
     fn set_gap(&mut self, tc: TestCase) {
         self.gap(&tc);

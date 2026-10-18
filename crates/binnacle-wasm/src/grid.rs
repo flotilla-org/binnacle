@@ -163,6 +163,12 @@ impl WebGrid {
         Ok(())
     }
 
+    /// Requests the latest View Spec again, so the Table Source filters rows
+    /// the user's edits left unmatched.
+    pub fn reapply_view(&mut self) {
+        self.grid.reapply_view();
+    }
+
     /// Sets the quick filter of axis `a` to `query`, a Text Query shaped as
     /// `ViewRequested` carries it, or clears it with `null`.
     pub fn set_quick_filter(&mut self, a: u8, query: JsValue) -> Result<(), JsError> {
