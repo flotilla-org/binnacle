@@ -82,44 +82,106 @@ fn appended_rows_take_the_host_keys_given_for_them() {
 }
 
 #[test]
-fn a_value_edit_is_content_changed_at_its_position_or_reordered_if_its_column_is_sorted() {
+fn a_value_change_is_content_changed_at_its_position_or_reordered_if_its_column_is_sorted() {
     let mut rows = recs(&[3, 1, 2]);
     let mut source = source(&rows);
     source.view(&rows, &rows_sorted(by_qty())).unwrap();
     // Sorted: 1, 2, 3 are rows 1, 2, 0.
     rows[0].price = 9;
     assert_eq!(
-        source.edited(&rows, 0, Key(1)),
+        source.changed(&rows, 0, Key(1)),
         Some(ChangeNotice::ContentChanged(2..3))
     );
     rows[0].qty = 0;
     assert_eq!(
-        source.edited(&rows, 0, Key(0)),
+        source.changed(&rows, 0, Key(0)),
         Some(ChangeNotice::Reordered)
     );
     assert_eq!(keys(&source), [0, 1, 2]);
 }
 
 #[test]
-fn an_edit_that_moves_a_row_across_the_filter_refilters_and_one_out_of_sight_says_nothing() {
+fn a_change_that_moves_a_row_across_the_filter_refilters_and_one_out_of_sight_says_nothing() {
     let mut rows = recs(&[3, 1, 2]);
     let mut source = source(&rows);
     source.filter(&rows, |r| r.qty >= 2);
     assert_eq!(keys(&source), [0, 2]);
     rows[1].price = 5;
-    assert_eq!(source.edited(&rows, 1, Key(1)), None);
+    assert_eq!(source.changed(&rows, 1, Key(1)), None);
+    rows[1].qty = 4;
+    assert_eq!(
+        source.changed(&rows, 1, Key(0)),
+        Some(ChangeNotice::Refiltered(3))
+    );
+    assert_eq!(keys(&source), [0, 1, 2]);
+    rows[2].qty = 0;
+    assert_eq!(
+        source.changed(&rows, 2, Key(0)),
+        Some(ChangeNotice::Refiltered(2))
+    );
+    assert_eq!(keys(&source), [0, 1]);
+}
+
+#[test]
+fn a_users_edit_that_stops_a_row_matching_keeps_it_unmatched_until_the_next_view_spec() {
+    let mut rows = recs(&[3, 1, 2]);
+    let mut source = source(&rows);
+    source.filter(&rows, |r| r.qty >= 2);
+    rows[2].qty = 0;
+    assert_eq!(
+        source.edited(&rows, 2, Key(0)),
+        Some(ChangeNotice::ContentChanged(1..2))
+    );
+    assert_eq!(keys(&source), [0, 2]);
+    assert_eq!(
+        source.unmatched(Axis::Rows, &[Key(0), Key(2), Key(1)]),
+        [false, true, false]
+    );
+    // Matching again, it is no longer flagged.
+    rows[2].qty = 5;
+    source.edited(&rows, 2, Key(0));
+    assert_eq!(source.unmatched(Axis::Rows, &[Key(2)]), [false]);
+    rows[2].qty = 0;
+    source.edited(&rows, 2, Key(0));
+    // The same View Spec again applies the filter to it.
+    assert_eq!(
+        source.view(&rows, &ViewSpec::default()),
+        Ok(ChangeNotice::Refiltered(1))
+    );
+    assert_eq!(keys(&source), [0]);
+    assert_eq!(source.unmatched(Axis::Rows, &[Key(2)]), [false]);
+}
+
+#[test]
+fn an_unmatched_row_sorts_by_its_edit_and_a_change_from_the_data_takes_it_out() {
+    let mut rows = recs(&[3, 1, 2]);
+    let mut source = source(&rows);
+    source.view(&rows, &rows_sorted(by_qty())).unwrap();
+    source.filter(&rows, |r| r.qty >= 2);
+    assert_eq!(keys(&source), [2, 0]);
+    rows[0].qty = 0;
+    assert_eq!(source.edited(&rows, 0, Key(0)), Some(ChangeNotice::Reordered));
+    assert_eq!(keys(&source), [0, 2]);
+    // The live data moves it again: now the filter takes it.
+    rows[0].qty = -1;
+    assert_eq!(
+        source.changed(&rows, 0, Key(0)),
+        Some(ChangeNotice::Refiltered(1))
+    );
+    assert_eq!(keys(&source), [2]);
+}
+
+#[test]
+fn a_users_edit_out_of_view_is_filtered_at_once() {
+    let mut rows = recs(&[3, 1, 2]);
+    let mut source = source(&rows);
+    source.filter(&rows, |r| r.qty >= 2);
     rows[1].qty = 4;
     assert_eq!(
         source.edited(&rows, 1, Key(0)),
         Some(ChangeNotice::Refiltered(3))
     );
     assert_eq!(keys(&source), [0, 1, 2]);
-    rows[2].qty = 0;
-    assert_eq!(
-        source.edited(&rows, 2, Key(0)),
-        Some(ChangeNotice::Refiltered(2))
-    );
-    assert_eq!(keys(&source), [0, 1]);
 }
 
 #[test]

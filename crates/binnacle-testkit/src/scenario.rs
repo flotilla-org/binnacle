@@ -156,8 +156,9 @@ impl RecordTable {
         self.source.appended(&self.rows, &[])
     }
 
-    /// Sets base row `row`'s value in column `col`; the Grid needs the
-    /// returned Change Notice, if any.
+    /// Sets base row `row`'s value in column `col` as the user's edit (a
+    /// row in view stays even if the filter now drops it); the Grid needs
+    /// the returned Change Notice, if any.
     pub fn edit(&mut self, row: usize, col: usize, value: Option<i64>) -> Option<ChangeNotice> {
         self.rows[row][col] = value;
         self.source.edited(&self.rows, row, Key(col as u64))

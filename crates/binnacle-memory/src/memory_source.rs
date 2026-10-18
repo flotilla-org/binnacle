@@ -234,6 +234,8 @@ impl<R> MemorySource<R> {
     /// Presents the rows as `spec`'s rows part asks, extracting each sort
     /// column's keys and each searched column's text from `rows`, and returns
     /// the Change Notice the rows need: `Refiltered` if the filter changed.
+    /// Any View Spec, even the one in force, applies the filter again to
+    /// Unmatched Rows.
     /// If a sort column has no closure, nothing changes. A quick filter with
     /// an invalid regex is not applied: the one in force stays. A condition
     /// with an invalid regex, or of a kind this source does not apply, is
@@ -265,7 +267,10 @@ impl<R> MemorySource<R> {
                 .eq(self.conditions.iter().map(|k| &k.condition));
             self.conditions = kept;
         }
-        Ok(if changed { self.refilter(rows) } else { sorted })
+        if changed || self.table.has_unmatched(Axis::Rows) {
+            return Ok(self.refilter(rows));
+        }
+        Ok(sorted)
     }
 
     /// `query` ready to match, or `None` for an invalid regex.
@@ -433,25 +438,67 @@ impl<R> MemorySource<R> {
     }
 
     /// The value in `column` of base row `row` (a Logical Index into `rows`)
-    /// changed. Returns `ContentChanged` for the row's Position, `Reordered`
-    /// if the rows are sorted by that column, `Refiltered` if the filter now keeps
-    /// or drops the row where it did not before, or `None` if the row is
-    /// filtered out either way.
+    /// changed in the data itself, as from a live feed: the filter in force
+    /// takes it at once. Returns `ContentChanged` for the row's Position,
+    /// `Reordered` if the rows are sorted by that column, `Refiltered` if the
+    /// filter now keeps or drops the row where it did not before, or `None`
+    /// if the row is filtered out either way. An Unmatched Row is matched
+    /// again, or leaves.
     ///
     /// # Panics
     ///
     /// If `row` is not a row of `rows`, or `rows` is not as long as the base
     /// row count.
+    pub fn changed(&mut self, rows: &[R], row: usize, column: Key) -> Option<ChangeNotice> {
+        let refiltered = match self.filtered() {
+            true => self.table.refilter_row(row, self.keeps(&rows[row])),
+            false => None,
+        };
+        self.content_changed(rows, row, column, refiltered)
+    }
+
+    /// The user edited the value in `column` of base row `row`. As
+    /// [`MemorySource::changed`], except that a row in view stays even if
+    /// the filter in force now drops it: it is an Unmatched Row until the
+    /// next View Spec or host filter ([`MemorySource::unmatched`] flags it).
+    /// A row out of view is filtered as for [`MemorySource::changed`].
+    ///
+    /// # Panics
+    ///
+    /// As [`MemorySource::changed`].
     pub fn edited(&mut self, rows: &[R], row: usize, column: Key) -> Option<ChangeNotice> {
-        if self.filtered() && self.keeps(&rows[row]) != self.table.row_position(row).is_some() {
-            return Some(self.reorder(rows));
-        }
+        let refiltered = match self.filtered() {
+            true => self.table.defer_row(row, self.keeps(&rows[row])),
+            false => None,
+        };
+        self.content_changed(rows, row, column, refiltered)
+    }
+
+    /// The Change Notice for a value change in `column` of base row `row`,
+    /// after any `refiltered` the filter gave, re-sorting if sorted by it.
+    fn content_changed(
+        &mut self,
+        rows: &[R],
+        row: usize,
+        column: Key,
+        refiltered: Option<ChangeNotice>,
+    ) -> Option<ChangeNotice> {
         if self.sort_spec().find(column).is_some() {
             self.resort(rows);
-            return Some(ChangeNotice::Reordered);
+            return Some(refiltered.unwrap_or(ChangeNotice::Reordered));
+        }
+        if refiltered.is_some() {
+            return refiltered;
         }
         let p = self.table.row_position(row)?;
         Some(ChangeNotice::ContentChanged(p..p + 1))
+    }
+
+    /// Whether each item with `keys` on `axis` is an Unmatched Row: in view
+    /// though the filter in force drops it, since the user's edit. Hosts ask
+    /// for the items shown, to draw them marked.
+    pub fn unmatched(&mut self, axis: Axis, keys: &[Key]) -> Vec<bool> {
+        self.table.unmatched(axis, keys)
     }
 
     /// The host's base data changed in some other way (rows inserted or
@@ -491,19 +538,6 @@ impl<R> MemorySource<R> {
     fn resort(&mut self, rows: &[R]) {
         let spec = self.sort_spec().clone();
         let _ = self.sort(rows, &spec);
-    }
-
-    /// Applies the sort and filter in force to `rows` again; returns the
-    /// Change Notice the rows need (`Refiltered` while a filter is in force).
-    fn reorder(&mut self, rows: &[R]) -> ChangeNotice {
-        if !self.sort_spec().is_empty() {
-            self.resort(rows);
-        }
-        if self.filtered() {
-            self.refilter(rows)
-        } else {
-            ChangeNotice::Reset(self.count(Axis::Rows))
-        }
     }
 
     /// The Sort Spec the rows are in, as last applied.

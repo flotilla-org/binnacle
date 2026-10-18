@@ -1,12 +1,14 @@
 //! Seam 2 properties for the quick filter, column conditions and distinct
 //! values: `MemorySource<R>` over random records of a name and a quantity,
 //! put through View Specs with random quick filters, Text and OneOf
-//! conditions (with `not`), appends, name edits and the host's own filter,
-//! and asked for distinct values, against a naive model that matches each
-//! value's text form one by one (the `regex` crate for patterns and for
-//! ignoring case, substrings otherwise).
+//! conditions (with `not`), appends, name changes, the user's name edits and
+//! the host's own filter, and asked for distinct values, against a naive
+//! model that matches each value's text form one by one (the `regex` crate
+//! for patterns and for ignoring case, substrings otherwise).
 
 mod support;
+
+use std::collections::BTreeSet;
 
 use binnacle_core::{
     Axis, Blanks, Condition, ConditionKind, Distinct, DistinctQuery, DistinctValue, FilterSpec,
@@ -198,20 +200,30 @@ fn valid(wanted: &[Condition]) -> Vec<Condition> {
     wanted.iter().filter(ok).cloned().collect()
 }
 
-/// The model's visible order, as Logical Indices.
+/// Whether the model's filters keep `record`.
+fn kept(
+    record: &Record,
+    quick: Option<&TextQuery>,
+    conditions: &[Condition],
+    min: Option<i64>,
+) -> bool {
+    quick.is_none_or(|q| keeps(q, record))
+        && conditions.iter().all(|c| satisfies(c, record))
+        && min.is_none_or(|m| record.1.is_some_and(|q| q >= m))
+}
+
+/// The model's visible order, as Logical Indices: the rows its filters keep
+/// and the Unmatched Rows, in its sort.
 fn model(
     rows: &[Record],
     sort: &SortSpec,
     quick: Option<&TextQuery>,
     conditions: &[Condition],
     min: Option<i64>,
+    unmatched: &BTreeSet<usize>,
 ) -> Vec<u64> {
     let rank = |_: usize, i: usize| rows[i].1.map_or((2, 0), |v| (0, i128::from(v)));
-    let kept = |i: usize| {
-        quick.is_none_or(|q| keeps(q, &rows[i]))
-            && conditions.iter().all(|c| satisfies(c, &rows[i]))
-            && min.is_none_or(|m| rows[i].1.is_some_and(|q| q >= m))
-    };
+    let kept = |i: usize| unmatched.contains(&i) || kept(&rows[i], quick, conditions, min);
     support::model(rows.len(), sort, rank, kept)
         .into_iter()
         .map(|i| i as u64)
@@ -231,8 +243,12 @@ fn visible(source: &MemorySource<Record>) -> Vec<u64> {
 enum Op {
     View(SortSpec, Option<TextQuery>, Vec<Condition>),
     Append(Vec<Record>),
-    /// Renames base row `row % len`.
+    /// Renames base row `row % len`: the data changed.
     Rename(usize, Option<String>),
+    /// The user renames base row `row % len`.
+    Edit(usize, Option<String>),
+    /// The View Spec last asked for, again: a re-apply.
+    Reapply,
     /// The host's own filter: quantities of at least this.
     Filter(Option<i64>),
 }
@@ -245,28 +261,35 @@ fn op(tc: &TestCase) -> Op {
         hegel::tuples!(sort(), gs::optional(query()), conditions())
             .map(|(s, q, c)| Op::View(s, q, c)),
         gs::vecs(record()).min_size(1).max_size(3).map(Op::Append),
+        gs::just(Op::Reapply),
         hegel::tuples!(gs::integers::<usize>(), gs::optional(text(0, 5)))
             .map(|(r, n)| Op::Rename(r, n)),
+        hegel::tuples!(gs::integers::<usize>(), gs::optional(text(0, 5)))
+            .map(|(r, n)| Op::Edit(r, n)),
         gs::optional(gs::integers::<i64>().min_value(-12).max_value(12)).map(Op::Filter),
     ))
 }
 
-/// Whatever View Specs, appends, edits and host filters arrive, the rows
-/// shown are the model's: those the applied quick filter, the applied
-/// conditions and the host's filter keep, in the applied sort. A quick
-/// filter with an invalid pattern leaves the one in force applied; a
-/// condition with one is left out.
+/// Whatever View Specs, appends, changes, edits and host filters arrive, the
+/// rows shown are the model's: those the applied quick filter, the applied
+/// conditions and the host's filter keep, in the applied sort, and the
+/// Unmatched Rows. A row the user's edit stops matching stays, flagged,
+/// until the next View Spec or host filter; a change from the data is
+/// filtered at once. A quick filter with an invalid pattern leaves the one
+/// in force applied; a condition with one is left out.
 #[hegel::test(test_cases = 1000)]
 fn the_rows_shown_are_the_models(tc: TestCase) {
     let mut rows = tc.draw(gs::vecs(record()).max_size(10));
     let mut source = source(rows.len());
     let (mut sort, mut quick, mut min) = (SortSpec::unsorted(), None::<TextQuery>, None);
     let mut applied = Vec::new();
+    let mut unmatched = BTreeSet::new();
+    let mut wanted = ViewSpec::default();
     for op in tc.draw(gs::vecs(op()).max_size(8)) {
         tc.note(&format!("{op:?}"));
         match op {
             Op::View(s, q, c) => {
-                let wanted = filtered(s.clone(), q.clone(), c.clone());
+                wanted = filtered(s.clone(), q.clone(), c.clone());
                 source.view(&rows, &wanted).unwrap();
                 sort = s;
                 applied = valid(&c);
@@ -274,10 +297,15 @@ fn the_rows_shown_are_the_models(tc: TestCase) {
                 if valid {
                     quick = q;
                 }
+                unmatched.clear();
             }
             Op::Append(records) => {
                 rows.extend(records);
                 source.appended(&rows, &[]);
+            }
+            Op::Reapply => {
+                source.view(&rows, &wanted).unwrap();
+                unmatched.clear();
             }
             Op::Rename(row, name) => {
                 if rows.is_empty() {
@@ -285,10 +313,26 @@ fn the_rows_shown_are_the_models(tc: TestCase) {
                 }
                 let row = row % rows.len();
                 rows[row].0 = name;
+                source.changed(&rows, row, NAME);
+                unmatched.remove(&row);
+            }
+            Op::Edit(row, name) => {
+                if rows.is_empty() {
+                    continue;
+                }
+                let row = row % rows.len();
+                let shown = visible(&source).contains(&(row as u64));
+                rows[row].0 = name;
                 source.edited(&rows, row, NAME);
+                if shown && !kept(&rows[row], quick.as_ref(), &applied, min) {
+                    unmatched.insert(row);
+                } else {
+                    unmatched.remove(&row);
+                }
             }
             Op::Filter(m) => {
                 min = m;
+                unmatched.clear();
                 match m {
                     Some(m) => source.filter(&rows, move |r| r.1.is_some_and(|q| q >= m)),
                     None => source.clear_filter(&rows),
@@ -299,10 +343,14 @@ fn the_rows_shown_are_the_models(tc: TestCase) {
             source.view_spec(),
             filtered(sort.clone(), quick.clone(), applied.clone())
         );
+        let shown = visible(&source);
         assert_eq!(
-            visible(&source),
-            model(&rows, &sort, quick.as_ref(), &applied, min)
+            shown,
+            model(&rows, &sort, quick.as_ref(), &applied, min, &unmatched)
         );
+        let keys: Vec<Key> = shown.iter().map(|&i| Key(i)).collect();
+        let flags: Vec<bool> = shown.iter().map(|&i| unmatched.contains(&(i as usize))).collect();
+        assert_eq!(source.unmatched(Axis::Rows, &keys), flags);
     }
 }
 

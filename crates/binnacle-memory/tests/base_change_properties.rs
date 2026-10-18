@@ -175,7 +175,7 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
                 }
                 let row = row % rows.len();
                 rows[row][col] = value;
-                source.edited(&rows, row, Key(col as u64))
+                source.changed(&rows, row, Key(col as u64))
             }
             Op::Replace(records) => {
                 rows = records;
