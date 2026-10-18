@@ -132,6 +132,8 @@ type MaybePromise<T> = T | Promise<T>;
 interface TableSource<RowId, ColId, V = unknown> {
   rows: AxisSource<RowId, ColId>;
   cols: AxisSource<ColId, RowId>;
+  /** Presents the table as `spec` asks; returns the View Spec now in force (all, part or none of it). */
+  view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<ViewSpec<RowId, ColId>>;
   /** The values where `rows` and `cols` cross, one array per row. */
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
   /** Hands the source its sinks for Change Notices; returns how to detach. */
@@ -142,9 +144,8 @@ interface AxisSource<Id, CrossId> {
   count(): MaybePromise<number>;
   /** The IDs at Positions `start..end`. */
   window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[]>;
-  /** Sorts by `spec` (columns, for the rows axis) and returns the spec now in force. */
-  sort?(spec: SortSpec<CrossId>, signal: AbortSignal): MaybePromise<SortSpec<CrossId>>;
-  sortable?(by: CrossId): boolean;
+  /** How this axis may be viewed by `by`, asked as `by` comes into view: `{ sort }`, `true` by default. */
+  support?(by: CrossId): Support;
   /** Where `id` sits after a reorder: `{ type: "Found", position }` or `{ type: "Gone", suggest }`. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /** Moves `ids` before Position `to`; `false` refuses. */
@@ -156,6 +157,12 @@ interface AxisSource<Id, CrossId> {
   /** The axis's IDs are its Positions (huge or position-only tables). */
   identity?: "position";
 }
+
+/** One part per axis, each naming items of the other axis: the rows sort by columns. */
+interface ViewSpec<RowId, ColId> {
+  rows: { sort: SortSpec<ColId> };
+  cols: { sort: SortSpec<RowId> };
+}
 ```
 
 A source tells the grid what changed through the sink:
@@ -163,7 +170,8 @@ A source tells the grid what changed through the sink:
 `Removed { at, n }`, `ContentChanged { start, end }`. Filtering is not part of
 the interface: filter however you like, then notify (`fromRows` has
 `filter(keep)` for this). A sort the source applies arrives as a reorder
-through the sink too.
+through the sink too. Only the rows sort for now: a source may drop the
+columns' part from its answer.
 
 `fromRows(rows, columns)` covers arrays of objects: row IDs are array
 indices, column IDs property names, every column sorts unless

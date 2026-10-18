@@ -71,10 +71,10 @@ export const slow: DemoSource = {
       rows: {
         count: () => inner.rows.count(),
         window: (start, end, signal) => later("data", signal, () => inner.rows.window(start, end, signal)),
-        sort: (spec, signal) => later("order", signal, () => inner.rows.sort!(spec, signal)),
         locate: (id, signal) => later("order", signal, () => inner.rows.locate!(id, signal)),
       },
       cols: inner.cols,
+      view: (spec, signal) => later("order", signal, () => inner.view!(spec, signal)),
       cells: (rowIds, colIds, signal) => later("data", signal, () => inner.cells(rowIds, colIds, signal)),
       emptyMessage: () => (box.value.trim() ? "No records match the filter" : undefined),
       attach: (sink) => {

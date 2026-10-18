@@ -8,6 +8,7 @@ export { defaultBindings, type Action, type FocusStep, type KeyBindings, type Pl
 export type {
   AxisSink,
   AxisSource,
+  AxisView,
   ChangeNotice,
   FailedRequest,
   Located,
@@ -15,7 +16,9 @@ export type {
   Primitive,
   SortDirection,
   SortSpec,
+  Support,
   TableSource,
+  ViewSpec,
 } from "./source";
 export { fromRows, type RowsColumn, type RowsColumnId, type RowsSource } from "./rows";
 export {

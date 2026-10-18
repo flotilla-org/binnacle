@@ -546,3 +546,31 @@ fn a_host_keeps_an_undo_stack_of_view_edits_and_specs_from_the_effects_alone() {
     assert_eq!(s.grid.snapshot().applied_view(), &previous);
     assert_eq!(s.grid.snapshot().requested_view(), None);
 }
+
+#[test]
+fn row_headers_show_the_columns_sort_and_column_headers_the_rows() {
+    let mut s = table();
+    s.frame(V);
+    let by_row_2 = SortSpec::new(vec![SortColumn::descending(Key(2))]);
+    s.input(|g| g.view_applied(ViewSpec::default().with_sort(Axis::Cols, by_row_2)));
+    let snap = s.frame(V);
+    let rows: Vec<_> = snap.headers(Axis::Rows).map(|h| h.sort).collect();
+    let sorted = HeaderSort {
+        applied: Some((SortDirection::Descending, 0)),
+        pending: false,
+    };
+    assert_eq!(
+        rows,
+        [
+            HeaderSort::default(),
+            HeaderSort::default(),
+            sorted,
+            HeaderSort::default()
+        ]
+    );
+    assert!(
+        snap.headers(Axis::Cols)
+            .all(|h| h.sort == HeaderSort::default())
+    );
+    assert_eq!(snap.header_sort(Key(2)), HeaderSort::default());
+}

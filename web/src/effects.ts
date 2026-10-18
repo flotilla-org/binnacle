@@ -3,9 +3,14 @@
 // `crates/binnacle-wasm/src/effect.rs`; the agreement tests keep them in step.
 
 import type { AxisName } from "./codes";
-import type { SortColumn } from "./snapshot";
+import type { KeyedViewSpec, SortColumn } from "./snapshot";
 
 type Stamped<T> = T & { generation: number };
+
+/** The cause of a requested View Spec, a hint: the spec alone is the request. `Other` is one this build does not know. */
+export type KeyedViewEdit =
+  | { type: "CycleSort"; axis: AxisName; key: bigint; multi: boolean }
+  | { type: "Other" };
 
 export type Effect = Stamped<
   | { type: "TextTyped"; text: string }
@@ -14,7 +19,7 @@ export type Effect = Stamped<
   | { type: "EditCancelled"; row: bigint; col: bigint }
   | { type: "FocusChanged"; row: bigint; col: bigint }
   | { type: "SelectionChanged" }
-  | { type: "SortRequested"; spec: SortColumn[] }
+  | { type: "ViewRequested"; spec: KeyedViewSpec; edit: KeyedViewEdit }
   | { type: "Locate"; axis: AxisName; key: bigint }
   | { type: "SizeChanged"; axis: AxisName; key: bigint; size: number }
   | { type: "AutoSizeRequested"; axis: AxisName; key: bigint }
@@ -25,7 +30,7 @@ export type Effect = Stamped<
 
 export type EffectType = Effect["type"];
 
-type Field = "string" | "number" | "key" | "axis" | "keys" | "spec";
+type Field = "string" | "number" | "key" | "axis" | "keys" | "view" | "edit";
 
 const FIELDS: { [T in EffectType]: Record<string, Field> } = {
   TextTyped: { text: "string" },
@@ -34,7 +39,7 @@ const FIELDS: { [T in EffectType]: Record<string, Field> } = {
   EditCancelled: { row: "key", col: "key" },
   FocusChanged: { row: "key", col: "key" },
   SelectionChanged: {},
-  SortRequested: { spec: "spec" },
+  ViewRequested: { spec: "view", edit: "edit" },
   Locate: { axis: "axis", key: "key" },
   SizeChanged: { axis: "axis", key: "key", size: "number" },
   AutoSizeRequested: { axis: "axis", key: "key" },
@@ -43,10 +48,28 @@ const FIELDS: { [T in EffectType]: Record<string, Field> } = {
   MoveRequested: { axis: "axis", keys: "keys", to: "number" },
 };
 
-function isSortColumn(v: unknown): boolean {
-  if (typeof v !== "object" || v === null) return false;
-  const c = v as Record<string, unknown>;
-  return typeof c.key === "bigint" && (c.direction === "ascending" || c.direction === "descending");
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function isSortColumn(v: unknown): v is SortColumn {
+  return isRecord(v) && typeof v.key === "bigint" && (v.direction === "ascending" || v.direction === "descending");
+}
+
+function isAxisView(v: unknown): boolean {
+  return isRecord(v) && Array.isArray(v.sort) && v.sort.every(isSortColumn);
+}
+
+function isEdit(v: unknown): v is KeyedViewEdit {
+  if (!isRecord(v)) return false;
+  switch (v.type) {
+    case "CycleSort":
+      return (v.axis === "rows" || v.axis === "cols") && typeof v.key === "bigint" && typeof v.multi === "boolean";
+    case "Other":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function fits(field: Field, v: unknown): boolean {
@@ -61,8 +84,10 @@ function fits(field: Field, v: unknown): boolean {
       return v === "rows" || v === "cols";
     case "keys":
       return Array.isArray(v) && v.every((k) => typeof k === "bigint");
-    case "spec":
-      return Array.isArray(v) && v.every(isSortColumn);
+    case "view":
+      return isRecord(v) && isAxisView(v.rows) && isAxisView(v.cols);
+    case "edit":
+      return isEdit(v);
   }
 }
 

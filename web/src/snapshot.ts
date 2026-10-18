@@ -26,6 +26,12 @@ export interface SortColumn {
   direction: SortDirection;
 }
 
+/** A View Spec as the Grid holds it, by Keys: each axis's sort, by items of the other axis. */
+export interface KeyedViewSpec {
+  rows: { sort: SortColumn[] };
+  cols: { sort: SortColumn[] };
+}
+
 export interface HeaderPlacement {
   position: number;
   key: bigint | null;
@@ -77,8 +83,8 @@ export interface Snapshot {
   selectionRects: Rect[];
   picked: bigint[];
   movingKeys: bigint[];
-  appliedSort: SortColumn[];
-  requestedSort: SortColumn[] | null;
+  appliedView: KeyedViewSpec;
+  requestedView: KeyedViewSpec | null;
   /** Cell states as bit flags, row-major over the Strips; read with `cellState`. */
   cells: Uint8Array;
 }
@@ -164,6 +170,11 @@ class Reader {
     return this.list(() => ({ key: this.key(), direction: DIRECTIONS[this.num()]! }));
   }
 
+  view(): KeyedViewSpec {
+    const rows = { sort: this.sort() };
+    return { rows, cols: { sort: this.sort() } };
+  }
+
   done(): boolean {
     return this.n === this.numbers.length && this.k === this.keys.length;
   }
@@ -234,8 +245,8 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const selectionRects = r.list(() => r.rect());
   const picked = r.list(() => r.key());
   const movingKeys = r.list(() => r.key());
-  const appliedSort = r.sort();
-  const requestedSort = r.opt(() => r.sort());
+  const appliedView = r.view();
+  const requestedView = r.opt(() => r.view());
   const cells = new Uint8Array(rows.strip.length * cols.strip.length);
   for (let i = 0; i < cells.length; i++) cells[i] = r.num();
   if (!r.done()) throw new Error("binnacle: Snapshot has data past its end");
@@ -256,8 +267,8 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     selectionRects,
     picked,
     movingKeys,
-    appliedSort,
-    requestedSort,
+    appliedView,
+    requestedView,
     cells,
   };
 }

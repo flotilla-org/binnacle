@@ -19,3 +19,6 @@ export const FOCUS_STEP = { item: 0, page: 1, edge: 2 } as const;
 export const EDIT_END = { commit: 0, cancel: 1 } as const;
 
 export const SELECTION_UNIT = { cells: 0, rows: 1 } as const;
+
+/** The support bits the wasm `set_support` input takes. */
+export const SUPPORT = { sort: 1 } as const;

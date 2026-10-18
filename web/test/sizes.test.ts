@@ -17,7 +17,8 @@ function table(rows: number, widths: number[]): TableSource<string, string, stri
   const rowIds = Array.from({ length: rows }, (_, i) => `r${i}`);
   const colIds = widths.map((_, j) => `c${j}`);
   return {
-    rows: { count: () => rowIds.length, window: (s, e) => rowIds.slice(s, e), sort: (spec) => spec },
+    rows: { count: () => rowIds.length, window: (s, e) => rowIds.slice(s, e) },
+    view: (spec) => spec,
     cols: { count: () => colIds.length, window: (s, e) => colIds.slice(s, e) },
     cells: (rs, cs) => rs.map(() => cs.map((c) => "x".repeat(widths[Number(c.slice(1))]!))),
   };

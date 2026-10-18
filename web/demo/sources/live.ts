@@ -90,16 +90,16 @@ export const live: DemoSource = {
       rows: {
         count: () => order.length,
         window: (start, end) => order.slice(start, end),
-        sort(next) {
-          spec = next;
-          resort();
-          for (const s of sinks) s.notify({ type: "Reordered" });
-          return spec;
-        },
-        sortable: (by) => by !== "trend",
+        support: (by) => ({ sort: by !== "trend" }),
         locate: (id) => ({ type: "Found", position: order.indexOf(id) }),
       },
       cols: { count: () => COLUMNS.length, window: (start, end) => COLUMNS.slice(start, end) },
+      view(next) {
+        spec = next.rows.sort;
+        resort();
+        for (const s of sinks) s.notify({ type: "Reordered" });
+        return { rows: { sort: spec }, cols: { sort: [] } };
+      },
       cells: (rows, cols) => rows.map((r) => cols.map((c) => value(tickers[r]!, c))),
       attach(sink) {
         sinks.add(sink.rows);

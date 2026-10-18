@@ -13,8 +13,8 @@ const MARKED = MARKER + 14;
 /** The direction to mark a header with, and whether it is only requested so far. */
 function marker(s: Snapshot, h: HeaderPlacement): { direction: SortDirection; place: number; pending: boolean } | null {
   if (h.sort.pending) {
-    const index = s.requestedSort?.findIndex((c) => c.key === h.key) ?? -1;
-    const requested = s.requestedSort?.[index];
+    const index = s.requestedView?.rows.sort.findIndex((c) => c.key === h.key) ?? -1;
+    const requested = s.requestedView?.rows.sort[index];
     // A pending removal shows nothing; a pending change shows where it is going.
     return requested ? { direction: requested.direction, place: index, pending: true } : null;
   }
@@ -28,7 +28,7 @@ function paintMarker(p: PaintContext, h: HeaderPlacement, mark: NonNullable<Retu
   ctx.save();
   if (mark.pending) ctx.globalAlpha = 0.4;
   ctx.fillStyle = theme.sortMarker;
-  const multi = (mark.pending ? (s.requestedSort?.length ?? 0) : s.appliedSort.length) > 1;
+  const multi = (mark.pending ? (s.requestedView?.rows.sort.length ?? 0) : s.appliedView.rows.sort.length) > 1;
   const x = multi ? right - 8 - MARKER : right - MARKER;
   const half = MARKER / 2;
   ctx.beginPath();

@@ -58,5 +58,12 @@ describe("Effects", () => {
     expect(isEffect({ type: "FocusChanged", generation: 1, row: 1, col: 2n })).toBe(false);
     expect(isEffect({ type: "Locate", generation: 1, axis: "diagonal", key: 1n })).toBe(false);
     expect(isEffect(null)).toBe(false);
+    const edit = { type: "CycleSort", axis: "rows", key: 1n, multi: false };
+    const view = (spec: unknown, e: unknown = edit) => ({ type: "ViewRequested", generation: 1, spec, edit: e });
+    const unsorted = { sort: [] };
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: unsorted, cols: { sort: [{ key: 1, direction: "ascending" }] } }))).toBe(false);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...edit, multi: 1 }))).toBe(false);
   });
 });

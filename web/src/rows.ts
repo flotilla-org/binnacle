@@ -10,7 +10,7 @@
 // IDs are the property names.
 
 import { byColumn, type CellRenderer } from "./renderer";
-import type { AxisSink, ChangeNotice, Located, SortSpec, TableSource } from "./source";
+import type { AxisSink, ChangeNotice, Located, SortSpec, TableSource, ViewSpec } from "./source";
 import { bridge } from "./wasm";
 
 type WebMemory = InstanceType<ReturnType<typeof bridge>["WebMemory"]>;
@@ -115,14 +115,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     rows: {
       count: () => memory().count(ROWS),
       window: (start, end) => Array.from(memory().window(ROWS, start, end)),
-      sort(spec: SortSpec<ColId>) {
-        if (spec.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
-          throw new Error(`binnacle: fromRows cannot sort by ${spec.map((c) => c.id).join(", ")}`);
-        }
-        sort(spec);
-        return spec;
-      },
-      sortable: (by) => columns[index.get(by) ?? -1]?.sortable !== false,
+      support: (by) => ({ sort: columns[index.get(by) ?? -1]?.sortable !== false }),
       locate: (id) => located(memory().locate(ROWS, id)),
     },
     cols: {
@@ -134,6 +127,15 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
         return true;
       },
       label: (id) => columns[index.get(id) ?? -1]?.label ?? id,
+    },
+    // Columns never sort by rows, so their part of the spec is dropped.
+    view(spec: ViewSpec<number, ColId>) {
+      const by = spec.rows.sort;
+      if (by.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
+        throw new Error(`binnacle: fromRows cannot sort by ${by.map((c) => c.id).join(", ")}`);
+      }
+      sort(by);
+      return { rows: { sort: by }, cols: { sort: [] } };
     },
     cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => rows[r]![c])),
     renderer: byColumn((id: ColId) => columns[index.get(id) ?? -1]?.renderer as CellRenderer<R[keyof R]> | undefined),

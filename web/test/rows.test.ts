@@ -6,7 +6,7 @@ import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
 import { fromRows } from "../src/rows";
-import type { ChangeNotice, SortDirection, SortSpec } from "../src/source";
+import type { ChangeNotice, SortDirection, SortSpec, ViewSpec } from "../src/source";
 import { BAND, COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
 import { loadForTests } from "./wasm";
 
@@ -63,6 +63,11 @@ function reference(rows: Rec[], spec: SortSpec<keyof Rec>, keep: (r: Rec) => boo
     .filter((i) => keep(rows[i]!));
 }
 
+/** A View Spec sorting the rows by `sort`. */
+function rowsSorted<ColId = keyof Rec>(sort: SortSpec<ColId>): ViewSpec<number, ColId> {
+  return { rows: { sort }, cols: { sort: [] } };
+}
+
 function order(source: ReturnType<typeof fromRows<Rec>>): number[] {
   return source.rows.window(0, source.rows.count() as number, new AbortController().signal) as number[];
 }
@@ -77,7 +82,7 @@ describe("fromRows", () => {
         const filtered = tc.draw(gs.booleans());
         const keep = (r: Rec) => !filtered || r.b !== 1;
         if (filtered && tc.draw(gs.booleans())) source.filter((r) => keep(r));
-        expect(source.rows.sort!(spec, new AbortController().signal)).toEqual(spec);
+        expect(source.view!(rowsSorted(spec), new AbortController().signal)).toEqual(rowsSorted(spec));
         if (filtered) source.filter((r) => keep(r));
         expect(order(source)).toEqual(reference(rows, spec, keep));
       } finally {
@@ -99,7 +104,7 @@ describe("fromRows", () => {
         if (filtered) source.filter((r) => keep(r));
         // The filter is not applied again on a change: the rows shown stay shown.
         const shown = new Set(rows.filter(keep));
-        source.rows.sort!(spec, new AbortController().signal);
+        source.view!(rowsSorted(spec), new AbortController().signal);
         const changes = tc.draw(gs.integers({ minValue: 1, maxValue: 4 }));
         for (let i = 0; i < changes; i++) {
           const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
@@ -126,12 +131,21 @@ describe("fromRows", () => {
     ];
     const source = fromRows(mixed, [{ key: "m" }, { key: "f" }, { key: "d" }]);
     const by = (id: keyof Mixed) => {
-      source.rows.sort!([{ id, direction: "ascending" }], new AbortController().signal);
+      source.view!(rowsSorted([{ id, direction: "ascending" }]), new AbortController().signal);
       return source.rows.window(0, 3, new AbortController().signal);
     };
     expect(by("m")).toEqual([0, 2, 1]);
     expect(by("f")).toEqual([1, 0, 2]);
     expect(by("d")).toEqual([1, 2, 0]);
+    source.destroy();
+  });
+
+  test("a View Spec that also sorts the columns is answered with the rows' sort alone", () => {
+    const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }, { n: 1, s: null, b: 0 }], COLUMNS);
+    const byN: SortSpec<keyof Rec> = [{ id: "n", direction: "ascending" }];
+    const asked = { rows: { sort: byN }, cols: { sort: [{ id: 1, direction: "descending" as const }] } };
+    expect(source.view!(asked, new AbortController().signal)).toEqual(rowsSorted(byN));
+    expect(order(source)).toEqual([1, 0]);
     source.destroy();
   });
 
@@ -149,7 +163,7 @@ describe("fromRows", () => {
     const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }, { n: 1, s: null, b: 0 }], COLUMNS);
     const notices: ChangeNotice[] = [];
     const detach = source.attach!({ rows: { notify: (n) => notices.push(n) }, cols: { notify: () => {} } });
-    source.rows.sort!([{ id: "n", direction: "ascending" }], new AbortController().signal);
+    source.view!(rowsSorted([{ id: "n", direction: "ascending" }]), new AbortController().signal);
     source.filter((r) => r.b === 0);
     source.filter(null);
     detach();
@@ -160,8 +174,8 @@ describe("fromRows", () => {
 
   test("columns marked unsortable say so, and labels default to the property name", () => {
     const source = fromRows<Rec>([], [{ key: "n", label: "Number" }, { key: "s", sortable: false }]);
-    expect(source.rows.sortable?.("n")).toBe(true);
-    expect(source.rows.sortable?.("s")).toBe(false);
+    expect(source.rows.support?.("n")).toEqual({ sort: true });
+    expect(source.rows.support?.("s")).toEqual({ sort: false });
     expect(source.cols.label?.("n", 0)).toBe("Number");
     expect(source.cols.label?.("s", 1)).toBe("s");
     source.destroy();

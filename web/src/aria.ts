@@ -147,7 +147,7 @@ export function createAria(options: AriaOptions): Aria {
 
   /** Announces what the table itself cannot show: a sort applied, a focused item gone. */
   const watch = (s: Snapshot, content: () => Content) => {
-    const sort = s.appliedSort.map((c) => `${c.key}:${c.direction}`).join(",");
+    const sort = s.appliedView.rows.sort.map((c) => `${c.key}:${c.direction}`).join(",");
     if (sorted !== null && sort !== sorted) announce(sortMessage(s, content()));
     sorted = sort;
     for (const axis of AXES) {
@@ -163,7 +163,7 @@ export function createAria(options: AriaOptions): Aria {
 
   const update = (s: Snapshot, content: Content) => {
     const choose = options.renderer();
-    const primary = s.appliedSort[0];
+    const primary = s.appliedView.rows.sort[0];
     set(table, "aria-rowcount", String(s.rows.count + 1));
     set(table, "aria-colcount", String(s.cols.count + 1));
     const cols = visible(s.cols);
@@ -285,8 +285,8 @@ function visibleKeys(s: Snapshot): string {
 }
 
 function sortMessage(s: Snapshot, content: Content): string {
-  if (s.appliedSort.length === 0) return "Not sorted";
-  const columns = s.appliedSort.map(({ key, direction }) => {
+  if (s.appliedView.rows.sort.length === 0) return "Not sorted";
+  const columns = s.appliedView.rows.sort.map(({ key, direction }) => {
     const item = s.cols.strip.find((i) => i.key === key);
     return `${item ? content.label("cols", item) : "a column out of view"}, ${direction}`;
   });

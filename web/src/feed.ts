@@ -1,16 +1,16 @@
 // Plumbing between a Table Source and the Grid: counts, Window answers
 // interned into Keys, the value cache, Change Notices from the source's
-// sinks, and the answers to the Effects a Table Source owns (sort, Locate,
-// move). Every answer goes through one `settle`.
+// sinks, and the answers to the Effects a Table Source owns (View Specs,
+// Locate, move). Every answer goes through one `settle`.
 
-import { AXES, AXIS_CODE, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, SUPPORT, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
 import { createSettler, type Request } from "./settle";
-import type { Snapshot, SortColumn, StripItem } from "./snapshot";
-import type { AxisMethods, ChangeNotice, FailedRequest, Located, SortSpec, TableSource } from "./source";
+import type { KeyedViewSpec, Snapshot, SortColumn, StripItem } from "./snapshot";
+import type { AxisMethods, ChangeNotice, FailedRequest, Located, SortSpec, TableSource, ViewSpec } from "./source";
 import type { WebGrid } from "./wasm";
 
 export interface Feed<RowId = unknown, ColId = unknown> {
@@ -20,7 +20,7 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   connect(grid: WebGrid): void;
   /** Answers the Windows `begin_frame` asked for (`[rowStart, rowEnd, colStart, colEnd]`, `NaN` for none). */
   fill(grid: WebGrid, requests: Float64Array): void;
-  /** Answers the Effects the Table Source owns (sort, Locate, move); `false` for the rest. */
+  /** Answers the Effects the Table Source owns (View Specs, Locate, move); `false` for the rest. */
   answer(effect: Effect): boolean;
   /** The values and labels for the Snapshot's visible items, asking for missing values. */
   content(s: Snapshot): Content;
@@ -63,7 +63,8 @@ const NOTICE_CODE: Record<ChangeNotice["type"], number> = {
   ContentChanged: 4,
 };
 
-const DIRECTION_CODE = { ascending: 0, descending: 1 } as const;
+/** The base view: nothing filtered, unsorted. */
+const BASE_VIEW: KeyedViewSpec = { rows: { sort: [] }, cols: { sort: [] } };
 
 interface Axis<Id> {
   source: AxisMethods<Id, unknown>;
@@ -125,14 +126,14 @@ export function createFeed<RowId, ColId, V>(
   let grid: WebGrid | null = null;
   let detach: (() => void) | undefined;
   let shown: Snapshot | null = null;
-  /** The Sort Spec last applied, to restore if a sort fails. */
-  let applied: SortColumn[] = [];
+  /** The View Spec last applied, to restore if a request fails. */
+  let applied: KeyedViewSpec = BASE_VIEW;
   /** Counts that arrived before the Grid did. */
   const early: Partial<Record<AxisName, number>> = {};
   /** Cell blocks in flight, aborted once none of their rows or columns is in view. */
   const blocks = new Set<Block>();
-  /** The sort in flight, aborted when a newer one is asked for. */
-  let sorting: Request | null = null;
+  /** The View Spec request in flight, aborted when a newer one is asked for. */
+  let viewing: Request | null = null;
   /** Locates in flight by axis and Key, each aborted when the same Key is asked for again. */
   const locating = new Map<string, Request>();
 
@@ -213,40 +214,53 @@ export function createFeed<RowId, ColId, V>(
 
   const keysOf = <Id>(axis: Axis<Id>, ids: Id[]) => BigUint64Array.from(ids, (id) => axis.interner.key(id));
 
-  const markSortable = (keys: BigUint64Array) => {
-    const sort = source.rows.sort;
+  /** Tells the Grid how the rows may be viewed by the columns with `keys`. */
+  const markSupport = (keys: BigUint64Array) => {
+    const view = source.view;
     for (const key of keys) {
       const id = cols.interner.id(key);
-      const sortable = sort !== undefined && id !== undefined && (source.rows.sortable?.(id) ?? true);
-      grid?.set_sortable(key, sortable);
+      const sort = view !== undefined && id !== undefined && (source.rows.support?.(id).sort ?? true);
+      grid?.set_support(AXIS_CODE.rows, key, sort ? SUPPORT.sort : 0);
     }
   };
 
-  const sortApplied = (spec: SortColumn[]) => {
+  const viewApplied = (spec: KeyedViewSpec) => {
     applied = spec;
-    grid?.sort_applied(
-      BigUint64Array.from(spec, (c) => c.key),
-      Uint8Array.from(spec, (c) => DIRECTION_CODE[c.direction]),
-    );
+    grid?.view_applied(spec);
   };
 
-  const answerSort = (requested: SortColumn[]) => {
-    const sort = source.rows.sort;
-    if (!sort) return sortApplied([]);
-    const spec: SortSpec<ColId> = [];
-    for (const c of requested) {
-      const id = cols.interner.id(c.key);
-      if (id === undefined) return sortApplied(applied);
+  /** A sort by Keys as IDs of `by`, or `undefined` if one is not known. */
+  const sortIds = <Id>(by: Axis<Id>, sort: SortColumn[]): SortSpec<Id> | undefined => {
+    const spec: SortSpec<Id> = [];
+    for (const c of sort) {
+      const id = by.interner.id(c.key);
+      if (id === undefined) return undefined;
       spec.push({ id, direction: c.direction });
     }
+    return spec;
+  };
+
+  const sortKeys = <Id>(by: Axis<Id>, sort: SortSpec<Id>): SortColumn[] =>
+    sort.map((c) => ({ key: by.interner.key(c.id), direction: c.direction }));
+
+  const answerView = (requested: KeyedViewSpec) => {
+    const view = source.view;
+    if (!view) return viewApplied(BASE_VIEW);
+    const [rowSort, colSort] = [sortIds(cols, requested.rows.sort), sortIds(rows, requested.cols.sort)];
+    if (!rowSort || !colSort) return viewApplied(applied);
+    const spec: ViewSpec<RowId, ColId> = { rows: { sort: rowSort }, cols: { sort: colSort } };
     const previous = applied;
     // The Grid still counts the superseded request's answer: aborting it
     // answers with the spec in force.
-    sorting?.abort();
-    sorting = settle(
-      (signal) => sort.call(source.rows, spec, signal),
-      (now) => sortApplied(now.map((c) => ({ key: cols.interner.key(c.id), direction: c.direction }))),
-      { otherwise: () => sortApplied(previous), failed: report({ type: "sort" }) },
+    viewing?.abort();
+    viewing = settle(
+      (signal) => view.call(source, spec, signal),
+      (now) =>
+        viewApplied({
+          rows: { sort: sortKeys(cols, now.rows.sort) },
+          cols: { sort: sortKeys(rows, now.cols.sort) },
+        }),
+      { otherwise: () => viewApplied(previous), failed: report({ type: "view" }) },
     );
   };
 
@@ -436,7 +450,7 @@ export function createFeed<RowId, ColId, V>(
             axis.failed = null;
             const keys = keysOf(axis, ids);
             (grid ?? g).set_window(i, start, keys);
-            if (name === "cols") markSortable(keys);
+            if (name === "cols") markSupport(keys);
             hooks.windowed?.(name, keys);
           },
           {
@@ -453,8 +467,8 @@ export function createFeed<RowId, ColId, V>(
     },
     answer(effect) {
       switch (effect.type) {
-        case "SortRequested":
-          answerSort(effect.spec);
+        case "ViewRequested":
+          answerView(effect.spec);
           return true;
         case "Locate":
           answerLocate(effect.axis, effect.key);

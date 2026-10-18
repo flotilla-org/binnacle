@@ -2,7 +2,7 @@
 // per axis so every ID type follows from the axis being implemented. Every
 // request may answer at once or with a Promise; the widget settles both the
 // same way. Omitted optional methods behave like the Rust `PumpSource`
-// defaults: no sort, every Locate `Gone`, every move refused.
+// defaults: no View Spec applied, every Locate `Gone`, every move refused.
 
 import type { Primitive } from "./interner";
 import type { RendererChoice } from "./renderer";
@@ -12,8 +12,25 @@ export type MaybePromise<T> = T | Promise<T>;
 
 export type { Primitive, SortDirection };
 
-/** The columns (on the rows axis) to sort by, most significant first. */
+/** The items of the other axis to sort an axis by (columns, for the rows), most significant first. */
 export type SortSpec<Id> = { id: Id; direction: SortDirection }[];
+
+/** One axis's part of a View Spec, naming items of the other axis. */
+export interface AxisView<CrossId> {
+  sort: SortSpec<CrossId>;
+}
+
+/** The view the Table Source should present for the whole table, one part per axis. */
+export interface ViewSpec<RowId, ColId> {
+  rows: AxisView<ColId>;
+  cols: AxisView<RowId>;
+}
+
+/** How an axis may be viewed by one item of the other axis; an omitted kind takes its default. */
+export interface Support {
+  /** Whether the axis may be sorted by the item; `true` by default while the source has `view`. */
+  sort?: boolean;
+}
 
 /** Where an item sits now, or that it left the axis (with a Position for focus to fall back to). */
 export type Located = { type: "Found"; position: number } | { type: "Gone"; suggest: number | null };
@@ -41,7 +58,7 @@ export type FailedRequest<RowId = unknown, ColId = unknown> =
   | { type: "count"; axis: "rows" | "cols" }
   | { type: "window"; axis: "rows" | "cols"; start: number; end: number }
   | { type: "cells"; rowIds: RowId[]; colIds: ColId[] }
-  | { type: "sort" }
+  | { type: "view" }
   | { type: "locate"; axis: "rows" | "cols" }
   | { type: "move"; axis: "rows" | "cols" };
 
@@ -53,13 +70,8 @@ export interface AxisMethods<Id, CrossId> {
   count(): MaybePromise<number>;
   /** The IDs at Positions `start..end` (fewer past the end). */
   window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[]>;
-  /**
-   * Sorts by `spec` and returns the Sort Spec now in force (the old one to
-   * reject). The reorder itself arrives through the sink as a Change Notice.
-   */
-  sort?(spec: SortSpec<CrossId>, signal: AbortSignal): MaybePromise<SortSpec<CrossId>>;
-  /** Whether clicking `by`'s header may sort by it; all are while `sort` exists. */
-  sortable?(by: CrossId): boolean;
+  /** How this axis may be viewed by `by`; asked as `by` comes into view. */
+  support?(by: CrossId): Support;
   /** Where `id` sits now, after a reorder. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /** Moves `ids` to before Position `to`; `false` refuses. The widget sends the `Reordered`. */
@@ -81,6 +93,12 @@ export type AxisSource<Id, CrossId> = AxisMethods<Id, CrossId> &
 export interface TableSource<RowId, ColId, V = unknown> {
   rows: AxisSource<RowId, ColId>;
   cols: AxisSource<ColId, RowId>;
+  /**
+   * Presents the table as `spec` asks and returns the View Spec now in force:
+   * the request, the part of it applied, or the old one to reject it. The
+   * reorder itself arrives through the sinks as Change Notices.
+   */
+  view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<ViewSpec<RowId, ColId>>;
   /** The values where `rows` and `cols` cross, one array per row. */
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
   /** How each cell draws unless the widget is given its own `renderer`; plain text by default. */

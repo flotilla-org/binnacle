@@ -15,6 +15,8 @@ beforeAll(loadForTests);
 type Sinks = { rows: AxisSink<string>; cols: AxisSink<string> };
 
 /** A keyed table whose cells read `<row>/<col>@<version>`, recording every cell it is asked for. */
+type Source = TableSource<string, string, string>;
+
 class Recorder {
   readonly asked: string[] = [];
   readonly versions = new Map<string, number>();
@@ -24,13 +26,14 @@ class Recorder {
   constructor(
     rows: number,
     cols: number,
-    extra: Partial<TableSource<string, string, string>["rows"]> = {},
+    { view, support }: Pick<Source, "view"> & Pick<Source["rows"], "support"> = {},
   ) {
     const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
     const rowIds = ids("r", rows);
     const colIds = ids("c", cols);
     this.source = {
-      rows: { count: () => rowIds.length, window: (s, e) => rowIds.slice(s, e), ...extra },
+      ...(view && { view }),
+      rows: { count: () => rowIds.length, window: (s, e) => rowIds.slice(s, e), ...(support && { support }) },
       cols: { count: () => colIds.length, window: (s, e) => colIds.slice(s, e) },
       cells: (rs, cs) =>
         rs.map((r) =>
@@ -196,10 +199,10 @@ describe("answers to the Grid's Effects", () => {
   test("a header click asks the source to sort by the column's own ID, and shows the spec it applies", () => {
     const asked: SortSpec<string>[] = [];
     const rec = new Recorder(10, 3, {
-      sort: (spec) => {
-        asked.push(spec);
+      view: (spec) => {
+        asked.push(spec.rows.sort);
         // Applies only the first column asked for.
-        return spec.slice(0, 1);
+        return { ...spec, rows: { sort: spec.rows.sort.slice(0, 1) } };
       },
     });
     const h = new Harness(rec.source);
@@ -220,6 +223,24 @@ describe("answers to the Grid's Effects", () => {
     }
   });
 
+  test("a source may answer with a columns sort of its own, shown on the row headers by the row's Key", () => {
+    const rec = new Recorder(10, 3, {
+      view: (spec) => ({ ...spec, cols: { sort: [{ id: "r1", direction: "descending" }] } }),
+    });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      h.click(header(0), HEADER / 2);
+      h.frame();
+      const r1 = h.snapshot.rows.strip[1]!.key!;
+      expect(h.snapshot.appliedView.cols.sort).toEqual([{ key: r1, direction: "descending" }]);
+      const applied = h.snapshot.rows.headers.map((x) => x.sort.applied);
+      expect(applied.slice(0, 3)).toEqual([null, { direction: "descending", index: 0 }, null]);
+    } finally {
+      h.destroy();
+    }
+  });
+
   test("a source that cannot sort makes no header sortable", () => {
     const rec = new Recorder(10, 3);
     const h = new Harness(rec.source);
@@ -227,18 +248,18 @@ describe("answers to the Grid's Effects", () => {
       h.frame();
       h.click(header(1), HEADER / 2);
       h.frame();
-      expect(h.snapshot.requestedSort).toBeNull();
+      expect(h.snapshot.requestedView).toBeNull();
       expect(h.snapshot.cols.headers.every((x) => x.sort.applied === null && !x.sort.pending)).toBe(true);
     } finally {
       h.destroy();
     }
   });
 
-  test("sortable keeps a column's header from requesting a sort", () => {
+  test("support keeps a column's header from requesting a sort", () => {
     const asked: SortSpec<string>[] = [];
     const rec = new Recorder(10, 3, {
-      sort: (spec) => (asked.push(spec), spec),
-      sortable: (col) => col !== "c1",
+      view: (spec) => (asked.push(spec.rows.sort), spec),
+      support: (col) => ({ sort: col !== "c1" }),
     });
     const h = new Harness(rec.source);
     try {
@@ -376,7 +397,7 @@ describe("late answers", () => {
 
 /** A request a slow source holds until the test answers it. */
 interface Held {
-  kind: "count" | "window" | "cells" | "sort" | "locate";
+  kind: "count" | "window" | "cells" | "view" | "locate";
   /** What was asked: the Window's range, the cells' row IDs, the Sort Spec, the located ID. */
   what: unknown;
   signal: AbortSignal;
@@ -411,18 +432,18 @@ class Slow {
       rows: {
         count: () => this.order.length,
         window: (s, e, signal) => hold("window", [s, e], signal, () => this.order.slice(s, e)),
-        sort: (spec, signal) =>
-          hold("sort", spec, signal, () => {
-            const by = spec[0];
-            this.order = [...this.order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
-            if (by?.direction === "descending") this.order.reverse();
-            this.sinks.rows.notify({ type: "Reordered" });
-            return spec;
-          }),
         locate: (id, signal) =>
           hold("locate", id, signal, (): Located => ({ type: "Found", position: this.order.indexOf(id) })),
       },
       cols: { count: () => colIds.length, window: (s, e) => colIds.slice(s, e) },
+      view: (spec, signal) =>
+        hold("view", spec, signal, () => {
+          const by = spec.rows.sort[0];
+          this.order = [...this.order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+          if (by?.direction === "descending") this.order.reverse();
+          this.sinks.rows.notify({ type: "Reordered" });
+          return spec;
+        }),
       cells: (rs, cs, signal) => hold("cells", rs, signal, () => rs.map((r) => cs.map((c) => `${r}/${c}`))),
       attach: (sinks) => ((this.sinks = sinks), () => {}),
     };
@@ -536,12 +557,12 @@ describe("slow sources", () => {
       expect(h.snapshot.cols.headers[0]!.sort.pending).toBe(true);
       // Clicking again asks for descending; the ascending request is no longer wanted.
       h.click(header(0), HEADER / 2);
-      const [ascending, descending] = slow.held.filter((x) => x.kind === "sort");
+      const [ascending, descending] = slow.held.filter((x) => x.kind === "view");
       expect(ascending!.signal.aborted).toBe(true);
       expect(descending!.signal.aborted).toBe(false);
       h.frame();
       expect(h.snapshot.cols.headers[0]!.sort.pending).toBe(true);
-      await slow.answer("sort");
+      await slow.answer("view");
       h.drain();
       h.frame();
       const sort = h.snapshot.cols.headers[0]!.sort;
@@ -588,7 +609,7 @@ describe("slow sources", () => {
     h.frame();
     h.click(header(0), HEADER / 2);
     const inFlight = slow.held.filter((x) => !x.signal.aborted);
-    expect(inFlight.map((x) => x.kind).sort()).toEqual(["cells", "sort"]);
+    expect(inFlight.map((x) => x.kind).sort()).toEqual(["cells", "view"]);
     h.destroy();
     expect(inFlight.every((x) => x.signal.aborted)).toBe(true);
   });
@@ -686,10 +707,10 @@ describe("failed requests", () => {
       await slow.answer("window");
       h.frame();
       h.click(BAND + COL_WIDTH / 2, HEADER / 2);
-      await slow.fail("sort");
+      await slow.fail("view");
       h.frame();
       expect(h.snapshot.cols.headers.every((c) => c.sort.applied === null && !c.sort.pending)).toBe(true);
-      expect(h.errors).toEqual([{ message: "sort failed", request: { type: "sort" } }]);
+      expect(h.errors).toEqual([{ message: "view failed", request: { type: "view" } }]);
     } finally {
       h.destroy();
     }
