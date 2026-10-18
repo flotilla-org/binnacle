@@ -25,11 +25,13 @@ const COLUMNS = IDS.map((key) => ({ key }));
 const signal = new AbortController().signal;
 
 const letters = ["a", "A", "é", "É", "1", "2", " "];
+/** Mostly the letters, so queries often match and case matters, and any character besides. */
+const chars = gs.oneOf(gs.sampledFrom(letters), gs.characters());
 
 const records = gs.arrays(
   gs.record({
     n: gs.oneOf(gs.just(null), gs.integers({ minValue: -12, maxValue: 25 })),
-    s: gs.oneOf(gs.just(null), gs.arrays(gs.sampledFrom(letters), { maxSize: 4 }).map((cs) => cs.join(""))),
+    s: gs.oneOf(gs.just(null), gs.arrays(chars, { maxSize: 4 }).map((cs) => cs.join(""))),
     b: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 })),
   }),
   { maxSize: 12 },
@@ -38,8 +40,8 @@ const records = gs.arrays(
 /** Plain text or a pattern (sometimes invalid), searching every column or some. */
 const queries = gs.composite((tc): TextQuery<Col> => {
   const regex = tc.draw(gs.booleans());
-  const pieces = regex ? ["a", "É", "1", ".", "^", "$", "|", "(", "[a2]"] : letters;
-  const text = tc.draw(gs.arrays(gs.sampledFrom(pieces), { minSize: 1, maxSize: 3 })).join("");
+  const pieces = regex ? gs.sampledFrom(["a", "É", "1", ".", "^", "$", "|", "(", "[a2]"]) : chars;
+  const text = tc.draw(gs.arrays(pieces, { minSize: 1, maxSize: 3 })).join("");
   const searches = tc.draw(gs.booleans()) ? "shown" : tc.draw(gs.arrays(gs.sampledFrom(IDS), { maxSize: 3 }));
   return { text, caseSensitive: tc.draw(gs.booleans()), regex, searches };
 });
@@ -132,11 +134,15 @@ function modelStep(
 const froms = (rows: number) =>
   gs.oneOf(
     gs.just(null),
-    gs.record({ row: gs.integers({ minValue: 0, maxValue: rows + 1 }), col: gs.sampledFrom(IDS) }),
+    gs.record({
+      row: gs.integers({ minValue: 0, maxValue: rows + 1 }),
+      // A column the table never had steps as one the view leaves out.
+      col: gs.sampledFrom<Col>([...IDS, "gone" as Col]),
+    }),
   );
 
 describe("find in fromRows", () => {
-  test("under any view, the count, the marks and a step from any cell agree with the model", () =>
+  test("under any view, the count and the marks agree with the model", () =>
     hegel.test((tc) => {
       const { rows, source } = tc.draw(viewed);
       try {
@@ -147,6 +153,17 @@ describe("find in fromRows", () => {
         const marks = source.find.marks(rowIds, colIds, find, signal) as boolean[][];
         const marked = new Set(all.map((m) => `${m.row}:${m.col}`));
         expect(marks).toEqual(rowIds.map((r) => colIds.map((c) => marked.has(`${r}:${c}`))));
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("under any view, a step from any cell, either way, agrees with the model", () =>
+    hegel.test((tc) => {
+      const { rows, source } = tc.draw(viewed);
+      try {
+        const find = tc.draw(finds);
+        const all = model(rows, source, find);
         const from = tc.draw(froms(rows.length));
         const direction = tc.draw(gs.sampledFrom<"next" | "previous">(["next", "previous"]));
         expect(source.find.next(from, direction, find, signal)).toEqual(modelStep(source, find, all, from, direction));

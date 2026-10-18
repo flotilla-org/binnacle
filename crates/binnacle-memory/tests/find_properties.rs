@@ -21,12 +21,13 @@ const QTY: Key = Key(1);
 /// A column with no closure, so no text form.
 const BARE: Key = Key(2);
 
-/// Short text from a few letters in both cases and digits, so queries often
-/// match more than one cell and case matters.
+/// Short text mostly from a few letters in both cases and digits, so queries
+/// often match more than one cell and case matters, and any character besides.
 #[hegel::composite]
 fn text(tc: &TestCase, min: usize, max: usize) -> String {
     let letters = gs::sampled_from(vec!['a', 'A', 'b', 'B', 'é', 'É', '1', '2', ' ']);
-    let chars: Vec<char> = tc.draw(gs::vecs(letters).min_size(min).max_size(max));
+    let any = hegel::one_of!(letters, gs::characters());
+    let chars: Vec<char> = tc.draw(gs::vecs(any).min_size(min).max_size(max));
     chars.into_iter().collect()
 }
 
@@ -226,11 +227,10 @@ fn from(tc: &TestCase, rows: usize) -> Option<FindMatch> {
     ))
 }
 
-/// Under any view, the count is the model's number of matches, the marks of
-/// the whole view are the model's matches, and a step from any cell, either
-/// way, lands where the model's does, with its index and whether it wrapped.
+/// Under any view, the count is the model's number of matches and the marks
+/// of the whole view are the model's matches.
 #[hegel::test(test_cases = 1000)]
-fn marks_steps_and_the_count_agree_with_the_model(tc: TestCase) {
+fn the_marks_and_the_count_agree_with_the_model(tc: TestCase) {
     let rows = tc.draw(gs::vecs(record()).max_size(10));
     let mut source = source(&rows, &tc.draw(view()));
     let query = tc.draw(find_query());
@@ -255,6 +255,16 @@ fn marks_steps_and_the_count_agree_with_the_model(tc: TestCase) {
         (at(&row_keys, m.row), at(&col_keys, m.col))
     });
     assert_eq!(marked, expected, "the marks of the whole view");
+}
+
+/// Under any view, a step from any cell, either way, lands where the model's
+/// does, with its index and whether it wrapped.
+#[hegel::test(test_cases = 1000)]
+fn a_step_agrees_with_the_model(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).max_size(10));
+    let mut source = source(&rows, &tc.draw(view()));
+    let query = tc.draw(find_query());
+    let matches = model(&rows, &source, &query);
     let from = tc.draw(from(rows.len()));
     let direction = tc.draw(gs::sampled_from(vec![
         FindDirection::Next,
@@ -278,11 +288,12 @@ fn stepping_visits_every_match_and_previous_undoes_next(tc: TestCase) {
     let total = source.find_count(&rows, &query).total;
     let mut at = None;
     let mut visited = Vec::new();
-    for _ in 0..total {
+    for i in 0..total {
         let step = source
             .find_next(&rows, &query, at, FindDirection::Next)
             .expect("a match while the count is not 0");
         assert!(!step.wrapped, "wrapped before visiting every match");
+        assert_eq!(step.index, Some(i));
         visited.push(step.at);
         at = Some(step.at);
     }
