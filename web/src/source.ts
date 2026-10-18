@@ -33,15 +33,22 @@ export interface TextQuery<CrossId> {
 export type TextMatch = Omit<TextQuery<never>, "searches">;
 
 /**
+ * A value as a OneOf condition lists it: text in the Table Source's own text
+ * form, or `null` for a blank (no value at all, which is not empty text).
+ */
+export type ListedValue = string | null;
+
+/**
  * One condition on the items of an axis, read in one item of the other axis
  * (a column, for the rows): an item is kept if its value in column `id`
  * satisfies `kind`, or with `not` if it does not. A `Text` kind matches as a
  * Text Query does, in that column alone; a blank never matches, so `not`
- * keeps blanks.
+ * keeps blanks. A `OneOf` kind keeps the values it lists exactly, and blanks
+ * only if it lists `null`; listing none keeps nothing.
  */
 export interface Condition<CrossId> {
   id: CrossId;
-  kind: { type: "Text"; query: TextMatch };
+  kind: { type: "Text"; query: TextMatch } | { type: "OneOf"; values: ListedValue[] };
   not: boolean;
 }
 
@@ -100,6 +107,39 @@ export interface Support {
    * source has `view`.
    */
   text?: { regex?: boolean } | false;
+  /**
+   * Whether the axis may be filtered by OneOf conditions on the item, picked
+   * from a checklist of its values; `true` by default while the source has
+   * `view` and the axis has `distinct`, and never without them.
+   */
+  oneOf?: boolean;
+}
+
+/**
+ * A checklist's question: the distinct values of one item of the other axis
+ * (a column, for the rows), up to `limit` of them, containing `search`
+ * (ignoring case; all when empty, and a search lists no blanks), among the
+ * items `narrow` keeps. `narrow` is the applied filter less the item's own
+ * conditions; a source that can't narrow ignores it.
+ */
+export interface DistinctQuery<CrossId> {
+  search: string;
+  limit: number;
+  narrow: FilterSpec<CrossId>;
+}
+
+/**
+ * The answer: the values in the item's natural order (numbers numerically,
+ * dates chronologically), each in the source's text form with how many
+ * items hold it if counted; `blanks`, a count or `true`, if some are blank;
+ * `partial` if there were more than the limit; `narrowed` if `narrow` was
+ * applied.
+ */
+export interface Distinct {
+  values: { text: string; count?: number }[];
+  blanks?: number | true;
+  partial: boolean;
+  narrowed: boolean;
 }
 
 /** Where an item sits now, or that it left the axis (with a Position for focus to fall back to). */
@@ -135,6 +175,7 @@ export type FailedRequest<RowId = unknown, ColId = unknown> =
   | { type: "window"; axis: "rows" | "cols"; start: number; end: number }
   | { type: "cells"; rowIds: RowId[]; colIds: ColId[] }
   | { type: "view" }
+  | { type: "distinct"; axis: "rows" | "cols" }
   | { type: "locate"; axis: "rows" | "cols" }
   | { type: "move"; axis: "rows" | "cols" };
 
@@ -150,6 +191,8 @@ export interface AxisMethods<Id, CrossId> {
   support?(by: CrossId): Support;
   /** Set if this axis takes a quick filter (the source must also have `view`). */
   quickFilter?: QuickFilterSupport;
+  /** The distinct values of item `by` across this axis, for a column's checklist; aborted when the search changes. */
+  distinct?(by: CrossId, query: DistinctQuery<CrossId>, signal: AbortSignal): MaybePromise<Distinct>;
   /** Where `id` sits now, after a reorder. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /** Moves `ids` to before Position `to`; `false` refuses. The widget sends the `Reordered`. */

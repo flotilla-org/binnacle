@@ -19,7 +19,7 @@ import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
 import type { AxisSnapshot, ConditionState, HeaderPlacement, Snapshot, Span } from "./snapshot";
-import type { Condition, FailedRequest, Located, TableSource, TextQuery, ViewSpec } from "./source";
+import type { Condition, Distinct, FailedRequest, Located, TableSource, TextQuery, ViewSpec } from "./source";
 import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -529,7 +529,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    */
   openColumnMenu(colId: ColId, anchor?: DOMRect): boolean {
     const open = this.columnMenu;
-    if (!open || this.destroyed || !this.feed.columnSupport(colId).text) return false;
+    const support = this.feed.columnSupport(colId);
+    if (!open || this.destroyed || (!support.text && !support.oneOf)) return false;
     const key = this.feed.colKey(colId);
     const header = this.last?.cols.headers.find((h) => h.key === key && this.inView(h));
     open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
@@ -544,7 +545,18 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return ids.map((id) => ({ id, label: this.columnLabel(id), support: this.feed.columnSupport(id) }));
   }
 
-  /** How the rows may be viewed by column `colId`: whether it sorts, and takes Text conditions (and regexes). */
+  /**
+   * Asks the Table Source for up to `limit` distinct values of column `colId`
+   * containing `search`, narrowed by the other filters applied, for a
+   * checklist; `apply` gets the answer unless the request is aborted first.
+   * `null` if the column takes no OneOf conditions.
+   */
+  distinct(colId: ColId, search: string, limit: number, apply: (answer: Distinct) => void): { abort(): void } | null {
+    if (this.destroyed) return null;
+    return this.feed.distinct(colId, search, limit, apply);
+  }
+
+  /** How the rows may be viewed by column `colId`: whether it sorts, takes Text conditions (and regexes), and OneOf ones. */
   columnSupport(colId: ColId): ColumnSupport {
     return this.feed.columnSupport(colId);
   }

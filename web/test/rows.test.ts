@@ -1,7 +1,8 @@
 // fromRows: the in-memory source over binnacle-memory in wasm, checked
 // against a sort written here from the spec (stable, multi-column, nulls last
 // both ways, NaN after every number, strings by code point), and a quick
-// filter and column conditions matched here cell by cell.
+// filter and column conditions matched here cell by cell, and distinct
+// values counted here.
 
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
@@ -12,6 +13,8 @@ import type {
   AppliedView,
   ChangeNotice,
   Condition,
+  Distinct,
+  FilterSpec,
   SortDirection,
   SortSpec,
   TextMatch,
@@ -112,11 +115,24 @@ function quickKeeps(query: TextQuery<keyof Rec> | null, row: Rec): boolean {
   return searched.some((id) => row[id] !== null && matches(query, String(row[id])) === true);
 }
 
-/** Whether `condition` keeps `row`: its column's value, as text, matches, or with `not` does not (a null never matches). */
+/**
+ * Whether `condition` keeps `row`: its column's value, as text, matches (a
+ * null never does) or is listed (a null as `null`), or with `not` the
+ * opposite.
+ */
 function satisfies(condition: Condition<keyof Rec>, row: Rec): boolean {
   const value = row[condition.id];
-  const matched = value !== null && matches(condition.kind.query, String(value)) === true;
+  const kind = condition.kind;
+  const matched =
+    kind.type === "OneOf"
+      ? kind.values.includes(value === null ? null : String(value))
+      : value !== null && matches(kind.query, String(value)) === true;
   return matched !== condition.not;
+}
+
+/** Whether fromRows can apply `condition`: a OneOf, or Text with a pattern RegExp takes. */
+function applicable(condition: Condition<keyof Rec>): boolean {
+  return condition.kind.type === "OneOf" || matches(condition.kind.query, "") !== undefined;
 }
 
 const letters = ["a", "A", "é", "É", "ﬀ", "i", "İ", "1", "-", " "];
@@ -144,11 +160,21 @@ const texts = gs.arrays(
   { maxSize: 20 },
 );
 
-/** A Text condition on any column, maybe with `not`. */
+/** A value a OneOf lists: often a null, empty text, a small number or a letter, so it often matches; sometimes any text. */
+const listedOf = gs.oneOf(
+  gs.just(null),
+  gs.sampledFrom(["", "0", "1", "-1", "2", "NaN"]),
+  gs.integers({ minValue: -12, maxValue: 12 }).map(String),
+  pieceOf(letters),
+);
+
+/** A Text or OneOf condition on any column, maybe with `not`. */
 const conditionOf = gs.composite((tc): Condition<keyof Rec> => {
-  const { text, caseSensitive, regex } = tc.draw(queries);
   const id = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
-  return { id, kind: { type: "Text", query: { text, caseSensitive, regex } }, not: tc.draw(gs.booleans()) };
+  const not = tc.draw(gs.booleans());
+  if (tc.draw(gs.booleans())) return { id, kind: { type: "OneOf", values: tc.draw(gs.arrays(listedOf, { maxSize: 4 })) }, not };
+  const { text, caseSensitive, regex } = tc.draw(queries);
+  return { id, kind: { type: "Text", query: { text, caseSensitive, regex } }, not };
 });
 
 const conditionsOf = gs.arrays(conditionOf, { maxSize: 3 });
@@ -228,7 +254,7 @@ describe("fromRows", () => {
             const valid = asked === null || matches(asked, "") !== undefined;
             if (valid) quick = asked;
             // A condition whose pattern RegExp rejects is left out.
-            const kept = conditions.filter((c) => matches(c.kind.query, "") !== undefined);
+            const kept = conditions.filter(applicable);
             const refiltered = (changed && valid) || JSON.stringify(kept) !== JSON.stringify(applied);
             applied = kept;
             expect(answer).toEqual(answered(rows.length, sort, quick, applied));
@@ -274,7 +300,7 @@ describe("fromRows", () => {
     hegel.test((tc) => {
       const rows = tc.draw(texts);
       const condition = tc.draw(conditionOf);
-      tc.assume(matches(condition.kind.query, "") !== undefined);
+      tc.assume(applicable(condition));
       const shown = (not: boolean) => {
         const source = fromRows(rows, COLUMNS);
         source.view!(rowsSorted([], null, [{ ...condition, not }]), new AbortController().signal);
@@ -293,7 +319,7 @@ describe("fromRows", () => {
       { n: 3, s: "Cádiz", b: 0 },
     ];
     const source = fromRows(rows, [{ key: "n" }, { key: "s" }, { key: "b", filterable: false }]);
-    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false });
+    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false, oneOf: false });
     const text = (text: string): TextMatch => ({ text, caseSensitive: false, regex: false });
     const notBergen: Condition<keyof Rec> = { id: "s", kind: { type: "Text", query: text("bergen") }, not: true };
     const onB: Condition<keyof Rec> = { id: "b", kind: { type: "Text", query: text("1") }, not: false };
@@ -358,8 +384,8 @@ describe("fromRows", () => {
 
   test("columns marked unsortable say so, and labels default to the property name", () => {
     const source = fromRows<Rec>([], [{ key: "n", label: "Number" }, { key: "s", sortable: false }]);
-    expect(source.rows.support?.("n")).toEqual({ sort: true, text: { regex: true } });
-    expect(source.rows.support?.("s")).toEqual({ sort: false, text: { regex: true } });
+    expect(source.rows.support?.("n")).toEqual({ sort: true, text: { regex: true }, oneOf: true });
+    expect(source.rows.support?.("s")).toEqual({ sort: false, text: { regex: true }, oneOf: true });
     expect(source.cols.label?.("n", 0)).toBe("Number");
     expect(source.cols.label?.("s", 1)).toBe("s");
     source.destroy();
@@ -413,5 +439,86 @@ describe("fromRows", () => {
       h.destroy();
       source.destroy();
     }
+  });
+
+  test("distinct values are the model's: counted, searched, narrowed, in the column's order, capped, with blanks apart from empty text", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(texts);
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const min = tc.draw(gs.oneOf(gs.just(null), gs.integers({ minValue: -12, maxValue: 12 })));
+        if (min !== null) source.filter((r) => r.n !== null && r.n >= min);
+        const quick = tc.draw(gs.oneOf(gs.just(null), queries));
+        const narrow: FilterSpec<keyof Rec> = {
+          quick: quick && matches(quick, "") !== undefined ? quick : null,
+          conditions: tc.draw(conditionsOf).filter(applicable),
+        };
+        const id = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
+        const search = tc.draw(gs.oneOf(gs.just(""), pieceOf(letters)));
+        const limit = tc.draw(gs.integers({ minValue: 0, maxValue: 8 }));
+        const answer = source.rows.distinct!(id, { search, limit, narrow }, new AbortController().signal);
+        // The model: the rows kept, their texts in the column's ascending sort order (ties by text).
+        const kept = rows.filter(
+          (r) =>
+            (min === null || (r.n !== null && r.n >= min)) &&
+            quickKeeps(narrow.quick, r) &&
+            narrow.conditions.every((c) => satisfies(c, r)),
+        );
+        const blanks = kept.filter((r) => r[id] === null).length;
+        const found = kept
+          .filter((r) => r[id] !== null && (search === "" || String(r[id]).toLowerCase().includes(search.toLowerCase())))
+          .sort((a, b) => compare(a[id], b[id], "ascending") || codePoints(String(a[id]), String(b[id])));
+        const values: { text: string; count: number }[] = [];
+        for (const r of found) {
+          const text = String(r[id]);
+          const v = values.find((v) => v.text === text);
+          if (v) v.count++;
+          else values.push({ text, count: 1 });
+        }
+        const expected: Distinct = {
+          values: values.slice(0, limit),
+          ...(blanks > 0 && search === "" ? { blanks } : {}),
+          partial: values.length > limit,
+          narrowed: true,
+        };
+        expect(answer).toEqual(expected);
+      } finally {
+        source.destroy();
+      }
+    }, { testCases: 500 }));
+
+  test("distinct values are a cell's text as its renderer gives it, numbers in numeric order", () => {
+    const rows: Rec[] = [
+      { n: 1234.5, s: "b", b: null },
+      { n: 7, s: null, b: 1 },
+      { n: 7, s: "", b: 1 },
+      { n: null, s: "a", b: null },
+    ];
+    const grouped = textRenderer<number | null>({ format: new Intl.NumberFormat("en-US") });
+    const source = fromRows(rows, [{ key: "n", renderer: grouped }, { key: "s" }, { key: "b" }]);
+    const ask = (id: keyof Rec, search = "", limit = 10) =>
+      source.rows.distinct!(id, { search, limit, narrow: { quick: null, conditions: [] } }, new AbortController().signal);
+    expect(ask("n")).toEqual({
+      values: [
+        { text: "7", count: 2 },
+        { text: "1,234.5", count: 1 },
+      ],
+      blanks: 1,
+      partial: false,
+      narrowed: true,
+    });
+    expect(ask("s")).toEqual({
+      values: [
+        { text: "", count: 1 },
+        { text: "a", count: 1 },
+        { text: "b", count: 1 },
+      ],
+      blanks: 1,
+      partial: false,
+      narrowed: true,
+    });
+    expect(ask("n", "1,2", 1)).toEqual({ values: [{ text: "1,234.5", count: 1 }], partial: false, narrowed: true });
+    expect(ask("s", "", 2)).toMatchObject({ partial: true });
+    source.destroy();
   });
 });

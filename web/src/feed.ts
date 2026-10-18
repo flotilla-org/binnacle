@@ -17,7 +17,9 @@ import type {
   AxisView,
   ChangeNotice,
   Condition,
+  Distinct,
   FailedRequest,
+  FilterSpec,
   Located,
   SortSpec,
   TableSource,
@@ -60,16 +62,29 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   conditionKey(condition: Condition<ColId>): KeyedCondition;
   /** A rows condition by its column's ID, if the column and the kind are known. */
   conditionId(condition: KeyedCondition): Condition<ColId> | undefined;
+  /**
+   * Asks the source for up to `limit` distinct values of column `id`
+   * containing `search`, narrowed by the applied rows filter less the
+   * column's own conditions; `apply` gets the answer. `null` if the column
+   * takes no OneOf conditions. Abort the request when its answer is no longer
+   * wanted, such as when the search changes.
+   */
+  distinct(id: ColId, search: string, limit: number, apply: (answer: Distinct) => void): Request | null;
   /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
   find(axis: AxisName, key: bigint): Promise<Located>;
   /** Detaches from the source and aborts outstanding requests. */
   destroy(): void;
 }
 
-/** How the rows may be viewed by one column, every kind decided: sorting, and Text conditions (with regexes or not, or `null` for none). */
+/**
+ * How the rows may be viewed by one column, every kind decided: sorting,
+ * Text conditions (with regexes or not, or `null` for none), and OneOf
+ * conditions from a checklist of its values.
+ */
 export interface ColumnSupport {
   sort: boolean;
   text: { regex: boolean } | null;
+  oneOf: boolean;
 }
 
 export interface FeedHooks<RowId = unknown, ColId = unknown> {
@@ -120,6 +135,8 @@ interface Block {
 }
 
 const known = <T>(v: T | undefined): v is T => v !== undefined;
+
+const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false };
 
 const GONE: Located = { type: "Gone", suggest: null };
 
@@ -255,19 +272,25 @@ export function createFeed<RowId, ColId, V>(
 
   /** How the rows may be viewed by column `id`, defaults filled in: nothing without `view`. */
   const columnSupport = (id: ColId): ColumnSupport => {
-    if (source.view === undefined) return { sort: false, text: null };
+    if (source.view === undefined) return NO_SUPPORT;
     const support = source.rows.support?.(id) ?? {};
     const text = support.text ?? {};
-    return { sort: support.sort ?? true, text: text ? { regex: text.regex ?? false } : null };
+    const listed = source.rows.distinct !== undefined;
+    return {
+      sort: support.sort ?? true,
+      text: text ? { regex: text.regex ?? false } : null,
+      oneOf: listed && (support.oneOf ?? true),
+    };
   };
 
   /** Tells the Grid how the rows may be viewed by the columns with `keys`. */
   const markSupport = (keys: BigUint64Array) => {
     for (const key of keys) {
       const id = cols.interner.id(key);
-      const support = id === undefined ? { sort: false, text: null } : columnSupport(id);
+      const support = id === undefined ? NO_SUPPORT : columnSupport(id);
       const text = support.text ? SUPPORT.text | (support.text.regex ? SUPPORT.textRegex : 0) : 0;
-      grid?.set_support(AXIS_CODE.rows, key, (support.sort ? SUPPORT.sort : 0) | text);
+      const oneOf = support.oneOf ? SUPPORT.oneOf : 0;
+      grid?.set_support(AXIS_CODE.rows, key, (support.sort ? SUPPORT.sort : 0) | text | oneOf);
     }
   };
 
@@ -317,13 +340,22 @@ export function createFeed<RowId, ColId, V>(
   /** A condition by its column's ID in `by`, or `undefined` if the column or the kind is not known. */
   const conditionId = <Id>(by: Axis<Id>, c: KeyedCondition): Condition<Id> | undefined => {
     const id = by.interner.id(c.key);
-    if (id === undefined || c.kind.type !== "Text") return undefined;
-    const { text, caseSensitive, regex } = c.kind.query;
-    return { id, kind: { type: "Text", query: { text, caseSensitive, regex } }, not: c.not };
+    if (id === undefined) return undefined;
+    switch (c.kind.type) {
+      case "Text": {
+        const { text, caseSensitive, regex } = c.kind.query;
+        return { id, kind: { type: "Text", query: { text, caseSensitive, regex } }, not: c.not };
+      }
+      case "OneOf":
+        return { id, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
+      default:
+        return undefined;
+    }
   };
 
   const conditionKey = <Id>(by: Axis<Id>, c: Condition<Id>): KeyedCondition => {
     const key = by.interner.key(c.id);
+    if (c.kind.type === "OneOf") return { key, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
     const { text, caseSensitive, regex } = c.kind.query;
     return { key, kind: { type: "Text", query: { text, caseSensitive, regex, searches: [key] } }, not: c.not };
   };
@@ -341,6 +373,23 @@ export function createFeed<RowId, ColId, V>(
     const quick = part.filter?.quick;
     const conditions = (part.filter?.conditions ?? []).map((c) => conditionKey(by, c));
     return { filter: { quick: quick ? queryKeys(by, quick) : null, conditions }, sort: sortKeys(by, part.sort) };
+  };
+
+  /** The applied rows filter by column IDs less the conditions on column `key`, leaving out parts naming unknown columns. */
+  const narrowing = (key: bigint): FilterSpec<ColId> => {
+    const filter = applied.rows.filter;
+    const quick = filter.quick && queryIds(cols, filter.quick);
+    const conditions = filter.conditions.filter((c) => c.key !== key).map((c) => conditionId(cols, c));
+    return { quick: quick ?? null, conditions: conditions.filter(known) };
+  };
+
+  const distinct = (id: ColId, search: string, limit: number, apply: (answer: Distinct) => void): Request | null => {
+    const ask = source.rows.distinct;
+    if (!ask || !columnSupport(id).oneOf) return null;
+    const narrow = narrowing(cols.interner.key(id));
+    return settle((signal) => ask.call(source.rows, id, { search, limit, narrow }, signal), apply, {
+      failed: report({ type: "distinct", axis: "rows" }),
+    });
   };
 
   const answerView = (requested: KeyedViewSpec) => {
@@ -612,6 +661,7 @@ export function createFeed<RowId, ColId, V>(
     columnSupport,
     conditionKey: (c) => conditionKey(cols, c),
     conditionId: (c) => conditionId(cols, c),
+    distinct,
     find(axis, key) {
       const item = shown?.[axis].strip.find((i) => i.key === key);
       if (item) return Promise.resolve({ type: "Found", position: item.position });

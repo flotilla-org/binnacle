@@ -40,12 +40,13 @@ export interface KeyedTextQuery {
 /**
  * A condition as the Grid holds it: keeps the items whose value in the item
  * `key` names (of the other axis) satisfies `kind`, or with `not` those
- * whose value does not. A Text condition's query searches `key` alone.
- * `Other` is a kind this build does not know.
+ * whose value does not. A Text condition's query searches `key` alone; a
+ * OneOf condition lists values, `null` for a blank. `Other` is a kind this
+ * build does not know.
  */
 export interface KeyedCondition {
   key: bigint;
-  kind: { type: "Text"; query: KeyedTextQuery } | { type: "Other" };
+  kind: { type: "Text"; query: KeyedTextQuery } | { type: "OneOf"; values: (string | null)[] } | { type: "Other" };
   not: boolean;
 }
 
@@ -80,7 +81,7 @@ export interface HeaderPlacement {
   /** Whether the applied View Spec has a condition read in this item, and whether a request would change them. */
   filter: { filtered: boolean; pending: boolean };
   /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
-  support: { sort: boolean; text: { regex: boolean } | null };
+  support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean };
 }
 
 export interface AxisSnapshot {
@@ -170,6 +171,7 @@ const CONDITION_STATES: readonly ConditionState[] = ["applied", "adding", "remov
 const SORT_BIT = 1;
 const TEXT_BIT = 2;
 const REGEX_BIT = 4;
+const ONE_OF_BIT = 8;
 
 class Reader {
   private n = 0;
@@ -239,7 +241,13 @@ class Reader {
   condition(): KeyedCondition {
     const key = this.key();
     const not = this.flag();
-    const kind: KeyedCondition["kind"] = this.num() === 0 ? { type: "Text", query: this.textQuery() } : { type: "Other" };
+    const code = this.num();
+    const kind: KeyedCondition["kind"] =
+      code === 0
+        ? { type: "Text", query: this.textQuery() }
+        : code === 2
+          ? { type: "OneOf", values: this.list(() => (this.flag() ? null : this.text())) }
+          : { type: "Other" };
     return { key, kind, not };
   }
 
@@ -295,6 +303,7 @@ function supportOf(bits: number): HeaderPlacement["support"] {
   return {
     sort: (bits & SORT_BIT) !== 0,
     text: (bits & TEXT_BIT) !== 0 ? { regex: (bits & REGEX_BIT) !== 0 } : null,
+    oneOf: (bits & ONE_OF_BIT) !== 0,
   };
 }
 

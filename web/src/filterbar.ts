@@ -95,7 +95,7 @@ export function createFilterBar<RowId, ColId, V>(
   };
   /** Lists the columns that take conditions; picking one opens its menu. */
   const openPicker = async () => {
-    const columns = (await widget.columns()).filter((c) => c.support.text);
+    const columns = (await widget.columns()).filter((c) => c.support.text || c.support.oneOf);
     closePicker();
     const t = widget.theme;
     const list = el("div", "binnacle-filter-picker", PICKER_STYLE);
@@ -272,9 +272,19 @@ export function createFilterBar<RowId, ColId, V>(
 }
 
 function chipText<ColId>(label: string, c: Condition<ColId>): string {
+  const not = c.not ? "not " : "";
+  if (c.kind.type === "OneOf") return `${label}: ${not}${listedText(c.kind.values)}`;
   const q = c.kind.query;
   const text = q.regex ? `/${q.text}/` : q.text;
-  return `${label}: ${c.not ? "not " : ""}${text}${q.caseSensitive ? " (Aa)" : ""}`;
+  return `${label}: ${not}${text}${q.caseSensitive ? " (Aa)" : ""}`;
+}
+
+/** A OneOf's values for a chip: up to three, then how many more; "(Blanks)" for a blank, "nothing" for none. */
+export function listedText(values: (string | null)[]): string {
+  if (values.length === 0) return "nothing";
+  const named = values.slice(0, 3).map((v) => (v === null ? "(Blanks)" : v === "" ? '""' : v));
+  const more = values.length - named.length;
+  return named.join(", ") + (more > 0 ? ` +${more}` : "");
 }
 
 function toggle(text: string, label: string): HTMLButtonElement {

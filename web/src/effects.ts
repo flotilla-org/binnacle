@@ -78,7 +78,13 @@ function isAxis(v: unknown): v is AxisName {
 
 function isCondition(v: unknown): v is KeyedCondition {
   if (!isRecord(v) || typeof v.key !== "bigint" || typeof v.not !== "boolean" || !isRecord(v.kind)) return false;
-  return (v.kind.type === "Text" && isTextQuery(v.kind.query)) || v.kind.type === "Other";
+  const listed = (values: unknown) =>
+    Array.isArray(values) && values.every((t) => t === null || typeof t === "string");
+  return (
+    (v.kind.type === "Text" && isTextQuery(v.kind.query)) ||
+    (v.kind.type === "OneOf" && listed(v.kind.values)) ||
+    v.kind.type === "Other"
+  );
 }
 
 function isAxisView(v: unknown): boolean {

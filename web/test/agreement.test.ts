@@ -83,6 +83,11 @@ describe("Effects", () => {
     expect(isEffect(view({ rows: conditioned({ ...condition, key: 2 }), cols: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: conditioned({ ...condition, not: "yes" }), cols: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: conditioned({ ...condition, kind: { type: "Text" } }), cols: unsorted }))).toBe(false);
+    const listed = (values: unknown) => conditioned({ ...condition, kind: { type: "OneOf", values } });
+    expect(isEffect(view({ rows: listed(["Bér", null, ""]), cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: listed([]), cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: listed([1]), cols: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: listed(null), cols: unsorted }))).toBe(false);
     const add = (c: unknown) => ({ type: "AddCondition", axis: "rows", condition: c });
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, add(condition)))).toBe(true);
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, add(null)))).toBe(false);
@@ -127,6 +132,7 @@ describe("View Specs", () => {
                 not: true,
                 kind: { type: "Text", query: { text: "Ø", caseSensitive: false, regex: true, searches: [1n] } },
               },
+              { key: 2n, not: false, kind: { type: "OneOf", values: [null, "", "Bér 🚢"] } },
             ],
           },
           sort: [{ key: 1n, direction: "descending" }],
@@ -157,26 +163,28 @@ describe("View Specs", () => {
 describe("Support", () => {
   test("each support code names the same support in Rust's Snapshot", () => {
     const { WebAxis, WebGrid } = bridge();
-    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(4, 80));
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(5, 80));
     try {
       const declared = [
         0,
         SUPPORT.sort,
         SUPPORT.text,
         SUPPORT.sort | SUPPORT.text | SUPPORT.textRegex,
+        SUPPORT.oneOf,
       ];
       grid.begin_frame(400, 200);
-      grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n]));
+      grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n, 14n]));
       declared.forEach((bits, i) => grid.set_support(0, BigInt(10 + i), bits));
       grid.begin_frame(400, 200);
       const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
       const dump = (grid.debug_frame() as DebugFrame).dump as { cols: { headers: { support: unknown }[] } };
       expect(s.cols.headers.map((h) => h.support)).toEqual(dump.cols.headers.map((h) => h.support));
       expect(s.cols.headers.map((h) => h.support)).toEqual([
-        { sort: false, text: null },
-        { sort: true, text: null },
-        { sort: false, text: { regex: false } },
-        { sort: true, text: { regex: true } },
+        { sort: false, text: null, oneOf: false },
+        { sort: true, text: null, oneOf: false },
+        { sort: false, text: { regex: false }, oneOf: false },
+        { sort: true, text: { regex: true }, oneOf: false },
+        { sort: false, text: null, oneOf: true },
       ]);
     } finally {
       grid.free();

@@ -1,12 +1,28 @@
 // The column menu: a part that mounts on a GridWidget, after which every
-// column header whose column takes Text conditions draws a filter button. A
-// press on the button, Alt+ArrowDown in the grid, or `open` drops a popover
-// under the header: "Contains" or "Does not contain", a text field with case
-// and regex toggles (regex only where the column supports it), and Clear.
-// Each change edits the column's Text condition at once; Escape, a press
-// outside, or Close shuts the menu. Drawn in the widget's Theme.
+// column header whose column takes conditions draws a filter button. A press
+// on the button, Alt+ArrowDown in the grid, or `open` drops a popover under
+// the header: "Contains" or "Does not contain", a text field with case and
+// regex toggles (regex only where the column supports it), then the
+// checklist of the column's values (where it takes OneOf conditions) with a
+// search, counts, "(Blanks)" and a note on whether the list is capped and
+// narrowed, and Clear. A column that takes only OneOf shows just the
+// checklist. Each change edits the column's conditions at once, the
+// checklist's by the rules in `checklist.ts`; Escape, a press outside, or
+// Close shuts the menu. Drawn in the widget's Theme.
 
-import type { Condition, TextMatch } from "./source";
+import {
+  columnConditions,
+  excluded,
+  headTicked,
+  replaced,
+  tick,
+  tickHead,
+  ticked,
+  type ColumnConditions,
+  type Shown,
+  type Written,
+} from "./checklist";
+import type { Condition, Distinct, ListedValue, TextMatch } from "./source";
 import type { FrameInfo, GridWidget } from "./widget";
 
 export interface ColumnMenu<ColId = unknown> {
@@ -18,6 +34,9 @@ export interface ColumnMenu<ColId = unknown> {
   /** Closes the menu and stops the headers drawing filter buttons. */
   destroy(): void;
 }
+
+/** How many values the checklist asks for; it says so when there are more. */
+const LIMIT = 1000;
 
 const MENU_STYLE =
   "position: fixed; z-index: 50; width: 300px; box-sizing: border-box; padding: 8px; border-radius: 8px; " +
@@ -32,6 +51,13 @@ const BUTTON_STYLE =
   "background: transparent; color: inherit; cursor: pointer; font: 12px ui-monospace, Menlo, monospace;";
 const FOOT_STYLE = "display: flex; gap: 6px; margin-top: 8px;";
 const ACTION_STYLE = "font: inherit; color: inherit; padding: 3px 12px; border-radius: 6px; cursor: pointer;";
+const SEPARATOR_STYLE = "height: 1px; margin: 8px -8px;";
+const SEARCH_STYLE = FIELD_STYLE + " display: block; width: 100%; box-sizing: border-box;";
+const LIST_STYLE = "max-height: 220px; overflow: auto; margin: 6px 0 4px; padding: 2px 0; border-radius: 6px;";
+const ITEM_STYLE = "display: flex; align-items: center; gap: 6px; padding: 2px 8px; white-space: nowrap;";
+const ITEM_TEXT_STYLE = "flex: 1; overflow: hidden; text-overflow: ellipsis;";
+const COUNT_STYLE = "font-size: 11px; font-variant-numeric: tabular-nums;";
+const NOTICE_STYLE = "font-size: 11px; min-height: 14px; margin: 0 2px;";
 
 export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColId, V>): ColumnMenu<ColId> {
   let menu: { element: HTMLElement; close(): void } | null = null;
@@ -39,13 +65,28 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
   const open = (colId: ColId, anchor: DOMRect) => {
     menu?.close();
     const support = widget.columnSupport(colId);
-    if (!support.text) return;
-    const regexAllowed = support.text.regex;
+    if (!support.text && !support.oneOf) return;
+    const regexAllowed = support.text?.regex ?? false;
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // The condition this menu edits: the column's first Text condition, as last asked for.
-    let sent: Condition<ColId> | null =
-      latest?.conditions.find(({ condition, state }) => state !== "removing" && condition.id === colId)?.condition ??
-      null;
+    // The column's conditions as this menu last asked for them, which each
+    // change replaces: the latest frame may not have caught up yet.
+    const asked = (latest?.conditions ?? []).filter(({ state }) => state !== "removing").map((c) => c.condition);
+    let column: ColumnConditions<ColId> = columnConditions(asked, colId);
+
+    /** Asks the widget for `written` in place of the column's Text condition and OneOf. */
+    const write = (written: Written<ColId>) => {
+      const pairs = [
+        [column.text, written.text],
+        [column.oneOf, written.oneOf],
+      ] as const;
+      for (const [from, to] of pairs) {
+        if (from && to) {
+          if (JSON.stringify(from) !== JSON.stringify(to)) widget.replaceCondition(from, to);
+        } else if (from) widget.removeCondition(from);
+        else if (to) widget.addCondition(to);
+      }
+      column = columnConditions(replaced(column, written), colId);
+    };
 
     const label = widget.columnLabel(colId);
     const element = el("div", "binnacle-column-menu", MENU_STYLE);
@@ -57,6 +98,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     title.append("Filter ", name);
 
     const textRow = el("div", "binnacle-column-menu-text", ROW_STYLE);
+    textRow.hidden = !support.text;
     const how = el("select", "", SELECT_STYLE);
     how.setAttribute("aria-label", "Condition");
     how.append(new Option("Contains", "contains"), new Option("Does not contain", "not"));
@@ -68,9 +110,22 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const regexToggle = toggle(".*", "Use regular expression");
     regexToggle.hidden = !regexAllowed;
     textRow.append(how, field, caseToggle, regexToggle);
-    // The OneOf checklist goes here, under the Text condition.
+
     const values = el("div", "binnacle-column-menu-values", "");
-    values.hidden = true;
+    values.hidden = !support.oneOf;
+    const separator = el("div", "", SEPARATOR_STYLE);
+    separator.hidden = !support.text;
+    const search = el("input", "binnacle-column-menu-search", SEARCH_STYLE);
+    search.type = "search";
+    search.placeholder = "Search values";
+    search.setAttribute("aria-label", `Search ${label} values`);
+    const list = el("div", "binnacle-column-menu-list", LIST_STYLE);
+    list.setAttribute("role", "group");
+    list.setAttribute("aria-label", `${label} values`);
+    const notice = el("div", "binnacle-column-menu-notice", NOTICE_STYLE);
+    notice.setAttribute("aria-live", "polite");
+    values.append(separator, search, list, notice);
+
     const foot = el("div", "binnacle-column-menu-buttons", FOOT_STYLE);
     const clearButton = action("Clear");
     const spacer = el("span", "", "flex: 1;");
@@ -78,45 +133,140 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     foot.append(clearButton, spacer, closeButton);
     element.append(title, textRow, values, foot);
 
-    if (sent) {
-      const q = sent.kind.query;
-      how.value = sent.not ? "not" : "contains";
-      field.value = q.text;
-      caseToggle.setAttribute("aria-pressed", String(q.caseSensitive));
-      regexToggle.setAttribute("aria-pressed", String(q.regex && regexAllowed));
-    }
-
     const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
-    const send = () => {
+    /** Shows the column's Text condition in the text row. */
+    const showText = () => {
+      const kind = column.text?.kind;
+      const q = kind?.type === "Text" ? kind.query : null;
+      how.value = column.text?.not ? "not" : "contains";
+      field.value = q?.text ?? "";
+      caseToggle.setAttribute("aria-pressed", String(q?.caseSensitive ?? false));
+      regexToggle.setAttribute("aria-pressed", String((q?.regex ?? false) && regexAllowed));
+    };
+    showText();
+
+    const sendText = () => {
       const query: TextMatch = {
         text: field.value,
         caseSensitive: pressed(caseToggle),
         regex: regexAllowed && pressed(regexToggle),
       };
       const to: Condition<ColId> = { id: colId, kind: { type: "Text", query }, not: how.value === "not" };
-      if (sent) widget.replaceCondition(sent, to);
-      else widget.addCondition(to);
-      sent = query.text === "" ? null : to;
+      write({ text: query.text === "" ? null : to, oneOf: column.oneOf });
+      showValues();
     };
     for (const b of [caseToggle, regexToggle]) {
       b.addEventListener("click", () => {
         b.setAttribute("aria-pressed", String(!pressed(b)));
         paint();
-        send();
+        sendText();
       });
     }
-    how.addEventListener("change", send);
-    field.addEventListener("input", send);
+    how.addEventListener("change", sendText);
+    field.addEventListener("input", sendText);
     clearButton.addEventListener("click", () => {
       widget.clearConditions(colId);
-      sent = null;
-      field.value = "";
-      field.focus();
+      column = columnConditions([], colId);
+      showText();
+      showValues();
+      (support.text ? field : search).focus();
     });
+
+    // The checklist: the latest answer for the search typed, and the request in flight.
+    let answer: Distinct | null = null;
+    let asking: { abort(): void } | null = null;
+    const ask = () => {
+      asking?.abort();
+      const searched = search.value;
+      asking = widget.distinct(colId, searched, LIMIT, (d) => {
+        asking = null;
+        answer = d;
+        showValues();
+      });
+      showValues();
+    };
+    search.addEventListener("input", ask);
+
+    const shown = (): Shown => ({
+      values: answer ? [...(answer.blanks ? [null] : []), ...answer.values.map((v) => v.text)] : [],
+      partial: answer?.partial ?? false,
+      search: search.value,
+    });
+
+    /** Draws the checklist from the latest answer and the column's conditions. */
+    const showValues = () => {
+      if (!support.oneOf) return;
+      const t = widget.theme;
+      const now = shown();
+      const scroll = list.scrollTop;
+      list.textContent = "";
+      if (!answer) {
+        notice.textContent = asking ? "Loading values…" : "";
+        return;
+      }
+      const head = item(
+        now.search ? `(Select all matching "${now.search}")` : "(Select all)",
+        headTicked(column, now),
+        undefined,
+        (on) => write(tickHead(column, colId, on, now)),
+      );
+      head.classList.add("binnacle-column-menu-all");
+      head.style.borderBottom = `1px solid ${t.border}`;
+      list.append(head);
+      const counts = new Map<ListedValue, number | undefined>(answer.values.map((v) => [v.text, v.count]));
+      if (answer.blanks) counts.set(null, answer.blanks === true ? undefined : answer.blanks);
+      for (const value of now.values) {
+        const text = value === null ? "(Blanks)" : value === "" ? '""' : value;
+        const row = item(text, ticked(column, value), counts.get(value), (on) =>
+          write(tick(column, colId, value, on, now)),
+        );
+        if (excluded(column, value)) {
+          row.querySelector("input")!.disabled = true;
+          row.style.opacity = "0.45";
+          row.title = "Excluded by the text condition";
+        }
+        list.append(row);
+      }
+      if (now.values.length === 0) {
+        const empty = el("div", "binnacle-column-menu-empty", "padding: 4px 8px;");
+        empty.textContent = "No values";
+        empty.style.color = t.loading;
+        list.append(empty);
+      }
+      list.scrollTop = scroll;
+      const capped = answer.partial ? `First ${LIMIT.toLocaleString("en")} values; type to search. ` : "";
+      notice.textContent = capped + (answer.narrowed ? "Narrowed by the other filters" : "Showing all values");
+      notice.style.color = asking ? t.loading : t.rowNumber.color;
+    };
+
+    /** A checklist row: a checkbox, the value and its count; `change` runs with the new tick, then the list redraws. */
+    const item = (text: string, on: boolean, count: number | undefined, change: (on: boolean) => void) => {
+      const t = widget.theme;
+      const row = el("label", "binnacle-column-menu-value", ITEM_STYLE);
+      const box = el("input", "", `margin: 0; accent-color: ${t.focus.color};`);
+      box.type = "checkbox";
+      box.checked = on;
+      box.addEventListener("change", () => {
+        change(box.checked);
+        showValues();
+        list.querySelectorAll("input")[[...list.children].indexOf(row)]?.focus();
+      });
+      const value = el("span", "", ITEM_TEXT_STYLE);
+      value.textContent = text;
+      row.append(box, value);
+      if (count !== undefined) {
+        const n = el("span", "binnacle-column-menu-count", COUNT_STYLE);
+        n.textContent = count.toLocaleString("en");
+        n.style.color = t.rowNumber.color;
+        row.append(n);
+      }
+      return row;
+    };
 
     const close = () => {
       if (menu?.element !== element) return;
       menu = null;
+      asking?.abort();
       document.removeEventListener("pointerdown", outside, true);
       element.remove();
       if (returnFocus?.isConnected) returnFocus.focus();
@@ -126,7 +276,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     };
     closeButton.addEventListener("click", close);
     element.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" || (e.key === "Enter" && e.target === field)) {
+      if (e.key === "Escape" || (e.key === "Enter" && (e.target === field || e.target === search))) {
         e.preventDefault();
         e.stopPropagation();
         close();
@@ -141,11 +291,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       element.style.border = `1px solid ${t.border}`;
       title.style.color = t.rowNumber.color;
       name.style.color = t.body.color;
-      for (const c of [how, field, clearButton, closeButton]) {
+      for (const c of [how, field, search, clearButton, closeButton]) {
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;
       }
       field.style.borderColor = t.focus.color;
+      list.style.border = `1px solid ${t.border}`;
+      separator.style.background = t.border;
       for (const b of [caseToggle, regexToggle]) {
         const on = pressed(b);
         b.style.color = on ? t.focus.color : t.loading;
@@ -153,15 +305,19 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       }
     };
     paint();
+    if (support.oneOf) ask();
 
     document.body.append(element);
     const width = element.offsetWidth;
     element.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - width - 8))}px`;
-    element.style.top = `${Math.max(8, Math.min(anchor.bottom + 4, innerHeight - element.offsetHeight - 8))}px`;
+    // Room for the checklist once its values land.
+    const height = Math.max(element.offsetHeight, support.oneOf ? 380 : 0);
+    element.style.top = `${Math.max(8, Math.min(anchor.bottom + 4, innerHeight - height - 8))}px`;
     document.addEventListener("pointerdown", outside, true);
     menu = { element, close };
-    field.focus();
-    field.select();
+    const first = support.text ? field : search;
+    first.focus();
+    if (first === field) field.select();
   };
 
   let latest: FrameInfo<RowId, ColId> | null = null;
