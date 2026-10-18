@@ -1,0 +1,34 @@
+---
+source: crates/binnacle-ratatui/tests/conditions.rs
+assertion_line: 245
+expression: "out.join(\"\\n\\n\")"
+---
+    name        │port        │crew        │
+1   r0c0         ┌─ Filter port ────────────────────────────┐  █
+2   r1c0         │ Contains ▏                         Aa .* │  █
+3   r2c0         │ Alt+N not  Alt+C case  Alt+R regex       │  █
+4   r3c0         │ Enter keep  Esc undo  Ctrl+U clear       │  █
+5   r4c0         └──────────────────────────────────────────┘  █
+                                                               █
+                                                               █
+                                                               █
+
+    name        │port      ▿~│crew        │
+1   r0c0         ┌─ Filter port ────────────────────────────┐  █
+2   r1c0         │ Does not contain ber▏              Aa .* │  █
+3   r2c0         │ Alt+N not  Alt+C case  Alt+R regex       │  █
+4   r3c0         │ Enter keep  Esc undo  Ctrl+U clear       │  █
+5   r4c0         └──────────────────────────────────────────┘  █
+                                                               █
+                                                               █
+                                                               █
+
+    name        │port      ▿~│crew        │
+1   ┌─ Filter name ────────────────────────────┐               █
+2   │ Contains ▏                            Aa │               █
+3   │ Alt+N not  Alt+C case                    │               █
+4   │ Enter keep  Esc undo  Ctrl+U clear       │               █
+5   └──────────────────────────────────────────┘               █
+                                                               █
+                                                               █
+                                                               █

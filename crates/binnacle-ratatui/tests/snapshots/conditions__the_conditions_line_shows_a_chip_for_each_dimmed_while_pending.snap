@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-ratatui/tests/conditions.rs
+assertion_line: 278
+expression: "out.join(\"\\n\")"
+---
+
+ Where   port: not bergen
+ Where   name: /^an/ Aa~   port: not bergen
+ Where   name: /^an/ Aa

@@ -37,6 +37,15 @@
 //! line counts the records shown of the total, such as "84 of 1,000 rows".
 //! The quick filter and Ctrl+F's crew filter both apply.
 //!
+//! Alt+Down opens the focused column's filter popup under its header (every
+//! records column but the id, and the tickers' name, price and load): type to
+//! keep the records whose value in that column contains the text, Alt+N for
+//! "does not contain", Alt+C to match case, Alt+R for a regex; Ctrl+U clears
+//! it, Enter keeps it and Esc puts back the column's condition from before.
+//! Conditions on several columns AND together and with the quick filter; a
+//! filtered column's header shows `▿` (with `~` while the change is
+//! pending), and a line above the table lists each condition as a chip.
+//!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
 //! huge table, typing digits goes to that row number. Enter, F2 or a
@@ -73,9 +82,10 @@ use binnacle_core::{
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
-    CellRenderer, ColorSupport, Content, Control, Controls, Keymap, Layout, Mouse, Preset,
-    QuickFilter, RenderContext, SparklineRenderer, TextRenderer, Theme, animating, begin_frame,
-    fit_width, render_editor, render_with, row_count, status, wheel,
+    CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, Keymap, Layout, Mouse,
+    Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer, Theme, animating,
+    begin_frame, fit_width, render_conditions, render_editor, render_with, row_count, status,
+    wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -738,7 +748,8 @@ fn main() -> io::Result<()> {
                 .gap(1.0),
         );
         for c in 0..HUGE_COLS {
-            grid.set_support(Axis::Rows, Key(c), Support::default().with_sort(false));
+            let none = Support::default().with_sort(false).with_text(None);
+            grid.set_support(Axis::Rows, Key(c), none);
         }
         let table = Table::Huge(Huge {
             rows: IdentitySource::new(HUGE_ROWS),
@@ -763,6 +774,12 @@ fn main() -> io::Result<()> {
                 .gap(1.0),
         );
         grid.set_quick_filter_support(Axis::Rows, source.quick_filter(Axis::Rows));
+        for c in 0..HEADERS.len() as u64 {
+            grid.set_support(Axis::Rows, Key(c), source.support(Axis::Rows, Key(c)));
+        }
+        // The ids take no conditions, as on the web.
+        let id = source.support(Axis::Rows, Key(0)).with_text(None);
+        grid.set_support(Axis::Rows, Key(0), id);
         let source = Box::new(source);
         let slow = std::env::args().any(|a| a == "--slow");
         let table = Table::Records {
@@ -784,6 +801,7 @@ fn main() -> io::Result<()> {
     );
     let controls = Controls::preset(Preset::Chords);
     let mut quick = QuickFilter::new().placeholder("Ctrl+L");
+    let mut popup = ColumnFilter::new();
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
@@ -796,8 +814,11 @@ fn main() -> io::Result<()> {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let mut theme = if no_color { themes.len() - 1 } else { 0 };
     let colors = ColorSupport::from_colorterm(std::env::var("COLORTERM").ok().as_deref());
-    if live {
-        grid.set_support(Axis::Rows, Key(2), Support::default().with_sort(false));
+    if let Table::Live(live) = &table {
+        for c in 0..TICKER_HEADERS.len() as u64 {
+            let support = live.source.support(Axis::Rows, Key(c));
+            grid.set_support(Axis::Rows, Key(c), support);
+        }
     }
     // The demo's clock, which the render context and the flashes share.
     let start = Instant::now();
@@ -809,13 +830,15 @@ fn main() -> io::Result<()> {
         loop {
             terminal.draw(|frame| {
                 // The Grid takes all but the bottom line, the status line,
-                // and the top line while the rows have a quick filter.
+                // the top line while the rows have a quick filter, and the
+                // next while they have column conditions.
                 let full = frame.area();
                 let mut area = full;
                 area.height = full.height.saturating_sub(1);
                 app.pump(&mut table, &mut grid, &shown_rows);
                 let field = grid.snapshot().quick_filter(Axis::Rows).is_some();
-                if field {
+                let chips = !grid.snapshot().conditions(Axis::Rows).is_empty();
+                for _ in 0..u16::from(field) + u16::from(chips) {
                     area.y += 1;
                     area.height = area.height.saturating_sub(1);
                 }
@@ -846,9 +869,25 @@ fn main() -> io::Result<()> {
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
+                popup.render(
+                    &snapshot,
+                    &table.text(),
+                    &themes[theme],
+                    layout.grid,
+                    frame.buffer_mut(),
+                );
                 if field {
                     let top = ratatui::layout::Rect { height: 1, ..full };
                     quick.render(&snapshot, &themes[theme], top, frame.buffer_mut());
+                }
+                if chips {
+                    let line = ratatui::layout::Rect {
+                        y: area.y - 1,
+                        height: 1,
+                        ..full
+                    };
+                    let buf = frame.buffer_mut();
+                    render_conditions(&snapshot, &table.text(), &themes[theme], line, buf);
                 }
                 let line = ratatui::layout::Rect {
                     y: full.y + area.height,
@@ -890,12 +929,22 @@ fn main() -> io::Result<()> {
                     if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
                         return Ok(());
                     }
-                    if app.edit_key(&mut table, &mut grid, key.code) || quick.key(&key, &mut grid) {
+                    if app.edit_key(&mut table, &mut grid, key.code)
+                        || popup.key(&key, &mut grid)
+                        || quick.key(&key, &mut grid)
+                    {
                         continue;
                     }
-                    if controls.control(&key) == Some(Control::QuickFilter) {
-                        quick.focus(&grid.snapshot());
-                        continue;
+                    match controls.control(&key) {
+                        Some(Control::QuickFilter) => {
+                            quick.focus(&grid.snapshot());
+                            continue;
+                        }
+                        Some(Control::ColumnFilter) => {
+                            popup.open(&grid.snapshot());
+                            continue;
+                        }
+                        _ => {}
                     }
                     if ctrl && key.code == KeyCode::Char('t') {
                         theme = (theme + 1) % themes.len();

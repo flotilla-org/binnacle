@@ -1,0 +1,8 @@
+---
+source: crates/binnacle-ratatui/tests/conditions.rs
+assertion_line: 298
+expression: "out.join(\"\\n\")"
+---
+    name        │port        │crew        │
+    name        │port       ▿│crew        │
+    name      ▿~│port       ~│crew        │

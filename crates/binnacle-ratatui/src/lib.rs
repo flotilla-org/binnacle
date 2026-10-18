@@ -16,7 +16,9 @@ mod theme;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
-pub use filter::{Control, Controls, Preset, QuickFilter, row_count};
+pub use filter::{
+    ColumnFilter, Control, Controls, Preset, QuickFilter, render_conditions, row_count,
+};
 pub use keymap::Keymap;
 pub use mouse::Mouse;
 pub use renderer::{
@@ -144,7 +146,12 @@ pub fn render_with(
         let label = h
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
-        let marker = sort_marker(h.sort, multi);
+        let requested = snapshot.requested_view().map(|v| &v.rows.filter.conditions);
+        let filtered = match (h.filter.pending, h.key, requested) {
+            (true, Some(key), Some(conditions)) => conditions.on(key).next().is_some(),
+            _ => h.filter.filtered,
+        };
+        let marker = header_marker(h.sort, filtered, h.filter.pending, multi);
         // The marker keeps the header's last cells; the label gets the rest.
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
@@ -460,11 +467,15 @@ pub fn status(snapshot: &Snapshot) -> String {
     }
 }
 
-/// How a column header shows the sort: `▲` ascending or `▼` descending, with
-/// the column's place when several columns sort, then `~` while a request
-/// that changes it is unanswered.
-fn sort_marker(sort: HeaderSort, multi: bool) -> String {
+/// How a column header shows its conditions and the sort: `▿` while the
+/// column is filtered (or will be, once a pending request is answered), `▲`
+/// ascending or `▼` descending, with the column's place when several columns
+/// sort, then `~` while a request that changes either is unanswered.
+fn header_marker(sort: HeaderSort, filtered: bool, filter_pending: bool, multi: bool) -> String {
     let mut marker = String::new();
+    if filtered {
+        marker.push('▿');
+    }
     if let Some((direction, order)) = sort.applied {
         marker.push(match direction {
             SortDirection::Ascending => '▲',
@@ -474,7 +485,7 @@ fn sort_marker(sort: HeaderSort, multi: bool) -> String {
             marker += &(order + 1).to_string();
         }
     }
-    if sort.pending {
+    if sort.pending || filter_pending {
         marker.push('~');
     }
     marker
