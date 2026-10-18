@@ -235,6 +235,7 @@ export type FailedRequest<RowId = unknown, ColId = unknown> =
   | { type: "view" }
   | { type: "distinct"; axis: "rows" | "cols" }
   | { type: "locate"; axis: "rows" | "cols" }
+  | { type: "unmatched"; axis: "rows" | "cols" }
   | { type: "move"; axis: "rows" | "cols" }
   | { type: "find"; request: "marks" | "next" | "count" };
 
@@ -258,9 +259,9 @@ export interface AxisMethods<Id, CrossId> {
    * Whether each of `ids` is unmatched: kept in view though the filter in
    * force drops it, because the user's edit stopped it matching. Such items
    * stay until the next View Spec (a re-apply asks for the same one again),
-   * and the widget draws them dimmed. Asked for the items shown while the
-   * axis is filtered. A source may instead filter edited items at once and
-   * leave this out.
+   * and the widget draws them dimmed. Asked for the items shown after each
+   * Change Notice and View Spec. A source may instead filter edited items at
+   * once and leave this out.
    */
   unmatched?(ids: Id[], signal: AbortSignal): MaybePromise<boolean[]>;
   /** Moves `ids` to before Position `to`; `false` refuses. The widget sends the `Reordered`. */

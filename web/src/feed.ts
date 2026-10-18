@@ -142,6 +142,18 @@ interface Axis<Id> {
   waiting: { asked: string; request: Request } | null;
   /** The Window the source last failed: not asked again until a Change Notice on the axis. */
   failed: { asked: string; start: number; end: number } | null;
+  /** Whether each item is unmatched, by Key, as the source last said and the round it was asked in. */
+  unmatched: Map<bigint, Flag>;
+  /** Bumped when the flags may have changed (a Change Notice, a View Spec): each item shown is asked again. */
+  flagRound: number;
+  /** The flags asked for and not answered yet. */
+  flagging: { keys: Set<bigint>; round: number; request: Request } | null;
+}
+
+/** An unmatched flag the source gave, and the round it was asked in: one from an earlier round is shown until it is asked again. */
+interface Flag {
+  unmatched: boolean;
+  round: number;
 }
 
 function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => string | number | bigint }): Axis<Id> {
@@ -152,6 +164,9 @@ function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => str
     position,
     waiting: null,
     failed: null,
+    unmatched: new Map(),
+    flagRound: 0,
+    flagging: null,
   };
 }
 
@@ -269,6 +284,7 @@ export function createFeed<RowId, ColId, V>(
     settler.bump();
     const { interner, position } = axes[axis];
     axes[axis].failed = null;
+    reflag(axis);
     remark(axis === "rows" && notice.type !== "Reordered");
     switch (notice.type) {
       case "Reset":
@@ -346,7 +362,46 @@ export function createFeed<RowId, ColId, V>(
     applied = spec;
     totals = now;
     grid?.view_applied(spec, now.rows ?? NaN, now.cols ?? NaN);
+    for (const axis of AXES) reflag(axis);
     remark(true);
+  };
+
+  /** The unmatched flags on `axis` may have changed: the items shown are asked again on the next paint, which this brings about. */
+  const reflag = (axis: AxisName) => {
+    axes[axis].flagRound++;
+    if (axes[axis].source.unmatched) landed = true;
+  };
+
+  /** Asks which of the items shown on `axis` are unmatched, for those that lack a flag from this round. */
+  const askUnmatched = (axis: AxisName, keys: bigint[]) => {
+    const a = axes[axis];
+    const ask = a.source.unmatched;
+    if (!ask) return;
+    const round = a.flagRound;
+    const lacking = keys.filter((k) => a.unmatched.get(k)?.round !== round);
+    const busy = a.flagging;
+    if (!lacking.length || (busy?.round === round && lacking.every((k) => busy.keys.has(k)))) return;
+    busy?.request.abort();
+    a.flagging = null;
+    const ids = lacking.map((k) => a.interner.id(k));
+    if (!ids.every(known)) return;
+    if (a.unmatched.size > 4 * Math.max(256, keys.length)) {
+      const shownKeys = new Set(keys);
+      for (const k of [...a.unmatched.keys()]) if (!shownKeys.has(k)) a.unmatched.delete(k);
+    }
+    let asking: Axis<unknown>["flagging"] = null;
+    const done = () => {
+      if (a.flagging === asking) a.flagging = null;
+    };
+    const request = settle(
+      (signal) => ask.call(a.source, ids, signal),
+      (answer) => {
+        done();
+        lacking.forEach((k, i) => a.unmatched.set(k, { unmatched: answer[i] === true, round }));
+      },
+      { fresh: true, otherwise: done, failed: report({ type: "unmatched", axis }) },
+    );
+    if (request.pending) a.flagging = asking = { keys: new Set(lacking), round, request };
   };
 
   /** Asks for the count of the Find Query in force, in place of any asked before. */
@@ -708,6 +763,8 @@ export function createFeed<RowId, ColId, V>(
     cache.prune(shownRows, shownCols);
     for (const block of missing.values()) ask(block.rows, block.cols);
     requestMarks(rowKeys, colKeys);
+    askUnmatched("rows", rowKeys);
+    askUnmatched("cols", colKeys);
   };
 
   const valueAt = (row: bigint, col: bigint): unknown => {
@@ -747,6 +804,10 @@ export function createFeed<RowId, ColId, V>(
       const row = shown?.rows.strip[i]?.key;
       const col = shown?.cols.strip[j]?.key;
       return finding !== null && row != null && col != null && marks.get(pair(row, col))?.marked === true;
+    },
+    unmatched: (axis, i) => {
+      const key = shown?.[axis].strip[i]?.key;
+      return key != null && axes[axis].unmatched.get(key)?.unmatched === true;
     },
   };
 
