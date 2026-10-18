@@ -144,15 +144,17 @@ pub fn located(code: u8, position: f64) -> Located {
 pub const SUPPORT_SORT: u8 = 1;
 pub const SUPPORT_TEXT: u8 = 2;
 pub const SUPPORT_TEXT_REGEX: u8 = 4;
+pub const SUPPORT_ONE_OF: u8 = 8;
 
-/// Support from its bits: [`SUPPORT_SORT`], and [`SUPPORT_TEXT`] with
+/// Support from its bits: [`SUPPORT_SORT`], [`SUPPORT_TEXT`] with
 /// [`SUPPORT_TEXT_REGEX`] if Text conditions take regexes (regex alone is no
-/// text support).
+/// text support), and [`SUPPORT_ONE_OF`].
 pub fn support(bits: u8) -> Support {
     let text = (bits & SUPPORT_TEXT != 0).then(|| TextSupport::new(bits & SUPPORT_TEXT_REGEX != 0));
     Support::default()
         .with_sort(bits & SUPPORT_SORT != 0)
         .with_text(text)
+        .with_one_of(bits & SUPPORT_ONE_OF != 0)
 }
 
 /// The bits of `support`, as [`support`] reads them.
@@ -163,6 +165,9 @@ pub fn support_bits(support: Support) -> u8 {
         if t.regex {
             bits |= SUPPORT_TEXT_REGEX;
         }
+    }
+    if support.one_of {
+        bits |= SUPPORT_ONE_OF;
     }
     bits
 }
@@ -281,7 +286,7 @@ mod tests {
 
     #[test]
     fn support_bits_round_trip_and_regex_needs_text() {
-        for bits in [0, 1, 2, 3, 6, 7] {
+        for bits in [0, 1, 2, 3, 6, 7, 8, 15] {
             assert_eq!(support_bits(support(bits)), bits);
         }
         assert_eq!(support(SUPPORT_TEXT_REGEX).text, None);

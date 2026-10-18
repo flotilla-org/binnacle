@@ -5,8 +5,8 @@
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Effect, FilterSpec,
     FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot,
-    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, ViewEdit, ViewSpec,
-    Viewport,
+    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -98,6 +98,8 @@ struct DumpListed {
 struct DumpSupport {
     sort: bool,
     text: Option<DumpTextSupport>,
+    #[serde(rename = "oneOf")]
+    one_of: bool,
 }
 
 impl From<Support> for DumpSupport {
@@ -105,6 +107,7 @@ impl From<Support> for DumpSupport {
         DumpSupport {
             sort: s.sort,
             text: s.text.map(|t| DumpTextSupport { regex: t.regex }),
+            one_of: s.one_of,
         }
     }
 }
@@ -417,6 +420,15 @@ pub fn every_effect() -> Vec<WireStamped> {
     let conditions = vec![
         Condition::text(col, TextQuery::new("Ø🚢").case_sensitive(true)).not(true),
         Condition::text(Key(7), TextQuery::new("^a").regex(true)),
+        Condition::one_of(
+            Key(7),
+            vec![
+                Value::Text("Bér 🚢".into()),
+                Value::Blank,
+                Value::Text("".into()),
+            ],
+        )
+        .not(true),
     ];
     let spec = spec.with_filter(
         Axis::Rows,
@@ -483,6 +495,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
     let col = Key((1 << 53) + 1);
     let not_ber = Condition::text(col, query.clone()).not(true);
     let regex = Condition::text(Key(2), TextQuery::new("^b").regex(true));
+    let listed = Condition::one_of(col, vec![Value::Blank, Value::Text("Ø".into())]);
     [
         ViewEdit::CycleSort {
             axis: Axis::Rows,
@@ -511,6 +524,10 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             from: not_ber,
             to: regex,
+        },
+        ViewEdit::AddCondition {
+            axis: Axis::Rows,
+            condition: listed,
         },
     ]
     .into_iter()
@@ -648,11 +665,13 @@ pub fn scenario(name: &str) -> Grid {
             // The rows' quick filter applied with a total of 900 rows, and a
             // new one (with a surrogate pair) requested. Column 1 has a
             // condition applied and another being added; column 2 one being
-            // removed. Column 0 cannot be filtered, column 1 takes regexes.
+            // removed, and a OneOf with a blank being added. Column 0 cannot
+            // be filtered, column 1 takes regexes, column 2 lists values.
             grid.set_quick_filter_support(Axis::Rows, Some(TextSupport::new(true)));
             grid.set_support(Axis::Rows, key(0), Support::default().with_text(None));
             let regex = Some(TextSupport::new(true));
             grid.set_support(Axis::Rows, key(1), Support::default().with_text(regex));
+            grid.set_support(Axis::Rows, key(2), Support::default().with_one_of(true));
             let applied = TextQuery::new("ber").searching(Searched::Keys(vec![key(0), key(2)]));
             let kept = Condition::text(key(1), TextQuery::new("Ø"));
             let dropped = Condition::text(key(2), TextQuery::new("x")).not(true);
@@ -670,6 +689,8 @@ pub fn scenario(name: &str) -> Grid {
                 Condition::text(key(1), TextQuery::new("^b").regex(true)),
             );
             grid.remove_condition(Axis::Rows, &dropped);
+            let values = vec![Value::Text("Bé🚢".into()), Value::Blank];
+            grid.add_condition(Axis::Rows, Condition::one_of(key(2), values).not(true));
         }
         other => panic!("no scenario {other}"),
     }
@@ -736,6 +757,7 @@ mod tests {
                         states,
                         [
                             ConditionState::Applied,
+                            ConditionState::Adding,
                             ConditionState::Adding,
                             ConditionState::Removing
                         ]

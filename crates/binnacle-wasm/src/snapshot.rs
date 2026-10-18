@@ -8,7 +8,7 @@
 
 use binnacle_core::{
     Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, HeaderPlacement, Key, Mode,
-    Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, ViewSpec,
+    Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
 };
 
 use crate::codes::support_bits;
@@ -124,7 +124,8 @@ impl Writer<'_> {
     }
 
     /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
-    /// this bridge does not carry 1) and a Text condition's query.
+    /// this bridge does not carry 1, OneOf 2) and a Text condition's query
+    /// or a OneOf's values, each a blank flag then text if not blank.
     fn condition(&mut self, c: &Condition) {
         self.key(c.key);
         self.flag(c.not);
@@ -132,6 +133,16 @@ impl Writer<'_> {
             ConditionKind::Text(q) => {
                 self.num(0);
                 self.text_query(q);
+            }
+            ConditionKind::OneOf(values) => {
+                self.num(2);
+                self.len(values.len());
+                for v in values {
+                    self.flag(*v == Value::Blank);
+                    if let Value::Text(t) = v {
+                        self.text(t);
+                    }
+                }
             }
             _ => self.num(1),
         }

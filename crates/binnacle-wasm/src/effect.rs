@@ -4,7 +4,7 @@
 
 use binnacle_core::{
     Axis, Condition, ConditionKind, Effect, FilterSpec, Key, Searched, SortColumn, SortDirection,
-    SortSpec, Stamped, TextQuery, ViewEdit, ViewSpec,
+    SortSpec, Stamped, TextQuery, Value, ViewEdit, ViewSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -103,12 +103,16 @@ impl From<WireTextQuery> for TextQuery {
 }
 
 /// What a condition asks of its item's values, tagged like the Effects.
-/// `Other` is a kind this bridge does not carry yet; it never comes back.
+/// A OneOf's values are text, or `null` for a blank. `Other` is a kind this
+/// bridge does not carry yet; it never comes back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum WireConditionKind {
     Text {
         query: WireTextQuery,
+    },
+    OneOf {
+        values: Vec<Option<String>>,
     },
     #[serde(skip_deserializing)]
     Other,
@@ -128,6 +132,14 @@ impl From<&Condition> for WireCondition {
             key: c.key.0,
             kind: match &c.kind {
                 ConditionKind::Text(q) => WireConditionKind::Text { query: q.into() },
+                ConditionKind::OneOf(values) => WireConditionKind::OneOf {
+                    values: (values.iter())
+                        .map(|v| match v {
+                            Value::Text(t) => Some(t.clone()),
+                            Value::Blank => None,
+                        })
+                        .collect(),
+                },
                 _ => WireConditionKind::Other,
             },
             not: c.not,
@@ -141,6 +153,10 @@ impl WireCondition {
         match self.kind {
             WireConditionKind::Text { query } => {
                 Some(Condition::text(Key(self.key), query.into()).not(self.not))
+            }
+            WireConditionKind::OneOf { values } => {
+                let values = values.iter().map(|v| Value::of(v.as_deref())).collect();
+                Some(Condition::one_of(Key(self.key), values).not(self.not))
             }
             WireConditionKind::Other => None,
         }
