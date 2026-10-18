@@ -634,17 +634,38 @@ impl Host {
     #[rule(weight = 0.5)]
     fn column_condition(&mut self, tc: TestCase) {
         let listed = self.grid.snapshot().conditions(Axis::Rows);
-        if tc.draw(gs::booleans()) && !listed.is_empty() {
-            let condition = listed[0].0.clone();
-            tc.note(&format!("remove_condition({condition:?})"));
-            self.grid.remove_condition(Axis::Rows, &condition);
-            return;
+        // A listed condition (applied, adding or removing), or a new one.
+        let pick = |tc: &TestCase| match listed.len() {
+            n if n > 0 && tc.draw(gs::booleans()) => {
+                let i = tc.draw(gs::integers::<usize>().max_value(n - 1));
+                listed[i].0.clone()
+            }
+            _ => {
+                let text = tc.draw(gs::sampled_from(vec!["", "a", "ab"]));
+                let query = TextQuery::new(text)
+                    .case_sensitive(tc.draw(gs::booleans()))
+                    .regex(tc.draw(gs::booleans()));
+                let key = self.key(tc, Axis::Cols);
+                Condition::text(key, query).not(tc.draw(gs::booleans()))
+            }
+        };
+        match tc.draw(gs::integers::<u8>().max_value(2)) {
+            0 => {
+                let condition = pick(&tc);
+                tc.note(&format!("add_condition({condition:?})"));
+                self.grid.add_condition(Axis::Rows, condition);
+            }
+            1 => {
+                let condition = pick(&tc);
+                tc.note(&format!("remove_condition({condition:?})"));
+                self.grid.remove_condition(Axis::Rows, &condition);
+            }
+            _ => {
+                let (from, to) = (pick(&tc), pick(&tc));
+                tc.note(&format!("replace_condition({from:?}, {to:?})"));
+                self.grid.replace_condition(Axis::Rows, &from, to);
+            }
         }
-        let text = tc.draw(gs::sampled_from(vec!["", "a", "ab"]));
-        let key = self.key(&tc, Axis::Cols);
-        let condition = Condition::text(key, TextQuery::new(text)).not(tc.draw(gs::booleans()));
-        tc.note(&format!("add_condition({condition:?})"));
-        self.grid.add_condition(Axis::Rows, condition);
     }
 
     /// The host restores the base view.

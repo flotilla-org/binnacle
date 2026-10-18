@@ -79,10 +79,10 @@ fn condition(tc: &TestCase) -> Condition {
     Condition::text(key, tc.draw(query())).not(tc.draw(gs::booleans()))
 }
 
-/// Up to three conditions, sometimes two on one column.
+/// Some conditions, often several on one column.
 #[hegel::composite]
 fn conditions(tc: &TestCase) -> Vec<Condition> {
-    tc.draw(gs::vecs(condition()).max_size(3))
+    tc.draw(gs::vecs(condition()).max_size(8))
 }
 
 /// Unsorted, or sorted by quantity either way.
@@ -312,12 +312,24 @@ fn every_row_shown_satisfies_the_applied_conditions(tc: TestCase) {
         .view(&rows, &filtered(SortSpec::unsorted(), None, wanted.clone()))
         .unwrap();
     let applied = source.view_spec().rows.filter.conditions;
-    assert_eq!(applied.conditions(), valid(&wanted), "the valid ones apply");
     let shown = visible(&source);
     for (i, record) in rows.iter().enumerate() {
         let kept = applied.conditions().iter().all(|c| satisfies(c, record));
         assert_eq!(shown.contains(&(i as u64)), kept, "row {i}: {record:?}");
     }
+}
+
+/// The source applies exactly the conditions with a valid pattern, in order.
+#[hegel::test(test_cases = 500)]
+fn the_conditions_applied_are_those_with_a_valid_pattern(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).max_size(12));
+    let mut source = source(rows.len());
+    let wanted = tc.draw(conditions());
+    source
+        .view(&rows, &filtered(SortSpec::unsorted(), None, wanted.clone()))
+        .unwrap();
+    let applied = source.view_spec().rows.filter.conditions;
+    assert_eq!(applied.conditions(), valid(&wanted));
 }
 
 /// A condition and its `not` split the rows between them: each row is shown
