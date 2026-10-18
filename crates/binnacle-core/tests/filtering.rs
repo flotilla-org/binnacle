@@ -108,7 +108,7 @@ fn filtering_everything_out_unplaces_focus_and_clamps_the_anchor() {
     );
     filter(&mut s, |_| false);
     out += &s.step("filter out everything: focus is unplaced", V);
-    let notice = s.source.source.clear_filter();
+    let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     out += &s.step("clear the filter: focus stays unplaced until a move", V);
     insta::assert_snapshot!(out);
@@ -189,7 +189,7 @@ fn picks_of_rows_a_filter_hides_are_dropped_and_the_others_stay() {
         V,
     );
     assert_eq!(s.grid.snapshot().picked(), &[Key(0)]);
-    let notice = s.source.source.clear_filter();
+    let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     out += &s.step("clear the filter: the dropped picks do not come back", V);
     assert_eq!(s.grid.snapshot().picked(), &[Key(0)]);
@@ -210,7 +210,7 @@ fn size_overrides_survive_a_filter_round_trip() {
         "filter out record 1: record 3, now row 2, keeps its size",
         V,
     );
-    let notice = s.source.source.clear_filter();
+    let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     out += &s.step("clear the filter: record 1 is back at its size", V);
     assert_eq!(s.grid.size_override(Axis::Rows, Key(1)), Some(2.0));
@@ -238,7 +238,7 @@ fn the_topmost_visible_row_that_survives_stays_at_the_top() {
             offset: 0.0
         }
     );
-    let notice = s.source.source.clear_filter();
+    let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     out += &s.step("clear the filter: record 4 stays on top, now row 4", V);
     assert_eq!(s.grid.snapshot().scroll_anchor(Axis::Rows).position, 4);

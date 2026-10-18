@@ -1,0 +1,10 @@
+---
+source: crates/binnacle-ratatui/tests/filter.rs
+assertion_line: 184
+expression: "out.join(\"\\n\")"
+---
+ Filter  Ctrl+L         Aa .*
+ Filter  ber▏           Aa .*
+ Filter  ber▏           Aa .*
+ Filter  nopqrstuvwxyz▏ Aa .*
+ Filter  berabcdefghij… Aa .*

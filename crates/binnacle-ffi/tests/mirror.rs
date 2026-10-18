@@ -6,11 +6,13 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FocusStep, Grid, HeaderClick, Key,
-    Located, Mode, Modifiers, PointerEvent, PointerKind, SelectionUnit, Snapshot, SortColumn,
-    SortDirection, SortSpec, Support, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FilterSpec, FocusStep, Grid,
+    HeaderClick, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Searched, SelectionUnit,
+    Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals,
+    ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
+use hegel::Generator;
 use hegel::TestCase;
 use hegel::generators as gs;
 
@@ -45,7 +47,10 @@ enum Op {
     Unit(SelectionUnit),
     HeaderClick(Axis, HeaderClick),
     Threshold(f32),
-    ViewApplied(ViewSpec),
+    ViewApplied(ViewSpec, Totals),
+    RequestView(ViewSpec),
+    SetQuickFilter(Axis, Option<TextQuery>),
+    QuickFilterSupport(Axis, Option<TextSupport>),
     SetSupport(Axis, Key, Support),
     /// A `located` answer about this Key, or (`None`) about the Key of the
     /// last `Locate` drained, if any.
@@ -208,21 +213,66 @@ fn sort_spec(tc: &TestCase, axis: Axis) -> SortSpec {
     )
 }
 
+/// A Text Query for `axis`, searching the shown items or Keys of the other
+/// axis; sometimes with no text.
+#[hegel::composite]
+fn text_query(tc: &TestCase, axis: Axis) -> TextQuery {
+    let searches = match tc.draw(gs::booleans()) {
+        true => Searched::Shown,
+        false => Searched::Keys(tc.draw(gs::vecs(key(axis.other())).max_size(3))),
+    };
+    let text = tc.draw(hegel::one_of!(
+        gs::text().min_size(1).max_size(6),
+        gs::just(String::new())
+    ));
+    TextQuery::new(text)
+        .case_sensitive(tc.draw(gs::booleans()))
+        .regex(tc.draw(gs::booleans()))
+        .searching(searches)
+}
+
+/// A View Spec: usually sorting and filtering only the rows.
+#[hegel::composite]
+fn view_spec(tc: &TestCase) -> ViewSpec {
+    let mut spec = ViewSpec::default();
+    for axis in Axis::ALL {
+        if axis == Axis::Rows || tc.draw(gs::weighted_booleans(0.25)) {
+            spec = spec.with_sort(axis, tc.draw(sort_spec(axis)));
+            let quick = tc.draw(gs::optional(text_query(axis)));
+            spec = spec.with_filter(axis, FilterSpec::default().with_quick(quick));
+        }
+    }
+    spec
+}
+
+#[hegel::composite]
+fn totals(tc: &TestCase) -> Totals {
+    Totals {
+        rows: tc.draw(gs::optional(position())),
+        cols: tc.draw(gs::optional(position())),
+    }
+}
+
 /// An answer the Table Source might send: an applied View Spec (usually
 /// sorting only the rows), what it supports, a `located` (often for the Key
-/// the Grid asked about), or a Change Notice.
+/// the Grid asked about), or a Change Notice; or a host's request for a View
+/// Spec or a quick filter.
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(3)) {
-        0 => {
-            let mut spec =
-                ViewSpec::default().with_sort(Axis::Rows, tc.draw(sort_spec(Axis::Rows)));
-            if tc.draw(gs::weighted_booleans(0.25)) {
-                spec = spec.with_sort(Axis::Cols, tc.draw(sort_spec(Axis::Cols)));
-            }
-            Op::ViewApplied(spec)
+    match tc.draw(gs::integers::<u8>().max_value(6)) {
+        0 => Op::ViewApplied(tc.draw(view_spec()), tc.draw(totals())),
+        4 => Op::RequestView(tc.draw(view_spec())),
+        5 => {
+            let query = tc
+                .draw(gs::weighted_booleans(0.8))
+                .then(|| tc.draw(text_query(axis)));
+            Op::SetQuickFilter(axis, query)
         }
+        6 => Op::QuickFilterSupport(
+            axis,
+            tc.draw(gs::optional(gs::booleans().map(TextSupport::new))),
+        ),
         3 => {
             let sort = tc.draw(gs::booleans());
             Op::SetSupport(
@@ -276,7 +326,7 @@ fn op(tc: &TestCase) -> Op {
             clicks: tc.draw(gs::integers::<u32>().min_value(1).max_value(2)),
             travel: tc.draw(gs::floats::<f32>().min_value(-6.0).max_value(6.0)),
         },
-        14 | 15 => tc.draw(answer()),
+        10 | 14 | 15 => tc.draw(answer()),
         0 | 1 | 11 => Op::Frame(tc.draw(len()), tc.draw(len())),
         2 => Op::Pointer(tc.draw(pointer())),
         3 | 12 | 13 => {
@@ -322,7 +372,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(15))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(22))),
     }
 }
 
@@ -418,15 +468,52 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 spec.axes[ROWS as usize] = BinnacleAxisView {
                     sort: &unknown,
                     sort_len: 1,
+                    ..BinnacleAxisView::default()
                 };
-                binnacle_grid_view_applied(h, &spec)
+                binnacle_grid_view_applied(h, &spec, std::ptr::null())
             }
             10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
             11 => binnacle_grid_located(h, 2, 1000, 0, 0),
             12 => binnacle_grid_notify(h, ROWS, 6, 0, 0),
             13 => binnacle_grid_set_header(h, 2, 1.0),
             14 => binnacle_grid_set_support(h, 2, 5000, 0),
-            _ => binnacle_grid_notify(h, 2, 1, 0, 0),
+            15 => binnacle_grid_notify(h, 2, 1, 0, 0),
+            16 => binnacle_grid_set_quick_filter_support(h, ROWS, 2),
+            17 => binnacle_grid_set_quick_filter_support(h, 2, 1),
+            18 => {
+                let query = BinnacleTextQuery {
+                    flags: 4,
+                    ..BinnacleTextQuery::default()
+                };
+                binnacle_grid_set_quick_filter(h, ROWS, &query)
+            }
+            19 => {
+                let query = BinnacleTextQuery {
+                    searched: 2,
+                    ..BinnacleTextQuery::default()
+                };
+                binnacle_grid_set_quick_filter(h, COLS, &query)
+            }
+            20 => {
+                let bad = [b'a', 0xff];
+                let query = BinnacleTextQuery {
+                    text: BinnacleText {
+                        data: bad.as_ptr(),
+                        len: bad.len(),
+                    },
+                    ..BinnacleTextQuery::default()
+                };
+                let mut spec = BinnacleViewSpec::default();
+                spec.axes[ROWS as usize].has_quick = 1;
+                spec.axes[ROWS as usize].quick = query;
+                binnacle_grid_request_view(h, &spec)
+            }
+            21 => {
+                let mut spec = BinnacleViewSpec::default();
+                spec.axes[COLS as usize].has_quick = 2;
+                binnacle_grid_view_applied(h, &spec, std::ptr::null())
+            }
+            _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
 }
@@ -503,6 +590,15 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 *r.span(axis)
             );
         }
+        assert_eq!(
+            (a.has_total != 0).then_some(a.total),
+            rust.total(axis),
+            "{axis:?} total"
+        );
+        let quick = rust
+            .quick_filter(axis)
+            .map_or(0, |s| BINNACLE_QUICK_FILTER | u32::from(s.regex) << 1);
+        assert_eq!(a.quick_filter, quick, "{axis:?} quick filter support");
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -583,6 +679,11 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             Effect::SelectionChanged => (3, 0, 0, 0, 0),
             Effect::ViewRequested { spec, edit: e } => {
                 view = spec.clone();
+                let on = |kind, axis| BinnacleViewEdit {
+                    kind,
+                    axis: tag(axis),
+                    ..BinnacleViewEdit::default()
+                };
                 edit = match *e {
                     ViewEdit::CycleSort { axis, key, multi } => BinnacleViewEdit {
                         kind: 1,
@@ -590,6 +691,9 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                         key: key.0,
                         multi: u32::from(multi),
                     },
+                    ViewEdit::SetQuickFilter { axis, .. } => on(2, axis),
+                    ViewEdit::Replace => on(3, Axis::Rows),
+                    ViewEdit::ShownChanged { axis } => on(4, axis),
                     #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
                     _ => BinnacleViewEdit::default(),
                 };
@@ -629,8 +733,86 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 .map(|s| (s.key.0, u32::from(s.direction == SortDirection::Descending)))
                 .collect();
             assert_eq!(sort, want);
+            let quick = (got.has_quick != 0).then(|| unsafe { query_from_c(&got.quick) });
+            assert_eq!(quick, view.axis(axis).filter.quick, "{axis:?} quick filter");
         }
     }
+}
+
+/// A Text Query read back from C, as a host would.
+unsafe fn query_from_c(q: &BinnacleTextQuery) -> TextQuery {
+    let text = unsafe { slice::from_raw_parts(q.text.data, q.text.len) };
+    let searches = match q.searched {
+        BINNACLE_SEARCHED_SHOWN => Searched::Shown,
+        _ => Searched::Keys(
+            unsafe { slice::from_raw_parts(q.keys, q.keys_len) }
+                .iter()
+                .map(|&k| Key(k))
+                .collect(),
+        ),
+    };
+    TextQuery::new(std::str::from_utf8(text).unwrap())
+        .case_sensitive(q.flags & BINNACLE_TEXT_CASE_SENSITIVE != 0)
+        .regex(q.flags & BINNACLE_TEXT_REGEX != 0)
+        .searching(searches)
+}
+
+/// A Text Query in C form, borrowing `query`'s text and `keys`.
+fn query_to_c(query: &TextQuery, keys: &[u64]) -> BinnacleTextQuery {
+    BinnacleTextQuery {
+        text: BinnacleText {
+            data: query.text.as_ptr(),
+            len: query.text.len(),
+        },
+        flags: u32::from(query.case_sensitive) | u32::from(query.regex) << 1,
+        searched: u32::from(matches!(query.searches, Searched::Keys(_))),
+        keys: keys.as_ptr(),
+        keys_len: keys.len(),
+    }
+}
+
+/// The Keys a Text Query searches, if it names them.
+fn query_keys(query: &TextQuery) -> Vec<u64> {
+    match &query.searches {
+        Searched::Shown => Vec::new(),
+        Searched::Keys(keys) => keys.iter().map(|k| k.0).collect(),
+    }
+}
+
+/// Runs `f` with `spec` in C form, its arrays alive for the call.
+fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T {
+    let sorts = Axis::ALL.map(|axis| {
+        spec.axis(axis)
+            .sort
+            .columns()
+            .iter()
+            .map(|s| BinnacleSortColumn {
+                key: s.key.0,
+                direction: u32::from(s.direction == SortDirection::Descending),
+            })
+            .collect::<Vec<_>>()
+    });
+    let keys = Axis::ALL.map(|axis| {
+        spec.axis(axis)
+            .filter
+            .quick
+            .as_ref()
+            .map_or_else(Vec::new, query_keys)
+    });
+    let mut c = BinnacleViewSpec::default();
+    for axis in Axis::ALL {
+        let sort = &sorts[axis.index()];
+        let quick = spec.axis(axis).filter.quick.as_ref();
+        c.axes[tag(axis) as usize] = BinnacleAxisView {
+            sort: sort.as_ptr(),
+            sort_len: sort.len(),
+            has_quick: u32::from(quick.is_some()),
+            quick: quick.map_or_else(BinnacleTextQuery::default, |q| {
+                query_to_c(q, &keys[axis.index()])
+            }),
+        };
+    }
+    f(&c)
 }
 
 /// The Window answer: Keys 1000 + Position for rows, 5000 + Position for
@@ -771,28 +953,38 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_drag_threshold(t);
                     binnacle_grid_set_drag_threshold(h, t)
                 }
-                Op::ViewApplied(spec) => {
-                    let sorts = Axis::ALL.map(|axis| {
-                        spec.axis(axis)
-                            .sort
-                            .columns()
-                            .iter()
-                            .map(|s| BinnacleSortColumn {
-                                key: s.key.0,
-                                direction: u32::from(s.direction == SortDirection::Descending),
-                            })
-                            .collect::<Vec<_>>()
-                    });
-                    let mut c = BinnacleViewSpec::default();
-                    for axis in Axis::ALL {
-                        let sort = &sorts[axis.index()];
-                        c.axes[tag(axis) as usize] = BinnacleAxisView {
-                            sort: sort.as_ptr(),
-                            sort_len: sort.len(),
-                        };
-                    }
-                    grid.view_applied(spec);
-                    binnacle_grid_view_applied(h, &c)
+                Op::ViewApplied(spec, totals) => {
+                    let known = |t: Option<u64>| BinnacleTotal {
+                        known: u32::from(t.is_some()),
+                        count: t.unwrap_or(0),
+                    };
+                    let c_totals = BinnacleTotals {
+                        axes: [known(totals.rows), known(totals.cols)],
+                    };
+                    let ok = with_c_view(&spec, |c| binnacle_grid_view_applied(h, c, &c_totals));
+                    grid.view_applied(spec, totals);
+                    ok
+                }
+                Op::RequestView(spec) => {
+                    let ok = with_c_view(&spec, |c| binnacle_grid_request_view(h, c));
+                    grid.request_view(spec);
+                    ok
+                }
+                Op::SetQuickFilter(axis, query) => {
+                    let ok = match &query {
+                        None => binnacle_grid_set_quick_filter(h, tag(axis), std::ptr::null()),
+                        Some(q) => {
+                            let keys = query_keys(q);
+                            binnacle_grid_set_quick_filter(h, tag(axis), &query_to_c(q, &keys))
+                        }
+                    };
+                    grid.set_quick_filter(axis, query);
+                    ok
+                }
+                Op::QuickFilterSupport(axis, support) => {
+                    grid.set_quick_filter_support(axis, support);
+                    let bits = support.map_or(0, |s| 1 | u32::from(s.regex) << 1);
+                    binnacle_grid_set_quick_filter_support(h, tag(axis), bits)
                 }
                 Op::SetSupport(axis, key, support) => {
                     grid.set_support(axis, key, support);

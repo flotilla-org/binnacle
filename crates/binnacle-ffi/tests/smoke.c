@@ -204,8 +204,8 @@ int main(void) {
   CHECK(effect.edit.key == 2000 && !effect.edit.multi);
   BinnacleSortColumn unknown[] = {{.key = 2000, .direction = 7}};
   BinnacleViewSpec misdirected = {.axes = {{.sort = unknown, .sort_len = 1}, {0}}};
-  CHECK(!binnacle_grid_view_applied(grid, &misdirected));
-  CHECK(binnacle_grid_view_applied(grid, NULL));
+  CHECK(!binnacle_grid_view_applied(grid, &misdirected, NULL));
+  CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED && sorted->sort_len == 1);
   CHECK(sorted->sort[0].key == 2000 && sorted->sort[0].direction == BINNACLE_SORT_DESCENDING);
@@ -216,7 +216,7 @@ int main(void) {
   BinnacleSortColumn column = sorted->sort[0];
   BinnacleViewSpec spec = {.axes = {{.sort = &column, .sort_len = 1}, {0}}};
   reversed = 1;
-  CHECK(binnacle_grid_view_applied(grid, &spec));
+  CHECK(binnacle_grid_view_applied(grid, &spec, NULL));
   CHECK(!binnacle_grid_notify(grid, BINNACLE_ROWS, 9, 0, 0));
   CHECK(binnacle_grid_notify(grid, BINNACLE_ROWS, BINNACLE_NOTICE_REORDERED, 0, 0));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
@@ -250,6 +250,36 @@ int main(void) {
   drain(grid, &focus);
   frame(grid, &snap);
   CHECK(r->focus.position == 7);
+
+  /* A quick filter round trip: the rows declare one, the host sets it, and
+   * the source answers with what it kept and the unfiltered total. */
+  CHECK(!binnacle_grid_set_quick_filter_support(grid, BINNACLE_ROWS, BINNACLE_QUICK_FILTER_REGEX));
+  CHECK(binnacle_grid_set_quick_filter_support(grid, BINNACLE_ROWS,
+                                               BINNACLE_QUICK_FILTER | BINNACLE_QUICK_FILTER_REGEX));
+  frame(grid, &snap);
+  CHECK(r->quick_filter == (BINNACLE_QUICK_FILTER | BINNACLE_QUICK_FILTER_REGEX));
+  CHECK(c->quick_filter == 0 && !r->has_total);
+  BinnacleTextQuery query = {.text = {(const uint8_t *)"ber", 3}, .flags = BINNACLE_TEXT_REGEX};
+  CHECK(binnacle_grid_set_quick_filter(grid, BINNACLE_ROWS, &query));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED);
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_SET_QUICK_FILTER && effect.edit.axis == BINNACLE_ROWS);
+  BinnacleAxisView *filtered = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(filtered->has_quick && filtered->quick.text.len == 3);
+  CHECK(memcmp(filtered->quick.text.data, "ber", 3) == 0);
+  CHECK(filtered->quick.flags == BINNACLE_TEXT_REGEX);
+  CHECK(filtered->quick.searched == BINNACLE_SEARCHED_SHOWN);
+  CHECK(!effect.view.axes[BINNACLE_COLS].has_quick);
+  BinnacleTotals totals = {.axes = {{.known = 1, .count = 100}, {0}}};
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, &totals));
+  frame(grid, &snap);
+  CHECK(r->has_total && r->total == 100 && !c->has_total);
+  /* Restoring a saved view: the base one. */
+  CHECK(binnacle_grid_request_view(grid, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_REPLACE);
+  CHECK(!effect.view.axes[BINNACLE_ROWS].has_quick);
+  CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
 
   /* Settings, sizes and content sizes. */
   CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_ROWS));

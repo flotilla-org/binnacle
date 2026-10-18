@@ -20,6 +20,7 @@ impl PumpSource for Recording {
         Viewed {
             applied: spec.clone(),
             notices: vec![(Axis::Rows, ChangeNotice::Reordered)],
+            ..Viewed::default()
         }
     }
 

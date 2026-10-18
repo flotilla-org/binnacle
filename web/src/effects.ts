@@ -3,13 +3,18 @@
 // `crates/binnacle-wasm/src/effect.rs`; the agreement tests keep them in step.
 
 import type { AxisName } from "./codes";
-import type { KeyedViewSpec, SortColumn } from "./snapshot";
+import type { KeyedTextQuery, KeyedViewSpec, SortColumn } from "./snapshot";
 
 type Stamped<T> = T & { generation: number };
 
 /** The cause of a requested View Spec, a hint: the spec alone is the request. `Other` is one this build does not know. */
 export type KeyedViewEdit =
   | { type: "CycleSort"; axis: AxisName; key: bigint; multi: boolean }
+  | { type: "SetQuickFilter"; axis: AxisName; query: KeyedTextQuery | null }
+  /** The host asked for a whole View Spec. */
+  | { type: "Replace" }
+  /** Items of `axis` were shown or hidden, so a quick filter searching the shown ones asks again. */
+  | { type: "ShownChanged"; axis: AxisName }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -56,15 +61,32 @@ function isSortColumn(v: unknown): v is SortColumn {
   return isRecord(v) && typeof v.key === "bigint" && (v.direction === "ascending" || v.direction === "descending");
 }
 
+function isTextQuery(v: unknown): v is KeyedTextQuery {
+  if (!isRecord(v)) return false;
+  const searches = v.searches === null || (Array.isArray(v.searches) && v.searches.every((k) => typeof k === "bigint"));
+  return typeof v.text === "string" && typeof v.caseSensitive === "boolean" && typeof v.regex === "boolean" && searches;
+}
+
+function isAxis(v: unknown): v is AxisName {
+  return v === "rows" || v === "cols";
+}
+
 function isAxisView(v: unknown): boolean {
-  return isRecord(v) && Array.isArray(v.sort) && v.sort.every(isSortColumn);
+  if (!isRecord(v) || !isRecord(v.filter)) return false;
+  const quick = v.filter.quick === null || isTextQuery(v.filter.quick);
+  return quick && Array.isArray(v.sort) && v.sort.every(isSortColumn);
 }
 
 function isEdit(v: unknown): v is KeyedViewEdit {
   if (!isRecord(v)) return false;
   switch (v.type) {
     case "CycleSort":
-      return (v.axis === "rows" || v.axis === "cols") && typeof v.key === "bigint" && typeof v.multi === "boolean";
+      return isAxis(v.axis) && typeof v.key === "bigint" && typeof v.multi === "boolean";
+    case "SetQuickFilter":
+      return isAxis(v.axis) && (v.query === null || isTextQuery(v.query));
+    case "ShownChanged":
+      return isAxis(v.axis);
+    case "Replace":
     case "Other":
       return true;
     default:

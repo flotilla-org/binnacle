@@ -3,7 +3,8 @@
 //! directions as strings. `web/src/effects.ts` holds the matching union.
 
 use binnacle_core::{
-    Axis, Effect, Key, SortColumn, SortDirection, SortSpec, Stamped, ViewEdit, ViewSpec,
+    Axis, Effect, FilterSpec, Key, Searched, SortColumn, SortDirection, SortSpec, Stamped,
+    TextQuery, ViewEdit, ViewSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,9 +65,56 @@ pub fn sort_columns(spec: &SortSpec) -> Vec<WireSortColumn> {
         .collect()
 }
 
-/// One axis's part of a View Spec. Its filter joins when the Grid has one.
+/// A Text Query; `searches` is `null` for the shown items of the other axis.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireTextQuery {
+    pub text: String,
+    pub case_sensitive: bool,
+    pub regex: bool,
+    pub searches: Option<Vec<u64>>,
+}
+
+impl From<&TextQuery> for WireTextQuery {
+    fn from(q: &TextQuery) -> Self {
+        WireTextQuery {
+            text: q.text.clone(),
+            case_sensitive: q.case_sensitive,
+            regex: q.regex,
+            searches: match &q.searches {
+                Searched::Shown => None,
+                Searched::Keys(keys) => Some(keys.iter().map(|k| k.0).collect()),
+            },
+        }
+    }
+}
+
+impl From<WireTextQuery> for TextQuery {
+    fn from(q: WireTextQuery) -> Self {
+        let searches = match q.searches {
+            None => Searched::Shown,
+            Some(keys) => Searched::Keys(keys.into_iter().map(Key).collect()),
+        };
+        TextQuery::new(q.text)
+            .case_sensitive(q.case_sensitive)
+            .regex(q.regex)
+            .searching(searches)
+    }
+}
+
+/// One axis's filter: its quick filter, or `null`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WireFilter {
+    #[serde(default)]
+    pub quick: Option<WireTextQuery>,
+}
+
+/// One axis's part of a View Spec. A spec coming back without a filter has
+/// none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireAxisView {
+    #[serde(default)]
+    pub filter: WireFilter,
     pub sort: Vec<WireSortColumn>,
 }
 
@@ -81,6 +129,9 @@ pub struct WireViewSpec {
 impl From<&ViewSpec> for WireViewSpec {
     fn from(spec: &ViewSpec) -> Self {
         let axis = |a: Axis| WireAxisView {
+            filter: WireFilter {
+                quick: spec.axis(a).filter.quick.as_ref().map(WireTextQuery::from),
+            },
             sort: sort_columns(&spec.axis(a).sort),
         };
         WireViewSpec {
@@ -92,10 +143,9 @@ impl From<&ViewSpec> for WireViewSpec {
 
 impl From<WireViewSpec> for ViewSpec {
     fn from(spec: WireViewSpec) -> Self {
-        let sort = |view: WireAxisView| {
+        let sort = |sort: Vec<WireSortColumn>| {
             SortSpec::new(
-                view.sort
-                    .into_iter()
+                sort.into_iter()
                     .map(|c| SortColumn {
                         key: Key(c.key),
                         direction: c.direction.into(),
@@ -103,9 +153,14 @@ impl From<WireViewSpec> for ViewSpec {
                     .collect(),
             )
         };
-        ViewSpec::default()
-            .with_sort(Axis::Rows, sort(spec.rows))
-            .with_sort(Axis::Cols, sort(spec.cols))
+        let filter = |f: WireFilter| FilterSpec::default().with_quick(f.quick.map(TextQuery::from));
+        let mut view = ViewSpec::default();
+        for (axis, part) in [(Axis::Rows, spec.rows), (Axis::Cols, spec.cols)] {
+            view = view
+                .with_sort(axis, sort(part.sort))
+                .with_filter(axis, filter(part.filter));
+        }
+        view
     }
 }
 
@@ -119,6 +174,14 @@ pub enum WireViewEdit {
         key: u64,
         multi: bool,
     },
+    SetQuickFilter {
+        axis: WireAxis,
+        query: Option<WireTextQuery>,
+    },
+    Replace,
+    ShownChanged {
+        axis: WireAxis,
+    },
     Other,
 }
 
@@ -130,6 +193,12 @@ impl From<ViewEdit> for WireViewEdit {
                 key: key.0,
                 multi,
             },
+            ViewEdit::SetQuickFilter { axis, query } => WireViewEdit::SetQuickFilter {
+                axis: axis.into(),
+                query: query.as_ref().map(WireTextQuery::from),
+            },
+            ViewEdit::Replace => WireViewEdit::Replace,
+            ViewEdit::ShownChanged { axis } => WireViewEdit::ShownChanged { axis: axis.into() },
             _ => WireViewEdit::Other,
         }
     }
@@ -319,11 +388,11 @@ mod tests {
             wire(Effect::ViewRequested { spec, edit }),
             json!({ "generation": 7.0, "type": "ViewRequested",
                 "spec": {
-                    "rows": { "sort": [
+                    "rows": { "filter": { "quick": null }, "sort": [
                         { "key": 2, "direction": "descending" },
                         { "key": 0, "direction": "ascending" },
                     ] },
-                    "cols": { "sort": [] },
+                    "cols": { "filter": { "quick": null }, "sort": [] },
                 },
                 "edit": { "type": "CycleSort", "axis": "rows", "key": 2, "multi": true },
             })
@@ -331,8 +400,45 @@ mod tests {
     }
 
     #[test]
+    fn a_quick_filter_and_its_edit_carry_the_text_query() {
+        let query = TextQuery::new("Bér")
+            .regex(true)
+            .searching(Searched::Keys(vec![Key(4)]));
+        let spec = ViewSpec::default().with_filter(
+            Axis::Rows,
+            FilterSpec::default().with_quick(Some(query.clone())),
+        );
+        let edit = ViewEdit::SetQuickFilter {
+            axis: Axis::Rows,
+            query: Some(query),
+        };
+        let quick =
+            json!({ "text": "Bér", "caseSensitive": false, "regex": true, "searches": [4] });
+        assert_eq!(
+            wire(Effect::ViewRequested { spec, edit }),
+            json!({ "generation": 7.0, "type": "ViewRequested",
+                "spec": {
+                    "rows": { "filter": { "quick": quick }, "sort": [] },
+                    "cols": { "filter": { "quick": null }, "sort": [] },
+                },
+                "edit": { "type": "SetQuickFilter", "axis": "rows", "query": quick },
+            })
+        );
+    }
+
+    #[test]
+    fn a_spec_without_a_filter_comes_back_unfiltered() {
+        let back: WireViewSpec =
+            serde_json::from_value(json!({ "rows": { "sort": [] }, "cols": { "sort": [] } }))
+                .unwrap();
+        assert_eq!(ViewSpec::from(back), ViewSpec::default());
+    }
+
+    #[test]
     fn a_view_spec_comes_back_as_it_went_out() {
+        let quick = TextQuery::new("x").case_sensitive(true);
         let spec = ViewSpec::default()
+            .with_filter(Axis::Rows, FilterSpec::default().with_quick(Some(quick)))
             .with_sort(
                 Axis::Rows,
                 SortSpec::new(vec![SortColumn::descending(Key(2))]),

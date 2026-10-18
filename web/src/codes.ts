@@ -25,3 +25,6 @@ export const SELECTION_UNIT = { cells: 0, rows: 1 } as const;
 
 /** The support bits the wasm `set_support` input takes. */
 export const SUPPORT = { sort: 1 } as const;
+
+/** The quick filter bits the wasm `set_quick_filter_support` input takes. */
+export const QUICK_FILTER = { on: 1, regex: 2 } as const;

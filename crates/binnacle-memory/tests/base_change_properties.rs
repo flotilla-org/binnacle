@@ -157,7 +157,7 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
                 keep = k;
                 Some(match k {
                     Some(k) => source.filter(&rows, move |r| k.keeps(r)),
-                    None => source.clear_filter(),
+                    None => source.clear_filter(&rows),
                 })
             }
             Op::Append(records) => {

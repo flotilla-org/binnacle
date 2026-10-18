@@ -112,8 +112,16 @@ fn fallback_end(st: &AxisState, position: Position, suggest: Option<Position>) -
 }
 
 impl Grid {
-    /// Tells the Grid how `axis` changed in the Table Source.
+    /// Tells the Grid how `axis` changed in the Table Source. A change that
+    /// may show or hide items requests the View Spec again
+    /// ([`crate::ViewEdit::ShownChanged`]) when a quick filter searches the
+    /// shown items of `axis`.
     pub fn notify(&mut self, axis: Axis, notice: ChangeNotice) {
+        // Items may have been shown or hidden.
+        let shown = !matches!(
+            notice,
+            ChangeNotice::Reordered | ChangeNotice::ContentChanged(_)
+        );
         match notice {
             ChangeNotice::Reordered => {
                 self.reordered_or_reset(axis, None);
@@ -143,6 +151,9 @@ impl Grid {
                 }
             }
             ChangeNotice::ContentChanged(range) => self.content_changed(axis, range),
+        }
+        if shown {
+            self.shown_changed(axis);
         }
     }
 

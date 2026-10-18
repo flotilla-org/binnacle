@@ -39,4 +39,6 @@ pub use snapshot::{
 };
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};
-pub use view::{AxisView, FilterSpec, Support, ViewEdit, ViewSpec};
+pub use view::{
+    AxisView, FilterSpec, Searched, Support, TextQuery, TextSupport, Totals, ViewEdit, ViewSpec,
+};

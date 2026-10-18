@@ -6,7 +6,7 @@
 use binnacle_core::{
     Action, Axis, AxisConfig, CellRange, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, Key,
     Located, Mode, Modifiers, PointerEvent, ScrollAnchor, SelectionUnit, SortColumn, SortSpec,
-    Support, ViewSpec, Viewport,
+    Support, Totals, ViewSpec, Viewport,
 };
 use binnacle_testkit::{Record, RecordTable, Scenario};
 use hegel::generators as gs;
@@ -322,7 +322,7 @@ impl Host {
                 let spec = ViewSpec::default().with_sort(Axis::Rows, sort);
                 if let Ok(notice) = self.s.source.source.view(&self.s.source.rows, &spec) {
                     self.s.input(|g| {
-                        g.view_applied(spec);
+                        g.view_applied(spec, Totals::unknown());
                         g.notify(Axis::Rows, notice);
                     });
                     return vec![Axis::Rows];
@@ -331,7 +331,7 @@ impl Host {
             Input::Filter(keep) => {
                 let notice = match keep {
                     Some(keep) => self.s.source.filter(move |r| keep.keeps(r)),
-                    None => self.s.source.source.clear_filter(),
+                    None => self.s.source.source.clear_filter(&self.s.source.rows),
                 };
                 self.s.input(|g| g.notify(Axis::Rows, notice));
             }

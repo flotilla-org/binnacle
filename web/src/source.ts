@@ -15,8 +15,29 @@ export type { Primitive, SortDirection };
 /** The items of the other axis to sort an axis by (columns, for the rows), most significant first. */
 export type SortSpec<Id> = { id: Id; direction: SortDirection }[];
 
+/**
+ * Text to look for in the items of the other axis (columns, for the rows):
+ * an item is kept if some searched column's value contains it. Case is
+ * ignored unless `caseSensitive`; with `regex` the text is a pattern in the
+ * Table Source's own syntax. `searches` is `"shown"` for the columns shown
+ * now, or names the columns.
+ */
+export interface TextQuery<CrossId> {
+  text: string;
+  caseSensitive: boolean;
+  regex: boolean;
+  searches: "shown" | CrossId[];
+}
+
+/** Which items of an axis a View Spec keeps; all of them when every part is empty. */
+export interface FilterSpec<CrossId> {
+  /** The quick filter: one Text Query across columns, or `null` for none. */
+  quick: TextQuery<CrossId> | null;
+}
+
 /** One axis's part of a View Spec, naming items of the other axis. */
 export interface AxisView<CrossId> {
+  filter: FilterSpec<CrossId>;
   sort: SortSpec<CrossId>;
 }
 
@@ -24,6 +45,28 @@ export interface AxisView<CrossId> {
 export interface ViewSpec<RowId, ColId> {
   rows: AxisView<ColId>;
   cols: AxisView<RowId>;
+}
+
+/** Each axis's count before any filter, where the Table Source knows it. */
+export interface Totals {
+  rows?: number;
+  cols?: number;
+}
+
+/** One axis's part of the View Spec a Table Source applies; an omitted filter is none. */
+export type AppliedAxisView<CrossId> = Omit<AxisView<CrossId>, "filter"> & { filter?: FilterSpec<CrossId> };
+
+/** The View Spec a Table Source applies, with its totals for "1,204 of 5,001". */
+export interface AppliedView<RowId, ColId> {
+  rows: AppliedAxisView<ColId>;
+  cols: AppliedAxisView<RowId>;
+  totals?: Totals;
+}
+
+/** How an axis takes a quick filter. */
+export interface QuickFilterSupport {
+  /** Whether a Text Query may be a regex; `false` by default. */
+  regex?: boolean;
 }
 
 /** How an axis may be viewed by one item of the other axis; an omitted kind takes its default. */
@@ -78,6 +121,8 @@ export interface AxisMethods<Id, CrossId> {
   window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[]>;
   /** How this axis may be viewed by `by`; asked as `by` comes into view. */
   support?(by: CrossId): Support;
+  /** Set if this axis takes a quick filter (the source must also have `view`). */
+  quickFilter?: QuickFilterSupport;
   /** Where `id` sits now, after a reorder. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /** Moves `ids` to before Position `to`; `false` refuses. The widget sends the `Reordered`. */
@@ -101,10 +146,11 @@ export interface TableSource<RowId, ColId, V = unknown> {
   cols: AxisSource<ColId, RowId>;
   /**
    * Presents the table as `spec` asks and returns the View Spec now in force:
-   * the request, the part of it applied, or the old one to reject it. The
-   * reorder itself arrives through the sinks as Change Notices.
+   * the request, the part of it applied, or the old one to reject it, with
+   * the totals if known. The reorder or refilter itself arrives through the
+   * sinks as Change Notices.
    */
-  view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<ViewSpec<RowId, ColId>>;
+  view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<AppliedView<RowId, ColId>>;
   /** The values where `rows` and `cols` cross, one array per row. */
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
   /** How each cell draws unless the widget is given its own `renderer`; plain text by default. */

@@ -6,6 +6,7 @@
 
 mod border;
 mod context;
+mod filter;
 mod keymap;
 mod mouse;
 mod renderer;
@@ -15,6 +16,7 @@ mod theme;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
+pub use filter::{Control, Controls, Preset, QuickFilter, row_count};
 pub use keymap::Keymap;
 pub use mouse::Mouse;
 pub use renderer::{

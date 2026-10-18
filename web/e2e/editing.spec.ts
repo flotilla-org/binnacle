@@ -82,9 +82,9 @@ test.describe("the records source", () => {
     await page.keyboard.press("Shift+Tab");
     await expect(committed(page)).toHaveText("crew of 0 = 7");
     await expect(status(page)).toContainText(focus(0, 2));
-    // Not editing, Shift+Tab leaves the grid for the toolbar.
+    // Not editing, Shift+Tab leaves the grid for the filter bar above it.
     await page.keyboard.press("Shift+Tab");
-    await expect(page.locator("header :focus")).toHaveCount(1);
+    await expect(page.getByRole("search").locator(":focus")).toHaveCount(1);
   });
 
   test("clicking another cell commits, and so does clicking outside the grid", async ({ page }) => {

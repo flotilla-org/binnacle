@@ -761,3 +761,93 @@ describe("edited values", () => {
     }
   });
 });
+
+describe("the quick filter", () => {
+  type Spec = Parameters<NonNullable<Source["view"]>>[0];
+  /** A Recorder whose rows take a quick filter, answering each View Spec with `answer`. */
+  const filtering = (answer: (spec: Spec) => ReturnType<NonNullable<Source["view"]>>, regex = false) => {
+    const rec = new Recorder(10, 3, { view: answer });
+    const source: Source = { ...rec.source, rows: { ...rec.source.rows, quickFilter: { regex } } };
+    return { rec, h: new Harness(source) };
+  };
+  const query = (h: Harness<string, string, string>, text: string, searches: string[] | null) => ({
+    text,
+    caseSensitive: true,
+    regex: false,
+    searches: searches && searches.map((id) => h.feed.colKey(id)),
+  });
+
+  test("a quick filter reaches the source by column IDs, and its answer, totals and support reach the Snapshot", () => {
+    const asked: Spec[] = [];
+    const { h } = filtering((spec) => (asked.push(spec), { ...spec, totals: { rows: 99 } }), true);
+    try {
+      h.frame();
+      expect(h.snapshot.rows.quickFilter).toEqual({ regex: true });
+      expect(h.snapshot.cols.quickFilter).toBeNull();
+      const named = query(h, "Bér", ["c2", "c0"]);
+      h.grid.set_quick_filter(0, named);
+      h.drain();
+      h.frame();
+      expect(asked.map((s) => s.rows.filter.quick)).toEqual([
+        { text: "Bér", caseSensitive: true, regex: false, searches: ["c2", "c0"] },
+      ]);
+      expect(h.snapshot.appliedView.rows.filter.quick).toEqual(named);
+      expect([h.snapshot.rows.total, h.snapshot.cols.total]).toEqual([99, null]);
+      h.grid.set_quick_filter(0, query(h, "x", null));
+      h.drain();
+      expect(asked.at(-1)?.rows.filter.quick?.searches).toBe("shown");
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("an answer that leaves out the filter applies none", () => {
+    const { h } = filtering((spec) => ({ rows: { sort: spec.rows.sort }, cols: { sort: [] } }));
+    try {
+      h.frame();
+      h.grid.set_quick_filter(0, query(h, "a", null));
+      h.drain();
+      h.frame();
+      expect(h.snapshot.appliedView.rows.filter.quick).toBeNull();
+      expect(h.snapshot.rows.total).toBeNull();
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a source without view takes no quick filter, whatever its rows say", () => {
+    const rec = new Recorder(10, 3);
+    const h = new Harness({ ...rec.source, rows: { ...rec.source.rows, quickFilter: { regex: true } } });
+    try {
+      expect(h.frame().rows.quickFilter).toBeNull();
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a rejected quick filter keeps the filter and totals in force, and one naming an unknown column is not asked", async () => {
+    let calls = 0;
+    const { h } = filtering((spec) => (++calls > 1 ? Promise.reject(new Error("no")) : { ...spec, totals: { rows: 40 } }));
+    try {
+      h.frame();
+      const first = query(h, "a", null);
+      h.grid.set_quick_filter(0, first);
+      h.drain();
+      h.grid.set_quick_filter(0, query(h, "b", null));
+      h.drain();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      h.frame();
+      expect(h.snapshot.appliedView.rows.filter.quick).toEqual(first);
+      expect(h.snapshot.rows.total).toBe(40);
+      expect(h.snapshot.requestedView).toBeNull();
+      h.grid.set_quick_filter(0, { ...first, searches: [12345n] });
+      h.drain();
+      h.frame();
+      expect(calls).toBe(2);
+      expect(h.snapshot.appliedView.rows.filter.quick).toEqual(first);
+      expect(h.snapshot.rows.total).toBe(40);
+    } finally {
+      h.destroy();
+    }
+  });
+});

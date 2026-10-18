@@ -9,9 +9,10 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, HeaderClick,
-    HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect, SelectionUnit,
-    SortColumn, SortDirection, SortSpec, StripItem, Support, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FilterSpec, FocusEnd, FocusStep, Grid,
+    HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect,
+    Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
+    TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
 };
 
 pub const BINNACLE_ROWS: u32 = 0;
@@ -49,8 +50,20 @@ pub const BINNACLE_SORT_DESCENDING: u32 = 1;
 
 pub const BINNACLE_VIEW_EDIT_OTHER: u32 = 0;
 pub const BINNACLE_VIEW_EDIT_CYCLE_SORT: u32 = 1;
+pub const BINNACLE_VIEW_EDIT_SET_QUICK_FILTER: u32 = 2;
+pub const BINNACLE_VIEW_EDIT_REPLACE: u32 = 3;
+pub const BINNACLE_VIEW_EDIT_SHOWN_CHANGED: u32 = 4;
+
+pub const BINNACLE_TEXT_CASE_SENSITIVE: u32 = 1;
+pub const BINNACLE_TEXT_REGEX: u32 = 2;
+
+pub const BINNACLE_SEARCHED_SHOWN: u32 = 0;
+pub const BINNACLE_SEARCHED_KEYS: u32 = 1;
 
 pub const BINNACLE_SUPPORT_SORT: u32 = 1;
+
+pub const BINNACLE_QUICK_FILTER: u32 = 1;
+pub const BINNACLE_QUICK_FILTER_REGEX: u32 = 2;
 
 pub const BINNACLE_LOCATED_FOUND: u32 = 0;
 pub const BINNACLE_LOCATED_GONE: u32 = 1;
@@ -98,8 +111,11 @@ pub struct BinnacleGrid {
     cells: Vec<u8>,
     /// The last polled Effect's text.
     text: String,
-    /// The last polled Effect's View Spec: each axis's sort.
+    /// The last polled Effect's View Spec: each axis's sort, and its quick
+    /// filter's text and Keys.
     sorts: [Vec<BinnacleSortColumn>; 2],
+    quick_texts: [String; 2],
+    quick_keys: [Vec<u64>; 2],
 }
 
 #[repr(C)]
@@ -199,6 +215,9 @@ pub struct BinnacleAxisSnapshot {
     pub headers_len: usize,
     pub focus: BinnacleFocusEnd,
     pub selection_range: BinnacleRange,
+    pub has_total: u32,
+    pub total: u64,
+    pub quick_filter: u32,
 }
 
 #[repr(C)]
@@ -233,9 +252,33 @@ pub struct BinnacleSortColumn {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleTextQuery {
+    pub text: BinnacleText,
+    pub flags: u32,
+    pub searched: u32,
+    pub keys: *const u64,
+    pub keys_len: usize,
+}
+
+impl Default for BinnacleTextQuery {
+    fn default() -> Self {
+        BinnacleTextQuery {
+            text: BinnacleText::default(),
+            flags: 0,
+            searched: BINNACLE_SEARCHED_SHOWN,
+            keys: std::ptr::null(),
+            keys_len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleAxisView {
     pub sort: *const BinnacleSortColumn,
     pub sort_len: usize,
+    pub has_quick: u32,
+    pub quick: BinnacleTextQuery,
 }
 
 impl Default for BinnacleAxisView {
@@ -243,8 +286,23 @@ impl Default for BinnacleAxisView {
         BinnacleAxisView {
             sort: std::ptr::null(),
             sort_len: 0,
+            has_quick: 0,
+            quick: BinnacleTextQuery::default(),
         }
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleTotal {
+    pub known: u32,
+    pub count: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleTotals {
+    pub axes: [BinnacleTotal; 2],
 }
 
 #[repr(C)]
@@ -465,11 +523,46 @@ impl BinnacleSortColumn {
     }
 }
 
-impl BinnacleViewSpec {
-    /// The View Spec, or `None` if a direction is unknown.
+impl BinnacleTextQuery {
+    /// The Text Query, or `None` if the text is not UTF-8 or a tag or flag
+    /// is unknown.
     ///
     /// # Safety
-    /// Each non-NULL `sort` is valid for `sort_len` reads.
+    /// A non-NULL `text.data` is valid for `text.len` reads and a non-NULL
+    /// `keys` for `keys_len`.
+    unsafe fn to_core(self) -> Option<TextQuery> {
+        if self.flags & !(BINNACLE_TEXT_CASE_SENSITIVE | BINNACLE_TEXT_REGEX) != 0 {
+            return None;
+        }
+        // SAFETY: the caller's contract.
+        let text = std::str::from_utf8(unsafe { borrowed(self.text.data, self.text.len) }).ok()?;
+        let searches = match self.searched {
+            BINNACLE_SEARCHED_SHOWN => Searched::Shown,
+            // SAFETY: the caller's contract.
+            BINNACLE_SEARCHED_KEYS => Searched::Keys(
+                unsafe { borrowed(self.keys, self.keys_len) }
+                    .iter()
+                    .map(|&k| Key(k))
+                    .collect(),
+            ),
+            _ => return None,
+        };
+        Some(
+            TextQuery::new(text)
+                .case_sensitive(self.flags & BINNACLE_TEXT_CASE_SENSITIVE != 0)
+                .regex(self.flags & BINNACLE_TEXT_REGEX != 0)
+                .searching(searches),
+        )
+    }
+}
+
+impl BinnacleViewSpec {
+    /// The View Spec, or `None` if a direction, tag or flag is unknown or
+    /// text is not UTF-8.
+    ///
+    /// # Safety
+    /// Each non-NULL `sort` is valid for `sort_len` reads, and each quick
+    /// filter present as [`BinnacleTextQuery::to_core`] requires.
     unsafe fn to_core(self) -> Option<ViewSpec> {
         let mut spec = ViewSpec::default();
         for axis in Axis::ALL {
@@ -479,10 +572,38 @@ impl BinnacleViewSpec {
                 .iter()
                 .map(|c| c.to_core())
                 .collect::<Option<Vec<_>>>()?;
-            spec = spec.with_sort(axis, SortSpec::new(columns));
+            let quick = match view.has_quick {
+                0 => None,
+                // SAFETY: the caller's contract.
+                1 => Some(unsafe { view.quick.to_core() }?),
+                _ => return None,
+            };
+            spec = spec
+                .with_sort(axis, SortSpec::new(columns))
+                .with_filter(axis, FilterSpec::default().with_quick(quick));
         }
         Some(spec)
     }
+}
+
+impl BinnacleTotals {
+    fn to_core(self) -> Totals {
+        let total = |a: Axis| {
+            let t = self.axes[a.index()];
+            (t.known != 0).then_some(t.count)
+        };
+        Totals {
+            rows: total(Axis::Rows),
+            cols: total(Axis::Cols),
+        }
+    }
+}
+
+/// `BINNACLE_QUICK_FILTER*` bits for a quick filter's support.
+fn quick_filter_bits(support: Option<TextSupport>) -> u32 {
+    support.map_or(0, |s| {
+        BINNACLE_QUICK_FILTER | bit(s.regex, BINNACLE_QUICK_FILTER_REGEX)
+    })
 }
 
 impl From<FocusEnd> for BinnacleFocusEnd {
@@ -549,6 +670,8 @@ pub extern "C" fn binnacle_grid_new(
         cells: Vec::new(),
         text: String::new(),
         sorts: [Vec::new(), Vec::new()],
+        quick_texts: [String::new(), String::new()],
+        quick_keys: [Vec::new(), Vec::new()],
     }))
 }
 
@@ -805,6 +928,9 @@ impl BinnacleGrid {
                     .focus(axis)
                     .map(BinnacleFocusEnd::from)
                     .unwrap_or_default(),
+                has_total: flag(snap.total(axis).is_some()),
+                total: snap.total(axis).unwrap_or(0),
+                quick_filter: quick_filter_bits(snap.quick_filter(axis)),
                 selection_range: range.as_ref().map_or_else(Default::default, |r| {
                     let span = r.span(axis);
                     BinnacleRange {
@@ -888,11 +1014,39 @@ impl BinnacleGrid {
                             .iter()
                             .map(BinnacleSortColumn::from),
                     );
+                    let quick = spec.axis(axis).filter.quick.as_ref();
+                    let text = &mut self.quick_texts[axis.index()];
+                    let keys = &mut self.quick_keys[axis.index()];
+                    text.clear();
+                    keys.clear();
+                    let mut query = BinnacleTextQuery::default();
+                    if let Some(q) = quick {
+                        text.push_str(&q.text);
+                        query.flags = bit(q.case_sensitive, BINNACLE_TEXT_CASE_SENSITIVE)
+                            | bit(q.regex, BINNACLE_TEXT_REGEX);
+                        if let Searched::Keys(ks) = &q.searches {
+                            query.searched = BINNACLE_SEARCHED_KEYS;
+                            keys.extend(ks.iter().map(|k| k.0));
+                        }
+                        query.text = BinnacleText {
+                            data: text.as_ptr(),
+                            len: text.len(),
+                        };
+                        query.keys = keys.as_ptr();
+                        query.keys_len = keys.len();
+                    }
                     effect.view.axes[axis.index()] = BinnacleAxisView {
                         sort: sort.as_ptr(),
                         sort_len: sort.len(),
+                        has_quick: flag(quick.is_some()),
+                        quick: query,
                     };
                 }
+                let on = |kind, axis| BinnacleViewEdit {
+                    kind,
+                    axis: axis_tag(axis),
+                    ..BinnacleViewEdit::default()
+                };
                 effect.edit = match edit {
                     ViewEdit::CycleSort { axis, key, multi } => BinnacleViewEdit {
                         kind: BINNACLE_VIEW_EDIT_CYCLE_SORT,
@@ -900,6 +1054,14 @@ impl BinnacleGrid {
                         key: key.0,
                         multi: flag(multi),
                     },
+                    ViewEdit::SetQuickFilter { axis, .. } => {
+                        on(BINNACLE_VIEW_EDIT_SET_QUICK_FILTER, axis)
+                    }
+                    ViewEdit::Replace => BinnacleViewEdit {
+                        kind: BINNACLE_VIEW_EDIT_REPLACE,
+                        ..BinnacleViewEdit::default()
+                    },
+                    ViewEdit::ShownChanged { axis } => on(BINNACLE_VIEW_EDIT_SHOWN_CHANGED, axis),
                     _ => BinnacleViewEdit::default(),
                 };
             }
@@ -937,22 +1099,102 @@ pub unsafe extern "C" fn binnacle_grid_poll_effect(
     unsafe { with_handle(grid, |h| write_out(out, h.poll_effect()?)) }
 }
 
+/// A View Spec from C: NULL is the base view.
+///
+/// # Safety
+/// `spec` is NULL or valid for a read, with arrays as
+/// [`BinnacleViewSpec::to_core`] requires.
+unsafe fn view_spec(spec: *const BinnacleViewSpec) -> Option<ViewSpec> {
+    // SAFETY: the caller's contract.
+    match unsafe { spec.as_ref() } {
+        None => Some(ViewSpec::default()),
+        // SAFETY: the caller's contract.
+        Some(spec) => unsafe { spec.to_core() },
+    }
+}
+
 /// # Safety
 /// `grid` is NULL or a live handle; `spec` is NULL (the base view) or valid
-/// for a read, and each of its non-NULL `sort` arrays for `sort_len` reads.
+/// for a read, each of its non-NULL arrays for its length's reads; `totals`
+/// is NULL (none known) or valid for a read.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_view_applied(
     grid: *mut BinnacleGrid,
     spec: *const BinnacleViewSpec,
+    totals: *const BinnacleTotals,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let spec = match unsafe { spec.as_ref() } {
-        None => Some(ViewSpec::default()),
+    let spec = unsafe { view_spec(spec) };
+    // SAFETY: the caller's contract.
+    let totals = unsafe { totals.as_ref() }.map_or_else(Totals::default, |t| t.to_core());
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| spec.map(|s| h.grid.view_applied(s, totals))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `spec` as for
+/// [`binnacle_grid_view_applied`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_request_view(
+    grid: *mut BinnacleGrid,
+    spec: *const BinnacleViewSpec,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let spec = unsafe { view_spec(spec) };
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| spec.map(|s| h.grid.request_view(s))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `query` is NULL (no quick filter) or
+/// valid for a read, its text for `text.len` reads and its keys for
+/// `keys_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_quick_filter(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    query: *const BinnacleTextQuery,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let query = match unsafe { query.as_ref() } {
+        None => Some(None),
         // SAFETY: the caller's contract.
-        Some(spec) => unsafe { spec.to_core() },
+        Some(q) => unsafe { q.to_core() }.map(Some),
     };
     // SAFETY: the caller's contract.
-    unsafe { with_handle(grid, |h| spec.map(|s| h.grid.view_applied(s))) }
+    unsafe {
+        with_handle(grid, |h| {
+            let (axis, query) = (axis(axis_tag)?, query?);
+            h.grid.set_quick_filter(axis, query);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_quick_filter_support(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    support: u32,
+) -> i32 {
+    let support = match support {
+        0 => Some(None),
+        BINNACLE_QUICK_FILTER => Some(Some(TextSupport::new(false))),
+        s if s == BINNACLE_QUICK_FILTER | BINNACLE_QUICK_FILTER_REGEX => {
+            Some(Some(TextSupport::new(true)))
+        }
+        _ => None,
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let (axis, support) = (axis(axis_tag)?, support?);
+            h.grid.set_quick_filter_support(axis, support);
+            Some(())
+        })
+    }
 }
 
 /// # Safety

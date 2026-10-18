@@ -3,13 +3,13 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, FocusStep, Grid, HeaderPlacement, Key,
-    Mode, Modifiers, PointerEvent, Rect, Snapshot, SortColumn, SortSpec, Stamped, ViewEdit,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, FilterSpec, FocusStep, Grid,
+    HeaderPlacement, Key, Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn,
+    SortSpec, Stamped, TextQuery, TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
-use crate::effect::{WireAxis, WireDirection, WireStamped, WireViewSpec};
+use crate::effect::{WireAxis, WireDirection, WireStamped, WireViewEdit, WireViewSpec};
 use crate::snapshot::cell_bits;
 
 #[derive(Serialize)]
@@ -63,6 +63,7 @@ impl From<Rect> for DumpRect {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DumpAxis {
     count: f64,
     extent: f32,
@@ -74,6 +75,13 @@ struct DumpAxis {
     locating: bool,
     strip: Vec<DumpItem>,
     headers: Vec<DumpHeader>,
+    total: Option<f64>,
+    quick_filter: Option<DumpTextSupport>,
+}
+
+#[derive(Serialize)]
+struct DumpTextSupport {
+    regex: bool,
 }
 
 #[derive(Serialize)]
@@ -256,6 +264,10 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             key: f.key.map(|k| k.0),
         }),
         locating: s.locating(axis),
+        total: s.total(axis).map(|t| t as f64),
+        quick_filter: s
+            .quick_filter(axis)
+            .map(|q| DumpTextSupport { regex: q.regex }),
         strip: s
             .strip(axis)
             .iter()
@@ -344,6 +356,14 @@ pub fn every_effect() -> Vec<WireStamped> {
             ]),
         )
         .with_sort(Axis::Cols, SortSpec::new(vec![SortColumn::descending(row)]));
+    let spec = spec.with_filter(
+        Axis::Rows,
+        FilterSpec::default().with_quick(Some(
+            TextQuery::new("Bér 🚢")
+                .regex(true)
+                .searching(Searched::Keys(vec![col])),
+        )),
+    );
     let edit = ViewEdit::CycleSort {
         axis: Axis::Rows,
         key: col,
@@ -393,10 +413,35 @@ pub fn every_effect() -> Vec<WireStamped> {
     .collect()
 }
 
+/// One of every View Edit, as `ViewRequested` carries them.
+pub fn every_view_edit() -> Vec<WireViewEdit> {
+    let query = TextQuery::new("ber").case_sensitive(true);
+    [
+        ViewEdit::CycleSort {
+            axis: Axis::Rows,
+            key: Key(u64::MAX),
+            multi: false,
+        },
+        ViewEdit::SetQuickFilter {
+            axis: Axis::Rows,
+            query: Some(query),
+        },
+        ViewEdit::SetQuickFilter {
+            axis: Axis::Cols,
+            query: None,
+        },
+        ViewEdit::Replace,
+        ViewEdit::ShownChanged { axis: Axis::Cols },
+    ]
+    .into_iter()
+    .map(WireViewEdit::from)
+    .collect()
+}
+
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 10] = [
+pub const SCENARIOS: [&str; 11] = [
     "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
-    "sorted",
+    "sorted", "filtered",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -514,9 +559,23 @@ pub fn scenario(name: &str) -> Grid {
                         Axis::Cols,
                         SortSpec::new(vec![SortColumn::ascending(key(1))]),
                     ),
+                Totals::unknown(),
             );
             grid.pointer(PointerEvent::down(150.0, 10.0).modifiers(Modifiers::SHIFT));
             grid.pointer(PointerEvent::up(150.0, 10.0).modifiers(Modifiers::SHIFT));
+        }
+        "filtered" => {
+            // The rows' quick filter applied with a total of 900 rows, and a
+            // new one (with a surrogate pair) requested.
+            grid.set_quick_filter_support(Axis::Rows, Some(TextSupport::new(true)));
+            let applied = TextQuery::new("ber").searching(Searched::Keys(vec![key(0), key(2)]));
+            grid.view_applied(
+                ViewSpec::default()
+                    .with_filter(Axis::Rows, FilterSpec::default().with_quick(Some(applied))),
+                Totals::unknown().with(Axis::Rows, Some(900)),
+            );
+            let requested = TextQuery::new("Bé🚢").case_sensitive(true).regex(true);
+            grid.set_quick_filter(Axis::Rows, Some(requested));
         }
         other => panic!("no scenario {other}"),
     }
@@ -568,6 +627,13 @@ mod tests {
                     let requested = s.requested_view().map(|r| r.rows.sort.columns().len());
                     assert_eq!(requested, Some(3));
                 }
+                "filtered" => {
+                    assert!(s.applied_view().rows.filter.quick.is_some());
+                    let requested = s.requested_view().and_then(|r| r.rows.filter.quick.clone());
+                    assert!(requested.is_some_and(|q| q.regex));
+                    assert_eq!(s.total(Axis::Rows), Some(900));
+                    assert!(s.quick_filter(Axis::Rows).is_some());
+                }
                 _ => {}
             }
         }
@@ -583,6 +649,7 @@ mod tests {
                 "Idle",
                 "Idle",
                 "DraggingSelection",
+                "Idle",
                 "Idle"
             ]
         );

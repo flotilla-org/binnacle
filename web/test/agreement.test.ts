@@ -28,6 +28,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "scrolled",
     "dragging",
     "sorted",
+    "filtered",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -61,11 +62,60 @@ describe("Effects", () => {
     expect(isEffect(null)).toBe(false);
     const edit = { type: "CycleSort", axis: "rows", key: 1n, multi: false };
     const view = (spec: unknown, e: unknown = edit) => ({ type: "ViewRequested", generation: 1, spec, edit: e });
-    const unsorted = { sort: [] };
+    const unsorted = { filter: { quick: null }, sort: [] };
     expect(isEffect(view({ rows: unsorted, cols: unsorted }))).toBe(true);
     expect(isEffect(view({ rows: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: { sort: [] }, cols: unsorted }))).toBe(false);
+    const quick = { text: "a", caseSensitive: false, regex: false, searches: null };
+    const filtered = (q: unknown) => ({ filter: { quick: q }, sort: [] });
+    expect(isEffect(view({ rows: filtered(quick), cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: filtered({ ...quick, searches: [1n] }), cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: filtered({ ...quick, searches: [1] }), cols: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: filtered({ ...quick, regex: "no" }), cols: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, { type: "SetQuickFilter", axis: "rows", query: 1 }))).toBe(false);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, { type: "ShownChanged", axis: "up" }))).toBe(false);
     expect(isEffect(view({ rows: unsorted, cols: { sort: [{ key: 1, direction: "ascending" }] } }))).toBe(false);
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...edit, multi: 1 }))).toBe(false);
+  });
+});
+
+describe("View Specs", () => {
+  test("every View Edit passes the edit guard", () => {
+    const edits = bridge().debug_every_view_edit() as { type: string }[];
+    expect(new Set(edits.map((e) => e.type))).toEqual(new Set(["CycleSort", "SetQuickFilter", "Replace", "ShownChanged"]));
+    const unsorted = { filter: { quick: null }, sort: [] };
+    for (const edit of edits) {
+      const effect = { type: "ViewRequested", generation: 1, spec: { rows: unsorted, cols: unsorted }, edit };
+      expect(isEffect(effect), edit.type).toBe(true);
+    }
+  });
+
+  test("a View Spec a host requests comes back as Rust carries it, and its totals reach the Snapshot", () => {
+    const { WebAxis, WebGrid } = bridge();
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(3, 80));
+    try {
+      const spec = {
+        rows: {
+          filter: { quick: { text: "Bér 🚢", caseSensitive: true, regex: false, searches: [2n, 0n] } },
+          sort: [{ key: 1n, direction: "descending" }],
+        },
+        cols: { filter: { quick: { text: "x", caseSensitive: false, regex: true, searches: null } }, sort: [] },
+      };
+      grid.request_view(spec);
+      const requested = (grid.poll_effects() as { type: string; spec?: unknown; edit?: unknown }[]).filter(
+        (e) => e.type === "ViewRequested",
+      );
+      expect(requested.map((e) => [e.spec, e.edit])).toEqual([[spec, { type: "Replace" }]]);
+      grid.view_applied(spec, 40, NaN);
+      grid.set_quick_filter_support(0, 3);
+      grid.begin_frame(400, 200);
+      const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+      expect(s.appliedView).toEqual(spec);
+      expect([s.rows.total, s.cols.total]).toEqual([40, null]);
+      expect([s.rows.quickFilter, s.cols.quickFilter]).toEqual([{ regex: true }, null]);
+    } finally {
+      grid.free();
+    }
   });
 });
 

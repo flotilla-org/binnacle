@@ -18,7 +18,7 @@ import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
 import type { AxisSnapshot, Snapshot, Span } from "./snapshot";
-import type { FailedRequest, Located, TableSource } from "./source";
+import type { FailedRequest, Located, TableSource, TextQuery, ViewSpec } from "./source";
 import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -89,9 +89,15 @@ export interface GridOptions<RowId, ColId, V = unknown> {
 export interface FrameInfo<RowId = unknown, ColId = unknown> {
   /** Whether the frame painted. */
   painted: boolean;
-  /** The rows in view: the first and last visible Positions, and the count. */
-  rows: { first: number; last: number; count: number };
-  cols: { first: number; last: number; count: number };
+  /**
+   * The rows in view: the first and last visible Positions, the count, and
+   * the count before any filter as the Table Source last gave it (`null` if
+   * it gave none).
+   */
+  rows: { first: number; last: number; count: number; total: number | null };
+  cols: { first: number; last: number; count: number; total: number | null };
+  /** Whether the rows take a quick filter (the Table Source's `rows.quickFilter`), and with regexes; `null` if not. */
+  quickFilter: { regex: boolean } | null;
   /** The focused cell's Positions, if any. */
   focus: { row: number; col: number } | null;
   /** The selection range as half-open Position spans, if any. */
@@ -148,6 +154,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private focusing: Focusing | null = null;
   /** Waiting for the next frame to run. */
   private framed: (() => void)[] = [];
+  private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -312,6 +319,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.input.destroy();
     this.aria.destroy();
     this.feed.destroy();
+    this.listeners.clear();
     this.painter.destroy?.();
     this.grid.free();
     this.element.remove();
@@ -394,6 +402,35 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.painter.flashes.mark(this.feed.rowKey(rowId), col, performance.now());
     this.repaint = true;
     this.schedule();
+  }
+
+  /**
+   * Sets the rows' quick filter: keep the rows with `query`'s text in a
+   * searched column. `null` or empty text clears it. The grid asks the Table
+   * Source for the View Spec in force with this quick filter; setting the
+   * one already asked for does nothing.
+   */
+  setQuickFilter(query: TextQuery<ColId> | null): void {
+    if (this.destroyed) return;
+    const keyed = query && this.feed.viewKeys({ rows: { filter: { quick: query }, sort: [] }, cols: { sort: [] } });
+    this.grid.set_quick_filter(AXIS_CODE.rows, keyed ? keyed.rows.filter.quick : null);
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /** Asks the Table Source for the whole of `spec`, such as a saved view, in place of the View Spec in force. */
+  requestView(spec: ViewSpec<RowId, ColId>): void {
+    if (this.destroyed) return;
+    this.grid.request_view(this.feed.viewKeys(spec));
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /** Calls `listener` after every frame, as `onFrame` is; returns how to stop. */
+  subscribe(listener: (frame: FrameInfo<RowId, ColId>) => void): () => void {
+    this.listeners.add(listener);
+    if (this.last) listener(this.frameInfo(this.last, false, false));
+    return () => this.listeners.delete(listener);
   }
 
   /** The Theme the grid draws in, for the current colour scheme when set to one per scheme. */
@@ -487,17 +524,24 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     if (again) this.schedule();
     this.settleFocus(snapshot);
     for (const waiting of this.framed.splice(0)) waiting();
-    this.options.onFrame?.({
+    const info = this.frameInfo(snapshot, painted, again);
+    this.options.onFrame?.(info);
+    for (const listener of this.listeners) listener(info);
+    this.selectionEvents(snapshot);
+  }
+
+  private frameInfo(snapshot: Snapshot, painted: boolean, again: boolean): FrameInfo<RowId, ColId> {
+    return {
       painted,
       rows: span(snapshot, "rows"),
       cols: span(snapshot, "cols"),
+      quickFilter: snapshot.rows.quickFilter,
       ...selection(snapshot),
       focusIds: this.focusIds(snapshot),
       loading: this.feed.loading(snapshot),
       animating: again,
       editing: snapshot.mode.type === "Editing" ? this.ids(snapshot.mode.row, snapshot.mode.col) : null,
-    });
-    this.selectionEvents(snapshot);
+    };
   }
 
   /** Waits for a frame if none has run or one is due, so the Strips are those of what is in view. */
@@ -626,7 +670,12 @@ function span(s: Snapshot, axis: "rows" | "cols"): FrameInfo["rows"] {
   const start = s[axis].header;
   const end = s[axis].extent;
   const visible = strip.filter((i) => i.offset + i.size > start && i.offset < end);
-  return { first: visible[0]?.position ?? 0, last: visible.at(-1)?.position ?? 0, count: s[axis].count };
+  return {
+    first: visible[0]?.position ?? 0,
+    last: visible.at(-1)?.position ?? 0,
+    count: s[axis].count,
+    total: s[axis].total,
+  };
 }
 
 function div(className: string, style: string): HTMLDivElement {

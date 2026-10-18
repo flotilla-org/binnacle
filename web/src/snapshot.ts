@@ -26,10 +26,27 @@ export interface SortColumn {
   direction: SortDirection;
 }
 
-/** A View Spec as the Grid holds it, by Keys: each axis's sort, by items of the other axis. */
+/**
+ * A Text Query as the Grid holds it: `searches` names the columns (Keys of
+ * the other axis) it looks in, or is `null` for the shown ones.
+ */
+export interface KeyedTextQuery {
+  text: string;
+  caseSensitive: boolean;
+  regex: boolean;
+  searches: bigint[] | null;
+}
+
+/** One axis's part of a View Spec, by Keys of the other axis. */
+export interface KeyedAxisView {
+  filter: { quick: KeyedTextQuery | null };
+  sort: SortColumn[];
+}
+
+/** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis. */
 export interface KeyedViewSpec {
-  rows: { sort: SortColumn[] };
-  cols: { sort: SortColumn[] };
+  rows: KeyedAxisView;
+  cols: KeyedAxisView;
 }
 
 export interface HeaderPlacement {
@@ -54,6 +71,10 @@ export interface AxisSnapshot {
   locating: boolean;
   strip: StripItem[];
   headers: HeaderPlacement[];
+  /** The axis's count before any filter, as the Table Source last gave it; `null` if unknown. */
+  total: number | null;
+  /** Whether the axis has a quick filter, and whether it takes regexes; `null` if it has none. */
+  quickFilter: { regex: boolean } | null;
 }
 
 export type Mode =
@@ -170,9 +191,27 @@ class Reader {
     return this.list(() => ({ key: this.key(), direction: DIRECTIONS[this.num()]! }));
   }
 
+  /** Text as its UTF-16 code units, after their count. */
+  text(): string {
+    return String.fromCharCode(...this.list(() => this.num()));
+  }
+
+  textQuery(): KeyedTextQuery {
+    const text = this.text();
+    const caseSensitive = this.flag();
+    const regex = this.flag();
+    const searches = this.opt(() => this.list(() => this.key()));
+    return { text, caseSensitive, regex, searches };
+  }
+
+  axisView(): KeyedAxisView {
+    const quick = this.opt(() => this.textQuery());
+    return { filter: { quick }, sort: this.sort() };
+  }
+
   view(): KeyedViewSpec {
-    const rows = { sort: this.sort() };
-    return { rows, cols: { sort: this.sort() } };
+    const rows = this.axisView();
+    return { rows, cols: this.axisView() };
   }
 
   done(): boolean {
@@ -201,7 +240,9 @@ function readAxis(r: Reader): AxisSnapshot {
     selected: r.flag(),
     hovered: r.flag(),
   }));
-  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers };
+  const total = r.opt(() => r.num());
+  const quickFilter = r.opt(() => ({ regex: r.flag() }));
+  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers, total, quickFilter };
 }
 
 function readMode(r: Reader): Mode {

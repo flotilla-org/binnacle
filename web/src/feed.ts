@@ -3,14 +3,27 @@
 // sinks, and the answers to the Effects a Table Source owns (View Specs,
 // Locate, move). Every answer goes through one `settle`.
 
-import { AXES, AXIS_CODE, NOTICE_CODE, SUPPORT, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, NOTICE_CODE, QUICK_FILTER, SUPPORT, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
 import { createSettler, type Request } from "./settle";
-import type { KeyedViewSpec, Snapshot, SortColumn, StripItem } from "./snapshot";
-import type { AxisMethods, ChangeNotice, FailedRequest, Located, SortSpec, TableSource, ViewSpec } from "./source";
+import type { KeyedAxisView, KeyedTextQuery, KeyedViewSpec, Snapshot, SortColumn, StripItem } from "./snapshot";
+import type {
+  AppliedAxisView,
+  AppliedView,
+  AxisMethods,
+  AxisView,
+  ChangeNotice,
+  FailedRequest,
+  Located,
+  SortSpec,
+  TableSource,
+  TextQuery,
+  Totals,
+  ViewSpec,
+} from "./source";
 import type { WebGrid } from "./wasm";
 
 export interface Feed<RowId = unknown, ColId = unknown> {
@@ -38,6 +51,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   /** The Key for a user's ID, issuing one if it has none yet. */
   rowKey(id: RowId): bigint;
   colKey(id: ColId): bigint;
+  /** A View Spec by Keys, issuing Keys for IDs that have none yet. */
+  viewKeys(spec: AppliedView<RowId, ColId>): KeyedViewSpec;
   /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
   find(axis: AxisName, key: bigint): Promise<Located>;
   /** Detaches from the source and aborts outstanding requests. */
@@ -59,7 +74,10 @@ export interface FeedHooks<RowId = unknown, ColId = unknown> {
 const NOTICE: Record<ChangeNotice["type"], number> = NOTICE_CODE;
 
 /** The base view: nothing filtered, unsorted. */
-const BASE_VIEW: KeyedViewSpec = { rows: { sort: [] }, cols: { sort: [] } };
+const BASE_VIEW: KeyedViewSpec = {
+  rows: { filter: { quick: null }, sort: [] },
+  cols: { filter: { quick: null }, sort: [] },
+};
 
 interface Axis<Id> {
   source: AxisMethods<Id, unknown>;
@@ -121,8 +139,9 @@ export function createFeed<RowId, ColId, V>(
   let grid: WebGrid | null = null;
   let detach: (() => void) | undefined;
   let shown: Snapshot | null = null;
-  /** The View Spec last applied, to restore if a request fails. */
+  /** The View Spec last applied and its totals, to restore if a request fails. */
   let applied: KeyedViewSpec = BASE_VIEW;
+  let totals: Totals = {};
   /** Counts that arrived before the Grid did. */
   const early: Partial<Record<AxisName, number>> = {};
   /** Cell blocks in flight, aborted once none of their rows or columns is in view. */
@@ -231,9 +250,19 @@ export function createFeed<RowId, ColId, V>(
     }
   };
 
-  const viewApplied = (spec: KeyedViewSpec) => {
+  const viewApplied = (spec: KeyedViewSpec, now: Totals = {}) => {
     applied = spec;
-    grid?.view_applied(spec);
+    totals = now;
+    grid?.view_applied(spec, now.rows ?? NaN, now.cols ?? NaN);
+  };
+
+  /** Tells the Grid which axes take a quick filter: only with `view`. */
+  const markQuickFilter = (g: WebGrid) => {
+    for (const axis of AXES) {
+      const quick = source.view ? axes[axis].source.quickFilter : undefined;
+      const bits = quick ? QUICK_FILTER.on | (quick.regex ? QUICK_FILTER.regex : 0) : 0;
+      g.set_quick_filter_support(AXIS_CODE[axis], bits);
+    }
   };
 
   /** A sort by Keys as IDs of `by`, or `undefined` if one is not known. */
@@ -250,24 +279,50 @@ export function createFeed<RowId, ColId, V>(
   const sortKeys = <Id>(by: Axis<Id>, sort: SortSpec<Id>): SortColumn[] =>
     sort.map((c) => ({ key: by.interner.key(c.id), direction: c.direction }));
 
+  /** A Text Query by Keys as IDs of `by`, or `undefined` if a column it names is not known. */
+  const queryIds = <Id>(by: Axis<Id>, q: KeyedTextQuery): TextQuery<Id> | undefined => {
+    const ids = q.searches?.map((k) => by.interner.id(k));
+    if (ids && !ids.every(known)) return undefined;
+    return { text: q.text, caseSensitive: q.caseSensitive, regex: q.regex, searches: ids ?? "shown" };
+  };
+
+  const queryKeys = <Id>(by: Axis<Id>, q: TextQuery<Id>): KeyedTextQuery => ({
+    text: q.text,
+    caseSensitive: q.caseSensitive,
+    regex: q.regex,
+    searches: q.searches === "shown" ? null : q.searches.map((id) => by.interner.key(id)),
+  });
+
+  /** One axis's part by IDs of `by`, or `undefined` if an item it names is not known. */
+  const partIds = <Id>(by: Axis<Id>, part: KeyedAxisView): AxisView<Id> | undefined => {
+    const sort = sortIds(by, part.sort);
+    const quick = part.filter.quick && queryIds(by, part.filter.quick);
+    if (!sort || quick === undefined) return undefined;
+    return { filter: { quick }, sort };
+  };
+
+  const partKeys = <Id>(by: Axis<Id>, part: AppliedAxisView<Id>): KeyedAxisView => {
+    const quick = part.filter?.quick;
+    return { filter: { quick: quick ? queryKeys(by, quick) : null }, sort: sortKeys(by, part.sort) };
+  };
+
   const answerView = (requested: KeyedViewSpec) => {
     const view = source.view;
     if (!view) return viewApplied(BASE_VIEW);
-    const [rowSort, colSort] = [sortIds(cols, requested.rows.sort), sortIds(rows, requested.cols.sort)];
-    if (!rowSort || !colSort) return viewApplied(applied);
-    const spec: ViewSpec<RowId, ColId> = { rows: { sort: rowSort }, cols: { sort: colSort } };
-    const previous = applied;
+    const [rowPart, colPart] = [partIds(cols, requested.rows), partIds(rows, requested.cols)];
+    if (!rowPart || !colPart) return viewApplied(applied, totals);
+    const spec: ViewSpec<RowId, ColId> = { rows: rowPart, cols: colPart };
+    const previous = { applied, totals };
     // The Grid still counts the superseded request's answer: aborting it
     // answers with the spec in force.
     viewing?.abort();
     viewing = settle(
       (signal) => view.call(source, spec, signal),
-      (now) =>
-        viewApplied({
-          rows: { sort: sortKeys(cols, now.rows.sort) },
-          cols: { sort: sortKeys(rows, now.cols.sort) },
-        }),
-      { otherwise: () => viewApplied(previous), failed: report({ type: "view" }) },
+      (now) => viewApplied({ rows: partKeys(cols, now.rows), cols: partKeys(rows, now.cols) }, now.totals ?? {}),
+      {
+        otherwise: () => viewApplied(previous.applied, previous.totals),
+        failed: report({ type: "view" }),
+      },
     );
   };
 
@@ -436,6 +491,7 @@ export function createFeed<RowId, ColId, V>(
     counts: () => ({ rows: askCount("rows") ?? 0, cols: askCount("cols") ?? 0 }),
     connect(g) {
       grid = g;
+      markQuickFilter(g);
       for (const axis of AXES) {
         const count = early[axis];
         if (count !== undefined) reset(axis, count);
@@ -515,6 +571,7 @@ export function createFeed<RowId, ColId, V>(
     colId: (key) => cols.interner.id(key),
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
+    viewKeys: (spec) => ({ rows: partKeys(cols, spec.rows), cols: partKeys(rows, spec.cols) }),
     find(axis, key) {
       const item = shown?.[axis].strip.find((i) => i.key === key);
       if (item) return Promise.resolve({ type: "Found", position: item.position });

@@ -1,7 +1,8 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, Cursor, FocusEnd, Mode, Snapshot, SortDirection, SortSpec, StripItem, ViewSpec,
+    Axis, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection, SortSpec,
+    StripItem, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -22,10 +23,11 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// edited cell is marked `=`, before focus), a hovered header `hover axis position`, a resize
 /// cursor hint `cursor C`, a resize guide `guide axis offset (key K size
 /// S)` and a move `moving keys to axis position at offset` (the drop
-/// indicator, also drawn across the header band). A non-empty applied View
-/// Spec adds `sort` and an unanswered request `requested`, each as the rows'
-/// sort with `key^` or `keyv` per column (then `cols` and the columns' sort,
-/// if any).
+/// indicator, also drawn across the header band). An applied View Spec that
+/// sorts adds `sort`, as the rows' sort with `key^` or `keyv` per column
+/// (then `cols` and the columns' sort, if any); one that filters adds
+/// `filter` (see [`view_text`]), and an unanswered request `requested` with
+/// both. Unfiltered counts the Table Source gave add `totals`.
 pub fn render(snap: &Snapshot) -> String {
     Rendered::of(snap).since(None)
 }
@@ -118,8 +120,17 @@ fn summary(snap: &Snapshot) -> String {
     for f in snap.selection_rects() {
         let _ = write!(out, " | fill {},{} {}x{}", f.x, f.y, f.width, f.height);
     }
-    if !snap.applied_view().is_empty() {
-        let _ = write!(out, " | sort {}", view_text(snap.applied_view()));
+    let applied = snap.applied_view();
+    if !(applied.rows.sort.is_empty() && applied.cols.sort.is_empty()) {
+        let _ = write!(out, " | sort {}", sorts_text(applied));
+    }
+    if !(applied.rows.filter.is_empty() && applied.cols.filter.is_empty()) {
+        let _ = write!(out, " | filter {}", filters_text(applied));
+    }
+    for axis in Axis::ALL {
+        if let Some(total) = snap.total(axis) {
+            let _ = write!(out, " | total {axis:?} {total}");
+        }
     }
     if let Some(spec) = snap.requested_view() {
         let _ = write!(out, " | requested {}", view_text(spec));
@@ -193,12 +204,49 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
     out
 }
 
+/// A View Spec's sorts, then its filters if any (see [`filters_text`]).
+pub(crate) fn view_text(spec: &ViewSpec) -> String {
+    let mut text = sorts_text(spec);
+    if !(spec.rows.filter.is_empty() && spec.cols.filter.is_empty()) {
+        text += &format!(" filter {}", filters_text(spec));
+    }
+    text
+}
+
 /// A View Spec's sorts as [`spec_text`] gives them: the rows', then the
 /// columns' after `cols` if they sort.
-pub(crate) fn view_text(spec: &ViewSpec) -> String {
+fn sorts_text(spec: &ViewSpec) -> String {
     let mut text = spec_text(&spec.rows.sort);
     if !spec.cols.sort.is_empty() {
         text += &format!(" cols {}", spec_text(&spec.cols.sort));
+    }
+    text
+}
+
+/// A View Spec's filters: the rows', then the columns' after `cols` if they
+/// filter. A quick filter is `quick "text"`, then `case` and `regex` for its
+/// options and `in k,k` for the Keys it searches, if not the shown ones.
+fn filters_text(spec: &ViewSpec) -> String {
+    let filter = |f: &FilterSpec| match &f.quick {
+        None => "none".to_string(),
+        Some(q) => {
+            let mut text = format!("quick {:?}", q.text);
+            if q.case_sensitive {
+                text += " case";
+            }
+            if q.regex {
+                text += " regex";
+            }
+            if let Searched::Keys(keys) = &q.searches {
+                let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
+                text += &format!(" in {}", keys.join(","));
+            }
+            text
+        }
+    };
+    let mut text = filter(&spec.rows.filter);
+    if !spec.cols.filter.is_empty() {
+        text += &format!(" cols {}", filter(&spec.cols.filter));
     }
     text
 }

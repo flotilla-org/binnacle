@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 binnacle-core.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 hegeltest.workspace = true

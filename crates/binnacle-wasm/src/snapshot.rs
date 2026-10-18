@@ -7,8 +7,8 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Cursor, HeaderPlacement, Key, Mode, Rect, Snapshot, SortDirection, SortSpec,
-    ViewSpec,
+    Axis, CellState, Cursor, HeaderPlacement, Key, Mode, Rect, Searched, Snapshot, SortDirection,
+    SortSpec, TextQuery, ViewSpec,
 };
 
 /// The flat form of one Snapshot. Buffers are reused frame to frame.
@@ -127,10 +127,44 @@ impl Writer<'_> {
         }
     }
 
-    /// Each axis's part, rows first.
+    /// Text as its UTF-16 code units, after their count.
+    fn text(&mut self, text: &str) {
+        let units = self.out.numbers.len();
+        self.num(0);
+        let mut n = 0;
+        for unit in text.encode_utf16() {
+            self.num(unit);
+            n += 1;
+        }
+        self.out.numbers[units] = n as f64;
+    }
+
+    fn text_query(&mut self, q: &TextQuery) {
+        self.text(&q.text);
+        self.flag(q.case_sensitive);
+        self.flag(q.regex);
+        let keys = match &q.searches {
+            Searched::Shown => None,
+            Searched::Keys(keys) => Some(keys),
+        };
+        self.flag(keys.is_some());
+        if let Some(keys) = keys {
+            self.len(keys.len());
+            for &k in keys {
+                self.key(k);
+            }
+        }
+    }
+
+    /// Each axis's part, rows first: its filter, then its sort.
     fn view(&mut self, spec: &ViewSpec) {
         for axis in Axis::ALL {
-            self.sort(&spec.axis(axis).sort);
+            let part = spec.axis(axis);
+            self.flag(part.filter.quick.is_some());
+            if let Some(q) = &part.filter.quick {
+                self.text_query(q);
+            }
+            self.sort(&part.sort);
         }
     }
 
@@ -210,6 +244,16 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.len(strip.len());
         for h in s.headers(axis) {
             w.header(h);
+        }
+        let total = s.total(axis);
+        w.flag(total.is_some());
+        if let Some(t) = total {
+            w.position(t);
+        }
+        let quick = s.quick_filter(axis);
+        w.flag(quick.is_some());
+        if let Some(q) = quick {
+            w.flag(q.regex);
         }
     }
     w.opt_rect(s.focus_rect());

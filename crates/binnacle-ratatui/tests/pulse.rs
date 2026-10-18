@@ -94,7 +94,7 @@ impl Host {
         match effect {
             Effect::ViewRequested { spec, .. } => {
                 let viewed = source.view(&spec);
-                self.grid.view_applied(viewed.applied);
+                self.grid.view_applied(viewed.applied, viewed.totals);
                 for (axis, notice) in viewed.notices {
                     self.grid.notify(axis, notice);
                 }

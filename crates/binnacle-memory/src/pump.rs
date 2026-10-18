@@ -1,13 +1,16 @@
 use binnacle_core::{
-    Axis, ChangeNotice, Effect, Grid, Key, Located, Position, Stamped, Support, ViewSpec,
+    Axis, ChangeNotice, Effect, Grid, Key, Located, Position, Stamped, Support, TextSupport,
+    Totals, ViewSpec,
 };
 
 /// A Table Source's answer to a requested View Spec: the spec it now applies
-/// (the request, a part of it, or the previous spec to reject it) and the
-/// Change Notices the axes need.
+/// (the request, a part of it, or the previous spec to reject it), each
+/// axis's unfiltered count where known, and the Change Notices the axes
+/// need.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Viewed {
     pub applied: ViewSpec,
+    pub totals: Totals,
     pub notices: Vec<(Axis, ChangeNotice)>,
 }
 
@@ -24,6 +27,12 @@ pub trait PumpSource {
     /// everything the Grid asks for.
     fn support(&mut self, _axis: Axis, _key: Key) -> Support {
         Support::default()
+    }
+
+    /// Whether `axis` has a quick filter and how it matches, for the host to
+    /// declare with [`Grid::set_quick_filter_support`]. The default has none.
+    fn quick_filter(&mut self, _axis: Axis) -> Option<TextSupport> {
+        None
     }
 
     /// Where `key` sits on `axis` now. The default knows no Keys and answers
@@ -56,7 +65,7 @@ pub fn pump(
         match &stamped.effect {
             Effect::ViewRequested { spec, .. } => {
                 let viewed = source.view(spec);
-                grid.view_applied(viewed.applied);
+                grid.view_applied(viewed.applied, viewed.totals);
                 for (axis, notice) in viewed.notices {
                     grid.notify(axis, notice);
                 }

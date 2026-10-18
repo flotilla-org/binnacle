@@ -29,6 +29,14 @@
 //! on a timer only while something animates, an answer is due or the live
 //! table ticks, and otherwise waits for input.
 //!
+//! In the records (and the slow records), Ctrl+L focuses the quick filter
+//! field on the top line: typing keeps only the records with that text in
+//! any column, ignoring case, as each key arrives. Alt+C matches case, Alt+R
+//! reads the text as a regex, Ctrl+U clears it, Enter keeps the filter and
+//! leaves the field, and Esc puts back the filter from before. The status
+//! line counts the records shown of the total, such as "84 of 1,000 rows".
+//! The quick filter and Ctrl+F's crew filter both apply.
+//!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
 //! huge table, typing digits goes to that row number. Enter, F2 or a
@@ -65,9 +73,9 @@ use binnacle_core::{
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
-    CellRenderer, ColorSupport, Content, Keymap, Layout, Mouse, RenderContext, SparklineRenderer,
-    TextRenderer, Theme, animating, begin_frame, fit_width, render_editor, render_with, status,
-    wheel,
+    CellRenderer, ColorSupport, Content, Control, Controls, Keymap, Layout, Mouse, Preset,
+    QuickFilter, RenderContext, SparklineRenderer, TextRenderer, Theme, animating, begin_frame,
+    fit_width, render_editor, render_with, row_count, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -422,16 +430,17 @@ impl Table {
             *filter = (*filter + 1) % CREW_FILTERS.len();
             let notice = match CREW_FILTERS[*filter] {
                 Some(min) => source.filter(rows, move |r| r.crew >= min),
-                None => source.clear_filter(),
+                None => source.clear_filter(rows),
             };
             grid.notify(Axis::Rows, notice);
         }
     }
 
-    /// What the body says when no rows are left.
-    fn empty(&self) -> &'static str {
+    /// What the body says when no rows are left, with the quick filter
+    /// `quick` on or not.
+    fn empty(&self, quick: bool) -> &'static str {
         match self {
-            Table::Records { filter, .. } if *filter > 0 => "No rows match the filter",
+            Table::Records { filter, .. } if *filter > 0 || quick => "No rows match the filter",
             _ => "No rows",
         }
     }
@@ -459,7 +468,7 @@ fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
     match effect {
         Effect::ViewRequested { spec, .. } => {
             let viewed = source.view(&spec);
-            grid.view_applied(viewed.applied);
+            grid.view_applied(viewed.applied, viewed.totals);
             for (axis, notice) in viewed.notices {
                 grid.notify(axis, notice);
             }
@@ -742,13 +751,18 @@ fn main() -> io::Result<()> {
             .i64_column(Key(0), |r| Some(r.id))
             .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
             .f64_column(Key(2), |r| r.weight)
-            .i64_column(Key(3), |r| Some(r.crew));
-        let grid = Grid::new(
+            .i64_column(Key(3), |r| Some(r.crew))
+            // The quick filter searches the weight as drawn.
+            .text_column(Key(2), |r| {
+                Some(r.weight.map_or("-".into(), |w| format!("{w:.1}").into()))
+            });
+        let mut grid = Grid::new(
             AxisConfig::new(rows.len() as u64, 1.0).header(1.0),
             AxisConfig::new(HEADERS.len() as u64, 14.0)
                 .header(5.0)
                 .gap(1.0),
         );
+        grid.set_quick_filter_support(Axis::Rows, source.quick_filter(Axis::Rows));
         let source = Box::new(source);
         let slow = std::env::args().any(|a| a == "--slow");
         let table = Table::Records {
@@ -768,6 +782,8 @@ fn main() -> io::Result<()> {
             fraction: 0.5,
         },
     );
+    let controls = Controls::preset(Preset::Chords);
+    let mut quick = QuickFilter::new().placeholder("Ctrl+L");
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
@@ -792,17 +808,23 @@ fn main() -> io::Result<()> {
     let result = (|| {
         loop {
             terminal.draw(|frame| {
-                // The Grid takes all but the bottom line, the status line.
+                // The Grid takes all but the bottom line, the status line,
+                // and the top line while the rows have a quick filter.
                 let full = frame.area();
                 let mut area = full;
                 area.height = full.height.saturating_sub(1);
                 app.pump(&mut table, &mut grid, &shown_rows);
+                let field = grid.snapshot().quick_filter(Axis::Rows).is_some();
+                if field {
+                    area.y += 1;
+                    area.height = area.height.saturating_sub(1);
+                }
                 let border = BORDERS[app.border];
                 let ctx = RenderContext::new(&themes[theme])
                     .border(border)
                     .colors(colors)
                     .at(start.elapsed())
-                    .empty(table.empty());
+                    .empty(table.empty(!quick.text().is_empty()));
                 let fill = |grid: &mut Grid, viewport| fill(grid, &table, viewport);
                 layout = begin_frame(&mut grid, &ctx, area, fill);
                 if app.fit_rows {
@@ -824,13 +846,22 @@ fn main() -> io::Result<()> {
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
+                if field {
+                    let top = ratatui::layout::Rect { height: 1, ..full };
+                    quick.render(&snapshot, &themes[theme], top, frame.buffer_mut());
+                }
                 let line = ratatui::layout::Rect {
                     y: full.y + area.height,
                     height: full.height - area.height,
                     ..full
                 };
                 frame.render_widget(ratatui::text::Line::from(status(&snapshot)), line);
-                let names = format!("{} | {} | {border}", table.source(), themes[theme].name);
+                let names = format!(
+                    "{} | {} | {} | {border}",
+                    row_count(&snapshot),
+                    table.source(),
+                    themes[theme].name
+                );
                 let name = ratatui::text::Line::from(names).right_aligned();
                 frame.render_widget(name, line);
             })?;
@@ -859,7 +890,11 @@ fn main() -> io::Result<()> {
                     if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
                         return Ok(());
                     }
-                    if app.edit_key(&mut table, &mut grid, key.code) {
+                    if app.edit_key(&mut table, &mut grid, key.code) || quick.key(&key, &mut grid) {
+                        continue;
+                    }
+                    if controls.control(&key) == Some(Control::QuickFilter) {
+                        quick.focus(&grid.snapshot());
                         continue;
                     }
                     if ctrl && key.code == KeyCode::Char('t') {

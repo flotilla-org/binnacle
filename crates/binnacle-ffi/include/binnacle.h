@@ -85,9 +85,32 @@ extern "C" {
  * which kept the rest of the sort. */
 #define BINNACLE_VIEW_EDIT_OTHER 0
 #define BINNACLE_VIEW_EDIT_CYCLE_SORT 1
+/* The quick filter of axis was set or cleared: the spec has it. */
+#define BINNACLE_VIEW_EDIT_SET_QUICK_FILTER 2
+/* The host asked for a whole View Spec (binnacle_grid_request_view). */
+#define BINNACLE_VIEW_EDIT_REPLACE 3
+/* Items were shown or hidden on axis and a quick filter searches the shown
+ * ones: the same spec, to apply again. */
+#define BINNACLE_VIEW_EDIT_SHOWN_CHANGED 4
+
+/* BinnacleTextQuery.flags bits. Without CASE_SENSITIVE, case is ignored;
+ * with REGEX, the text is a pattern in the Table Source's own syntax. */
+#define BINNACLE_TEXT_CASE_SENSITIVE 1u
+#define BINNACLE_TEXT_REGEX 2u
+
+/* BinnacleTextQuery.searched: every item of the other axis the Table Source
+ * shows (the Grid asks again when they change), or the keys given. */
+#define BINNACLE_SEARCHED_SHOWN 0
+#define BINNACLE_SEARCHED_KEYS 1
 
 /* binnacle_grid_set_support bits. SORT: the axis may be sorted by the item. */
 #define BINNACLE_SUPPORT_SORT 1u
+
+/* binnacle_grid_set_quick_filter_support bits and
+ * BinnacleAxisSnapshot.quick_filter: the axis has a quick filter, and it
+ * takes regexes. 0 is none, the default. REGEX needs QUICK_FILTER. */
+#define BINNACLE_QUICK_FILTER 1u
+#define BINNACLE_QUICK_FILTER_REGEX 2u
 
 /* binnacle_grid_located's answer: the Key is at position, has left the axis,
  * or has left and position is where focus should go instead. */
@@ -244,6 +267,12 @@ typedef struct {
   BinnacleFocusEnd focus;
   /* Set when BinnacleSnapshot.has_selection_range is. */
   BinnacleRange selection_range;
+  /* The axis's unfiltered count, if the Table Source gave it with the
+   * applied View Spec: shown beside count. */
+  uint32_t has_total;
+  uint64_t total;
+  /* BINNACLE_QUICK_FILTER* bits: whether the axis has a quick filter. */
+  uint32_t quick_filter;
 } BinnacleAxisSnapshot;
 
 /*
@@ -290,11 +319,32 @@ typedef struct {
   uint32_t direction;
 } BinnacleSortColumn;
 
+/* UTF-8 text, length-delimited and not NUL-terminated. */
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+} BinnacleText;
+
+/* Text to look for in the cells of items of the other axis, as the Table
+ * Source writes their values: anywhere in a value, as BINNACLE_TEXT_* flags
+ * say, in the items BINNACLE_SEARCHED_* says (keys for KEYS). A blank never
+ * matches. */
+typedef struct {
+  BinnacleText text;
+  uint32_t flags;
+  uint32_t searched;
+  const uint64_t *keys;
+  size_t keys_len;
+} BinnacleTextQuery;
+
 /* One axis's part of a View Spec: its sort, by items of the other axis in
- * order (empty for unsorted). */
+ * order (empty for unsorted), and its filter: the quick filter, which keeps
+ * the items with a match for it, when has_quick is 1. */
 typedef struct {
   const BinnacleSortColumn *sort;
   size_t sort_len;
+  uint32_t has_quick;
+  BinnacleTextQuery quick;
 } BinnacleAxisView;
 
 /* The view the Table Source should present: axes[BINNACLE_ROWS] and
@@ -311,11 +361,15 @@ typedef struct {
   uint32_t multi;
 } BinnacleViewEdit;
 
-/* UTF-8 text, length-delimited and not NUL-terminated. */
+/* Each axis's unfiltered count, where the Table Source knows it. */
 typedef struct {
-  const uint8_t *data;
-  size_t len;
-} BinnacleText;
+  uint32_t known;
+  uint64_t count;
+} BinnacleTotal;
+
+typedef struct {
+  BinnacleTotal axes[2];
+} BinnacleTotals;
 
 /*
  * A request for the host to act on, stamped with the generation of the
@@ -414,9 +468,16 @@ int binnacle_grid_poll_effect(BinnacleGrid *grid, BinnacleEffect *out);
 
 /* The answer to VIEW_REQUESTED, or the Table Source's own news: the View
  * Spec now applied, which may be part of the request, or the previous one if
- * the request was rejected. NULL is the base view. 0 for an unknown
- * direction. */
-int binnacle_grid_view_applied(BinnacleGrid *grid, const BinnacleViewSpec *spec);
+ * the request was rejected, with each axis's unfiltered count where known.
+ * NULL spec is the base view, NULL totals knows neither. 0 for an unknown
+ * direction, tag or flag, or text that is not UTF-8. */
+int binnacle_grid_view_applied(BinnacleGrid *grid, const BinnacleViewSpec *spec,
+                               const BinnacleTotals *totals);
+
+/* Whether axis has a quick filter and takes regexes: BINNACLE_QUICK_FILTER*
+ * bits. Adapters hide the quick filter of an axis without one. */
+int binnacle_grid_set_quick_filter_support(BinnacleGrid *grid, uint32_t axis,
+                                           uint32_t support);
 
 /* What the Table Source supports when viewing axis by key, an item of the
  * other axis: BINNACLE_SUPPORT_* bits. Every item supports everything until
@@ -437,6 +498,16 @@ int binnacle_grid_notify(BinnacleGrid *grid, uint32_t axis, uint32_t notice, uin
 /* Input. */
 
 int binnacle_grid_pointer(BinnacleGrid *grid, BinnaclePointerEvent event);
+
+/* Sets the quick filter of axis, or clears it with NULL or empty text, and
+ * requests the View Spec with BINNACLE_VIEW_EDIT_SET_QUICK_FILTER (nothing if
+ * it is unchanged). 0 for an unknown tag or flag, or text that is not UTF-8. */
+int binnacle_grid_set_quick_filter(BinnacleGrid *grid, uint32_t axis,
+                                   const BinnacleTextQuery *query);
+
+/* Requests the whole of spec (NULL for the base view), say to restore a saved
+ * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */
+int binnacle_grid_request_view(BinnacleGrid *grid, const BinnacleViewSpec *spec);
 
 /* Text the user typed; 0 if it is not UTF-8. */
 int binnacle_grid_type_text(BinnacleGrid *grid, const uint8_t *text, size_t len);

@@ -1,10 +1,12 @@
 // The records source: a few thousand generated rows through `fromRows`,
 // like the ratatui demo's records. Every column sorts (Shift-click adds a
 // column), headers drag to move columns, and the filter box keeps the rows
-// whose name or port contains its text. Cells edit in place: type, or press
+// whose name or port contains its text. The filter bar above the grid holds
+// the quick filter, which keeps the rows with its text in any column (with
+// case and regex toggles), and the count. Cells edit in place: type, or press
 // F2 or Enter, or double-click; the port column picks from a list.
 
-import { fromRows, GridWidget, type Editor } from "../../src";
+import { createFilterBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, PORTS, RECORDS, rows, WIDTHS, type RecordRow } from "./records-data";
 
@@ -69,7 +71,13 @@ export const records: DemoSource = {
     const committed = document.createElement("output");
     committed.id = "committed";
     toolbar.append(box, committed);
-    const widget = await GridWidget.create(host, {
+    const frame = document.createElement("div");
+    frame.className = "with-filter-bar";
+    const gridBox = document.createElement("div");
+    gridBox.className = "grid-box";
+    frame.append(gridBox);
+    host.append(frame);
+    const widget = await GridWidget.create(gridBox, {
       source,
       columnWidth: 140,
       initialColumnWidth: (col) => WIDTHS[col],
@@ -87,6 +95,8 @@ export const records: DemoSource = {
       },
       editor: (_id, col) => (col === "port" ? portPicker() : null),
     });
+    const bar = createFilterBar(widget);
+    frame.prepend(bar.element);
     return {
       get theme() {
         return widget.theme;
@@ -101,7 +111,9 @@ export const records: DemoSource = {
         widget.border = style;
       },
       destroy() {
+        bar.destroy();
         widget.destroy();
+        frame.remove();
         source.destroy();
         box.remove();
         committed.remove();

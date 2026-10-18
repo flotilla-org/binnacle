@@ -4,8 +4,10 @@ use std::fmt;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Grid, Key, Located, Position, SortSpec, Stamped, Support, ViewSpec,
+    Axis, ChangeNotice, FilterSpec, Grid, Key, Located, Position, Searched, SortSpec, Stamped,
+    Support, TextQuery, TextSupport, Totals, ViewSpec,
 };
+use regex::{Regex, RegexBuilder};
 
 use crate::{InMemoryTableSource, PumpSource, SortKeys, Viewed};
 
@@ -26,6 +28,7 @@ impl std::error::Error for Unsortable {}
 type Extract<R, T> = Box<dyn Fn(&R) -> Option<T>>;
 type Keep<R> = Box<dyn Fn(&R) -> bool>;
 type ExtractBytes<R> = Box<dyn for<'r> Fn(&'r R) -> Option<Cow<'r, [u8]>>>;
+type ExtractText<R> = Box<dyn for<'r> Fn(&'r R) -> Option<Cow<'r, str>>>;
 
 enum Column<R> {
     I64(Extract<R, i64>),
@@ -41,16 +44,78 @@ impl<R> Column<R> {
             Column::Bytes(f) => SortKeys::Bytes(rows.iter().map(f).collect()),
         }
     }
+
+    /// The sort key of `row` written with `Display` (bytes as UTF-8, lossily).
+    fn display<'r>(&self, row: &'r R) -> Option<Cow<'r, str>> {
+        match self {
+            Column::I64(f) => f(row).map(|v| v.to_string().into()),
+            Column::F64(f) => f(row).map(|v| v.to_string().into()),
+            Column::Bytes(f) => f(row).map(|v| match v {
+                Cow::Borrowed(b) => String::from_utf8_lossy(b),
+                Cow::Owned(b) => String::from_utf8_lossy(&b).into_owned().into(),
+            }),
+        }
+    }
+}
+
+/// How a Text Query matches a value.
+enum Matcher {
+    Contains(String),
+    Pattern(Regex),
+}
+
+impl Matcher {
+    /// Plain text matched case-sensitively is a substring search; anything
+    /// else is a regex, the text escaped unless it is one. `None` for an
+    /// invalid regex.
+    fn new(query: &TextQuery) -> Option<Matcher> {
+        if query.case_sensitive && !query.regex {
+            return Some(Matcher::Contains(query.text.clone()));
+        }
+        let pattern = if query.regex {
+            Cow::Borrowed(query.text.as_str())
+        } else {
+            Cow::Owned(regex::escape(&query.text))
+        };
+        let regex = RegexBuilder::new(&pattern)
+            .case_insensitive(!query.case_sensitive)
+            .build()
+            .ok()?;
+        Some(Matcher::Pattern(regex))
+    }
+
+    fn is_match(&self, text: &str) -> bool {
+        match self {
+            Matcher::Contains(needle) => text.contains(needle.as_str()),
+            Matcher::Pattern(regex) => regex.is_match(text),
+        }
+    }
+}
+
+/// The quick filter in force: its query, the columns it searches that have
+/// a text form, and its matcher.
+struct Quick {
+    query: TextQuery,
+    columns: Vec<Key>,
+    matcher: Matcher,
 }
 
 /// An In-Memory Table Source for rows of type `R` in a host's slice, with a
 /// closure per sortable column extracting its sort key from a row. It never
 /// holds the rows: each sort borrows them.
+///
+/// A column's text form, which a quick filter matches, is its text closure
+/// ([`MemorySource::text_column`]) or else its sort key written with
+/// `Display`. A column with neither never matches. Regexes are the `regex`
+/// crate's.
 pub struct MemorySource<R> {
     table: InMemoryTableSource,
     columns: HashMap<Key, Column<R>>,
-    /// The filter in force, kept to place rows the base data gains.
+    texts: HashMap<Key, ExtractText<R>>,
+    /// The host's own filter in force, kept to place rows the base data gains.
     keep: Option<Keep<R>>,
+    /// The quick filter in force, ANDed with `keep`.
+    quick: Option<Quick>,
 }
 
 impl<R> MemorySource<R> {
@@ -60,7 +125,9 @@ impl<R> MemorySource<R> {
         MemorySource {
             table: InMemoryTableSource::new(rows, cols),
             columns: HashMap::new(),
+            texts: HashMap::new(),
             keep: None,
+            quick: None,
         }
     }
 
@@ -93,16 +160,68 @@ impl<R> MemorySource<R> {
         self
     }
 
+    /// Gives the column with Key `column` the text form `f`, which a quick
+    /// filter matches; `None` is a blank, which never matches.
+    pub fn text_column(
+        mut self,
+        column: Key,
+        f: impl for<'r> Fn(&'r R) -> Option<Cow<'r, str>> + 'static,
+    ) -> Self {
+        self.texts.insert(column, Box::new(f));
+        self
+    }
+
+    /// Column `column`'s text form of `row`, if it has one and `row` is not
+    /// blank there.
+    fn text<'r>(&self, column: Key, row: &'r R) -> Option<Cow<'r, str>> {
+        match self.texts.get(&column) {
+            Some(f) => f(row),
+            None => self.columns.get(&column)?.display(row),
+        }
+    }
+
     /// Presents the rows as `spec`'s rows part asks, extracting each sort
-    /// column's keys from `rows`, and returns the Change Notice the rows
-    /// need. If a sort column has no closure, nothing changes. The columns
-    /// part is not applied: [`MemorySource::view_spec`] leaves it out.
+    /// column's keys and each searched column's text from `rows`, and returns
+    /// the Change Notice the rows need: `Refiltered` if the quick filter
+    /// changed. If a sort column has no closure, nothing changes. A quick
+    /// filter with an invalid regex is not applied: the one in force stays.
+    /// The columns part is not applied: [`MemorySource::view_spec`] leaves
+    /// out what is not.
     ///
     /// # Panics
     ///
     /// If `rows` is not as long as the base row count.
     pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Result<ChangeNotice, Unsortable> {
-        self.sort(rows, &spec.rows.sort)
+        let sorted = self.sort(rows, &spec.rows.sort)?;
+        let query = spec.rows.filter.quick.as_ref();
+        if query == self.quick.as_ref().map(|q| &q.query) {
+            return Ok(sorted);
+        }
+        let quick = match query {
+            None => None,
+            Some(query) => match self.quick(query) {
+                Some(quick) => Some(quick),
+                None => return Ok(sorted),
+            },
+        };
+        self.quick = quick;
+        Ok(self.refilter(rows))
+    }
+
+    /// `query` ready to match, or `None` for an invalid regex.
+    fn quick(&self, query: &TextQuery) -> Option<Quick> {
+        let columns = match &query.searches {
+            Searched::Shown => self.window(Axis::Cols, 0..self.count(Axis::Cols)),
+            Searched::Keys(keys) => keys.clone(),
+        };
+        let columns = (columns.into_iter())
+            .filter(|c| self.texts.contains_key(c) || self.columns.contains_key(c))
+            .collect();
+        Some(Quick {
+            query: query.clone(),
+            columns,
+            matcher: Matcher::new(query)?,
+        })
     }
 
     fn sort(&mut self, rows: &[R], spec: &SortSpec) -> Result<ChangeNotice, Unsortable> {
@@ -115,23 +234,53 @@ impl<R> MemorySource<R> {
         Ok(self.table.apply_sort(spec, keys))
     }
 
-    /// Keeps only the rows for which `keep` is true, in sort order, and
-    /// returns the `Refiltered` the rows need. The sort is not redone. The
-    /// filter stays in force for rows the base data gains or changes.
+    /// Whether a filter is in force: the host's or the quick filter.
+    fn filtered(&self) -> bool {
+        self.keep.is_some() || self.quick.is_some()
+    }
+
+    /// Whether the filters in force keep `row`.
+    fn keeps(&self, row: &R) -> bool {
+        self.keep.as_ref().is_none_or(|keep| keep(row))
+            && self.quick.as_ref().is_none_or(|q| {
+                (q.columns.iter())
+                    .any(|&c| self.text(c, row).is_some_and(|t| q.matcher.is_match(&t)))
+            })
+    }
+
+    /// Applies the filters in force to `rows` again, in the sort in force;
+    /// returns the `Refiltered` the rows need.
+    fn refilter(&mut self, rows: &[R]) -> ChangeNotice {
+        if self.filtered() {
+            let keep = rows.iter().map(|r| self.keeps(r)).collect();
+            self.table.apply_filter(keep)
+        } else {
+            self.table.clear_filter()
+        }
+    }
+
+    /// Keeps only the rows for which `keep` is true, and the quick filter
+    /// in force, in sort order, and returns the `Refiltered` the rows need.
+    /// The sort is not redone. The filter stays in force for rows the base
+    /// data gains or changes.
     ///
     /// # Panics
     ///
     /// If `rows` is not as long as the base row count.
     pub fn filter(&mut self, rows: &[R], keep: impl Fn(&R) -> bool + 'static) -> ChangeNotice {
-        let notice = self.table.apply_filter(rows.iter().map(&keep).collect());
         self.keep = Some(Box::new(keep));
-        notice
+        self.refilter(rows)
     }
 
-    /// See [`InMemoryTableSource::clear_filter`].
-    pub fn clear_filter(&mut self) -> ChangeNotice {
+    /// Removes the filter [`MemorySource::filter`] set, keeping the quick
+    /// filter, and returns the `Refiltered` the rows need.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn clear_filter(&mut self, rows: &[R]) -> ChangeNotice {
         self.keep = None;
-        self.table.clear_filter()
+        self.refilter(rows)
     }
 
     /// Rows were appended to the host's base data, now `rows`, keyed by
@@ -148,10 +297,7 @@ impl<R> MemorySource<R> {
             .len()
             .checked_sub(old)
             .expect("rows were appended, not removed");
-        let keep: Vec<bool> = self
-            .keep
-            .as_ref()
-            .map_or_else(Vec::new, |keep| rows[old..].iter().map(keep).collect());
+        let keep: Vec<bool> = self.keep_flags(&rows[old..]);
         let sort_keys = self.sort_keys(rows);
         self.table.append_rows(n, keys, sort_keys, &keep)
     }
@@ -167,9 +313,7 @@ impl<R> MemorySource<R> {
     /// If `row` is not a row of `rows`, or `rows` is not as long as the base
     /// row count.
     pub fn edited(&mut self, rows: &[R], row: usize, column: Key) -> Option<ChangeNotice> {
-        if let Some(keep) = &self.keep
-            && keep(&rows[row]) != self.table.row_position(row).is_some()
-        {
+        if self.filtered() && self.keeps(&rows[row]) != self.table.row_position(row).is_some() {
             return Some(self.reorder(rows));
         }
         if self.sort_spec().find(column).is_some() {
@@ -189,12 +333,18 @@ impl<R> MemorySource<R> {
     ///
     /// As [`InMemoryTableSource::replace_rows`].
     pub fn replaced(&mut self, rows: &[R], keys: Option<Vec<Key>>) -> ChangeNotice {
-        let keep: Vec<bool> = self
-            .keep
-            .as_ref()
-            .map_or_else(Vec::new, |keep| rows.iter().map(keep).collect());
+        let keep = self.keep_flags(rows);
         let sort_keys = self.sort_keys(rows);
         self.table.replace_rows(rows.len(), keys, sort_keys, keep)
+    }
+
+    /// The keep flags of `rows` while a filter is in force, else none.
+    fn keep_flags(&self, rows: &[R]) -> Vec<bool> {
+        if self.filtered() {
+            rows.iter().map(|r| self.keeps(r)).collect()
+        } else {
+            Vec::new()
+        }
     }
 
     /// The sort keys of `rows` for the Sort Spec in force.
@@ -219,9 +369,10 @@ impl<R> MemorySource<R> {
         if !self.sort_spec().is_empty() {
             self.resort(rows);
         }
-        match &self.keep {
-            Some(keep) => self.table.apply_filter(rows.iter().map(keep).collect()),
-            None => ChangeNotice::Reset(self.count(Axis::Rows)),
+        if self.filtered() {
+            self.refilter(rows)
+        } else {
+            ChangeNotice::Reset(self.count(Axis::Rows))
         }
     }
 
@@ -230,14 +381,31 @@ impl<R> MemorySource<R> {
         self.table.sort_spec()
     }
 
-    /// The View Spec the source applies: the rows' sort, as last applied.
+    /// The View Spec the source applies: the rows' sort and quick filter,
+    /// as last applied.
     pub fn view_spec(&self) -> ViewSpec {
-        ViewSpec::default().with_sort(Axis::Rows, self.sort_spec().clone())
+        let quick = self.quick.as_ref().map(|q| q.query.clone());
+        ViewSpec::default()
+            .with_sort(Axis::Rows, self.sort_spec().clone())
+            .with_filter(Axis::Rows, FilterSpec::default().with_quick(quick))
+    }
+
+    /// The unfiltered count of each axis: every base row and column.
+    pub fn totals(&self) -> Totals {
+        Totals {
+            rows: Some(self.table.base_rows() as u64),
+            cols: Some(self.count(Axis::Cols)),
+        }
     }
 
     /// The rows sort by the columns given a closure; columns sort by nothing.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
         Support::default().with_sort(axis == Axis::Rows && self.columns.contains_key(&key))
+    }
+
+    /// The rows have a quick filter, regex included; the columns have none.
+    pub fn quick_filter(&self, axis: Axis) -> Option<TextSupport> {
+        (axis == Axis::Rows).then_some(TextSupport::new(true))
     }
 
     /// Runs [`crate::pump`] with this source over the host's `rows`: View
@@ -285,12 +453,17 @@ impl<R> PumpSource for Over<'_, R> {
         let notice = self.source.view(self.rows, spec).ok();
         Viewed {
             applied: self.source.view_spec(),
+            totals: self.source.totals(),
             notices: notice.map(|n| (Axis::Rows, n)).into_iter().collect(),
         }
     }
 
     fn support(&mut self, axis: Axis, key: Key) -> Support {
         self.source.support(axis, key)
+    }
+
+    fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {
+        self.source.quick_filter(axis)
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {

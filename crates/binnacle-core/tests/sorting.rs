@@ -4,7 +4,8 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, HeaderSort, Key, Mode, Modifiers,
-    PointerEvent, SortColumn, SortDirection, SortSpec, Support, ViewEdit, ViewSpec, Viewport,
+    PointerEvent, SortColumn, SortDirection, SortSpec, Support, Totals, ViewEdit, ViewSpec,
+    Viewport,
 };
 use binnacle_testkit::{PumpSource, RecordTable, Scenario, ScenarioSource};
 
@@ -83,13 +84,13 @@ fn headers_show_the_applied_sort_and_a_pending_flag_until_answered() {
     s.click(header_x(1), 0.0, Modifiers::NONE);
     let mut out = unanswered(&mut s, "click column 1: requested, nothing applied");
     let spec = requested(&mut s).pop().unwrap();
-    s.input(|g| g.view_applied(spec));
+    s.input(|g| g.view_applied(spec, Totals::unknown()));
     out += &unanswered(&mut s, "applied");
     s.click(header_x(2), 0.0, Modifiers::SHIFT);
     s.click(header_x(2), 0.0, Modifiers::SHIFT);
     out += &unanswered(&mut s, "shift-click column 2 twice: two requests out");
     let specs = requested(&mut s);
-    s.input(|g| g.view_applied(specs[0].clone()));
+    s.input(|g| g.view_applied(specs[0].clone(), Totals::unknown()));
     out += &unanswered(&mut s, "first applied: the second is still pending");
     let snap = s.grid.snapshot();
     let header = |_: Key, applied, pending| HeaderSort { applied, pending };
@@ -102,7 +103,7 @@ fn headers_show_the_applied_sort_and_a_pending_flag_until_answered() {
         header(Key(2), Some((SortDirection::Ascending, 1)), true)
     );
     assert_eq!(snap.header_sort(Key(3)), HeaderSort::default());
-    s.input(|g| g.view_applied(specs[0].clone()));
+    s.input(|g| g.view_applied(specs[0].clone(), Totals::unknown()));
     out += &unanswered(&mut s, "second rejected: the first stays applied");
     s.input(|g| g.set_support(Axis::Rows, Key(0), Support::default().with_sort(false)));
     s.click(header_x(0), 0.0, Modifiers::NONE);
@@ -533,7 +534,7 @@ fn a_host_keeps_an_undo_stack_of_view_edits_and_specs_from_the_effects_alone() {
     let viewed = s.source.view(&previous);
     assert_eq!(viewed.applied, previous);
     s.input(|g| {
-        g.view_applied(viewed.applied);
+        g.view_applied(viewed.applied, viewed.totals);
         for (axis, notice) in viewed.notices {
             g.notify(axis, notice);
         }
@@ -552,7 +553,12 @@ fn row_headers_show_the_columns_sort_and_column_headers_the_rows() {
     let mut s = table();
     s.frame(V);
     let by_row_2 = SortSpec::new(vec![SortColumn::descending(Key(2))]);
-    s.input(|g| g.view_applied(ViewSpec::default().with_sort(Axis::Cols, by_row_2)));
+    s.input(|g| {
+        g.view_applied(
+            ViewSpec::default().with_sort(Axis::Cols, by_row_2),
+            Totals::unknown(),
+        )
+    });
     let snap = s.frame(V);
     let rows: Vec<_> = snap.headers(Axis::Rows).map(|h| h.sort).collect();
     let sorted = HeaderSort {

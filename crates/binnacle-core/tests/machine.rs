@@ -1,6 +1,7 @@
 //! Seam 1 state machine: a real Grid against an honest model Table Source,
 //! with every kind of input mixed in any order. Change Notices, `located`
-//! answers (some held back and answered late), refilters, sorts, header
+//! answers (some held back and answered late), refilters, sorts and quick
+//! filters (answered by a sort or a refilter), header
 //! moves, edits,
 //! pointer gestures (band edge drags among them), Actions, Size Overrides,
 //! `set_header`, `set_gap` and `set_focus` (with Keys the source has and Keys
@@ -14,8 +15,8 @@ use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, EditEnd, Effect, FocusStep, Grid, HeaderClick,
-    Key, Located, Mode, Modifiers, PointerEvent, PointerKind, ScrollAnchor, SelectionUnit,
-    Viewport,
+    Key, Located, Mode, Modifiers, PointerEvent, PointerKind, ScrollAnchor, Searched,
+    SelectionUnit, TextQuery, Totals, ViewSpec, Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -203,12 +204,20 @@ impl Host {
                 self.grid.located(axis, key, answer);
             }
             Effect::ViewRequested { spec, .. } => {
-                // Any order will do: the Grid never sees values.
-                let rows = std::mem::take(&mut self.keys[0]);
-                self.keys[0] = tc.draw(gs::permutations(rows));
-                tc.note(&format!("sorted: rows {:?}", self.keys[0]));
-                self.grid.view_applied(spec);
-                self.grid.notify(Axis::Rows, ChangeNotice::Reordered);
+                let total = (self.keys[0].len() + self.hidden[0].len()) as u64;
+                let totals =
+                    Totals::unknown().with(Axis::Rows, tc.draw(gs::booleans()).then_some(total));
+                self.grid.view_applied(spec, totals);
+                if tc.draw(gs::booleans()) {
+                    // Any rows will do for a filter: the Grid never sees values.
+                    self.refilter_axis(tc, Axis::Rows);
+                } else {
+                    // Any order will do for a sort.
+                    let rows = std::mem::take(&mut self.keys[0]);
+                    self.keys[0] = tc.draw(gs::permutations(rows));
+                    tc.note(&format!("sorted: rows {:?}", self.keys[0]));
+                    self.grid.notify(Axis::Rows, ChangeNotice::Reordered);
+                }
             }
             Effect::MoveRequested { axis, keys, to } => {
                 let order = &mut self.keys[axis.index()];
@@ -299,6 +308,12 @@ impl Host {
     /// now and then the order changes too.
     fn refilter(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
+        self.refilter_axis(tc, axis);
+    }
+
+    /// Keeps a random part of `axis`'s Keys, hidden ones included, and
+    /// sends `Refiltered`.
+    fn refilter_axis(&mut self, tc: &TestCase, axis: Axis) {
         let i = axis.index();
         let pool: Vec<u64> = self.keys[i]
             .iter()
@@ -587,6 +602,25 @@ impl Host {
     #[rule(weight = 0.5)]
     fn set_header(&mut self, tc: TestCase) {
         self.band_thickness(&tc);
+    }
+
+    /// The quick filter set, changed or cleared, searching the shown
+    /// columns or one of them.
+    #[rule(weight = 0.5)]
+    fn quick_filter(&mut self, tc: TestCase) {
+        let text = tc.draw(gs::sampled_from(vec!["", "a", "ab"]));
+        let mut query = TextQuery::new(text);
+        if tc.draw(gs::booleans()) {
+            query = query.searching(Searched::Keys(vec![self.key(&tc, Axis::Cols)]));
+        }
+        tc.note(&format!("set_quick_filter({query:?})"));
+        self.grid.set_quick_filter(Axis::Rows, Some(query));
+    }
+
+    /// The host restores the base view.
+    #[rule(weight = 0.25)]
+    fn request_view(&mut self, _: TestCase) {
+        self.grid.request_view(ViewSpec::default());
     }
 
     #[rule(weight = 0.5)]

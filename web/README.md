@@ -88,6 +88,27 @@ To move around from code:
 - `grid.scrollTo(row, col?)` scrolls so the row at that Position (and the
   column) starts the grid.
 
+To filter and view from code:
+
+- `grid.setQuickFilter({ text, caseSensitive, regex, searches: "shown" })`
+  keeps the rows with the text in any shown column (or in the columns
+  `searches` names); `null` or empty text clears it. Each call asks the
+  Table Source for the View Spec in force with this quick filter.
+- `grid.requestView(spec)` asks the Table Source for a whole View Spec, such
+  as a saved view.
+- `grid.subscribe(listener)` calls `listener` after every frame, as
+  `onFrame` does. `frame.rows.total` is the row count before any filter (if
+  the source gave one) and `frame.quickFilter` says whether the rows take a
+  quick filter.
+
+`createFilterBar(grid)` builds the filter bar: the quick filter field with
+match case, regex (when the source takes regexes) and clear buttons, and the
+row count ("1,204 of 5,001", or "5,001 rows"). Place `bar.element` where you
+like, usually above the grid; it draws in the grid's Theme and stays hidden
+while the source's rows take no quick filter. Typing sets the quick filter
+as each key lands, and the grid's live region announces the count once the
+filter applies.
+
 ### React
 
 ```tsx
@@ -132,8 +153,11 @@ type MaybePromise<T> = T | Promise<T>;
 interface TableSource<RowId, ColId, V = unknown> {
   rows: AxisSource<RowId, ColId>;
   cols: AxisSource<ColId, RowId>;
-  /** Presents the table as `spec` asks; returns the View Spec now in force (all, part or none of it). */
-  view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<ViewSpec<RowId, ColId>>;
+  /**
+   * Presents the table as `spec` asks; returns the View Spec now in force (all, part or none of
+   * it, an omitted filter being none), with `totals: { rows?, cols? }`, the counts before any filter.
+   */
+  view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<AppliedView<RowId, ColId>>;
   /** The values where `rows` and `cols` cross, one array per row. */
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
   /** Hands the source its sinks for Change Notices; returns how to detach. */
@@ -146,6 +170,8 @@ interface AxisSource<Id, CrossId> {
   window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[]>;
   /** How this axis may be viewed by `by`, asked as `by` comes into view: `{ sort }`, `true` by default. */
   support?(by: CrossId): Support;
+  /** Set if the axis takes a quick filter (with `view`); `{ regex: true }` if its Text Queries may be regexes. */
+  quickFilter?: { regex?: boolean };
   /** Where `id` sits after a reorder: `{ type: "Found", position }` or `{ type: "Gone", suggest }`. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /** Moves `ids` before Position `to`; `false` refuses. */
@@ -158,25 +184,41 @@ interface AxisSource<Id, CrossId> {
   identity?: "position";
 }
 
-/** One part per axis, each naming items of the other axis: the rows sort by columns. */
+/** One part per axis, each naming items of the other axis: the rows sort and filter by columns. */
 interface ViewSpec<RowId, ColId> {
-  rows: { sort: SortSpec<ColId> };
-  cols: { sort: SortSpec<RowId> };
+  rows: { filter: { quick: TextQuery<ColId> | null }; sort: SortSpec<ColId> };
+  cols: { filter: { quick: TextQuery<RowId> | null }; sort: SortSpec<RowId> };
+}
+
+/** Keep the items with `text` in a searched item of the other axis: the shown ones, or those named. */
+interface TextQuery<CrossId> {
+  text: string;
+  caseSensitive: boolean;
+  /** A regex in the source's own syntax. */
+  regex: boolean;
+  searches: "shown" | CrossId[];
 }
 ```
 
 A source tells the grid what changed through the sink:
 `sink.rows.notify({ type: "Reset" })`, or `Reordered`, `Refiltered`,
 `Inserted { at, n }`, `Removed { at, n }`, `ContentChanged { start, end }`.
-Filtering is not part of the interface: filter however you like, then notify
-`Refiltered`, which keeps focus, picks, row heights and the scroll position
-with their rows (`fromRows` has `filter(keep)` for this). A sort the source
-applies arrives as a reorder through the sink too. Only the rows sort for
-now: a source may drop the columns' part from its answer.
+A filter of the host's own needs no View Spec: filter however you like, then
+notify `Refiltered`, which keeps focus, picks, row heights and the scroll
+position with their rows (`fromRows` has `filter(keep)` for this). A sort or
+quick filter the source applies arrives as a reorder or a `Refiltered`
+through the sink too. Only the rows sort and filter for now: a source may
+drop the columns' part from its answer. When the columns shown change (a
+`Refiltered`, `Reset`, `Inserted` or `Removed` on the columns), a quick
+filter searching the shown columns is asked for again.
 
 `fromRows(rows, columns)` covers arrays of objects: row IDs are array
 indices, column IDs property names, every column sorts unless
-`sortable: false`, and the rows stay in JavaScript.
+`sortable: false`, and the rows stay in JavaScript. Its rows take a quick
+filter, regexes included (JavaScript `RegExp` syntax, with the `u` flag),
+matched against each cell's text as its column's renderer gives it; a
+missing value never matches, and a pattern `RegExp` rejects leaves the quick
+filter in force. The host's `filter(keep)` applies as well.
 
 ## Develop
 

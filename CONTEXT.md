@@ -89,8 +89,16 @@ The sort part of one axis of a View Spec: the ordered list of items on the other
 _Avoid_: Sort order, remap spec
 
 **Filter Spec**:
-The filter part of one axis of a View Spec: which of its items the Table Source keeps.
+The filter part of one axis of a View Spec: which of its items the Table Source keeps, as the parts it holds (so far the quick filter, a Text Query across the other axis's items) all keeping an item. An empty Filter Spec keeps every item.
 _Avoid_: Filter state, predicate
+
+**Text Query**:
+Text to look for in the items of the other axis, with whether case matters, whether it is a regex in the Table Source's own syntax, and which items it searches (the shown ones, or named ones). The quick filter is one; find will be another.
+_Avoid_: Search string, pattern, quick filter text
+
+**Totals**:
+Each axis's count before any filter, as the Table Source gives it with the View Spec it applied, so "1,204 of 5,001" can be shown; unknown when the source does not say.
+_Avoid_: Unfiltered count, base count
 
 ### Inside an In-Memory Table Source
 

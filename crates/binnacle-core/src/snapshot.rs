@@ -4,7 +4,7 @@ use crate::grid::Grid;
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
 use crate::types::{Axis, Generation, Key, Position};
-use crate::view::ViewSpec;
+use crate::view::{TextSupport, ViewSpec};
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
 /// along the axis; `key` is `None` while the Table Source has not filled that
@@ -302,6 +302,17 @@ impl<'a> Snapshot<'a> {
     /// The latest requested View Spec while an answer is still due.
     pub fn requested_view(&self) -> Option<&'a ViewSpec> {
         self.grid.view.requested.as_ref()
+    }
+
+    /// The unfiltered count of `axis`, if the Table Source gave it with the
+    /// applied View Spec: shown beside [`Snapshot::count`].
+    pub fn total(&self, axis: Axis) -> Option<u64> {
+        self.grid.view.totals.axis(axis)
+    }
+
+    /// How `axis`'s quick filter matches, if it has one.
+    pub fn quick_filter(&self, axis: Axis) -> Option<TextSupport> {
+        self.grid.view.quick_filter[axis.index()]
     }
 
     /// How the header of column `key` shows the rows' sort.

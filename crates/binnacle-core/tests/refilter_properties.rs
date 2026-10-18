@@ -90,7 +90,7 @@ fn a_filter_round_trip_restores_focus_sizes_and_the_surviving_picks(tc: TestCase
         .collect();
     assert_eq!(s.grid.snapshot().picked(), surviving, "picks once filtered");
 
-    let notice = s.source.source.clear_filter();
+    let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     s.frame(view);
     let snap = s.grid.snapshot();

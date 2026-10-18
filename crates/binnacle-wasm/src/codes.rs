@@ -6,7 +6,7 @@ use std::fmt;
 
 use binnacle_core::{
     Axis, Button, ChangeNotice, EditEnd, FocusStep, Key, Located, Modifiers, PointerKind, Position,
-    SelectionUnit, SortColumn, SortSpec, Support,
+    SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -162,6 +162,21 @@ pub fn sort_spec(keys: &[u64], directions: &[u8]) -> SortSpec {
     )
 }
 
+pub const QUICK_FILTER: u8 = 1;
+pub const QUICK_FILTER_REGEX: u8 = 2;
+
+/// A quick filter's support: none without [`QUICK_FILTER`], with regexes if
+/// [`QUICK_FILTER_REGEX`] is set too.
+pub fn quick_filter(bits: u8) -> Option<TextSupport> {
+    (bits & QUICK_FILTER != 0).then(|| TextSupport::new(bits & QUICK_FILTER_REGEX != 0))
+}
+
+/// An unfiltered count: `None` unless a whole number up to [`MAX_COUNT`]
+/// (NaN for unknown).
+pub fn total(n: f64) -> Option<u64> {
+    count(n).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +258,14 @@ mod tests {
         assert!(count(-1.0).is_err());
         assert!(count(2.5).is_err());
         assert!(count(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn quick_filter_bits_need_the_quick_filter_bit_and_unknown_totals_are_nan() {
+        assert_eq!(quick_filter(0), None);
+        assert_eq!(quick_filter(QUICK_FILTER_REGEX), None);
+        assert_eq!(quick_filter(QUICK_FILTER), Some(TextSupport::new(false)));
+        assert_eq!(quick_filter(3), Some(TextSupport::new(true)));
+        assert_eq!((total(f64::NAN), total(40.0)), (None, Some(40)));
     }
 }

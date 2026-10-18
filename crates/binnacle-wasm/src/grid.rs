@@ -1,12 +1,12 @@
 //! The Grid as a wasm-bindgen class. Each input is one typed method: a new
 //! Action or setting is a few lines here plus its call in `web/src`.
 
-use binnacle_core::{Action, AxisConfig, Grid, Key, PointerEvent, Viewport};
+use binnacle_core::{Action, AxisConfig, Grid, Key, PointerEvent, TextQuery, Totals, Viewport};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, focus_step, position};
-use crate::effect::{WireStamped, WireViewSpec};
+use crate::effect::{WireStamped, WireTextQuery, WireViewSpec};
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -138,12 +138,43 @@ impl WebGrid {
     }
 
     /// The View Spec the Table Source now applies, shaped as `ViewRequested`
-    /// carries it.
-    pub fn view_applied(&mut self, spec: JsValue) -> Result<(), JsError> {
-        let spec: WireViewSpec =
-            serde_wasm_bindgen::from_value(spec).map_err(|e| JsError::new(&e.to_string()))?;
-        self.grid.view_applied(spec.into());
+    /// carries it, with each axis's unfiltered count (NaN if unknown).
+    pub fn view_applied(
+        &mut self,
+        spec: JsValue,
+        total_rows: f64,
+        total_cols: f64,
+    ) -> Result<(), JsError> {
+        let spec = view_spec(spec)?;
+        let totals = Totals {
+            rows: codes::total(total_rows),
+            cols: codes::total(total_cols),
+        };
+        self.grid.view_applied(spec, totals);
         Ok(())
+    }
+
+    /// Requests the whole of `spec`, shaped as `ViewRequested` carries it.
+    pub fn request_view(&mut self, spec: JsValue) -> Result<(), JsError> {
+        let spec = view_spec(spec)?;
+        self.grid.request_view(spec);
+        Ok(())
+    }
+
+    /// Sets the quick filter of axis `a` to `query`, a Text Query shaped as
+    /// `ViewRequested` carries it, or clears it with `null`.
+    pub fn set_quick_filter(&mut self, a: u8, query: JsValue) -> Result<(), JsError> {
+        let query: Option<WireTextQuery> =
+            serde_wasm_bindgen::from_value(query).map_err(|e| JsError::new(&e.to_string()))?;
+        self.grid
+            .set_quick_filter(axis(a), query.map(TextQuery::from));
+        Ok(())
+    }
+
+    /// Whether axis `a` has a quick filter; see [`codes::quick_filter`].
+    pub fn set_quick_filter_support(&mut self, a: u8, bits: u8) {
+        self.grid
+            .set_quick_filter_support(axis(a), codes::quick_filter(bits));
     }
 
     /// The answer to `Locate`; see [`codes::located`].
@@ -288,6 +319,19 @@ pub fn debug_scenarios() -> Vec<String> {
 #[wasm_bindgen]
 pub fn debug_notice(code: u8, a: f64, b: f64) -> String {
     format!("{:?}", codes::notice(code, a, b))
+}
+
+/// A View Spec from JS, shaped as `ViewRequested` carries it.
+fn view_spec(spec: JsValue) -> Result<binnacle_core::ViewSpec, JsError> {
+    let spec: WireViewSpec =
+        serde_wasm_bindgen::from_value(spec).map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(spec.into())
+}
+
+/// Test only: one of every View Edit, as `ViewRequested` carries them.
+#[wasm_bindgen]
+pub fn debug_every_view_edit() -> JsValue {
+    to_js(&testing::every_view_edit())
 }
 
 /// Test only: one of every Effect, as [`WebGrid::poll_effects`] returns them.
