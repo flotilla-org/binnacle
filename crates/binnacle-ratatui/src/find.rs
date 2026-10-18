@@ -41,9 +41,14 @@ pub struct FindStatus {
 /// once a pause has passed (see [`FindBar::tick`]), the toggles and steps at
 /// once.
 ///
+/// Opening selects the text the bar holds, so the first character typed (or
+/// Backspace) replaces it and any other key keeps it, as in vim's `/` and a
+/// desktop find.
+///
 /// While focused it takes every key: characters and Backspace edit, Ctrl+U
 /// clears, Alt+C toggles case, Alt+R regex, Alt+B the order, Enter or Ctrl+N
-/// step to the next match, Shift+Enter or Ctrl+P to the previous, Alt+F shows
+/// step to the next match, Shift+Enter or Ctrl+P to the previous (Enter and
+/// Shift+Enter the other way round once [`FindBar::open_backward`]), Alt+F shows
 /// only matching rows (it sets the rows' quick filter to the find's text;
 /// again clears it), and Esc leaves the bar with find still open, so F3
 /// steps from the table. [`FindBar::close`] closes find.
@@ -57,10 +62,14 @@ pub struct FindBar {
     focused: bool,
     /// Whether the Table Source takes regexes, as of opening.
     regex_support: bool,
-    /// Whether Alt+F set the quick filter, so the next clears it.
-    only: bool,
     /// Which way the last step went, for the wrap note.
     stepped: Option<FindDirection>,
+    /// Whether find was opened to step backwards, so Enter steps back.
+    backward: bool,
+    /// Whether the text is selected, as on opening, so typing replaces it.
+    selected: bool,
+    /// The keys the bar names while the table has focus.
+    table_hints: Option<String>,
     pause: Pause,
 }
 
@@ -89,6 +98,13 @@ impl FindBar {
         self.pause.deadline()
     }
 
+    /// The keys to name after the count while the table has focus, such as
+    /// `n next  N prev  / edit`; by default the chords preset's.
+    pub fn table_hints(mut self, hints: impl Into<String>) -> Self {
+        self.table_hints = Some(hints.into());
+        self
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -101,11 +117,24 @@ impl FindBar {
     /// find support; returns whether it did. Follow it with
     /// [`FindBar::apply`] to find the bar's text again.
     pub fn open(&mut self, snapshot: &Snapshot) -> bool {
+        self.open_toward(snapshot, false)
+    }
+
+    /// As [`FindBar::open`], but to step backwards: Enter steps to the
+    /// previous match and Shift+Enter to the next, and [`FindBar::repeat`]
+    /// goes backwards, as after vim's `?`.
+    pub fn open_backward(&mut self, snapshot: &Snapshot) -> bool {
+        self.open_toward(snapshot, true)
+    }
+
+    fn open_toward(&mut self, snapshot: &Snapshot, backward: bool) -> bool {
         let Some(support) = snapshot.find_support() else {
             return false;
         };
         self.regex_support = support.regex;
         self.regex &= support.regex;
+        self.backward = backward;
+        self.selected = !self.focused && !self.text.is_empty();
         self.open = true;
         self.focused = true;
         true
@@ -155,6 +184,39 @@ impl FindBar {
         true
     }
 
+    /// Steps on the way find was opened, or the other way if `reverse`, as
+    /// vim's `n` and `N` do; returns whether find was open.
+    pub fn repeat(&mut self, reverse: bool, grid: &mut Grid) -> bool {
+        let direction = if self.backward != reverse {
+            FindDirection::Previous
+        } else {
+            FindDirection::Next
+        };
+        self.step(direction, grid)
+    }
+
+    /// Shows only the rows that match: sets the rows' quick filter to the
+    /// find's text or, while it is that already, clears it. Does nothing
+    /// while there is no text to find.
+    pub fn only_matching(&mut self, grid: &mut Grid) {
+        if self.pause.flush() {
+            self.apply(grid);
+        }
+        let Some(query) = self.query().map(|q| q.query) else {
+            return;
+        };
+        let snapshot = grid.snapshot();
+        let view = snapshot.requested_view().unwrap_or(snapshot.applied_view());
+        let on = view.rows.filter.quick.as_ref() == Some(&query);
+        grid.set_quick_filter(Axis::Rows, (!on).then_some(query));
+    }
+
+    /// Toggles whether find matches case, finding again if open.
+    pub fn toggle_case(&mut self, grid: &mut Grid) {
+        self.case_sensitive = !self.case_sensitive;
+        self.edited(grid);
+    }
+
     /// Takes a key press while focused; false (taking nothing) otherwise.
     pub fn key(&mut self, event: &KeyEvent, grid: &mut Grid) -> bool {
         if !self.focused || event.kind == KeyEventKind::Release {
@@ -163,13 +225,15 @@ impl FindBar {
         let alt = event.modifiers == KeyModifiers::ALT;
         let ctrl = event.modifiers == KeyModifiers::CONTROL;
         let shift = event.modifiers == KeyModifiers::SHIFT;
+        let typed = KeyModifiers::SHIFT.contains(event.modifiers)
+            && matches!(event.code, KeyCode::Char(_) | KeyCode::Backspace);
+        if std::mem::take(&mut self.selected) && typed {
+            self.text.clear();
+        }
         match event.code {
             KeyCode::Esc => self.focused = false,
-            KeyCode::Enter if shift => {
-                self.step(FindDirection::Previous, grid);
-            }
             KeyCode::Enter => {
-                self.step(FindDirection::Next, grid);
+                self.repeat(shift, grid);
             }
             KeyCode::Char('n') if ctrl => {
                 self.step(FindDirection::Next, grid);
@@ -177,18 +241,8 @@ impl FindBar {
             KeyCode::Char('p') if ctrl => {
                 self.step(FindDirection::Previous, grid);
             }
-            KeyCode::Char('f') if alt => {
-                if self.pause.flush() {
-                    self.apply(grid);
-                }
-                let quick = self.query().filter(|_| !self.only).map(|q| q.query);
-                self.only = quick.is_some();
-                grid.set_quick_filter(Axis::Rows, quick);
-            }
-            KeyCode::Char('c') if alt => {
-                self.case_sensitive = !self.case_sensitive;
-                self.edited(grid);
-            }
+            KeyCode::Char('f') if alt => self.only_matching(grid),
+            KeyCode::Char('c') if alt => self.toggle_case(grid),
             KeyCode::Char('r') if alt && self.regex_support => {
                 self.regex = !self.regex;
                 self.edited(grid);
@@ -277,7 +331,11 @@ impl FindBar {
         };
         let shown = fit(&shown, u32::try_from(room).unwrap_or(u32::MAX));
         let pad = room.saturating_sub(char_count(&shown) as usize);
-        put(&mut x, &shown, field);
+        let text = match self.selected && self.focused {
+            true => field.add_modifier(Modifier::REVERSED),
+            false => field,
+        };
+        put(&mut x, &shown, text);
         put(&mut x, &" ".repeat(pad), field);
         put(&mut x, " ", theme.body);
         let mut toggles = vec![("Aa", self.case_sensitive)];
@@ -326,11 +384,13 @@ impl FindBar {
             };
             put(&mut x, note, theme.body.patch(theme.find_current));
         }
-        let hints = if self.focused {
-            "  Enter next  S-Enter/^P prev  Esc table"
-        } else {
-            "  F3 next  S-F3 prev  ^F edit"
+        let hints = match self.table_hints.as_deref() {
+            _ if self.focused && self.backward => "Enter prev  S-Enter/^N next  Esc table",
+            _ if self.focused => "Enter next  S-Enter/^P prev  Esc table",
+            Some(hints) => hints,
+            None => "F3/^N next  S-F3/^P prev  ^F edit",
         };
+        put(&mut x, "  ", theme.body);
         put(&mut x, hints, theme.body.patch(theme.loading));
     }
 }

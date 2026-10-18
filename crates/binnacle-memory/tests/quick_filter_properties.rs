@@ -559,3 +559,26 @@ fn distinct_values_ignore_the_filter_in_force(tc: TestCase) {
     source.view(&rows, &spec).unwrap();
     assert_eq!(source.distinct(&rows, column, &asked), before);
 }
+
+/// Keeping a record's value in a column (as a OneOf of the value the source
+/// names it by) keeps that record and exactly the others whose value there
+/// is the same, blanks with blanks.
+#[hegel::test(test_cases = 500)]
+fn a_records_value_kept_as_a_one_of_keeps_the_records_alike(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).min_size(1).max_size(12));
+    let mut source = source(rows.len());
+    let column = tc.draw(gs::sampled_from(vec![NAME, QTY, BARE]));
+    let at = tc.draw(gs::integers::<usize>().max_value(rows.len() - 1));
+    let value = source.value(column, &rows[at]);
+    let keep = Condition::one_of(column, vec![value]);
+    source
+        .view(&rows, &filtered(tc.draw(sort()), None, vec![keep]))
+        .unwrap();
+    let mut shown = visible(&source);
+    shown.sort_unstable();
+    let alike: Vec<u64> = (0..rows.len())
+        .filter(|&i| text_of(&rows[i], column) == text_of(&rows[at], column))
+        .map(|i| i as u64)
+        .collect();
+    assert_eq!(shown, alike);
+}

@@ -19,8 +19,8 @@ mod theme;
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
 pub use filter::{
-    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, render_conditions,
-    row_count,
+    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, keep_value,
+    remove_conditions, render_conditions, row_count,
 };
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;

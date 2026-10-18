@@ -1,7 +1,6 @@
 //! Find and filter controls: the keys that reach them, by preset, the quick
 //! filter field, the column filter popup and the conditions line.
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use binnacle_core::{
@@ -17,65 +16,191 @@ use crate::checklist::{Column, Shown};
 use crate::renderer::{char_count, fit};
 use crate::{Content, Theme};
 
-/// A find or filter control a key reaches, outside the Grid's Actions.
+/// A find or filter control a key reaches, outside the Grid's Actions. Every
+/// [`Preset`] reaches each of [`Control::ALL`]; the host carries it out with
+/// the method each names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Control {
-    /// Focus the quick filter field.
+    /// Focus the quick filter field ([`QuickFilter::focus`]).
     QuickFilter,
-    /// Open the focused column's filter popup.
+    /// Open the focused column's filter popup or drawer, or focus a drawer
+    /// already shown ([`ColumnFilter::open`]).
     ColumnFilter,
-    /// Open the find bar, or focus it again.
+    /// Open the focused column's filter at its text, set to contain or (with
+    /// `not`) not contain it ([`ColumnFilter::open_text`]).
+    ColumnText { not: bool },
+    /// Keep only the rows whose value in the focused column is the focused
+    /// cell's ([`keep_value`], with the value the host reads).
+    KeepValue,
+    /// Remove the focused column's conditions or, with none there, the last
+    /// condition ([`remove_conditions`]).
+    Remove,
+    /// Clear the quick filter and every condition ([`clear_filters`]).
+    Clear,
+    /// Open the find bar, or focus it again ([`crate::FindBar::open`]).
     Find,
-    /// Step to the next match while find is open.
+    /// Open the find bar to step backwards: Enter steps to the previous
+    /// match and [`Control::FindNext`] goes backwards too
+    /// ([`crate::FindBar::open_backward`]).
+    FindBackward,
+    /// Step on to the next match while find is open, the way find was opened
+    /// ([`crate::FindBar::repeat`]).
     FindNext,
-    /// Step to the previous match while find is open.
+    /// Step back the other way ([`crate::FindBar::repeat`] reversed).
     FindPrevious,
+    /// Show only the rows that match the find, or show them all again
+    /// ([`crate::FindBar::only_matching`]).
+    OnlyMatching,
+    /// Toggle whether find matches case ([`crate::FindBar::toggle_case`]).
+    Case,
     /// Apply the View Spec again ([`binnacle_core::Grid::reapply_view`]), so
     /// rows the user's edits left unmatched are filtered.
     Reapply,
+    /// Close an open filter drawer, else find; with neither open, the key
+    /// goes on to the [`crate::Keymap`] ([`ColumnFilter::close`],
+    /// [`crate::FindBar::close`]).
+    Close,
+}
+
+impl Control {
+    /// Every Control, each of which every preset reaches.
+    pub const ALL: [Control; 15] = [
+        Control::QuickFilter,
+        Control::ColumnFilter,
+        Control::ColumnText { not: false },
+        Control::ColumnText { not: true },
+        Control::KeepValue,
+        Control::Remove,
+        Control::Clear,
+        Control::Find,
+        Control::FindBackward,
+        Control::FindNext,
+        Control::FindPrevious,
+        Control::OnlyMatching,
+        Control::Case,
+        Control::Reapply,
+        Control::Close,
+    ];
 }
 
 /// A set of bindings for the find and filter controls, to suit how a
-/// terminal user already works.
+/// terminal user already works. Each reaches every [`Control`], and none only
+/// through a function key, since macOS sends media keys for the top row by
+/// default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Preset {
-    /// Ctrl chords, as in a desktop application: Ctrl+L for the quick
-    /// filter, Alt+Down for the focused column's filter popup, Ctrl+F for
-    /// the find bar, F3 (Shift+F3 back) to step between matches, and Alt+L
-    /// (or Excel's Ctrl+Alt+L) to apply the filter again.
+    /// Ctrl and Alt chords, as in a desktop application, with typing left to
+    /// the [`crate::Keymap`]: Ctrl+F find, Alt+Shift+F find backwards, F3 or
+    /// Ctrl+N next, Shift+F3 or Ctrl+P previous, Alt+F show only matching
+    /// rows, Alt+C case, Ctrl+L the quick filter, Alt+Down the focused
+    /// column's filter popup, Alt+T and Alt+N its text set to contain or not,
+    /// Alt+= keep the focused value, Ctrl+D remove, Ctrl+K clear, Alt+L (or
+    /// Excel's Ctrl+Alt+L) apply the filter again, Esc close.
     Chords,
+    /// vim and VisiData: `/` and `?` find forwards and backwards, `n` and `N`
+    /// step, `|` the quick filter, `\` and `&` the focused column's text set
+    /// to contain or not, `F` its filter popup, `=` keep the focused value,
+    /// `u` and `U` remove and clear, `i` case, `m` show only matching rows,
+    /// `r` apply the filter again, Esc close. Typing is off.
+    Modes,
+    /// Single keys with no modes: `/ ? n N` find, `\` the quick filter, `f`
+    /// the filter drawer (see [`ColumnFilter::drawer`]), `|` and `&` its text
+    /// set to contain or not, `=` keep the focused value, `x` and `X` remove
+    /// and clear, `m` show only matching rows, `i` case, `r` apply the filter
+    /// again, Esc close. Typing is off.
+    BareKeys,
+}
+
+impl Preset {
+    /// Whether the [`crate::Keymap`] behind the preset should turn
+    /// characters into typing ([`crate::Keymap::set_typing`]): only chords
+    /// leave the bare keys free for it.
+    pub fn typing(self) -> bool {
+        self == Preset::Chords
+    }
 }
 
 /// Maps crossterm key presses to [`Control`]s, starting from a [`Preset`];
 /// hosts rebind with [`Controls::bind`] and [`Controls::unbind`]. Check it
-/// before the [`crate::Keymap`], so its bindings win.
+/// before the [`crate::Keymap`], so its bindings win. A character's case
+/// carries Shift, so Shift is ignored on characters.
 #[derive(Clone, Debug)]
 pub struct Controls {
-    bindings: HashMap<(KeyCode, KeyModifiers), Control>,
+    /// In the order bound, so the first binding of a Control is its hint.
+    bindings: Vec<((KeyCode, KeyModifiers), Control)>,
 }
 
 impl Controls {
     pub fn preset(preset: Preset) -> Self {
+        use Control::*;
+        use KeyCode::{Char, Down, Esc, F};
+        const NONE: KeyModifiers = KeyModifiers::NONE;
+        const CTRL: KeyModifiers = KeyModifiers::CONTROL;
+        const ALT: KeyModifiers = KeyModifiers::ALT;
+        const SHIFT: KeyModifiers = KeyModifiers::SHIFT;
         let mut controls = Controls {
-            bindings: HashMap::new(),
+            bindings: Vec::new(),
         };
-        match preset {
-            Preset::Chords => {
-                controls.bind(
-                    KeyCode::Char('l'),
-                    KeyModifiers::CONTROL,
-                    Control::QuickFilter,
-                );
-                controls.bind(KeyCode::Down, KeyModifiers::ALT, Control::ColumnFilter);
-                controls.bind(KeyCode::Char('f'), KeyModifiers::CONTROL, Control::Find);
-                controls.bind(KeyCode::F(3), KeyModifiers::NONE, Control::FindNext);
-                controls.bind(KeyCode::F(3), KeyModifiers::SHIFT, Control::FindPrevious);
-                controls.bind(KeyCode::Char('l'), KeyModifiers::ALT, Control::Reapply);
-                let excel = KeyModifiers::CONTROL | KeyModifiers::ALT;
-                controls.bind(KeyCode::Char('l'), excel, Control::Reapply);
-            }
+        let bindings: &[(KeyCode, KeyModifiers, Control)] = match preset {
+            Preset::Chords => &[
+                (Char('l'), CTRL, QuickFilter),
+                (Down, ALT, ColumnFilter),
+                (Char('t'), ALT, ColumnText { not: false }),
+                (Char('n'), ALT, ColumnText { not: true }),
+                (Char('='), ALT, KeepValue),
+                (Char('d'), CTRL, Remove),
+                (Char('k'), CTRL, Clear),
+                (Char('f'), CTRL, Find),
+                (Char('F'), ALT, FindBackward),
+                (F(3), NONE, FindNext),
+                (Char('n'), CTRL, FindNext),
+                (F(3), SHIFT, FindPrevious),
+                (Char('p'), CTRL, FindPrevious),
+                (Char('f'), ALT, OnlyMatching),
+                (Char('c'), ALT, Case),
+                (Char('l'), ALT, Reapply),
+                (Char('l'), CTRL.union(ALT), Reapply),
+                (Esc, NONE, Close),
+            ],
+            Preset::Modes => &[
+                (Char('|'), NONE, QuickFilter),
+                (Char('F'), NONE, ColumnFilter),
+                (Char('\\'), NONE, ColumnText { not: false }),
+                (Char('&'), NONE, ColumnText { not: true }),
+                (Char('='), NONE, KeepValue),
+                (Char('u'), NONE, Remove),
+                (Char('U'), NONE, Clear),
+                (Char('/'), NONE, Find),
+                (Char('?'), NONE, FindBackward),
+                (Char('n'), NONE, FindNext),
+                (Char('N'), NONE, FindPrevious),
+                (Char('m'), NONE, OnlyMatching),
+                (Char('i'), NONE, Case),
+                (Char('r'), NONE, Reapply),
+                (Esc, NONE, Close),
+            ],
+            Preset::BareKeys => &[
+                (Char('\\'), NONE, QuickFilter),
+                (Char('f'), NONE, ColumnFilter),
+                (Char('|'), NONE, ColumnText { not: false }),
+                (Char('&'), NONE, ColumnText { not: true }),
+                (Char('='), NONE, KeepValue),
+                (Char('x'), NONE, Remove),
+                (Char('X'), NONE, Clear),
+                (Char('/'), NONE, Find),
+                (Char('?'), NONE, FindBackward),
+                (Char('n'), NONE, FindNext),
+                (Char('N'), NONE, FindPrevious),
+                (Char('m'), NONE, OnlyMatching),
+                (Char('i'), NONE, Case),
+                (Char('r'), NONE, Reapply),
+                (Esc, NONE, Close),
+            ],
+        };
+        for &(code, modifiers, control) in bindings {
+            controls.bind(code, modifiers, control);
         }
         controls
     }
@@ -83,13 +208,19 @@ impl Controls {
     /// Binds `code` pressed with exactly `modifiers` to `control`, replacing
     /// any earlier binding.
     pub fn bind(&mut self, code: KeyCode, modifiers: KeyModifiers, control: Control) -> &mut Self {
-        self.bindings.insert((code, modifiers), control);
+        let key = chord(code, modifiers);
+        match self.bindings.iter_mut().find(|(k, _)| *k == key) {
+            Some(binding) => binding.1 = control,
+            None => self.bindings.push((key, control)),
+        }
         self
     }
 
     /// Removes the binding for `code` with `modifiers`, returning its Control.
     pub fn unbind(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Control> {
-        self.bindings.remove(&(code, modifiers))
+        let key = chord(code, modifiers);
+        let at = self.bindings.iter().position(|(k, _)| *k == key)?;
+        Some(self.bindings.remove(at).1)
     }
 
     /// The Control for a key press or repeat, if bound.
@@ -97,8 +228,54 @@ impl Controls {
         if event.kind == KeyEventKind::Release {
             return None;
         }
-        self.bindings.get(&(event.code, event.modifiers)).copied()
+        let key = chord(event.code, event.modifiers);
+        (self.bindings.iter())
+            .find(|(k, _)| *k == key)
+            .map(|&(_, control)| control)
     }
+
+    /// The keys bound to `control`, in the order bound.
+    pub fn keys(&self, control: Control) -> Vec<(KeyCode, KeyModifiers)> {
+        (self.bindings.iter())
+            .filter(|(_, c)| *c == control)
+            .map(|&(key, _)| key)
+            .collect()
+    }
+
+    /// The first key bound to `control`, named for a hint, such as `Ctrl+F`,
+    /// `Alt+Down`, `Shift+F3` or `/`.
+    pub fn hint(&self, control: Control) -> Option<String> {
+        let (code, modifiers) = *self.keys(control).first()?;
+        let mut name = String::new();
+        for (modifier, label) in [
+            (KeyModifiers::CONTROL, "Ctrl+"),
+            (KeyModifiers::ALT, "Alt+"),
+            (KeyModifiers::SHIFT, "Shift+"),
+        ] {
+            if modifiers.contains(modifier) {
+                name += label;
+            }
+        }
+        match code {
+            KeyCode::Char(c) if !modifiers.is_empty() && c.is_ascii_uppercase() => {
+                name += "Shift+";
+                name.push(c);
+            }
+            KeyCode::Char(c) if !modifiers.is_empty() => name.push(c.to_ascii_uppercase()),
+            KeyCode::Char(c) => name.push(c),
+            KeyCode::F(n) => name += &format!("F{n}"),
+            code => name += &format!("{code:?}"),
+        }
+        Some(name)
+    }
+}
+
+/// A binding's key: Shift dropped from a character, whose case carries it.
+fn chord(code: KeyCode, mut modifiers: KeyModifiers) -> (KeyCode, KeyModifiers) {
+    if matches!(code, KeyCode::Char(_)) {
+        modifiers.remove(KeyModifiers::SHIFT);
+    }
+    (code, modifiers)
 }
 
 /// How long a field that writes a Text Query waits after the last key typed
@@ -483,11 +660,23 @@ impl Query {
 /// A Text condition the Table Source did not apply (an invalid regex, say)
 /// turns the text red, with the message the host gives
 /// [`ColumnFilter::set_error`] under it.
+///
+/// Made a [`ColumnFilter::drawer`], it is drawn down the table's right
+/// instead, in the [`ColumnFilter::width`] the host leaves it, and stays
+/// shown once opened: Enter and Esc keep the conditions and give focus back
+/// to the table, where the drawer follows the focused column (a column with
+/// no filters leaves it empty) until [`ColumnFilter::open`] focuses it again
+/// or [`ColumnFilter::close`] closes it.
 #[derive(Clone, Debug, Default)]
 pub struct ColumnFilter {
     open: Option<Open>,
     pause: Pause,
     error: Option<String>,
+    drawer: bool,
+    /// The column a drawer is shown on, while shown.
+    shown: Option<Key>,
+    /// Whether a shown drawer has focus.
+    focused: bool,
 }
 
 /// Where the popup's keys go.
@@ -596,31 +785,77 @@ impl ColumnFilter {
         self.error = message;
     }
 
-    /// The column the popup is open on, if it is open.
+    /// Draws it as a drawer down the table's right, not a popup.
+    pub fn drawer(mut self) -> Self {
+        self.drawer = true;
+        self
+    }
+
+    /// The cells wide a shown drawer is, which the host takes from the
+    /// table's right; 0 for a popup or a closed drawer.
+    pub fn width(&self) -> u16 {
+        if self.shown.is_some() { POPUP_WIDTH } else { 0 }
+    }
+
+    /// Whether it takes keys: a popup while open, a drawer while focused.
+    pub fn focused(&self) -> bool {
+        match self.drawer {
+            true => self.focused && self.open.is_some(),
+            false => self.open.is_some(),
+        }
+    }
+
+    /// The column it is open on, if it is open.
     pub fn column(&self) -> Option<Key> {
         self.open.as_ref().map(|o| o.key)
     }
 
-    /// Opens on the focused column; returns whether it did.
+    /// Opens on the focused column, or focuses a drawer already shown on
+    /// it; returns whether it took focus. A drawer opened on a column with
+    /// no filters shows empty and takes no focus.
     pub fn open(&mut self, snapshot: &Snapshot) -> bool {
-        match snapshot.focus(Axis::Cols).and_then(|f| f.key) {
-            Some(key) => self.open_column(snapshot, key),
-            None => false,
+        let Some(key) = snapshot.focus(Axis::Cols).and_then(|f| f.key) else {
+            return false;
+        };
+        if self.drawer && self.shown == Some(key) && self.open.is_some() {
+            self.focused = true;
+            return true;
         }
+        self.open_column(snapshot, key)
+    }
+
+    /// Closes it, keeping the conditions; returns whether it was open (or a
+    /// drawer shown).
+    pub fn close(&mut self) -> bool {
+        let was = self.open.is_some() || self.shown.is_some();
+        self.open = None;
+        self.shown = None;
+        self.focused = false;
+        was
     }
 
     /// Opens on column `key` if it takes Text or OneOf conditions; returns
     /// whether it did.
     pub fn open_column(&mut self, snapshot: &Snapshot, key: Key) -> bool {
+        let opened = self.show(snapshot, key);
+        if self.drawer {
+            self.shown = Some(key);
+            self.focused = opened;
+        }
+        opened
+    }
+
+    /// Puts column `key`'s conditions in it, or nothing if it takes none;
+    /// returns whether it takes any.
+    fn show(&mut self, snapshot: &Snapshot, key: Key) -> bool {
         let support = snapshot.support(Axis::Rows, key);
         if support.text.is_none() && !support.one_of {
+            if self.drawer {
+                self.open = None;
+            }
             return false;
         }
-        let asked: Vec<Condition> = (snapshot.conditions(Axis::Rows).into_iter())
-            .filter(|(_, state)| *state != ConditionState::Removing)
-            .map(|(c, _)| c)
-            .collect();
-        let column = Column::of(&asked, key);
+        let column = Column::of(&asked(snapshot), key);
         let mut open = Open {
             key,
             text: support.text,
@@ -645,6 +880,30 @@ impl ColumnFilter {
         true
     }
 
+    /// Opens on the focused column at its text, set to contain or (with
+    /// `not`) not contain what it holds, which is asked for at once if that
+    /// changes it ([`Control::ColumnText`]); returns whether the column takes
+    /// Text conditions.
+    pub fn open_text(&mut self, grid: &mut Grid, not: bool) -> bool {
+        let snapshot = grid.snapshot();
+        let key = snapshot.focus(Axis::Cols).and_then(|f| f.key);
+        let takes = key.is_some_and(|k| snapshot.support(Axis::Rows, k).text.is_some());
+        if !takes || !self.open(&snapshot) {
+            return false;
+        }
+        let Some(o) = &mut self.open else {
+            return false;
+        };
+        o.zone = Zone::Text;
+        if o.not != not {
+            o.not = not;
+            if !o.query.text.is_empty() {
+                o.apply_text(grid);
+            }
+        }
+        true
+    }
+
     /// Hands the checklist its values: calls `ask` with the column and the
     /// question when the search, or the narrowing (the applied rows filter
     /// less the column's own conditions), changed since it last asked. A
@@ -654,6 +913,7 @@ impl ColumnFilter {
         snapshot: &Snapshot,
         ask: impl FnOnce(Key, &DistinctQuery) -> Option<Distinct>,
     ) {
+        self.follow(snapshot);
         let Some(o) = &mut self.open else {
             return;
         };
@@ -680,9 +940,28 @@ impl ColumnFilter {
         o.cursor = o.cursor.min(o.rows().saturating_sub(1));
     }
 
-    /// Takes a key press while open, editing `grid`'s rows conditions as
-    /// they change; false (taking nothing) when closed.
+    /// While a drawer's table has focus: shows the focused column, and its
+    /// conditions as edited elsewhere.
+    fn follow(&mut self, snapshot: &Snapshot) {
+        let Some(shown) = self.shown.filter(|_| !self.focused) else {
+            return;
+        };
+        let key = snapshot.focus(Axis::Cols).and_then(|f| f.key);
+        let key = key.unwrap_or(shown);
+        let column = Column::of(&asked(snapshot), key);
+        let same = self.open.as_ref().map(|o| (o.key, &o.column));
+        if key != shown || same.is_some_and(|same| same != (key, &column)) {
+            self.show(snapshot, key);
+            self.shown = Some(key);
+        }
+    }
+
+    /// Takes a key press while focused, editing `grid`'s rows conditions as
+    /// they change; false (taking nothing) otherwise.
     pub fn key(&mut self, event: &KeyEvent, grid: &mut Grid) -> bool {
+        if !self.focused() {
+            return false;
+        }
         let Some(o) = &mut self.open else {
             return false;
         };
@@ -696,7 +975,7 @@ impl ColumnFilter {
         let typing = o.zone == Zone::Text
             && matches!(event.code, KeyCode::Char(_) | KeyCode::Backspace)
             && !alt_key;
-        if alt_key || event.code == KeyCode::Esc {
+        if alt_key || (event.code == KeyCode::Esc && !self.drawer) {
             pause.flush();
         } else if !typing && pause.flush() {
             o.apply_text(grid);
@@ -706,6 +985,7 @@ impl ColumnFilter {
         let plain = KeyModifiers::SHIFT.contains(event.modifiers);
         let text = o.text.is_some();
         match event.code {
+            KeyCode::Enter | KeyCode::Esc if self.drawer => self.focused = false,
             KeyCode::Enter => self.open = None,
             KeyCode::Esc => {
                 let (text, one_of) = (o.before.text.clone(), o.before.one_of.clone());
@@ -753,6 +1033,9 @@ impl ColumnFilter {
     /// Draws the popup while open, under its column's header in the Grid's
     /// `area` (or at the body's left while the column is out of view),
     /// moved left to fit, and as tall as its list needs and `area` allows.
+    /// A drawer fills `area`, which the host places at the table's right,
+    /// [`ColumnFilter::width`] wide; while the table has focus it shows no
+    /// caret or cursor.
     pub fn render(
         &self,
         snapshot: &Snapshot,
@@ -761,10 +1044,14 @@ impl ColumnFilter {
         area: Rect,
         buf: &mut Buffer,
     ) {
+        let area = area.intersection(buf.area);
         let Some(o) = &self.open else {
+            if let Some(key) = self.shown {
+                render_empty(&content.column_header(key), theme, area, buf);
+            }
             return;
         };
-        let area = area.intersection(buf.area);
+        let focused = self.focused();
         let header = snapshot
             .headers(Axis::Cols)
             .find(|h| h.key == Some(o.key))
@@ -782,7 +1069,13 @@ impl ColumnFilter {
         if o.one_of {
             hints.push("Tab move  Space tick  Ctrl+A all".to_string());
         }
-        hints.push("Enter keep  Esc undo  Ctrl+U clear".to_string());
+        hints.push(match self.drawer {
+            true => "Enter, Esc table  Ctrl+U clear".to_string(),
+            false => "Enter keep  Esc undo  Ctrl+U clear".to_string(),
+        });
+        if !focused {
+            hints = vec!["Follows the focused column".to_string()];
+        }
         // The column's Text condition as listed, if it is.
         let state = (o.column.text.as_ref()).and_then(|c| {
             (snapshot.conditions(Axis::Rows).into_iter())
@@ -802,16 +1095,20 @@ impl ColumnFilter {
         // The head and the values, a line saying there are none, or one
         // saying none were listed.
         let none = o.listed.as_ref().is_some_and(|l| l.values.is_empty());
-        let list = if o.one_of {
-            (o.rows() + usize::from(none)).clamp(1, LIST_ROWS).min(room)
-        } else {
-            0
+        let list = match o.one_of {
+            true if self.drawer => usize::from(area.height.saturating_sub(fixed)),
+            true => (o.rows() + usize::from(none)).clamp(1, LIST_ROWS).min(room),
+            false => 0,
         };
-        let width = POPUP_WIDTH.min(area.width);
-        let height = (fixed + list as u16).min(area.height);
-        let left = (header.max(0.0).ceil() as u16).min(area.width - width);
-        let top = top.min(area.height - height);
-        let popup = Rect::new(area.x + left, area.y + top, width, height);
+        let popup = if self.drawer {
+            area
+        } else {
+            let width = POPUP_WIDTH.min(area.width);
+            let height = (fixed + list as u16).min(area.height);
+            let left = (header.max(0.0).ceil() as u16).min(area.width - width);
+            let top = top.min(area.height - height);
+            Rect::new(area.x + left, area.y + top, width, height)
+        };
         if popup.width < 4 || popup.height < 3 {
             return;
         }
@@ -850,7 +1147,7 @@ impl ColumnFilter {
             }
             let right: usize = toggles.iter().map(|(t, _)| t.len() + 1).sum();
             let room = inner.saturating_sub(char_count(how) as usize + right + 2);
-            let field = field_text(&o.query.text, room, o.zone == Zone::Text);
+            let field = field_text(&o.query.text, room, focused && o.zone == Zone::Text);
             let mut x = popup.x;
             put(row, &mut x, "│ ", border);
             put(row, &mut x, how, theme.body.add_modifier(Modifier::BOLD));
@@ -888,7 +1185,7 @@ impl ColumnFilter {
         if o.one_of {
             let label = "Search ";
             let room = inner.saturating_sub(char_count(label) as usize + 2);
-            let field = field_text(&o.search, room, o.zone == Zone::Search);
+            let field = field_text(&o.search, room, focused && o.zone == Zone::Search);
             let mut x = popup.x;
             put(row, &mut x, "│ ", border);
             put(row, &mut x, label, theme.body.add_modifier(Modifier::BOLD));
@@ -923,7 +1220,7 @@ impl ColumnFilter {
                 let (line, style) = o.list_row(i, width, theme);
                 let mut x = popup.x;
                 put(row, &mut x, "│ ", border);
-                let style = if i == o.cursor && o.zone == Zone::List {
+                let style = if focused && i == o.cursor && o.zone == Zone::List {
                     style.add_modifier(Modifier::REVERSED)
                 } else {
                     style
@@ -950,6 +1247,15 @@ impl ColumnFilter {
             row += 1;
         }
 
+        // A drawer keeps its hints at the bottom.
+        let blank = format!("{:<inner$}", "");
+        while self.drawer && usize::from(row) + hints.len() + 1 < usize::from(popup.height) {
+            let mut x = popup.x;
+            put(row, &mut x, "│", border);
+            put(row, &mut x, &blank, theme.body);
+            put(row, &mut x, "│", border);
+            row += 1;
+        }
         for hint in &hints {
             let hint = fit(hint, u32::try_from(inner - 1).unwrap_or(0));
             let mut x = popup.x;
@@ -964,6 +1270,110 @@ impl ColumnFilter {
         let bottom = popup.height - 1;
         put(bottom, &mut x, &format!("└{}┘", "─".repeat(inner)), border);
     }
+}
+
+/// The rows' conditions as last asked for, less those being removed.
+fn asked(snapshot: &Snapshot) -> Vec<Condition> {
+    (snapshot.conditions(Axis::Rows).into_iter())
+        .filter(|(_, state)| *state != ConditionState::Removing)
+        .map(|(c, _)| c)
+        .collect()
+}
+
+/// Removes the focused column's conditions or, with none there, the last
+/// condition on the rows ([`Control::Remove`]).
+pub fn remove_conditions(grid: &mut Grid) {
+    let snapshot = grid.snapshot();
+    let asked = asked(&snapshot);
+    let focused = snapshot.focus(Axis::Cols).and_then(|f| f.key);
+    let on: Vec<&Condition> = asked.iter().filter(|c| Some(c.key) == focused).collect();
+    let gone: Vec<Condition> = if on.is_empty() {
+        asked.last().into_iter().cloned().collect()
+    } else {
+        on.into_iter().cloned().collect()
+    };
+    for c in &gone {
+        grid.remove_condition(Axis::Rows, c);
+    }
+}
+
+/// Clears the rows' quick filter and every condition in one request
+/// ([`Control::Clear`]); does nothing while there are none.
+pub fn clear_filters(grid: &mut Grid) {
+    let snapshot = grid.snapshot();
+    let mut spec = snapshot
+        .requested_view()
+        .unwrap_or(snapshot.applied_view())
+        .clone();
+    if spec.rows.filter.is_empty() {
+        return;
+    }
+    spec.rows.filter = FilterSpec::default();
+    grid.request_view(spec);
+}
+
+/// Keeps only the rows whose value in column `key` is `value`
+/// ([`Control::KeepValue`], with the focused cell's value as the host reads
+/// it): the column's OneOf becomes `value` alone, and its Text condition
+/// stays. Returns whether the column takes OneOf conditions.
+pub fn keep_value(grid: &mut Grid, key: Key, value: Value) -> bool {
+    let snapshot = grid.snapshot();
+    if !snapshot.support(Axis::Rows, key).one_of {
+        return false;
+    }
+    let column = Column::of(&asked(&snapshot), key);
+    let one_of = Condition::one_of(key, vec![value]);
+    column.write(grid, column.text.clone(), Some(one_of));
+    true
+}
+
+/// A drawer shown on a column with no filters: its title and a note.
+fn render_empty(label: &str, theme: &Theme, area: Rect, buf: &mut Buffer) {
+    if area.width < 4 || area.height < 3 {
+        return;
+    }
+    let border = theme.body.patch(theme.border);
+    let inner = usize::from(area.width - 2);
+    let mut put = |row: u16, x: &mut u16, text: &str, style: Style| {
+        for ch in text.chars() {
+            if *x >= area.right() {
+                return;
+            }
+            buf[(*x, area.y + row)].set_char(ch).set_style(style);
+            *x += 1;
+        }
+    };
+    let title = format!(" Filter {label} ");
+    let title = fit(&title, u32::try_from(inner).unwrap_or(0));
+    let rule = inner.saturating_sub(char_count(&title) as usize + 1);
+    let mut x = area.x;
+    put(0, &mut x, "┌─", border);
+    put(0, &mut x, &title, theme.body.add_modifier(Modifier::BOLD));
+    put(0, &mut x, &format!("{}┐", "─".repeat(rule)), border);
+    for row in 1..area.height - 1 {
+        let note = if row == 1 {
+            "No filters on this column"
+        } else {
+            ""
+        };
+        let note = fit(note, u32::try_from(inner - 1).unwrap_or(0));
+        let mut x = area.x;
+        put(row, &mut x, "│ ", border);
+        put(
+            row,
+            &mut x,
+            &format!("{note:<w$}", w = inner - 1),
+            theme.body.patch(theme.loading),
+        );
+        put(row, &mut x, "│", border);
+    }
+    let mut x = area.x;
+    put(
+        area.height - 1,
+        &mut x,
+        &format!("└{}┘", "─".repeat(inner)),
+        border,
+    );
 }
 
 /// A field's text in `room` cells: the end of a long text then a caret

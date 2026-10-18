@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use binnacle_core::{
     Axis, AxisConfig, Condition, Effect, FilterSpec, Grid, Key, Snapshot, Support, TextQuery,
-    TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
-    ColumnFilter, Content, Control, Controls, Preset, RenderContext, Theme, render_conditions,
-    render_with,
+    ColumnFilter, Content, Control, Controls, Preset, RenderContext, Theme, clear_filters,
+    keep_value, remove_conditions, render_conditions, render_with,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -298,4 +298,111 @@ fn a_filtered_columns_header_carries_the_filter_marker_with_a_tilde_while_pendin
     grid.remove_condition(Axis::Rows, &contains(1, "b"));
     out.push(header(&mut grid));
     insta::assert_snapshot!(out.join("\n"));
+}
+
+#[test]
+fn open_text_sets_the_columns_text_to_contain_or_not() {
+    let mut grid = grid();
+    grid.view_applied(conditions(vec![contains(1, "b")]), Totals::unknown());
+    focus(&mut grid, 2);
+    let mut popup = ColumnFilter::new().pause(Duration::ZERO);
+    assert!(!popup.open_text(&mut grid, true), "crew takes none");
+    focus(&mut grid, 1);
+    assert!(popup.open_text(&mut grid, true));
+    popup.key(&char('e'), &mut grid);
+    popup.key(&press(KeyCode::Enter, KeyModifiers::NONE), &mut grid);
+    assert!(popup.open_text(&mut grid, true), "already not");
+    let replace = |from: &Condition, to: &Condition| ViewEdit::ReplaceCondition {
+        axis: Axis::Rows,
+        from: from.clone(),
+        to: to.clone(),
+    };
+    let not_b = contains(1, "b").not(true);
+    assert_eq!(
+        edits(&mut grid),
+        vec![
+            replace(&contains(1, "b"), &not_b),
+            replace(&not_b, &contains(1, "be").not(true)),
+        ]
+    );
+    let mut empty = ColumnFilter::new().pause(Duration::ZERO);
+    focus(&mut grid, 0);
+    assert!(empty.open_text(&mut grid, true));
+    assert_eq!(edits(&mut grid), vec![], "no text asks nothing");
+    empty.key(&char('x'), &mut grid);
+    assert_eq!(
+        edits(&mut grid),
+        vec![ViewEdit::AddCondition {
+            axis: Axis::Rows,
+            condition: contains(0, "x").not(true),
+        }]
+    );
+}
+
+#[test]
+fn remove_takes_the_focused_columns_conditions_else_the_last_and_clear_takes_them_all() {
+    let mut grid = grid();
+    let name = contains(0, "a");
+    let port = [contains(1, "b"), contains(1, "c").not(true)];
+    let all = vec![port[0].clone(), name.clone(), port[1].clone()];
+    let quick = TextQuery::new("q");
+    let spec = ViewSpec::default().with_filter(
+        Axis::Rows,
+        FilterSpec::default()
+            .with_quick(Some(quick))
+            .with_conditions(all.into()),
+    );
+    grid.view_applied(spec.clone(), Totals::unknown());
+    focus(&mut grid, 1);
+    remove_conditions(&mut grid);
+    let remove = |c: &Condition| ViewEdit::RemoveCondition {
+        axis: Axis::Rows,
+        condition: c.clone(),
+    };
+    assert_eq!(edits(&mut grid), vec![remove(&port[0]), remove(&port[1])]);
+    remove_conditions(&mut grid);
+    assert_eq!(edits(&mut grid), vec![remove(&name)], "the last left");
+    remove_conditions(&mut grid);
+    assert_eq!(edits(&mut grid), vec![], "none left");
+    clear_filters(&mut grid);
+    assert_eq!(edits(&mut grid), vec![ViewEdit::Replace]);
+    let snap = snapshot(&mut grid);
+    let wanted = snap.requested_view().expect("a request");
+    assert!(
+        wanted.rows.filter.is_empty(),
+        "quick filter and conditions go"
+    );
+    clear_filters(&mut grid);
+    assert_eq!(edits(&mut grid), vec![], "nothing left to clear");
+}
+
+#[test]
+fn keep_value_writes_the_columns_one_of_with_just_that_value() {
+    let mut grid = grid();
+    let port = Support::default()
+        .with_text(Some(TextSupport::new(true)))
+        .with_one_of(true);
+    grid.set_support(Axis::Rows, Key(1), port);
+    let text = contains(1, "e");
+    let old = Condition::one_of(Key(1), vec![Value::Text("Hull".into())]).not(true);
+    grid.view_applied(
+        conditions(vec![text.clone(), old.clone()]),
+        Totals::unknown(),
+    );
+    focus(&mut grid, 0);
+    assert!(
+        !keep_value(&mut grid, Key(0), Value::Blank),
+        "name takes no OneOf"
+    );
+    let bergen = Condition::one_of(Key(1), vec![Value::Text("Bergen".into())]);
+    assert!(keep_value(&mut grid, Key(1), Value::Text("Bergen".into())));
+    assert_eq!(
+        edits(&mut grid),
+        vec![ViewEdit::ReplaceCondition {
+            axis: Axis::Rows,
+            from: old,
+            to: bergen,
+        }],
+        "the Text condition stays"
+    );
 }

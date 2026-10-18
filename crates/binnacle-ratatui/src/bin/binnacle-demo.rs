@@ -72,7 +72,26 @@
 //! still open, where F3 and Shift+F3 step, Ctrl+F returns to the bar, and Esc
 //! closes find. The slow records answer each step late, and pressing Enter
 //! again before the first answer moves once. An invalid regex reads "No
-//! matches" in red, with the reason.
+//! matches" in red, with the reason. Opening find again selects its text, so
+//! typing replaces it.
+//!
+//! Those are the chords preset's keys, which also give Alt+Shift+F to find
+//! backwards, Ctrl+N and Ctrl+P to step from the table where F3 does not reach
+//! the demo, Alt+C for find's case, Alt+T and Alt+N to set the focused
+//! column's text to contain or not contain, Alt+= to keep only the focused
+//! cell's value, Ctrl+D to remove the focused column's conditions (or the
+//! last one) and Ctrl+K to clear every filter. `--preset modes` picks vim
+//! and VisiData keys instead, with typing off and `h j k l` moving: `/` and
+//! `?` find forwards and backwards, `n` and `N` step, `|` the quick filter,
+//! `\` and `&` the column's text, `F` its popup, `=` keep the value, `u` and
+//! `U` remove and clear, `i` case, `m` show only matching rows, `r` re-apply.
+//! `--preset bare-keys` uses single keys with typing off: `/ ? n N`, `\` the
+//! quick filter, `|` and `&` the column's text, `x` and `X` remove and clear,
+//! `m`, `i`, `=`, `r`, and `f` opens a filter drawer down the right that
+//! applies as you tick; Enter or Esc gives the table focus back, and the
+//! drawer then follows the focused column until `f` focuses it again or Esc
+//! closes it. The status line names the preset's main keys while it has
+//! nothing else to say.
 //!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
@@ -107,8 +126,8 @@ use std::collections::HashSet;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
-    Effect, FindDirection, FindMatch, FindQuery, Grid, Key, Located, Mode, Position, Snapshot,
-    Stamped, Support, TextSupport, Totals, ViewSpec, Viewport,
+    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, Key, Located, Mode, Position,
+    Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
     FindStep, IdentitySource, MemorySource, PumpSource, Viewed, pump, query_error,
@@ -117,8 +136,8 @@ use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
     CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
-    Theme, animating, begin_frame, fit_width, render_conditions, render_editor, render_with,
-    row_count, status, wheel,
+    Theme, animating, begin_frame, clear_filters, fit_width, keep_value, remove_conditions,
+    render_conditions, render_editor, render_with, row_count, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -614,6 +633,18 @@ impl Table {
         }
     }
 
+    /// The Value a OneOf on column `col` keeps row `row` by, as the source
+    /// names it.
+    fn value(&self, row: Key, col: Key) -> Option<Value> {
+        match self {
+            Table::Records { rows, source, .. } => {
+                Some(source.value(col, rows.get(row.0 as usize)?))
+            }
+            Table::Huge(_) => None,
+            Table::Live(live) => Some(live.source.value(col, live.rows.get(row.0 as usize)?)),
+        }
+    }
+
     /// How long until the table next changes by itself, if it ever does.
     fn until_tick(&self) -> Option<Duration> {
         match self {
@@ -969,7 +1000,26 @@ fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
     Some(widest as f32 + 1.0)
 }
 
+/// The keymap preset `--preset` names (`chords`, `modes` or `bare-keys`).
+fn preset() -> Result<Preset, String> {
+    let args: Vec<String> = std::env::args().collect();
+    let named = (args.iter().enumerate()).find_map(|(i, a)| match a.strip_prefix("--preset") {
+        Some("") => Some(args.get(i + 1).cloned().unwrap_or_default()),
+        Some(rest) => rest.strip_prefix('=').map(str::to_string),
+        None => None,
+    });
+    match named.as_deref() {
+        None | Some("chords") => Ok(Preset::Chords),
+        Some("modes") => Ok(Preset::Modes),
+        Some("bare-keys") => Ok(Preset::BareKeys),
+        Some(other) => Err(format!(
+            "unknown preset {other:?}: use chords, modes or bare-keys"
+        )),
+    }
+}
+
 fn main() -> io::Result<()> {
+    let preset = preset().map_err(io::Error::other)?;
     let live = std::env::args().any(|a| a == "--live");
     let (mut table, mut grid) = if live {
         let grid = Grid::new(
@@ -1046,10 +1096,54 @@ fn main() -> io::Result<()> {
             fraction: 0.5,
         },
     );
-    let controls = Controls::preset(Preset::Chords);
-    let mut quick = QuickFilter::new().placeholder("Ctrl+L");
-    let mut popup = ColumnFilter::new();
-    let mut find = FindBar::new();
+    keymap.set_typing(preset.typing());
+    if preset == Preset::Modes {
+        // vim's moves, on top of the arrows.
+        let moves = [
+            ('j', Axis::Rows, true),
+            ('k', Axis::Rows, false),
+            ('l', Axis::Cols, true),
+            ('h', Axis::Cols, false),
+        ];
+        for (c, axis, forward) in moves {
+            let action = Action::MoveFocus {
+                axis,
+                by: FocusStep::Item,
+                forward,
+                extend: false,
+            };
+            keymap.bind(KeyCode::Char(c), KeyModifiers::NONE, action);
+        }
+    }
+    let controls = Controls::preset(preset);
+    let hint = |control| controls.hint(control).unwrap_or_default();
+    let mut quick = QuickFilter::new().placeholder(hint(Control::QuickFilter));
+    let mut popup = match preset {
+        Preset::BareKeys => ColumnFilter::new().drawer(),
+        _ => ColumnFilter::new(),
+    };
+    let mut find = match preset {
+        Preset::Chords => FindBar::new(),
+        _ => FindBar::new().table_hints(format!(
+            "{} next  {} prev  {} edit",
+            hint(Control::FindNext),
+            hint(Control::FindPrevious),
+            hint(Control::Find)
+        )),
+    };
+    let preset_name = match preset {
+        Preset::Chords => "chords",
+        Preset::Modes => "modes",
+        _ => "bare keys",
+    };
+    // What the status line says while nothing else is to be said.
+    let keys = format!(
+        "{} find  {} filter  {} column  {} clear",
+        hint(Control::Find),
+        hint(Control::QuickFilter),
+        hint(Control::ColumnFilter),
+        hint(Control::Clear)
+    );
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
@@ -1083,6 +1177,8 @@ fn main() -> io::Result<()> {
                 let full = frame.area();
                 let mut area = full;
                 area.height = full.height.saturating_sub(1 + u16::from(find.is_open()));
+                // A filter drawer takes the table's right.
+                area.width = area.width.saturating_sub(popup.width());
                 let now = Instant::now();
                 quick.tick(&mut grid, now);
                 popup.tick(&mut grid, now);
@@ -1146,11 +1242,19 @@ fn main() -> io::Result<()> {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
                 popup.fetch(&snapshot, |key, query| table.distinct(key, query));
+                let at = match popup.width() {
+                    0 => layout.grid,
+                    width => ratatui::layout::Rect {
+                        x: area.right(),
+                        width,
+                        ..area
+                    },
+                };
                 popup.render(
                     &snapshot,
                     &table.text(),
                     &themes[theme],
-                    layout.grid,
+                    at,
                     frame.buffer_mut(),
                 );
                 if field {
@@ -1184,14 +1288,18 @@ fn main() -> io::Result<()> {
                     if !said.is_empty() {
                         said += " | ";
                     }
+                    let again = hint(Control::Reapply);
                     said += &match unmatched.len() {
-                        1 => "1 edited row no longer matches: Alt+L re-applies".to_string(),
-                        n => format!("{n} edited rows no longer match: Alt+L re-applies"),
+                        1 => format!("1 edited row no longer matches: {again} re-applies"),
+                        n => format!("{n} edited rows no longer match: {again} re-applies"),
                     };
+                }
+                if said.is_empty() {
+                    said = keys.clone();
                 }
                 frame.render_widget(ratatui::text::Line::from(said), line);
                 let names = format!(
-                    "{} | {} | {} | {border}",
+                    "{} | {} | {preset_name} | {} | {border}",
                     row_count(&snapshot),
                     table.source(),
                     themes[theme].name
@@ -1236,38 +1344,60 @@ fn main() -> io::Result<()> {
                     {
                         continue;
                     }
-                    match controls.control(&key) {
-                        Some(Control::QuickFilter) => {
-                            quick.focus(&grid.snapshot());
-                            continue;
+                    let took = match controls.control(&key) {
+                        Some(Control::QuickFilter) => quick.focus(&grid.snapshot()),
+                        Some(Control::ColumnFilter) => popup.open(&grid.snapshot()),
+                        Some(Control::ColumnText { not }) => popup.open_text(&mut grid, not),
+                        Some(Control::KeepValue) => {
+                            let snapshot = grid.snapshot();
+                            let focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
+                            let cell = focus.and_then(|(r, c)| r.key.zip(c.key));
+                            let value = cell.and_then(|(r, c)| Some((c, table.value(r, c)?)));
+                            value.is_some_and(|(col, value)| keep_value(&mut grid, col, value))
                         }
-                        Some(Control::ColumnFilter) => {
-                            popup.open(&grid.snapshot());
-                            continue;
+                        Some(Control::Remove) => {
+                            remove_conditions(&mut grid);
+                            true
+                        }
+                        Some(Control::Clear) => {
+                            clear_filters(&mut grid);
+                            true
                         }
                         Some(Control::Find) => {
                             if find.open(&grid.snapshot()) {
                                 find.apply(&mut grid);
                             }
-                            continue;
+                            true
                         }
-                        Some(Control::FindNext) if find.step(FindDirection::Next, &mut grid) => {
-                            continue;
+                        Some(Control::FindBackward) => {
+                            if find.open_backward(&grid.snapshot()) {
+                                find.apply(&mut grid);
+                            }
+                            true
                         }
-                        Some(Control::FindPrevious)
-                            if find.step(FindDirection::Previous, &mut grid) =>
-                        {
-                            continue;
+                        Some(Control::FindNext) => find.repeat(false, &mut grid),
+                        Some(Control::FindPrevious) => find.repeat(true, &mut grid),
+                        Some(Control::OnlyMatching) => {
+                            find.only_matching(&mut grid);
+                            true
+                        }
+                        Some(Control::Case) => {
+                            find.toggle_case(&mut grid);
+                            true
                         }
                         Some(Control::Reapply) => {
                             grid.reapply_view();
-                            continue;
+                            true
                         }
-                        _ => {}
-                    }
-                    // Esc on the table closes find while it is open.
-                    if key.code == KeyCode::Esc && key.modifiers.is_empty() && find.is_open() {
-                        find.close(&mut grid);
+                        // Esc closes the drawer, else find, else cancels.
+                        Some(Control::Close) if popup.close() => true,
+                        Some(Control::Close) if find.is_open() => {
+                            find.close(&mut grid);
+                            true
+                        }
+                        _ => false,
+                    };
+                    if took {
                         continue;
                     }
                     if ctrl && key.code == KeyCode::Char('t') {

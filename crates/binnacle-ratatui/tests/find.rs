@@ -312,3 +312,93 @@ fn marked_cells_and_the_current_match_are_drawn_in_their_styles() {
     assert_eq!(marker.symbol(), "◂");
     assert_eq!(marker.fg, theme.find_current.fg.unwrap());
 }
+
+#[test]
+fn opened_backwards_enter_and_repeat_step_back_and_reversed_steps_on() {
+    let mut grid = grid(false);
+    let mut bar = FindBar::new().pause(Duration::ZERO);
+    assert!(bar.open_backward(&snapshot(&mut grid)));
+    bar.key(&char('a'), &mut grid);
+    // Each step is answered before the next, which would otherwise wait.
+    let mut out = vec![];
+    bar.key(&press(KeyCode::Enter, KeyModifiers::NONE), &mut grid);
+    out.extend(asked(&mut grid));
+    bar.key(&press(KeyCode::Enter, KeyModifiers::SHIFT), &mut grid);
+    out.extend(asked(&mut grid));
+    bar.key(&press(KeyCode::Esc, KeyModifiers::NONE), &mut grid);
+    assert!(bar.repeat(false, &mut grid));
+    out.extend(asked(&mut grid));
+    assert!(bar.repeat(true, &mut grid));
+    out.extend(asked(&mut grid));
+    use FindDirection::{Next, Previous};
+    assert_eq!(
+        out,
+        vec![
+            Asked::Find(Some("a".into())),
+            Asked::Step(Previous),
+            Asked::Step(Next),
+            Asked::Step(Previous),
+            Asked::Step(Next),
+        ]
+    );
+    assert!(bar.open(&snapshot(&mut grid)));
+    bar.key(&press(KeyCode::Enter, KeyModifiers::NONE), &mut grid);
+    bar.close(&mut grid);
+    assert!(!bar.repeat(false, &mut grid), "closed, it steps nowhere");
+    assert_eq!(
+        asked(&mut grid),
+        vec![Asked::Step(Next), Asked::Find(None)],
+        "opened forwards again, Enter steps on"
+    );
+}
+
+#[test]
+fn from_the_table_case_and_only_matching_act_as_alt_c_and_alt_f_do() {
+    let mut grid = grid(false);
+    let mut bar = FindBar::new().pause(Duration::ZERO);
+    bar.only_matching(&mut grid);
+    assert_eq!(asked(&mut grid), vec![], "no find text, no filter");
+    bar.open(&snapshot(&mut grid));
+    bar.key(&char('b'), &mut grid);
+    bar.key(&press(KeyCode::Esc, KeyModifiers::NONE), &mut grid);
+    bar.toggle_case(&mut grid);
+    bar.only_matching(&mut grid);
+    bar.only_matching(&mut grid);
+    assert_eq!(
+        asked(&mut grid),
+        vec![
+            Asked::Find(Some("b".into())),
+            Asked::Find(Some("b case".into())),
+            Asked::Quick(Some("b".into())),
+            Asked::Quick(None),
+        ]
+    );
+}
+
+#[test]
+fn opening_again_selects_the_text_so_typing_replaces_it_and_other_keys_keep_it() {
+    let mut grid = grid(false);
+    let mut bar = FindBar::new().pause(Duration::ZERO);
+    bar.open(&snapshot(&mut grid));
+    bar.key(&char('a'), &mut grid);
+    bar.key(&char('b'), &mut grid);
+    bar.key(&press(KeyCode::Esc, KeyModifiers::NONE), &mut grid);
+    bar.open(&snapshot(&mut grid));
+    bar.key(&char('c'), &mut grid);
+    bar.key(&char('d'), &mut grid);
+    bar.key(&press(KeyCode::Esc, KeyModifiers::NONE), &mut grid);
+    bar.open_backward(&snapshot(&mut grid));
+    bar.key(&press(KeyCode::Char('c'), KeyModifiers::ALT), &mut grid);
+    bar.key(&char('e'), &mut grid);
+    let found = asked(&mut grid);
+    assert_eq!(
+        found.last(),
+        Some(&Asked::Find(Some("cde case".into()))),
+        "{found:?}"
+    );
+    assert!(found.contains(&Asked::Find(Some("c".into()))), "{found:?}");
+    assert!(
+        !found.contains(&Asked::Find(Some("abc".into()))),
+        "{found:?}"
+    );
+}

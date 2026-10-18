@@ -1,0 +1,63 @@
+---
+source: crates/binnacle-ratatui/tests/drawer.rs
+expression: "out.join(\"\\n\\n\")"
+---
+   id        │name      │port    ▿~ ┌─ Filter port ────────────────────────────┐
+1  r0c0       r0c1       r0c2      █│ Contains                           Aa .* │
+2  r1c0       r1c1       r1c2      █│ Search                                   │
+3  r2c0       r2c1       r2c2      █├─ 3 values ───────────────────────────────┤
+4  r3c0       r3c1       r3c2      █│ [-] (Select all)                         │
+5  r4c0       r4c1       r4c2      █│ [ ] (Blanks)                           2 │
+                                   █│ [x] Bergen                             2 │
+                                   █│ [x] Hull                               1 │
+                                   █│                                          │
+                                   █│ showing all values                       │
+                                   █│ Alt+N not  Alt+C case  Alt+R regex       │
+                                   █│ Tab move  Space tick  Ctrl+A all         │
+                                   █│ Enter, Esc table  Ctrl+U clear           │
+                                   █└──────────────────────────────────────────┘
+
+   id        │name      │port    ▿~ ┌─ Filter port ────────────────────────────┐
+1  r0c0       r0c1       r0c2      █│ Contains                           Aa .* │
+2  r1c0       r1c1       r1c2      █│ Search                                   │
+3  r2c0       r2c1       r2c2      █├─ 3 values ───────────────────────────────┤
+4  r3c0       r3c1       r3c2      █│ [-] (Select all)                         │
+5  r4c0       r4c1       r4c2      █│ [ ] (Blanks)                           2 │
+                                   █│ [x] Bergen                             2 │
+                                   █│ [x] Hull                               1 │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│ showing all values                       │
+                                   █│ Follows the focused column               │
+                                   █└──────────────────────────────────────────┘
+
+   id        │name      │port    ▿~ ┌─ Filter name ────────────────────────────┐
+1  r0c0       r0c1       r0c2      █│ Contains                              Aa │
+2  r1c0       r1c1       r1c2      █│                                          │
+3  r2c0       r2c1       r2c2      █│                                          │
+4  r3c0       r3c1       r3c2      █│                                          │
+5  r4c0       r4c1       r4c2      █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│ Follows the focused column               │
+                                   █└──────────────────────────────────────────┘
+
+   id        │name      │port    ▿~ ┌─ Filter id ──────────────────────────────┐
+1  r0c0       r0c1       r0c2      █│ No filters on this column                │
+2  r1c0       r1c1       r1c2      █│                                          │
+3  r2c0       r2c1       r2c2      █│                                          │
+4  r3c0       r3c1       r3c2      █│                                          │
+5  r4c0       r4c1       r4c2      █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █│                                          │
+                                   █└──────────────────────────────────────────┘

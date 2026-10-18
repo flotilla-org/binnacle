@@ -235,6 +235,12 @@ impl<R> MemorySource<R> {
         self
     }
 
+    /// The Value a OneOf condition on `column` names `row` by: its text form,
+    /// or `Blank` without one, as [`MemorySource::distinct`] lists it.
+    pub fn value(&self, column: Key, row: &R) -> Value {
+        Value::of(self.text(column, row).as_deref())
+    }
+
     /// Column `column`'s text form of `row`, if it has one and `row` is not
     /// blank there.
     fn text<'r>(&self, column: Key, row: &'r R) -> Option<Cow<'r, str>> {
