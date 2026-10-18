@@ -366,3 +366,15 @@ fn the_rows_have_a_quick_filter_with_regexes_and_the_columns_none() {
     assert_eq!(over.quick_filter(Axis::Rows), Some(TextSupport::new(true)));
     assert_eq!(over.quick_filter(Axis::Cols), None);
 }
+
+#[test]
+fn query_error_gives_the_regex_crates_reason_in_one_line() {
+    let invalid = TextQuery::new("(ber").regex(true);
+    assert_eq!(
+        binnacle_memory::query_error(&invalid).as_deref(),
+        Some("unclosed group")
+    );
+    assert_eq!(binnacle_memory::query_error(&TextQuery::new("(ber")), None);
+    let valid = TextQuery::new("^b.r").regex(true);
+    assert_eq!(binnacle_memory::query_error(&valid), None);
+}

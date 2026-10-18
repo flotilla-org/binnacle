@@ -2,6 +2,8 @@
 //! edits the focused column's Text condition as keys arrive; the conditions
 //! line of chips; and the filter marker in a filtered column's header.
 
+use std::time::Duration;
+
 use binnacle_core::{
     Axis, AxisConfig, Condition, Effect, FilterSpec, Grid, Key, Snapshot, Support, TextQuery,
     TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
@@ -133,7 +135,7 @@ fn the_chords_preset_reaches_the_column_filter_with_alt_down() {
 #[test]
 fn the_popup_opens_only_on_a_focused_column_that_takes_text_conditions() {
     let mut grid = grid();
-    let mut popup = ColumnFilter::new();
+    let mut popup = ColumnFilter::new().pause(Duration::ZERO);
     assert!(!popup.open(&snapshot(&mut grid)), "no focus");
     focus(&mut grid, 2);
     assert!(!popup.open(&snapshot(&mut grid)), "crew takes none");
@@ -159,7 +161,7 @@ fn each_key_edits_the_columns_condition_and_esc_puts_back_the_one_from_before() 
     let mut grid = grid();
     grid.view_applied(conditions(vec![contains(1, "b")]), Totals::unknown());
     focus(&mut grid, 1);
-    let mut popup = ColumnFilter::new();
+    let mut popup = ColumnFilter::new().pause(Duration::ZERO);
     popup.open(&snapshot(&mut grid));
     edits(&mut grid);
     for key in [char('e'), alt('n'), alt('c'), alt('r')] {
@@ -196,7 +198,7 @@ fn each_key_edits_the_columns_condition_and_esc_puts_back_the_one_from_before() 
 fn ctrl_u_removes_the_condition_enter_keeps_it_and_alt_r_needs_regex_support() {
     let mut grid = grid();
     focus(&mut grid, 0);
-    let mut popup = ColumnFilter::new();
+    let mut popup = ColumnFilter::new().pause(Duration::ZERO);
     popup.open(&snapshot(&mut grid));
     for key in [char('x'), alt('r')] {
         popup.key(&key, &mut grid);
@@ -227,7 +229,7 @@ fn ctrl_u_removes_the_condition_enter_keeps_it_and_alt_r_needs_regex_support() {
 fn the_popup_drops_under_its_column_header_with_the_condition_and_its_toggles() {
     let mut grid = grid();
     focus(&mut grid, 1);
-    let mut popup = ColumnFilter::new();
+    let mut popup = ColumnFilter::new().pause(Duration::ZERO);
     popup.open(&snapshot(&mut grid));
     let mut out = vec![text(&screen(&popup, &mut grid))];
     for key in [char('b'), char('e'), char('r'), alt('n'), alt('r')] {
@@ -239,7 +241,7 @@ fn the_popup_drops_under_its_column_header_with_the_condition_and_its_toggles() 
     let lit = lit.expect("the regex toggle");
     assert!(buf[(lit, 2)].modifier.contains(Modifier::REVERSED), "lit");
     focus(&mut grid, 0);
-    let mut name = ColumnFilter::new();
+    let mut name = ColumnFilter::new().pause(Duration::ZERO);
     name.open(&snapshot(&mut grid));
     out.push(text(&screen(&name, &mut grid)));
     insta::assert_snapshot!(out.join("\n\n"));

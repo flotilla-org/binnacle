@@ -1,6 +1,8 @@
 //! The find bar: one line holding the Find Query's text and toggles, the
 //! count, and the keys that step between matches.
 
+use std::time::{Duration, Instant};
+
 use binnacle_core::{Action, Axis, FindDirection, FindQuery, Grid, Snapshot, TextQuery};
 use binnacle_memory::FindCount;
 use ratatui::buffer::Buffer;
@@ -9,26 +11,35 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::Theme;
-use crate::filter::toggle_style;
+use crate::filter::{Pause, toggle_style};
 use crate::renderer::{char_count, fit};
 
 /// What the Table Source last said about the Find Query in force, which the
 /// host keeps (the Grid holds only the query and the current match): the
-/// count, and where the last step landed among the matches.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// count, where the last step landed among the matches, whether it is still
+/// finding, and why it failed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FindStatus {
     pub count: Option<FindCount>,
     /// The last step's 0-based index among the matches, if the source gave one.
     pub index: Option<u64>,
     /// Whether the last step wrapped past the end (or the start).
     pub wrapped: bool,
+    /// Whether the source is still working out the Find Query in force (no
+    /// count yet), so the bar says "finding…".
+    pub finding: bool,
+    /// The source's message if it failed or rejected the Find Query (an
+    /// invalid regex, say): the bar says "No matches" in the error style.
+    pub error: Option<String>,
 }
 
 /// The find bar: `Find`, the text, the case (`Aa`) and regex (`.*`, where
 /// the Table Source takes regexes) toggles, the order (`rows` or `cols`),
 /// then the count ("3 of 120", "120 matches", "No matches") and a note when
 /// a step wraps. Opens only while the Grid has find support; each change
-/// sets the Grid's Find Query, so the host's marks follow as it types.
+/// sets the Grid's Find Query, so the host's marks follow as it types: typing
+/// once a pause has passed (see [`FindBar::tick`]), the toggles and steps at
+/// once.
 ///
 /// While focused it takes every key: characters and Backspace edit, Ctrl+U
 /// clears, Alt+C toggles case, Alt+R regex, Alt+B the order, Enter or Ctrl+N
@@ -50,11 +61,32 @@ pub struct FindBar {
     only: bool,
     /// Which way the last step went, for the wrap note.
     stepped: Option<FindDirection>,
+    pause: Pause,
 }
 
 impl FindBar {
     pub fn new() -> Self {
         FindBar::default()
+    }
+
+    /// How long typing waits before setting the Find Query:
+    /// [`crate::TYPING_PAUSE`] unless set; zero sets it on every key.
+    pub fn pause(mut self, pause: Duration) -> Self {
+        self.pause.pause = pause;
+        self
+    }
+
+    /// Sets the Find Query typed, once its pause has passed by `now`. Call
+    /// it from the host's loop, waking by [`FindBar::deadline`].
+    pub fn tick(&mut self, grid: &mut Grid, now: Instant) {
+        if self.pause.due(now) {
+            self.apply(grid);
+        }
+    }
+
+    /// When typed text waits to be sent until, if it does.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.pause.deadline()
     }
 
     pub fn is_open(&self) -> bool {
@@ -90,6 +122,7 @@ impl FindBar {
         self.open = false;
         self.focused = false;
         self.stepped = None;
+        self.pause.flush();
         grid.set_find(None);
     }
 
@@ -110,6 +143,9 @@ impl FindBar {
     pub fn step(&mut self, direction: FindDirection, grid: &mut Grid) -> bool {
         if !self.open {
             return false;
+        }
+        if self.pause.flush() {
+            self.apply(grid);
         }
         self.stepped = Some(direction);
         grid.action(match direction {
@@ -142,6 +178,9 @@ impl FindBar {
                 self.step(FindDirection::Previous, grid);
             }
             KeyCode::Char('f') if alt => {
+                if self.pause.flush() {
+                    self.apply(grid);
+                }
                 let quick = self.query().filter(|_| !self.only).map(|q| q.query);
                 self.only = quick.is_some();
                 grid.set_quick_filter(Axis::Rows, quick);
@@ -160,15 +199,15 @@ impl FindBar {
             }
             KeyCode::Char('u') if ctrl => {
                 self.text.clear();
-                self.edited(grid);
+                self.typed(grid);
             }
             KeyCode::Char(c) if KeyModifiers::SHIFT.contains(event.modifiers) => {
                 self.text.push(c);
-                self.edited(grid);
+                self.typed(grid);
             }
             KeyCode::Backspace => {
                 self.text.pop();
-                self.edited(grid);
+                self.typed(grid);
             }
             _ => {}
         }
@@ -177,7 +216,16 @@ impl FindBar {
 
     fn edited(&mut self, grid: &mut Grid) {
         self.stepped = None;
+        self.pause.flush();
         self.apply(grid);
+    }
+
+    /// Text typed: sent once the pause allows.
+    fn typed(&mut self, grid: &mut Grid) {
+        self.stepped = None;
+        if self.pause.typed() {
+            self.apply(grid);
+        }
     }
 
     /// Draws the bar into `area`'s first line while find is open: `Find`,
@@ -244,9 +292,18 @@ impl FindBar {
         put(&mut x, by, theme.body.add_modifier(Modifier::DIM));
         put(&mut x, "  ", theme.body);
         let current = snapshot.find_match().is_some();
-        let count = count_text(snapshot.find().is_some(), status, current);
+        let waiting = self.pause.typed.is_some() || status.finding;
+        let count = match status.error {
+            _ if waiting => "finding…".to_string(),
+            Some(_) => "No matches".to_string(),
+            None => count_text(snapshot.find().is_some(), status, current),
+        };
         let none = status.count.is_some_and(|c| c.total == 0 && !c.partial);
-        let style = if none {
+        let style = if waiting {
+            theme.body.patch(theme.loading)
+        } else if status.error.is_some() {
+            theme.body.patch(theme.error)
+        } else if none {
             theme
                 .body
                 .patch(theme.sort_marker)
@@ -255,6 +312,13 @@ impl FindBar {
             theme.body.add_modifier(Modifier::BOLD)
         };
         put(&mut x, &count, style);
+        if let Some(message) = status.error.as_ref().filter(|_| !waiting) {
+            put(
+                &mut x,
+                &format!(": {message}"),
+                theme.body.patch(theme.error),
+            );
+        }
         if status.wrapped && current {
             let note = match self.stepped {
                 Some(FindDirection::Previous) => "  wrapped to the end",

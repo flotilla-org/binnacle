@@ -19,7 +19,8 @@ mod theme;
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
 pub use filter::{
-    ColumnFilter, Control, Controls, Preset, QuickFilter, render_conditions, row_count,
+    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, render_conditions,
+    row_count,
 };
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
@@ -170,7 +171,10 @@ pub fn render_with(
             (true, Some(key), Some(conditions)) => conditions.on(key).next().is_some(),
             _ => h.filter.filtered,
         };
-        let marker = header_marker(h.sort, filtered, h.filter.pending, multi);
+        let mut marker = header_marker(h.sort, filtered, h.filter.pending, multi);
+        if h.filter.not_applied {
+            marker.push('!');
+        }
         // The marker keeps the header's last cells; the label gets the rest.
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
@@ -191,7 +195,11 @@ pub fn render_with(
             let label = format!("{label:<room$}");
             put(buf, area, (start, 0.0), clip, &label, style);
             let at = start + room as f32;
-            let style = style.patch(theme.sort_marker);
+            let style = style.patch(if h.filter.not_applied {
+                theme.error
+            } else {
+                theme.sort_marker
+            });
             put(buf, area, (at, 0.0), clip, &marker, style);
         }
         if h.key.is_none() {
@@ -504,7 +512,8 @@ pub fn status(snapshot: &Snapshot) -> String {
 /// How a column header shows its conditions and the sort: `▿` while the
 /// column is filtered (or will be, once a pending request is answered), `▲`
 /// ascending or `▼` descending, with the column's place when several columns
-/// sort, then `~` while a request that changes either is unanswered.
+/// sort, then `~` while a request that changes either is unanswered. A
+/// condition asked for and not applied adds `!`, drawn in the error style.
 fn header_marker(sort: HeaderSort, filtered: bool, filter_pending: bool, multi: bool) -> String {
     let mut marker = String::new();
     if filtered {

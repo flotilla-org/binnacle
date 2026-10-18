@@ -60,6 +60,16 @@ impl<R> Column<R> {
     }
 }
 
+/// Why a [`MemorySource`] can't apply or find `query`: the last line of the
+/// `regex` crate's message for an invalid pattern, such as "unclosed group",
+/// or `None` if it can. A host shows it on the control the query came from,
+/// as the Table Source's error report.
+pub fn query_error(query: &TextQuery) -> Option<String> {
+    let error = Matcher::compile(query).err()?.to_string();
+    let last = error.lines().last().unwrap_or_default().trim();
+    Some(last.strip_prefix("error: ").unwrap_or(last).to_string())
+}
+
 /// How a Text Query matches a value.
 enum Matcher {
     Contains(String),
@@ -71,8 +81,12 @@ impl Matcher {
     /// else is a regex, the text escaped unless it is one. `None` for an
     /// invalid regex.
     fn new(query: &TextQuery) -> Option<Matcher> {
+        Matcher::compile(query).ok()
+    }
+
+    fn compile(query: &TextQuery) -> Result<Matcher, regex::Error> {
         if query.case_sensitive && !query.regex {
-            return Some(Matcher::Contains(query.text.clone()));
+            return Ok(Matcher::Contains(query.text.clone()));
         }
         let pattern = if query.regex {
             Cow::Borrowed(query.text.as_str())
@@ -81,9 +95,8 @@ impl Matcher {
         };
         let regex = RegexBuilder::new(&pattern)
             .case_insensitive(!query.case_sensitive)
-            .build()
-            .ok()?;
-        Some(Matcher::Pattern(regex))
+            .build()?;
+        Ok(Matcher::Pattern(regex))
     }
 
     fn is_match(&self, text: &str) -> bool {

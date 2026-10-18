@@ -27,20 +27,25 @@
 //! filter (Alt+Down) takes each change and each new ticker as it arrives.
 //! `binnacle-demo --slow` shows the records with sorts and Locates answered
 //! only after 1.5 s: a Shimmer sweeps across a header while its sort is
-//! pending, and the focused cell pulses while its Locate is. The demo redraws
+//! pending, and the focused cell pulses while its Locate is. A filter typed
+//! there leaves the rows as they are while the status line says
+//! "filtering…", and a newer one answers the one waiting at once with the
+//! filter in force, so only the last is drawn. The demo redraws
 //! on a timer only while something animates, an answer is due or the live
 //! table ticks, and otherwise waits for input.
 //!
 //! In the records (and the slow records), Ctrl+L focuses the quick filter
 //! field on the top line: typing keeps only the records with that text in
-//! any column, ignoring case, as each key arrives. Alt+C matches case, Alt+R
-//! reads the text as a regex, Ctrl+U clears it, Enter keeps the filter and
-//! leaves the field, and Esc puts back the filter from before. The status
-//! line counts the records shown of the total, such as "84 of 1,000 rows".
-//! The quick filter and Ctrl+R's crew filter both apply. A name edited so
-//! its record no longer matches stays where it is, dimmed, until the filter
-//! changes or Alt+L (or Excel's Ctrl+Alt+L) applies it again; the status
-//! line counts such records in view.
+//! any column, ignoring case, once typing pauses for 150 ms. Alt+C matches
+//! case, Alt+R reads the text as a regex, Ctrl+U clears it, Enter keeps the
+//! filter and leaves the field, and Esc puts back the filter from before. An
+//! invalid regex (try `(` with Alt+R) turns the field red with the reason,
+//! keeping the text and the filter from before. The status line counts the
+//! records shown of the total, such as "84 of 1,000 rows". The quick filter
+//! and Ctrl+R's crew filter both apply. A name edited so its record no longer
+//! matches stays where it is, dimmed, until the filter changes or Alt+L (or
+//! Excel's Ctrl+Alt+L) applies it again; the status line counts such records
+//! in view.
 //!
 //! Alt+Down opens the focused column's filter popup under its header (every
 //! records column but the id, and the tickers' name, price and load): type to
@@ -54,7 +59,8 @@
 //! Esc puts back the column's conditions from before.
 //! Conditions on several columns AND together and with the quick filter; a
 //! filtered column's header shows `▿` (with `~` while the change is
-//! pending), and a line above the table lists each condition as a chip.
+//! pending, `!` while not applied), and a line above the table lists each
+//! condition as a chip, red when the source did not apply it.
 //!
 //! Ctrl+F opens the find bar above the status line: typing marks every
 //! matching cell in yellow, and the bar counts them. Enter (or Ctrl+N) steps
@@ -64,7 +70,9 @@
 //! regex, Alt+B steps by columns instead of rows, Alt+F shows only the rows
 //! that match (again to show them all). Esc goes back to the table with find
 //! still open, where F3 and Shift+F3 step, Ctrl+F returns to the bar, and Esc
-//! closes find. The slow records answer each step late.
+//! closes find. The slow records answer each step late, and pressing Enter
+//! again before the first answer moves once. An invalid regex reads "No
+//! matches" in red, with the reason.
 //!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
@@ -98,11 +106,13 @@ use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, EditEnd, Effect,
-    FindDirection, FindMatch, FindQuery, Grid, Key, Located, Mode, Position, Snapshot, Stamped,
-    Support, TextSupport, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
+    Effect, FindDirection, FindMatch, FindQuery, Grid, Key, Located, Mode, Position, Snapshot,
+    Stamped, Support, TextSupport, Totals, ViewSpec, Viewport,
 };
-use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Viewed, pump};
+use binnacle_memory::{
+    FindStep, IdentitySource, MemorySource, PumpSource, Viewed, pump, query_error,
+};
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
     CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
@@ -402,9 +412,25 @@ impl Table {
                 }
                 while let Some(stamped) = grid.poll_effect() {
                     match &stamped.effect {
-                        Effect::ViewRequested { .. }
-                        | Effect::Locate { .. }
-                        | Effect::FindStepRequested { .. } => {
+                        Effect::ViewRequested { .. } => {
+                            // A newer View Spec aborts the one waiting, which
+                            // answers with the spec in force.
+                            let applied = grid.snapshot().applied_view().clone();
+                            held.retain(|(_, e)| {
+                                let waiting = matches!(e, Effect::ViewRequested { .. });
+                                if waiting {
+                                    let snapshot = grid.snapshot();
+                                    let totals = Totals {
+                                        rows: snapshot.total(Axis::Rows),
+                                        cols: snapshot.total(Axis::Cols),
+                                    };
+                                    grid.view_applied(applied.clone(), totals);
+                                }
+                                !waiting
+                            });
+                            held.push((now + SLOW, stamped.effect.clone()));
+                        }
+                        Effect::Locate { .. } | Effect::FindStepRequested { .. } => {
                             held.push((now + SLOW, stamped.effect.clone()));
                         }
                         Effect::MoveRequested { axis, keys, to } => {
@@ -545,6 +571,8 @@ impl Table {
             count: Some(source.find_count(rows, query)),
             index: step.and_then(|s| s.index),
             wrapped: step.is_some_and(|s| s.wrapped),
+            finding: false,
+            error: query_error(&query.query),
         };
         (marked, status)
     }
@@ -1055,7 +1083,27 @@ fn main() -> io::Result<()> {
                 let full = frame.area();
                 let mut area = full;
                 area.height = full.height.saturating_sub(1 + u16::from(find.is_open()));
+                let now = Instant::now();
+                quick.tick(&mut grid, now);
+                popup.tick(&mut grid, now);
+                find.tick(&mut grid, now);
                 app.pump(&mut table, &mut grid, &shown_rows);
+                // The source's reasons for what it did not apply.
+                let snapshot = grid.snapshot();
+                let wanted = snapshot.requested_view().unwrap_or(snapshot.applied_view());
+                quick.set_error(wanted.rows.filter.quick.as_ref().and_then(query_error));
+                let column = popup.column().and_then(|key| {
+                    wanted
+                        .rows
+                        .filter
+                        .conditions
+                        .on(key)
+                        .find_map(|c| match &c.kind {
+                            ConditionKind::Text(q) => query_error(q),
+                            _ => None,
+                        })
+                });
+                popup.set_error(column);
                 let field = grid.snapshot().quick_filter(Axis::Rows).is_some();
                 let chips = !grid.snapshot().conditions(Axis::Rows).is_empty();
                 for _ in 0..u16::from(field) + u16::from(chips) {
@@ -1156,7 +1204,12 @@ fn main() -> io::Result<()> {
             let due = table
                 .next_answer()
                 .map(|at| at.saturating_duration_since(Instant::now()));
-            let wake = [moving.then_some(FRAME), due, table.until_tick()]
+            let typed = [quick.deadline(), popup.deadline(), find.deadline()]
+                .into_iter()
+                .flatten()
+                .min()
+                .map(|at| at.saturating_duration_since(Instant::now()));
+            let wake = [moving.then_some(FRAME), due, table.until_tick(), typed]
                 .into_iter()
                 .flatten()
                 .min();

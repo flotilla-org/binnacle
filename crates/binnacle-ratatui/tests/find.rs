@@ -2,6 +2,8 @@
 //! editing, stepping and drawing, and the marks and the current match drawn
 //! over the cells.
 
+use std::time::Duration;
+
 use binnacle_core::{
     Axis, AxisConfig, Effect, FindDirection, FindMatch, FindQuery, Grid, Key, Snapshot, TextQuery,
     TextSupport, ViewEdit, Viewport,
@@ -127,7 +129,7 @@ fn the_chords_preset_opens_find_with_ctrl_f_and_steps_with_f3() {
 #[test]
 fn the_bar_opens_only_while_the_grid_finds() {
     let mut without = Grid::new(AxisConfig::new(3, 1.0), AxisConfig::new(2, 6.0));
-    let mut bar = FindBar::new();
+    let mut bar = FindBar::new().pause(Duration::ZERO);
     assert!(!bar.open(&snapshot(&mut without)));
     assert!(!bar.is_open());
     assert!(!bar.key(&char('a'), &mut without));
@@ -141,7 +143,7 @@ fn the_bar_opens_only_while_the_grid_finds() {
 #[test]
 fn typing_sets_the_find_query_and_enter_and_the_chords_step() {
     let mut grid = grid(true);
-    let mut bar = FindBar::new();
+    let mut bar = FindBar::new().pause(Duration::ZERO);
     bar.open(&snapshot(&mut grid));
     let alt = KeyModifiers::ALT;
     let ctrl = KeyModifiers::CONTROL;
@@ -186,7 +188,7 @@ fn typing_sets_the_find_query_and_enter_and_the_chords_step() {
 #[test]
 fn esc_leaves_the_bar_with_find_open_so_f3_steps_and_close_ends_find() {
     let mut grid = grid(false);
-    let mut bar = FindBar::new();
+    let mut bar = FindBar::new().pause(Duration::ZERO);
     bar.open(&snapshot(&mut grid));
     bar.key(&char('x'), &mut grid);
     bar.key(&press(KeyCode::Esc, KeyModifiers::NONE), &mut grid);
@@ -212,7 +214,7 @@ fn esc_leaves_the_bar_with_find_open_so_f3_steps_and_close_ends_find() {
 #[test]
 fn alt_f_shows_only_matching_rows_and_again_shows_them_all() {
     let mut grid = grid(false);
-    let mut bar = FindBar::new();
+    let mut bar = FindBar::new().pause(Duration::ZERO);
     bar.open(&snapshot(&mut grid));
     bar.key(&char('b'), &mut grid);
     asked(&mut grid);
@@ -228,7 +230,7 @@ fn alt_f_shows_only_matching_rows_and_again_shows_them_all() {
 #[test]
 fn the_bar_shows_the_text_toggles_count_and_wrap() {
     let mut grid = grid(true);
-    let mut bar = FindBar::new();
+    let mut bar = FindBar::new().pause(Duration::ZERO);
     let count = |total, partial| Some(FindCount { total, partial });
     let mut out = vec![];
     bar.open(&snapshot(&mut grid));
@@ -251,6 +253,7 @@ fn the_bar_shows_the_text_toggles_count_and_wrap() {
         count: count(1204, false),
         index: Some(1203),
         wrapped: true,
+        ..FindStatus::default()
     };
     out.push(bar_line(&bar, &snapshot(&mut grid), &status));
     bar.key(&press(KeyCode::Char('c'), KeyModifiers::ALT), &mut grid);

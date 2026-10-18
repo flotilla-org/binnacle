@@ -2,6 +2,7 @@
 //! filter field, the column filter popup and the conditions line.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use binnacle_core::{
     Axis, Blanks, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery, FilterSpec,
@@ -100,6 +101,57 @@ impl Controls {
     }
 }
 
+/// How long a field that writes a Text Query waits after the last key typed
+/// before it asks, unless the host sets another pause.
+pub const TYPING_PAUSE: Duration = Duration::from_millis(150);
+
+/// A field's typing pause: text typed waits until `pause` has passed with no
+/// more, then [`Pause::due`] says to send it. A zero pause sends at once.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Pause {
+    pub(crate) pause: Duration,
+    pub(crate) typed: Option<Instant>,
+}
+
+impl Default for Pause {
+    fn default() -> Self {
+        Pause {
+            pause: TYPING_PAUSE,
+            typed: None,
+        }
+    }
+}
+
+impl Pause {
+    /// Text was typed: whether to send it now (no pause).
+    pub(crate) fn typed(&mut self) -> bool {
+        if self.pause.is_zero() {
+            return true;
+        }
+        self.typed = Some(Instant::now());
+        false
+    }
+
+    /// Whether typed text waits and its pause has passed by `now`; it stops
+    /// waiting if so.
+    pub(crate) fn due(&mut self, now: Instant) -> bool {
+        let due = self.deadline().is_some_and(|at| now >= at);
+        if due {
+            self.typed = None;
+        }
+        due
+    }
+
+    /// Whether typed text waits to be sent; it stops waiting.
+    pub(crate) fn flush(&mut self) -> bool {
+        self.typed.take().is_some()
+    }
+
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.typed.map(|at| at + self.pause)
+    }
+}
+
 /// The text, case and regex options a quick filter field holds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Query {
@@ -111,13 +163,19 @@ struct Query {
 /// The rows' quick filter field: one line holding the text and the case
 /// (`Aa`) and regex (`.*`) toggles, drawn by [`QuickFilter::render`] only
 /// while the rows have a quick filter. Each change sets the Grid's quick
-/// filter, searching the shown columns. Unfocused, it shows the quick filter
-/// in force, which another control (the find bar's Alt+F) may have set.
+/// filter, searching the shown columns: typing once a pause has passed (see
+/// [`QuickFilter::tick`]), the toggles, Esc and Enter at once. Unfocused, it
+/// shows the quick filter in force, which another control (the find bar's
+/// Alt+F) may have set.
 ///
 /// While focused it takes every key: characters and Backspace edit, Ctrl+U
 /// clears, Alt+C toggles case, Alt+R regex (if the rows take regexes), Enter
 /// keeps the filter and Esc puts back the one from before focus; both leave
 /// the field.
+///
+/// A quick filter the Table Source did not apply (an invalid regex, say)
+/// turns the field red, with the message the host gives
+/// [`QuickFilter::set_error`] after it, and the text kept.
 #[derive(Clone, Debug, Default)]
 pub struct QuickFilter {
     query: Query,
@@ -126,6 +184,8 @@ pub struct QuickFilter {
     /// Whether the rows take regexes, as of focus.
     regex: bool,
     placeholder: String,
+    pause: Pause,
+    error: Option<String>,
 }
 
 impl QuickFilter {
@@ -137,6 +197,32 @@ impl QuickFilter {
     pub fn placeholder(mut self, text: impl Into<String>) -> Self {
         self.placeholder = text.into();
         self
+    }
+
+    /// How long typing waits before setting the quick filter:
+    /// [`TYPING_PAUSE`] unless set; zero sets it on every key.
+    pub fn pause(mut self, pause: Duration) -> Self {
+        self.pause.pause = pause;
+        self
+    }
+
+    /// Sets the quick filter typed, once its pause has passed by `now`. Call
+    /// it from the host's loop, waking by [`QuickFilter::deadline`].
+    pub fn tick(&mut self, grid: &mut Grid, now: Instant) {
+        if self.pause.due(now) {
+            self.apply(grid);
+        }
+    }
+
+    /// When typed text waits to be sent until, if it does.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.pause.deadline()
+    }
+
+    /// The Table Source's message for a quick filter it did not apply,
+    /// shown while the field's quick filter stays not applied.
+    pub fn set_error(&mut self, message: Option<String>) {
+        self.error = message;
     }
 
     pub fn focused(&self) -> bool {
@@ -170,33 +256,48 @@ impl QuickFilter {
         let q = &mut self.query;
         let alt = event.modifiers == KeyModifiers::ALT;
         let ctrl = event.modifiers == KeyModifiers::CONTROL;
-        match event.code {
-            KeyCode::Enter => self.before = None,
+        let typed = match event.code {
+            KeyCode::Enter => {
+                self.before = None;
+                if self.pause.flush() {
+                    self.apply(grid);
+                }
+                false
+            }
             KeyCode::Esc => {
+                self.pause.flush();
                 self.query = self.before.take().unwrap_or_default();
                 self.apply(grid);
+                false
             }
             KeyCode::Char('c') if alt => {
                 q.case_sensitive = !q.case_sensitive;
+                self.pause.flush();
                 self.apply(grid);
+                false
             }
             KeyCode::Char('r') if alt && self.regex => {
                 q.regex = !q.regex;
+                self.pause.flush();
                 self.apply(grid);
+                false
             }
             KeyCode::Char('u') if ctrl => {
                 q.text.clear();
-                self.apply(grid);
+                true
             }
             KeyCode::Char(c) if KeyModifiers::SHIFT.contains(event.modifiers) => {
                 q.text.push(c);
-                self.apply(grid);
+                true
             }
             KeyCode::Backspace => {
                 q.text.pop();
-                self.apply(grid);
+                true
             }
-            _ => {}
+            _ => false,
+        };
+        if typed && self.pause.typed() {
+            self.apply(grid);
         }
         true
     }
@@ -211,7 +312,9 @@ impl QuickFilter {
 
     /// Draws the field into `area`'s first line: `Filter`, the text (ending
     /// in a caret while focused), then the toggles at the right, lit when on.
-    /// Draws nothing while the rows have no quick filter.
+    /// A quick filter still pending is dimmed; one not applied is
+    /// drawn in the error style, followed by the message. Draws nothing while
+    /// the rows have no quick filter.
     pub fn render(&self, snapshot: &Snapshot, theme: &Theme, area: Rect, buf: &mut Buffer) {
         let area = area.intersection(buf.area);
         let Some(support) = snapshot.quick_filter(Axis::Rows) else {
@@ -228,9 +331,25 @@ impl QuickFilter {
         if support.regex {
             toggles.push((".*", query.regex));
         }
+        let state = quick_state(snapshot);
+        // Not applied only while the field shows what was asked for.
+        let state = match state {
+            QuickState::NotApplied(asked) if asked != query => QuickState::Settled,
+            state => state,
+        };
         let label = " Filter ";
-        let right: usize = toggles.iter().map(|(t, _)| t.len() + 1).sum::<usize>() + 1;
         let width = usize::from(area.width);
+        let message = match (&state, &self.error) {
+            (QuickState::NotApplied(_), Some(m)) => {
+                let m = format!("✗ {m} ");
+                fit(&m, u32::try_from(width / 2).unwrap_or(0)).into_owned()
+            }
+            (QuickState::NotApplied(_), None) => "✗ not applied ".to_string(),
+            _ => String::new(),
+        };
+        let right: usize = toggles.iter().map(|(t, _)| t.len() + 1).sum::<usize>()
+            + 1
+            + char_count(&message) as usize;
         let room = width.saturating_sub(char_count(label) as usize + right + 1);
         let blank = Style::default();
         let mut x = area.x;
@@ -263,7 +382,11 @@ impl QuickFilter {
         let style = if !self.focused() && query.text.is_empty() {
             theme.body.patch(theme.loading).add_modifier(Modifier::DIM)
         } else {
-            field
+            match state {
+                QuickState::NotApplied(_) => field.patch(theme.error),
+                QuickState::Pending => field.add_modifier(Modifier::DIM),
+                QuickState::Settled => field,
+            }
         };
         let shown = fit(&shown, u32::try_from(room).unwrap_or(u32::MAX));
         let pad = room.saturating_sub(char_count(&shown) as usize);
@@ -278,7 +401,38 @@ impl QuickFilter {
             put(&mut x, text, toggle_style(theme, on));
             put(&mut x, " ", theme.body);
         }
+        let message_style = match state {
+            QuickState::NotApplied(_) => theme.body.patch(theme.error),
+            _ => theme.body.patch(theme.loading),
+        };
+        put(&mut x, &message, message_style);
     }
+}
+
+/// Where the rows' quick filter stands between the latest request and the
+/// applied View Spec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum QuickState {
+    /// Applied as asked.
+    Settled,
+    /// Asked for, an answer still due.
+    Pending,
+    /// Asked for (this query), answered, and not applied.
+    NotApplied(Query),
+}
+
+fn quick_state(snapshot: &Snapshot) -> QuickState {
+    let Some(requested) = snapshot.requested_view() else {
+        return QuickState::Settled;
+    };
+    let asked = &requested.rows.filter.quick;
+    if *asked == snapshot.applied_view().rows.filter.quick {
+        return QuickState::Settled;
+    }
+    if snapshot.view_pending() {
+        return QuickState::Pending;
+    }
+    QuickState::NotApplied(asked.as_ref().map_or_else(Query::default, Query::of))
 }
 
 /// The rows' quick filter as last asked for (the request still unanswered,
@@ -292,12 +446,18 @@ fn in_force(snapshot: &Snapshot) -> Option<Query> {
             .filter
             .quick
             .as_ref()
-            .map_or_else(Query::default, |q| Query {
-                text: q.text.clone(),
-                case_sensitive: q.case_sensitive,
-                regex: q.regex,
-            }),
+            .map_or_else(Query::default, Query::of),
     )
+}
+
+impl Query {
+    fn of(q: &TextQuery) -> Self {
+        Query {
+            text: q.text.clone(),
+            case_sensitive: q.case_sensitive,
+            regex: q.regex,
+        }
+    }
 }
 
 /// A column's filter popup, dropped under the column header. Where the
@@ -317,10 +477,17 @@ fn in_force(snapshot: &Snapshot) -> Option<Query> {
 /// PageDown, Home and End move, Space ticks, and characters search. Ctrl+A
 /// ticks the head of the list; Alt+N toggles not, Alt+C case, Alt+R regex.
 /// Enter keeps the conditions and Esc puts back the ones from before; both
-/// close it.
+/// close it. Typing in the text sets the condition once a pause has passed
+/// (see [`ColumnFilter::tick`]); every other change, at once.
+///
+/// A Text condition the Table Source did not apply (an invalid regex, say)
+/// turns the text red, with the message the host gives
+/// [`ColumnFilter::set_error`] under it.
 #[derive(Clone, Debug, Default)]
 pub struct ColumnFilter {
     open: Option<Open>,
+    pause: Pause,
+    error: Option<String>,
 }
 
 /// Where the popup's keys go.
@@ -399,6 +566,34 @@ const LIST_ROWS: usize = 10;
 impl ColumnFilter {
     pub fn new() -> Self {
         ColumnFilter::default()
+    }
+
+    /// How long typing in the text waits before setting the condition:
+    /// [`TYPING_PAUSE`] unless set; zero sets it on every key.
+    pub fn pause(mut self, pause: Duration) -> Self {
+        self.pause.pause = pause;
+        self
+    }
+
+    /// Sets the Text condition typed, once its pause has passed by `now`.
+    /// Call it from the host's loop, waking by [`ColumnFilter::deadline`].
+    pub fn tick(&mut self, grid: &mut Grid, now: Instant) {
+        if self.pause.due(now)
+            && let Some(o) = &mut self.open
+        {
+            o.apply_text(grid);
+        }
+    }
+
+    /// When typed text waits to be sent until, if it does.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.pause.deadline()
+    }
+
+    /// The Table Source's message for a Text condition it did not apply,
+    /// shown while the popup's condition stays not applied.
+    pub fn set_error(&mut self, message: Option<String>) {
+        self.error = message;
     }
 
     /// The column the popup is open on, if it is open.
@@ -494,6 +689,18 @@ impl ColumnFilter {
         if event.kind == KeyEventKind::Release {
             return true;
         }
+        let pause = &mut self.pause;
+        // Anything but typing in the text sends what waits first; Alt+N, C
+        // and R send it with their own change, and Esc drops it.
+        let alt_key = event.modifiers == KeyModifiers::ALT;
+        let typing = o.zone == Zone::Text
+            && matches!(event.code, KeyCode::Char(_) | KeyCode::Backspace)
+            && !alt_key;
+        if alt_key || event.code == KeyCode::Esc {
+            pause.flush();
+        } else if !typing && pause.flush() {
+            o.apply_text(grid);
+        }
         let alt = event.modifiers == KeyModifiers::ALT;
         let ctrl = event.modifiers == KeyModifiers::CONTROL;
         let plain = KeyModifiers::SHIFT.contains(event.modifiers);
@@ -520,10 +727,10 @@ impl ColumnFilter {
                 o.apply_text(grid);
             }
             KeyCode::Char('a') if ctrl && o.one_of => o.tick_row(grid, 0),
-            KeyCode::Char('u') if ctrl => o.edit(grid, |t| t.clear()),
+            KeyCode::Char('u') if ctrl => o.edit(grid, pause, |t| t.clear()),
             KeyCode::Char(' ') if plain && o.zone == Zone::List => o.tick_row(grid, o.cursor),
-            KeyCode::Char(c) if plain => o.edit(grid, |t| t.push(c)),
-            KeyCode::Backspace => o.edit(grid, |t| {
+            KeyCode::Char(c) if plain => o.edit(grid, pause, |t| t.push(c)),
+            KeyCode::Backspace => o.edit(grid, pause, |t| {
                 t.pop();
             }),
             KeyCode::Down if o.zone == Zone::Search => o.zone = Zone::List,
@@ -576,8 +783,20 @@ impl ColumnFilter {
             hints.push("Tab move  Space tick  Ctrl+A all".to_string());
         }
         hints.push("Enter keep  Esc undo  Ctrl+U clear".to_string());
-        // Borders, the text row, the search, rule and note rows, the hints.
-        let fixed = 2 + u16::from(o.text.is_some()) + 3 * u16::from(o.one_of) + hints.len() as u16;
+        // The column's Text condition as listed, if it is.
+        let state = (o.column.text.as_ref()).and_then(|c| {
+            (snapshot.conditions(Axis::Rows).into_iter())
+                .find(|(listed, _)| listed == c)
+                .map(|(_, state)| state)
+        });
+        let rejected = state == Some(ConditionState::NotApplied) && self.pause.typed.is_none();
+        // Borders, the text row and any error under it, the search, rule and
+        // note rows, the hints.
+        let fixed = 2
+            + u16::from(o.text.is_some())
+            + u16::from(rejected)
+            + 3 * u16::from(o.one_of)
+            + hints.len() as u16;
         let top = (snapshot.header(Axis::Rows).ceil() as u16).min(area.height);
         let room = usize::from(area.height.saturating_sub(top + fixed));
         // The head and the values, a line saying there are none, or one
@@ -636,6 +855,11 @@ impl ColumnFilter {
             put(row, &mut x, "│ ", border);
             put(row, &mut x, how, theme.body.add_modifier(Modifier::BOLD));
             let underlined = theme.body.add_modifier(Modifier::UNDERLINED);
+            let underlined = match state {
+                _ if rejected => underlined.patch(theme.error),
+                Some(ConditionState::Adding) => underlined.add_modifier(Modifier::DIM),
+                _ => underlined,
+            };
             put(row, &mut x, &field, underlined);
             put(row, &mut x, " ", theme.body);
             for (text, on) in toggles {
@@ -644,6 +868,21 @@ impl ColumnFilter {
             }
             put(row, &mut x, "│", border);
             row += 1;
+            if rejected {
+                let message = self.error.as_deref().unwrap_or("not applied");
+                let message = fit(
+                    &format!("✗ {message}"),
+                    u32::try_from(inner - 1).unwrap_or(0),
+                )
+                .into_owned();
+                let pad = (inner - 1).saturating_sub(char_count(&message) as usize);
+                let mut x = popup.x;
+                put(row, &mut x, "│ ", border);
+                put(row, &mut x, &message, theme.body.patch(theme.error));
+                put(row, &mut x, &" ".repeat(pad), theme.body);
+                put(row, &mut x, "│", border);
+                row += 1;
+            }
         }
 
         if o.one_of {
@@ -834,11 +1073,14 @@ impl Open {
         }]
     }
 
-    /// Edits the text or, elsewhere, the search with `f`.
-    fn edit(&mut self, grid: &mut Grid, f: impl FnOnce(&mut String)) {
+    /// Edits the text (sent once `pause` allows) or, elsewhere, the search
+    /// with `f`.
+    fn edit(&mut self, grid: &mut Grid, pause: &mut Pause, f: impl FnOnce(&mut String)) {
         if self.zone == Zone::Text {
             f(&mut self.query.text);
-            self.apply_text(grid);
+            if pause.typed() {
+                self.apply_text(grid);
+            }
         } else if self.one_of {
             f(&mut self.search);
             self.cursor = 0;
@@ -917,8 +1159,9 @@ pub(crate) fn toggle_style(theme: &Theme, on: bool) -> Style {
 
 /// Draws the rows' column conditions into `area`'s first line, after a
 /// `Where` label: a chip for each, such as `port: not bergen` or
-/// `name: /^an/ Aa`, dimmed with a `~` while being added and struck through
-/// while being removed. Draws nothing while there are none.
+/// `name: /^an/ Aa`, dimmed with a `~` while being added, struck through
+/// while being removed, and in the error style with a `!` when the Table
+/// Source did not apply it. Draws nothing while there are none.
 pub fn render_conditions(
     snapshot: &Snapshot,
     content: &impl Content,
@@ -957,6 +1200,13 @@ pub fn render_conditions(
             ConditionState::Adding => {
                 chip.push('~');
                 style.add_modifier(Modifier::DIM)
+            }
+            ConditionState::NotApplied => {
+                chip.push('!');
+                theme
+                    .body
+                    .patch(theme.error)
+                    .add_modifier(Modifier::REVERSED)
             }
             _ => style.add_modifier(Modifier::DIM | Modifier::CROSSED_OUT),
         };
@@ -1006,8 +1256,14 @@ fn listed_text(values: &[Value]) -> String {
 }
 
 /// The row count for a status line: "1,204 of 5,001 rows" when the Table
-/// Source gave an unfiltered total that differs, else "5,001 rows".
+/// Source gave an unfiltered total that differs, else "5,001 rows";
+/// "filtering…" while a request that changes the rows' filter is pending.
 pub fn row_count(snapshot: &Snapshot) -> String {
+    let filter = |v: &binnacle_core::ViewSpec| v.rows.filter.clone();
+    let requested = snapshot.requested_view().map(filter);
+    if snapshot.view_pending() && requested != Some(filter(snapshot.applied_view())) {
+        return "filtering…".into();
+    }
     let count = snapshot.count(Axis::Rows);
     let noun = if count == 1 { "row" } else { "rows" };
     match snapshot.total(Axis::Rows) {

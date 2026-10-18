@@ -1,0 +1,27 @@
+---
+source: crates/binnacle-ratatui/tests/slow.rs
+expression: "screen(&mut grid, &field, &popup, &bar, &status)"
+---
+ Filter  (                               Aa .* ✗ unclosed group
+ Where   port: /[/!
+    name        │port       !│crew        │
+1   r0c0         ┌─ Filter port ────────────────────────────┐  █
+2   r1c0         │ Contains [▏                        Aa .* │  █
+3   r2c0         │ ✗ unclosed character class               │  █
+4   r3c0         │ Alt+N not  Alt+C case  Alt+R regex       │  █
+5   r4c0         │ Enter keep  Esc undo  Ctrl+U clear       │  █
+                 └──────────────────────────────────────────┘  █
+                                                               █
+ Find  (▏                       Aa .* rows  No matches: unclosed
+5 rows
+.........R...............................dd....RRRRRRRRRRRRRRRRR
+........RRRRRRRRRRRR
+............................R
+
+............................RRRRRRRRRRRRRRRRRRRRRRRRR.dd
+...................RRRRRRRRRRRRRRRRRRRRRRRRRR
+
+
+
+
+................................dd....dddd..RRRRRRRRRRRRRRRRRRRR

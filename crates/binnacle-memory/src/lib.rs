@@ -11,7 +11,7 @@ use std::ops::Range;
 use binnacle_core::{Key, Located, Position};
 
 pub use interner::KeyInterner;
-pub use memory_source::{MemorySource, Unsortable};
+pub use memory_source::{MemorySource, Unsortable, query_error};
 pub use pump::{FindCount, FindStep, PumpSource, Viewed, pump};
 pub use sort_keys::SortKeys;
 pub use table::InMemoryTableSource;

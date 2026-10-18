@@ -1,0 +1,27 @@
+---
+source: crates/binnacle-ratatui/tests/slow.rs
+expression: "screen(&mut grid, &field, &popup, &bar, &status)"
+---
+ Filter  a                                                Aa .*
+ Where   port: ber   name: x~
+    name      ▿~│port       ▿│crew        │
+1   r0c0         r0c1         r0c2                             █
+2   r1c0         r1c1         r1c2                             █
+3   r2c0         r2c1         r2c2                             █
+4   r3c0         r3c1         r3c2                             █
+5   r4c0         r4c1         r4c2                             █
+                                                               █
+                                                               █
+ Find  q▏                       Aa .* rows  finding…  Enter next
+filtering…
+.........d................................................dd.dd
+.....................ddddd.dd
+
+
+
+
+
+
+
+
+................................dd.dd.dddd

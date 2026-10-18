@@ -1,6 +1,8 @@
 //! The find and filter controls: the chords preset's keys, the quick filter
 //! field's editing and drawing, and the status line's row count.
 
+use std::time::Duration;
+
 use binnacle_core::{
     Axis, AxisConfig, Effect, FilterSpec, Grid, Snapshot, TextQuery, TextSupport, Totals, ViewEdit,
     ViewSpec, Viewport,
@@ -90,7 +92,7 @@ fn the_chords_preset_reaches_the_quick_filter_with_ctrl_l() {
 
 #[test]
 fn the_field_takes_focus_only_while_the_rows_have_a_quick_filter() {
-    let mut field = QuickFilter::new();
+    let mut field = QuickFilter::new().pause(Duration::ZERO);
     let mut without = grid(5, None);
     assert!(!field.focus(&snapshot(&mut without)));
     assert!(!field.key(&char('a'), &mut without));
@@ -104,7 +106,7 @@ fn the_field_takes_focus_only_while_the_rows_have_a_quick_filter() {
 #[test]
 fn each_change_sets_the_quick_filter_and_esc_puts_back_the_one_before_focus() {
     let mut grid = grid(5, Some(TextSupport::new(true)));
-    let mut field = QuickFilter::new();
+    let mut field = QuickFilter::new().pause(Duration::ZERO);
     let alt = KeyModifiers::ALT;
     field.focus(&snapshot(&mut grid));
     for key in [char('a'), press(KeyCode::Char('B'), KeyModifiers::SHIFT)] {
@@ -144,7 +146,7 @@ fn each_change_sets_the_quick_filter_and_esc_puts_back_the_one_before_focus() {
 #[test]
 fn alt_r_toggles_regex_only_when_the_rows_take_regexes() {
     let mut grid = grid(5, Some(TextSupport::new(false)));
-    let mut field = QuickFilter::new();
+    let mut field = QuickFilter::new().pause(Duration::ZERO);
     field.focus(&snapshot(&mut grid));
     field.key(&char('a'), &mut grid);
     field.key(&press(KeyCode::Char('r'), KeyModifiers::ALT), &mut grid);
@@ -158,14 +160,20 @@ fn alt_r_toggles_regex_only_when_the_rows_take_regexes() {
 #[test]
 fn the_field_is_hidden_while_the_rows_have_no_quick_filter() {
     let mut grid = grid(5, None);
-    let buf = line(&QuickFilter::new(), &snapshot(&mut grid), 30);
+    let buf = line(
+        &QuickFilter::new().pause(Duration::ZERO),
+        &snapshot(&mut grid),
+        30,
+    );
     assert_eq!(text(&buf), "");
 }
 
 #[test]
 fn the_field_shows_its_placeholder_text_caret_and_lit_toggles() {
     let mut grid = grid(5, Some(TextSupport::new(true)));
-    let mut field = QuickFilter::new().placeholder("Ctrl+L");
+    let mut field = QuickFilter::new()
+        .pause(Duration::ZERO)
+        .placeholder("Ctrl+L");
     let mut out = vec![text(&line(&field, &snapshot(&mut grid), 30))];
     field.focus(&snapshot(&mut grid));
     for c in "ber".chars() {
@@ -193,7 +201,7 @@ fn the_field_shows_its_placeholder_text_caret_and_lit_toggles() {
 #[test]
 fn unfocused_the_field_shows_a_quick_filter_set_elsewhere_and_focus_adopts_it() {
     let mut grid = grid(5, Some(TextSupport::new(true)));
-    let mut field = QuickFilter::new();
+    let mut field = QuickFilter::new().pause(Duration::ZERO);
     grid.set_quick_filter(Axis::Rows, Some(TextQuery::new("hal").case_sensitive(true)));
     requested(&mut grid);
     assert_eq!(

@@ -4,6 +4,8 @@
 //! condition (#107); and how it draws. A property mirrors the web's
 //! (web/test/checklist.test.ts), so the two ports of the rules can't drift.
 
+use std::time::Duration;
+
 use std::cell::RefCell;
 
 use binnacle_core::{
@@ -73,7 +75,7 @@ fn snapshot(grid: &mut Grid) -> Snapshot<'_> {
 
 /// Opens the popup on column `col`, with the edits so far drained.
 fn open(grid: &mut Grid, col: u64) -> ColumnFilter {
-    let mut popup = ColumnFilter::new();
+    let mut popup = ColumnFilter::new().pause(Duration::ZERO);
     assert!(popup.open_column(&snapshot(grid), Key(col)));
     edits(grid);
     popup
