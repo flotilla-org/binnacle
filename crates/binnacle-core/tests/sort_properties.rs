@@ -545,7 +545,7 @@ fn buffered_focus_moves_land_where_moves_after_located_would(tc: TestCase) {
 }
 
 #[hegel::test(test_cases = 1000)]
-fn a_filtered_out_focus_moves_to_the_suggestion_and_leaves_the_picks(tc: TestCase) {
+fn a_filtered_out_focus_moves_to_the_suggestion_and_hidden_picks_go(tc: TestCase) {
     runs(&tc, |host, step| {
         let ([Input::Filter(_)], Some(before)) = (step.inputs.as_slice(), step.before.focus) else {
             return;
@@ -556,7 +556,14 @@ fn a_filtered_out_focus_moves_to_the_suggestion_and_leaves_the_picks(tc: TestCas
         }
         let Some(key) = before[0].key else { return };
         let after = host.view.focus;
+        // Picks of rows the filter hides are dropped, whatever focus does.
         let mut picks = step.before.picks.clone();
+        picks.retain(|&k| {
+            matches!(
+                host.s.source.source.locate(Axis::Rows, k),
+                Located::Found(_)
+            )
+        });
         match host.s.source.source.locate(Axis::Rows, key) {
             Located::Found(p) => assert_eq!(
                 after.map(|f| f[0]),
@@ -576,7 +583,6 @@ fn a_filtered_out_focus_moves_to_the_suggestion_and_leaves_the_picks(tc: TestCas
                 // The suggested item's Key is known once a Window holds it.
                 let to = host.s.source.source.window(Axis::Rows, p..p + 1);
                 assert!(end.key.is_none_or(|k| Some(&k) == to.first()), "{end:?}");
-                picks.retain(|&k| k != key);
             }
         }
         assert_eq!(after.map(|f| f[1]), Some(before[1]));

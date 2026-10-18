@@ -404,3 +404,28 @@ fn cancel_after_a_filter_empties_the_rows_brings_no_pick_back() {
     assert_eq!(s.grid.snapshot().picked(), &[] as &[Key]);
     insta::assert_snapshot!(out);
 }
+
+/// Regression (from a property whose oracle predated `Refiltered`): with
+/// focus on a row the filter keeps, the pick of a row it hides still goes.
+#[test]
+fn a_hidden_pick_goes_while_focus_stays_on_a_kept_row() {
+    let rows = vec![vec![None, None], vec![Some(0), None]];
+    let grid = Grid::new(
+        AxisConfig::new(2, 1.0).header(1.0),
+        AxisConfig::new(2, 6.0).header(4.0).gap(1.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 2, [0]));
+    s.frame(V);
+    s.click(5.0, 1.5, Modifiers::CTRL);
+    s.click(5.0, 2.5, Modifiers::CTRL);
+    let mut out = s.step("pick records 0 and 1, focusing 1", V);
+    filter(&mut s, |r| r[0] >= Some(0));
+    out += &s.step(
+        "keep values of 0 and up: record 0 (no value) goes with its pick; focus stays on record 1",
+        V,
+    );
+    let snap = s.grid.snapshot();
+    assert_eq!(snap.picked(), &[Key(1)]);
+    assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(1)));
+    insta::assert_snapshot!(out);
+}
