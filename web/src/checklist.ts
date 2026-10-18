@@ -38,26 +38,28 @@ export function columnConditions<ColId>(conditions: Condition<ColId>[], id: ColI
 }
 
 /**
- * Whether a Text query keeps `value`, read here as the In-Memory Table
- * Source reads it: lowercased substrings, or a `RegExp`. `true` for a
- * pattern `RegExp` rejects, which no source applies.
+ * Whether a Text query matches `value` (never a blank), read here as fromRows
+ * reads it: lowercased substrings, or a `RegExp`; `undefined` for a pattern
+ * `RegExp` rejects.
  */
-function textKeeps(query: TextMatch, value: string): boolean {
+function textMatches(query: TextMatch, value: ListedValue): boolean | undefined {
   if (!query.regex) {
+    if (value === null) return false;
     return query.caseSensitive ? value.includes(query.text) : value.toLowerCase().includes(query.text.toLowerCase());
   }
   try {
-    return new RegExp(query.text, query.caseSensitive ? "u" : "iu").test(value);
+    const pattern = new RegExp(query.text, query.caseSensitive ? "u" : "iu");
+    return value !== null && pattern.test(value);
   } catch {
-    return true;
+    return undefined;
   }
 }
 
-/** Whether `condition` keeps an item whose value is `value` (`null` for a blank). */
+/** Whether `condition` keeps an item whose value is `value` (`null` for a blank); one with an invalid pattern, which no source applies, keeps everything. */
 export function keeps<ColId>(condition: Condition<ColId>, value: ListedValue): boolean {
   const kind = condition.kind;
-  const matched = kind.type === "OneOf" ? kind.values.includes(value) : value !== null && textKeeps(kind.query, value);
-  return matched !== condition.not;
+  const matched = kind.type === "OneOf" ? kind.values.includes(value) : textMatches(kind.query, value);
+  return matched === undefined || matched !== condition.not;
 }
 
 /** Whether the column's Text conditions reject `value`, so it can't be ticked. */

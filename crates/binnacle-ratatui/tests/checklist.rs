@@ -336,3 +336,17 @@ fn the_checklist_draws_ticks_counts_and_dims_the_values_the_text_condition_rejec
     out.push(text(&screen(&empty, &mut grid)));
     insta::assert_snapshot!(out.join("\n\n"));
 }
+
+#[test]
+fn a_text_condition_with_an_invalid_pattern_leaves_every_value_tickable() {
+    let mut grid = grid();
+    let invalid = Condition::text(Key(1), TextQuery::new("(").regex(true));
+    grid.view_applied(conditions(vec![invalid]), Totals::unknown());
+    let mut popup = open(&mut grid, 1);
+    fetch(&mut popup, &mut grid);
+    popup.key(&press(KeyCode::Tab), &mut grid);
+    popup.key(&press(KeyCode::Tab), &mut grid);
+    popup.key(&press(KeyCode::Down), &mut grid);
+    popup.key(&char(' '), &mut grid);
+    assert_eq!(edits(&mut grid), vec![add(one_of(1, &[None]).not(true))]);
+}

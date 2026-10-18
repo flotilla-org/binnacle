@@ -136,6 +136,14 @@ describe("the checklist", () => {
     expect(after(conditions, written)).toEqual([contains("berg"), oneOf(["Bergen"], true)]);
   });
 
+  test("a Text condition with an invalid pattern, which no source applies, excludes no value", () => {
+    const query = { text: "(", caseSensitive: false, regex: true };
+    for (const not of [false, true]) {
+      const column = columnConditions([{ id: ID, kind: { type: "Text", query }, not }], ID);
+      expect(["Bergen", null].map((v) => excluded(column, v))).toEqual([false, false]);
+    }
+  });
+
   test("a blank is its own value, apart from empty text", () => {
     const column = columnConditions([oneOf([null])], ID);
     expect([ticked(column, null), ticked(column, "")]).toEqual([true, false]);

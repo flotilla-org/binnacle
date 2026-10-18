@@ -171,8 +171,7 @@ fn search_condition(key: Key, search: &str) -> Condition {
 fn keeps(condition: &Condition, value: &Value) -> bool {
     let matched = match (&condition.kind, value) {
         (ConditionKind::OneOf(values), _) => values.contains(value),
-        (ConditionKind::Text(_), Value::Blank) => false,
-        (ConditionKind::Text(q), Value::Text(t)) => {
+        (ConditionKind::Text(q), value) => {
             let pattern = if q.regex {
                 q.text.clone()
             } else {
@@ -181,9 +180,10 @@ fn keeps(condition: &Condition, value: &Value) -> bool {
             let built = RegexBuilder::new(&pattern)
                 .case_insensitive(!q.case_sensitive)
                 .build();
-            match built {
-                Ok(regex) => regex.is_match(t),
-                Err(_) => return true,
+            match (built, value) {
+                (Err(_), _) => return true,
+                (Ok(regex), Value::Text(t)) => regex.is_match(t),
+                (Ok(_), Value::Blank) => false,
             }
         }
         _ => return true,
