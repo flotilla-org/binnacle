@@ -143,4 +143,37 @@ describe("unmatched rows in the feed", () => {
       source.destroy();
     }
   });
+
+  test("a row a change brings back into view shows its new value, never one cached from before it was hidden", () => {
+    const rows = [
+      { name: "Bergen", port: "Oslo" },
+      { name: "Hull", port: "Hull" },
+    ];
+    const source = fromRows(rows, [{ key: "name" }, { key: "port" }]);
+    const h = new Harness(source);
+    try {
+      h.frame();
+      expect(h.values()).toEqual([
+        ["Bergen", "Oslo"],
+        ["Hull", "Hull"],
+      ]);
+      h.grid.set_quick_filter(0, { text: "bergen", caseSensitive: false, regex: false, searches: null });
+      h.drain();
+      h.frame();
+      expect(h.values()).toEqual([["Bergen", "Oslo"]]);
+      // Hidden, the row changes in the data and so comes back.
+      rows[1]!.port = "Bergen";
+      source.changed(1);
+      h.frame();
+      h.drain();
+      h.frame();
+      expect(h.values()).toEqual([
+        ["Bergen", "Oslo"],
+        ["Hull", "Bergen"],
+      ]);
+    } finally {
+      h.destroy();
+      source.destroy();
+    }
+  });
 });

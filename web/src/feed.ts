@@ -298,10 +298,15 @@ export function createFeed<RowId, ColId, V>(
         });
         return;
       case "Refiltered":
-        // The same IDs, so values follow their Keys, unless the Keys are Positions.
+        // The same IDs, so values follow their Keys, unless the Keys are
+        // Positions. Only the items shown keep theirs: one out of view may
+        // have changed while filtered out, with no Position to say so.
         if (position) {
           cache.clear();
           edits.clear();
+        } else {
+          const { all } = visibleAt(axis, 0, 0);
+          cache.retain(axis, (k) => all.has(k));
         }
         settle(() => axes[axis].source.count(), (count) => reset(axis, count, "Refiltered"), {
           fresh: true,
