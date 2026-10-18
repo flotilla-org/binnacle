@@ -1,6 +1,7 @@
 // The checklist's rules (#107): each tick writes the condition that is
 // exact, and the ticks read back from the conditions are the ones the user
-// made.
+// made. The property mirrors the Rust port's
+// (crates/binnacle-ratatui/tests/checklist.rs), so the two can't drift.
 
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
@@ -27,6 +28,16 @@ function after(conditions: Condition<string>[], written: Written<string>): Condi
   return [...conditions.filter((c) => c.id !== ID), ...replaced(column, written)];
 }
 
+/** Whether `condition` keeps an item whose value is `value`: Text as a contains ignoring case, which never keeps a blank; OneOf exactly. */
+function modelKeeps(condition: Condition<string>, value: ListedValue): boolean {
+  const kind = condition.kind;
+  const matched =
+    kind.type === "OneOf"
+      ? kind.values.includes(value)
+      : value !== null && value.toLowerCase().includes(kind.query.text.toLowerCase());
+  return matched !== condition.not;
+}
+
 const whole = (values: ListedValue[]): Shown => ({ values, partial: false, search: "" });
 
 const contains = (text: string, not = false): Condition<string> => ({
@@ -37,44 +48,70 @@ const contains = (text: string, not = false): Condition<string> => ({
 const oneOf = (values: ListedValue[], not = false): Condition<string> => ({ id: ID, kind: { type: "OneOf", values }, not });
 
 describe("the checklist", () => {
-  test("whatever ticks and unticks a user makes, the ticks read back are theirs, and all ticked of a whole list leaves no OneOf", () =>
+  test("whatever the user ticks, unticks, searches and selects all matching, over a whole or a capped list (which leaves a value out), the conditions keep exactly the values left ticked", () =>
     hegel.test(
       (tc) => {
-        const values: ListedValue[] = tc.draw(
-          gs.arrays(gs.oneOf(gs.just(null), gs.sampledFrom(["", "Bergen", "bergen", "Oslo", "Cádiz", "7"])), {
-            minSize: 1,
-            maxSize: 6,
-            unique: true,
-          }),
-        );
-        const shown: Shown = { values, partial: tc.draw(gs.booleans()), search: "" };
+        const candidates: ListedValue[] = [null, "", "Bergen", "bergen", "Oslo", "Cádiz", "7"];
+        const universe = candidates.filter(() => tc.draw(gs.booleans()));
+        if (universe.length === 0) universe.push(tc.draw(gs.sampledFrom(candidates)));
+        const partial = tc.draw(gs.booleans());
+        // A capped list leaves out a value the rows hold: the last text.
+        const unlisted = partial ? universe.filter((v) => v !== null).at(-1) : undefined;
+        const has = (text: string, search: string) => text.toLowerCase().includes(search.toLowerCase());
         let conditions: Condition<string>[] = [OTHER];
-        const model = new Set(values);
-        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 10 }));
+        // The model: the values ticked, and the search "select all matching" kept.
+        let model = new Set(universe);
+        let text: string | null = null;
+        let search = "";
+        const excluded = (v: ListedValue) => text !== null && (v === null || !has(v, text));
+        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 20 }));
         for (let i = 0; i < steps; i++) {
+          if (tc.draw(gs.integers({ minValue: 0, maxValue: 3 })) === 0) {
+            search = tc.draw(gs.sampledFrom(["", "berg", "o", "e", "7", "z"]));
+            tc.note(`search ${JSON.stringify(search)}`);
+          }
+          // The values listed, the blank first, as the menu shows them.
+          const values = [
+            ...(search === "" && universe.includes(null) ? [null] : []),
+            ...universe.filter((v) => v !== null && v !== unlisted && (search === "" || has(v, search))),
+          ];
+          const shown: Shown = { values, partial, search };
           const column = columnConditions(conditions, ID);
+          let changed = true;
           if (tc.draw(gs.integers({ minValue: 0, maxValue: 4 })) === 0) {
             const on = !headTicked(column, shown);
             tc.note(`head ${on}`);
             conditions = after(conditions, tickHead(column, ID, on, shown));
-            for (const v of values) on ? model.add(v) : model.delete(v);
-          } else {
+            if (on && search !== "") text = search;
+            if (on) model = new Set(universe.filter((v) => !excluded(v)));
+            else if (search === "") model.clear();
+            else for (const v of values) model.delete(v);
+          } else if (values.length > 0) {
             const v = tc.draw(gs.sampledFrom(values));
-            const on = !model.has(v);
+            const on = !ticked(column, v);
             tc.note(`${on ? "tick" : "untick"} ${JSON.stringify(v)}`);
             conditions = after(conditions, tick(column, ID, v, on, shown));
-            on ? model.add(v) : model.delete(v);
+            if (model.has(v)) model.delete(v);
+            else if (excluded(v)) changed = false;
+            else model.add(v);
+          } else {
+            continue;
           }
           const now = columnConditions(conditions, ID);
-          expect(values.filter((v) => ticked(now, v))).toEqual(values.filter((v) => model.has(v)));
-          expect(headTicked(now, shown)).toBe(model.size === values.length);
-          if (model.size === values.length && !shown.partial) expect(now.oneOf).toBeNull();
-          expect(now.all.filter((c) => c.kind.type === "OneOf")).toHaveLength(now.oneOf ? 1 : 0);
-          expect(now.oneOf?.not && now.oneOf.kind.type === "OneOf" && now.oneOf.kind.values.length === 0).toBeFalsy();
           expect(conditions).toContainEqual(OTHER);
+          expect(universe.filter((v) => now.all.every((c) => modelKeeps(c, v)))).toEqual(universe.filter((v) => model.has(v)));
+          const oneOfs = now.all.filter((c) => c.kind.type === "OneOf");
+          expect(oneOfs.length).toBeLessThanOrEqual(1);
+          expect(oneOfs.some((c) => c.not && c.kind.type === "OneOf" && c.kind.values.length === 0)).toBe(false);
+          if (search === "") {
+            const open = values.filter((v) => !excluded(v));
+            const all = open.length > 0 && open.every((v) => model.has(v));
+            expect(headTicked(now, shown)).toBe(all);
+            if (all && !partial && changed) expect(oneOfs).toEqual([]);
+          }
         }
       },
-      { testCases: 300 },
+      { testCases: 1000 },
     ));
 
   test("unticking from all excludes just those values, so values that arrive later stay included", () => {
