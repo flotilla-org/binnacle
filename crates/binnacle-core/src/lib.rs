@@ -9,6 +9,7 @@
 //! [`Effect`] and drained with [`Grid::poll_effect`].
 
 mod axis;
+mod distinct;
 mod edit;
 mod effect;
 mod focus;
@@ -24,6 +25,7 @@ mod sort;
 mod types;
 mod view;
 
+pub use distinct::{Blanks, Distinct, DistinctQuery, DistinctValue};
 pub use edit::EditEnd;
 pub use effect::{Action, Effect, FocusStep, Stamped};
 pub use focus::FocusEnd;
@@ -41,5 +43,5 @@ pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};
 pub use view::{
     AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HeaderFilter,
-    Searched, Support, TextQuery, TextSupport, Totals, ViewEdit, ViewSpec,
+    Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
 };

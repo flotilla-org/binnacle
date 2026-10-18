@@ -16,7 +16,7 @@ use std::collections::{BTreeSet, VecDeque};
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, EditEnd, Effect,
     FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers, PointerEvent, PointerKind,
-    ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, ViewSpec, Viewport,
+    ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, Value, ViewSpec, Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -630,7 +630,8 @@ impl Host {
         self.grid.set_quick_filter(Axis::Rows, Some(query));
     }
 
-    /// A Text condition added on a column, or the first one listed removed.
+    /// A Text or OneOf condition added on a column, or the first one listed
+    /// removed.
     #[rule(weight = 0.5)]
     fn column_condition(&mut self, tc: TestCase) {
         let listed = self.grid.snapshot().conditions(Axis::Rows);
@@ -639,6 +640,16 @@ impl Host {
             n if n > 0 && tc.draw(gs::booleans()) => {
                 let i = tc.draw(gs::integers::<usize>().max_value(n - 1));
                 listed[i].0.clone()
+            }
+            _ if tc.draw(gs::booleans()) => {
+                let values = vec![
+                    Value::Blank,
+                    Value::Text("".into()),
+                    Value::Text("a".into()),
+                ];
+                let values = tc.draw(gs::vecs(gs::sampled_from(values)).max_size(3));
+                let key = self.key(tc, Axis::Cols);
+                Condition::one_of(key, values).not(tc.draw(gs::booleans()))
             }
             _ => {
                 let text = tc.draw(gs::sampled_from(vec!["", "a", "ab"]));

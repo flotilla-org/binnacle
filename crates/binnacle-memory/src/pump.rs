@@ -1,6 +1,6 @@
 use binnacle_core::{
-    Axis, ChangeNotice, Effect, Grid, Key, Located, Position, Stamped, Support, TextSupport,
-    Totals, ViewSpec,
+    Axis, ChangeNotice, Distinct, DistinctQuery, Effect, Grid, Key, Located, Position, Stamped,
+    Support, TextSupport, Totals, ViewSpec,
 };
 
 /// A Table Source's answer to a requested View Spec: the spec it now applies
@@ -32,6 +32,14 @@ pub trait PumpSource {
     /// Whether `axis` has a quick filter and how it matches, for the host to
     /// declare with [`Grid::set_quick_filter_support`]. The default has none.
     fn quick_filter(&mut self, _axis: Axis) -> Option<TextSupport> {
+        None
+    }
+
+    /// The distinct values `key`, an item of the other axis, holds across
+    /// the items of `axis`, as `query` asks, for a checklist; `None` if the
+    /// source can't list them (the default), so OneOf conditions are not
+    /// offered.
+    fn distinct(&mut self, _axis: Axis, _key: Key, _query: &DistinctQuery) -> Option<Distinct> {
         None
     }
 

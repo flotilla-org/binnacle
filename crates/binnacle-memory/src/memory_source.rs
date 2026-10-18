@@ -1,11 +1,13 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Condition, ConditionKind, FilterSpec, Grid, Key, Located, Position,
-    Searched, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, ViewSpec,
+    Axis, Blanks, ChangeNotice, Condition, ConditionKind, Distinct, DistinctQuery, DistinctValue,
+    FilterSpec, Grid, Key, Located, Position, Searched, SortDirection, SortSpec, Stamped, Support,
+    TextQuery, TextSupport, Totals, Value, ViewSpec,
 };
 use regex::{Regex, RegexBuilder};
 
@@ -100,28 +102,48 @@ struct Quick {
     matcher: Matcher,
 }
 
-/// A column condition in force and its matcher.
+/// How a column condition tests a value.
+enum Test {
+    Text(Matcher),
+    /// The texts listed, and whether blanks are.
+    OneOf(HashSet<String>, bool),
+}
+
+/// A column condition in force and its test.
 struct Kept {
     condition: Condition,
-    matcher: Matcher,
+    test: Test,
 }
 
 impl Kept {
-    /// `condition` ready to match, or `None` for an invalid regex.
+    /// `condition` ready to test, or `None` for an invalid regex.
     fn new(condition: &Condition) -> Option<Kept> {
-        let matcher = match &condition.kind {
-            ConditionKind::Text(query) => Matcher::new(query)?,
+        let test = match &condition.kind {
+            ConditionKind::Text(query) => Test::Text(Matcher::new(query)?),
+            ConditionKind::OneOf(values) => {
+                let texts = (values.iter())
+                    .filter_map(|v| match v {
+                        Value::Text(t) => Some(t.clone()),
+                        Value::Blank => None,
+                    })
+                    .collect();
+                Test::OneOf(texts, values.contains(&Value::Blank))
+            }
             _ => return None,
         };
         Some(Kept {
             condition: condition.clone(),
-            matcher,
+            test,
         })
     }
 
     /// Whether the condition keeps a row whose text in its column is `text`.
     fn keeps(&self, text: Option<&str>) -> bool {
-        text.is_some_and(|t| self.matcher.is_match(t)) != self.condition.not
+        let matched = match &self.test {
+            Test::Text(matcher) => text.is_some_and(|t| matcher.is_match(t)),
+            Test::OneOf(texts, blanks) => text.map_or(*blanks, |t| texts.contains(t)),
+        };
+        matched != self.condition.not
     }
 }
 
@@ -281,11 +303,79 @@ impl<R> MemorySource<R> {
     /// Whether the filters in force keep `row`.
     fn keeps(&self, row: &R) -> bool {
         self.keep.as_ref().is_none_or(|keep| keep(row))
-            && self.quick.as_ref().is_none_or(|q| {
-                (q.columns.iter())
-                    .any(|&c| self.text(c, row).is_some_and(|t| q.matcher.is_match(&t)))
-            })
-            && (self.conditions.iter()).all(|k| k.keeps(self.text(k.condition.key, row).as_deref()))
+            && self.passes(self.quick.as_ref(), &self.conditions, row)
+    }
+
+    /// Whether `quick` and every one of `conditions` keep `row`.
+    fn passes(&self, quick: Option<&Quick>, conditions: &[Kept], row: &R) -> bool {
+        quick.is_none_or(|q| {
+            (q.columns.iter()).any(|&c| self.text(c, row).is_some_and(|t| q.matcher.is_match(&t)))
+        }) && (conditions.iter()).all(|k| k.keeps(self.text(k.condition.key, row).as_deref()))
+    }
+
+    /// The distinct values of column `column` in `rows` as `query` asks:
+    /// those containing its search (ignoring case, as a Text Query would),
+    /// in rows the host's filter and `query.narrow` keep, with how many rows
+    /// hold each and how many are blank, in the column's sort-key order
+    /// (ties, and columns with only a text closure, by text), up to its
+    /// limit. A part of `narrow` with an invalid regex is left out.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn distinct(&self, rows: &[R], column: Key, query: &DistinctQuery) -> Distinct {
+        let quick = (query.narrow.quick.as_ref()).and_then(|q| self.quick(q));
+        let conditions: Vec<Kept> = (query.narrow.conditions.conditions().iter())
+            .filter_map(Kept::new)
+            .collect();
+        let search = (!query.search.is_empty())
+            .then(|| Matcher::new(&TextQuery::new(query.search.clone())))
+            .flatten();
+        let keys = self.columns.get(&column).map(|c| c.extract(rows));
+        let mut blanks = 0;
+        // Each value's count and the row with its least sort key.
+        let mut seen: HashMap<Cow<'_, str>, (u64, usize)> = HashMap::new();
+        for (i, row) in rows.iter().enumerate() {
+            let kept = self.keep.as_ref().is_none_or(|keep| keep(row))
+                && self.passes(quick.as_ref(), &conditions, row);
+            if !kept {
+                continue;
+            }
+            let Some(text) = self.text(column, row) else {
+                blanks += 1;
+                continue;
+            };
+            if search.as_ref().is_some_and(|m| !m.is_match(&text)) {
+                continue;
+            }
+            let entry = seen.entry(text).or_insert((0, i));
+            entry.0 += 1;
+            let less = |k: &SortKeys| k.compare(i, entry.1, SortDirection::Ascending).is_lt();
+            if keys.as_ref().is_some_and(less) {
+                entry.1 = i;
+            }
+        }
+        let mut values: Vec<(Cow<'_, str>, (u64, usize))> = seen.into_iter().collect();
+        values.sort_by(|(a, (_, i)), (b, (_, j))| {
+            let by_key = keys.as_ref().map_or(Ordering::Equal, |k| {
+                k.compare(*i, *j, SortDirection::Ascending)
+            });
+            by_key.then_with(|| a.cmp(b))
+        });
+        let partial = values.len() > query.limit;
+        values.truncate(query.limit);
+        let listed = query.search.is_empty() && blanks > 0;
+        Distinct {
+            values: (values.into_iter())
+                .map(|(text, (count, _))| DistinctValue {
+                    text: text.into_owned(),
+                    count: Some(count),
+                })
+                .collect(),
+            blanks: listed.then_some(Blanks::Counted(blanks)),
+            partial,
+            narrowed: true,
+        }
     }
 
     /// Applies the filters in force to `rows` again, in the sort in force;
@@ -447,14 +537,15 @@ impl<R> MemorySource<R> {
     }
 
     /// The rows sort by the columns given a closure, and filter by Text
-    /// conditions, regex included, on the columns with a text form; columns
-    /// sort and filter by nothing.
+    /// conditions, regex included, and OneOf conditions on the columns with
+    /// a text form; columns sort and filter by nothing.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
         let rows = axis == Axis::Rows;
         let text = rows && (self.texts.contains_key(&key) || self.columns.contains_key(&key));
         Support::default()
             .with_sort(rows && self.columns.contains_key(&key))
             .with_text(text.then_some(TextSupport::new(true)))
+            .with_one_of(text)
     }
 
     /// The rows have a quick filter, regex included; the columns have none.
@@ -518,6 +609,10 @@ impl<R> PumpSource for Over<'_, R> {
 
     fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {
         self.source.quick_filter(axis)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        (axis == Axis::Rows).then(|| self.source.distinct(self.rows, key, query))
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {

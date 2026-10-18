@@ -57,12 +57,33 @@ impl TextQuery {
     }
 }
 
+/// A value as a condition lists it: text in the Table Source's own text
+/// form, or a blank (no value at all), which is not the same as empty text.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Value {
+    Text(String),
+    Blank,
+}
+
+impl Value {
+    /// The value whose text form is `text`, or a blank for `None`.
+    pub fn of(text: Option<&str>) -> Self {
+        match text {
+            Some(t) => Value::Text(t.to_owned()),
+            None => Value::Blank,
+        }
+    }
+}
+
 /// What a condition asks of the values in its item.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ConditionKind {
     /// The value matches the Text Query, which searches the condition's item.
     Text(TextQuery),
+    /// The value is one of these, exactly (a blank only if they list
+    /// [`Value::Blank`]). None listed keeps nothing.
+    OneOf(Vec<Value>),
 }
 
 /// One condition on the items of an axis, read in one item of the other
@@ -87,16 +108,27 @@ impl Condition {
         }
     }
 
+    /// Keeps the items whose value in `key` is one of `values`.
+    pub fn one_of(key: Key, values: Vec<Value>) -> Self {
+        Condition {
+            key,
+            kind: ConditionKind::OneOf(values),
+            not: false,
+        }
+    }
+
     /// This condition, or with `not` its opposite.
     pub fn not(mut self, not: bool) -> Self {
         self.not = not;
         self
     }
 
-    /// A Text condition with no text, which asks for nothing.
+    /// A Text condition with no text, which asks for nothing. A OneOf
+    /// condition always asks for something, even with no values.
     fn is_empty(&self) -> bool {
         match &self.kind {
             ConditionKind::Text(query) => query.text.is_empty(),
+            ConditionKind::OneOf(_) => false,
         }
     }
 }
@@ -319,6 +351,9 @@ pub struct Support {
     /// The axis may be filtered by Text conditions on the item, and how they
     /// match; `None` if not. Contains without regex by default.
     pub text: Option<TextSupport>,
+    /// The axis may be filtered by OneOf conditions on the item, the Table
+    /// Source listing its distinct values. Not by default.
+    pub one_of: bool,
 }
 
 impl Default for Support {
@@ -326,6 +361,7 @@ impl Default for Support {
         Support {
             sort: true,
             text: Some(TextSupport::default()),
+            one_of: false,
         }
     }
 }
@@ -338,6 +374,11 @@ impl Support {
 
     pub fn with_text(mut self, text: Option<TextSupport>) -> Self {
         self.text = text;
+        self
+    }
+
+    pub fn with_one_of(mut self, one_of: bool) -> Self {
+        self.one_of = one_of;
         self
     }
 }

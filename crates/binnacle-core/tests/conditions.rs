@@ -5,7 +5,7 @@
 
 use binnacle_core::{
     Axis, AxisConfig, Condition, ConditionState, Effect, FilterSpec, Grid, HeaderFilter, Key,
-    Support, TextQuery, TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
+    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_testkit::{RecordTable, Scenario};
 
@@ -255,4 +255,54 @@ fn support_declares_text_with_contains_by_default_and_the_snapshot_shows_it() {
             .with_text(Some(TextSupport::new(true)))
     );
     assert_eq!(snap.support(Axis::Cols, Key(1)), Support::default());
+}
+
+fn one_of(key: u64, values: &[Option<&str>]) -> Condition {
+    Condition::one_of(Key(key), values.iter().map(|v| Value::of(*v)).collect())
+}
+
+#[test]
+fn one_of_conditions_keep_exactly_the_values_listed_and_blanks_only_when_listed() {
+    let mut s = records();
+    let mut out = s.step("eight records", V);
+    s.input(|g| g.add_condition(Axis::Rows, one_of(0, &[Some("13"), Some("3"), Some("1")])));
+    out += &s.step(
+        "column 0 is one of 13, 3 and 1: 13 and 3 exactly (not 31 or 23, nor 1, absent)",
+        V,
+    );
+    s.input(|g| {
+        g.replace_condition(
+            Axis::Rows,
+            &one_of(0, &[Some("13"), Some("3"), Some("1")]),
+            one_of(0, &[Some("13"), Some("3")]).not(true),
+        )
+    });
+    out += &s.step("column 0 is not 13 or 3: the other six", V);
+    s.input(|g| g.add_condition(Axis::Rows, one_of(2, &[Some("")])));
+    out += &s.step(
+        "and column 2 is empty text: none, as column 2 is blank, not empty",
+        V,
+    );
+    s.input(|g| g.replace_condition(Axis::Rows, &one_of(2, &[Some("")]), one_of(2, &[None])));
+    out += &s.step("column 2 is blank instead: the six again", V);
+    s.input(|g| g.replace_condition(Axis::Rows, &one_of(2, &[None]), one_of(2, &[]).not(true)));
+    out += &s.step("column 2 is not one of nothing: the six", V);
+    s.input(|g| g.replace_condition(Axis::Rows, &one_of(2, &[]).not(true), one_of(2, &[])));
+    out += &s.step("column 2 is one of nothing: none", V);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn one_of_is_unsupported_by_default_and_declared_with_distinct_values() {
+    let mut s = records();
+    let snap = s.frame(V);
+    assert!(
+        !Support::default().one_of,
+        "only a source listing values offers it"
+    );
+    assert!(!snap.support(Axis::Rows, Key(0)).one_of);
+    s.input(|g| g.set_support(Axis::Rows, Key(0), Support::default().with_one_of(true)));
+    let snap = s.frame(V);
+    assert!(snap.support(Axis::Rows, Key(0)).one_of);
+    assert!(!snap.support(Axis::Rows, Key(1)).one_of);
 }

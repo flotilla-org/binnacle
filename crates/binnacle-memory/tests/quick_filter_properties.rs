@@ -1,15 +1,16 @@
-//! Seam 2 properties for the quick filter and column conditions:
-//! `MemorySource<R>` over random records of a name and a quantity, put
-//! through View Specs with random quick filters and Text conditions (with
-//! `not`), appends, name edits and the host's own filter, against a naive
-//! model that matches each value's text form one by one (the `regex` crate
-//! for patterns and for ignoring case, substrings otherwise).
+//! Seam 2 properties for the quick filter, column conditions and distinct
+//! values: `MemorySource<R>` over random records of a name and a quantity,
+//! put through View Specs with random quick filters, Text and OneOf
+//! conditions (with `not`), appends, name edits and the host's own filter,
+//! and asked for distinct values, against a naive model that matches each
+//! value's text form one by one (the `regex` crate for patterns and for
+//! ignoring case, substrings otherwise).
 
 mod support;
 
 use binnacle_core::{
-    Axis, Condition, ConditionKind, FilterSpec, Key, Searched, SortColumn, SortSpec, TextQuery,
-    ViewSpec,
+    Axis, Blanks, Condition, ConditionKind, Distinct, DistinctQuery, DistinctValue, FilterSpec,
+    Key, Searched, SortColumn, SortSpec, TextQuery, Value, ViewSpec,
 };
 use binnacle_memory::MemorySource;
 use hegel::generators as gs;
@@ -72,11 +73,30 @@ fn query(tc: &TestCase) -> TextQuery {
         .searching(searches)
 }
 
-/// A Text condition on any column, the bare one included, maybe with `not`.
+/// A value as a OneOf condition lists it: often a blank, empty text or a
+/// small quantity, so it often matches; otherwise short text.
+#[hegel::composite]
+fn value(tc: &TestCase) -> Value {
+    let small = gs::integers::<i64>().min_value(-12).max_value(12);
+    tc.draw(hegel::one_of!(
+        gs::just(Value::Blank),
+        gs::just(Value::Text(String::new())),
+        small.map(|q| Value::Text(q.to_string())),
+        text(1, 2).map(Value::Text),
+    ))
+}
+
+/// A Text or OneOf condition on any column, the bare one included, maybe
+/// with `not`.
 #[hegel::composite]
 fn condition(tc: &TestCase) -> Condition {
     let key = tc.draw(gs::sampled_from(vec![NAME, QTY, BARE]));
-    Condition::text(key, tc.draw(query())).not(tc.draw(gs::booleans()))
+    let condition = if tc.draw(gs::booleans()) {
+        Condition::text(key, tc.draw(query()))
+    } else {
+        Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(4)))
+    };
+    condition.not(tc.draw(gs::booleans()))
 }
 
 /// Some conditions, often several on one column.
@@ -155,21 +175,24 @@ fn keeps(query: &TextQuery, record: &Record) -> bool {
 }
 
 /// Whether the model keeps `record` under `condition`: its value in the
-/// condition's column has text that matches, or with `not` does not (a
-/// blank never matches).
+/// condition's column has text that matches (a blank never does) or is
+/// listed (a blank as `Blank`), or with `not` the opposite.
 fn satisfies(condition: &Condition, record: &Record) -> bool {
-    let ConditionKind::Text(query) = &condition.kind else {
-        unreachable!("only Text conditions are drawn");
+    let text = text_of(record, condition.key);
+    let matched = match &condition.kind {
+        ConditionKind::Text(query) => text.is_some_and(|t| matches(query, &t) == Some(true)),
+        ConditionKind::OneOf(values) => values.contains(&Value::of(text.as_deref())),
+        _ => unreachable!("only Text and OneOf conditions are drawn"),
     };
-    let matched = text_of(record, condition.key).is_some_and(|t| matches(query, &t) == Some(true));
     matched != condition.not
 }
 
-/// The conditions of `wanted` the source can apply: those with a valid
-/// pattern.
+/// The conditions of `wanted` the source can apply: OneOf, and Text with a
+/// valid pattern.
 fn valid(wanted: &[Condition]) -> Vec<Condition> {
     let ok = |c: &&Condition| match &c.kind {
         ConditionKind::Text(q) => matches(q, "").is_some(),
+        ConditionKind::OneOf(_) => true,
         _ => false,
     };
     wanted.iter().filter(ok).cloned().collect()
@@ -332,7 +355,8 @@ fn the_conditions_applied_are_those_with_a_valid_pattern(tc: TestCase) {
     assert_eq!(applied.conditions(), valid(&wanted));
 }
 
-/// A condition and its `not` split the rows between them: each row is shown
+/// A condition and its `not` split the rows between them (a blank goes to
+/// whichever lists it, for OneOf, and to the `not`, for Text): each row is shown
 /// under exactly one, whichever order they come in.
 #[hegel::test(test_cases = 500)]
 fn a_condition_and_its_not_split_the_rows(tc: TestCase) {
@@ -367,4 +391,115 @@ fn filtering_then_sorting_equals_sorting_then_filtering(tc: TestCase) {
         .unwrap();
     filtered_first.view(&rows, &both).unwrap();
     assert_eq!(visible(&sorted_first), visible(&filtered_first));
+}
+
+/// The model's distinct values of `column` among the records the host's
+/// filter (quantities of at least `min`) and `narrow` keep: those containing
+/// `search` ignoring case, counted, in the column's natural order (names by
+/// bytes, quantities numerically), capped at `limit`; blanks counted unless
+/// searching.
+fn model_distinct(
+    rows: &[Record],
+    column: Key,
+    query: &DistinctQuery,
+    min: Option<i64>,
+) -> Distinct {
+    let narrow = &query.narrow;
+    let kept = rows.iter().filter(|r| {
+        min.is_none_or(|m| r.1.is_some_and(|q| q >= m))
+            && narrow.quick.as_ref().is_none_or(|q| keeps(q, r))
+            && narrow
+                .conditions
+                .conditions()
+                .iter()
+                .all(|c| satisfies(c, r))
+    });
+    let search = TextQuery::new(query.search.clone());
+    let mut blanks = 0;
+    let mut found: Vec<(Option<i64>, String)> = Vec::new();
+    for r in kept {
+        match text_of(r, column) {
+            None => blanks += 1,
+            Some(t) if query.search.is_empty() || matches(&search, &t) == Some(true) => {
+                let rank = if column == QTY { r.1 } else { None };
+                found.push((rank, t));
+            }
+            Some(_) => {}
+        }
+    }
+    found.sort();
+    let mut values: Vec<DistinctValue> = Vec::new();
+    for (_, text) in found {
+        match values.iter_mut().find(|v| v.text == text) {
+            Some(v) => v.count = v.count.map(|c| c + 1),
+            None => values.push(DistinctValue {
+                text,
+                count: Some(1),
+            }),
+        }
+    }
+    let partial = values.len() > query.limit;
+    values.truncate(query.limit);
+    Distinct {
+        values,
+        blanks: (query.search.is_empty() && blanks > 0).then_some(Blanks::Counted(blanks)),
+        partial,
+        narrowed: true,
+    }
+}
+
+/// The narrowing a checklist sends: a quick filter and conditions, only the
+/// valid ones (as the applied spec it comes from would hold).
+#[hegel::composite]
+fn narrow(tc: &TestCase) -> FilterSpec {
+    let quick = tc
+        .draw(gs::optional(query()))
+        .filter(|q| matches(q, "").is_some());
+    FilterSpec::default()
+        .with_quick(quick)
+        .with_conditions(valid(&tc.draw(conditions())).into())
+}
+
+/// Whatever the records, the host's filter, the narrowing, the search and
+/// the limit, the distinct values are the model's: each value of the column
+/// in the rows kept, counted, in natural order, searched, capped, with
+/// blanks counted apart from empty text.
+#[hegel::test(test_cases = 1000)]
+fn distinct_values_are_the_models(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).max_size(16));
+    let mut source = source(rows.len());
+    let min = tc.draw(gs::optional(
+        gs::integers::<i64>().min_value(-12).max_value(12),
+    ));
+    if let Some(m) = min {
+        source.filter(&rows, move |r| r.1.is_some_and(|q| q >= m));
+    }
+    let column = tc.draw(gs::sampled_from(vec![NAME, QTY, BARE]));
+    let search = tc.draw(hegel::one_of!(gs::just(String::new()), text(1, 2)));
+    let limit = tc.draw(gs::integers::<usize>().max_value(8));
+    let query = DistinctQuery::new(limit)
+        .search(search)
+        .narrow(tc.draw(narrow()));
+    tc.note(&format!("{query:?}"));
+    assert_eq!(
+        source.distinct(&rows, column, &query),
+        model_distinct(&rows, column, &query, min)
+    );
+}
+
+/// What the source applies does not narrow the distinct values; only the
+/// query's `narrow` does.
+#[hegel::test(test_cases = 300)]
+fn distinct_values_ignore_the_filter_in_force(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).max_size(12));
+    let mut source = source(rows.len());
+    let asked = DistinctQuery::new(100).narrow(tc.draw(narrow()));
+    let before = source.distinct(&rows, QTY, &asked);
+    let spec = filtered(
+        tc.draw(sort()),
+        tc.draw(gs::optional(query())),
+        tc.draw(conditions()),
+    );
+    source.view(&rows, &spec).unwrap();
+    assert_eq!(source.distinct(&rows, QTY, &asked), before);
 }

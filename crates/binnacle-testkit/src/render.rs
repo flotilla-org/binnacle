@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use binnacle_core::{
     Axis, ConditionKind, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection,
-    SortSpec, StripItem, TextQuery, ViewSpec,
+    SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -255,6 +255,15 @@ fn filters_text(spec: &ViewSpec) -> String {
                 ConditionKind::Text(q) => {
                     text += &format!("{:?}", q.text);
                     query(q, &mut text);
+                }
+                ConditionKind::OneOf(values) => {
+                    let values: Vec<String> = (values.iter())
+                        .map(|v| match v {
+                            Value::Text(t) => format!("{t:?}"),
+                            Value::Blank => "blank".into(),
+                        })
+                        .collect();
+                    text += &format!("one of [{}]", values.join(", "));
                 }
                 _ => text += "?",
             }

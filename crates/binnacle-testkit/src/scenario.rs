@@ -3,8 +3,8 @@ use std::fmt::Write;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, AxisConfig, ChangeNotice, Effect, Grid, Key, Located, Modifiers, PointerEvent, Position,
-    Snapshot, Stamped, Support, ViewSpec, Viewport,
+    Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, Effect, Grid, Key, Located, Modifiers,
+    PointerEvent, Position, Snapshot, Stamped, Support, ViewSpec, Viewport,
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, Viewed};
 
@@ -183,6 +183,10 @@ impl PumpSource for RecordTable {
 
     fn support(&mut self, axis: Axis, key: Key) -> Support {
         self.source.support(axis, key)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        self.source.over(&self.rows).distinct(axis, key, query)
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
