@@ -1,0 +1,24 @@
+---
+source: crates/binnacle-ratatui/tests/checklist.rs
+expression: text(&buf)
+---
+    name        │port      ▿~│crew        │
+1   r0c0         ┌─ Filter port ────────────────────────────┐  █
+2   r1c0         │ Contains EN                        Aa .* │  █
+3   r2c0         │ Search EN                                │  █
+4   r3c0         ├─ 2 values ───────────────────────────────┤  █
+5   r4c0         │ [ ] (Select all matching "EN")           │  █
+                 │ [ ] Aberdeen                           1 │  █
+                 │ [x] Bergen                             2 │  █
+                 │ narrowed by the other filters            │  █
+                 │ Alt+N not  Alt+C case  Alt+R regex       │  █
+                 │ Tab move  Space tick  Ctrl+A all         │  █
+                 │ Enter keep  Esc undo  Ctrl+U clear       │  █
+                 └──────────────────────────────────────────┘  █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █

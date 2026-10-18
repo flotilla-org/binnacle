@@ -5,6 +5,7 @@
 //! never reads cell values.
 
 mod border;
+mod checklist;
 mod context;
 mod filter;
 mod keymap;

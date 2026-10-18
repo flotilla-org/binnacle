@@ -40,8 +40,13 @@
 //! Alt+Down opens the focused column's filter popup under its header (every
 //! records column but the id, and the tickers' name, price and load): type to
 //! keep the records whose value in that column contains the text, Alt+N for
-//! "does not contain", Alt+C to match case, Alt+R for a regex; Ctrl+U clears
-//! it, Enter keeps it and Esc puts back the column's condition from before.
+//! "does not contain", Alt+C to match case, Alt+R for a regex. Below it, the
+//! checklist lists the column's values with their counts, narrowed by the
+//! other filters: Tab moves to its search and then the list, Space ticks the
+//! value under the cursor, and Ctrl+A ticks "(Select all)" or, while
+//! searching, "(Select all matching …)". The port column has blanks, every
+//! eleventh record. Ctrl+U clears the field, Enter keeps the conditions and
+//! Esc puts back the column's conditions from before.
 //! Conditions on several columns AND together and with the quick filter; a
 //! filtered column's header shows `▿` (with `~` while the change is
 //! pending), and a line above the table lists each condition as a chip.
@@ -76,8 +81,8 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Mode, Snapshot, Stamped,
-    Support, Viewport,
+    Action, Axis, AxisConfig, Distinct, DistinctQuery, EditEnd, Effect, Grid, Key, Located, Mode,
+    Snapshot, Stamped, Support, Viewport,
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
@@ -117,12 +122,26 @@ const NAMES: [&str; 8] = [
     "anchor", "bosun", "capstan", "davit", "ensign", "fathom", "galley", "hawser",
 ];
 
+const PORTS: [&str; 9] = [
+    "Aberdeen",
+    "Bergen",
+    "Cádiz",
+    "Dunedin",
+    "Esbjerg",
+    "Funchal",
+    "Gdańsk",
+    "Halifax",
+    "Île d'Yeu",
+];
+
 struct Record {
     id: i64,
     name: String,
     /// Missing for every seventh record, to show nulls sorting last.
     weight: Option<f64>,
     crew: i64,
+    /// Missing for every eleventh record, to show blanks in its checklist.
+    port: Option<&'static str>,
 }
 
 impl Record {
@@ -134,6 +153,7 @@ impl Record {
             name: format!("{} {}", NAMES[(h % 8) as usize], h % 97),
             weight: (!i.is_multiple_of(7)).then(|| (h % 10_000) as f64 / 10.0),
             crew: (h % 13) as i64,
+            port: (!i.is_multiple_of(11)).then(|| PORTS[((h >> 4) % 9) as usize]),
         }
     }
 }
@@ -141,7 +161,7 @@ impl Record {
 /// The minimum crew each Ctrl+F filter keeps, in turn; `None` keeps all.
 const CREW_FILTERS: [Option<i64>; 3] = [None, Some(6), Some(13)];
 
-const HEADERS: [&str; 4] = ["id", "name", "weight", "crew"];
+const HEADERS: [&str; 5] = ["id", "name", "weight", "crew", "port"];
 
 const TICKERS: usize = 200;
 const TICKER_HEADERS: [&str; 4] = ["ticker", "price", "trend", "load"];
@@ -463,6 +483,15 @@ impl Table {
         }
     }
 
+    /// Column `key`'s distinct values for its checklist, as the source lists them.
+    fn distinct(&self, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        match self {
+            Table::Records { rows, source, .. } => Some(source.distinct(rows, key, query)),
+            Table::Huge(_) => None,
+            Table::Live(live) => Some(live.source.distinct(&live.rows, key, query)),
+        }
+    }
+
     /// How long until the table next changes by itself, if it ever does.
     fn until_tick(&self) -> Option<Duration> {
         match self {
@@ -519,7 +548,8 @@ impl Content for Text<'_> {
                     0 => r.id.to_string(),
                     1 => r.name.clone(),
                     2 => r.weight.map_or_else(|| "-".into(), |w| format!("{w:.1}")),
-                    _ => r.crew.to_string(),
+                    3 => r.crew.to_string(),
+                    _ => r.port.unwrap_or_default().to_string(),
                 }
             }
             Text::Huge => format!("r{}c{}", row.0, col.0),
@@ -763,6 +793,7 @@ fn main() -> io::Result<()> {
             .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
             .f64_column(Key(2), |r| r.weight)
             .i64_column(Key(3), |r| Some(r.crew))
+            .bytes_column(Key(4), |r| r.port.map(|p| Cow::Borrowed(p.as_bytes())))
             // The quick filter searches the weight as drawn.
             .text_column(Key(2), |r| {
                 Some(r.weight.map_or("-".into(), |w| format!("{w:.1}").into()))
@@ -778,7 +809,9 @@ fn main() -> io::Result<()> {
             grid.set_support(Axis::Rows, Key(c), source.support(Axis::Rows, Key(c)));
         }
         // The ids take no conditions, as on the web.
-        let id = source.support(Axis::Rows, Key(0)).with_text(None);
+        let id = (source.support(Axis::Rows, Key(0)))
+            .with_text(None)
+            .with_one_of(false);
         grid.set_support(Axis::Rows, Key(0), id);
         let source = Box::new(source);
         let slow = std::env::args().any(|a| a == "--slow");
@@ -869,6 +902,7 @@ fn main() -> io::Result<()> {
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
+                popup.fetch(&snapshot, |key, query| table.distinct(key, query));
                 popup.render(
                     &snapshot,
                     &table.text(),

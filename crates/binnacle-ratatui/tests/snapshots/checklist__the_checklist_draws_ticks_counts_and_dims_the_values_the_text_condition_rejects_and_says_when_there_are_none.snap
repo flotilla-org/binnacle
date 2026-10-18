@@ -1,0 +1,66 @@
+---
+source: crates/binnacle-ratatui/tests/checklist.rs
+expression: "out.join(\"\\n\\n\")"
+---
+    name        │port       ▿│crew        │
+1   r0c0         ┌─ Filter port ────────────────────────────┐  █
+2   r1c0         │ Contains en                        Aa .* │  █
+3   r2c0         │ Search                                   │  █
+4   r3c0         ├─ 4 values ───────────────────────────────┤  █
+5   r4c0         │ [-] (Select all)                         │  █
+                 │ [ ] (Blanks)                           2 │  █
+                 │ [x] Aberdeen                           1 │  █
+                 │ [ ] Bergen                             2 │  █
+                 │ [ ] Cádiz                              1 │  █
+                 │ narrowed by the other filters            │  █
+                 │ Alt+N not  Alt+C case  Alt+R regex       │  █
+                 │ Tab move  Space tick  Ctrl+A all         │  █
+                 │ Enter keep  Esc undo  Ctrl+U clear       │  █
+                 └──────────────────────────────────────────┘  █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+
+    name        │port       ▿│crew        │
+1   r0c0         r0c┌─ Filter crew ────────────────────────────┐
+2   r1c0         r1c│ Search ▏                                 │
+3   r2c0         r2c├──────────────────────────────────────────┤
+4   r3c0         r3c│ No values listed                         │
+5   r4c0         r4c│                                          │
+                    │ Tab move  Space tick  Ctrl+A all         │
+                    │ Enter keep  Esc undo  Ctrl+U clear       │
+                    └──────────────────────────────────────────┘
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+
+    name        │port       ▿│crew        │
+1   r0c0         r0c┌─ Filter crew ────────────────────────────┐
+2   r1c0         r1c│ Search ▏                                 │
+3   r2c0         r2c├─ 0 values ───────────────────────────────┤
+4   r3c0         r3c│ [ ] (Select all)                         │
+5   r4c0         r4c│ No values                                │
+                    │ showing all values                       │
+                    │ Tab move  Space tick  Ctrl+A all         │
+                    │ Enter keep  Esc undo  Ctrl+U clear       │
+                    └──────────────────────────────────────────┘
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+                                                               █
