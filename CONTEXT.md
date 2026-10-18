@@ -112,6 +112,10 @@ _Avoid_: Search, find string, highlight query
 Each axis's count before any filter, as the Table Source gives it with the View Spec it applied, so "1,204 of 5,001" can be shown; unknown when the source does not say.
 _Avoid_: Unfiltered count, base count
 
+**Unmatched Row**:
+A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead.
+_Avoid_: Stale row, held row, edited row (as a term)
+
 ### Inside an In-Memory Table Source
 
 **In-Memory Table Source**:

@@ -245,8 +245,9 @@ enum Op {
     Append(Vec<Record>),
     /// Renames base row `row % len`: the data changed.
     Rename(usize, Option<String>),
-    /// The user renames base row `row % len`.
-    Edit(usize, Option<String>),
+    /// The user edits base row `row % len` to this record, name then
+    /// quantity.
+    Edit(usize, Record),
     /// The View Spec last asked for, again: a re-apply.
     Reapply,
     /// The host's own filter: quantities of at least this.
@@ -264,8 +265,7 @@ fn op(tc: &TestCase) -> Op {
         gs::just(Op::Reapply),
         hegel::tuples!(gs::integers::<usize>(), gs::optional(text(0, 5)))
             .map(|(r, n)| Op::Rename(r, n)),
-        hegel::tuples!(gs::integers::<usize>(), gs::optional(text(0, 5)))
-            .map(|(r, n)| Op::Edit(r, n)),
+        hegel::tuples!(gs::integers::<usize>(), record()).map(|(r, rec)| Op::Edit(r, rec)),
         gs::optional(gs::integers::<i64>().min_value(-12).max_value(12)).map(Op::Filter),
     ))
 }
@@ -316,14 +316,15 @@ fn the_rows_shown_are_the_models(tc: TestCase) {
                 source.changed(&rows, row, NAME);
                 unmatched.remove(&row);
             }
-            Op::Edit(row, name) => {
+            Op::Edit(row, record) => {
                 if rows.is_empty() {
                     continue;
                 }
                 let row = row % rows.len();
                 let shown = visible(&source).contains(&(row as u64));
-                rows[row].0 = name;
+                rows[row] = record;
                 source.edited(&rows, row, NAME);
+                source.edited(&rows, row, QTY);
                 if shown && !kept(&rows[row], quick.as_ref(), &applied, min) {
                     unmatched.insert(row);
                 } else {
@@ -349,7 +350,10 @@ fn the_rows_shown_are_the_models(tc: TestCase) {
             model(&rows, &sort, quick.as_ref(), &applied, min, &unmatched)
         );
         let keys: Vec<Key> = shown.iter().map(|&i| Key(i)).collect();
-        let flags: Vec<bool> = shown.iter().map(|&i| unmatched.contains(&(i as usize))).collect();
+        let flags: Vec<bool> = shown
+            .iter()
+            .map(|&i| unmatched.contains(&(i as usize)))
+            .collect();
         assert_eq!(source.unmatched(Axis::Rows, &keys), flags);
     }
 }

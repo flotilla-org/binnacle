@@ -105,9 +105,13 @@ To filter and view from code:
   the View Spec in force with the change.
 - `grid.requestView(spec)` asks the Table Source for a whole View Spec, such
   as a saved view.
+- `grid.reapplyView()` asks for the View Spec in force again, so rows the
+  user's edits left in view though they no longer match the filter (drawn
+  dimmed) are filtered.
 - `grid.subscribe(listener)` calls `listener` after every frame, as
   `onFrame` does. `frame.rows.total` is the row count before any filter (if
-  the source gave one), `frame.quickFilter` says whether the rows take a
+  the source gave one), `frame.rows.unmatched` how many rows in view are
+  unmatched, `frame.quickFilter` says whether the rows take a
   quick filter, `frame.conditions` lists the conditions with their state
   (`applied`, or `adding` and `removing` until the source answers), and
   `frame.columns` the column headers in view, each with whether it is
@@ -122,7 +126,8 @@ To filter and view from code:
 
 `createFilterBar(grid)` builds the filter bar: the quick filter field with
 match case, regex (when the source takes regexes) and clear buttons, and the
-row count ("1,204 of 5,001", or "5,001 rows"). Place `bar.element` where you
+row count ("1,204 of 5,001", or "5,001 rows"), and "Re-apply" while rows in
+view are unmatched. Place `bar.element` where you
 like, usually above the grid; it draws in the grid's Theme and stays hidden
 while the source's rows take no quick filter. Typing sets the quick filter
 as each key lands, and the grid's live region announces the count once the
@@ -248,6 +253,11 @@ interface AxisSource<Id, CrossId> {
   quickFilter?: { regex?: boolean };
   /** Where `id` sits after a reorder: `{ type: "Found", position }` or `{ type: "Gone", suggest }`. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
+  /**
+   * Whether each of `ids` is unmatched: kept in view after the user's edit though the filter drops
+   * it, until the next View Spec. The grid draws such items dimmed.
+   */
+  unmatched?(ids: Id[], signal: AbortSignal): MaybePromise<boolean[]>;
   /** Moves `ids` before Position `to`; `false` refuses. */
   move?(ids: Id[], to: number): MaybePromise<boolean>;
   /** Header text; `String(id)` for columns and Position + 1 for rows by default. */
@@ -324,6 +334,16 @@ match outside the rows the grid holds is placed with the axis's `locate`.
 Marks are asked for again after a Change Notice or a new View Spec, and the
 count with them.
 
+A row the user's edit stops matching may stay where it is until the next
+View Spec, as in a spreadsheet's filter: the source keeps it in the rows it
+answers and says it is unmatched through `rows.unmatched`, which the grid
+asks for the rows it draws, again after each Change Notice and View Spec,
+and draws them dimmed (the Theme's `unmatched` wash). Any View Spec, even
+the one in force (`grid.reapplyView()`, or "Re-apply" in the filter bar),
+filters them. A source may instead filter edited rows at once and leave
+`unmatched` out. Changes from the data itself, such as a live feed, and
+inserted rows are best filtered as they arrive.
+
 A source tells the grid what changed through the sink:
 `sink.rows.notify({ type: "Reset" })`, or `Reordered`, `Refiltered`,
 `Inserted { at, n }`, `Removed { at, n }`, `ContentChanged { start, end }`.
@@ -351,7 +371,11 @@ a column's values as its renderer gives them, with counts, in sort order
 `filterable: false` takes no conditions. The host's `filter(keep)` applies
 as well. Its `find` matches the same way across the
 shown columns, steps in the rows' order (and the columns'), gives each
-step's index and counts every match.
+step's index and counts every match. Rows are read as they are until you
+say one changed in place: `edited(id)` for the user's edit (from `onCommit`),
+which leaves a row that stops matching in view, unmatched, until the next
+View Spec, and `changed(id)` for a change from the data itself, which the
+filter takes at once.
 
 ## Develop
 

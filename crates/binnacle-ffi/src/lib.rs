@@ -1556,7 +1556,12 @@ pub unsafe extern "C" fn binnacle_grid_request_view(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_reapply_view(grid: *mut BinnacleGrid) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { with_handle(grid, |h| Some(h.grid.reapply_view())) }
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.reapply_view();
+            Some(())
+        })
+    }
 }
 
 /// # Safety

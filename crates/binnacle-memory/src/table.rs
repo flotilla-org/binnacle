@@ -481,7 +481,11 @@ impl InMemoryTableSource {
     pub fn unmatched(&mut self, axis: Axis, keys: &[Key]) -> Vec<bool> {
         let order = self.axis_mut(axis);
         (keys.iter())
-            .map(|&k| order.logical(k).is_some_and(|i| order.unmatched.contains(&i)))
+            .map(|&k| {
+                order
+                    .logical(k)
+                    .is_some_and(|i| order.unmatched.contains(&i))
+            })
             .collect()
     }
 

@@ -160,7 +160,10 @@ fn an_unmatched_row_sorts_by_its_edit_and_a_change_from_the_data_takes_it_out() 
     source.filter(&rows, |r| r.qty >= 2);
     assert_eq!(keys(&source), [2, 0]);
     rows[0].qty = 0;
-    assert_eq!(source.edited(&rows, 0, Key(0)), Some(ChangeNotice::Reordered));
+    assert_eq!(
+        source.edited(&rows, 0, Key(0)),
+        Some(ChangeNotice::Reordered)
+    );
     assert_eq!(keys(&source), [0, 2]);
     // The live data moves it again: now the filter takes it.
     rows[0].qty = -1;

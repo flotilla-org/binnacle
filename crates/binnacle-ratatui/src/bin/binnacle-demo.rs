@@ -227,7 +227,9 @@ impl Live {
             next_tick: Instant::now(),
             since_listing: 0,
         };
-        live.rows = (0..TICKERS).map(|i| live.ticker(i, Duration::ZERO)).collect();
+        live.rows = (0..TICKERS)
+            .map(|i| live.ticker(i, Duration::ZERO))
+            .collect();
         live
     }
 
