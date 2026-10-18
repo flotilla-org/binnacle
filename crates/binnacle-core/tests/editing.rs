@@ -4,7 +4,7 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, EditEnd, Effect, FocusEnd, FocusStep, Grid, Key, Mode,
-    Modifiers, PointerEvent, SelectionUnit, SortColumn, SortSpec, Viewport,
+    Modifiers, PointerEvent, SelectionUnit, SortColumn, SortSpec, ViewSpec, Viewport,
 };
 use binnacle_testkit::{IdentityTable, PumpSource, RecordTable, Scenario, ScenarioSource};
 
@@ -244,9 +244,11 @@ fn an_edit_follows_its_record_through_a_sort_and_is_cancelled_when_filtered_out(
     s.frame(TALL);
     s.input(|g| g.edit_started(Key(1), Key(2)));
     let mut out = s.step("editing record 1, column 2; focus unplaced", TALL);
-    let notice = s
+    let spec = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
+    let t = &mut s.source;
+    let notice = t
         .source
-        .sort(&SortSpec::new(vec![SortColumn::ascending(Key(0))]))
+        .view(&t.rows, &ViewSpec::default().with_sort(Axis::Rows, spec))
         .unwrap();
     s.input(|g| g.notify(Axis::Rows, notice));
     out += &s.step(

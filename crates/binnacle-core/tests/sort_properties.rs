@@ -6,7 +6,7 @@
 use binnacle_core::{
     Action, Axis, AxisConfig, CellRange, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, Key,
     Located, Mode, Modifiers, PointerEvent, ScrollAnchor, SelectionUnit, SortColumn, SortSpec,
-    Viewport,
+    Support, ViewSpec, Viewport,
 };
 use binnacle_testkit::{Record, RecordTable, Scenario};
 use hegel::generators as gs;
@@ -215,8 +215,8 @@ struct View {
     anchors: [ScrollAnchor; 2],
     counts: [u64; 2],
     mode: Mode,
-    applied: SortSpec,
-    requested: Option<SortSpec>,
+    applied: ViewSpec,
+    requested: Option<ViewSpec>,
     /// Each visible column's Key, offset and end.
     cols: Vec<(Option<Key>, f32, f32)>,
 }
@@ -241,7 +241,7 @@ impl Host {
         grid.set_follow_focus_on_reorder(table.follow);
         grid.set_selection_unit(table.unit);
         for &c in &table.unsortable {
-            grid.set_sortable(Key(c), false);
+            grid.set_support(Axis::Rows, Key(c), Support::default().with_sort(false));
         }
         let source = RecordTable::new(table.rows.clone(), table.cols, table.sortable.clone());
         let mut host = Host {
@@ -255,7 +255,7 @@ impl Host {
                 anchors: [ScrollAnchor::default(); 2],
                 counts: [0; 2],
                 mode: Mode::Idle,
-                applied: SortSpec::unsorted(),
+                applied: ViewSpec::default(),
                 requested: None,
                 cols: Vec::new(),
             },
@@ -277,8 +277,8 @@ impl Host {
             anchors: Axis::ALL.map(|a| snap.scroll_anchor(a)),
             counts: Axis::ALL.map(|a| snap.count(a)),
             mode: snap.mode(),
-            applied: snap.applied_sort().clone(),
-            requested: snap.requested_sort().cloned(),
+            applied: snap.applied_view().clone(),
+            requested: snap.requested_view().cloned(),
             cols: snap
                 .cols()
                 .iter()
@@ -318,10 +318,11 @@ impl Host {
                     click(&mut self.s, x, 0.5, m);
                 }
             }
-            Input::Sort(spec) => {
-                if let Ok(notice) = self.s.source.source.sort(&self.s.source.rows, &spec) {
+            Input::Sort(sort) => {
+                let spec = ViewSpec::default().with_sort(Axis::Rows, sort);
+                if let Ok(notice) = self.s.source.source.view(&self.s.source.rows, &spec) {
                     self.s.input(|g| {
-                        g.sort_applied(spec);
+                        g.view_applied(spec);
                         g.notify(Axis::Rows, notice);
                     });
                     return vec![Axis::Rows];
@@ -471,7 +472,7 @@ fn the_pump_answers_everything_it_drains(tc: TestCase) {
     runs(&tc, |host, _| {
         assert_eq!(host.view.requested, None);
         assert_eq!(host.view.locating, [false; 2]);
-        assert_eq!(&host.view.applied, host.s.source.source.sort_spec());
+        assert_eq!(host.view.applied, host.s.source.source.view_spec());
     });
 }
 
@@ -486,7 +487,7 @@ fn clicking_the_header_of_a_column_marked_unsortable_requests_nothing(tc: TestCa
             let requests = host
                 .drained
                 .iter()
-                .filter(|e| matches!(e, Effect::SortRequested { .. }));
+                .filter(|e| matches!(e, Effect::ViewRequested { .. }));
             assert_eq!(requests.count(), 0);
         }
     });

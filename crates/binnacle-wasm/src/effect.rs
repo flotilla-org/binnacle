@@ -2,8 +2,10 @@
 //! (a `bigint` in JS), Positions and generations as `f64`, axes and
 //! directions as strings. `web/src/effects.ts` holds the matching union.
 
-use binnacle_core::{Axis, Effect, Key, SortDirection, SortSpec, Stamped};
-use serde::Serialize;
+use binnacle_core::{
+    Axis, Effect, Key, SortColumn, SortDirection, SortSpec, Stamped, ViewEdit, ViewSpec,
+};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -21,7 +23,7 @@ impl From<Axis> for WireAxis {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WireDirection {
     Ascending,
@@ -37,7 +39,16 @@ impl From<SortDirection> for WireDirection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+impl From<WireDirection> for SortDirection {
+    fn from(direction: WireDirection) -> Self {
+        match direction {
+            WireDirection::Ascending => SortDirection::Ascending,
+            WireDirection::Descending => SortDirection::Descending,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireSortColumn {
     pub key: u64,
     pub direction: WireDirection,
@@ -51,6 +62,77 @@ pub fn sort_columns(spec: &SortSpec) -> Vec<WireSortColumn> {
             direction: c.direction.into(),
         })
         .collect()
+}
+
+/// One axis's part of a View Spec. Its filter joins when the Grid has one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WireAxisView {
+    pub sort: Vec<WireSortColumn>,
+}
+
+/// A View Spec both ways across the boundary: out in `ViewRequested` and the
+/// Snapshot, back in `view_applied`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WireViewSpec {
+    pub rows: WireAxisView,
+    pub cols: WireAxisView,
+}
+
+impl From<&ViewSpec> for WireViewSpec {
+    fn from(spec: &ViewSpec) -> Self {
+        let axis = |a: Axis| WireAxisView {
+            sort: sort_columns(&spec.axis(a).sort),
+        };
+        WireViewSpec {
+            rows: axis(Axis::Rows),
+            cols: axis(Axis::Cols),
+        }
+    }
+}
+
+impl From<WireViewSpec> for ViewSpec {
+    fn from(spec: WireViewSpec) -> Self {
+        let sort = |view: WireAxisView| {
+            SortSpec::new(
+                view.sort
+                    .into_iter()
+                    .map(|c| SortColumn {
+                        key: Key(c.key),
+                        direction: c.direction.into(),
+                    })
+                    .collect(),
+            )
+        };
+        ViewSpec::default()
+            .with_sort(Axis::Rows, sort(spec.rows))
+            .with_sort(Axis::Cols, sort(spec.cols))
+    }
+}
+
+/// A View Edit, tagged like the Effects. `Other` is an edit this bridge does
+/// not carry yet.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type")]
+pub enum WireViewEdit {
+    CycleSort {
+        axis: WireAxis,
+        key: u64,
+        multi: bool,
+    },
+    Other,
+}
+
+impl From<ViewEdit> for WireViewEdit {
+    fn from(edit: ViewEdit) -> Self {
+        match edit {
+            ViewEdit::CycleSort { axis, key, multi } => WireViewEdit::CycleSort {
+                axis: axis.into(),
+                key: key.0,
+                multi,
+            },
+            _ => WireViewEdit::Other,
+        }
+    }
 }
 
 /// One Effect with the generation it was stamped with.
@@ -84,8 +166,9 @@ pub enum WireEffect {
         col: u64,
     },
     SelectionChanged,
-    SortRequested {
-        spec: Vec<WireSortColumn>,
+    ViewRequested {
+        spec: WireViewSpec,
+        edit: WireViewEdit,
     },
     Locate {
         axis: WireAxis,
@@ -145,8 +228,9 @@ impl From<Effect> for WireEffect {
                 col: k(col),
             },
             Effect::SelectionChanged => WireEffect::SelectionChanged,
-            Effect::SortRequested { spec } => WireEffect::SortRequested {
-                spec: sort_columns(&spec),
+            Effect::ViewRequested { spec, edit } => WireEffect::ViewRequested {
+                spec: (&spec).into(),
+                edit: edit.into(),
             },
             Effect::Locate { axis, key } => WireEffect::Locate {
                 axis: axis.into(),
@@ -179,7 +263,6 @@ impl From<Effect> for WireEffect {
 
 #[cfg(test)]
 mod tests {
-    use binnacle_core::SortColumn;
     use serde_json::json;
 
     use super::*;
@@ -219,18 +302,48 @@ mod tests {
     }
 
     #[test]
-    fn a_sort_request_lists_columns_with_their_directions() {
-        let spec = SortSpec::new(vec![
-            SortColumn::descending(Key(2)),
-            SortColumn::ascending(Key(0)),
-        ]);
-        assert_eq!(
-            wire(Effect::SortRequested { spec }),
-            json!({ "generation": 7.0, "type": "SortRequested", "spec": [
-                { "key": 2, "direction": "descending" },
-                { "key": 0, "direction": "ascending" },
-            ] })
+    fn a_view_request_lists_each_axis_sort_and_the_edit() {
+        let spec = ViewSpec::default().with_sort(
+            Axis::Rows,
+            SortSpec::new(vec![
+                SortColumn::descending(Key(2)),
+                SortColumn::ascending(Key(0)),
+            ]),
         );
+        let edit = ViewEdit::CycleSort {
+            axis: Axis::Rows,
+            key: Key(2),
+            multi: true,
+        };
+        assert_eq!(
+            wire(Effect::ViewRequested { spec, edit }),
+            json!({ "generation": 7.0, "type": "ViewRequested",
+                "spec": {
+                    "rows": { "sort": [
+                        { "key": 2, "direction": "descending" },
+                        { "key": 0, "direction": "ascending" },
+                    ] },
+                    "cols": { "sort": [] },
+                },
+                "edit": { "type": "CycleSort", "axis": "rows", "key": 2, "multi": true },
+            })
+        );
+    }
+
+    #[test]
+    fn a_view_spec_comes_back_as_it_went_out() {
+        let spec = ViewSpec::default()
+            .with_sort(
+                Axis::Rows,
+                SortSpec::new(vec![SortColumn::descending(Key(2))]),
+            )
+            .with_sort(
+                Axis::Cols,
+                SortSpec::new(vec![SortColumn::ascending(Key(9))]),
+            );
+        let json = serde_json::to_value(WireViewSpec::from(&spec)).unwrap();
+        let back: WireViewSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(ViewSpec::from(back), spec);
     }
 
     #[test]

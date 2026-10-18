@@ -58,7 +58,7 @@ use std::time::{Duration, Instant};
 
 use binnacle_core::{
     Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Mode, Snapshot, Stamped,
-    Viewport,
+    Support, Viewport,
 };
 use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
@@ -235,13 +235,13 @@ const NAME: Key = Key(1);
 /// How long a pause starts type-ahead over.
 const TYPE_AHEAD: Duration = Duration::from_secs(1);
 
-/// How long the slow source holds back its sort and Locate answers.
+/// How long the slow source holds back its View Spec and Locate answers.
 const SLOW: Duration = Duration::from_millis(1500);
 
 /// How often the demo redraws while something animates.
 const FRAME: Duration = Duration::from_millis(33);
 
-/// Sort requests and Locates the slow source has not answered yet, each
+/// View Specs and Locates the slow source has not answered yet, each
 /// with the time its answer is due.
 type Held = Vec<(Instant, Effect)>;
 
@@ -289,7 +289,7 @@ impl Table {
         }
     }
 
-    /// Drains the Grid's Effects, answering sorts, column moves and `Locate`
+    /// Drains the Grid's Effects, answering View Specs, column moves and `Locate`
     /// from the source and auto-size by measuring the text drawn for `shown`
     /// rows. Returns the Effects the app itself acts on: activation, edits
     /// and typing.
@@ -321,7 +321,7 @@ impl Table {
                 }
                 while let Some(stamped) = grid.poll_effect() {
                     match &stamped.effect {
-                        Effect::SortRequested { .. } | Effect::Locate { .. } => {
+                        Effect::ViewRequested { .. } | Effect::Locate { .. } => {
                             held.push((now + SLOW, stamped.effect.clone()));
                         }
                         Effect::MoveRequested { axis, keys, to } => {
@@ -451,17 +451,17 @@ impl Table {
     }
 }
 
-/// Answers a sort request or a Locate the slow source held, as
+/// Answers a View Spec or a Locate the slow source held, as
 /// [`pump`] would have at once.
 fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
     match effect {
-        Effect::SortRequested { spec } => match source.sort(&spec) {
-            Ok(notice) => {
-                grid.sort_applied(spec);
-                grid.notify(Axis::Rows, notice);
+        Effect::ViewRequested { spec, .. } => {
+            let viewed = source.view(&spec);
+            grid.view_applied(viewed.applied);
+            for (axis, notice) in viewed.notices {
+                grid.notify(axis, notice);
             }
-            Err(previous) => grid.sort_applied(previous),
-        },
+        }
         Effect::Locate { axis, key } => {
             let located = source.locate(axis, key);
             grid.located(axis, key, located);
@@ -727,7 +727,7 @@ fn main() -> io::Result<()> {
                 .gap(1.0),
         );
         for c in 0..HUGE_COLS {
-            grid.set_sortable(Key(c), false);
+            grid.set_support(Axis::Rows, Key(c), Support::default().with_sort(false));
         }
         let table = Table::Huge(Huge {
             rows: IdentitySource::new(HUGE_ROWS),
@@ -779,7 +779,7 @@ fn main() -> io::Result<()> {
     let mut theme = if no_color { themes.len() - 1 } else { 0 };
     let colors = ColorSupport::from_colorterm(std::env::var("COLORTERM").ok().as_deref());
     if live {
-        grid.set_sortable(Key(2), false);
+        grid.set_support(Axis::Rows, Key(2), Support::default().with_sort(false));
     }
     // The demo's clock, which the render context and the flashes share.
     let start = Instant::now();

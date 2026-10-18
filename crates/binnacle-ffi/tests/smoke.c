@@ -196,21 +196,27 @@ int main(void) {
   click(grid, 6, 0.5f, 0);
   click(grid, 6, 0.5f, 0);
   CHECK(binnacle_grid_poll_effect(grid, &effect));
-  CHECK(effect.kind == BINNACLE_EFFECT_SORT_REQUESTED && effect.sort_len == 1);
-  CHECK(effect.sort[0].key == 2000 && effect.sort[0].direction == BINNACLE_SORT_ASCENDING);
+  BinnacleAxisView *sorted = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED && sorted->sort_len == 1);
+  CHECK(sorted->sort[0].key == 2000 && sorted->sort[0].direction == BINNACLE_SORT_ASCENDING);
+  CHECK(effect.view.axes[BINNACLE_COLS].sort_len == 0);
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_CYCLE_SORT && effect.edit.axis == BINNACLE_ROWS);
+  CHECK(effect.edit.key == 2000 && !effect.edit.multi);
   BinnacleSortColumn unknown[] = {{.key = 2000, .direction = 7}};
-  CHECK(!binnacle_grid_sort_applied(grid, unknown, 1));
-  CHECK(binnacle_grid_sort_applied(grid, NULL, 0));
+  BinnacleViewSpec misdirected = {.axes = {{.sort = unknown, .sort_len = 1}, {0}}};
+  CHECK(!binnacle_grid_view_applied(grid, &misdirected));
+  CHECK(binnacle_grid_view_applied(grid, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
-  CHECK(effect.kind == BINNACLE_EFFECT_SORT_REQUESTED && effect.sort_len == 1);
-  CHECK(effect.sort[0].key == 2000 && effect.sort[0].direction == BINNACLE_SORT_DESCENDING);
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED && sorted->sort_len == 1);
+  CHECK(sorted->sort[0].key == 2000 && sorted->sort[0].direction == BINNACLE_SORT_DESCENDING);
   frame(grid, &snap);
   CHECK(c->headers_len == c->strip_len && c->headers[0].key == 2000);
   CHECK(c->headers[0].flags & BINNACLE_HEADER_PENDING);
   CHECK(!(c->headers[0].flags & BINNACLE_HEADER_SORTED));
-  BinnacleSortColumn spec = effect.sort[0];
+  BinnacleSortColumn column = sorted->sort[0];
+  BinnacleViewSpec spec = {.axes = {{.sort = &column, .sort_len = 1}, {0}}};
   reversed = 1;
-  CHECK(binnacle_grid_sort_applied(grid, &spec, 1));
+  CHECK(binnacle_grid_view_applied(grid, &spec));
   CHECK(!binnacle_grid_notify(grid, BINNACLE_ROWS, 9, 0, 0));
   CHECK(binnacle_grid_notify(grid, BINNACLE_ROWS, BINNACLE_NOTICE_REORDERED, 0, 0));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
@@ -229,6 +235,13 @@ int main(void) {
   CHECK(c->headers[0].sort_place == 0 && c->headers[0].rect.x == 4);
   CHECK(c->headers[0].rect.height == 1 && r->headers[0].rect.width == 4);
   CHECK(r->focus.position == 95 && r->focus.key == 1004);
+  /* Once the source says it cannot sort by column 0, its header asks for
+   * nothing. */
+  CHECK(!binnacle_grid_set_support(grid, 2, 2000, 0));
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2000, 0));
+  click(grid, 6, 0.5f, 0);
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2000, BINNACLE_SUPPORT_SORT));
   /* Rows removed and a departed Key: focus takes the suggestion. */
   CHECK(binnacle_grid_notify(grid, BINNACLE_ROWS, BINNACLE_NOTICE_RESET, 0, 100));
   CHECK(binnacle_grid_poll_effect(grid, &effect));

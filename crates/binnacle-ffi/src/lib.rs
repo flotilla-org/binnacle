@@ -11,7 +11,7 @@ use std::slice;
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, HeaderClick,
     HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect, SelectionUnit,
-    SortColumn, SortDirection, SortSpec, StripItem, Viewport,
+    SortColumn, SortDirection, SortSpec, StripItem, Support, ViewEdit, ViewSpec, Viewport,
 };
 
 pub const BINNACLE_ROWS: u32 = 0;
@@ -39,13 +39,18 @@ pub const BINNACLE_EFFECT_OTHER: u32 = 0;
 pub const BINNACLE_EFFECT_TEXT_TYPED: u32 = 1;
 pub const BINNACLE_EFFECT_FOCUS_CHANGED: u32 = 2;
 pub const BINNACLE_EFFECT_SELECTION_CHANGED: u32 = 3;
-pub const BINNACLE_EFFECT_SORT_REQUESTED: u32 = 4;
+pub const BINNACLE_EFFECT_VIEW_REQUESTED: u32 = 4;
 pub const BINNACLE_EFFECT_LOCATE: u32 = 5;
 pub const BINNACLE_EFFECT_BAND_SIZE_CHANGED: u32 = 6;
 pub const BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED: u32 = 7;
 
 pub const BINNACLE_SORT_ASCENDING: u32 = 0;
 pub const BINNACLE_SORT_DESCENDING: u32 = 1;
+
+pub const BINNACLE_VIEW_EDIT_OTHER: u32 = 0;
+pub const BINNACLE_VIEW_EDIT_CYCLE_SORT: u32 = 1;
+
+pub const BINNACLE_SUPPORT_SORT: u32 = 1;
 
 pub const BINNACLE_LOCATED_FOUND: u32 = 0;
 pub const BINNACLE_LOCATED_GONE: u32 = 1;
@@ -92,8 +97,8 @@ pub struct BinnacleGrid {
     cells: Vec<u8>,
     /// The last polled Effect's text.
     text: String,
-    /// The last polled Effect's Sort Spec.
-    sort: Vec<BinnacleSortColumn>,
+    /// The last polled Effect's View Spec: each axis's sort.
+    sorts: [Vec<BinnacleSortColumn>; 2],
 }
 
 #[repr(C)]
@@ -227,6 +232,37 @@ pub struct BinnacleSortColumn {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleAxisView {
+    pub sort: *const BinnacleSortColumn,
+    pub sort_len: usize,
+}
+
+impl Default for BinnacleAxisView {
+    fn default() -> Self {
+        BinnacleAxisView {
+            sort: std::ptr::null(),
+            sort_len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleViewSpec {
+    pub axes: [BinnacleAxisView; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleViewEdit {
+    pub kind: u32,
+    pub axis: u32,
+    pub key: u64,
+    pub multi: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleText {
     pub data: *const u8,
     pub len: usize,
@@ -249,8 +285,8 @@ pub struct BinnacleEffect {
     pub text: BinnacleText,
     pub row: u64,
     pub col: u64,
-    pub sort: *const BinnacleSortColumn,
-    pub sort_len: usize,
+    pub view: BinnacleViewSpec,
+    pub edit: BinnacleViewEdit,
     pub axis: u32,
     pub key: u64,
     pub size: f32,
@@ -264,8 +300,8 @@ impl Default for BinnacleEffect {
             text: BinnacleText::default(),
             row: 0,
             col: 0,
-            sort: std::ptr::null(),
-            sort_len: 0,
+            view: BinnacleViewSpec::default(),
+            edit: BinnacleViewEdit::default(),
             axis: 0,
             key: 0,
             size: 0.0,
@@ -428,6 +464,26 @@ impl BinnacleSortColumn {
     }
 }
 
+impl BinnacleViewSpec {
+    /// The View Spec, or `None` if a direction is unknown.
+    ///
+    /// # Safety
+    /// Each non-NULL `sort` is valid for `sort_len` reads.
+    unsafe fn to_core(self) -> Option<ViewSpec> {
+        let mut spec = ViewSpec::default();
+        for axis in Axis::ALL {
+            let view = self.axes[axis.index()];
+            // SAFETY: the caller's contract.
+            let columns = unsafe { borrowed(view.sort, view.sort_len) }
+                .iter()
+                .map(|c| c.to_core())
+                .collect::<Option<Vec<_>>>()?;
+            spec = spec.with_sort(axis, SortSpec::new(columns));
+        }
+        Some(spec)
+    }
+}
+
 impl From<FocusEnd> for BinnacleFocusEnd {
     fn from(end: FocusEnd) -> Self {
         BinnacleFocusEnd {
@@ -491,7 +547,7 @@ pub extern "C" fn binnacle_grid_new(
         rects: Vec::new(),
         cells: Vec::new(),
         text: String::new(),
-        sort: Vec::new(),
+        sorts: [Vec::new(), Vec::new()],
     }))
 }
 
@@ -819,13 +875,32 @@ impl BinnacleGrid {
                 effect.col = col.0;
             }
             Effect::SelectionChanged => effect.kind = BINNACLE_EFFECT_SELECTION_CHANGED,
-            Effect::SortRequested { spec } => {
-                self.sort.clear();
-                self.sort
-                    .extend(spec.columns().iter().map(BinnacleSortColumn::from));
-                effect.kind = BINNACLE_EFFECT_SORT_REQUESTED;
-                effect.sort = self.sort.as_ptr();
-                effect.sort_len = self.sort.len();
+            Effect::ViewRequested { spec, edit } => {
+                effect.kind = BINNACLE_EFFECT_VIEW_REQUESTED;
+                for axis in Axis::ALL {
+                    let sort = &mut self.sorts[axis.index()];
+                    sort.clear();
+                    sort.extend(
+                        spec.axis(axis)
+                            .sort
+                            .columns()
+                            .iter()
+                            .map(BinnacleSortColumn::from),
+                    );
+                    effect.view.axes[axis.index()] = BinnacleAxisView {
+                        sort: sort.as_ptr(),
+                        sort_len: sort.len(),
+                    };
+                }
+                effect.edit = match edit {
+                    ViewEdit::CycleSort { axis, key, multi } => BinnacleViewEdit {
+                        kind: BINNACLE_VIEW_EDIT_CYCLE_SORT,
+                        axis: axis_tag(axis),
+                        key: key.0,
+                        multi: flag(multi),
+                    },
+                    _ => BinnacleViewEdit::default(),
+                };
             }
             Effect::Locate { axis, key } => {
                 effect.kind = BINNACLE_EFFECT_LOCATE;
@@ -862,23 +937,37 @@ pub unsafe extern "C" fn binnacle_grid_poll_effect(
 }
 
 /// # Safety
-/// `grid` is NULL or a live handle; a non-NULL `columns` is valid for `len`
-/// reads.
+/// `grid` is NULL or a live handle; `spec` is NULL (the base view) or valid
+/// for a read, and each of its non-NULL `sort` arrays for `sort_len` reads.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_sort_applied(
+pub unsafe extern "C" fn binnacle_grid_view_applied(
     grid: *mut BinnacleGrid,
-    columns: *const BinnacleSortColumn,
-    len: usize,
+    spec: *const BinnacleViewSpec,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let spec: Option<Vec<SortColumn>> = unsafe { borrowed(columns, len) }
-        .iter()
-        .map(|c| c.to_core())
-        .collect();
+    let spec = match unsafe { spec.as_ref() } {
+        None => Some(ViewSpec::default()),
+        // SAFETY: the caller's contract.
+        Some(spec) => unsafe { spec.to_core() },
+    };
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| spec.map(|s| h.grid.view_applied(s))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_support(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+    support: u32,
+) -> i32 {
+    let support = Support::default().with_sort(support & BINNACLE_SUPPORT_SORT != 0);
     // SAFETY: the caller's contract.
     unsafe {
         with_handle(grid, |h| {
-            spec.map(|s| h.grid.sort_applied(SortSpec::new(s)))
+            axis(axis_tag).map(|axis| h.grid.set_support(axis, Key(key), support))
         })
     }
 }

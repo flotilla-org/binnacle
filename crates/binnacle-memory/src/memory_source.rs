@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 
-use binnacle_core::{Axis, ChangeNotice, Grid, Key, Located, Position, SortSpec, Stamped};
+use binnacle_core::{
+    Axis, ChangeNotice, Grid, Key, Located, Position, SortSpec, Stamped, Support, ViewSpec,
+};
 
-use crate::{InMemoryTableSource, PumpSource, SortKeys};
+use crate::{InMemoryTableSource, PumpSource, SortKeys, Viewed};
 
 /// A Sort Spec named a column with no sort-key closure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,14 +93,19 @@ impl<R> MemorySource<R> {
         self
     }
 
-    /// Sorts by `spec`, extracting each spec column's keys from `rows`, and
-    /// returns the Change Notice the rows need. If a spec column has no
-    /// closure, nothing changes.
+    /// Presents the rows as `spec`'s rows part asks, extracting each sort
+    /// column's keys from `rows`, and returns the Change Notice the rows
+    /// need. If a sort column has no closure, nothing changes. The columns
+    /// part is not applied: [`MemorySource::view_spec`] leaves it out.
     ///
     /// # Panics
     ///
     /// If `rows` is not as long as the base row count.
-    pub fn sort(&mut self, rows: &[R], spec: &SortSpec) -> Result<ChangeNotice, Unsortable> {
+    pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Result<ChangeNotice, Unsortable> {
+        self.sort(rows, &spec.rows.sort)
+    }
+
+    fn sort(&mut self, rows: &[R], spec: &SortSpec) -> Result<ChangeNotice, Unsortable> {
         let columns = spec
             .columns()
             .iter()
@@ -219,12 +226,22 @@ impl<R> MemorySource<R> {
     }
 
     /// The Sort Spec the rows are in, as last applied.
-    pub fn sort_spec(&self) -> &SortSpec {
+    fn sort_spec(&self) -> &SortSpec {
         self.table.sort_spec()
     }
 
-    /// Runs [`crate::pump`] with this source over the host's `rows`: sort
-    /// requests are answered by sorting them (or rejected if a column has no
+    /// The View Spec the source applies: the rows' sort, as last applied.
+    pub fn view_spec(&self) -> ViewSpec {
+        ViewSpec::default().with_sort(Axis::Rows, self.sort_spec().clone())
+    }
+
+    /// The rows sort by the columns given a closure; columns sort by nothing.
+    pub fn support(&self, axis: Axis, key: Key) -> Support {
+        Support::default().with_sort(axis == Axis::Rows && self.columns.contains_key(&key))
+    }
+
+    /// Runs [`crate::pump`] with this source over the host's `rows`: View
+    /// Specs are answered by sorting them (or rejected if a column has no
     /// closure), `Locate` by the Remap, column moves by moving the columns.
     /// `seen` gets every Effect drained.
     pub fn pump(&mut self, rows: &[R], grid: &mut Grid, seen: impl FnMut(&mut Grid, Stamped)) {
@@ -264,10 +281,16 @@ struct Over<'a, R> {
 }
 
 impl<R> PumpSource for Over<'_, R> {
-    fn sort(&mut self, spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
-        self.source
-            .sort(self.rows, spec)
-            .map_err(|_| self.source.sort_spec().clone())
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        let notice = self.source.view(self.rows, spec).ok();
+        Viewed {
+            applied: self.source.view_spec(),
+            notices: notice.map(|n| (Axis::Rows, n)).into_iter().collect(),
+        }
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.source.support(axis, key)
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {

@@ -10,8 +10,8 @@ use crate::notice::Locating;
 use crate::pointer::{AxisHit, Hit};
 use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
-use crate::sort::SortState;
 use crate::types::{Axis, Generation, Key, Position, Viewport};
+use crate::view::ViewState;
 
 /// How one axis starts out: its count, default item size, header band, Gap
 /// and size range.
@@ -135,7 +135,7 @@ pub struct Grid {
     pub(crate) hovered_border: Option<Axis>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
-    pub(crate) sort: SortState,
+    pub(crate) view: ViewState,
 }
 
 /// The drag threshold until [`Grid::set_drag_threshold`] changes it: one unit,
@@ -177,7 +177,7 @@ impl Grid {
             hovered: None,
             hovered_border: None,
             fills: Vec::new(),
-            sort: SortState::default(),
+            view: ViewState::default(),
         }
     }
 
@@ -763,14 +763,14 @@ impl Grid {
     }
 
     /// Takes the oldest queued Effect, if any. Requests the Table Source
-    /// answers (`SortRequested`, `Locate`, `MoveRequested`) come out before the rest, so a
+    /// answers (`ViewRequested`, `Locate`, `MoveRequested`) come out before the rest, so a
     /// host that answers as it drains does so before it hears of focus and
     /// selection, which the answers may change again.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
         let request = self.effects.iter().position(|s| {
             matches!(
                 s.effect,
-                Effect::SortRequested { .. } | Effect::Locate { .. } | Effect::MoveRequested { .. }
+                Effect::ViewRequested { .. } | Effect::Locate { .. } | Effect::MoveRequested { .. }
             )
         });
         let stamped = match request {

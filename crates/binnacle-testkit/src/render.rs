@@ -1,6 +1,8 @@
 use std::fmt::Write;
 
-use binnacle_core::{Axis, Cursor, FocusEnd, Mode, Snapshot, SortDirection, SortSpec, StripItem};
+use binnacle_core::{
+    Axis, Cursor, FocusEnd, Mode, Snapshot, SortDirection, SortSpec, StripItem, ViewSpec,
+};
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
 const MAX_CANVAS: (usize, usize) = (160, 60);
@@ -20,9 +22,10 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// edited cell is marked `=`, before focus), a hovered header `hover axis position`, a resize
 /// cursor hint `cursor C`, a resize guide `guide axis offset (key K size
 /// S)` and a move `moving keys to axis position at offset` (the drop
-/// indicator, also drawn across the header band). A non-empty applied Sort
-/// Spec adds `sort` and an unanswered request `requested`, each as `key^` or
-/// `keyv` per column.
+/// indicator, also drawn across the header band). A non-empty applied View
+/// Spec adds `sort` and an unanswered request `requested`, each as the rows'
+/// sort with `key^` or `keyv` per column (then `cols` and the columns' sort,
+/// if any).
 pub fn render(snap: &Snapshot) -> String {
     Rendered::of(snap).since(None)
 }
@@ -115,11 +118,11 @@ fn summary(snap: &Snapshot) -> String {
     for f in snap.selection_rects() {
         let _ = write!(out, " | fill {},{} {}x{}", f.x, f.y, f.width, f.height);
     }
-    if !snap.applied_sort().is_empty() {
-        let _ = write!(out, " | sort {}", spec_text(snap.applied_sort()));
+    if !snap.applied_view().is_empty() {
+        let _ = write!(out, " | sort {}", view_text(snap.applied_view()));
     }
-    if let Some(spec) = snap.requested_sort() {
-        let _ = write!(out, " | requested {}", spec_text(spec));
+    if let Some(spec) = snap.requested_view() {
+        let _ = write!(out, " | requested {}", view_text(spec));
     }
     if snap.mode() != Mode::Idle {
         let _ = write!(out, " | mode {:?}", snap.mode());
@@ -188,6 +191,16 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
         );
     }
     out
+}
+
+/// A View Spec's sorts as [`spec_text`] gives them: the rows', then the
+/// columns' after `cols` if they sort.
+pub(crate) fn view_text(spec: &ViewSpec) -> String {
+    let mut text = spec_text(&spec.rows.sort);
+    if !spec.cols.sort.is_empty() {
+        text += &format!(" cols {}", spec_text(&spec.cols.sort));
+    }
+    text
 }
 
 /// A Sort Spec as `key^` (ascending) or `keyv` (descending) per column, in

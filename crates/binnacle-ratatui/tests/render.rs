@@ -1,7 +1,7 @@
 //! The adapter's Snapshot renderer, drawn into a `TestBackend`.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, FocusStep, Grid, Key, SortColumn, SortSpec, Viewport,
+    Action, Axis, AxisConfig, FocusStep, Grid, Key, SortColumn, SortSpec, ViewSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
@@ -238,15 +238,21 @@ fn column_headers_show_the_applied_sort_and_pending_requests() {
     );
     let area = Rect::new(0, 0, 41, 2);
     let mut out = String::new();
-    grid.sort_applied(SortSpec::new(vec![SortColumn::descending(Key(1))]));
+    grid.view_applied(ViewSpec::default().with_sort(
+        Axis::Rows,
+        SortSpec::new(vec![SortColumn::descending(Key(1))]),
+    ));
     out += &format!(
         "--- column 1 descending\n{}\n",
         frame(&mut grid, 41, 2, area)
     );
-    grid.sort_applied(SortSpec::new(vec![
-        SortColumn::descending(Key(1)),
-        SortColumn::ascending(Key(3)),
-    ]));
+    grid.view_applied(ViewSpec::default().with_sort(
+        Axis::Rows,
+        SortSpec::new(vec![
+            SortColumn::descending(Key(1)),
+            SortColumn::ascending(Key(3)),
+        ]),
+    ));
     out += &format!(
         "--- then column 3 ascending\n{}\n",
         frame(&mut grid, 41, 2, area)
@@ -427,7 +433,10 @@ fn header_text_too_long_for_its_header_ends_in_an_ellipsis() {
         AxisConfig::new(2, 1.0).header(1.0),
         AxisConfig::new(2, 8.0).header(4.0).gap(1.0),
     );
-    grid.sort_applied(SortSpec::new(vec![SortColumn::ascending(Key(1))]));
+    grid.view_applied(ViewSpec::default().with_sort(
+        Axis::Rows,
+        SortSpec::new(vec![SortColumn::ascending(Key(1))]),
+    ));
     let area = Rect::new(0, 0, 22, 3);
     for (axis, range) in grid.begin_frame(Viewport::new(area.width.into(), area.height.into())) {
         let keys = IdentitySource::new(range.end).window(range.clone());

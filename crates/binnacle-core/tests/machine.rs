@@ -195,12 +195,12 @@ impl Host {
                 tc.note(&format!("located({axis:?}, {key:?}, {answer:?})"));
                 self.grid.located(axis, key, answer);
             }
-            Effect::SortRequested { spec } => {
+            Effect::ViewRequested { spec, .. } => {
                 // Any order will do: the Grid never sees values.
                 let rows = std::mem::take(&mut self.keys[0]);
                 self.keys[0] = tc.draw(gs::permutations(rows));
                 tc.note(&format!("sorted: rows {:?}", self.keys[0]));
-                self.grid.sort_applied(spec);
+                self.grid.view_applied(spec);
                 self.grid.notify(Axis::Rows, ChangeNotice::Reordered);
             }
             Effect::MoveRequested { axis, keys, to } => {

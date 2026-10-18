@@ -2,9 +2,9 @@
 //! count, and focus, picks, Size Overrides and the Scroll Anchor settle.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, FocusStep, Grid, Key, Modifiers, PointerEvent, Viewport,
+    Action, Axis, AxisConfig, FocusStep, Grid, Key, Modifiers, PointerEvent, ViewSpec, Viewport,
 };
-use binnacle_testkit::{PumpSource, RecordTable, Scenario};
+use binnacle_testkit::{RecordTable, Scenario};
 
 const V: Viewport = Viewport {
     width: 26.0,
@@ -64,11 +64,11 @@ fn a_filtered_out_focus_moves_to_the_nearest_survivor_and_leaves_the_picks() {
 fn a_sorted_and_filtered_focus_lands_on_the_nearest_survivor_in_sort_order() {
     let mut s = records();
     s.frame(V);
-    let notice = s
+    let spec = binnacle_core::SortSpec::new(vec![binnacle_core::SortColumn::ascending(Key(0))]);
+    let t = &mut s.source;
+    let notice = t
         .source
-        .sort(&binnacle_core::SortSpec::new(vec![
-            binnacle_core::SortColumn::ascending(Key(0)),
-        ]))
+        .view(&t.rows, &ViewSpec::default().with_sort(Axis::Rows, spec))
         .unwrap();
     s.input(|g| g.notify(Axis::Rows, notice));
     // Sorted values 1 2 3 4 5 7 8 9 are records 3 5 1 7 0 6 2 4.

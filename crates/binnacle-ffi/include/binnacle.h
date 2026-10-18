@@ -37,9 +37,10 @@ extern "C" {
 /* Inside the range, or in a picked row. */
 #define BINNACLE_CELL_SELECTED 2u
 
-/* BinnacleHeader.flags bits. SORTED: the column is in the applied Sort Spec,
- * DESCENDING says which way and sort_place where (0 first). PENDING: a
- * requested sort that would change this column is unanswered. SELECTED: the
+/* BinnacleHeader.flags bits. SORTED: the item is in the other axis's sort in
+ * the applied View Spec, DESCENDING says which way and sort_place where (0
+ * first). PENDING: a requested View Spec that would change this item's part
+ * of that sort is unanswered. SELECTED: the
  * whole item is selected (the range spans every item across it, or its row
  * is picked). HOVERED: the pointer is over it. */
 #define BINNACLE_HEADER_SORTED 1u
@@ -63,9 +64,9 @@ extern "C" {
 #define BINNACLE_EFFECT_TEXT_TYPED 1
 #define BINNACLE_EFFECT_FOCUS_CHANGED 2
 #define BINNACLE_EFFECT_SELECTION_CHANGED 3
-/* Answer with binnacle_grid_sort_applied, then tell the Grid how the rows
- * moved with binnacle_grid_notify. */
-#define BINNACLE_EFFECT_SORT_REQUESTED 4
+/* Answer with binnacle_grid_view_applied, then tell the Grid how the axes
+ * changed with binnacle_grid_notify. */
+#define BINNACLE_EFFECT_VIEW_REQUESTED 4
 /* Answer with binnacle_grid_located. */
 #define BINNACLE_EFFECT_LOCATE 5
 /* A drag of the edge of the Header Band leading axis ended at size. */
@@ -77,6 +78,16 @@ extern "C" {
 /* BinnacleSortColumn.direction. Nulls go last either way. */
 #define BINNACLE_SORT_ASCENDING 0
 #define BINNACLE_SORT_DESCENDING 1
+
+/* BinnacleViewEdit.kind. Edits the Grid gained after this header read as
+ * BINNACLE_VIEW_EDIT_OTHER. CYCLE_SORT: a header click cycled the sort of
+ * axis by key, an item of the other axis; multi is 1 for a Shift-click,
+ * which kept the rest of the sort. */
+#define BINNACLE_VIEW_EDIT_OTHER 0
+#define BINNACLE_VIEW_EDIT_CYCLE_SORT 1
+
+/* binnacle_grid_set_support bits. SORT: the axis may be sorted by the item. */
+#define BINNACLE_SUPPORT_SORT 1u
 
 /* binnacle_grid_located's answer: the Key is at position, has left the axis,
  * or has left and position is where focus should go instead. */
@@ -276,6 +287,27 @@ typedef struct {
   uint32_t direction;
 } BinnacleSortColumn;
 
+/* One axis's part of a View Spec: its sort, by items of the other axis in
+ * order (empty for unsorted). */
+typedef struct {
+  const BinnacleSortColumn *sort;
+  size_t sort_len;
+} BinnacleAxisView;
+
+/* The view the Table Source should present: axes[BINNACLE_ROWS] and
+ * axes[BINNACLE_COLS]. */
+typedef struct {
+  BinnacleAxisView axes[2];
+} BinnacleViewSpec;
+
+/* The cause of a requested View Spec, a hint: the spec alone is the request. */
+typedef struct {
+  uint32_t kind;
+  uint32_t axis;
+  uint64_t key;
+  uint32_t multi;
+} BinnacleViewEdit;
+
 /* UTF-8 text, length-delimited and not NUL-terminated. */
 typedef struct {
   const uint8_t *data;
@@ -295,11 +327,11 @@ typedef struct {
   /* FOCUS_CHANGED: the focused cell's row and column Keys. */
   uint64_t row;
   uint64_t col;
-  /* SORT_REQUESTED: the requested Sort Spec, columns in order (empty for
-   * unsorted), valid until the next binnacle_grid_poll_effect or
-   * binnacle_grid_free on the same Grid. */
-  const BinnacleSortColumn *sort;
-  size_t sort_len;
+  /* VIEW_REQUESTED: the whole requested View Spec, its arrays valid until
+   * the next binnacle_grid_poll_effect or binnacle_grid_free on the same
+   * Grid, and the edit that caused it. */
+  BinnacleViewSpec view;
+  BinnacleViewEdit edit;
   /* LOCATE: the axis and the Key to find. BAND_SIZE_CHANGED and
    * BAND_AUTO_SIZE_REQUESTED: the axis the band leads. */
   uint32_t axis;
@@ -377,10 +409,17 @@ int binnacle_grid_poll_effect(BinnacleGrid *grid, BinnacleEffect *out);
 
 /* Answers. */
 
-/* The answer to SORT_REQUESTED: the Sort Spec now applied, the previous one if
- * the request was rejected. 0 for an unknown direction. */
-int binnacle_grid_sort_applied(BinnacleGrid *grid, const BinnacleSortColumn *columns,
-                               size_t len);
+/* The answer to VIEW_REQUESTED, or the Table Source's own news: the View
+ * Spec now applied, which may be part of the request, or the previous one if
+ * the request was rejected. NULL is the base view. 0 for an unknown
+ * direction. */
+int binnacle_grid_view_applied(BinnacleGrid *grid, const BinnacleViewSpec *spec);
+
+/* What the Table Source supports when viewing axis by key, an item of the
+ * other axis: BINNACLE_SUPPORT_* bits. Every item supports everything until
+ * set otherwise. */
+int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
+                              uint32_t support);
 
 /* The answer to LOCATE for key on axis: BINNACLE_LOCATED_*, with position
  * for FOUND and GONE_SUGGEST (ignored for GONE). */

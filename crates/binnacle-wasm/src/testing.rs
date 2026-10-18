@@ -4,11 +4,12 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, FocusStep, Grid, HeaderPlacement, Key,
-    Mode, Modifiers, PointerEvent, Rect, Snapshot, SortColumn, SortSpec, Stamped, Viewport,
+    Mode, Modifiers, PointerEvent, Rect, Snapshot, SortColumn, SortSpec, Stamped, ViewEdit,
+    ViewSpec, Viewport,
 };
 use serde::Serialize;
 
-use crate::effect::{WireAxis, WireDirection, WireSortColumn, WireStamped, sort_columns};
+use crate::effect::{WireAxis, WireDirection, WireStamped, WireViewSpec};
 use crate::snapshot::cell_bits;
 
 #[derive(Serialize)]
@@ -30,8 +31,8 @@ pub struct Dump {
     selection_rects: Vec<DumpRect>,
     picked: Vec<u64>,
     moving_keys: Vec<u64>,
-    applied_sort: Vec<WireSortColumn>,
-    requested_sort: Option<Vec<WireSortColumn>>,
+    applied_view: WireViewSpec,
+    requested_view: Option<WireViewSpec>,
     cells: Vec<u8>,
 }
 
@@ -325,8 +326,8 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         selection_rects: s.selection_rects().iter().map(|r| (*r).into()).collect(),
         picked: keys(s.picked()),
         moving_keys: keys(s.moving_keys()),
-        applied_sort: sort_columns(s.applied_sort()),
-        requested_sort: s.requested_sort().map(sort_columns),
+        applied_view: s.applied_view().into(),
+        requested_view: s.requested_view().map(WireViewSpec::from),
         cells,
     }
 }
@@ -334,10 +335,20 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
 /// One of every Effect variant, with Keys past 2^53 where an Effect has them.
 pub fn every_effect() -> Vec<WireStamped> {
     let (row, col) = (Key(u64::MAX), Key((1 << 53) + 1));
-    let spec = SortSpec::new(vec![
-        SortColumn::ascending(col),
-        SortColumn::descending(row),
-    ]);
+    let spec = ViewSpec::default()
+        .with_sort(
+            Axis::Rows,
+            SortSpec::new(vec![
+                SortColumn::ascending(col),
+                SortColumn::descending(Key(7)),
+            ]),
+        )
+        .with_sort(Axis::Cols, SortSpec::new(vec![SortColumn::descending(row)]));
+    let edit = ViewEdit::CycleSort {
+        axis: Axis::Rows,
+        key: col,
+        multi: true,
+    };
     [
         Effect::TextTyped { text: "é".into() },
         Effect::Activated { row, col },
@@ -345,7 +356,7 @@ pub fn every_effect() -> Vec<WireStamped> {
         Effect::EditCancelled { row, col },
         Effect::FocusChanged { row, col },
         Effect::SelectionChanged,
-        Effect::SortRequested { spec },
+        Effect::ViewRequested { spec, edit },
         Effect::Locate {
             axis: Axis::Rows,
             key: row,
@@ -488,11 +499,22 @@ pub fn scenario(name: &str) -> Grid {
             grid.pointer(PointerEvent::moved(220.0, 24.0 + 21.0 * 4.0 + 5.0));
         }
         "sorted" => {
-            // Applied: column 2 descending, then column 0; column 1 pending.
-            grid.sort_applied(SortSpec::new(vec![
-                SortColumn::descending(key(2)),
-                SortColumn::ascending(key(0)),
-            ]));
+            // Applied: rows by column 2 descending, then column 0, and
+            // columns by row 1; column 1 pending.
+            grid.view_applied(
+                ViewSpec::default()
+                    .with_sort(
+                        Axis::Rows,
+                        SortSpec::new(vec![
+                            SortColumn::descending(key(2)),
+                            SortColumn::ascending(key(0)),
+                        ]),
+                    )
+                    .with_sort(
+                        Axis::Cols,
+                        SortSpec::new(vec![SortColumn::ascending(key(1))]),
+                    ),
+            );
             grid.pointer(PointerEvent::down(150.0, 10.0).modifiers(Modifiers::SHIFT));
             grid.pointer(PointerEvent::up(150.0, 10.0).modifiers(Modifiers::SHIFT));
         }
@@ -525,7 +547,7 @@ mod tests {
                 "busy" => {
                     assert!(s.selection_range().is_some());
                     assert_eq!(s.picked().len(), 1);
-                    assert!(s.requested_sort().is_some());
+                    assert!(s.requested_view().is_some());
                     assert!(s.hovered_header().is_some());
                 }
                 "resizing" => assert!(s.resize_guide().is_some() && s.capturing()),
@@ -541,8 +563,10 @@ mod tests {
                     assert_eq!((range.rows, range.cols), (1..5, 0..3));
                 }
                 "sorted" => {
-                    assert_eq!(s.applied_sort().columns().len(), 2);
-                    assert_eq!(s.requested_sort().map(|r| r.columns().len()), Some(3));
+                    assert_eq!(s.applied_view().rows.sort.columns().len(), 2);
+                    assert_eq!(s.applied_view().cols.sort.columns().len(), 1);
+                    let requested = s.requested_view().map(|r| r.rows.sort.columns().len());
+                    assert_eq!(requested, Some(3));
                 }
                 _ => {}
             }
@@ -577,7 +601,7 @@ mod tests {
                 crate::effect::WireEffect::EditCancelled { .. } => "EditCancelled",
                 crate::effect::WireEffect::FocusChanged { .. } => "FocusChanged",
                 crate::effect::WireEffect::SelectionChanged => "SelectionChanged",
-                crate::effect::WireEffect::SortRequested { .. } => "SortRequested",
+                crate::effect::WireEffect::ViewRequested { .. } => "ViewRequested",
                 crate::effect::WireEffect::Locate { .. } => "Locate",
                 crate::effect::WireEffect::SizeChanged { .. } => "SizeChanged",
                 crate::effect::WireEffect::AutoSizeRequested { .. } => "AutoSizeRequested",

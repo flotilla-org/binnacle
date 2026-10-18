@@ -15,7 +15,7 @@ The host-side owner of a table's data and every operation on it (sort, filter, r
 _Avoid_: Storage, data source, model, backend
 
 **Effect**:
-A request the Grid emits for its host or Table Source to act on, such as a sort request, a column move or the start of an edit.
+A request the Grid emits for its host or Table Source to act on, such as a requested View Spec, a column move or the start of an edit.
 _Avoid_: Callback, event, command
 
 **Action**:
@@ -76,9 +76,21 @@ _Avoid_: Border, padding, gutter
 The band of headers leading an axis, whose thickness the host sets and the user can drag or fit: the column header band leads the row axis (it runs along the top), and the row-number band leads the column axis (it runs down the left).
 _Avoid_: Header row, header column, gutter
 
+**View Spec**:
+The declared view a Table Source should present for a whole table, one part per axis, each with a filter and a sort (grouping and pivot may join later); the Grid holds the one the source last applied and the latest one requested.
+_Avoid_: View state, query, view model
+
+**View Edit**:
+The named cause of a requested View Spec, such as cycling a column's sort, applied by the Grid to the latest requested spec and carried with it as a hint; a Table Source must be correct from the spec alone.
+_Avoid_: View change, view event, view command
+
 **Sort Spec**:
-The ordered list of columns and directions the user has asked to sort by, held by the Grid as header state and requested from the Table Source.
+The sort part of one axis of a View Spec: the ordered list of items on the other axis (columns, for the rows) and directions to sort by.
 _Avoid_: Sort order, remap spec
+
+**Filter Spec**:
+The filter part of one axis of a View Spec: which of its items the Table Source keeps.
+_Avoid_: Filter state, predicate
 
 ### Inside an In-Memory Table Source
 

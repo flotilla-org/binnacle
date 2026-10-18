@@ -6,7 +6,7 @@ use std::fmt::Write;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Key, Modifiers, PointerEvent, Snapshot, SortColumn, SortDirection,
-    SortSpec, Viewport,
+    SortSpec, ViewSpec, Viewport,
 };
 use binnacle_testkit::Scenario;
 
@@ -60,10 +60,13 @@ fn header_placements_carry_their_rect_sort_selection_and_hover() {
     );
     s.frame(V);
     s.input(|g| {
-        g.sort_applied(SortSpec::new(vec![
-            SortColumn::ascending(Key(1)),
-            SortColumn::descending(Key(3)),
-        ]));
+        g.view_applied(ViewSpec::default().with_sort(
+            Axis::Rows,
+            SortSpec::new(vec![
+                SortColumn::ascending(Key(1)),
+                SortColumn::descending(Key(3)),
+            ]),
+        ));
         // Focus row 1, column 2 and select that whole column.
         g.pointer(PointerEvent::down(20.0, 2.5));
         g.pointer(PointerEvent::up(20.0, 2.5));

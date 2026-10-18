@@ -136,7 +136,7 @@ pub fn render_with(
             style
         }
     };
-    let multi = snapshot.applied_sort().columns().len() > 1;
+    let multi = snapshot.applied_view().rows.sort.columns().len() > 1;
     let area_end = i64::from(area.width);
     for h in snapshot.headers(Axis::Cols) {
         let label = h

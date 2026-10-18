@@ -1,5 +1,5 @@
-use crate::sort::SortSpec;
 use crate::types::{Axis, Generation, Key, Position};
+use crate::view::{ViewEdit, ViewSpec};
 
 /// A request the Grid emits for its host or Table Source to act on. Effects
 /// carry no continuations: answers come back later as ordinary inputs.
@@ -27,10 +27,10 @@ pub enum Effect {
     /// The range or the picks changed; read them from the next Snapshot. At
     /// most one is queued at a time.
     SelectionChanged,
-    /// The user asked for the rows to be sorted by `spec`. Answer with
-    /// [`crate::Grid::sort_applied`]: the spec if applied, the previous one to
-    /// reject it.
-    SortRequested { spec: SortSpec },
+    /// The user changed the view by `edit`, asking for the whole table to be
+    /// viewed by `spec`. Answer with [`crate::Grid::view_applied`]: the spec
+    /// if applied, the part of it applied, or the previous one to reject it.
+    ViewRequested { spec: ViewSpec, edit: ViewEdit },
     /// A Change Notice left the Grid holding `key` without its Position.
     /// Answer with [`crate::Grid::located`].
     Locate { axis: Axis, key: Key },

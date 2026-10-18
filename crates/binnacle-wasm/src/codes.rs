@@ -6,7 +6,7 @@ use std::fmt;
 
 use binnacle_core::{
     Axis, Button, ChangeNotice, EditEnd, FocusStep, Key, Located, Modifiers, PointerKind, Position,
-    SelectionUnit, SortColumn, SortSpec,
+    SelectionUnit, SortColumn, SortSpec, Support,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -138,6 +138,13 @@ pub fn located(code: u8, position: f64) -> Located {
             suggest: (!position.is_nan()).then(|| self::position(position)),
         },
     }
+}
+
+pub const SUPPORT_SORT: u8 = 1;
+
+/// Support from its bits: [`SUPPORT_SORT`].
+pub fn support(bits: u8) -> Support {
+    Support::default().with_sort(bits & SUPPORT_SORT != 0)
 }
 
 /// A Sort Spec from parallel lists of column Keys and directions

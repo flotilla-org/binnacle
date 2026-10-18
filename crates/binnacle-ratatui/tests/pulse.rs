@@ -72,7 +72,7 @@ impl Host {
         while let Some(stamped) = self.grid.poll_effect() {
             if matches!(
                 stamped.effect,
-                Effect::SortRequested { .. } | Effect::Locate { .. }
+                Effect::ViewRequested { .. } | Effect::Locate { .. }
             ) {
                 self.held.push(stamped.effect);
             }
@@ -92,13 +92,13 @@ impl Host {
         let effect = self.held.remove(0);
         let mut source = self.source.over(&self.rows);
         match effect {
-            Effect::SortRequested { spec } => match source.sort(&spec) {
-                Ok(notice) => {
-                    self.grid.sort_applied(spec);
-                    self.grid.notify(Axis::Rows, notice);
+            Effect::ViewRequested { spec, .. } => {
+                let viewed = source.view(&spec);
+                self.grid.view_applied(viewed.applied);
+                for (axis, notice) in viewed.notices {
+                    self.grid.notify(axis, notice);
                 }
-                Err(previous) => self.grid.sort_applied(previous),
-            },
+            }
             Effect::Locate { axis, key } => {
                 let answer = source.locate(axis, key);
                 self.grid.located(axis, key, answer);

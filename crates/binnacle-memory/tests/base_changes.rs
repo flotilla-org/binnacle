@@ -2,7 +2,7 @@
 //! edit, anything else) and `MemorySource<R>` answers with the Change Notice
 //! the Grid needs.
 
-use binnacle_core::{Axis, ChangeNotice, Key, Located, SortColumn, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, Key, Located, SortColumn, SortSpec, ViewSpec};
 use binnacle_memory::{InMemoryTableSource, MemorySource, SortKeys};
 
 #[derive(Clone, Debug)]
@@ -51,7 +51,7 @@ fn an_append_with_no_sort_or_filter_is_inserted_at_the_end() {
 fn an_append_while_sorted_or_filtered_places_the_rows_in_order_and_filters_them() {
     let mut rows = recs(&[3, 1, 2]);
     let mut source = source(&rows);
-    source.sort(&rows, &by_qty()).unwrap();
+    source.view(&rows, &rows_sorted(by_qty())).unwrap();
     rows.extend(recs(&[0, 5]));
     assert_eq!(source.appended(&rows, &[]), ChangeNotice::Reset(5));
     assert_eq!(keys(&source), [3, 1, 2, 0, 4]);
@@ -76,7 +76,7 @@ fn appended_rows_take_the_host_keys_given_for_them() {
         source.appended(&rows, &[Key(20)]),
         ChangeNotice::Inserted { at: 2, n: 1 }
     );
-    source.sort(&rows, &by_qty()).unwrap();
+    source.view(&rows, &rows_sorted(by_qty())).unwrap();
     assert_eq!(keys(&source), [10, 20, 30]);
     assert_eq!(source.locate(Axis::Rows, Key(20)), Located::Found(1));
 }
@@ -85,7 +85,7 @@ fn appended_rows_take_the_host_keys_given_for_them() {
 fn a_value_edit_is_content_changed_at_its_position_or_reordered_if_its_column_is_sorted() {
     let mut rows = recs(&[3, 1, 2]);
     let mut source = source(&rows);
-    source.sort(&rows, &by_qty()).unwrap();
+    source.view(&rows, &rows_sorted(by_qty())).unwrap();
     // Sorted: 1, 2, 3 are rows 1, 2, 0.
     rows[0].price = 9;
     assert_eq!(
@@ -126,14 +126,14 @@ fn an_edit_that_moves_a_row_across_the_filter_resets_and_one_out_of_sight_says_n
 fn any_other_change_recomputes_the_order_and_resets() {
     let mut rows = recs(&[3, 1, 2, 5]);
     let mut source = source(&rows);
-    source.sort(&rows, &by_qty()).unwrap();
+    source.view(&rows, &rows_sorted(by_qty())).unwrap();
     source.filter(&rows, |r| r.qty != 2);
     rows.remove(0);
     rows.push(Rec { qty: 0, price: 0 });
     // Base now 1, 2, 5, 0: sorted 0, 1, 5 without the 2.
     assert_eq!(source.replaced(&rows, None), ChangeNotice::Reset(3));
     assert_eq!(keys(&source), [3, 0, 2]);
-    assert_eq!(source.sort_spec(), &by_qty());
+    assert_eq!(source.view_spec(), rows_sorted(by_qty()));
 }
 
 #[test]
@@ -169,4 +169,9 @@ fn the_table_source_sorts_appended_rows_into_place_and_inserts_a_contiguous_run(
     );
     assert_eq!(table_keys(&table), [1, 0, 3, 4, 2]);
     assert_eq!(table.row_position(4), Some(3));
+}
+
+/// A View Spec sorting the rows by `sort`.
+fn rows_sorted(sort: SortSpec) -> ViewSpec {
+    ViewSpec::default().with_sort(Axis::Rows, sort)
 }

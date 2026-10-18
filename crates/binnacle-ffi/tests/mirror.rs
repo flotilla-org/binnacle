@@ -8,7 +8,7 @@ use std::slice;
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FocusStep, Grid, HeaderClick, Key,
     Located, Mode, Modifiers, PointerEvent, PointerKind, SelectionUnit, Snapshot, SortColumn,
-    SortDirection, SortSpec, Viewport,
+    SortDirection, SortSpec, Support, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::TestCase;
@@ -45,7 +45,8 @@ enum Op {
     Unit(SelectionUnit),
     HeaderClick(Axis, HeaderClick),
     Threshold(f32),
-    SortApplied(SortSpec),
+    ViewApplied(ViewSpec),
+    SetSupport(Axis, Key, Support),
     /// A `located` answer about this Key, or (`None`) about the Key of the
     /// last `Locate` drained, if any.
     Located(Option<(Axis, Key)>, Located),
@@ -189,27 +190,46 @@ fn position(tc: &TestCase) -> u64 {
     ))
 }
 
-/// An answer the Table Source might send: a sort, a `located` (often for
-/// the Key the Grid asked about), or a Change Notice.
+/// A Sort Spec for `axis`, by Keys of the other axis.
+#[hegel::composite]
+fn sort_spec(tc: &TestCase, axis: Axis) -> SortSpec {
+    let by = tc.draw(gs::vecs(hegel::tuples!(key(axis.other()), gs::booleans())).max_size(3));
+    SortSpec::new(
+        by.into_iter()
+            .map(|(key, descending)| SortColumn {
+                key,
+                direction: if descending {
+                    SortDirection::Descending
+                } else {
+                    SortDirection::Ascending
+                },
+            })
+            .collect(),
+    )
+}
+
+/// An answer the Table Source might send: an applied View Spec (usually
+/// sorting only the rows), what it supports, a `located` (often for the Key
+/// the Grid asked about), or a Change Notice.
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(2)) {
+    match tc.draw(gs::integers::<u8>().max_value(3)) {
         0 => {
-            let cols =
-                tc.draw(gs::vecs(hegel::tuples!(key(Axis::Cols), gs::booleans())).max_size(3));
-            Op::SortApplied(SortSpec::new(
-                cols.into_iter()
-                    .map(|(key, descending)| SortColumn {
-                        key,
-                        direction: if descending {
-                            SortDirection::Descending
-                        } else {
-                            SortDirection::Ascending
-                        },
-                    })
-                    .collect(),
-            ))
+            let mut spec =
+                ViewSpec::default().with_sort(Axis::Rows, tc.draw(sort_spec(Axis::Rows)));
+            if tc.draw(gs::weighted_booleans(0.25)) {
+                spec = spec.with_sort(Axis::Cols, tc.draw(sort_spec(Axis::Cols)));
+            }
+            Op::ViewApplied(spec)
+        }
+        3 => {
+            let sort = tc.draw(gs::booleans());
+            Op::SetSupport(
+                axis,
+                tc.draw(key(axis.other())),
+                Support::default().with_sort(sort),
+            )
         }
         1 => {
             let answer = match tc.draw(gs::integers::<u8>().max_value(2)) {
@@ -301,7 +321,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(14))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(15))),
     }
 }
 
@@ -393,12 +413,18 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                     key: 5000,
                     direction: 2,
                 };
-                binnacle_grid_sort_applied(h, &unknown, 1)
+                let mut spec = BinnacleViewSpec::default();
+                spec.axes[ROWS as usize] = BinnacleAxisView {
+                    sort: &unknown,
+                    sort_len: 1,
+                };
+                binnacle_grid_view_applied(h, &spec)
             }
             10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
             11 => binnacle_grid_located(h, 2, 1000, 0, 0),
             12 => binnacle_grid_notify(h, ROWS, 5, 0, 0),
             13 => binnacle_grid_set_header(h, 2, 1.0),
+            14 => binnacle_grid_set_support(h, 2, 5000, 0),
             _ => binnacle_grid_notify(h, 2, 1, 0, 0),
         }
     }
@@ -543,7 +569,8 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         };
         assert_eq!(polled, 1, "missing {want:?}");
         assert_eq!(c.generation, want.generation);
-        let mut spec = Vec::new();
+        let mut view = ViewSpec::default();
+        let mut edit = BinnacleViewEdit::default();
         let mut size = 0.0;
         let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
@@ -553,8 +580,18 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             }
             Effect::FocusChanged { row, col } => (2, row.0, col.0, 0, 0),
             Effect::SelectionChanged => (3, 0, 0, 0, 0),
-            Effect::SortRequested { spec: s } => {
-                spec = s.columns().to_vec();
+            Effect::ViewRequested { spec, edit: e } => {
+                view = spec.clone();
+                edit = match *e {
+                    ViewEdit::CycleSort { axis, key, multi } => BinnacleViewEdit {
+                        kind: 1,
+                        axis: tag(axis),
+                        key: key.0,
+                        multi: u32::from(multi),
+                    },
+                    #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
+                    _ => BinnacleViewEdit::default(),
+                };
                 (4, 0, 0, 0, 0)
             }
             Effect::Locate { axis, key } => {
@@ -574,17 +611,24 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             (kind, row, col, axis, key)
         );
         assert!(same_f32(c.size, size), "size {} for {want:?}", c.size);
-        let sort = match c.sort.is_null() {
-            true => &[][..],
-            false => unsafe { slice::from_raw_parts(c.sort, c.sort_len) },
-        };
-        assert!(!c.sort.is_null() || c.sort_len == 0);
-        let sort: Vec<(u64, u32)> = sort.iter().map(|s| (s.key, s.direction)).collect();
-        let want: Vec<(u64, u32)> = spec
-            .iter()
-            .map(|s| (s.key.0, u32::from(s.direction == SortDirection::Descending)))
-            .collect();
-        assert_eq!(sort, want);
+        assert_eq!(c.edit, edit);
+        for axis in Axis::ALL {
+            let got = c.view.axes[tag(axis) as usize];
+            let sort = match got.sort.is_null() {
+                true => &[][..],
+                false => unsafe { slice::from_raw_parts(got.sort, got.sort_len) },
+            };
+            assert!(!got.sort.is_null() || got.sort_len == 0);
+            let sort: Vec<(u64, u32)> = sort.iter().map(|s| (s.key, s.direction)).collect();
+            let want: Vec<(u64, u32)> = view
+                .axis(axis)
+                .sort
+                .columns()
+                .iter()
+                .map(|s| (s.key.0, u32::from(s.direction == SortDirection::Descending)))
+                .collect();
+            assert_eq!(sort, want);
+        }
     }
 }
 
@@ -726,17 +770,33 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_drag_threshold(t);
                     binnacle_grid_set_drag_threshold(h, t)
                 }
-                Op::SortApplied(spec) => {
-                    let c: Vec<BinnacleSortColumn> = spec
-                        .columns()
-                        .iter()
-                        .map(|s| BinnacleSortColumn {
-                            key: s.key.0,
-                            direction: u32::from(s.direction == SortDirection::Descending),
-                        })
-                        .collect();
-                    grid.sort_applied(spec);
-                    binnacle_grid_sort_applied(h, c.as_ptr(), c.len())
+                Op::ViewApplied(spec) => {
+                    let sorts = Axis::ALL.map(|axis| {
+                        spec.axis(axis)
+                            .sort
+                            .columns()
+                            .iter()
+                            .map(|s| BinnacleSortColumn {
+                                key: s.key.0,
+                                direction: u32::from(s.direction == SortDirection::Descending),
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                    let mut c = BinnacleViewSpec::default();
+                    for axis in Axis::ALL {
+                        let sort = &sorts[axis.index()];
+                        c.axes[tag(axis) as usize] = BinnacleAxisView {
+                            sort: sort.as_ptr(),
+                            sort_len: sort.len(),
+                        };
+                    }
+                    grid.view_applied(spec);
+                    binnacle_grid_view_applied(h, &c)
+                }
+                Op::SetSupport(axis, key, support) => {
+                    grid.set_support(axis, key, support);
+                    let bits = if support.sort { 1 } else { 0 };
+                    binnacle_grid_set_support(h, tag(axis), key.0, bits)
                 }
                 Op::Located(about, answer) => {
                     let Some((axis, key)) = about.or(asked) else {

@@ -1,12 +1,29 @@
-use binnacle_core::{Axis, ChangeNotice, Effect, Grid, Key, Located, Position, SortSpec, Stamped};
+use binnacle_core::{
+    Axis, ChangeNotice, Effect, Grid, Key, Located, Position, Stamped, Support, ViewSpec,
+};
+
+/// A Table Source's answer to a requested View Spec: the spec it now applies
+/// (the request, a part of it, or the previous spec to reject it) and the
+/// Change Notices the axes need.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Viewed {
+    pub applied: ViewSpec,
+    pub notices: Vec<(Axis, ChangeNotice)>,
+}
 
 /// What [`pump`] asks of a Table Source.
 pub trait PumpSource {
-    /// Sorts the rows by `spec`. Returns the Change Notice the rows need, or
-    /// the Sort Spec still in force to reject the request (the default: the
-    /// Table Source cannot sort and keeps base order).
-    fn sort(&mut self, _spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
-        Err(SortSpec::unsorted())
+    /// Presents the table as `spec` asks, as far as it can. The default
+    /// applies nothing and keeps the base view.
+    fn view(&mut self, _spec: &ViewSpec) -> Viewed {
+        Viewed::default()
+    }
+
+    /// How `axis` may be viewed by `key`, an item of the other axis, for the
+    /// host to declare with [`Grid::set_support`]. The default supports
+    /// everything the Grid asks for.
+    fn support(&mut self, _axis: Axis, _key: Key) -> Support {
+        Support::default()
     }
 
     /// Where `key` sits on `axis` now. The default knows no Keys and answers
@@ -24,8 +41,8 @@ pub trait PumpSource {
 }
 
 /// Drains the Grid's Effects until the queue is empty, answering those the
-/// Table Source handles: `SortRequested` with `sort_applied` and the rows'
-/// Change Notice (or `sort_applied` of the previous spec to reject it), and
+/// Table Source handles: `ViewRequested` with `view_applied` and the axes'
+/// Change Notices (or `view_applied` of the previous spec to reject it), and
 /// `Locate` with `located`, and `MoveRequested` with the axis's Change
 /// Notice if the source moves the items. Answers can queue more Effects, which the same
 /// loop drains. `seen` gets every Effect drained, in order, after the pump
@@ -37,13 +54,13 @@ pub fn pump(
 ) {
     while let Some(stamped) = grid.poll_effect() {
         match &stamped.effect {
-            Effect::SortRequested { spec } => match source.sort(spec) {
-                Ok(notice) => {
-                    grid.sort_applied(spec.clone());
-                    grid.notify(Axis::Rows, notice);
+            Effect::ViewRequested { spec, .. } => {
+                let viewed = source.view(spec);
+                grid.view_applied(viewed.applied);
+                for (axis, notice) in viewed.notices {
+                    grid.notify(axis, notice);
                 }
-                Err(previous) => grid.sort_applied(previous),
-            },
+            }
             &Effect::Locate { axis, key } => {
                 let answer = source.locate(axis, key);
                 grid.located(axis, key, answer);

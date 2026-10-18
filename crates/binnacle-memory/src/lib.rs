@@ -12,7 +12,7 @@ use binnacle_core::{Key, Located, Position};
 
 pub use interner::KeyInterner;
 pub use memory_source::{MemorySource, Unsortable};
-pub use pump::{PumpSource, pump};
+pub use pump::{PumpSource, Viewed, pump};
 pub use sort_keys::SortKeys;
 pub use table::InMemoryTableSource;
 

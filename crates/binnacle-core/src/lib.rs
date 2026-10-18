@@ -21,6 +21,7 @@ mod selection;
 mod snapshot;
 mod sort;
 mod types;
+mod view;
 
 pub use edit::EditEnd;
 pub use effect::{Action, Effect, FocusStep, Stamped};
@@ -37,3 +38,4 @@ pub use snapshot::{
 };
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};
+pub use view::{AxisView, FilterSpec, Support, ViewEdit, ViewSpec};

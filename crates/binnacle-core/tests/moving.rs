@@ -4,7 +4,7 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, Grid, Key, Mode, Modifiers,
-    PointerEvent, SortColumn, SortSpec, Viewport,
+    PointerEvent, SortColumn, SortSpec, Support, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_testkit::{IdentityTable, RecordTable, Scenario};
 
@@ -234,7 +234,7 @@ fn a_dropped_column_moves_in_the_source_and_its_width_and_focus_follow_it() {
 #[test]
 fn an_unsortable_column_stays_unsortable_at_the_position_it_moves_to() {
     let mut s = records();
-    s.input(|g| g.set_sortable(Key(0), false));
+    s.input(|g| g.set_support(Axis::Rows, Key(0), Support::default().with_sort(false)));
     s.frame(V);
     s.input(|g| {
         g.pointer(PointerEvent::down(7.0, 0.5));
@@ -251,8 +251,16 @@ fn an_unsortable_column_stays_unsortable_at_the_position_it_moves_to() {
     s.click(7.0, 0.5, Modifiers::NONE);
     assert_eq!(
         s.effects(),
-        vec![Effect::SortRequested {
-            spec: SortSpec::new(vec![SortColumn::ascending(Key(1))])
+        vec![Effect::ViewRequested {
+            spec: ViewSpec::default().with_sort(
+                Axis::Rows,
+                SortSpec::new(vec![SortColumn::ascending(Key(1))])
+            ),
+            edit: ViewEdit::CycleSort {
+                axis: Axis::Rows,
+                key: Key(1),
+                multi: false
+            }
         }]
     );
 }

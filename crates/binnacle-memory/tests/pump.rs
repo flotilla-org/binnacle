@@ -4,20 +4,23 @@
 
 use binnacle_core::{
     Axis, AxisConfig, ChangeNotice, Effect, Grid, Key, Located, PointerEvent, SortColumn, SortSpec,
-    Viewport,
+    ViewEdit, ViewSpec, Viewport,
 };
-use binnacle_memory::{PumpSource, pump};
+use binnacle_memory::{PumpSource, Viewed, pump};
 
-/// Sorts by recording the spec; locates nothing.
+/// Views by recording the spec; locates nothing.
 #[derive(Default)]
 struct Recording {
-    sorted: Vec<SortSpec>,
+    viewed: Vec<ViewSpec>,
 }
 
 impl PumpSource for Recording {
-    fn sort(&mut self, spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
-        self.sorted.push(spec.clone());
-        Ok(ChangeNotice::Reordered)
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        self.viewed.push(spec.clone());
+        Viewed {
+            applied: spec.clone(),
+            notices: vec![(Axis::Rows, ChangeNotice::Reordered)],
+        }
     }
 
     fn locate(&mut self, _axis: Axis, _key: Key) -> Located {
@@ -46,8 +49,22 @@ fn the_pump_answers_a_table_source_held_as_a_trait_object() {
     let mut seen = Vec::new();
     pump(&mut grid, source, |_, stamped| seen.push(stamped.effect));
 
-    let spec = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
-    assert_eq!(seen, vec![Effect::SortRequested { spec: spec.clone() }]);
-    assert_eq!(recording.sorted, vec![spec.clone()]);
-    assert_eq!(grid.snapshot().applied_sort(), &spec);
+    let spec = ViewSpec::default().with_sort(
+        Axis::Rows,
+        SortSpec::new(vec![SortColumn::ascending(Key(0))]),
+    );
+    let edit = ViewEdit::CycleSort {
+        axis: Axis::Rows,
+        key: Key(0),
+        multi: false,
+    };
+    assert_eq!(
+        seen,
+        vec![Effect::ViewRequested {
+            spec: spec.clone(),
+            edit
+        }]
+    );
+    assert_eq!(recording.viewed, vec![spec.clone()]);
+    assert_eq!(grid.snapshot().applied_view(), &spec);
 }

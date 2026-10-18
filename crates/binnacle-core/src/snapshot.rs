@@ -2,8 +2,9 @@ use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
 use crate::selection::CellRange;
-use crate::sort::{HeaderSort, SortSpec};
+use crate::sort::HeaderSort;
 use crate::types::{Axis, Generation, Key, Position};
+use crate::view::ViewSpec;
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
 /// along the axis; `key` is `None` while the Table Source has not filled that
@@ -70,7 +71,8 @@ pub struct HeaderPlacement {
     pub key: Option<Key>,
     /// The header's rectangle in its band, unclipped like the Strip item.
     pub rect: Rect,
-    /// How it shows the sort; always unsorted on row headers.
+    /// How it shows the sort of the other axis (rows never sort columns yet,
+    /// so row headers show none).
     pub sort: HeaderSort,
     /// Its whole item is selected: the range spans every item across it, or
     /// (on a row header) its row is picked.
@@ -292,19 +294,19 @@ impl<'a> Snapshot<'a> {
         &self.grid.fills
     }
 
-    /// The Sort Spec the Table Source last applied: what the headers show.
-    pub fn applied_sort(&self) -> &'a SortSpec {
-        &self.grid.sort.applied
+    /// The View Spec the Table Source last applied: what the headers show.
+    pub fn applied_view(&self) -> &'a ViewSpec {
+        &self.grid.view.applied
     }
 
-    /// The latest requested Sort Spec while an answer is still due.
-    pub fn requested_sort(&self) -> Option<&'a SortSpec> {
-        self.grid.sort.requested.as_ref()
+    /// The latest requested View Spec while an answer is still due.
+    pub fn requested_view(&self) -> Option<&'a ViewSpec> {
+        self.grid.view.requested.as_ref()
     }
 
-    /// How the header of column `key` shows the sort.
+    /// How the header of column `key` shows the rows' sort.
     pub fn header_sort(&self, key: Key) -> HeaderSort {
-        self.grid.sort.header(key)
+        self.grid.view.header(Axis::Cols, key)
     }
 
     /// The headers of the visible items on `axis`, in Strip order: column
@@ -335,10 +337,9 @@ impl<'a> Snapshot<'a> {
                     width,
                     height,
                 },
-                sort: match (axis, item.key) {
-                    (Axis::Cols, Some(key)) => grid.sort.header(key),
-                    _ => HeaderSort::default(),
-                },
+                sort: item
+                    .key
+                    .map_or(HeaderSort::default(), |key| grid.view.header(axis, key)),
                 selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
                 hovered: hovered == Some((axis, item.position)),
             }

@@ -6,7 +6,7 @@
 
 mod support;
 
-use binnacle_core::{Axis, ChangeNotice, Key, SortColumn, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, Key, SortColumn, SortSpec, ViewSpec};
 use binnacle_memory::MemorySource;
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -151,7 +151,7 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
         let notice = match op.clone() {
             Op::Sort(s) => {
                 spec = s;
-                Some(source.sort(&rows, &spec).unwrap())
+                Some(source.view(&rows, &rows_sorted(spec.clone())).unwrap())
             }
             Op::Filter(k) => {
                 keep = k;
@@ -275,4 +275,9 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
             }
         }
     });
+}
+
+/// A View Spec sorting the rows by `sort`.
+fn rows_sorted(sort: SortSpec) -> ViewSpec {
+    ViewSpec::default().with_sort(Axis::Rows, sort)
 }

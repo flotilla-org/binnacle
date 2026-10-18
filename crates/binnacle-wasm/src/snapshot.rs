@@ -8,6 +8,7 @@
 
 use binnacle_core::{
     Axis, CellState, Cursor, HeaderPlacement, Key, Mode, Rect, Snapshot, SortDirection, SortSpec,
+    ViewSpec,
 };
 
 /// The flat form of one Snapshot. Buffers are reused frame to frame.
@@ -123,6 +124,13 @@ impl Writer<'_> {
         for c in spec.columns() {
             self.key(c.key);
             self.num(direction_code(c.direction));
+        }
+    }
+
+    /// Each axis's part, rows first.
+    fn view(&mut self, spec: &ViewSpec) {
+        for axis in Axis::ALL {
+            self.sort(&spec.axis(axis).sort);
         }
     }
 
@@ -248,11 +256,11 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.key(*k);
         }
     }
-    w.sort(s.applied_sort());
-    let requested = s.requested_sort();
+    w.view(s.applied_view());
+    let requested = s.requested_view();
     w.flag(requested.is_some());
     if let Some(spec) = requested {
-        w.sort(spec);
+        w.view(spec);
     }
     // Cell states, row-major over the Strips, as bit flags.
     for row in s.rows() {

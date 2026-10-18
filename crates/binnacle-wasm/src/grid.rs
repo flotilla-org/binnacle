@@ -6,7 +6,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, focus_step, position};
-use crate::effect::WireStamped;
+use crate::effect::{WireStamped, WireViewSpec};
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -124,8 +124,11 @@ impl WebGrid {
             .map_or(f64::NAN, f64::from)
     }
 
-    pub fn set_sortable(&mut self, key: u64, sortable: bool) {
-        self.grid.set_sortable(Key(key), sortable);
+    /// What the Table Source supports when viewing axis `a` by `key`, an
+    /// item of the other axis; see [`codes::support`].
+    pub fn set_support(&mut self, a: u8, key: u64, bits: u8) {
+        self.grid
+            .set_support(axis(a), Key(key), codes::support(bits));
     }
 
     /// A Change Notice on axis `a`; see [`codes::notice`].
@@ -134,9 +137,13 @@ impl WebGrid {
             .notify(axis(a), codes::notice(code, first, second));
     }
 
-    /// The Sort Spec the Table Source now applies; see [`codes::sort_spec`].
-    pub fn sort_applied(&mut self, keys: &[u64], directions: &[u8]) {
-        self.grid.sort_applied(codes::sort_spec(keys, directions));
+    /// The View Spec the Table Source now applies, shaped as `ViewRequested`
+    /// carries it.
+    pub fn view_applied(&mut self, spec: JsValue) -> Result<(), JsError> {
+        let spec: WireViewSpec =
+            serde_wasm_bindgen::from_value(spec).map_err(|e| JsError::new(&e.to_string()))?;
+        self.grid.view_applied(spec.into());
+        Ok(())
     }
 
     /// The answer to `Locate`; see [`codes::located`].
