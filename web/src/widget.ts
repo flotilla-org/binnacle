@@ -285,9 +285,15 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         return id !== undefined && this.openColumnMenu(id);
       },
       openColumnMenu: () => {
-        const key = this.last?.cols.focus?.key;
-        const id = key == null ? undefined : this.feed.colId(key);
-        return id !== undefined && this.openColumnMenu(id);
+        if (!this.columnMenu) return false;
+        // After the next frame, so a focus move just made has landed.
+        this.framed.push(() => {
+          const key = this.last?.cols.focus?.key;
+          const id = key == null ? undefined : this.feed.colId(key);
+          if (id !== undefined) this.openColumnMenu(id);
+        });
+        this.invalidate();
+        return true;
       },
       edits: {
         editable: options.onCommit !== undefined,
