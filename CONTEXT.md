@@ -101,8 +101,12 @@ The values one item of the other axis holds across an axis (a column's values, f
 _Avoid_: Unique values, facets
 
 **Text Query**:
-Text to look for in the items of the other axis, with whether case matters, whether it is a regex in the Table Source's own syntax, and which items it searches (the shown ones, or named ones). The quick filter is one; find will be another.
+Text to look for in the items of the other axis, with whether case matters, whether it is a regex in the Table Source's own syntax, and which items it searches (the shown ones, or named ones). The quick filter is one; a Find Query holds another.
 _Avoid_: Search string, pattern, quick filter text
+
+**Find Query**:
+What find looks for: a Text Query, and the order find steps through the matching cells (by rows, along each row in turn, or by columns, down each column). The Table Source works out which cells match, the next match from a cell and how many there are; the Grid holds the Find Query and the current match, and draws the matching cells as marks without changing the view.
+_Avoid_: Search, find string, highlight query
 
 **Totals**:
 Each axis's count before any filter, as the Table Source gives it with the View Spec it applied, so "1,204 of 5,001" can be shown; unknown when the source does not say.

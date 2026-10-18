@@ -179,6 +179,28 @@ frames. Props reach it like this:
 
 The wrapper does not destroy your Table Source: you made it, you free it.
 
+To find from code (when the Table Source has `find`):
+
+- `grid.setFind({ query: { text, caseSensitive, regex, searches: "shown" }, by: "rows" })`
+  marks the cells that match, leaving the view alone; `by: "cols"` steps
+  down each column in turn. `null` closes find and clears the marks.
+- `grid.findNext()` and `grid.findPrevious()` step to the next or previous
+  match, wrapping round, and focus it without changing the selection. A step
+  asked while one is due waits for it.
+- `frame.find` holds what find shows: `support`, the `query` in force, the
+  `current` match, the source's `count`, and where the last `step` landed
+  (its `index` among the matches and whether it `wrapped`).
+
+`createFindBar(grid)` builds the find bar: the find field with match case
+and regex (when the source takes regexes) toggles, the order (by rows or by
+columns), the count ("3 of 120", "120 matches", "No matches"), a note when a
+step wraps, Previous and Next, "Show only matching rows" (which copies the
+text to the quick filter) and close. Place `bar.element` above the grid,
+full width. Ctrl+F (Cmd+F on macOS) in the grid opens it, Enter steps to the
+next match and Shift+Enter to the previous, F3 and Shift+F3 step from the
+grid while find is open, and Escape closes it and hands focus back to the
+grid. It never opens while the source does not find.
+
 ## The Table Source
 
 A Table Source answers for order and values, per axis, in your own ID and
@@ -198,6 +220,8 @@ interface TableSource<RowId, ColId, V = unknown> {
   view?(spec: ViewSpec<RowId, ColId>, signal: AbortSignal): MaybePromise<AppliedView<RowId, ColId>>;
   /** The values where `rows` and `cols` cross, one array per row. */
   cells(rows: RowId[], cols: ColId[], signal: AbortSignal): MaybePromise<V[][]>;
+  /** Find: which cells match a Find Query, the next match, and how many there are. */
+  find?: FindMethods<RowId, ColId>;
   /** Hands the source its sinks for Change Notices; returns how to detach. */
   attach?(sink: { rows: AxisSink<RowId>; cols: AxisSink<ColId> }): () => void;
 }
@@ -266,7 +290,39 @@ interface TextQuery<CrossId> {
   regex: boolean;
   searches: "shown" | CrossId[];
 }
+
+/** A Text Query and the order find steps in: along each row, or down each column. */
+interface FindQuery<ColId> {
+  query: TextQuery<ColId>;
+  by: "rows" | "cols";
+}
+
+interface FindMethods<RowId, ColId> {
+  /** Whether a Find Query may be a regex; `false` by default. */
+  regex?: boolean;
+  /** Whether each cell where `rowIds` and `colIds` cross matches, one array per row. */
+  marks(rowIds: RowId[], colIds: ColId[], query: FindQuery<ColId>, signal: AbortSignal): MaybePromise<boolean[][]>;
+  /**
+   * The first match after `from` in the query's order (before it, for `previous`), wrapping round;
+   * from the start (or the end) if `from` is `null` or not in the view. `null` if nothing matches.
+   * The answer, `{ row, col, index?, wrapped? }`, may give the match's 0-based index and whether it wrapped.
+   */
+  next(
+    from: { row: RowId; col: ColId } | null,
+    direction: "next" | "previous",
+    query: FindQuery<ColId>,
+    signal: AbortSignal,
+  ): MaybePromise<FindStep<RowId, ColId> | null>;
+  /** How many cells in the view match: `{ total, partial? }`, `partial` if counting stopped early. */
+  count?(query: FindQuery<ColId>, signal: AbortSignal): MaybePromise<FindCount>;
+}
 ```
+
+Find never sees a value: the source decides which cells match, in the view
+in force, and the grid asks for the marks of the cells it draws. A step to a
+match outside the rows the grid holds is placed with the axis's `locate`.
+Marks are asked for again after a Change Notice or a new View Spec, and the
+count with them.
 
 A source tells the grid what changed through the sink:
 `sink.rows.notify({ type: "Reset" })`, or `Reordered`, `Refiltered`,
@@ -293,7 +349,9 @@ answers. OneOf conditions match the same text exactly. Its `distinct` lists
 a column's values as its renderer gives them, with counts, in sort order
 (numbers numerically), narrowed by the filter asked for. A column with
 `filterable: false` takes no conditions. The host's `filter(keep)` applies
-as well.
+as well. Its `find` matches the same way across the
+shown columns, steps in the rows' order (and the columns'), gives each
+step's index and counts every match.
 
 ## Develop
 
