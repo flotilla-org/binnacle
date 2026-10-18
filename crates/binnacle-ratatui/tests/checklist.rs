@@ -1,17 +1,20 @@
 //! The list-of-values checklist in the column filter popup: the values the
 //! host hands it through `fetch`, asked again only when the search or the
 //! narrowing changes; the keys that tick them, each writing the exact
-//! condition (#107); and how it draws.
+//! condition (#107); and how it draws. A property mirrors the web's
+//! (web/test/checklist.test.ts), so the two ports of the rules can't drift.
 
 use std::cell::RefCell;
 
 use binnacle_core::{
-    Axis, AxisConfig, Blanks, Condition, Distinct, DistinctQuery, DistinctValue, Effect,
-    FilterSpec, Grid, Key, Snapshot, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    Axis, AxisConfig, Blanks, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery,
+    DistinctValue, Effect, FilterSpec, Grid, Key, Snapshot, Support, TextQuery, TextSupport,
+    Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{ColumnFilter, Content, RenderContext, Theme, render_with};
+use hegel::TestCase;
+use hegel::generators as gs;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -349,4 +352,188 @@ fn a_text_condition_with_an_invalid_pattern_leaves_every_value_tickable() {
     popup.key(&press(KeyCode::Down), &mut grid);
     popup.key(&char(' '), &mut grid);
     assert_eq!(edits(&mut grid), vec![add(one_of(1, &[None]).not(true))]);
+}
+
+/// The values a checklist may list, as on the web: a blank, empty text, two
+/// spellings of one name and a number.
+const CANDIDATES: [Option<&str>; 7] = [
+    None,
+    Some(""),
+    Some("Bergen"),
+    Some("bergen"),
+    Some("Oslo"),
+    Some("Cádiz"),
+    Some("7"),
+];
+
+/// Whether `text` contains `search`, ignoring case, as "select all matching" asks.
+fn has(text: &str, search: &str) -> bool {
+    text.to_lowercase().contains(&search.to_lowercase())
+}
+
+/// Whether `condition` keeps an item whose value is `value`: Text as a
+/// contains ignoring case, which never keeps a blank; OneOf exactly.
+fn model_keeps(condition: &Condition, value: &Value) -> bool {
+    let matched = match (&condition.kind, value) {
+        (ConditionKind::OneOf(values), _) => values.contains(value),
+        (ConditionKind::Text(q), Value::Text(t)) => has(t, &q.text),
+        _ => false,
+    };
+    matched != condition.not
+}
+
+/// Whatever the user ticks, unticks, searches and selects all matching, over
+/// a whole or a capped list (which leaves a value out): the conditions written keep exactly the values
+/// the user left ticked; values the search rejects can't be ticked; the head
+/// is ticked when every value that can be is; ticking every value of a
+/// whole list leaves no OneOf; and the other column's condition stays.
+#[hegel::test(test_cases = 1000)]
+fn whatever_the_user_ticks_the_conditions_keep_exactly_the_values_left_ticked(tc: TestCase) {
+    let mut universe: Vec<Value> = (CANDIDATES.iter())
+        .filter(|_| tc.draw(gs::booleans()))
+        .map(|v| Value::of(*v))
+        .collect();
+    if universe.is_empty() {
+        universe.push(Value::of(tc.draw(gs::sampled_from(CANDIDATES.to_vec()))));
+    }
+    // A capped list leaves out a value the rows hold: the last text.
+    let partial = tc.draw(gs::booleans());
+    let unlisted = (universe.iter().rev())
+        .find(|v| partial && **v != Value::Blank)
+        .cloned();
+    let listed = |v: &&Value| Some(*v) != unlisted.as_ref();
+    let answer = |q: &DistinctQuery| {
+        let search = q.search.as_str();
+        let values = (universe.iter().filter(listed))
+            .filter_map(|v| match v {
+                Value::Text(t) if search.is_empty() || has(t, search) => Some(DistinctValue {
+                    text: t.clone(),
+                    count: None,
+                }),
+                _ => None,
+            })
+            .collect();
+        let blank = universe.contains(&Value::Blank) && search.is_empty();
+        Distinct {
+            values,
+            blanks: blank.then_some(Blanks::Uncounted),
+            partial,
+            narrowed: true,
+        }
+    };
+    let mut grid = grid();
+    let other = one_of(0, &[Some("x")]);
+    grid.view_applied(conditions(vec![other.clone()]), Totals::unknown());
+    let mut popup = open(&mut grid, 1);
+    popup.key(&press(KeyCode::Tab), &mut grid);
+    popup.key(&press(KeyCode::Tab), &mut grid);
+    // The model: the values ticked, and the search "select all matching" kept.
+    let mut ticked: Vec<Value> = universe.clone();
+    let mut text: Option<String> = None;
+    let mut search = String::new();
+    popup.fetch(&snapshot(&mut grid), |_, q| Some(answer(q)));
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(20));
+    for _ in 0..steps {
+        if tc.draw(gs::integers::<u8>().max_value(3)) == 0 {
+            search = tc
+                .draw(gs::sampled_from(vec!["", "berg", "o", "e", "7", "z"]))
+                .to_string();
+            tc.note(&format!("search {search:?}"));
+            popup.key(&ctrl('u'), &mut grid);
+            for c in search.chars() {
+                popup.key(&char(c), &mut grid);
+            }
+            popup.fetch(&snapshot(&mut grid), |_, q| Some(answer(q)));
+        }
+        // The values listed, the blank first, as the popup shows them.
+        let blank = (universe.iter()).filter(|v| **v == Value::Blank && search.is_empty());
+        let texts = (universe.iter().filter(listed)).filter(|v| match v {
+            Value::Text(t) => search.is_empty() || has(t, &search),
+            Value::Blank => false,
+        });
+        let shown: Vec<Value> = blank.chain(texts).cloned().collect();
+        let excluded = |v: &Value, text: &Option<String>| match (text, v) {
+            (Some(s), Value::Text(t)) => !has(t, s),
+            (Some(_), Value::Blank) => true,
+            (None, _) => false,
+        };
+        let head = head_mark(&popup, &mut grid);
+        let mut changed = true;
+        if tc.draw(gs::integers::<u8>().max_value(4)) == 0 {
+            let on = head != "[x]";
+            tc.note(&format!("head {on}"));
+            popup.key(&ctrl('a'), &mut grid);
+            match (search.is_empty(), on) {
+                (true, true) => {
+                    ticked = universe
+                        .iter()
+                        .filter(|v| !excluded(v, &text))
+                        .cloned()
+                        .collect()
+                }
+                (true, false) => ticked.clear(),
+                (false, true) => {
+                    text = Some(search.clone());
+                    ticked = universe
+                        .iter()
+                        .filter(|v| !excluded(v, &text))
+                        .cloned()
+                        .collect();
+                }
+                (false, false) => ticked.retain(|v| !shown.contains(v)),
+            }
+        } else if !shown.is_empty() {
+            let i = tc.draw(gs::integers::<usize>().max_value(shown.len() - 1));
+            let v = &shown[i];
+            tc.note(&format!("tick or untick {v:?}"));
+            popup.key(&press(KeyCode::Home), &mut grid);
+            for _ in 0..=i {
+                popup.key(&press(KeyCode::Down), &mut grid);
+            }
+            popup.key(&char(' '), &mut grid);
+            if let Some(at) = ticked.iter().position(|t| t == v) {
+                ticked.remove(at);
+            } else if excluded(v, &text) {
+                changed = false;
+            } else {
+                ticked.push(v.clone());
+            }
+        } else {
+            continue;
+        }
+        let asked: Vec<Condition> = (snapshot(&mut grid).conditions(Axis::Rows).into_iter())
+            .filter(|(_, state)| *state != ConditionState::Removing)
+            .map(|(c, _)| c)
+            .collect();
+        assert!(asked.contains(&other), "the other column's condition stays");
+        let column: Vec<&Condition> = asked.iter().filter(|c| c.key == Key(1)).collect();
+        for v in &universe {
+            let kept = column.iter().all(|c| model_keeps(c, v));
+            assert_eq!(kept, ticked.contains(v), "{v:?} kept: {column:?}");
+        }
+        let one_ofs: Vec<&&Condition> = (column.iter())
+            .filter(|c| matches!(c.kind, ConditionKind::OneOf(_)))
+            .collect();
+        assert!(one_ofs.len() <= 1, "{column:?}");
+        let empty_not = |c: &&Condition| c.not && c.kind == ConditionKind::OneOf(vec![]);
+        assert!(!column.iter().any(empty_not), "{column:?}");
+        if search.is_empty() {
+            let open: Vec<&Value> = shown.iter().filter(|v| !excluded(v, &text)).collect();
+            let all = !open.is_empty() && open.iter().all(|v| ticked.contains(v));
+            assert_eq!(head_mark(&popup, &mut grid) == "[x]", all, "the head");
+            if all && !partial && changed {
+                assert!(one_ofs.is_empty(), "all ticked of a whole list: {column:?}");
+            }
+        }
+    }
+}
+
+/// The tick box drawn at the head of the list.
+fn head_mark(popup: &ColumnFilter, grid: &mut Grid) -> String {
+    let screen = text(&screen(popup, grid));
+    let line = (screen.lines())
+        .find(|l| l.contains("(Select all"))
+        .expect("the head");
+    let at = line.find('[').expect("a tick box");
+    line[at..at + 3].to_string()
 }
