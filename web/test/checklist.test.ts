@@ -37,7 +37,7 @@ const contains = (text: string, not = false): Condition<string> => ({
 const oneOf = (values: ListedValue[], not = false): Condition<string> => ({ id: ID, kind: { type: "OneOf", values }, not });
 
 describe("the checklist", () => {
-  test("whatever ticks and unticks a user makes over a whole list, the ticks read back are theirs, and all ticked leaves no OneOf", () =>
+  test("whatever ticks and unticks a user makes, the ticks read back are theirs, and all ticked of a whole list leaves no OneOf", () =>
     hegel.test(
       (tc) => {
         const values: ListedValue[] = tc.draw(
@@ -47,7 +47,7 @@ describe("the checklist", () => {
             unique: true,
           }),
         );
-        const shown = whole(values);
+        const shown: Shown = { values, partial: tc.draw(gs.booleans()), search: "" };
         let conditions: Condition<string>[] = [OTHER];
         const model = new Set(values);
         const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 10 }));
@@ -68,7 +68,7 @@ describe("the checklist", () => {
           const now = columnConditions(conditions, ID);
           expect(values.filter((v) => ticked(now, v))).toEqual(values.filter((v) => model.has(v)));
           expect(headTicked(now, shown)).toBe(model.size === values.length);
-          if (model.size === values.length) expect(now.oneOf).toBeNull();
+          if (model.size === values.length && !shown.partial) expect(now.oneOf).toBeNull();
           expect(now.all.filter((c) => c.kind.type === "OneOf")).toHaveLength(now.oneOf ? 1 : 0);
           expect(now.oneOf?.not && now.oneOf.kind.type === "OneOf" && now.oneOf.kind.values.length === 0).toBeFalsy();
           expect(conditions).toContainEqual(OTHER);

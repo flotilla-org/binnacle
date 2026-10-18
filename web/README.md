@@ -98,7 +98,9 @@ To filter and view from code:
   column condition: keep the rows whose value in column `id` matches `query`
   (`{ text, caseSensitive, regex }`), or with `not`, does not. Conditions
   AND with each other and with the quick filter, and a column may hold
-  several. `grid.removeCondition(c)`, `grid.replaceCondition(from, to)` and
+  several. A `{ type: "OneOf", values }` kind keeps the rows whose value is
+  one of `values` exactly (`null` for a blank); with `not`, the others.
+  `grid.removeCondition(c)`, `grid.replaceCondition(from, to)` and
   `grid.clearConditions(colId)` change them; each asks the Table Source for
   the View Spec in force with the change.
 - `grid.requestView(spec)` asks the Table Source for a whole View Spec, such
@@ -111,8 +113,12 @@ To filter and view from code:
   `frame.columns` the column headers in view, each with whether it is
   filtered (and pending) and what it supports.
 - `grid.columnSupport(colId)` says whether a column sorts and takes Text
-  conditions (and regexes); `grid.columns()` lists the table's columns with
-  their labels and support.
+  conditions (and regexes) and OneOf conditions; `grid.columns()` lists the
+  table's columns with their labels and support.
+- `grid.distinct(colId, search, limit, apply)` asks the source for a
+  column's distinct values, narrowed by the filter in force less the
+  column's own conditions, and calls `apply` with them; it returns a request
+  to `abort()`, or `null` if the column takes no OneOf conditions.
 
 `createFilterBar(grid)` builds the filter bar: the quick filter field with
 match case, regex (when the source takes regexes) and clear buttons, and the
@@ -123,12 +129,19 @@ as each key lands, and the grid's live region announces the count once the
 filter applies.
 
 `createColumnMenu(grid)` mounts the column menu: every column header whose
-column takes Text conditions then draws a funnel (solid once filtered, faded
-while pending), and pressing it, or Alt+ArrowDown in the grid, opens a
-popover under the header: "Contains" or "Does not contain", the text with
-match case and (when the column supports them) regex toggles, and Clear.
-Each change edits the column's first Text condition at once; Escape, a
-press outside or Close shuts it. Pass it to the filter bar,
+column takes Text or OneOf conditions then draws a funnel (solid once
+filtered, faded while pending), and pressing it, or Alt+ArrowDown in the
+grid, opens a popover under the header: "Contains" or "Does not contain",
+the text with match case and (when the column supports them) regex toggles,
+and Clear. Below it, where the column takes OneOf conditions, a checklist of
+its values with their counts: a search, "(Select all)" (or "(Select all
+matching …)" while searching), "(Blanks)", and a note when the list stops at
+1,000 values and whether the other filters narrowed it. Each change edits
+the column's first Text condition and first OneOf at once, writing whichever
+condition is exact: unticking from all excludes the values unticked, ticking
+from none includes those ticked, and "select all matching" keeps the
+search as a Text condition. A value the Text condition rejects is shown
+disabled. Escape, a press outside or Close shuts it. Pass it to the filter bar,
 `createFilterBar(grid, { columnMenu })`, and the bar shows a chip for each
 condition ("port: not Bergen ×": the label reopens the menu, × removes the
 condition) and "+ Filter", which picks a column and opens its menu. With a
@@ -194,11 +207,19 @@ interface AxisSource<Id, CrossId> {
   /** The IDs at Positions `start..end`. */
   window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[]>;
   /**
-   * How this axis may be viewed by `by`, asked as `by` comes into view: `{ sort, text }`. With `view`,
-   * `sort` is `true` and `text` (Text conditions) is `{ regex: false }` (contains, no regexes) by
-   * default; `text: false` takes none. The grid draws no control for what is unsupported.
+   * How this axis may be viewed by `by`, asked as `by` comes into view: `{ sort, text, oneOf }`. With
+   * `view`, `sort` is `true` and `text` (Text conditions) is `{ regex: false }` (contains, no regexes)
+   * by default; `text: false` takes none. `oneOf` is `true` with `distinct`. The grid draws no control
+   * for what is unsupported.
    */
   support?(by: CrossId): Support;
+  /**
+   * The distinct values of item `by` across this axis, for its checklist: `{ search, limit, narrow }`
+   * asks for those containing `search` (ignoring case; a search lists no blanks), up to `limit`, among
+   * the items `narrow` keeps. Answer `{ values: { text, count? }[], blanks?, partial, narrowed }` in
+   * the item's natural order; `partial` if there were more.
+   */
+  distinct?(by: CrossId, query: DistinctQuery<CrossId>, signal: AbortSignal): MaybePromise<Distinct>;
   /** Set if the axis takes a quick filter (with `view`); `{ regex: true }` if its Text Queries may be regexes. */
   quickFilter?: { regex?: boolean };
   /** Where `id` sits after a reorder: `{ type: "Found", position }` or `{ type: "Gone", suggest }`. */
@@ -225,10 +246,15 @@ interface FilterSpec<CrossId> {
   conditions: Condition<CrossId>[];
 }
 
-/** Keep the items whose value in item `id` of the other axis matches `query`, or with `not`, does not. */
+/**
+ * Keep the items whose value in item `id` of the other axis matches `query`, or is one of `values`
+ * (`null` for a blank); with `not`, those that don't.
+ */
 interface Condition<CrossId> {
   id: CrossId;
-  kind: { type: "Text"; query: { text: string; caseSensitive: boolean; regex: boolean } };
+  kind:
+    | { type: "Text"; query: { text: string; caseSensitive: boolean; regex: boolean } }
+    | { type: "OneOf"; values: (string | null)[] };
   not: boolean;
 }
 
@@ -263,8 +289,11 @@ missing value never matches, and a pattern `RegExp` rejects leaves the quick
 filter in force. It applies Text conditions the same way, in their own
 column: a blank never matches, so a `not` condition keeps blanks, and a
 condition whose pattern `RegExp` rejects is left out of the View Spec it
-answers. A column with `filterable: false` takes no conditions. The host's
-`filter(keep)` applies as well.
+answers. OneOf conditions match the same text exactly. Its `distinct` lists
+a column's values as its renderer gives them, with counts, in sort order
+(numbers numerically), narrowed by the filter asked for. A column with
+`filterable: false` takes no conditions. The host's `filter(keep)` applies
+as well.
 
 ## Develop
 

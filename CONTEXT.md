@@ -93,8 +93,12 @@ The filter part of one axis of a View Spec: which of its items the Table Source 
 _Avoid_: Filter state, predicate
 
 **Condition**:
-One test in a Filter Spec on the value an item has in one item of the other axis (a column, for the rows), such as a Text Query searching that column alone, kept or with `not` inverted. Conditions AND with each other and with the quick filter, and one column may hold several.
+One test in a Filter Spec on the value an item has in one item of the other axis (a column, for the rows), such as a Text Query searching that column alone or OneOf (the value is exactly one of those listed, blank among them or not), kept or with `not` inverted. Conditions AND with each other and with the quick filter, and one column may hold several.
 _Avoid_: Column filter, criterion, rule
+
+**Distinct Values**:
+The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more.
+_Avoid_: Unique values, facets
 
 **Text Query**:
 Text to look for in the items of the other axis, with whether case matters, whether it is a regex in the Table Source's own syntax, and which items it searches (the shown ones, or named ones). The quick filter is one; find will be another.

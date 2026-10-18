@@ -493,13 +493,17 @@ fn distinct_values_are_the_models(tc: TestCase) {
 fn distinct_values_ignore_the_filter_in_force(tc: TestCase) {
     let rows = tc.draw(gs::vecs(record()).max_size(12));
     let mut source = source(rows.len());
-    let asked = DistinctQuery::new(100).narrow(tc.draw(narrow()));
-    let before = source.distinct(&rows, QTY, &asked);
+    let column = tc.draw(gs::sampled_from(vec![NAME, QTY, BARE]));
+    let search = tc.draw(hegel::one_of!(gs::just(String::new()), text(1, 2)));
+    let asked = DistinctQuery::new(100)
+        .search(search)
+        .narrow(tc.draw(narrow()));
+    let before = source.distinct(&rows, column, &asked);
     let spec = filtered(
         tc.draw(sort()),
         tc.draw(gs::optional(query())),
         tc.draw(conditions()),
     );
     source.view(&rows, &spec).unwrap();
-    assert_eq!(source.distinct(&rows, QTY, &asked), before);
+    assert_eq!(source.distinct(&rows, column, &asked), before);
 }
