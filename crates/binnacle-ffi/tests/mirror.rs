@@ -820,7 +820,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         .then(|| FindMatch::new(Key(c.find_match.row), Key(c.find_match.col)));
     assert_eq!(found, rust.find_match(), "find match");
     let support = rust.find_support().map_or(0, |s| {
-        BINNACLE_FIND | u32::from(s.regex) * BINNACLE_FIND_REGEX
+        BINNACLE_FIND | (u32::from(s.regex) * BINNACLE_FIND_REGEX)
     });
     assert_eq!(c.find_support, support, "find support");
     match rust.hovered_header() {
