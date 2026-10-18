@@ -1,7 +1,10 @@
 // @flotilla-org/binnacle: the binnacle Grid on a web page.
 
-export { GridWidget, type FrameInfo, type GridOptions } from "./widget";
+export { GridWidget, type ColumnHeader, type ColumnInfo, type FrameInfo, type GridOptions } from "./widget";
 export { createFilterBar, type FilterBar, type FilterBarOptions } from "./filterbar";
+export { createColumnMenu, type ColumnMenu } from "./columnmenu";
+export type { ColumnSupport } from "./feed";
+export type { ConditionState } from "./snapshot";
 export type { Editor } from "./editing";
 export type { InitialSize } from "./sizes";
 export type { AxisSelection, SelectionChange } from "./selection";
@@ -13,6 +16,7 @@ export type {
   AxisSource,
   AxisView,
   ChangeNotice,
+  Condition,
   FailedRequest,
   FilterSpec,
   Located,
@@ -23,6 +27,7 @@ export type {
   SortSpec,
   Support,
   TableSource,
+  TextMatch,
   TextQuery,
   Totals,
   ViewSpec,

@@ -94,12 +94,25 @@ To filter and view from code:
   keeps the rows with the text in any shown column (or in the columns
   `searches` names); `null` or empty text clears it. Each call asks the
   Table Source for the View Spec in force with this quick filter.
+- `grid.addCondition({ id, kind: { type: "Text", query }, not })` adds a
+  column condition: keep the rows whose value in column `id` matches `query`
+  (`{ text, caseSensitive, regex }`), or with `not`, does not. Conditions
+  AND with each other and with the quick filter, and a column may hold
+  several. `grid.removeCondition(c)`, `grid.replaceCondition(from, to)` and
+  `grid.clearConditions(colId)` change them; each asks the Table Source for
+  the View Spec in force with the change.
 - `grid.requestView(spec)` asks the Table Source for a whole View Spec, such
   as a saved view.
 - `grid.subscribe(listener)` calls `listener` after every frame, as
   `onFrame` does. `frame.rows.total` is the row count before any filter (if
-  the source gave one) and `frame.quickFilter` says whether the rows take a
-  quick filter.
+  the source gave one), `frame.quickFilter` says whether the rows take a
+  quick filter, `frame.conditions` lists the conditions with their state
+  (`applied`, or `adding` and `removing` until the source answers), and
+  `frame.columns` the column headers in view, each with whether it is
+  filtered (and pending) and what it supports.
+- `grid.columnSupport(colId)` says whether a column sorts and takes Text
+  conditions (and regexes); `grid.columns()` lists the table's columns with
+  their labels and support.
 
 `createFilterBar(grid)` builds the filter bar: the quick filter field with
 match case, regex (when the source takes regexes) and clear buttons, and the
@@ -108,6 +121,18 @@ like, usually above the grid; it draws in the grid's Theme and stays hidden
 while the source's rows take no quick filter. Typing sets the quick filter
 as each key lands, and the grid's live region announces the count once the
 filter applies.
+
+`createColumnMenu(grid)` mounts the column menu: every column header whose
+column takes Text conditions then draws a funnel (solid once filtered, faded
+while pending), and pressing it, or Alt+ArrowDown in the grid, opens a
+popover under the header: "Contains" or "Does not contain", the text with
+match case and (when the column supports them) regex toggles, and Clear.
+Each change edits the column's first Text condition at once; Escape, a
+press outside or Close shuts it. Pass it to the filter bar,
+`createFilterBar(grid, { columnMenu })`, and the bar shows a chip for each
+condition ("port: not Bergen ×": the label reopens the menu, × removes the
+condition) and "+ Filter", which picks a column and opens its menu. With a
+column menu the bar shows even when the rows take no quick filter.
 
 ### React
 
@@ -168,7 +193,11 @@ interface AxisSource<Id, CrossId> {
   count(): MaybePromise<number>;
   /** The IDs at Positions `start..end`. */
   window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[]>;
-  /** How this axis may be viewed by `by`, asked as `by` comes into view: `{ sort }`, `true` by default. */
+  /**
+   * How this axis may be viewed by `by`, asked as `by` comes into view: `{ sort, text }`. With `view`,
+   * `sort` is `true` and `text` (Text conditions) is `{ regex: false }` (contains, no regexes) by
+   * default; `text: false` takes none. The grid draws no control for what is unsupported.
+   */
   support?(by: CrossId): Support;
   /** Set if the axis takes a quick filter (with `view`); `{ regex: true }` if its Text Queries may be regexes. */
   quickFilter?: { regex?: boolean };
@@ -186,8 +215,21 @@ interface AxisSource<Id, CrossId> {
 
 /** One part per axis, each naming items of the other axis: the rows sort and filter by columns. */
 interface ViewSpec<RowId, ColId> {
-  rows: { filter: { quick: TextQuery<ColId> | null }; sort: SortSpec<ColId> };
-  cols: { filter: { quick: TextQuery<RowId> | null }; sort: SortSpec<RowId> };
+  rows: { filter: FilterSpec<ColId>; sort: SortSpec<ColId> };
+  cols: { filter: FilterSpec<RowId>; sort: SortSpec<RowId> };
+}
+
+/** Every part must keep an item: the quick filter, and each condition. */
+interface FilterSpec<CrossId> {
+  quick: TextQuery<CrossId> | null;
+  conditions: Condition<CrossId>[];
+}
+
+/** Keep the items whose value in item `id` of the other axis matches `query`, or with `not`, does not. */
+interface Condition<CrossId> {
+  id: CrossId;
+  kind: { type: "Text"; query: { text: string; caseSensitive: boolean; regex: boolean } };
+  not: boolean;
 }
 
 /** Keep the items with `text` in a searched item of the other axis: the shown ones, or those named. */
@@ -218,7 +260,11 @@ indices, column IDs property names, every column sorts unless
 filter, regexes included (JavaScript `RegExp` syntax, with the `u` flag),
 matched against each cell's text as its column's renderer gives it; a
 missing value never matches, and a pattern `RegExp` rejects leaves the quick
-filter in force. The host's `filter(keep)` applies as well.
+filter in force. It applies Text conditions the same way, in their own
+column: a blank never matches, so a `not` condition keeps blanks, and a
+condition whose pattern `RegExp` rejects is left out of the View Spec it
+answers. A column with `filterable: false` takes no conditions. The host's
+`filter(keep)` applies as well.
 
 ## Develop
 

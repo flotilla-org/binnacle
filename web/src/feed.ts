@@ -54,6 +54,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   colKey(id: ColId): bigint;
   /** A View Spec by Keys, issuing Keys for IDs that have none yet. */
   viewKeys(spec: AppliedView<RowId, ColId>): KeyedViewSpec;
+  /** How the rows may be viewed by column `id`, as the source declares it with the defaults filled in. */
+  columnSupport(id: ColId): ColumnSupport;
   /** A rows condition by Keys, issuing a Key for its column if it has none yet. */
   conditionKey(condition: Condition<ColId>): KeyedCondition;
   /** A rows condition by its column's ID, if the column and the kind are known. */
@@ -62,6 +64,12 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   find(axis: AxisName, key: bigint): Promise<Located>;
   /** Detaches from the source and aborts outstanding requests. */
   destroy(): void;
+}
+
+/** How the rows may be viewed by one column, every kind decided: sorting, and Text conditions (with regexes or not, or `null` for none). */
+export interface ColumnSupport {
+  sort: boolean;
+  text: { regex: boolean } | null;
 }
 
 export interface FeedHooks<RowId = unknown, ColId = unknown> {
@@ -245,21 +253,21 @@ export function createFeed<RowId, ColId, V>(
 
   const keysOf = <Id>(axis: Axis<Id>, ids: Id[]) => BigUint64Array.from(ids, (id) => axis.interner.key(id));
 
-  /** Tells the Grid how the rows may be viewed by the columns with `keys`: nothing without `view`. */
+  /** How the rows may be viewed by column `id`, defaults filled in: nothing without `view`. */
+  const columnSupport = (id: ColId): ColumnSupport => {
+    if (source.view === undefined) return { sort: false, text: null };
+    const support = source.rows.support?.(id) ?? {};
+    const text = support.text ?? {};
+    return { sort: support.sort ?? true, text: text ? { regex: text.regex ?? false } : null };
+  };
+
+  /** Tells the Grid how the rows may be viewed by the columns with `keys`. */
   const markSupport = (keys: BigUint64Array) => {
-    const view = source.view;
     for (const key of keys) {
       const id = cols.interner.id(key);
-      if (view === undefined || id === undefined) {
-        grid?.set_support(AXIS_CODE.rows, key, 0);
-        continue;
-      }
-      const support = source.rows.support?.(id) ?? {};
-      const text = support.text ?? {};
-      const bits =
-        (support.sort ?? true ? SUPPORT.sort : 0) |
-        (text ? SUPPORT.text | (text.regex ? SUPPORT.textRegex : 0) : 0);
-      grid?.set_support(AXIS_CODE.rows, key, bits);
+      const support = id === undefined ? { sort: false, text: null } : columnSupport(id);
+      const text = support.text ? SUPPORT.text | (support.text.regex ? SUPPORT.textRegex : 0) : 0;
+      grid?.set_support(AXIS_CODE.rows, key, (support.sort ? SUPPORT.sort : 0) | text);
     }
   };
 
@@ -601,6 +609,7 @@ export function createFeed<RowId, ColId, V>(
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
     viewKeys: (spec) => ({ rows: partKeys(cols, spec.rows), cols: partKeys(rows, spec.cols) }),
+    columnSupport,
     conditionKey: (c) => conditionKey(cols, c),
     conditionId: (c) => conditionId(cols, c),
     find(axis, key) {

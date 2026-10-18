@@ -9,7 +9,8 @@ import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
-import { createFeed, type Feed } from "./feed";
+import { filterButtonRect, hasFilterButton } from "./canvas/bands";
+import { createFeed, type ColumnSupport, type Feed } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -17,8 +18,8 @@ import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scro
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
-import type { AxisSnapshot, Snapshot, Span } from "./snapshot";
-import type { FailedRequest, Located, TableSource, TextQuery, ViewSpec } from "./source";
+import type { AxisSnapshot, ConditionState, HeaderPlacement, Snapshot, Span } from "./snapshot";
+import type { Condition, FailedRequest, Located, TableSource, TextQuery, ViewSpec } from "./source";
 import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -112,6 +113,30 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   animating: boolean;
   /** The cell being edited, by the Table Source's own IDs, if an editor is open. */
   editing: { row: RowId; col: ColId } | null;
+  /**
+   * The rows' column conditions as a filter's chips list them: the latest
+   * request's, each applied or still being added, then the applied ones
+   * being removed. Pending ones (`adding`, `removing`) are not applied yet.
+   */
+  conditions: { condition: Condition<ColId>; state: ConditionState }[];
+  /** The column headers in view, by the Table Source's IDs: how each is filtered, and what it supports. */
+  columns: ColumnHeader<ColId>[];
+}
+
+/** A column header in view, as `FrameInfo.columns` lists it. */
+export interface ColumnHeader<ColId = unknown> {
+  id: ColId;
+  label: string;
+  /** Whether an applied condition reads this column, and whether a request would change them. */
+  filter: { filtered: boolean; pending: boolean };
+  support: ColumnSupport;
+}
+
+/** A listed column, as `GridWidget.columns` gives them. */
+export interface ColumnInfo<ColId = unknown> {
+  id: ColId;
+  label: string;
+  support: ColumnSupport;
 }
 
 const HEADER_HEIGHT = 28;
@@ -155,6 +180,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   /** Waiting for the next frame to run. */
   private framed: (() => void)[] = [];
   private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
+  /** The mounted column menu's opener, if one is mounted. */
+  private columnMenu: ((colId: ColId, anchor: DOMRect) => void) | null = null;
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -252,6 +279,16 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         this.invalidate();
       },
       snapshot: () => this.last,
+      menuButtonAt: (x, y) => this.menuButtonAt(x, y) !== undefined,
+      menuPress: (x, y) => {
+        const id = this.menuButtonAt(x, y);
+        return id !== undefined && this.openColumnMenu(id);
+      },
+      openColumnMenu: () => {
+        const key = this.last?.cols.focus?.key;
+        const id = key == null ? undefined : this.feed.colId(key);
+        return id !== undefined && this.openColumnMenu(id);
+      },
       edits: {
         editable: options.onCommit !== undefined,
         value: (row, col) => this.feed.value(row, col),
@@ -418,6 +455,124 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.schedule();
   }
 
+  /**
+   * Adds a condition on the rows: keep those whose value in the condition's
+   * column matches (or with `not`, does not). A Text condition with no text
+   * asks for nothing. The grid asks the Table Source for the View Spec in
+   * force with it.
+   */
+  addCondition(condition: Condition<ColId>): void {
+    this.editView(() => this.grid.add_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  }
+
+  /** Removes the first rows condition equal to `condition`, if the View Spec in force (or asked for) has one. */
+  removeCondition(condition: Condition<ColId>): void {
+    this.editView(() => this.grid.remove_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  }
+
+  /**
+   * Puts `to` in place of the first rows condition equal to `from`: adds `to`
+   * if there is none, and removes `from` if `to` asks for nothing.
+   */
+  replaceCondition(from: Condition<ColId>, to: Condition<ColId>): void {
+    this.editView(() =>
+      this.grid.replace_condition(AXIS_CODE.rows, this.feed.conditionKey(from), this.feed.conditionKey(to)),
+    );
+  }
+
+  /** Removes every rows condition on column `colId`. */
+  clearConditions(colId: ColId): void {
+    const listed = this.last?.rows.conditions ?? [];
+    const key = this.feed.colKey(colId);
+    this.editView(() => {
+      for (const { condition, state } of listed) {
+        if (state !== "removing" && condition.key === key) this.grid.remove_condition(AXIS_CODE.rows, condition);
+      }
+    });
+  }
+
+  private editView(edit: () => void): void {
+    if (this.destroyed) return;
+    edit();
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /**
+   * Mounts a column menu (see `createColumnMenu`): filterable column headers
+   * draw its button, and a press on one, Alt+ArrowDown, or `openColumnMenu`
+   * calls `open` with the column and a rectangle to place the menu under.
+   * Returns how to unmount it; one menu is mounted at a time.
+   */
+  attachColumnMenu(open: (colId: ColId, anchor: DOMRect) => void): () => void {
+    this.columnMenu = open;
+    this.painter.filterButtons = true;
+    this.invalidate();
+    return () => {
+      if (this.columnMenu !== open) return;
+      this.columnMenu = null;
+      this.painter.filterButtons = false;
+      this.invalidate();
+    };
+  }
+
+  /**
+   * Opens the mounted column menu for `colId`, under its header if it is in
+   * view, else under `anchor` (or the grid's top left). `false` if no menu is
+   * mounted or the column cannot be filtered.
+   */
+  openColumnMenu(colId: ColId, anchor?: DOMRect): boolean {
+    const open = this.columnMenu;
+    if (!open || this.destroyed || !this.feed.columnSupport(colId).text) return false;
+    const key = this.feed.colKey(colId);
+    const header = this.last?.cols.headers.find((h) => h.key === key && this.inView(h));
+    open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
+    return true;
+  }
+
+  /** The columns of the table, up to `limit` (1,000 by default), with their labels and support, asked of the Table Source. */
+  async columns(limit = 1000): Promise<ColumnInfo<ColId>[]> {
+    const cols = this.options.source.cols;
+    const count = await cols.count();
+    const ids = await cols.window(0, Math.min(count, limit), new AbortController().signal);
+    return ids.map((id) => ({ id, label: this.columnLabel(id), support: this.feed.columnSupport(id) }));
+  }
+
+  /** How the rows may be viewed by column `colId`: whether it sorts, and takes Text conditions (and regexes). */
+  columnSupport(colId: ColId): ColumnSupport {
+    return this.feed.columnSupport(colId);
+  }
+
+  /** A column's header text: the source's `cols.label` (given the column's Position if in view, else NaN), else its ID. */
+  columnLabel(colId: ColId): string {
+    const key = this.feed.colKey(colId);
+    const position = this.last?.cols.strip.find((i) => i.key === key)?.position ?? Number.NaN;
+    return this.options.source.cols.label?.(colId, position) ?? String(colId);
+  }
+
+  /** The column whose menu button is at (x, y), if a menu is mounted and there is one. */
+  private menuButtonAt(x: number, y: number): ColId | undefined {
+    const s = this.last;
+    if (!this.columnMenu || !s || y > s.rows.header) return undefined;
+    for (const h of s.cols.headers) {
+      if (!hasFilterButton(true, h) || !this.inView(h)) continue;
+      const r = filterButtonRect(h);
+      if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) return this.feed.colId(h.key!);
+    }
+    return undefined;
+  }
+
+  private inView(h: HeaderPlacement): boolean {
+    const s = this.last;
+    return s !== null && h.rect.x + h.rect.width > s.cols.header && h.rect.x < s.cols.extent;
+  }
+
+  /** A viewport rectangle in client coordinates. */
+  private clientRect(r: { x: number; y: number; width: number; height: number }): DOMRect {
+    const box = this.layer.getBoundingClientRect();
+    return new DOMRect(box.left + r.x, box.top + r.y, r.width, r.height);
+  }
+
   /** Asks the Table Source for the whole of `spec`, such as a saved view, in place of the View Spec in force. */
   requestView(spec: ViewSpec<RowId, ColId>): void {
     if (this.destroyed) return;
@@ -541,6 +696,16 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       loading: this.feed.loading(snapshot),
       animating: again,
       editing: snapshot.mode.type === "Editing" ? this.ids(snapshot.mode.row, snapshot.mode.col) : null,
+      conditions: snapshot.rows.conditions.flatMap(({ condition, state }) => {
+        const c = this.feed.conditionId(condition);
+        return c ? [{ condition: c, state }] : [];
+      }),
+      columns: visible(snapshot.cols).flatMap((item) => {
+        const id = item.key === null ? undefined : this.feed.colId(item.key);
+        const header = snapshot.cols.headers.find((h) => h.position === item.position);
+        if (id === undefined || !header) return [];
+        return [{ id, label: this.columnLabel(id), filter: header.filter, support: this.feed.columnSupport(id) }];
+      }),
     };
   }
 

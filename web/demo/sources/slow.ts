@@ -5,8 +5,11 @@
 // AbortSignal: one the widget no longer wants is never answered, and the
 // toolbar counts both. "Fail" makes Windows and cells fail instead: the
 // failed cells show the error marker, and Retry asks again with a Reset.
+// The filter bar holds column conditions, through the column menu: they show
+// pending (faded chips and header funnels) until the late answer, and as the
+// source declares no support, they take contains but no regexes.
 
-import { fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
+import { createColumnMenu, createFilterBar, fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, RECORDS, rows, type RecordRow } from "./records-data";
 
@@ -116,12 +119,21 @@ export const slow: DemoSource = {
       sinks?.rows.notify({ type: "Reset" });
     });
     toolbar.append(speed, box, fail, retry, counter);
-    const widget = await GridWidget.create(host, {
+    const frame = document.createElement("div");
+    frame.className = "with-filter-bar";
+    const gridBox = document.createElement("div");
+    gridBox.className = "grid-box";
+    frame.append(gridBox);
+    host.append(frame);
+    const widget = await GridWidget.create(gridBox, {
       source,
       columnWidth: 140,
       onError: () => (retry.hidden = false),
       ...look,
     });
+    const columnMenu = createColumnMenu(widget);
+    const bar = createFilterBar(widget, { columnMenu });
+    frame.prepend(bar.element);
     return {
       get theme() {
         return widget.theme;
@@ -136,7 +148,10 @@ export const slow: DemoSource = {
         widget.border = style;
       },
       destroy() {
+        bar.destroy();
+        columnMenu.destroy();
         widget.destroy();
+        frame.remove();
         inner.destroy();
         speed.remove();
         box.remove();

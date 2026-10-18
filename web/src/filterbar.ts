@@ -1,16 +1,23 @@
 // The filter bar: a part the embedder places beside a GridWidget, usually
 // above it. It holds the rows' quick filter field with its case and regex
-// toggles and a clear button, and the row count. Each change to the field
-// sets the widget's quick filter; the widget announces the count to
-// assistive technology once the filter is applied. Drawn in the widget's
-// Theme; hidden while the rows take no quick filter.
+// toggles and a clear button, a chip for each column condition (× removes
+// it), "+ Filter" to add one through a column menu, and the row count. Each
+// change to the field sets the widget's quick filter; the widget announces
+// the count to assistive technology once the filter is applied. Drawn in the
+// widget's Theme; hidden while the rows take no quick filter, have no
+// conditions and no column menu is given.
 
 import { rowCount } from "./aria";
+import type { ColumnMenu } from "./columnmenu";
+import type { Condition } from "./source";
+import type { ConditionState } from "./snapshot";
 import type { FrameInfo, GridWidget } from "./widget";
 
-export interface FilterBarOptions {
+export interface FilterBarOptions<ColId = unknown> {
   /** What the empty field says; "Filter rows…" by default. */
   placeholder?: string;
+  /** The column menu (`createColumnMenu`) that "+ Filter" and a press on a chip open; without one, neither does. */
+  columnMenu?: ColumnMenu<ColId>;
 }
 
 export interface FilterBar {
@@ -29,11 +36,25 @@ const INPUT_STYLE =
 const BUTTON_STYLE =
   "min-width: 24px; height: 24px; padding: 0 5px; border: 1px solid transparent; border-radius: 4px; " +
   "background: transparent; color: inherit; cursor: pointer; font: 12px ui-monospace, Menlo, monospace;";
+const CHIPS_STYLE = "display: flex; flex-wrap: wrap; gap: 6px;";
+const CHIP_STYLE = "display: inline-flex; align-items: center; border-radius: 999px; overflow: hidden;";
+const CHIP_LABEL_STYLE =
+  "font: inherit; color: inherit; border: 0; background: transparent; padding: 3px 4px 3px 10px; white-space: nowrap;";
+const CHIP_REMOVE_STYLE =
+  "font: inherit; color: inherit; border: 0; background: transparent; padding: 3px 8px 3px 4px; cursor: pointer;";
+const ADD_STYLE =
+  "font: inherit; border-radius: 999px; padding: 3px 10px; cursor: pointer; background: transparent; white-space: nowrap;";
+const PICKER_STYLE =
+  "position: fixed; z-index: 50; min-width: 160px; max-height: 280px; overflow: auto; padding: 4px 0; " +
+  "border-radius: 8px; box-shadow: 0 10px 30px rgb(15 23 42 / 0.18);";
+const PICK_STYLE =
+  "display: block; width: 100%; text-align: left; font: inherit; color: inherit; border: 0; " +
+  "background: transparent; padding: 4px 12px; cursor: pointer;";
 const COUNT_STYLE = "margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap;";
 
 export function createFilterBar<RowId, ColId, V>(
   widget: GridWidget<RowId, ColId, V>,
-  options: FilterBarOptions = {},
+  options: FilterBarOptions<ColId> = {},
 ): FilterBar {
   const element = el("div", "binnacle-filter-bar", BAR_STYLE);
   element.setAttribute("role", "search");
@@ -51,8 +72,106 @@ export function createFilterBar<RowId, ColId, V>(
   clearButton.setAttribute("aria-label", "Clear filter");
   clearButton.hidden = true;
   field.append(input, caseToggle, regexToggle, clearButton);
+  const chips = el("div", "binnacle-chips", CHIPS_STYLE);
+  chips.setAttribute("role", "list");
+  chips.setAttribute("aria-label", "Column filters");
+  const menu = options.columnMenu;
+  const add = el("button", "binnacle-add-filter", ADD_STYLE);
+  add.type = "button";
+  add.textContent = "+ Filter";
+  add.setAttribute("aria-haspopup", "menu");
+  add.hidden = !menu;
   const count = el("span", "binnacle-row-count", COUNT_STYLE);
-  element.append(field, count);
+  element.append(field, chips, add, count);
+
+  let picker: HTMLElement | null = null;
+  const closePicker = () => {
+    picker?.remove();
+    picker = null;
+    document.removeEventListener("pointerdown", outsidePicker, true);
+  };
+  const outsidePicker = (e: PointerEvent) => {
+    if (picker && !picker.contains(e.target as Node) && e.target !== add) closePicker();
+  };
+  /** Lists the columns that take conditions; picking one opens its menu. */
+  const openPicker = async () => {
+    const columns = (await widget.columns()).filter((c) => c.support.text);
+    closePicker();
+    const t = widget.theme;
+    const list = el("div", "binnacle-filter-picker", PICKER_STYLE);
+    list.setAttribute("role", "menu");
+    list.setAttribute("aria-label", "Filter column");
+    list.style.font = t.font;
+    list.style.color = t.body.color;
+    list.style.background = t.body.background;
+    list.style.border = `1px solid ${t.border}`;
+    const items = columns.map((c) => {
+      const b = el("button", "", PICK_STYLE);
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.textContent = c.label;
+      b.addEventListener("pointerenter", () => b.focus());
+      b.addEventListener("focus", () => (b.style.background = t.headerHovered.background));
+      b.addEventListener("blur", () => (b.style.background = "transparent"));
+      b.addEventListener("click", () => {
+        const anchor = add.getBoundingClientRect();
+        closePicker();
+        menu?.open(c.id, anchor);
+      });
+      return b;
+    });
+    list.append(...items);
+    list.addEventListener("keydown", (e) => {
+      const at = items.indexOf(document.activeElement as HTMLButtonElement);
+      const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+      if (step !== 0 && items.length > 0) {
+        e.preventDefault();
+        items[(at + step + items.length) % items.length]!.focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closePicker();
+        add.focus();
+      }
+    });
+    const r = add.getBoundingClientRect();
+    list.style.left = `${r.left}px`;
+    list.style.top = `${r.bottom + 4}px`;
+    document.body.append(list);
+    document.addEventListener("pointerdown", outsidePicker, true);
+    picker = list;
+    items[0]?.focus();
+  };
+  add.addEventListener("click", () => (picker ? closePicker() : void openPicker()));
+
+  /** One chip: "port: not Bergen", faded while pending; the label opens the column menu, × removes it. */
+  const chip = (condition: Condition<ColId>, state: ConditionState) => {
+    const t = widget.theme;
+    const item = el("div", "binnacle-chip", CHIP_STYLE);
+    item.setAttribute("role", "listitem");
+    const text = chipText(widget.columnLabel(condition.id), condition);
+    const label = el("button", "binnacle-chip-label", CHIP_LABEL_STYLE);
+    label.type = "button";
+    label.textContent = text;
+    label.disabled = !menu || state === "removing";
+    label.style.cursor = label.disabled ? "default" : "pointer";
+    label.addEventListener("click", () => menu?.open(condition.id, item.getBoundingClientRect()));
+    const remove = el("button", "binnacle-chip-remove", CHIP_REMOVE_STYLE);
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove filter ${text}`);
+    remove.hidden = state === "removing";
+    remove.style.color = t.rowNumber.color;
+    remove.addEventListener("click", () => widget.removeCondition(condition));
+    item.append(label, remove);
+    item.style.border = `1px solid ${t.sortMarker}`;
+    item.style.background = t.picks.background;
+    item.style.color = t.picks.color;
+    if (state !== "applied") item.style.opacity = "0.55";
+    if (state === "removing") label.style.textDecoration = "line-through";
+    if (state !== "applied") item.setAttribute("aria-busy", "true");
+    return item;
+  };
+  let shownChips = "";
 
   let regexAllowed = false;
   const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
@@ -108,6 +227,8 @@ export function createFilterBar<RowId, ColId, V>(
     const lit = input.value !== "" || document.activeElement === input;
     field.style.border = `1px solid ${lit ? t.focus.color : t.border}`;
     count.style.color = t.rowNumber.color;
+    add.style.color = t.rowNumber.color;
+    add.style.border = `1px dashed ${t.border}`;
     for (const b of [caseToggle, regexToggle]) {
       const on = pressed(b);
       b.style.color = on ? t.focus.color : t.loading;
@@ -117,8 +238,18 @@ export function createFilterBar<RowId, ColId, V>(
 
   const frame = (f: FrameInfo<RowId, ColId>) => {
     // Inline styles would win over the `hidden` attribute.
-    element.style.display = f.quickFilter === null ? "none" : "flex";
+    element.style.display = f.quickFilter === null && f.conditions.length === 0 && !menu ? "none" : "flex";
+    field.style.display = f.quickFilter === null ? "none" : "flex";
     regexAllowed = f.quickFilter?.regex ?? false;
+    // Rebuilt only when they change, so a press on a chip is not lost to a repaint.
+    const key = [
+      widget.theme.name,
+      ...f.conditions.map(({ condition, state }) => `${state} ${chipText(widget.columnLabel(condition.id), condition)}`),
+    ].join("\n");
+    if (key !== shownChips) {
+      shownChips = key;
+      chips.replaceChildren(...f.conditions.map(({ condition, state }) => chip(condition, state)));
+    }
     regexToggle.hidden = !regexAllowed;
     const filtered = f.rows.total !== null && f.rows.total !== f.rows.count;
     count.textContent = filtered
@@ -134,9 +265,16 @@ export function createFilterBar<RowId, ColId, V>(
     focus: () => input.focus(),
     destroy() {
       unsubscribe();
+      closePicker();
       element.remove();
     },
   };
+}
+
+function chipText<ColId>(label: string, c: Condition<ColId>): string {
+  const q = c.kind.query;
+  const text = q.regex ? `/${q.text}/` : q.text;
+  return `${label}: ${c.not ? "not " : ""}${text}${q.caseSensitive ? " (Aa)" : ""}`;
 }
 
 function toggle(text: string, label: string): HTMLButtonElement {

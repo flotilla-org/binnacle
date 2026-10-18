@@ -14,7 +14,9 @@ export type Action =
   | { type: "Cancel" }
   | { type: "Activate" }
   | { type: "BeginEdit" }
-  | { type: "ScrollBy"; axis: AxisName; items: number };
+  | { type: "ScrollBy"; axis: AxisName; items: number }
+  /** Opens the focused column's menu, if a column menu is mounted; the key is the page's otherwise. */
+  | { type: "OpenColumnMenu" };
 
 export type Platform = "mac" | "other";
 
@@ -100,7 +102,7 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
   extend,
 });
 
-/** The default bindings: arrows, Shift to extend, Mod+arrow to the edge, pages, Home and End, Mod+A. */
+/** The default bindings: arrows, Shift to extend, Mod+arrow to the edge, pages, Home and End, Mod+A, Alt+ArrowDown for the column menu. */
 export function defaultBindings(): KeyBindings {
   const bindings: KeyBindings = {};
   const moves: [string, AxisName, FocusStep, boolean][] = [
@@ -126,6 +128,7 @@ export function defaultBindings(): KeyBindings {
   bindings["Escape"] = { type: "Cancel" };
   bindings["Enter"] = { type: "Activate" };
   bindings["F2"] = { type: "BeginEdit" };
+  bindings["Alt+ArrowDown"] = { type: "OpenColumnMenu" };
   return bindings;
 }
 

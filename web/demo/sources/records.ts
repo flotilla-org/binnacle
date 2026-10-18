@@ -3,10 +3,12 @@
 // column), headers drag to move columns, and the filter box keeps the rows
 // whose name or port contains its text. The filter bar above the grid holds
 // the quick filter, which keeps the rows with its text in any column (with
-// case and regex toggles), and the count. Cells edit in place: type, or press
-// F2 or Enter, or double-click; the port column picks from a list.
+// case and regex toggles), a chip for each column condition, "+ Filter" and
+// the count. Every column but the id takes Text conditions: its header's
+// funnel, or Alt+ArrowDown, opens the column menu. Cells edit in place: type,
+// or press F2 or Enter, or double-click; the port column picks from a list.
 
-import { createFilterBar, fromRows, GridWidget, type Editor } from "../../src";
+import { createColumnMenu, createFilterBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, PORTS, RECORDS, rows, WIDTHS, type RecordRow } from "./records-data";
 
@@ -54,7 +56,7 @@ export const records: DemoSource = {
   showIds: true,
   async mount(host, toolbar, look) {
     const source = fromRows(rows, [
-      { key: "id" },
+      { key: "id", filterable: false },
       { key: "name" },
       { key: "weight" },
       { key: "crew" },
@@ -95,7 +97,8 @@ export const records: DemoSource = {
       },
       editor: (_id, col) => (col === "port" ? portPicker() : null),
     });
-    const bar = createFilterBar(widget);
+    const columnMenu = createColumnMenu(widget);
+    const bar = createFilterBar(widget, { columnMenu });
     frame.prepend(bar.element);
     return {
       get theme() {
@@ -112,6 +115,7 @@ export const records: DemoSource = {
       },
       destroy() {
         bar.destroy();
+        columnMenu.destroy();
         widget.destroy();
         frame.remove();
         source.destroy();
