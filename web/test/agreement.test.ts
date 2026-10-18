@@ -242,6 +242,29 @@ describe("Find", () => {
   });
 });
 
+describe("Unmatched rows", () => {
+  test("binnacle-memory keeps an edited row in view, flagged, until the rows are filtered again", () => {
+    const memory = new (bridge().WebMemory)(4, 1);
+    const order = () => Array.from(memory.window(0, 0, memory.count(0)));
+    try {
+      expect(memory.filter(Uint8Array.from([1, 1, 0, 1]))).toBe(3);
+      // The user's edit: row 1 no longer matches but stays; row 2 now matches and comes in.
+      expect(memory.defer_row(1, 0)).toBe(false);
+      expect(memory.defer_row(2, 1)).toBe(true);
+      expect(order()).toEqual([0, 1, 2, 3]);
+      expect(Array.from(memory.unmatched(Uint32Array.from([0, 1, 2, 3, 9])))).toEqual([0, 1, 0, 0, 0]);
+      expect(memory.has_unmatched()).toBe(true);
+      // A change from the data takes row 3 out at once.
+      expect(memory.refilter_row(3, 0)).toBe(true);
+      expect(order()).toEqual([0, 1, 2]);
+      expect(memory.filter(Uint8Array.from([1, 0, 1, 0]))).toBe(2);
+      expect(memory.has_unmatched()).toBe(false);
+    } finally {
+      memory.free();
+    }
+  });
+});
+
 describe("Change Notices", () => {
   test("each notice code names the same notice in Rust", () => {
     for (const [type, code] of Object.entries(NOTICE_CODE)) {

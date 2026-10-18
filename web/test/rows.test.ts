@@ -201,10 +201,10 @@ describe("fromRows", () => {
       }
     }));
 
-  test("after rows change in place, a sort in force re-sorts by their new values, and each change is told", () =>
+  test("after rows change in place, a sort in force re-sorts; a change from the data is filtered at once, and the user's edit leaves its row unmatched", () =>
     hegel.test((tc) => {
       const rows = tc.draw(records);
-        tc.assume(rows.length > 0);
+      tc.assume(rows.length > 0);
       const source = fromRows(rows, COLUMNS);
       const notices: ChangeNotice[] = [];
       source.attach!({ rows: { notify: (n) => notices.push(n) }, cols: { notify: () => {} } });
@@ -213,21 +213,33 @@ describe("fromRows", () => {
         const filtered = tc.draw(gs.booleans());
         const keep = (r: Rec) => !filtered || r.b !== 1;
         if (filtered) source.filter((r) => keep(r));
-        // The filter is not applied again on a change: the rows shown stay shown.
-        const shown = new Set(rows.filter(keep));
         source.view!(rowsSorted(spec), new AbortController().signal);
-        const changes = tc.draw(gs.integers({ minValue: 1, maxValue: 4 }));
+        const unmatched = new Set<number>();
+        const changes = tc.draw(gs.integers({ minValue: 1, maxValue: 6 }));
         for (let i = 0; i < changes; i++) {
           const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+          const edit = tc.draw(gs.booleans());
           const before = order(source).indexOf(id);
           Object.assign(rows[id]!, tc.draw(gs.record(fields)));
           notices.length = 0;
-          source.changed(id);
-          expect(order(source)).toEqual(reference(rows, spec, (r) => shown.has(r)));
+          if (edit) source.edited(id);
+          else source.changed(id);
+          if (edit && before >= 0 && !keep(rows[id]!)) unmatched.add(id);
+          else unmatched.delete(id);
+          const shown = order(source);
+          expect(shown).toEqual(reference(rows, spec, (r) => keep(r) || unmatched.has(rows.indexOf(r))));
+          expect(source.rows.unmatched!(shown, new AbortController().signal)).toEqual(shown.map((r) => unmatched.has(r)));
+          const moved = (before >= 0) !== shown.includes(id);
           const told: ChangeNotice[] = before < 0 ? [] : [{ type: "ContentChanged", start: before, end: before + 1 }];
-          if (spec.length) told.push({ type: "Reordered" });
+          if (moved) told.push({ type: "Refiltered" });
+          else if (spec.length) told.push({ type: "Reordered" });
           expect(notices).toEqual(told);
         }
+        // Any View Spec, even the one in force, filters the unmatched rows.
+        notices.length = 0;
+        source.view!(rowsSorted(spec), new AbortController().signal);
+        expect(order(source)).toEqual(reference(rows, spec, keep));
+        expect(notices).toEqual([{ type: unmatched.size ? "Refiltered" : "Reordered" }]);
       } finally {
         source.destroy();
       }

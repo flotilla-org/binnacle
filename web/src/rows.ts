@@ -4,7 +4,10 @@
 // and a column's sort keys cross only when it is first sorted (numbers as a
 // Float64Array, strings UTF-8 encoded once, so they sort by code point).
 //
-// Rows are treated as immutable until `changed` says one was edited.
+// Rows are treated as immutable until `edited` or `changed` says one was
+// changed in place. The user's edit leaves a row that stops matching the
+// filter in view, unmatched, until the next View Spec; a change from the
+// data is filtered at once.
 //
 // The quick filter and column conditions match in JS (a `RegExp` for a
 // regex, lowercased substrings otherwise, exact text for OneOf) against each
@@ -64,9 +67,15 @@ export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[ke
   /** The row a row ID names. */
   row(id: number): R;
   /**
-   * The row `id` names was changed in place: shows its new values and
-   * re-sorts by the sort in force. The filter is not applied again, so a
-   * changed row stays shown.
+   * The user edited the row `id` names in place: shows its new values and
+   * re-sorts by the sort in force. If it no longer matches the filter it
+   * stays shown, unmatched (drawn dimmed), until the next View Spec.
+   */
+  edited(id: number): void;
+  /**
+   * The row `id` names changed in place in the data itself, as from a live
+   * feed: shows its new values, re-sorts, and applies the filter to it at
+   * once, so it may come into view or leave.
    */
   changed(id: number): void;
   /** Frees the wasm side. */
@@ -302,6 +311,27 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     applied = spec;
   };
 
+  /**
+   * The row `id` changed in place: told at its old Position, re-sorted, and
+   * filtered again, at once or (with `defer`, for the user's edit) only if
+   * it was out of view.
+   */
+  const update = (id: number, defer: boolean) => {
+    const m = memory();
+    const at = located(m.locate(ROWS, id));
+    if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
+    keys.clear();
+    hits = undefined;
+    let moved = false;
+    if (keep || quick || conditions.length) {
+      const kept = keeper(quick, quickMatch, conditions)(rows[id]!) ? 1 : 0;
+      moved = defer ? m.defer_row(id, kept) : m.refilter_row(id, kept);
+    }
+    if (applied.length) sort(applied);
+    if (moved) tell({ type: "Refiltered" });
+    else if (applied.length) tell({ type: "Reordered" });
+  };
+
   return {
     rows: {
       count: () => memory().count(ROWS),
@@ -314,6 +344,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       },
       distinct: (by, { search, limit, narrow }) => distinct(by, search, limit, narrow),
       locate: (id) => located(memory().locate(ROWS, id)),
+      unmatched: (ids) => Array.from(memory().unmatched(Uint32Array.from(ids)), (u) => u === 1),
     },
     cols: {
       count: () => columns.length,
@@ -348,7 +379,8 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       );
       if (conditionsChanged) conditions = kept;
       sort(by);
-      const refiltered = quickChanged || conditionsChanged;
+      // Any View Spec, even the one in force, filters the unmatched rows.
+      const refiltered = quickChanged || conditionsChanged || memory().has_unmatched();
       if (refiltered) refilter();
       tell({ type: refiltered ? "Refiltered" : "Reordered" });
       return {
@@ -418,16 +450,8 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       tell({ type: "Refiltered" });
     },
     row: (id) => rows[id]!,
-    changed(id) {
-      const at = located(memory().locate(ROWS, id));
-      if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
-      keys.clear();
-      hits = undefined;
-      if (applied.length) {
-        sort(applied);
-        tell({ type: "Reordered" });
-      }
-    },
+    edited: (id) => update(id, true),
+    changed: (id) => update(id, false),
     destroy() {
       wasm?.free();
       wasm = undefined;

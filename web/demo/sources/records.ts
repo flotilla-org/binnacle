@@ -95,7 +95,7 @@ export const records: DemoSource = {
         }
         (source.row(id) as Record<keyof RecordRow, Value>)[col] = parsed;
         committed.textContent = `${col} of ${id} = ${JSON.stringify(parsed)}`;
-        source.changed(id);
+        source.edited(id);
         return true;
       },
       editor: (_id, col) => (col === "port" ? portPicker() : null),

@@ -254,6 +254,15 @@ export interface AxisMethods<Id, CrossId> {
   distinct?(by: CrossId, query: DistinctQuery<CrossId>, signal: AbortSignal): MaybePromise<Distinct>;
   /** Where `id` sits now, after a reorder. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
+  /**
+   * Whether each of `ids` is unmatched: kept in view though the filter in
+   * force drops it, because the user's edit stopped it matching. Such items
+   * stay until the next View Spec (a re-apply asks for the same one again),
+   * and the widget draws them dimmed. Asked for the items shown while the
+   * axis is filtered. A source may instead filter edited items at once and
+   * leave this out.
+   */
+  unmatched?(ids: Id[], signal: AbortSignal): MaybePromise<boolean[]>;
   /** Moves `ids` to before Position `to`; `false` refuses. The widget sends the `Reordered`. */
   move?(ids: Id[], to: number): MaybePromise<boolean>;
   /** Header text for an item; defaults to `String(id)` for columns and Position + 1 for rows. */
