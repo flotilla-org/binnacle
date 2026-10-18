@@ -153,13 +153,18 @@ describe("the value cache", () => {
       }
     }));
 
-  test("a Reset forgets every value; a Reordered keeps them", () => {
+  test("a Reset forgets every value; a Reordered or Refiltered keeps them", () => {
     const rec = new Recorder(10, 3);
     const h = new Harness(rec.source);
     try {
       h.frame();
       rec.take();
       rec.sinks.rows.notify({ type: "Reordered" });
+      h.frame();
+      expect(rec.take()).toEqual([]);
+      rec.sinks.rows.notify({ type: "Refiltered" });
+      h.frame();
+      h.drain();
       h.frame();
       expect(rec.take()).toEqual([]);
       rec.sinks.rows.notify({ type: "Reset" });

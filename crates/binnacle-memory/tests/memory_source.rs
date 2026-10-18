@@ -103,7 +103,10 @@ fn filters_rows_by_a_closure_and_keeps_the_sort() {
         vec![Key(2), Key(3), Key(0), Key(1)]
     );
 
-    assert_eq!(source.filter(&rows, |r| r.qty > 0), ChangeNotice::Reset(3));
+    assert_eq!(
+        source.filter(&rows, |r| r.qty > 0),
+        ChangeNotice::Refiltered(3)
+    );
     assert_eq!(
         source.window(Axis::Rows, 0..4),
         vec![Key(2), Key(0), Key(1)]
@@ -113,7 +116,7 @@ fn filters_rows_by_a_closure_and_keeps_the_sort() {
         Located::Gone { suggest: Some(1) }
     );
 
-    assert_eq!(source.clear_filter(), ChangeNotice::Reset(4));
+    assert_eq!(source.clear_filter(), ChangeNotice::Refiltered(4));
     assert_eq!(source.count(Axis::Rows), 4);
 }
 

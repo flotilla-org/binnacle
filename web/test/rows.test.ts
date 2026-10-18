@@ -168,7 +168,7 @@ describe("fromRows", () => {
     source.filter(null);
     detach();
     source.filter((r) => r.b === 0);
-    expect(notices.map((n) => n.type)).toEqual(["Reordered", "Reset", "Reset"]);
+    expect(notices.map((n) => n.type)).toEqual(["Reordered", "Refiltered", "Refiltered"]);
     source.destroy();
   });
 
@@ -215,6 +215,16 @@ describe("fromRows", () => {
       h.frame();
       expect(h.snapshot.rows.count).toBe(3);
       expect(h.values().map((r) => r[0])).toEqual([2, 1, null]);
+      const moved = h.feed.rowId(h.snapshot.rows.focus!.key!);
+      // Clearing the filter keeps focus on the row it moved to.
+      source.filter(null);
+      h.frame();
+      h.drain();
+      h.frame();
+      expect(h.snapshot.rows.count).toBe(4);
+      expect(h.values().map((r) => r[0])).toEqual([3, 2, 1, null]);
+      expect(h.feed.rowId(h.snapshot.rows.focus!.key!)).toBe(moved);
+      expect(h.snapshot.rows.focus?.position).toBe(1);
     } finally {
       h.destroy();
       source.destroy();

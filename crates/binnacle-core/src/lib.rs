@@ -17,6 +17,7 @@ mod grid;
 mod measure;
 mod notice;
 mod pointer;
+mod refilter;
 mod selection;
 mod snapshot;
 mod sort;

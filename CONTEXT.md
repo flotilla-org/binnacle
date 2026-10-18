@@ -35,7 +35,7 @@ The Grid's per-frame, read-only description of what to draw (cell and header pla
 _Avoid_: Frame, render list, view model
 
 **Change Notice**:
-A message from the Table Source telling the Grid how an axis changed (reset, reordered, inserted, removed, content changed).
+A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys.
 _Avoid_: Invalidation, update event, data changed
 
 ### Axes and identity

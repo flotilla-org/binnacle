@@ -116,7 +116,7 @@ impl<R> MemorySource<R> {
     }
 
     /// Keeps only the rows for which `keep` is true, in sort order, and
-    /// returns the Change Notice the rows need. The sort is not redone. The
+    /// returns the `Refiltered` the rows need. The sort is not redone. The
     /// filter stays in force for rows the base data gains or changes.
     ///
     /// # Panics
@@ -158,7 +158,7 @@ impl<R> MemorySource<R> {
 
     /// The value in `column` of base row `row` (a Logical Index into `rows`)
     /// changed. Returns `ContentChanged` for the row's Position, `Reordered`
-    /// if the rows are sorted by that column, `Reset` if the filter now keeps
+    /// if the rows are sorted by that column, `Refiltered` if the filter now keeps
     /// or drops the row where it did not before, or `None` if the row is
     /// filtered out either way.
     ///
@@ -214,7 +214,7 @@ impl<R> MemorySource<R> {
     }
 
     /// Applies the sort and filter in force to `rows` again; returns the
-    /// `Reset` the rows need.
+    /// Change Notice the rows need (`Refiltered` while a filter is in force).
     fn reorder(&mut self, rows: &[R]) -> ChangeNotice {
         if !self.sort_spec().is_empty() {
             self.resort(rows);

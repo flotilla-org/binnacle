@@ -301,7 +301,7 @@ fn op(tc: &TestCase, table: Table) -> Op {
 /// Draws a table and a sequence of sorts, filters and column moves, applies
 /// each and hands `check` the table, the source and the state it left (the
 /// first call sees the fresh source). Asserts the Change Notice each op
-/// returns: `Reordered` for a sort or move, `Reset` with the new count for a
+/// returns: `Reordered` for a sort or move, `Refiltered` with the new count for a
 /// filter.
 fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTableSource, &State)) {
     let table = tc.draw(table());
@@ -325,7 +325,7 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTabl
                 };
                 state.keep = keep;
                 let kept = table.kept(&state).len() as u64;
-                assert_eq!(notice, ChangeNotice::Reset(kept));
+                assert_eq!(notice, ChangeNotice::Refiltered(kept));
             }
             Op::Move(keys, to) => {
                 let notice = source.move_columns(&keys, to);

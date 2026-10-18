@@ -376,7 +376,7 @@ impl InMemoryTableSource {
 
     /// Filters the rows: `keep[i]` says whether base row `i` (by Logical
     /// Index) stays. The rows kept stay in sort order, and the sort is not
-    /// redone. Returns the Change Notice the rows need.
+    /// redone. Returns the `Refiltered` the rows need.
     ///
     /// # Panics
     ///
@@ -385,14 +385,15 @@ impl InMemoryTableSource {
         let rows = self.axis_mut(Axis::Rows);
         assert_eq!(keep.len(), rows.len, "one keep flag per base row");
         rows.set_keep(Some(keep));
-        ChangeNotice::Reset(rows.count())
+        ChangeNotice::Refiltered(rows.count())
     }
 
-    /// Removes the filter, keeping every row in sort order.
+    /// Removes the filter, keeping every row in sort order. Returns the
+    /// `Refiltered` the rows need.
     pub fn clear_filter(&mut self) -> ChangeNotice {
         let rows = self.axis_mut(Axis::Rows);
         rows.set_keep(None);
-        ChangeNotice::Reset(rows.count())
+        ChangeNotice::Refiltered(rows.count())
     }
 
     /// The number of base rows, kept or not.
@@ -481,11 +482,11 @@ impl InMemoryTableSource {
         let spec = self.sort.clone();
         self.apply_sort(&spec, sort_keys);
         if filtered {
-            self.apply_filter(keep)
+            self.apply_filter(keep);
         } else {
             assert!(keep.is_empty(), "no filter is in force");
-            ChangeNotice::Reset(len as u64)
         }
+        ChangeNotice::Reset(self.count(Axis::Rows))
     }
 
     /// The Sort Spec the rows are in, as last applied.

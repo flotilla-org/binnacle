@@ -166,12 +166,13 @@ interface ViewSpec<RowId, ColId> {
 ```
 
 A source tells the grid what changed through the sink:
-`sink.rows.notify({ type: "Reset" })`, or `Reordered`, `Inserted { at, n }`,
-`Removed { at, n }`, `ContentChanged { start, end }`. Filtering is not part of
-the interface: filter however you like, then notify (`fromRows` has
-`filter(keep)` for this). A sort the source applies arrives as a reorder
-through the sink too. Only the rows sort for now: a source may drop the
-columns' part from its answer.
+`sink.rows.notify({ type: "Reset" })`, or `Reordered`, `Refiltered`,
+`Inserted { at, n }`, `Removed { at, n }`, `ContentChanged { start, end }`.
+Filtering is not part of the interface: filter however you like, then notify
+`Refiltered`, which keeps focus, picks, row heights and the scroll position
+with their rows (`fromRows` has `filter(keep)` for this). A sort the source
+applies arrives as a reorder through the sink too. Only the rows sort for
+now: a source may drop the columns' part from its answer.
 
 `fromRows(rows, columns)` covers arrays of objects: row IDs are array
 indices, column IDs property names, every column sorts unless

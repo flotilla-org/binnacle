@@ -265,6 +265,12 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
                     );
                 }
             }
+            Some(ChangeNotice::Refiltered(count)) => {
+                // Only a filter, or an edit moving a row across it, keeps
+                // the same rows but shows a different set of them.
+                assert!(matches!(op, Op::Filter(_) | Op::Edit { .. }), "{op:?}");
+                assert_eq!(*count, after.len() as u64);
+            }
             Some(ChangeNotice::Removed { .. }) => panic!("{op:?}"),
             None => {
                 let Op::Edit { row, .. } = op else {

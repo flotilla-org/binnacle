@@ -1,0 +1,22 @@
+---
+source: crates/binnacle-core/tests/filtering.rs
+expression: out
+---
+--- 2. filter out record 0, then scroll one row before the answers: the scroll wins
+effect (gen 2): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(1)
+effect (gen 2): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(2)
+effect (gen 2): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(3)
+effect (gen 2): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Found(4)
+window Rows 0..7
+gen 3 | damage layout positions
+Rows: count 7, extent 5, header 1, anchor 3+0, thumb 1.0000/0.5714 | 3#4@1+1 4#5@2+1 5#6@3+1 6#7@4+1
+Cols: (unchanged)
+    0      1      2
+3   4.0    4.1    4.2
+4   5.0    5.1    5.2
+5   6.0    6.1    6.2
+6   7.0    7.1    7.2

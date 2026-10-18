@@ -106,6 +106,9 @@ extern "C" {
 #define BINNACLE_NOTICE_REMOVED 3
 /* The content of the n items from Position at changed. */
 #define BINNACLE_NOTICE_CONTENT_CHANGED 4
+/* The same items, some left out or brought back and possibly reordered (a
+ * filter changed); n is the new count. */
+#define BINNACLE_NOTICE_REFILTERED 5
 
 /* How far binnacle_grid_move_focus goes. */
 #define BINNACLE_FOCUS_ITEM 0

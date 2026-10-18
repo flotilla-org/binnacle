@@ -112,7 +112,7 @@ pub fn position(n: f64) -> Position {
 
 /// A Change Notice from its code and up to two Positions (`NaN` where the
 /// notice takes fewer): Reordered 0, Reset 1 (count), Inserted 2 (at, n),
-/// Removed 3 (at, n), ContentChanged 4 (start, end).
+/// Removed 3 (at, n), ContentChanged 4 (start, end), Refiltered 5 (count).
 pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
     match code {
         0 => ChangeNotice::Reordered,
@@ -125,6 +125,7 @@ pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
             at: position(a),
             n: position(b),
         },
+        5 => ChangeNotice::Refiltered(position(a)),
         _ => ChangeNotice::ContentChanged(position(a)..position(b)),
     }
 }
@@ -172,6 +173,7 @@ mod tests {
         assert_eq!(notice(2, 3.0, 4.0), ChangeNotice::Inserted { at: 3, n: 4 });
         assert_eq!(notice(3, 3.0, 4.0), ChangeNotice::Removed { at: 3, n: 4 });
         assert_eq!(notice(4, 3.0, 7.0), ChangeNotice::ContentChanged(3..7));
+        assert_eq!(notice(5, 6.0, f64::NAN), ChangeNotice::Refiltered(6));
     }
 
     #[test]

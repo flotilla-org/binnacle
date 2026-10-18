@@ -3,7 +3,7 @@
 // sinks, and the answers to the Effects a Table Source owns (View Specs,
 // Locate, move). Every answer goes through one `settle`.
 
-import { AXES, AXIS_CODE, SUPPORT, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, NOTICE_CODE, SUPPORT, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -55,13 +55,8 @@ export interface FeedHooks<RowId = unknown, ColId = unknown> {
   windowed?(axis: AxisName, keys: BigUint64Array): void;
 }
 
-const NOTICE_CODE: Record<ChangeNotice["type"], number> = {
-  Reordered: 0,
-  Reset: 1,
-  Inserted: 2,
-  Removed: 3,
-  ContentChanged: 4,
-};
+/** Every Change Notice type has its code. */
+const NOTICE: Record<ChangeNotice["type"], number> = NOTICE_CODE;
 
 /** The base view: nothing filtered, unsorted. */
 const BASE_VIEW: KeyedViewSpec = { rows: { sort: [] }, cols: { sort: [] } };
@@ -137,8 +132,9 @@ export function createFeed<RowId, ColId, V>(
   /** Locates in flight by axis and Key, each aborted when the same Key is asked for again. */
   const locating = new Map<string, Request>();
 
-  const reset = (axis: AxisName, count: number) => {
-    if (grid) grid.notify(AXIS_CODE[axis], NOTICE_CODE.Reset, count, NaN);
+  /** Tells the Grid the count on `axis`, with a Reset unless another counted notice is given. */
+  const reset = (axis: AxisName, count: number, notice: "Reset" | "Refiltered" = "Reset") => {
+    if (grid) grid.notify(AXIS_CODE[axis], NOTICE[notice], count, NaN);
     else early[axis] = count;
     schedule();
   };
@@ -186,6 +182,17 @@ export function createFeed<RowId, ColId, V>(
           failed: report({ type: "count", axis }),
         });
         return;
+      case "Refiltered":
+        // The same IDs, so values follow their Keys, unless the Keys are Positions.
+        if (position) {
+          cache.clear();
+          edits.clear();
+        }
+        settle(() => axes[axis].source.count(), (count) => reset(axis, count, "Refiltered"), {
+          fresh: true,
+          failed: report({ type: "count", axis }),
+        });
+        return;
       case "ContentChanged": {
         // Visible items outside the range keep their values; the rest, which
         // cannot be placed, are asked for again when they come into view.
@@ -206,7 +213,7 @@ export function createFeed<RowId, ColId, V>(
         : notice.type === "ContentChanged"
           ? [notice.start, notice.end]
           : [NaN, NaN];
-    grid?.notify(AXIS_CODE[axis], NOTICE_CODE[notice.type], a, b);
+    grid?.notify(AXIS_CODE[axis], NOTICE[notice.type], a, b);
     schedule();
   };
 
@@ -306,6 +313,8 @@ export function createFeed<RowId, ColId, V>(
         locating.delete(at);
         hooks.located?.(axis, key, answer);
         located(axis, key, answer);
+        // The Grid may scroll at the next frame's start (a Refiltered keeping its place).
+        schedule();
       },
       () => (locating.delete(at), located(axis, key, GONE)),
     );

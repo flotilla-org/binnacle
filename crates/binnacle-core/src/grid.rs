@@ -8,6 +8,7 @@ use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
 use crate::notice::Locating;
 use crate::pointer::{AxisHit, Hit};
+use crate::refilter::Refiltering;
 use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
 use crate::types::{Axis, Generation, Key, Position, Viewport};
@@ -118,6 +119,7 @@ pub struct Grid {
     /// sizes the move was made against may change before then.
     pub(crate) reveal: bool,
     pub(crate) locating: Locating,
+    pub(crate) refiltering: Refiltering,
     pub(crate) follow_focus_on_reorder: bool,
     pub(crate) selection: Selection,
     pub(crate) unit: SelectionUnit,
@@ -166,6 +168,7 @@ impl Grid {
             heard: None,
             reveal: false,
             locating: Locating::default(),
+            refiltering: Refiltering::default(),
             follow_focus_on_reorder: false,
             selection: Selection::default(),
             unit: SelectionUnit::Cells,
@@ -240,6 +243,7 @@ impl Grid {
                 st.extent = extent;
                 self.pending_damage.layout = true;
             }
+            self.refilter_settle(axis);
             if self.axis_mut(axis).clamp_anchor() {
                 self.pending_damage.layout = true;
             }
@@ -417,16 +421,24 @@ impl Grid {
             }
             Action::Scroll { dx, dy } => {
                 self.reveal = false;
+                if dx != 0.0 {
+                    self.refilter_scrolled(Axis::Cols);
+                }
+                if dy != 0.0 {
+                    self.refilter_scrolled(Axis::Rows);
+                }
                 let moved =
                     self.axis_mut(Axis::Cols).scroll(dx) | self.axis_mut(Axis::Rows).scroll(dy);
                 self.pending_damage.layout |= moved;
             }
             Action::ScrollTo { axis, fraction } => {
                 self.reveal = false;
+                self.refilter_scrolled(axis);
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_to(fraction);
             }
             Action::ScrollBy { axis, items } => {
                 self.reveal = false;
+                self.refilter_scrolled(axis);
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_items(items);
             }
         }
@@ -534,6 +546,7 @@ impl Grid {
             return;
         }
         self.reveal = false;
+        self.refilter_scrolled(axis);
         self.pending_damage.layout |= self.axis_mut(axis).reveal(position);
     }
 
@@ -544,6 +557,7 @@ impl Grid {
             return;
         }
         self.reveal = false;
+        self.refilter_scrolled(axis);
         self.pending_damage.layout |= self.axis_mut(axis).scroll_to_item(position);
     }
 

@@ -283,6 +283,13 @@ pub fn debug_scenarios() -> Vec<String> {
     testing::SCENARIOS.map(String::from).to_vec()
 }
 
+/// Test only: the Change Notice [`WebGrid::notify`] makes of `code`, `a` and
+/// `b`, as Rust prints it.
+#[wasm_bindgen]
+pub fn debug_notice(code: u8, a: f64, b: f64) -> String {
+    format!("{:?}", codes::notice(code, a, b))
+}
+
 /// Test only: one of every Effect, as [`WebGrid::poll_effects`] returns them.
 #[wasm_bindgen]
 pub fn debug_every_effect() -> JsValue {

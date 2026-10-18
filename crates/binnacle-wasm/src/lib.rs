@@ -13,7 +13,7 @@ mod memory;
 pub mod snapshot;
 pub mod testing;
 
-pub use grid::{WebAxis, WebGrid, debug_every_effect, debug_scenarios};
+pub use grid::{WebAxis, WebGrid, debug_every_effect, debug_notice, debug_scenarios};
 pub use memory::WebMemory;
 
 use wasm_bindgen::prelude::*;

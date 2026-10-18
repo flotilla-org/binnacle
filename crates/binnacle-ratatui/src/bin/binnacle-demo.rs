@@ -10,7 +10,9 @@
 //! columns. Press Ctrl+F to show only records with a crew of 6 or more, again
 //! for a crew of 13 or more (there are none, so the body says "No rows match
 //! the filter"), and again to show them all: focus stays on its record, or
-//! moves to the nearest one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
+//! moves to the nearest one left in sort order; the topmost record shown
+//! that is left stays at the top, and picks of records filtered out are
+//! dropped. `binnacle-demo --huge` shows 10^15 identity rows,
 //! which neither sort, move nor filter. The records and tickers label their
 //! rows with their Keys, which stay with them through sorts and filters; the
 //! huge table numbers its rows. Its row-number band fits the

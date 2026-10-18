@@ -1,6 +1,7 @@
 //! Seam 1 state machine: a real Grid against an honest model Table Source,
 //! with every kind of input mixed in any order. Change Notices, `located`
-//! answers (some held back and answered late), sorts, header moves, edits,
+//! answers (some held back and answered late), refilters, sorts, header
+//! moves, edits,
 //! pointer gestures (band edge drags among them), Actions, Size Overrides,
 //! `set_header`, `set_gap` and `set_focus` (with Keys the source has and Keys
 //! it never had). Every frame's Snapshot is checked
@@ -9,7 +10,7 @@
 //! Ported from the seeded chaos driver of the correctness review, which
 //! found the Cancel bugs pinned in `positional.rs`.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, EditEnd, Effect, FocusStep, Grid, HeaderClick,
@@ -26,6 +27,12 @@ use hegel::{Generator, TestCase};
 struct Host {
     grid: Grid,
     keys: [Vec<u64>; 2],
+    /// Per axis, the Keys a filter leaves out, which a later `Refiltered`
+    /// may bring back.
+    hidden: [Vec<u64>; 2],
+    /// Row Keys a `Refiltered` took out since the last `Reset`: once every
+    /// `Locate` is answered, none of them is picked.
+    refiltered_out: BTreeSet<u64>,
     /// The next fresh Key; row and column Keys never collide with each other
     /// or with the initial ones.
     next: u64,
@@ -282,7 +289,60 @@ impl Host {
         }
         self.keys[axis.index()] = keys;
         let count = self.keys[axis.index()].len() as u64;
+        if axis == Axis::Rows {
+            self.refiltered_out.clear();
+        }
         self.grid.notify(axis, ChangeNotice::Reset(count));
+    }
+
+    /// A filter changed: some Keys leave, some hidden ones come back, and
+    /// now and then the order changes too.
+    fn refilter(&mut self, tc: &TestCase) {
+        let axis = tc.draw(axis());
+        let i = axis.index();
+        let pool: Vec<u64> = self.keys[i]
+            .iter()
+            .chain(&self.hidden[i])
+            .copied()
+            .collect();
+        let mut keys = tc.draw(gs::subsequences(pool.clone()));
+        if tc.draw(gs::weighted_booleans(0.2)) {
+            keys = tc.draw(gs::permutations(keys));
+        }
+        self.hidden[i] = pool.into_iter().filter(|k| !keys.contains(k)).collect();
+        if axis == Axis::Rows {
+            self.refiltered_out.retain(|k| !keys.contains(k));
+            self.refiltered_out.extend(&self.hidden[i]);
+        }
+        self.keys[i] = keys;
+        let count = self.keys[i].len() as u64;
+        tc.note(&format!("refiltered: {axis:?} {:?}", self.keys[i]));
+        self.grid.notify(axis, ChangeNotice::Refiltered(count));
+    }
+
+    /// Answers every Effect, and those the answers bring, until none is
+    /// left: every pick a `Refiltered` took out is then gone.
+    fn answer_all(&mut self, tc: &TestCase) {
+        for _ in 0..20 {
+            while let Some(stamped) = self.grid.poll_effect() {
+                self.pending.push_back(stamped.effect);
+            }
+            let Some(effect) = self.pending.pop_front() else {
+                break;
+            };
+            self.answer(tc, effect);
+        }
+        if !self.pending.is_empty() {
+            return;
+        }
+        self.frame_and_check();
+        let picked = self.grid.snapshot().picked().to_vec();
+        for key in picked {
+            assert!(
+                !self.refiltered_out.contains(&key.0),
+                "{key:?} is still picked after a Refiltered took it out"
+            );
+        }
     }
 
     fn edit_content(&mut self, tc: &TestCase) {
@@ -446,6 +506,17 @@ impl Host {
         self.replace(&tc);
     }
 
+    #[rule(weight = 2.0)]
+    fn refiltered(&mut self, tc: TestCase) {
+        self.refilter(&tc);
+    }
+
+    /// Answers everything waiting, then checks the picks.
+    #[rule]
+    fn settle(&mut self, tc: TestCase) {
+        self.answer_all(&tc);
+    }
+
     #[rule]
     fn content_changed(&mut self, tc: TestCase) {
         self.edit_content(&tc);
@@ -571,6 +642,8 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
     let host = Host {
         grid,
         keys: [(0..rows).collect(), (100..100 + cols).collect()],
+        hidden: [Vec::new(), Vec::new()],
+        refiltered_out: BTreeSet::new(),
         next: 1000,
         pending: VecDeque::new(),
         viewport,

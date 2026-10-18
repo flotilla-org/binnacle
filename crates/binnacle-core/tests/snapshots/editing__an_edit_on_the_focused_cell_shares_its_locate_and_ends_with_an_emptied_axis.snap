@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/editing.rs
+assertion_line: 293
 expression: out
 ---
 --- 1. focus and edit record 3
@@ -22,6 +23,20 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 --- 2. filter out record 3: one Locate answers for focus and edit; focus falls back to row 3, the edit is cancelled
 effect (gen 2): Locate { axis: Rows, key: Key(3) }
   locate Rows Key(3): Gone { suggest: Some(3) }
+effect (gen 2): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 2): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(1)
+effect (gen 2): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(2)
+effect (gen 2): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(3)
+effect (gen 2): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Found(4)
+effect (gen 2): Locate { axis: Rows, key: Key(6) }
+  locate Rows Key(6): Found(5)
+effect (gen 2): Locate { axis: Rows, key: Key(7) }
+  locate Rows Key(7): Found(6)
 effect (gen 2): EditCancelled { row: Key(3), col: Key(0) }
 window Rows 0..7
 gen 3 | damage layout selection positions | focus 3#4,0#0 at 4,4 6x1

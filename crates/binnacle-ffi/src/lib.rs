@@ -61,6 +61,7 @@ pub const BINNACLE_NOTICE_REORDERED: u32 = 1;
 pub const BINNACLE_NOTICE_INSERTED: u32 = 2;
 pub const BINNACLE_NOTICE_REMOVED: u32 = 3;
 pub const BINNACLE_NOTICE_CONTENT_CHANGED: u32 = 4;
+pub const BINNACLE_NOTICE_REFILTERED: u32 = 5;
 
 pub const BINNACLE_FOCUS_ITEM: u32 = 0;
 pub const BINNACLE_FOCUS_PAGE: u32 = 1;
@@ -1014,6 +1015,7 @@ pub unsafe extern "C" fn binnacle_grid_notify(
         BINNACLE_NOTICE_INSERTED => ChangeNotice::Inserted { at, n },
         BINNACLE_NOTICE_REMOVED => ChangeNotice::Removed { at, n },
         BINNACLE_NOTICE_CONTENT_CHANGED => ChangeNotice::ContentChanged(at..at.saturating_add(n)),
+        BINNACLE_NOTICE_REFILTERED => ChangeNotice::Refiltered(n),
         _ => return 0,
     };
     // SAFETY: the caller's contract.

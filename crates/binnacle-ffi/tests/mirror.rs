@@ -246,8 +246,9 @@ fn answer(tc: &TestCase) -> Op {
         }
         _ => {
             let (at, n) = (tc.draw(position()), tc.draw(position()));
-            let notice = match tc.draw(gs::integers::<u8>().max_value(4)) {
+            let notice = match tc.draw(gs::integers::<u8>().max_value(5)) {
                 0 => ChangeNotice::Reset(n),
+                5 => ChangeNotice::Refiltered(n),
                 1 => ChangeNotice::Reordered,
                 2 => ChangeNotice::Inserted { at, n },
                 3 => ChangeNotice::Removed { at, n },
@@ -422,7 +423,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             }
             10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
             11 => binnacle_grid_located(h, 2, 1000, 0, 0),
-            12 => binnacle_grid_notify(h, ROWS, 5, 0, 0),
+            12 => binnacle_grid_notify(h, ROWS, 6, 0, 0),
             13 => binnacle_grid_set_header(h, 2, 1.0),
             14 => binnacle_grid_set_support(h, 2, 5000, 0),
             _ => binnacle_grid_notify(h, 2, 1, 0, 0),
@@ -817,6 +818,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                         ChangeNotice::Inserted { at, n } => (2, *at, *n),
                         ChangeNotice::Removed { at, n } => (3, *at, *n),
                         ChangeNotice::ContentChanged(r) => (4, r.start, r.end - r.start),
+                        ChangeNotice::Refiltered(count) => (5, 0, *count),
                     };
                     grid.notify(axis, notice);
                     binnacle_grid_notify(h, tag(axis), kind, at, n)

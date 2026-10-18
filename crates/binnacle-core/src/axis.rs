@@ -258,6 +258,14 @@ impl AxisState {
         moved
     }
 
+    /// Puts the anchor at `to`, then re-applies its bounds as
+    /// [`Self::clamp_anchor`] does.
+    pub fn place_anchor(&mut self, to: ScrollAnchor) {
+        self.anchor = to;
+        self.at_end = false;
+        self.clamp_anchor();
+    }
+
     /// Sets the Gap, keeping the anchor's Position and offset as far as the
     /// new Gap and end clamp allow. An anchor that was following the end
     /// stops following it, so its item stays put. Returns whether anything

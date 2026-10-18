@@ -41,6 +41,12 @@ export type ChangeNotice =
   | { type: "Reordered" }
   /** Anything may have changed; the widget asks for the count again. */
   | { type: "Reset" }
+  /**
+   * The same items, some left out or brought back and possibly reordered (a
+   * filter changed); the widget asks for the count again. Unlike a Reset,
+   * values, picks, row heights and the scroll position follow their IDs.
+   */
+  | { type: "Refiltered" }
   /** `n` items inserted before Position `at`. */
   | { type: "Inserted"; at: number; n: number }
   /** The `n` items from Position `at` removed. */

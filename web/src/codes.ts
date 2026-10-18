@@ -7,6 +7,9 @@ export const AXIS_CODE: Record<AxisName, number> = { rows: 0, cols: 1 };
 
 export const AXES: readonly AxisName[] = ["rows", "cols"];
 
+/** Change Notice types, as the wasm `notify` input takes them. */
+export const NOTICE_CODE = { Reordered: 0, Reset: 1, Inserted: 2, Removed: 3, ContentChanged: 4, Refiltered: 5 } as const;
+
 export const POINTER = { down: 0, move: 1, up: 2 } as const;
 
 /** The modifier bitmask the wasm `pointer` input takes. */

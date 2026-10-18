@@ -2,6 +2,7 @@
 // against Rust's own view of the same frame, never against constants.
 
 import { beforeAll, describe, expect, test } from "vitest";
+import { NOTICE_CODE } from "../src/codes";
 import { decodeSnapshot } from "../src/snapshot";
 import { isEffect } from "../src/effects";
 import { bridge } from "../src/wasm";
@@ -65,5 +66,13 @@ describe("Effects", () => {
     expect(isEffect(view({ rows: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: unsorted, cols: { sort: [{ key: 1, direction: "ascending" }] } }))).toBe(false);
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...edit, multi: 1 }))).toBe(false);
+  });
+});
+
+describe("Change Notices", () => {
+  test("each notice code names the same notice in Rust", () => {
+    for (const [type, code] of Object.entries(NOTICE_CODE)) {
+      expect(bridge().debug_notice(code, 1, 2).split(/[ ({]/)[0]).toBe(type);
+    }
   });
 });

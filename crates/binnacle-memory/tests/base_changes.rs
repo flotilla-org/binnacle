@@ -101,7 +101,7 @@ fn a_value_edit_is_content_changed_at_its_position_or_reordered_if_its_column_is
 }
 
 #[test]
-fn an_edit_that_moves_a_row_across_the_filter_resets_and_one_out_of_sight_says_nothing() {
+fn an_edit_that_moves_a_row_across_the_filter_refilters_and_one_out_of_sight_says_nothing() {
     let mut rows = recs(&[3, 1, 2]);
     let mut source = source(&rows);
     source.filter(&rows, |r| r.qty >= 2);
@@ -111,13 +111,13 @@ fn an_edit_that_moves_a_row_across_the_filter_resets_and_one_out_of_sight_says_n
     rows[1].qty = 4;
     assert_eq!(
         source.edited(&rows, 1, Key(0)),
-        Some(ChangeNotice::Reset(3))
+        Some(ChangeNotice::Refiltered(3))
     );
     assert_eq!(keys(&source), [0, 1, 2]);
     rows[2].qty = 0;
     assert_eq!(
         source.edited(&rows, 2, Key(0)),
-        Some(ChangeNotice::Reset(2))
+        Some(ChangeNotice::Refiltered(2))
     );
     assert_eq!(keys(&source), [0, 1]);
 }

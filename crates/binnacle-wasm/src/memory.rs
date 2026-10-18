@@ -104,14 +104,14 @@ impl WebMemory {
     }
 
     /// Keeps the base rows with `keep[i] != 0`; returns the new row count
-    /// for the `Reset` the rows need.
+    /// for the `Refiltered` the rows need.
     pub fn filter(&mut self, keep: &[u8]) -> f64 {
         self.table
             .apply_filter(keep.iter().map(|&k| k != 0).collect());
         self.table.count(Axis::Rows) as f64
     }
 
-    /// Keeps every row again; returns the row count for the `Reset`.
+    /// Keeps every row again; returns the row count for the `Refiltered`.
     pub fn clear_filter(&mut self) -> f64 {
         self.table.clear_filter();
         self.table.count(Axis::Rows) as f64

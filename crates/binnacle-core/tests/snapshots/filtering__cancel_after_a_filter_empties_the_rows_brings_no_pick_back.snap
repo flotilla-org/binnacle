@@ -1,0 +1,12 @@
+---
+source: crates/binnacle-core/tests/filtering.rs
+expression: out
+---
+--- 1. Ctrl-press record 0, filter out everything, then cancel the press: no pick comes back
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): SelectionChanged
+gen 2 | damage layout selection positions
+Rows: count 0, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 |
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2

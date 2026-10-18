@@ -146,7 +146,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     filter(keep) {
       if (keep) memory().filter(Uint8Array.from(rows, (r) => (keep(r) ? 1 : 0)));
       else memory().clear_filter();
-      tell({ type: "Reset" });
+      tell({ type: "Refiltered" });
     },
     row: (id) => rows[id]!,
     changed(id) {
