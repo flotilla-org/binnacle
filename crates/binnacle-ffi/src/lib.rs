@@ -12,7 +12,7 @@ use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
     Effect, FilterSpec, FocusEnd, FocusStep, Grid, HeaderClick, HeaderPlacement, Key, Located,
     Mode, Modifiers, PointerEvent, PointerKind, Rect, Searched, SelectionUnit, SortColumn,
-    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, ViewEdit,
+    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
     ViewSpec, Viewport,
 };
 
@@ -62,6 +62,7 @@ pub const BINNACLE_VIEW_EDIT_REPLACE_CONDITION: u32 = 7;
 
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
+pub const BINNACLE_CONDITION_ONE_OF: u32 = 2;
 
 pub const BINNACLE_CONDITION_APPLIED: u32 = 0;
 pub const BINNACLE_CONDITION_ADDING: u32 = 1;
@@ -76,6 +77,7 @@ pub const BINNACLE_SEARCHED_KEYS: u32 = 1;
 pub const BINNACLE_SUPPORT_SORT: u32 = 1;
 pub const BINNACLE_SUPPORT_TEXT: u32 = 2;
 pub const BINNACLE_SUPPORT_TEXT_REGEX: u32 = 4;
+pub const BINNACLE_SUPPORT_ONE_OF: u32 = 8;
 
 pub const BINNACLE_QUICK_FILTER: u32 = 1;
 pub const BINNACLE_QUICK_FILTER_REGEX: u32 = 2;
@@ -137,11 +139,12 @@ pub struct BinnacleGrid {
     listed_states: [Vec<BinnacleListedCondition>; 2],
 }
 
-/// Conditions in C form, with the texts and Keys they point into.
+/// Conditions in C form, with the texts, Keys and values they point into.
 #[derive(Default)]
 struct CConditions {
     texts: String,
     keys: Vec<u64>,
+    values: Vec<BinnacleValue>,
     items: Vec<BinnacleCondition>,
 }
 
@@ -150,14 +153,19 @@ impl CConditions {
     fn fill<'a>(&mut self, conditions: impl IntoIterator<Item = &'a Condition>) {
         self.texts.clear();
         self.keys.clear();
+        self.values.clear();
         self.items.clear();
-        // Texts and Keys first, so the pointers taken after stay valid.
+        // Texts and Keys first, then values, so the pointers taken after
+        // stay valid.
         let mut spans = Vec::new();
+        // Each value's text span, or `None` for a blank.
+        let mut values: Vec<Option<(usize, usize)>> = Vec::new();
         for c in conditions {
             #[allow(unreachable_patterns)] // Kinds added to the Grid later are OTHER.
-            let (kind, query) = match &c.kind {
-                ConditionKind::Text(q) => (BINNACLE_CONDITION_TEXT, Some(q)),
-                _ => (BINNACLE_CONDITION_OTHER, None),
+            let (kind, query, listed) = match &c.kind {
+                ConditionKind::Text(q) => (BINNACLE_CONDITION_TEXT, Some(q), &[][..]),
+                ConditionKind::OneOf(vs) => (BINNACLE_CONDITION_ONE_OF, None, &vs[..]),
+                _ => (BINNACLE_CONDITION_OTHER, None, &[][..]),
             };
             let text = self.texts.len();
             let keys = self.keys.len();
@@ -167,9 +175,32 @@ impl CConditions {
                     self.keys.extend(ks.iter().map(|k| k.0));
                 }
             }
-            spans.push((c, kind, query, text, keys));
+            let first = values.len();
+            for v in listed {
+                values.push(match v {
+                    Value::Text(t) => {
+                        self.texts.push_str(t);
+                        Some((self.texts.len() - t.len(), t.len()))
+                    }
+                    Value::Blank => None,
+                });
+            }
+            spans.push((c, kind, query, text, keys, first..values.len()));
         }
-        for (c, kind, query, text, keys) in spans {
+        self.values.extend(values.into_iter().map(|v| match v {
+            Some((at, len)) => BinnacleValue {
+                blank: 0,
+                text: BinnacleText {
+                    data: self.texts.as_ptr().wrapping_add(at),
+                    len,
+                },
+            },
+            None => BinnacleValue {
+                blank: 1,
+                text: BinnacleText::default(),
+            },
+        }));
+        for (c, kind, query, text, keys, listed) in spans {
             let mut q = BinnacleTextQuery::default();
             if let Some(query) = query {
                 q.flags = bit(query.case_sensitive, BINNACLE_TEXT_CASE_SENSITIVE)
@@ -189,6 +220,8 @@ impl CConditions {
                 kind,
                 negated: flag(c.not),
                 text: q,
+                values: self.values.as_ptr().wrapping_add(listed.start),
+                values_len: listed.len(),
             });
         }
     }
@@ -353,11 +386,33 @@ impl Default for BinnacleTextQuery {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleValue {
+    pub blank: u32,
+    pub text: BinnacleText,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleCondition {
     pub key: u64,
     pub kind: u32,
     pub negated: u32,
     pub text: BinnacleTextQuery,
+    pub values: *const BinnacleValue,
+    pub values_len: usize,
+}
+
+impl Default for BinnacleCondition {
+    fn default() -> Self {
+        BinnacleCondition {
+            key: 0,
+            kind: BINNACLE_CONDITION_OTHER,
+            negated: 0,
+            text: BinnacleTextQuery::default(),
+            values: std::ptr::null(),
+            values_len: 0,
+        }
+    }
 }
 
 #[repr(C)]
@@ -578,6 +633,7 @@ impl From<Rect> for BinnacleRect {
 /// `BINNACLE_SUPPORT_*` bits for an item's support.
 fn support_bits(support: Support) -> u32 {
     bit(support.sort, BINNACLE_SUPPORT_SORT)
+        | bit(support.one_of, BINNACLE_SUPPORT_ONE_OF)
         | support.text.map_or(0, |t| {
             BINNACLE_SUPPORT_TEXT | bit(t.regex, BINNACLE_SUPPORT_TEXT_REGEX)
         })
@@ -672,7 +728,8 @@ impl BinnacleCondition {
     /// whatever its query names.
     ///
     /// # Safety
-    /// As [`BinnacleTextQuery::to_core`] for `text`.
+    /// As [`BinnacleTextQuery::to_core`] for `text`; a non-NULL `values` is
+    /// valid for `values_len` reads, each value's text as for `text`.
     unsafe fn to_core(self) -> Option<Condition> {
         let not = match self.negated {
             0 => false,
@@ -684,6 +741,34 @@ impl BinnacleCondition {
             BINNACLE_CONDITION_TEXT => {
                 Some(Condition::text(Key(self.key), unsafe { self.text.to_core() }?).not(not))
             }
+            BINNACLE_CONDITION_ONE_OF => {
+                // SAFETY: the caller's contract.
+                let values = unsafe { borrowed(self.values, self.values_len) }
+                    .iter()
+                    // SAFETY: the caller's contract.
+                    .map(|v| unsafe { v.to_core() })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Condition::one_of(Key(self.key), values).not(not))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl BinnacleValue {
+    /// The value, or `None` if `blank` is not 0 or 1 or the text is not
+    /// UTF-8.
+    ///
+    /// # Safety
+    /// A non-NULL `text.data` is valid for `text.len` reads.
+    unsafe fn to_core(self) -> Option<Value> {
+        match self.blank {
+            0 => {
+                // SAFETY: the caller's contract.
+                let bytes = unsafe { borrowed(self.text.data, self.text.len) };
+                Some(Value::Text(std::str::from_utf8(bytes).ok()?.to_owned()))
+            }
+            1 => Some(Value::Blank),
             _ => None,
         }
     }
@@ -1394,7 +1479,10 @@ pub unsafe extern "C" fn binnacle_grid_set_support(
     key: u64,
     support: u32,
 ) -> i32 {
-    let known = BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX;
+    let known = BINNACLE_SUPPORT_SORT
+        | BINNACLE_SUPPORT_TEXT
+        | BINNACLE_SUPPORT_TEXT_REGEX
+        | BINNACLE_SUPPORT_ONE_OF;
     let text = match support & (BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX) {
         0 => Some(None),
         BINNACLE_SUPPORT_TEXT => Some(Some(TextSupport::new(false))),
@@ -1407,6 +1495,7 @@ pub unsafe extern "C" fn binnacle_grid_set_support(
         Support::default()
             .with_sort(support & BINNACLE_SUPPORT_SORT != 0)
             .with_text(text)
+            .with_one_of(support & BINNACLE_SUPPORT_ONE_OF != 0)
     });
     // SAFETY: the caller's contract.
     unsafe {

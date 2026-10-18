@@ -104,9 +104,11 @@ extern "C" {
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
- * matches the condition's text query. */
+ * matches the condition's text query. ONE_OF: the value is one of the
+ * condition's values exactly (none keeps nothing). */
 #define BINNACLE_CONDITION_OTHER 0
 #define BINNACLE_CONDITION_TEXT 1
+#define BINNACLE_CONDITION_ONE_OF 2
 
 /* BinnacleListedCondition.state: applied and still requested, requested and
  * not yet applied, or applied and no longer requested. */
@@ -126,10 +128,13 @@ extern "C" {
 
 /* binnacle_grid_set_support bits and BinnacleHeader.support. SORT: the axis
  * may be sorted by the item. TEXT: it may be filtered by Text conditions on
- * the item, and with TEXT_REGEX they take regexes. REGEX needs TEXT. */
+ * the item, and with TEXT_REGEX they take regexes. REGEX needs TEXT. ONE_OF:
+ * it may be filtered by OneOf conditions, the Table Source listing the
+ * item's distinct values. */
 #define BINNACLE_SUPPORT_SORT 1u
 #define BINNACLE_SUPPORT_TEXT 2u
 #define BINNACLE_SUPPORT_TEXT_REGEX 4u
+#define BINNACLE_SUPPORT_ONE_OF 8u
 
 /* binnacle_grid_set_quick_filter_support bits and
  * BinnacleAxisSnapshot.quick_filter: the axis has a quick filter, and it
@@ -360,6 +365,14 @@ typedef struct {
   size_t len;
 } BinnacleText;
 
+/* A value as a ONE_OF condition lists it: text in the Table Source's own
+ * text form, or with blank 1 a blank (no value at all, not empty text), its
+ * text ignored. */
+typedef struct {
+  uint32_t blank;
+  BinnacleText text;
+} BinnacleValue;
+
 /* Text to look for in the cells of items of the other axis, as the Table
  * Source writes their values: anywhere in a value, as BINNACLE_TEXT_* flags
  * say, in the items BINNACLE_SEARCHED_* says (keys for KEYS). A blank never
@@ -375,13 +388,16 @@ typedef struct {
 /* One condition on the items of an axis, read in item key of the other axis
  * (a column, for the rows): the items whose value there matches are kept, or
  * with negated 1 those whose value does not. A TEXT condition matches text;
- * its query searches key alone (as input, searched and keys are ignored). */
+ * its query searches key alone (as input, searched and keys are ignored). A
+ * ONE_OF condition lists values_len values; other kinds ignore them. */
 typedef struct {
   uint64_t key;
   /* BINNACLE_CONDITION_*. */
   uint32_t kind;
   uint32_t negated;
   BinnacleTextQuery text;
+  const BinnacleValue *values;
+  size_t values_len;
 } BinnacleCondition;
 
 struct BinnacleListedCondition {
@@ -537,8 +553,8 @@ int binnacle_grid_set_quick_filter_support(BinnacleGrid *grid, uint32_t axis,
 
 /* What the Table Source supports when viewing axis by key, an item of the
  * other axis: BINNACLE_SUPPORT_* bits, the whole declaration. Every item
- * supports SORT | TEXT until set otherwise. 0 for unknown bits, or REGEX
- * without TEXT. */
+ * supports SORT | TEXT (not ONE_OF) until set otherwise. 0 for unknown bits,
+ * or REGEX without TEXT. */
 int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
                               uint32_t support);
 

@@ -9,7 +9,7 @@ use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
     Effect, FilterSpec, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers, PointerEvent,
     PointerKind, Searched, SelectionUnit, Snapshot, SortColumn, SortDirection, SortSpec, Support,
-    TextQuery, TextSupport, Totals, ViewEdit, ViewSpec, Viewport,
+    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -234,12 +234,25 @@ fn text_query(tc: &TestCase, axis: Axis) -> TextQuery {
         .searching(searches)
 }
 
-/// A Text condition on `axis`, read in a Key of the other axis, maybe with
-/// `not`; sometimes with no text.
+/// A value for a OneOf condition: a blank, or text (empty or not ASCII
+/// sometimes).
+#[hegel::composite]
+fn value(tc: &TestCase) -> Value {
+    let text = gs::sampled_from(vec!["", "a", "Ø b"]).map(|t| Value::Text(t.into()));
+    tc.draw(hegel::one_of!(gs::just(Value::Blank), text))
+}
+
+/// A Text or OneOf condition on `axis`, read in a Key of the other axis,
+/// maybe with `not`; sometimes with no text or no values.
 #[hegel::composite]
 fn condition(tc: &TestCase, axis: Axis) -> Condition {
     let key = tc.draw(key(axis.other()));
-    Condition::text(key, tc.draw(text_query(axis))).not(tc.draw(gs::booleans()))
+    let condition = if tc.draw(gs::booleans()) {
+        Condition::text(key, tc.draw(text_query(axis)))
+    } else {
+        Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(3)))
+    };
+    condition.not(tc.draw(gs::booleans()))
 }
 
 /// A View Spec: usually sorting and filtering only the rows.
@@ -298,7 +311,10 @@ fn answer(tc: &TestCase) -> Op {
             Op::SetSupport(
                 axis,
                 tc.draw(key(axis.other())),
-                Support::default().with_sort(sort).with_text(text),
+                Support::default()
+                    .with_sort(sort)
+                    .with_text(text)
+                    .with_one_of(tc.draw(gs::booleans())),
             )
         }
         1 => {
@@ -392,7 +408,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(29))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(31))),
     }
 }
 
@@ -534,10 +550,10 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 binnacle_grid_view_applied(h, &spec, std::ptr::null())
             }
             22 => binnacle_grid_set_support(h, ROWS, 5000, 4),
-            23 => binnacle_grid_set_support(h, ROWS, 5000, 8),
+            23 => binnacle_grid_set_support(h, ROWS, 5000, 16),
             24 => {
                 let unknown = BinnacleCondition {
-                    kind: 2,
+                    kind: 3,
                     ..BinnacleCondition::default()
                 };
                 binnacle_grid_add_condition(h, ROWS, &unknown)
@@ -564,6 +580,36 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                     ..BinnacleCondition::default()
                 };
                 binnacle_grid_add_condition(h, 2, &text)
+            }
+            29 => {
+                let value = BinnacleValue {
+                    blank: 2,
+                    ..BinnacleValue::default()
+                };
+                let one_of = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_ONE_OF,
+                    values: &value,
+                    values_len: 1,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &one_of)
+            }
+            30 => {
+                let bad = [b'a', 0xff];
+                let value = BinnacleValue {
+                    blank: 0,
+                    text: BinnacleText {
+                        data: bad.as_ptr(),
+                        len: bad.len(),
+                    },
+                };
+                let one_of = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_ONE_OF,
+                    values: &value,
+                    values_len: 1,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &one_of)
             }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
@@ -870,28 +916,90 @@ fn support_bits(support: Support) -> u32 {
                 0
             }
     });
-    (u32::from(support.sort) * BINNACLE_SUPPORT_SORT) | text
+    (u32::from(support.sort) * BINNACLE_SUPPORT_SORT)
+        | text
+        | (u32::from(support.one_of) * BINNACLE_SUPPORT_ONE_OF)
 }
 
 /// A condition read back from C, as a host would: its query searching the
 /// Keys it names.
 unsafe fn condition_from_c(c: &BinnacleCondition) -> Condition {
-    assert_eq!(c.kind, BINNACLE_CONDITION_TEXT);
-    let query = unsafe { query_from_c(&c.text) };
-    assert_eq!(query.searches, Searched::Keys(vec![Key(c.key)]));
-    Condition::text(Key(c.key), query).not(c.negated != 0)
+    let condition = match c.kind {
+        BINNACLE_CONDITION_TEXT => {
+            let query = unsafe { query_from_c(&c.text) };
+            assert_eq!(query.searches, Searched::Keys(vec![Key(c.key)]));
+            Condition::text(Key(c.key), query)
+        }
+        BINNACLE_CONDITION_ONE_OF => {
+            let values = match c.values_len {
+                0 => &[][..],
+                n => unsafe { slice::from_raw_parts(c.values, n) },
+            };
+            let values = (values.iter())
+                .map(|v| match v.blank {
+                    0 => Value::Text(unsafe { text_from_c(v.text) }),
+                    1 => Value::Blank,
+                    b => panic!("blank is {b}"),
+                })
+                .collect();
+            Condition::one_of(Key(c.key), values)
+        }
+        kind => panic!("condition kind {kind}"),
+    };
+    condition.not(c.negated != 0)
 }
 
-/// `condition` in C form, borrowing its text and `keys`.
-fn condition_to_c(condition: &Condition, keys: &[u64]) -> BinnacleCondition {
-    let ConditionKind::Text(query) = &condition.kind else {
-        unreachable!("only Text conditions are drawn");
+/// The text `t` points at, as a host would read it.
+unsafe fn text_from_c(t: BinnacleText) -> String {
+    let bytes = match t.len {
+        0 => &[][..],
+        n => unsafe { slice::from_raw_parts(t.data, n) },
+    };
+    String::from_utf8(bytes.to_vec()).expect("UTF-8")
+}
+
+/// The values of a OneOf `condition` in C form, borrowing their texts; none
+/// for other kinds.
+fn values_to_c(condition: &Condition) -> Vec<BinnacleValue> {
+    let ConditionKind::OneOf(values) = &condition.kind else {
+        return Vec::new();
+    };
+    (values.iter())
+        .map(|v| match v {
+            Value::Text(t) => BinnacleValue {
+                blank: 0,
+                text: BinnacleText {
+                    data: t.as_ptr(),
+                    len: t.len(),
+                },
+            },
+            Value::Blank => BinnacleValue {
+                blank: 1,
+                text: BinnacleText::default(),
+            },
+        })
+        .collect()
+}
+
+/// `condition` in C form, borrowing its text, `keys` and `values` (from
+/// [`values_to_c`]).
+fn condition_to_c(
+    condition: &Condition,
+    keys: &[u64],
+    values: &[BinnacleValue],
+) -> BinnacleCondition {
+    let (kind, text) = match &condition.kind {
+        ConditionKind::Text(query) => (BINNACLE_CONDITION_TEXT, query_to_c(query, keys)),
+        ConditionKind::OneOf(_) => (BINNACLE_CONDITION_ONE_OF, BinnacleTextQuery::default()),
+        _ => unreachable!("only Text and OneOf conditions are drawn"),
     };
     BinnacleCondition {
         key: condition.key.0,
-        kind: BINNACLE_CONDITION_TEXT,
+        kind,
         negated: u32::from(condition.not),
-        text: query_to_c(query, keys),
+        text,
+        values: values.as_ptr(),
+        values_len: values.len(),
     }
 }
 
@@ -937,10 +1045,16 @@ fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T 
             .as_ref()
             .map_or_else(Vec::new, query_keys)
     });
+    let values = Axis::ALL.map(|axis| {
+        (spec.axis(axis).filter.conditions.conditions().iter())
+            .map(values_to_c)
+            .collect::<Vec<_>>()
+    });
     // No Keys: a condition's query searches its own column whatever it names.
     let conditions = Axis::ALL.map(|axis| {
         (spec.axis(axis).filter.conditions.conditions().iter())
-            .map(|c| condition_to_c(c, &[]))
+            .zip(&values[axis.index()])
+            .map(|(c, v)| condition_to_c(c, &[], v))
             .collect::<Vec<_>>()
     });
     let mut c = BinnacleViewSpec::default();
@@ -1138,18 +1252,22 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     binnacle_grid_set_support(h, tag(axis), key.0, support_bits(support))
                 }
                 Op::AddCondition(axis, condition) => {
-                    let ok =
-                        binnacle_grid_add_condition(h, tag(axis), &condition_to_c(&condition, &[]));
+                    let values = values_to_c(&condition);
+                    let c = condition_to_c(&condition, &[], &values);
+                    let ok = binnacle_grid_add_condition(h, tag(axis), &c);
                     grid.add_condition(axis, condition);
                     ok
                 }
                 Op::RemoveCondition(axis, condition) => {
-                    let c = condition_to_c(&condition, &[]);
+                    let values = values_to_c(&condition);
+                    let c = condition_to_c(&condition, &[], &values);
                     grid.remove_condition(axis, &condition);
                     binnacle_grid_remove_condition(h, tag(axis), &c)
                 }
                 Op::ReplaceCondition(axis, from, to) => {
-                    let (c_from, c_to) = (condition_to_c(&from, &[]), condition_to_c(&to, &[]));
+                    let (from_values, to_values) = (values_to_c(&from), values_to_c(&to));
+                    let c_from = condition_to_c(&from, &[], &from_values);
+                    let c_to = condition_to_c(&to, &[], &to_values);
                     grid.replace_condition(axis, &from, to.clone());
                     binnacle_grid_replace_condition(h, tag(axis), &c_from, &c_to)
                 }

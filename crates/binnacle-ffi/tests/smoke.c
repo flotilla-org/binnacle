@@ -301,6 +301,22 @@ int main(void) {
   frame(grid, &snap);
   CHECK(c->headers[1].flags & BINNACLE_HEADER_FILTERED);
   CHECK(r->conditions_len == 1 && r->conditions[0].state == BINNACLE_CONDITION_APPLIED);
+  /* A checklist's condition: column 2000 is "b" or blank. */
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2000,
+                                  BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_ONE_OF));
+  BinnacleValue listed[] = {{.blank = 0, .text = {(const uint8_t *)"b", 1}}, {.blank = 1}};
+  BinnacleCondition b_or_blank = {
+      .key = 2000, .kind = BINNACLE_CONDITION_ONE_OF, .values = listed, .values_len = 2};
+  CHECK(binnacle_grid_add_condition(grid, BINNACLE_ROWS, &b_or_blank));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  filtered = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(filtered->conditions_len == 2 && filtered->conditions[1].kind == BINNACLE_CONDITION_ONE_OF);
+  CHECK(filtered->conditions[1].values_len == 2 && !filtered->conditions[1].values[0].blank);
+  CHECK(filtered->conditions[1].values[0].text.len == 1 && filtered->conditions[1].values[1].blank);
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, &totals));
+  frame(grid, &snap);
+  CHECK(c->headers[0].support == (BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_ONE_OF));
+  CHECK(r->conditions_len == 2 && r->conditions[1].condition.values[1].blank);
   /* Restoring a saved view: the base one. */
   CHECK(binnacle_grid_request_view(grid, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
