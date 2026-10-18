@@ -7,7 +7,8 @@ import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
 import { fromRows, type RowsSource } from "../src/rows";
-import type { FindMatch, FindQuery, FindStep, SortDirection, TextQuery } from "../src/source";
+import type { FindMatch, FindQuery, FindStep, SortDirection, TableSource, TextQuery } from "../src/source";
+import { Harness } from "./harness";
 import { loadForTests } from "./wasm";
 
 beforeAll(loadForTests);
@@ -196,5 +197,216 @@ describe("find in fromRows", () => {
     expect(source.find.count!(find, signal)).toEqual({ total: 2 });
     expect(source.find.regex).toBe(true);
     source.destroy();
+  });
+});
+
+/** An answer the test settles by hand, at once: a thenable, so the feed treats it as late. */
+interface Late {
+  kind: "marks" | "next" | "count";
+  resolve(): void;
+  reject(): void;
+}
+
+/**
+ * A keyed table of `rows` by 4 columns whose cells hold `texts`, finding
+ * through late answers the test settles in any order. `query.text` is
+ * matched as a plain, case-sensitive substring.
+ */
+function lateFinder(texts: string[][]) {
+  const rowIds = texts.map((_, i) => `r${i}`);
+  const colIds = ["c0", "c1", "c2", "c3"];
+  const pending: Late[] = [];
+  const hit = (row: string, col: string, q: FindQuery<string>) =>
+    texts[Number(row.slice(1))]![Number(col.slice(1))]!.includes(q.query.text);
+  const cells = (q: FindQuery<string>) =>
+    q.by === "rows"
+      ? rowIds.flatMap((row) => colIds.map((col) => ({ row, col })))
+      : colIds.flatMap((col) => rowIds.map((row) => ({ row, col })));
+  const late = <T,>(kind: Late["kind"], answer: () => T): Promise<T> => {
+    let done: { ok(v: T): void; fail(e: unknown): void } | undefined;
+    pending.push({ kind, resolve: () => done?.ok(answer()), reject: () => done?.fail(new Error(`${kind} failed`)) });
+    const thenable = { then: (ok: (v: T) => void, fail: (e: unknown) => void) => void (done = { ok, fail }) };
+    return thenable as unknown as Promise<T>;
+  };
+  const source: TableSource<string, string, string> = {
+    rows: {
+      count: () => rowIds.length,
+      window: (s, e) => rowIds.slice(s, e),
+      locate: (id) => ({ type: "Found", position: rowIds.indexOf(id) }),
+    },
+    cols: { count: () => colIds.length, window: (s, e) => colIds.slice(s, e) },
+    cells: (rs, cs) => rs.map((r) => cs.map((c) => texts[Number(r.slice(1))]![Number(c.slice(1))]!)),
+    find: {
+      marks: (rs, cs, q) => late("marks", () => rs.map((r) => cs.map((c) => hit(r, c, q)))),
+      next: (from, direction, q) =>
+        late("next", () => {
+          const all = cells(q);
+          const at = from ? all.findIndex((m) => m.row === from.row && m.col === from.col) : -1;
+          const n = all.length;
+          for (let k = 1; k <= n; k++) {
+            const i = from && at >= 0 ? (at + (direction === "next" ? k : -k) + n) % n : direction === "next" ? k - 1 : n - k;
+            if (hit(all[i]!.row, all[i]!.col, q)) return { ...all[i]! };
+          }
+          return null;
+        }),
+      count: (q) => late("count", () => ({ total: cells(q).filter((m) => hit(m.row, m.col, q)).length })),
+    },
+  };
+  return { source, pending, hit, total: (q: FindQuery<string>) => cells(q).filter((m) => hit(m.row, m.col, q)).length };
+}
+
+const findText = (text: string, by: "rows" | "cols" = "rows"): FindQuery<string> => ({
+  query: { text, caseSensitive: true, regex: false, searches: "shown" },
+  by,
+});
+
+describe("find in the feed", () => {
+  test("with late answers in any order, failures and new queries, the marks shown are always the query's, every step is answered, and all settles to the model", () =>
+    hegel.test((tc) => {
+      const texts = tc.draw(
+        gs.arrays(gs.arrays(gs.sampledFrom(["", "a", "b", "ab", "ba", "c"]), { minSize: 4, maxSize: 4 }), {
+          minSize: 1,
+          maxSize: 40,
+        }),
+      );
+      const { source, pending, hit, total } = lateFinder(texts);
+      const h = new Harness(source);
+      let query: FindQuery<string> | null = null;
+      /** Every visible cell marked matches the query in force. */
+      const marksAreTheQuerys = () => {
+        const s = h.snapshot;
+        s.rows.strip.forEach((r, i) =>
+          s.cols.strip.forEach((c, j) => {
+            if (!h.content?.marked(i, j)) return;
+            expect(query).not.toBeNull();
+            expect(hit(h.feed.rowId(r.key!)!, h.feed.colId(c.key!)!, query!)).toBe(true);
+          }),
+        );
+      };
+      try {
+        h.frame();
+        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 25 }));
+        for (let i = 0; i < steps; i++) {
+          const op = tc.draw(gs.sampledFrom(["find", "next", "previous", "resolve", "reject", "scroll", "frame"]));
+          if (op === "find") {
+            const text = tc.draw(gs.sampledFrom(["", "a", "b", "ab", "x"]));
+            query = text === "" ? null : findText(text, tc.draw(gs.sampledFrom<"rows" | "cols">(["rows", "cols"])));
+            h.grid.set_find(query && h.feed.findKeys(query));
+          } else if (op === "next") h.grid.find_next();
+          else if (op === "previous") h.grid.find_previous();
+          else if ((op === "resolve" || op === "reject") && pending.length) {
+            const late = pending.splice(tc.draw(gs.integers({ minValue: 0, maxValue: pending.length - 1 })), 1)[0]!;
+            if (op === "resolve") late.resolve();
+            else late.reject();
+          } else if (op === "scroll") h.grid.scroll_by(0, tc.draw(gs.integers({ minValue: -20, maxValue: 20 })));
+          h.drain();
+          h.frame();
+          marksAreTheQuerys();
+        }
+        const settle = () => {
+          for (let round = 0; round < 50 && pending.length; round++) {
+            for (const late of pending.splice(0)) late.resolve();
+            h.drain();
+            h.frame();
+          }
+          expect(pending).toEqual([]);
+        };
+        settle();
+        const s = h.snapshot;
+        s.rows.strip.forEach((r, i) =>
+          s.cols.strip.forEach((c, j) => {
+            const wanted = query !== null && hit(h.feed.rowId(r.key!)!, h.feed.colId(c.key!)!, query);
+            expect(h.content?.marked(i, j) ?? false).toBe(wanted);
+          }),
+        );
+        if (!query) return;
+        // A count that failed stays unknown: nothing asks again until the query or the view changes.
+        const count = h.feed.findState().count;
+        if (count) expect(count).toEqual({ total: total(query) });
+        // Not stuck waiting for an answer: one more step lands on a match if there is one.
+        h.grid.find_next();
+        h.drain();
+        settle();
+        const found = h.snapshot.findMatch;
+        if (total(query) === 0) expect(found).toBeNull();
+        else expect(found && hit(h.feed.rowId(found.row)!, h.feed.colId(found.col)!, query)).toBe(true);
+      } finally {
+        h.destroy();
+      }
+    }));
+
+  test("a failed or superseded step is answered with no match, and the failure reported", () => {
+    const { source, pending } = lateFinder([
+      ["a", "", "", ""],
+      ["", "a", "", ""],
+    ]);
+    const h = new Harness(source);
+    try {
+      h.frame();
+      h.grid.set_find(h.feed.findKeys(findText("a")));
+      h.grid.find_next();
+      h.drain();
+      const next = () => pending.splice(pending.findIndex((p) => p.kind === "next"), 1)[0]!;
+      next().reject();
+      h.drain();
+      h.frame();
+      expect(h.snapshot.findMatch).toBeNull();
+      expect(h.errors.map((e) => e.request)).toEqual([{ type: "find", request: "next" }]);
+      // Not stuck: the next step is asked for and lands.
+      h.grid.find_next();
+      h.drain();
+      next().resolve();
+      h.drain();
+      h.frame();
+      expect(h.snapshot.findMatch).toEqual({ row: h.feed.rowKey("r0"), col: h.feed.colKey("c0") });
+      // A step asked for under "a", answered after the query changed, is ignored.
+      h.grid.find_next();
+      h.drain();
+      h.grid.set_find(h.feed.findKeys(findText("b")));
+      h.drain();
+      next().resolve();
+      h.drain();
+      h.frame();
+      expect(h.snapshot.findMatch).toBeNull();
+      expect(h.feed.findState().step).toBeNull();
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a new query clears the old marks at once, before its own arrive; closing find asks nothing", () => {
+    const { source, pending } = lateFinder([
+      ["a", "b", "", ""],
+      ["b", "a", "", ""],
+    ]);
+    const h = new Harness(source);
+    const marked = () => h.snapshot.rows.strip.map((_, i) => h.snapshot.cols.strip.map((_, j) => h.content!.marked(i, j)));
+    try {
+      h.frame();
+      h.grid.set_find(h.feed.findKeys(findText("a")));
+      h.drain();
+      h.frame();
+      for (const p of pending.splice(0)) p.resolve();
+      h.frame();
+      expect(marked()).toEqual([
+        [true, false, false, false],
+        [false, true, false, false],
+      ]);
+      expect(h.feed.findState().count).toEqual({ total: 2 });
+      h.grid.set_find(h.feed.findKeys(findText("b")));
+      h.drain();
+      h.frame();
+      expect(marked().flat().some(Boolean)).toBe(false);
+      expect(h.feed.findState().count).toBeNull();
+      h.grid.set_find(null);
+      h.drain();
+      h.frame();
+      for (const p of pending.splice(0)) p.resolve();
+      h.frame();
+      expect(pending).toEqual([]);
+      expect(marked().flat().some(Boolean)).toBe(false);
+    } finally {
+      h.destroy();
+    }
   });
 });

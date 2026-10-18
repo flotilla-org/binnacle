@@ -99,6 +99,8 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   cols: { first: number; last: number; count: number; total: number | null };
   /** Whether the rows take a quick filter (the Table Source's `rows.quickFilter`), and with regexes; `null` if not. */
   quickFilter: { regex: boolean } | null;
+  /** The rows' quick filter as last asked for: the request still unanswered, else the one applied. */
+  quick: TextQuery<ColId> | null;
   /** The focused cell's Positions, if any. */
   focus: { row: number; col: number } | null;
   /** The selection range as half-open Position spans, if any. */
@@ -775,6 +777,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       rows: span(snapshot, "rows"),
       cols: span(snapshot, "cols"),
       quickFilter: snapshot.rows.quickFilter,
+      quick: this.quick(snapshot),
       ...selection(snapshot),
       focusIds: this.focusIds(snapshot),
       loading: this.feed.loading(snapshot),
@@ -797,6 +800,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         ...this.feed.findState(),
       },
     };
+  }
+
+  private quick(s: Snapshot): TextQuery<ColId> | null {
+    const q = (s.requestedView ?? s.appliedView).rows.filter.quick;
+    return (q && this.feed.queryIds(q)) ?? null;
   }
 
   /** Waits for a frame if none has run or one is due, so the Strips are those of what is in view. */

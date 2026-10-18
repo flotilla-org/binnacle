@@ -172,6 +172,7 @@ export function createFilterBar<RowId, ColId, V>(
     return item;
   };
   let shownChips = "";
+  let shownQuick = "null";
 
   let regexAllowed = false;
   const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
@@ -241,6 +242,16 @@ export function createFilterBar<RowId, ColId, V>(
     element.style.display = f.quickFilter === null && f.conditions.length === 0 && !menu ? "none" : "flex";
     field.style.display = f.quickFilter === null ? "none" : "flex";
     regexAllowed = f.quickFilter?.regex ?? false;
+    // Follows a quick filter set from elsewhere (the find bar's "Show only matching rows").
+    const quick = JSON.stringify(f.quick);
+    const changed = quick !== shownQuick;
+    shownQuick = quick;
+    if (changed && document.activeElement !== input && (f.quick?.text ?? "") !== input.value) {
+      input.value = f.quick?.text ?? "";
+      caseToggle.setAttribute("aria-pressed", String(f.quick?.caseSensitive ?? false));
+      regexToggle.setAttribute("aria-pressed", String(f.quick?.regex ?? false));
+      clearButton.hidden = input.value === "";
+    }
     // Rebuilt only when they change, so a press on a chip is not lost to a repaint.
     const key = [
       widget.theme.name,

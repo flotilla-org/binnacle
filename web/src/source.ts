@@ -108,6 +108,7 @@ export interface FindCount {
 /**
  * Find, worked out by the Table Source: which cells match, where the next
  * match is, and how many there are. The widget never sees a value to match.
+ * A step to a match outside the Window is placed with the axes' `locate`.
  */
 export interface FindMethods<RowId, ColId> {
   /** Whether a Find Query may be a regex; `false` by default. */

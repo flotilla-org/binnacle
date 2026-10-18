@@ -84,6 +84,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   distinct(id: ColId, search: string, limit: number, apply: (answer: Distinct) => void): Request | null;
   /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
   find(axis: AxisName, key: bigint): Promise<Located>;
+  /** A rows Text Query by its columns' IDs, if every column it names is known. */
+  queryIds(query: KeyedTextQuery): TextQuery<ColId> | undefined;
   /** A Find Query by Keys, issuing Keys for columns that have none yet. */
   findKeys(query: FindQuery<ColId>): KeyedFindQuery;
   /** A Find Query by IDs, if every column it names is known. */
@@ -849,6 +851,7 @@ export function createFeed<RowId, ColId, V>(
       if (item) return Promise.resolve({ type: "Found", position: item.position });
       return new Promise((resolve) => whereIs(axis, key, resolve, () => resolve(GONE)));
     },
+    queryIds: (q) => queryIds(cols, q),
     findKeys: (q) => ({ query: queryKeys(cols, q.query), by: q.by }),
     findIds,
     findState: () => findState,
