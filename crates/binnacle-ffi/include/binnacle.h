@@ -36,6 +36,8 @@ extern "C" {
 #define BINNACLE_CELL_FOCUSED 1u
 /* Inside the range, or in a picked row. */
 #define BINNACLE_CELL_SELECTED 2u
+/* The current find match, drawn apart from the other matches. */
+#define BINNACLE_CELL_CURRENT_MATCH 4u
 
 /* BinnacleHeader.flags bits. SORTED: the item is in the other axis's sort in
  * the applied View Spec, DESCENDING says which way and sort_place where (0
@@ -78,6 +80,24 @@ extern "C" {
 /* The edge of the Header Band leading axis was double-clicked: measure its
  * content and answer with binnacle_grid_set_header. */
 #define BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED 7
+/* The Find Query changed (has_find 1, find) or find closed (has_find 0):
+ * fetch the marks for the cells shown, and the count, again. */
+#define BINNACLE_EFFECT_FIND_REQUESTED 8
+/* Step from the cell from (none when has_from is 0: from the start) to the
+ * next or previous match of find, in direction (BINNACLE_FIND_NEXT or
+ * PREVIOUS), wrapping. Answer each with binnacle_grid_find_stepped, in
+ * order. */
+#define BINNACLE_EFFECT_FIND_STEP_REQUESTED 9
+
+/* BinnacleEffect.direction for FIND_STEP_REQUESTED. */
+#define BINNACLE_FIND_NEXT 0
+#define BINNACLE_FIND_PREVIOUS 1
+
+/* binnacle_grid_set_find_support bits and BinnacleSnapshot.find_support: the
+ * Table Source finds, and takes regexes. 0 is none, the default. REGEX needs
+ * FIND. */
+#define BINNACLE_FIND 1u
+#define BINNACLE_FIND_REGEX 2u
 
 /* BinnacleSortColumn.direction. Nulls go last either way. */
 #define BINNACLE_SORT_ASCENDING 0
@@ -282,6 +302,38 @@ typedef struct {
   uint64_t key;
 } BinnacleFocusEnd;
 
+/* UTF-8 text, length-delimited and not NUL-terminated. */
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+} BinnacleText;
+
+/* Text to look for in the cells of items of the other axis, as the Table
+ * Source writes their values: anywhere in a value, as BINNACLE_TEXT_* flags
+ * say, in the items BINNACLE_SEARCHED_* says (keys for KEYS). A blank never
+ * matches. */
+typedef struct {
+  BinnacleText text;
+  uint32_t flags;
+  uint32_t searched;
+  const uint64_t *keys;
+  size_t keys_len;
+} BinnacleTextQuery;
+
+/* The Find Query: query, matched against each cell of the items it
+ * searches, and the axis stepped along first (BINNACLE_ROWS: each row's
+ * searched cells in column order, then the next row; COLS the transpose). */
+typedef struct {
+  BinnacleTextQuery query;
+  uint32_t by;
+} BinnacleFindQuery;
+
+/* A cell matching the Find Query, by its row and column Keys. */
+typedef struct {
+  uint64_t row;
+  uint64_t col;
+} BinnacleFindMatch;
+
 /* Defined with BinnacleCondition, below. */
 typedef struct BinnacleListedCondition BinnacleListedCondition;
 
@@ -351,6 +403,15 @@ typedef struct {
   uint32_t has_hovered_header;
   uint32_t hovered_axis;
   size_t hovered_index;
+  /* The Find Query in force, if find is open. */
+  uint32_t has_find;
+  BinnacleFindQuery find;
+  /* The match the last find step landed on, until its row or column leaves
+   * or the Find Query changes. */
+  uint32_t has_find_match;
+  BinnacleFindMatch find_match;
+  /* BINNACLE_FIND* bits: whether to offer find. */
+  uint32_t find_support;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -359,12 +420,6 @@ typedef struct {
   uint32_t direction;
 } BinnacleSortColumn;
 
-/* UTF-8 text, length-delimited and not NUL-terminated. */
-typedef struct {
-  const uint8_t *data;
-  size_t len;
-} BinnacleText;
-
 /* A value as a ONE_OF condition lists it: text in the Table Source's own
  * text form, or with blank 1 a blank (no value at all, not empty text), its
  * text ignored. */
@@ -372,18 +427,6 @@ typedef struct {
   uint32_t blank;
   BinnacleText text;
 } BinnacleValue;
-
-/* Text to look for in the cells of items of the other axis, as the Table
- * Source writes their values: anywhere in a value, as BINNACLE_TEXT_* flags
- * say, in the items BINNACLE_SEARCHED_* says (keys for KEYS). A blank never
- * matches. */
-typedef struct {
-  BinnacleText text;
-  uint32_t flags;
-  uint32_t searched;
-  const uint64_t *keys;
-  size_t keys_len;
-} BinnacleTextQuery;
 
 /* One condition on the items of an axis, read in item key of the other axis
  * (a column, for the rows): the items whose value there matches are kept, or
@@ -467,6 +510,14 @@ typedef struct {
   uint64_t key;
   /* BAND_SIZE_CHANGED: the band's new thickness. */
   float size;
+  /* FIND_REQUESTED and FIND_STEP_REQUESTED: the Find Query, its arrays valid
+   * as view's are. */
+  uint32_t has_find;
+  BinnacleFindQuery find;
+  /* FIND_STEP_REQUESTED: the cell to step from, and BINNACLE_FIND_*. */
+  uint32_t has_from;
+  BinnacleFindMatch from;
+  uint32_t direction;
 } BinnacleEffect;
 
 /* A raw pointer event in viewport coordinates (the host's unit, origin at the
@@ -563,6 +614,14 @@ int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
 int binnacle_grid_located(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint32_t answer,
                           uint64_t position);
 
+/* The answer to FIND_STEP_REQUESTED: the match stepped to, or NULL if
+ * nothing matches. The match takes focus and is scrolled into view; the
+ * selection is left as it is. */
+int binnacle_grid_find_stepped(BinnacleGrid *grid, const BinnacleFindMatch *found);
+
+/* Whether the Table Source finds, and takes regexes: BINNACLE_FIND* bits. */
+int binnacle_grid_set_find_support(BinnacleGrid *grid, uint32_t support);
+
 /* A Change Notice for axis: BINNACLE_NOTICE_*, with at and n as each
  * describes (unused ones are ignored). */
 int binnacle_grid_notify(BinnacleGrid *grid, uint32_t axis, uint32_t notice, uint64_t at,
@@ -598,6 +657,16 @@ int binnacle_grid_replace_condition(BinnacleGrid *grid, uint32_t axis,
 /* Requests the whole of spec (NULL for the base view), say to restore a saved
  * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */
 int binnacle_grid_request_view(BinnacleGrid *grid, const BinnacleViewSpec *spec);
+
+/* Sets the Find Query, or closes find with NULL or empty text, emitting
+ * FIND_REQUESTED (nothing if it is unchanged). 0 for an unknown tag or flag,
+ * or text that is not UTF-8. */
+int binnacle_grid_set_find(BinnacleGrid *grid, const BinnacleFindQuery *query);
+
+/* The Find Next and Find Previous Actions: FIND_STEP_REQUESTED from the
+ * current match, else the focused cell. Nothing while find is closed. */
+int binnacle_grid_find_next(BinnacleGrid *grid);
+int binnacle_grid_find_previous(BinnacleGrid *grid);
 
 /* Text the user typed; 0 if it is not UTF-8. */
 int binnacle_grid_type_text(BinnacleGrid *grid, const uint8_t *text, size_t len);

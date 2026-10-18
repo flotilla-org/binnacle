@@ -83,7 +83,8 @@ fn view(tc: &TestCase) -> View {
     };
     let quick = tc.draw(gs::optional(query()));
     let keys = gs::vecs(gs::sampled_from(vec![NAME, QTY, BARE])).max_size(2);
-    let moves = tc.draw(gs::vecs(hegel::tuples!(keys, gs::integers::<u64>().max_value(3))).max_size(3));
+    let moves =
+        tc.draw(gs::vecs(hegel::tuples!(keys, gs::integers::<u64>().max_value(3))).max_size(3));
     View { sort, quick, moves }
 }
 
@@ -146,8 +147,12 @@ fn shown(source: &MemorySource<Record>) -> (Vec<Key>, Vec<Key>) {
 /// Every cell in the Find Query's order, as (row Position, column Position).
 fn order(rows: usize, cols: usize, by: Axis) -> Vec<(usize, usize)> {
     match by {
-        Axis::Rows => (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).collect(),
-        Axis::Cols => (0..cols).flat_map(|c| (0..rows).map(move |r| (r, c))).collect(),
+        Axis::Rows => (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (r, c)))
+            .collect(),
+        Axis::Cols => (0..cols)
+            .flat_map(|c| (0..rows).map(move |r| (r, c)))
+            .collect(),
     }
 }
 
@@ -183,13 +188,20 @@ fn model_step(
     let from = from.and_then(place);
     let at = |i: usize| (i, place(matches[i]).expect("a match is shown"));
     let (i, wrapped) = match direction {
-        FindDirection::Next => match (0..matches.len()).map(at).find(|&(_, p)| from.is_none_or(|f| p > f)) {
+        FindDirection::Next => match (0..matches.len())
+            .map(at)
+            .find(|&(_, p)| from.is_none_or(|f| p > f))
+        {
             Some((i, _)) => (i, false),
             None if matches.is_empty() => return None,
             None => (0, from.is_some()),
         },
         FindDirection::Previous => {
-            match (0..matches.len()).rev().map(at).find(|&(_, p)| from.is_none_or(|f| p < f)) {
+            match (0..matches.len())
+                .rev()
+                .map(at)
+                .find(|&(_, p)| from.is_none_or(|f| p < f))
+            {
                 Some((i, _)) => (i, false),
                 None if matches.is_empty() => return None,
                 None => (matches.len() - 1, from.is_some()),
@@ -209,7 +221,9 @@ fn model_step(
 fn from(tc: &TestCase, rows: usize) -> Option<FindMatch> {
     let row = gs::integers::<u64>().max_value(rows as u64 + 1).map(Key);
     let col = gs::sampled_from(vec![NAME, QTY, BARE, Key(9)]);
-    tc.draw(gs::optional(hegel::tuples!(row, col).map(|(r, c)| FindMatch::new(r, c))))
+    tc.draw(gs::optional(
+        hegel::tuples!(row, col).map(|(r, c)| FindMatch::new(r, c)),
+    ))
 }
 
 /// Under any view, the count is the model's number of matches, the marks of
@@ -242,7 +256,10 @@ fn marks_steps_and_the_count_agree_with_the_model(tc: TestCase) {
     });
     assert_eq!(marked, expected, "the marks of the whole view");
     let from = tc.draw(from(rows.len()));
-    let direction = tc.draw(gs::sampled_from(vec![FindDirection::Next, FindDirection::Previous]));
+    let direction = tc.draw(gs::sampled_from(vec![
+        FindDirection::Next,
+        FindDirection::Previous,
+    ]));
     assert_eq!(
         source.find_next(&rows, &query, from, direction),
         model_step(&source, &query, &matches, from, direction),
@@ -271,7 +288,10 @@ fn stepping_visits_every_match_and_previous_undoes_next(tc: TestCase) {
     }
     assert_eq!(visited, model(&rows, &source, &query));
     let last = source.find_next(&rows, &query, at, FindDirection::Next);
-    assert_eq!(last.map(|s| (s.at, s.wrapped)), visited.first().map(|&m| (m, at.is_some())));
+    assert_eq!(
+        last.map(|s| (s.at, s.wrapped)),
+        visited.first().map(|&m| (m, at.is_some()))
+    );
     for pair in visited.windows(2) {
         let back = source.find_next(&rows, &query, Some(pair[1]), FindDirection::Previous);
         assert_eq!(back.map(|s| s.at), Some(pair[0]));

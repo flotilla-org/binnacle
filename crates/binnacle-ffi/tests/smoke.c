@@ -324,6 +324,41 @@ int main(void) {
   CHECK(!effect.view.axes[BINNACLE_ROWS].has_quick);
   CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
 
+  /* Find: the host declares it, sets a query, steps, and answers the step;
+   * the match takes focus, and closing find drops it. */
+  CHECK(!binnacle_grid_set_find_support(grid, BINNACLE_FIND_REGEX));
+  CHECK(binnacle_grid_set_find_support(grid, BINNACLE_FIND));
+  BinnacleFindQuery find = {.query = {.text = {(const uint8_t *)"7", 1}}, .by = BINNACLE_COLS};
+  CHECK(!binnacle_grid_set_find(grid, &(BinnacleFindQuery){.query = find.query, .by = 2}));
+  CHECK(binnacle_grid_set_find(grid, &find));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_FIND_REQUESTED && effect.has_find);
+  CHECK(effect.find.by == BINNACLE_COLS && effect.find.query.text.len == 1);
+  /* Focus a cell of the top row in column 2001 to step from. */
+  click(grid, 14, 1.5f, 0);
+  drain(grid, &focus);
+  frame(grid, &snap);
+  CHECK(r->focus.has_key && c->focus.key == 2001);
+  CHECK(binnacle_grid_find_previous(grid));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_FIND_STEP_REQUESTED);
+  CHECK(effect.direction == BINNACLE_FIND_PREVIOUS && effect.has_from);
+  CHECK(effect.from.row == r->focus.key && effect.from.col == 2001);
+  CHECK(memcmp(effect.find.query.text.data, "7", 1) == 0);
+  /* A row in the Window, so no Locate is needed. */
+  BinnacleFindMatch found = {.row = r->strip[2].key, .col = 2001};
+  CHECK(binnacle_grid_find_stepped(grid, &found));
+  drain(grid, &focus);
+  frame(grid, &snap);
+  CHECK(snap.find_support == BINNACLE_FIND && snap.has_find && snap.find.by == BINNACLE_COLS);
+  CHECK(snap.has_find_match && snap.find_match.row == found.row && snap.find_match.col == 2001);
+  CHECK(r->focus.key == found.row && c->focus.key == 2001);
+  CHECK(binnacle_grid_set_find(grid, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_FIND_REQUESTED && !effect.has_find);
+  frame(grid, &snap);
+  CHECK(!snap.has_find && !snap.has_find_match);
+
   /* Settings, sizes and content sizes. */
   CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_ROWS));
   CHECK(!binnacle_grid_set_selection_unit(grid, 2));

@@ -10,10 +10,10 @@ use std::slice;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    Effect, FilterSpec, FocusEnd, FocusStep, Grid, HeaderClick, HeaderPlacement, Key, Located,
-    Mode, Modifiers, PointerEvent, PointerKind, Rect, Searched, SelectionUnit, SortColumn,
-    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Grid,
+    HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect,
+    Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
 pub const BINNACLE_ROWS: u32 = 0;
@@ -25,6 +25,7 @@ pub const BINNACLE_DAMAGE_POSITIONS: u32 = 4;
 
 pub const BINNACLE_CELL_FOCUSED: u8 = 1;
 pub const BINNACLE_CELL_SELECTED: u8 = 2;
+pub const BINNACLE_CELL_CURRENT_MATCH: u8 = 4;
 
 pub const BINNACLE_HEADER_SORTED: u32 = 1;
 pub const BINNACLE_HEADER_DESCENDING: u32 = 2;
@@ -47,6 +48,14 @@ pub const BINNACLE_EFFECT_VIEW_REQUESTED: u32 = 4;
 pub const BINNACLE_EFFECT_LOCATE: u32 = 5;
 pub const BINNACLE_EFFECT_BAND_SIZE_CHANGED: u32 = 6;
 pub const BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED: u32 = 7;
+pub const BINNACLE_EFFECT_FIND_REQUESTED: u32 = 8;
+pub const BINNACLE_EFFECT_FIND_STEP_REQUESTED: u32 = 9;
+
+pub const BINNACLE_FIND_NEXT: u32 = 0;
+pub const BINNACLE_FIND_PREVIOUS: u32 = 1;
+
+pub const BINNACLE_FIND: u32 = 1;
+pub const BINNACLE_FIND_REGEX: u32 = 2;
 
 pub const BINNACLE_SORT_ASCENDING: u32 = 0;
 pub const BINNACLE_SORT_DESCENDING: u32 = 1;
@@ -137,6 +146,10 @@ pub struct BinnacleGrid {
     /// The last Snapshot's conditions per axis, with their states.
     listed: [CConditions; 2],
     listed_states: [Vec<BinnacleListedCondition>; 2],
+    /// The last polled Effect's Find Query text and Keys, and the last
+    /// Snapshot's.
+    find_effect: (String, Vec<u64>),
+    find_snapshot: (String, Vec<u64>),
 }
 
 /// Conditions in C form, with the texts, Keys and values they point into.
@@ -353,6 +366,11 @@ pub struct BinnacleSnapshot {
     pub has_hovered_header: u32,
     pub hovered_axis: u32,
     pub hovered_index: usize,
+    pub has_find: u32,
+    pub find: BinnacleFindQuery,
+    pub has_find_match: u32,
+    pub find_match: BinnacleFindMatch,
+    pub find_support: u32,
 }
 
 #[repr(C)]
@@ -389,6 +407,20 @@ impl Default for BinnacleTextQuery {
 pub struct BinnacleValue {
     pub blank: u32,
     pub text: BinnacleText,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleFindQuery {
+    pub query: BinnacleTextQuery,
+    pub by: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleFindMatch {
+    pub row: u64,
+    pub col: u64,
 }
 
 #[repr(C)]
@@ -503,6 +535,11 @@ pub struct BinnacleEffect {
     pub axis: u32,
     pub key: u64,
     pub size: f32,
+    pub has_find: u32,
+    pub find: BinnacleFindQuery,
+    pub has_from: u32,
+    pub from: BinnacleFindMatch,
+    pub direction: u32,
 }
 
 impl Default for BinnacleEffect {
@@ -518,6 +555,11 @@ impl Default for BinnacleEffect {
             axis: 0,
             key: 0,
             size: 0.0,
+            has_find: 0,
+            find: BinnacleFindQuery::default(),
+            has_from: 0,
+            from: BinnacleFindMatch::default(),
+            direction: BINNACLE_FIND_NEXT,
         }
     }
 }
@@ -722,6 +764,60 @@ impl BinnacleTextQuery {
     }
 }
 
+/// `query` in C form, its text and Keys copied into `(text, keys)`.
+fn find_to_c(query: &FindQuery, (text, keys): &mut (String, Vec<u64>)) -> BinnacleFindQuery {
+    let q = &query.query;
+    text.clear();
+    text.push_str(&q.text);
+    keys.clear();
+    let mut c = BinnacleTextQuery {
+        text: BinnacleText {
+            data: text.as_ptr(),
+            len: text.len(),
+        },
+        flags: bit(q.case_sensitive, BINNACLE_TEXT_CASE_SENSITIVE)
+            | bit(q.regex, BINNACLE_TEXT_REGEX),
+        ..BinnacleTextQuery::default()
+    };
+    if let Searched::Keys(ks) = &q.searches {
+        keys.extend(ks.iter().map(|k| k.0));
+        c.searched = BINNACLE_SEARCHED_KEYS;
+        c.keys = keys.as_ptr();
+        c.keys_len = keys.len();
+    }
+    BinnacleFindQuery {
+        query: c,
+        by: axis_tag(query.by),
+    }
+}
+
+impl BinnacleFindQuery {
+    /// The Find Query, or `None` if its text is not UTF-8 or a tag or flag
+    /// is unknown.
+    ///
+    /// # Safety
+    /// As [`BinnacleTextQuery::to_core`] for `query`.
+    unsafe fn to_core(self) -> Option<FindQuery> {
+        // SAFETY: the caller's contract.
+        let query = unsafe { self.query.to_core() }?;
+        Some(FindQuery::new(query).by(axis(self.by)?))
+    }
+}
+
+impl From<FindMatch> for BinnacleFindMatch {
+    fn from(m: FindMatch) -> Self {
+        BinnacleFindMatch {
+            row: m.row.0,
+            col: m.col.0,
+        }
+    }
+}
+
+/// `BINNACLE_FIND*` bits for find's support.
+fn find_bits(support: Option<TextSupport>) -> u32 {
+    support.map_or(0, |s| BINNACLE_FIND | bit(s.regex, BINNACLE_FIND_REGEX))
+}
+
 impl BinnacleCondition {
     /// The condition, or `None` if its kind or a tag or flag is unknown or
     /// its text is not UTF-8. A Text condition searches its own item,
@@ -903,6 +999,8 @@ pub extern "C" fn binnacle_grid_new(
         conditions: Default::default(),
         listed: Default::default(),
         listed_states: Default::default(),
+        find_effect: Default::default(),
+        find_snapshot: Default::default(),
     }))
 }
 
@@ -1151,7 +1249,8 @@ impl BinnacleGrid {
                 let state = snap.cell_state(row, col);
                 self.cells.push(
                     bit(state.focused, BINNACLE_CELL_FOCUSED)
-                        | bit(state.selected, BINNACLE_CELL_SELECTED),
+                        | bit(state.selected, BINNACLE_CELL_SELECTED)
+                        | bit(state.current_match, BINNACLE_CELL_CURRENT_MATCH),
                 );
             }
         }
@@ -1204,6 +1303,8 @@ impl BinnacleGrid {
                 .position(|s| s.position == item.position)?;
             Some((axis, i))
         });
+        let find = snap.find().map(|f| find_to_c(f, &mut self.find_snapshot));
+        let find_match = snap.find_match();
         let focus_rect = snap.focus_rect();
         #[allow(unreachable_patterns)] // Modes added to the Grid later are OTHER.
         let mode = match snap.mode() {
@@ -1233,6 +1334,11 @@ impl BinnacleGrid {
             has_hovered_header: flag(hovered.is_some()),
             hovered_axis: hovered.map_or(0, |(axis, _)| axis_tag(axis)),
             hovered_index: hovered.map_or(0, |(_, i)| i),
+            has_find: flag(find.is_some()),
+            find: find.unwrap_or_default(),
+            has_find_match: flag(find_match.is_some()),
+            find_match: find_match.map(BinnacleFindMatch::from).unwrap_or_default(),
+            find_support: find_bits(snap.find_support()),
         }
     }
 
@@ -1351,6 +1457,28 @@ impl BinnacleGrid {
             Effect::BandAutoSizeRequested { axis } => {
                 effect.kind = BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED;
                 effect.axis = axis_tag(axis);
+            }
+            Effect::FindRequested { query } => {
+                effect.kind = BINNACLE_EFFECT_FIND_REQUESTED;
+                if let Some(query) = query {
+                    effect.has_find = 1;
+                    effect.find = find_to_c(&query, &mut self.find_effect);
+                }
+            }
+            Effect::FindStepRequested {
+                query,
+                from,
+                direction,
+            } => {
+                effect.kind = BINNACLE_EFFECT_FIND_STEP_REQUESTED;
+                effect.has_find = 1;
+                effect.find = find_to_c(&query, &mut self.find_effect);
+                effect.has_from = flag(from.is_some());
+                effect.from = from.map(BinnacleFindMatch::from).unwrap_or_default();
+                effect.direction = match direction {
+                    FindDirection::Next => BINNACLE_FIND_NEXT,
+                    FindDirection::Previous => BINNACLE_FIND_PREVIOUS,
+                };
             }
             _ => effect.kind = BINNACLE_EFFECT_OTHER,
         }
@@ -1744,4 +1872,69 @@ pub unsafe extern "C" fn binnacle_grid_scroll_by(
     let action = axis(axis_tag).map(|axis| Action::ScrollBy { axis, items });
     // SAFETY: the caller's contract.
     unsafe { act(grid, action) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `query` is NULL (close find) or valid
+/// for a read, its text for `text.len` reads and its keys for `keys_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_find(
+    grid: *mut BinnacleGrid,
+    query: *const BinnacleFindQuery,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let query = match unsafe { query.as_ref() } {
+        None => Some(None),
+        // SAFETY: the caller's contract.
+        Some(q) => unsafe { q.to_core() }.map(Some),
+    };
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| query.map(|q| h.grid.set_find(q))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_find_support(
+    grid: *mut BinnacleGrid,
+    support: u32,
+) -> i32 {
+    let support = match support {
+        0 => Some(None),
+        BINNACLE_FIND => Some(Some(TextSupport::new(false))),
+        s if s == BINNACLE_FIND | BINNACLE_FIND_REGEX => Some(Some(TextSupport::new(true))),
+        _ => None,
+    };
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| support.map(|s| h.grid.set_find_support(s))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_find_next(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { act(grid, Some(Action::FindNext)) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_find_previous(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { act(grid, Some(Action::FindPrevious)) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `found` is NULL (no match) or valid for
+/// a read.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_find_stepped(
+    grid: *mut BinnacleGrid,
+    found: *const BinnacleFindMatch,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let found = unsafe { found.as_ref() }.map(|m| FindMatch::new(Key(m.row), Key(m.col)));
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| Some(h.grid.find_stepped(found))) }
 }

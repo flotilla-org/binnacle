@@ -7,9 +7,10 @@ use std::slice;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    Effect, FilterSpec, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers, PointerEvent,
-    PointerKind, Searched, SelectionUnit, Snapshot, SortColumn, SortDirection, SortSpec, Support,
-    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
+    Located, Mode, Modifiers, PointerEvent, PointerKind, Searched, SelectionUnit, Snapshot,
+    SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -55,6 +56,11 @@ enum Op {
     AddCondition(Axis, Condition),
     RemoveCondition(Axis, Condition),
     ReplaceCondition(Axis, Condition, Condition),
+    SetFind(Option<FindQuery>),
+    FindSupport(Option<TextSupport>),
+    /// The answer to a find step: this match, or with `Some((r, c))` the
+    /// cell of the last frame's strips at those indices (wrapped).
+    FindStepped(Option<FindMatch>, Option<(usize, usize)>),
     /// A `located` answer about this Key, or (`None`) about the Key of the
     /// last `Locate` drained, if any.
     Located(Option<(Axis, Key)>, Located),
@@ -140,7 +146,9 @@ fn pointer(tc: &TestCase) -> PointerEvent {
 
 #[hegel::composite]
 fn action(tc: &TestCase) -> Action {
-    match tc.draw(gs::integers::<u8>().max_value(7)) {
+    match tc.draw(gs::integers::<u8>().max_value(9)) {
+        8 => Action::FindNext,
+        9 => Action::FindPrevious,
         0 => Action::TypeText(tc.draw(gs::text().max_size(8))),
         1 => Action::MoveFocus {
             axis: tc.draw(axes()),
@@ -255,6 +263,16 @@ fn condition(tc: &TestCase, axis: Axis) -> Condition {
     condition.not(tc.draw(gs::booleans()))
 }
 
+/// A Find Query, by rows or by columns; now and then with no text.
+#[hegel::composite]
+fn find_query(tc: &TestCase) -> FindQuery {
+    let mut query = tc.draw(text_query(Axis::Rows));
+    if query.text.is_empty() && tc.draw(gs::booleans()) {
+        query = TextQuery::new("a").searching(query.searches);
+    }
+    FindQuery::new(query).by(tc.draw(axes()))
+}
+
 /// A View Spec: usually sorting and filtering only the rows.
 #[hegel::composite]
 fn view_spec(tc: &TestCase) -> ViewSpec {
@@ -288,7 +306,21 @@ fn totals(tc: &TestCase) -> Totals {
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(9)) {
+    match tc.draw(gs::integers::<u8>().max_value(13)) {
+        10 => Op::SetFind(
+            tc.draw(gs::weighted_booleans(0.9))
+                .then(|| tc.draw(find_query())),
+        ),
+        11 => Op::FindSupport(tc.draw(gs::optional(gs::booleans().map(TextSupport::new)))),
+        // Often, so a match lands while find is open and a frame shows it.
+        12 | 13 => {
+            let cell = hegel::tuples!(key(Axis::Rows), key(Axis::Cols));
+            let found = tc
+                .draw(gs::optional(cell))
+                .map(|(r, c)| FindMatch::new(r, c));
+            let shown = hegel::tuples!(gs::integers::<usize>(), gs::integers::<usize>());
+            Op::FindStepped(found, tc.draw(gs::optional(shown)))
+        }
         0 => Op::ViewApplied(tc.draw(view_spec()), tc.draw(totals())),
         7 => Op::AddCondition(axis, tc.draw(condition(axis))),
         // Often one the latest request has, so it goes.
@@ -408,7 +440,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(31))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(35))),
     }
 }
 
@@ -461,6 +493,8 @@ unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
                 binnacle_grid_scroll_to(h, tag(*axis), *fraction)
             }
             Action::ScrollBy { axis, items } => binnacle_grid_scroll_by(h, tag(*axis), *items),
+            Action::FindNext => binnacle_grid_find_next(h),
+            Action::FindPrevious => binnacle_grid_find_previous(h),
             #[allow(unreachable_patterns)] // `action` draws only the Actions above.
             _ => unreachable!(),
         }
@@ -611,6 +645,25 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 };
                 binnacle_grid_add_condition(h, ROWS, &one_of)
             }
+            31 => binnacle_grid_set_find_support(h, BINNACLE_FIND_REGEX),
+            32 => binnacle_grid_set_find_support(h, 4),
+            33 => {
+                let find = BinnacleFindQuery {
+                    by: 2,
+                    ..BinnacleFindQuery::default()
+                };
+                binnacle_grid_set_find(h, &find)
+            }
+            34 => {
+                let find = BinnacleFindQuery {
+                    query: BinnacleTextQuery {
+                        flags: 4,
+                        ..BinnacleTextQuery::default()
+                    },
+                    by: ROWS,
+                };
+                binnacle_grid_set_find(h, &find)
+            }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -747,7 +800,8 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     for (r, row) in rows.iter().enumerate() {
         for (k, col) in cols.iter().enumerate() {
             let s = rust.cell_state(row, col);
-            let want = u8::from(s.focused) | u8::from(s.selected) << 1;
+            let want =
+                u8::from(s.focused) | u8::from(s.selected) << 1 | u8::from(s.current_match) << 2;
             assert_eq!(cells[r * cols.len() + k], want, "cell {r},{k}");
         }
     }
@@ -760,6 +814,15 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     };
     assert_eq!(c.mode, mode);
     assert_eq!(c.capturing != 0, rust.capturing());
+    let find = (c.has_find != 0).then(|| unsafe { find_from_c(&c.find) });
+    assert_eq!(find.as_ref(), rust.find(), "find");
+    let found = (c.has_find_match != 0)
+        .then(|| FindMatch::new(Key(c.find_match.row), Key(c.find_match.col)));
+    assert_eq!(found, rust.find_match(), "find match");
+    let support = rust.find_support().map_or(0, |s| {
+        BINNACLE_FIND | u32::from(s.regex) * BINNACLE_FIND_REGEX
+    });
+    assert_eq!(c.find_support, support, "find support");
     match rust.hovered_header() {
         None => assert_eq!(c.has_hovered_header, 0),
         Some((axis, item)) => {
@@ -786,6 +849,9 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         let mut view = ViewSpec::default();
         let mut edit = BinnacleViewEdit::default();
         let mut size = 0.0;
+        let mut find = None;
+        let mut from = None;
+        let mut direction = BINNACLE_FIND_NEXT;
         let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
                 let got = unsafe { slice::from_raw_parts(c.text.data, c.text.len) };
@@ -843,6 +909,22 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 (6, 0, 0, tag(*axis), 0)
             }
             Effect::BandAutoSizeRequested { axis } => (7, 0, 0, tag(*axis), 0),
+            Effect::FindRequested { query } => {
+                find = query.clone();
+                (8, 0, 0, 0, 0)
+            }
+            Effect::FindStepRequested {
+                query,
+                from: f,
+                direction: d,
+            } => {
+                find = Some(query.clone());
+                from = *f;
+                if *d == FindDirection::Previous {
+                    direction = BINNACLE_FIND_PREVIOUS;
+                }
+                (9, 0, 0, 0, 0)
+            }
             #[allow(unreachable_patterns)] // Effects added to the Grid later are OTHER.
             _ => (0, 0, 0, 0, 0),
         };
@@ -852,6 +934,10 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         );
         assert!(same_f32(c.size, size), "size {} for {want:?}", c.size);
         assert_eq!(c.edit, edit);
+        let got = (c.has_find != 0).then(|| unsafe { find_from_c(&c.find) });
+        assert_eq!(got, find, "find for {want:?}");
+        let got = (c.has_from != 0).then(|| FindMatch::new(Key(c.from.row), Key(c.from.col)));
+        assert_eq!((got, c.direction), (from, direction), "step for {want:?}");
         for axis in Axis::ALL {
             let got = c.view.axes[tag(axis) as usize];
             let sort = match got.sort.is_null() {
@@ -904,6 +990,15 @@ unsafe fn query_from_c(q: &BinnacleTextQuery) -> TextQuery {
         .case_sensitive(q.flags & BINNACLE_TEXT_CASE_SENSITIVE != 0)
         .regex(q.flags & BINNACLE_TEXT_REGEX != 0)
         .searching(searches)
+}
+
+/// A Find Query read back from C, as a host would.
+unsafe fn find_from_c(f: &BinnacleFindQuery) -> FindQuery {
+    let by = match f.by {
+        BINNACLE_ROWS => Axis::Rows,
+        _ => Axis::Cols,
+    };
+    FindQuery::new(unsafe { query_from_c(&f.query) }).by(by)
 }
 
 /// The support bits from the header's constants.
@@ -1098,10 +1193,16 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
     // Start with a frame so pointer input can hit the laid-out Grid.
     let first = Op::Frame(tc.draw(len()), tc.draw(len()));
     let mut asked = None;
-    // Each band's thickness as of the last frame.
+    // Each band's thickness and each strip's Keys as of the last frame.
     let mut bands = [0.0f32; 2];
+    let mut shown: [Vec<Key>; 2] = Default::default();
+    // Find open from the start half the time, so steps land while it is.
+    let find = tc
+        .draw(gs::booleans())
+        .then(|| Op::SetFind(Some(FindQuery::new(TextQuery::new("a")))));
     let ops = [first]
         .into_iter()
+        .chain(find)
         .chain(tc.draw(gs::vecs(op()).min_size(5).max_size(60)));
     for op in ops {
         unsafe {
@@ -1140,6 +1241,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     let rust = grid.snapshot();
                     check_snapshot(&snap, &rust);
                     bands = Axis::ALL.map(|a| rust.header(a));
+                    shown = Axis::ALL.map(|a| rust.strip(a).iter().filter_map(|i| i.key).collect());
                     1
                 }
                 Op::Pointer(e) => {
@@ -1270,6 +1372,38 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     let c_to = condition_to_c(&to, &[], &to_values);
                     grid.replace_condition(axis, &from, to.clone());
                     binnacle_grid_replace_condition(h, tag(axis), &c_from, &c_to)
+                }
+                Op::SetFind(query) => {
+                    let keys = query
+                        .as_ref()
+                        .map_or_else(Vec::new, |q| query_keys(&q.query));
+                    let c = query.as_ref().map(|q| BinnacleFindQuery {
+                        query: query_to_c(&q.query, &keys),
+                        by: tag(q.by),
+                    });
+                    let ok = binnacle_grid_set_find(h, c.as_ref().map_or(std::ptr::null(), |c| c));
+                    grid.set_find(query);
+                    ok
+                }
+                Op::FindSupport(support) => {
+                    grid.set_find_support(support);
+                    let bits = support.map_or(0, |s| BINNACLE_FIND | u32::from(s.regex) << 1);
+                    binnacle_grid_set_find_support(h, bits)
+                }
+                Op::FindStepped(found, at) => {
+                    let found = match at {
+                        Some((r, c)) if found.is_some() && shown.iter().all(|s| !s.is_empty()) => {
+                            let [rows, cols] = &shown;
+                            Some(FindMatch::new(rows[r % rows.len()], cols[c % cols.len()]))
+                        }
+                        _ => found,
+                    };
+                    let c = found.map(|m| BinnacleFindMatch {
+                        row: m.row.0,
+                        col: m.col.0,
+                    });
+                    grid.find_stepped(found);
+                    binnacle_grid_find_stepped(h, c.as_ref().map_or(std::ptr::null(), |c| c))
                 }
                 Op::Located(about, answer) => {
                     let Some((axis, key)) = about.or(asked) else {
