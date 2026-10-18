@@ -130,6 +130,7 @@ test.describe("records", () => {
       await menu(page, "name").getByRole("combobox", { name: "Condition" }).selectOption("not");
       await menuField(page, "name").fill("an");
       await expect(chips(page)).toHaveText(["crew: 1×", "name: not an×"]);
+      await expect(menu(page, "name").locator(".binnacle-column-menu-notice")).not.toHaveText(/Loading/);
       await expect(page).toHaveScreenshot("column-menu.png");
     });
 
