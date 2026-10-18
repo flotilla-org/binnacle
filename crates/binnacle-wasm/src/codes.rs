@@ -195,6 +195,20 @@ pub fn quick_filter(bits: u8) -> Option<TextSupport> {
     (bits & QUICK_FILTER != 0).then(|| TextSupport::new(bits & QUICK_FILTER_REGEX != 0))
 }
 
+pub const FIND: u8 = 1;
+pub const FIND_REGEX: u8 = 2;
+
+/// Find's support: none without [`FIND`], with regexes if [`FIND_REGEX`] is
+/// set too.
+pub fn find(bits: u8) -> Option<TextSupport> {
+    (bits & FIND != 0).then(|| TextSupport::new(bits & FIND_REGEX != 0))
+}
+
+/// The bits [`find`] decodes.
+pub fn find_bits(support: Option<TextSupport>) -> u8 {
+    support.map_or(0, |s| FIND | if s.regex { FIND_REGEX } else { 0 })
+}
+
 /// An unfiltered count: `None` unless a whole number up to [`MAX_COUNT`]
 /// (NaN for unknown).
 pub fn total(n: f64) -> Option<u64> {
@@ -300,5 +314,13 @@ mod tests {
         assert_eq!(quick_filter(QUICK_FILTER), Some(TextSupport::new(false)));
         assert_eq!(quick_filter(3), Some(TextSupport::new(true)));
         assert_eq!((total(f64::NAN), total(40.0)), (None, Some(40)));
+    }
+
+    #[test]
+    fn find_bits_need_the_find_bit_and_round_trip() {
+        assert_eq!(find(FIND_REGEX), None);
+        for bits in [0, FIND, FIND | FIND_REGEX] {
+            assert_eq!(find_bits(find(bits)), bits);
+        }
     }
 }

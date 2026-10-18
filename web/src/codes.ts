@@ -28,3 +28,6 @@ export const SUPPORT = { sort: 1, text: 2, textRegex: 4, oneOf: 8 } as const;
 
 /** The quick filter bits the wasm `set_quick_filter_support` input takes. */
 export const QUICK_FILTER = { on: 1, regex: 2 } as const;
+
+/** The find bits the wasm `set_find_support` input takes. */
+export const FIND = { on: 1, regex: 2 } as const;

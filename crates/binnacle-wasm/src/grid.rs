@@ -6,7 +6,9 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, focus_step, position};
-use crate::effect::{WireCondition, WireStamped, WireTextQuery, WireViewSpec};
+use crate::effect::{
+    WireCondition, WireFindMatch, WireFindQuery, WireStamped, WireTextQuery, WireViewSpec,
+};
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -197,6 +199,37 @@ impl WebGrid {
     pub fn set_quick_filter_support(&mut self, a: u8, bits: u8) {
         self.grid
             .set_quick_filter_support(axis(a), codes::quick_filter(bits));
+    }
+
+    /// Sets the Find Query, shaped as `FindRequested` carries it, or closes
+    /// find with `null`.
+    pub fn set_find(&mut self, query: JsValue) -> Result<(), JsError> {
+        let query: Option<WireFindQuery> =
+            serde_wasm_bindgen::from_value(query).map_err(|e| JsError::new(&e.to_string()))?;
+        self.grid.set_find(query.map(Into::into));
+        Ok(())
+    }
+
+    /// Whether the Table Source finds; see [`codes::find`].
+    pub fn set_find_support(&mut self, bits: u8) {
+        self.grid.set_find_support(codes::find(bits));
+    }
+
+    pub fn find_next(&mut self) {
+        self.grid.action(Action::FindNext);
+    }
+
+    pub fn find_previous(&mut self) {
+        self.grid.action(Action::FindPrevious);
+    }
+
+    /// The answer to `FindStepRequested`: `{ row, col }`, or `null` for no
+    /// match.
+    pub fn find_stepped(&mut self, found: JsValue) -> Result<(), JsError> {
+        let found: Option<WireFindMatch> =
+            serde_wasm_bindgen::from_value(found).map_err(|e| JsError::new(&e.to_string()))?;
+        self.grid.find_stepped(found.map(Into::into));
+        Ok(())
     }
 
     /// The answer to `Locate`; see [`codes::located`].

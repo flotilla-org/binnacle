@@ -3,12 +3,12 @@
 //! directions as strings. `web/src/effects.ts` holds the matching union.
 
 use binnacle_core::{
-    Axis, Condition, ConditionKind, Effect, FilterSpec, Key, Searched, SortColumn, SortDirection,
-    SortSpec, Stamped, TextQuery, Value, ViewEdit, ViewSpec,
+    Axis, Condition, ConditionKind, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, Key,
+    Searched, SortColumn, SortDirection, SortSpec, Stamped, TextQuery, Value, ViewEdit, ViewSpec,
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WireAxis {
     Rows,
@@ -20,6 +20,15 @@ impl From<Axis> for WireAxis {
         match axis {
             Axis::Rows => WireAxis::Rows,
             Axis::Cols => WireAxis::Cols,
+        }
+    }
+}
+
+impl From<WireAxis> for Axis {
+    fn from(axis: WireAxis) -> Self {
+        match axis {
+            WireAxis::Rows => Axis::Rows,
+            WireAxis::Cols => Axis::Cols,
         }
     }
 }
@@ -304,6 +313,57 @@ impl From<ViewEdit> for WireViewEdit {
     }
 }
 
+/// A Find Query: the Text Query and the axis stepped along first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WireFindQuery {
+    pub query: WireTextQuery,
+    pub by: WireAxis,
+}
+
+impl From<&FindQuery> for WireFindQuery {
+    fn from(q: &FindQuery) -> Self {
+        WireFindQuery {
+            query: (&q.query).into(),
+            by: q.by.into(),
+        }
+    }
+}
+
+impl From<WireFindQuery> for FindQuery {
+    fn from(q: WireFindQuery) -> Self {
+        FindQuery::new(q.query.into()).by(q.by.into())
+    }
+}
+
+/// A cell find stepped to or from, by its row and column Keys.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WireFindMatch {
+    pub row: u64,
+    pub col: u64,
+}
+
+impl From<FindMatch> for WireFindMatch {
+    fn from(m: FindMatch) -> Self {
+        WireFindMatch {
+            row: m.row.0,
+            col: m.col.0,
+        }
+    }
+}
+
+impl From<WireFindMatch> for FindMatch {
+    fn from(m: WireFindMatch) -> Self {
+        FindMatch::new(Key(m.row), Key(m.col))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireFindDirection {
+    Next,
+    Previous,
+}
+
 /// One Effect with the generation it was stamped with.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct WireStamped {
@@ -366,6 +426,14 @@ pub enum WireEffect {
         keys: Vec<u64>,
         to: f64,
     },
+    FindRequested {
+        query: Option<WireFindQuery>,
+    },
+    FindStepRequested {
+        query: WireFindQuery,
+        from: Option<WireFindMatch>,
+        direction: WireFindDirection,
+    },
 }
 
 impl From<Stamped> for WireStamped {
@@ -427,6 +495,21 @@ impl From<Effect> for WireEffect {
                 axis: axis.into(),
                 keys: keys.into_iter().map(k).collect(),
                 to: to as f64,
+            },
+            Effect::FindRequested { query } => WireEffect::FindRequested {
+                query: query.as_ref().map(WireFindQuery::from),
+            },
+            Effect::FindStepRequested {
+                query,
+                from,
+                direction,
+            } => WireEffect::FindStepRequested {
+                query: (&query).into(),
+                from: from.map(WireFindMatch::from),
+                direction: match direction {
+                    FindDirection::Next => WireFindDirection::Next,
+                    FindDirection::Previous => WireFindDirection::Previous,
+                },
             },
         }
     }
@@ -612,6 +695,36 @@ mod tests {
             }),
             json!({ "generation": 7.0, "type": "MoveRequested", "axis": "cols", "keys": [5, 9], "to": 2.0 })
         );
+    }
+
+    #[test]
+    fn find_effects_carry_the_find_query_and_the_cell_stepped_from() {
+        let query = FindQuery::new(TextQuery::new("a").case_sensitive(true)).by(Axis::Cols);
+        let wired = json!({ "text": "a", "caseSensitive": true, "regex": false, "searches": null });
+        assert_eq!(
+            wire(Effect::FindRequested {
+                query: Some(query.clone())
+            }),
+            json!({ "generation": 7.0, "type": "FindRequested",
+                "query": { "query": wired, "by": "cols" } })
+        );
+        assert_eq!(
+            wire(Effect::FindRequested { query: None }),
+            json!({ "generation": 7.0, "type": "FindRequested", "query": null })
+        );
+        assert_eq!(
+            wire(Effect::FindStepRequested {
+                query: query.clone(),
+                from: Some(FindMatch::new(Key(3), Key(u64::MAX))),
+                direction: FindDirection::Previous,
+            }),
+            json!({ "generation": 7.0, "type": "FindStepRequested",
+                "query": { "query": wired, "by": "cols" },
+                "from": { "row": 3, "col": u64::MAX }, "direction": "previous" })
+        );
+        let back: WireFindQuery =
+            serde_json::from_value(json!({ "query": wired, "by": "cols" })).unwrap();
+        assert_eq!(FindQuery::from(back), query);
     }
 
     #[test]

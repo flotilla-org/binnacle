@@ -65,6 +65,21 @@ export interface KeyedAxisView {
 /** Where a condition stands: applied and still asked for, asked for and not yet applied, or applied and no longer asked for. */
 export type ConditionState = "applied" | "adding" | "removing";
 
+/**
+ * A Find Query as the Grid holds it: the Text Query, and the axis find steps
+ * along first (`rows`: each row's cells left to right, then the next row).
+ */
+export interface KeyedFindQuery {
+  query: KeyedTextQuery;
+  by: AxisName;
+}
+
+/** A cell find stepped to or from, by its row and column Keys. */
+export interface FindMatch {
+  row: bigint;
+  col: bigint;
+}
+
 /** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis. */
 export interface KeyedViewSpec {
   rows: KeyedAxisView;
@@ -134,6 +149,12 @@ export interface Snapshot {
   movingKeys: bigint[];
   appliedView: KeyedViewSpec;
   requestedView: KeyedViewSpec | null;
+  /** The Find Query, `null` while find is closed. */
+  find: KeyedFindQuery | null;
+  /** The match the last find step landed on, until its row or column leaves. */
+  findMatch: FindMatch | null;
+  /** Whether the Table Source finds, and with regexes; `null` if it does not. */
+  findSupport: { regex: boolean } | null;
   /** Cell states as bit flags, row-major over the Strips; read with `cellState`. */
   cells: Uint8Array;
 }
@@ -147,11 +168,13 @@ export interface CellState {
   focused: boolean;
   selected: boolean;
   editing: boolean;
+  currentMatch: boolean;
 }
 
 const FOCUSED = 1;
 const SELECTED = 2;
 const EDITING = 4;
+const CURRENT_MATCH = 8;
 
 /** The state of the cell where the `row`th row item and `col`th column item cross. */
 export function cellState(s: Snapshot, row: number, col: number): CellState {
@@ -160,6 +183,7 @@ export function cellState(s: Snapshot, row: number, col: number): CellState {
     focused: (bits & FOCUSED) !== 0,
     selected: (bits & SELECTED) !== 0,
     editing: (bits & EDITING) !== 0,
+    currentMatch: (bits & CURRENT_MATCH) !== 0,
   };
 }
 
@@ -169,6 +193,9 @@ const CURSORS: readonly Cursor[] = ["default", "resizeCol", "resizeRow", "move"]
 const CONDITION_STATES: readonly ConditionState[] = ["applied", "adding", "removing"];
 /** `SUPPORT` bits in `codes.ts`, read here without importing the encoder's side. */
 const SORT_BIT = 1;
+/** `FIND` bits in `codes.ts`, likewise. */
+const FIND_BIT = 1;
+const FIND_REGEX_BIT = 2;
 const TEXT_BIT = 2;
 const REGEX_BIT = 4;
 const ONE_OF_BIT = 8;
@@ -350,6 +377,13 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const movingKeys = r.list(() => r.key());
   const appliedView = r.view();
   const requestedView = r.opt(() => r.view());
+  const find = r.opt(() => {
+    const query = r.textQuery();
+    return { query, by: r.axis() };
+  });
+  const findMatch = r.opt(() => ({ row: r.key(), col: r.key() }));
+  const findBits = r.num();
+  const findSupport = findBits & FIND_BIT ? { regex: (findBits & FIND_REGEX_BIT) !== 0 } : null;
   const cells = new Uint8Array(rows.strip.length * cols.strip.length);
   for (let i = 0; i < cells.length; i++) cells[i] = r.num();
   if (!r.done()) throw new Error("binnacle: Snapshot has data past its end");
@@ -372,6 +406,9 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     movingKeys,
     appliedView,
     requestedView,
+    find,
+    findMatch,
+    findSupport,
     cells,
   };
 }

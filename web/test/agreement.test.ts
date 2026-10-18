@@ -2,7 +2,7 @@
 // against Rust's own view of the same frame, never against constants.
 
 import { beforeAll, describe, expect, test } from "vitest";
-import { NOTICE_CODE, SUPPORT } from "../src/codes";
+import { FIND, NOTICE_CODE, SUPPORT } from "../src/codes";
 import { decodeSnapshot } from "../src/snapshot";
 import { isEffect } from "../src/effects";
 import { bridge } from "../src/wasm";
@@ -29,6 +29,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "dragging",
     "sorted",
     "filtered",
+    "found",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -94,6 +95,16 @@ describe("Effects", () => {
     const replace = { type: "ReplaceCondition", axis: "rows", from: condition, to: { ...condition, not: false } };
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, replace))).toBe(true);
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...replace, to: undefined }))).toBe(false);
+    const find = { query: quick, by: "cols" };
+    expect(isEffect({ type: "FindRequested", generation: 1, query: find })).toBe(true);
+    expect(isEffect({ type: "FindRequested", generation: 1, query: null })).toBe(true);
+    expect(isEffect({ type: "FindRequested", generation: 1, query: { ...find, by: "up" } })).toBe(false);
+    const step = { type: "FindStepRequested", generation: 1, query: find, from: { row: 1n, col: 2n }, direction: "next" };
+    expect(isEffect(step)).toBe(true);
+    expect(isEffect({ ...step, from: null, direction: "previous" })).toBe(true);
+    expect(isEffect({ ...step, query: null })).toBe(false);
+    expect(isEffect({ ...step, from: { row: 1n, col: 2 } })).toBe(false);
+    expect(isEffect({ ...step, direction: "sideways" })).toBe(false);
   });
 });
 
@@ -186,6 +197,39 @@ describe("Support", () => {
         { sort: true, text: { regex: true }, oneOf: false },
         { sort: false, text: null, oneOf: true },
       ]);
+    } finally {
+      grid.free();
+    }
+  });
+});
+
+describe("Find", () => {
+  test("a Find Query a host sets comes back as Rust carries it, and a step's answer becomes the current match", () => {
+    const { WebAxis, WebGrid } = bridge();
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(3, 80));
+    try {
+      grid.begin_frame(400, 200);
+      grid.set_window(0, 0, BigUint64Array.from([10n, 11n, 12n, 13n, 14n]));
+      grid.set_window(1, 0, BigUint64Array.from([20n, 21n, 22n]));
+      grid.set_find_support(FIND.on | FIND.regex);
+      const query = { query: { text: "Bé🚢", caseSensitive: true, regex: false, searches: [21n] }, by: "cols" };
+      grid.set_find(query);
+      grid.find_previous();
+      const effects = (grid.poll_effects() as { type: string }[]).filter((e) => e.type.startsWith("Find"));
+      expect(effects.map(({ generation: _, ...e }: { type: string; generation?: number }) => e)).toEqual([
+        { type: "FindRequested", query },
+        { type: "FindStepRequested", query, from: null, direction: "previous" },
+      ]);
+      grid.find_stepped({ row: 13n, col: 21n });
+      grid.begin_frame(400, 200);
+      const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+      expect([s.find, s.findMatch, s.findSupport]).toEqual([query, { row: 13n, col: 21n }, { regex: true }]);
+      expect(s.rows.focus?.key).toBe(13n);
+      grid.set_find(null);
+      grid.set_find_support(FIND.regex);
+      grid.begin_frame(400, 200);
+      const closed = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+      expect([closed.find, closed.findMatch, closed.findSupport]).toEqual([null, null, null]);
     } finally {
       grid.free();
     }

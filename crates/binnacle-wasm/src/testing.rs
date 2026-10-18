@@ -4,14 +4,15 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Effect, FilterSpec,
-    FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot,
-    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers,
+    PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
 use crate::effect::{
-    WireAxis, WireCondition, WireDirection, WireStamped, WireViewEdit, WireViewSpec,
+    WireAxis, WireCondition, WireDirection, WireFindMatch, WireFindQuery, WireStamped,
+    WireViewEdit, WireViewSpec,
 };
 use crate::snapshot::cell_bits;
 
@@ -36,6 +37,9 @@ pub struct Dump {
     moving_keys: Vec<u64>,
     applied_view: WireViewSpec,
     requested_view: Option<WireViewSpec>,
+    find: Option<WireFindQuery>,
+    find_match: Option<WireFindMatch>,
+    find_support: Option<DumpTextSupport>,
     cells: Vec<u8>,
 }
 
@@ -401,6 +405,9 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         moving_keys: keys(s.moving_keys()),
         applied_view: s.applied_view().into(),
         requested_view: s.requested_view().map(WireViewSpec::from),
+        find: s.find().map(WireFindQuery::from),
+        find_match: s.find_match().map(WireFindMatch::from),
+        find_support: s.find_support().map(|f| DumpTextSupport { regex: f.regex }),
         cells,
     }
 }
@@ -476,6 +483,14 @@ pub fn every_effect() -> Vec<WireStamped> {
             keys: vec![col, row],
             to: 3,
         },
+        Effect::FindRequested {
+            query: Some(FindQuery::new(TextQuery::new("Ø🚢").case_sensitive(true)).by(Axis::Cols)),
+        },
+        Effect::FindStepRequested {
+            query: FindQuery::new(TextQuery::new("a").searching(Searched::Keys(vec![col]))),
+            from: Some(FindMatch::new(row, col)),
+            direction: FindDirection::Previous,
+        },
     ]
     .into_iter()
     .enumerate()
@@ -536,9 +551,9 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 11] = [
+pub const SCENARIOS: [&str; 12] = [
     "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
-    "sorted", "filtered",
+    "sorted", "filtered", "found",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -692,6 +707,23 @@ pub fn scenario(name: &str) -> Grid {
             let values = vec![Value::Text("Bé🚢".into()), Value::Blank];
             grid.add_condition(Axis::Rows, Condition::one_of(key(2), values).not(true));
         }
+        "found" => {
+            // Find "Bé🚢" by columns, regexes supported, stepped to row 3,
+            // column 1 with rows 1 to 2 of column 0 selected.
+            grid.set_focus(key(1), key(0));
+            frame(&mut grid);
+            grid.action(Action::MoveFocus {
+                axis: Axis::Rows,
+                by: FocusStep::Item,
+                forward: true,
+                extend: true,
+            });
+            grid.set_find_support(Some(TextSupport::new(true)));
+            let query = TextQuery::new("Bé🚢").searching(Searched::Keys(vec![key(1)]));
+            grid.set_find(Some(FindQuery::new(query).by(Axis::Cols)));
+            grid.action(Action::FindNext);
+            grid.find_stepped(Some(FindMatch::new(key(3), key(1))));
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -763,6 +795,15 @@ mod tests {
                         ]
                     );
                 }
+                "found" => {
+                    assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
+                    assert!(s.find_support().is_some());
+                    let current = s.find_match().unwrap();
+                    assert_eq!(s.selection_range().map(|r| r.rows), Some(1..3));
+                    let row = s.rows().iter().find(|i| i.key == Some(current.row));
+                    let col = s.cols().iter().find(|i| i.key == Some(current.col));
+                    assert!(s.cell_state(row.unwrap(), col.unwrap()).current_match);
+                }
                 _ => {}
             }
         }
@@ -778,6 +819,7 @@ mod tests {
                 "Idle",
                 "Idle",
                 "DraggingSelection",
+                "Idle",
                 "Idle",
                 "Idle"
             ]
@@ -804,10 +846,12 @@ mod tests {
                 crate::effect::WireEffect::BandSizeChanged { .. } => "BandSizeChanged",
                 crate::effect::WireEffect::BandAutoSizeRequested { .. } => "BandAutoSizeRequested",
                 crate::effect::WireEffect::MoveRequested { .. } => "MoveRequested",
+                crate::effect::WireEffect::FindRequested { .. } => "FindRequested",
+                crate::effect::WireEffect::FindStepRequested { .. } => "FindStepRequested",
             })
             .collect();
         let mut unique = seen.clone();
         unique.dedup();
-        assert_eq!(unique.len(), 13, "{seen:?}");
+        assert_eq!(unique.len(), 15, "{seen:?}");
     }
 }

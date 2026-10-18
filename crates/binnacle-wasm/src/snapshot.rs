@@ -11,7 +11,7 @@ use binnacle_core::{
     Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
 };
 
-use crate::codes::support_bits;
+use crate::codes::{find_bits, support_bits};
 
 /// The flat form of one Snapshot. Buffers are reused frame to frame.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -23,6 +23,7 @@ pub struct Encoded {
 pub const CELL_FOCUSED: u8 = 1;
 pub const CELL_SELECTED: u8 = 2;
 pub const CELL_EDITING: u8 = 4;
+pub const CELL_CURRENT_MATCH: u8 = 8;
 
 /// A cell's state as the bit flags the Snapshot carries.
 pub fn cell_bits(c: CellState) -> u8 {
@@ -35,6 +36,9 @@ pub fn cell_bits(c: CellState) -> u8 {
     }
     if c.editing {
         bits |= CELL_EDITING;
+    }
+    if c.current_match {
+        bits |= CELL_CURRENT_MATCH;
     }
     bits
 }
@@ -355,6 +359,21 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
     if let Some(spec) = requested {
         w.view(spec);
     }
+    // Find: the query and the axis it steps along, the current match, then
+    // the support bits.
+    let find = s.find();
+    w.flag(find.is_some());
+    if let Some(f) = find {
+        w.text_query(&f.query);
+        w.num(axis_code(f.by));
+    }
+    let found = s.find_match();
+    w.flag(found.is_some());
+    if let Some(m) = found {
+        w.key(m.row);
+        w.key(m.col);
+    }
+    w.num(find_bits(s.find_support()));
     // Cell states, row-major over the Strips, as bit flags.
     for row in s.rows() {
         for col in s.cols() {
