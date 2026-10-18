@@ -4,8 +4,8 @@ use std::fmt;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, FilterSpec, Grid, Key, Located, Position, Searched, SortSpec, Stamped,
-    Support, TextQuery, TextSupport, Totals, ViewSpec,
+    Axis, ChangeNotice, Condition, ConditionKind, FilterSpec, Grid, Key, Located, Position,
+    Searched, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, ViewSpec,
 };
 use regex::{Regex, RegexBuilder};
 
@@ -100,13 +100,39 @@ struct Quick {
     matcher: Matcher,
 }
 
+/// A column condition in force and its matcher.
+struct Kept {
+    condition: Condition,
+    matcher: Matcher,
+}
+
+impl Kept {
+    /// `condition` ready to match, or `None` for an invalid regex.
+    fn new(condition: &Condition) -> Option<Kept> {
+        let matcher = match &condition.kind {
+            ConditionKind::Text(query) => Matcher::new(query)?,
+            _ => return None,
+        };
+        Some(Kept {
+            condition: condition.clone(),
+            matcher,
+        })
+    }
+
+    /// Whether the condition keeps a row whose text in its column is `text`.
+    fn keeps(&self, text: Option<&str>) -> bool {
+        text.is_some_and(|t| self.matcher.is_match(t)) != self.condition.not
+    }
+}
+
 /// An In-Memory Table Source for rows of type `R` in a host's slice, with a
 /// closure per sortable column extracting its sort key from a row. It never
 /// holds the rows: each sort borrows them.
 ///
-/// A column's text form, which a quick filter matches, is its text closure
-/// ([`MemorySource::text_column`]) or else its sort key written with
-/// `Display`. A column with neither never matches. Regexes are the `regex`
+/// A column's text form, which a quick filter and its Text conditions match,
+/// is its text closure ([`MemorySource::text_column`]) or else its sort key
+/// written with `Display`. A column with neither never matches, nor does a
+/// blank (`None`), so a `not` condition keeps it. Regexes are the `regex`
 /// crate's.
 pub struct MemorySource<R> {
     table: InMemoryTableSource,
@@ -116,6 +142,8 @@ pub struct MemorySource<R> {
     keep: Option<Keep<R>>,
     /// The quick filter in force, ANDed with `keep`.
     quick: Option<Quick>,
+    /// The column conditions in force, ANDed with the quick filter.
+    conditions: Vec<Kept>,
 }
 
 impl<R> MemorySource<R> {
@@ -128,6 +156,7 @@ impl<R> MemorySource<R> {
             texts: HashMap::new(),
             keep: None,
             quick: None,
+            conditions: Vec::new(),
         }
     }
 
@@ -182,9 +211,11 @@ impl<R> MemorySource<R> {
 
     /// Presents the rows as `spec`'s rows part asks, extracting each sort
     /// column's keys and each searched column's text from `rows`, and returns
-    /// the Change Notice the rows need: `Refiltered` if the quick filter
-    /// changed. If a sort column has no closure, nothing changes. A quick
-    /// filter with an invalid regex is not applied: the one in force stays.
+    /// the Change Notice the rows need: `Refiltered` if the filter changed.
+    /// If a sort column has no closure, nothing changes. A quick filter with
+    /// an invalid regex is not applied: the one in force stays. A condition
+    /// with an invalid regex, or of a kind this source does not apply, is
+    /// left out.
     /// The columns part is not applied: [`MemorySource::view_spec`] leaves
     /// out what is not.
     ///
@@ -193,19 +224,26 @@ impl<R> MemorySource<R> {
     /// If `rows` is not as long as the base row count.
     pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Result<ChangeNotice, Unsortable> {
         let sorted = self.sort(rows, &spec.rows.sort)?;
-        let query = spec.rows.filter.quick.as_ref();
-        if query == self.quick.as_ref().map(|q| &q.query) {
-            return Ok(sorted);
+        let filter = &spec.rows.filter;
+        let query = filter.quick.as_ref();
+        let mut changed = false;
+        if query != self.quick.as_ref().map(|q| &q.query) {
+            let quick = query.map(|q| self.quick(q));
+            if let Some(None) = quick {
+                // An invalid regex: the quick filter in force stays.
+            } else {
+                self.quick = quick.flatten();
+                changed = true;
+            }
         }
-        let quick = match query {
-            None => None,
-            Some(query) => match self.quick(query) {
-                Some(quick) => Some(quick),
-                None => return Ok(sorted),
-            },
-        };
-        self.quick = quick;
-        Ok(self.refilter(rows))
+        let wanted = filter.conditions.conditions();
+        if !(wanted.iter()).eq(self.conditions.iter().map(|k| &k.condition)) {
+            let kept: Vec<Kept> = wanted.iter().filter_map(Kept::new).collect();
+            changed |= !(kept.iter().map(|k| &k.condition))
+                .eq(self.conditions.iter().map(|k| &k.condition));
+            self.conditions = kept;
+        }
+        Ok(if changed { self.refilter(rows) } else { sorted })
     }
 
     /// `query` ready to match, or `None` for an invalid regex.
@@ -234,9 +272,10 @@ impl<R> MemorySource<R> {
         Ok(self.table.apply_sort(spec, keys))
     }
 
-    /// Whether a filter is in force: the host's or the quick filter.
+    /// Whether a filter is in force: the host's, the quick filter or a
+    /// condition.
     fn filtered(&self) -> bool {
-        self.keep.is_some() || self.quick.is_some()
+        self.keep.is_some() || self.quick.is_some() || !self.conditions.is_empty()
     }
 
     /// Whether the filters in force keep `row`.
@@ -246,6 +285,7 @@ impl<R> MemorySource<R> {
                 (q.columns.iter())
                     .any(|&c| self.text(c, row).is_some_and(|t| q.matcher.is_match(&t)))
             })
+            && (self.conditions.iter()).all(|k| k.keeps(self.text(k.condition.key, row).as_deref()))
     }
 
     /// Applies the filters in force to `rows` again, in the sort in force;
@@ -381,13 +421,18 @@ impl<R> MemorySource<R> {
         self.table.sort_spec()
     }
 
-    /// The View Spec the source applies: the rows' sort and quick filter,
-    /// as last applied.
+    /// The View Spec the source applies: the rows' sort, quick filter and
+    /// conditions, as last applied.
     pub fn view_spec(&self) -> ViewSpec {
         let quick = self.quick.as_ref().map(|q| q.query.clone());
+        let conditions: Vec<Condition> =
+            self.conditions.iter().map(|k| k.condition.clone()).collect();
+        let filter = FilterSpec::default()
+            .with_quick(quick)
+            .with_conditions(conditions.into());
         ViewSpec::default()
             .with_sort(Axis::Rows, self.sort_spec().clone())
-            .with_filter(Axis::Rows, FilterSpec::default().with_quick(quick))
+            .with_filter(Axis::Rows, filter)
     }
 
     /// The unfiltered count of each axis: every base row and column.
@@ -398,9 +443,15 @@ impl<R> MemorySource<R> {
         }
     }
 
-    /// The rows sort by the columns given a closure; columns sort by nothing.
+    /// The rows sort by the columns given a closure, and filter by Text
+    /// conditions, regex included, on the columns with a text form; columns
+    /// sort and filter by nothing.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
-        Support::default().with_sort(axis == Axis::Rows && self.columns.contains_key(&key))
+        let rows = axis == Axis::Rows;
+        let text = rows && (self.texts.contains_key(&key) || self.columns.contains_key(&key));
+        Support::default()
+            .with_sort(rows && self.columns.contains_key(&key))
+            .with_text(text.then_some(TextSupport::new(true)))
     }
 
     /// The rows have a quick filter, regex included; the columns have none.

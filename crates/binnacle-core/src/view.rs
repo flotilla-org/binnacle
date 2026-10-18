@@ -57,23 +57,123 @@ impl TextQuery {
     }
 }
 
+/// What a condition asks of the values in its item.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConditionKind {
+    /// The value matches the Text Query, which searches the condition's item.
+    Text(TextQuery),
+}
+
+/// One condition on the items of an axis, read in one item of the other
+/// axis (a column, for the rows): the items whose value there satisfies
+/// `kind` are kept, or with `not` the items whose value does not.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Condition {
+    pub key: Key,
+    pub kind: ConditionKind,
+    pub not: bool,
+}
+
+impl Condition {
+    /// Keeps the items whose value in `key` matches `query`. The query
+    /// searches `key` alone, whatever it searched before.
+    pub fn text(key: Key, query: TextQuery) -> Self {
+        Condition {
+            key,
+            kind: ConditionKind::Text(query.searching(Searched::Keys(vec![key]))),
+            not: false,
+        }
+    }
+
+    /// This condition, or with `not` its opposite.
+    pub fn not(mut self, not: bool) -> Self {
+        self.not = not;
+        self
+    }
+
+    /// A Text condition with no text, which asks for nothing.
+    fn is_empty(&self) -> bool {
+        match &self.kind {
+            ConditionKind::Text(query) => query.text.is_empty(),
+        }
+    }
+}
+
+/// How the conditions of a Filter Spec combine.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ConditionTree {
+    /// Keeps the items every condition keeps: all of them, when empty.
+    All(Vec<Condition>),
+}
+
+impl Default for ConditionTree {
+    fn default() -> Self {
+        ConditionTree::All(Vec::new())
+    }
+}
+
+impl From<Vec<Condition>> for ConditionTree {
+    fn from(conditions: Vec<Condition>) -> Self {
+        ConditionTree::All(conditions)
+    }
+}
+
+impl ConditionTree {
+    /// Every condition in the tree, in order.
+    pub fn conditions(&self) -> &[Condition] {
+        match self {
+            ConditionTree::All(conditions) => conditions,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.conditions().is_empty()
+    }
+
+    /// The conditions read in item `key`, in order.
+    pub fn on(&self, key: Key) -> impl Iterator<Item = &Condition> {
+        self.conditions().iter().filter(move |c| c.key == key)
+    }
+
+    fn list_mut(&mut self) -> &mut Vec<Condition> {
+        match self {
+            ConditionTree::All(conditions) => conditions,
+        }
+    }
+
+    /// Where the first condition equal to `condition` sits.
+    fn find(&self, condition: &Condition) -> Option<usize> {
+        self.conditions().iter().position(|c| c == condition)
+    }
+}
+
 /// The filter part of one axis of a View Spec: which of its items the Table
-/// Source keeps. Empty keeps every item.
+/// Source keeps, those the quick filter and every condition keep. Empty keeps
+/// every item.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct FilterSpec {
     /// The quick filter: keeps the items with a match for the query in any
     /// item it searches.
     pub quick: Option<TextQuery>,
+    pub conditions: ConditionTree,
 }
 
 impl FilterSpec {
     pub fn is_empty(&self) -> bool {
-        self.quick.is_none()
+        self.quick.is_none() && self.conditions.is_empty()
     }
 
     pub fn with_quick(mut self, quick: Option<TextQuery>) -> Self {
         self.quick = quick;
+        self
+    }
+
+    pub fn with_conditions(mut self, conditions: ConditionTree) -> Self {
+        self.conditions = conditions;
         self
     }
 }
@@ -153,6 +253,16 @@ pub enum ViewEdit {
     /// Items were shown or hidden on `axis`, and a Text Query searches the
     /// shown ones: the same spec, to apply again.
     ShownChanged { axis: Axis },
+    /// `condition` was added to the conditions of `axis`.
+    AddCondition { axis: Axis, condition: Condition },
+    /// The first condition of `axis` equal to `condition` was removed.
+    RemoveCondition { axis: Axis, condition: Condition },
+    /// The first condition of `axis` equal to `from` became `to`, in place.
+    ReplaceCondition {
+        axis: Axis,
+        from: Condition,
+        to: Condition,
+    },
 }
 
 /// How a Table Source matches a Text Query: `regex` if it takes patterns as
@@ -206,11 +316,17 @@ impl Totals {
 pub struct Support {
     /// The axis may be sorted by the item.
     pub sort: bool,
+    /// The axis may be filtered by Text conditions on the item, and how they
+    /// match; `None` if not. Contains without regex by default.
+    pub text: Option<TextSupport>,
 }
 
 impl Default for Support {
     fn default() -> Self {
-        Support { sort: true }
+        Support {
+            sort: true,
+            text: Some(TextSupport::default()),
+        }
     }
 }
 
@@ -219,6 +335,32 @@ impl Support {
         self.sort = sort;
         self
     }
+
+    pub fn with_text(mut self, text: Option<TextSupport>) -> Self {
+        self.text = text;
+        self
+    }
+}
+
+/// How the header of an item shows the conditions read in it: `filtered`
+/// while the applied View Spec has one, `pending` while the latest request
+/// would change them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HeaderFilter {
+    pub filtered: bool,
+    pub pending: bool,
+}
+
+/// Where a condition stands between the applied View Spec and the latest
+/// request, as [`crate::Snapshot::conditions`] lists it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ConditionState {
+    /// Applied, and still requested.
+    Applied,
+    /// Requested, not yet applied.
+    Adding,
+    /// Applied, no longer requested.
+    Removing,
 }
 
 /// The Grid's view state: the View Spec the Table Source last applied and the
@@ -248,7 +390,43 @@ impl ViewState {
         HeaderSort { applied, pending }
     }
 
-    fn support(&self, axis: Axis, key: Key) -> Support {
+    /// How the header of `key` shows the conditions read in it.
+    pub fn header_filter(&self, header_axis: Axis, key: Key) -> HeaderFilter {
+        let filtered = header_axis.other();
+        let on = |spec: &ViewSpec| -> Vec<Condition> {
+            spec.axis(filtered).filter.conditions.on(key).cloned().collect()
+        };
+        let applied = on(&self.applied);
+        let pending = self.requested.as_ref().is_some_and(|r| on(r) != applied);
+        HeaderFilter {
+            filtered: !applied.is_empty(),
+            pending,
+        }
+    }
+
+    /// The conditions of `axis`: the latest request's, each `Applied` or
+    /// `Adding`, then the applied ones it drops, `Removing`.
+    pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
+        let mut applied: Vec<&Condition> = self.applied.axis(axis).filter.conditions.conditions().iter().collect();
+        let Some(requested) = &self.requested else {
+            return applied.into_iter().map(|c| (c.clone(), ConditionState::Applied)).collect();
+        };
+        let mut out = Vec::new();
+        for c in requested.axis(axis).filter.conditions.conditions() {
+            let state = match applied.iter().position(|a| *a == c) {
+                Some(i) => {
+                    applied.remove(i);
+                    ConditionState::Applied
+                }
+                None => ConditionState::Adding,
+            };
+            out.push((c.clone(), state));
+        }
+        out.extend(applied.into_iter().map(|c| (c.clone(), ConditionState::Removing)));
+        out
+    }
+
+    pub fn support(&self, axis: Axis, key: Key) -> Support {
         self.support[axis.index()]
             .get(&key)
             .copied()
@@ -301,6 +479,42 @@ impl Grid {
         self.edit_view(ViewEdit::SetQuickFilter { axis, query });
     }
 
+    /// Adds `condition` to the conditions of `axis` and requests the result.
+    /// A Text condition with no text asks for nothing.
+    pub fn add_condition(&mut self, axis: Axis, condition: Condition) {
+        if condition.is_empty() {
+            return;
+        }
+        self.edit_view(ViewEdit::AddCondition { axis, condition });
+    }
+
+    /// Removes the first condition of `axis` equal to `condition`, if the
+    /// latest request has one, and requests the result.
+    pub fn remove_condition(&mut self, axis: Axis, condition: &Condition) {
+        let tree = &self.latest_view().axis(axis).filter.conditions;
+        if tree.find(condition).is_none() {
+            return;
+        }
+        let condition = condition.clone();
+        self.edit_view(ViewEdit::RemoveCondition { axis, condition });
+    }
+
+    /// Puts `to` in place of the first condition of `axis` equal to `from`
+    /// and requests the result: adds `to` if there is no such condition,
+    /// removes `from` if `to` asks for nothing, and asks for nothing if they
+    /// are equal.
+    pub fn replace_condition(&mut self, axis: Axis, from: &Condition, to: Condition) {
+        let tree = &self.latest_view().axis(axis).filter.conditions;
+        if tree.find(from).is_none() {
+            self.add_condition(axis, to);
+        } else if to.is_empty() {
+            self.remove_condition(axis, from);
+        } else if *from != to {
+            let from = from.clone();
+            self.edit_view(ViewEdit::ReplaceCondition { axis, from, to });
+        }
+    }
+
     /// Requests the whole of `spec`, say to restore a saved view, with the
     /// View Edit [`ViewEdit::Replace`].
     pub fn request_view(&mut self, spec: ViewSpec) {
@@ -335,6 +549,22 @@ impl Grid {
             }
             ViewEdit::SetQuickFilter { axis, query } => {
                 spec.axis_mut(*axis).filter.quick = query.clone();
+            }
+            ViewEdit::AddCondition { axis, condition } => {
+                let tree = &mut spec.axis_mut(*axis).filter.conditions;
+                tree.list_mut().push(condition.clone());
+            }
+            ViewEdit::RemoveCondition { axis, condition } => {
+                let tree = &mut spec.axis_mut(*axis).filter.conditions;
+                if let Some(i) = tree.find(condition) {
+                    tree.list_mut().remove(i);
+                }
+            }
+            ViewEdit::ReplaceCondition { axis, from, to } => {
+                let tree = &mut spec.axis_mut(*axis).filter.conditions;
+                if let Some(i) = tree.find(from) {
+                    tree.list_mut()[i] = to.clone();
+                }
             }
             ViewEdit::Replace | ViewEdit::ShownChanged { .. } => {}
         }

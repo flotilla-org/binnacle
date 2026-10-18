@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection, SortSpec,
-    StripItem, ViewSpec,
+    Axis, ConditionKind, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection, SortSpec,
+    StripItem, TextQuery, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -225,23 +225,45 @@ fn sorts_text(spec: &ViewSpec) -> String {
 
 /// A View Spec's filters: the rows', then the columns' after `cols` if they
 /// filter. A quick filter is `quick "text"`, then `case` and `regex` for its
-/// options and `in k,k` for the Keys it searches, if not the shown ones.
+/// options and `in k,k` for the Keys it searches, if not the shown ones. Each
+/// condition follows after `&`: a Text condition is `key: "text"` (or `key:
+/// not "text"`) with the same options.
 fn filters_text(spec: &ViewSpec) -> String {
-    let filter = |f: &FilterSpec| match &f.quick {
-        None => "none".to_string(),
-        Some(q) => {
+    let query = |q: &TextQuery, text: &mut String| {
+        if q.case_sensitive {
+            *text += " case";
+        }
+        if q.regex {
+            *text += " regex";
+        }
+    };
+    let filter = |f: &FilterSpec| {
+        let mut parts = Vec::new();
+        if let Some(q) = &f.quick {
             let mut text = format!("quick {:?}", q.text);
-            if q.case_sensitive {
-                text += " case";
-            }
-            if q.regex {
-                text += " regex";
-            }
+            query(q, &mut text);
             if let Searched::Keys(keys) = &q.searches {
                 let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
                 text += &format!(" in {}", keys.join(","));
             }
-            text
+            parts.push(text);
+        }
+        for c in f.conditions.conditions() {
+            let not = if c.not { "not " } else { "" };
+            let mut text = format!("{}: {not}", c.key.0);
+            match &c.kind {
+                ConditionKind::Text(q) => {
+                    text += &format!("{:?}", q.text);
+                    query(q, &mut text);
+                }
+                _ => text += "?",
+            }
+            parts.push(text);
+        }
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(" & ")
         }
     };
     let mut text = filter(&spec.rows.filter);

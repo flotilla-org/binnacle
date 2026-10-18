@@ -4,7 +4,7 @@ use crate::grid::Grid;
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
 use crate::types::{Axis, Generation, Key, Position};
-use crate::view::{TextSupport, ViewSpec};
+use crate::view::{Condition, ConditionState, HeaderFilter, Support, TextSupport, ViewSpec};
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
 /// along the axis; `key` is `None` while the Table Source has not filled that
@@ -74,6 +74,8 @@ pub struct HeaderPlacement {
     /// How it shows the sort of the other axis (rows never sort columns yet,
     /// so row headers show none).
     pub sort: HeaderSort,
+    /// How it shows the conditions read in it (row headers show none).
+    pub filter: HeaderFilter,
     /// Its whole item is selected: the range spans every item across it, or
     /// (on a row header) its row is picked.
     pub selected: bool,
@@ -315,6 +317,24 @@ impl<'a> Snapshot<'a> {
         self.grid.view.quick_filter[axis.index()]
     }
 
+    /// What the Table Source supports when viewing `axis` by `key`, an item
+    /// of the other axis: adapters offer only these controls.
+    pub fn support(&self, axis: Axis, key: Key) -> Support {
+        self.grid.view.support(axis, key)
+    }
+
+    /// The conditions of `axis`, as the filter's chips list them: the latest
+    /// request's, each applied or being added, then the applied ones being
+    /// removed.
+    pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
+        self.grid.view.conditions(axis)
+    }
+
+    /// How the header of column `key` shows the rows' conditions on it.
+    pub fn header_filter(&self, key: Key) -> HeaderFilter {
+        self.grid.view.header_filter(Axis::Cols, key)
+    }
+
     /// How the header of column `key` shows the rows' sort.
     pub fn header_sort(&self, key: Key) -> HeaderSort {
         self.grid.view.header(Axis::Cols, key)
@@ -351,6 +371,8 @@ impl<'a> Snapshot<'a> {
                 sort: item
                     .key
                     .map_or(HeaderSort::default(), |key| grid.view.header(axis, key)),
+                filter: (item.key)
+                    .map_or(HeaderFilter::default(), |key| grid.view.header_filter(axis, key)),
                 selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
                 hovered: hovered == Some((axis, item.position)),
             }
