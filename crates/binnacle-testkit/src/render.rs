@@ -1,6 +1,9 @@
 use std::fmt::Write;
 
-use binnacle_core::{Axis, Cursor, FocusEnd, Mode, Snapshot, SortDirection, SortSpec, StripItem};
+use binnacle_core::{
+    Axis, ConditionKind, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection,
+    SortSpec, StripItem, TextQuery, Value, ViewSpec,
+};
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
 const MAX_CANVAS: (usize, usize) = (160, 60);
@@ -20,9 +23,14 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// edited cell is marked `=`, before focus), a hovered header `hover axis position`, a resize
 /// cursor hint `cursor C`, a resize guide `guide axis offset (key K size
 /// S)` and a move `moving keys to axis position at offset` (the drop
-/// indicator, also drawn across the header band). A non-empty applied Sort
-/// Spec adds `sort` and an unanswered request `requested`, each as `key^` or
-/// `keyv` per column.
+/// indicator, also drawn across the header band). An applied View Spec that
+/// sorts adds `sort`, as the rows' sort with `key^` or `keyv` per column
+/// (then `cols` and the columns' sort, if any); one that filters adds
+/// `filter` (see [`view_text`]), an unanswered request `requested` with
+/// both, and an answered one the source left part of out `wanted, not
+/// applied`. Unfiltered counts the Table Source gave add `totals`. A Find Query
+/// adds `find` (and `by cols` for that order), the current match `match
+/// rowkey,colkey`, and the matched cell is marked `!` after any other mark.
 pub fn render(snap: &Snapshot) -> String {
     Rendered::of(snap).since(None)
 }
@@ -115,11 +123,34 @@ fn summary(snap: &Snapshot) -> String {
     for f in snap.selection_rects() {
         let _ = write!(out, " | fill {},{} {}x{}", f.x, f.y, f.width, f.height);
     }
-    if !snap.applied_sort().is_empty() {
-        let _ = write!(out, " | sort {}", spec_text(snap.applied_sort()));
+    let applied = snap.applied_view();
+    if !(applied.rows.sort.is_empty() && applied.cols.sort.is_empty()) {
+        let _ = write!(out, " | sort {}", sorts_text(applied));
     }
-    if let Some(spec) = snap.requested_sort() {
-        let _ = write!(out, " | requested {}", spec_text(spec));
+    if !(applied.rows.filter.is_empty() && applied.cols.filter.is_empty()) {
+        let _ = write!(out, " | filter {}", filters_text(applied));
+    }
+    for axis in Axis::ALL {
+        if let Some(total) = snap.total(axis) {
+            let _ = write!(out, " | total {axis:?} {total}");
+        }
+    }
+    if let Some(spec) = snap.requested_view() {
+        let state = if snap.view_pending() {
+            "requested"
+        } else {
+            "wanted, not applied"
+        };
+        let _ = write!(out, " | {state} {}", view_text(spec));
+    }
+    if let Some(find) = snap.find() {
+        let _ = write!(out, " | find {}", query_text(&find.query));
+        if find.by == Axis::Cols {
+            out.push_str(" by cols");
+        }
+    }
+    if let Some(m) = snap.find_match() {
+        let _ = write!(out, " | match {},{}", m.row.0, m.col.0);
     }
     if snap.mode() != Mode::Idle {
         let _ = write!(out, " | mode {:?}", snap.mode());
@@ -190,6 +221,95 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
     out
 }
 
+/// A View Spec's sorts, then its filters if any (see [`filters_text`]).
+pub(crate) fn view_text(spec: &ViewSpec) -> String {
+    let mut text = sorts_text(spec);
+    if !(spec.rows.filter.is_empty() && spec.cols.filter.is_empty()) {
+        text += &format!(" filter {}", filters_text(spec));
+    }
+    text
+}
+
+/// A View Spec's sorts as [`spec_text`] gives them: the rows', then the
+/// columns' after `cols` if they sort.
+fn sorts_text(spec: &ViewSpec) -> String {
+    let mut text = spec_text(&spec.rows.sort);
+    if !spec.cols.sort.is_empty() {
+        text += &format!(" cols {}", spec_text(&spec.cols.sort));
+    }
+    text
+}
+
+/// A View Spec's filters: the rows', then the columns' after `cols` if they
+/// filter. A quick filter is `quick "text"`, then `case` and `regex` for its
+/// options and `in k,k` for the Keys it searches, if not the shown ones. Each
+/// condition follows after `&`: a Text condition is `key: "text"` (or `key:
+/// not "text"`) with the same options.
+fn filters_text(spec: &ViewSpec) -> String {
+    let query = |q: &TextQuery, text: &mut String| {
+        if q.case_sensitive {
+            *text += " case";
+        }
+        if q.regex {
+            *text += " regex";
+        }
+    };
+    let filter = |f: &FilterSpec| {
+        let mut parts = Vec::new();
+        if let Some(q) = &f.quick {
+            parts.push(format!("quick {}", query_text(q)));
+        }
+        for c in f.conditions.conditions() {
+            let not = if c.not { "not " } else { "" };
+            let mut text = format!("{}: {not}", c.key.0);
+            match &c.kind {
+                ConditionKind::Text(q) => {
+                    text += &format!("{:?}", q.text);
+                    query(q, &mut text);
+                }
+                ConditionKind::OneOf(values) => {
+                    let values: Vec<String> = (values.iter())
+                        .map(|v| match v {
+                            Value::Text(t) => format!("{t:?}"),
+                            Value::Blank => "blank".into(),
+                        })
+                        .collect();
+                    text += &format!("one of [{}]", values.join(", "));
+                }
+                _ => text += "?",
+            }
+            parts.push(text);
+        }
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(" & ")
+        }
+    };
+    let mut text = filter(&spec.rows.filter);
+    if !spec.cols.filter.is_empty() {
+        text += &format!(" cols {}", filter(&spec.cols.filter));
+    }
+    text
+}
+
+/// A Text Query as `"text"`, then `case` and `regex` for its options and
+/// `in k,k` for the Keys it searches, if not the shown ones.
+fn query_text(q: &TextQuery) -> String {
+    let mut text = format!("{:?}", q.text);
+    if q.case_sensitive {
+        text += " case";
+    }
+    if q.regex {
+        text += " regex";
+    }
+    if let Searched::Keys(keys) = &q.searches {
+        let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
+        text += &format!(" in {}", keys.join(","));
+    }
+    text
+}
+
 /// A Sort Spec as `key^` (ascending) or `keyv` (descending) per column, in
 /// order, or `unsorted`.
 fn spec_text(spec: &SortSpec) -> String {
@@ -245,7 +365,7 @@ fn picture(snap: &Snapshot) -> String {
         put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
         for c in snap.cols() {
             let state = snap.cell_state(r, c);
-            let mark = if state.editing {
+            let mut mark = if state.editing {
                 "="
             } else if state.focused {
                 "*"
@@ -253,7 +373,11 @@ fn picture(snap: &Snapshot) -> String {
                 "+"
             } else {
                 ""
-            };
+            }
+            .to_string();
+            if state.current_match {
+                mark.push('!');
+            }
             put(
                 c.offset,
                 r.offset,

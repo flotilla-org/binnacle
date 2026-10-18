@@ -17,13 +17,13 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 3   +3.0   *3.1   3.2
 4   4.0    4.1    4.2
 --- 2. sort by column 0: focus follows record 3 off screen, picks follow, range gone, anchor stays
-effect (gen 2): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(0), direction: Ascending }] } }
-  sort [SortColumn { key: Key(0), direction: Ascending }]: Ok(Reordered)
+effect (gen 2): ViewRequested 0^ by CycleSort { axis: Rows, key: Key(0), multi: false }
+  view: applied 0^, notices [(Rows, Reordered)]
 effect (gen 2): Locate { axis: Rows, key: Key(3) }
   locate Rows Key(3): Found(0)
 effect (gen 2): SelectionChanged
 window Rows 0..7
-gen 3 | damage layout selection positions | focus 0#3,1#1 not drawn | picks 0,2 | fill 4,4 20x1 | sort 0^ | hover Cols 0
+gen 3 | damage layout selection positions | focus 0#3,1#1 not drawn | picks 0,2 | fill 4,4 20x1 | sort 0^ | total Rows 8 | total Cols 3 | hover Cols 0
 Rows: count 8, extent 5, header 1, anchor 1+0, thumb 0.2500/0.5000 | 1#5@1+1 2#1@2+1 3#7@3+1 4#0@4+1
 Cols: (unchanged)
     0      1      2
@@ -32,12 +32,12 @@ Cols: (unchanged)
 3   7.0    7.1    7.2
 4   +0.0   +0.1   +0.2
 --- 3. again: descending
-effect (gen 3): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(0), direction: Descending }] } }
-  sort [SortColumn { key: Key(0), direction: Descending }]: Ok(Reordered)
+effect (gen 3): ViewRequested 0v by CycleSort { axis: Rows, key: Key(0), multi: false }
+  view: applied 0v, notices [(Rows, Reordered)]
 effect (gen 3): Locate { axis: Rows, key: Key(3) }
   locate Rows Key(3): Found(7)
 window Rows 0..7
-gen 4 | damage layout selection positions | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v | hover Cols 0
+gen 4 | damage layout selection positions | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v | total Rows 8 | total Cols 3 | hover Cols 0
 Rows: count 8, extent 5, header 1, anchor 1+0, thumb 0.2500/0.5000 | 1#2@1+1 2#6@2+1 3#0@3+1 4#7@4+1
 Cols: (unchanged)
     0      1      2
@@ -46,19 +46,19 @@ Cols: (unchanged)
 3   +0.0   +0.1   +0.2
 4   7.0    7.1    7.2
 --- 4. shift-click column 1: added second; column 0 has no ties, so the order holds
-effect (gen 4): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(0), direction: Descending }, SortColumn { key: Key(1), direction: Ascending }] } }
-  sort [SortColumn { key: Key(0), direction: Descending }, SortColumn { key: Key(1), direction: Ascending }]: Ok(Reordered)
+effect (gen 4): ViewRequested 0v,1^ by CycleSort { axis: Rows, key: Key(1), multi: true }
+  view: applied 0v,1^, notices [(Rows, Reordered)]
 effect (gen 4): Locate { axis: Rows, key: Key(3) }
   locate Rows Key(3): Found(7)
 window Rows 0..7
-gen 5 | damage layout selection positions | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | hover Cols 1
+gen 5 | damage layout selection positions | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | total Rows 8 | total Cols 3 | hover Cols 1
 Rows: (unchanged)
 Cols: (unchanged)
 (picture unchanged)
 --- 5. column 2 has no sort keys: rejected, the sort stays
-effect (gen 5): SortRequested { spec: SortSpec { columns: [SortColumn { key: Key(2), direction: Ascending }] } }
-  sort [SortColumn { key: Key(2), direction: Ascending }]: Err(SortSpec { columns: [SortColumn { key: Key(0), direction: Descending }, SortColumn { key: Key(1), direction: Ascending }] })
-gen 6 | damage selection | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | hover Cols 2
+effect (gen 5): ViewRequested 2^ by CycleSort { axis: Rows, key: Key(2), multi: false }
+  view: applied 0v,1^, notices []
+gen 6 | damage selection | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | total Rows 8 | total Cols 3 | hover Cols 2
 Rows: (unchanged)
 Cols: (unchanged)
 (picture unchanged)

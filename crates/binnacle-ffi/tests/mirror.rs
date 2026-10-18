@@ -6,11 +6,14 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Effect, FocusStep, Grid, HeaderClick, Key,
-    Located, Mode, Modifiers, PointerEvent, PointerKind, SelectionUnit, Snapshot, SortColumn,
-    SortDirection, SortSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
+    Located, Mode, Modifiers, PointerEvent, PointerKind, Searched, SelectionUnit, Snapshot,
+    SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
+use hegel::Generator;
 use hegel::TestCase;
 use hegel::generators as gs;
 
@@ -45,7 +48,21 @@ enum Op {
     Unit(SelectionUnit),
     HeaderClick(Axis, HeaderClick),
     Threshold(f32),
-    SortApplied(SortSpec),
+    ViewApplied(ViewSpec, Totals),
+    ViewChanged(ViewSpec, Totals),
+    RequestView(ViewSpec),
+    ReapplyView,
+    SetQuickFilter(Axis, Option<TextQuery>),
+    QuickFilterSupport(Axis, Option<TextSupport>),
+    SetSupport(Axis, Key, Support),
+    AddCondition(Axis, Condition),
+    RemoveCondition(Axis, Condition),
+    ReplaceCondition(Axis, Condition, Condition),
+    SetFind(Option<FindQuery>),
+    FindSupport(Option<TextSupport>),
+    /// The answer to a find step: this match, or with `Some((r, c))` the
+    /// cell of the last frame's strips at those indices (wrapped).
+    FindStepped(Option<FindMatch>, Option<(usize, usize)>),
     /// A `located` answer about this Key, or (`None`) about the Key of the
     /// last `Locate` drained, if any.
     Located(Option<(Axis, Key)>, Located),
@@ -131,7 +148,9 @@ fn pointer(tc: &TestCase) -> PointerEvent {
 
 #[hegel::composite]
 fn action(tc: &TestCase) -> Action {
-    match tc.draw(gs::integers::<u8>().max_value(7)) {
+    match tc.draw(gs::integers::<u8>().max_value(9)) {
+        8 => Action::FindNext,
+        9 => Action::FindPrevious,
         0 => Action::TypeText(tc.draw(gs::text().max_size(8))),
         1 => Action::MoveFocus {
             axis: tc.draw(axes()),
@@ -189,27 +208,150 @@ fn position(tc: &TestCase) -> u64 {
     ))
 }
 
-/// An answer the Table Source might send: a sort, a `located` (often for
-/// the Key the Grid asked about), or a Change Notice.
+/// A Sort Spec for `axis`, by Keys of the other axis.
+#[hegel::composite]
+fn sort_spec(tc: &TestCase, axis: Axis) -> SortSpec {
+    let by = tc.draw(gs::vecs(hegel::tuples!(key(axis.other()), gs::booleans())).max_size(3));
+    SortSpec::new(
+        by.into_iter()
+            .map(|(key, descending)| SortColumn {
+                key,
+                direction: if descending {
+                    SortDirection::Descending
+                } else {
+                    SortDirection::Ascending
+                },
+            })
+            .collect(),
+    )
+}
+
+/// A Text Query for `axis`, searching the shown items or Keys of the other
+/// axis; sometimes with no text.
+#[hegel::composite]
+fn text_query(tc: &TestCase, axis: Axis) -> TextQuery {
+    let searches = match tc.draw(gs::booleans()) {
+        true => Searched::Shown,
+        false => Searched::Keys(tc.draw(gs::vecs(key(axis.other())).max_size(3))),
+    };
+    let text = tc.draw(hegel::one_of!(
+        gs::text().min_size(1).max_size(6),
+        gs::just(String::new())
+    ));
+    TextQuery::new(text)
+        .case_sensitive(tc.draw(gs::booleans()))
+        .regex(tc.draw(gs::booleans()))
+        .searching(searches)
+}
+
+/// A value for a OneOf condition: a blank, or text (empty or not ASCII
+/// sometimes).
+#[hegel::composite]
+fn value(tc: &TestCase) -> Value {
+    let text = gs::sampled_from(vec!["", "a", "Ø b"]).map(|t| Value::Text(t.into()));
+    tc.draw(hegel::one_of!(gs::just(Value::Blank), text))
+}
+
+/// A Text or OneOf condition on `axis`, read in a Key of the other axis,
+/// maybe with `not`; sometimes with no text or no values.
+#[hegel::composite]
+fn condition(tc: &TestCase, axis: Axis) -> Condition {
+    let key = tc.draw(key(axis.other()));
+    let condition = if tc.draw(gs::booleans()) {
+        Condition::text(key, tc.draw(text_query(axis)))
+    } else {
+        Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(3)))
+    };
+    condition.not(tc.draw(gs::booleans()))
+}
+
+/// A Find Query, by rows or by columns; now and then with no text.
+#[hegel::composite]
+fn find_query(tc: &TestCase) -> FindQuery {
+    let mut query = tc.draw(text_query(Axis::Rows));
+    if query.text.is_empty() && tc.draw(gs::booleans()) {
+        query = TextQuery::new("a").searching(query.searches);
+    }
+    FindQuery::new(query).by(tc.draw(axes()))
+}
+
+/// A View Spec: usually sorting and filtering only the rows.
+#[hegel::composite]
+fn view_spec(tc: &TestCase) -> ViewSpec {
+    let mut spec = ViewSpec::default();
+    for axis in Axis::ALL {
+        if axis == Axis::Rows || tc.draw(gs::weighted_booleans(0.25)) {
+            spec = spec.with_sort(axis, tc.draw(sort_spec(axis)));
+            let quick = tc.draw(gs::optional(text_query(axis)));
+            let conditions = tc.draw(gs::vecs(condition(axis)).max_size(3));
+            let filter = FilterSpec::default()
+                .with_quick(quick)
+                .with_conditions(conditions.into());
+            spec = spec.with_filter(axis, filter);
+        }
+    }
+    spec
+}
+
+#[hegel::composite]
+fn totals(tc: &TestCase) -> Totals {
+    Totals {
+        rows: tc.draw(gs::optional(position())),
+        cols: tc.draw(gs::optional(position())),
+    }
+}
+
+/// An answer the Table Source might send: an applied View Spec (usually
+/// sorting only the rows), what it supports, a `located` (often for the Key
+/// the Grid asked about), or a Change Notice; or a host's request for a View
+/// Spec or a quick filter.
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(2)) {
-        0 => {
-            let cols =
-                tc.draw(gs::vecs(hegel::tuples!(key(Axis::Cols), gs::booleans())).max_size(3));
-            Op::SortApplied(SortSpec::new(
-                cols.into_iter()
-                    .map(|(key, descending)| SortColumn {
-                        key,
-                        direction: if descending {
-                            SortDirection::Descending
-                        } else {
-                            SortDirection::Ascending
-                        },
-                    })
-                    .collect(),
-            ))
+    match tc.draw(gs::integers::<u8>().max_value(14)) {
+        10 => Op::SetFind(
+            tc.draw(gs::weighted_booleans(0.9))
+                .then(|| tc.draw(find_query())),
+        ),
+        11 => Op::FindSupport(tc.draw(gs::optional(gs::booleans().map(TextSupport::new)))),
+        // Often, so a match lands while find is open and a frame shows it.
+        12 | 13 => {
+            let cell = hegel::tuples!(key(Axis::Rows), key(Axis::Cols));
+            let found = tc
+                .draw(gs::optional(cell))
+                .map(|(r, c)| FindMatch::new(r, c));
+            let shown = hegel::tuples!(gs::integers::<usize>(), gs::integers::<usize>());
+            Op::FindStepped(found, tc.draw(gs::optional(shown)))
+        }
+        0 => Op::ViewApplied(tc.draw(view_spec()), tc.draw(totals())),
+        14 => Op::ViewChanged(tc.draw(view_spec()), tc.draw(totals())),
+        7 => Op::AddCondition(axis, tc.draw(condition(axis))),
+        // Often one the latest request has, so it goes.
+        8 => Op::RemoveCondition(axis, tc.draw(condition(axis))),
+        9 => Op::ReplaceCondition(axis, tc.draw(condition(axis)), tc.draw(condition(axis))),
+        4 if tc.draw(gs::weighted_booleans(0.25)) => Op::ReapplyView,
+        4 => Op::RequestView(tc.draw(view_spec())),
+        5 => {
+            let query = tc
+                .draw(gs::weighted_booleans(0.8))
+                .then(|| tc.draw(text_query(axis)));
+            Op::SetQuickFilter(axis, query)
+        }
+        6 => Op::QuickFilterSupport(
+            axis,
+            tc.draw(gs::optional(gs::booleans().map(TextSupport::new))),
+        ),
+        3 => {
+            let sort = tc.draw(gs::booleans());
+            let text = tc.draw(gs::optional(gs::booleans().map(TextSupport::new)));
+            Op::SetSupport(
+                axis,
+                tc.draw(key(axis.other())),
+                Support::default()
+                    .with_sort(sort)
+                    .with_text(text)
+                    .with_one_of(tc.draw(gs::booleans())),
+            )
         }
         1 => {
             let answer = match tc.draw(gs::integers::<u8>().max_value(2)) {
@@ -226,8 +368,9 @@ fn answer(tc: &TestCase) -> Op {
         }
         _ => {
             let (at, n) = (tc.draw(position()), tc.draw(position()));
-            let notice = match tc.draw(gs::integers::<u8>().max_value(4)) {
+            let notice = match tc.draw(gs::integers::<u8>().max_value(5)) {
                 0 => ChangeNotice::Reset(n),
+                5 => ChangeNotice::Refiltered(n),
                 1 => ChangeNotice::Reordered,
                 2 => ChangeNotice::Inserted { at, n },
                 3 => ChangeNotice::Removed { at, n },
@@ -255,7 +398,7 @@ fn op(tc: &TestCase) -> Op {
             clicks: tc.draw(gs::integers::<u32>().min_value(1).max_value(2)),
             travel: tc.draw(gs::floats::<f32>().min_value(-6.0).max_value(6.0)),
         },
-        14 | 15 => tc.draw(answer()),
+        10 | 14 | 15 => tc.draw(answer()),
         0 | 1 | 11 => Op::Frame(tc.draw(len()), tc.draw(len())),
         2 => Op::Pointer(tc.draw(pointer())),
         3 | 12 | 13 => {
@@ -301,7 +444,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(14))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(35))),
     }
 }
 
@@ -354,6 +497,8 @@ unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
                 binnacle_grid_scroll_to(h, tag(*axis), *fraction)
             }
             Action::ScrollBy { axis, items } => binnacle_grid_scroll_by(h, tag(*axis), *items),
+            Action::FindNext => binnacle_grid_find_next(h),
+            Action::FindPrevious => binnacle_grid_find_previous(h),
             #[allow(unreachable_patterns)] // `action` draws only the Actions above.
             _ => unreachable!(),
         }
@@ -393,13 +538,137 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                     key: 5000,
                     direction: 2,
                 };
-                binnacle_grid_sort_applied(h, &unknown, 1)
+                let mut spec = BinnacleViewSpec::default();
+                spec.axes[ROWS as usize] = BinnacleAxisView {
+                    sort: &unknown,
+                    sort_len: 1,
+                    ..BinnacleAxisView::default()
+                };
+                binnacle_grid_view_applied(h, &spec, std::ptr::null())
             }
             10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
             11 => binnacle_grid_located(h, 2, 1000, 0, 0),
-            12 => binnacle_grid_notify(h, ROWS, 5, 0, 0),
+            12 => binnacle_grid_notify(h, ROWS, 6, 0, 0),
             13 => binnacle_grid_set_header(h, 2, 1.0),
-            _ => binnacle_grid_notify(h, 2, 1, 0, 0),
+            14 => binnacle_grid_set_support(h, 2, 5000, 0),
+            15 => binnacle_grid_notify(h, 2, 1, 0, 0),
+            16 => binnacle_grid_set_quick_filter_support(h, ROWS, 2),
+            17 => binnacle_grid_set_quick_filter_support(h, 2, 1),
+            18 => {
+                let query = BinnacleTextQuery {
+                    flags: 4,
+                    ..BinnacleTextQuery::default()
+                };
+                binnacle_grid_set_quick_filter(h, ROWS, &query)
+            }
+            19 => {
+                let query = BinnacleTextQuery {
+                    searched: 2,
+                    ..BinnacleTextQuery::default()
+                };
+                binnacle_grid_set_quick_filter(h, COLS, &query)
+            }
+            20 => {
+                let bad = [b'a', 0xff];
+                let query = BinnacleTextQuery {
+                    text: BinnacleText {
+                        data: bad.as_ptr(),
+                        len: bad.len(),
+                    },
+                    ..BinnacleTextQuery::default()
+                };
+                let mut spec = BinnacleViewSpec::default();
+                spec.axes[ROWS as usize].has_quick = 1;
+                spec.axes[ROWS as usize].quick = query;
+                binnacle_grid_request_view(h, &spec)
+            }
+            21 => {
+                let mut spec = BinnacleViewSpec::default();
+                spec.axes[COLS as usize].has_quick = 2;
+                binnacle_grid_view_applied(h, &spec, std::ptr::null())
+            }
+            22 => binnacle_grid_set_support(h, ROWS, 5000, 4),
+            23 => binnacle_grid_set_support(h, ROWS, 5000, 16),
+            24 => {
+                let unknown = BinnacleCondition {
+                    kind: 3,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &unknown)
+            }
+            25 => {
+                let negated = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_TEXT,
+                    negated: 2,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_remove_condition(h, ROWS, &negated)
+            }
+            26 => {
+                let other = BinnacleCondition::default();
+                let mut spec = BinnacleViewSpec::default();
+                spec.axes[ROWS as usize].conditions = &other;
+                spec.axes[ROWS as usize].conditions_len = 1;
+                binnacle_grid_request_view(h, &spec)
+            }
+            27 => binnacle_grid_replace_condition(h, ROWS, std::ptr::null(), std::ptr::null()),
+            28 => {
+                let text = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_TEXT,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, 2, &text)
+            }
+            29 => {
+                let value = BinnacleValue {
+                    blank: 2,
+                    ..BinnacleValue::default()
+                };
+                let one_of = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_ONE_OF,
+                    values: &value,
+                    values_len: 1,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &one_of)
+            }
+            30 => {
+                let bad = [b'a', 0xff];
+                let value = BinnacleValue {
+                    blank: 0,
+                    text: BinnacleText {
+                        data: bad.as_ptr(),
+                        len: bad.len(),
+                    },
+                };
+                let one_of = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_ONE_OF,
+                    values: &value,
+                    values_len: 1,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &one_of)
+            }
+            31 => binnacle_grid_set_find_support(h, BINNACLE_FIND_REGEX),
+            32 => binnacle_grid_set_find_support(h, 4),
+            33 => {
+                let find = BinnacleFindQuery {
+                    by: 2,
+                    ..BinnacleFindQuery::default()
+                };
+                binnacle_grid_set_find(h, &find)
+            }
+            34 => {
+                let find = BinnacleFindQuery {
+                    query: BinnacleTextQuery {
+                        flags: 4,
+                        ..BinnacleTextQuery::default()
+                    },
+                    by: ROWS,
+                };
+                binnacle_grid_set_find(h, &find)
+            }
+            _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
 }
@@ -458,9 +727,16 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 | u32::from(direction == Some(SortDirection::Descending)) << 1
                 | u32::from(want.sort.pending) << 2
                 | u32::from(want.selected) << 3
-                | u32::from(want.hovered) << 4;
+                | u32::from(want.hovered) << 4
+                | u32::from(want.filter.filtered) << 5
+                | u32::from(want.filter.pending) << 6
+                | u32::from(want.filter.not_applied) << 7;
             assert_eq!(got.flags, flags, "{want:?}");
             assert_eq!(got.sort_place as usize, place.unwrap_or(0));
+            let support = want
+                .key
+                .map_or(0, |k| support_bits(rust.support(axis.other(), k)));
+            assert_eq!(got.support, support, "{want:?} support");
         }
         assert_eq!(c.has_focus != 0, rust.focus(axis).is_some());
         if let Some(f) = rust.focus(axis) {
@@ -476,6 +752,29 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 *r.span(axis)
             );
         }
+        assert_eq!(
+            (a.has_total != 0).then_some(a.total),
+            rust.total(axis),
+            "{axis:?} total"
+        );
+        let quick = rust
+            .quick_filter(axis)
+            .map_or(0, |s| BINNACLE_QUICK_FILTER | u32::from(s.regex) << 1);
+        assert_eq!(a.quick_filter, quick, "{axis:?} quick filter support");
+        let listed = unsafe { slice::from_raw_parts(a.conditions, a.conditions_len) };
+        let got: Vec<(Condition, ConditionState)> = listed
+            .iter()
+            .map(|l| {
+                let state = match l.state {
+                    0 => ConditionState::Applied,
+                    1 => ConditionState::Adding,
+                    2 => ConditionState::Removing,
+                    _ => ConditionState::NotApplied,
+                };
+                (unsafe { condition_from_c(&l.condition) }, state)
+            })
+            .collect();
+        assert_eq!(got, rust.conditions(axis), "{axis:?} conditions");
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -507,7 +806,8 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     for (r, row) in rows.iter().enumerate() {
         for (k, col) in cols.iter().enumerate() {
             let s = rust.cell_state(row, col);
-            let want = u8::from(s.focused) | u8::from(s.selected) << 1;
+            let want =
+                u8::from(s.focused) | u8::from(s.selected) << 1 | u8::from(s.current_match) << 2;
             assert_eq!(cells[r * cols.len() + k], want, "cell {r},{k}");
         }
     }
@@ -520,6 +820,16 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     };
     assert_eq!(c.mode, mode);
     assert_eq!(c.capturing != 0, rust.capturing());
+    let find = (c.has_find != 0).then(|| unsafe { find_from_c(&c.find) });
+    assert_eq!(find.as_ref(), rust.find(), "find");
+    let found = (c.has_find_match != 0)
+        .then(|| FindMatch::new(Key(c.find_match.row), Key(c.find_match.col)));
+    assert_eq!(found, rust.find_match(), "find match");
+    let support = rust.find_support().map_or(0, |s| {
+        BINNACLE_FIND | (u32::from(s.regex) * BINNACLE_FIND_REGEX)
+    });
+    assert_eq!(c.find_support, support, "find support");
+    assert_eq!(c.view_pending != 0, rust.view_pending(), "view pending");
     match rust.hovered_header() {
         None => assert_eq!(c.has_hovered_header, 0),
         Some((axis, item)) => {
@@ -543,8 +853,12 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         };
         assert_eq!(polled, 1, "missing {want:?}");
         assert_eq!(c.generation, want.generation);
-        let mut spec = Vec::new();
+        let mut view = ViewSpec::default();
+        let mut edit = BinnacleViewEdit::default();
         let mut size = 0.0;
+        let mut find = None;
+        let mut from = None;
+        let mut direction = BINNACLE_FIND_NEXT;
         let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
                 let got = unsafe { slice::from_raw_parts(c.text.data, c.text.len) };
@@ -553,8 +867,45 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             }
             Effect::FocusChanged { row, col } => (2, row.0, col.0, 0, 0),
             Effect::SelectionChanged => (3, 0, 0, 0, 0),
-            Effect::SortRequested { spec: s } => {
-                spec = s.columns().to_vec();
+            Effect::ViewRequested { spec, edit: e } => {
+                view = spec.clone();
+                let on = |kind, axis| BinnacleViewEdit {
+                    kind,
+                    axis: tag(axis),
+                    ..BinnacleViewEdit::default()
+                };
+                edit = match *e {
+                    ViewEdit::CycleSort { axis, key, multi } => BinnacleViewEdit {
+                        kind: 1,
+                        axis: tag(axis),
+                        key: key.0,
+                        multi: u32::from(multi),
+                    },
+                    ViewEdit::SetQuickFilter { axis, .. } => on(2, axis),
+                    ViewEdit::Replace => on(3, Axis::Rows),
+                    ViewEdit::ShownChanged { axis } => on(4, axis),
+                    ViewEdit::Reapply => on(8, Axis::Rows),
+                    ViewEdit::AddCondition {
+                        axis,
+                        ref condition,
+                    } => BinnacleViewEdit {
+                        key: condition.key.0,
+                        ..on(5, axis)
+                    },
+                    ViewEdit::RemoveCondition {
+                        axis,
+                        ref condition,
+                    } => BinnacleViewEdit {
+                        key: condition.key.0,
+                        ..on(6, axis)
+                    },
+                    ViewEdit::ReplaceCondition { axis, ref to, .. } => BinnacleViewEdit {
+                        key: to.key.0,
+                        ..on(7, axis)
+                    },
+                    #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
+                    _ => BinnacleViewEdit::default(),
+                };
                 (4, 0, 0, 0, 0)
             }
             Effect::Locate { axis, key } => {
@@ -566,6 +917,22 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 (6, 0, 0, tag(*axis), 0)
             }
             Effect::BandAutoSizeRequested { axis } => (7, 0, 0, tag(*axis), 0),
+            Effect::FindRequested { query } => {
+                find = query.clone();
+                (8, 0, 0, 0, 0)
+            }
+            Effect::FindStepRequested {
+                query,
+                from: f,
+                direction: d,
+            } => {
+                find = Some(query.clone());
+                from = *f;
+                if *d == FindDirection::Previous {
+                    direction = BINNACLE_FIND_PREVIOUS;
+                }
+                (9, 0, 0, 0, 0)
+            }
             #[allow(unreachable_patterns)] // Effects added to the Grid later are OTHER.
             _ => (0, 0, 0, 0, 0),
         };
@@ -574,18 +941,242 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             (kind, row, col, axis, key)
         );
         assert!(same_f32(c.size, size), "size {} for {want:?}", c.size);
-        let sort = match c.sort.is_null() {
-            true => &[][..],
-            false => unsafe { slice::from_raw_parts(c.sort, c.sort_len) },
-        };
-        assert!(!c.sort.is_null() || c.sort_len == 0);
-        let sort: Vec<(u64, u32)> = sort.iter().map(|s| (s.key, s.direction)).collect();
-        let want: Vec<(u64, u32)> = spec
-            .iter()
-            .map(|s| (s.key.0, u32::from(s.direction == SortDirection::Descending)))
-            .collect();
-        assert_eq!(sort, want);
+        assert_eq!(c.edit, edit);
+        let got = (c.has_find != 0).then(|| unsafe { find_from_c(&c.find) });
+        assert_eq!(got, find, "find for {want:?}");
+        let got = (c.has_from != 0).then(|| FindMatch::new(Key(c.from.row), Key(c.from.col)));
+        assert_eq!((got, c.direction), (from, direction), "step for {want:?}");
+        for axis in Axis::ALL {
+            let got = c.view.axes[tag(axis) as usize];
+            let sort = match got.sort.is_null() {
+                true => &[][..],
+                false => unsafe { slice::from_raw_parts(got.sort, got.sort_len) },
+            };
+            assert!(!got.sort.is_null() || got.sort_len == 0);
+            let sort: Vec<(u64, u32)> = sort.iter().map(|s| (s.key, s.direction)).collect();
+            let want: Vec<(u64, u32)> = view
+                .axis(axis)
+                .sort
+                .columns()
+                .iter()
+                .map(|s| (s.key.0, u32::from(s.direction == SortDirection::Descending)))
+                .collect();
+            assert_eq!(sort, want);
+            let quick = (got.has_quick != 0).then(|| unsafe { query_from_c(&got.quick) });
+            assert_eq!(quick, view.axis(axis).filter.quick, "{axis:?} quick filter");
+            assert!(!got.conditions.is_null() || got.conditions_len == 0);
+            let conditions = match got.conditions.is_null() {
+                true => &[][..],
+                false => unsafe { slice::from_raw_parts(got.conditions, got.conditions_len) },
+            };
+            let conditions: Vec<Condition> = conditions
+                .iter()
+                .map(|c| unsafe { condition_from_c(c) })
+                .collect();
+            assert_eq!(
+                conditions,
+                view.axis(axis).filter.conditions.conditions(),
+                "{axis:?} conditions"
+            );
+        }
     }
+}
+
+/// A Text Query read back from C, as a host would.
+unsafe fn query_from_c(q: &BinnacleTextQuery) -> TextQuery {
+    let text = unsafe { slice::from_raw_parts(q.text.data, q.text.len) };
+    let searches = match q.searched {
+        BINNACLE_SEARCHED_SHOWN => Searched::Shown,
+        _ => Searched::Keys(
+            unsafe { slice::from_raw_parts(q.keys, q.keys_len) }
+                .iter()
+                .map(|&k| Key(k))
+                .collect(),
+        ),
+    };
+    TextQuery::new(std::str::from_utf8(text).unwrap())
+        .case_sensitive(q.flags & BINNACLE_TEXT_CASE_SENSITIVE != 0)
+        .regex(q.flags & BINNACLE_TEXT_REGEX != 0)
+        .searching(searches)
+}
+
+/// A Find Query read back from C, as a host would.
+unsafe fn find_from_c(f: &BinnacleFindQuery) -> FindQuery {
+    let by = match f.by {
+        BINNACLE_ROWS => Axis::Rows,
+        _ => Axis::Cols,
+    };
+    FindQuery::new(unsafe { query_from_c(&f.query) }).by(by)
+}
+
+/// The support bits from the header's constants.
+fn support_bits(support: Support) -> u32 {
+    let text = support.text.map_or(0, |t| {
+        BINNACLE_SUPPORT_TEXT
+            | if t.regex {
+                BINNACLE_SUPPORT_TEXT_REGEX
+            } else {
+                0
+            }
+    });
+    (u32::from(support.sort) * BINNACLE_SUPPORT_SORT)
+        | text
+        | (u32::from(support.one_of) * BINNACLE_SUPPORT_ONE_OF)
+}
+
+/// A condition read back from C, as a host would: its query searching the
+/// Keys it names.
+unsafe fn condition_from_c(c: &BinnacleCondition) -> Condition {
+    let condition = match c.kind {
+        BINNACLE_CONDITION_TEXT => {
+            let query = unsafe { query_from_c(&c.text) };
+            assert_eq!(query.searches, Searched::Keys(vec![Key(c.key)]));
+            Condition::text(Key(c.key), query)
+        }
+        BINNACLE_CONDITION_ONE_OF => {
+            let values = match c.values_len {
+                0 => &[][..],
+                n => unsafe { slice::from_raw_parts(c.values, n) },
+            };
+            let values = (values.iter())
+                .map(|v| match v.blank {
+                    0 => Value::Text(unsafe { text_from_c(v.text) }),
+                    1 => Value::Blank,
+                    b => panic!("blank is {b}"),
+                })
+                .collect();
+            Condition::one_of(Key(c.key), values)
+        }
+        kind => panic!("condition kind {kind}"),
+    };
+    condition.not(c.negated != 0)
+}
+
+/// The text `t` points at, as a host would read it.
+unsafe fn text_from_c(t: BinnacleText) -> String {
+    let bytes = match t.len {
+        0 => &[][..],
+        n => unsafe { slice::from_raw_parts(t.data, n) },
+    };
+    String::from_utf8(bytes.to_vec()).expect("UTF-8")
+}
+
+/// The values of a OneOf `condition` in C form, borrowing their texts; none
+/// for other kinds.
+fn values_to_c(condition: &Condition) -> Vec<BinnacleValue> {
+    let ConditionKind::OneOf(values) = &condition.kind else {
+        return Vec::new();
+    };
+    (values.iter())
+        .map(|v| match v {
+            Value::Text(t) => BinnacleValue {
+                blank: 0,
+                text: BinnacleText {
+                    data: t.as_ptr(),
+                    len: t.len(),
+                },
+            },
+            Value::Blank => BinnacleValue {
+                blank: 1,
+                text: BinnacleText::default(),
+            },
+        })
+        .collect()
+}
+
+/// `condition` in C form, borrowing its text, `keys` and `values` (from
+/// [`values_to_c`]).
+fn condition_to_c(
+    condition: &Condition,
+    keys: &[u64],
+    values: &[BinnacleValue],
+) -> BinnacleCondition {
+    let (kind, text) = match &condition.kind {
+        ConditionKind::Text(query) => (BINNACLE_CONDITION_TEXT, query_to_c(query, keys)),
+        ConditionKind::OneOf(_) => (BINNACLE_CONDITION_ONE_OF, BinnacleTextQuery::default()),
+        _ => unreachable!("only Text and OneOf conditions are drawn"),
+    };
+    BinnacleCondition {
+        key: condition.key.0,
+        kind,
+        negated: u32::from(condition.not),
+        text,
+        values: values.as_ptr(),
+        values_len: values.len(),
+    }
+}
+
+/// A Text Query in C form, borrowing `query`'s text and `keys`.
+fn query_to_c(query: &TextQuery, keys: &[u64]) -> BinnacleTextQuery {
+    BinnacleTextQuery {
+        text: BinnacleText {
+            data: query.text.as_ptr(),
+            len: query.text.len(),
+        },
+        flags: u32::from(query.case_sensitive) | u32::from(query.regex) << 1,
+        searched: u32::from(matches!(query.searches, Searched::Keys(_))),
+        keys: keys.as_ptr(),
+        keys_len: keys.len(),
+    }
+}
+
+/// The Keys a Text Query searches, if it names them.
+fn query_keys(query: &TextQuery) -> Vec<u64> {
+    match &query.searches {
+        Searched::Shown => Vec::new(),
+        Searched::Keys(keys) => keys.iter().map(|k| k.0).collect(),
+    }
+}
+
+/// Runs `f` with `spec` in C form, its arrays alive for the call.
+fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T {
+    let sorts = Axis::ALL.map(|axis| {
+        spec.axis(axis)
+            .sort
+            .columns()
+            .iter()
+            .map(|s| BinnacleSortColumn {
+                key: s.key.0,
+                direction: u32::from(s.direction == SortDirection::Descending),
+            })
+            .collect::<Vec<_>>()
+    });
+    let keys = Axis::ALL.map(|axis| {
+        spec.axis(axis)
+            .filter
+            .quick
+            .as_ref()
+            .map_or_else(Vec::new, query_keys)
+    });
+    let values = Axis::ALL.map(|axis| {
+        (spec.axis(axis).filter.conditions.conditions().iter())
+            .map(values_to_c)
+            .collect::<Vec<_>>()
+    });
+    // No Keys: a condition's query searches its own column whatever it names.
+    let conditions = Axis::ALL.map(|axis| {
+        (spec.axis(axis).filter.conditions.conditions().iter())
+            .zip(&values[axis.index()])
+            .map(|(c, v)| condition_to_c(c, &[], v))
+            .collect::<Vec<_>>()
+    });
+    let mut c = BinnacleViewSpec::default();
+    for axis in Axis::ALL {
+        let sort = &sorts[axis.index()];
+        let quick = spec.axis(axis).filter.quick.as_ref();
+        let conds = &conditions[axis.index()];
+        c.axes[tag(axis) as usize] = BinnacleAxisView {
+            sort: sort.as_ptr(),
+            sort_len: sort.len(),
+            has_quick: u32::from(quick.is_some()),
+            quick: quick.map_or_else(BinnacleTextQuery::default, |q| {
+                query_to_c(q, &keys[axis.index()])
+            }),
+            conditions: conds.as_ptr(),
+            conditions_len: conds.len(),
+        };
+    }
+    f(&c)
 }
 
 /// The Window answer: Keys 1000 + Position for rows, 5000 + Position for
@@ -610,10 +1201,16 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
     // Start with a frame so pointer input can hit the laid-out Grid.
     let first = Op::Frame(tc.draw(len()), tc.draw(len()));
     let mut asked = None;
-    // Each band's thickness as of the last frame.
+    // Each band's thickness and each strip's Keys as of the last frame.
     let mut bands = [0.0f32; 2];
+    let mut shown: [Vec<Key>; 2] = Default::default();
+    // Find open from the start half the time, so steps land while it is.
+    let find = tc
+        .draw(gs::booleans())
+        .then(|| Op::SetFind(Some(FindQuery::new(TextQuery::new("a")))));
     let ops = [first]
         .into_iter()
+        .chain(find)
         .chain(tc.draw(gs::vecs(op()).min_size(5).max_size(60)));
     for op in ops {
         unsafe {
@@ -652,6 +1249,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     let rust = grid.snapshot();
                     check_snapshot(&snap, &rust);
                     bands = Axis::ALL.map(|a| rust.header(a));
+                    shown = Axis::ALL.map(|a| rust.strip(a).iter().filter_map(|i| i.key).collect());
                     1
                 }
                 Op::Pointer(e) => {
@@ -726,17 +1324,110 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_drag_threshold(t);
                     binnacle_grid_set_drag_threshold(h, t)
                 }
-                Op::SortApplied(spec) => {
-                    let c: Vec<BinnacleSortColumn> = spec
-                        .columns()
-                        .iter()
-                        .map(|s| BinnacleSortColumn {
-                            key: s.key.0,
-                            direction: u32::from(s.direction == SortDirection::Descending),
-                        })
-                        .collect();
-                    grid.sort_applied(spec);
-                    binnacle_grid_sort_applied(h, c.as_ptr(), c.len())
+                Op::ViewApplied(spec, totals) => {
+                    let known = |t: Option<u64>| BinnacleTotal {
+                        known: u32::from(t.is_some()),
+                        count: t.unwrap_or(0),
+                    };
+                    let c_totals = BinnacleTotals {
+                        axes: [known(totals.rows), known(totals.cols)],
+                    };
+                    let ok = with_c_view(&spec, |c| binnacle_grid_view_applied(h, c, &c_totals));
+                    grid.view_applied(spec, totals);
+                    ok
+                }
+                Op::ViewChanged(spec, totals) => {
+                    let known = |t: Option<u64>| BinnacleTotal {
+                        known: u32::from(t.is_some()),
+                        count: t.unwrap_or(0),
+                    };
+                    let c_totals = BinnacleTotals {
+                        axes: [known(totals.rows), known(totals.cols)],
+                    };
+                    let ok = with_c_view(&spec, |c| binnacle_grid_view_changed(h, c, &c_totals));
+                    grid.view_changed(spec, totals);
+                    ok
+                }
+                Op::RequestView(spec) => {
+                    let ok = with_c_view(&spec, |c| binnacle_grid_request_view(h, c));
+                    grid.request_view(spec);
+                    ok
+                }
+                Op::ReapplyView => {
+                    grid.reapply_view();
+                    binnacle_grid_reapply_view(h)
+                }
+                Op::SetQuickFilter(axis, query) => {
+                    let ok = match &query {
+                        None => binnacle_grid_set_quick_filter(h, tag(axis), std::ptr::null()),
+                        Some(q) => {
+                            let keys = query_keys(q);
+                            binnacle_grid_set_quick_filter(h, tag(axis), &query_to_c(q, &keys))
+                        }
+                    };
+                    grid.set_quick_filter(axis, query);
+                    ok
+                }
+                Op::QuickFilterSupport(axis, support) => {
+                    grid.set_quick_filter_support(axis, support);
+                    let bits = support.map_or(0, |s| 1 | u32::from(s.regex) << 1);
+                    binnacle_grid_set_quick_filter_support(h, tag(axis), bits)
+                }
+                Op::SetSupport(axis, key, support) => {
+                    grid.set_support(axis, key, support);
+                    binnacle_grid_set_support(h, tag(axis), key.0, support_bits(support))
+                }
+                Op::AddCondition(axis, condition) => {
+                    let values = values_to_c(&condition);
+                    let c = condition_to_c(&condition, &[], &values);
+                    let ok = binnacle_grid_add_condition(h, tag(axis), &c);
+                    grid.add_condition(axis, condition);
+                    ok
+                }
+                Op::RemoveCondition(axis, condition) => {
+                    let values = values_to_c(&condition);
+                    let c = condition_to_c(&condition, &[], &values);
+                    grid.remove_condition(axis, &condition);
+                    binnacle_grid_remove_condition(h, tag(axis), &c)
+                }
+                Op::ReplaceCondition(axis, from, to) => {
+                    let (from_values, to_values) = (values_to_c(&from), values_to_c(&to));
+                    let c_from = condition_to_c(&from, &[], &from_values);
+                    let c_to = condition_to_c(&to, &[], &to_values);
+                    grid.replace_condition(axis, &from, to.clone());
+                    binnacle_grid_replace_condition(h, tag(axis), &c_from, &c_to)
+                }
+                Op::SetFind(query) => {
+                    let keys = query
+                        .as_ref()
+                        .map_or_else(Vec::new, |q| query_keys(&q.query));
+                    let c = query.as_ref().map(|q| BinnacleFindQuery {
+                        query: query_to_c(&q.query, &keys),
+                        by: tag(q.by),
+                    });
+                    let ok = binnacle_grid_set_find(h, c.as_ref().map_or(std::ptr::null(), |c| c));
+                    grid.set_find(query);
+                    ok
+                }
+                Op::FindSupport(support) => {
+                    grid.set_find_support(support);
+                    let bits = support.map_or(0, |s| BINNACLE_FIND | u32::from(s.regex) << 1);
+                    binnacle_grid_set_find_support(h, bits)
+                }
+                Op::FindStepped(found, at) => {
+                    let found = match at {
+                        Some((r, c)) if found.is_some() && shown.iter().all(|s| !s.is_empty()) => {
+                            let [rows, cols] = &shown;
+                            Some(FindMatch::new(rows[r % rows.len()], cols[c % cols.len()]))
+                        }
+                        _ => found,
+                    };
+                    let c = found.map(|m| BinnacleFindMatch {
+                        row: m.row.0,
+                        col: m.col.0,
+                    });
+                    grid.find_stepped(found);
+                    binnacle_grid_find_stepped(h, c.as_ref().map_or(std::ptr::null(), |c| c))
                 }
                 Op::Located(about, answer) => {
                     let Some((axis, key)) = about.or(asked) else {
@@ -757,6 +1448,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                         ChangeNotice::Inserted { at, n } => (2, *at, *n),
                         ChangeNotice::Removed { at, n } => (3, *at, *n),
                         ChangeNotice::ContentChanged(r) => (4, r.start, r.end - r.start),
+                        ChangeNotice::Refiltered(count) => (5, 0, *count),
                     };
                     grid.notify(axis, notice);
                     binnacle_grid_notify(h, tag(axis), kind, at, n)

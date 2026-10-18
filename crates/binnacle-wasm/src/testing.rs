@@ -3,12 +3,17 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, FocusStep, Grid, HeaderPlacement, Key,
-    Mode, Modifiers, PointerEvent, Rect, Snapshot, SortColumn, SortSpec, Stamped, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Effect, FilterSpec,
+    FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers,
+    PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
-use crate::effect::{WireAxis, WireDirection, WireSortColumn, WireStamped, sort_columns};
+use crate::effect::{
+    WireAxis, WireCondition, WireDirection, WireFindMatch, WireFindQuery, WireStamped,
+    WireViewEdit, WireViewSpec,
+};
 use crate::snapshot::cell_bits;
 
 #[derive(Serialize)]
@@ -30,8 +35,12 @@ pub struct Dump {
     selection_rects: Vec<DumpRect>,
     picked: Vec<u64>,
     moving_keys: Vec<u64>,
-    applied_sort: Vec<WireSortColumn>,
-    requested_sort: Option<Vec<WireSortColumn>>,
+    applied_view: WireViewSpec,
+    requested_view: Option<WireViewSpec>,
+    view_pending: bool,
+    find: Option<WireFindQuery>,
+    find_match: Option<WireFindMatch>,
+    find_support: Option<DumpTextSupport>,
     cells: Vec<u8>,
 }
 
@@ -62,6 +71,7 @@ impl From<Rect> for DumpRect {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DumpAxis {
     count: f64,
     extent: f32,
@@ -73,6 +83,46 @@ struct DumpAxis {
     locating: bool,
     strip: Vec<DumpItem>,
     headers: Vec<DumpHeader>,
+    total: Option<f64>,
+    quick_filter: Option<DumpTextSupport>,
+    conditions: Vec<DumpListed>,
+}
+
+#[derive(Serialize)]
+struct DumpTextSupport {
+    regex: bool,
+}
+
+#[derive(Serialize)]
+struct DumpListed {
+    condition: WireCondition,
+    state: &'static str,
+}
+
+#[derive(Serialize)]
+struct DumpSupport {
+    sort: bool,
+    text: Option<DumpTextSupport>,
+    #[serde(rename = "oneOf")]
+    one_of: bool,
+}
+
+impl From<Support> for DumpSupport {
+    fn from(s: Support) -> Self {
+        DumpSupport {
+            sort: s.sort,
+            text: s.text.map(|t| DumpTextSupport { regex: t.regex }),
+            one_of: s.one_of,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DumpHeaderFilter {
+    filtered: bool,
+    pending: bool,
+    not_applied: bool,
 }
 
 #[derive(Serialize)]
@@ -109,6 +159,9 @@ struct DumpHeader {
     sort: DumpHeaderSort,
     selected: bool,
     hovered: bool,
+    filter: DumpHeaderFilter,
+    /// The support of the item's Key, or none (all off) for an unfilled one.
+    support: DumpSupport,
 }
 
 #[derive(Serialize)]
@@ -123,8 +176,8 @@ struct DumpApplied {
     index: f64,
 }
 
-impl From<HeaderPlacement> for DumpHeader {
-    fn from(h: HeaderPlacement) -> Self {
+impl DumpHeader {
+    fn new(h: HeaderPlacement, support: Support) -> Self {
         DumpHeader {
             position: h.position as f64,
             key: h.key.map(|k| k.0),
@@ -138,6 +191,12 @@ impl From<HeaderPlacement> for DumpHeader {
             },
             selected: h.selected,
             hovered: h.hovered,
+            filter: DumpHeaderFilter {
+                filtered: h.filter.filtered,
+                pending: h.filter.pending,
+                not_applied: h.filter.not_applied,
+            },
+            support: support.into(),
         }
     }
 }
@@ -255,6 +314,10 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             key: f.key.map(|k| k.0),
         }),
         locating: s.locating(axis),
+        total: s.total(axis).map(|t| t as f64),
+        quick_filter: s
+            .quick_filter(axis)
+            .map(|q| DumpTextSupport { regex: q.regex }),
         strip: s
             .strip(axis)
             .iter()
@@ -265,7 +328,27 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 size: i.size,
             })
             .collect(),
-        headers: s.headers(axis).map(DumpHeader::from).collect(),
+        headers: s
+            .headers(axis)
+            .map(|h| {
+                let none = Support::default().with_sort(false).with_text(None);
+                let support = h.key.map_or(none, |k| s.support(axis.other(), k));
+                DumpHeader::new(h, support)
+            })
+            .collect(),
+        conditions: s
+            .conditions(axis)
+            .iter()
+            .map(|(c, state)| DumpListed {
+                condition: c.into(),
+                state: match state {
+                    ConditionState::Applied => "applied",
+                    ConditionState::Adding => "adding",
+                    ConditionState::Removing => "removing",
+                    ConditionState::NotApplied => "notApplied",
+                },
+            })
+            .collect(),
     }
 }
 
@@ -325,8 +408,12 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         selection_rects: s.selection_rects().iter().map(|r| (*r).into()).collect(),
         picked: keys(s.picked()),
         moving_keys: keys(s.moving_keys()),
-        applied_sort: sort_columns(s.applied_sort()),
-        requested_sort: s.requested_sort().map(sort_columns),
+        applied_view: s.applied_view().into(),
+        requested_view: s.requested_view().map(WireViewSpec::from),
+        view_pending: s.view_pending(),
+        find: s.find().map(WireFindQuery::from),
+        find_match: s.find_match().map(WireFindMatch::from),
+        find_support: s.find_support().map(|f| DumpTextSupport { regex: f.regex }),
         cells,
     }
 }
@@ -334,10 +421,43 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
 /// One of every Effect variant, with Keys past 2^53 where an Effect has them.
 pub fn every_effect() -> Vec<WireStamped> {
     let (row, col) = (Key(u64::MAX), Key((1 << 53) + 1));
-    let spec = SortSpec::new(vec![
-        SortColumn::ascending(col),
-        SortColumn::descending(row),
-    ]);
+    let spec = ViewSpec::default()
+        .with_sort(
+            Axis::Rows,
+            SortSpec::new(vec![
+                SortColumn::ascending(col),
+                SortColumn::descending(Key(7)),
+            ]),
+        )
+        .with_sort(Axis::Cols, SortSpec::new(vec![SortColumn::descending(row)]));
+    let conditions = vec![
+        Condition::text(col, TextQuery::new("Ø🚢").case_sensitive(true)).not(true),
+        Condition::text(Key(7), TextQuery::new("^a").regex(true)),
+        Condition::one_of(
+            Key(7),
+            vec![
+                Value::Text("Bér 🚢".into()),
+                Value::Blank,
+                Value::Text("".into()),
+            ],
+        )
+        .not(true),
+    ];
+    let spec = spec.with_filter(
+        Axis::Rows,
+        FilterSpec::default()
+            .with_quick(Some(
+                TextQuery::new("Bér 🚢")
+                    .regex(true)
+                    .searching(Searched::Keys(vec![col])),
+            ))
+            .with_conditions(conditions.into()),
+    );
+    let edit = ViewEdit::CycleSort {
+        axis: Axis::Rows,
+        key: col,
+        multi: true,
+    };
     [
         Effect::TextTyped { text: "é".into() },
         Effect::Activated { row, col },
@@ -345,7 +465,7 @@ pub fn every_effect() -> Vec<WireStamped> {
         Effect::EditCancelled { row, col },
         Effect::FocusChanged { row, col },
         Effect::SelectionChanged,
-        Effect::SortRequested { spec },
+        Effect::ViewRequested { spec, edit },
         Effect::Locate {
             axis: Axis::Rows,
             key: row,
@@ -369,6 +489,14 @@ pub fn every_effect() -> Vec<WireStamped> {
             keys: vec![col, row],
             to: 3,
         },
+        Effect::FindRequested {
+            query: Some(FindQuery::new(TextQuery::new("Ø🚢").case_sensitive(true)).by(Axis::Cols)),
+        },
+        Effect::FindStepRequested {
+            query: FindQuery::new(TextQuery::new("a").searching(Searched::Keys(vec![col]))),
+            from: Some(FindMatch::new(row, col)),
+            direction: FindDirection::Previous,
+        },
     ]
     .into_iter()
     .enumerate()
@@ -382,10 +510,57 @@ pub fn every_effect() -> Vec<WireStamped> {
     .collect()
 }
 
+/// One of every View Edit, as `ViewRequested` carries them.
+pub fn every_view_edit() -> Vec<WireViewEdit> {
+    let query = TextQuery::new("ber").case_sensitive(true);
+    let col = Key((1 << 53) + 1);
+    let not_ber = Condition::text(col, query.clone()).not(true);
+    let regex = Condition::text(Key(2), TextQuery::new("^b").regex(true));
+    let listed = Condition::one_of(col, vec![Value::Blank, Value::Text("Ø".into())]);
+    [
+        ViewEdit::CycleSort {
+            axis: Axis::Rows,
+            key: Key(u64::MAX),
+            multi: false,
+        },
+        ViewEdit::SetQuickFilter {
+            axis: Axis::Rows,
+            query: Some(query),
+        },
+        ViewEdit::SetQuickFilter {
+            axis: Axis::Cols,
+            query: None,
+        },
+        ViewEdit::Replace,
+        ViewEdit::ShownChanged { axis: Axis::Cols },
+        ViewEdit::Reapply,
+        ViewEdit::AddCondition {
+            axis: Axis::Rows,
+            condition: not_ber.clone(),
+        },
+        ViewEdit::RemoveCondition {
+            axis: Axis::Rows,
+            condition: regex.clone(),
+        },
+        ViewEdit::ReplaceCondition {
+            axis: Axis::Rows,
+            from: not_ber,
+            to: regex,
+        },
+        ViewEdit::AddCondition {
+            axis: Axis::Rows,
+            condition: listed,
+        },
+    ]
+    .into_iter()
+    .map(WireViewEdit::from)
+    .collect()
+}
+
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 10] = [
+pub const SCENARIOS: [&str; 13] = [
     "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
-    "sorted",
+    "sorted", "filtered", "found", "rejected",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -488,13 +663,94 @@ pub fn scenario(name: &str) -> Grid {
             grid.pointer(PointerEvent::moved(220.0, 24.0 + 21.0 * 4.0 + 5.0));
         }
         "sorted" => {
-            // Applied: column 2 descending, then column 0; column 1 pending.
-            grid.sort_applied(SortSpec::new(vec![
-                SortColumn::descending(key(2)),
-                SortColumn::ascending(key(0)),
-            ]));
+            // Applied: rows by column 2 descending, then column 0, and
+            // columns by row 1; column 1 pending.
+            grid.view_applied(
+                ViewSpec::default()
+                    .with_sort(
+                        Axis::Rows,
+                        SortSpec::new(vec![
+                            SortColumn::descending(key(2)),
+                            SortColumn::ascending(key(0)),
+                        ]),
+                    )
+                    .with_sort(
+                        Axis::Cols,
+                        SortSpec::new(vec![SortColumn::ascending(key(1))]),
+                    ),
+                Totals::unknown(),
+            );
             grid.pointer(PointerEvent::down(150.0, 10.0).modifiers(Modifiers::SHIFT));
             grid.pointer(PointerEvent::up(150.0, 10.0).modifiers(Modifiers::SHIFT));
+        }
+        "filtered" => {
+            // The rows' quick filter applied with a total of 900 rows, and a
+            // new one (with a surrogate pair) requested. Column 1 has a
+            // condition applied and another being added; column 2 one being
+            // removed, and a OneOf with a blank being added. Column 0 cannot
+            // be filtered, column 1 takes regexes, column 2 lists values.
+            grid.set_quick_filter_support(Axis::Rows, Some(TextSupport::new(true)));
+            grid.set_support(Axis::Rows, key(0), Support::default().with_text(None));
+            let regex = Some(TextSupport::new(true));
+            grid.set_support(Axis::Rows, key(1), Support::default().with_text(regex));
+            grid.set_support(Axis::Rows, key(2), Support::default().with_one_of(true));
+            let applied = TextQuery::new("ber").searching(Searched::Keys(vec![key(0), key(2)]));
+            let kept = Condition::text(key(1), TextQuery::new("Ø"));
+            let dropped = Condition::text(key(2), TextQuery::new("x")).not(true);
+            let filter = FilterSpec::default()
+                .with_quick(Some(applied))
+                .with_conditions(vec![kept.clone(), dropped.clone()].into());
+            grid.view_applied(
+                ViewSpec::default().with_filter(Axis::Rows, filter),
+                Totals::unknown().with(Axis::Rows, Some(900)),
+            );
+            let requested = TextQuery::new("Bé🚢").case_sensitive(true).regex(true);
+            grid.set_quick_filter(Axis::Rows, Some(requested));
+            grid.add_condition(
+                Axis::Rows,
+                Condition::text(key(1), TextQuery::new("^b").regex(true)),
+            );
+            grid.remove_condition(Axis::Rows, &dropped);
+            let values = vec![Value::Text("Bé🚢".into()), Value::Blank];
+            grid.add_condition(Axis::Rows, Condition::one_of(key(2), values).not(true));
+        }
+        "found" => {
+            // Find "Bé🚢" by columns, regexes supported, stepped to row 3,
+            // column 1 with rows 1 to 2 of column 0 selected.
+            grid.set_focus(key(1), key(0));
+            frame(&mut grid);
+            grid.action(Action::MoveFocus {
+                axis: Axis::Rows,
+                by: FocusStep::Item,
+                forward: true,
+                extend: true,
+            });
+            grid.set_find_support(Some(TextSupport::new(true)));
+            let query = TextQuery::new("Bé🚢").searching(Searched::Keys(vec![key(1)]));
+            grid.set_find(Some(FindQuery::new(query).by(Axis::Cols)));
+            grid.action(Action::FindNext);
+            grid.find_stepped(Some(FindMatch::new(key(3), key(1))));
+        }
+        "rejected" => {
+            // The source answered a quick filter and a condition on column 1
+            // with neither (an invalid regex, say), and later stopped
+            // applying the condition on column 2.
+            let kept = Condition::text(key(2), TextQuery::new("x"));
+            grid.add_condition(Axis::Rows, kept.clone());
+            let applied = FilterSpec::default().with_conditions(vec![kept].into());
+            grid.view_applied(
+                ViewSpec::default().with_filter(Axis::Rows, applied),
+                Totals::unknown(),
+            );
+            grid.set_quick_filter(Axis::Rows, Some(TextQuery::new("(").regex(true)));
+            grid.add_condition(
+                Axis::Rows,
+                Condition::text(key(1), TextQuery::new("[").regex(true)),
+            );
+            let applied = grid.snapshot().applied_view().clone();
+            grid.view_applied(applied.clone(), Totals::unknown());
+            grid.view_applied(applied, Totals::unknown());
+            grid.view_changed(ViewSpec::default(), Totals::unknown());
         }
         other => panic!("no scenario {other}"),
     }
@@ -525,7 +781,7 @@ mod tests {
                 "busy" => {
                     assert!(s.selection_range().is_some());
                     assert_eq!(s.picked().len(), 1);
-                    assert!(s.requested_sort().is_some());
+                    assert!(s.requested_view().is_some());
                     assert!(s.hovered_header().is_some());
                 }
                 "resizing" => assert!(s.resize_guide().is_some() && s.capturing()),
@@ -541,8 +797,52 @@ mod tests {
                     assert_eq!((range.rows, range.cols), (1..5, 0..3));
                 }
                 "sorted" => {
-                    assert_eq!(s.applied_sort().columns().len(), 2);
-                    assert_eq!(s.requested_sort().map(|r| r.columns().len()), Some(3));
+                    assert_eq!(s.applied_view().rows.sort.columns().len(), 2);
+                    assert_eq!(s.applied_view().cols.sort.columns().len(), 1);
+                    let requested = s.requested_view().map(|r| r.rows.sort.columns().len());
+                    assert_eq!(requested, Some(3));
+                }
+                "filtered" => {
+                    assert!(s.applied_view().rows.filter.quick.is_some());
+                    let requested = s.requested_view().and_then(|r| r.rows.filter.quick.clone());
+                    assert!(requested.is_some_and(|q| q.regex));
+                    assert_eq!(s.total(Axis::Rows), Some(900));
+                    assert!(s.quick_filter(Axis::Rows).is_some());
+                    let states: Vec<ConditionState> = s
+                        .conditions(Axis::Rows)
+                        .into_iter()
+                        .map(|(_, st)| st)
+                        .collect();
+                    assert_eq!(
+                        states,
+                        [
+                            ConditionState::Applied,
+                            ConditionState::Adding,
+                            ConditionState::Adding,
+                            ConditionState::Removing
+                        ]
+                    );
+                }
+                "rejected" => {
+                    assert!(!s.view_pending());
+                    let states: Vec<ConditionState> = s
+                        .conditions(Axis::Rows)
+                        .into_iter()
+                        .map(|(_, st)| st)
+                        .collect();
+                    assert_eq!(states, [ConditionState::NotApplied; 2]);
+                    let wanted = s.requested_view().and_then(|r| r.rows.filter.quick.clone());
+                    assert!(wanted.is_some_and(|q| q.regex));
+                    assert_eq!(s.applied_view(), &ViewSpec::default());
+                }
+                "found" => {
+                    assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
+                    assert!(s.find_support().is_some());
+                    let current = s.find_match().unwrap();
+                    assert_eq!(s.selection_range().map(|r| r.rows), Some(1..3));
+                    let row = s.rows().iter().find(|i| i.key == Some(current.row));
+                    let col = s.cols().iter().find(|i| i.key == Some(current.col));
+                    assert!(s.cell_state(row.unwrap(), col.unwrap()).current_match);
                 }
                 _ => {}
             }
@@ -559,6 +859,9 @@ mod tests {
                 "Idle",
                 "Idle",
                 "DraggingSelection",
+                "Idle",
+                "Idle",
+                "Idle",
                 "Idle"
             ]
         );
@@ -577,17 +880,19 @@ mod tests {
                 crate::effect::WireEffect::EditCancelled { .. } => "EditCancelled",
                 crate::effect::WireEffect::FocusChanged { .. } => "FocusChanged",
                 crate::effect::WireEffect::SelectionChanged => "SelectionChanged",
-                crate::effect::WireEffect::SortRequested { .. } => "SortRequested",
+                crate::effect::WireEffect::ViewRequested { .. } => "ViewRequested",
                 crate::effect::WireEffect::Locate { .. } => "Locate",
                 crate::effect::WireEffect::SizeChanged { .. } => "SizeChanged",
                 crate::effect::WireEffect::AutoSizeRequested { .. } => "AutoSizeRequested",
                 crate::effect::WireEffect::BandSizeChanged { .. } => "BandSizeChanged",
                 crate::effect::WireEffect::BandAutoSizeRequested { .. } => "BandAutoSizeRequested",
                 crate::effect::WireEffect::MoveRequested { .. } => "MoveRequested",
+                crate::effect::WireEffect::FindRequested { .. } => "FindRequested",
+                crate::effect::WireEffect::FindStepRequested { .. } => "FindStepRequested",
             })
             .collect();
         let mut unique = seen.clone();
         unique.dedup();
-        assert_eq!(unique.len(), 13, "{seen:?}");
+        assert_eq!(unique.len(), 15, "{seen:?}");
     }
 }

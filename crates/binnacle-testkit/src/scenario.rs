@@ -3,12 +3,13 @@ use std::fmt::Write;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, AxisConfig, ChangeNotice, Effect, Grid, Key, Located, Modifiers, PointerEvent, Position,
-    Snapshot, SortSpec, Stamped, Viewport,
+    Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, Effect, FindDirection, FindMatch,
+    FindQuery, Grid, Key, Located, Modifiers, PointerEvent, Position, Snapshot, Stamped, Support,
+    ViewSpec, Viewport,
 };
-use binnacle_memory::{IdentitySource, MemorySource, PumpSource};
+use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Viewed};
 
-use crate::render::Rendered;
+use crate::render::{Rendered, view_text};
 
 /// What a scenario's host fetches Keys from, on top of the Effects it answers
 /// through the shared pump.
@@ -155,8 +156,9 @@ impl RecordTable {
         self.source.appended(&self.rows, &[])
     }
 
-    /// Sets base row `row`'s value in column `col`; the Grid needs the
-    /// returned Change Notice, if any.
+    /// Sets base row `row`'s value in column `col` as the user's edit (a
+    /// row in view stays even if the filter now drops it); the Grid needs
+    /// the returned Change Notice, if any.
     pub fn edit(&mut self, row: usize, col: usize, value: Option<i64>) -> Option<ChangeNotice> {
         self.rows[row][col] = value;
         self.source.edited(&self.rows, row, Key(col as u64))
@@ -177,8 +179,16 @@ impl ScenarioSource for RecordTable {
 }
 
 impl PumpSource for RecordTable {
-    fn sort(&mut self, spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
-        self.source.over(&self.rows).sort(spec)
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        self.source.over(&self.rows).view(spec)
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.source.support(axis, key)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        self.source.over(&self.rows).distinct(axis, key, query)
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
@@ -187,6 +197,15 @@ impl PumpSource for RecordTable {
 
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
         self.source.over(&self.rows).move_items(axis, keys, to)
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        self.source.find_next(&self.rows, query, from, direction)
     }
 }
 
@@ -197,14 +216,19 @@ struct Answering<'a, S> {
 }
 
 impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
-    fn sort(&mut self, spec: &SortSpec) -> Result<ChangeNotice, SortSpec> {
-        let answer = self.source.sort(spec);
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        let answer = self.source.view(spec);
         let _ = writeln!(
             self.log.borrow_mut(),
-            "  sort {:?}: {answer:?}",
-            spec.columns()
+            "  view: applied {}, notices {:?}",
+            view_text(&answer.applied),
+            answer.notices
         );
         answer
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.source.support(axis, key)
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
@@ -222,6 +246,17 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
             self.log.borrow_mut(),
             "  move {axis:?} {keys:?} to {to}: {answer:?}"
         );
+        answer
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        let answer = self.source.find_next(query, from, direction);
+        let _ = writeln!(self.log.borrow_mut(), "  find: {answer:?}");
         answer
     }
 }
@@ -265,8 +300,8 @@ impl<S: ScenarioSource> Scenario<S> {
         f(&mut self.grid);
     }
 
-    /// Drains the Effect queue through the shared pump, which answers sort
-    /// requests and `Locate` from the source; logs each Effect and answer and
+    /// Drains the Effect queue through the shared pump, which answers View
+    /// Specs and `Locate` from the source; logs each Effect and answer and
     /// returns the Effects in order.
     pub fn pump(&mut self) -> Vec<Stamped> {
         let mut drained = Vec::new();
@@ -277,11 +312,15 @@ impl<S: ScenarioSource> Scenario<S> {
         };
         let log = &mut self.log;
         binnacle_memory::pump(&mut self.grid, &mut source, |_, stamped| {
-            let _ = writeln!(
-                log,
-                "effect (gen {}): {:?}",
-                stamped.generation, stamped.effect
-            );
+            let _ = match &stamped.effect {
+                Effect::ViewRequested { spec, edit } => writeln!(
+                    log,
+                    "effect (gen {}): ViewRequested {} by {edit:?}",
+                    stamped.generation,
+                    view_text(spec)
+                ),
+                effect => writeln!(log, "effect (gen {}): {effect:?}", stamped.generation),
+            };
             // The pump answers an Effect before handing it on.
             log.push_str(&answers.take());
             drained.push(stamped);

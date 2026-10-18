@@ -6,7 +6,7 @@
 
 mod support;
 
-use binnacle_core::{Axis, ChangeNotice, Key, SortColumn, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, Key, SortColumn, SortSpec, ViewSpec};
 use binnacle_memory::MemorySource;
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -151,13 +151,13 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
         let notice = match op.clone() {
             Op::Sort(s) => {
                 spec = s;
-                Some(source.sort(&rows, &spec).unwrap())
+                Some(source.view(&rows, &rows_sorted(spec.clone())).unwrap())
             }
             Op::Filter(k) => {
                 keep = k;
                 Some(match k {
                     Some(k) => source.filter(&rows, move |r| k.keeps(r)),
-                    None => source.clear_filter(),
+                    None => source.clear_filter(&rows),
                 })
             }
             Op::Append(records) => {
@@ -175,7 +175,7 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
                 }
                 let row = row % rows.len();
                 rows[row][col] = value;
-                source.edited(&rows, row, Key(col as u64))
+                source.changed(&rows, row, Key(col as u64))
             }
             Op::Replace(records) => {
                 rows = records;
@@ -265,6 +265,12 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
                     );
                 }
             }
+            Some(ChangeNotice::Refiltered(count)) => {
+                // Only a filter, or an edit moving a row across it, keeps
+                // the same rows but shows a different set of them.
+                assert!(matches!(op, Op::Filter(_) | Op::Edit { .. }), "{op:?}");
+                assert_eq!(*count, after.len() as u64);
+            }
             Some(ChangeNotice::Removed { .. }) => panic!("{op:?}"),
             None => {
                 let Op::Edit { row, .. } = op else {
@@ -275,4 +281,9 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
             }
         }
     });
+}
+
+/// A View Spec sorting the rows by `sort`.
+fn rows_sorted(sort: SortSpec) -> ViewSpec {
+    ViewSpec::default().with_sort(Axis::Rows, sort)
 }

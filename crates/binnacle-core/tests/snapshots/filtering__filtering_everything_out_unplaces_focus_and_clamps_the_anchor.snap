@@ -18,6 +18,12 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 --- 2. keep 7, 8, 9: the anchor clamps to the count, the whole range stays, focus moves to record 6, the nearest survivor in base order
 effect (gen 2): Locate { axis: Rows, key: Key(7) }
   locate Rows Key(7): Gone { suggest: Some(2) }
+effect (gen 2): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(1)
+effect (gen 2): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Gone { suggest: Some(2) }
+effect (gen 2): Locate { axis: Rows, key: Key(6) }
+  locate Rows Key(6): Found(2)
 effect (gen 2): SelectionChanged
 window Rows 0..3
 gen 3 | damage layout selection positions | focus 2#6,0#0 at 4,3 6x1 | range 0..3 x 0..3 | fill 4,1 20x3

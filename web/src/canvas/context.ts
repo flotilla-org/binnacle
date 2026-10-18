@@ -34,6 +34,8 @@ export interface PaintContext {
   now: number;
   /** Whether pending states animate; `false` under `prefers-reduced-motion`. */
   motion: boolean;
+  /** Whether a column menu is mounted, so filterable column headers draw its button. */
+  filterButtons: boolean;
 }
 
 /** Horizontal text padding inside a cell or header, CSS px. */

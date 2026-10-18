@@ -1,0 +1,106 @@
+---
+source: crates/binnacle-core/tests/conditions.rs
+expression: out
+---
+--- 1. eight records
+window Rows 0..7
+window Cols 0..3
+gen 1 | damage layout selection positions
+Rows: count 8, extent 6, header 1, anchor 0+0, thumb 0.0000/0.6250 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1 4#4@5+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+--- 2. column 0 is one of 13, 3 and 1: 13 and 3 exactly (not 31 or 23, nor 1, absent)
+effect (gen 1): ViewRequested unsorted filter 0: one of ["13", "3", "1"] by AddCondition { axis: Rows, condition: Condition { key: Key(0), kind: OneOf([Text("13"), Text("3"), Text("1")]), not: false } }
+  view: applied unsorted filter 0: one of ["13", "3", "1"], notices [(Rows, Refiltered(2))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(0)
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Gone { suggest: Some(1) }
+window Rows 0..2
+gen 2 | damage layout selection positions | filter 0: one of ["13", "3", "1"] | total Rows 8 | total Cols 3
+Rows: count 2, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1@1+1 1#7@2+1
+Cols: (unchanged)
+    0      1      2
+0   1.0    1.1    1.2
+1   7.0    7.1    7.2
+
+
+
+--- 3. column 0 is not 13 or 3: the other six
+effect (gen 2): ViewRequested unsorted filter 0: not one of ["13", "3"] by ReplaceCondition { axis: Rows, from: Condition { key: Key(0), kind: OneOf([Text("13"), Text("3"), Text("1")]), not: false }, to: Condition { key: Key(0), kind: OneOf([Text("13"), Text("3")]), not: true } }
+  view: applied unsorted filter 0: not one of ["13", "3"], notices [(Rows, Refiltered(6))]
+effect (gen 2): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: Some(1) }
+effect (gen 2): Locate { axis: Rows, key: Key(7) }
+  locate Rows Key(7): Gone { suggest: Some(5) }
+window Rows 0..6
+gen 3 | damage layout selection positions | filter 0: not one of ["13", "3"] | total Rows 8 | total Cols 3
+Rows: count 6, extent 6, header 1, anchor 0+0, thumb 0.0000/0.8333 | 0#0@1+1 1#2@2+1 2#3@3+1 3#4@4+1 4#5@5+1
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   2.0    2.1    2.2
+2   3.0    3.1    3.2
+3   4.0    4.1    4.2
+4   5.0    5.1    5.2
+--- 4. and column 2 is empty text: none, as column 2 is blank, not empty
+effect (gen 3): ViewRequested unsorted filter 0: not one of ["13", "3"] & 2: one of [""] by AddCondition { axis: Rows, condition: Condition { key: Key(2), kind: OneOf([Text("")]), not: false } }
+  view: applied unsorted filter 0: not one of ["13", "3"] & 2: one of [""], notices [(Rows, Refiltered(0))]
+gen 4 | damage layout selection positions | filter 0: not one of ["13", "3"] & 2: one of [""] | total Rows 8 | total Cols 3
+Rows: count 0, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 |
+Cols: (unchanged)
+    0      1      2
+
+
+
+
+
+--- 5. column 2 is blank instead: the six again
+effect (gen 4): ViewRequested unsorted filter 0: not one of ["13", "3"] & 2: one of [blank] by ReplaceCondition { axis: Rows, from: Condition { key: Key(2), kind: OneOf([Text("")]), not: false }, to: Condition { key: Key(2), kind: OneOf([Blank]), not: false } }
+  view: applied unsorted filter 0: not one of ["13", "3"] & 2: one of [blank], notices [(Rows, Refiltered(6))]
+window Rows 0..6
+gen 5 | damage layout selection positions | filter 0: not one of ["13", "3"] & 2: one of [blank] | total Rows 8 | total Cols 3
+Rows: count 6, extent 6, header 1, anchor 0+0, thumb 0.0000/0.8333 | 0#0@1+1 1#2@2+1 2#3@3+1 3#4@4+1 4#5@5+1
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   2.0    2.1    2.2
+2   3.0    3.1    3.2
+3   4.0    4.1    4.2
+4   5.0    5.1    5.2
+--- 6. column 2 is not one of nothing: the six
+effect (gen 5): ViewRequested unsorted filter 0: not one of ["13", "3"] & 2: not one of [] by ReplaceCondition { axis: Rows, from: Condition { key: Key(2), kind: OneOf([Blank]), not: false }, to: Condition { key: Key(2), kind: OneOf([]), not: true } }
+  view: applied unsorted filter 0: not one of ["13", "3"] & 2: not one of [], notices [(Rows, Refiltered(6))]
+effect (gen 5): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 5): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(1)
+effect (gen 5): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(2)
+effect (gen 5): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(3)
+effect (gen 5): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Found(4)
+window Rows 0..6
+gen 6 | damage layout selection positions | filter 0: not one of ["13", "3"] & 2: not one of [] | total Rows 8 | total Cols 3
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 7. column 2 is one of nothing: none
+effect (gen 6): ViewRequested unsorted filter 0: not one of ["13", "3"] & 2: one of [] by ReplaceCondition { axis: Rows, from: Condition { key: Key(2), kind: OneOf([]), not: true }, to: Condition { key: Key(2), kind: OneOf([]), not: false } }
+  view: applied unsorted filter 0: not one of ["13", "3"] & 2: one of [], notices [(Rows, Refiltered(0))]
+gen 7 | damage layout selection positions | filter 0: not one of ["13", "3"] & 2: one of [] | total Rows 8 | total Cols 3
+Rows: count 0, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 |
+Cols: (unchanged)
+    0      1      2

@@ -9,21 +9,27 @@
 //! [`Effect`] and drained with [`Grid::poll_effect`].
 
 mod axis;
+mod distinct;
 mod edit;
 mod effect;
+mod find;
 mod focus;
 mod gesture;
 mod grid;
 mod measure;
 mod notice;
 mod pointer;
+mod refilter;
 mod selection;
 mod snapshot;
 mod sort;
 mod types;
+mod view;
 
+pub use distinct::{Blanks, Distinct, DistinctQuery, DistinctValue};
 pub use edit::EditEnd;
 pub use effect::{Action, Effect, FocusStep, Stamped};
+pub use find::{FindDirection, FindMatch, FindQuery};
 pub use focus::FocusEnd;
 pub use gesture::Mode;
 pub use grid::{AxisConfig, DEFAULT_DRAG_THRESHOLD, Grid, WindowRequests};
@@ -37,3 +43,7 @@ pub use snapshot::{
 };
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Generation, Key, Position, Viewport};
+pub use view::{
+    AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HeaderFilter,
+    Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
+};

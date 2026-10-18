@@ -53,12 +53,6 @@ const source: TableSource<string, Col, Value> = {
     count: () => order.length,
     window: (start, end) => order.slice(start, end),
     label: (id) => byId(id).name as string,
-    sort(next) {
-      spec = next;
-      sortOrder();
-      queueMicrotask(() => sink?.rows.notify({ type: "Reordered" }));
-      return next;
-    },
     locate: (id) => {
       const at = order.indexOf(id);
       return at < 0 ? { type: "Gone", suggest: null } : { type: "Found", position: at };
@@ -68,6 +62,12 @@ const source: TableSource<string, Col, Value> = {
     count: () => COLS.length,
     window: (start, end) => COLS.slice(start, end),
     label: (c) => LABELS[c],
+  },
+  view(next) {
+    spec = next.rows.sort;
+    sortOrder();
+    queueMicrotask(() => sink?.rows.notify({ type: "Reordered" }));
+    return { rows: { sort: spec }, cols: { sort: [] } };
   },
   cells(rows, cols) {
     const values = rows.map((r) => cols.map((c) => byId(r)[c]));

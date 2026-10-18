@@ -3,15 +3,17 @@ use std::ops::Range;
 
 use crate::axis::AxisState;
 use crate::effect::{Action, Effect, FocusStep, Stamped};
+use crate::find::{FindDirection, FindState};
 use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
 use crate::notice::Locating;
 use crate::pointer::{AxisHit, Hit};
+use crate::refilter::Refiltering;
 use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
-use crate::sort::SortState;
 use crate::types::{Axis, Generation, Key, Position, Viewport};
+use crate::view::ViewState;
 
 /// How one axis starts out: its count, default item size, header band, Gap
 /// and size range.
@@ -118,6 +120,7 @@ pub struct Grid {
     /// sizes the move was made against may change before then.
     pub(crate) reveal: bool,
     pub(crate) locating: Locating,
+    pub(crate) refiltering: Refiltering,
     pub(crate) follow_focus_on_reorder: bool,
     pub(crate) selection: Selection,
     pub(crate) unit: SelectionUnit,
@@ -135,7 +138,8 @@ pub struct Grid {
     pub(crate) hovered_border: Option<Axis>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
-    pub(crate) sort: SortState,
+    pub(crate) view: ViewState,
+    pub(crate) find: FindState,
 }
 
 /// The drag threshold until [`Grid::set_drag_threshold`] changes it: one unit,
@@ -166,6 +170,7 @@ impl Grid {
             heard: None,
             reveal: false,
             locating: Locating::default(),
+            refiltering: Refiltering::default(),
             follow_focus_on_reorder: false,
             selection: Selection::default(),
             unit: SelectionUnit::Cells,
@@ -177,7 +182,8 @@ impl Grid {
             hovered: None,
             hovered_border: None,
             fills: Vec::new(),
-            sort: SortState::default(),
+            view: ViewState::default(),
+            find: FindState::default(),
         }
     }
 
@@ -240,6 +246,7 @@ impl Grid {
                 st.extent = extent;
                 self.pending_damage.layout = true;
             }
+            self.refilter_settle(axis);
             if self.axis_mut(axis).clamp_anchor() {
                 self.pending_damage.layout = true;
             }
@@ -417,18 +424,28 @@ impl Grid {
             }
             Action::Scroll { dx, dy } => {
                 self.reveal = false;
+                if dx != 0.0 {
+                    self.refilter_scrolled(Axis::Cols);
+                }
+                if dy != 0.0 {
+                    self.refilter_scrolled(Axis::Rows);
+                }
                 let moved =
                     self.axis_mut(Axis::Cols).scroll(dx) | self.axis_mut(Axis::Rows).scroll(dy);
                 self.pending_damage.layout |= moved;
             }
             Action::ScrollTo { axis, fraction } => {
                 self.reveal = false;
+                self.refilter_scrolled(axis);
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_to(fraction);
             }
             Action::ScrollBy { axis, items } => {
                 self.reveal = false;
+                self.refilter_scrolled(axis);
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_items(items);
             }
+            Action::FindNext => self.find_step(FindDirection::Next),
+            Action::FindPrevious => self.find_step(FindDirection::Previous),
         }
     }
 
@@ -490,6 +507,12 @@ impl Grid {
     /// axis. A gesture in progress keeps going, but `Cancel` no longer undoes
     /// this. Nothing happens while either axis is empty.
     pub fn set_focus(&mut self, row: Key, col: Key) {
+        self.place_focus(row, col, true);
+    }
+
+    /// As [`Grid::set_focus`], selecting the focus as a focus move does only
+    /// if `select`; the view follows either way.
+    pub(crate) fn place_focus(&mut self, row: Key, col: Key, select: bool) {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return;
         }
@@ -516,12 +539,16 @@ impl Grid {
             self.locate(axis, keys[axis.index()]);
         }
         if unknown.is_empty() {
-            self.set_span(self.unit_span(cell));
+            if select {
+                self.set_span(self.unit_span(cell));
+            }
             self.reveal = true;
             self.reveal_focus();
-        } else {
+        } else if select {
             self.set_span(None);
             self.locating.select_when_placed = true;
+        } else {
+            self.locating.reveal_when_placed = true;
         }
         self.rebase_gesture();
     }
@@ -534,6 +561,7 @@ impl Grid {
             return;
         }
         self.reveal = false;
+        self.refilter_scrolled(axis);
         self.pending_damage.layout |= self.axis_mut(axis).reveal(position);
     }
 
@@ -544,6 +572,7 @@ impl Grid {
             return;
         }
         self.reveal = false;
+        self.refilter_scrolled(axis);
         self.pending_damage.layout |= self.axis_mut(axis).scroll_to_item(position);
     }
 
@@ -763,14 +792,19 @@ impl Grid {
     }
 
     /// Takes the oldest queued Effect, if any. Requests the Table Source
-    /// answers (`SortRequested`, `Locate`, `MoveRequested`) come out before the rest, so a
+    /// answers (`ViewRequested`, `Locate`, `MoveRequested`, `FindRequested`,
+    /// `FindStepRequested`) come out before the rest, so a
     /// host that answers as it drains does so before it hears of focus and
     /// selection, which the answers may change again.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
         let request = self.effects.iter().position(|s| {
             matches!(
                 s.effect,
-                Effect::SortRequested { .. } | Effect::Locate { .. } | Effect::MoveRequested { .. }
+                Effect::ViewRequested { .. }
+                    | Effect::Locate { .. }
+                    | Effect::MoveRequested { .. }
+                    | Effect::FindRequested { .. }
+                    | Effect::FindStepRequested { .. }
             )
         });
         let stamped = match request {

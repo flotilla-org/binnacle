@@ -40,6 +40,17 @@ pub struct Theme {
     /// Patched over a cell whose value just changed (see
     /// [`CellCanvas::flash`](crate::CellCanvas::flash)).
     pub flash: Style,
+    /// Patched over a cell that matches the Find Query.
+    pub find_match: Style,
+    /// Patched over the current match, which also ends in `◂` so it shows
+    /// under the focus.
+    pub find_current: Style,
+    /// Patched over the cells of an unmatched row (kept after the user's
+    /// edit though the filter drops it), dimming it.
+    pub unmatched: Style,
+    /// Patched over a control whose request the Table Source rejected or
+    /// failed: a quick filter, condition or find text it did not apply.
+    pub error: Style,
     pub shimmer_base: Color,
     pub shimmer_highlight: Color,
     /// Draws headers and row numbers reversed, so the bands stand out.
@@ -75,6 +86,13 @@ impl Theme {
             scrollbar_thumb: none.fg(Color::Gray),
             loading: none,
             flash: none.fg(Color::Black).bg(Color::Yellow),
+            find_match: none.fg(Color::Black).bg(Color::Yellow),
+            find_current: none
+                .fg(Color::Black)
+                .bg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
+            unmatched: none.fg(Color::DarkGray),
+            error: none.fg(Color::LightRed).add_modifier(Modifier::BOLD),
             shimmer_base: Color::Rgb(140, 130, 40),
             shimmer_highlight: Color::Rgb(255, 240, 120),
             invert_headers: false,
@@ -103,6 +121,13 @@ impl Theme {
             scrollbar_thumb: none.fg(mocha::OVERLAY0),
             loading: none.fg(mocha::OVERLAY0),
             flash: none.fg(mocha::CRUST).bg(mocha::YELLOW),
+            find_match: none.fg(mocha::CRUST).bg(mocha::YELLOW),
+            find_current: none
+                .fg(mocha::CRUST)
+                .bg(mocha::PEACH)
+                .add_modifier(Modifier::BOLD),
+            unmatched: none.fg(mocha::OVERLAY0),
+            error: none.fg(mocha::RED).add_modifier(Modifier::BOLD),
             shimmer_base: mocha::PEACH,
             shimmer_highlight: mocha::YELLOW,
             invert_headers: false,
@@ -131,6 +156,10 @@ impl Theme {
             scrollbar_thumb: none,
             loading: none.add_modifier(Modifier::DIM),
             flash: none.add_modifier(Modifier::BOLD),
+            find_match: none.add_modifier(Modifier::UNDERLINED),
+            find_current: none.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            unmatched: none.add_modifier(Modifier::DIM),
+            error: none.add_modifier(Modifier::BOLD | Modifier::ITALIC),
             shimmer_base: Color::Reset,
             shimmer_highlight: Color::Reset,
             invert_headers: false,
@@ -171,6 +200,10 @@ impl Theme {
             scrollbar_thumb: s(self.scrollbar_thumb),
             loading: s(self.loading),
             flash: s(self.flash),
+            find_match: s(self.find_match),
+            find_current: s(self.find_current),
+            unmatched: s(self.unmatched),
+            error: s(self.error),
             shimmer_base: nearest_ansi(self.shimmer_base),
             shimmer_highlight: nearest_ansi(self.shimmer_highlight),
             ..self.clone()
@@ -246,6 +279,7 @@ mod mocha {
     pub const TEXT: Color = Color::Rgb(205, 214, 244);
     pub const MAUVE: Color = Color::Rgb(203, 166, 247);
     pub const PEACH: Color = Color::Rgb(250, 179, 135);
+    pub const RED: Color = Color::Rgb(243, 139, 168);
     pub const YELLOW: Color = Color::Rgb(249, 226, 175);
     pub const SAPPHIRE: Color = Color::Rgb(116, 199, 236);
     pub const BLUE: Color = Color::Rgb(137, 180, 250);

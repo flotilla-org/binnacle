@@ -5,6 +5,14 @@ expression: out
 --- 1. press row 3's header, filter down to 3 rows, release: no row 3 to select
 window Rows 0..6
 window Cols 0..3
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(0)
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: Some(1) }
 window Rows 0..3
 gen 2 | damage layout selection positions
 Rows: count 3, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#2@1+1 1#4@2+1 2#6@3+1

@@ -29,6 +29,14 @@ export interface InputHost {
   snapshot(): Snapshot | null;
   /** What the editor needs from the widget. */
   edits: Pick<EditHost, "editable" | "value" | "text" | "editor" | "commit" | "theme">;
+  /** Whether (x, y) is on a column menu button. */
+  menuButtonAt(x: number, y: number): boolean;
+  /** A press at (x, y), before the Grid sees it: `true` if a column menu button took it. */
+  menuPress(x: number, y: number): boolean;
+  /** Opens the focused column's menu: `false` if there is none to open. */
+  openColumnMenu(): boolean;
+  /** Opens the find bar, or steps while find is open: `false` if there is no find bar or find is closed. */
+  find(action: "open" | "next" | "previous"): boolean;
 }
 
 export interface Input {
@@ -88,6 +96,14 @@ export function perform(grid: WebGrid, action: Action): void {
       return grid.begin_edit();
     case "ScrollBy":
       return grid.scroll_by(AXIS_CODE[action.axis], action.items);
+    case "FindNext":
+      return grid.find_next();
+    case "FindPrevious":
+      return grid.find_previous();
+    case "OpenColumnMenu":
+    case "OpenFind":
+      // The widget's, not the Grid's: see `createInput`.
+      return;
   }
 }
 
@@ -133,6 +149,7 @@ export function createInput(host: InputHost): Input {
   let touch: Touch | null = null;
   let placed = { x: NaN, y: NaN, width: NaN, height: NaN };
   let cursor = "";
+  let overButton = false;
 
   const on = <K extends keyof HTMLElementEventMap>(
     target: HTMLElement,
@@ -170,6 +187,15 @@ export function createInput(host: InputHost): Input {
     }
     const action = host.keymap.lookup(e);
     if (!action) return;
+    if (action.type === "OpenColumnMenu") {
+      if (host.openColumnMenu()) e.preventDefault();
+      return;
+    }
+    if (action.type === "OpenFind" || action.type === "FindNext" || action.type === "FindPrevious") {
+      const asked = action.type === "OpenFind" ? "open" : action.type === "FindNext" ? "next" : "previous";
+      if (host.find(asked)) e.preventDefault();
+      return;
+    }
     e.preventDefault();
     perform(grid, action);
     host.changed();
@@ -214,6 +240,10 @@ export function createInput(host: InputHost): Input {
     editing.commit();
     const { x, y } = at(e);
     const finger = e.pointerType === "touch" && e.target !== bands.top && e.target !== bands.left;
+    if (e.button === 0 && host.menuPress(x, y)) {
+      e.preventDefault();
+      return;
+    }
     if (finger) {
       // Panning is the browser's; a tap is decided on release.
       touch = { id: e.pointerId, x, y, moved: false };
@@ -236,6 +266,7 @@ export function createInput(host: InputHost): Input {
       return;
     }
     if (e.pointerType === "touch" && held !== e.pointerId) return;
+    overButton = held === null && host.menuButtonAt(x, y);
     send(POINTER.move, e, x, y);
     host.changed();
   });
@@ -327,7 +358,7 @@ export function createInput(host: InputHost): Input {
           height: `${r.height}px`,
         });
       }
-      const shape = CURSORS[s.cursor];
+      const shape = overButton && s.cursor === "default" ? "pointer" : CURSORS[s.cursor];
       if (shape !== cursor) layer.style.cursor = cursor = shape;
       size(bands.top, s.cols.extent, s.rows.header);
       size(bands.left, s.cols.header, s.rows.extent);

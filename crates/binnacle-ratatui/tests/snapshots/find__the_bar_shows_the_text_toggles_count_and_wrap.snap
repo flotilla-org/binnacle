@@ -1,0 +1,11 @@
+---
+source: crates/binnacle-ratatui/tests/find.rs
+expression: "out.join(\"\\n\")"
+---
+ Find  bergen▏                  Aa .* rows    Enter next  S-Enter/^P prev  Esc table
+ Find  bergen▏                  Aa .* rows  120 matches  Enter next  S-Enter/^P prev  Esc
+ Find  bergen▏                  Aa .* rows  120+ matches  Enter next  S-Enter/^P prev  Esc
+ Find  bergen▏                  Aa .* rows  No matches  Enter next  S-Enter/^P prev  Esc t
+ Find  bergen▏                  Aa .* rows  1,204 of 1,204  wrapped to the end  Enter next
+ Find  bergen                   Aa .* rows  1 match  F3/^N next  S-F3/^P prev  ^F edit
+closed: []

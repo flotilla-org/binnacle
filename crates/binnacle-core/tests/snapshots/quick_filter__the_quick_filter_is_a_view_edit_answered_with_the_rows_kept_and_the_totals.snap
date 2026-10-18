@@ -1,0 +1,77 @@
+---
+source: crates/binnacle-core/tests/quick_filter.rs
+expression: out
+---
+--- 1. eight records
+window Rows 0..7
+window Cols 0..3
+gen 1 | damage layout selection positions
+Rows: count 8, extent 6, header 1, anchor 0+0, thumb 0.0000/0.6250 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1 4#4@5+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+--- 2. quick filter "3": the rows with a 3 in any shown column are kept (13, 31, 23, 3 and the 30 in column 1), 4 of a total of 8
+effect (gen 1): ViewRequested unsorted filter quick "3" by SetQuickFilter { axis: Rows, query: Some(TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }) }
+  view: applied unsorted filter quick "3", notices [(Rows, Refiltered(4))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(0)
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Gone { suggest: Some(1) }
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(1)
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Gone { suggest: Some(2) }
+window Rows 0..4
+gen 2 | damage layout selection positions | filter quick "3" | total Rows 8 | total Cols 3
+Rows: count 4, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1@1+1 1#3@2+1 2#5@3+1 3#7@4+1
+Cols: (unchanged)
+    0      1      2
+0   1.0    1.1    1.2
+1   3.0    3.1    3.2
+2   5.0    5.1    5.2
+3   7.0    7.1    7.2
+
+--- 3. regex "^3": 31, 3 and the 30
+effect (gen 2): ViewRequested unsorted filter quick "^3" regex by SetQuickFilter { axis: Rows, query: Some(TextQuery { text: "^3", case_sensitive: false, regex: true, searches: Shown }) }
+  view: applied unsorted filter quick "^3" regex, notices [(Rows, Refiltered(2))]
+effect (gen 2): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: Some(0) }
+effect (gen 2): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(0)
+effect (gen 2): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Gone { suggest: Some(1) }
+effect (gen 2): Locate { axis: Rows, key: Key(7) }
+  locate Rows Key(7): Found(1)
+window Rows 0..2
+gen 3 | damage layout selection positions | filter quick "^3" regex | total Rows 8 | total Cols 3
+Rows: count 2, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#3@1+1 1#7@2+1
+Cols: (unchanged)
+    0      1      2
+0   3.0    3.1    3.2
+1   7.0    7.1    7.2
+
+
+
+--- 4. no text clears the quick filter
+effect (gen 3): ViewRequested unsorted by SetQuickFilter { axis: Rows, query: None }
+  view: applied unsorted, notices [(Rows, Refiltered(8))]
+effect (gen 3): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(3)
+effect (gen 3): Locate { axis: Rows, key: Key(7) }
+  locate Rows Key(7): Found(7)
+window Rows 0..8
+gen 4 | damage layout selection positions | total Rows 8 | total Cols 3
+Rows: count 8, extent 6, header 1, anchor 3+0, thumb 1.0000/0.6250 | 3#3@1+1 4#4@2+1 5#5@3+1 6#6@4+1 7#7@5+1
+Cols: (unchanged)
+    0      1      2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+5   5.0    5.1    5.2
+6   6.0    6.1    6.2
+7   7.0    7.1    7.2

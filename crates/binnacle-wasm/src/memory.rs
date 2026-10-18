@@ -104,17 +104,45 @@ impl WebMemory {
     }
 
     /// Keeps the base rows with `keep[i] != 0`; returns the new row count
-    /// for the `Reset` the rows need.
+    /// for the `Refiltered` the rows need.
     pub fn filter(&mut self, keep: &[u8]) -> f64 {
         self.table
             .apply_filter(keep.iter().map(|&k| k != 0).collect());
         self.table.count(Axis::Rows) as f64
     }
 
-    /// Keeps every row again; returns the row count for the `Reset`.
+    /// Keeps every row again; returns the row count for the `Refiltered`.
     pub fn clear_filter(&mut self) -> f64 {
         self.table.clear_filter();
         self.table.count(Axis::Rows) as f64
+    }
+
+    /// Base row `row` changed in the data itself and the filter now keeps
+    /// it (`keep != 0`) or not: it comes or goes at once. Returns whether it
+    /// did, so the rows need a `Refiltered`.
+    pub fn refilter_row(&mut self, row: u32, keep: u8) -> bool {
+        self.table.refilter_row(row as usize, keep != 0).is_some()
+    }
+
+    /// The user edited base row `row` and the filter now keeps it or not: a
+    /// row in view stays, unmatched while the filter drops it. Returns
+    /// whether a row out of view came in, so the rows need a `Refiltered`.
+    pub fn defer_row(&mut self, row: u32, keep: u8) -> bool {
+        self.table.defer_row(row as usize, keep != 0).is_some()
+    }
+
+    /// For each row with these Logical Indices, 1 if it is unmatched: in
+    /// view though the filter drops it.
+    pub fn unmatched(&mut self, items: &[u32]) -> Vec<u8> {
+        let keys: Vec<Key> = items.iter().map(|&i| Key(i as u64)).collect();
+        (self.table.unmatched(Axis::Rows, &keys).into_iter())
+            .map(u8::from)
+            .collect()
+    }
+
+    /// Whether any row is unmatched.
+    pub fn has_unmatched(&self) -> bool {
+        self.table.has_unmatched(Axis::Rows)
     }
 
     /// Moves the columns with these Logical Indices to before Position `to`.
@@ -160,6 +188,19 @@ mod tests {
         assert_eq!(m.locate(ROWS, 2), vec![0.0, 1.0]);
         assert_eq!(m.locate(ROWS, 1)[0], 1.0);
         assert_eq!(m.clear_filter(), 4.0);
+    }
+
+    #[test]
+    fn an_edited_row_stays_unmatched_until_the_rows_are_filtered_again() {
+        let mut m = WebMemory::new(3, 1);
+        m.filter(&[1, 1, 0]);
+        assert!(!m.defer_row(1, 0));
+        assert_eq!(order(&m), vec![0, 1]);
+        assert_eq!(m.unmatched(&[0, 1, 2]), vec![0, 1, 0]);
+        assert!(m.has_unmatched());
+        assert!(m.refilter_row(1, 0));
+        assert_eq!(order(&m), vec![0]);
+        assert!(!m.has_unmatched());
     }
 
     #[test]

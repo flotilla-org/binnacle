@@ -1,0 +1,114 @@
+---
+source: crates/binnacle-core/tests/find.rs
+expression: out
+---
+--- 1. eight records
+window Rows 0..7
+window Cols 0..3
+gen 1 | damage layout selection positions
+Rows: count 8, extent 6, header 1, anchor 0+0, thumb 0.0000/0.6250 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1 4#4@5+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+--- 2. find "3": 13, 31 and 30, 23, 3 match; nothing is focused yet
+effect (gen 1): FindRequested { query: Some(FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }) }
+gen 2 | damage none | find "3"
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 3. next: 13, the first match from the start
+effect (gen 2): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: None, direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(1), col: Key(0) }, index: Some(0), wrapped: false })
+effect (gen 2): FocusChanged { row: Key(1), col: Key(0) }
+gen 3 | damage selection | focus 1#1,0#0 at 4,2 6x1 | find "3" | match 1,0
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   *!1.0  1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+--- 4. next: 31 in row 3
+effect (gen 3): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(1), col: Key(0) }), direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(3), col: Key(0) }, index: Some(1), wrapped: false })
+effect (gen 3): FocusChanged { row: Key(3), col: Key(0) }
+gen 4 | damage selection | focus 3#3,0#0 at 4,4 6x1 | find "3" | match 3,0
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   *!3.0  3.1    3.2
+4   4.0    4.1    4.2
+--- 5. next: 30, in the same row, column 1
+effect (gen 4): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(3), col: Key(0) }), direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(3), col: Key(1) }, index: Some(2), wrapped: false })
+effect (gen 4): FocusChanged { row: Key(3), col: Key(1) }
+gen 5 | damage selection | focus 3#3,1#1 at 11,4 6x1 | find "3" | match 3,1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    *!3.1  3.2
+4   4.0    4.1    4.2
+--- 6. next: 23
+effect (gen 5): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(3), col: Key(1) }), direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(5), col: Key(0) }, index: Some(3), wrapped: false })
+effect (gen 5): FocusChanged { row: Key(5), col: Key(0) }
+window Rows 0..8
+gen 6 | damage layout selection positions | focus 5#5,0#0 at 4,5 6x1 | find "3" | match 5,0
+Rows: count 8, extent 6, header 1, anchor 1+0, thumb 0.3333/0.6250 | 1#1@1+1 2#2@2+1 3#3@3+1 4#4@4+1 5#5@5+1
+Cols: (unchanged)
+    0      1      2
+1   1.0    1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+5   *!5.0  5.1    5.2
+--- 7. next: 3 in row 7, scrolled into view
+effect (gen 6): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(5), col: Key(0) }), direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(7), col: Key(0) }, index: Some(4), wrapped: false })
+effect (gen 6): FocusChanged { row: Key(7), col: Key(0) }
+gen 7 | damage layout selection | focus 7#7,0#0 at 4,5 6x1 | find "3" | match 7,0
+Rows: count 8, extent 6, header 1, anchor 3+0, thumb 1.0000/0.6250 | 3#3@1+1 4#4@2+1 5#5@3+1 6#6@4+1 7#7@5+1
+Cols: (unchanged)
+    0      1      2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+5   5.0    5.1    5.2
+6   6.0    6.1    6.2
+7   *!7.0  7.1    7.2
+--- 8. next wraps to 13
+effect (gen 7): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(7), col: Key(0) }), direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(1), col: Key(0) }, index: Some(0), wrapped: true })
+effect (gen 7): FocusChanged { row: Key(1), col: Key(0) }
+gen 8 | damage layout selection | focus 1#1,0#0 at 4,1 6x1 | find "3" | match 1,0
+Rows: count 8, extent 6, header 1, anchor 1+0, thumb 0.3333/0.6250 | 1#1@1+1 2#2@2+1 3#3@3+1 4#4@4+1 5#5@5+1
+Cols: (unchanged)
+    0      1      2
+1   *!1.0  1.1    1.2
+2   2.0    2.1    2.2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+5   5.0    5.1    5.2
+--- 9. previous: back to 3 in row 7
+effect (gen 8): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(1), col: Key(0) }), direction: Previous }
+  find: Some(FindStep { at: FindMatch { row: Key(7), col: Key(0) }, index: Some(4), wrapped: true })
+effect (gen 8): FocusChanged { row: Key(7), col: Key(0) }
+gen 9 | damage layout selection | focus 7#7,0#0 at 4,5 6x1 | find "3" | match 7,0
+Rows: count 8, extent 6, header 1, anchor 3+0, thumb 1.0000/0.6250 | 3#3@1+1 4#4@2+1 5#5@3+1 6#6@4+1 7#7@5+1
+Cols: (unchanged)
+    0      1      2
+3   3.0    3.1    3.2
+4   4.0    4.1    4.2
+5   5.0    5.1    5.2
+6   6.0    6.1    6.2
+7   *!7.0  7.1    7.2

@@ -128,6 +128,10 @@ export function createAria(options: AriaOptions): Aria {
   let rows = new Map<string, Row>();
   /** The applied Sort Spec last seen, `null` before the first frame. */
   let sorted: string | null = null;
+  /** The applied rows filter last seen, `null` before the first frame. */
+  let filtered: string | null = null;
+  /** The rows filter changed and its count is not announced yet. */
+  let recount = false;
   /** The visible Keys as of the last frame. */
   let shown = "";
   /** The cell being edited as of the last frame, `""` if none. */
@@ -145,11 +149,24 @@ export function createAria(options: AriaOptions): Aria {
     status.textContent = message === status.textContent ? `${message}\u00a0` : message;
   };
 
-  /** Announces what the table itself cannot show: a sort applied, a focused item gone. */
+  /**
+   * Announces what the table itself cannot show: a sort applied, the rows
+   * left once a filter change is applied and no other View Spec is pending,
+   * a focused item gone.
+   */
   const watch = (s: Snapshot, content: () => Content) => {
-    const sort = s.appliedSort.map((c) => `${c.key}:${c.direction}`).join(",");
-    if (sorted !== null && sort !== sorted) announce(sortMessage(s, content()));
+    const messages: string[] = [];
+    const sort = s.appliedView.rows.sort.map((c) => `${c.key}:${c.direction}`).join(",");
+    if (sorted !== null && sort !== sorted) messages.push(sortMessage(s, content()));
     sorted = sort;
+    const filter = JSON.stringify(s.appliedView.rows.filter, (_, v: unknown) => (typeof v === "bigint" ? String(v) : v));
+    recount ||= filtered !== null && filter !== filtered;
+    filtered = filter;
+    if (recount && s.requestedView === null) {
+      recount = false;
+      messages.push(rowCount(s.rows.count, s.rows.total));
+    }
+    if (messages.length) announce(messages.join(". "));
     for (const axis of AXES) {
       const key = locating[axis];
       // A Locate that ends `Found` keeps the focused Key; `Gone` moves focus off it.
@@ -163,7 +180,7 @@ export function createAria(options: AriaOptions): Aria {
 
   const update = (s: Snapshot, content: Content) => {
     const choose = options.renderer();
-    const primary = s.appliedSort[0];
+    const primary = s.appliedView.rows.sort[0];
     set(table, "aria-rowcount", String(s.rows.count + 1));
     set(table, "aria-colcount", String(s.cols.count + 1));
     const cols = visible(s.cols);
@@ -284,9 +301,18 @@ function visibleKeys(s: Snapshot): string {
   return `${keys(s.rows)};${keys(s.cols)}`;
 }
 
+const grouped = new Intl.NumberFormat("en");
+
+/** The rows shown, of the total before any filter if known and different: "1,204 of 5,001 rows", or "5,001 rows". */
+export function rowCount(count: number, total: number | null): string {
+  const noun = (total ?? count) === 1 ? "row" : "rows";
+  if (total === null || total === count) return `${grouped.format(count)} ${noun}`;
+  return `${grouped.format(count)} of ${grouped.format(total)} ${noun}`;
+}
+
 function sortMessage(s: Snapshot, content: Content): string {
-  if (s.appliedSort.length === 0) return "Not sorted";
-  const columns = s.appliedSort.map(({ key, direction }) => {
+  if (s.appliedView.rows.sort.length === 0) return "Not sorted";
+  const columns = s.appliedView.rows.sort.map(({ key, direction }) => {
     const item = s.cols.strip.find((i) => i.key === key);
     return `${item ? content.label("cols", item) : "a column out of view"}, ${direction}`;
   });

@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-ratatui/tests/filter.rs
+assertion_line: 204
+expression: "counts.join(\"\\n\")"
+---
+1,204 rows
+1,204 of 5,001 rows
+1,204 rows
+1 row

@@ -6,7 +6,7 @@
 use binnacle_core::{
     Action, Axis, AxisConfig, CellRange, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, Key,
     Located, Mode, Modifiers, PointerEvent, ScrollAnchor, SelectionUnit, SortColumn, SortSpec,
-    Viewport,
+    Support, Totals, ViewSpec, Viewport,
 };
 use binnacle_testkit::{Record, RecordTable, Scenario};
 use hegel::generators as gs;
@@ -215,8 +215,8 @@ struct View {
     anchors: [ScrollAnchor; 2],
     counts: [u64; 2],
     mode: Mode,
-    applied: SortSpec,
-    requested: Option<SortSpec>,
+    applied: ViewSpec,
+    requested: Option<ViewSpec>,
     /// Each visible column's Key, offset and end.
     cols: Vec<(Option<Key>, f32, f32)>,
 }
@@ -241,7 +241,7 @@ impl Host {
         grid.set_follow_focus_on_reorder(table.follow);
         grid.set_selection_unit(table.unit);
         for &c in &table.unsortable {
-            grid.set_sortable(Key(c), false);
+            grid.set_support(Axis::Rows, Key(c), Support::default().with_sort(false));
         }
         let source = RecordTable::new(table.rows.clone(), table.cols, table.sortable.clone());
         let mut host = Host {
@@ -255,7 +255,7 @@ impl Host {
                 anchors: [ScrollAnchor::default(); 2],
                 counts: [0; 2],
                 mode: Mode::Idle,
-                applied: SortSpec::unsorted(),
+                applied: ViewSpec::default(),
                 requested: None,
                 cols: Vec::new(),
             },
@@ -277,8 +277,8 @@ impl Host {
             anchors: Axis::ALL.map(|a| snap.scroll_anchor(a)),
             counts: Axis::ALL.map(|a| snap.count(a)),
             mode: snap.mode(),
-            applied: snap.applied_sort().clone(),
-            requested: snap.requested_sort().cloned(),
+            applied: snap.applied_view().clone(),
+            requested: snap.requested_view().cloned(),
             cols: snap
                 .cols()
                 .iter()
@@ -318,10 +318,11 @@ impl Host {
                     click(&mut self.s, x, 0.5, m);
                 }
             }
-            Input::Sort(spec) => {
-                if let Ok(notice) = self.s.source.source.sort(&self.s.source.rows, &spec) {
+            Input::Sort(sort) => {
+                let spec = ViewSpec::default().with_sort(Axis::Rows, sort);
+                if let Ok(notice) = self.s.source.source.view(&self.s.source.rows, &spec) {
                     self.s.input(|g| {
-                        g.sort_applied(spec);
+                        g.view_applied(spec, Totals::unknown());
                         g.notify(Axis::Rows, notice);
                     });
                     return vec![Axis::Rows];
@@ -330,7 +331,7 @@ impl Host {
             Input::Filter(keep) => {
                 let notice = match keep {
                     Some(keep) => self.s.source.filter(move |r| keep.keeps(r)),
-                    None => self.s.source.source.clear_filter(),
+                    None => self.s.source.source.clear_filter(&self.s.source.rows),
                 };
                 self.s.input(|g| g.notify(Axis::Rows, notice));
             }
@@ -471,7 +472,7 @@ fn the_pump_answers_everything_it_drains(tc: TestCase) {
     runs(&tc, |host, _| {
         assert_eq!(host.view.requested, None);
         assert_eq!(host.view.locating, [false; 2]);
-        assert_eq!(&host.view.applied, host.s.source.source.sort_spec());
+        assert_eq!(host.view.applied, host.s.source.source.view_spec());
     });
 }
 
@@ -486,7 +487,7 @@ fn clicking_the_header_of_a_column_marked_unsortable_requests_nothing(tc: TestCa
             let requests = host
                 .drained
                 .iter()
-                .filter(|e| matches!(e, Effect::SortRequested { .. }));
+                .filter(|e| matches!(e, Effect::ViewRequested { .. }));
             assert_eq!(requests.count(), 0);
         }
     });
@@ -544,7 +545,7 @@ fn buffered_focus_moves_land_where_moves_after_located_would(tc: TestCase) {
 }
 
 #[hegel::test(test_cases = 1000)]
-fn a_filtered_out_focus_moves_to_the_suggestion_and_leaves_the_picks(tc: TestCase) {
+fn a_filtered_out_focus_moves_to_the_suggestion_and_hidden_picks_go(tc: TestCase) {
     runs(&tc, |host, step| {
         let ([Input::Filter(_)], Some(before)) = (step.inputs.as_slice(), step.before.focus) else {
             return;
@@ -555,7 +556,14 @@ fn a_filtered_out_focus_moves_to_the_suggestion_and_leaves_the_picks(tc: TestCas
         }
         let Some(key) = before[0].key else { return };
         let after = host.view.focus;
+        // Picks of rows the filter hides are dropped, whatever focus does.
         let mut picks = step.before.picks.clone();
+        picks.retain(|&k| {
+            matches!(
+                host.s.source.source.locate(Axis::Rows, k),
+                Located::Found(_)
+            )
+        });
         match host.s.source.source.locate(Axis::Rows, key) {
             Located::Found(p) => assert_eq!(
                 after.map(|f| f[0]),
@@ -575,7 +583,6 @@ fn a_filtered_out_focus_moves_to_the_suggestion_and_leaves_the_picks(tc: TestCas
                 // The suggested item's Key is known once a Window holds it.
                 let to = host.s.source.source.window(Axis::Rows, p..p + 1);
                 assert!(end.key.is_none_or(|k| Some(&k) == to.first()), "{end:?}");
-                picks.retain(|&k| k != key);
             }
         }
         assert_eq!(after.map(|f| f[1]), Some(before[1]));

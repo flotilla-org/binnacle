@@ -6,7 +6,7 @@ use std::fmt;
 
 use binnacle_core::{
     Axis, Button, ChangeNotice, EditEnd, FocusStep, Key, Located, Modifiers, PointerKind, Position,
-    SelectionUnit, SortColumn, SortSpec,
+    SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -112,7 +112,7 @@ pub fn position(n: f64) -> Position {
 
 /// A Change Notice from its code and up to two Positions (`NaN` where the
 /// notice takes fewer): Reordered 0, Reset 1 (count), Inserted 2 (at, n),
-/// Removed 3 (at, n), ContentChanged 4 (start, end).
+/// Removed 3 (at, n), ContentChanged 4 (start, end), Refiltered 5 (count).
 pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
     match code {
         0 => ChangeNotice::Reordered,
@@ -125,6 +125,7 @@ pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
             at: position(a),
             n: position(b),
         },
+        5 => ChangeNotice::Refiltered(position(a)),
         _ => ChangeNotice::ContentChanged(position(a)..position(b)),
     }
 }
@@ -138,6 +139,37 @@ pub fn located(code: u8, position: f64) -> Located {
             suggest: (!position.is_nan()).then(|| self::position(position)),
         },
     }
+}
+
+pub const SUPPORT_SORT: u8 = 1;
+pub const SUPPORT_TEXT: u8 = 2;
+pub const SUPPORT_TEXT_REGEX: u8 = 4;
+pub const SUPPORT_ONE_OF: u8 = 8;
+
+/// Support from its bits: [`SUPPORT_SORT`], [`SUPPORT_TEXT`] with
+/// [`SUPPORT_TEXT_REGEX`] if Text conditions take regexes (regex alone is no
+/// text support), and [`SUPPORT_ONE_OF`].
+pub fn support(bits: u8) -> Support {
+    let text = (bits & SUPPORT_TEXT != 0).then(|| TextSupport::new(bits & SUPPORT_TEXT_REGEX != 0));
+    Support::default()
+        .with_sort(bits & SUPPORT_SORT != 0)
+        .with_text(text)
+        .with_one_of(bits & SUPPORT_ONE_OF != 0)
+}
+
+/// The bits of `support`, as [`support`] reads them.
+pub fn support_bits(support: Support) -> u8 {
+    let mut bits = if support.sort { SUPPORT_SORT } else { 0 };
+    if let Some(t) = support.text {
+        bits |= SUPPORT_TEXT;
+        if t.regex {
+            bits |= SUPPORT_TEXT_REGEX;
+        }
+    }
+    if support.one_of {
+        bits |= SUPPORT_ONE_OF;
+    }
+    bits
 }
 
 /// A Sort Spec from parallel lists of column Keys and directions
@@ -154,6 +186,35 @@ pub fn sort_spec(keys: &[u64], directions: &[u8]) -> SortSpec {
     )
 }
 
+pub const QUICK_FILTER: u8 = 1;
+pub const QUICK_FILTER_REGEX: u8 = 2;
+
+/// A quick filter's support: none without [`QUICK_FILTER`], with regexes if
+/// [`QUICK_FILTER_REGEX`] is set too.
+pub fn quick_filter(bits: u8) -> Option<TextSupport> {
+    (bits & QUICK_FILTER != 0).then(|| TextSupport::new(bits & QUICK_FILTER_REGEX != 0))
+}
+
+pub const FIND: u8 = 1;
+pub const FIND_REGEX: u8 = 2;
+
+/// Find's support: none without [`FIND`], with regexes if [`FIND_REGEX`] is
+/// set too.
+pub fn find(bits: u8) -> Option<TextSupport> {
+    (bits & FIND != 0).then(|| TextSupport::new(bits & FIND_REGEX != 0))
+}
+
+/// The bits [`find`] decodes.
+pub fn find_bits(support: Option<TextSupport>) -> u8 {
+    support.map_or(0, |s| FIND | if s.regex { FIND_REGEX } else { 0 })
+}
+
+/// An unfiltered count: `None` unless a whole number up to [`MAX_COUNT`]
+/// (NaN for unknown).
+pub fn total(n: f64) -> Option<u64> {
+    count(n).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +226,7 @@ mod tests {
         assert_eq!(notice(2, 3.0, 4.0), ChangeNotice::Inserted { at: 3, n: 4 });
         assert_eq!(notice(3, 3.0, 4.0), ChangeNotice::Removed { at: 3, n: 4 });
         assert_eq!(notice(4, 3.0, 7.0), ChangeNotice::ContentChanged(3..7));
+        assert_eq!(notice(5, 6.0, f64::NAN), ChangeNotice::Refiltered(6));
     }
 
     #[test]
@@ -234,5 +296,31 @@ mod tests {
         assert!(count(-1.0).is_err());
         assert!(count(2.5).is_err());
         assert!(count(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn support_bits_round_trip_and_regex_needs_text() {
+        for bits in [0, 1, 2, 3, 6, 7, 8, 15] {
+            assert_eq!(support_bits(support(bits)), bits);
+        }
+        assert_eq!(support(SUPPORT_TEXT_REGEX).text, None);
+        assert_eq!(support(SUPPORT_TEXT).text, Some(TextSupport::new(false)));
+    }
+
+    #[test]
+    fn quick_filter_bits_need_the_quick_filter_bit_and_unknown_totals_are_nan() {
+        assert_eq!(quick_filter(0), None);
+        assert_eq!(quick_filter(QUICK_FILTER_REGEX), None);
+        assert_eq!(quick_filter(QUICK_FILTER), Some(TextSupport::new(false)));
+        assert_eq!(quick_filter(3), Some(TextSupport::new(true)));
+        assert_eq!((total(f64::NAN), total(40.0)), (None, Some(40)));
+    }
+
+    #[test]
+    fn find_bits_need_the_find_bit_and_round_trip() {
+        assert_eq!(find(FIND_REGEX), None);
+        for bits in [0, FIND, FIND | FIND_REGEX] {
+            assert_eq!(find_bits(find(bits)), bits);
+        }
     }
 }

@@ -5,8 +5,17 @@
 // AbortSignal: one the widget no longer wants is never answered, and the
 // toolbar counts both. "Fail" makes Windows and cells fail instead: the
 // failed cells show the error marker, and Retry asks again with a Reset.
+// The filter bar holds a quick filter (regexes too) and column conditions,
+// through the column menu: while one is pending the rows stay, the count
+// reads "filtering…" and chips and header funnels fade until the late
+// answer; typing more aborts the request in flight, so only the last answer
+// paints. As the source declares no column support, conditions take contains
+// but no regexes. An invalid regex comes back unapplied with RegExp's message,
+// which turns the field red. Find's marks arrive late like cells, its steps
+// and counts like sorts, the count reading "finding…" meanwhile; an invalid
+// regex there reads "No matches" with the message.
 
-import { fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
+import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, RECORDS, rows, type RecordRow } from "./records-data";
 
@@ -55,7 +64,13 @@ export const slow: DemoSource = {
           inFlight--;
           count();
           if (failing && kind === "data") reject(new Error("the source is failing on purpose"));
-          else resolve(answer());
+          else {
+            try {
+              resolve(answer());
+            } catch (error) {
+              reject(error);
+            }
+          }
         }, PACES[pace][kind]);
         const stop = () => {
           clearTimeout(timer);
@@ -71,11 +86,18 @@ export const slow: DemoSource = {
       rows: {
         count: () => inner.rows.count(),
         window: (start, end, signal) => later("data", signal, () => inner.rows.window(start, end, signal)),
-        sort: (spec, signal) => later("order", signal, () => inner.rows.sort!(spec, signal)),
         locate: (id, signal) => later("order", signal, () => inner.rows.locate!(id, signal)),
+        quickFilter: inner.rows.quickFilter!,
       },
       cols: inner.cols,
+      view: (spec, signal) => later("order", signal, () => inner.view!(spec, signal)),
       cells: (rowIds, colIds, signal) => later("data", signal, () => inner.cells(rowIds, colIds, signal)),
+      find: {
+        regex: true,
+        marks: (rowIds, colIds, query, signal) => later("data", signal, () => inner.find.marks(rowIds, colIds, query, signal)),
+        next: (from, direction, query, signal) => later("order", signal, () => inner.find.next(from, direction, query, signal)),
+        count: (query, signal) => later("order", signal, () => inner.find.count!(query, signal)),
+      },
       emptyMessage: () => (box.value.trim() ? "No records match the filter" : undefined),
       attach: (sink) => {
         sinks = sink;
@@ -116,12 +138,29 @@ export const slow: DemoSource = {
       sinks?.rows.notify({ type: "Reset" });
     });
     toolbar.append(speed, box, fail, retry, counter);
-    const widget = await GridWidget.create(host, {
+    const frame = document.createElement("div");
+    frame.className = "with-filter-bar";
+    const gridBox = document.createElement("div");
+    gridBox.className = "grid-box";
+    frame.append(gridBox);
+    host.append(frame);
+    const widget = await GridWidget.create(gridBox, {
       source,
       columnWidth: 140,
-      onError: () => (retry.hidden = false),
+      onError: (_error, request) => {
+        if (request.type === "window" || request.type === "cells") retry.hidden = false;
+      },
       ...look,
     });
+    const columnMenu = createColumnMenu(widget);
+    const bar = createFilterBar(widget, { columnMenu });
+    const findBar = createFindBar(widget);
+    frame.prepend(bar.element, findBar.element);
+    const findButton = document.createElement("button");
+    findButton.textContent = "Find";
+    findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
+    findButton.addEventListener("click", () => findBar.open());
+    toolbar.append(findButton);
     return {
       get theme() {
         return widget.theme;
@@ -136,7 +175,12 @@ export const slow: DemoSource = {
         widget.border = style;
       },
       destroy() {
+        findBar.destroy();
+        findButton.remove();
+        bar.destroy();
+        columnMenu.destroy();
         widget.destroy();
+        frame.remove();
         inner.destroy();
         speed.remove();
         box.remove();

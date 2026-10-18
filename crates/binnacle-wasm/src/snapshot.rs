@@ -7,8 +7,11 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Cursor, HeaderPlacement, Key, Mode, Rect, Snapshot, SortDirection, SortSpec,
+    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, HeaderPlacement, Key, Mode,
+    Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
 };
+
+use crate::codes::{find_bits, support_bits};
 
 /// The flat form of one Snapshot. Buffers are reused frame to frame.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -20,6 +23,7 @@ pub struct Encoded {
 pub const CELL_FOCUSED: u8 = 1;
 pub const CELL_SELECTED: u8 = 2;
 pub const CELL_EDITING: u8 = 4;
+pub const CELL_CURRENT_MATCH: u8 = 8;
 
 /// A cell's state as the bit flags the Snapshot carries.
 pub fn cell_bits(c: CellState) -> u8 {
@@ -32,6 +36,9 @@ pub fn cell_bits(c: CellState) -> u8 {
     }
     if c.editing {
         bits |= CELL_EDITING;
+    }
+    if c.current_match {
+        bits |= CELL_CURRENT_MATCH;
     }
     bits
 }
@@ -116,6 +123,34 @@ impl Writer<'_> {
         self.flag(h.sort.pending);
         self.flag(h.selected);
         self.flag(h.hovered);
+        self.flag(h.filter.filtered);
+        self.flag(h.filter.pending);
+        self.flag(h.filter.not_applied);
+    }
+
+    /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
+    /// this bridge does not carry 1, OneOf 2) and a Text condition's query
+    /// or a OneOf's values, each a blank flag then text if not blank.
+    fn condition(&mut self, c: &Condition) {
+        self.key(c.key);
+        self.flag(c.not);
+        match &c.kind {
+            ConditionKind::Text(q) => {
+                self.num(0);
+                self.text_query(q);
+            }
+            ConditionKind::OneOf(values) => {
+                self.num(2);
+                self.len(values.len());
+                for v in values {
+                    self.flag(*v == Value::Blank);
+                    if let Value::Text(t) = v {
+                        self.text(t);
+                    }
+                }
+            }
+            _ => self.num(1),
+        }
     }
 
     fn sort(&mut self, spec: &SortSpec) {
@@ -123,6 +158,53 @@ impl Writer<'_> {
         for c in spec.columns() {
             self.key(c.key);
             self.num(direction_code(c.direction));
+        }
+    }
+
+    /// Text as its UTF-16 code units, after their count.
+    fn text(&mut self, text: &str) {
+        let units = self.out.numbers.len();
+        self.num(0);
+        let mut n = 0;
+        for unit in text.encode_utf16() {
+            self.num(unit);
+            n += 1;
+        }
+        self.out.numbers[units] = n as f64;
+    }
+
+    fn text_query(&mut self, q: &TextQuery) {
+        self.text(&q.text);
+        self.flag(q.case_sensitive);
+        self.flag(q.regex);
+        let keys = match &q.searches {
+            Searched::Shown => None,
+            Searched::Keys(keys) => Some(keys),
+        };
+        self.flag(keys.is_some());
+        if let Some(keys) = keys {
+            self.len(keys.len());
+            for &k in keys {
+                self.key(k);
+            }
+        }
+    }
+
+    /// Each axis's part, rows first: its filter (the quick filter, then the
+    /// conditions), then its sort.
+    fn view(&mut self, spec: &ViewSpec) {
+        for axis in Axis::ALL {
+            let part = spec.axis(axis);
+            self.flag(part.filter.quick.is_some());
+            if let Some(q) = &part.filter.quick {
+                self.text_query(q);
+            }
+            let conditions = part.filter.conditions.conditions();
+            self.len(conditions.len());
+            for c in conditions {
+                self.condition(c);
+            }
+            self.sort(&part.sort);
         }
     }
 
@@ -201,7 +283,32 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         }
         w.len(strip.len());
         for h in s.headers(axis) {
+            let support = h
+                .key
+                .map_or(0, |k| support_bits(s.support(axis.other(), k)));
             w.header(h);
+            w.num(support);
+        }
+        let conditions = s.conditions(axis);
+        w.len(conditions.len());
+        for (c, state) in &conditions {
+            w.num(match state {
+                ConditionState::Applied => 0,
+                ConditionState::Adding => 1,
+                ConditionState::Removing => 2,
+                ConditionState::NotApplied => 3,
+            });
+            w.condition(c);
+        }
+        let total = s.total(axis);
+        w.flag(total.is_some());
+        if let Some(t) = total {
+            w.position(t);
+        }
+        let quick = s.quick_filter(axis);
+        w.flag(quick.is_some());
+        if let Some(q) = quick {
+            w.flag(q.regex);
         }
     }
     w.opt_rect(s.focus_rect());
@@ -248,12 +355,28 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.key(*k);
         }
     }
-    w.sort(s.applied_sort());
-    let requested = s.requested_sort();
+    w.view(s.applied_view());
+    let requested = s.requested_view();
     w.flag(requested.is_some());
     if let Some(spec) = requested {
-        w.sort(spec);
+        w.view(spec);
     }
+    w.flag(s.view_pending());
+    // Find: the query and the axis it steps along, the current match, then
+    // the support bits.
+    let find = s.find();
+    w.flag(find.is_some());
+    if let Some(f) = find {
+        w.text_query(&f.query);
+        w.num(axis_code(f.by));
+    }
+    let found = s.find_match();
+    w.flag(found.is_some());
+    if let Some(m) = found {
+        w.key(m.row);
+        w.key(m.col);
+    }
+    w.num(find_bits(s.find_support()));
     // Cell states, row-major over the Strips, as bit flags.
     for row in s.rows() {
         for col in s.cols() {

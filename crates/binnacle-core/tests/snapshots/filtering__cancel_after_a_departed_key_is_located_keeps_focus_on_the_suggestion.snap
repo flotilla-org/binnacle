@@ -18,6 +18,12 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 --- 2. filter out record 1 and press row 2's header: focus moves to the suggestion, record 2
 effect (gen 2): Locate { axis: Rows, key: Key(1) }
   locate Rows Key(1): Gone { suggest: Some(1) }
+effect (gen 2): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 2): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(1)
+effect (gen 2): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(2)
 effect (gen 2): SelectionChanged
 window Rows 0..6
 gen 3 | damage layout selection positions | focus 1#2,0#0 at 4,2 6x1 | capturing | hover Rows 2

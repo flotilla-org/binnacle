@@ -88,6 +88,7 @@ version = "0.1.0"
 dependencies = [
  "binnacle-core",
  "hegeltest",
+ "regex",
 ]
 
 [[package]]
@@ -99,6 +100,7 @@ dependencies = [
  "hegeltest",
  "insta",
  "ratatui",
+ "regex",
 ]
 
 [[package]]

@@ -5,7 +5,10 @@
 //! never reads cell values.
 
 mod border;
+mod checklist;
 mod context;
+mod filter;
+mod find;
 mod keymap;
 mod mouse;
 mod renderer;
@@ -15,6 +18,11 @@ mod theme;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
+pub use filter::{
+    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, keep_value,
+    remove_conditions, render_conditions, row_count,
+};
+pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
 pub use mouse::Mouse;
 pub use renderer::{
@@ -61,6 +69,22 @@ pub trait Content {
     fn row_header(&self, row: Key, position: u64) -> String {
         let _ = row;
         position.saturating_add(1).to_string()
+    }
+
+    /// Whether the cell matches the Find Query in force, as the host's Table
+    /// Source says for the cells shown: no cell unless overridden.
+    fn marked(&self, row: Key, col: Key) -> bool {
+        let _ = (row, col);
+        false
+    }
+
+    /// Whether the item with `key` on `axis` is unmatched: kept in view by
+    /// the host's Table Source after the user's edit though the filter drops
+    /// it (`MemorySource::unmatched` says, for the items shown). Its cells
+    /// are drawn in the Theme's `unmatched` style. No item unless overridden.
+    fn unmatched(&self, axis: Axis, key: Key) -> bool {
+        let _ = (axis, key);
+        false
     }
 
     /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
@@ -136,13 +160,21 @@ pub fn render_with(
             style
         }
     };
-    let multi = snapshot.applied_sort().columns().len() > 1;
+    let multi = snapshot.applied_view().rows.sort.columns().len() > 1;
     let area_end = i64::from(area.width);
     for h in snapshot.headers(Axis::Cols) {
         let label = h
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
-        let marker = sort_marker(h.sort, multi);
+        let requested = snapshot.requested_view().map(|v| &v.rows.filter.conditions);
+        let filtered = match (h.filter.pending, h.key, requested) {
+            (true, Some(key), Some(conditions)) => conditions.on(key).next().is_some(),
+            _ => h.filter.filtered,
+        };
+        let mut marker = header_marker(h.sort, filtered, h.filter.pending, multi);
+        if h.filter.not_applied {
+            marker.push('!');
+        }
         // The marker keeps the header's last cells; the label gets the rest.
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
@@ -163,7 +195,11 @@ pub fn render_with(
             let label = format!("{label:<room$}");
             put(buf, area, (start, 0.0), clip, &label, style);
             let at = start + room as f32;
-            let style = style.patch(theme.sort_marker);
+            let style = style.patch(if h.filter.not_applied {
+                theme.error
+            } else {
+                theme.sort_marker
+            });
             put(buf, area, (at, 0.0), clip, &marker, style);
         }
         if h.key.is_none() {
@@ -260,7 +296,22 @@ pub fn render_with(
             match (r.key, c.key, renderer) {
                 (Some(row), Some(col), Some(renderer)) => {
                     renderer.draw(row, col, &mut canvas);
+                    if state.current_match {
+                        canvas.patch(theme.find_current);
+                    } else if content.marked(row, col) {
+                        canvas.patch(theme.find_match);
+                    }
+                    if content.unmatched(Axis::Rows, row) || content.unmatched(Axis::Cols, col) {
+                        canvas.patch(theme.unmatched);
+                    }
                     canvas.patch(over);
+                    if state.current_match {
+                        let (x, y) = (canvas.visible_x(), canvas.visible_y());
+                        let style = theme.body.patch(theme.find_current).patch(over);
+                        if x.end > x.start && y.end > y.start {
+                            canvas.print(x.end - 1, y.start, "◂", style);
+                        }
+                    }
                 }
                 _ => {
                     let y = canvas.visible_y().start;
@@ -458,11 +509,16 @@ pub fn status(snapshot: &Snapshot) -> String {
     }
 }
 
-/// How a column header shows the sort: `▲` ascending or `▼` descending, with
-/// the column's place when several columns sort, then `~` while a request
-/// that changes it is unanswered.
-fn sort_marker(sort: HeaderSort, multi: bool) -> String {
+/// How a column header shows its conditions and the sort: `▿` while the
+/// column is filtered (or will be, once a pending request is answered), `▲`
+/// ascending or `▼` descending, with the column's place when several columns
+/// sort, then `~` while a request that changes either is unanswered. A
+/// condition asked for and not applied adds `!`, drawn in the error style.
+fn header_marker(sort: HeaderSort, filtered: bool, filter_pending: bool, multi: bool) -> String {
     let mut marker = String::new();
+    if filtered {
+        marker.push('▿');
+    }
     if let Some((direction, order)) = sort.applied {
         marker.push(match direction {
             SortDirection::Ascending => '▲',
@@ -472,7 +528,7 @@ fn sort_marker(sort: HeaderSort, multi: bool) -> String {
             marker += &(order + 1).to_string();
         }
     }
-    if sort.pending {
+    if sort.pending || filter_pending {
         marker.push('~');
     }
     marker

@@ -1,8 +1,11 @@
-use crate::sort::SortSpec;
+use crate::find::{FindDirection, FindMatch, FindQuery};
 use crate::types::{Axis, Generation, Key, Position};
+use crate::view::{ViewEdit, ViewSpec};
 
 /// A request the Grid emits for its host or Table Source to act on. Effects
 /// carry no continuations: answers come back later as ordinary inputs.
+// Effects are polled one at a time, so a large View Spec costs nothing to keep unboxed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     /// The user typed text while the Grid had focus. The host decides what it
@@ -27,10 +30,10 @@ pub enum Effect {
     /// The range or the picks changed; read them from the next Snapshot. At
     /// most one is queued at a time.
     SelectionChanged,
-    /// The user asked for the rows to be sorted by `spec`. Answer with
-    /// [`crate::Grid::sort_applied`]: the spec if applied, the previous one to
-    /// reject it.
-    SortRequested { spec: SortSpec },
+    /// The user changed the view by `edit`, asking for the whole table to be
+    /// viewed by `spec`. Answer with [`crate::Grid::view_applied`]: the spec
+    /// if applied, the part of it applied, or the previous one to reject it.
+    ViewRequested { spec: ViewSpec, edit: ViewEdit },
     /// A Change Notice left the Grid holding `key` without its Position.
     /// Answer with [`crate::Grid::located`].
     Locate { axis: Axis, key: Key },
@@ -59,6 +62,17 @@ pub enum Effect {
         axis: Axis,
         keys: Vec<Key>,
         to: Position,
+    },
+    /// The Find Query changed to `query`, or find closed (`None`): the host
+    /// fetches the marks for what it shows again, and the count.
+    FindRequested { query: Option<FindQuery> },
+    /// The user asked for the next or previous match of `query` after
+    /// `from` (the current match, else the focused cell, else `None` for
+    /// the start). Answer with [`crate::Grid::find_stepped`].
+    FindStepRequested {
+        query: FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
     },
 }
 
@@ -103,6 +117,10 @@ pub enum Action {
     ScrollTo { axis: Axis, fraction: f64 },
     /// Scrolls `axis` by whole items, landing on an item start.
     ScrollBy { axis: Axis, items: i64 },
+    /// Steps to the next match of the Find Query: emits `FindStepRequested`.
+    FindNext,
+    /// Steps to the previous match of the Find Query.
+    FindPrevious,
 }
 
 /// How far a [`Action::MoveFocus`] goes.

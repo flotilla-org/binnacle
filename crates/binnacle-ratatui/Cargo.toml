@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 binnacle-core.workspace = true
 binnacle-memory.workspace = true
+regex.workspace = true
 ratatui.workspace = true
 
 [dev-dependencies]

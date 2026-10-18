@@ -1,7 +1,9 @@
 // The slow source end to end: loading cells until the answers land, a
 // re-sort while the first sort is still in flight, and what pending states
 // look like with motion and with motion reduced. Canvas pixels are read
-// back to see whether a pending header or cell is still moving.
+// back to see whether a pending header or cell is still moving. A quick
+// filter keeps the rows until its last answer, and an invalid regex turns
+// the field (or find's count) red with its message.
 
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
@@ -149,4 +151,82 @@ test("with motion reduced, pending states hold still at a static highlight", asy
   await header(page, 2);
   await expect.poll(() => headerStrip(page, 2)).not.toBe(idle);
   expect(await moving(() => headerStrip(page, 2))).toBe(false);
+});
+
+/** How many records have some cell whose text contains `text`, ignoring case. */
+const quickCount = (text: string) =>
+  rows.filter((r) => Object.values(r).some((v) => v != null && String(v).toLowerCase().includes(text))).length;
+
+const filterField = (page: Page) => page.getByRole("search").first().getByRole("textbox").first();
+const rowCount = (page: Page) => page.locator(".binnacle-row-count");
+
+test("typing a quick filter keeps the rows, reads filtering…, and paints only the last answer", async ({ page }) => {
+  await open(page, "slow");
+  await expect(status(page)).not.toContainText("loading");
+  // Every status line the page shows from here on.
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { seen: string[] }).seen = seen;
+    const line = document.querySelector("#status")!;
+    new MutationObserver(() => seen.push(line.textContent ?? "")).observe(line, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  });
+  const before = Number((await requests(page).textContent())!.match(/(\d+) aborted/)![1]);
+  await filterField(page).click();
+  await page.keyboard.type("b");
+  await expect(rowCount(page)).toHaveText("filtering…");
+  // The answer for "b" is still on its way when the rest is typed.
+  await page.keyboard.type("erg");
+  await expect(rowCount(page)).toHaveText("filtering…");
+  await expect(status(page)).toContainText("of 5,000");
+  const n = quickCount("berg");
+  await expect(rowCount(page)).toHaveText(`${n.toLocaleString("en")} of 5,000`);
+  // The request for "b" was aborted (and maybe cells besides).
+  await expect
+    .poll(async () => Number((await requests(page).textContent())!.match(/(\d+) aborted/)![1]))
+    .toBeGreaterThan(before);
+  const seen = await page.evaluate(() => (window as unknown as { seen: string[] }).seen);
+  expect(seen.filter((line) => line.includes(`of ${quickCount("b").toLocaleString("en")} `))).toEqual([]);
+});
+
+test("an invalid regex turns the quick filter red with its message, the text kept and the rows in force", async ({
+  page,
+}) => {
+  await open(page, "brisk");
+  await expect(status(page)).not.toContainText("loading");
+  const all = "5,000 rows";
+  await expect(rowCount(page)).toHaveText(all);
+  await page.getByRole("search").first().getByRole("button", { name: "Use regular expression" }).click();
+  await filterField(page).fill("berg(");
+  const error = page.locator(".binnacle-filter-error");
+  // RegExp's own words, which differ between browsers.
+  await expect(error).toHaveText(/\w/);
+  await expect(error).not.toHaveText("Not applied");
+  await expect(filterField(page)).toHaveValue("berg(");
+  await expect(filterField(page)).toHaveAttribute("aria-invalid", "");
+  await expect(rowCount(page)).toHaveText(all);
+  await filterField(page).fill("berg");
+  await expect(error).toBeHidden();
+  await expect(rowCount(page)).toHaveText(`${quickCount("berg").toLocaleString("en")} of 5,000`);
+});
+
+test("find reads finding… until the slow count lands, and an invalid regex reads No matches with its message", async ({
+  page,
+}) => {
+  await open(page, "brisk");
+  await expect(status(page)).not.toContainText("loading");
+  await page.getByRole("button", { name: "Find" }).click();
+  const find = page.getByRole("search").nth(1);
+  const count = page.locator(".binnacle-find-count");
+  await find.getByRole("textbox").fill("bergen");
+  await expect(count).toHaveText("finding…");
+  await expect(count).toHaveText(/\d matches/);
+  await find.getByRole("button", { name: "Use regular expression" }).click();
+  await find.getByRole("textbox").fill("berg(");
+  await expect(count).toHaveText("No matches");
+  await expect(page.locator(".binnacle-find-wrapped")).toHaveText(/\w/);
+  await expect(find.getByRole("textbox")).toHaveValue("berg(");
 });

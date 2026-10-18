@@ -7,10 +7,12 @@
 //! pending. Focus and picks stay on their records. Drag a column header to
 //! move the column (a selected column takes the other selected ones with
 //! it); a cyan line shows where it will drop, and widths go with their
-//! columns. Press Ctrl+F to show only records with a crew of 6 or more, again
+//! columns. Press Ctrl+R to show only records with a crew of 6 or more, again
 //! for a crew of 13 or more (there are none, so the body says "No rows match
 //! the filter"), and again to show them all: focus stays on its record, or
-//! moves to the nearest one left in sort order. `binnacle-demo --huge` shows 10^15 identity rows,
+//! moves to the nearest one left in sort order; the topmost record shown
+//! that is left stays at the top, and picks of records filtered out are
+//! dropped. `binnacle-demo --huge` shows 10^15 identity rows,
 //! which neither sort, move nor filter. The records and tickers label their
 //! rows with their Keys, which stay with them through sorts and filters; the
 //! huge table numbers its rows. Its row-number band fits the
@@ -19,13 +21,77 @@
 //! double-clicking the edge fits it again. `binnacle-demo --live` shows 200
 //! tickers whose prices and loads change four times a second: the price
 //! right-aligned, its recent history as a sparkline, the load as a bar, and
-//! changed cells flashing. Each tick sends Change Notices through the
-//! In-Memory Table Source, so a sort by price or load holds as values move.
+//! changed cells flashing, and a new ticker is listed every two seconds up
+//! to 240. Each tick sends Change Notices through the In-Memory Table
+//! Source, so a sort by price or load holds as values move, and a column
+//! filter (Alt+Down) takes each change and each new ticker as it arrives.
 //! `binnacle-demo --slow` shows the records with sorts and Locates answered
 //! only after 1.5 s: a Shimmer sweeps across a header while its sort is
-//! pending, and the focused cell pulses while its Locate is. The demo redraws
+//! pending, and the focused cell pulses while its Locate is. A filter typed
+//! there leaves the rows as they are while the status line says
+//! "filtering…", and a newer one answers the one waiting at once with the
+//! filter in force, so only the last is drawn. The demo redraws
 //! on a timer only while something animates, an answer is due or the live
 //! table ticks, and otherwise waits for input.
+//!
+//! In the records (and the slow records), Ctrl+L focuses the quick filter
+//! field on the top line: typing keeps only the records with that text in
+//! any column, ignoring case, once typing pauses for 150 ms. Alt+C matches
+//! case, Alt+R reads the text as a regex, Ctrl+U clears it, Enter keeps the
+//! filter and leaves the field, and Esc puts back the filter from before. An
+//! invalid regex (try `(` with Alt+R) turns the field red with the reason,
+//! keeping the text and the filter from before. The status line counts the
+//! records shown of the total, such as "84 of 1,000 rows". The quick filter
+//! and Ctrl+R's crew filter both apply. A name edited so its record no longer
+//! matches stays where it is, dimmed, until the filter changes or Alt+L (or
+//! Excel's Ctrl+Alt+L) applies it again; the status line counts such records
+//! in view.
+//!
+//! Alt+Down opens the focused column's filter popup under its header (every
+//! records column but the id, and the tickers' name, price and load): type to
+//! keep the records whose value in that column contains the text, Alt+N for
+//! "does not contain", Alt+C to match case, Alt+R for a regex. Below it, the
+//! checklist lists the column's values with their counts, narrowed by the
+//! other filters: Tab moves to its search and then the list, Space ticks the
+//! value under the cursor, and Ctrl+A ticks "(Select all)" or, while
+//! searching, "(Select all matching …)". The port column has blanks, every
+//! eleventh record. Ctrl+U clears the field, Enter keeps the conditions and
+//! Esc puts back the column's conditions from before.
+//! Conditions on several columns AND together and with the quick filter; a
+//! filtered column's header shows `▿` (with `~` while the change is
+//! pending, `!` while not applied), and a line above the table lists each
+//! condition as a chip, red when the source did not apply it.
+//!
+//! Ctrl+F opens the find bar above the status line: typing marks every
+//! matching cell in yellow, and the bar counts them. Enter (or Ctrl+N) steps
+//! to the next match and Shift+Enter (or Ctrl+P) to the previous, wrapping
+//! round: focus moves to the match, which is drawn in its own colour and
+//! ends in `◂`, and the selection stays. Alt+C matches case, Alt+R reads a
+//! regex, Alt+B steps by columns instead of rows, Alt+F shows only the rows
+//! that match (again to show them all). Esc goes back to the table with find
+//! still open, where F3 and Shift+F3 step, Ctrl+F returns to the bar, and Esc
+//! closes find. The slow records answer each step late, and pressing Enter
+//! again before the first answer moves once. An invalid regex reads "No
+//! matches" in red, with the reason. Opening find again selects its text, so
+//! typing replaces it.
+//!
+//! Those are the chords preset's keys, which also give Alt+Shift+F to find
+//! backwards, Ctrl+N and Ctrl+P to step from the table where F3 does not reach
+//! the demo, Alt+C for find's case, Alt+T and Alt+N to set the focused
+//! column's text to contain or not contain, Alt+= to keep only the focused
+//! cell's value, Ctrl+D to remove the focused column's conditions (or the
+//! last one) and Ctrl+K to clear every filter. `--preset modes` picks vim
+//! and VisiData keys instead, with typing off and `h j k l` moving: `/` and
+//! `?` find forwards and backwards, `n` and `N` step, `|` the quick filter,
+//! `\` and `&` the column's text, `F` its popup, `=` keep the value, `u` and
+//! `U` remove and clear, `i` case, `m` show only matching rows, `r` re-apply.
+//! `--preset bare-keys` uses single keys with typing off: `/ ? n N`, `\` the
+//! quick filter, `|` and `&` the column's text, `x` and `X` remove and clear,
+//! `m`, `i`, `=`, `r`, and `f` opens a filter drawer down the right that
+//! applies as you tick; Enter or Esc gives the table focus back, and the
+//! drawer then follows the focused column until `f` focuses it again or Esc
+//! closes it. The status line names the preset's main keys while it has
+//! nothing else to say.
 //!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
@@ -39,7 +105,7 @@
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
 //! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
 //! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
-//! Ctrl+F cycles the filter. Click to focus, Shift-click or drag to select,
+//! Ctrl+R cycles the crew filter. Click to focus, Shift-click or drag to select,
 //! Ctrl-click to pick rows, click a row number to select its row. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to what it draws. The bottom
@@ -56,16 +122,22 @@ use std::borrow::Cow;
 use std::io;
 use std::time::{Duration, Instant};
 
+use std::collections::HashSet;
+
 use binnacle_core::{
-    Action, Axis, AxisConfig, EditEnd, Effect, Grid, Key, Located, Mode, Snapshot, Stamped,
-    Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
+    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, Key, Located, Mode, Position,
+    Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
-use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
+use binnacle_memory::{
+    FindStep, IdentitySource, MemorySource, PumpSource, Viewed, pump, query_error,
+};
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
-    CellRenderer, ColorSupport, Content, Keymap, Layout, Mouse, RenderContext, SparklineRenderer,
-    TextRenderer, Theme, animating, begin_frame, fit_width, render_editor, render_with, status,
-    wheel,
+    CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
+    Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
+    Theme, animating, begin_frame, clear_filters, fit_width, keep_value, remove_conditions,
+    render_conditions, render_editor, render_with, row_count, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -97,12 +169,26 @@ const NAMES: [&str; 8] = [
     "anchor", "bosun", "capstan", "davit", "ensign", "fathom", "galley", "hawser",
 ];
 
+const PORTS: [&str; 9] = [
+    "Aberdeen",
+    "Bergen",
+    "Cádiz",
+    "Dunedin",
+    "Esbjerg",
+    "Funchal",
+    "Gdańsk",
+    "Halifax",
+    "Île d'Yeu",
+];
+
 struct Record {
     id: i64,
     name: String,
     /// Missing for every seventh record, to show nulls sorting last.
     weight: Option<f64>,
     crew: i64,
+    /// Missing for every eleventh record, to show blanks in its checklist.
+    port: Option<&'static str>,
 }
 
 impl Record {
@@ -114,16 +200,20 @@ impl Record {
             name: format!("{} {}", NAMES[(h % 8) as usize], h % 97),
             weight: (!i.is_multiple_of(7)).then(|| (h % 10_000) as f64 / 10.0),
             crew: (h % 13) as i64,
+            port: (!i.is_multiple_of(11)).then(|| PORTS[((h >> 4) % 9) as usize]),
         }
     }
 }
 
-/// The minimum crew each Ctrl+F filter keeps, in turn; `None` keeps all.
+/// The minimum crew each Ctrl+R filter keeps, in turn; `None` keeps all.
 const CREW_FILTERS: [Option<i64>; 3] = [None, Some(6), Some(13)];
 
-const HEADERS: [&str; 4] = ["id", "name", "weight", "crew"];
+const HEADERS: [&str; 5] = ["id", "name", "weight", "crew", "port"];
 
 const TICKERS: usize = 200;
+/// The live table lists a new ticker every this many ticks, up to [`LISTED`].
+const LISTING: u32 = 8;
+const LISTED: usize = 240;
 const TICKER_HEADERS: [&str; 4] = ["ticker", "price", "trend", "load"];
 /// How many prices a ticker's sparkline remembers.
 const HISTORY: usize = 24;
@@ -148,6 +238,8 @@ struct Live {
     /// A xorshift state, so runs repeat.
     seed: u64,
     next_tick: Instant,
+    /// Ticks since the last ticker was listed.
+    since_listing: u32,
 }
 
 impl Live {
@@ -162,20 +254,24 @@ impl Live {
             ),
             seed: 0x2545_F491_4F6C_DD1D,
             next_tick: Instant::now(),
+            since_listing: 0,
         };
         live.rows = (0..TICKERS)
-            .map(|i| {
-                let price = 10.0 + live.random() * 990.0;
-                Ticker {
-                    name: format!("{} {}", NAMES[i % 8].to_uppercase(), i / 8),
-                    price,
-                    history: vec![price],
-                    load: live.random(),
-                    changed: Duration::ZERO,
-                }
-            })
+            .map(|i| live.ticker(i, Duration::ZERO))
             .collect();
         live
+    }
+
+    /// The `i`th ticker, at a random price and load, changed at `now`.
+    fn ticker(&mut self, i: usize, now: Duration) -> Ticker {
+        let price = 10.0 + self.random() * 990.0;
+        Ticker {
+            name: format!("{} {}", NAMES[i % 8].to_uppercase(), i / 8),
+            price,
+            history: vec![price],
+            load: self.random(),
+            changed: now,
+        }
     }
 
     /// A number in `0..1`.
@@ -187,7 +283,8 @@ impl Live {
     }
 
     /// Moves about a quarter of the tickers, at `now` on the demo's clock,
-    /// and tells the Grid what changed.
+    /// now and then lists a new one, and tells the Grid what changed: the
+    /// filter in force takes each change and each new ticker as it arrives.
     fn tick(&mut self, grid: &mut Grid, now: Duration) {
         self.next_tick += TICK;
         for i in 0..self.rows.len() {
@@ -204,10 +301,17 @@ impl Live {
             t.load = (t.load + load * 0.2).clamp(0.0, 1.0);
             t.changed = now;
             for col in [Key(1), Key(3)] {
-                if let Some(notice) = self.source.edited(&self.rows, i, col) {
+                if let Some(notice) = self.source.changed(&self.rows, i, col) {
                     grid.notify(Axis::Rows, notice);
                 }
             }
+        }
+        self.since_listing += 1;
+        if self.since_listing >= LISTING && self.rows.len() < LISTED {
+            self.since_listing = 0;
+            let ticker = self.ticker(self.rows.len(), now);
+            self.rows.push(ticker);
+            grid.notify(Axis::Rows, self.source.appended(&self.rows, &[]));
         }
     }
 }
@@ -235,13 +339,13 @@ const NAME: Key = Key(1);
 /// How long a pause starts type-ahead over.
 const TYPE_AHEAD: Duration = Duration::from_secs(1);
 
-/// How long the slow source holds back its sort and Locate answers.
+/// How long the slow source holds back its View Spec and Locate answers.
 const SLOW: Duration = Duration::from_millis(1500);
 
 /// How often the demo redraws while something animates.
 const FRAME: Duration = Duration::from_millis(33);
 
-/// Sort requests and Locates the slow source has not answered yet, each
+/// View Specs and Locates the slow source has not answered yet, each
 /// with the time its answer is due.
 type Held = Vec<(Instant, Effect)>;
 
@@ -254,6 +358,8 @@ enum Table {
         filter: usize,
         /// `Some` for the slow source.
         held: Option<Held>,
+        /// The Find Query of the last find step, and where it landed.
+        step: Option<(FindQuery, FindStep)>,
     },
     Huge(Huge),
     Live(Live),
@@ -289,7 +395,7 @@ impl Table {
         }
     }
 
-    /// Drains the Grid's Effects, answering sorts, column moves and `Locate`
+    /// Drains the Grid's Effects, answering View Specs, column moves and `Locate`
     /// from the source and auto-size by measuring the text drawn for `shown`
     /// rows. Returns the Effects the app itself acts on: activation, edits
     /// and typing.
@@ -309,11 +415,15 @@ impl Table {
                 rows,
                 source,
                 held: Some(held),
+                step,
                 ..
             } => {
                 let text = Text::Records(rows);
                 let now = Instant::now();
-                let mut source = source.over(rows);
+                let mut source = Stepped {
+                    inner: source.over(rows),
+                    step,
+                };
                 let (due, later) = held.drain(..).partition(|&(at, _)| at <= now);
                 *held = later;
                 for (_, effect) in due {
@@ -321,7 +431,25 @@ impl Table {
                 }
                 while let Some(stamped) = grid.poll_effect() {
                     match &stamped.effect {
-                        Effect::SortRequested { .. } | Effect::Locate { .. } => {
+                        Effect::ViewRequested { .. } => {
+                            // A newer View Spec aborts the one waiting, which
+                            // answers with the spec in force.
+                            let applied = grid.snapshot().applied_view().clone();
+                            held.retain(|(_, e)| {
+                                let waiting = matches!(e, Effect::ViewRequested { .. });
+                                if waiting {
+                                    let snapshot = grid.snapshot();
+                                    let totals = Totals {
+                                        rows: snapshot.total(Axis::Rows),
+                                        cols: snapshot.total(Axis::Cols),
+                                    };
+                                    grid.view_applied(applied.clone(), totals);
+                                }
+                                !waiting
+                            });
+                            held.push((now + SLOW, stamped.effect.clone()));
+                        }
+                        Effect::Locate { .. } | Effect::FindStepRequested { .. } => {
                             held.push((now + SLOW, stamped.effect.clone()));
                         }
                         Effect::MoveRequested { axis, keys, to } => {
@@ -334,9 +462,17 @@ impl Table {
                     seen(&text, grid, stamped);
                 }
             }
-            Table::Records { rows, source, .. } => {
+            Table::Records {
+                rows, source, step, ..
+            } => {
                 let text = Text::Records(rows);
-                source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
+                let mut source = Stepped {
+                    inner: source.over(rows),
+                    step,
+                };
+                pump(grid, &mut source, |grid, stamped| {
+                    seen(&text, grid, stamped)
+                });
             }
             Table::Huge(huge) => {
                 pump(grid, huge, |grid, stamped| seen(&Text::Huge, grid, stamped));
@@ -420,16 +556,62 @@ impl Table {
             *filter = (*filter + 1) % CREW_FILTERS.len();
             let notice = match CREW_FILTERS[*filter] {
                 Some(min) => source.filter(rows, move |r| r.crew >= min),
-                None => source.clear_filter(),
+                None => source.clear_filter(rows),
             };
             grid.notify(Axis::Rows, notice);
         }
     }
 
-    /// What the body says when no rows are left.
-    fn empty(&self) -> &'static str {
+    /// The marked cells among `rows` by `cols` and what the find bar shows,
+    /// for the Find Query in force.
+    fn find(
+        &mut self,
+        query: Option<&FindQuery>,
+        rows_shown: &[Key],
+        cols: &[Key],
+    ) -> (HashSet<(Key, Key)>, FindStatus) {
+        let (
+            Table::Records {
+                rows, source, step, ..
+            },
+            Some(query),
+        ) = (self, query)
+        else {
+            return Default::default();
+        };
+        let marks = source.find_marks(rows, rows_shown, cols, query);
+        let marked = (rows_shown.iter())
+            .flat_map(|&r| cols.iter().map(move |&c| (r, c)))
+            .zip(marks)
+            .filter_map(|(cell, marked)| marked.then_some(cell))
+            .collect();
+        let step = step.as_ref().filter(|(q, _)| q == query).map(|(_, s)| s);
+        let status = FindStatus {
+            count: Some(source.find_count(rows, query)),
+            index: step.and_then(|s| s.index),
+            wrapped: step.is_some_and(|s| s.wrapped),
+            finding: false,
+            error: query_error(&query.query),
+        };
+        (marked, status)
+    }
+
+    /// The rows among `rows_shown` the source keeps unmatched after an edit.
+    fn unmatched(&mut self, rows_shown: &[Key]) -> HashSet<Key> {
+        let Table::Records { source, .. } = self else {
+            return HashSet::new();
+        };
+        let flags = source.unmatched(Axis::Rows, rows_shown);
+        (rows_shown.iter().zip(flags))
+            .filter_map(|(&r, unmatched)| unmatched.then_some(r))
+            .collect()
+    }
+
+    /// What the body says when no rows are left, with the quick filter
+    /// `quick` on or not.
+    fn empty(&self, quick: bool) -> &'static str {
         match self {
-            Table::Records { filter, .. } if *filter > 0 => "No rows match the filter",
+            Table::Records { filter, .. } if *filter > 0 || quick => "No rows match the filter",
             _ => "No rows",
         }
     }
@@ -442,6 +624,27 @@ impl Table {
         }
     }
 
+    /// Column `key`'s distinct values for its checklist, as the source lists them.
+    fn distinct(&self, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        match self {
+            Table::Records { rows, source, .. } => Some(source.distinct(rows, key, query)),
+            Table::Huge(_) => None,
+            Table::Live(live) => Some(live.source.distinct(&live.rows, key, query)),
+        }
+    }
+
+    /// The Value a OneOf on column `col` keeps row `row` by, as the source
+    /// names it.
+    fn value(&self, row: Key, col: Key) -> Option<Value> {
+        match self {
+            Table::Records { rows, source, .. } => {
+                Some(source.value(col, rows.get(row.0 as usize)?))
+            }
+            Table::Huge(_) => None,
+            Table::Live(live) => Some(live.source.value(col, live.rows.get(row.0 as usize)?)),
+        }
+    }
+
     /// How long until the table next changes by itself, if it ever does.
     fn until_tick(&self) -> Option<Duration> {
         match self {
@@ -451,20 +654,76 @@ impl Table {
     }
 }
 
-/// Answers a sort request or a Locate the slow source held, as
+/// A Table Source that keeps where its last find step landed, for the find
+/// bar's "3 of 120" and wrap note.
+struct Stepped<'a, S> {
+    inner: S,
+    step: &'a mut Option<(FindQuery, FindStep)>,
+}
+
+impl<S: PumpSource> PumpSource for Stepped<'_, S> {
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        self.inner.view(spec)
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.inner.support(axis, key)
+    }
+
+    fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {
+        self.inner.quick_filter(axis)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        self.inner.distinct(axis, key, query)
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.inner.locate(axis, key)
+    }
+
+    fn find_support(&mut self) -> Option<TextSupport> {
+        self.inner.find_support()
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        let step = self.inner.find_next(query, from, direction);
+        *self.step = step.map(|s| (query.clone(), s));
+        step
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        self.inner.move_items(axis, keys, to)
+    }
+}
+
+/// Answers a View Spec, a Locate or a find step the slow source held, as
 /// [`pump`] would have at once.
 fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
     match effect {
-        Effect::SortRequested { spec } => match source.sort(&spec) {
-            Ok(notice) => {
-                grid.sort_applied(spec);
-                grid.notify(Axis::Rows, notice);
+        Effect::ViewRequested { spec, .. } => {
+            let viewed = source.view(&spec);
+            grid.view_applied(viewed.applied, viewed.totals);
+            for (axis, notice) in viewed.notices {
+                grid.notify(axis, notice);
             }
-            Err(previous) => grid.sort_applied(previous),
-        },
+        }
         Effect::Locate { axis, key } => {
             let located = source.locate(axis, key);
             grid.located(axis, key, located);
+        }
+        Effect::FindStepRequested {
+            query,
+            from,
+            direction,
+        } => {
+            let step = source.find_next(&query, from, direction);
+            grid.find_stepped(step.map(|s| s.at));
         }
         _ => {}
     }
@@ -498,7 +757,8 @@ impl Content for Text<'_> {
                     0 => r.id.to_string(),
                     1 => r.name.clone(),
                     2 => r.weight.map_or_else(|| "-".into(), |w| format!("{w:.1}")),
-                    _ => r.crew.to_string(),
+                    3 => r.crew.to_string(),
+                    _ => r.port.unwrap_or_default().to_string(),
                 }
             }
             Text::Huge => format!("r{}c{}", row.0, col.0),
@@ -548,6 +808,40 @@ impl Content for Text<'_> {
             }),
             _ => Box::new(text),
         }
+    }
+}
+
+/// The text a [`Table`] draws, with the cells that match the Find Query
+/// and the unmatched rows.
+struct Marked<'a> {
+    text: Text<'a>,
+    marks: &'a HashSet<(Key, Key)>,
+    unmatched: &'a HashSet<Key>,
+}
+
+impl Content for Marked<'_> {
+    fn cell(&self, row: Key, col: Key) -> String {
+        self.text.cell(row, col)
+    }
+
+    fn row_header(&self, row: Key, position: u64) -> String {
+        self.text.row_header(row, position)
+    }
+
+    fn column_header(&self, col: Key) -> String {
+        self.text.column_header(col)
+    }
+
+    fn marked(&self, row: Key, col: Key) -> bool {
+        self.marks.contains(&(row, col))
+    }
+
+    fn unmatched(&self, axis: Axis, key: Key) -> bool {
+        axis == Axis::Rows && self.unmatched.contains(&key)
+    }
+
+    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+        self.text.renderer(col)
     }
 }
 
@@ -706,7 +1000,26 @@ fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
     Some(widest as f32 + 1.0)
 }
 
+/// The keymap preset `--preset` names (`chords`, `modes` or `bare-keys`).
+fn preset() -> Result<Preset, String> {
+    let args: Vec<String> = std::env::args().collect();
+    let named = (args.iter().enumerate()).find_map(|(i, a)| match a.strip_prefix("--preset") {
+        Some("") => Some(args.get(i + 1).cloned().unwrap_or_default()),
+        Some(rest) => rest.strip_prefix('=').map(str::to_string),
+        None => None,
+    });
+    match named.as_deref() {
+        None | Some("chords") => Ok(Preset::Chords),
+        Some("modes") => Ok(Preset::Modes),
+        Some("bare-keys") => Ok(Preset::BareKeys),
+        Some(other) => Err(format!(
+            "unknown preset {other:?}: use chords, modes or bare-keys"
+        )),
+    }
+}
+
 fn main() -> io::Result<()> {
+    let preset = preset().map_err(io::Error::other)?;
     let live = std::env::args().any(|a| a == "--live");
     let (mut table, mut grid) = if live {
         let grid = Grid::new(
@@ -727,7 +1040,8 @@ fn main() -> io::Result<()> {
                 .gap(1.0),
         );
         for c in 0..HUGE_COLS {
-            grid.set_sortable(Key(c), false);
+            let none = Support::default().with_sort(false).with_text(None);
+            grid.set_support(Axis::Rows, Key(c), none);
         }
         let table = Table::Huge(Huge {
             rows: IdentitySource::new(HUGE_ROWS),
@@ -740,13 +1054,28 @@ fn main() -> io::Result<()> {
             .i64_column(Key(0), |r| Some(r.id))
             .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
             .f64_column(Key(2), |r| r.weight)
-            .i64_column(Key(3), |r| Some(r.crew));
-        let grid = Grid::new(
+            .i64_column(Key(3), |r| Some(r.crew))
+            .bytes_column(Key(4), |r| r.port.map(|p| Cow::Borrowed(p.as_bytes())))
+            // The quick filter searches the weight as drawn.
+            .text_column(Key(2), |r| {
+                Some(r.weight.map_or("-".into(), |w| format!("{w:.1}").into()))
+            });
+        let mut grid = Grid::new(
             AxisConfig::new(rows.len() as u64, 1.0).header(1.0),
             AxisConfig::new(HEADERS.len() as u64, 14.0)
                 .header(5.0)
                 .gap(1.0),
         );
+        grid.set_quick_filter_support(Axis::Rows, source.quick_filter(Axis::Rows));
+        grid.set_find_support(source.find_support());
+        for c in 0..HEADERS.len() as u64 {
+            grid.set_support(Axis::Rows, Key(c), source.support(Axis::Rows, Key(c)));
+        }
+        // The ids take no conditions, as on the web.
+        let id = (source.support(Axis::Rows, Key(0)))
+            .with_text(None)
+            .with_one_of(false);
+        grid.set_support(Axis::Rows, Key(0), id);
         let source = Box::new(source);
         let slow = std::env::args().any(|a| a == "--slow");
         let table = Table::Records {
@@ -754,6 +1083,7 @@ fn main() -> io::Result<()> {
             source,
             filter: 0,
             held: slow.then(Vec::new),
+            step: None,
         };
         (table, grid)
     };
@@ -765,6 +1095,54 @@ fn main() -> io::Result<()> {
             axis: Axis::Rows,
             fraction: 0.5,
         },
+    );
+    keymap.set_typing(preset.typing());
+    if preset == Preset::Modes {
+        // vim's moves, on top of the arrows.
+        let moves = [
+            ('j', Axis::Rows, true),
+            ('k', Axis::Rows, false),
+            ('l', Axis::Cols, true),
+            ('h', Axis::Cols, false),
+        ];
+        for (c, axis, forward) in moves {
+            let action = Action::MoveFocus {
+                axis,
+                by: FocusStep::Item,
+                forward,
+                extend: false,
+            };
+            keymap.bind(KeyCode::Char(c), KeyModifiers::NONE, action);
+        }
+    }
+    let controls = Controls::preset(preset);
+    let hint = |control| controls.hint(control).unwrap_or_default();
+    let mut quick = QuickFilter::new().placeholder(hint(Control::QuickFilter));
+    let mut popup = match preset {
+        Preset::BareKeys => ColumnFilter::new().drawer(),
+        _ => ColumnFilter::new(),
+    };
+    let mut find = match preset {
+        Preset::Chords => FindBar::new(),
+        _ => FindBar::new().table_hints(format!(
+            "{} next  {} prev  {} edit",
+            hint(Control::FindNext),
+            hint(Control::FindPrevious),
+            hint(Control::Find)
+        )),
+    };
+    let preset_name = match preset {
+        Preset::Chords => "chords",
+        Preset::Modes => "modes",
+        _ => "bare keys",
+    };
+    // What the status line says while nothing else is to be said.
+    let keys = format!(
+        "{} find  {} filter  {} column  {} clear",
+        hint(Control::Find),
+        hint(Control::QuickFilter),
+        hint(Control::ColumnFilter),
+        hint(Control::Clear)
     );
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
@@ -778,8 +1156,11 @@ fn main() -> io::Result<()> {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let mut theme = if no_color { themes.len() - 1 } else { 0 };
     let colors = ColorSupport::from_colorterm(std::env::var("COLORTERM").ok().as_deref());
-    if live {
-        grid.set_sortable(Key(2), false);
+    if let Table::Live(live) = &table {
+        for c in 0..TICKER_HEADERS.len() as u64 {
+            let support = live.source.support(Axis::Rows, Key(c));
+            grid.set_support(Axis::Rows, Key(c), support);
+        }
     }
     // The demo's clock, which the render context and the flashes share.
     let start = Instant::now();
@@ -790,17 +1171,47 @@ fn main() -> io::Result<()> {
     let result = (|| {
         loop {
             terminal.draw(|frame| {
-                // The Grid takes all but the bottom line, the status line.
+                // The Grid takes all but the bottom line, the status line,
+                // the top line while the rows have a quick filter, and the
+                // next while they have column conditions.
                 let full = frame.area();
                 let mut area = full;
-                area.height = full.height.saturating_sub(1);
+                area.height = full.height.saturating_sub(1 + u16::from(find.is_open()));
+                // A filter drawer takes the table's right.
+                area.width = area.width.saturating_sub(popup.width());
+                let now = Instant::now();
+                quick.tick(&mut grid, now);
+                popup.tick(&mut grid, now);
+                find.tick(&mut grid, now);
                 app.pump(&mut table, &mut grid, &shown_rows);
+                // The source's reasons for what it did not apply.
+                let snapshot = grid.snapshot();
+                let wanted = snapshot.requested_view().unwrap_or(snapshot.applied_view());
+                quick.set_error(wanted.rows.filter.quick.as_ref().and_then(query_error));
+                let column = popup.column().and_then(|key| {
+                    wanted
+                        .rows
+                        .filter
+                        .conditions
+                        .on(key)
+                        .find_map(|c| match &c.kind {
+                            ConditionKind::Text(q) => query_error(q),
+                            _ => None,
+                        })
+                });
+                popup.set_error(column);
+                let field = grid.snapshot().quick_filter(Axis::Rows).is_some();
+                let chips = !grid.snapshot().conditions(Axis::Rows).is_empty();
+                for _ in 0..u16::from(field) + u16::from(chips) {
+                    area.y += 1;
+                    area.height = area.height.saturating_sub(1);
+                }
                 let border = BORDERS[app.border];
                 let ctx = RenderContext::new(&themes[theme])
                     .border(border)
                     .colors(colors)
                     .at(start.elapsed())
-                    .empty(table.empty());
+                    .empty(table.empty(!quick.text().is_empty()));
                 let fill = |grid: &mut Grid, viewport| fill(grid, &table, viewport);
                 layout = begin_frame(&mut grid, &ctx, area, fill);
                 if app.fit_rows {
@@ -818,17 +1229,81 @@ fn main() -> io::Result<()> {
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 moving = animating(&snapshot);
-                render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
+                let shown_cols: Vec<Key> = snapshot.cols().iter().filter_map(|c| c.key).collect();
+                let (marks, found) = table.find(snapshot.find(), &shown_rows, &shown_cols);
+                let unmatched = table.unmatched(&shown_rows);
+                let content = Marked {
+                    text: table.text(),
+                    marks: &marks,
+                    unmatched: &unmatched,
+                };
+                render_with(&snapshot, &content, &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
+                popup.fetch(&snapshot, |key, query| table.distinct(key, query));
+                let at = match popup.width() {
+                    0 => layout.grid,
+                    width => ratatui::layout::Rect {
+                        x: area.right(),
+                        width,
+                        ..area
+                    },
+                };
+                popup.render(
+                    &snapshot,
+                    &table.text(),
+                    &themes[theme],
+                    at,
+                    frame.buffer_mut(),
+                );
+                if field {
+                    let top = ratatui::layout::Rect { height: 1, ..full };
+                    quick.render(&snapshot, &themes[theme], top, frame.buffer_mut());
+                }
+                if chips {
+                    let line = ratatui::layout::Rect {
+                        y: area.y - 1,
+                        height: 1,
+                        ..full
+                    };
+                    let buf = frame.buffer_mut();
+                    render_conditions(&snapshot, &table.text(), &themes[theme], line, buf);
+                }
+                if find.is_open() {
+                    let bar = ratatui::layout::Rect {
+                        y: area.y + area.height,
+                        height: 1,
+                        ..full
+                    };
+                    find.render(&snapshot, &found, &themes[theme], bar, frame.buffer_mut());
+                }
                 let line = ratatui::layout::Rect {
-                    y: full.y + area.height,
-                    height: full.height - area.height,
+                    y: full.bottom().saturating_sub(1),
+                    height: 1,
                     ..full
                 };
-                frame.render_widget(ratatui::text::Line::from(status(&snapshot)), line);
-                let names = format!("{} | {} | {border}", table.source(), themes[theme].name);
+                let mut said = status(&snapshot);
+                if !unmatched.is_empty() {
+                    if !said.is_empty() {
+                        said += " | ";
+                    }
+                    let again = hint(Control::Reapply);
+                    said += &match unmatched.len() {
+                        1 => format!("1 edited row no longer matches: {again} re-applies"),
+                        n => format!("{n} edited rows no longer match: {again} re-applies"),
+                    };
+                }
+                if said.is_empty() {
+                    said = keys.clone();
+                }
+                frame.render_widget(ratatui::text::Line::from(said), line);
+                let names = format!(
+                    "{} | {} | {preset_name} | {} | {border}",
+                    row_count(&snapshot),
+                    table.source(),
+                    themes[theme].name
+                );
                 let name = ratatui::text::Line::from(names).right_aligned();
                 frame.render_widget(name, line);
             })?;
@@ -837,7 +1312,12 @@ fn main() -> io::Result<()> {
             let due = table
                 .next_answer()
                 .map(|at| at.saturating_duration_since(Instant::now()));
-            let wake = [moving.then_some(FRAME), due, table.until_tick()]
+            let typed = [quick.deadline(), popup.deadline(), find.deadline()]
+                .into_iter()
+                .flatten()
+                .min()
+                .map(|at| at.saturating_duration_since(Instant::now()));
+            let wake = [moving.then_some(FRAME), due, table.until_tick(), typed]
                 .into_iter()
                 .flatten()
                 .min();
@@ -857,7 +1337,67 @@ fn main() -> io::Result<()> {
                     if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
                         return Ok(());
                     }
-                    if app.edit_key(&mut table, &mut grid, key.code) {
+                    if app.edit_key(&mut table, &mut grid, key.code)
+                        || popup.key(&key, &mut grid)
+                        || quick.key(&key, &mut grid)
+                        || find.key(&key, &mut grid)
+                    {
+                        continue;
+                    }
+                    let took = match controls.control(&key) {
+                        Some(Control::QuickFilter) => quick.focus(&grid.snapshot()),
+                        Some(Control::ColumnFilter) => popup.open(&grid.snapshot()),
+                        Some(Control::ColumnText { not }) => popup.open_text(&mut grid, not),
+                        Some(Control::KeepValue) => {
+                            let snapshot = grid.snapshot();
+                            let focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
+                            let cell = focus.and_then(|(r, c)| r.key.zip(c.key));
+                            let value = cell.and_then(|(r, c)| Some((c, table.value(r, c)?)));
+                            value.is_some_and(|(col, value)| keep_value(&mut grid, col, value))
+                        }
+                        Some(Control::Remove) => {
+                            remove_conditions(&mut grid);
+                            true
+                        }
+                        Some(Control::Clear) => {
+                            clear_filters(&mut grid);
+                            true
+                        }
+                        Some(Control::Find) => {
+                            if find.open(&grid.snapshot()) {
+                                find.apply(&mut grid);
+                            }
+                            true
+                        }
+                        Some(Control::FindBackward) => {
+                            if find.open_backward(&grid.snapshot()) {
+                                find.apply(&mut grid);
+                            }
+                            true
+                        }
+                        Some(Control::FindNext) => find.repeat(false, &mut grid),
+                        Some(Control::FindPrevious) => find.repeat(true, &mut grid),
+                        Some(Control::OnlyMatching) => {
+                            find.only_matching(&mut grid);
+                            true
+                        }
+                        Some(Control::Case) => {
+                            find.toggle_case(&mut grid);
+                            true
+                        }
+                        Some(Control::Reapply) => {
+                            grid.reapply_view();
+                            true
+                        }
+                        // Esc closes the drawer, else find, else cancels.
+                        Some(Control::Close) if popup.close() => true,
+                        Some(Control::Close) if find.is_open() => {
+                            find.close(&mut grid);
+                            true
+                        }
+                        _ => false,
+                    };
+                    if took {
                         continue;
                     }
                     if ctrl && key.code == KeyCode::Char('t') {
@@ -868,7 +1408,7 @@ fn main() -> io::Result<()> {
                         app.next_border(&mut grid);
                         continue;
                     }
-                    if ctrl && key.code == KeyCode::Char('f') {
+                    if ctrl && key.code == KeyCode::Char('r') {
                         table.next_filter(&mut grid);
                         continue;
                     }

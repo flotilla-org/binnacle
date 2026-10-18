@@ -1,12 +1,14 @@
 //! The Grid as a wasm-bindgen class. Each input is one typed method: a new
 //! Action or setting is a few lines here plus its call in `web/src`.
 
-use binnacle_core::{Action, AxisConfig, Grid, Key, PointerEvent, Viewport};
+use binnacle_core::{Action, AxisConfig, Grid, Key, PointerEvent, TextQuery, Totals, Viewport};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, focus_step, position};
-use crate::effect::WireStamped;
+use crate::effect::{
+    WireCondition, WireFindMatch, WireFindQuery, WireStamped, WireTextQuery, WireViewSpec,
+};
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -124,8 +126,11 @@ impl WebGrid {
             .map_or(f64::NAN, f64::from)
     }
 
-    pub fn set_sortable(&mut self, key: u64, sortable: bool) {
-        self.grid.set_sortable(Key(key), sortable);
+    /// What the Table Source supports when viewing axis `a` by `key`, an
+    /// item of the other axis; see [`codes::support`].
+    pub fn set_support(&mut self, a: u8, key: u64, bits: u8) {
+        self.grid
+            .set_support(axis(a), Key(key), codes::support(bits));
     }
 
     /// A Change Notice on axis `a`; see [`codes::notice`].
@@ -134,9 +139,120 @@ impl WebGrid {
             .notify(axis(a), codes::notice(code, first, second));
     }
 
-    /// The Sort Spec the Table Source now applies; see [`codes::sort_spec`].
-    pub fn sort_applied(&mut self, keys: &[u64], directions: &[u8]) {
-        self.grid.sort_applied(codes::sort_spec(keys, directions));
+    /// The View Spec the Table Source now applies, shaped as `ViewRequested`
+    /// carries it, with each axis's unfiltered count (NaN if unknown).
+    pub fn view_applied(
+        &mut self,
+        spec: JsValue,
+        total_rows: f64,
+        total_cols: f64,
+    ) -> Result<(), JsError> {
+        let spec = view_spec(spec)?;
+        let totals = Totals {
+            rows: codes::total(total_rows),
+            cols: codes::total(total_cols),
+        };
+        self.grid.view_applied(spec, totals);
+        Ok(())
+    }
+
+    /// The Table Source's news, not an answer: the View Spec it applies now,
+    /// or new totals, as for `view_applied`. Answers still due stay due.
+    pub fn view_changed(
+        &mut self,
+        spec: JsValue,
+        total_rows: f64,
+        total_cols: f64,
+    ) -> Result<(), JsError> {
+        let spec = view_spec(spec)?;
+        let totals = Totals {
+            rows: codes::total(total_rows),
+            cols: codes::total(total_cols),
+        };
+        self.grid.view_changed(spec, totals);
+        Ok(())
+    }
+
+    /// Requests the whole of `spec`, shaped as `ViewRequested` carries it.
+    pub fn request_view(&mut self, spec: JsValue) -> Result<(), JsError> {
+        let spec = view_spec(spec)?;
+        self.grid.request_view(spec);
+        Ok(())
+    }
+
+    /// Requests the latest View Spec again, so the Table Source filters rows
+    /// the user's edits left unmatched.
+    pub fn reapply_view(&mut self) {
+        self.grid.reapply_view();
+    }
+
+    /// Sets the quick filter of axis `a` to `query`, a Text Query shaped as
+    /// `ViewRequested` carries it, or clears it with `null`.
+    pub fn set_quick_filter(&mut self, a: u8, query: JsValue) -> Result<(), JsError> {
+        let query: Option<WireTextQuery> =
+            serde_wasm_bindgen::from_value(query).map_err(|e| JsError::new(&e.to_string()))?;
+        self.grid
+            .set_quick_filter(axis(a), query.map(TextQuery::from));
+        Ok(())
+    }
+
+    /// Adds `condition`, shaped as `ViewRequested` carries it, to the
+    /// conditions of axis `a`.
+    pub fn add_condition(&mut self, a: u8, condition: JsValue) -> Result<(), JsError> {
+        let condition = self::condition(condition)?;
+        self.grid.add_condition(axis(a), condition);
+        Ok(())
+    }
+
+    /// Removes the first condition of axis `a` equal to `condition`.
+    pub fn remove_condition(&mut self, a: u8, condition: JsValue) -> Result<(), JsError> {
+        let condition = self::condition(condition)?;
+        self.grid.remove_condition(axis(a), &condition);
+        Ok(())
+    }
+
+    /// Puts `to` in place of the first condition of axis `a` equal to `from`.
+    pub fn replace_condition(&mut self, a: u8, from: JsValue, to: JsValue) -> Result<(), JsError> {
+        let (from, to) = (self::condition(from)?, self::condition(to)?);
+        self.grid.replace_condition(axis(a), &from, to);
+        Ok(())
+    }
+
+    /// Whether axis `a` has a quick filter; see [`codes::quick_filter`].
+    pub fn set_quick_filter_support(&mut self, a: u8, bits: u8) {
+        self.grid
+            .set_quick_filter_support(axis(a), codes::quick_filter(bits));
+    }
+
+    /// Sets the Find Query, shaped as `FindRequested` carries it, or closes
+    /// find with `null`.
+    pub fn set_find(&mut self, query: JsValue) -> Result<(), JsError> {
+        let query: Option<WireFindQuery> =
+            serde_wasm_bindgen::from_value(query).map_err(|e| JsError::new(&e.to_string()))?;
+        self.grid.set_find(query.map(Into::into));
+        Ok(())
+    }
+
+    /// Whether the Table Source finds; see [`codes::find`].
+    pub fn set_find_support(&mut self, bits: u8) {
+        self.grid.set_find_support(codes::find(bits));
+    }
+
+    pub fn find_next(&mut self) {
+        self.grid.action(Action::FindNext);
+    }
+
+    pub fn find_previous(&mut self) {
+        self.grid.action(Action::FindPrevious);
+    }
+
+    /// The answer to `FindStepRequested`: `{ row, col }`, or `null` for no
+    /// match.
+    pub fn find_stepped(&mut self, found: JsValue) -> Result<(), JsError> {
+        let found: Option<WireFindMatch> =
+            serde_wasm_bindgen::from_value(found).map_err(|e| JsError::new(&e.to_string()))?;
+        self.grid.find_stepped(found.map(Into::into));
+        Ok(())
     }
 
     /// The answer to `Locate`; see [`codes::located`].
@@ -274,6 +390,34 @@ impl WebGrid {
 #[wasm_bindgen]
 pub fn debug_scenarios() -> Vec<String> {
     testing::SCENARIOS.map(String::from).to_vec()
+}
+
+/// Test only: the Change Notice [`WebGrid::notify`] makes of `code`, `a` and
+/// `b`, as Rust prints it.
+#[wasm_bindgen]
+pub fn debug_notice(code: u8, a: f64, b: f64) -> String {
+    format!("{:?}", codes::notice(code, a, b))
+}
+
+/// A View Spec from JS, shaped as `ViewRequested` carries it.
+fn view_spec(spec: JsValue) -> Result<binnacle_core::ViewSpec, JsError> {
+    let spec: WireViewSpec =
+        serde_wasm_bindgen::from_value(spec).map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(spec.into())
+}
+
+fn condition(condition: JsValue) -> Result<binnacle_core::Condition, JsError> {
+    let condition: WireCondition =
+        serde_wasm_bindgen::from_value(condition).map_err(|e| JsError::new(&e.to_string()))?;
+    condition
+        .into_core()
+        .ok_or_else(|| JsError::new("a condition of a kind binnacle does not know"))
+}
+
+/// Test only: one of every View Edit, as `ViewRequested` carries them.
+#[wasm_bindgen]
+pub fn debug_every_view_edit() -> JsValue {
+    to_js(&testing::every_view_edit())
 }
 
 /// Test only: one of every Effect, as [`WebGrid::poll_effects`] returns them.

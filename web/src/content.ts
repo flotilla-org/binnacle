@@ -13,4 +13,8 @@ export interface Content {
   label(axis: AxisName, item: StripItem): string;
   /** The Table Source's own ID for a visible item; `undefined` while its Key has not arrived. */
   id(axis: AxisName, item: StripItem): unknown;
+  /** Whether the cell matches the Find Query in force, as the Table Source last said. */
+  marked(row: number, col: number): boolean;
+  /** Whether the visible item at index `i` of `axis`'s Strip is unmatched (kept after an edit though the filter drops it), as the Table Source last said. */
+  unmatched(axis: AxisName, i: number): boolean;
 }

@@ -1,0 +1,29 @@
+---
+source: crates/binnacle-core/tests/filtering.rs
+expression: out
+---
+--- 1. pick records 0 and 1, focusing 1
+window Rows 0..2
+window Cols 0..2
+effect (gen 1): SelectionChanged
+effect (gen 1): FocusChanged { row: Key(1), col: Key(0) }
+gen 2 | damage selection | focus 1#1,0#0 at 4,2 6x1 | picks 0,1 | fill 4,1 13x1 | fill 4,2 13x1
+Rows: count 2, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1
+Cols: count 2, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6
+    0      1
+0   +0.0   +0.1
+1   *1.0   +1.1
+
+
+--- 2. keep values of 0 and up: record 0 (no value) goes with its pick; focus stays on record 1
+effect (gen 2): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(0)
+effect (gen 2): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: Some(0) }
+effect (gen 2): SelectionChanged
+window Rows 0..1
+gen 3 | damage layout selection positions | focus 0#1,0#0 at 4,1 6x1 | picks 1 | fill 4,1 13x1
+Rows: count 1, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1@1+1
+Cols: (unchanged)
+    0      1
+0   *1.0   +1.1

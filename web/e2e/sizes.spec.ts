@@ -22,8 +22,9 @@ async function mount(page: Page) {
     const w = window as unknown as { frame: FrameInfo };
     await GridWidget.create(host, {
       source: {
-        rows: { identity: "position", count: () => 100, window: range, sort: (spec) => spec },
+        rows: { identity: "position", count: () => 100, window: range },
         cols: { identity: "position", count: () => 6, window: range },
+        view: (spec) => spec,
         cells: (rs: number[], cs: number[]) => rs.map((r) => cs.map((c) => `r${r}c${c}`)),
       },
       rowHeight: 24,

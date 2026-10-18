@@ -1,0 +1,47 @@
+---
+source: crates/binnacle-core/tests/filtering.rs
+expression: out
+---
+--- 1. records 1 and 3 sized 2 and 3
+window Rows 0..6
+window Cols 0..3
+gen 2 | damage layout
+Rows: count 8, extent 5, header 1, anchor 0+0, thumb 0.0000/0.3636 | 0#0@1+1 1#1@2+2 2#2@4+1
+Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+
+2   2.0    2.1    2.2
+--- 2. filter out record 1: record 3, now row 2, keeps its size
+effect (gen 2): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 2): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: Some(1) }
+effect (gen 2): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(1)
+window Rows 0..6
+gen 3 | damage layout positions
+Rows: count 7, extent 5, header 1, anchor 0+0, thumb 0.0000/0.4444 | 0#0@1+1 1#2@2+1 2#3@3+3
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   2.0    2.1    2.2
+2   3.0    3.1    3.2
+
+--- 3. clear the filter: record 1 is back at its size
+effect (gen 3): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 3): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(2)
+effect (gen 3): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(3)
+window Rows 0..6
+gen 4 | damage layout positions
+Rows: count 8, extent 5, header 1, anchor 0+0, thumb 0.0000/0.3636 | 0#0@1+1 1#1@2+2 2#2@4+1
+Cols: (unchanged)
+    0      1      2
+0   0.0    0.1    0.2
+1   1.0    1.1    1.2
+
+2   2.0    2.1    2.2

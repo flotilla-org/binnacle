@@ -2,7 +2,7 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, FocusStep, Grid, Key, Modifiers, PointerEvent, SortColumn, SortSpec,
-    Viewport,
+    Totals, ViewSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{ColorSupport, Content, RenderContext, Theme, render_with};
@@ -34,7 +34,13 @@ fn fixture() -> Grid {
         AxisConfig::new(20, 1.0).header(1.0),
         AxisConfig::new(5, 6.0).header(3.0).gap(1.0),
     );
-    grid.sort_applied(SortSpec::new(vec![SortColumn::ascending(Key(1))]));
+    grid.view_applied(
+        ViewSpec::default().with_sort(
+            Axis::Rows,
+            SortSpec::new(vec![SortColumn::ascending(Key(1))]),
+        ),
+        Totals::unknown(),
+    );
     grid.action(Action::Scroll { dx: 2.0, dy: 2.0 });
     window(&mut grid);
     // Column 1 spans x 8..14 after the scroll: Ctrl-click picks row 4 (line 3).

@@ -6,7 +6,7 @@ import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { AxisName } from "../src/codes";
-import type { AxisSink, ChangeNotice, Located, SortSpec, TableSource } from "../src/source";
+import type { AxisSink, ChangeNotice, Distinct, Located, SortSpec, TableSource } from "../src/source";
 import { BAND, COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
 import { loadForTests } from "./wasm";
 
@@ -15,6 +15,8 @@ beforeAll(loadForTests);
 type Sinks = { rows: AxisSink<string>; cols: AxisSink<string> };
 
 /** A keyed table whose cells read `<row>/<col>@<version>`, recording every cell it is asked for. */
+type Source = TableSource<string, string, string>;
+
 class Recorder {
   readonly asked: string[] = [];
   readonly versions = new Map<string, number>();
@@ -24,13 +26,19 @@ class Recorder {
   constructor(
     rows: number,
     cols: number,
-    extra: Partial<TableSource<string, string, string>["rows"]> = {},
+    { view, support, distinct }: Pick<Source, "view"> & Pick<Source["rows"], "support" | "distinct"> = {},
   ) {
     const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}${i}`);
     const rowIds = ids("r", rows);
     const colIds = ids("c", cols);
     this.source = {
-      rows: { count: () => rowIds.length, window: (s, e) => rowIds.slice(s, e), ...extra },
+      ...(view && { view }),
+      rows: {
+        count: () => rowIds.length,
+        window: (s, e) => rowIds.slice(s, e),
+        ...(support && { support }),
+        ...(distinct && { distinct }),
+      },
       cols: { count: () => colIds.length, window: (s, e) => colIds.slice(s, e) },
       cells: (rs, cs) =>
         rs.map((r) =>
@@ -150,13 +158,18 @@ describe("the value cache", () => {
       }
     }));
 
-  test("a Reset forgets every value; a Reordered keeps them", () => {
+  test("a Reset forgets every value; a Reordered or Refiltered keeps them", () => {
     const rec = new Recorder(10, 3);
     const h = new Harness(rec.source);
     try {
       h.frame();
       rec.take();
       rec.sinks.rows.notify({ type: "Reordered" });
+      h.frame();
+      expect(rec.take()).toEqual([]);
+      rec.sinks.rows.notify({ type: "Refiltered" });
+      h.frame();
+      h.drain();
       h.frame();
       expect(rec.take()).toEqual([]);
       rec.sinks.rows.notify({ type: "Reset" });
@@ -196,10 +209,10 @@ describe("answers to the Grid's Effects", () => {
   test("a header click asks the source to sort by the column's own ID, and shows the spec it applies", () => {
     const asked: SortSpec<string>[] = [];
     const rec = new Recorder(10, 3, {
-      sort: (spec) => {
-        asked.push(spec);
+      view: (spec) => {
+        asked.push(spec.rows.sort);
         // Applies only the first column asked for.
-        return spec.slice(0, 1);
+        return { ...spec, rows: { sort: spec.rows.sort.slice(0, 1) } };
       },
     });
     const h = new Harness(rec.source);
@@ -220,6 +233,24 @@ describe("answers to the Grid's Effects", () => {
     }
   });
 
+  test("a source may answer with a columns sort of its own, shown on the row headers by the row's Key", () => {
+    const rec = new Recorder(10, 3, {
+      view: (spec) => ({ ...spec, cols: { sort: [{ id: "r1", direction: "descending" }] } }),
+    });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      h.click(header(0), HEADER / 2);
+      h.frame();
+      const r1 = h.snapshot.rows.strip[1]!.key!;
+      expect(h.snapshot.appliedView.cols.sort).toEqual([{ key: r1, direction: "descending" }]);
+      const applied = h.snapshot.rows.headers.map((x) => x.sort.applied);
+      expect(applied.slice(0, 3)).toEqual([null, { direction: "descending", index: 0 }, null]);
+    } finally {
+      h.destroy();
+    }
+  });
+
   test("a source that cannot sort makes no header sortable", () => {
     const rec = new Recorder(10, 3);
     const h = new Harness(rec.source);
@@ -227,18 +258,18 @@ describe("answers to the Grid's Effects", () => {
       h.frame();
       h.click(header(1), HEADER / 2);
       h.frame();
-      expect(h.snapshot.requestedSort).toBeNull();
+      expect(h.snapshot.requestedView).toBeNull();
       expect(h.snapshot.cols.headers.every((x) => x.sort.applied === null && !x.sort.pending)).toBe(true);
     } finally {
       h.destroy();
     }
   });
 
-  test("sortable keeps a column's header from requesting a sort", () => {
+  test("support keeps a column's header from requesting a sort", () => {
     const asked: SortSpec<string>[] = [];
     const rec = new Recorder(10, 3, {
-      sort: (spec) => (asked.push(spec), spec),
-      sortable: (col) => col !== "c1",
+      view: (spec) => (asked.push(spec.rows.sort), spec),
+      support: (col) => ({ sort: col !== "c1" }),
     });
     const h = new Harness(rec.source);
     try {
@@ -376,7 +407,7 @@ describe("late answers", () => {
 
 /** A request a slow source holds until the test answers it. */
 interface Held {
-  kind: "count" | "window" | "cells" | "sort" | "locate";
+  kind: "count" | "window" | "cells" | "view" | "locate";
   /** What was asked: the Window's range, the cells' row IDs, the Sort Spec, the located ID. */
   what: unknown;
   signal: AbortSignal;
@@ -411,18 +442,18 @@ class Slow {
       rows: {
         count: () => this.order.length,
         window: (s, e, signal) => hold("window", [s, e], signal, () => this.order.slice(s, e)),
-        sort: (spec, signal) =>
-          hold("sort", spec, signal, () => {
-            const by = spec[0];
-            this.order = [...this.order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
-            if (by?.direction === "descending") this.order.reverse();
-            this.sinks.rows.notify({ type: "Reordered" });
-            return spec;
-          }),
         locate: (id, signal) =>
           hold("locate", id, signal, (): Located => ({ type: "Found", position: this.order.indexOf(id) })),
       },
       cols: { count: () => colIds.length, window: (s, e) => colIds.slice(s, e) },
+      view: (spec, signal) =>
+        hold("view", spec, signal, () => {
+          const by = spec.rows.sort[0];
+          this.order = [...this.order].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+          if (by?.direction === "descending") this.order.reverse();
+          this.sinks.rows.notify({ type: "Reordered" });
+          return spec;
+        }),
       cells: (rs, cs, signal) => hold("cells", rs, signal, () => rs.map((r) => cs.map((c) => `${r}/${c}`))),
       attach: (sinks) => ((this.sinks = sinks), () => {}),
     };
@@ -536,12 +567,12 @@ describe("slow sources", () => {
       expect(h.snapshot.cols.headers[0]!.sort.pending).toBe(true);
       // Clicking again asks for descending; the ascending request is no longer wanted.
       h.click(header(0), HEADER / 2);
-      const [ascending, descending] = slow.held.filter((x) => x.kind === "sort");
+      const [ascending, descending] = slow.held.filter((x) => x.kind === "view");
       expect(ascending!.signal.aborted).toBe(true);
       expect(descending!.signal.aborted).toBe(false);
       h.frame();
       expect(h.snapshot.cols.headers[0]!.sort.pending).toBe(true);
-      await slow.answer("sort");
+      await slow.answer("view");
       h.drain();
       h.frame();
       const sort = h.snapshot.cols.headers[0]!.sort;
@@ -588,7 +619,7 @@ describe("slow sources", () => {
     h.frame();
     h.click(header(0), HEADER / 2);
     const inFlight = slow.held.filter((x) => !x.signal.aborted);
-    expect(inFlight.map((x) => x.kind).sort()).toEqual(["cells", "sort"]);
+    expect(inFlight.map((x) => x.kind).sort()).toEqual(["cells", "view"]);
     h.destroy();
     expect(inFlight.every((x) => x.signal.aborted)).toBe(true);
   });
@@ -686,10 +717,10 @@ describe("failed requests", () => {
       await slow.answer("window");
       h.frame();
       h.click(BAND + COL_WIDTH / 2, HEADER / 2);
-      await slow.fail("sort");
+      await slow.fail("view");
       h.frame();
       expect(h.snapshot.cols.headers.every((c) => c.sort.applied === null && !c.sort.pending)).toBe(true);
-      expect(h.errors).toEqual([{ message: "sort failed", request: { type: "sort" } }]);
+      expect(h.errors).toEqual([{ message: "view failed", request: { type: "view" } }]);
     } finally {
       h.destroy();
     }
@@ -730,6 +761,308 @@ describe("edited values", () => {
       await Promise.resolve();
       h.frame();
       expect(h.values()).toEqual([["saved"], ["old y"]]);
+    } finally {
+      h.destroy();
+    }
+  });
+});
+
+describe("the quick filter", () => {
+  type Spec = Parameters<NonNullable<Source["view"]>>[0];
+  /** A Recorder whose rows take a quick filter, answering each View Spec with `answer`. */
+  const filtering = (answer: (spec: Spec) => ReturnType<NonNullable<Source["view"]>>, regex = false) => {
+    const rec = new Recorder(10, 3, { view: answer });
+    const source: Source = { ...rec.source, rows: { ...rec.source.rows, quickFilter: { regex } } };
+    return { rec, h: new Harness(source) };
+  };
+  const query = (h: Harness<string, string, string>, text: string, searches: string[] | null) => ({
+    text,
+    caseSensitive: true,
+    regex: false,
+    searches: searches && searches.map((id) => h.feed.colKey(id)),
+  });
+
+  test("a quick filter reaches the source by column IDs, and its answer, totals and support reach the Snapshot", () => {
+    const asked: Spec[] = [];
+    const { h } = filtering((spec) => (asked.push(spec), { ...spec, totals: { rows: 99 } }), true);
+    try {
+      h.frame();
+      expect(h.snapshot.rows.quickFilter).toEqual({ regex: true });
+      expect(h.snapshot.cols.quickFilter).toBeNull();
+      const named = query(h, "Bér", ["c2", "c0"]);
+      h.grid.set_quick_filter(0, named);
+      h.drain();
+      h.frame();
+      expect(asked.map((s) => s.rows.filter.quick)).toEqual([
+        { text: "Bér", caseSensitive: true, regex: false, searches: ["c2", "c0"] },
+      ]);
+      expect(h.snapshot.appliedView.rows.filter.quick).toEqual(named);
+      expect([h.snapshot.rows.total, h.snapshot.cols.total]).toEqual([99, null]);
+      h.grid.set_quick_filter(0, query(h, "x", null));
+      h.drain();
+      expect(asked.at(-1)?.rows.filter.quick?.searches).toBe("shown");
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("an answer that leaves out the filter applies none", () => {
+    const { h } = filtering((spec) => ({ rows: { sort: spec.rows.sort }, cols: { sort: [] } }));
+    try {
+      h.frame();
+      h.grid.set_quick_filter(0, query(h, "a", null));
+      h.drain();
+      h.frame();
+      expect(h.snapshot.appliedView.rows.filter.quick).toBeNull();
+      expect(h.snapshot.rows.total).toBeNull();
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a source without view takes no quick filter, whatever its rows say", () => {
+    const rec = new Recorder(10, 3);
+    const h = new Harness({ ...rec.source, rows: { ...rec.source.rows, quickFilter: { regex: true } } });
+    try {
+      expect(h.frame().rows.quickFilter).toBeNull();
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a rejected quick filter keeps the filter and totals in force and stays asked for, not applied; one naming an unknown column is not asked", async () => {
+    let calls = 0;
+    const { h } = filtering((spec) => (++calls > 1 ? Promise.reject(new Error("no")) : { ...spec, totals: { rows: 40 } }));
+    try {
+      h.frame();
+      const first = query(h, "a", null);
+      h.grid.set_quick_filter(0, first);
+      h.drain();
+      h.grid.set_quick_filter(0, query(h, "b", null));
+      h.drain();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      h.frame();
+      expect(h.snapshot.appliedView.rows.filter.quick).toEqual(first);
+      expect(h.snapshot.rows.total).toBe(40);
+      expect(h.snapshot.requestedView?.rows.filter.quick).toEqual(query(h, "b", null));
+      expect(h.snapshot.viewPending).toBe(false);
+      h.grid.set_quick_filter(0, { ...first, searches: [12345n] });
+      h.drain();
+      h.frame();
+      expect(calls).toBe(2);
+      expect(h.snapshot.appliedView.rows.filter.quick).toEqual(first);
+      expect(h.snapshot.rows.total).toBe(40);
+    } finally {
+      h.destroy();
+    }
+  });
+});
+
+describe("column conditions", () => {
+  type Spec = Parameters<NonNullable<Source["view"]>>[0];
+  const textOn = (h: Harness<string, string, string>, col: string, text: string, not = false) => {
+    const key = h.feed.colKey(col);
+    const query = { text, caseSensitive: false, regex: false, searches: [key] };
+    return { key, kind: { type: "Text" as const, query }, not };
+  };
+
+  test("a condition reaches the source by its column's ID, and the source's answer reaches the headers and the list, one it left out not applied", () => {
+    const asked: Spec[] = [];
+    // Applies only the conditions on c1.
+    const rec = new Recorder(10, 3, {
+      view: (spec) => {
+        asked.push(spec);
+        const conditions = spec.rows.filter.conditions.filter((c) => c.id === "c1");
+        return { ...spec, rows: { ...spec.rows, filter: { ...spec.rows.filter, conditions } } };
+      },
+    });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      h.grid.add_condition(0, textOn(h, "c1", "Bér", true));
+      h.grid.add_condition(0, textOn(h, "c2", "x"));
+      h.drain();
+      h.frame();
+      expect(asked.at(-1)?.rows.filter.conditions).toEqual([
+        { id: "c1", kind: { type: "Text", query: { text: "Bér", caseSensitive: false, regex: false } }, not: true },
+        { id: "c2", kind: { type: "Text", query: { text: "x", caseSensitive: false, regex: false } }, not: false },
+      ]);
+      expect(h.snapshot.appliedView.rows.filter.conditions).toEqual([textOn(h, "c1", "Bér", true)]);
+      expect(h.snapshot.cols.headers.map((x) => x.filter)).toEqual([
+        { filtered: false, pending: false, notApplied: false },
+        { filtered: true, pending: false, notApplied: false },
+        { filtered: false, pending: false, notApplied: true },
+      ]);
+      expect(h.snapshot.rows.conditions).toEqual([
+        { condition: textOn(h, "c1", "Bér", true), state: "applied" },
+        { condition: textOn(h, "c2", "x"), state: "notApplied" },
+      ]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("support declares contains on every column by default, a source narrows it, and without view there is none", () => {
+    const view = (spec: Spec) => spec;
+    const support = (col: string) => (col === "c0" ? { text: false as const } : col === "c1" ? { text: { regex: true } } : {});
+    const cases: [Recorder, unknown[]][] = [
+      [
+        new Recorder(4, 3, { view }),
+        [
+          { sort: true, text: { regex: false }, oneOf: false },
+          { sort: true, text: { regex: false }, oneOf: false },
+          { sort: true, text: { regex: false }, oneOf: false },
+        ],
+      ],
+      [
+        new Recorder(4, 3, { view, support }),
+        [
+          { sort: true, text: null, oneOf: false },
+          { sort: true, text: { regex: true }, oneOf: false },
+          { sort: true, text: { regex: false }, oneOf: false },
+        ],
+      ],
+      [new Recorder(4, 3, { support }), Array(3).fill({ sort: false, text: null, oneOf: false })],
+    ];
+    for (const [rec, want] of cases) {
+      const h = new Harness(rec.source);
+      try {
+        h.frame();
+        expect(h.frame().cols.headers.map((x) => x.support)).toEqual(want);
+      } finally {
+        h.destroy();
+      }
+    }
+  });
+
+  test("a condition naming a column the feed has no ID for is not asked, the spec in force stays and it shows not applied", () => {
+    let calls = 0;
+    const rec = new Recorder(4, 3, { view: (spec) => (calls++, spec) });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      const query = { text: "a", caseSensitive: false, regex: false, searches: [99999n] };
+      h.grid.add_condition(0, { key: 99999n, kind: { type: "Text", query }, not: false });
+      h.drain();
+      h.frame();
+      expect(calls).toBe(0);
+      expect(h.snapshot.appliedView.rows.filter.conditions).toEqual([]);
+      expect(h.snapshot.viewPending).toBe(false);
+      expect(h.snapshot.rows.conditions.map((c) => c.state)).toEqual(["notApplied"]);
+    } finally {
+      h.destroy();
+    }
+  });
+});
+
+describe("distinct values", () => {
+  type Spec = Parameters<NonNullable<Source["view"]>>[0];
+  type Asked = Parameters<NonNullable<Source["rows"]["distinct"]>>;
+  const answer: Distinct = { values: [{ text: "a", count: 2 }], blanks: true, partial: false, narrowed: true };
+
+  test("OneOf is offered only where the source lists distinct values, and a column may opt out", () => {
+    const view = (spec: Spec) => spec;
+    const distinct = () => answer;
+    const support = (col: string) => (col === "c0" ? { oneOf: false } : {});
+    const cases: [Recorder, boolean[]][] = [
+      [new Recorder(4, 3, { view, distinct }), [true, true, true]],
+      [new Recorder(4, 3, { view, distinct, support }), [false, true, true]],
+      [new Recorder(4, 3, { view }), [false, false, false]],
+      [new Recorder(4, 3, { distinct }), [false, false, false]],
+    ];
+    for (const [rec, want] of cases) {
+      const h = new Harness(rec.source);
+      try {
+        h.frame();
+        expect(h.frame().cols.headers.map((x) => x.support.oneOf)).toEqual(want);
+        expect(h.feed.distinct("c0", "", 10, () => {}) !== null).toBe(want[0]);
+      } finally {
+        h.destroy();
+      }
+    }
+  });
+
+  test("a checklist asks by the column's ID, narrowed by the applied filter less the column's own conditions", () => {
+    const asked: Asked[] = [];
+    const rec = new Recorder(10, 3, {
+      view: (spec) => spec,
+      distinct: (...args) => (asked.push(args), answer),
+    });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      const quick = { text: "q", caseSensitive: true, regex: false, searches: null };
+      h.grid.set_quick_filter(0, quick);
+      const [c0, c1] = [h.feed.colKey("c0"), h.feed.colKey("c1")];
+      h.grid.add_condition(0, { key: c0, kind: { type: "OneOf", values: ["Bér", null, ""] }, not: true });
+      h.grid.add_condition(0, { key: c1, kind: { type: "OneOf", values: ["x"] }, not: false });
+      h.drain();
+      h.frame();
+      const got: Distinct[] = [];
+      h.feed.distinct("c1", "be", 5, (d) => got.push(d));
+      expect(got).toEqual([answer]);
+      expect(asked.map(([id, query]) => [id, query])).toEqual([
+        [
+          "c1",
+          {
+            search: "be",
+            limit: 5,
+            narrow: {
+              quick: { text: "q", caseSensitive: true, regex: false, searches: "shown" },
+              conditions: [{ id: "c0", kind: { type: "OneOf", values: ["Bér", null, ""] }, not: true }],
+            },
+          },
+        ],
+      ]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a OneOf reaches the source by its column's ID, blanks apart from empty text, and comes back in the Snapshot", () => {
+    const asked: Spec[] = [];
+    const rec = new Recorder(10, 3, { view: (spec) => (asked.push(spec), spec), distinct: () => answer });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      const key = h.feed.colKey("c2");
+      const listed = { key, kind: { type: "OneOf" as const, values: [null, "", "Ø🚢"] }, not: false };
+      h.grid.add_condition(0, listed);
+      h.drain();
+      h.frame();
+      expect(asked.at(-1)?.rows.filter.conditions).toEqual([
+        { id: "c2", kind: { type: "OneOf", values: [null, "", "Ø🚢"] }, not: false },
+      ]);
+      expect(h.snapshot.rows.conditions).toEqual([{ condition: listed, state: "applied" }]);
+      expect(h.snapshot.cols.headers[2]?.filter).toEqual({ filtered: true, pending: false, notApplied: false });
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("an aborted question's answer never lands, and a failed one is reported", async () => {
+    const signals: AbortSignal[] = [];
+    let fail = false;
+    const rec = new Recorder(4, 3, {
+      view: (spec) => spec,
+      distinct: (_id, query, signal) => {
+        signals.push(signal);
+        return fail ? Promise.reject(new Error("no")) : Promise.resolve({ ...answer, values: [{ text: query.search }] });
+      },
+    });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      const got: Distinct[] = [];
+      const first = h.feed.distinct("c0", "a", 10, (d) => got.push(d))!;
+      first.abort();
+      h.feed.distinct("c0", "ab", 10, (d) => got.push(d));
+      fail = true;
+      h.feed.distinct("c0", "x", 10, (d) => got.push(d));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(signals.map((s) => s.aborted)).toEqual([true, false, false]);
+      expect(got.map((d) => d.values[0]?.text)).toEqual(["ab"]);
+      expect(h.errors).toEqual([{ message: "no", request: { type: "distinct", axis: "rows" } }]);
     } finally {
       h.destroy();
     }

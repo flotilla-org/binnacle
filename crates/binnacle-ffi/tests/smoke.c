@@ -196,21 +196,27 @@ int main(void) {
   click(grid, 6, 0.5f, 0);
   click(grid, 6, 0.5f, 0);
   CHECK(binnacle_grid_poll_effect(grid, &effect));
-  CHECK(effect.kind == BINNACLE_EFFECT_SORT_REQUESTED && effect.sort_len == 1);
-  CHECK(effect.sort[0].key == 2000 && effect.sort[0].direction == BINNACLE_SORT_ASCENDING);
+  BinnacleAxisView *sorted = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED && sorted->sort_len == 1);
+  CHECK(sorted->sort[0].key == 2000 && sorted->sort[0].direction == BINNACLE_SORT_ASCENDING);
+  CHECK(effect.view.axes[BINNACLE_COLS].sort_len == 0);
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_CYCLE_SORT && effect.edit.axis == BINNACLE_ROWS);
+  CHECK(effect.edit.key == 2000 && !effect.edit.multi);
   BinnacleSortColumn unknown[] = {{.key = 2000, .direction = 7}};
-  CHECK(!binnacle_grid_sort_applied(grid, unknown, 1));
-  CHECK(binnacle_grid_sort_applied(grid, NULL, 0));
+  BinnacleViewSpec misdirected = {.axes = {{.sort = unknown, .sort_len = 1}, {0}}};
+  CHECK(!binnacle_grid_view_applied(grid, &misdirected, NULL));
+  CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
-  CHECK(effect.kind == BINNACLE_EFFECT_SORT_REQUESTED && effect.sort_len == 1);
-  CHECK(effect.sort[0].key == 2000 && effect.sort[0].direction == BINNACLE_SORT_DESCENDING);
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED && sorted->sort_len == 1);
+  CHECK(sorted->sort[0].key == 2000 && sorted->sort[0].direction == BINNACLE_SORT_DESCENDING);
   frame(grid, &snap);
   CHECK(c->headers_len == c->strip_len && c->headers[0].key == 2000);
   CHECK(c->headers[0].flags & BINNACLE_HEADER_PENDING);
   CHECK(!(c->headers[0].flags & BINNACLE_HEADER_SORTED));
-  BinnacleSortColumn spec = effect.sort[0];
+  BinnacleSortColumn column = sorted->sort[0];
+  BinnacleViewSpec spec = {.axes = {{.sort = &column, .sort_len = 1}, {0}}};
   reversed = 1;
-  CHECK(binnacle_grid_sort_applied(grid, &spec, 1));
+  CHECK(binnacle_grid_view_applied(grid, &spec, NULL));
   CHECK(!binnacle_grid_notify(grid, BINNACLE_ROWS, 9, 0, 0));
   CHECK(binnacle_grid_notify(grid, BINNACLE_ROWS, BINNACLE_NOTICE_REORDERED, 0, 0));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
@@ -229,6 +235,13 @@ int main(void) {
   CHECK(c->headers[0].sort_place == 0 && c->headers[0].rect.x == 4);
   CHECK(c->headers[0].rect.height == 1 && r->headers[0].rect.width == 4);
   CHECK(r->focus.position == 95 && r->focus.key == 1004);
+  /* Once the source says it cannot sort by column 0, its header asks for
+   * nothing. */
+  CHECK(!binnacle_grid_set_support(grid, 2, 2000, 0));
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2000, 0));
+  click(grid, 6, 0.5f, 0);
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2000, BINNACLE_SUPPORT_SORT));
   /* Rows removed and a departed Key: focus takes the suggestion. */
   CHECK(binnacle_grid_notify(grid, BINNACLE_ROWS, BINNACLE_NOTICE_RESET, 0, 100));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
@@ -237,6 +250,126 @@ int main(void) {
   drain(grid, &focus);
   frame(grid, &snap);
   CHECK(r->focus.position == 7);
+
+  /* A quick filter round trip: the rows declare one, the host sets it, and
+   * the source answers with what it kept and the unfiltered total. */
+  CHECK(!binnacle_grid_set_quick_filter_support(grid, BINNACLE_ROWS, BINNACLE_QUICK_FILTER_REGEX));
+  CHECK(binnacle_grid_set_quick_filter_support(grid, BINNACLE_ROWS,
+                                               BINNACLE_QUICK_FILTER | BINNACLE_QUICK_FILTER_REGEX));
+  frame(grid, &snap);
+  CHECK(r->quick_filter == (BINNACLE_QUICK_FILTER | BINNACLE_QUICK_FILTER_REGEX));
+  CHECK(c->quick_filter == 0 && !r->has_total);
+  BinnacleTextQuery query = {.text = {(const uint8_t *)"ber", 3}, .flags = BINNACLE_TEXT_REGEX};
+  CHECK(binnacle_grid_set_quick_filter(grid, BINNACLE_ROWS, &query));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED);
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_SET_QUICK_FILTER && effect.edit.axis == BINNACLE_ROWS);
+  BinnacleAxisView *filtered = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(filtered->has_quick && filtered->quick.text.len == 3);
+  CHECK(memcmp(filtered->quick.text.data, "ber", 3) == 0);
+  CHECK(filtered->quick.flags == BINNACLE_TEXT_REGEX);
+  CHECK(filtered->quick.searched == BINNACLE_SEARCHED_SHOWN);
+  CHECK(!effect.view.axes[BINNACLE_COLS].has_quick);
+  BinnacleTotals totals = {.axes = {{.known = 1, .count = 100}, {0}}};
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, &totals));
+  frame(grid, &snap);
+  CHECK(r->has_total && r->total == 100 && !c->has_total);
+  /* A column condition: does not contain "x" in column 2001, which supports
+   * Text with regexes; column 2000 was declared sortable only. */
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2001,
+                                  BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_TEXT |
+                                      BINNACLE_SUPPORT_TEXT_REGEX));
+  CHECK(!binnacle_grid_set_support(grid, BINNACLE_ROWS, 2001, BINNACLE_SUPPORT_TEXT_REGEX));
+  BinnacleCondition not_x = {.key = 2001, .kind = BINNACLE_CONDITION_TEXT, .negated = 1,
+                             .text = {.text = {(const uint8_t *)"x", 1}}};
+  CHECK(binnacle_grid_add_condition(grid, BINNACLE_ROWS, &not_x));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_ADD_CONDITION && effect.edit.key == 2001);
+  filtered = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(filtered->has_quick && filtered->conditions_len == 1);
+  CHECK(filtered->conditions[0].key == 2001 && filtered->conditions[0].negated);
+  CHECK(filtered->conditions[0].text.searched == BINNACLE_SEARCHED_KEYS);
+  CHECK(filtered->conditions[0].text.keys_len == 1 && filtered->conditions[0].text.keys[0] == 2001);
+  frame(grid, &snap);
+  CHECK(c->headers[1].flags & BINNACLE_HEADER_FILTER_PENDING);
+  CHECK(!(c->headers[1].flags & BINNACLE_HEADER_FILTERED));
+  CHECK(r->conditions_len == 1 && r->conditions[0].state == BINNACLE_CONDITION_ADDING);
+  CHECK(c->headers[0].support == BINNACLE_SUPPORT_SORT);
+  CHECK(c->headers[1].support ==
+        (BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX));
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, &totals));
+  frame(grid, &snap);
+  CHECK(c->headers[1].flags & BINNACLE_HEADER_FILTERED);
+  CHECK(r->conditions_len == 1 && r->conditions[0].state == BINNACLE_CONDITION_APPLIED);
+  /* A checklist's condition: column 2000 is "b" or blank. */
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2000,
+                                  BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_ONE_OF));
+  BinnacleValue listed[] = {{.blank = 0, .text = {(const uint8_t *)"b", 1}}, {.blank = 1}};
+  BinnacleCondition b_or_blank = {
+      .key = 2000, .kind = BINNACLE_CONDITION_ONE_OF, .values = listed, .values_len = 2};
+  CHECK(binnacle_grid_add_condition(grid, BINNACLE_ROWS, &b_or_blank));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  filtered = &effect.view.axes[BINNACLE_ROWS];
+  CHECK(filtered->conditions_len == 2 && filtered->conditions[1].kind == BINNACLE_CONDITION_ONE_OF);
+  CHECK(filtered->conditions[1].values_len == 2 && !filtered->conditions[1].values[0].blank);
+  CHECK(filtered->conditions[1].values[0].text.len == 1 && filtered->conditions[1].values[1].blank);
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, &totals));
+  frame(grid, &snap);
+  CHECK(c->headers[0].support == (BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_ONE_OF));
+  CHECK(r->conditions_len == 2 && r->conditions[1].condition.values[1].blank);
+  /* The source stops supporting text on column 2001 and says so,
+   * unprompted: its condition stays listed, not applied. */
+  CHECK(!snap.view_pending);
+  CHECK(binnacle_grid_view_changed(grid, NULL, &totals));
+  frame(grid, &snap);
+  CHECK(r->conditions_len == 2 && r->conditions[0].state == BINNACLE_CONDITION_NOT_APPLIED);
+  CHECK(c->headers[1].flags & BINNACLE_HEADER_FILTER_NOT_APPLIED);
+  /* Restoring a saved view: the base one. */
+  CHECK(binnacle_grid_request_view(grid, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_REPLACE);
+  CHECK(!effect.view.axes[BINNACLE_ROWS].has_quick);
+  CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
+  /* Re-applying asks for the same spec again. */
+  CHECK(binnacle_grid_reapply_view(grid));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_REAPPLY);
+  CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
+
+  /* Find: the host declares it, sets a query, steps, and answers the step;
+   * the match takes focus, and closing find drops it. */
+  CHECK(!binnacle_grid_set_find_support(grid, BINNACLE_FIND_REGEX));
+  CHECK(binnacle_grid_set_find_support(grid, BINNACLE_FIND));
+  BinnacleFindQuery find = {.query = {.text = {(const uint8_t *)"7", 1}}, .by = BINNACLE_COLS};
+  CHECK(!binnacle_grid_set_find(grid, &(BinnacleFindQuery){.query = find.query, .by = 2}));
+  CHECK(binnacle_grid_set_find(grid, &find));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_FIND_REQUESTED && effect.has_find);
+  CHECK(effect.find.by == BINNACLE_COLS && effect.find.query.text.len == 1);
+  /* Focus a cell of the top row in column 2001 to step from. */
+  click(grid, 14, 1.5f, 0);
+  drain(grid, &focus);
+  frame(grid, &snap);
+  CHECK(r->focus.has_key && c->focus.key == 2001);
+  CHECK(binnacle_grid_find_previous(grid));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_FIND_STEP_REQUESTED);
+  CHECK(effect.direction == BINNACLE_FIND_PREVIOUS && effect.has_from);
+  CHECK(effect.from.row == r->focus.key && effect.from.col == 2001);
+  CHECK(memcmp(effect.find.query.text.data, "7", 1) == 0);
+  /* A row in the Window, so no Locate is needed. */
+  BinnacleFindMatch found = {.row = r->strip[2].key, .col = 2001};
+  CHECK(binnacle_grid_find_stepped(grid, &found));
+  drain(grid, &focus);
+  frame(grid, &snap);
+  CHECK(snap.find_support == BINNACLE_FIND && snap.has_find && snap.find.by == BINNACLE_COLS);
+  CHECK(snap.has_find_match && snap.find_match.row == found.row && snap.find_match.col == 2001);
+  CHECK(r->focus.key == found.row && c->focus.key == 2001);
+  CHECK(binnacle_grid_set_find(grid, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_FIND_REQUESTED && !effect.has_find);
+  frame(grid, &snap);
+  CHECK(!snap.has_find && !snap.has_find_match);
 
   /* Settings, sizes and content sizes. */
   CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_ROWS));

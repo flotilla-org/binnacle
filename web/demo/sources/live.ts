@@ -1,12 +1,16 @@
 // The live source: 200 tickers whose prices and loads move four times a
-// second, like the ratatui demo's `--live`. The price is right-aligned, its
-// recent history a sparkline, the load a bar, and changed cells flash. Each
-// tick tells the widget through Change Notices, so a sort by price or load
-// holds as the values move. A hand-written Table Source, renderers by column.
+// second, like the ratatui demo's `--live`, and a new ticker listed every two
+// seconds up to 240. The price is right-aligned, its recent history a
+// sparkline, the load a bar, and changed cells flash. Each tick tells the
+// widget through Change Notices, so a sort by price or load holds as the
+// values move, and the quick filter in the bar above takes each change and
+// each new ticker as it arrives. A hand-written Table Source, renderers by
+// column.
 
 import {
   barRenderer,
   byColumn,
+  createFilterBar,
   GridWidget,
   sparklineRenderer,
   textRenderer,
@@ -14,12 +18,16 @@ import {
   type CellRenderer,
   type SortSpec,
   type TableSource,
+  type TextQuery,
 } from "../../src";
 import type { DemoSource } from "./demo-source";
 
 const TICKERS = 200;
 const HISTORY = 24;
 const TICK_MS = 250;
+/** A new ticker is listed every this many ticks, up to `LISTED`. */
+const LISTING = 8;
+const LISTED = 240;
 const NAMES = ["anchor", "bosun", "capstan", "davit", "ensign", "fathom", "galley", "hawser"];
 const COLUMNS = ["ticker", "price", "trend", "load"] as const;
 
@@ -57,49 +65,96 @@ function compare(a: Ticker, b: Ticker, spec: SortSpec<Column>): number {
   return 0;
 }
 
+const PRICE = new Intl.NumberFormat("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** A cell's text, as drawn, for the quick filter; the trend has none. */
+const text = (t: Ticker, col: Column): string | null =>
+  col === "ticker" ? t.name : col === "price" ? PRICE.format(t.price) : col === "load" ? `${Math.round(t.load * 100)}%` : null;
+
+/** Whether a ticker has `query`'s text in a searched column, or `undefined` if its pattern is not a valid `RegExp`. */
+function matcher(query: TextQuery<Column>): ((t: Ticker) => boolean) | undefined {
+  let test: (s: string) => boolean;
+  if (query.regex) {
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(query.text, query.caseSensitive ? "u" : "iu");
+    } catch {
+      return undefined;
+    }
+    test = (s) => pattern.test(s);
+  } else if (query.caseSensitive) test = (s) => s.includes(query.text);
+  else test = (s) => s.toLowerCase().includes(query.text.toLowerCase());
+  const searched = query.searches === "shown" ? COLUMNS : query.searches;
+  return (t) =>
+    searched.some((c) => {
+      const s = text(t, c);
+      return s !== null && test(s);
+    });
+}
+
 const renderers: Partial<Record<Column, CellRenderer<Value>>> = {
-  price: textRenderer<Value>({
-    align: "end",
-    format: new Intl.NumberFormat("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
-  }),
+  price: textRenderer<Value>({ align: "end", format: PRICE }),
   trend: sparklineRenderer<Value>(),
   load: barRenderer<Value>(),
 };
 
 export const live: DemoSource = {
   name: "live",
-  description: `${TICKERS} tickers ticking: sparklines, bars and flashes`,
+  description: `${TICKERS} tickers ticking: sparklines, bars and flashes, filtered as they change`,
   async mount(host, toolbar, look) {
     const next = random(0x2545f491);
-    const tickers: Ticker[] = Array.from({ length: TICKERS }, (_, i) => {
+    const ticker = (i: number): Ticker => {
       // A made-up past, so the sparklines are full from the start.
       const history = [10 + next() * 990];
       while (history.length < HISTORY) history.push(Math.max(0.01, history.at(-1)! * (1 + (next() - 0.5) * 0.04)));
       return { name: `${NAMES[i % 8]!.toUpperCase()} ${Math.floor(i / 8)}`, price: history.at(-1)!, history, load: next() };
-    });
-    /** Row IDs (indices into `tickers`) in the order shown. */
+    };
+    const tickers: Ticker[] = Array.from({ length: TICKERS }, (_, i) => ticker(i));
+    /** Row IDs (indices into `tickers`) in the order shown: those the quick filter keeps, sorted. */
     let order = tickers.map((_, i) => i);
     let spec: SortSpec<Column> = [];
+    let quick: TextQuery<Column> | null = null;
+    let keeps: (t: Ticker) => boolean = () => true;
     const sinks = new Set<AxisSink<number>>();
-    const resort = () => {
-      order = tickers.map((_, i) => i);
+    const tell = (notice: Parameters<AxisSink<number>["notify"]>[0]) => {
+      for (const s of sinks) s.notify(notice);
+    };
+    /** Filters and sorts again; returns the notice the rows need, if any. */
+    const reorder = (): "Refiltered" | "Reordered" | null => {
+      const was = order;
+      order = tickers.flatMap((t, i) => (keeps(t) ? [i] : []));
       if (spec.length) order.sort((a, b) => compare(tickers[a]!, tickers[b]!, spec) || a - b);
+      const before = new Set(was);
+      if (order.length !== was.length || order.some((id) => !before.has(id))) return "Refiltered";
+      return order.some((id, i) => id !== was[i]) ? "Reordered" : null;
     };
 
     const source: TableSource<number, Column, Value> = {
       rows: {
         count: () => order.length,
         window: (start, end) => order.slice(start, end),
-        sort(next) {
-          spec = next;
-          resort();
-          for (const s of sinks) s.notify({ type: "Reordered" });
-          return spec;
+        support: (by) => ({ sort: by !== "trend", text: false }),
+        quickFilter: { regex: true },
+        locate: (id) => {
+          const at = order.indexOf(id);
+          return at >= 0 ? { type: "Found", position: at } : { type: "Gone", suggest: null };
         },
-        sortable: (by) => by !== "trend",
-        locate: (id) => ({ type: "Found", position: order.indexOf(id) }),
       },
       cols: { count: () => COLUMNS.length, window: (start, end) => COLUMNS.slice(start, end) },
+      // A quick filter whose pattern is not a valid RegExp leaves the one in force.
+      view(asked) {
+        spec = asked.rows.sort;
+        const q = asked.rows.filter.quick;
+        const match = q && matcher(q);
+        if (q === null || match) {
+          quick = q;
+          keeps = match ?? (() => true);
+        }
+        reorder();
+        tell({ type: "Refiltered" });
+        // No totals: new tickers would leave them stale.
+        return { rows: { sort: spec, filter: { quick } }, cols: { sort: [] } };
+      },
       cells: (rows, cols) => rows.map((r) => cols.map((c) => value(tickers[r]!, c))),
       attach(sink) {
         sinks.add(sink.rows);
@@ -107,14 +162,23 @@ export const live: DemoSource = {
       },
     };
 
-    const widget = await GridWidget.create(host, {
+    const frame = document.createElement("div");
+    frame.className = "with-filter-bar";
+    const gridBox = document.createElement("div");
+    gridBox.className = "grid-box";
+    frame.append(gridBox);
+    host.append(frame);
+    const widget = await GridWidget.create(gridBox, {
       source,
       renderer: byColumn((col: Column) => renderers[col]),
       columnWidth: 140,
       ...look,
     });
+    const bar = createFilterBar(widget, { placeholder: "Filter tickers…" });
+    frame.prepend(bar.element);
 
-    /** Moves about a quarter of the tickers and tells the widget what changed. */
+    let ticks = 0;
+    /** Moves about a quarter of the tickers, now and then lists a new one, and tells the widget what changed. */
     const tick = () => {
       const moved: number[] = [];
       tickers.forEach((t, i) => {
@@ -126,14 +190,15 @@ export const live: DemoSource = {
         t.load = Math.min(1, Math.max(0, t.load + (next() - 0.5) * 0.2));
         moved.push(i);
       });
+      if (++ticks % LISTING === 0 && tickers.length < LISTED) {
+        moved.push(tickers.length);
+        tickers.push(ticker(tickers.length));
+      }
       // A ContentChanged over the whole table is one cheap block for 200
       // rows, and leaves nothing stale whatever was painted last.
-      for (const s of sinks) s.notify({ type: "ContentChanged", start: 0, end: order.length });
-      if (spec.length) {
-        const was = order.join();
-        resort();
-        if (order.join() !== was) for (const s of sinks) s.notify({ type: "Reordered" });
-      }
+      tell({ type: "ContentChanged", start: 0, end: order.length });
+      const notice = reorder();
+      if (notice) tell({ type: notice });
       for (const i of moved) {
         widget.flash(i, "price");
         widget.flash(i, "load");
@@ -169,7 +234,9 @@ export const live: DemoSource = {
       },
       destroy() {
         clearInterval(timer);
+        bar.destroy();
         widget.destroy();
+        frame.remove();
         pause.remove();
       },
     };

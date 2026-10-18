@@ -4,7 +4,8 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Effect, FocusStep, HeaderSort, Key, Mode, Modifiers,
-    PointerEvent, SortColumn, SortDirection, SortSpec, Viewport,
+    PointerEvent, SortColumn, SortDirection, SortSpec, Support, Totals, ViewEdit, ViewSpec,
+    Viewport,
 };
 use binnacle_testkit::{PumpSource, RecordTable, Scenario, ScenarioSource};
 
@@ -17,14 +18,19 @@ fn header_x(c: u64) -> f32 {
     4.0 + 7.0 * c as f32 + 3.0
 }
 
-/// The Sort Specs requested since the last drain, without answering them.
-fn requested<S: ScenarioSource>(s: &mut Scenario<S>) -> Vec<SortSpec> {
+/// The View Specs requested since the last drain, without answering them.
+fn requested<S: ScenarioSource>(s: &mut Scenario<S>) -> Vec<ViewSpec> {
     std::iter::from_fn(|| s.grid.poll_effect())
         .filter_map(|e| match e.effect {
-            Effect::SortRequested { spec } => Some(spec),
+            Effect::ViewRequested { spec, .. } => Some(spec),
             _ => None,
         })
         .collect()
+}
+
+/// A View Spec sorting the rows by `columns`.
+fn rows_sorted(columns: Vec<SortColumn>) -> ViewSpec {
+    ViewSpec::default().with_sort(Axis::Rows, SortSpec::new(columns))
 }
 
 #[test]
@@ -32,7 +38,7 @@ fn a_column_header_click_cycles_ascending_descending_none_and_shift_adds_a_colum
     let mut s = table();
     s.frame(V);
     let (asc, desc) = (SortColumn::ascending, SortColumn::descending);
-    let spec = |c: Vec<SortColumn>| SortSpec::new(c);
+    let spec = rows_sorted;
     let mut seen = Vec::new();
     for _ in 0..3 {
         s.click(header_x(1), 0.0, Modifiers::NONE);
@@ -78,13 +84,13 @@ fn headers_show_the_applied_sort_and_a_pending_flag_until_answered() {
     s.click(header_x(1), 0.0, Modifiers::NONE);
     let mut out = unanswered(&mut s, "click column 1: requested, nothing applied");
     let spec = requested(&mut s).pop().unwrap();
-    s.input(|g| g.sort_applied(spec));
+    s.input(|g| g.view_applied(spec, Totals::unknown()));
     out += &unanswered(&mut s, "applied");
     s.click(header_x(2), 0.0, Modifiers::SHIFT);
     s.click(header_x(2), 0.0, Modifiers::SHIFT);
     out += &unanswered(&mut s, "shift-click column 2 twice: two requests out");
     let specs = requested(&mut s);
-    s.input(|g| g.sort_applied(specs[0].clone()));
+    s.input(|g| g.view_applied(specs[0].clone(), Totals::unknown()));
     out += &unanswered(&mut s, "first applied: the second is still pending");
     let snap = s.grid.snapshot();
     let header = |_: Key, applied, pending| HeaderSort { applied, pending };
@@ -97,9 +103,9 @@ fn headers_show_the_applied_sort_and_a_pending_flag_until_answered() {
         header(Key(2), Some((SortDirection::Ascending, 1)), true)
     );
     assert_eq!(snap.header_sort(Key(3)), HeaderSort::default());
-    s.input(|g| g.sort_applied(specs[0].clone()));
+    s.input(|g| g.view_applied(specs[0].clone(), Totals::unknown()));
     out += &unanswered(&mut s, "second rejected: the first stays applied");
-    s.input(|g| g.set_sortable(Key(0), false));
+    s.input(|g| g.set_support(Axis::Rows, Key(0), Support::default().with_sort(false)));
     s.click(header_x(0), 0.0, Modifiers::NONE);
     out += &unanswered(&mut s, "column 0 is not sortable: no request");
     assert_eq!(requested(&mut s), vec![]);
@@ -176,8 +182,8 @@ fn down() -> Action {
 /// Sorts the records' source by column 0 and tells the Grid, leaving the
 /// `Locate` it queues unanswered.
 fn sort_behind_the_grid(s: &mut Scenario<RecordTable>) {
-    let spec = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
-    let notice = s.source.sort(&spec).unwrap();
+    let spec = rows_sorted(vec![SortColumn::ascending(Key(0))]);
+    let notice = s.source.source.view(&s.source.rows, &spec).unwrap();
     s.input(|g| g.notify(Axis::Rows, notice));
 }
 
@@ -280,8 +286,8 @@ fn only_the_answer_to_the_latest_locate_places_the_focus() {
             key: Key(1)
         })
     );
-    let descending = SortSpec::new(vec![SortColumn::descending(Key(0))]);
-    let notice = s.source.source.sort(&s.source.rows, &descending).unwrap();
+    let descending = rows_sorted(vec![SortColumn::descending(Key(0))]);
+    let notice = s.source.source.view(&s.source.rows, &descending).unwrap();
     s.input(|g| {
         g.notify(Axis::Rows, notice);
         g.located(Axis::Rows, Key(1), binnacle_core::Located::Found(2));
@@ -429,7 +435,7 @@ fn a_sort_click_on_a_row_header_does_nothing() {
     s.click(1.0, 2.5, Modifiers::NONE);
     assert_eq!(s.pump(), vec![]);
     let snap = s.frame(V);
-    assert_eq!(snap.requested_sort(), None);
+    assert_eq!(snap.requested_view(), None);
     assert_eq!(snap.focus(Axis::Rows), None);
 }
 
@@ -489,4 +495,88 @@ fn a_reorder_leaves_an_anchor_deep_in_a_wide_column() {
     assert_eq!((before.position, before.offset), (0, 8.0));
     s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
     assert_eq!(s.frame(v).scroll_anchor(Axis::Cols), before);
+}
+
+#[test]
+fn a_host_keeps_an_undo_stack_of_view_edits_and_specs_from_the_effects_alone() {
+    let mut s = records();
+    s.frame(V);
+    let mut history: Vec<(ViewEdit, ViewSpec)> = Vec::new();
+    let mut click = |s: &mut Scenario<RecordTable>, c: u64, modifiers| {
+        s.click(header_x(c), 0.0, modifiers);
+        history.extend(s.pump().into_iter().filter_map(|e| match e.effect {
+            Effect::ViewRequested { spec, edit } => Some((edit, spec)),
+            _ => None,
+        }));
+    };
+    click(&mut s, 0, Modifiers::NONE);
+    click(&mut s, 1, Modifiers::SHIFT);
+    click(&mut s, 0, Modifiers::SHIFT);
+    let rows = rows_sorted;
+    let cycle = |key, multi| ViewEdit::CycleSort {
+        axis: Axis::Rows,
+        key: Key(key),
+        multi,
+    };
+    let (asc, desc) = (SortColumn::ascending, SortColumn::descending);
+    assert_eq!(
+        history,
+        vec![
+            (cycle(0, false), rows(vec![asc(Key(0))])),
+            (cycle(1, true), rows(vec![asc(Key(0)), asc(Key(1))])),
+            (cycle(0, true), rows(vec![desc(Key(0)), asc(Key(1))])),
+        ]
+    );
+    // Undo: pop the latest pair, have the source apply the spec before it
+    // and tell the Grid, unprompted.
+    history.pop();
+    let (_, previous) = history.last().unwrap().clone();
+    let viewed = s.source.view(&previous);
+    assert_eq!(viewed.applied, previous);
+    s.input(|g| {
+        g.view_applied(viewed.applied, viewed.totals);
+        for (axis, notice) in viewed.notices {
+            g.notify(axis, notice);
+        }
+    });
+    let snap = s.frame(V);
+    let keys: Vec<_> = snap.strip(Axis::Rows).iter().map(|i| i.key).collect();
+    assert_eq!(keys, [3, 5, 1, 7].map(|k| Some(Key(k))));
+    assert_eq!(snap.applied_view(), &previous);
+    assert_eq!(snap.requested_view(), None);
+    assert_eq!(s.grid.snapshot().applied_view(), &previous);
+    assert_eq!(s.grid.snapshot().requested_view(), None);
+}
+
+#[test]
+fn row_headers_show_the_columns_sort_and_column_headers_the_rows() {
+    let mut s = table();
+    s.frame(V);
+    let by_row_2 = SortSpec::new(vec![SortColumn::descending(Key(2))]);
+    s.input(|g| {
+        g.view_applied(
+            ViewSpec::default().with_sort(Axis::Cols, by_row_2),
+            Totals::unknown(),
+        )
+    });
+    let snap = s.frame(V);
+    let rows: Vec<_> = snap.headers(Axis::Rows).map(|h| h.sort).collect();
+    let sorted = HeaderSort {
+        applied: Some((SortDirection::Descending, 0)),
+        pending: false,
+    };
+    assert_eq!(
+        rows,
+        [
+            HeaderSort::default(),
+            HeaderSort::default(),
+            sorted,
+            HeaderSort::default()
+        ]
+    );
+    assert!(
+        snap.headers(Axis::Cols)
+            .all(|h| h.sort == HeaderSort::default())
+    );
+    assert_eq!(snap.header_sort(Key(2)), HeaderSort::default());
 }

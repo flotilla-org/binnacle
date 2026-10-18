@@ -1,9 +1,11 @@
+use crate::find::{FindMatch, FindQuery};
 use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
 use crate::selection::CellRange;
-use crate::sort::{HeaderSort, SortSpec};
+use crate::sort::HeaderSort;
 use crate::types::{Axis, Generation, Key, Position};
+use crate::view::{Condition, ConditionState, HeaderFilter, Support, TextSupport, ViewSpec};
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
 /// along the axis; `key` is `None` while the Table Source has not filled that
@@ -58,6 +60,8 @@ pub struct CellState {
     pub selected: bool,
     /// The host's editor is open on this cell.
     pub editing: bool,
+    /// The current find match, drawn apart from the other matches.
+    pub current_match: bool,
 }
 
 /// One header to draw, from [`Snapshot::headers`]: the header of a visible
@@ -70,8 +74,11 @@ pub struct HeaderPlacement {
     pub key: Option<Key>,
     /// The header's rectangle in its band, unclipped like the Strip item.
     pub rect: Rect,
-    /// How it shows the sort; always unsorted on row headers.
+    /// How it shows the sort of the other axis (rows never sort columns yet,
+    /// so row headers show none).
     pub sort: HeaderSort,
+    /// How it shows the conditions read in it (row headers show none).
+    pub filter: HeaderFilter,
     /// Its whole item is selected: the range spans every item across it, or
     /// (on a row header) its row is picked.
     pub selected: bool,
@@ -267,10 +274,16 @@ impl<'a> Snapshot<'a> {
             Mode::Editing { row: r, col: c } => row.key == Some(r) && col.key == Some(c),
             _ => false,
         };
+        let current_match = self
+            .grid
+            .find
+            .current
+            .is_some_and(|m| (row.key, col.key) == (Some(m.row), Some(m.col)));
         CellState {
             focused: on(Axis::Rows, row) && on(Axis::Cols, col),
             selected: in_range || picked,
             editing,
+            current_match,
         }
     }
 
@@ -292,19 +305,73 @@ impl<'a> Snapshot<'a> {
         &self.grid.fills
     }
 
-    /// The Sort Spec the Table Source last applied: what the headers show.
-    pub fn applied_sort(&self) -> &'a SortSpec {
-        &self.grid.sort.applied
+    /// The View Spec the Table Source last applied: what the headers show.
+    pub fn applied_view(&self) -> &'a ViewSpec {
+        &self.grid.view.applied
     }
 
-    /// The latest requested Sort Spec while an answer is still due.
-    pub fn requested_sort(&self) -> Option<&'a SortSpec> {
-        self.grid.sort.requested.as_ref()
+    /// The latest requested View Spec while an answer is still due, then
+    /// while the applied spec leaves out part of it (see
+    /// [`Self::view_pending`]).
+    pub fn requested_view(&self) -> Option<&'a ViewSpec> {
+        self.grid.view.requested.as_ref()
     }
 
-    /// How the header of column `key` shows the sort.
+    /// Whether a `view_applied` is still due: the requested View Spec is
+    /// pending while this holds, and what it asks for beyond the applied spec
+    /// is not applied once it doesn't.
+    pub fn view_pending(&self) -> bool {
+        self.grid.view.pending()
+    }
+
+    /// The Find Query in force, if find is open.
+    pub fn find(&self) -> Option<&'a FindQuery> {
+        self.grid.find.query.as_ref()
+    }
+
+    /// The match the last find step landed on, until its row or column
+    /// leaves, a step for a new Find Query lands, or find closes.
+    pub fn find_match(&self) -> Option<FindMatch> {
+        self.grid.find.current
+    }
+
+    /// How the Table Source finds, if it does.
+    pub fn find_support(&self) -> Option<TextSupport> {
+        self.grid.find.support
+    }
+
+    /// The unfiltered count of `axis`, if the Table Source gave it with the
+    /// applied View Spec: shown beside [`Snapshot::count`].
+    pub fn total(&self, axis: Axis) -> Option<u64> {
+        self.grid.view.totals.axis(axis)
+    }
+
+    /// How `axis`'s quick filter matches, if it has one.
+    pub fn quick_filter(&self, axis: Axis) -> Option<TextSupport> {
+        self.grid.view.quick_filter[axis.index()]
+    }
+
+    /// What the Table Source supports when viewing `axis` by `key`, an item
+    /// of the other axis: adapters offer only these controls.
+    pub fn support(&self, axis: Axis, key: Key) -> Support {
+        self.grid.view.support(axis, key)
+    }
+
+    /// The conditions of `axis`, as the filter's chips list them: the latest
+    /// request's, each applied or being added, then the applied ones being
+    /// removed.
+    pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
+        self.grid.view.conditions(axis)
+    }
+
+    /// How the header of column `key` shows the rows' conditions on it.
+    pub fn header_filter(&self, key: Key) -> HeaderFilter {
+        self.grid.view.header_filter(Axis::Cols, key)
+    }
+
+    /// How the header of column `key` shows the rows' sort.
     pub fn header_sort(&self, key: Key) -> HeaderSort {
-        self.grid.sort.header(key)
+        self.grid.view.header(Axis::Cols, key)
     }
 
     /// The headers of the visible items on `axis`, in Strip order: column
@@ -335,10 +402,12 @@ impl<'a> Snapshot<'a> {
                     width,
                     height,
                 },
-                sort: match (axis, item.key) {
-                    (Axis::Cols, Some(key)) => grid.sort.header(key),
-                    _ => HeaderSort::default(),
-                },
+                sort: item
+                    .key
+                    .map_or(HeaderSort::default(), |key| grid.view.header(axis, key)),
+                filter: (item.key).map_or(HeaderFilter::default(), |key| {
+                    grid.view.header_filter(axis, key)
+                }),
                 selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
                 hovered: hovered == Some((axis, item.position)),
             }

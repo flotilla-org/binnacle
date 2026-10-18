@@ -222,7 +222,7 @@ impl Host {
 fn expected_mode(before: Mode, axis: Axis, notice: &ChangeNotice) -> Mode {
     let moves = match notice {
         ChangeNotice::Inserted { n, .. } | ChangeNotice::Removed { n, .. } => *n > 0,
-        ChangeNotice::Reordered | ChangeNotice::Reset(_) => true,
+        ChangeNotice::Reordered | ChangeNotice::Reset(_) | ChangeNotice::Refiltered(_) => true,
         ChangeNotice::ContentChanged(_) => false,
     };
     match before {

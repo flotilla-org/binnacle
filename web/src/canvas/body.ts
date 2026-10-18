@@ -1,7 +1,8 @@
 // The body: row backgrounds (zebra), then each cell through its Cell
-// Renderer, translated to the cell's corner and clipped to it, or the
+// Renderer over its find mark (the current match ringed), translated to the cell's corner and clipped to it, or the
 // loading marker while its Key or value has not arrived, or the error marker
-// once the Table Source failed the request for it.
+// once the Table Source failed the request for it. Cells of an unmatched row
+// or column are dimmed under a wash.
 
 import type { Align, CellCanvas, CellStatus } from "../renderer";
 import { cellState } from "../snapshot";
@@ -23,6 +24,7 @@ export function paintBody(p: PaintContext): boolean {
       ctx.fillRect(left, row.offset, right - left, row.size);
     }
     const rowId = p.content.id("rows", row);
+    const rowUnmatched = p.content.unmatched("rows", i);
     cols.forEach((col, j) => {
       const value = row.key === null || col.key === null ? undefined : p.content.value(i, j);
       const state = cellState(s, i, j);
@@ -39,6 +41,16 @@ export function paintBody(p: PaintContext): boolean {
       ctx.translate(col.offset, row.offset);
       clip(ctx, 0, 0, col.size, row.size);
       cell.place(col.size, row.size, status);
+      if (state.currentMatch || p.content.marked(i, j)) {
+        ctx.fillStyle = state.currentMatch ? theme.findCurrent.background : theme.findMatch.background;
+        ctx.fillRect(0, 0, col.size, row.size);
+      }
+      if (state.currentMatch) {
+        const line = theme.focus.width;
+        ctx.strokeStyle = theme.findCurrent.color;
+        ctx.lineWidth = line;
+        ctx.strokeRect(line / 2, line / 2, col.size - line, row.size - line);
+      }
       if (status.flashing > 0) {
         ctx.globalAlpha = status.flashing;
         ctx.fillStyle = theme.flash.background;
@@ -48,6 +60,10 @@ export function paintBody(p: PaintContext): boolean {
       if (failed) cell.marker("⚠", theme.error);
       else if (status.loading) cell.marker("…", theme.loading);
       else p.renderer(rowId, p.content.id("cols", col)).draw(cell, value);
+      if (rowUnmatched || p.content.unmatched("cols", j)) {
+        ctx.fillStyle = theme.unmatched;
+        ctx.fillRect(0, 0, col.size, row.size);
+      }
       ctx.restore();
     });
   });

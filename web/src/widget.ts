@@ -9,7 +9,8 @@ import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
-import { createFeed, type Feed } from "./feed";
+import { filterButtonRect, hasFilterButton } from "./canvas/bands";
+import { createFeed, type ColumnSupport, type Feed, type FindState } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -17,8 +18,8 @@ import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scro
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
-import type { AxisSnapshot, Snapshot, Span } from "./snapshot";
-import type { FailedRequest, Located, TableSource } from "./source";
+import type { AxisSnapshot, ConditionState, HeaderPlacement, KeyedTextQuery, Snapshot, Span } from "./snapshot";
+import type { Condition, Distinct, FailedRequest, FindMatch, FindQuery, Located, TableSource, TextQuery, ViewSpec } from "./source";
 import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -80,6 +81,13 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
   /**
+   * How long the fields that write a Text Query (the filter bar's quick
+   * filter, the find bar, the column menu's contains field) wait after the
+   * last key typed before asking the Table Source, in ms; 150 by default.
+   * Enter, toggles, ticks and steps ask at once.
+   */
+  typingPause?: number;
+  /**
    * What a click or a focus move selects besides the focused cell: nothing
    * (`"cells"`, the default) or its whole row (`"rows"`, for list-style views).
    */
@@ -89,9 +97,24 @@ export interface GridOptions<RowId, ColId, V = unknown> {
 export interface FrameInfo<RowId = unknown, ColId = unknown> {
   /** Whether the frame painted. */
   painted: boolean;
-  /** The rows in view: the first and last visible Positions, and the count. */
-  rows: { first: number; last: number; count: number };
-  cols: { first: number; last: number; count: number };
+  /** The rows in view. */
+  rows: AxisInfo;
+  cols: AxisInfo;
+  /** Whether the rows take a quick filter (the Table Source's `rows.quickFilter`), and with regexes; `null` if not. */
+  quickFilter: { regex: boolean } | null;
+  /** The rows' quick filter as last asked for: the request still unanswered (or not applied), else the one applied. */
+  quick: TextQuery<ColId> | null;
+  /**
+   * Where `quick` stands: applied, being set (`adding`) or cleared
+   * (`removing`) while the answer is due, or `notApplied` when the Table
+   * Source answered without it (an invalid regex, say); `null` with no quick
+   * filter asked for or applied.
+   */
+  quickState: ConditionState | null;
+  /** Whether a View Spec request is unanswered: the count says "filtering…" while it changes the rows' filter. */
+  viewPending: boolean;
+  /** The Table Source's message for the part of the View Spec it did not apply, if any; shown on that part's control. */
+  viewError: string | null;
   /** The focused cell's Positions, if any. */
   focus: { row: number; col: number } | null;
   /** The selection range as half-open Position spans, if any. */
@@ -106,6 +129,56 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   animating: boolean;
   /** The cell being edited, by the Table Source's own IDs, if an editor is open. */
   editing: { row: RowId; col: ColId } | null;
+  /**
+   * The rows' column conditions as a filter's chips list them: the latest
+   * request's, each applied or still being added, then the applied ones
+   * being removed. Pending ones (`adding`, `removing`) are not applied yet.
+   */
+  conditions: { condition: Condition<ColId>; state: ConditionState }[];
+  /** The column headers in view, by the Table Source's IDs: how each is filtered, and what it supports. */
+  columns: ColumnHeader<ColId>[];
+  /** Find: whether the Table Source finds, the Find Query in force, the current match, and what the source said of them. */
+  find: FindInfo<RowId, ColId>;
+}
+
+/**
+ * An axis in view, as `FrameInfo` gives it: the first and last visible
+ * Positions, the count, the count before any filter as the Table Source last
+ * gave it (`null` if it gave none), and how many visible items are unmatched
+ * (kept after the user's edit though the filter drops them).
+ */
+export interface AxisInfo {
+  first: number;
+  last: number;
+  count: number;
+  total: number | null;
+  unmatched: number;
+}
+
+/** Find as `FrameInfo.find` gives it. */
+export interface FindInfo<RowId = unknown, ColId = unknown> extends FindState {
+  /** Whether the Table Source finds, and with regexes; `null` if it does not. */
+  support: { regex: boolean } | null;
+  /** The Find Query in force; `null` while find is closed. */
+  query: FindQuery<ColId> | null;
+  /** The match the last step landed on, until its row or column leaves. */
+  current: FindMatch<RowId, ColId> | null;
+}
+
+/** A column header in view, as `FrameInfo.columns` lists it. */
+export interface ColumnHeader<ColId = unknown> {
+  id: ColId;
+  label: string;
+  /** Whether an applied condition reads this column, whether a request would change them, and whether one asked for is not applied. */
+  filter: { filtered: boolean; pending: boolean; notApplied: boolean };
+  support: ColumnSupport;
+}
+
+/** A listed column, as `GridWidget.columns` gives them. */
+export interface ColumnInfo<ColId = unknown> {
+  id: ColId;
+  label: string;
+  support: ColumnSupport;
 }
 
 const HEADER_HEIGHT = 28;
@@ -148,6 +221,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private focusing: Focusing | null = null;
   /** Waiting for the next frame to run. */
   private framed: (() => void)[] = [];
+  private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
+  /** The mounted column menu's opener, if one is mounted. */
+  private columnMenu: ((colId: ColId, anchor: DOMRect) => void) | null = null;
+  /** The mounted find bar's opener, if one is mounted. */
+  private findBar: (() => void) | null = null;
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -245,6 +323,29 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         this.invalidate();
       },
       snapshot: () => this.last,
+      menuButtonAt: (x, y) => this.menuButtonAt(x, y) !== undefined,
+      menuPress: (x, y) => {
+        const id = this.menuButtonAt(x, y);
+        return id !== undefined && this.openColumnMenu(id);
+      },
+      openColumnMenu: () => {
+        if (!this.columnMenu) return false;
+        // After the next frame, so a focus move just made has landed.
+        this.framed.push(() => {
+          const key = this.last?.cols.focus?.key;
+          const id = key == null ? undefined : this.feed.colId(key);
+          if (id !== undefined) this.openColumnMenu(id);
+        });
+        this.invalidate();
+        return true;
+      },
+      find: (action) => {
+        if (action === "open") return this.openFind();
+        if (!this.last?.find) return false;
+        if (action === "next") this.findNext();
+        else this.findPrevious();
+        return true;
+      },
       edits: {
         editable: options.onCommit !== undefined,
         value: (row, col) => this.feed.value(row, col),
@@ -312,6 +413,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.input.destroy();
     this.aria.destroy();
     this.feed.destroy();
+    this.listeners.clear();
     this.painter.destroy?.();
     this.grid.free();
     this.element.remove();
@@ -396,7 +498,227 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.schedule();
   }
 
+  /**
+   * Sets the rows' quick filter: keep the rows with `query`'s text in a
+   * searched column. `null` or empty text clears it. The grid asks the Table
+   * Source for the View Spec in force with this quick filter; setting the
+   * one already asked for does nothing.
+   */
+  setQuickFilter(query: TextQuery<ColId> | null): void {
+    if (this.destroyed) return;
+    const keyed = query && this.feed.viewKeys({ rows: { filter: { quick: query }, sort: [] }, cols: { sort: [] } });
+    this.grid.set_quick_filter(AXIS_CODE.rows, keyed ? keyed.rows.filter.quick : null);
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /**
+   * Adds a condition on the rows: keep those whose value in the condition's
+   * column matches (or with `not`, does not). A Text condition with no text
+   * asks for nothing. The grid asks the Table Source for the View Spec in
+   * force with it.
+   */
+  addCondition(condition: Condition<ColId>): void {
+    this.editView(() => this.grid.add_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  }
+
+  /** Removes the first rows condition equal to `condition`, if the View Spec in force (or asked for) has one. */
+  removeCondition(condition: Condition<ColId>): void {
+    this.editView(() => this.grid.remove_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  }
+
+  /**
+   * Puts `to` in place of the first rows condition equal to `from`: adds `to`
+   * if there is none, and removes `from` if `to` asks for nothing.
+   */
+  replaceCondition(from: Condition<ColId>, to: Condition<ColId>): void {
+    this.editView(() =>
+      this.grid.replace_condition(AXIS_CODE.rows, this.feed.conditionKey(from), this.feed.conditionKey(to)),
+    );
+  }
+
+  /** Removes every rows condition on column `colId`. */
+  clearConditions(colId: ColId): void {
+    const listed = this.last?.rows.conditions ?? [];
+    const key = this.feed.colKey(colId);
+    this.editView(() => {
+      for (const { condition, state } of listed) {
+        if (state !== "removing" && condition.key === key) this.grid.remove_condition(AXIS_CODE.rows, condition);
+      }
+    });
+  }
+
+  private editView(edit: () => void): void {
+    if (this.destroyed) return;
+    edit();
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /**
+   * Mounts a column menu (see `createColumnMenu`): filterable column headers
+   * draw its button, and a press on one, Alt+ArrowDown, or `openColumnMenu`
+   * calls `open` with the column and a rectangle to place the menu under.
+   * Returns how to unmount it; one menu is mounted at a time.
+   */
+  attachColumnMenu(open: (colId: ColId, anchor: DOMRect) => void): () => void {
+    this.columnMenu = open;
+    this.painter.filterButtons = true;
+    this.invalidate();
+    return () => {
+      if (this.columnMenu !== open) return;
+      this.columnMenu = null;
+      this.painter.filterButtons = false;
+      this.invalidate();
+    };
+  }
+
+  /**
+   * Opens the mounted column menu for `colId`, under its header if it is in
+   * view, else under `anchor` (or the grid's top left). `false` if no menu is
+   * mounted or the column cannot be filtered.
+   */
+  openColumnMenu(colId: ColId, anchor?: DOMRect): boolean {
+    const open = this.columnMenu;
+    const support = this.feed.columnSupport(colId);
+    if (!open || this.destroyed || (!support.text && !support.oneOf)) return false;
+    const key = this.feed.colKey(colId);
+    const header = this.last?.cols.headers.find((h) => h.key === key && this.inView(h));
+    open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
+    return true;
+  }
+
+  /**
+   * Sets the Find Query, or closes find with `null` (or empty text). The
+   * Table Source marks the matching cells in view and counts them; the old
+   * marks go at once. Does nothing unless the source has `find`.
+   */
+  setFind(query: FindQuery<ColId> | null): void {
+    if (this.destroyed || !this.options.source.find) return;
+    this.grid.set_find(query && this.feed.findKeys(query));
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /**
+   * Steps to the next match of the Find Query from the current one (or the
+   * focused cell), wrapping round: focus moves there and it scrolls into
+   * view; the selection stays. Does nothing while find is closed.
+   */
+  findNext(): void {
+    this.editView(() => this.grid.find_next());
+  }
+
+  /** Steps to the previous match, as `findNext` does. */
+  findPrevious(): void {
+    this.editView(() => this.grid.find_previous());
+  }
+
+  /**
+   * Mounts a find bar (see `createFindBar`): Mod+F in the grid calls `open`.
+   * Returns how to unmount it; one find bar is mounted at a time.
+   */
+  attachFindBar(open: () => void): () => void {
+    this.findBar = open;
+    return () => {
+      if (this.findBar === open) this.findBar = null;
+    };
+  }
+
+  /** Opens the mounted find bar: `false` if none is mounted or the Table Source does not find. */
+  openFind(): boolean {
+    const open = this.findBar;
+    if (!open || this.destroyed || !this.options.source.find) return false;
+    open();
+    return true;
+  }
+
+  /** The columns of the table, up to `limit` (1,000 by default), with their labels and support, asked of the Table Source. */
+  async columns(limit = 1000): Promise<ColumnInfo<ColId>[]> {
+    const cols = this.options.source.cols;
+    const count = await cols.count();
+    const ids = await cols.window(0, Math.min(count, limit), new AbortController().signal);
+    return ids.map((id) => ({ id, label: this.columnLabel(id), support: this.feed.columnSupport(id) }));
+  }
+
+  /**
+   * Asks the Table Source for up to `limit` distinct values of column `colId`
+   * containing `search`, narrowed by the other filters applied, for a
+   * checklist; `apply` gets the answer unless the request is aborted first.
+   * `null` if the column takes no OneOf conditions.
+   */
+  distinct(colId: ColId, search: string, limit: number, apply: (answer: Distinct) => void): { abort(): void } | null {
+    if (this.destroyed) return null;
+    return this.feed.distinct(colId, search, limit, apply);
+  }
+
+  /** How the rows may be viewed by column `colId`: whether it sorts, takes Text conditions (and regexes), and OneOf ones. */
+  columnSupport(colId: ColId): ColumnSupport {
+    return this.feed.columnSupport(colId);
+  }
+
+  /** A column's header text: the source's `cols.label` (given the column's Position if in view, else NaN), else its ID. */
+  columnLabel(colId: ColId): string {
+    const key = this.feed.colKey(colId);
+    const position = this.last?.cols.strip.find((i) => i.key === key)?.position ?? Number.NaN;
+    return this.options.source.cols.label?.(colId, position) ?? String(colId);
+  }
+
+  /** The column whose menu button is at (x, y), if a menu is mounted and there is one. */
+  private menuButtonAt(x: number, y: number): ColId | undefined {
+    const s = this.last;
+    if (!this.columnMenu || !s || y > s.rows.header) return undefined;
+    for (const h of s.cols.headers) {
+      if (!hasFilterButton(true, h) || !this.inView(h)) continue;
+      const r = filterButtonRect(h);
+      if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) return this.feed.colId(h.key!);
+    }
+    return undefined;
+  }
+
+  private inView(h: HeaderPlacement): boolean {
+    const s = this.last;
+    return s !== null && h.rect.x + h.rect.width > s.cols.header && h.rect.x < s.cols.extent;
+  }
+
+  /** A viewport rectangle in client coordinates. */
+  private clientRect(r: { x: number; y: number; width: number; height: number }): DOMRect {
+    const box = this.layer.getBoundingClientRect();
+    return new DOMRect(box.left + r.x, box.top + r.y, r.width, r.height);
+  }
+
+  /**
+   * Asks the Table Source for the View Spec in force again, so rows the
+   * user's edits left in view though they no longer match are filtered.
+   */
+  reapplyView(): void {
+    if (this.destroyed) return;
+    this.grid.reapply_view();
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /** Asks the Table Source for the whole of `spec`, such as a saved view, in place of the View Spec in force. */
+  requestView(spec: ViewSpec<RowId, ColId>): void {
+    if (this.destroyed) return;
+    this.grid.request_view(this.feed.viewKeys(spec));
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /** Calls `listener` after every frame, as `onFrame` is; returns how to stop. */
+  subscribe(listener: (frame: FrameInfo<RowId, ColId>) => void): () => void {
+    this.listeners.add(listener);
+    if (this.last) listener(this.frameInfo(this.last, false, false));
+    return () => this.listeners.delete(listener);
+  }
+
   /** The Theme the grid draws in, for the current colour scheme when set to one per scheme. */
+  /** How long text fields wait after typing before asking the Table Source, in ms (`GridOptions.typingPause`). */
+  get typingPause(): number {
+    return this.options.typingPause ?? 150;
+  }
+
   get theme(): Theme {
     return this.painter.theme;
   }
@@ -487,17 +809,49 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     if (again) this.schedule();
     this.settleFocus(snapshot);
     for (const waiting of this.framed.splice(0)) waiting();
-    this.options.onFrame?.({
+    const info = this.frameInfo(snapshot, painted, again);
+    this.options.onFrame?.(info);
+    for (const listener of this.listeners) listener(info);
+    this.selectionEvents(snapshot);
+  }
+
+  private frameInfo(snapshot: Snapshot, painted: boolean, again: boolean): FrameInfo<RowId, ColId> {
+    return {
       painted,
-      rows: span(snapshot, "rows"),
-      cols: span(snapshot, "cols"),
+      rows: span(snapshot, "rows", (key) => this.feed.unmatched("rows", key)),
+      cols: span(snapshot, "cols", (key) => this.feed.unmatched("cols", key)),
+      quickFilter: snapshot.rows.quickFilter,
+      quick: this.quick(snapshot),
+      quickState: quickState(snapshot),
+      viewPending: snapshot.viewPending,
+      viewError: this.feed.viewError(),
       ...selection(snapshot),
       focusIds: this.focusIds(snapshot),
       loading: this.feed.loading(snapshot),
       animating: again,
       editing: snapshot.mode.type === "Editing" ? this.ids(snapshot.mode.row, snapshot.mode.col) : null,
-    });
-    this.selectionEvents(snapshot);
+      conditions: snapshot.rows.conditions.flatMap(({ condition, state }) => {
+        const c = this.feed.conditionId(condition);
+        return c ? [{ condition: c, state }] : [];
+      }),
+      columns: visible(snapshot.cols).flatMap((item) => {
+        const id = item.key === null ? undefined : this.feed.colId(item.key);
+        const header = snapshot.cols.headers.find((h) => h.position === item.position);
+        if (id === undefined || !header) return [];
+        return [{ id, label: this.columnLabel(id), filter: header.filter, support: this.feed.columnSupport(id) }];
+      }),
+      find: {
+        support: snapshot.findSupport,
+        query: snapshot.find ? (this.feed.findIds(snapshot.find) ?? null) : null,
+        current: snapshot.findMatch && this.ids(snapshot.findMatch.row, snapshot.findMatch.col),
+        ...this.feed.findState(),
+      },
+    };
+  }
+
+  private quick(s: Snapshot): TextQuery<ColId> | null {
+    const q = (s.requestedView ?? s.appliedView).rows.filter.quick;
+    return (q && this.feed.queryIds(q)) ?? null;
   }
 
   /** Waits for a frame if none has run or one is due, so the Strips are those of what is in view. */
@@ -620,13 +974,19 @@ function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked
   };
 }
 
-function span(s: Snapshot, axis: "rows" | "cols"): FrameInfo["rows"] {
+function span(s: Snapshot, axis: "rows" | "cols", unmatched: (key: bigint) => boolean): AxisInfo {
   const strip = s[axis].strip;
   // The Strip includes overscan; report what the viewport shows.
   const start = s[axis].header;
   const end = s[axis].extent;
   const visible = strip.filter((i) => i.offset + i.size > start && i.offset < end);
-  return { first: visible[0]?.position ?? 0, last: visible.at(-1)?.position ?? 0, count: s[axis].count };
+  return {
+    first: visible[0]?.position ?? 0,
+    last: visible.at(-1)?.position ?? 0,
+    count: s[axis].count,
+    total: s[axis].total,
+    unmatched: visible.filter((i) => i.key !== null && unmatched(i.key)).length,
+  };
 }
 
 function div(className: string, style: string): HTMLDivElement {
@@ -634,4 +994,19 @@ function div(className: string, style: string): HTMLDivElement {
   el.className = className;
   el.style.cssText = style;
   return el;
+}
+
+/** Where the rows' quick filter stands between the latest request and the applied View Spec. */
+function quickState(s: Snapshot): ConditionState | null {
+  const applied = s.appliedView.rows.filter.quick;
+  const asked = s.requestedView ? s.requestedView.rows.filter.quick : applied;
+  if (sameQuery(asked, applied)) return asked ? "applied" : null;
+  if (!s.viewPending) return "notApplied";
+  return asked ? "adding" : "removing";
+}
+
+function sameQuery(a: KeyedTextQuery | null, b: KeyedTextQuery | null): boolean {
+  if (!a || !b) return a === b;
+  const keys = (q: KeyedTextQuery) => q.searches?.join(",") ?? null;
+  return a.text === b.text && a.caseSensitive === b.caseSensitive && a.regex === b.regex && keys(a) === keys(b);
 }

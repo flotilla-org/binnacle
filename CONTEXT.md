@@ -15,7 +15,7 @@ The host-side owner of a table's data and every operation on it (sort, filter, r
 _Avoid_: Storage, data source, model, backend
 
 **Effect**:
-A request the Grid emits for its host or Table Source to act on, such as a sort request, a column move or the start of an edit.
+A request the Grid emits for its host or Table Source to act on, such as a requested View Spec, a column move or the start of an edit.
 _Avoid_: Callback, event, command
 
 **Action**:
@@ -35,7 +35,7 @@ The Grid's per-frame, read-only description of what to draw (cell and header pla
 _Avoid_: Frame, render list, view model
 
 **Change Notice**:
-A message from the Table Source telling the Grid how an axis changed (reset, reordered, inserted, removed, content changed).
+A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys.
 _Avoid_: Invalidation, update event, data changed
 
 ### Axes and identity
@@ -76,9 +76,45 @@ _Avoid_: Border, padding, gutter
 The band of headers leading an axis, whose thickness the host sets and the user can drag or fit: the column header band leads the row axis (it runs along the top), and the row-number band leads the column axis (it runs down the left).
 _Avoid_: Header row, header column, gutter
 
+**View Spec**:
+The declared view a Table Source should present for a whole table, one part per axis, each with a filter and a sort (grouping and pivot may join later); the Grid holds the one the source last applied and the latest one requested.
+_Avoid_: View state, query, view model
+
+**View Edit**:
+The named cause of a requested View Spec, such as cycling a column's sort, applied by the Grid to the latest requested spec and carried with it as a hint; a Table Source must be correct from the spec alone.
+_Avoid_: View change, view event, view command
+
 **Sort Spec**:
-The ordered list of columns and directions the user has asked to sort by, held by the Grid as header state and requested from the Table Source.
+The sort part of one axis of a View Spec: the ordered list of items on the other axis (columns, for the rows) and directions to sort by.
 _Avoid_: Sort order, remap spec
+
+**Filter Spec**:
+The filter part of one axis of a View Spec: which of its items the Table Source keeps, as the parts it holds (the quick filter, a Text Query across the other axis's items, and the Conditions) all keeping an item. An empty Filter Spec keeps every item.
+_Avoid_: Filter state, predicate
+
+**Condition**:
+One test in a Filter Spec on the value an item has in one item of the other axis (a column, for the rows), such as a Text Query searching that column alone or OneOf (the value is exactly one of those listed, blank among them or not), kept or with `not` inverted. Conditions AND with each other and with the quick filter, and one column may hold several.
+_Avoid_: Column filter, criterion, rule
+
+**Distinct Values**:
+The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more.
+_Avoid_: Unique values, facets
+
+**Text Query**:
+Text to look for in the items of the other axis, with whether case matters, whether it is a regex in the Table Source's own syntax, and which items it searches (the shown ones, or named ones). The quick filter is one; a Find Query holds another.
+_Avoid_: Search string, pattern, quick filter text
+
+**Find Query**:
+What find looks for: a Text Query, and the order find steps through the matching cells (by rows, along each row in turn, or by columns, down each column). The Table Source works out which cells match, the next match from a cell and how many there are; the Grid holds the Find Query and the current match, and draws the matching cells as marks without changing the view.
+_Avoid_: Search, find string, highlight query
+
+**Totals**:
+Each axis's count before any filter, as the Table Source gives it with the View Spec it applied, so "1,204 of 5,001" can be shown; unknown when the source does not say.
+_Avoid_: Unfiltered count, base count
+
+**Unmatched Row**:
+A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead.
+_Avoid_: Stale row, held row, edited row (as a term)
 
 ### Inside an In-Memory Table Source
 

@@ -26,6 +26,71 @@ export interface SortColumn {
   direction: SortDirection;
 }
 
+/**
+ * A Text Query as the Grid holds it: `searches` names the columns (Keys of
+ * the other axis) it looks in, or is `null` for the shown ones.
+ */
+export interface KeyedTextQuery {
+  text: string;
+  caseSensitive: boolean;
+  regex: boolean;
+  searches: bigint[] | null;
+}
+
+/**
+ * A condition as the Grid holds it: keeps the items whose value in the item
+ * `key` names (of the other axis) satisfies `kind`, or with `not` those
+ * whose value does not. A Text condition's query searches `key` alone; a
+ * OneOf condition lists values, `null` for a blank. `Other` is a kind this
+ * build does not know.
+ */
+export interface KeyedCondition {
+  key: bigint;
+  kind: { type: "Text"; query: KeyedTextQuery } | { type: "OneOf"; values: (string | null)[] } | { type: "Other" };
+  not: boolean;
+}
+
+/** One axis's filter by Keys: the quick filter and the conditions, all of which must keep an item. */
+export interface KeyedFilter {
+  quick: KeyedTextQuery | null;
+  conditions: KeyedCondition[];
+}
+
+/** One axis's part of a View Spec, by Keys of the other axis. */
+export interface KeyedAxisView {
+  filter: KeyedFilter;
+  sort: SortColumn[];
+}
+
+/**
+ * Where a condition stands: applied and still asked for, asked for and not
+ * yet applied, applied and no longer asked for, or asked for and left out by
+ * the Table Source with no answer due (rejected, failed, or no longer
+ * supported).
+ */
+export type ConditionState = "applied" | "adding" | "removing" | "notApplied";
+
+/**
+ * A Find Query as the Grid holds it: the Text Query, and the axis find steps
+ * along first (`rows`: each row's cells left to right, then the next row).
+ */
+export interface KeyedFindQuery {
+  query: KeyedTextQuery;
+  by: AxisName;
+}
+
+/** A cell find stepped to or from, by its row and column Keys. */
+export interface FindMatch {
+  row: bigint;
+  col: bigint;
+}
+
+/** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis. */
+export interface KeyedViewSpec {
+  rows: KeyedAxisView;
+  cols: KeyedAxisView;
+}
+
 export interface HeaderPlacement {
   position: number;
   key: bigint | null;
@@ -33,6 +98,13 @@ export interface HeaderPlacement {
   sort: { applied: { direction: SortDirection; index: number } | null; pending: boolean };
   selected: boolean;
   hovered: boolean;
+  /**
+   * Whether the applied View Spec has a condition read in this item, whether
+   * a request would change them, and whether one asked for is not applied.
+   */
+  filter: { filtered: boolean; pending: boolean; notApplied: boolean };
+  /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
+  support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean };
 }
 
 export interface AxisSnapshot {
@@ -48,6 +120,12 @@ export interface AxisSnapshot {
   locating: boolean;
   strip: StripItem[];
   headers: HeaderPlacement[];
+  /** The axis's count before any filter, as the Table Source last gave it; `null` if unknown. */
+  total: number | null;
+  /** Whether the axis has a quick filter, and whether it takes regexes; `null` if it has none. */
+  quickFilter: { regex: boolean } | null;
+  /** The axis's conditions as the filter's chips list them: the latest request's, then the applied ones it drops. */
+  conditions: { condition: KeyedCondition; state: ConditionState }[];
 }
 
 export type Mode =
@@ -77,8 +155,17 @@ export interface Snapshot {
   selectionRects: Rect[];
   picked: bigint[];
   movingKeys: bigint[];
-  appliedSort: SortColumn[];
-  requestedSort: SortColumn[] | null;
+  appliedView: KeyedViewSpec;
+  /** The latest request while an answer is due (`viewPending`), then while the applied spec leaves part of it out. */
+  requestedView: KeyedViewSpec | null;
+  /** Whether an answer to a View Spec request is due. */
+  viewPending: boolean;
+  /** The Find Query, `null` while find is closed. */
+  find: KeyedFindQuery | null;
+  /** The match the last find step landed on, until its row or column leaves, a step for a new Find Query lands, or find closes. */
+  findMatch: FindMatch | null;
+  /** Whether the Table Source finds, and with regexes; `null` if it does not. */
+  findSupport: { regex: boolean } | null;
   /** Cell states as bit flags, row-major over the Strips; read with `cellState`. */
   cells: Uint8Array;
 }
@@ -92,11 +179,13 @@ export interface CellState {
   focused: boolean;
   selected: boolean;
   editing: boolean;
+  currentMatch: boolean;
 }
 
 const FOCUSED = 1;
 const SELECTED = 2;
 const EDITING = 4;
+const CURRENT_MATCH = 8;
 
 /** The state of the cell where the `row`th row item and `col`th column item cross. */
 export function cellState(s: Snapshot, row: number, col: number): CellState {
@@ -105,12 +194,22 @@ export function cellState(s: Snapshot, row: number, col: number): CellState {
     focused: (bits & FOCUSED) !== 0,
     selected: (bits & SELECTED) !== 0,
     editing: (bits & EDITING) !== 0,
+    currentMatch: (bits & CURRENT_MATCH) !== 0,
   };
 }
 
 const AXIS_NAMES: readonly AxisName[] = ["rows", "cols"];
 const DIRECTIONS: readonly SortDirection[] = ["ascending", "descending"];
 const CURSORS: readonly Cursor[] = ["default", "resizeCol", "resizeRow", "move"];
+const CONDITION_STATES: readonly ConditionState[] = ["applied", "adding", "removing", "notApplied"];
+/** `SUPPORT` bits in `codes.ts`, read here without importing the encoder's side. */
+const SORT_BIT = 1;
+/** `FIND` bits in `codes.ts`, likewise. */
+const FIND_BIT = 1;
+const FIND_REGEX_BIT = 2;
+const TEXT_BIT = 2;
+const REGEX_BIT = 4;
+const ONE_OF_BIT = 8;
 
 class Reader {
   private n = 0;
@@ -164,6 +263,43 @@ class Reader {
     return this.list(() => ({ key: this.key(), direction: DIRECTIONS[this.num()]! }));
   }
 
+  /** Text as its UTF-16 code units, after their count. */
+  text(): string {
+    return String.fromCharCode(...this.list(() => this.num()));
+  }
+
+  textQuery(): KeyedTextQuery {
+    const text = this.text();
+    const caseSensitive = this.flag();
+    const regex = this.flag();
+    const searches = this.opt(() => this.list(() => this.key()));
+    return { text, caseSensitive, regex, searches };
+  }
+
+  condition(): KeyedCondition {
+    const key = this.key();
+    const not = this.flag();
+    const code = this.num();
+    const kind: KeyedCondition["kind"] =
+      code === 0
+        ? { type: "Text", query: this.textQuery() }
+        : code === 2
+          ? { type: "OneOf", values: this.list(() => (this.flag() ? null : this.text())) }
+          : { type: "Other" };
+    return { key, kind, not };
+  }
+
+  axisView(): KeyedAxisView {
+    const quick = this.opt(() => this.textQuery());
+    const conditions = this.list(() => this.condition());
+    return { filter: { quick, conditions }, sort: this.sort() };
+  }
+
+  view(): KeyedViewSpec {
+    const rows = this.axisView();
+    return { rows, cols: this.axisView() };
+  }
+
   done(): boolean {
     return this.n === this.numbers.length && this.k === this.keys.length;
   }
@@ -189,8 +325,24 @@ function readAxis(r: Reader): AxisSnapshot {
     },
     selected: r.flag(),
     hovered: r.flag(),
+    filter: { filtered: r.flag(), pending: r.flag(), notApplied: r.flag() },
+    support: supportOf(r.num()),
   }));
-  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers };
+  const conditions = r.list(() => {
+    const state = CONDITION_STATES[r.num()]!;
+    return { condition: r.condition(), state };
+  });
+  const total = r.opt(() => r.num());
+  const quickFilter = r.opt(() => ({ regex: r.flag() }));
+  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers, total, quickFilter, conditions };
+}
+
+function supportOf(bits: number): HeaderPlacement["support"] {
+  return {
+    sort: (bits & SORT_BIT) !== 0,
+    text: (bits & TEXT_BIT) !== 0 ? { regex: (bits & REGEX_BIT) !== 0 } : null,
+    oneOf: (bits & ONE_OF_BIT) !== 0,
+  };
 }
 
 function readMode(r: Reader): Mode {
@@ -234,8 +386,16 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const selectionRects = r.list(() => r.rect());
   const picked = r.list(() => r.key());
   const movingKeys = r.list(() => r.key());
-  const appliedSort = r.sort();
-  const requestedSort = r.opt(() => r.sort());
+  const appliedView = r.view();
+  const requestedView = r.opt(() => r.view());
+  const viewPending = r.flag();
+  const find = r.opt(() => {
+    const query = r.textQuery();
+    return { query, by: r.axis() };
+  });
+  const findMatch = r.opt(() => ({ row: r.key(), col: r.key() }));
+  const findBits = r.num();
+  const findSupport = findBits & FIND_BIT ? { regex: (findBits & FIND_REGEX_BIT) !== 0 } : null;
   const cells = new Uint8Array(rows.strip.length * cols.strip.length);
   for (let i = 0; i < cells.length; i++) cells[i] = r.num();
   if (!r.done()) throw new Error("binnacle: Snapshot has data past its end");
@@ -256,8 +416,12 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     selectionRects,
     picked,
     movingKeys,
-    appliedSort,
-    requestedSort,
+    appliedView,
+    requestedView,
+    viewPending,
+    find,
+    findMatch,
+    findSupport,
     cells,
   };
 }

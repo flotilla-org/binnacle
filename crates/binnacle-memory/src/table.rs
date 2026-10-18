@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use binnacle_core::{Axis, ChangeNotice, Key, Located, Position, SortSpec};
@@ -18,8 +18,11 @@ struct AxisOrder {
     sorted: Option<Vec<u32>>,
     /// Which base items the filter keeps, by Logical Index; `None` keeps all.
     keep: Option<Vec<bool>>,
+    /// Unmatched items, by Logical Index: the filter drops them but they stay
+    /// until it is applied again.
+    unmatched: HashSet<u32>,
     /// The Remap, Position to Logical Index: the sorted order with items the
-    /// filter drops skipped. `None` is base order.
+    /// filter drops skipped, unless unmatched. `None` is base order.
     remap: Option<Vec<u32>>,
     /// Supplied Key to Logical Index, built on the first `locate`.
     logical: Option<HashMap<Key, u32>>,
@@ -45,6 +48,7 @@ impl AxisOrder {
             keys: None,
             sorted: None,
             keep: None,
+            unmatched: HashSet::new(),
             remap: None,
             logical: None,
             positions: None,
@@ -67,16 +71,41 @@ impl AxisOrder {
 
     fn set_keep(&mut self, keep: Option<Vec<bool>>) {
         self.keep = keep;
+        self.unmatched.clear();
         self.rebuild();
     }
 
+    /// The filter now keeps item `logical` or not. With `defer`, an item in
+    /// view stays, unmatched while the filter drops it. Returns whether the
+    /// item came into view or left it; `false` with no filter in force.
+    fn rekeep(&mut self, logical: usize, keep: bool, defer: bool) -> bool {
+        let shown = self.position(logical).is_some();
+        let Some(flags) = &mut self.keep else {
+            return false;
+        };
+        flags[logical] = keep;
+        let i = logical as u32;
+        if defer && shown && !keep {
+            self.unmatched.insert(i);
+        } else {
+            self.unmatched.remove(&i);
+        }
+        let moved = shown != (keep || self.unmatched.contains(&i));
+        if moved {
+            self.rebuild();
+        }
+        moved
+    }
     /// Rebuilds the Remap from the sorted order and keep mask in one pass.
     fn rebuild(&mut self) {
         self.positions = None;
         self.remap = match (&self.sorted, &self.keep) {
             (None, None) => None,
             (sorted, keep) => {
-                let kept = |&i: &u32| keep.as_ref().is_none_or(|k| k[i as usize]);
+                let unmatched = &self.unmatched;
+                let kept = |&i: &u32| {
+                    keep.as_ref().is_none_or(|k| k[i as usize]) || unmatched.contains(&i)
+                };
                 Some(match sorted {
                     Some(sorted) => sorted.iter().copied().filter(kept).collect(),
                     None => (0..self.len as u32).filter(kept).collect(),
@@ -331,6 +360,27 @@ impl InMemoryTableSource {
         self.axis(axis).window(range)
     }
 
+    /// The Logical Indices at the Positions in `range`, clipped to the count:
+    /// a part of the Remap.
+    pub fn logical_window(&self, axis: Axis, range: Range<Position>) -> Vec<usize> {
+        let order = self.axis(axis);
+        let end = range.end.min(order.count());
+        let start = range.start.min(end);
+        match &order.remap {
+            None => (start as usize..end as usize).collect(),
+            Some(remap) => remap[start as usize..end as usize]
+                .iter()
+                .map(|&i| i as usize)
+                .collect(),
+        }
+    }
+
+    /// The Logical Index of the item with `key` on `axis`, whether or not
+    /// the filter keeps it.
+    pub fn logical_index(&mut self, axis: Axis, key: Key) -> Option<usize> {
+        self.axis_mut(axis).logical(key).map(|i| i as usize)
+    }
+
     /// Answers `Locate`: the Key's current Position, or `Gone` if no item on
     /// the axis has it. A Key the filter dropped is `Gone` with the Position
     /// of the kept item nearest it in sort order suggested (the following one
@@ -376,7 +426,8 @@ impl InMemoryTableSource {
 
     /// Filters the rows: `keep[i]` says whether base row `i` (by Logical
     /// Index) stays. The rows kept stay in sort order, and the sort is not
-    /// redone. Returns the Change Notice the rows need.
+    /// redone, and no row stays unmatched. Returns the `Refiltered` the rows
+    /// need.
     ///
     /// # Panics
     ///
@@ -385,14 +436,62 @@ impl InMemoryTableSource {
         let rows = self.axis_mut(Axis::Rows);
         assert_eq!(keep.len(), rows.len, "one keep flag per base row");
         rows.set_keep(Some(keep));
-        ChangeNotice::Reset(rows.count())
+        ChangeNotice::Refiltered(rows.count())
     }
 
-    /// Removes the filter, keeping every row in sort order.
+    /// Removes the filter, keeping every row in sort order. Returns the
+    /// `Refiltered` the rows need.
     pub fn clear_filter(&mut self) -> ChangeNotice {
         let rows = self.axis_mut(Axis::Rows);
         rows.set_keep(None);
-        ChangeNotice::Reset(rows.count())
+        ChangeNotice::Refiltered(rows.count())
+    }
+
+    /// The filter in force now keeps base row `row` (a Logical Index) or
+    /// not, because the data changed: the row comes into view or leaves it
+    /// at once, and is no longer unmatched. Returns the `Refiltered` the rows
+    /// need if it came or went; nothing while no filter is in force.
+    ///
+    /// # Panics
+    ///
+    /// If there is no such row.
+    pub fn refilter_row(&mut self, row: usize, keep: bool) -> Option<ChangeNotice> {
+        let rows = self.axis_mut(Axis::Rows);
+        rows.rekeep(row, keep, false)
+            .then(|| ChangeNotice::Refiltered(rows.count()))
+    }
+
+    /// The filter in force now keeps base row `row` or not, because the user
+    /// edited it: a row in view stays, unmatched while the filter drops it,
+    /// until the filter is applied again ([`InMemoryTableSource::apply_filter`]
+    /// or [`InMemoryTableSource::clear_filter`]). A row out of view is
+    /// treated as by [`InMemoryTableSource::refilter_row`].
+    ///
+    /// # Panics
+    ///
+    /// If there is no such row.
+    pub fn defer_row(&mut self, row: usize, keep: bool) -> Option<ChangeNotice> {
+        let rows = self.axis_mut(Axis::Rows);
+        rows.rekeep(row, keep, true)
+            .then(|| ChangeNotice::Refiltered(rows.count()))
+    }
+
+    /// Whether each item with `keys` on `axis` is unmatched: in view though
+    /// the filter in force drops it. Keys the axis lacks are not.
+    pub fn unmatched(&mut self, axis: Axis, keys: &[Key]) -> Vec<bool> {
+        let order = self.axis_mut(axis);
+        (keys.iter())
+            .map(|&k| {
+                order
+                    .logical(k)
+                    .is_some_and(|i| order.unmatched.contains(&i))
+            })
+            .collect()
+    }
+
+    /// Whether any item on `axis` is unmatched.
+    pub fn has_unmatched(&self, axis: Axis) -> bool {
+        !self.axis(axis).unmatched.is_empty()
     }
 
     /// The number of base rows, kept or not.
@@ -481,11 +580,11 @@ impl InMemoryTableSource {
         let spec = self.sort.clone();
         self.apply_sort(&spec, sort_keys);
         if filtered {
-            self.apply_filter(keep)
+            self.apply_filter(keep);
         } else {
             assert!(keep.is_empty(), "no filter is in force");
-            ChangeNotice::Reset(len as u64)
         }
+        ChangeNotice::Reset(self.count(Axis::Rows))
     }
 
     /// The Sort Spec the rows are in, as last applied.

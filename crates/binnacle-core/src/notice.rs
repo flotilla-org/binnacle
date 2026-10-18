@@ -29,6 +29,15 @@ pub enum ChangeNotice {
     /// dropped unless it spans the whole axis; row Size Overrides are dropped
     /// (column ones kept); the Scroll Anchor keeps its Position, clamped.
     Reset(u64),
+    /// The axis holds `count` of the same Keys as before, some left out or
+    /// brought back and possibly reordered: a filter changed. Focus follows
+    /// its Key (the Grid sends `Locate`) and falls back as for a `Gone`
+    /// answer; picks are located too, and those that left are dropped; the
+    /// range is dropped unless it spans the whole axis; Size Overrides stay
+    /// with their Keys; the topmost visible item that is still there stays at
+    /// the top, else focus is shown, else the view goes to the start. An edit
+    /// whose Key left is cancelled.
+    Refiltered(u64),
     /// `n` items were inserted before the item at Position `at` (the count
     /// for the end). Everything from `at` on moves `n` later: focus, the
     /// range and the Scroll Anchor move with their items, so the view stays
@@ -68,6 +77,8 @@ pub(crate) struct Locating {
     /// A `set_focus` is waiting: once placed, the focus is selected as a
     /// focus move would and revealed.
     pub select_when_placed: bool,
+    /// A find step is waiting: once placed, the focus is revealed.
+    pub reveal_when_placed: bool,
 }
 
 impl Locating {
@@ -103,17 +114,39 @@ fn fallback_end(st: &AxisState, position: Position, suggest: Option<Position>) -
 }
 
 impl Grid {
-    /// Tells the Grid how `axis` changed in the Table Source.
+    /// Tells the Grid how `axis` changed in the Table Source. The current
+    /// find match is located after a change that may take its Key away. A
+    /// change that may show or hide items requests the View Spec again
+    /// ([`crate::ViewEdit::ShownChanged`]) when a quick filter searches the
+    /// shown items of `axis`.
     pub fn notify(&mut self, axis: Axis, notice: ChangeNotice) {
+        // Items may have been shown or hidden.
+        let shown = !matches!(
+            notice,
+            ChangeNotice::Reordered | ChangeNotice::ContentChanged(_)
+        );
+        // Keys may have left.
+        let left = matches!(
+            notice,
+            ChangeNotice::Reset(_) | ChangeNotice::Refiltered(_) | ChangeNotice::Removed { .. }
+        );
         match notice {
-            ChangeNotice::Reordered => self.reordered_or_reset(axis, None),
-            ChangeNotice::Reset(count) => self.reordered_or_reset(axis, Some(count)),
+            ChangeNotice::Reordered => {
+                self.reordered_or_reset(axis, None);
+                self.refilter_reask(axis);
+            }
+            ChangeNotice::Reset(count) => {
+                self.reordered_or_reset(axis, Some(count));
+                self.refilter_forget(axis);
+            }
+            ChangeNotice::Refiltered(count) => self.refiltered(axis, count),
             ChangeNotice::Inserted { at, n } => {
                 let count = self.axis(axis).measure.count();
                 let at = at.min(count);
                 let n = n.min(u64::MAX - count);
                 if n > 0 {
                     self.inserted_or_removed(axis, Shift::Inserted { at, n });
+                    self.refilter_reask(axis);
                 }
             }
             ChangeNotice::Removed { at, n } => {
@@ -122,9 +155,16 @@ impl Grid {
                 let n = n.min(count - at);
                 if n > 0 {
                     self.inserted_or_removed(axis, Shift::Removed { at, n });
+                    self.refilter_reask(axis);
                 }
             }
             ChangeNotice::ContentChanged(range) => self.content_changed(axis, range),
+        }
+        if left {
+            self.find_locate(axis);
+        }
+        if shown {
+            self.shown_changed(axis);
         }
     }
 
@@ -296,6 +336,17 @@ impl Grid {
     /// The items on `axis` moved, and if `count` is given the count changed
     /// too (a `Reset`).
     fn reordered_or_reset(&mut self, axis: Axis, count: Option<u64>) {
+        self.reordered_or_counted(axis, count, axis == Axis::Rows);
+    }
+
+    /// As [`Grid::reordered_or_reset`], dropping the Size Overrides on `axis`
+    /// with a new count only if `drop_sizes`.
+    pub(crate) fn reordered_or_counted(
+        &mut self,
+        axis: Axis,
+        count: Option<u64>,
+        drop_sizes: bool,
+    ) {
         let i = axis.index();
         self.cancel_drags(axis);
         if self.selection.span.is_some_and(|s| !s.whole[i]) || count == Some(0) {
@@ -309,7 +360,7 @@ impl Grid {
             Some(count) => {
                 let resized = st.measure.count() != count;
                 st.measure.set_count(count);
-                if axis == Axis::Rows {
+                if drop_sizes {
                     st.measure.clear_sizes();
                 }
                 self.clamp_positions(axis, count);
@@ -394,9 +445,16 @@ impl Grid {
     /// ignored. Once every focused Key is placed, focus moves made meanwhile
     /// are applied. An edit whose Key has left is cancelled (`EditCancelled`).
     pub fn located(&mut self, axis: Axis, key: Key, answer: Located) {
+        self.edit_located(axis, key, &answer);
+        self.refilter_located(axis, key, answer);
+        self.find_located(axis, key, answer);
+        self.focus_located(axis, key, answer);
+    }
+
+    /// A `located` answer about the focused Key on `axis`.
+    fn focus_located(&mut self, axis: Axis, key: Key, answer: Located) {
         let i = axis.index();
         let count = self.axis(axis).measure.count();
-        self.edit_located(axis, key, &answer);
         let focused = self.locating.waiting[i] && self.focus.and_then(|f| f[i].key) == Some(key);
         let Some(w) = &mut self.locating.whereabouts[i] else {
             return;
@@ -474,6 +532,16 @@ impl Grid {
         }
     }
 
+    /// The state a press would restore on `Cancel` must not bring back a
+    /// pick of a row that has left.
+    pub(crate) fn forget_pick_before(&mut self, key: Key) {
+        if let Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before } =
+            &mut self.gesture
+        {
+            before.selection.picks.retain(|&k| k != key);
+        }
+    }
+
     /// Called when an axis stops waiting for `located`: once no axis
     /// waits, finishes a waiting `set_focus` and applies the focus moves
     /// held meanwhile. Returns false while an axis still waits.
@@ -485,6 +553,10 @@ impl Grid {
             && let Some(f) = self.focus
         {
             self.set_span(self.unit_span(f));
+            self.reveal = true;
+            self.reveal_focus();
+        }
+        if std::mem::take(&mut self.locating.reveal_when_placed) && self.focus.is_some() {
             self.reveal = true;
             self.reveal_focus();
         }
@@ -522,6 +594,7 @@ impl Grid {
     pub(crate) fn before_focus_set(&mut self, cell: [FocusEnd; 2]) {
         self.locating.moves.clear();
         self.locating.select_when_placed = false;
+        self.locating.reveal_when_placed = false;
         for axis in Axis::ALL {
             let i = axis.index();
             if self.focus.map(|f| f[i]) != Some(cell[i]) {

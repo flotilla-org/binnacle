@@ -1,5 +1,5 @@
 // The records source end to end: header clicks sort (Shift adds a column),
-// the filter box filters, header drags move columns, and focus follows its
+// the filter box filters (keeping the view's place), header drags move columns, and focus follows its
 // record through a re-sort. Cells are canvas pixels, so the status line's
 // focus (Position, row ID, column ID) is the probe: the row ID is the
 // record's index, which is also its `id`.
@@ -114,6 +114,24 @@ test("the filter box keeps the matching records, in the sort in force", async ({
   await expect(status(page)).toContainText(focus(2, kept[2]!, "id"));
   await page.getByRole("searchbox", { name: "Filter records" }).fill("");
   await expect(status(page)).toContainText(`of ${rows.length.toLocaleString("en")}`);
+});
+
+test("a filter keeps the topmost record still shown at the top, and clearing it keeps it there", async ({ page }) => {
+  const b = await layer(page);
+  await page.mouse.move(b.x + column(1), b.y + HEADER + ROW * 3);
+  await page.mouse.wheel(0, ROW * 25);
+  await expect(status(page)).not.toContainText("rows 1 to");
+  const first = Number(/rows ([\d,]+) to/.exec((await status(page).textContent()) ?? "")![1]!.replace(/,/g, ""));
+  // The topmost record shown that matches, and its Position once filtered.
+  const kept = sorted([], (r) => matches(r, "e"));
+  const survivor = kept.find((i) => i >= first - 1)!;
+  const top = kept.indexOf(survivor) + 1;
+  await page.getByRole("searchbox", { name: "Filter records" }).fill("e");
+  await expect(status(page)).toContainText(`rows ${top} to`);
+  await expect(status(page)).not.toContainText("loading");
+  await page.getByRole("searchbox", { name: "Filter records" }).fill("");
+  await expect(status(page)).toContainText(`rows ${survivor + 1} to`);
+  await expect(status(page)).not.toContainText("loading");
 });
 
 test("dragging a header moves its column", async ({ page }) => {

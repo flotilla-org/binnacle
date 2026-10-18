@@ -103,6 +103,9 @@ header h1 {
 
 #grid { min-height: 0; }
 
+.with-filter-bar { display: flex; flex-direction: column; height: 100%; }
+.with-filter-bar .grid-box { flex: 1; min-height: 0; }
+
 footer {
   padding: 5px 14px;
   border-top: 1px solid var(--line);
