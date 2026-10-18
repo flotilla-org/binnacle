@@ -317,6 +317,13 @@ int main(void) {
   frame(grid, &snap);
   CHECK(c->headers[0].support == (BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_ONE_OF));
   CHECK(r->conditions_len == 2 && r->conditions[1].condition.values[1].blank);
+  /* The source stops supporting text on column 2001 and says so,
+   * unprompted: its condition stays listed, not applied. */
+  CHECK(!snap.view_pending);
+  CHECK(binnacle_grid_view_changed(grid, NULL, &totals));
+  frame(grid, &snap);
+  CHECK(r->conditions_len == 2 && r->conditions[0].state == BINNACLE_CONDITION_NOT_APPLIED);
+  CHECK(c->headers[1].flags & BINNACLE_HEADER_FILTER_NOT_APPLIED);
   /* Restoring a saved view: the base one. */
   CHECK(binnacle_grid_request_view(grid, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));

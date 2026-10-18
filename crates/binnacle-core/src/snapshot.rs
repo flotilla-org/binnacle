@@ -310,9 +310,18 @@ impl<'a> Snapshot<'a> {
         &self.grid.view.applied
     }
 
-    /// The latest requested View Spec while an answer is still due.
+    /// The latest requested View Spec while an answer is still due, then
+    /// while the applied spec leaves out part of it (see
+    /// [`Self::view_pending`]).
     pub fn requested_view(&self) -> Option<&'a ViewSpec> {
         self.grid.view.requested.as_ref()
+    }
+
+    /// Whether a `view_applied` is still due: the requested View Spec is
+    /// pending while this holds, and what it asks for beyond the applied spec
+    /// is not applied once it doesn't.
+    pub fn view_pending(&self) -> bool {
+        self.grid.view.pending()
     }
 
     /// The Find Query in force, if find is open.
@@ -321,7 +330,7 @@ impl<'a> Snapshot<'a> {
     }
 
     /// The match the last find step landed on, until its row or column
-    /// leaves or the Find Query changes.
+    /// leaves, a step for a new Find Query lands, or find closes.
     pub fn find_match(&self) -> Option<FindMatch> {
         self.grid.find.current
     }

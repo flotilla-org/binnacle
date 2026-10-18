@@ -49,6 +49,7 @@ enum Op {
     HeaderClick(Axis, HeaderClick),
     Threshold(f32),
     ViewApplied(ViewSpec, Totals),
+    ViewChanged(ViewSpec, Totals),
     RequestView(ViewSpec),
     ReapplyView,
     SetQuickFilter(Axis, Option<TextQuery>),
@@ -307,7 +308,7 @@ fn totals(tc: &TestCase) -> Totals {
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(13)) {
+    match tc.draw(gs::integers::<u8>().max_value(14)) {
         10 => Op::SetFind(
             tc.draw(gs::weighted_booleans(0.9))
                 .then(|| tc.draw(find_query())),
@@ -323,6 +324,7 @@ fn answer(tc: &TestCase) -> Op {
             Op::FindStepped(found, tc.draw(gs::optional(shown)))
         }
         0 => Op::ViewApplied(tc.draw(view_spec()), tc.draw(totals())),
+        14 => Op::ViewChanged(tc.draw(view_spec()), tc.draw(totals())),
         7 => Op::AddCondition(axis, tc.draw(condition(axis))),
         // Often one the latest request has, so it goes.
         8 => Op::RemoveCondition(axis, tc.draw(condition(axis))),
@@ -727,7 +729,8 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 | u32::from(want.selected) << 3
                 | u32::from(want.hovered) << 4
                 | u32::from(want.filter.filtered) << 5
-                | u32::from(want.filter.pending) << 6;
+                | u32::from(want.filter.pending) << 6
+                | u32::from(want.filter.not_applied) << 7;
             assert_eq!(got.flags, flags, "{want:?}");
             assert_eq!(got.sort_place as usize, place.unwrap_or(0));
             let support = want
@@ -765,7 +768,8 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 let state = match l.state {
                     0 => ConditionState::Applied,
                     1 => ConditionState::Adding,
-                    _ => ConditionState::Removing,
+                    2 => ConditionState::Removing,
+                    _ => ConditionState::NotApplied,
                 };
                 (unsafe { condition_from_c(&l.condition) }, state)
             })
@@ -825,6 +829,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         BINNACLE_FIND | (u32::from(s.regex) * BINNACLE_FIND_REGEX)
     });
     assert_eq!(c.find_support, support, "find support");
+    assert_eq!(c.view_pending != 0, rust.view_pending(), "view pending");
     match rust.hovered_header() {
         None => assert_eq!(c.has_hovered_header, 0),
         Some((axis, item)) => {
@@ -1329,6 +1334,18 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     };
                     let ok = with_c_view(&spec, |c| binnacle_grid_view_applied(h, c, &c_totals));
                     grid.view_applied(spec, totals);
+                    ok
+                }
+                Op::ViewChanged(spec, totals) => {
+                    let known = |t: Option<u64>| BinnacleTotal {
+                        known: u32::from(t.is_some()),
+                        count: t.unwrap_or(0),
+                    };
+                    let c_totals = BinnacleTotals {
+                        axes: [known(totals.rows), known(totals.cols)],
+                    };
+                    let ok = with_c_view(&spec, |c| binnacle_grid_view_changed(h, c, &c_totals));
+                    grid.view_changed(spec, totals);
                     ok
                 }
                 Op::RequestView(spec) => {

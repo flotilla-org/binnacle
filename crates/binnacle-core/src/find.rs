@@ -72,9 +72,11 @@ pub(crate) struct FindState {
     pub support: Option<TextSupport>,
     /// Step answers still to come for the query in force.
     due: u32,
-    /// Steps asked for while one was unanswered, sent in turn once it is,
-    /// each from where the one before landed.
-    held: Vec<FindDirection>,
+    /// Whether a step for the query in force has been answered.
+    answered: bool,
+    /// The step asked for last while one was unanswered, sent once it is,
+    /// from where that one landed. Never more than one.
+    held: Option<FindDirection>,
     /// Step answers still to come for an earlier query, ignored.
     stale: u32,
     /// Per axis, `Locate` answers still to come about the current match's Key.
@@ -90,7 +92,8 @@ impl Grid {
 
     /// Sets the Find Query, or closes find with `None` (or a query with no
     /// text), emitting [`Effect::FindRequested`] so the host fetches the new
-    /// marks. The current match is dropped, and a step still unanswered is
+    /// marks. The current match stays until the first step for the new
+    /// query lands (closing find drops it), and a step still unanswered is
     /// ignored when it lands. Setting the query in force does nothing.
     pub fn set_find(&mut self, query: Option<FindQuery>) {
         let query = query.filter(|q| !q.query.text.is_empty());
@@ -99,20 +102,27 @@ impl Grid {
         }
         self.find.query = query.clone();
         self.find.stale += std::mem::take(&mut self.find.due);
-        self.find.held.clear();
-        self.drop_match();
+        self.find.held = None;
+        self.find.answered = false;
+        if query.is_none() {
+            self.drop_match();
+        }
         self.push(Effect::FindRequested { query });
     }
 
     /// A Find Next or Find Previous Action: asks the Table Source for the
     /// next match from the current one, or from the focused cell. While a
-    /// step is unanswered the next one waits, so it starts where that lands.
+    /// step is unanswered one more waits, the latest asked for, so it starts
+    /// where that lands; before the query's first answer, none does, so
+    /// presses made while a slow source finds the first match move once.
     pub(crate) fn find_step(&mut self, direction: FindDirection) {
         let Some(query) = self.find.query.clone() else {
             return;
         };
         if self.find.due > 0 {
-            self.find.held.push(direction);
+            if self.find.answered {
+                self.find.held = Some(direction);
+            }
             return;
         }
         let from = self
@@ -142,6 +152,7 @@ impl Grid {
         if self.find.query.is_none() {
             return;
         }
+        self.find.answered = true;
         self.drop_match();
         if let Some(found) = found {
             self.find.current = Some(found);
@@ -153,8 +164,7 @@ impl Grid {
                 }
             }
         }
-        if !self.find.held.is_empty() {
-            let direction = self.find.held.remove(0);
+        if let Some(direction) = self.find.held.take() {
             self.find_step(direction);
         }
     }

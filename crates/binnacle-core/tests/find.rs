@@ -125,8 +125,9 @@ fn the_current_match_goes_when_a_filter_takes_its_row() {
     s.input(|g| {
         g.set_find(find("3"));
         g.action(Action::FindNext);
-        g.action(Action::FindNext);
     });
+    s.frame(V);
+    s.input(|g| g.action(Action::FindNext));
     let mut out = s.step("find \"3\", stepped twice: 31 in row 3", V);
     s.input(|g| g.set_quick_filter(Axis::Rows, Some(TextQuery::new("2"))));
     out += &s.step(
@@ -201,8 +202,9 @@ fn the_current_match_stays_when_a_filter_keeps_its_row() {
     s.input(|g| {
         g.set_find(find("3"));
         g.action(Action::FindNext);
-        g.action(Action::FindNext);
     });
+    s.frame(V);
+    s.input(|g| g.action(Action::FindNext));
     s.frame(V);
     assert_eq!(s.grid.snapshot().find_match(), Some(cell(3, 0)));
     // "3" keeps 13, 31, 30, 23 and 3: row 3 stays.

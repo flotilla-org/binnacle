@@ -62,8 +62,13 @@ export interface KeyedAxisView {
   sort: SortColumn[];
 }
 
-/** Where a condition stands: applied and still asked for, asked for and not yet applied, or applied and no longer asked for. */
-export type ConditionState = "applied" | "adding" | "removing";
+/**
+ * Where a condition stands: applied and still asked for, asked for and not
+ * yet applied, applied and no longer asked for, or asked for and left out by
+ * the Table Source with no answer due (rejected, failed, or no longer
+ * supported).
+ */
+export type ConditionState = "applied" | "adding" | "removing" | "notApplied";
 
 /**
  * A Find Query as the Grid holds it: the Text Query, and the axis find steps
@@ -93,8 +98,11 @@ export interface HeaderPlacement {
   sort: { applied: { direction: SortDirection; index: number } | null; pending: boolean };
   selected: boolean;
   hovered: boolean;
-  /** Whether the applied View Spec has a condition read in this item, and whether a request would change them. */
-  filter: { filtered: boolean; pending: boolean };
+  /**
+   * Whether the applied View Spec has a condition read in this item, whether
+   * a request would change them, and whether one asked for is not applied.
+   */
+  filter: { filtered: boolean; pending: boolean; notApplied: boolean };
   /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
   support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean };
 }
@@ -148,10 +156,13 @@ export interface Snapshot {
   picked: bigint[];
   movingKeys: bigint[];
   appliedView: KeyedViewSpec;
+  /** The latest request while an answer is due (`viewPending`), then while the applied spec leaves part of it out. */
   requestedView: KeyedViewSpec | null;
+  /** Whether an answer to a View Spec request is due. */
+  viewPending: boolean;
   /** The Find Query, `null` while find is closed. */
   find: KeyedFindQuery | null;
-  /** The match the last find step landed on, until its row or column leaves. */
+  /** The match the last find step landed on, until its row or column leaves, a step for a new Find Query lands, or find closes. */
   findMatch: FindMatch | null;
   /** Whether the Table Source finds, and with regexes; `null` if it does not. */
   findSupport: { regex: boolean } | null;
@@ -190,7 +201,7 @@ export function cellState(s: Snapshot, row: number, col: number): CellState {
 const AXIS_NAMES: readonly AxisName[] = ["rows", "cols"];
 const DIRECTIONS: readonly SortDirection[] = ["ascending", "descending"];
 const CURSORS: readonly Cursor[] = ["default", "resizeCol", "resizeRow", "move"];
-const CONDITION_STATES: readonly ConditionState[] = ["applied", "adding", "removing"];
+const CONDITION_STATES: readonly ConditionState[] = ["applied", "adding", "removing", "notApplied"];
 /** `SUPPORT` bits in `codes.ts`, read here without importing the encoder's side. */
 const SORT_BIT = 1;
 /** `FIND` bits in `codes.ts`, likewise. */
@@ -314,7 +325,7 @@ function readAxis(r: Reader): AxisSnapshot {
     },
     selected: r.flag(),
     hovered: r.flag(),
-    filter: { filtered: r.flag(), pending: r.flag() },
+    filter: { filtered: r.flag(), pending: r.flag(), notApplied: r.flag() },
     support: supportOf(r.num()),
   }));
   const conditions = r.list(() => {
@@ -377,6 +388,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const movingKeys = r.list(() => r.key());
   const appliedView = r.view();
   const requestedView = r.opt(() => r.view());
+  const viewPending = r.flag();
   const find = r.opt(() => {
     const query = r.textQuery();
     return { query, by: r.axis() };
@@ -406,6 +418,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     movingKeys,
     appliedView,
     requestedView,
+    viewPending,
     find,
     findMatch,
     findSupport,

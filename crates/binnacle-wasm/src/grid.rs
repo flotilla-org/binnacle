@@ -156,6 +156,23 @@ impl WebGrid {
         Ok(())
     }
 
+    /// The Table Source's news, not an answer: the View Spec it applies now,
+    /// or new totals, as for `view_applied`. Answers still due stay due.
+    pub fn view_changed(
+        &mut self,
+        spec: JsValue,
+        total_rows: f64,
+        total_cols: f64,
+    ) -> Result<(), JsError> {
+        let spec = view_spec(spec)?;
+        let totals = Totals {
+            rows: codes::total(total_rows),
+            cols: codes::total(total_cols),
+        };
+        self.grid.view_changed(spec, totals);
+        Ok(())
+    }
+
     /// Requests the whole of `spec`, shaped as `ViewRequested` carries it.
     pub fn request_view(&mut self, spec: JsValue) -> Result<(), JsError> {
         let spec = view_spec(spec)?;

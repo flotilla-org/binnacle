@@ -389,11 +389,13 @@ impl Support {
 
 /// How the header of an item shows the conditions read in it: `filtered`
 /// while the applied View Spec has one, `pending` while the latest request
-/// would change them.
+/// would change them, and `not_applied` while one the user asked for is
+/// left out of the applied spec with no answer due.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct HeaderFilter {
     pub filtered: bool,
     pub pending: bool,
+    pub not_applied: bool,
 }
 
 /// Where a condition stands between the applied View Spec and the latest
@@ -406,14 +408,19 @@ pub enum ConditionState {
     Adding,
     /// Applied, no longer requested.
     Removing,
+    /// Requested, with no answer due, but left out of the applied spec: the
+    /// Table Source rejected it, failed, or stopped applying it.
+    NotApplied,
 }
 
 /// The Grid's view state: the View Spec the Table Source last applied and the
-/// one the user last asked for while answers are still due.
+/// one the user last asked for while answers are still due, or while the
+/// source leaves part of it out.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ViewState {
     pub applied: ViewSpec,
-    /// The latest request, kept while any `view_applied` is still due.
+    /// The latest request, kept while any `view_applied` is still due, then
+    /// while the applied spec leaves out part of it.
     pub requested: Option<ViewSpec>,
     due: u32,
     /// Per axis viewed, the items of the other axis whose support differs
@@ -431,7 +438,8 @@ impl ViewState {
         let sorted = header_axis.other();
         let place = |spec: &ViewSpec| spec.axis(sorted).sort.find(key).map(|(i, d)| (d, i));
         let applied = place(&self.applied);
-        let pending = self.requested.as_ref().is_some_and(|r| place(r) != applied);
+        let pending =
+            self.pending() && self.requested.as_ref().is_some_and(|r| place(r) != applied);
         HeaderSort { applied, pending }
     }
 
@@ -447,11 +455,17 @@ impl ViewState {
                 .collect()
         };
         let applied = on(&self.applied);
-        let pending = self.requested.as_ref().is_some_and(|r| on(r) != applied);
+        let differs = self.requested.as_ref().is_some_and(|r| on(r) != applied);
         HeaderFilter {
             filtered: !applied.is_empty(),
-            pending,
+            pending: differs && self.pending(),
+            not_applied: differs && !self.pending(),
         }
+    }
+
+    /// Whether a `view_applied` is still due.
+    pub fn pending(&self) -> bool {
+        self.due > 0
     }
 
     /// The conditions of `axis`: the latest request's, each `Applied` or
@@ -478,7 +492,8 @@ impl ViewState {
                     applied.remove(i);
                     ConditionState::Applied
                 }
-                None => ConditionState::Adding,
+                None if self.pending() => ConditionState::Adding,
+                None => ConditionState::NotApplied,
             };
             out.push((c.clone(), state));
         }
@@ -496,6 +511,36 @@ impl ViewState {
             .copied()
             .unwrap_or_default()
     }
+}
+
+/// What the user asked for, `wanted`, once the Table Source has answered with
+/// `applied`: the source's sort, its conditions plus the wanted ones it left
+/// out, and the wanted quick filter if there is one, else its own.
+fn kept(wanted: ViewSpec, applied: &ViewSpec) -> ViewSpec {
+    let mut kept = applied.clone();
+    for axis in Axis::ALL {
+        let wanted = &wanted.axis(axis).filter;
+        let filter = &mut kept.axis_mut(axis).filter;
+        if wanted.quick.is_some() {
+            filter.quick = wanted.quick.clone();
+        }
+        // In the wanted order, so a chip the source left out stays in place.
+        let mut extra: Vec<Condition> = filter.conditions.conditions().to_vec();
+        let mut list = Vec::new();
+        let mut missing = false;
+        for c in wanted.conditions.conditions() {
+            match extra.iter().position(|a| a == c) {
+                Some(i) => drop(extra.remove(i)),
+                None => missing = true,
+            }
+            list.push(c.clone());
+        }
+        if missing {
+            list.extend(extra);
+            filter.conditions = ConditionTree::All(list);
+        }
+    }
+    kept
 }
 
 impl Grid {
@@ -517,12 +562,28 @@ impl Grid {
     /// pending flags clear once every request has had its answer.
     ///
     /// `totals` gives each axis's unfiltered count, where known.
+    ///
+    /// Once no answer is due, what the user asked for and the source left out
+    /// stays requested, shown as not applied (a red chip, say) until the user
+    /// removes it or the source applies it: an invalid regex, a condition the
+    /// source stopped supporting. A removal the source refused puts the
+    /// condition back, and the source's sort stands.
     pub fn view_applied(&mut self, spec: ViewSpec, totals: Totals) {
+        self.view.due = self.view.due.saturating_sub(1);
+        self.view_changed(spec, totals);
+    }
+
+    /// The Table Source's news, not an answer to a request: the View Spec it
+    /// applies now, or new totals, pushed when what it can apply changes.
+    /// Answers still due stay due. A condition the user asked for that the
+    /// new spec leaves out stays, shown as not applied.
+    pub fn view_changed(&mut self, spec: ViewSpec, totals: Totals) {
+        let wanted = self.latest_view().clone();
         self.view.applied = spec;
         self.view.totals = totals;
-        self.view.due = self.view.due.saturating_sub(1);
         if self.view.due == 0 {
-            self.view.requested = None;
+            let kept = kept(wanted, &self.view.applied);
+            self.view.requested = (kept != self.view.applied).then_some(kept);
         }
         self.pending_damage.selection = true;
     }

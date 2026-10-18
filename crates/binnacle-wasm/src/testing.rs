@@ -37,6 +37,7 @@ pub struct Dump {
     moving_keys: Vec<u64>,
     applied_view: WireViewSpec,
     requested_view: Option<WireViewSpec>,
+    view_pending: bool,
     find: Option<WireFindQuery>,
     find_match: Option<WireFindMatch>,
     find_support: Option<DumpTextSupport>,
@@ -117,9 +118,11 @@ impl From<Support> for DumpSupport {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DumpHeaderFilter {
     filtered: bool,
     pending: bool,
+    not_applied: bool,
 }
 
 #[derive(Serialize)]
@@ -191,6 +194,7 @@ impl DumpHeader {
             filter: DumpHeaderFilter {
                 filtered: h.filter.filtered,
                 pending: h.filter.pending,
+                not_applied: h.filter.not_applied,
             },
             support: support.into(),
         }
@@ -341,6 +345,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                     ConditionState::Applied => "applied",
                     ConditionState::Adding => "adding",
                     ConditionState::Removing => "removing",
+                    ConditionState::NotApplied => "notApplied",
                 },
             })
             .collect(),
@@ -405,6 +410,7 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         moving_keys: keys(s.moving_keys()),
         applied_view: s.applied_view().into(),
         requested_view: s.requested_view().map(WireViewSpec::from),
+        view_pending: s.view_pending(),
         find: s.find().map(WireFindQuery::from),
         find_match: s.find_match().map(WireFindMatch::from),
         find_support: s.find_support().map(|f| DumpTextSupport { regex: f.regex }),
@@ -552,9 +558,9 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 12] = [
+pub const SCENARIOS: [&str; 13] = [
     "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
-    "sorted", "filtered", "found",
+    "sorted", "filtered", "found", "rejected",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -725,6 +731,27 @@ pub fn scenario(name: &str) -> Grid {
             grid.action(Action::FindNext);
             grid.find_stepped(Some(FindMatch::new(key(3), key(1))));
         }
+        "rejected" => {
+            // The source answered a quick filter and a condition on column 1
+            // with neither (an invalid regex, say), and later stopped
+            // applying the condition on column 2.
+            let kept = Condition::text(key(2), TextQuery::new("x"));
+            grid.add_condition(Axis::Rows, kept.clone());
+            let applied = FilterSpec::default().with_conditions(vec![kept].into());
+            grid.view_applied(
+                ViewSpec::default().with_filter(Axis::Rows, applied),
+                Totals::unknown(),
+            );
+            grid.set_quick_filter(Axis::Rows, Some(TextQuery::new("(").regex(true)));
+            grid.add_condition(
+                Axis::Rows,
+                Condition::text(key(1), TextQuery::new("[").regex(true)),
+            );
+            let applied = grid.snapshot().applied_view().clone();
+            grid.view_applied(applied.clone(), Totals::unknown());
+            grid.view_applied(applied, Totals::unknown());
+            grid.view_changed(ViewSpec::default(), Totals::unknown());
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -796,6 +823,18 @@ mod tests {
                         ]
                     );
                 }
+                "rejected" => {
+                    assert!(!s.view_pending());
+                    let states: Vec<ConditionState> = s
+                        .conditions(Axis::Rows)
+                        .into_iter()
+                        .map(|(_, st)| st)
+                        .collect();
+                    assert_eq!(states, [ConditionState::NotApplied; 2]);
+                    let wanted = s.requested_view().and_then(|r| r.rows.filter.quick.clone());
+                    assert!(wanted.is_some_and(|q| q.regex));
+                    assert_eq!(s.applied_view(), &ViewSpec::default());
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
@@ -820,6 +859,7 @@ mod tests {
                 "Idle",
                 "Idle",
                 "DraggingSelection",
+                "Idle",
                 "Idle",
                 "Idle",
                 "Idle"

@@ -34,6 +34,7 @@ pub const BINNACLE_HEADER_SELECTED: u32 = 8;
 pub const BINNACLE_HEADER_HOVERED: u32 = 16;
 pub const BINNACLE_HEADER_FILTERED: u32 = 32;
 pub const BINNACLE_HEADER_FILTER_PENDING: u32 = 64;
+pub const BINNACLE_HEADER_FILTER_NOT_APPLIED: u32 = 128;
 
 pub const BINNACLE_MODE_OTHER: u32 = 0;
 pub const BINNACLE_MODE_IDLE: u32 = 1;
@@ -77,6 +78,7 @@ pub const BINNACLE_CONDITION_ONE_OF: u32 = 2;
 pub const BINNACLE_CONDITION_APPLIED: u32 = 0;
 pub const BINNACLE_CONDITION_ADDING: u32 = 1;
 pub const BINNACLE_CONDITION_REMOVING: u32 = 2;
+pub const BINNACLE_CONDITION_NOT_APPLIED: u32 = 3;
 
 pub const BINNACLE_TEXT_CASE_SENSITIVE: u32 = 1;
 pub const BINNACLE_TEXT_REGEX: u32 = 2;
@@ -372,6 +374,7 @@ pub struct BinnacleSnapshot {
     pub has_find_match: u32,
     pub find_match: BinnacleFindMatch,
     pub find_support: u32,
+    pub view_pending: u32,
 }
 
 #[repr(C)]
@@ -699,7 +702,8 @@ impl From<HeaderPlacement> for BinnacleHeader {
                 | bit(h.selected, BINNACLE_HEADER_SELECTED)
                 | bit(h.hovered, BINNACLE_HEADER_HOVERED)
                 | bit(h.filter.filtered, BINNACLE_HEADER_FILTERED)
-                | bit(h.filter.pending, BINNACLE_HEADER_FILTER_PENDING),
+                | bit(h.filter.pending, BINNACLE_HEADER_FILTER_PENDING)
+                | bit(h.filter.not_applied, BINNACLE_HEADER_FILTER_NOT_APPLIED),
             sort_place: place.map_or(0, |p| u32::try_from(p).unwrap_or(u32::MAX)),
             support: 0,
         }
@@ -1231,6 +1235,7 @@ impl BinnacleGrid {
                         ConditionState::Applied => BINNACLE_CONDITION_APPLIED,
                         ConditionState::Adding => BINNACLE_CONDITION_ADDING,
                         ConditionState::Removing => BINNACLE_CONDITION_REMOVING,
+                        ConditionState::NotApplied => BINNACLE_CONDITION_NOT_APPLIED,
                     },
                     condition,
                 }
@@ -1340,6 +1345,7 @@ impl BinnacleGrid {
             has_find_match: flag(find_match.is_some()),
             find_match: find_match.map(BinnacleFindMatch::from).unwrap_or_default(),
             find_support: find_bits(snap.find_support()),
+            view_pending: flag(snap.view_pending()),
         }
     }
 
@@ -1535,6 +1541,22 @@ pub unsafe extern "C" fn binnacle_grid_view_applied(
     let totals = unsafe { totals.as_ref() }.map_or_else(Totals::default, |t| t.to_core());
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| spec.map(|s| h.grid.view_applied(s, totals))) }
+}
+
+/// # Safety
+/// As for [`binnacle_grid_view_applied`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_view_changed(
+    grid: *mut BinnacleGrid,
+    spec: *const BinnacleViewSpec,
+    totals: *const BinnacleTotals,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let spec = unsafe { view_spec(spec) };
+    // SAFETY: the caller's contract.
+    let totals = unsafe { totals.as_ref() }.map_or_else(Totals::default, |t| t.to_core());
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| spec.map(|s| h.grid.view_changed(s, totals))) }
 }
 
 /// # Safety

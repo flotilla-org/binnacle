@@ -125,6 +125,7 @@ impl Writer<'_> {
         self.flag(h.hovered);
         self.flag(h.filter.filtered);
         self.flag(h.filter.pending);
+        self.flag(h.filter.not_applied);
     }
 
     /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
@@ -295,6 +296,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
                 ConditionState::Applied => 0,
                 ConditionState::Adding => 1,
                 ConditionState::Removing => 2,
+                ConditionState::NotApplied => 3,
             });
             w.condition(c);
         }
@@ -359,6 +361,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
     if let Some(spec) = requested {
         w.view(spec);
     }
+    w.flag(s.view_pending());
     // Find: the query and the axis it steps along, the current match, then
     // the support bits.
     let find = s.find();

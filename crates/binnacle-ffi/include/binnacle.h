@@ -54,6 +54,9 @@ extern "C" {
 #define BINNACLE_HEADER_HOVERED 16u
 #define BINNACLE_HEADER_FILTERED 32u
 #define BINNACLE_HEADER_FILTER_PENDING 64u
+/* FILTER_NOT_APPLIED: no answer is due, and a condition read in this item
+ * that the user asked for is left out of the applied View Spec. */
+#define BINNACLE_HEADER_FILTER_NOT_APPLIED 128u
 
 /* BinnacleSnapshot.mode. Modes the Grid gained after this header read as
  * BINNACLE_MODE_OTHER. */
@@ -135,10 +138,13 @@ extern "C" {
 #define BINNACLE_CONDITION_ONE_OF 2
 
 /* BinnacleListedCondition.state: applied and still requested, requested and
- * not yet applied, or applied and no longer requested. */
+ * not yet applied, applied and no longer requested, or requested and left
+ * out of the applied View Spec with no answer due (rejected, failed, or no
+ * longer supported). */
 #define BINNACLE_CONDITION_APPLIED 0
 #define BINNACLE_CONDITION_ADDING 1
 #define BINNACLE_CONDITION_REMOVING 2
+#define BINNACLE_CONDITION_NOT_APPLIED 3
 
 /* BinnacleTextQuery.flags bits. Without CASE_SENSITIVE, case is ignored;
  * with REGEX, the text is a pattern in the Table Source's own syntax. */
@@ -410,12 +416,15 @@ typedef struct {
   /* The Find Query in force, if find is open. */
   uint32_t has_find;
   BinnacleFindQuery find;
-  /* The match the last find step landed on, until its row or column leaves
-   * or the Find Query changes. */
+  /* The match the last find step landed on, until its row or column leaves,
+   * a step for a new Find Query lands, or find closes. */
   uint32_t has_find_match;
   BinnacleFindMatch find_match;
   /* BINNACLE_FIND* bits: whether to offer find. */
   uint32_t find_support;
+  /* Nonzero while a binnacle_grid_view_applied is due: requested parts are
+   * pending; once zero, requested parts not applied are not applied. */
+  uint32_t view_pending;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -599,6 +608,13 @@ int binnacle_grid_poll_effect(BinnacleGrid *grid, BinnacleEffect *out);
  * NULL spec is the base view, NULL totals knows neither. 0 for an unknown
  * direction, tag or flag, or text that is not UTF-8. */
 int binnacle_grid_view_applied(BinnacleGrid *grid, const BinnacleViewSpec *spec,
+                               const BinnacleTotals *totals);
+
+/* The Table Source's news, not an answer: the View Spec it applies now, or
+ * new totals. Answers still due stay due; a condition the user asked for
+ * that the spec leaves out stays listed, NOT_APPLIED. Arguments and result
+ * as binnacle_grid_view_applied. */
+int binnacle_grid_view_changed(BinnacleGrid *grid, const BinnacleViewSpec *spec,
                                const BinnacleTotals *totals);
 
 /* Whether axis has a quick filter and takes regexes: BINNACLE_QUICK_FILTER*

@@ -1,8 +1,9 @@
 //! Seam 1 state machine: a real Grid against an honest model Table Source,
 //! with every kind of input mixed in any order. Change Notices, `located`
 //! answers (some held back and answered late), refilters, sorts, quick
-//! filters and column conditions (answered by a sort or a refilter), header
-//! moves, edits,
+//! filters and column conditions (answered whole, as a subset or as a
+//! failure, late or superseded, by a sort or a refilter), View Specs pushed
+//! unprompted, find steps, header moves, edits,
 //! pointer gestures (band edge drags among them), Actions, Size Overrides,
 //! `set_header`, `set_gap` and `set_focus` (with Keys the source has and Keys
 //! it never had). Every frame's Snapshot is checked
@@ -38,8 +39,15 @@ struct Host {
     /// The next fresh Key; row and column Keys never collide with each other
     /// or with the initial ones.
     next: u64,
-    /// Effects drained but not answered yet.
-    pending: VecDeque<Effect>,
+    /// Effects drained but not answered yet, each with the find round it
+    /// was drained in.
+    pending: VecDeque<(Effect, u64)>,
+    /// `view_applied` answers due: one per `ViewRequested` drained.
+    views_due: u32,
+    /// Bumped with each `FindRequested` drained.
+    find_round: u64,
+    /// Find steps drained in this find round and not answered yet.
+    steps_due: u32,
     viewport: Viewport,
     /// Each axis's band thickness and Gap as of the last frame.
     headers: [f32; 2],
@@ -102,9 +110,67 @@ impl Host {
         });
     }
 
+    /// Drains the Effect queue into `pending`, counting the answers due.
+    fn collect(&mut self) {
+        while let Some(stamped) = self.grid.poll_effect() {
+            match &stamped.effect {
+                Effect::ViewRequested { .. } => self.views_due += 1,
+                Effect::FindRequested { .. } => {
+                    self.find_round += 1;
+                    self.steps_due = 0;
+                }
+                Effect::FindStepRequested { .. } => self.steps_due += 1,
+                _ => {}
+            }
+            self.pending.push_back((stamped.effect, self.find_round));
+        }
+        assert!(
+            self.steps_due <= 1,
+            "{} find steps asked for at once",
+            self.steps_due
+        );
+    }
+
+    /// What the user wants, as the Snapshot lists it: the quick filter of
+    /// the latest request (else the applied one), and every condition not
+    /// being removed.
+    fn wanted(&mut self) -> (Option<TextQuery>, Vec<Condition>) {
+        let snap = self.grid.snapshot();
+        let latest = snap.requested_view().unwrap_or(snap.applied_view());
+        let quick = latest.rows.filter.quick.clone();
+        let conditions = (snap.conditions(Axis::Rows).into_iter())
+            .filter(|(_, state)| *state != ConditionState::Removing)
+            .map(|(c, _)| c)
+            .collect();
+        (quick, conditions)
+    }
+
+    /// A View Spec from the source, answering or not: whatever it applies,
+    /// what the user wanted stays wanted.
+    fn view_from_source(&mut self, spec: ViewSpec, totals: Totals, answering: bool) {
+        let (quick, conditions) = self.wanted();
+        if answering {
+            self.views_due = self.views_due.saturating_sub(1);
+            self.grid.view_applied(spec, totals);
+        } else {
+            self.grid.view_changed(spec, totals);
+        }
+        let (quick_after, conditions_after) = self.wanted();
+        if quick.is_some() {
+            assert_eq!(quick_after, quick, "a wanted quick filter dropped");
+        }
+        let mut left = conditions_after;
+        for c in conditions {
+            let i = left.iter().position(|a| *a == c);
+            assert!(i.is_some(), "{c:?} wanted, silently dropped");
+            left.remove(i.unwrap());
+        }
+    }
+
     /// A host frame: fills the requested Windows from the model, then checks
     /// the Snapshot against it.
     fn frame_and_check(&mut self) {
+        self.collect();
         let requests: Vec<_> = self.grid.begin_frame(self.viewport).into_iter().collect();
         for (axis, range) in requests {
             let keys = &self.keys[axis.index()];
@@ -115,12 +181,37 @@ impl Host {
         }
         let snap = self.grid.snapshot();
         // The chips list the applied conditions, each Applied or Removing,
-        // and the headers mark the columns they read.
+        // and the headers mark the columns they read. Others are Adding while
+        // an answer is due, else NotApplied.
         let applied = snap.applied_view().rows.filter.conditions.conditions();
-        let listed = (snap.conditions(Axis::Rows).into_iter())
-            .filter(|(_, state)| *state != ConditionState::Adding)
+        let pending = self.views_due > 0;
+        assert_eq!(snap.view_pending(), pending, "view pending");
+        let listed = snap.conditions(Axis::Rows);
+        let applied_listed = (listed.iter())
+            .filter(|(_, state)| {
+                matches!(state, ConditionState::Applied | ConditionState::Removing)
+            })
             .count();
-        assert_eq!(listed, applied.len(), "conditions listed as applied");
+        assert_eq!(
+            applied_listed,
+            applied.len(),
+            "conditions listed as applied"
+        );
+        for (c, state) in &listed {
+            let expected = match state {
+                ConditionState::Adding | ConditionState::Removing => pending,
+                ConditionState::NotApplied => !pending,
+                ConditionState::Applied => true,
+            };
+            assert!(expected, "{c:?} {state:?} with an answer due: {pending}");
+        }
+        if !pending && snap.requested_view().is_some() {
+            assert_ne!(
+                snap.requested_view(),
+                Some(snap.applied_view()),
+                "kept as requested though all of it is applied"
+            );
+        }
         for h in snap.headers(Axis::Cols) {
             if let Some(key) = h.key {
                 let filtered = applied.iter().any(|c| c.key == key);
@@ -207,7 +298,23 @@ impl Host {
         }
     }
 
-    fn answer(&mut self, tc: &TestCase, effect: Effect) {
+    /// `spec` with some of the rows' conditions, or its quick filter, left
+    /// out.
+    fn part_of(&self, tc: &TestCase, mut spec: ViewSpec) -> ViewSpec {
+        let filter = &spec.rows.filter;
+        let kept: Vec<Condition> =
+            tc.draw(gs::subsequences(filter.conditions.conditions().to_vec()));
+        let quick = filter.quick.clone().filter(|_| tc.draw(gs::booleans()));
+        spec.rows.filter = spec
+            .rows
+            .filter
+            .clone()
+            .with_quick(quick)
+            .with_conditions(kept.into());
+        spec
+    }
+
+    fn answer(&mut self, tc: &TestCase, (effect, round): (Effect, u64)) {
         match effect {
             Effect::Locate { axis, key } => {
                 let answer = match self.keys[axis.index()].iter().position(|&k| k == key.0) {
@@ -221,7 +328,15 @@ impl Host {
                 let total = (self.keys[0].len() + self.hidden[0].len()) as u64;
                 let totals =
                     Totals::unknown().with(Axis::Rows, tc.draw(gs::booleans()).then_some(total));
-                self.grid.view_applied(spec, totals);
+                // Whole, part of it (a condition or the quick filter left
+                // out), or the spec in force (failed, or aborted).
+                let answer = match tc.draw(gs::integers::<u8>().max_value(3)) {
+                    0 | 1 => spec,
+                    2 => self.part_of(tc, spec),
+                    _ => self.grid.snapshot().applied_view().clone(),
+                };
+                tc.note(&format!("view_applied({answer:?})"));
+                self.view_from_source(answer, totals, true);
                 if tc.draw(gs::booleans()) {
                     // Any rows will do for a filter: the Grid never sees values.
                     self.refilter_axis(tc, Axis::Rows);
@@ -250,6 +365,9 @@ impl Host {
             }
             // Any cell will do for a match: the Grid never sees values.
             Effect::FindStepRequested { .. } => {
+                if round == self.find_round {
+                    self.steps_due -= 1;
+                }
                 let found = tc
                     .draw(gs::weighted_booleans(0.8))
                     .then(|| FindMatch::new(self.key(tc, Axis::Rows), self.key(tc, Axis::Cols)));
@@ -367,17 +485,13 @@ impl Host {
     /// left: every pick a `Refiltered` took out is then gone.
     fn answer_all(&mut self, tc: &TestCase) {
         for _ in 0..20 {
-            while let Some(stamped) = self.grid.poll_effect() {
-                self.pending.push_back(stamped.effect);
-            }
+            self.collect();
             let Some(effect) = self.pending.pop_front() else {
                 break;
             };
             self.answer(tc, effect);
         }
-        while let Some(stamped) = self.grid.poll_effect() {
-            self.pending.push_back(stamped.effect);
-        }
+        self.collect();
         if !self.pending.is_empty() {
             return;
         }
@@ -580,9 +694,7 @@ impl Host {
     /// may stop early and leave the rest for a later drain.
     #[rule(weight = 2.0)]
     fn drain(&mut self, tc: TestCase) {
-        while let Some(stamped) = self.grid.poll_effect() {
-            self.pending.push_back(stamped.effect);
-        }
+        self.collect();
         while !self.pending.is_empty() && tc.draw(gs::weighted_booleans(0.8)) {
             let effect = self.pending.pop_front().expect("not empty");
             self.answer(&tc, effect);
@@ -726,6 +838,19 @@ impl Host {
         self.grid.action(action);
     }
 
+    /// The source pushes part of what it applies, unprompted: it stopped
+    /// supporting the rest. Now and then only the totals change.
+    #[rule(weight = 0.5)]
+    fn view_pushed(&mut self, tc: TestCase) {
+        self.collect();
+        let applied = self.grid.snapshot().applied_view().clone();
+        let spec = self.part_of(&tc, applied);
+        let total = (self.keys[0].len() + self.hidden[0].len()) as u64;
+        let totals = Totals::unknown().with(Axis::Rows, Some(total));
+        tc.note(&format!("view_changed({spec:?})"));
+        self.view_from_source(spec, totals, false);
+    }
+
     /// The host restores the base view.
     #[rule(weight = 0.25)]
     fn request_view(&mut self, _: TestCase) {
@@ -795,6 +920,9 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         refiltered_out: BTreeSet::new(),
         next: 1000,
         pending: VecDeque::new(),
+        views_due: 0,
+        find_round: 0,
+        steps_due: 0,
         viewport,
         headers: [1.0, 2.0],
         gaps: [gap; 2],

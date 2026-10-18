@@ -173,7 +173,8 @@ fn headers_and_conditions_show_what_is_applied_and_what_is_pending() {
         snap.header_filter(Key(0)),
         HeaderFilter {
             filtered: true,
-            pending: false
+            pending: false,
+            not_applied: false
         }
     );
     assert_eq!(snap.header_filter(Key(1)), HeaderFilter::default());
@@ -191,7 +192,8 @@ fn headers_and_conditions_show_what_is_applied_and_what_is_pending() {
         snap.header_filter(Key(0)),
         HeaderFilter {
             filtered: true,
-            pending: true
+            pending: true,
+            not_applied: false
         },
         "applied until the answer, pending removal"
     );
@@ -199,7 +201,8 @@ fn headers_and_conditions_show_what_is_applied_and_what_is_pending() {
         snap.header_filter(Key(1)),
         HeaderFilter {
             filtered: false,
-            pending: true
+            pending: true,
+            not_applied: false
         }
     );
     assert_eq!(snap.header_filter(Key(2)), HeaderFilter::default());
@@ -218,12 +221,16 @@ fn headers_and_conditions_show_what_is_applied_and_what_is_pending() {
     );
     assert_eq!(snap.conditions(Axis::Cols), vec![]);
 
-    // The source answers with a subset: the swap without the new condition.
+    // The source answers with a subset: the swap without the new condition,
+    // which stays listed, not applied.
     s.input(|g| g.view_applied(ViewSpec::default(), Totals::unknown()));
     let snap = s.frame(V);
     assert_eq!(snap.header_filter(Key(0)), HeaderFilter::default());
-    assert_eq!(snap.header_filter(Key(1)), HeaderFilter::default());
-    assert_eq!(snap.conditions(Axis::Rows), vec![]);
+    assert!(snap.header_filter(Key(1)).not_applied);
+    assert_eq!(
+        snap.conditions(Axis::Rows),
+        vec![(b.clone(), ConditionState::NotApplied)]
+    );
 }
 
 #[test]

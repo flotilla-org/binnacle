@@ -26,8 +26,9 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// indicator, also drawn across the header band). An applied View Spec that
 /// sorts adds `sort`, as the rows' sort with `key^` or `keyv` per column
 /// (then `cols` and the columns' sort, if any); one that filters adds
-/// `filter` (see [`view_text`]), and an unanswered request `requested` with
-/// both. Unfiltered counts the Table Source gave add `totals`. A Find Query
+/// `filter` (see [`view_text`]), an unanswered request `requested` with
+/// both, and an answered one the source left part of out `wanted, not
+/// applied`. Unfiltered counts the Table Source gave add `totals`. A Find Query
 /// adds `find` (and `by cols` for that order), the current match `match
 /// rowkey,colkey`, and the matched cell is marked `!` after any other mark.
 pub fn render(snap: &Snapshot) -> String {
@@ -135,7 +136,12 @@ fn summary(snap: &Snapshot) -> String {
         }
     }
     if let Some(spec) = snap.requested_view() {
-        let _ = write!(out, " | requested {}", view_text(spec));
+        let state = if snap.view_pending() {
+            "requested"
+        } else {
+            "wanted, not applied"
+        };
+        let _ = write!(out, " | {state} {}", view_text(spec));
     }
     if let Some(find) = snap.find() {
         let _ = write!(out, " | find {}", query_text(&find.query));
