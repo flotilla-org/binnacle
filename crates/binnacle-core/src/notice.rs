@@ -77,6 +77,8 @@ pub(crate) struct Locating {
     /// A `set_focus` is waiting: once placed, the focus is selected as a
     /// focus move would and revealed.
     pub select_when_placed: bool,
+    /// A find step is waiting: once placed, the focus is revealed.
+    pub reveal_when_placed: bool,
 }
 
 impl Locating {
@@ -112,8 +114,9 @@ fn fallback_end(st: &AxisState, position: Position, suggest: Option<Position>) -
 }
 
 impl Grid {
-    /// Tells the Grid how `axis` changed in the Table Source. A change that
-    /// may show or hide items requests the View Spec again
+    /// Tells the Grid how `axis` changed in the Table Source. The current
+    /// find match is located after a change that may take its Key away. A
+    /// change that may show or hide items requests the View Spec again
     /// ([`crate::ViewEdit::ShownChanged`]) when a quick filter searches the
     /// shown items of `axis`.
     pub fn notify(&mut self, axis: Axis, notice: ChangeNotice) {
@@ -121,6 +124,11 @@ impl Grid {
         let shown = !matches!(
             notice,
             ChangeNotice::Reordered | ChangeNotice::ContentChanged(_)
+        );
+        // Keys may have left.
+        let left = matches!(
+            notice,
+            ChangeNotice::Reset(_) | ChangeNotice::Refiltered(_) | ChangeNotice::Removed { .. }
         );
         match notice {
             ChangeNotice::Reordered => {
@@ -151,6 +159,9 @@ impl Grid {
                 }
             }
             ChangeNotice::ContentChanged(range) => self.content_changed(axis, range),
+        }
+        if left {
+            self.find_locate(axis);
         }
         if shown {
             self.shown_changed(axis);
@@ -436,6 +447,7 @@ impl Grid {
     pub fn located(&mut self, axis: Axis, key: Key, answer: Located) {
         self.edit_located(axis, key, &answer);
         self.refilter_located(axis, key, answer);
+        self.find_located(axis, key, answer);
         self.focus_located(axis, key, answer);
     }
 
@@ -544,6 +556,10 @@ impl Grid {
             self.reveal = true;
             self.reveal_focus();
         }
+        if std::mem::take(&mut self.locating.reveal_when_placed) && self.focus.is_some() {
+            self.reveal = true;
+            self.reveal_focus();
+        }
         for m in std::mem::take(&mut self.locating.moves) {
             self.move_and_select(m);
         }
@@ -578,6 +594,7 @@ impl Grid {
     pub(crate) fn before_focus_set(&mut self, cell: [FocusEnd; 2]) {
         self.locating.moves.clear();
         self.locating.select_when_placed = false;
+        self.locating.reveal_when_placed = false;
         for axis in Axis::ALL {
             let i = axis.index();
             if self.focus.map(|f| f[i]) != Some(cell[i]) {

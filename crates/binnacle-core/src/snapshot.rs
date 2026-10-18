@@ -1,3 +1,4 @@
+use crate::find::{FindMatch, FindQuery};
 use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
@@ -59,6 +60,8 @@ pub struct CellState {
     pub selected: bool,
     /// The host's editor is open on this cell.
     pub editing: bool,
+    /// The current find match, drawn apart from the other matches.
+    pub current_match: bool,
 }
 
 /// One header to draw, from [`Snapshot::headers`]: the header of a visible
@@ -271,10 +274,16 @@ impl<'a> Snapshot<'a> {
             Mode::Editing { row: r, col: c } => row.key == Some(r) && col.key == Some(c),
             _ => false,
         };
+        let current_match = self
+            .grid
+            .find
+            .current
+            .is_some_and(|m| (row.key, col.key) == (Some(m.row), Some(m.col)));
         CellState {
             focused: on(Axis::Rows, row) && on(Axis::Cols, col),
             selected: in_range || picked,
             editing,
+            current_match,
         }
     }
 
@@ -304,6 +313,22 @@ impl<'a> Snapshot<'a> {
     /// The latest requested View Spec while an answer is still due.
     pub fn requested_view(&self) -> Option<&'a ViewSpec> {
         self.grid.view.requested.as_ref()
+    }
+
+    /// The Find Query in force, if find is open.
+    pub fn find(&self) -> Option<&'a FindQuery> {
+        self.grid.find.query.as_ref()
+    }
+
+    /// The match the last find step landed on, until its row or column
+    /// leaves or the Find Query changes.
+    pub fn find_match(&self) -> Option<FindMatch> {
+        self.grid.find.current
+    }
+
+    /// How the Table Source finds, if it does.
+    pub fn find_support(&self) -> Option<TextSupport> {
+        self.grid.find.support
     }
 
     /// The unfiltered count of `axis`, if the Table Source gave it with the

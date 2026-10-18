@@ -1,3 +1,4 @@
+use crate::find::{FindDirection, FindMatch, FindQuery};
 use crate::types::{Axis, Generation, Key, Position};
 use crate::view::{ViewEdit, ViewSpec};
 
@@ -62,6 +63,17 @@ pub enum Effect {
         keys: Vec<Key>,
         to: Position,
     },
+    /// The Find Query changed to `query`, or find closed (`None`): the host
+    /// fetches the marks for what it shows again, and the count.
+    FindRequested { query: Option<FindQuery> },
+    /// The user asked for the next or previous match of `query` after
+    /// `from` (the current match, else the focused cell, else `None` for
+    /// the start). Answer with [`crate::Grid::find_stepped`].
+    FindStepRequested {
+        query: FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    },
 }
 
 /// An Effect stamped with the generation of the Snapshot it was based on.
@@ -105,6 +117,10 @@ pub enum Action {
     ScrollTo { axis: Axis, fraction: f64 },
     /// Scrolls `axis` by whole items, landing on an item start.
     ScrollBy { axis: Axis, items: i64 },
+    /// Steps to the next match of the Find Query: emits `FindStepRequested`.
+    FindNext,
+    /// Steps to the previous match of the Find Query.
+    FindPrevious,
 }
 
 /// How far a [`Action::MoveFocus`] goes.

@@ -27,7 +27,9 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// sorts adds `sort`, as the rows' sort with `key^` or `keyv` per column
 /// (then `cols` and the columns' sort, if any); one that filters adds
 /// `filter` (see [`view_text`]), and an unanswered request `requested` with
-/// both. Unfiltered counts the Table Source gave add `totals`.
+/// both. Unfiltered counts the Table Source gave add `totals`. A Find Query
+/// adds `find` (and `by cols` for that order), the current match `match
+/// rowkey,colkey`, and the matched cell is marked `!` after any other mark.
 pub fn render(snap: &Snapshot) -> String {
     Rendered::of(snap).since(None)
 }
@@ -135,6 +137,15 @@ fn summary(snap: &Snapshot) -> String {
     if let Some(spec) = snap.requested_view() {
         let _ = write!(out, " | requested {}", view_text(spec));
     }
+    if let Some(find) = snap.find() {
+        let _ = write!(out, " | find {}", query_text(&find.query));
+        if find.by == Axis::Cols {
+            out.push_str(" by cols");
+        }
+    }
+    if let Some(m) = snap.find_match() {
+        let _ = write!(out, " | match {},{}", m.row.0, m.col.0);
+    }
     if snap.mode() != Mode::Idle {
         let _ = write!(out, " | mode {:?}", snap.mode());
     }
@@ -240,13 +251,7 @@ fn filters_text(spec: &ViewSpec) -> String {
     let filter = |f: &FilterSpec| {
         let mut parts = Vec::new();
         if let Some(q) = &f.quick {
-            let mut text = format!("quick {:?}", q.text);
-            query(q, &mut text);
-            if let Searched::Keys(keys) = &q.searches {
-                let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
-                text += &format!(" in {}", keys.join(","));
-            }
-            parts.push(text);
+            parts.push(format!("quick {}", query_text(q)));
         }
         for c in f.conditions.conditions() {
             let not = if c.not { "not " } else { "" };
@@ -278,6 +283,23 @@ fn filters_text(spec: &ViewSpec) -> String {
     let mut text = filter(&spec.rows.filter);
     if !spec.cols.filter.is_empty() {
         text += &format!(" cols {}", filter(&spec.cols.filter));
+    }
+    text
+}
+
+/// A Text Query as `"text"`, then `case` and `regex` for its options and
+/// `in k,k` for the Keys it searches, if not the shown ones.
+fn query_text(q: &TextQuery) -> String {
+    let mut text = format!("{:?}", q.text);
+    if q.case_sensitive {
+        text += " case";
+    }
+    if q.regex {
+        text += " regex";
+    }
+    if let Searched::Keys(keys) = &q.searches {
+        let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
+        text += &format!(" in {}", keys.join(","));
     }
     text
 }
@@ -337,7 +359,7 @@ fn picture(snap: &Snapshot) -> String {
         put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
         for c in snap.cols() {
             let state = snap.cell_state(r, c);
-            let mark = if state.editing {
+            let mut mark = if state.editing {
                 "="
             } else if state.focused {
                 "*"
@@ -345,7 +367,11 @@ fn picture(snap: &Snapshot) -> String {
                 "+"
             } else {
                 ""
-            };
+            }
+            .to_string();
+            if state.current_match {
+                mark.push('!');
+            }
             put(
                 c.offset,
                 r.offset,

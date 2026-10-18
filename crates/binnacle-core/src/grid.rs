@@ -3,6 +3,7 @@ use std::ops::Range;
 
 use crate::axis::AxisState;
 use crate::effect::{Action, Effect, FocusStep, Stamped};
+use crate::find::{FindDirection, FindState};
 use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
@@ -138,6 +139,7 @@ pub struct Grid {
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
     pub(crate) view: ViewState,
+    pub(crate) find: FindState,
 }
 
 /// The drag threshold until [`Grid::set_drag_threshold`] changes it: one unit,
@@ -181,6 +183,7 @@ impl Grid {
             hovered_border: None,
             fills: Vec::new(),
             view: ViewState::default(),
+            find: FindState::default(),
         }
     }
 
@@ -441,6 +444,8 @@ impl Grid {
                 self.refilter_scrolled(axis);
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_items(items);
             }
+            Action::FindNext => self.find_step(FindDirection::Next),
+            Action::FindPrevious => self.find_step(FindDirection::Previous),
         }
     }
 
@@ -502,6 +507,12 @@ impl Grid {
     /// axis. A gesture in progress keeps going, but `Cancel` no longer undoes
     /// this. Nothing happens while either axis is empty.
     pub fn set_focus(&mut self, row: Key, col: Key) {
+        self.place_focus(row, col, true);
+    }
+
+    /// As [`Grid::set_focus`], selecting the focus as a focus move does only
+    /// if `select`; the view follows either way.
+    pub(crate) fn place_focus(&mut self, row: Key, col: Key, select: bool) {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return;
         }
@@ -528,12 +539,16 @@ impl Grid {
             self.locate(axis, keys[axis.index()]);
         }
         if unknown.is_empty() {
-            self.set_span(self.unit_span(cell));
+            if select {
+                self.set_span(self.unit_span(cell));
+            }
             self.reveal = true;
             self.reveal_focus();
-        } else {
+        } else if select {
             self.set_span(None);
             self.locating.select_when_placed = true;
+        } else {
+            self.locating.reveal_when_placed = true;
         }
         self.rebase_gesture();
     }
@@ -777,14 +792,19 @@ impl Grid {
     }
 
     /// Takes the oldest queued Effect, if any. Requests the Table Source
-    /// answers (`ViewRequested`, `Locate`, `MoveRequested`) come out before the rest, so a
+    /// answers (`ViewRequested`, `Locate`, `MoveRequested`, `FindRequested`,
+    /// `FindStepRequested`) come out before the rest, so a
     /// host that answers as it drains does so before it hears of focus and
     /// selection, which the answers may change again.
     pub fn poll_effect(&mut self) -> Option<Stamped> {
         let request = self.effects.iter().position(|s| {
             matches!(
                 s.effect,
-                Effect::ViewRequested { .. } | Effect::Locate { .. } | Effect::MoveRequested { .. }
+                Effect::ViewRequested { .. }
+                    | Effect::Locate { .. }
+                    | Effect::MoveRequested { .. }
+                    | Effect::FindRequested { .. }
+                    | Effect::FindStepRequested { .. }
             )
         });
         let stamped = match request {

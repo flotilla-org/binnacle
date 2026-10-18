@@ -331,6 +331,27 @@ impl InMemoryTableSource {
         self.axis(axis).window(range)
     }
 
+    /// The Logical Indices at the Positions in `range`, clipped to the count:
+    /// a part of the Remap.
+    pub fn logical_window(&self, axis: Axis, range: Range<Position>) -> Vec<usize> {
+        let order = self.axis(axis);
+        let end = range.end.min(order.count());
+        let start = range.start.min(end);
+        match &order.remap {
+            None => (start as usize..end as usize).collect(),
+            Some(remap) => remap[start as usize..end as usize]
+                .iter()
+                .map(|&i| i as usize)
+                .collect(),
+        }
+    }
+
+    /// The Logical Index of the item with `key` on `axis`, whether or not
+    /// the filter keeps it.
+    pub fn logical_index(&mut self, axis: Axis, key: Key) -> Option<usize> {
+        self.axis_mut(axis).logical(key).map(|i| i as usize)
+    }
+
     /// Answers `Locate`: the Key's current Position, or `Gone` if no item on
     /// the axis has it. A Key the filter dropped is `Gone` with the Position
     /// of the kept item nearest it in sort order suggested (the following one

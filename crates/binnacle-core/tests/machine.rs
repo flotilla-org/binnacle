@@ -15,8 +15,9 @@ use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, EditEnd, Effect,
-    FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers, PointerEvent, PointerKind,
-    ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, Value, ViewSpec, Viewport,
+    FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers,
+    PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, Value,
+    ViewSpec, Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -247,6 +248,20 @@ impl Host {
                 tc.note(&format!("moved: {axis:?} {order:?}"));
                 self.grid.notify(axis, ChangeNotice::Reordered);
             }
+            // Any cell will do for a match: the Grid never sees values.
+            Effect::FindStepRequested { .. } => {
+                let found = tc
+                    .draw(gs::weighted_booleans(0.8))
+                    .then(|| FindMatch::new(self.key(tc, Axis::Rows), self.key(tc, Axis::Cols)));
+                tc.note(&format!("find_stepped({found:?})"));
+                let selection = |grid: &mut Grid| {
+                    let snap = grid.snapshot();
+                    (snap.selection_range(), snap.picked().to_vec())
+                };
+                let before = selection(&mut self.grid);
+                self.grid.find_stepped(found);
+                assert_eq!(selection(&mut self.grid), before, "a find step selected");
+            }
             // The host fits the band to content it measured.
             Effect::BandAutoSizeRequested { axis } => {
                 let fit = tc.draw(gs::sampled_from(vec![0.0, 1.0, 2.0, 4.5]));
@@ -360,10 +375,21 @@ impl Host {
             };
             self.answer(tc, effect);
         }
+        while let Some(stamped) = self.grid.poll_effect() {
+            self.pending.push_back(stamped.effect);
+        }
         if !self.pending.is_empty() {
             return;
         }
         self.frame_and_check();
+        if let Some(m) = self.grid.snapshot().find_match() {
+            for axis in Axis::ALL {
+                assert!(
+                    self.keys[axis.index()].contains(&m.key(axis).0),
+                    "the current match {m:?} is still there once every Locate is answered"
+                );
+            }
+        }
         let picked = self.grid.snapshot().picked().to_vec();
         for key in picked {
             assert!(
@@ -677,6 +703,27 @@ impl Host {
                 self.grid.replace_condition(Axis::Rows, &from, to);
             }
         }
+    }
+
+    /// Find opened, changed or closed, by rows or by columns.
+    #[rule(weight = 0.5)]
+    fn find(&mut self, tc: TestCase) {
+        let text = tc.draw(gs::sampled_from(vec!["", "a", "ab"]));
+        let by = tc.draw(axis());
+        let query = tc
+            .draw(gs::weighted_booleans(0.9))
+            .then(|| FindQuery::new(TextQuery::new(text)).by(by));
+        tc.note(&format!("set_find({query:?})"));
+        self.grid.set_find(query);
+    }
+
+    #[rule]
+    fn find_step(&mut self, tc: TestCase) {
+        let action = tc.draw(gs::sampled_from(vec![
+            Action::FindNext,
+            Action::FindPrevious,
+        ]));
+        self.grid.action(action);
     }
 
     /// The host restores the base view.

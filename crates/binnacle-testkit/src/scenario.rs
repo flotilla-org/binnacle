@@ -3,10 +3,11 @@ use std::fmt::Write;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, Effect, Grid, Key, Located, Modifiers,
-    PointerEvent, Position, Snapshot, Stamped, Support, ViewSpec, Viewport,
+    Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, Effect, FindDirection, FindMatch,
+    FindQuery, Grid, Key, Located, Modifiers, PointerEvent, Position, Snapshot, Stamped, Support,
+    ViewSpec, Viewport,
 };
-use binnacle_memory::{IdentitySource, MemorySource, PumpSource, Viewed};
+use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Viewed};
 
 use crate::render::{Rendered, view_text};
 
@@ -196,6 +197,15 @@ impl PumpSource for RecordTable {
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
         self.source.over(&self.rows).move_items(axis, keys, to)
     }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        self.source.find_next(&self.rows, query, from, direction)
+    }
 }
 
 /// A scenario's source seen by the shared pump, logging each answer.
@@ -235,6 +245,17 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
             self.log.borrow_mut(),
             "  move {axis:?} {keys:?} to {to}: {answer:?}"
         );
+        answer
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        let answer = self.source.find_next(query, from, direction);
+        let _ = writeln!(self.log.borrow_mut(), "  find: {answer:?}");
         answer
     }
 }

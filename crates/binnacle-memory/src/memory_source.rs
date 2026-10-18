@@ -6,12 +6,12 @@ use std::ops::Range;
 
 use binnacle_core::{
     Axis, Blanks, ChangeNotice, Condition, ConditionKind, Distinct, DistinctQuery, DistinctValue,
-    FilterSpec, Grid, Key, Located, Position, Searched, SortDirection, SortSpec, Stamped, Support,
-    TextQuery, TextSupport, Totals, Value, ViewSpec,
+    FilterSpec, FindDirection, FindMatch, FindQuery, Grid, Key, Located, Position, Searched,
+    SortDirection, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewSpec,
 };
 use regex::{Regex, RegexBuilder};
 
-use crate::{InMemoryTableSource, PumpSource, SortKeys, Viewed};
+use crate::{FindCount, FindStep, InMemoryTableSource, PumpSource, SortKeys, Viewed};
 
 /// A Sort Spec named a column with no sort-key closure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,6 +553,150 @@ impl<R> MemorySource<R> {
         (axis == Axis::Rows).then_some(TextSupport::new(true))
     }
 
+    /// The source finds, regex included.
+    pub fn find_support(&self) -> Option<TextSupport> {
+        Some(TextSupport::new(true))
+    }
+
+    /// The columns `query` searches that have a text form, as (Position,
+    /// Key) in column order.
+    fn searched(&self, query: &TextQuery) -> Vec<(Position, Key)> {
+        let shown = self.window(Axis::Cols, 0..self.count(Axis::Cols));
+        (0..)
+            .zip(shown)
+            .filter(|(_, c)| match &query.searches {
+                Searched::Shown => true,
+                Searched::Keys(keys) => keys.contains(c),
+            })
+            .filter(|(_, c)| self.texts.contains_key(c) || self.columns.contains_key(c))
+            .collect()
+    }
+
+    /// Whether the cell of base row `row` in column `col` matches.
+    fn found(&self, matcher: &Matcher, row: &R, col: Key) -> bool {
+        self.text(col, row).is_some_and(|t| matcher.is_match(&t))
+    }
+
+    /// Which cells of the block `row_keys` by `col_keys` match `query`, row
+    /// by row: what find marks. A cell in a column the query does not search,
+    /// or of a row or column the source does not have, is not marked; nor is
+    /// any cell for an invalid regex.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn find_marks(
+        &mut self,
+        rows: &[R],
+        row_keys: &[Key],
+        col_keys: &[Key],
+        query: &FindQuery,
+    ) -> Vec<bool> {
+        let mut marks = vec![false; row_keys.len() * col_keys.len()];
+        let Some(matcher) = Matcher::new(&query.query) else {
+            return marks;
+        };
+        let searched: Vec<Key> = self
+            .searched(&query.query)
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
+        for (i, &r) in row_keys.iter().enumerate() {
+            let Some(row) = self.table.logical_index(Axis::Rows, r) else {
+                continue;
+            };
+            for (j, c) in col_keys.iter().enumerate() {
+                marks[i * col_keys.len() + j] =
+                    searched.contains(c) && self.found(&matcher, &rows[row], *c);
+            }
+        }
+        marks
+    }
+
+    /// The match of `query` next after `from` (or before it, for
+    /// [`FindDirection::Previous`]) in the view's order: by rows, row
+    /// Positions then the searched columns in column order; by columns, the
+    /// transpose. Past the last match it wraps to the first. A `from` the
+    /// view does not show, or `None`, steps from before the start (after
+    /// the end, going back). The answer carries its index among every match.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn find_next(
+        &mut self,
+        rows: &[R],
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        let order = self.find_order(query)?;
+        let n = order.len();
+        let from = from.and_then(|m| {
+            let mut at = |axis| match self.table.locate(axis, m.key(axis)) {
+                Located::Found(p) => Some(p),
+                Located::Gone { .. } => None,
+            };
+            Some(order.ordinal(at(Axis::Rows)?, at(Axis::Cols)?))
+        });
+        let hit = |i: u64| self.found(&order.matcher, &rows[order.row(i)], order.col(i).1);
+        // Where the scan starts, and the order it visits every cell in.
+        let found = match direction {
+            FindDirection::Next => {
+                let start = from.map_or(0, |(_, after)| after);
+                (start..n)
+                    .chain(0..start)
+                    .find(|&i| hit(i))
+                    .map(|i| (i, i < start))
+            }
+            FindDirection::Previous => {
+                let end = from.map_or(n, |(before, _)| before);
+                (0..end)
+                    .rev()
+                    .chain((end..n).rev())
+                    .find(|&i| hit(i))
+                    .map(|i| (i, i >= end))
+            }
+        };
+        let (i, wrapped) = found?;
+        let index = (0..i).filter(|&j| hit(j)).count() as u64;
+        Some(FindStep {
+            at: FindMatch::new(order.row_key(i), order.col(i).1),
+            index: Some(index),
+            wrapped,
+        })
+    }
+
+    /// How many cells match `query`, all counted.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn find_count(&self, rows: &[R], query: &FindQuery) -> FindCount {
+        let total = self.find_order(query).map_or(0, |order| {
+            (0..order.len())
+                .filter(|&i| self.found(&order.matcher, &rows[order.row(i)], order.col(i).1))
+                .count() as u64
+        });
+        FindCount {
+            total,
+            partial: false,
+        }
+    }
+
+    /// The cells `query` searches, in its order, and its matcher; `None` for
+    /// an invalid regex.
+    fn find_order(&self, query: &FindQuery) -> Option<FindOrder> {
+        let rows = self.count(Axis::Rows);
+        Some(FindOrder {
+            matcher: Matcher::new(&query.query)?,
+            logical: self.table.logical_window(Axis::Rows, 0..rows),
+            row_keys: self.window(Axis::Rows, 0..rows),
+            cols: self.searched(&query.query),
+            by: query.by,
+        })
+    }
+
     /// Runs [`crate::pump`] with this source over the host's `rows`: View
     /// Specs are answered by sorting them (or rejected if a column has no
     /// closure), `Locate` by the Remap, column moves by moving the columns.
@@ -584,6 +728,63 @@ impl<R> MemorySource<R> {
 
     pub fn locate(&mut self, axis: Axis, key: Key) -> Located {
         self.table.locate(axis, key)
+    }
+}
+
+/// Every cell a Find Query searches, numbered in its order: by rows, cell
+/// `i` is in row `i / c` and searched column `i % c` (`c` searched
+/// columns); by columns, the transpose.
+struct FindOrder {
+    matcher: Matcher,
+    /// The Logical Index and Key of the row at each Position.
+    logical: Vec<usize>,
+    row_keys: Vec<Key>,
+    /// The searched columns' Positions and Keys, in column order.
+    cols: Vec<(Position, Key)>,
+    by: Axis,
+}
+
+impl FindOrder {
+    fn len(&self) -> u64 {
+        (self.logical.len() * self.cols.len()) as u64
+    }
+
+    /// The row and searched-column indices of cell `i`.
+    fn place(&self, i: u64) -> (usize, usize) {
+        let i = i as usize;
+        match self.by {
+            Axis::Rows => (i / self.cols.len(), i % self.cols.len()),
+            Axis::Cols => (i % self.logical.len(), i / self.logical.len()),
+        }
+    }
+
+    /// The Logical Index of cell `i`'s row.
+    fn row(&self, i: u64) -> usize {
+        self.logical[self.place(i).0]
+    }
+
+    fn row_key(&self, i: u64) -> Key {
+        self.row_keys[self.place(i).0]
+    }
+
+    fn col(&self, i: u64) -> (Position, Key) {
+        self.cols[self.place(i).1]
+    }
+
+    /// Where the cell at row Position `row` and column Position `col` falls
+    /// among the searched cells, which it need not be one of: how many
+    /// come before it, and how many come before it or are it.
+    fn ordinal(&self, row: Position, col: Position) -> (u64, u64) {
+        let (rows, cols) = (self.logical.len() as u64, self.cols.len() as u64);
+        let row = row.min(rows);
+        let before = self.cols.partition_point(|&(p, _)| p < col) as u64;
+        let through = self.cols.partition_point(|&(p, _)| p <= col) as u64;
+        match self.by {
+            Axis::Rows => (row * cols + before, row * cols + through),
+            // Rows are numbered from 0 with none left out, so `row` is a count.
+            Axis::Cols if through > before => (before * rows + row, before * rows + row + 1),
+            Axis::Cols => (before * rows, before * rows),
+        }
     }
 }
 
@@ -621,5 +822,18 @@ impl<R> PumpSource for Over<'_, R> {
 
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
         (axis == Axis::Cols).then(|| self.source.move_columns(keys, to))
+    }
+
+    fn find_support(&mut self) -> Option<TextSupport> {
+        self.source.find_support()
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        self.source.find_next(self.rows, query, from, direction)
     }
 }
