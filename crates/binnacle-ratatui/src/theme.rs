@@ -45,6 +45,9 @@ pub struct Theme {
     /// Patched over the current match, which also ends in `◂` so it shows
     /// under the focus.
     pub find_current: Style,
+    /// Patched over the cells of an unmatched row (kept after the user's
+    /// edit though the filter drops it), dimming it.
+    pub unmatched: Style,
     pub shimmer_base: Color,
     pub shimmer_highlight: Color,
     /// Draws headers and row numbers reversed, so the bands stand out.
@@ -85,6 +88,7 @@ impl Theme {
                 .fg(Color::Black)
                 .bg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
+            unmatched: none.fg(Color::DarkGray),
             shimmer_base: Color::Rgb(140, 130, 40),
             shimmer_highlight: Color::Rgb(255, 240, 120),
             invert_headers: false,
@@ -118,6 +122,7 @@ impl Theme {
                 .fg(mocha::CRUST)
                 .bg(mocha::PEACH)
                 .add_modifier(Modifier::BOLD),
+            unmatched: none.fg(mocha::OVERLAY0),
             shimmer_base: mocha::PEACH,
             shimmer_highlight: mocha::YELLOW,
             invert_headers: false,
@@ -148,6 +153,7 @@ impl Theme {
             flash: none.add_modifier(Modifier::BOLD),
             find_match: none.add_modifier(Modifier::UNDERLINED),
             find_current: none.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            unmatched: none.add_modifier(Modifier::DIM),
             shimmer_base: Color::Reset,
             shimmer_highlight: Color::Reset,
             invert_headers: false,
@@ -190,6 +196,7 @@ impl Theme {
             flash: s(self.flash),
             find_match: s(self.find_match),
             find_current: s(self.find_current),
+            unmatched: s(self.unmatched),
             shimmer_base: nearest_ansi(self.shimmer_base),
             shimmer_highlight: nearest_ansi(self.shimmer_highlight),
             ..self.clone()

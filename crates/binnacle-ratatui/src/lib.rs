@@ -77,6 +77,15 @@ pub trait Content {
         false
     }
 
+    /// Whether the item with `key` on `axis` is unmatched: kept in view by
+    /// the host's Table Source after the user's edit though the filter drops
+    /// it (`MemorySource::unmatched` says, for the items shown). Its cells
+    /// are drawn in the Theme's `unmatched` style. No item unless overridden.
+    fn unmatched(&self, axis: Axis, key: Key) -> bool {
+        let _ = (axis, key);
+        false
+    }
+
     /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
     /// unless overridden.
     fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
@@ -283,6 +292,9 @@ pub fn render_with(
                         canvas.patch(theme.find_current);
                     } else if content.marked(row, col) {
                         canvas.patch(theme.find_match);
+                    }
+                    if content.unmatched(Axis::Rows, row) || content.unmatched(Axis::Cols, col) {
+                        canvas.patch(theme.unmatched);
                     }
                     canvas.patch(over);
                     if state.current_match {

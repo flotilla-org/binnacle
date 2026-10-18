@@ -21,8 +21,10 @@
 //! double-clicking the edge fits it again. `binnacle-demo --live` shows 200
 //! tickers whose prices and loads change four times a second: the price
 //! right-aligned, its recent history as a sparkline, the load as a bar, and
-//! changed cells flashing. Each tick sends Change Notices through the
-//! In-Memory Table Source, so a sort by price or load holds as values move.
+//! changed cells flashing, and a new ticker is listed every two seconds up
+//! to 240. Each tick sends Change Notices through the In-Memory Table
+//! Source, so a sort by price or load holds as values move, and a column
+//! filter (Alt+Down) takes each change and each new ticker as it arrives.
 //! `binnacle-demo --slow` shows the records with sorts and Locates answered
 //! only after 1.5 s: a Shimmer sweeps across a header while its sort is
 //! pending, and the focused cell pulses while its Locate is. The demo redraws
@@ -35,7 +37,10 @@
 //! reads the text as a regex, Ctrl+U clears it, Enter keeps the filter and
 //! leaves the field, and Esc puts back the filter from before. The status
 //! line counts the records shown of the total, such as "84 of 1,000 rows".
-//! The quick filter and Ctrl+R's crew filter both apply.
+//! The quick filter and Ctrl+R's crew filter both apply. A name edited so
+//! its record no longer matches stays where it is, dimmed, until the filter
+//! changes or Alt+L (or Excel's Ctrl+Alt+L) applies it again; the status
+//! line counts such records in view.
 //!
 //! Alt+Down opens the focused column's filter popup under its header (every
 //! records column but the id, and the tickers' name, price and load): type to
@@ -177,6 +182,9 @@ const CREW_FILTERS: [Option<i64>; 3] = [None, Some(6), Some(13)];
 const HEADERS: [&str; 5] = ["id", "name", "weight", "crew", "port"];
 
 const TICKERS: usize = 200;
+/// The live table lists a new ticker every this many ticks, up to [`LISTED`].
+const LISTING: u32 = 8;
+const LISTED: usize = 240;
 const TICKER_HEADERS: [&str; 4] = ["ticker", "price", "trend", "load"];
 /// How many prices a ticker's sparkline remembers.
 const HISTORY: usize = 24;
@@ -201,6 +209,8 @@ struct Live {
     /// A xorshift state, so runs repeat.
     seed: u64,
     next_tick: Instant,
+    /// Ticks since the last ticker was listed.
+    since_listing: u32,
 }
 
 impl Live {
@@ -215,20 +225,22 @@ impl Live {
             ),
             seed: 0x2545_F491_4F6C_DD1D,
             next_tick: Instant::now(),
+            since_listing: 0,
         };
-        live.rows = (0..TICKERS)
-            .map(|i| {
-                let price = 10.0 + live.random() * 990.0;
-                Ticker {
-                    name: format!("{} {}", NAMES[i % 8].to_uppercase(), i / 8),
-                    price,
-                    history: vec![price],
-                    load: live.random(),
-                    changed: Duration::ZERO,
-                }
-            })
-            .collect();
+        live.rows = (0..TICKERS).map(|i| live.ticker(i, Duration::ZERO)).collect();
         live
+    }
+
+    /// The `i`th ticker, at a random price and load, changed at `now`.
+    fn ticker(&mut self, i: usize, now: Duration) -> Ticker {
+        let price = 10.0 + self.random() * 990.0;
+        Ticker {
+            name: format!("{} {}", NAMES[i % 8].to_uppercase(), i / 8),
+            price,
+            history: vec![price],
+            load: self.random(),
+            changed: now,
+        }
     }
 
     /// A number in `0..1`.
@@ -240,7 +252,8 @@ impl Live {
     }
 
     /// Moves about a quarter of the tickers, at `now` on the demo's clock,
-    /// and tells the Grid what changed.
+    /// now and then lists a new one, and tells the Grid what changed: the
+    /// filter in force takes each change and each new ticker as it arrives.
     fn tick(&mut self, grid: &mut Grid, now: Duration) {
         self.next_tick += TICK;
         for i in 0..self.rows.len() {
@@ -257,10 +270,17 @@ impl Live {
             t.load = (t.load + load * 0.2).clamp(0.0, 1.0);
             t.changed = now;
             for col in [Key(1), Key(3)] {
-                if let Some(notice) = self.source.edited(&self.rows, i, col) {
+                if let Some(notice) = self.source.changed(&self.rows, i, col) {
                     grid.notify(Axis::Rows, notice);
                 }
             }
+        }
+        self.since_listing += 1;
+        if self.since_listing >= LISTING && self.rows.len() < LISTED {
+            self.since_listing = 0;
+            let ticker = self.ticker(self.rows.len(), now);
+            self.rows.push(ticker);
+            grid.notify(Axis::Rows, self.source.appended(&self.rows, &[]));
         }
     }
 }
@@ -527,6 +547,17 @@ impl Table {
         (marked, status)
     }
 
+    /// The rows among `rows_shown` the source keeps unmatched after an edit.
+    fn unmatched(&mut self, rows_shown: &[Key]) -> HashSet<Key> {
+        let Table::Records { source, .. } = self else {
+            return HashSet::new();
+        };
+        let flags = source.unmatched(Axis::Rows, rows_shown);
+        (rows_shown.iter().zip(flags))
+            .filter_map(|(&r, unmatched)| unmatched.then_some(r))
+            .collect()
+    }
+
     /// What the body says when no rows are left, with the quick filter
     /// `quick` on or not.
     fn empty(&self, quick: bool) -> &'static str {
@@ -719,10 +750,12 @@ impl Content for Text<'_> {
     }
 }
 
-/// The text a [`Table`] draws, with the cells that match the Find Query.
+/// The text a [`Table`] draws, with the cells that match the Find Query
+/// and the unmatched rows.
 struct Marked<'a> {
     text: Text<'a>,
     marks: &'a HashSet<(Key, Key)>,
+    unmatched: &'a HashSet<Key>,
 }
 
 impl Content for Marked<'_> {
@@ -740,6 +773,10 @@ impl Content for Marked<'_> {
 
     fn marked(&self, row: Key, col: Key) -> bool {
         self.marks.contains(&(row, col))
+    }
+
+    fn unmatched(&self, axis: Axis, key: Key) -> bool {
+        axis == Axis::Rows && self.unmatched.contains(&key)
     }
 
     fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
@@ -1048,9 +1085,11 @@ fn main() -> io::Result<()> {
                 moving = animating(&snapshot);
                 let shown_cols: Vec<Key> = snapshot.cols().iter().filter_map(|c| c.key).collect();
                 let (marks, found) = table.find(snapshot.find(), &shown_rows, &shown_cols);
+                let unmatched = table.unmatched(&shown_rows);
                 let content = Marked {
                     text: table.text(),
                     marks: &marks,
+                    unmatched: &unmatched,
                 };
                 render_with(&snapshot, &content, &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
@@ -1090,7 +1129,17 @@ fn main() -> io::Result<()> {
                     height: 1,
                     ..full
                 };
-                frame.render_widget(ratatui::text::Line::from(status(&snapshot)), line);
+                let mut said = status(&snapshot);
+                if !unmatched.is_empty() {
+                    if !said.is_empty() {
+                        said += " | ";
+                    }
+                    said += &match unmatched.len() {
+                        1 => "1 edited row no longer matches: Alt+L re-applies".to_string(),
+                        n => format!("{n} edited rows no longer match: Alt+L re-applies"),
+                    };
+                }
+                frame.render_widget(ratatui::text::Line::from(said), line);
                 let names = format!(
                     "{} | {} | {} | {border}",
                     row_count(&snapshot),
@@ -1153,6 +1202,10 @@ fn main() -> io::Result<()> {
                         Some(Control::FindPrevious)
                             if find.step(FindDirection::Previous, &mut grid) =>
                         {
+                            continue;
+                        }
+                        Some(Control::Reapply) => {
+                            grid.reapply_view();
                             continue;
                         }
                         _ => {}

@@ -30,6 +30,9 @@ pub enum Control {
     FindNext,
     /// Step to the previous match while find is open.
     FindPrevious,
+    /// Apply the View Spec again ([`binnacle_core::Grid::reapply_view`]), so
+    /// rows the user's edits left unmatched are filtered.
+    Reapply,
 }
 
 /// A set of bindings for the find and filter controls, to suit how a
@@ -39,7 +42,8 @@ pub enum Control {
 pub enum Preset {
     /// Ctrl chords, as in a desktop application: Ctrl+L for the quick
     /// filter, Alt+Down for the focused column's filter popup, Ctrl+F for
-    /// the find bar and F3 (Shift+F3 back) to step between matches.
+    /// the find bar, F3 (Shift+F3 back) to step between matches, and Alt+L
+    /// (or Excel's Ctrl+Alt+L) to apply the filter again.
     Chords,
 }
 
@@ -67,6 +71,9 @@ impl Controls {
                 controls.bind(KeyCode::Char('f'), KeyModifiers::CONTROL, Control::Find);
                 controls.bind(KeyCode::F(3), KeyModifiers::NONE, Control::FindNext);
                 controls.bind(KeyCode::F(3), KeyModifiers::SHIFT, Control::FindPrevious);
+                controls.bind(KeyCode::Char('l'), KeyModifiers::ALT, Control::Reapply);
+                let excel = KeyModifiers::CONTROL | KeyModifiers::ALT;
+                controls.bind(KeyCode::Char('l'), excel, Control::Reapply);
             }
         }
         controls
