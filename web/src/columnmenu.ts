@@ -247,9 +247,14 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       box.type = "checkbox";
       box.checked = on;
       box.addEventListener("change", () => {
+        const at = [...list.children].indexOf(row);
         change(box.checked);
+        showText();
         showValues();
-        list.querySelectorAll("input")[[...list.children].indexOf(row)]?.focus();
+        // The list was drawn again: keep focus on the same row.
+        if (box === document.activeElement || document.activeElement === document.body) {
+          list.children[at]?.querySelector("input")?.focus();
+        }
       });
       const value = el("span", "", ITEM_TEXT_STYLE);
       value.textContent = text;
