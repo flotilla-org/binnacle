@@ -29,10 +29,28 @@ export interface TextQuery<CrossId> {
   searches: "shown" | CrossId[];
 }
 
+/** How a Text condition matches its column's values: a Text Query without columns to search. */
+export type TextMatch = Omit<TextQuery<never>, "searches">;
+
+/**
+ * One condition on the items of an axis, read in one item of the other axis
+ * (a column, for the rows): an item is kept if its value in column `id`
+ * satisfies `kind`, or with `not` if it does not. A `Text` kind matches as a
+ * Text Query does, in that column alone; a blank never matches, so `not`
+ * keeps blanks.
+ */
+export interface Condition<CrossId> {
+  id: CrossId;
+  kind: { type: "Text"; query: TextMatch };
+  not: boolean;
+}
+
 /** Which items of an axis a View Spec keeps; all of them when every part is empty. */
 export interface FilterSpec<CrossId> {
   /** The quick filter: one Text Query across columns, or `null` for none. */
   quick: TextQuery<CrossId> | null;
+  /** Column conditions, every one of which must keep an item; several may name one column. */
+  conditions: Condition<CrossId>[];
 }
 
 /** One axis's part of a View Spec, naming items of the other axis. */
@@ -53,8 +71,8 @@ export interface Totals {
   cols?: number;
 }
 
-/** One axis's part of the View Spec a Table Source applies; an omitted filter is none. */
-export type AppliedAxisView<CrossId> = Omit<AxisView<CrossId>, "filter"> & { filter?: FilterSpec<CrossId> };
+/** One axis's part of the View Spec a Table Source applies; an omitted filter, or part of one, is none. */
+export type AppliedAxisView<CrossId> = Omit<AxisView<CrossId>, "filter"> & { filter?: Partial<FilterSpec<CrossId>> };
 
 /** The View Spec a Table Source applies, with its totals for "1,204 of 5,001". */
 export interface AppliedView<RowId, ColId> {
@@ -69,10 +87,19 @@ export interface QuickFilterSupport {
   regex?: boolean;
 }
 
-/** How an axis may be viewed by one item of the other axis; an omitted kind takes its default. */
+/**
+ * How an axis may be viewed by one item of the other axis; an omitted kind
+ * takes its default. Without `view` nothing is supported.
+ */
 export interface Support {
   /** Whether the axis may be sorted by the item; `true` by default while the source has `view`. */
   sort?: boolean;
+  /**
+   * Whether the axis may be filtered by Text conditions on the item, and with
+   * regexes; `false` for none. Contains without regex by default while the
+   * source has `view`.
+   */
+  text?: { regex?: boolean } | false;
 }
 
 /** Where an item sits now, or that it left the axis (with a Position for focus to fall back to). */

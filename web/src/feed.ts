@@ -9,13 +9,14 @@ import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
 import { createSettler, type Request } from "./settle";
-import type { KeyedAxisView, KeyedTextQuery, KeyedViewSpec, Snapshot, SortColumn, StripItem } from "./snapshot";
+import type { KeyedAxisView, KeyedCondition, KeyedTextQuery, KeyedViewSpec, Snapshot, SortColumn, StripItem } from "./snapshot";
 import type {
   AppliedAxisView,
   AppliedView,
   AxisMethods,
   AxisView,
   ChangeNotice,
+  Condition,
   FailedRequest,
   Located,
   SortSpec,
@@ -53,6 +54,10 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   colKey(id: ColId): bigint;
   /** A View Spec by Keys, issuing Keys for IDs that have none yet. */
   viewKeys(spec: AppliedView<RowId, ColId>): KeyedViewSpec;
+  /** A rows condition by Keys, issuing a Key for its column if it has none yet. */
+  conditionKey(condition: Condition<ColId>): KeyedCondition;
+  /** A rows condition by its column's ID, if the column and the kind are known. */
+  conditionId(condition: KeyedCondition): Condition<ColId> | undefined;
   /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
   find(axis: AxisName, key: bigint): Promise<Located>;
   /** Detaches from the source and aborts outstanding requests. */
@@ -75,8 +80,8 @@ const NOTICE: Record<ChangeNotice["type"], number> = NOTICE_CODE;
 
 /** The base view: nothing filtered, unsorted. */
 const BASE_VIEW: KeyedViewSpec = {
-  rows: { filter: { quick: null }, sort: [] },
-  cols: { filter: { quick: null }, sort: [] },
+  rows: { filter: { quick: null, conditions: [] }, sort: [] },
+  cols: { filter: { quick: null, conditions: [] }, sort: [] },
 };
 
 interface Axis<Id> {
@@ -240,13 +245,21 @@ export function createFeed<RowId, ColId, V>(
 
   const keysOf = <Id>(axis: Axis<Id>, ids: Id[]) => BigUint64Array.from(ids, (id) => axis.interner.key(id));
 
-  /** Tells the Grid how the rows may be viewed by the columns with `keys`. */
+  /** Tells the Grid how the rows may be viewed by the columns with `keys`: nothing without `view`. */
   const markSupport = (keys: BigUint64Array) => {
     const view = source.view;
     for (const key of keys) {
       const id = cols.interner.id(key);
-      const sort = view !== undefined && id !== undefined && (source.rows.support?.(id).sort ?? true);
-      grid?.set_support(AXIS_CODE.rows, key, sort ? SUPPORT.sort : 0);
+      if (view === undefined || id === undefined) {
+        grid?.set_support(AXIS_CODE.rows, key, 0);
+        continue;
+      }
+      const support = source.rows.support?.(id) ?? {};
+      const text = support.text ?? {};
+      const bits =
+        (support.sort ?? true ? SUPPORT.sort : 0) |
+        (text ? SUPPORT.text | (text.regex ? SUPPORT.textRegex : 0) : 0);
+      grid?.set_support(AXIS_CODE.rows, key, bits);
     }
   };
 
@@ -293,17 +306,33 @@ export function createFeed<RowId, ColId, V>(
     searches: q.searches === "shown" ? null : q.searches.map((id) => by.interner.key(id)),
   });
 
+  /** A condition by its column's ID in `by`, or `undefined` if the column or the kind is not known. */
+  const conditionId = <Id>(by: Axis<Id>, c: KeyedCondition): Condition<Id> | undefined => {
+    const id = by.interner.id(c.key);
+    if (id === undefined || c.kind.type !== "Text") return undefined;
+    const { text, caseSensitive, regex } = c.kind.query;
+    return { id, kind: { type: "Text", query: { text, caseSensitive, regex } }, not: c.not };
+  };
+
+  const conditionKey = <Id>(by: Axis<Id>, c: Condition<Id>): KeyedCondition => {
+    const key = by.interner.key(c.id);
+    const { text, caseSensitive, regex } = c.kind.query;
+    return { key, kind: { type: "Text", query: { text, caseSensitive, regex, searches: [key] } }, not: c.not };
+  };
+
   /** One axis's part by IDs of `by`, or `undefined` if an item it names is not known. */
   const partIds = <Id>(by: Axis<Id>, part: KeyedAxisView): AxisView<Id> | undefined => {
     const sort = sortIds(by, part.sort);
     const quick = part.filter.quick && queryIds(by, part.filter.quick);
-    if (!sort || quick === undefined) return undefined;
-    return { filter: { quick }, sort };
+    const conditions = part.filter.conditions.map((c) => conditionId(by, c));
+    if (!sort || quick === undefined || !conditions.every(known)) return undefined;
+    return { filter: { quick, conditions }, sort };
   };
 
   const partKeys = <Id>(by: Axis<Id>, part: AppliedAxisView<Id>): KeyedAxisView => {
     const quick = part.filter?.quick;
-    return { filter: { quick: quick ? queryKeys(by, quick) : null }, sort: sortKeys(by, part.sort) };
+    const conditions = (part.filter?.conditions ?? []).map((c) => conditionKey(by, c));
+    return { filter: { quick: quick ? queryKeys(by, quick) : null, conditions }, sort: sortKeys(by, part.sort) };
   };
 
   const answerView = (requested: KeyedViewSpec) => {
@@ -572,6 +601,8 @@ export function createFeed<RowId, ColId, V>(
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
     viewKeys: (spec) => ({ rows: partKeys(cols, spec.rows), cols: partKeys(rows, spec.cols) }),
+    conditionKey: (c) => conditionKey(cols, c),
+    conditionId: (c) => conditionId(cols, c),
     find(axis, key) {
       const item = shown?.[axis].strip.find((i) => i.key === key);
       if (item) return Promise.resolve({ type: "Found", position: item.position });

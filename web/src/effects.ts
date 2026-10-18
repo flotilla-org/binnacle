@@ -3,7 +3,7 @@
 // `crates/binnacle-wasm/src/effect.rs`; the agreement tests keep them in step.
 
 import type { AxisName } from "./codes";
-import type { KeyedTextQuery, KeyedViewSpec, SortColumn } from "./snapshot";
+import type { KeyedCondition, KeyedTextQuery, KeyedViewSpec, SortColumn } from "./snapshot";
 
 type Stamped<T> = T & { generation: number };
 
@@ -15,6 +15,11 @@ export type KeyedViewEdit =
   | { type: "Replace" }
   /** Items of `axis` were shown or hidden, so a quick filter searching the shown ones asks again. */
   | { type: "ShownChanged"; axis: AxisName }
+  | { type: "AddCondition"; axis: AxisName; condition: KeyedCondition }
+  /** The first condition of `axis` equal to `condition` was removed. */
+  | { type: "RemoveCondition"; axis: AxisName; condition: KeyedCondition }
+  /** The first condition of `axis` equal to `from` became `to`, in place. */
+  | { type: "ReplaceCondition"; axis: AxisName; from: KeyedCondition; to: KeyedCondition }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -71,10 +76,16 @@ function isAxis(v: unknown): v is AxisName {
   return v === "rows" || v === "cols";
 }
 
+function isCondition(v: unknown): v is KeyedCondition {
+  if (!isRecord(v) || typeof v.key !== "bigint" || typeof v.not !== "boolean" || !isRecord(v.kind)) return false;
+  return (v.kind.type === "Text" && isTextQuery(v.kind.query)) || v.kind.type === "Other";
+}
+
 function isAxisView(v: unknown): boolean {
   if (!isRecord(v) || !isRecord(v.filter)) return false;
   const quick = v.filter.quick === null || isTextQuery(v.filter.quick);
-  return quick && Array.isArray(v.sort) && v.sort.every(isSortColumn);
+  const conditions = Array.isArray(v.filter.conditions) && v.filter.conditions.every(isCondition);
+  return quick && conditions && Array.isArray(v.sort) && v.sort.every(isSortColumn);
 }
 
 function isEdit(v: unknown): v is KeyedViewEdit {
@@ -86,6 +97,11 @@ function isEdit(v: unknown): v is KeyedViewEdit {
       return isAxis(v.axis) && (v.query === null || isTextQuery(v.query));
     case "ShownChanged":
       return isAxis(v.axis);
+    case "AddCondition":
+    case "RemoveCondition":
+      return isAxis(v.axis) && isCondition(v.condition);
+    case "ReplaceCondition":
+      return isAxis(v.axis) && isCondition(v.from) && isCondition(v.to);
     case "Replace":
     case "Other":
       return true;

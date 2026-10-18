@@ -851,3 +851,96 @@ describe("the quick filter", () => {
     }
   });
 });
+
+describe("column conditions", () => {
+  type Spec = Parameters<NonNullable<Source["view"]>>[0];
+  const textOn = (h: Harness<string, string, string>, col: string, text: string, not = false) => {
+    const key = h.feed.colKey(col);
+    const query = { text, caseSensitive: false, regex: false, searches: [key] };
+    return { key, kind: { type: "Text" as const, query }, not };
+  };
+
+  test("a condition reaches the source by its column's ID, and the source's answer reaches the headers and the list", () => {
+    const asked: Spec[] = [];
+    // Applies only the conditions on c1.
+    const rec = new Recorder(10, 3, {
+      view: (spec) => {
+        asked.push(spec);
+        const conditions = spec.rows.filter.conditions.filter((c) => c.id === "c1");
+        return { ...spec, rows: { ...spec.rows, filter: { ...spec.rows.filter, conditions } } };
+      },
+    });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      h.grid.add_condition(0, textOn(h, "c1", "Bér", true));
+      h.grid.add_condition(0, textOn(h, "c2", "x"));
+      h.drain();
+      h.frame();
+      expect(asked.at(-1)?.rows.filter.conditions).toEqual([
+        { id: "c1", kind: { type: "Text", query: { text: "Bér", caseSensitive: false, regex: false } }, not: true },
+        { id: "c2", kind: { type: "Text", query: { text: "x", caseSensitive: false, regex: false } }, not: false },
+      ]);
+      expect(h.snapshot.appliedView.rows.filter.conditions).toEqual([textOn(h, "c1", "Bér", true)]);
+      expect(h.snapshot.cols.headers.map((x) => x.filter)).toEqual([
+        { filtered: false, pending: false },
+        { filtered: true, pending: false },
+        { filtered: false, pending: false },
+      ]);
+      expect(h.snapshot.rows.conditions).toEqual([{ condition: textOn(h, "c1", "Bér", true), state: "applied" }]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("support declares contains on every column by default, a source narrows it, and without view there is none", () => {
+    const view = (spec: Spec) => spec;
+    const support = (col: string) => (col === "c0" ? { text: false as const } : col === "c1" ? { text: { regex: true } } : {});
+    const cases: [Recorder, unknown[]][] = [
+      [
+        new Recorder(4, 3, { view }),
+        [
+          { sort: true, text: { regex: false } },
+          { sort: true, text: { regex: false } },
+          { sort: true, text: { regex: false } },
+        ],
+      ],
+      [
+        new Recorder(4, 3, { view, support }),
+        [
+          { sort: true, text: null },
+          { sort: true, text: { regex: true } },
+          { sort: true, text: { regex: false } },
+        ],
+      ],
+      [new Recorder(4, 3, { support }), Array(3).fill({ sort: false, text: null })],
+    ];
+    for (const [rec, want] of cases) {
+      const h = new Harness(rec.source);
+      try {
+        h.frame();
+        expect(h.frame().cols.headers.map((x) => x.support)).toEqual(want);
+      } finally {
+        h.destroy();
+      }
+    }
+  });
+
+  test("a condition naming a column the feed has no ID for is not asked, and the spec in force stays", () => {
+    let calls = 0;
+    const rec = new Recorder(4, 3, { view: (spec) => (calls++, spec) });
+    const h = new Harness(rec.source);
+    try {
+      h.frame();
+      const query = { text: "a", caseSensitive: false, regex: false, searches: [99999n] };
+      h.grid.add_condition(0, { key: 99999n, kind: { type: "Text", query }, not: false });
+      h.drain();
+      h.frame();
+      expect(calls).toBe(0);
+      expect(h.snapshot.appliedView.rows.filter.conditions).toEqual([]);
+      expect(h.snapshot.requestedView).toBeNull();
+    } finally {
+      h.destroy();
+    }
+  });
+});

@@ -1,14 +1,23 @@
 // fromRows: the in-memory source over binnacle-memory in wasm, checked
 // against a sort written here from the spec (stable, multi-column, nulls last
-// both ways, NaN after every number, strings by code point) and a quick
-// filter matched here cell by cell.
+// both ways, NaN after every number, strings by code point), and a quick
+// filter and column conditions matched here cell by cell.
 
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
 import { textRenderer } from "../src/renderers/text";
 import { fromRows } from "../src/rows";
-import type { AppliedView, ChangeNotice, SortDirection, SortSpec, TextQuery, ViewSpec } from "../src/source";
+import type {
+  AppliedView,
+  ChangeNotice,
+  Condition,
+  SortDirection,
+  SortSpec,
+  TextMatch,
+  TextQuery,
+  ViewSpec,
+} from "../src/source";
 import { BAND, COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
 import { loadForTests } from "./wasm";
 
@@ -65,25 +74,27 @@ function reference(rows: Rec[], spec: SortSpec<keyof Rec>, keep: (r: Rec) => boo
     .filter((i) => keep(rows[i]!));
 }
 
-/** A View Spec sorting the rows by `sort` and filtering them by `quick`. */
+/** A View Spec sorting the rows by `sort` and filtering them by `quick` and `conditions`. */
 function rowsSorted<ColId = keyof Rec>(
   sort: SortSpec<ColId>,
   quick: TextQuery<ColId> | null = null,
+  conditions: Condition<ColId>[] = [],
 ): ViewSpec<number, ColId> {
-  return { rows: { filter: { quick }, sort }, cols: { filter: { quick: null }, sort: [] } };
+  return { rows: { filter: { quick, conditions }, sort }, cols: { filter: { quick: null, conditions: [] }, sort: [] } };
 }
 
-/** What fromRows answers for `rowsSorted(sort, quick)` over `n` rows of three columns. */
+/** What fromRows answers for `rowsSorted(sort, quick, conditions)` over `n` rows of three columns. */
 function answered<ColId = keyof Rec>(
   n: number,
   sort: SortSpec<ColId>,
   quick: TextQuery<ColId> | null = null,
+  conditions: Condition<ColId>[] = [],
 ): AppliedView<number, ColId> {
-  return { ...rowsSorted(sort, quick), totals: { rows: n, cols: 3 } };
+  return { ...rowsSorted(sort, quick, conditions), totals: { rows: n, cols: 3 } };
 }
 
 /** Whether `text` matches `query` as the spec reads it; `undefined` for a pattern RegExp rejects. */
-function matches(query: TextQuery<keyof Rec>, text: string): boolean | undefined {
+function matches(query: TextMatch, text: string): boolean | undefined {
   if (!query.regex) {
     return query.caseSensitive ? text.includes(query.text) : text.toLowerCase().includes(query.text.toLowerCase());
   }
@@ -99,6 +110,13 @@ function quickKeeps(query: TextQuery<keyof Rec> | null, row: Rec): boolean {
   if (!query) return true;
   const searched = query.searches === "shown" ? (["n", "s", "b"] as const) : query.searches;
   return searched.some((id) => row[id] !== null && matches(query, String(row[id])) === true);
+}
+
+/** Whether `condition` keeps `row`: its column's value, as text, matches, or with `not` does not (a null never matches). */
+function satisfies(condition: Condition<keyof Rec>, row: Rec): boolean {
+  const value = row[condition.id];
+  const matched = value !== null && matches(condition.kind.query, String(value)) === true;
+  return matched !== condition.not;
 }
 
 const letters = ["a", "A", "é", "É", "ﬀ", "i", "İ", "1", "-", " "];
@@ -125,6 +143,15 @@ const texts = gs.arrays(
   }),
   { maxSize: 20 },
 );
+
+/** A Text condition on any column, maybe with `not`. */
+const conditionOf = gs.composite((tc): Condition<keyof Rec> => {
+  const { text, caseSensitive, regex } = tc.draw(queries);
+  const id = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
+  return { id, kind: { type: "Text", query: { text, caseSensitive, regex } }, not: tc.draw(gs.booleans()) };
+});
+
+const conditionsOf = gs.arrays(conditionOf, { maxSize: 3 });
 
 function order(source: ReturnType<typeof fromRows<Rec>>): number[] {
   return source.rows.window(0, source.rows.count() as number, new AbortController().signal) as number[];
@@ -180,26 +207,32 @@ describe("fromRows", () => {
       }
     }));
 
-  test("whatever View Specs and host filters arrive, the rows shown are the model's, and an invalid pattern leaves the quick filter in force", () =>
+  test("whatever View Specs and host filters arrive, the rows shown are the model's; an invalid pattern leaves the quick filter in force and drops a condition", () =>
     hegel.test((tc) => {
       const rows = tc.draw(texts);
       const source = fromRows(rows, COLUMNS);
       const notices: ChangeNotice[] = [];
       source.attach!({ rows: { notify: (n) => notices.push(n) }, cols: { notify: () => {} } });
       let [sort, quick, min]: [SortSpec<keyof Rec>, TextQuery<keyof Rec> | null, number | null] = [[], null, null];
+      let applied: Condition<keyof Rec>[] = [];
       try {
         const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 6 }));
         for (let i = 0; i < steps; i++) {
           notices.length = 0;
           if (tc.draw(gs.integers({ minValue: 0, maxValue: 3 })) > 0) {
             const asked = tc.draw(gs.oneOf(gs.just(null), queries));
+            const conditions = tc.draw(gs.oneOf(gs.just(applied), conditionsOf));
             sort = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
-            const answer = source.view!(rowsSorted(sort, asked), new AbortController().signal);
+            const answer = source.view!(rowsSorted(sort, asked, conditions), new AbortController().signal);
             const changed = JSON.stringify(asked) !== JSON.stringify(quick);
             const valid = asked === null || matches(asked, "") !== undefined;
             if (valid) quick = asked;
-            expect(answer).toEqual(answered(rows.length, sort, quick));
-            expect(notices).toEqual([{ type: changed && valid ? "Refiltered" : "Reordered" }]);
+            // A condition whose pattern RegExp rejects is left out.
+            const kept = conditions.filter((c) => matches(c.kind.query, "") !== undefined);
+            const refiltered = (changed && valid) || JSON.stringify(kept) !== JSON.stringify(applied);
+            applied = kept;
+            expect(answer).toEqual(answered(rows.length, sort, quick, applied));
+            expect(notices).toEqual([{ type: refiltered ? "Refiltered" : "Reordered" }]);
           } else {
             const m = tc.draw(gs.oneOf(gs.just(null), gs.integers({ minValue: -12, maxValue: 12 })));
             min = m;
@@ -207,7 +240,8 @@ describe("fromRows", () => {
             expect(notices).toEqual([{ type: "Refiltered" }]);
           }
           const host = (r: Rec) => min === null || (r.n !== null && r.n >= min);
-          expect(order(source)).toEqual(reference(rows, sort, (r) => host(r) && quickKeeps(quick, r)));
+          const kept = (r: Rec) => host(r) && quickKeeps(quick, r) && applied.every((c) => satisfies(c, r));
+          expect(order(source)).toEqual(reference(rows, sort, kept));
         }
       } finally {
         source.destroy();
@@ -236,6 +270,39 @@ describe("fromRows", () => {
     source.destroy();
   });
 
+  test("a condition and its not split the rows between them", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(texts);
+      const condition = tc.draw(conditionOf);
+      tc.assume(matches(condition.kind.query, "") !== undefined);
+      const shown = (not: boolean) => {
+        const source = fromRows(rows, COLUMNS);
+        source.view!(rowsSorted([], null, [{ ...condition, not }]), new AbortController().signal);
+        const shown = order(source);
+        source.destroy();
+        return shown;
+      };
+      const both = [...shown(false), ...shown(true)].sort((a, b) => a - b);
+      expect(both).toEqual(rows.map((_, i) => i));
+    }));
+
+  test("a column that takes no conditions says so, and a condition on it is left out", () => {
+    const rows: Rec[] = [
+      { n: 1, s: "Bergen", b: null },
+      { n: 2, s: null, b: 1 },
+      { n: 3, s: "Cádiz", b: 0 },
+    ];
+    const source = fromRows(rows, [{ key: "n" }, { key: "s" }, { key: "b", filterable: false }]);
+    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false });
+    const text = (text: string): TextMatch => ({ text, caseSensitive: false, regex: false });
+    const notBergen: Condition<keyof Rec> = { id: "s", kind: { type: "Text", query: text("bergen") }, not: true };
+    const onB: Condition<keyof Rec> = { id: "b", kind: { type: "Text", query: text("1") }, not: false };
+    const answer = source.view!(rowsSorted([], null, [notBergen, onB]), new AbortController().signal);
+    expect(answer).toEqual(answered(3, [], null, [notBergen]));
+    expect(order(source)).toEqual([1, 2]);
+    source.destroy();
+  });
+
   test("a column of numbers and strings sorts as strings; booleans and dates sort as numbers", () => {
     type Mixed = { m: number | string; f: boolean; d: Date };
     const mixed: Mixed[] = [
@@ -258,8 +325,8 @@ describe("fromRows", () => {
     const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }, { n: 1, s: null, b: 0 }], COLUMNS);
     const byN: SortSpec<keyof Rec> = [{ id: "n", direction: "ascending" }];
     const asked = {
-      rows: { filter: { quick: null }, sort: byN },
-      cols: { filter: { quick: null }, sort: [{ id: 1, direction: "descending" as const }] },
+      rows: { filter: { quick: null, conditions: [] }, sort: byN },
+      cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 1, direction: "descending" as const }] },
     };
     expect(source.view!(asked, new AbortController().signal)).toEqual(answered(2, byN));
     expect(order(source)).toEqual([1, 0]);
@@ -291,8 +358,8 @@ describe("fromRows", () => {
 
   test("columns marked unsortable say so, and labels default to the property name", () => {
     const source = fromRows<Rec>([], [{ key: "n", label: "Number" }, { key: "s", sortable: false }]);
-    expect(source.rows.support?.("n")).toEqual({ sort: true });
-    expect(source.rows.support?.("s")).toEqual({ sort: false });
+    expect(source.rows.support?.("n")).toEqual({ sort: true, text: { regex: true } });
+    expect(source.rows.support?.("s")).toEqual({ sort: false, text: { regex: true } });
     expect(source.cols.label?.("n", 0)).toBe("Number");
     expect(source.cols.label?.("s", 1)).toBe("s");
     source.destroy();

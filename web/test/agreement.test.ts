@@ -2,7 +2,7 @@
 // against Rust's own view of the same frame, never against constants.
 
 import { beforeAll, describe, expect, test } from "vitest";
-import { NOTICE_CODE } from "../src/codes";
+import { NOTICE_CODE, SUPPORT } from "../src/codes";
 import { decodeSnapshot } from "../src/snapshot";
 import { isEffect } from "../src/effects";
 import { bridge } from "../src/wasm";
@@ -62,12 +62,13 @@ describe("Effects", () => {
     expect(isEffect(null)).toBe(false);
     const edit = { type: "CycleSort", axis: "rows", key: 1n, multi: false };
     const view = (spec: unknown, e: unknown = edit) => ({ type: "ViewRequested", generation: 1, spec, edit: e });
-    const unsorted = { filter: { quick: null }, sort: [] };
+    const unsorted = { filter: { quick: null, conditions: [] }, sort: [] };
     expect(isEffect(view({ rows: unsorted, cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: { filter: { quick: null }, sort: [] }, cols: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: { sort: [] }, cols: unsorted }))).toBe(false);
     const quick = { text: "a", caseSensitive: false, regex: false, searches: null };
-    const filtered = (q: unknown) => ({ filter: { quick: q }, sort: [] });
+    const filtered = (q: unknown) => ({ filter: { quick: q, conditions: [] }, sort: [] });
     expect(isEffect(view({ rows: filtered(quick), cols: unsorted }))).toBe(true);
     expect(isEffect(view({ rows: filtered({ ...quick, searches: [1n] }), cols: unsorted }))).toBe(true);
     expect(isEffect(view({ rows: filtered({ ...quick, searches: [1] }), cols: unsorted }))).toBe(false);
@@ -76,14 +77,36 @@ describe("Effects", () => {
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, { type: "ShownChanged", axis: "up" }))).toBe(false);
     expect(isEffect(view({ rows: unsorted, cols: { sort: [{ key: 1, direction: "ascending" }] } }))).toBe(false);
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...edit, multi: 1 }))).toBe(false);
+    const condition = { key: 2n, not: true, kind: { type: "Text", query: { ...quick, searches: [2n] } } };
+    const conditioned = (c: unknown) => ({ filter: { quick: null, conditions: [c] }, sort: [] });
+    expect(isEffect(view({ rows: conditioned(condition), cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: conditioned({ ...condition, key: 2 }), cols: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: conditioned({ ...condition, not: "yes" }), cols: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: conditioned({ ...condition, kind: { type: "Text" } }), cols: unsorted }))).toBe(false);
+    const add = (c: unknown) => ({ type: "AddCondition", axis: "rows", condition: c });
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, add(condition)))).toBe(true);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, add(null)))).toBe(false);
+    const replace = { type: "ReplaceCondition", axis: "rows", from: condition, to: { ...condition, not: false } };
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, replace))).toBe(true);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...replace, to: undefined }))).toBe(false);
   });
 });
 
 describe("View Specs", () => {
   test("every View Edit passes the edit guard", () => {
     const edits = bridge().debug_every_view_edit() as { type: string }[];
-    expect(new Set(edits.map((e) => e.type))).toEqual(new Set(["CycleSort", "SetQuickFilter", "Replace", "ShownChanged"]));
-    const unsorted = { filter: { quick: null }, sort: [] };
+    expect(new Set(edits.map((e) => e.type))).toEqual(
+      new Set([
+        "CycleSort",
+        "SetQuickFilter",
+        "Replace",
+        "ShownChanged",
+        "AddCondition",
+        "RemoveCondition",
+        "ReplaceCondition",
+      ]),
+    );
+    const unsorted = { filter: { quick: null, conditions: [] }, sort: [] };
     for (const edit of edits) {
       const effect = { type: "ViewRequested", generation: 1, spec: { rows: unsorted, cols: unsorted }, edit };
       expect(isEffect(effect), edit.type).toBe(true);
@@ -96,10 +119,22 @@ describe("View Specs", () => {
     try {
       const spec = {
         rows: {
-          filter: { quick: { text: "Bér 🚢", caseSensitive: true, regex: false, searches: [2n, 0n] } },
+          filter: {
+            quick: { text: "Bér 🚢", caseSensitive: true, regex: false, searches: [2n, 0n] },
+            conditions: [
+              {
+                key: 1n,
+                not: true,
+                kind: { type: "Text", query: { text: "Ø", caseSensitive: false, regex: true, searches: [1n] } },
+              },
+            ],
+          },
           sort: [{ key: 1n, direction: "descending" }],
         },
-        cols: { filter: { quick: { text: "x", caseSensitive: false, regex: true, searches: null } }, sort: [] },
+        cols: {
+          filter: { quick: { text: "x", caseSensitive: false, regex: true, searches: null }, conditions: [] },
+          sort: [],
+        },
       };
       grid.request_view(spec);
       const requested = (grid.poll_effects() as { type: string; spec?: unknown; edit?: unknown }[]).filter(
@@ -113,6 +148,36 @@ describe("View Specs", () => {
       expect(s.appliedView).toEqual(spec);
       expect([s.rows.total, s.cols.total]).toEqual([40, null]);
       expect([s.rows.quickFilter, s.cols.quickFilter]).toEqual([{ regex: true }, null]);
+    } finally {
+      grid.free();
+    }
+  });
+});
+
+describe("Support", () => {
+  test("each support code names the same support in Rust's Snapshot", () => {
+    const { WebAxis, WebGrid } = bridge();
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(4, 80));
+    try {
+      const declared = [
+        0,
+        SUPPORT.sort,
+        SUPPORT.text,
+        SUPPORT.sort | SUPPORT.text | SUPPORT.textRegex,
+      ];
+      grid.begin_frame(400, 200);
+      grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n]));
+      declared.forEach((bits, i) => grid.set_support(0, BigInt(10 + i), bits));
+      grid.begin_frame(400, 200);
+      const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+      const dump = (grid.debug_frame() as DebugFrame).dump as { cols: { headers: { support: unknown }[] } };
+      expect(s.cols.headers.map((h) => h.support)).toEqual(dump.cols.headers.map((h) => h.support));
+      expect(s.cols.headers.map((h) => h.support)).toEqual([
+        { sort: false, text: null },
+        { sort: true, text: null },
+        { sort: false, text: { regex: false } },
+        { sort: true, text: { regex: true } },
+      ]);
     } finally {
       grid.free();
     }

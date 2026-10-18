@@ -6,15 +6,25 @@
 //
 // Rows are treated as immutable until `changed` says one was edited.
 //
-// The quick filter matches in JS (a `RegExp` for a regex, lowercased
-// substrings otherwise) against each cell's text as its column's renderer
-// gives it, and hands binnacle-memory the rows to keep.
+// The quick filter and column conditions match in JS (a `RegExp` for a
+// regex, lowercased substrings otherwise) against each cell's text as its
+// column's renderer gives it, and hand binnacle-memory the rows to keep.
 //
 // Row IDs are the rows' indices in the array (their Logical Indices); column
 // IDs are the property names.
 
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
-import type { AxisSink, ChangeNotice, Located, SortSpec, TableSource, TextQuery, ViewSpec } from "./source";
+import type {
+  AxisSink,
+  ChangeNotice,
+  Condition,
+  Located,
+  SortSpec,
+  TableSource,
+  TextMatch,
+  TextQuery,
+  ViewSpec,
+} from "./source";
 import { bridge } from "./wasm";
 
 type WebMemory = InstanceType<ReturnType<typeof bridge>["WebMemory"]>;
@@ -27,6 +37,8 @@ export type RowsColumn<R> = {
     label?: string;
     /** Whether its header sorts; `true` by default. */
     sortable?: boolean;
+    /** Whether it takes column conditions; `true` by default. */
+    filterable?: boolean;
     /** How its cells draw; plain text by default. */
     renderer?: CellRenderer<R[K]>;
   };
@@ -86,7 +98,7 @@ function extract(values: unknown[]): SortKeys {
 const DIRECTION = { ascending: 0, descending: 1 } as const;
 
 /** Whether some text matches `query`, or `undefined` if its pattern is not a valid `RegExp`. */
-function matcher<C>(query: TextQuery<C>): ((text: string) => boolean) | undefined {
+function matcher(query: TextMatch): ((text: string) => boolean) | undefined {
   if (query.regex) {
     let pattern: RegExp;
     try {
@@ -101,9 +113,11 @@ function matcher<C>(query: TextQuery<C>): ((text: string) => boolean) | undefine
   return (text) => text.toLowerCase().includes(lower);
 }
 
-function sameQuery<C>(a: TextQuery<C> | null, b: TextQuery<C> | null): boolean {
+function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+
+type Match = (text: string) => boolean;
 
 export function fromRows<R extends object>(rows: readonly R[], columns: readonly RowsColumn<R>[]): RowsSource<R> {
   type ColId = RowsColumnId<R>;
@@ -113,7 +127,10 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
   let wasm: WebMemory | undefined;
   let applied: SortSpec<ColId> = [];
   let quick: TextQuery<ColId> | null = null;
+  let quickMatch: Match | undefined;
+  let conditions: { condition: Condition<ColId>; match: Match }[] = [];
   let keep: ((row: R) => boolean) | null = null;
+  const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
   // Created on first use, once the widget has loaded the wasm module.
   const memory = () => (wasm ??= new (bridge().WebMemory)(rows.length, columns.length));
   const tell = (notice: ChangeNotice) => {
@@ -132,10 +149,11 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     return cellText(renderer, value);
   };
 
-  /** Hands binnacle-memory the rows both the quick filter (matching with `match`) and `keep` keep. */
-  const refilter = (match: ((text: string) => boolean) | undefined) => {
+  /** Hands binnacle-memory the rows the quick filter, every condition and `keep` keep. */
+  const refilter = () => {
     const m = memory();
-    if (!keep && !quick) return void m.clear_filter();
+    if (!keep && !quick && !conditions.length) return void m.clear_filter();
+    const match = quickMatch;
     // The shown columns are all of them: fromRows hides none.
     const searched = quick?.searches === "shown" ? columns.map((c) => c.key) : (quick?.searches ?? []);
     const named = searched.filter((id) => index.has(id));
@@ -145,7 +163,13 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
         const t = text(row, id);
         return t !== null && match(t);
       });
-    m.filter(Uint8Array.from(rows, (r) => (quickKeeps(r) && (keep?.(r) ?? true) ? 1 : 0)));
+    // A blank never matches, so `not` keeps it.
+    const conditionsKeep = (row: R) =>
+      conditions.every(({ condition, match }) => {
+        const t = text(row, condition.id);
+        return (t !== null && match(t)) !== condition.not;
+      });
+    m.filter(Uint8Array.from(rows, (r) => (quickKeeps(r) && conditionsKeep(r) && (keep?.(r) ?? true) ? 1 : 0)));
   };
 
   const sort = (spec: SortSpec<ColId>) => {
@@ -168,7 +192,10 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       count: () => memory().count(ROWS),
       window: (start, end) => Array.from(memory().window(ROWS, start, end)),
       quickFilter: { regex: true },
-      support: (by) => ({ sort: columns[index.get(by) ?? -1]?.sortable !== false }),
+      support: (by) => {
+        const column = columns[index.get(by) ?? -1];
+        return { sort: column?.sortable !== false, text: column?.filterable === false ? false : { regex: true } };
+      },
       locate: (id) => located(memory().locate(ROWS, id)),
     },
     cols: {
@@ -183,7 +210,8 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     },
     // Columns never sort or filter by rows, so their part of the spec is
     // dropped. A quick filter whose pattern is not a valid RegExp leaves the
-    // one in force.
+    // one in force; a condition with one, or on a column that takes none, is
+    // left out.
     view(spec: ViewSpec<number, ColId>) {
       const by = spec.rows.sort;
       if (by.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
@@ -191,16 +219,27 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       }
       const asked = spec.rows.filter?.quick ?? null;
       const match = asked && matcher(asked);
-      const refiltered = !sameQuery(asked, quick) && match !== undefined;
-      sort(by);
-      if (refiltered) {
+      const quickChanged = !same(asked, quick) && match !== undefined;
+      if (quickChanged) {
         quick = asked;
-        refilter(match ?? undefined);
+        quickMatch = match ?? undefined;
       }
+      const kept = (spec.rows.filter?.conditions ?? []).flatMap((condition) => {
+        const match = filterable(condition.id) ? matcher(condition.kind.query) : undefined;
+        return match ? [{ condition, match }] : [];
+      });
+      const conditionsChanged = !same(
+        kept.map((k) => k.condition),
+        conditions.map((k) => k.condition),
+      );
+      if (conditionsChanged) conditions = kept;
+      sort(by);
+      const refiltered = quickChanged || conditionsChanged;
+      if (refiltered) refilter();
       tell({ type: refiltered ? "Refiltered" : "Reordered" });
       return {
-        rows: { filter: { quick }, sort: by },
-        cols: { filter: { quick: null }, sort: [] },
+        rows: { filter: { quick, conditions: conditions.map((k) => k.condition) }, sort: by },
+        cols: { filter: { quick: null, conditions: [] }, sort: [] },
         totals: { rows: rows.length, cols: columns.length },
       };
     },
@@ -212,7 +251,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     },
     filter(next) {
       keep = next;
-      refilter(quick ? matcher(quick) : undefined);
+      refilter();
       tell({ type: "Refiltered" });
     },
     row: (id) => rows[id]!,

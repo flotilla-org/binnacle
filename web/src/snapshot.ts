@@ -37,11 +37,32 @@ export interface KeyedTextQuery {
   searches: bigint[] | null;
 }
 
+/**
+ * A condition as the Grid holds it: keeps the items whose value in the item
+ * `key` names (of the other axis) satisfies `kind`, or with `not` those
+ * whose value does not. A Text condition's query searches `key` alone.
+ * `Other` is a kind this build does not know.
+ */
+export interface KeyedCondition {
+  key: bigint;
+  kind: { type: "Text"; query: KeyedTextQuery } | { type: "Other" };
+  not: boolean;
+}
+
+/** One axis's filter by Keys: the quick filter and the conditions, all of which must keep an item. */
+export interface KeyedFilter {
+  quick: KeyedTextQuery | null;
+  conditions: KeyedCondition[];
+}
+
 /** One axis's part of a View Spec, by Keys of the other axis. */
 export interface KeyedAxisView {
-  filter: { quick: KeyedTextQuery | null };
+  filter: KeyedFilter;
   sort: SortColumn[];
 }
+
+/** Where a condition stands: applied and still asked for, asked for and not yet applied, or applied and no longer asked for. */
+export type ConditionState = "applied" | "adding" | "removing";
 
 /** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis. */
 export interface KeyedViewSpec {
@@ -56,6 +77,10 @@ export interface HeaderPlacement {
   sort: { applied: { direction: SortDirection; index: number } | null; pending: boolean };
   selected: boolean;
   hovered: boolean;
+  /** Whether the applied View Spec has a condition read in this item, and whether a request would change them. */
+  filter: { filtered: boolean; pending: boolean };
+  /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
+  support: { sort: boolean; text: { regex: boolean } | null };
 }
 
 export interface AxisSnapshot {
@@ -75,6 +100,8 @@ export interface AxisSnapshot {
   total: number | null;
   /** Whether the axis has a quick filter, and whether it takes regexes; `null` if it has none. */
   quickFilter: { regex: boolean } | null;
+  /** The axis's conditions as the filter's chips list them: the latest request's, then the applied ones it drops. */
+  conditions: { condition: KeyedCondition; state: ConditionState }[];
 }
 
 export type Mode =
@@ -138,6 +165,11 @@ export function cellState(s: Snapshot, row: number, col: number): CellState {
 const AXIS_NAMES: readonly AxisName[] = ["rows", "cols"];
 const DIRECTIONS: readonly SortDirection[] = ["ascending", "descending"];
 const CURSORS: readonly Cursor[] = ["default", "resizeCol", "resizeRow", "move"];
+const CONDITION_STATES: readonly ConditionState[] = ["applied", "adding", "removing"];
+/** `SUPPORT` bits in `codes.ts`, read here without importing the encoder's side. */
+const SORT_BIT = 1;
+const TEXT_BIT = 2;
+const REGEX_BIT = 4;
 
 class Reader {
   private n = 0;
@@ -204,9 +236,17 @@ class Reader {
     return { text, caseSensitive, regex, searches };
   }
 
+  condition(): KeyedCondition {
+    const key = this.key();
+    const not = this.flag();
+    const kind: KeyedCondition["kind"] = this.num() === 0 ? { type: "Text", query: this.textQuery() } : { type: "Other" };
+    return { key, kind, not };
+  }
+
   axisView(): KeyedAxisView {
     const quick = this.opt(() => this.textQuery());
-    return { filter: { quick }, sort: this.sort() };
+    const conditions = this.list(() => this.condition());
+    return { filter: { quick, conditions }, sort: this.sort() };
   }
 
   view(): KeyedViewSpec {
@@ -239,10 +279,23 @@ function readAxis(r: Reader): AxisSnapshot {
     },
     selected: r.flag(),
     hovered: r.flag(),
+    filter: { filtered: r.flag(), pending: r.flag() },
+    support: supportOf(r.num()),
   }));
+  const conditions = r.list(() => {
+    const state = CONDITION_STATES[r.num()]!;
+    return { condition: r.condition(), state };
+  });
   const total = r.opt(() => r.num());
   const quickFilter = r.opt(() => ({ regex: r.flag() }));
-  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers, total, quickFilter };
+  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers, total, quickFilter, conditions };
+}
+
+function supportOf(bits: number): HeaderPlacement["support"] {
+  return {
+    sort: (bits & SORT_BIT) !== 0,
+    text: (bits & TEXT_BIT) !== 0 ? { regex: (bits & REGEX_BIT) !== 0 } : null,
+  };
 }
 
 function readMode(r: Reader): Mode {
