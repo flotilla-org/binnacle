@@ -10,6 +10,8 @@
 // regex, lowercased substrings otherwise, exact text for OneOf) against each
 // cell's text as its column's renderer gives it, and hand binnacle-memory
 // the rows to keep. Distinct values are counted in JS too.
+// Find matches the same way, once per Find Query, and walks the view's order
+// for steps and the count.
 //
 // Row IDs are the rows' indices in the array (their Logical Indices); column
 // IDs are the property names.
@@ -21,6 +23,8 @@ import type {
   Condition,
   Distinct,
   FilterSpec,
+  FindMethods,
+  FindQuery,
   Located,
   SortSpec,
   TableSource,
@@ -50,6 +54,8 @@ export type RowsColumn<R> = {
 export type RowsColumnId<R> = keyof R & string;
 
 export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[keyof R]> {
+  /** Find over each cell's text as its column's renderer gives it, regexes included. */
+  find: FindMethods<number, RowsColumnId<R>>;
   /**
    * Shows only the rows `keep` accepts (and the quick filter keeps), in the
    * sort in force; `null` shows every row the quick filter keeps.
@@ -206,6 +212,34 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       return test ? [{ condition, test }] : [];
     });
 
+  /** Which cells match a Find Query's text, by Logical Index then column index; worked out once per query. */
+  let hits: { query: string; cells: Uint8Array } | undefined;
+  const hitsFor = (find: FindQuery<ColId>): Uint8Array => {
+    const id = JSON.stringify(find.query);
+    if (hits?.query === id) return hits.cells;
+    const match = matcher(find.query);
+    const n = columns.length;
+    const cells = new Uint8Array(rows.length * n);
+    const { searches } = find.query;
+    const searched = searches === "shown" ? columns.map((c) => c.key) : searches.filter((c) => index.has(c));
+    if (match) {
+      rows.forEach((row, r) => {
+        for (const c of searched) {
+          const t = text(row, c);
+          if (t !== null && match(t)) cells[r * n + index.get(c)!] = 1;
+        }
+      });
+    }
+    hits = { query: id, cells };
+    return cells;
+  };
+
+  /** The view: its rows' Logical Indices and its columns' indices, each in Position order. */
+  const shown = () => {
+    const m = memory();
+    return { rowsAt: Array.from(m.window(ROWS, 0, m.count(ROWS))), colsAt: Array.from(m.window(COLS, 0, columns.length)) };
+  };
+
   /** Hands binnacle-memory the rows the quick filter, every condition and `keep` keep. */
   const refilter = () => {
     const m = memory();
@@ -324,6 +358,55 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       };
     },
     cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => rows[r]![c])),
+    find: {
+      regex: true,
+      marks(rowIds, colIds, query) {
+        const cells = hitsFor(query);
+        const n = columns.length;
+        return rowIds.map((r) => colIds.map((c) => index.has(c) && cells[r * n + index.get(c)!] === 1));
+      },
+      next(from, direction, query) {
+        const cells = hitsFor(query);
+        const n = columns.length;
+        const { rowsAt, colsAt } = shown();
+        const [nr, nc] = [rowsAt.length, colsAt.length];
+        const size = nr * nc;
+        // The cell at place `i` of the query's order, as Positions.
+        const at = (i: number): [number, number] =>
+          query.by === "rows" ? [Math.floor(i / nc), i % nc] : [i % nr, Math.floor(i / nr)];
+        const hit = (i: number) => {
+          const [r, c] = at(i);
+          return cells[rowsAt[r]! * n + colsAt[c]!] === 1;
+        };
+        let start: number | null = null;
+        if (from) {
+          const r = rowsAt.indexOf(from.row);
+          const c = colsAt.indexOf(index.get(from.col) ?? -1);
+          if (r >= 0 && c >= 0) start = query.by === "rows" ? r * nc + c : c * nr + r;
+        }
+        const forward = direction === "next";
+        const first = start === null ? (forward ? 0 : size - 1) : start + (forward ? 1 : -1);
+        for (let k = 0; k < size; k++) {
+          const place = forward ? first + k : first - k;
+          const i = ((place % size) + size) % size;
+          if (!hit(i)) continue;
+          let before = 0;
+          for (let j = 0; j < i; j++) if (hit(j)) before++;
+          const [r, c] = at(i);
+          const wrapped = start !== null && (place >= size || place < 0);
+          return { row: rowsAt[r]!, col: columns[colsAt[c]!]!.key, index: before, wrapped };
+        }
+        return null;
+      },
+      count(query) {
+        const cells = hitsFor(query);
+        const n = columns.length;
+        const { rowsAt, colsAt } = shown();
+        let total = 0;
+        for (const r of rowsAt) for (const c of colsAt) total += cells[r * n + c]!;
+        return { total };
+      },
+    },
     renderer: byColumn((id: ColId) => columns[index.get(id) ?? -1]?.renderer as CellRenderer<R[keyof R]> | undefined),
     attach(sink) {
       sinks.add(sink);
@@ -339,6 +422,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       const at = located(memory().locate(ROWS, id));
       if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
       keys.clear();
+      hits = undefined;
       if (applied.length) {
         sort(applied);
         tell({ type: "Reordered" });

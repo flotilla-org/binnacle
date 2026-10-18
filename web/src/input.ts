@@ -35,6 +35,8 @@ export interface InputHost {
   menuPress(x: number, y: number): boolean;
   /** Opens the focused column's menu: `false` if there is none to open. */
   openColumnMenu(): boolean;
+  /** Opens the find bar, or steps while find is open: `false` if there is no find bar or find is closed. */
+  find(action: "open" | "next" | "previous"): boolean;
 }
 
 export interface Input {
@@ -94,7 +96,12 @@ export function perform(grid: WebGrid, action: Action): void {
       return grid.begin_edit();
     case "ScrollBy":
       return grid.scroll_by(AXIS_CODE[action.axis], action.items);
+    case "FindNext":
+      return grid.find_next();
+    case "FindPrevious":
+      return grid.find_previous();
     case "OpenColumnMenu":
+    case "OpenFind":
       // The widget's, not the Grid's: see `createInput`.
       return;
   }
@@ -182,6 +189,11 @@ export function createInput(host: InputHost): Input {
     if (!action) return;
     if (action.type === "OpenColumnMenu") {
       if (host.openColumnMenu()) e.preventDefault();
+      return;
+    }
+    if (action.type === "OpenFind" || action.type === "FindNext" || action.type === "FindPrevious") {
+      const asked = action.type === "OpenFind" ? "open" : action.type === "FindNext" ? "next" : "previous";
+      if (host.find(asked)) e.preventDefault();
       return;
     }
     e.preventDefault();

@@ -1,9 +1,10 @@
 // @flotilla-org/binnacle: the binnacle Grid on a web page.
 
-export { GridWidget, type ColumnHeader, type ColumnInfo, type FrameInfo, type GridOptions } from "./widget";
+export { GridWidget, type ColumnHeader, type ColumnInfo, type FindInfo, type FrameInfo, type GridOptions } from "./widget";
 export { createFilterBar, type FilterBar, type FilterBarOptions } from "./filterbar";
 export { createColumnMenu, type ColumnMenu } from "./columnmenu";
-export type { ColumnSupport } from "./feed";
+export { createFindBar, type FindBar, type FindBarOptions } from "./findbar";
+export type { ColumnSupport, FindState } from "./feed";
 export type { ConditionState } from "./snapshot";
 export type { Editor } from "./editing";
 export type { InitialSize } from "./sizes";
@@ -22,6 +23,11 @@ export type {
   FailedRequest,
   FilterSpec,
   ListedValue,
+  FindCount,
+  FindMatch,
+  FindMethods,
+  FindQuery,
+  FindStep,
   Located,
   MaybePromise,
   Primitive,

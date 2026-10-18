@@ -7,9 +7,10 @@
 // failed cells show the error marker, and Retry asks again with a Reset.
 // The filter bar holds column conditions, through the column menu: they show
 // pending (faded chips and header funnels) until the late answer, and as the
-// source declares no support, they take contains but no regexes.
+// source declares no support, they take contains but no regexes. Find's
+// marks arrive late like cells, its steps and counts like sorts.
 
-import { createColumnMenu, createFilterBar, fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
+import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, RECORDS, rows, type RecordRow } from "./records-data";
 
@@ -79,6 +80,12 @@ export const slow: DemoSource = {
       cols: inner.cols,
       view: (spec, signal) => later("order", signal, () => inner.view!(spec, signal)),
       cells: (rowIds, colIds, signal) => later("data", signal, () => inner.cells(rowIds, colIds, signal)),
+      find: {
+        regex: true,
+        marks: (rowIds, colIds, query, signal) => later("data", signal, () => inner.find.marks(rowIds, colIds, query, signal)),
+        next: (from, direction, query, signal) => later("order", signal, () => inner.find.next(from, direction, query, signal)),
+        count: (query, signal) => later("order", signal, () => inner.find.count!(query, signal)),
+      },
       emptyMessage: () => (box.value.trim() ? "No records match the filter" : undefined),
       attach: (sink) => {
         sinks = sink;
@@ -133,7 +140,13 @@ export const slow: DemoSource = {
     });
     const columnMenu = createColumnMenu(widget);
     const bar = createFilterBar(widget, { columnMenu });
-    frame.prepend(bar.element);
+    const findBar = createFindBar(widget);
+    frame.prepend(bar.element, findBar.element);
+    const findButton = document.createElement("button");
+    findButton.textContent = "Find";
+    findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
+    findButton.addEventListener("click", () => findBar.open());
+    toolbar.append(findButton);
     return {
       get theme() {
         return widget.theme;
@@ -148,6 +161,8 @@ export const slow: DemoSource = {
         widget.border = style;
       },
       destroy() {
+        findBar.destroy();
+        findButton.remove();
         bar.destroy();
         columnMenu.destroy();
         widget.destroy();

@@ -47,6 +47,10 @@ export interface Theme {
   error: string;
   /** A cell whose value just changed. */
   flash: Style;
+  /** A cell that matches the Find Query: `background` fills it under its value. */
+  findMatch: Style;
+  /** The current match: `background` fills it and `color` rings it. */
+  findCurrent: Style;
   /**
    * Fills for pending states: a band of `shimmerHighlight` sweeps over
    * `shimmerBase` across the header of a sort not answered yet, and the
@@ -78,6 +82,8 @@ export const light: Theme = {
   loading: "#94a3b8",
   error: "#dc2626",
   flash: { color: "#0f172a", background: "#fef08a" },
+  findMatch: { color: "#0f172a", background: "#fde68a" },
+  findCurrent: { color: "#ea580c", background: "#fdba74" },
   shimmerBase: "#dbeafe",
   shimmerHighlight: "#ffffff",
 };
@@ -120,6 +126,8 @@ export const catppuccinMocha: Theme = {
   loading: mocha.overlay0,
   error: mocha.red,
   flash: { color: mocha.crust, background: mocha.yellow },
+  findMatch: { color: mocha.text, background: "rgb(249 226 175 / 0.22)" },
+  findCurrent: { color: mocha.peach, background: "rgb(250 179 135 / 0.45)" },
   shimmerBase: mocha.surface0,
   shimmerHighlight: mocha.surface2,
 };
@@ -145,6 +153,8 @@ export const mono: Theme = {
   loading: "#8c8c8c",
   error: "#000000",
   flash: { color: "#ffffff", background: "#000000" },
+  findMatch: { color: "#000000", background: "#d9d9d9" },
+  findCurrent: { color: "#000000", background: "#a6a6a6" },
   shimmerBase: "#d4d4d4",
   shimmerHighlight: "#f5f5f5",
 };

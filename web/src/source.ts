@@ -72,6 +72,63 @@ export interface ViewSpec<RowId, ColId> {
   cols: AxisView<RowId>;
 }
 
+/**
+ * What find looks for: `query` matched against each cell of the columns it
+ * searches, as a quick filter matches, and the order find steps through the
+ * matches in: `rows` goes along each row's columns, then the next row;
+ * `cols` down each column's rows, then the next column. Both follow the view.
+ */
+export interface FindQuery<ColId> {
+  query: TextQuery<ColId>;
+  by: "rows" | "cols";
+}
+
+/** A cell that matches the Find Query, by its row and column. */
+export interface FindMatch<RowId, ColId> {
+  row: RowId;
+  col: ColId;
+}
+
+/**
+ * Where a find step landed: the match, its 0-based index among all the
+ * matches in the Find Query's order if the source knows it, and whether the
+ * step wrapped past the end (or the start).
+ */
+export interface FindStep<RowId, ColId> extends FindMatch<RowId, ColId> {
+  index?: number;
+  wrapped?: boolean;
+}
+
+/** How many cells match, and whether the source stopped counting early (`total` is then a floor). */
+export interface FindCount {
+  total: number;
+  partial?: boolean;
+}
+
+/**
+ * Find, worked out by the Table Source: which cells match, where the next
+ * match is, and how many there are. The widget never sees a value to match.
+ */
+export interface FindMethods<RowId, ColId> {
+  /** Whether a Find Query may be a regex; `false` by default. */
+  regex?: boolean;
+  /** Whether each cell where `rowIds` and `colIds` cross matches, one array per row. */
+  marks(rowIds: RowId[], colIds: ColId[], query: FindQuery<ColId>, signal: AbortSignal): MaybePromise<boolean[][]>;
+  /**
+   * The first match after `from` in the query's order (or before it, for
+   * `previous`), wrapping round; from the start (or the end) if `from` is
+   * `null` or not in the view. `null` if nothing matches.
+   */
+  next(
+    from: FindMatch<RowId, ColId> | null,
+    direction: "next" | "previous",
+    query: FindQuery<ColId>,
+    signal: AbortSignal,
+  ): MaybePromise<FindStep<RowId, ColId> | null>;
+  /** How many cells in the view match. */
+  count?(query: FindQuery<ColId>, signal: AbortSignal): MaybePromise<FindCount>;
+}
+
 /** Each axis's count before any filter, where the Table Source knows it. */
 export interface Totals {
   rows?: number;
@@ -177,7 +234,8 @@ export type FailedRequest<RowId = unknown, ColId = unknown> =
   | { type: "view" }
   | { type: "distinct"; axis: "rows" | "cols" }
   | { type: "locate"; axis: "rows" | "cols" }
-  | { type: "move"; axis: "rows" | "cols" };
+  | { type: "move"; axis: "rows" | "cols" }
+  | { type: "find"; request: "marks" | "next" | "count" };
 
 export interface AxisSink<_Id> {
   notify(notice: ChangeNotice): void;
@@ -231,6 +289,8 @@ export interface TableSource<RowId, ColId, V = unknown> {
    * paint of an empty table.
    */
   emptyMessage?(): string | undefined;
+  /** Set if the source finds: the widget offers find only then. */
+  find?: FindMethods<RowId, ColId>;
   /** Hands the source its sinks for Change Notices; returns how to detach. */
   attach?(sink: { rows: AxisSink<RowId>; cols: AxisSink<ColId> }): () => void;
 }

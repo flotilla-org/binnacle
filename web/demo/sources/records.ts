@@ -7,8 +7,11 @@
 // the count. Every column but the id takes Text conditions: its header's
 // funnel, or Alt+ArrowDown, opens the column menu. Cells edit in place: type,
 // or press F2 or Enter, or double-click; the port column picks from a list.
+// Ctrl/Cmd-F in the grid (or Find in the toolbar) opens the find bar under
+// the filter bar: matches are marked, Enter and Shift+Enter (or F3 and
+// Shift+F3 in the grid) step between them.
 
-import { createColumnMenu, createFilterBar, fromRows, GridWidget, type Editor } from "../../src";
+import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, PORTS, RECORDS, rows, WIDTHS, type RecordRow } from "./records-data";
 
@@ -99,7 +102,13 @@ export const records: DemoSource = {
     });
     const columnMenu = createColumnMenu(widget);
     const bar = createFilterBar(widget, { columnMenu });
-    frame.prepend(bar.element);
+    const findBar = createFindBar(widget);
+    frame.prepend(bar.element, findBar.element);
+    const findButton = document.createElement("button");
+    findButton.textContent = "Find";
+    findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
+    findButton.addEventListener("click", () => findBar.open());
+    toolbar.append(findButton);
     return {
       get theme() {
         return widget.theme;
@@ -114,6 +123,8 @@ export const records: DemoSource = {
         widget.border = style;
       },
       destroy() {
+        findBar.destroy();
+        findButton.remove();
         bar.destroy();
         columnMenu.destroy();
         widget.destroy();

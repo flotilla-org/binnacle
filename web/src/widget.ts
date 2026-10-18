@@ -10,7 +10,7 @@ import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
 import { filterButtonRect, hasFilterButton } from "./canvas/bands";
-import { createFeed, type ColumnSupport, type Feed } from "./feed";
+import { createFeed, type ColumnSupport, type Feed, type FindState } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -19,7 +19,7 @@ import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
 import type { AxisSnapshot, ConditionState, HeaderPlacement, Snapshot, Span } from "./snapshot";
-import type { Condition, Distinct, FailedRequest, Located, TableSource, TextQuery, ViewSpec } from "./source";
+import type { Condition, Distinct, FailedRequest, FindMatch, FindQuery, Located, TableSource, TextQuery, ViewSpec } from "./source";
 import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -121,6 +121,18 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   conditions: { condition: Condition<ColId>; state: ConditionState }[];
   /** The column headers in view, by the Table Source's IDs: how each is filtered, and what it supports. */
   columns: ColumnHeader<ColId>[];
+  /** Find: whether the Table Source finds, the Find Query in force, the current match, and what the source said of them. */
+  find: FindInfo<RowId, ColId>;
+}
+
+/** Find as `FrameInfo.find` gives it. */
+export interface FindInfo<RowId = unknown, ColId = unknown> extends FindState {
+  /** Whether the Table Source finds, and with regexes; `null` if it does not. */
+  support: { regex: boolean } | null;
+  /** The Find Query in force; `null` while find is closed. */
+  query: FindQuery<ColId> | null;
+  /** The match the last step landed on, until its row or column leaves. */
+  current: FindMatch<RowId, ColId> | null;
 }
 
 /** A column header in view, as `FrameInfo.columns` lists it. */
@@ -182,6 +194,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
   /** The mounted column menu's opener, if one is mounted. */
   private columnMenu: ((colId: ColId, anchor: DOMRect) => void) | null = null;
+  /** The mounted find bar's opener, if one is mounted. */
+  private findBar: (() => void) | null = null;
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -293,6 +307,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
           if (id !== undefined) this.openColumnMenu(id);
         });
         this.invalidate();
+        return true;
+      },
+      find: (action) => {
+        if (action === "open") return this.openFind();
+        if (!this.last?.find) return false;
+        if (action === "next") this.findNext();
+        else this.findPrevious();
         return true;
       },
       edits: {
@@ -537,6 +558,51 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return true;
   }
 
+  /**
+   * Sets the Find Query, or closes find with `null` (or empty text). The
+   * Table Source marks the matching cells in view and counts them; the old
+   * marks go at once. Does nothing unless the source has `find`.
+   */
+  setFind(query: FindQuery<ColId> | null): void {
+    if (this.destroyed || !this.options.source.find) return;
+    this.grid.set_find(query && this.feed.findKeys(query));
+    drainEffects(this.parts);
+    this.schedule();
+  }
+
+  /**
+   * Steps to the next match of the Find Query from the current one (or the
+   * focused cell), wrapping round: focus moves there and it scrolls into
+   * view; the selection stays. Does nothing while find is closed.
+   */
+  findNext(): void {
+    this.editView(() => this.grid.find_next());
+  }
+
+  /** Steps to the previous match, as `findNext` does. */
+  findPrevious(): void {
+    this.editView(() => this.grid.find_previous());
+  }
+
+  /**
+   * Mounts a find bar (see `createFindBar`): Mod+F in the grid calls `open`.
+   * Returns how to unmount it; one find bar is mounted at a time.
+   */
+  attachFindBar(open: () => void): () => void {
+    this.findBar = open;
+    return () => {
+      if (this.findBar === open) this.findBar = null;
+    };
+  }
+
+  /** Opens the mounted find bar: `false` if none is mounted or the Table Source does not find. */
+  openFind(): boolean {
+    const open = this.findBar;
+    if (!open || this.destroyed || !this.options.source.find) return false;
+    open();
+    return true;
+  }
+
   /** The columns of the table, up to `limit` (1,000 by default), with their labels and support, asked of the Table Source. */
   async columns(limit = 1000): Promise<ColumnInfo<ColId>[]> {
     const cols = this.options.source.cols;
@@ -724,6 +790,12 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         if (id === undefined || !header) return [];
         return [{ id, label: this.columnLabel(id), filter: header.filter, support: this.feed.columnSupport(id) }];
       }),
+      find: {
+        support: snapshot.findSupport,
+        query: snapshot.find ? (this.feed.findIds(snapshot.find) ?? null) : null,
+        current: snapshot.findMatch && this.ids(snapshot.findMatch.row, snapshot.findMatch.col),
+        ...this.feed.findState(),
+      },
     };
   }
 

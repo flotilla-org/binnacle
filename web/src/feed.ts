@@ -1,15 +1,25 @@
 // Plumbing between a Table Source and the Grid: counts, Window answers
 // interned into Keys, the value cache, Change Notices from the source's
 // sinks, and the answers to the Effects a Table Source owns (View Specs,
-// Locate, move). Every answer goes through one `settle`.
+// Locate, move, find steps), and find's marks and count. Every answer goes
+// through one `settle`.
 
-import { AXES, AXIS_CODE, NOTICE_CODE, QUICK_FILTER, SUPPORT, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, FIND, NOTICE_CODE, QUICK_FILTER, SUPPORT, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
 import { createSettler, type Request } from "./settle";
-import type { KeyedAxisView, KeyedCondition, KeyedTextQuery, KeyedViewSpec, Snapshot, SortColumn, StripItem } from "./snapshot";
+import type {
+  KeyedAxisView,
+  KeyedCondition,
+  KeyedFindQuery,
+  KeyedTextQuery,
+  KeyedViewSpec,
+  Snapshot,
+  SortColumn,
+  StripItem,
+} from "./snapshot";
 import type {
   AppliedAxisView,
   AppliedView,
@@ -20,6 +30,8 @@ import type {
   Distinct,
   FailedRequest,
   FilterSpec,
+  FindCount,
+  FindQuery,
   Located,
   SortSpec,
   TableSource,
@@ -72,8 +84,21 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   distinct(id: ColId, search: string, limit: number, apply: (answer: Distinct) => void): Request | null;
   /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
   find(axis: AxisName, key: bigint): Promise<Located>;
+  /** A Find Query by Keys, issuing Keys for columns that have none yet. */
+  findKeys(query: FindQuery<ColId>): KeyedFindQuery;
+  /** A Find Query by IDs, if every column it names is known. */
+  findIds(query: KeyedFindQuery): FindQuery<ColId> | undefined;
+  /** The count for the Find Query in force (`null` until the source gives one), and where the last step landed among the matches. */
+  findState(): FindState;
   /** Detaches from the source and aborts outstanding requests. */
   destroy(): void;
+}
+
+/** What the Table Source last said about the Find Query in force. */
+export interface FindState {
+  count: FindCount | null;
+  /** The last step's 0-based index among the matches (`null` if the source gave none) and whether it wrapped; `null` before a step lands. */
+  step: { index: number | null; wrapped: boolean } | null;
 }
 
 /**
@@ -140,6 +165,12 @@ const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false };
 
 const GONE: Located = { type: "Gone", suggest: null };
 
+/** A mark the source gave, and the round it was asked in: one from an earlier round is shown until it is asked again. */
+interface Mark {
+  marked: boolean;
+  round: number;
+}
+
 export function createFeed<RowId, ColId, V>(
   source: TableSource<RowId, ColId, V>,
   hooks: FeedHooks<RowId, ColId> = {},
@@ -180,6 +211,20 @@ export function createFeed<RowId, ColId, V>(
   let viewing: Request | null = null;
   /** Locates in flight by axis and Key, each aborted when the same Key is asked for again. */
   const locating = new Map<string, Request>();
+  const finder = source.find;
+  /** The Find Query in force by IDs; `null` while find is closed or the query names a column not known. */
+  let finding: FindQuery<ColId> | null = null;
+  /** Bumped with each new Find Query, so a step for an older one leaves `findState` alone. */
+  let findEpoch = 0;
+  /** Find's marks by Key pair, for the query in force. */
+  const marks = new Map<string, Mark>();
+  /** Bumped when the marks may have changed (a Change Notice, a new View Spec): each visible cell is asked again. */
+  let markRound = 0;
+  /** Mark blocks in flight, aborted with the query or once out of view. */
+  const markBlocks = new Set<Block>();
+  const marking = new Set<string>();
+  let counting: Request | null = null;
+  let findState: FindState = { count: null, step: null };
 
   /** Tells the Grid the count on `axis`, with a Reset unless another counted notice is given. */
   const reset = (axis: AxisName, count: number, notice: "Reset" | "Refiltered" = "Reset") => {
@@ -222,6 +267,7 @@ export function createFeed<RowId, ColId, V>(
     settler.bump();
     const { interner, position } = axes[axis];
     axes[axis].failed = null;
+    remark(axis === "rows" && notice.type !== "Reordered");
     switch (notice.type) {
       case "Reset":
         cache.clear();
@@ -298,6 +344,67 @@ export function createFeed<RowId, ColId, V>(
     applied = spec;
     totals = now;
     grid?.view_applied(spec, now.rows ?? NaN, now.cols ?? NaN);
+    remark(true);
+  };
+
+  /** Asks for the count of the Find Query in force, in place of any asked before. */
+  const askFindCount = () => {
+    counting?.abort();
+    counting = null;
+    const query = finding;
+    if (!finder?.count || !query) return;
+    counting = settle(
+      (signal) => finder.count!.call(finder, query, signal),
+      (count) => {
+        counting = null;
+        findState = { ...findState, count };
+      },
+      { failed: report({ type: "find", request: "count" }) },
+    );
+  };
+
+  /** The marks may have changed: each visible cell is asked again, its old mark shown meanwhile; with `recount`, the count too. */
+  const remark = (recount: boolean) => {
+    if (!finding) return;
+    markRound++;
+    if (recount) askFindCount();
+  };
+
+  /** A new Find Query, or find closed: the old marks go at once. */
+  const answerFind = (query: KeyedFindQuery | null) => {
+    for (const b of markBlocks) b.request.abort();
+    marks.clear();
+    markRound++;
+    findEpoch++;
+    finding = (query && findIds(query)) ?? null;
+    findState = { count: null, step: null };
+    askFindCount();
+    landed = true;
+    schedule();
+  };
+
+  /** Answers a step, always exactly once: `null` if the source cannot step or fails. */
+  const answerFindStep = (query: KeyedFindQuery, from: { row: bigint; col: bigint } | null, direction: "next" | "previous") => {
+    const ids = findIds(query);
+    const row = from && rows.interner.id(from.row);
+    const col = from && cols.interner.id(from.col);
+    const fromIds = row !== undefined && row !== null && col !== undefined && col !== null ? { row, col } : null;
+    const answer = (found: { row: bigint; col: bigint } | null) => {
+      grid?.find_stepped(found);
+      schedule();
+    };
+    if (!finder || !ids) return answer(null);
+    const epoch = findEpoch;
+    settle(
+      (signal) => finder.next.call(finder, fromIds, direction, ids, signal),
+      (step) => {
+        if (step && epoch === findEpoch) {
+          findState = { ...findState, step: { index: step.index ?? null, wrapped: step.wrapped ?? false } };
+        }
+        answer(step && { row: rows.interner.key(step.row), col: cols.interner.key(step.col) });
+      },
+      { otherwise: () => answer(null), failed: report({ type: "find", request: "next" }) },
+    );
   };
 
   /** Tells the Grid which axes take a quick filter: only with `view`. */
@@ -336,6 +443,11 @@ export function createFeed<RowId, ColId, V>(
     regex: q.regex,
     searches: q.searches === "shown" ? null : q.searches.map((id) => by.interner.key(id)),
   });
+
+  const findIds = (q: KeyedFindQuery): FindQuery<ColId> | undefined => {
+    const query = queryIds(cols, q.query);
+    return query && { query, by: q.by };
+  };
 
   /** A condition by its column's ID in `by`, or `undefined` if the column or the kind is not known. */
   const conditionId = <Id>(by: Axis<Id>, c: KeyedCondition): Condition<Id> | undefined => {
@@ -511,6 +623,63 @@ export function createFeed<RowId, ColId, V>(
     if (request.pending) blocks.add((block = { rows: rowKeys, cols: colKeys, request }));
   };
 
+  /** Asks for find's marks over the block `rowKeys` by `colKeys`. */
+  const askMarks = (query: FindQuery<ColId>, rowKeys: bigint[], colKeys: bigint[]) => {
+    const rowIds = rowKeys.map((k) => rows.interner.id(k));
+    const colIds = colKeys.map((k) => cols.interner.id(k));
+    if (!finder || !rowIds.every(known) || !colIds.every(known)) return;
+    const round = markRound;
+    const pairs = rowKeys.flatMap((r) => colKeys.map((c) => pair(r, c)));
+    for (const p of pairs) marking.add(p);
+    let block: Block | undefined;
+    const done = () => {
+      if (block) markBlocks.delete(block);
+      for (const p of pairs) marking.delete(p);
+    };
+    const request = settle(
+      (signal) => finder.marks.call(finder, rowIds, colIds, query, signal),
+      (answer) => {
+        done();
+        if (query !== finding) return;
+        rowKeys.forEach((r, i) =>
+          colKeys.forEach((c, j) => marks.set(pair(r, c), { marked: answer[i]?.[j] === true, round })),
+        );
+      },
+      { fresh: true, otherwise: done, failed: report({ type: "find", request: "marks" }) },
+    );
+    if (request.pending) markBlocks.add((block = { rows: rowKeys, cols: colKeys, request }));
+  };
+
+  /** Asks for the marks of the visible cells that lack one from this round, grouped as `request` groups values. */
+  const requestMarks = (rowKeys: bigint[], colKeys: bigint[]) => {
+    const query = finding;
+    if (!query) return;
+    const shownRows = new Set(rowKeys);
+    const shownCols = new Set(colKeys);
+    for (const b of markBlocks) {
+      if (!b.rows.some((r) => shownRows.has(r)) || !b.cols.some((c) => shownCols.has(c))) b.request.abort();
+    }
+    const missing = new Map<string, { rows: bigint[]; cols: bigint[] }>();
+    for (const r of rowKeys) {
+      const lacking = colKeys.filter((c) => {
+        const p = pair(r, c);
+        return marks.get(p)?.round !== markRound && !marking.has(p);
+      });
+      if (!lacking.length) continue;
+      const id = lacking.join(",");
+      const block = missing.get(id);
+      if (block) block.rows.push(r);
+      else missing.set(id, { rows: [r], cols: lacking });
+    }
+    if (marks.size > 4 * Math.max(256, shownRows.size * shownCols.size)) {
+      for (const p of [...marks.keys()]) {
+        const [r, c] = p.split(":").map(BigInt) as [bigint, bigint];
+        if (!shownRows.has(r) || !shownCols.has(c)) marks.delete(p);
+      }
+    }
+    for (const block of missing.values()) askMarks(query, block.rows, block.cols);
+  };
+
   /**
    * Asks for the visible cells the cache lacks, one block per set of missing
    * columns: scrolling down asks for new rows by every column, across for
@@ -536,6 +705,7 @@ export function createFeed<RowId, ColId, V>(
     }
     cache.prune(shownRows, shownCols);
     for (const block of missing.values()) ask(block.rows, block.cols);
+    requestMarks(rowKeys, colKeys);
   };
 
   const valueAt = (row: bigint, col: bigint): unknown => {
@@ -571,6 +741,11 @@ export function createFeed<RowId, ColId, V>(
       return axis === "rows" || id === undefined ? String(item.position + 1) : String(id);
     },
     id: (axis, item) => (item.key === null ? undefined : axes[axis].interner.id(item.key)),
+    marked: (i, j) => {
+      const row = shown?.rows.strip[i]?.key;
+      const col = shown?.cols.strip[j]?.key;
+      return finding !== null && row != null && col != null && marks.get(pair(row, col))?.marked === true;
+    },
   };
 
   return {
@@ -578,6 +753,7 @@ export function createFeed<RowId, ColId, V>(
     connect(g) {
       grid = g;
       markQuickFilter(g);
+      g.set_find_support(finder ? FIND.on | (finder.regex ? FIND.regex : 0) : 0);
       for (const axis of AXES) {
         const count = early[axis];
         if (count !== undefined) reset(axis, count);
@@ -627,6 +803,12 @@ export function createFeed<RowId, ColId, V>(
         case "MoveRequested":
           answerMove(effect.axis, effect.keys, effect.to);
           return true;
+        case "FindRequested":
+          answerFind(effect.query);
+          return true;
+        case "FindStepRequested":
+          answerFindStep(effect.query, effect.from, effect.direction);
+          return true;
         default:
           return false;
       }
@@ -667,6 +849,9 @@ export function createFeed<RowId, ColId, V>(
       if (item) return Promise.resolve({ type: "Found", position: item.position });
       return new Promise((resolve) => whereIs(axis, key, resolve, () => resolve(GONE)));
     },
+    findKeys: (q) => ({ query: queryKeys(cols, q.query), by: q.by }),
+    findIds,
+    findState: () => findState,
     destroy() {
       detach?.();
       settler.close();
