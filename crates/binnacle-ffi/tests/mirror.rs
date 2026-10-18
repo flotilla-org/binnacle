@@ -870,7 +870,7 @@ fn support_bits(support: Support) -> u32 {
                 0
             }
     });
-    u32::from(support.sort) * BINNACLE_SUPPORT_SORT | text
+    (u32::from(support.sort) * BINNACLE_SUPPORT_SORT) | text
 }
 
 /// A condition read back from C, as a host would: its query searching the

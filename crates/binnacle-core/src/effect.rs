@@ -3,6 +3,8 @@ use crate::view::{ViewEdit, ViewSpec};
 
 /// A request the Grid emits for its host or Table Source to act on. Effects
 /// carry no continuations: answers come back later as ordinary inputs.
+// Effects are polled one at a time, so a large View Spec costs nothing to keep unboxed.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     /// The user typed text while the Grid had focus. The host decides what it

@@ -296,6 +296,8 @@ pub struct WireStamped {
     pub effect: WireEffect,
 }
 
+// Serialized one at a time, as the core's Effects are polled.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type")]
 pub enum WireEffect {
