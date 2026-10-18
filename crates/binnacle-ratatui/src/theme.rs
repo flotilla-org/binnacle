@@ -40,6 +40,11 @@ pub struct Theme {
     /// Patched over a cell whose value just changed (see
     /// [`CellCanvas::flash`](crate::CellCanvas::flash)).
     pub flash: Style,
+    /// Patched over a cell that matches the Find Query.
+    pub find_match: Style,
+    /// Patched over the current match, which also ends in `◂` so it shows
+    /// under the focus.
+    pub find_current: Style,
     pub shimmer_base: Color,
     pub shimmer_highlight: Color,
     /// Draws headers and row numbers reversed, so the bands stand out.
@@ -75,6 +80,11 @@ impl Theme {
             scrollbar_thumb: none.fg(Color::Gray),
             loading: none,
             flash: none.fg(Color::Black).bg(Color::Yellow),
+            find_match: none.fg(Color::Black).bg(Color::Yellow),
+            find_current: none
+                .fg(Color::Black)
+                .bg(Color::LightMagenta)
+                .add_modifier(Modifier::BOLD),
             shimmer_base: Color::Rgb(140, 130, 40),
             shimmer_highlight: Color::Rgb(255, 240, 120),
             invert_headers: false,
@@ -103,6 +113,11 @@ impl Theme {
             scrollbar_thumb: none.fg(mocha::OVERLAY0),
             loading: none.fg(mocha::OVERLAY0),
             flash: none.fg(mocha::CRUST).bg(mocha::YELLOW),
+            find_match: none.fg(mocha::CRUST).bg(mocha::YELLOW),
+            find_current: none
+                .fg(mocha::CRUST)
+                .bg(mocha::PEACH)
+                .add_modifier(Modifier::BOLD),
             shimmer_base: mocha::PEACH,
             shimmer_highlight: mocha::YELLOW,
             invert_headers: false,
@@ -131,6 +146,8 @@ impl Theme {
             scrollbar_thumb: none,
             loading: none.add_modifier(Modifier::DIM),
             flash: none.add_modifier(Modifier::BOLD),
+            find_match: none.add_modifier(Modifier::UNDERLINED),
+            find_current: none.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             shimmer_base: Color::Reset,
             shimmer_highlight: Color::Reset,
             invert_headers: false,
@@ -171,6 +188,8 @@ impl Theme {
             scrollbar_thumb: s(self.scrollbar_thumb),
             loading: s(self.loading),
             flash: s(self.flash),
+            find_match: s(self.find_match),
+            find_current: s(self.find_current),
             shimmer_base: nearest_ansi(self.shimmer_base),
             shimmer_highlight: nearest_ansi(self.shimmer_highlight),
             ..self.clone()

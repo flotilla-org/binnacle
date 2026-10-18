@@ -191,6 +191,24 @@ fn the_field_shows_its_placeholder_text_caret_and_lit_toggles() {
 }
 
 #[test]
+fn unfocused_the_field_shows_a_quick_filter_set_elsewhere_and_focus_adopts_it() {
+    let mut grid = grid(5, Some(TextSupport::new(true)));
+    let mut field = QuickFilter::new();
+    grid.set_quick_filter(Axis::Rows, Some(TextQuery::new("hal").case_sensitive(true)));
+    requested(&mut grid);
+    assert_eq!(
+        text(&line(&field, &snapshot(&mut grid), 30)),
+        " Filter  hal            Aa .*"
+    );
+    field.focus(&snapshot(&mut grid));
+    field.key(&char('i'), &mut grid);
+    assert_eq!(
+        requested(&mut grid),
+        vec![Some(TextQuery::new("hali").case_sensitive(true))]
+    );
+}
+
+#[test]
 fn the_status_line_counts_the_rows_shown_of_the_sources_total() {
     let mut grid = grid(1204, Some(TextSupport::new(true)));
     let mut counts = vec![row_count(&snapshot(&mut grid))];

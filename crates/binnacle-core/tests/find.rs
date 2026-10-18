@@ -193,3 +193,21 @@ fn a_step_with_no_match_answers_none_and_focus_stays() {
     assert_eq!(snap.find_match(), None);
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(2)));
 }
+
+#[test]
+fn the_current_match_stays_when_a_filter_keeps_its_row() {
+    let mut s = records();
+    s.frame(V);
+    s.input(|g| {
+        g.set_find(find("3"));
+        g.action(Action::FindNext);
+        g.action(Action::FindNext);
+    });
+    s.frame(V);
+    assert_eq!(s.grid.snapshot().find_match(), Some(cell(3, 0)));
+    // "3" keeps 13, 31, 30, 23 and 3: row 3 stays.
+    s.input(|g| g.set_quick_filter(Axis::Rows, Some(TextQuery::new("3"))));
+    s.frame(V);
+    s.frame(V);
+    assert_eq!(s.grid.snapshot().find_match(), Some(cell(3, 0)));
+}

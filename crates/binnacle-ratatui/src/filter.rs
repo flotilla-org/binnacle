@@ -24,6 +24,12 @@ pub enum Control {
     QuickFilter,
     /// Open the focused column's filter popup.
     ColumnFilter,
+    /// Open the find bar, or focus it again.
+    Find,
+    /// Step to the next match while find is open.
+    FindNext,
+    /// Step to the previous match while find is open.
+    FindPrevious,
 }
 
 /// A set of bindings for the find and filter controls, to suit how a
@@ -32,7 +38,8 @@ pub enum Control {
 #[non_exhaustive]
 pub enum Preset {
     /// Ctrl chords, as in a desktop application: Ctrl+L for the quick
-    /// filter, Alt+Down for the focused column's filter popup.
+    /// filter, Alt+Down for the focused column's filter popup, Ctrl+F for
+    /// the find bar and F3 (Shift+F3 back) to step between matches.
     Chords,
 }
 
@@ -57,6 +64,9 @@ impl Controls {
                     Control::QuickFilter,
                 );
                 controls.bind(KeyCode::Down, KeyModifiers::ALT, Control::ColumnFilter);
+                controls.bind(KeyCode::Char('f'), KeyModifiers::CONTROL, Control::Find);
+                controls.bind(KeyCode::F(3), KeyModifiers::NONE, Control::FindNext);
+                controls.bind(KeyCode::F(3), KeyModifiers::SHIFT, Control::FindPrevious);
             }
         }
         controls
@@ -94,7 +104,8 @@ struct Query {
 /// The rows' quick filter field: one line holding the text and the case
 /// (`Aa`) and regex (`.*`) toggles, drawn by [`QuickFilter::render`] only
 /// while the rows have a quick filter. Each change sets the Grid's quick
-/// filter, searching the shown columns.
+/// filter, searching the shown columns. Unfocused, it shows the quick filter
+/// in force, which another control (the find bar's Alt+F) may have set.
 ///
 /// While focused it takes every key: characters and Backspace edit, Ctrl+U
 /// clears, Alt+C toggles case, Alt+R regex (if the rows take regexes), Enter
@@ -131,6 +142,9 @@ impl QuickFilter {
             return false;
         };
         self.regex = support.regex;
+        if !self.focused() {
+            self.query = in_force(snapshot).unwrap_or(self.query.clone());
+        }
         self.before.get_or_insert_with(|| self.query.clone());
         true
     }
@@ -199,9 +213,13 @@ impl QuickFilter {
         if area.is_empty() {
             return;
         }
-        let mut toggles = vec![("Aa", self.query.case_sensitive)];
+        let query = match in_force(snapshot) {
+            Some(q) if !self.focused() => q,
+            _ => self.query.clone(),
+        };
+        let mut toggles = vec![("Aa", query.case_sensitive)];
         if support.regex {
-            toggles.push((".*", self.query.regex));
+            toggles.push((".*", query.regex));
         }
         let label = " Filter ";
         let right: usize = toggles.iter().map(|(t, _)| t.len() + 1).sum::<usize>() + 1;
@@ -230,12 +248,12 @@ impl QuickFilter {
                 .iter()
                 .collect();
             format!("{tail}▏")
-        } else if self.query.text.is_empty() {
+        } else if query.text.is_empty() {
             self.placeholder.clone()
         } else {
-            self.query.text.clone()
+            query.text.clone()
         };
-        let style = if !self.focused() && self.query.text.is_empty() {
+        let style = if !self.focused() && query.text.is_empty() {
             theme.body.patch(theme.loading).add_modifier(Modifier::DIM)
         } else {
             field
@@ -254,6 +272,25 @@ impl QuickFilter {
             put(&mut x, " ", theme.body);
         }
     }
+}
+
+/// The rows' quick filter as last asked for (the request still unanswered,
+/// else the one applied), or an empty query for none; `None` while the rows
+/// have no quick filter.
+fn in_force(snapshot: &Snapshot) -> Option<Query> {
+    snapshot.quick_filter(Axis::Rows)?;
+    let view = snapshot.requested_view().unwrap_or(snapshot.applied_view());
+    Some(
+        view.rows
+            .filter
+            .quick
+            .as_ref()
+            .map_or_else(Query::default, |q| Query {
+                text: q.text.clone(),
+                case_sensitive: q.case_sensitive,
+                regex: q.regex,
+            }),
+    )
 }
 
 /// A column's filter popup, dropped under the column header. Where the
@@ -861,7 +898,7 @@ impl Open {
     }
 }
 
-fn toggle_style(theme: &Theme, on: bool) -> Style {
+pub(crate) fn toggle_style(theme: &Theme, on: bool) -> Style {
     if on {
         theme
             .sort_marker
@@ -975,7 +1012,7 @@ pub fn row_count(snapshot: &Snapshot) -> String {
 }
 
 /// `n` with commas between groups of three digits.
-fn grouped(n: u64) -> String {
+pub(crate) fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, d) in digits.chars().enumerate() {

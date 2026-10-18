@@ -7,7 +7,7 @@
 //! pending. Focus and picks stay on their records. Drag a column header to
 //! move the column (a selected column takes the other selected ones with
 //! it); a cyan line shows where it will drop, and widths go with their
-//! columns. Press Ctrl+F to show only records with a crew of 6 or more, again
+//! columns. Press Ctrl+R to show only records with a crew of 6 or more, again
 //! for a crew of 13 or more (there are none, so the body says "No rows match
 //! the filter"), and again to show them all: focus stays on its record, or
 //! moves to the nearest one left in sort order; the topmost record shown
@@ -35,7 +35,7 @@
 //! reads the text as a regex, Ctrl+U clears it, Enter keeps the filter and
 //! leaves the field, and Esc puts back the filter from before. The status
 //! line counts the records shown of the total, such as "84 of 1,000 rows".
-//! The quick filter and Ctrl+F's crew filter both apply.
+//! The quick filter and Ctrl+R's crew filter both apply.
 //!
 //! Alt+Down opens the focused column's filter popup under its header (every
 //! records column but the id, and the tickers' name, price and load): type to
@@ -51,6 +51,16 @@
 //! filtered column's header shows `▿` (with `~` while the change is
 //! pending), and a line above the table lists each condition as a chip.
 //!
+//! Ctrl+F opens the find bar above the status line: typing marks every
+//! matching cell in yellow, and the bar counts them. Enter (or Ctrl+N) steps
+//! to the next match and Shift+Enter (or Ctrl+P) to the previous, wrapping
+//! round: focus moves to the match, which is drawn in its own colour and
+//! ends in `◂`, and the selection stays. Alt+C matches case, Alt+R reads a
+//! regex, Alt+B steps by columns instead of rows, Alt+F shows only the rows
+//! that match (again to show them all). Esc goes back to the table with find
+//! still open, where F3 and Shift+F3 step, Ctrl+F returns to the bar, and Esc
+//! closes find. The slow records answer each step late.
+//!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
 //! huge table, typing digits goes to that row number. Enter, F2 or a
@@ -63,7 +73,7 @@
 //! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
 //! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
 //! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
-//! Ctrl+F cycles the filter. Click to focus, Shift-click or drag to select,
+//! Ctrl+R cycles the crew filter. Click to focus, Shift-click or drag to select,
 //! Ctrl-click to pick rows, click a row number to select its row. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to what it draws. The bottom
@@ -80,17 +90,20 @@ use std::borrow::Cow;
 use std::io;
 use std::time::{Duration, Instant};
 
+use std::collections::HashSet;
+
 use binnacle_core::{
-    Action, Axis, AxisConfig, Distinct, DistinctQuery, EditEnd, Effect, Grid, Key, Located, Mode,
-    Snapshot, Stamped, Support, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, EditEnd, Effect,
+    FindDirection, FindMatch, FindQuery, Grid, Key, Located, Mode, Position, Snapshot, Stamped,
+    Support, TextSupport, ViewSpec, Viewport,
 };
-use binnacle_memory::{IdentitySource, MemorySource, PumpSource, pump};
+use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Viewed, pump};
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
-    CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, Keymap, Layout, Mouse,
-    Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer, Theme, animating,
-    begin_frame, fit_width, render_conditions, render_editor, render_with, row_count, status,
-    wheel,
+    CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
+    Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
+    Theme, animating, begin_frame, fit_width, render_conditions, render_editor, render_with,
+    row_count, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -158,7 +171,7 @@ impl Record {
     }
 }
 
-/// The minimum crew each Ctrl+F filter keeps, in turn; `None` keeps all.
+/// The minimum crew each Ctrl+R filter keeps, in turn; `None` keeps all.
 const CREW_FILTERS: [Option<i64>; 3] = [None, Some(6), Some(13)];
 
 const HEADERS: [&str; 5] = ["id", "name", "weight", "crew", "port"];
@@ -294,6 +307,8 @@ enum Table {
         filter: usize,
         /// `Some` for the slow source.
         held: Option<Held>,
+        /// The Find Query of the last find step, and where it landed.
+        step: Option<(FindQuery, FindStep)>,
     },
     Huge(Huge),
     Live(Live),
@@ -349,11 +364,15 @@ impl Table {
                 rows,
                 source,
                 held: Some(held),
+                step,
                 ..
             } => {
                 let text = Text::Records(rows);
                 let now = Instant::now();
-                let mut source = source.over(rows);
+                let mut source = Stepped {
+                    inner: source.over(rows),
+                    step,
+                };
                 let (due, later) = held.drain(..).partition(|&(at, _)| at <= now);
                 *held = later;
                 for (_, effect) in due {
@@ -361,7 +380,9 @@ impl Table {
                 }
                 while let Some(stamped) = grid.poll_effect() {
                     match &stamped.effect {
-                        Effect::ViewRequested { .. } | Effect::Locate { .. } => {
+                        Effect::ViewRequested { .. }
+                        | Effect::Locate { .. }
+                        | Effect::FindStepRequested { .. } => {
                             held.push((now + SLOW, stamped.effect.clone()));
                         }
                         Effect::MoveRequested { axis, keys, to } => {
@@ -374,9 +395,17 @@ impl Table {
                     seen(&text, grid, stamped);
                 }
             }
-            Table::Records { rows, source, .. } => {
+            Table::Records {
+                rows, source, step, ..
+            } => {
                 let text = Text::Records(rows);
-                source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
+                let mut source = Stepped {
+                    inner: source.over(rows),
+                    step,
+                };
+                pump(grid, &mut source, |grid, stamped| {
+                    seen(&text, grid, stamped)
+                });
             }
             Table::Huge(huge) => {
                 pump(grid, huge, |grid, stamped| seen(&Text::Huge, grid, stamped));
@@ -466,6 +495,38 @@ impl Table {
         }
     }
 
+    /// The marked cells among `rows` by `cols` and what the find bar shows,
+    /// for the Find Query in force.
+    fn find(
+        &mut self,
+        query: Option<&FindQuery>,
+        rows_shown: &[Key],
+        cols: &[Key],
+    ) -> (HashSet<(Key, Key)>, FindStatus) {
+        let (
+            Table::Records {
+                rows, source, step, ..
+            },
+            Some(query),
+        ) = (self, query)
+        else {
+            return Default::default();
+        };
+        let marks = source.find_marks(rows, rows_shown, cols, query);
+        let marked = (rows_shown.iter())
+            .flat_map(|&r| cols.iter().map(move |&c| (r, c)))
+            .zip(marks)
+            .filter_map(|(cell, marked)| marked.then_some(cell))
+            .collect();
+        let step = step.as_ref().filter(|(q, _)| q == query).map(|(_, s)| s);
+        let status = FindStatus {
+            count: Some(source.find_count(rows, query)),
+            index: step.and_then(|s| s.index),
+            wrapped: step.is_some_and(|s| s.wrapped),
+        };
+        (marked, status)
+    }
+
     /// What the body says when no rows are left, with the quick filter
     /// `quick` on or not.
     fn empty(&self, quick: bool) -> &'static str {
@@ -501,7 +562,55 @@ impl Table {
     }
 }
 
-/// Answers a View Spec or a Locate the slow source held, as
+/// A Table Source that keeps where its last find step landed, for the find
+/// bar's "3 of 120" and wrap note.
+struct Stepped<'a, S> {
+    inner: S,
+    step: &'a mut Option<(FindQuery, FindStep)>,
+}
+
+impl<S: PumpSource> PumpSource for Stepped<'_, S> {
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        self.inner.view(spec)
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.inner.support(axis, key)
+    }
+
+    fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {
+        self.inner.quick_filter(axis)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        self.inner.distinct(axis, key, query)
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.inner.locate(axis, key)
+    }
+
+    fn find_support(&mut self) -> Option<TextSupport> {
+        self.inner.find_support()
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        let step = self.inner.find_next(query, from, direction);
+        *self.step = step.map(|s| (query.clone(), s));
+        step
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        self.inner.move_items(axis, keys, to)
+    }
+}
+
+/// Answers a View Spec, a Locate or a find step the slow source held, as
 /// [`pump`] would have at once.
 fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
     match effect {
@@ -515,6 +624,14 @@ fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
         Effect::Locate { axis, key } => {
             let located = source.locate(axis, key);
             grid.located(axis, key, located);
+        }
+        Effect::FindStepRequested {
+            query,
+            from,
+            direction,
+        } => {
+            let step = source.find_next(&query, from, direction);
+            grid.find_stepped(step.map(|s| s.at));
         }
         _ => {}
     }
@@ -599,6 +716,34 @@ impl Content for Text<'_> {
             }),
             _ => Box::new(text),
         }
+    }
+}
+
+/// The text a [`Table`] draws, with the cells that match the Find Query.
+struct Marked<'a> {
+    text: Text<'a>,
+    marks: &'a HashSet<(Key, Key)>,
+}
+
+impl Content for Marked<'_> {
+    fn cell(&self, row: Key, col: Key) -> String {
+        self.text.cell(row, col)
+    }
+
+    fn row_header(&self, row: Key, position: u64) -> String {
+        self.text.row_header(row, position)
+    }
+
+    fn column_header(&self, col: Key) -> String {
+        self.text.column_header(col)
+    }
+
+    fn marked(&self, row: Key, col: Key) -> bool {
+        self.marks.contains(&(row, col))
+    }
+
+    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+        self.text.renderer(col)
     }
 }
 
@@ -805,6 +950,7 @@ fn main() -> io::Result<()> {
                 .gap(1.0),
         );
         grid.set_quick_filter_support(Axis::Rows, source.quick_filter(Axis::Rows));
+        grid.set_find_support(source.find_support());
         for c in 0..HEADERS.len() as u64 {
             grid.set_support(Axis::Rows, Key(c), source.support(Axis::Rows, Key(c)));
         }
@@ -820,6 +966,7 @@ fn main() -> io::Result<()> {
             source,
             filter: 0,
             held: slow.then(Vec::new),
+            step: None,
         };
         (table, grid)
     };
@@ -835,6 +982,7 @@ fn main() -> io::Result<()> {
     let controls = Controls::preset(Preset::Chords);
     let mut quick = QuickFilter::new().placeholder("Ctrl+L");
     let mut popup = ColumnFilter::new();
+    let mut find = FindBar::new();
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
@@ -867,7 +1015,7 @@ fn main() -> io::Result<()> {
                 // next while they have column conditions.
                 let full = frame.area();
                 let mut area = full;
-                area.height = full.height.saturating_sub(1);
+                area.height = full.height.saturating_sub(1 + u16::from(find.is_open()));
                 app.pump(&mut table, &mut grid, &shown_rows);
                 let field = grid.snapshot().quick_filter(Axis::Rows).is_some();
                 let chips = !grid.snapshot().conditions(Axis::Rows).is_empty();
@@ -898,7 +1046,13 @@ fn main() -> io::Result<()> {
                 shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 moving = animating(&snapshot);
-                render_with(&snapshot, &table.text(), &ctx, area, frame.buffer_mut());
+                let shown_cols: Vec<Key> = snapshot.cols().iter().filter_map(|c| c.key).collect();
+                let (marks, found) = table.find(snapshot.find(), &shown_rows, &shown_cols);
+                let content = Marked {
+                    text: table.text(),
+                    marks: &marks,
+                };
+                render_with(&snapshot, &content, &ctx, area, frame.buffer_mut());
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
@@ -923,9 +1077,17 @@ fn main() -> io::Result<()> {
                     let buf = frame.buffer_mut();
                     render_conditions(&snapshot, &table.text(), &themes[theme], line, buf);
                 }
+                if find.is_open() {
+                    let bar = ratatui::layout::Rect {
+                        y: area.y + area.height,
+                        height: 1,
+                        ..full
+                    };
+                    find.render(&snapshot, &found, &themes[theme], bar, frame.buffer_mut());
+                }
                 let line = ratatui::layout::Rect {
-                    y: full.y + area.height,
-                    height: full.height - area.height,
+                    y: full.bottom().saturating_sub(1),
+                    height: 1,
                     ..full
                 };
                 frame.render_widget(ratatui::text::Line::from(status(&snapshot)), line);
@@ -966,6 +1128,7 @@ fn main() -> io::Result<()> {
                     if app.edit_key(&mut table, &mut grid, key.code)
                         || popup.key(&key, &mut grid)
                         || quick.key(&key, &mut grid)
+                        || find.key(&key, &mut grid)
                     {
                         continue;
                     }
@@ -978,7 +1141,26 @@ fn main() -> io::Result<()> {
                             popup.open(&grid.snapshot());
                             continue;
                         }
+                        Some(Control::Find) => {
+                            if find.open(&grid.snapshot()) {
+                                find.apply(&mut grid);
+                            }
+                            continue;
+                        }
+                        Some(Control::FindNext) if find.step(FindDirection::Next, &mut grid) => {
+                            continue;
+                        }
+                        Some(Control::FindPrevious)
+                            if find.step(FindDirection::Previous, &mut grid) =>
+                        {
+                            continue;
+                        }
                         _ => {}
+                    }
+                    // Esc on the table closes find while it is open.
+                    if key.code == KeyCode::Esc && key.modifiers.is_empty() && find.is_open() {
+                        find.close(&mut grid);
+                        continue;
                     }
                     if ctrl && key.code == KeyCode::Char('t') {
                         theme = (theme + 1) % themes.len();
@@ -988,7 +1170,7 @@ fn main() -> io::Result<()> {
                         app.next_border(&mut grid);
                         continue;
                     }
-                    if ctrl && key.code == KeyCode::Char('f') {
+                    if ctrl && key.code == KeyCode::Char('r') {
                         table.next_filter(&mut grid);
                         continue;
                     }

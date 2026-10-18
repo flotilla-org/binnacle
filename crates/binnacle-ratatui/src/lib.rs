@@ -8,6 +8,7 @@ mod border;
 mod checklist;
 mod context;
 mod filter;
+mod find;
 mod keymap;
 mod mouse;
 mod renderer;
@@ -20,6 +21,7 @@ pub use context::RenderContext;
 pub use filter::{
     ColumnFilter, Control, Controls, Preset, QuickFilter, render_conditions, row_count,
 };
+pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
 pub use mouse::Mouse;
 pub use renderer::{
@@ -66,6 +68,13 @@ pub trait Content {
     fn row_header(&self, row: Key, position: u64) -> String {
         let _ = row;
         position.saturating_add(1).to_string()
+    }
+
+    /// Whether the cell matches the Find Query in force, as the host's Table
+    /// Source says for the cells shown: no cell unless overridden.
+    fn marked(&self, row: Key, col: Key) -> bool {
+        let _ = (row, col);
+        false
     }
 
     /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
@@ -270,7 +279,19 @@ pub fn render_with(
             match (r.key, c.key, renderer) {
                 (Some(row), Some(col), Some(renderer)) => {
                     renderer.draw(row, col, &mut canvas);
+                    if state.current_match {
+                        canvas.patch(theme.find_current);
+                    } else if content.marked(row, col) {
+                        canvas.patch(theme.find_match);
+                    }
                     canvas.patch(over);
+                    if state.current_match {
+                        let (x, y) = (canvas.visible_x(), canvas.visible_y());
+                        let style = theme.body.patch(theme.find_current).patch(over);
+                        if x.end > x.start && y.end > y.start {
+                            canvas.print(x.end - 1, y.start, "◂", style);
+                        }
+                    }
                 }
                 _ => {
                     let y = canvas.visible_y().start;
