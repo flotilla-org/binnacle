@@ -6,9 +6,11 @@ import { huge } from "./huge";
 import { live } from "./live";
 import { records } from "./records";
 import { slow } from "./slow";
+// PROTOTYPE (#138): the records with each record a column.
+import { transposed } from "./transposed";
 
 import type { DemoSource } from "./demo-source";
 
 export type { DemoSource, Mounted } from "./demo-source";
 
-export const SOURCES: readonly DemoSource[] = [records, slow, huge, live, gaps];
+export const SOURCES: readonly DemoSource[] = [records, slow, huge, live, gaps, transposed];

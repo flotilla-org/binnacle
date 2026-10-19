@@ -34,6 +34,11 @@
 //! on a timer only while something animates, an answer is due or the live
 //! table ticks, and otherwise waits for input.
 //!
+//! PROTOTYPE (#138, throwaway): `binnacle-demo --transposed` shows the
+//! records on their side, each record a column and each field a row, to
+//! find what works along one axis and not the other. See
+//! `NOTES.md` at the top of the branch.
+//!
 //! In the records (and the slow records), Ctrl+L focuses the quick filter
 //! field on the top line: typing keeps only the records with that text in
 //! any column, ignoring case, once typing pauses for 150 ms. Alt+C matches
@@ -126,8 +131,8 @@ use std::collections::HashSet;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
-    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, Key, Located, Mode, Position,
-    Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
+    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode,
+    Position, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
     FindStep, IdentitySource, MemorySource, PumpSource, Viewed, pump, query_error,
@@ -363,6 +368,93 @@ enum Table {
     },
     Huge(Huge),
     Live(Live),
+    /// PROTOTYPE (#138, branch `prototype/column-major`, throwaway): the
+    /// records turned on their side, each record a column and each field a
+    /// row, over the same In-Memory Table Source seen through [`Flip`].
+    Transposed {
+        rows: Vec<Record>,
+        source: Box<MemorySource<Record>>,
+        filter: usize,
+        step: Option<(FindQuery, FindStep)>,
+    },
+}
+
+/// PROTOTYPE (#138): a Table Source with its axes swapped. The Grid's rows
+/// are the source's columns and the Grid's columns its rows, so every
+/// request is passed on about the other axis and every answer swapped back.
+/// It adds and fixes nothing: what the source or the Grid does only on one
+/// axis shows up as a gap in the transposed demo.
+struct Flip<S>(S);
+
+/// `spec` with its axes' parts swapped.
+fn flip_spec(spec: &ViewSpec) -> ViewSpec {
+    ViewSpec {
+        rows: spec.cols.clone(),
+        cols: spec.rows.clone(),
+    }
+}
+
+fn flip_query(query: &FindQuery) -> FindQuery {
+    FindQuery::new(query.query.clone()).by(query.by.other())
+}
+
+fn flip_match(m: FindMatch) -> FindMatch {
+    FindMatch::new(m.col, m.row)
+}
+
+impl<S: PumpSource> PumpSource for Flip<S> {
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        let viewed = self.0.view(&flip_spec(spec));
+        Viewed {
+            applied: flip_spec(&viewed.applied),
+            totals: Totals {
+                rows: viewed.totals.cols,
+                cols: viewed.totals.rows,
+            },
+            notices: (viewed.notices.into_iter())
+                .map(|(axis, notice)| (axis.other(), notice))
+                .collect(),
+        }
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.0.support(axis.other(), key)
+    }
+
+    fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {
+        self.0.quick_filter(axis.other())
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        self.0.distinct(axis.other(), key, query)
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.0.locate(axis.other(), key)
+    }
+
+    fn find_support(&mut self) -> Option<TextSupport> {
+        self.0.find_support()
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        let step = self
+            .0
+            .find_next(&flip_query(query), from.map(flip_match), direction)?;
+        Some(FindStep {
+            at: flip_match(step.at),
+            ..step
+        })
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        self.0.move_items(axis.other(), keys, to)
+    }
 }
 
 /// The huge table: Keys are Positions on both axes.
@@ -392,6 +484,7 @@ impl Table {
             Table::Records { source, .. } => source.window(axis, range),
             Table::Huge(huge) => huge.axis(axis).window(range),
             Table::Live(live) => live.source.window(axis, range),
+            Table::Transposed { source, .. } => source.window(axis.other(), range),
         }
     }
 
@@ -481,6 +574,18 @@ impl Table {
                 let text = Text::Live(rows);
                 source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
             }
+            Table::Transposed {
+                rows, source, step, ..
+            } => {
+                let text = Text::Transposed(rows);
+                let mut source = Flip(Stepped {
+                    inner: source.over(rows),
+                    step,
+                });
+                pump(grid, &mut source, |grid, stamped| {
+                    seen(&text, grid, stamped)
+                });
+            }
         }
         app
     }
@@ -492,6 +597,7 @@ impl Table {
             Table::Records { held: Some(_), .. } => "slow",
             Table::Huge(_) => "huge",
             Table::Live(_) => "live",
+            Table::Transposed { .. } => "transposed",
         }
     }
 
@@ -523,7 +629,7 @@ impl Table {
                 let n: u64 = typed.parse().ok()?;
                 (1..=huge.rows.count()).contains(&n).then(|| Key(n - 1))
             }
-            Table::Live(_) => None,
+            Table::Live(_) | Table::Transposed { .. } => None,
         }
     }
 
@@ -540,7 +646,7 @@ impl Table {
     fn name(&self, row: Key) -> Option<String> {
         match self {
             Table::Records { rows, .. } => Some(rows[row.0 as usize].name.clone()),
-            Table::Huge(_) | Table::Live(_) => None,
+            Table::Huge(_) | Table::Live(_) | Table::Transposed { .. } => None,
         }
     }
 
@@ -560,6 +666,22 @@ impl Table {
             };
             grid.notify(Axis::Rows, notice);
         }
+        // PROTOTYPE (#138): the same crew filter, on the records, which are
+        // the Grid's columns here.
+        if let Table::Transposed {
+            rows,
+            source,
+            filter,
+            ..
+        } = self
+        {
+            *filter = (*filter + 1) % CREW_FILTERS.len();
+            let notice = match CREW_FILTERS[*filter] {
+                Some(min) => source.filter(rows, move |r| r.crew >= min),
+                None => source.clear_filter(rows),
+            };
+            grid.notify(Axis::Cols, notice);
+        }
     }
 
     /// The marked cells among `rows` by `cols` and what the find bar shows,
@@ -570,6 +692,32 @@ impl Table {
         rows_shown: &[Key],
         cols: &[Key],
     ) -> (HashSet<(Key, Key)>, FindStatus) {
+        // PROTOTYPE (#138): ask the source about the records as its rows
+        // and its fields as its columns, and swap the marks back.
+        if let (
+            Table::Transposed {
+                rows, source, step, ..
+            },
+            Some(query),
+        ) = (&mut *self, query)
+        {
+            let flipped = flip_query(query);
+            let marks = source.find_marks(rows, cols, rows_shown, &flipped);
+            let marked = (cols.iter())
+                .flat_map(|&r| rows_shown.iter().map(move |&c| (c, r)))
+                .zip(marks)
+                .filter_map(|(cell, marked)| marked.then_some(cell))
+                .collect();
+            let step = step.as_ref().filter(|(q, _)| *q == flipped).map(|(_, s)| s);
+            let status = FindStatus {
+                count: Some(source.find_count(rows, &flipped)),
+                index: step.and_then(|s| s.index),
+                wrapped: step.is_some_and(|s| s.wrapped),
+                finding: false,
+                error: query_error(&query.query),
+            };
+            return (marked, status);
+        }
         let (
             Table::Records {
                 rows, source, step, ..
@@ -612,6 +760,7 @@ impl Table {
     fn empty(&self, quick: bool) -> &'static str {
         match self {
             Table::Records { filter, .. } if *filter > 0 || quick => "No rows match the filter",
+            Table::Transposed { filter, .. } if *filter > 0 => "No rows match the filter",
             _ => "No rows",
         }
     }
@@ -621,6 +770,7 @@ impl Table {
             Table::Records { rows, .. } => Text::Records(rows),
             Table::Huge(_) => Text::Huge,
             Table::Live(live) => Text::Live(&live.rows),
+            Table::Transposed { rows, .. } => Text::Transposed(rows),
         }
     }
 
@@ -628,7 +778,9 @@ impl Table {
     fn distinct(&self, key: Key, query: &DistinctQuery) -> Option<Distinct> {
         match self {
             Table::Records { rows, source, .. } => Some(source.distinct(rows, key, query)),
-            Table::Huge(_) => None,
+            // PROTOTYPE (#138): the column filter's checklist asks for a
+            // column's values down the rows, which the source can't list.
+            Table::Huge(_) | Table::Transposed { .. } => None,
             Table::Live(live) => Some(live.source.distinct(&live.rows, key, query)),
         }
     }
@@ -640,7 +792,7 @@ impl Table {
             Table::Records { rows, source, .. } => {
                 Some(source.value(col, rows.get(row.0 as usize)?))
             }
-            Table::Huge(_) => None,
+            Table::Huge(_) | Table::Transposed { .. } => None,
             Table::Live(live) => Some(live.source.value(col, live.rows.get(row.0 as usize)?)),
         }
     }
@@ -746,6 +898,8 @@ enum Text<'a> {
     Records(&'a [Record]),
     Huge,
     Live(&'a [Ticker]),
+    /// PROTOTYPE (#138): the records with fields as rows.
+    Transposed(&'a [Record]),
 }
 
 impl Content for Text<'_> {
@@ -762,6 +916,7 @@ impl Content for Text<'_> {
                 }
             }
             Text::Huge => format!("r{}c{}", row.0, col.0),
+            Text::Transposed(rows) => Text::Records(rows).cell(col, row),
             Text::Live(rows) => {
                 let t = &rows[row.0 as usize];
                 match col.0 {
@@ -778,6 +933,7 @@ impl Content for Text<'_> {
         match self {
             Text::Records(_) | Text::Live(_) => row.0.to_string(),
             Text::Huge => position.saturating_add(1).to_string(),
+            Text::Transposed(_) => HEADERS[row.0 as usize].to_string(),
         }
     }
 
@@ -786,6 +942,7 @@ impl Content for Text<'_> {
             Text::Records(_) => HEADERS[col.0 as usize].to_string(),
             Text::Huge => format!("col {}", col.0),
             Text::Live(_) => TICKER_HEADERS[col.0 as usize].to_string(),
+            Text::Transposed(_) => format!("#{}", col.0),
         }
     }
 
@@ -1018,10 +1175,59 @@ fn preset() -> Result<Preset, String> {
     }
 }
 
+/// PROTOTYPE (#138): the records demo with each record a column and each
+/// field a row, over the records' own In-Memory Table Source seen through
+/// [`Flip`]. Support is declared from the flipped source on both axes and
+/// row headers are set to sort, as column headers are in the records, so
+/// whatever the Grid or the adapter cannot do along the columns fails
+/// where it can be seen.
+fn transposed() -> (Table, Grid) {
+    let rows: Vec<Record> = (0..RECORDS).map(Record::generate).collect();
+    let mut source = MemorySource::<Record>::new(rows.len(), HEADERS.len())
+        .i64_column(Key(0), |r| Some(r.id))
+        .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
+        .f64_column(Key(2), |r| r.weight)
+        .i64_column(Key(3), |r| Some(r.crew))
+        .bytes_column(Key(4), |r| r.port.map(|p| Cow::Borrowed(p.as_bytes())))
+        .text_column(Key(2), |r| {
+            Some(r.weight.map_or("-".into(), |w| format!("{w:.1}").into()))
+        });
+    let mut grid = Grid::new(
+        AxisConfig::new(HEADERS.len() as u64, 1.0).header(1.0),
+        AxisConfig::new(rows.len() as u64, 14.0)
+            .header(7.0)
+            .gap(1.0),
+    );
+    grid.set_header_click(Axis::Rows, HeaderClick::Sort);
+    grid.set_header_click(Axis::Cols, HeaderClick::Select);
+    {
+        let mut flip = Flip(source.over(&rows));
+        for axis in Axis::ALL {
+            grid.set_quick_filter_support(axis, flip.quick_filter(axis));
+        }
+        grid.set_find_support(flip.find_support());
+        for f in 0..HEADERS.len() as u64 {
+            grid.set_support(Axis::Cols, Key(f), flip.support(Axis::Cols, Key(f)));
+        }
+        for r in 0..rows.len() as u64 {
+            grid.set_support(Axis::Rows, Key(r), flip.support(Axis::Rows, Key(r)));
+        }
+    }
+    let table = Table::Transposed {
+        rows,
+        source: Box::new(source),
+        filter: 0,
+        step: None,
+    };
+    (table, grid)
+}
+
 fn main() -> io::Result<()> {
     let preset = preset().map_err(io::Error::other)?;
     let live = std::env::args().any(|a| a == "--live");
-    let (mut table, mut grid) = if live {
+    let (mut table, mut grid) = if std::env::args().any(|a| a == "--transposed") {
+        transposed()
+    } else if live {
         let grid = Grid::new(
             AxisConfig::new(TICKERS as u64, 1.0).header(1.0),
             AxisConfig::new(TICKER_HEADERS.len() as u64, 12.0)
