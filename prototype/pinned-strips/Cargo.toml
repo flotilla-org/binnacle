@@ -1,0 +1,11 @@
+# PROTOTYPE: throwaway model for issue #137 (frozen regions in the core).
+# Its own workspace, so it never joins the binnacle build. Delete once answered.
+[package]
+name = "prototype-pinned-strips"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
