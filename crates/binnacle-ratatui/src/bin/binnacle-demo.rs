@@ -154,7 +154,7 @@ use binnacle_ratatui::{
     CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
     Theme, animating, begin_frame, clear_filters, fit_width, keep_value, remove_conditions,
-    render_conditions, render_editor, render_with, row_count, status, wheel,
+    render_conditions, render_editor, render_with, row_count, count, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -662,15 +662,18 @@ impl Table {
         (marked, status)
     }
 
-    /// The rows among `rows_shown` the source keeps unmatched after an edit.
-    fn unmatched(&mut self, rows_shown: &[Key]) -> HashSet<Key> {
+    /// The rows among `rows_shown` and the columns among `cols_shown` the
+    /// source keeps unmatched after an edit.
+    fn unmatched(&mut self, rows_shown: &[Key], cols_shown: &[Key]) -> [HashSet<Key>; 2] {
         let Table::Records { source, .. } = self else {
-            return HashSet::new();
+            return Default::default();
         };
-        let flags = source.unmatched(Axis::Rows, rows_shown);
-        (rows_shown.iter().zip(flags))
-            .filter_map(|(&r, unmatched)| unmatched.then_some(r))
-            .collect()
+        [(Axis::Rows, rows_shown), (Axis::Cols, cols_shown)].map(|(axis, shown)| {
+            let flags = source.unmatched(axis, shown);
+            (shown.iter().zip(flags))
+                .filter_map(|(&k, unmatched)| unmatched.then_some(k))
+                .collect()
+        })
     }
 
     /// What the body says when no rows are left, with the quick filter
@@ -678,8 +681,29 @@ impl Table {
     fn empty(&self, quick: bool) -> &'static str {
         match self {
             Table::Records { filter, .. } if *filter > 0 || quick => "No rows match the filter",
-            Table::Transposed { filter, .. } if *filter > 0 => "No columns match the filter",
+            Table::Transposed { filter, .. } if *filter > 0 || quick => {
+                "No columns match the filter"
+            }
             _ => "No rows",
+        }
+    }
+
+    /// The counts for the status line: the records' (the rows, or on their
+    /// side the columns), then the other axis's while it is filtered, such
+    /// as "120 of 1,000 rows, 3 of 5 columns".
+    fn counts(&self, snapshot: &Snapshot) -> String {
+        let (records, other) = match self {
+            Table::Transposed { .. } => (
+                count(snapshot, Axis::Cols, ("record", "records")),
+                (Axis::Rows, ("field", "fields")),
+            ),
+            _ => (row_count(snapshot), (Axis::Cols, ("column", "columns"))),
+        };
+        let (axis, noun) = other;
+        let filtered = snapshot.total(axis).is_some_and(|t| t != snapshot.count(axis));
+        match filtered {
+            true => format!("{records}, {}", count(snapshot, axis, noun)),
+            false => records,
         }
     }
 
@@ -697,7 +721,10 @@ impl Table {
     fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
         match self {
             Table::Records { rows, source, .. } => Some(source.distinct(rows, axis, key, query)),
-            Table::Huge(_) | Table::Transposed { .. } => None,
+            Table::Transposed { rows, source, .. } => {
+                Transposed(source.over(rows)).distinct(axis, key, query)
+            }
+            Table::Huge(_) => None,
             Table::Live(live) => Some(live.source.distinct(&live.rows, axis, key, query)),
         }
     }
@@ -846,6 +873,15 @@ impl Content for Text<'_> {
         }
     }
 
+    /// A record's row is named by its name, a ticker's by its symbol.
+    fn row_label(&self, row: Key) -> String {
+        match self {
+            Text::Records(_) => self.cell(row, Key(1)),
+            Text::Live(_) => self.cell(row, Key(0)),
+            Text::Huge | Text::Transposed(_) => self.row_header(row, row.0),
+        }
+    }
+
     fn row_header(&self, row: Key, position: u64) -> String {
         match self {
             Text::Records(_) | Text::Live(_) => row.0.to_string(),
@@ -902,11 +938,11 @@ impl Content for Text<'_> {
 }
 
 /// The text a [`Table`] draws, with the cells that match the Find Query
-/// and the unmatched rows.
+/// and the unmatched rows and columns.
 struct Marked<'a> {
     text: Text<'a>,
     marks: &'a HashSet<(Key, Key)>,
-    unmatched: &'a HashSet<Key>,
+    unmatched: &'a [HashSet<Key>; 2],
 }
 
 impl Content for Marked<'_> {
@@ -918,6 +954,10 @@ impl Content for Marked<'_> {
         self.text.row_header(row, position)
     }
 
+    fn row_label(&self, row: Key) -> String {
+        self.text.row_label(row)
+    }
+
     fn column_header(&self, col: Key) -> String {
         self.text.column_header(col)
     }
@@ -927,7 +967,7 @@ impl Content for Marked<'_> {
     }
 
     fn unmatched(&self, axis: Axis, key: Key) -> bool {
-        axis == Axis::Rows && self.unmatched.contains(&key)
+        self.unmatched[axis.index()].contains(&key)
     }
 
     fn renderer(&self, row: Key, col: Key) -> Box<dyn CellRenderer + '_> {
@@ -1222,10 +1262,16 @@ fn main() -> io::Result<()> {
                 .header(5.0)
                 .gap(1.0),
         );
-        grid.set_quick_filter_support(Axis::Rows, source.quick_filter(Axis::Rows));
+        for axis in Axis::ALL {
+            grid.set_quick_filter_support(axis, source.quick_filter(axis));
+        }
         grid.set_find_support(source.find_support());
         for c in 0..HEADERS.len() as u64 {
             grid.set_support(Axis::Rows, Key(c), source.support(Axis::Rows, Key(c)));
+        }
+        // A record's values filter the columns too.
+        for r in 0..rows.len() as u64 {
+            grid.set_support(Axis::Cols, Key(r), source.support(Axis::Cols, Key(r)));
         }
         // The ids take no conditions, as on the web.
         let id = (source.support(Axis::Rows, Key(0)))
@@ -1254,7 +1300,11 @@ fn main() -> io::Result<()> {
     );
     let controls = Controls::preset(preset);
     let hint = |control| controls.hint(control).unwrap_or_default();
+    // On their side, the quick filter narrows the records, now the columns.
     let mut quick = QuickFilter::new().placeholder(hint(Control::QuickFilter));
+    if let Table::Transposed { .. } = table {
+        quick = quick.on(Axis::Cols);
+    }
     let mut popup = match preset {
         Preset::BareKeys => ColumnFilter::new().drawer(),
         _ => ColumnFilter::new(),
@@ -1275,10 +1325,11 @@ fn main() -> io::Result<()> {
     };
     // What the status line says while nothing else is to be said.
     let keys = format!(
-        "{} find  {} filter  {} column  {} clear",
+        "{} find  {} filter  {} column  {} row  {} clear",
         hint(Control::Find),
         hint(Control::QuickFilter),
         hint(Control::ColumnFilter),
+        hint(Control::RowFilter),
         hint(Control::Clear)
     );
     // What a click selects, which Alt+U cycles.
@@ -1326,10 +1377,11 @@ fn main() -> io::Result<()> {
                 // The source's reasons for what it did not apply.
                 let snapshot = grid.snapshot();
                 let wanted = snapshot.requested_view().unwrap_or(snapshot.applied_view());
-                quick.set_error(wanted.rows.filter.quick.as_ref().and_then(query_error));
-                let column = popup.column().and_then(|key| {
+                let asked = wanted.axis(quick.axis()).filter.quick.as_ref();
+                quick.set_error(asked.and_then(query_error));
+                let item = popup.filtering().zip(popup.item()).and_then(|(axis, key)| {
                     wanted
-                        .rows
+                        .axis(axis)
                         .filter
                         .conditions
                         .on(key)
@@ -1338,9 +1390,11 @@ fn main() -> io::Result<()> {
                             _ => None,
                         })
                 });
-                popup.set_error(column);
-                let field = grid.snapshot().quick_filter(Axis::Rows).is_some();
-                let chips = !grid.snapshot().conditions(Axis::Rows).is_empty();
+                popup.set_error(item);
+                let field = grid.snapshot().quick_filter(quick.axis()).is_some();
+                let chips = Axis::ALL
+                    .into_iter()
+                    .any(|axis| !grid.snapshot().conditions(axis).is_empty());
                 for _ in 0..u16::from(field) + u16::from(chips) {
                     area.y += 1;
                     area.height = area.height.saturating_sub(1);
@@ -1370,7 +1424,7 @@ fn main() -> io::Result<()> {
                 moving = animating(&snapshot);
                 let shown_cols: Vec<Key> = snapshot.cols().iter().filter_map(|c| c.key).collect();
                 let (marks, found) = table.find(snapshot.find(), &shown_rows, &shown_cols);
-                let unmatched = table.unmatched(&shown_rows);
+                let unmatched = table.unmatched(&shown_rows, &shown_cols);
                 let content = Marked {
                     text: table.text(),
                     marks: &marks,
@@ -1425,15 +1479,24 @@ fn main() -> io::Result<()> {
                     ..full
                 };
                 let mut said = status(&snapshot);
-                if !unmatched.is_empty() {
+                let [rows, cols] = [&unmatched[0], &unmatched[1]].map(|u| u.len());
+                if rows + cols > 0 {
                     if !said.is_empty() {
                         said += " | ";
                     }
                     let again = hint(Control::Reapply);
-                    said += &match unmatched.len() {
-                        1 => format!("1 edited row no longer matches: {again} re-applies"),
-                        n => format!("{n} edited rows no longer match: {again} re-applies"),
+                    let named = |n: usize, noun: &str| match n {
+                        0 => None,
+                        1 => Some(format!("1 {noun}")),
+                        n => Some(format!("{n} {noun}s")),
                     };
+                    let edited = [named(rows, "row"), named(cols, "column")];
+                    let edited: Vec<String> = edited.into_iter().flatten().collect();
+                    let verb = if rows + cols == 1 { "matches" } else { "match" };
+                    said += &format!(
+                        "{} edited no longer {verb}: {again} re-applies",
+                        edited.join(" and ")
+                    );
                 }
                 if said.is_empty() {
                     said = keys.clone();
@@ -1442,7 +1505,7 @@ fn main() -> io::Result<()> {
                 let names = format!(
                     "{}{} | {} | {preset_name} | {} | {border}",
                     selecting(&snapshot, unit),
-                    row_count(&snapshot),
+                    table.counts(&snapshot),
                     table.source(),
                     themes[theme].name
                 );
@@ -1489,6 +1552,7 @@ fn main() -> io::Result<()> {
                     let took = match controls.control(&key) {
                         Some(Control::QuickFilter) => quick.focus(&grid.snapshot()),
                         Some(Control::ColumnFilter) => popup.open(&grid.snapshot()),
+                        Some(Control::RowFilter) => popup.open_row(&grid.snapshot()),
                         Some(Control::ColumnText { not }) => popup.open_text(&mut grid, not),
                         Some(Control::KeepValue) => {
                             let snapshot = grid.snapshot();

@@ -846,6 +846,11 @@ impl ColumnFilter {
             .map(|o| o.key)
     }
 
+    /// The column or row it is open on, if it is open.
+    pub fn item(&self) -> Option<Key> {
+        self.open.as_ref().map(|o| o.key)
+    }
+
     /// The axis it filters while open: [`Axis::Rows`] on a column,
     /// [`Axis::Cols`] on a row.
     pub fn filtering(&self) -> Option<Axis> {
