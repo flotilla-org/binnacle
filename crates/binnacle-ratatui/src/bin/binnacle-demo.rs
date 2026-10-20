@@ -153,8 +153,8 @@ use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
     CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
-    Theme, animating, begin_frame, clear_filters, fit_width, keep_value, remove_conditions,
-    render_conditions, render_editor, render_with, row_count, count, status, wheel,
+    Theme, animating, begin_frame, clear_filters, count, fit_width, keep_value, remove_conditions,
+    render_conditions, render_editor, render_with, row_count, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -700,7 +700,9 @@ impl Table {
             _ => (row_count(snapshot), (Axis::Cols, ("column", "columns"))),
         };
         let (axis, noun) = other;
-        let filtered = snapshot.total(axis).is_some_and(|t| t != snapshot.count(axis));
+        let filtered = snapshot
+            .total(axis)
+            .is_some_and(|t| t != snapshot.count(axis));
         match filtered {
             true => format!("{records}, {}", count(snapshot, axis, noun)),
             false => records,

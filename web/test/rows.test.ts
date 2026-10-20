@@ -257,8 +257,8 @@ function rejects(spec: FilterSpec<unknown>): boolean {
   return patterns.some((q) => q !== null && matches(q, "") === undefined);
 }
 
-/** A few rows, so that edits often change what the columns' filter reads. */
-const fewTexts = gs.arrays(text, { minSize: 1, maxSize: 4 });
+/** Often a few rows, so that edits often change what the columns' filter reads. */
+const fewTexts = gs.oneOf(gs.arrays(text, { minSize: 1, maxSize: 4 }), gs.arrays(text, { minSize: 1, maxSize: 20 }));
 
 /** A View Spec filtering the rows by `rows` and the columns by `cols`. */
 function filtered(rows: FilterSpec<keyof Rec>, cols: FilterSpec<number>): ViewSpec<number, keyof Rec> {

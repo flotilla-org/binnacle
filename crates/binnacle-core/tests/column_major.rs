@@ -300,9 +300,12 @@ fn axis_filter(tc: &TestCase, axis: Axis, rows: usize, cols: usize) -> FilterSpe
         Axis::Rows => cols,
         Axis::Cols => rows,
     } as u64;
-    let text = || gs::sampled_from(vec!["1", "-", "3", "2", "^-?[12]$"]);
+    // Pieces of the records' values, a pattern, and one RegExp rejects.
+    let text = || gs::sampled_from(vec!["1", "-", "3", "2", "^-?[12]$", "^("]);
     let quick = tc.draw(gs::optional(text())).map(|t| {
-        let query = TextQuery::new(t).regex(t.starts_with('^'));
+        let query = TextQuery::new(t)
+            .regex(t.starts_with('^'))
+            .case_sensitive(tc.draw(gs::booleans()));
         match tc.draw(gs::booleans()) {
             true => query,
             false => {
@@ -316,12 +319,16 @@ fn axis_filter(tc: &TestCase, axis: Axis, rows: usize, cols: usize) -> FilterSpe
             gs::integers::<u64>().max_value(across),
             gs::booleans(),
             text(),
+            gs::booleans(),
             gs::booleans()
         )
-        .map(|(key, one_of, t, not)| {
+        .map(|(key, one_of, t, not, case)| {
             let condition = match one_of {
                 true => Condition::one_of(Key(key), vec![Value::Text(t.into()), Value::Blank]),
-                false => Condition::text(Key(key), TextQuery::new(t).regex(t.starts_with('^'))),
+                false => {
+                    let query = TextQuery::new(t).regex(t.starts_with('^'));
+                    Condition::text(Key(key), query.case_sensitive(case))
+                }
             };
             condition.not(not)
         })

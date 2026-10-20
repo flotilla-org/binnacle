@@ -59,7 +59,16 @@ const viewed = gs.composite((tc): { rows: Rec[]; source: RowsSource<Rec> } => {
     gs.arrays(gs.tuples(gs.sampledFrom(IDS), gs.sampledFrom<SortDirection>(["ascending", "descending"])), { maxSize: 2 }),
   );
   const quick = tc.draw(gs.oneOf(gs.just(null), queries));
-  const colsQuick = tc.draw(gs.oneOf(gs.just(null), queries.map((q): TextQuery<number> => ({ ...q, searches: "shown" }))));
+  const searchedRows = rows.length ? gs.arrays(gs.integers({ minValue: 0, maxValue: rows.length - 1 }), { maxSize: 3 }) : gs.just([]);
+  const colsQuick = tc.draw(
+    gs.oneOf(
+      gs.just(null),
+      gs.composite((tc): TextQuery<number> => ({
+        ...tc.draw(queries),
+        searches: tc.draw(gs.booleans()) ? "shown" : tc.draw(searchedRows),
+      })),
+    ),
+  );
   source.view!(
     {
       rows: { filter: { quick, conditions: [] }, sort: sort.map(([id, direction]) => ({ id, direction })) },

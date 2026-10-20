@@ -28,7 +28,12 @@ const COLS: usize = TEXTS + 1;
 
 #[hegel::composite]
 fn text(tc: &TestCase, min: usize, max: usize) -> String {
-    let letters = gs::sampled_from(vec!['a', 'A', 'b', 'é', '1', ' ']);
+    // Mostly a few letters, so queries often match; any character besides.
+    let letters = hegel::one_of!(
+        gs::sampled_from(vec!['a', 'A', 'b', 'é', 'É', '1', ' ']),
+        gs::sampled_from(vec!['a', 'A', 'b', 'é', 'É', '1', ' ']),
+        gs::characters(),
+    );
     let chars: Vec<char> = tc.draw(gs::vecs(letters).min_size(min).max_size(max));
     chars.into_iter().collect()
 }
