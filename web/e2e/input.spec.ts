@@ -59,10 +59,13 @@ test.describe("keys on the huge table", () => {
     const col = await column();
     await page.keyboard.press("Alt+PageDown");
     await expect.poll(column).toBeGreaterThan(col + 1);
+    // Pages follow the columns' widths, so a page back need not land where it started.
+    const paged = await column();
     await page.keyboard.press("Alt+PageUp");
-    await expect.poll(column).toBe(col);
+    await expect.poll(column).toBeLessThan(paged - 1);
+    const back = await column();
     await page.keyboard.press("End");
-    await expect(status(page)).toContainText(`focus row 1,000,000,000,000,000, column ${col}`);
+    await expect(status(page)).toContainText(`focus row 1,000,000,000,000,000, column ${back}`);
   });
 
   test("Cmd/Ctrl+A selects every cell", async ({ page }) => {

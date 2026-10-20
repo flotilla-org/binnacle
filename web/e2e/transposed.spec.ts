@@ -5,10 +5,11 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { matches, rows } from "../demo/sources/records-data";
-import { FIRST } from "./records-columns";
 
 const HEADER = 28;
 const ROW = 24;
+/** Inside the first record's column: the row-number band fits the field names and a sort marker. */
+const FIRST = 90;
 /** The demo's column width and the Gap after it. */
 const COLUMN = 112 + 1;
 

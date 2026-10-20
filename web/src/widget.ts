@@ -928,11 +928,12 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   /**
    * Widens the row-number band once, when the first rows arrive, to fit their
-   * labels (a column-major table's field names, say); returns whether it did.
+   * labels (a column-major table's field names, say) and, where a row header
+   * click sorts, a sort marker; returns whether it did.
    */
   private fitBand(s: Snapshot, content: Content): boolean {
     if (this.bandFitted || s.rows.strip.length === 0) return false;
-    const width = bandWidth(s, content, this.sizing(), true);
+    const width = bandWidth(s, content, this.sizing(), true, this.options.headerClick?.rows === "sort");
     if (width === null) return false;
     this.bandFitted = true;
     if (Math.ceil(width) <= s.cols.header) return false;

@@ -53,9 +53,9 @@ export function answerAutoSize(effect: Effect, s: Snapshot | null, content: Cont
 /**
  * The width of the row-number band that shows the labels of the rows in the
  * Strip whole; `null`, when `complete`, while any of those rows is still to
- * come.
+ * come. `sorts` leaves room for a sort marker before any row shows one.
  */
-export function bandWidth(s: Snapshot, content: Content, parts: SizingParts, complete: boolean): number | null {
+export function bandWidth(s: Snapshot, content: Content, parts: SizingParts, complete: boolean, sorts = false): number | null {
   const { measure, theme } = parts;
   let width = 0;
   for (const row of s.rows.strip) {
@@ -63,7 +63,7 @@ export function bandWidth(s: Snapshot, content: Content, parts: SizingParts, com
     width = Math.max(width, measure.width(content.label("rows", row), theme.font));
   }
   // Room for a sort marker while a row shown sorts the columns, or will.
-  const marked = s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);
+  const marked = sorts || s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);
   return width + 2 * PAD + (marked ? MARKED : 0);
 }
 
