@@ -16,12 +16,19 @@
 - **ratatui:** `ColumnFilter::fetch` asks with the axis too (`|axis, key, query| ...`), and `Control` gains `RowFilter`.
 - **web:** `WebMemory`'s filter calls take the axis first.
 - **testkit:** `append` on `RecordTable` and `ColumnMajorTable` returns `Vec<(Axis, ChangeNotice)>` too.
+- **core:** `Snapshot::headers` places the headers of every drawn item, the leading pinned Strip's first, then the scrolling Strip's; `Snapshot::rows` and `cols` stay the scrolling Strips. A host that zips `rows()` with `headers(Axis::Rows)` iterates `drawn(Axis::Rows)` instead.
+- **C API:** `BinnacleAxisSnapshot.strip` lists the drawn items, the `pinned_len` pinned ones first, and gains `scrolling_start` and `scrolling_end`; the cell states run over the drawn items.
+- **ratatui:** `Theme` gains `pinned_edge`, so a Theme built field by field names it (or takes `..Theme::classic()`).
+- **web:** `AxisSnapshot.strip` lists the drawn items, the `pinned` ones first, and gains `scrolling`. `Theme` gains `pinnedEdge` and `pinnedShadow`. The `Action` union gains `Pin` and `Unpin`. The column menu opens on every column, not only those that take conditions; one that takes none shows only its pin button.
 
 ### Added
 
 - **memory:** `Transposed`, a Table Source on its side: the Grid's rows are the inner source's columns and its columns the inner source's rows. With it a row-major source, such as the In-Memory Table Source over records, serves a column-major table. `transpose_spec`, `transpose_totals`, `transpose_find` and `transpose_match` turn the values that cross it.
 - **web:** `transpose(source)`, the same for a web Table Source, so `transpose(fromRows(...))` shows each record as a column.
 - **testkit:** `ColumnMajorTable`, the records of a `RecordTable` on their side, for scenarios and properties.
+- **core:** pinning. `Grid::pin(axis, edge, key)` pins an item's Key to the leading edge of its axis and `Grid::unpin(axis, key)` unpins it: pinned items draw in a pinned Strip of their own after the Header Band, in pin order, whatever the sort or scroll, and the scrolling Strip skips them. Pins follow their Keys through sorts and filters. `Snapshot::pinned(axis, edge)`, `scrolling(axis)` and `drawn(axis)` describe the Strips; hit-testing and resizing reach pinned items. The C API mirrors it with `binnacle_grid_pin` and `binnacle_grid_unpin`, the wasm bridge with `WebGrid.pin` and `unpin`.
+- **ratatui:** the pinned edge, `║` in the Gap after the pinned columns in every Border Style, capped `╥` at the band rule and `╨` at the closing rule (`┃`, `┰`, `┸` under Double). `Control::Pin` and `Control::Unpin` in every preset (chords Alt+, and Alt+U, modes `!` and Alt+U, bare keys `<` and `u`), carried out by `toggle_pin` and `unpin_focused`.
+- **web:** the pinned edge, a line in the `pinnedEdge` Theme role (the border colour by default) with a `pinnedShadow` once the body has scrolled under it. `GridWidget.pin`, `unpin` and `pinned`; the column menu's "Pin left" and "Unpin"; Alt+Shift+ArrowLeft pins the focused column (or unpins it) and Alt+Shift+Backspace unpins it. ARIA reads cells in Position order across the Strips.
 - **demos:** a column-major source in both demos: `binnacle-demo --transposed` and the web demo's `transposed` source.
 - **memory:** `MemorySource` sorts its columns by rows' values (integers, numbers or text, whichever every column with a sort closure gives), re-sorts them when such a row changes, and drops rows that left on a replace from the columns' sort. `InMemoryTableSource::base_len` and `base_key`.
 - **web:** `fromRows` sorts the columns by rows' values the same way; the `headerClick` option sets what a header click does per axis (`"sort"`, `"select"` or `"none"`), as the C API's `binnacle_grid_set_header_click` does; row headers show the columns' sort marker and pending shimmer, and carry `aria-sort`; the live region says "Columns sorted by …". Fitting the row header band leaves room for a sort marker.
