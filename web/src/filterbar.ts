@@ -105,6 +105,7 @@ export function createFilterBar<RowId, ColId, V>(
   const across = el("div", "binnacle-column-chips", CHIPS_STYLE + " align-items: center;");
   across.setAttribute("role", "list");
   across.setAttribute("aria-label", `Filters on the ${nouns.cols[1]}`);
+  across.style.display = "none";
   const menu = options.columnMenu;
   const add = el("button", "binnacle-add-filter", ADD_STYLE);
   add.type = "button";
@@ -361,6 +362,8 @@ export function createFilterBar<RowId, ColId, V>(
         conditions[on].map(({ condition, state }) => chip(on, condition as Condition<RowId | ColId>, state, message));
       chips.replaceChildren(...chipsOf("rows"));
       across.replaceChildren(...(conditions.cols.length ? [acrossLabel, ...chipsOf("cols")] : []));
+      // Inline styles would win over the `hidden` attribute, and an empty list would still take a gap.
+      across.style.display = conditions.cols.length ? "flex" : "none";
     }
     regexToggle.hidden = !regexAllowed;
     const edited = AXES.flatMap((on) => {

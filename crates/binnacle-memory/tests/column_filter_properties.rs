@@ -5,8 +5,6 @@
 //! `not`), with appends, data changes, the user's edits and replacements
 //! between, against a naive model that tests every cell one by one.
 
-mod support;
-
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
