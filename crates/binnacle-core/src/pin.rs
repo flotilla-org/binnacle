@@ -209,16 +209,13 @@ impl AxisState {
         let edge_gap = strips
             .clone()
             .map(|s| if s.is_empty() { 0.0 } else { self.edge_gap() });
-        let focused = |s: &[StripItem]| {
-            let key = self.focused?;
-            s.iter().find(|it| it.key == Some(key)).map(|it| it.size)
-        };
+        let focused = self
+            .focused
+            .and_then(|key| trailing.iter().find(|it| it.key == Some(key)));
         let room = (self.extent - self.header - self.min_scrolling).max(0.0);
         // The trailing Strip keeps its Edge Gap, so its edge still shows.
-        let kept = focused(trailing).map_or(0.0, |size| size.min(want[1])) + edge_gap[1];
-        let lead = (room - edge_gap[0] - kept)
-            .max(focused(leading).unwrap_or(0.0))
-            .max(0.0);
+        let kept = focused.map_or(0.0, |it| it.size.min(want[1])) + edge_gap[1];
+        let lead = (room - edge_gap[0] - kept).max(0.0);
         let trail = (room - (lead.min(want[0]) + edge_gap[0]) - edge_gap[1]).max(0.0);
         // Unclipped, each ends where its items do.
         let lead_end = match leading.last() {

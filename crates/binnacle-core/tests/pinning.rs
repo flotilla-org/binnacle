@@ -730,6 +730,12 @@ fn too_wide_pinned_strips_clip_trailing_first_and_never_unpin() {
         "pin column 5 left too: it clips at the inside end, and 9 has no room",
         V,
     );
+    s.click(13.0, 2.5, Modifiers::NONE);
+    s.click(25.0, 3.5, Modifiers::SHIFT);
+    out += &s.step(
+        "select from column 3 to column 0: the leading fill stops where 5 clips",
+        V,
+    );
     s.input(|g| g.set_min_scrolling(Axis::Cols, 0.0));
     out += &s.step("keep nothing to scroll: the pins take the whole width", V);
     s.input(|g| g.unpin(Axis::Cols, Key(3)));
@@ -919,6 +925,17 @@ fn pinned_strips_clip_trailing_first_and_show_a_focused_pin(tc: TestCase) {
             assert!(
                 shown >= item.size.min(len) - eps,
                 "focused {item:?} shows {shown} of {region:?}"
+            );
+            // Its region holds it, as far as the room less the Edge Gaps
+            // allows.
+            let room = length - header - min;
+            let gaps = (Edge::ALL.iter())
+                .filter(|&&e| !snap.pinned(axis, e).is_empty())
+                .count() as f32
+                * edge_gap;
+            assert!(
+                len >= item.size.min(room - gaps) - eps,
+                "focused {item:?} has only {region:?}"
             );
         }
     }

@@ -29,21 +29,32 @@ Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.1951 | pinned 2#
 1   1.2    1.3    1.5  1.0    1
 2   2.2    2.3    2.5  2.0    2
 3   3.2    3.3    3.5  3.0    3
---- 3. keep nothing to scroll: the pins take the whole width
-gen 3 | damage layout
+--- 3. select from column 3 to column 0: the leading fill stops where 5 clips
+effect (gen 2): FocusChanged { row: Key(2), col: Key(0) }
+effect (gen 2): SelectionChanged
+gen 3 | damage selection | focus 2#2,0#0 at 23,3 6x1 | range 1..3 x 0..1,3..4,5..6 | fill 11,2 11x2 | fill 23,2 6x2
+Rows: (unchanged)
+Cols: (unchanged)
+    2      3      5    0      1
+0   0.2    0.3    0.5  0.0    0
+1   1.2    +1.3   +1.5 +1.0   1
+2   2.2    +2.3   +2.5 *2.0   2
+3   3.2    3.3    3.5  3.0    3
+--- 4. keep nothing to scroll: the pins take the whole width
+gen 4 | damage layout | focus 2#2,0#0 not drawn | range 1..3 x 0..1,3..4,5..6 | fill 11,2 13x2
 Rows: (unchanged)
 Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.0000 | pinned 2#2@4+6 3#3@11+6 5#5@18+6 | scrolling from 25 | | scrolling to 25 | trailing 9#9@26+6
     2      3      5       9
 0   0.2    0.3    0.5     0.9
-1   1.2    1.3    1.5     1.9
-2   2.2    2.3    2.5     2.9
+1   1.2    +1.3   +1.5    1.9
+2   2.2    +2.3   +2.5    2.9
 3   3.2    3.3    3.5     3.9
---- 4. unpin column 3: 9 comes back whole
-gen 4 | damage layout
+--- 5. unpin column 3: 9 comes back whole
+gen 5 | damage layout | focus 2#2,0#0 at 18,3 6x1 | range 1..3 x 0..2,3..4 | fill 18,2 6x2
 Rows: (unchanged)
 Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.1458 | pinned 2#2@4+6 5#5@11+6 | scrolling from 18 | 0#0@18+6 | scrolling to 25 | trailing 9#9@26+6
     2      5      0       9
 0   0.2    0.5    0.0     0.9
-1   1.2    1.5    1.0     1.9
-2   2.2    2.5    2.0     2.9
+1   1.2    1.5    +1.0    1.9
+2   2.2    2.5    *2.0    2.9
 3   3.2    3.5    3.0     3.9

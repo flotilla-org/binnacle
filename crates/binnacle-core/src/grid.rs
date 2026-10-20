@@ -863,28 +863,36 @@ impl Grid {
     /// Computes the selection fill rects from the laid-out Strips: one for the
     /// visible part of the range in each pair of a row Strip and a column
     /// Strip (leading pinned, scrolling, trailing pinned), then one per visible picked row and
-    /// column Strip, then one per visible picked column and row Strip.
+    /// column Strip, then one per visible picked column and row Strip. A
+    /// pinned Strip's part is clipped to its region; one it clips whole is
+    /// left out.
     fn fill_selection(&mut self) {
         let mut fills = std::mem::take(&mut self.fills);
         fills.clear();
+        // Each Strip with where it draws: a pinned one's region, while the
+        // scrolling one's items are left unclipped.
         let strips = |axis: Axis| {
             let st = self.axis(axis);
             let [leading, trailing] = &st.pinned;
-            [leading, &st.strip, trailing]
+            let [lead, trail] = st.regions.clone();
+            let all = f32::NEG_INFINITY..f32::INFINITY;
+            [(leading, lead), (&st.strip, all), (trailing, trail)]
         };
         let (rows, cols) = (strips(Axis::Rows), strips(Axis::Cols));
-        let extent = |items: &mut dyn Iterator<Item = &crate::snapshot::StripItem>| {
-            let first = items.next()?;
-            let last = items.last().unwrap_or(first);
-            Some((first.offset, last.end() - first.offset))
-        };
+        let extent =
+            |(items, region): &(&Vec<crate::snapshot::StripItem>, std::ops::Range<f32>),
+             keep: &dyn Fn(&crate::snapshot::StripItem) -> bool| {
+                let mut items = items.iter().filter(|i| keep(i));
+                let first = items.next()?;
+                let last = items.last().unwrap_or(first);
+                let (start, end) = (first.offset.max(region.start), last.end().min(region.end));
+                (start < end).then_some((start, end - start))
+            };
         if let Some(range) = &self.range {
-            for rows in rows {
-                for cols in cols {
-                    let r =
-                        extent(&mut rows.iter().filter(|i| range.covers(Axis::Rows, i.position)));
-                    let c =
-                        extent(&mut cols.iter().filter(|i| range.covers(Axis::Cols, i.position)));
+            for rows in &rows {
+                for cols in &cols {
+                    let r = extent(rows, &|i| range.covers(Axis::Rows, i.position));
+                    let c = extent(cols, &|i| range.covers(Axis::Cols, i.position));
                     if let (Some((y, height)), Some((x, width))) = (r, c) {
                         fills.push(Rect {
                             x,
@@ -896,39 +904,40 @@ impl Grid {
                 }
             }
         }
-        for row in rows.into_iter().flatten() {
-            if !row
-                .key
-                .is_some_and(|k| self.selection.picked(Axis::Rows, k))
-            {
-                continue;
-            }
-            for cols in cols {
-                if let Some((x, width)) = extent(&mut cols.iter()) {
-                    fills.push(Rect {
-                        x,
-                        y: row.offset,
-                        width,
-                        height: row.size,
-                    });
+        let picked = |axis, i: &crate::snapshot::StripItem| {
+            i.key.is_some_and(|k| self.selection.picked(axis, k))
+        };
+        for strip in &rows {
+            for row in strip.0.iter().filter(|i| picked(Axis::Rows, i)) {
+                let Some((y, height)) = extent(&(strip.0, strip.1.clone()), &|i| i == row) else {
+                    continue;
+                };
+                for cols in &cols {
+                    if let Some((x, width)) = extent(cols, &|_| true) {
+                        fills.push(Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
                 }
             }
         }
-        for col in cols.into_iter().flatten() {
-            if !col
-                .key
-                .is_some_and(|k| self.selection.picked(Axis::Cols, k))
-            {
-                continue;
-            }
-            for rows in rows {
-                if let Some((y, height)) = extent(&mut rows.iter()) {
-                    fills.push(Rect {
-                        x: col.offset,
-                        y,
-                        width: col.size,
-                        height,
-                    });
+        for strip in &cols {
+            for col in strip.0.iter().filter(|i| picked(Axis::Cols, i)) {
+                let Some((x, width)) = extent(&(strip.0, strip.1.clone()), &|i| i == col) else {
+                    continue;
+                };
+                for rows in &rows {
+                    if let Some((y, height)) = extent(rows, &|_| true) {
+                        fills.push(Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
                 }
             }
         }
