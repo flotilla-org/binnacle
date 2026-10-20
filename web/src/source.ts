@@ -60,16 +60,21 @@ export interface FilterSpec<CrossId> {
   conditions: Condition<CrossId>[];
 }
 
-/** One axis's part of a View Spec, naming items of the other axis. */
-export interface AxisView<CrossId> {
+/**
+ * One axis's part of a View Spec: its filter and sort, naming items of the
+ * other axis, and the axis's own items to leave out of view whatever the
+ * filter keeps (always empty unless the axis has `hide`).
+ */
+export interface AxisView<CrossId, Id = unknown> {
   filter: FilterSpec<CrossId>;
   sort: SortSpec<CrossId>;
+  hidden: Id[];
 }
 
 /** The view the Table Source should present for the whole table, one part per axis. */
 export interface ViewSpec<RowId, ColId> {
-  rows: AxisView<ColId>;
-  cols: AxisView<RowId>;
+  rows: AxisView<ColId, RowId>;
+  cols: AxisView<RowId, ColId>;
 }
 
 /**
@@ -139,8 +144,16 @@ export interface Totals {
   cols?: number;
 }
 
-/** One axis's part of the View Spec a Table Source applies; an omitted filter, or part of one, is none. */
-export type AppliedAxisView<CrossId> = Omit<AxisView<CrossId>, "filter"> & { filter?: Partial<FilterSpec<CrossId>> };
+/**
+ * One axis's part of the View Spec a Table Source applies; an omitted
+ * filter, or part of one, is none, and so is an omitted `hidden`. A source
+ * that hides answers with the hidden items it has, leaving out IDs it does
+ * not know.
+ */
+export type AppliedAxisView<CrossId, Id = unknown> = Omit<AxisView<CrossId, Id>, "filter" | "hidden"> & {
+  filter?: Partial<FilterSpec<CrossId>>;
+  hidden?: Id[];
+};
 
 /**
  * The View Spec a Table Source applies, with its totals for "1,204 of 5,001",
@@ -148,8 +161,8 @@ export type AppliedAxisView<CrossId> = Omit<AxisView<CrossId>, "filter"> & { fil
  * which the control the part came from shows.
  */
 export interface AppliedView<RowId, ColId> {
-  rows: AppliedAxisView<ColId>;
-  cols: AppliedAxisView<RowId>;
+  rows: AppliedAxisView<ColId, RowId>;
+  cols: AppliedAxisView<RowId, ColId>;
   totals?: Totals;
   error?: string;
 }
@@ -285,6 +298,12 @@ export interface AxisMethods<Id, CrossId> {
   support?(by: CrossId): Support;
   /** Set if this axis takes a quick filter (the source must also have `view`). */
   quickFilter?: QuickFilterSupport;
+  /**
+   * Set if the source leaves the items a View Spec's `hidden` names out of
+   * this axis (the source must also have `view`); the widget offers hiding
+   * only then.
+   */
+  hide?: boolean;
   /** The distinct values of item `by` across this axis, for a column's checklist; aborted when the search changes. */
   distinct?(by: CrossId, query: DistinctQuery<CrossId>, signal: AbortSignal): MaybePromise<Distinct>;
   /** Where `id` sits now, after a reorder. */

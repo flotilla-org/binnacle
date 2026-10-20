@@ -120,7 +120,10 @@ function rowsSorted<ColId = keyof Rec>(
   quick: TextQuery<ColId> | null = null,
   conditions: Condition<ColId>[] = [],
 ): ViewSpec<number, ColId> {
-  return { rows: { filter: { quick, conditions }, sort }, cols: { filter: { quick: null, conditions: [] }, sort: [] } };
+  return {
+    rows: { filter: { quick, conditions }, sort, hidden: [] },
+    cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
+  };
 }
 
 /** What fromRows answers for `rowsSorted(sort, quick, conditions)` over `n` rows of three columns. */
@@ -263,7 +266,7 @@ const fewTexts = gs.oneOf(gs.arrays(text, { minSize: 1, maxSize: 4 }), gs.arrays
 
 /** A View Spec filtering the rows by `rows` and the columns by `cols`. */
 function filtered(rows: FilterSpec<keyof Rec>, cols: FilterSpec<number>): ViewSpec<number, keyof Rec> {
-  return { rows: { filter: rows, sort: [] }, cols: { filter: cols, sort: [] } };
+  return { rows: { filter: rows, sort: [], hidden: [] }, cols: { filter: cols, sort: [], hidden: [] } };
 }
 
 const NONE = { quick: null, conditions: [] };
@@ -318,7 +321,7 @@ describe("fromRows", () => {
           rows.length > 0 && tc.draw(gs.booleans())
             ? [{ id: tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 })), direction: "descending" }]
             : [];
-        const spec = { ...rowsSorted(sort), cols: { filter: { quick: null, conditions: [] }, sort: byRows } };
+        const spec = { ...rowsSorted(sort), cols: { filter: { quick: null, conditions: [] }, sort: byRows, hidden: [] } };
         source.view!(spec, new AbortController().signal);
         const axis = tc.draw(gs.sampledFrom<"rows" | "cols">(["rows", "cols"]));
         const sorted = (axis === "rows" ? sort : byRows).length > 0;
@@ -530,7 +533,7 @@ describe("fromRows", () => {
           : [];
         const spec: SortSpec<number> = byRows.map(([id, direction]) => ({ id, direction }));
         const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
-        const asked = { ...rowsSorted(sort), cols: { filter: { quick: null, conditions: [] }, sort: spec } };
+        const asked = { ...rowsSorted(sort), cols: { filter: { quick: null, conditions: [] }, sort: spec, hidden: [] } };
         expect(source.view!(asked, new AbortController().signal)).toEqual({
           ...asked,
           totals: { rows: rows.length, cols: 3 },
@@ -544,7 +547,7 @@ describe("fromRows", () => {
 
   test("a sort of the columns by a row that is not there is refused", () => {
     const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }], COLUMNS);
-    const asked = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 1, direction: "descending" as const }] } };
+    const asked = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 1, direction: "descending" as const }], hidden: [] } };
     expect(() => source.view!(asked, new AbortController().signal)).toThrow(/cannot sort the columns by row 1/);
     expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(["n", "s", "b"]);
     source.destroy();
@@ -561,7 +564,7 @@ describe("fromRows", () => {
       viewChanged: ignore,
       findCounted: ignore,
     });
-    const byRow0 = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 0, direction: "ascending" as const }] } };
+    const byRow0 = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 0, direction: "ascending" as const }], hidden: [] } };
     source.view!(byRow0, new AbortController().signal);
     expect(source.cols.window(0, 2, new AbortController().signal)).toEqual(["n", "b"]);
     rows[0]!.n = 5;
@@ -911,6 +914,125 @@ describe("fromRows's columns", () => {
           partial: values.length > limit,
           narrowed: true,
         });
+      } finally {
+        source.destroy();
+      }
+    }, { testCases: 300 }));
+});
+
+describe("fromRows's hiding", () => {
+  const valid = <C,>(q: TextQuery<C>) => matches(q, "") !== undefined;
+
+  /** Whether the rows' quick filter keeps `row`, searching the columns not hidden when it searches the shown ones. */
+  const rowKept = (query: TextQuery<keyof Rec> | null, row: Rec, hiddenCols: (keyof Rec)[]) => {
+    if (!query) return true;
+    const searched = query.searches === "shown" ? COLUMN_IDS.filter((c) => !hiddenCols.includes(c)) : query.searches;
+    return searched.some((id) => row[id] !== null && matches(query, String(row[id])) === true);
+  };
+
+  /** The columns the columns' quick filter keeps, searching the rows not hidden when it searches the shown ones. */
+  const columnsKeptOf = (rows: Rec[], query: TextQuery<number> | null, hiddenRows: number[]) => {
+    if (!query) return [...COLUMN_IDS];
+    const searched = query.searches === "shown" ? rows.map((_, i) => i).filter((i) => !hiddenRows.includes(i)) : query.searches;
+    return COLUMN_IDS.filter((c) => searched.some((r) => rows[r]![c] !== null && matches(query, String(rows[r]![c])) === true));
+  };
+
+  const firstOf = <T,>(ids: T[], has: (id: T) => boolean) => [...new Set(ids)].filter(has);
+
+  test("hiding the only item of one axis a quick filter on the other matched drops what it kept", () => {
+    const rows: Rec[] = [
+      { n: 1, s: "a", b: null },
+      { n: 2, s: "b", b: null },
+    ];
+    const source = fromRows(rows, COLUMNS);
+    const [notices, colsNotices]: [ChangeNotice[], ChangeNotice[]] = [[], []];
+    source.attach!(sinksTo(notices, colsNotices));
+    const signal = new AbortController().signal;
+    const shown = (text: string) => ({ text, caseSensitive: false, regex: false, searches: "shown" as const });
+    const spec = (hiddenRows: number[], hiddenCols: (keyof Rec)[]): ViewSpec<number, keyof Rec> => ({
+      rows: { filter: { quick: shown("2"), conditions: [] }, sort: [], hidden: hiddenRows },
+      cols: { filter: { quick: shown("a"), conditions: [] }, sort: [], hidden: hiddenCols },
+    });
+    try {
+      source.view!(spec([], []), signal);
+      expect([order(source), source.cols.window(0, 3, signal)]).toEqual([[1], ["s"]]);
+      // Each hide changes only its own axis's hidden items.
+      notices.length = colsNotices.length = 0;
+      source.view!(spec([], ["n"]), signal);
+      expect([order(source), source.cols.window(0, 3, signal)]).toEqual([[], ["s"]]);
+      expect(notices).toContainEqual({ type: "Refiltered" });
+      source.view!(spec([], []), signal);
+      notices.length = colsNotices.length = 0;
+      source.view!(spec([0], []), signal);
+      expect([order(source), source.cols.window(0, 3, signal)]).toEqual([[1], []]);
+      expect(colsNotices).toEqual([{ type: "Refiltered" }]);
+    } finally {
+      source.destroy();
+    }
+  });
+
+  test("whatever View Specs arrive, hidden items leave each axis whatever the filter keeps, a quick filter searching the shown items skips them, and the answer prunes IDs the data lacks", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(fewTexts);
+      const source = fromRows(rows, COLUMNS);
+      const [notices, colsNotices]: [ChangeNotice[], ChangeNotice[]] = [[], []];
+      source.attach!(sinksTo(notices, colsNotices));
+      try {
+        expect([source.rows.hide, source.cols.hide]).toEqual([true, true]);
+        const signal = new AbortController().signal;
+        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 5 }));
+        let last: { rows: number[]; cols: (keyof Rec)[] } = { rows: [], cols: [] };
+        let was: { quick: TextQuery<keyof Rec> | null; colsQuick: TextQuery<number> | null } = { quick: null, colsQuick: null };
+        for (let i = 0; i < steps; i++) {
+          const before = { rows: order(source), cols: source.cols.window(0, 3, signal) as (keyof Rec)[] };
+          notices.length = colsNotices.length = 0;
+          const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+          // Often the quick filters in force, so that only the hidden items change.
+          const keepOr = <T,>(old: T, fresh: gs.Generator<T>) => tc.draw(gs.oneOf(gs.just(old), fresh));
+          const quick = keepOr(was.quick, gs.oneOf(gs.just(null), queries.filter(valid)));
+          const colsQuick = keepOr(was.colsQuick, gs.oneOf(gs.just(null), colsQueryOf(rows.length).filter(valid)));
+          was = { quick, colsQuick };
+          // Some IDs not there, some repeated.
+          const hiddenRows = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: rows.length + 1 }), { maxSize: 4 }));
+          const hiddenCols = tc.draw(gs.arrays(gs.sampledFrom<keyof Rec>([...COLUMN_IDS, "x" as keyof Rec]), { maxSize: 3 }));
+          const asked: ViewSpec<number, keyof Rec> = {
+            rows: { filter: { quick, conditions: [] }, sort, hidden: hiddenRows },
+            cols: { filter: { quick: colsQuick, conditions: [] }, sort: [], hidden: hiddenCols },
+          };
+          const answer = source.view!(asked, signal) as AppliedView<number, keyof Rec>;
+          const hidden = {
+            rows: firstOf(hiddenRows, (r) => r < rows.length),
+            cols: firstOf(hiddenCols, (c) => (COLUMN_IDS as readonly string[]).includes(c)),
+          };
+          expect([answer.rows.hidden, answer.cols.hidden]).toEqual([hidden.rows, hidden.cols]);
+          last = hidden;
+          const shown = {
+            rows: reference(rows, sort, (r) => rowKept(quick, r, hidden.cols)).filter((r) => !hidden.rows.includes(r)),
+            cols: columnsKeptOf(rows, colsQuick, hidden.rows).filter((c) => !hidden.cols.includes(c)),
+          };
+          expect(order(source)).toEqual(shown.rows);
+          expect(source.cols.window(0, 3, signal)).toEqual(shown.cols);
+          const sameSet = <T,>(a: T[], b: T[]) => a.length === b.length && a.every((x) => b.includes(x));
+          if (!sameSet(before.rows, shown.rows)) expect(notices).toContainEqual({ type: "Refiltered" });
+          if (!sameSet(before.cols, shown.cols)) expect(colsNotices).toContainEqual({ type: "Refiltered" });
+          // Distinct values leave the hidden items out.
+          if (rows.length > 0) {
+            const NONE_NARROW = { quick: null, conditions: [] };
+            const byColumn = source.rows.distinct!("s", { search: "", limit: 100, narrow: NONE_NARROW }, signal) as Distinct;
+            const counted = rows.filter((_, r) => !hidden.rows.includes(r)).filter((r) => r.s !== null).length;
+            expect(byColumn.values.reduce((n, v) => n + v.count!, 0)).toBe(counted);
+            const byRow = source.cols.distinct!(0, { search: "", limit: 100, narrow: NONE_NARROW }, signal) as Distinct;
+            const across = COLUMN_IDS.filter((c) => !hidden.cols.includes(c) && rows[0]![c] !== null).length;
+            expect(byRow.values.reduce((n, v) => n + v.count!, 0)).toBe(across);
+          }
+        }
+        // Clearing the filters leaves the hidden items hidden.
+        const cleared = filtered(NONE, NONE);
+        cleared.rows.hidden = last.rows;
+        cleared.cols.hidden = last.cols;
+        source.view!(cleared, signal);
+        expect(order(source)).toEqual(rows.map((_, r) => r).filter((r) => !last.rows.includes(r)));
+        expect(source.cols.window(0, 3, signal)).toEqual(COLUMN_IDS.filter((c) => !last.cols.includes(c)));
       } finally {
         source.destroy();
       }

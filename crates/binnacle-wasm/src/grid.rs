@@ -230,7 +230,6 @@ impl WebGrid {
         Ok(())
     }
 
-    /// Whether axis `a` has a quick filter; see [`codes::quick_filter`].
     /// Whether the Table Source hides items of the axis.
     pub fn set_hide_support(&mut self, a: u8, hides: bool) {
         self.grid.set_hide_support(axis(a), hides);
@@ -246,6 +245,7 @@ impl WebGrid {
         self.grid.show(axis(a), &keys);
     }
 
+    /// Whether axis `a` has a quick filter; see [`codes::quick_filter`].
     pub fn set_quick_filter_support(&mut self, a: u8, bits: u8) {
         self.grid
             .set_quick_filter_support(axis(a), codes::quick_filter(bits));

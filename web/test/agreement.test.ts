@@ -3,7 +3,7 @@
 
 import { beforeAll, describe, expect, test } from "vitest";
 import { FIND, NOTICE_CODE, SUPPORT } from "../src/codes";
-import { decodeSnapshot } from "../src/snapshot";
+import { decodeSnapshot, type KeyedViewSpec } from "../src/snapshot";
 import { isEffect } from "../src/effects";
 import { bridge } from "../src/wasm";
 import { loadForTests } from "./wasm";
@@ -34,6 +34,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "found",
     "rejected",
     "pinned",
+    "hidden",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -67,13 +68,20 @@ describe("Effects", () => {
     expect(isEffect(null)).toBe(false);
     const edit = { type: "CycleSort", axis: "rows", key: 1n, multi: false };
     const view = (spec: unknown, e: unknown = edit) => ({ type: "ViewRequested", generation: 1, spec, edit: e });
-    const unsorted = { filter: { quick: null, conditions: [] }, sort: [] };
+    const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
     expect(isEffect(view({ rows: unsorted, cols: unsorted }))).toBe(true);
     expect(isEffect(view({ rows: { filter: { quick: null }, sort: [] }, cols: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: { sort: [] }, cols: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: { ...unsorted, hidden: [1n, 4n] }, cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: { ...unsorted, hidden: [1] }, cols: unsorted }))).toBe(false);
+    expect(isEffect(view({ rows: { ...unsorted, hidden: undefined }, cols: unsorted }))).toBe(false);
+    const hide = { type: "Hide", axis: "cols", keys: [3n] };
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, hide))).toBe(true);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...hide, type: "Show" }))).toBe(true);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...hide, keys: [3] }))).toBe(false);
     const quick = { text: "a", caseSensitive: false, regex: false, searches: null };
-    const filtered = (q: unknown) => ({ filter: { quick: q, conditions: [] }, sort: [] });
+    const filtered = (q: unknown) => ({ filter: { quick: q, conditions: [] }, sort: [], hidden: [] });
     expect(isEffect(view({ rows: filtered(quick), cols: unsorted }))).toBe(true);
     expect(isEffect(view({ rows: filtered({ ...quick, searches: [1n] }), cols: unsorted }))).toBe(true);
     expect(isEffect(view({ rows: filtered({ ...quick, searches: [1] }), cols: unsorted }))).toBe(false);
@@ -83,7 +91,7 @@ describe("Effects", () => {
     expect(isEffect(view({ rows: unsorted, cols: { sort: [{ key: 1, direction: "ascending" }] } }))).toBe(false);
     expect(isEffect(view({ rows: unsorted, cols: unsorted }, { ...edit, multi: 1 }))).toBe(false);
     const condition = { key: 2n, not: true, kind: { type: "Text", query: { ...quick, searches: [2n] } } };
-    const conditioned = (c: unknown) => ({ filter: { quick: null, conditions: [c] }, sort: [] });
+    const conditioned = (c: unknown) => ({ filter: { quick: null, conditions: [c] }, sort: [], hidden: [] });
     expect(isEffect(view({ rows: conditioned(condition), cols: unsorted }))).toBe(true);
     expect(isEffect(view({ rows: conditioned({ ...condition, key: 2 }), cols: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: conditioned({ ...condition, not: "yes" }), cols: unsorted }))).toBe(false);
@@ -125,9 +133,11 @@ describe("View Specs", () => {
         "RemoveCondition",
         "ReplaceCondition",
         "Reapply",
+        "Hide",
+        "Show",
       ]),
     );
-    const unsorted = { filter: { quick: null, conditions: [] }, sort: [] };
+    const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
     for (const edit of edits) {
       const effect = { type: "ViewRequested", generation: 1, spec: { rows: unsorted, cols: unsorted }, edit };
       expect(isEffect(effect), edit.type).toBe(true);
@@ -152,10 +162,12 @@ describe("View Specs", () => {
             ],
           },
           sort: [{ key: 1n, direction: "descending" }],
+          hidden: [3n, 0n],
         },
         cols: {
           filter: { quick: { text: "x", caseSensitive: false, regex: true, searches: null }, conditions: [] },
           sort: [],
+          hidden: [],
         },
       };
       grid.request_view(spec);
@@ -175,6 +187,34 @@ describe("View Specs", () => {
         (e) => e.type === "ViewRequested",
       );
       expect(again.map((e) => [e.spec, e.edit])).toEqual([[spec, { type: "Reapply" }]]);
+    } finally {
+      grid.free();
+    }
+  });
+});
+
+describe("Hiding", () => {
+  test("hide and show come back as Hide and Show requests, and hide support reaches the Snapshot", () => {
+    const { WebAxis, WebGrid } = bridge();
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(3, 80));
+    try {
+      grid.begin_frame(400, 200);
+      grid.hide(1, BigUint64Array.from([2n]));
+      expect((grid.poll_effects() as { type: string }[]).filter((e) => e.type === "ViewRequested")).toEqual([]);
+      grid.set_hide_support(1, true);
+      grid.hide(1, BigUint64Array.from([2n, 0n, 2n]));
+      grid.show(1, BigUint64Array.from([0n, 1n]));
+      const requested = (grid.poll_effects() as { type: string; spec?: KeyedViewSpec; edit?: unknown }[]).filter(
+        (e) => e.type === "ViewRequested",
+      );
+      expect(requested.map((e) => [e.spec?.cols.hidden, e.edit])).toEqual([
+        [[2n, 0n], { type: "Hide", axis: "cols", keys: [2n, 0n] }],
+        [[2n], { type: "Show", axis: "cols", keys: [0n] }],
+      ]);
+      grid.begin_frame(400, 200);
+      const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+      expect([s.rows.hideSupport, s.cols.hideSupport]).toEqual([false, true]);
+      expect(s.requestedView?.cols.hidden).toEqual([2n]);
     } finally {
       grid.free();
     }

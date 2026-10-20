@@ -590,8 +590,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       query &&
       this.feed.viewKeys(
         on === "rows"
-          ? { rows: part as AppliedAxisView<ColId>, cols: { sort: [] } }
-          : { rows: { sort: [] }, cols: part as AppliedAxisView<RowId> },
+          ? { rows: part as AppliedAxisView<ColId, RowId>, cols: { sort: [] } }
+          : { rows: { sort: [] }, cols: part as AppliedAxisView<RowId, ColId> },
       );
     this.grid.set_quick_filter(AXIS_CODE[on], keyed ? keyed[on].filter.quick : null);
     drainEffects(this.parts);

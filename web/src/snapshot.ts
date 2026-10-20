@@ -60,6 +60,8 @@ export interface KeyedFilter {
 export interface KeyedAxisView {
   filter: KeyedFilter;
   sort: SortColumn[];
+  /** Keys of the axis's own items left out of view, apart from the filter. */
+  hidden: bigint[];
 }
 
 /**
@@ -85,7 +87,7 @@ export interface FindMatch {
   col: bigint;
 }
 
-/** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis. */
+/** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis, and its hidden items. */
 export interface KeyedViewSpec {
   rows: KeyedAxisView;
   cols: KeyedAxisView;
@@ -130,6 +132,8 @@ export interface AxisSnapshot {
   total: number | null;
   /** Whether the axis has a quick filter, and whether it takes regexes; `null` if it has none. */
   quickFilter: { regex: boolean } | null;
+  /** Whether the Table Source hides items of the axis. */
+  hideSupport: boolean;
   /** The axis's conditions as the filter's chips list them: the latest request's, then the applied ones it drops. */
   conditions: { condition: KeyedCondition; state: ConditionState }[];
   /** Whether the Table Source can move the axis's items now, so dragging a header moves them. */
@@ -317,7 +321,8 @@ class Reader {
   axisView(): KeyedAxisView {
     const quick = this.opt(() => this.textQuery());
     const conditions = this.list(() => this.condition());
-    return { filter: { quick, conditions }, sort: this.sort() };
+    const sort = this.sort();
+    return { filter: { quick, conditions }, sort, hidden: this.list(() => this.key()) };
   }
 
   view(): KeyedViewSpec {
@@ -363,6 +368,7 @@ function readAxis(r: Reader): AxisSnapshot {
   const total = r.opt(() => r.num());
   const quickFilter = r.opt(() => ({ regex: r.flag() }));
   const movable = r.flag();
+  const hideSupport = r.flag();
   return {
     count,
     extent,
@@ -378,6 +384,7 @@ function readAxis(r: Reader): AxisSnapshot {
     headers,
     total,
     quickFilter,
+    hideSupport,
     conditions,
     movable,
   };

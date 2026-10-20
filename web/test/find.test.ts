@@ -71,8 +71,8 @@ const viewed = gs.composite((tc): { rows: Rec[]; source: RowsSource<Rec> } => {
   );
   source.view!(
     {
-      rows: { filter: { quick, conditions: [] }, sort: sort.map(([id, direction]) => ({ id, direction })) },
-      cols: { filter: { quick: colsQuick, conditions: [] }, sort: [] },
+      rows: { filter: { quick, conditions: [] }, sort: sort.map(([id, direction]) => ({ id, direction })), hidden: [] },
+      cols: { filter: { quick: colsQuick, conditions: [] }, sort: [], hidden: [] },
     },
     signal,
   );

@@ -16,8 +16,11 @@
 // cell's text as its column's renderer gives it, and hand binnacle-memory
 // the items to keep: rows by their values across the columns, columns by
 // theirs across the rows. A quick filter searching the shown items of the
-// other axis searches all of them, since fromRows hides none. Distinct
-// values are counted in JS too.
+// other axis searches those not hidden. Distinct values are counted in JS
+// too, over the items not hidden.
+//
+// Both axes hide: binnacle-memory leaves the hidden items out whatever the
+// filter keeps, and the answer prunes IDs the data lacks.
 // Find matches the same way, once per Find Query, and walks the view's order
 // for steps and the count; a pattern RegExp rejects fails both and marks
 // nothing.
@@ -142,7 +145,7 @@ function invalid(query: TextMatch): string | undefined {
     new RegExp(query.text, "u");
     return undefined;
   } catch (e) {
-    return String((e as Error).message).replace(/^Invalid regular expression: \/.*\/[a-z]*: /, "");
+    return String((e as Error).message).replace(/^Invalid regular expression: \/.*\/[a-z]*: /s, "");
   }
 }
 
@@ -187,6 +190,16 @@ function byCodePoint(a: string, b: string): number {
     if (d !== 0) return d;
   }
   return x.length - y.length;
+}
+
+/** The first of each ID of `ids` that `has` accepts, in order. */
+function pruned<Id>(ids: readonly Id[], has: (id: Id) => boolean): Id[] {
+  return [...new Set(ids)].filter(has);
+}
+
+/** Whether two lists without repeats hold the same items. */
+function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((x) => b.includes(x));
 }
 
 function same(a: unknown, b: unknown): boolean {
@@ -263,6 +276,7 @@ export function fromRows<R extends object>(
   let applied: SortSpec<ColId> = [];
   let colsApplied: SortSpec<number> = [];
   let filters: { rows: Filter<ColId>; cols: Filter<number> } = { rows: NO_FILTER, cols: NO_FILTER };
+  let hidden: { rows: number[]; cols: ColId[] } = { rows: [], cols: [] };
   let keep: ((row: R) => boolean) | null = null;
   const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
   const isRow = (id: number) => Number.isInteger(id) && id >= 0 && id < rows.length;
@@ -292,7 +306,8 @@ export function fromRows<R extends object>(
   /** Whether a row passes `filter` and `keep`. */
   const rowKeeper = (filter: Filter<ColId>) => {
     const { quick } = filter;
-    const searched = (quick?.searches === "shown" ? columns.map((c) => c.key) : (quick?.searches ?? [])).filter((id) =>
+    const shownColumns = () => columns.map((c) => c.key).filter((id) => !hidden.cols.includes(id));
+    const searched = (quick?.searches === "shown" ? shownColumns() : (quick?.searches ?? [])).filter((id) =>
       index.has(id),
     );
     return (row: R) => keeps(filter, searched, (id) => text(row, id)) && (keep?.(row) ?? true);
@@ -301,7 +316,11 @@ export function fromRows<R extends object>(
   /** Whether the column at index `c` passes `filter`. */
   const columnKeeper = (filter: Filter<number>) => {
     const { quick } = filter;
-    const searched = (quick?.searches === "shown" ? rows.map((_, i) => i) : (quick?.searches ?? [])).filter(isRow);
+    const shownRows = () => {
+      const out = new Set(hidden.rows);
+      return rows.map((_, i) => i).filter((i) => !out.has(i));
+    };
+    const searched = (quick?.searches === "shown" ? shownRows() : (quick?.searches ?? [])).filter(isRow);
     return (c: number) => keeps(filter, searched, (r) => text(rows[r]!, columns[c]!.key));
   };
 
@@ -372,8 +391,9 @@ export function fromRows<R extends object>(
     // Each text's count and least sort key.
     const seen = new Map<string, { count: number; rank: number | string }>();
     let blanks = 0;
+    const out = new Set(hidden.rows);
     rows.forEach((row, i) => {
-      if (!index.has(id) || !keeps(row)) return;
+      if (!index.has(id) || !keeps(row) || out.has(i)) return;
       const t = text(row, id);
       if (t === null) return void blanks++;
       if (found && !found(t)) return;
@@ -407,7 +427,7 @@ export function fromRows<R extends object>(
     const seen = new Map<string, number>();
     let blanks = 0;
     columns.forEach((c, i) => {
-      if (!isRow(id) || !keeps(i)) return;
+      if (!isRow(id) || !keeps(i) || hidden.cols.includes(c.key)) return;
       const t = text(rows[id]!, c.key);
       if (t === null) return void blanks++;
       if (!found || found(t)) seen.set(t, (seen.get(t) ?? 0) + 1);
@@ -456,8 +476,8 @@ export function fromRows<R extends object>(
 
   /** The View Spec in force, as `view` answers it. */
   const current = (): AppliedView<number, ColId> => ({
-    rows: { filter: spec(filters.rows), sort: applied },
-    cols: { filter: spec(filters.cols), sort: colsApplied },
+    rows: { filter: spec(filters.rows), sort: applied, hidden: hidden.rows },
+    cols: { filter: spec(filters.cols), sort: colsApplied, hidden: hidden.cols },
     totals: { rows: rows.length, cols: columns.length },
   });
 
@@ -515,6 +535,7 @@ export function fromRows<R extends object>(
       count: () => memory().count(ROWS),
       window: (start, end) => Array.from(memory().window(ROWS, start, end)),
       quickFilter: { regex: true },
+      hide: true,
       support: (by) => {
         const column = columns[index.get(by) ?? -1];
         const filterable = column?.filterable !== false;
@@ -530,6 +551,7 @@ export function fromRows<R extends object>(
       count: () => memory().count(COLS),
       window: (start, end) => Array.from(memory().window(COLS, start, end), (i) => columns[i]!.key),
       quickFilter: { regex: true },
+      hide: true,
       support: () => ({ sort: true, text: { regex: true }, oneOf: true }),
       distinct: (by, { search, limit, narrow }) => distinctAcross(by, search, limit, narrow),
       locate: (id) => located(memory().locate(COLS, index.get(id) ?? columns.length)),
@@ -561,14 +583,27 @@ export function fromRows<R extends object>(
       const forCols = take(filters.cols, asked.cols.filter, isRow);
       filters = { rows: forRows.filter, cols: forCols.filter };
       const error = forRows.error ?? forCols.error;
+      const was = hidden;
+      hidden = { rows: pruned(asked.rows.hidden, isRow), cols: pruned(asked.cols.hidden, (id) => index.has(id)) };
+      const m = memory();
+      const hid = {
+        rows: m.hide(ROWS, Uint32Array.from(hidden.rows)),
+        cols: m.hide(COLS, Uint32Array.from(hidden.cols, (id) => index.get(id)!)),
+      };
+      // A quick filter searching the shown items of the other axis asks again when they change.
+      const searchesShown = (filter: Filter<unknown>) => filter.quick?.searches === "shown";
+      const shownChanged = {
+        rows: !sameItems(was.cols, hidden.cols) && searchesShown(filters.rows),
+        cols: !sameItems(was.rows, hidden.rows) && searchesShown(filters.cols),
+      };
       sort(by);
       // Any View Spec, even the one in force, filters the unmatched items.
-      const refiltered = forRows.changed || memory().has_unmatched(ROWS);
+      const refiltered = forRows.changed || shownChanged.rows || m.has_unmatched(ROWS);
       if (refiltered) refilter();
-      tell({ type: refiltered ? "Refiltered" : "Reordered" });
+      tell({ type: refiltered || hid.rows ? "Refiltered" : "Reordered" });
       const resorted = byRows.length > 0 || colsApplied.length > 0;
       if (resorted) sortColumns(byRows);
-      const refilteredCols = forCols.changed || memory().has_unmatched(COLS);
+      const refilteredCols = forCols.changed || shownChanged.cols || hid.cols || m.has_unmatched(COLS);
       if (refilteredCols) refilterColumns();
       if (resorted || refilteredCols) tell({ type: refilteredCols ? "Refiltered" : "Reordered" }, "cols");
       return { ...current(), ...(error === undefined ? {} : { error }) };

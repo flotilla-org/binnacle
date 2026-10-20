@@ -155,8 +155,8 @@ const NOTICE: Record<ChangeNotice["type"], number> = NOTICE_CODE;
 
 /** The base view: nothing filtered, unsorted. */
 const BASE_VIEW: KeyedViewSpec = {
-  rows: { filter: { quick: null, conditions: [] }, sort: [] },
-  cols: { filter: { quick: null, conditions: [] }, sort: [] },
+  rows: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
+  cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
 };
 
 interface Axis<Id> {
@@ -473,7 +473,7 @@ export function createFeed<RowId, ColId, V>(
 
   /** The source's news: what it applies now, or new totals; answers due stay due. */
   const viewChanged = (view: AppliedView<RowId, ColId>) => {
-    applied = { rows: partKeys(cols, view.rows), cols: partKeys(rows, view.cols) };
+    applied = viewKeys(view);
     totals = view.totals ?? totals;
     grid?.view_changed(applied, totals.rows ?? NaN, totals.cols ?? NaN);
     if (view.error !== undefined) viewError = view.error;
@@ -570,12 +570,13 @@ export function createFeed<RowId, ColId, V>(
     );
   };
 
-  /** Tells the Grid which axes take a quick filter: only with `view`. */
+  /** Tells the Grid which axes take a quick filter and which hide: only with `view`. */
   const markQuickFilter = (g: WebGrid) => {
     for (const axis of AXES) {
       const quick = source.view ? axes[axis].source.quickFilter : undefined;
       const bits = quick ? QUICK_FILTER.on | (quick.regex ? QUICK_FILTER.regex : 0) : 0;
       g.set_quick_filter_support(AXIS_CODE[axis], bits);
+      g.set_hide_support(AXIS_CODE[axis], !!source.view && axes[axis].source.hide === true);
     }
   };
 
@@ -635,20 +636,31 @@ export function createFeed<RowId, ColId, V>(
     return { key, kind: { type: "Text", query: { text, caseSensitive, regex, searches: [key] } }, not: c.not };
   };
 
-  /** One axis's part by IDs of `by`, or `undefined` if an item it names is not known. */
-  const partIds = <Id>(by: Axis<Id>, part: KeyedAxisView): AxisView<Id> | undefined => {
+  /**
+   * One axis's part by IDs of `by` (its hidden items by IDs of `own`), or
+   * `undefined` if an item of `by` it names is not known. A hidden Key with
+   * no ID is left out, as the source would prune it.
+   */
+  const partIds = <Id, OwnId>(by: Axis<Id>, own: Axis<OwnId>, part: KeyedAxisView): AxisView<Id, OwnId> | undefined => {
     const sort = sortIds(by, part.sort);
     const quick = part.filter.quick && queryIds(by, part.filter.quick);
     const conditions = part.filter.conditions.map((c) => conditionId(by, c));
     if (!sort || quick === undefined || !conditions.every(known)) return undefined;
-    return { filter: { quick, conditions }, sort };
+    const hidden = part.hidden.map((k) => own.interner.id(k)).filter(known);
+    return { filter: { quick, conditions }, sort, hidden };
   };
 
-  const partKeys = <Id>(by: Axis<Id>, part: AppliedAxisView<Id>): KeyedAxisView => {
+  const partKeys = <Id, OwnId>(by: Axis<Id>, own: Axis<OwnId>, part: AppliedAxisView<Id, OwnId>): KeyedAxisView => {
     const quick = part.filter?.quick;
     const conditions = (part.filter?.conditions ?? []).map((c) => conditionKey(by, c));
-    return { filter: { quick: quick ? queryKeys(by, quick) : null, conditions }, sort: sortKeys(by, part.sort) };
+    const hidden = (part.hidden ?? []).map((id) => own.interner.key(id));
+    return { filter: { quick: quick ? queryKeys(by, quick) : null, conditions }, sort: sortKeys(by, part.sort), hidden };
   };
+
+  const viewKeys = (view: AppliedView<RowId, ColId>): KeyedViewSpec => ({
+    rows: partKeys(cols, rows, view.rows),
+    cols: partKeys(rows, cols, view.cols),
+  });
 
   /** The applied filter of `axis` by IDs less the conditions on item `key`, leaving out parts naming unknown items. */
   const narrowing = (axis: AxisName, key: bigint): FilterSpec<unknown> => {
@@ -678,7 +690,7 @@ export function createFeed<RowId, ColId, V>(
   const answerView = (requested: KeyedViewSpec) => {
     const view = source.view;
     if (!view) return viewApplied(BASE_VIEW);
-    const [rowPart, colPart] = [partIds(cols, requested.rows), partIds(rows, requested.cols)];
+    const [rowPart, colPart] = [partIds(cols, rows, requested.rows), partIds(rows, cols, requested.cols)];
     if (!rowPart || !colPart) return viewApplied(applied, totals);
     const failed = report({ type: "view" });
     const spec: ViewSpec<RowId, ColId> = { rows: rowPart, cols: colPart };
@@ -691,7 +703,7 @@ export function createFeed<RowId, ColId, V>(
       (now) => {
         viewError = now.error ?? null;
         if (now.error !== undefined) failed(new Error(now.error));
-        viewApplied({ rows: partKeys(cols, now.rows), cols: partKeys(rows, now.cols) }, now.totals ?? {});
+        viewApplied(viewKeys(now), now.totals ?? {});
       },
       {
         otherwise: () => viewApplied(previous.applied, previous.totals),
@@ -1047,7 +1059,7 @@ export function createFeed<RowId, ColId, V>(
     colId: (key) => cols.interner.id(key),
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
-    viewKeys: (spec) => ({ rows: partKeys(cols, spec.rows), cols: partKeys(rows, spec.cols) }),
+    viewKeys,
     columnSupport,
     rowSupport,
     conditionKey: (c, axis) => conditionKey(cross(axis ?? "rows"), c as Condition<unknown>),

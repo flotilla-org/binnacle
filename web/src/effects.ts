@@ -22,6 +22,10 @@ export type KeyedViewEdit =
   | { type: "ReplaceCondition"; axis: AxisName; from: KeyedCondition; to: KeyedCondition }
   /** The user asked for the same View Spec again, so rows their edits left unmatched are filtered. */
   | { type: "Reapply" }
+  /** These items of `axis` were hidden, beside any hidden already. */
+  | { type: "Hide"; axis: AxisName; keys: bigint[] }
+  /** These hidden items of `axis` were shown again. */
+  | { type: "Show"; axis: AxisName; keys: bigint[] }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -107,7 +111,12 @@ function isAxisView(v: unknown): boolean {
   if (!isRecord(v) || !isRecord(v.filter)) return false;
   const quick = v.filter.quick === null || isTextQuery(v.filter.quick);
   const conditions = Array.isArray(v.filter.conditions) && v.filter.conditions.every(isCondition);
-  return quick && conditions && Array.isArray(v.sort) && v.sort.every(isSortColumn);
+  const sorted = Array.isArray(v.sort) && v.sort.every(isSortColumn);
+  return quick && conditions && sorted && isKeys(v.hidden);
+}
+
+function isKeys(v: unknown): v is bigint[] {
+  return Array.isArray(v) && v.every((k) => typeof k === "bigint");
 }
 
 function isEdit(v: unknown): v is KeyedViewEdit {
@@ -124,6 +133,9 @@ function isEdit(v: unknown): v is KeyedViewEdit {
       return isAxis(v.axis) && isCondition(v.condition);
     case "ReplaceCondition":
       return isAxis(v.axis) && isCondition(v.from) && isCondition(v.to);
+    case "Hide":
+    case "Show":
+      return isAxis(v.axis) && isKeys(v.keys);
     case "Replace":
     case "Reapply":
     case "Other":
@@ -144,7 +156,7 @@ function fits(field: Field, v: unknown): boolean {
     case "axis":
       return v === "rows" || v === "cols";
     case "keys":
-      return Array.isArray(v) && v.every((k) => typeof k === "bigint");
+      return isKeys(v);
     case "view":
       return isRecord(v) && isAxisView(v.rows) && isAxisView(v.cols);
     case "edit":
