@@ -3,8 +3,8 @@
 use binnacle_core::{Action, Axis, AxisConfig, Edge, Grid, Key, PointerEvent, StripItem, Viewport};
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
-    BorderExtent, BorderStyle, BorderWeight, Content, MIN_SCROLLING, RenderContext, Theme,
-    begin_frame, render_with,
+    BorderExtent, BorderStyle, BorderWeight, Content, RenderContext, Theme, begin_frame,
+    render_with,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -477,7 +477,7 @@ fn begin_frame_gives_pinned_edges_a_cell_where_there_is_no_gap() {
     insta::assert_snapshot!(text(&buf));
 }
 
-/// [`begin_frame`] keeps [`MIN_SCROLLING`] cells of each axis to scroll:
+/// [`begin_frame`] keeps `MIN_SCROLLING` cells of each axis to scroll:
 /// pinned Strips longer than the rest clip at their inside ends, the
 /// trailing one first, with the edge where they clip; focus on a clipped
 /// item slides its Strip to show it.
@@ -494,7 +494,7 @@ fn pinned_strips_too_long_for_the_area_clip_with_the_edge_where_they_clip() {
     let theme = Theme::classic();
     let style = BorderStyle::new(BorderExtent::Grid, BorderWeight::Light);
     let ctx = RenderContext::new(&theme).scrollbars(false).border(style);
-    let mut frame = |grid: &mut Grid| {
+    let frame = |grid: &mut Grid| {
         let layout = begin_frame(grid, &ctx, AREA, |grid, viewport| {
             for (axis, range) in grid.begin_frame(viewport) {
                 let keys = IdentitySource::new(range.end).window(range.clone());
