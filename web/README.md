@@ -105,6 +105,13 @@ To filter and view from code:
   `grid.removeCondition(c)`, `grid.replaceCondition(from, to)` and
   `grid.clearConditions(colId)` change them; each asks the Table Source for
   the View Spec in force with the change.
+- Each of these takes the axis to filter last, the rows by default: with
+  `"cols"` it filters the columns by their values in rows, so
+  `grid.addCondition({ id: rowId, kind, not }, "cols")` keeps the columns
+  whose value in that row matches, and `grid.setQuickFilter(query, "cols")`
+  keeps those with the text in a searched row. The source declares it on its
+  `cols` axis (`quickFilter`, `support`, `distinct`, `unmatched`); without
+  `cols.support` the columns offer no controls.
 - `grid.requestView(spec)` asks the Table Source for a whole View Spec, such
   as a saved view.
 - `grid.reapplyView()` asks for the View Spec in force again, so rows the
@@ -121,15 +128,21 @@ To filter and view from code:
   still to be answered, `frame.viewError` holds the source's message for the
   part it left out, and `frame.columns` the column headers in view, each
   with whether it is filtered (and pending, or not applied) and what it
-  supports. While a View Spec is pending the rows shown stay as they are; a
-  newer one aborts the request in flight, so only the latest answer paints.
+  supports. `frame.columnsFilter` gives the same for the columns' filter
+  (`quickFilter`, `quick`, `quickState`, `conditions`), and `frame.cols`
+  their count, total and unmatched. While a View Spec is pending the rows
+  shown stay as they are; a newer one aborts the request in flight, so only
+  the latest answer paints.
 - `grid.columnSupport(colId)` says whether a column sorts and takes Text
   conditions (and regexes) and OneOf conditions; `grid.columns()` lists the
-  table's columns with their labels and support.
+  table's columns with their labels and support. `grid.rowSupport(rowId)`
+  says the same of the columns by a row, and `grid.rowLabel(rowId)` gives a
+  row's header text.
 - `grid.distinct(colId, search, limit, apply)` asks the source for a
   column's distinct values, narrowed by the filter in force less the
   column's own conditions, and calls `apply` with them; it returns a request
-  to `abort()`, or `null` if the column takes no OneOf conditions.
+  to `abort()`, or `null` if the column takes no OneOf conditions. With a
+  last argument `"cols"`, a row's values across the columns.
 
 `createFilterBar(grid)` builds the filter bar: the quick filter field with
 match case, regex (when the source takes regexes) and clear buttons, and the
@@ -162,6 +175,18 @@ source did not apply turns the field red with its message. Escape, a press outsi
 condition ("port: not Bergen ×": the label reopens the menu, × removes the
 condition) and "+ Filter", which picks a column and opens its menu. With a
 column menu the bar shows even when the rows take no quick filter.
+
+The column menu is the row menu too, where the source filters its columns:
+a row header's funnel (drawn while hovered, and as a mark while the row
+filters the columns), Alt+ArrowRight in the grid, or `menu.openRow(rowId)`
+opens the same popover beside the row header, "Filter columns by" the row,
+with the checklist of the row's values across the columns. The filter bar
+then lists those conditions after "Columns where" ("3: not Bergen ×"), shows
+the column count beside the row count while the columns are filtered ("4
+of 5 columns"), and its "Re-apply" counts edited rows and columns. Its
+options name each axis's items for the counts (`nouns: { rows: ["field",
+"fields"], cols: ["record", "records"] }`, giving "5 of 12 records"), and
+`axis: "cols"` makes its field the columns' quick filter.
 
 ### React
 

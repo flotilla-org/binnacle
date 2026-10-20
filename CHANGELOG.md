@@ -7,11 +7,15 @@
 - **ratatui:** `Content::renderer` now chooses the Cell Renderer per cell, from the row Key and the column Key, as the web's `RendererChoice` does, so a column-major table can draw each row its own way. A host that chose by column renames its `renderer(&self, col)` to `column_renderer(&self, col)`, which the default `renderer` calls. `fit_width` asks each cell's own renderer.
 - **core:** a Sort header click on a row header now sorts the columns by that row, as a column header click sorts the rows (it did nothing before). Row headers keep `HeaderClick::Select` by default.
 - **memory:** `InMemoryTableSource::apply_sort` and `sort_spec` take the axis, so either axis sorts. `MemorySource::view`, `changed`, `edited` and `replaced` return each axis's Change Notices as `Vec<(Axis, ChangeNotice)>`, since sorting the columns by a row makes a row's change move the columns. The testkit's `RecordTable` and `ColumnMajorTable` `edit` and `replace` follow. A sort now starts from the order column moves left, so ties keep it, and a move on sorted columns makes that order the columns' own and clears their sort.
+- **memory:** the In-Memory Table Source filters either axis: `apply_filter(axis, keep)`, `clear_filter(axis)`, `filtered(axis)`, `refilter_item(axis, item, keep)` and `defer_item(axis, item, keep)` replace the rows-only calls, and `position(axis, item)` replaces `row_position` (`base_rows` goes too, for `base_len(axis)`). `MemorySource::appended` returns `Vec<(Axis, ChangeNotice)>` as well, since filtering the columns by a row makes new rows refilter the columns, and `distinct` takes the axis. A move's drop Position is read in the filtered order.
 - **wasm:** `WebMemory::sort` takes the axis first.
 - **core:** picks are kept per axis: `Selection::picks` is `[Vec<Key>; 2]`, and `picked`, `toggle_pick` and `Snapshot::picked` take the axis. Ctrl/Cmd-click on a column header picks the column under Sort or Select, as on a row header; under `SelectionUnit::Cols` a Ctrl/Cmd-click on a cell picks its column.
 - **core:** a `Reset` keeps the Size Overrides of both axes with their Keys (rows lost theirs before), and a `Removed` drops those of the removed Keys on both axes (columns kept theirs before).
 - **C API:** the picked Keys move from `BinnacleSnapshot` to `BinnacleAxisSnapshot` (`picked`, `picked_len`), one list per axis.
 - **web:** `SelectionChange.picked` is `{ rows, cols }` of IDs and `FrameInfo.picked` is `{ rows, cols }` of counts.
+- **ratatui:** `ColumnFilter::fetch` asks with the axis too (`|axis, key, query| ...`), and `Control` gains `RowFilter`.
+- **web:** `WebMemory`'s filter calls take the axis first.
+- **testkit:** `append` on `RecordTable` and `ColumnMajorTable` returns `Vec<(Axis, ChangeNotice)>` too.
 
 ### Added
 
@@ -27,3 +31,10 @@
 - **ratatui:** the headers of selected rows and columns are highlighted (`Theme::header_selected`); Shift+Space selects the row and Alt+PageUp and Alt+PageDown page the columns; `Keymap::preset(preset)` binds what each preset adds (`V` selects the row in modes and bare keys, `h j k l` move in modes) and `Keymap::keys(action)` lists an Action's keys.
 - **web:** the `"cols"` selection unit, a `SelectRow` Action on Shift+Space, Alt+PageUp and Alt+PageDown page the columns, and picked columns are marked under their headers and in their cells. The row header band widens once, on the first rows, to fit their labels (and a sort marker where row headers sort), so a column-major table shows its field names whole.
 - **demos:** both demos count picked rows and columns; the ratatui demo's Alt+U switches the selection unit.
+- **memory, web:** the In-Memory Table Source (`MemorySource`) and `fromRows` filter their columns by the rows' values: the quick filter, conditions, a row's distinct values and unmatched columns. A change from the data moves only the columns whose match changed (`refilter_items`).
+- **ratatui:** `ColumnFilter::open_row` (Alt+Right in Chords) filters the columns by a row's values; `render_conditions` adds "Columns where" chips, `count(snapshot, axis, nouns)` counts either axis, and `QuickFilter::on(Axis::Cols)` filters the columns.
+- **web:** the column menu is the row menu too (`attachRowMenu`, `openRowMenu`, Alt+ArrowRight, `menu.openRow`); the widget's filter methods and `distinct` take an axis; `rowSupport`, `rowLabel` and `FrameInfo.columnsFilter`; the filter bar shows the columns' chips and count, with `nouns` and `axis` options.
+
+### Fixed
+
+- **web:** the find count is asked again when the columns are refiltered ([#139](https://github.com/flotilla-org/binnacle/issues/139)).
