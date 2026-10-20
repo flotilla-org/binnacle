@@ -90,6 +90,27 @@ test.describe("records", () => {
     await expect(columnCount(page)).toHaveText("2 of 5 columns");
   });
 
+  test("a selection from a pinned column on through the next drawn one shows only those two", async ({ page }) => {
+    await cell(page, 0, column(3));
+    await page.keyboard.press("Alt+Shift+ArrowLeft");
+    // The pin lands after the next frame: its menu offers Unpin once it has.
+    await page.keyboard.press("Alt+ArrowDown");
+    await expect(page.getByRole("dialog", { name: "Filter crew" }).getByRole("button", { name: "Unpin" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    // The pinned crew is drawn first, then id: two runs of Positions.
+    await page.keyboard.press("Shift+ArrowRight");
+    await expect(status(page)).toContainText("selected 1 × 2");
+    await page.keyboard.press("Alt+ArrowDown");
+    // The id column takes no conditions, so its menu is titled "Column id".
+    await page.getByRole("dialog", { name: "Column id" }).getByRole("button", { name: "Show only these 2 columns" }).click();
+    await expect(columnCount(page)).toHaveText("2 of 5 columns");
+    await page.keyboard.press(`${await mod(page)}+Alt+O`);
+    const list = chooser(page, "columns");
+    await expect(list.getByRole("checkbox", { checked: true })).toHaveCount(2);
+    await expect(list.getByRole("checkbox", { name: "id" })).toBeChecked();
+    await expect(list.getByRole("checkbox", { name: "crew" })).toBeChecked();
+  });
+
   test("the row key hides the selected rows, and Show only past the cap hides nothing and says to filter", async ({ page }) => {
     await cell(page, 1, column(1));
     await cell(page, 3, column(1), ["Shift"]);

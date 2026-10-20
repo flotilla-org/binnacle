@@ -2,7 +2,9 @@
 //! these, its hidden items inline and Show all, and the chooser, over an
 //! In-Memory Table Source that hides both axes.
 
-use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Modifiers, PointerEvent, Viewport};
+use binnacle_core::{
+    Action, Axis, AxisConfig, Edge, FocusStep, Grid, Key, Modifiers, PointerEvent, Viewport,
+};
 use binnacle_memory::{MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
     Chooser, Content, Control, Controls, HeaderMenu, Hid, Preset, RenderContext, Theme,
@@ -379,6 +381,33 @@ fn hide_reaches_the_picks_or_the_selection_as_well_as_the_focused_item() {
         "then the focused row"
     );
     assert_eq!(t.shown(Axis::Rows).len(), 2);
+}
+
+#[test]
+fn a_selection_across_a_pinned_row_hides_and_keeps_every_row_it_covers() {
+    // Row 4 pinned first: a range from it down two rows in drawn order covers
+    // rows 4, 0 and 1, two runs of Positions.
+    let selected = || {
+        let mut t = Table::new(true);
+        t.grid.pin(Axis::Rows, Edge::Leading, Key(4));
+        t.focus(4, 0);
+        for _ in 0..2 {
+            t.grid.action(Action::MoveFocus {
+                axis: Axis::Rows,
+                by: FocusStep::Item,
+                forward: true,
+                extend: true,
+            });
+        }
+        t.frame();
+        t
+    };
+    let mut t = selected();
+    assert_eq!(t.hide_chosen(Axis::Rows), Hid::Hidden(3));
+    assert_eq!(t.shown(Axis::Rows), [2, 3, 5]);
+    let mut t = selected();
+    assert_eq!(t.show_only(Axis::Rows), Hid::Hidden(3));
+    assert_eq!(t.shown(Axis::Rows), [0, 1, 4]);
 }
 
 #[test]
