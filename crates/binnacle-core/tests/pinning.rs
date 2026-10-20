@@ -161,7 +161,7 @@ fn op(tc: &TestCase) -> Op {
             .min_value(4.0)
             .max_value(60.0)
             .map(Op::Length),
-        gs::sampled_from(vec![0.0f32, 1.0, 2.5]).map(Op::EdgeGap),
+        gs::floats::<f32>().map(Op::EdgeGap),
     ))
 }
 
@@ -684,4 +684,27 @@ fn an_edge_gap_spaces_the_pinned_strips_from_the_scrolling_one() {
         SHORT,
     );
     insta::assert_snapshot!(out);
+}
+
+/// An Edge Gap that is negative or not finite is ignored: the layout stays
+/// as the last one set left it.
+#[hegel::test(test_cases = 200)]
+fn an_edge_gap_that_is_negative_or_not_finite_changes_nothing(tc: TestCase) {
+    let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+    let mut s = tall();
+    s.input(|g| {
+        g.pin(axis, Edge::Leading, Key(5));
+        g.pin(axis, Edge::Trailing, Key(0));
+        g.set_edge_gap(
+            axis,
+            tc.draw(gs::floats::<f32>().min_value(0.0).max_value(8.0)),
+        );
+    });
+    let before = s.frame(SHORT).scrolling(axis);
+    let bad = tc.draw(hegel::one_of!(
+        gs::floats::<f32>().max_value(-f32::MIN_POSITIVE),
+        gs::sampled_from(vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY]),
+    ));
+    s.input(|g| g.set_edge_gap(axis, bad));
+    assert_eq!(s.frame(SHORT).scrolling(axis), before);
 }
