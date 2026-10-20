@@ -75,6 +75,13 @@ test.describe("records", () => {
     await unpin.click();
     await expect(await pinButton(page)).toHaveText("Pin left");
   });
+
+  test("a row's menu filters the columns and offers no pin", async ({ page }) => {
+    await page.keyboard.press("Alt+ArrowRight");
+    const menu = page.getByRole("dialog", { name: "Filter columns by 1" });
+    await expect(menu.getByRole("textbox")).toBeVisible();
+    await expect(menu.getByRole("button", { name: /^(Pin left|Unpin)$/ })).toBeHidden();
+  });
 });
 
 test("on the column-major records, a record's column pins and stays while the others scroll", async ({ page }) => {

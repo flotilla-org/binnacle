@@ -124,7 +124,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     title.append(heading, name);
 
     const pins = el("div", "binnacle-column-menu-pins", ROW_STYLE);
-    pins.hidden = !pinnable;
+    // Its inline display would beat the `hidden` attribute.
+    if (!pinnable) pins.style.display = "none";
     // As of the latest frame, so it follows pins made while the menu is open.
     const pinned = () => pinnable && widget.pinned("cols").includes(colId as ColId);
     const pinButton = action("Pin left");
