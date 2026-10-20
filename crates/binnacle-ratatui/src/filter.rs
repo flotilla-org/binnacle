@@ -27,6 +27,9 @@ pub enum Control {
     /// Open the focused column's filter popup or drawer, or focus a drawer
     /// already shown ([`ColumnFilter::open`]).
     ColumnFilter,
+    /// Open the focused row's filter popup or drawer, filtering the columns
+    /// by its values ([`ColumnFilter::open_row`]).
+    RowFilter,
     /// Open the focused column's filter at its text, set to contain or (with
     /// `not`) not contain it ([`ColumnFilter::open_text`]).
     ColumnText { not: bool },
@@ -65,9 +68,10 @@ pub enum Control {
 
 impl Control {
     /// Every Control, each of which every preset reaches.
-    pub const ALL: [Control; 15] = [
+    pub const ALL: [Control; 16] = [
         Control::QuickFilter,
         Control::ColumnFilter,
+        Control::RowFilter,
         Control::ColumnText { not: false },
         Control::ColumnText { not: true },
         Control::KeepValue,
@@ -95,19 +99,19 @@ pub enum Preset {
     /// the [`crate::Keymap`]: Ctrl+F find, Alt+Shift+F find backwards, F3 or
     /// Ctrl+N next, Shift+F3 or Ctrl+P previous, Alt+F show only matching
     /// rows, Alt+C case, Ctrl+L the quick filter, Alt+Down the focused
-    /// column's filter popup, Alt+T and Alt+N its text set to contain or not,
-    /// Alt+= keep the focused value, Ctrl+D remove, Ctrl+K clear, Alt+L (or
+    /// column's filter popup and Alt+Right the focused row's, Alt+T and Alt+N
+    /// the column's text set to contain or not, Alt+= keep the focused value, Ctrl+D remove, Ctrl+K clear, Alt+L (or
     /// Excel's Ctrl+Alt+L) apply the filter again, Esc close.
     Chords,
     /// vim and VisiData: `/` and `?` find forwards and backwards, `n` and `N`
     /// step, `|` the quick filter, `\` and `&` the focused column's text set
-    /// to contain or not, `F` its filter popup, `=` keep the focused value,
-    /// `u` and `U` remove and clear, `i` case, `m` show only matching rows,
+    /// to contain or not, `F` its filter popup, `R` the focused row's, `=`
+    /// keep the focused value, `u` and `U` remove and clear, `i` case, `m` show only matching rows,
     /// `r` apply the filter again, Esc close. Typing is off.
     Modes,
     /// Single keys with no modes: `/ ? n N` find, `\` the quick filter, `f`
-    /// the filter drawer (see [`ColumnFilter::drawer`]), `|` and `&` its text
-    /// set to contain or not, `=` keep the focused value, `x` and `X` remove
+    /// the filter drawer (see [`ColumnFilter::drawer`]), `F` the focused
+    /// row's, `|` and `&` the column's text set to contain or not, `=` keep the focused value, `x` and `X` remove
     /// and clear, `m` show only matching rows, `i` case, `r` apply the filter
     /// again, Esc close. Typing is off.
     BareKeys,
@@ -135,7 +139,7 @@ pub struct Controls {
 impl Controls {
     pub fn preset(preset: Preset) -> Self {
         use Control::*;
-        use KeyCode::{Char, Down, Esc, F};
+        use KeyCode::{Char, Down, Esc, F, Right};
         const NONE: KeyModifiers = KeyModifiers::NONE;
         const CTRL: KeyModifiers = KeyModifiers::CONTROL;
         const ALT: KeyModifiers = KeyModifiers::ALT;
@@ -147,6 +151,7 @@ impl Controls {
             Preset::Chords => &[
                 (Char('l'), CTRL, QuickFilter),
                 (Down, ALT, ColumnFilter),
+                (Right, ALT, RowFilter),
                 (Char('t'), ALT, ColumnText { not: false }),
                 (Char('n'), ALT, ColumnText { not: true }),
                 (Char('='), ALT, KeepValue),
@@ -167,6 +172,7 @@ impl Controls {
             Preset::Modes => &[
                 (Char('|'), NONE, QuickFilter),
                 (Char('F'), NONE, ColumnFilter),
+                (Char('R'), NONE, RowFilter),
                 (Char('\\'), NONE, ColumnText { not: false }),
                 (Char('&'), NONE, ColumnText { not: true }),
                 (Char('='), NONE, KeepValue),
@@ -184,6 +190,7 @@ impl Controls {
             Preset::BareKeys => &[
                 (Char('\\'), NONE, QuickFilter),
                 (Char('f'), NONE, ColumnFilter),
+                (Char('F'), NONE, RowFilter),
                 (Char('|'), NONE, ColumnText { not: false }),
                 (Char('&'), NONE, ColumnText { not: true }),
                 (Char('='), NONE, KeepValue),
@@ -350,6 +357,9 @@ struct Query {
 /// keeps the filter and Esc puts back the one from before focus; both leave
 /// the field.
 ///
+/// Made [`QuickFilter::on`] the columns, the same field filters the columns,
+/// searching the shown rows.
+///
 /// A quick filter the Table Source did not apply (an invalid regex, say)
 /// turns the field red, with the message the host gives
 /// [`QuickFilter::set_error`] after it, and the text kept.
@@ -363,11 +373,24 @@ pub struct QuickFilter {
     placeholder: String,
     pause: Pause,
     error: Option<String>,
+    /// Whether it filters the columns, not the rows.
+    columns: bool,
 }
 
 impl QuickFilter {
     pub fn new() -> Self {
         QuickFilter::default()
+    }
+
+    /// Makes it filter `axis`: the rows unless set.
+    pub fn on(mut self, axis: Axis) -> Self {
+        self.columns = axis == Axis::Cols;
+        self
+    }
+
+    /// The axis it filters.
+    pub fn axis(&self) -> Axis {
+        if self.columns { Axis::Cols } else { Axis::Rows }
     }
 
     /// What the empty field says while unfocused, such as how to reach it.
@@ -406,14 +429,14 @@ impl QuickFilter {
         self.before.is_some()
     }
 
-    /// Takes focus if the rows have a quick filter; returns whether it did.
+    /// Takes focus if its axis has a quick filter; returns whether it did.
     pub fn focus(&mut self, snapshot: &Snapshot) -> bool {
-        let Some(support) = snapshot.quick_filter(Axis::Rows) else {
+        let Some(support) = snapshot.quick_filter(self.axis()) else {
             return false;
         };
         self.regex = support.regex;
         if !self.focused() {
-            self.query = in_force(snapshot).unwrap_or(self.query.clone());
+            self.query = in_force(snapshot, self.axis()).unwrap_or(self.query.clone());
         }
         self.before.get_or_insert_with(|| self.query.clone());
         true
@@ -484,7 +507,7 @@ impl QuickFilter {
         let query = TextQuery::new(q.text.clone())
             .case_sensitive(q.case_sensitive)
             .regex(q.regex);
-        grid.set_quick_filter(Axis::Rows, Some(query));
+        grid.set_quick_filter(self.axis(), Some(query));
     }
 
     /// Draws the field into `area`'s first line: `Filter`, the text (ending
@@ -494,13 +517,14 @@ impl QuickFilter {
     /// the rows have no quick filter.
     pub fn render(&self, snapshot: &Snapshot, theme: &Theme, area: Rect, buf: &mut Buffer) {
         let area = area.intersection(buf.area);
-        let Some(support) = snapshot.quick_filter(Axis::Rows) else {
+        let axis = self.axis();
+        let Some(support) = snapshot.quick_filter(axis) else {
             return;
         };
         if area.is_empty() {
             return;
         }
-        let query = match in_force(snapshot) {
+        let query = match in_force(snapshot, axis) {
             Some(q) if !self.focused() => q,
             _ => self.query.clone(),
         };
@@ -508,13 +532,16 @@ impl QuickFilter {
         if support.regex {
             toggles.push((".*", query.regex));
         }
-        let state = quick_state(snapshot);
+        let state = quick_state(snapshot, axis);
         // Not applied only while the field shows what was asked for.
         let state = match state {
             QuickState::NotApplied(asked) if asked != query => QuickState::Settled,
             state => state,
         };
-        let label = " Filter ";
+        let label = match axis {
+            Axis::Rows => " Filter ",
+            Axis::Cols => " Filter columns ",
+        };
         let width = usize::from(area.width);
         let message = match (&state, &self.error) {
             (QuickState::NotApplied(_), Some(m)) => {
@@ -586,7 +613,7 @@ impl QuickFilter {
     }
 }
 
-/// Where the rows' quick filter stands between the latest request and the
+/// Where an axis's quick filter stands between the latest request and the
 /// applied View Spec.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum QuickState {
@@ -598,12 +625,12 @@ enum QuickState {
     NotApplied(Query),
 }
 
-fn quick_state(snapshot: &Snapshot) -> QuickState {
+fn quick_state(snapshot: &Snapshot, axis: Axis) -> QuickState {
     let Some(requested) = snapshot.requested_view() else {
         return QuickState::Settled;
     };
-    let asked = &requested.rows.filter.quick;
-    if *asked == snapshot.applied_view().rows.filter.quick {
+    let asked = &requested.axis(axis).filter.quick;
+    if *asked == snapshot.applied_view().axis(axis).filter.quick {
         return QuickState::Settled;
     }
     if snapshot.view_pending() {
@@ -612,14 +639,14 @@ fn quick_state(snapshot: &Snapshot) -> QuickState {
     QuickState::NotApplied(asked.as_ref().map_or_else(Query::default, Query::of))
 }
 
-/// The rows' quick filter as last asked for (the request still unanswered,
-/// else the one applied), or an empty query for none; `None` while the rows
-/// have no quick filter.
-fn in_force(snapshot: &Snapshot) -> Option<Query> {
-    snapshot.quick_filter(Axis::Rows)?;
+/// `axis`'s quick filter as last asked for (the request still unanswered,
+/// else the one applied), or an empty query for none; `None` while the axis
+/// has no quick filter.
+fn in_force(snapshot: &Snapshot, axis: Axis) -> Option<Query> {
+    snapshot.quick_filter(axis)?;
     let view = snapshot.requested_view().unwrap_or(snapshot.applied_view());
     Some(
-        view.rows
+        view.axis(axis)
             .filter
             .quick
             .as_ref()
@@ -648,6 +675,9 @@ impl Query {
 /// the list-of-values filter (#107); the host hands it the values with
 /// [`ColumnFilter::fetch`].
 ///
+/// Opened on a row ([`ColumnFilter::open_row`]), the same popup filters the
+/// columns by that row's values, dropped beside the row header.
+///
 /// While open it takes every key. Tab and Shift+Tab move between the text,
 /// the search and the list. In the text or the search, characters and
 /// Backspace edit and Ctrl+U clears; in the list, Up, Down, PageUp,
@@ -673,8 +703,8 @@ pub struct ColumnFilter {
     pause: Pause,
     error: Option<String>,
     drawer: bool,
-    /// The column a drawer is shown on, while shown.
-    shown: Option<Key>,
+    /// The axis a drawer filters and the item it is shown on, while shown.
+    shown: Option<(Axis, Key)>,
     /// Whether a shown drawer has focus.
     focused: bool,
 }
@@ -689,6 +719,9 @@ enum Zone {
 
 #[derive(Clone, Debug)]
 struct Open {
+    /// The axis filtered: the rows for a column's popup, the columns for a
+    /// row's.
+    axis: Axis,
     key: Key,
     /// How the column takes Text conditions, if it does.
     text: Option<TextSupport>,
@@ -805,23 +838,44 @@ impl ColumnFilter {
         }
     }
 
-    /// The column it is open on, if it is open.
+    /// The column it is open on, if it is open on a column.
     pub fn column(&self) -> Option<Key> {
-        self.open.as_ref().map(|o| o.key)
+        self.open
+            .as_ref()
+            .filter(|o| o.axis == Axis::Rows)
+            .map(|o| o.key)
+    }
+
+    /// The axis it filters while open: [`Axis::Rows`] on a column,
+    /// [`Axis::Cols`] on a row.
+    pub fn filtering(&self) -> Option<Axis> {
+        self.open.as_ref().map(|o| o.axis)
     }
 
     /// Opens on the focused column, or focuses a drawer already shown on
     /// it; returns whether it took focus. A drawer opened on a column with
     /// no filters shows empty and takes no focus.
     pub fn open(&mut self, snapshot: &Snapshot) -> bool {
-        let Some(key) = snapshot.focus(Axis::Cols).and_then(|f| f.key) else {
+        self.open_focused(snapshot, Axis::Rows)
+    }
+
+    /// Opens on the focused row, to filter the columns by its values
+    /// ([`Control::RowFilter`]), or focuses a drawer already shown on it;
+    /// returns whether it took focus.
+    pub fn open_row(&mut self, snapshot: &Snapshot) -> bool {
+        self.open_focused(snapshot, Axis::Cols)
+    }
+
+    /// Opens on the focused item of `axis`'s other axis, to filter `axis`.
+    fn open_focused(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
+        let Some(key) = snapshot.focus(axis.other()).and_then(|f| f.key) else {
             return false;
         };
-        if self.drawer && self.shown == Some(key) && self.open.is_some() {
+        if self.drawer && self.shown == Some((axis, key)) && self.open.is_some() {
             self.focused = true;
             return true;
         }
-        self.open_column(snapshot, key)
+        self.open_on(snapshot, axis, key)
     }
 
     /// Closes it, keeping the conditions; returns whether it was open (or a
@@ -837,26 +891,34 @@ impl ColumnFilter {
     /// Opens on column `key` if it takes Text or OneOf conditions; returns
     /// whether it did.
     pub fn open_column(&mut self, snapshot: &Snapshot, key: Key) -> bool {
-        let opened = self.show(snapshot, key);
+        self.open_on(snapshot, Axis::Rows, key)
+    }
+
+    /// Opens on `key`, an item of `axis`'s other axis, to filter `axis` by
+    /// it, if `axis` takes Text or OneOf conditions on it; returns whether
+    /// it did.
+    pub fn open_on(&mut self, snapshot: &Snapshot, axis: Axis, key: Key) -> bool {
+        let opened = self.show(snapshot, axis, key);
         if self.drawer {
-            self.shown = Some(key);
+            self.shown = Some((axis, key));
             self.focused = opened;
         }
         opened
     }
 
-    /// Puts column `key`'s conditions in it, or nothing if it takes none;
+    /// Puts `key`'s conditions on `axis` in it, or nothing if it takes none;
     /// returns whether it takes any.
-    fn show(&mut self, snapshot: &Snapshot, key: Key) -> bool {
-        let support = snapshot.support(Axis::Rows, key);
+    fn show(&mut self, snapshot: &Snapshot, axis: Axis, key: Key) -> bool {
+        let support = snapshot.support(axis, key);
         if support.text.is_none() && !support.one_of {
             if self.drawer {
                 self.open = None;
             }
             return false;
         }
-        let column = Column::of(&asked(snapshot), key);
+        let column = Column::of(&asked(snapshot, axis), axis, key);
         let mut open = Open {
+            axis,
             key,
             text: support.text,
             one_of: support.one_of,
@@ -904,14 +966,15 @@ impl ColumnFilter {
         true
     }
 
-    /// Hands the checklist its values: calls `ask` with the column and the
-    /// question when the search, or the narrowing (the applied rows filter
-    /// less the column's own conditions), changed since it last asked. A
-    /// `None` answer lists nothing. Call it before each render while open.
+    /// Hands the checklist its values: calls `ask` with the axis filtered,
+    /// the column (or row) and the question when the search, or the
+    /// narrowing (the axis's applied filter less the item's own
+    /// conditions), changed since it last asked. A `None` answer lists
+    /// nothing. Call it before each render while open.
     pub fn fetch(
         &mut self,
         snapshot: &Snapshot,
-        ask: impl FnOnce(Key, &DistinctQuery) -> Option<Distinct>,
+        ask: impl FnOnce(Axis, Key, &DistinctQuery) -> Option<Distinct>,
     ) {
         self.follow(snapshot);
         let Some(o) = &mut self.open else {
@@ -920,7 +983,7 @@ impl ColumnFilter {
         if !o.one_of {
             return;
         }
-        let applied = &snapshot.applied_view().rows.filter;
+        let applied = &snapshot.applied_view().axis(o.axis).filter;
         let others: Vec<Condition> = (applied.conditions.conditions().iter())
             .filter(|c| c.key != o.key)
             .cloned()
@@ -935,24 +998,24 @@ impl ColumnFilter {
         let query = DistinctQuery::new(LIMIT)
             .search(question.0.clone())
             .narrow(question.1.clone());
-        o.listed = ask(o.key, &query).map(Listed::from);
+        o.listed = ask(o.axis, o.key, &query).map(Listed::from);
         o.asked = Some(question);
         o.cursor = o.cursor.min(o.rows().saturating_sub(1));
     }
 
-    /// While a drawer's table has focus: shows the focused column, and its
-    /// conditions as edited elsewhere.
+    /// While a drawer's table has focus: shows the focused column (or row),
+    /// and its conditions as edited elsewhere.
     fn follow(&mut self, snapshot: &Snapshot) {
-        let Some(shown) = self.shown.filter(|_| !self.focused) else {
+        let Some((axis, shown)) = self.shown.filter(|_| !self.focused) else {
             return;
         };
-        let key = snapshot.focus(Axis::Cols).and_then(|f| f.key);
+        let key = snapshot.focus(axis.other()).and_then(|f| f.key);
         let key = key.unwrap_or(shown);
-        let column = Column::of(&asked(snapshot), key);
+        let column = Column::of(&asked(snapshot, axis), axis, key);
         let same = self.open.as_ref().map(|o| (o.key, &o.column));
         if key != shown || same.is_some_and(|same| same != (key, &column)) {
-            self.show(snapshot, key);
-            self.shown = Some(key);
+            self.show(snapshot, axis, key);
+            self.shown = Some((axis, key));
         }
     }
 
@@ -1033,6 +1096,8 @@ impl ColumnFilter {
     /// Draws the popup while open, under its column's header in the Grid's
     /// `area` (or at the body's left while the column is out of view),
     /// moved left to fit, and as tall as its list needs and `area` allows.
+    /// A row's popup is drawn at the body's left under the row (or under
+    /// the header band while the row is out of view), moved up to fit.
     /// A drawer fills `area`, which the host places at the table's right,
     /// [`ColumnFilter::width`] wide; while the table has focus it shows no
     /// caret or cursor.
@@ -1046,18 +1111,33 @@ impl ColumnFilter {
     ) {
         let area = area.intersection(buf.area);
         let Some(o) = &self.open else {
-            if let Some(key) = self.shown {
-                render_empty(&content.column_header(key), theme, area, buf);
+            if let Some((axis, key)) = self.shown {
+                let label = label(content, axis, key);
+                render_empty(&label, noun(axis), theme, area, buf);
             }
             return;
         };
         let focused = self.focused();
-        let header = snapshot
-            .headers(Axis::Cols)
-            .find(|h| h.key == Some(o.key))
-            .map_or(snapshot.header(Axis::Cols), |h| {
-                h.rect.x.max(snapshot.header(Axis::Cols))
-            });
+        // Where it drops from: under the column header, or under the row.
+        let (header, top) = match o.axis {
+            Axis::Rows => {
+                let x = (snapshot.headers(Axis::Cols))
+                    .find(|h| h.key == Some(o.key))
+                    .map_or(snapshot.header(Axis::Cols), |h| {
+                        h.rect.x.max(snapshot.header(Axis::Cols))
+                    });
+                (x, snapshot.header(Axis::Rows))
+            }
+            Axis::Cols => {
+                let y = (snapshot.headers(Axis::Rows))
+                    .find(|h| h.key == Some(o.key))
+                    .map_or(0.0, |h| h.rect.y + h.rect.height);
+                (
+                    snapshot.header(Axis::Cols),
+                    y.max(snapshot.header(Axis::Rows)),
+                )
+            }
+        };
         let mut hints = Vec::new();
         if let Some(t) = o.text {
             let mut keys = String::from("Alt+N not  Alt+C case");
@@ -1074,11 +1154,11 @@ impl ColumnFilter {
             false => "Enter keep  Esc undo  Ctrl+U clear".to_string(),
         });
         if !focused {
-            hints = vec!["Follows the focused column".to_string()];
+            hints = vec![format!("Follows the focused {}", noun(o.axis))];
         }
         // The column's Text condition as listed, if it is.
         let state = (o.column.text.as_ref()).and_then(|c| {
-            (snapshot.conditions(Axis::Rows).into_iter())
+            (snapshot.conditions(o.axis).into_iter())
                 .find(|(listed, _)| listed == c)
                 .map(|(_, state)| state)
         });
@@ -1090,7 +1170,7 @@ impl ColumnFilter {
             + u16::from(rejected)
             + 3 * u16::from(o.one_of)
             + hints.len() as u16;
-        let top = (snapshot.header(Axis::Rows).ceil() as u16).min(area.height);
+        let top = (top.ceil() as u16).min(area.height);
         let room = usize::from(area.height.saturating_sub(top + fixed));
         // The head and the values, a line saying there are none, or one
         // saying none were listed.
@@ -1126,7 +1206,10 @@ impl ColumnFilter {
                 *x += 1;
             }
         };
-        let title = format!(" Filter {} ", content.column_header(o.key));
+        let title = match o.axis {
+            Axis::Rows => format!(" Filter {} ", label(content, o.axis, o.key)),
+            Axis::Cols => format!(" Filter columns by {} ", label(content, o.axis, o.key)),
+        };
         let title = fit(&title, u32::try_from(inner).unwrap_or(0));
         let rule = inner.saturating_sub(char_count(&title) as usize + 1);
         let mut x = popup.x;
@@ -1272,32 +1355,60 @@ impl ColumnFilter {
     }
 }
 
-/// The rows' conditions as last asked for, less those being removed.
-fn asked(snapshot: &Snapshot) -> Vec<Condition> {
-    (snapshot.conditions(Axis::Rows).into_iter())
+/// `axis`'s conditions as last asked for, less those being removed.
+fn asked(snapshot: &Snapshot, axis: Axis) -> Vec<Condition> {
+    (snapshot.conditions(axis).into_iter())
         .filter(|(_, state)| *state != ConditionState::Removing)
         .map(|(c, _)| c)
         .collect()
 }
 
-/// Removes the focused column's conditions or, with none there, the last
-/// condition on the rows ([`Control::Remove`]).
-pub fn remove_conditions(grid: &mut Grid) {
-    let snapshot = grid.snapshot();
-    let asked = asked(&snapshot);
-    let focused = snapshot.focus(Axis::Cols).and_then(|f| f.key);
-    let on: Vec<&Condition> = asked.iter().filter(|c| Some(c.key) == focused).collect();
-    let gone: Vec<Condition> = if on.is_empty() {
-        asked.last().into_iter().cloned().collect()
-    } else {
-        on.into_iter().cloned().collect()
-    };
-    for c in &gone {
-        grid.remove_condition(Axis::Rows, c);
+/// What a popup filtering `axis` is open on: "column" or "row".
+fn noun(axis: Axis) -> &'static str {
+    match axis {
+        Axis::Rows => "column",
+        Axis::Cols => "row",
     }
 }
 
-/// Clears the rows' quick filter and every condition in one request
+/// The name of `key`, an item of `axis`'s other axis, for a title or chip.
+fn label(content: &impl Content, axis: Axis, key: Key) -> String {
+    match axis {
+        Axis::Rows => content.column_header(key),
+        Axis::Cols => content.row_label(key),
+    }
+}
+
+/// Removes the focused column's conditions on the rows and the focused
+/// row's on the columns or, with none there, the last condition on the
+/// rows, else on the columns ([`Control::Remove`]).
+pub fn remove_conditions(grid: &mut Grid) {
+    let snapshot = grid.snapshot();
+    let on = |axis: Axis| -> Vec<Condition> {
+        let focused = snapshot.focus(axis.other()).and_then(|f| f.key);
+        let asked = asked(&snapshot, axis);
+        asked
+            .into_iter()
+            .filter(|c| Some(c.key) == focused)
+            .collect()
+    };
+    let mut gone: Vec<(Axis, Condition)> = [Axis::Rows, Axis::Cols]
+        .into_iter()
+        .flat_map(|axis| on(axis).into_iter().map(move |c| (axis, c)))
+        .collect();
+    if gone.is_empty() {
+        gone = [Axis::Rows, Axis::Cols]
+            .into_iter()
+            .find_map(|axis| asked(&snapshot, axis).pop().map(|c| (axis, c)))
+            .into_iter()
+            .collect();
+    }
+    for (axis, c) in &gone {
+        grid.remove_condition(*axis, c);
+    }
+}
+
+/// Clears both axes' quick filters and conditions in one request
 /// ([`Control::Clear`]); does nothing while there are none.
 pub fn clear_filters(grid: &mut Grid) {
     let snapshot = grid.snapshot();
@@ -1305,10 +1416,11 @@ pub fn clear_filters(grid: &mut Grid) {
         .requested_view()
         .unwrap_or(snapshot.applied_view())
         .clone();
-    if spec.rows.filter.is_empty() {
+    if spec.rows.filter.is_empty() && spec.cols.filter.is_empty() {
         return;
     }
     spec.rows.filter = FilterSpec::default();
+    spec.cols.filter = FilterSpec::default();
     grid.request_view(spec);
 }
 
@@ -1321,14 +1433,15 @@ pub fn keep_value(grid: &mut Grid, key: Key, value: Value) -> bool {
     if !snapshot.support(Axis::Rows, key).one_of {
         return false;
     }
-    let column = Column::of(&asked(&snapshot), key);
+    let column = Column::of(&asked(&snapshot, Axis::Rows), Axis::Rows, key);
     let one_of = Condition::one_of(key, vec![value]);
     column.write(grid, column.text.clone(), Some(one_of));
     true
 }
 
-/// A drawer shown on a column with no filters: its title and a note.
-fn render_empty(label: &str, theme: &Theme, area: Rect, buf: &mut Buffer) {
+/// A drawer shown on a column (or row) with no filters: its title and a
+/// note.
+fn render_empty(label: &str, noun: &str, theme: &Theme, area: Rect, buf: &mut Buffer) {
     if area.width < 4 || area.height < 3 {
         return;
     }
@@ -1351,12 +1464,11 @@ fn render_empty(label: &str, theme: &Theme, area: Rect, buf: &mut Buffer) {
     put(0, &mut x, &title, theme.body.add_modifier(Modifier::BOLD));
     put(0, &mut x, &format!("{}┐", "─".repeat(rule)), border);
     for row in 1..area.height - 1 {
-        let note = if row == 1 {
-            "No filters on this column"
-        } else {
-            ""
+        let note = match row {
+            1 => format!("No filters on this {noun}"),
+            _ => String::new(),
         };
-        let note = fit(note, u32::try_from(inner - 1).unwrap_or(0));
+        let note = fit(&note, u32::try_from(inner - 1).unwrap_or(0));
         let mut x = area.x;
         put(row, &mut x, "│ ", border);
         put(
@@ -1567,11 +1679,13 @@ pub(crate) fn toggle_style(theme: &Theme, on: bool) -> Style {
     }
 }
 
-/// Draws the rows' column conditions into `area`'s first line, after a
-/// `Where` label: a chip for each, such as `port: not bergen` or
-/// `name: /^an/ Aa`, dimmed with a `~` while being added, struck through
-/// while being removed, and in the error style with a `!` when the Table
-/// Source did not apply it. Draws nothing while there are none.
+/// Draws the conditions into `area`'s first line: the rows' after a
+/// `Where` label, then the columns' after a `Columns where` label, a chip
+/// for each, such as `port: not bergen` or `name: /^an/ Aa` (a column's
+/// conditions named by their row's [`Content::row_label`]), dimmed with a
+/// `~` while being added, struck through while being removed, and in the
+/// error style with a `!` when the Table Source did not apply it. Draws
+/// nothing while there are none.
 pub fn render_conditions(
     snapshot: &Snapshot,
     content: &impl Content,
@@ -1580,8 +1694,8 @@ pub fn render_conditions(
     buf: &mut Buffer,
 ) {
     let area = area.intersection(buf.area);
-    let listed = snapshot.conditions(Axis::Rows);
-    if area.is_empty() || listed.is_empty() {
+    let listed = [Axis::Rows, Axis::Cols].map(|axis| snapshot.conditions(axis));
+    if area.is_empty() || listed.iter().all(Vec::is_empty) {
         return;
     }
     let mut x = area.x;
@@ -1596,14 +1710,31 @@ pub fn render_conditions(
     };
     put(&mut x, &" ".repeat(usize::from(area.width)), theme.body);
     x = area.x;
-    put(
-        &mut x,
-        " Where ",
-        theme.header.add_modifier(Modifier::REVERSED),
-    );
+    let axes = [(Axis::Rows, " Where "), (Axis::Cols, " Columns where ")];
+    for ((axis, title), listed) in axes.into_iter().zip(listed) {
+        if listed.is_empty() {
+            continue;
+        }
+        if x > area.x {
+            put(&mut x, " ", theme.body);
+        }
+        put(&mut x, title, theme.header.add_modifier(Modifier::REVERSED));
+        chips(&mut put, &mut x, content, theme, axis, listed);
+    }
+}
+
+/// Puts a chip for each of `axis`'s `listed` conditions.
+fn chips(
+    put: &mut impl FnMut(&mut u16, &str, Style),
+    x: &mut u16,
+    content: &impl Content,
+    theme: &Theme,
+    axis: Axis,
+    listed: Vec<(Condition, ConditionState)>,
+) {
     for (condition, state) in listed {
-        put(&mut x, " ", theme.body);
-        let mut chip = chip_text(&content.column_header(condition.key), &condition);
+        put(x, " ", theme.body);
+        let mut chip = chip_text(&label(content, axis, condition.key), &condition);
         let style = theme.sort_marker.add_modifier(Modifier::REVERSED);
         let style = match state {
             ConditionState::Applied => style,
@@ -1620,7 +1751,7 @@ pub fn render_conditions(
             }
             _ => style.add_modifier(Modifier::DIM | Modifier::CROSSED_OUT),
         };
-        put(&mut x, &format!(" {chip} "), style);
+        put(x, &format!(" {chip} "), style);
     }
 }
 
@@ -1669,14 +1800,21 @@ fn listed_text(values: &[Value]) -> String {
 /// Source gave an unfiltered total that differs, else "5,001 rows";
 /// "filtering…" while a request that changes the rows' filter is pending.
 pub fn row_count(snapshot: &Snapshot) -> String {
-    let filter = |v: &binnacle_core::ViewSpec| v.rows.filter.clone();
+    count(snapshot, Axis::Rows, ("row", "rows"))
+}
+
+/// The count of `axis` for a status line, naming its items by `noun`
+/// (singular, plural), as [`row_count`] does the rows': "5 of 12 fields"
+/// when the axis is filtered.
+pub fn count(snapshot: &Snapshot, axis: Axis, noun: (&str, &str)) -> String {
+    let filter = |v: &binnacle_core::ViewSpec| v.axis(axis).filter.clone();
     let requested = snapshot.requested_view().map(filter);
     if snapshot.view_pending() && requested != Some(filter(snapshot.applied_view())) {
         return "filtering…".into();
     }
-    let count = snapshot.count(Axis::Rows);
-    let noun = if count == 1 { "row" } else { "rows" };
-    match snapshot.total(Axis::Rows) {
+    let count = snapshot.count(axis);
+    let noun = if count == 1 { noun.0 } else { noun.1 };
+    match snapshot.total(axis) {
         Some(total) if total != count => {
             format!("{} of {} {noun}", grouped(count), grouped(total))
         }

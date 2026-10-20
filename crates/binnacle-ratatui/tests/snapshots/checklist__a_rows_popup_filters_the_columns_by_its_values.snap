@@ -1,0 +1,24 @@
+---
+source: crates/binnacle-ratatui/tests/checklist.rs
+expression: text(&buf)
+---
+    name        │port        │
+1   r0c0         r0c1                                          █
+2   r1c0         r1c1                                          █
+3  ▿r2c0         r2c1                                          █
+4   ┌─ Filter columns by 3 ────────────────────┐               █
+5   │ Contains en▏                          Aa │               █
+    │ Search                                   │               █
+    ├─ 4 values ───────────────────────────────┤               █
+    │ [x] (Select all)                         │               █
+    │ [ ] (Blanks)                           2 │               █
+    │ [x] Aberdeen                           1 │               █
+    │ [x] Bergen                             2 │               █
+    │ [ ] Cádiz                              1 │               █
+    │ narrowed by the other filters            │               █
+    │ Alt+N not  Alt+C case                    │               █
+    │ Tab move  Space tick  Ctrl+A all         │               █
+    │ Enter keep  Esc undo  Ctrl+U clear       │               █
+    └──────────────────────────────────────────┘               █
+                                                               █
+ Columns where   3: en

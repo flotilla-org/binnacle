@@ -19,8 +19,8 @@ mod theme;
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use context::RenderContext;
 pub use filter::{
-    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, keep_value,
-    remove_conditions, render_conditions, row_count,
+    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, count,
+    keep_value, remove_conditions, render_conditions, row_count,
 };
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
@@ -71,6 +71,14 @@ pub trait Content {
     fn row_header(&self, row: Key, position: u64) -> String {
         let _ = row;
         position.saturating_add(1).to_string()
+    }
+
+    /// The name of the row with Key `row` away from its header, such as on
+    /// a filter chip or popup title for a condition on it:
+    /// [`Content::row_header`] as if at Position `row.0` unless overridden,
+    /// which suits rows keyed by Logical Index.
+    fn row_label(&self, row: Key) -> String {
+        self.row_header(row, row.0)
     }
 
     /// Whether the cell matches the Find Query in force, as the host's Table
@@ -238,8 +246,17 @@ pub fn render_with(
             || r.position.saturating_add(1).to_string(),
             |k| content.row_header(k, r.position),
         );
-        // As on column headers, the marker keeps the header's last cells.
-        let marker = header_marker(h.sort, false, false, multi_rows);
+        // As on column headers, the marker keeps the header's last cells; a
+        // row the columns are filtered by marks it too.
+        let requested = snapshot.requested_view().map(|v| &v.cols.filter.conditions);
+        let filtered = match (h.filter.pending, h.key, requested) {
+            (true, Some(key), Some(conditions)) => conditions.on(key).next().is_some(),
+            _ => h.filter.filtered,
+        };
+        let mut marker = header_marker(h.sort, filtered, h.filter.pending, multi_rows);
+        if h.filter.not_applied {
+            marker.push('!');
+        }
         let width = usize::try_from(cell(left)).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
         let number = fit(&number, u32::try_from(room).unwrap_or(u32::MAX));
@@ -255,7 +272,11 @@ pub fn render_with(
         );
         if !marker.is_empty() {
             let at = room as f32;
-            let style = style.patch(theme.sort_marker);
+            let style = style.patch(if h.filter.not_applied {
+                theme.error
+            } else {
+                theme.sort_marker
+            });
             put(buf, area, (at, r.offset), clip, &marker, style);
         }
         if h.sort.pending {

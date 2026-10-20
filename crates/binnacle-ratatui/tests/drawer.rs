@@ -97,7 +97,7 @@ fn ports(_: &DistinctQuery) -> Distinct {
 /// Fetches the values (following focus first), as a host does each frame.
 fn fetch(drawer: &mut ColumnFilter, grid: &mut Grid) {
     let snapshot = snapshot(grid, drawer);
-    drawer.fetch(&snapshot, |_, q| Some(ports(q)));
+    drawer.fetch(&snapshot, |_, _, q| Some(ports(q)));
 }
 
 fn text(buf: &Buffer) -> String {

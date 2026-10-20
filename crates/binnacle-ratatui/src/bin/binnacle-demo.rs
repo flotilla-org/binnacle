@@ -1380,8 +1380,8 @@ fn main() -> io::Result<()> {
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
-                popup.fetch(&snapshot, |key, query| {
-                    table.distinct(Axis::Rows, key, query)
+                popup.fetch(&snapshot, |axis, key, query| {
+                    table.distinct(axis, key, query)
                 });
                 let at = match popup.width() {
                     0 => layout.grid,
