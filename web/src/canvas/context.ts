@@ -6,7 +6,7 @@ import type { Flashes } from "../flash";
 import type { Measure } from "../measure";
 import type { RendererChoice } from "../renderer";
 import type { AxisName } from "../codes";
-import type { Snapshot } from "../snapshot";
+import type { Snapshot, Span } from "../snapshot";
 import type { Theme } from "../theme";
 
 export interface PaintContext {
@@ -49,19 +49,19 @@ export function clip(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
 }
 
 /**
- * Where a body item ending at `end` along `axis` is clipped: a pinned item
- * (one that ends before the scrolling Strip starts) at the Header Band, a
- * scrolling item where the scrolling Strip starts, so it slides under the
- * pinned Strip.
+ * Where a body item from `start` to `end` along `axis` may draw: a pinned
+ * item (one that ends before the scrolling Strip starts, or starts after it
+ * ends) from the Header Band on, a scrolling item within the scrolling
+ * Strip, so it slides under the pinned Strips.
  */
-export function drawsFrom(s: Snapshot, axis: AxisName, end: number): number {
-  const scrolling = s[axis].scrolling.start;
-  return end <= scrolling ? s[axis].header : scrolling;
+export function drawsIn(s: Snapshot, axis: AxisName, start: number, end: number): Span {
+  const { scrolling, header, extent } = s[axis];
+  return end <= scrolling.start || start >= scrolling.end ? { start: header, end: extent } : scrolling;
 }
 
-/** Clips to where a body rect may draw: past both Header Bands, and past each pinned Strip it scrolls under. */
+/** Clips to where a body rect may draw: past both Header Bands, and off each pinned Strip it scrolls under. */
 export function clipBody(p: PaintContext, x: number, y: number, width: number, height: number): void {
-  const x0 = drawsFrom(p.s, "cols", x + width);
-  const y0 = drawsFrom(p.s, "rows", y + height);
-  clip(p.ctx, x0, y0, p.width - x0, p.height - y0);
+  const cols = drawsIn(p.s, "cols", x, x + width);
+  const rows = drawsIn(p.s, "rows", y, y + height);
+  clip(p.ctx, cols.start, rows.start, cols.end - cols.start, rows.end - rows.start);
 }

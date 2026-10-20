@@ -39,6 +39,8 @@ export interface InputHost {
   openRowMenu(): boolean;
   /** Pins the focused item of `axis` to `edge` or unpins it (see `pinFocused`); with no `edge`, only unpins it. */
   pin(axis: AxisName, edge: PinEdge | null): void;
+  /** Freezes `axis` up to its focused item (see `freezeFocused`). */
+  freeze(axis: AxisName): void;
   /** Opens the find bar, or steps while find is open: `false` if there is no find bar or find is closed. */
   find(action: "open" | "next" | "previous"): boolean;
   /** Hides the focused item of `axis`: `false` if the axis does not hide or nothing is focused. */
@@ -117,6 +119,7 @@ export function perform(grid: WebGrid, action: Action): void {
     case "Unpin":
     case "Hide":
     case "ShowHidden":
+    case "Freeze":
       // The widget's, not the Grid's: see `createInput`.
       return;
   }
@@ -213,6 +216,11 @@ export function createInput(host: InputHost): Input {
     }
     if (action.type === "Hide" || action.type === "ShowHidden") {
       if (action.type === "Hide" ? host.hide(action.axis) : host.showHidden(action.axis)) e.preventDefault();
+      return;
+    }
+    if (action.type === "Freeze") {
+      e.preventDefault();
+      host.freeze(action.axis);
       return;
     }
     if (action.type === "OpenFind" || action.type === "FindNext" || action.type === "FindPrevious") {

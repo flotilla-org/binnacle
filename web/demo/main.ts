@@ -61,7 +61,7 @@ function describe(frame: FrameInfo): string {
     parts.push(`focus row ${number.format(focus.row + 1)}, column ${number.format(focus.col + 1)}${ids}`);
   }
   if (selection) {
-    const size = (s: { start: number; end: number }) => number.format(s.end - s.start);
+    const size = (runs: { start: number; end: number }[]) => number.format(runs.reduce((n, r) => n + r.end - r.start, 0));
     parts.push(`selected ${size(selection.rows)} × ${size(selection.cols)}`);
   }
   if (picked.rows) parts.push(`${number.format(picked.rows)} ${picked.rows === 1 ? "row" : "rows"} picked`);

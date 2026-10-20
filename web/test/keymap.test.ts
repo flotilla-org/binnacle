@@ -178,6 +178,13 @@ test.each<[Platform, KeyChord, Action]>([
   ["mac", { key: "º", code: "Digit0", ctrlKey: false, altKey: true, shiftKey: false, metaKey: true }, { type: "Hide", axis: "cols" }],
   ["mac", { key: "‚", code: "Digit0", ctrlKey: false, altKey: true, shiftKey: true, metaKey: true }, { type: "ShowHidden", axis: "cols" }],
   ["other", { key: "(", code: "Digit9", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "ShowHidden", axis: "rows" }],
+  ["mac", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "trailing" }],
+  ["other", { key: "ArrowUp", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "rows", edge: "leading" }],
+  ["mac", { key: "ArrowDown", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "rows", edge: "trailing" }],
+  ["mac", { key: "Backspace", ctrlKey: false, altKey: true, shiftKey: true, metaKey: true }, { type: "Unpin", axis: "rows" }],
+  ["other", { key: "Backspace", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "Unpin", axis: "rows" }],
+  ["mac", { key: "Home", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Freeze", axis: "cols" }],
+  ["other", { key: "Home", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "Freeze", axis: "rows" }],
 ])("default on %s: %o is %o", (platform, event, action) => {
   expect(createKeymap({ platform }).lookup(event)).toEqual(action);
 });

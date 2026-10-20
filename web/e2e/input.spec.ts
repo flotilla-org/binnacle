@@ -164,8 +164,8 @@ test.describe("pointer", () => {
     await expect.poll(async () => (await frame(page))?.focus).toEqual({ row: 2, col: 1 });
     await click(page, cell(5, 3), "Shift");
     await expect.poll(async () => (await frame(page))?.selection).toEqual({
-      rows: { start: 2, end: 6 },
-      cols: { start: 1, end: 4 },
+      rows: [{ start: 2, end: 6 }],
+      cols: [{ start: 1, end: 4 }],
     });
     await click(page, cell(8, 0), "ControlOrMeta");
     await click(page, cell(10, 0), "ControlOrMeta");
@@ -187,8 +187,8 @@ test.describe("pointer", () => {
     await page.mouse.move(to.x, to.y, { steps: 5 });
     await page.mouse.up();
     await expect.poll(async () => (await frame(page))?.selection).toEqual({
-      rows: { start: 1, end: 5 },
-      cols: { start: 0, end: 3 },
+      rows: [{ start: 1, end: 5 }],
+      cols: [{ start: 0, end: 3 }],
     });
   });
 
@@ -225,8 +225,8 @@ test.describe("pointer", () => {
     // The band now ends past x = 80: a click there is on row 2's header, selecting the row.
     await click(page, { x: 80, y: cell(2, 0).y });
     await expect.poll(async () => (await frame(page))?.selection).toEqual({
-      rows: { start: 2, end: 3 },
-      cols: { start: 0, end: 6 },
+      rows: [{ start: 2, end: 3 }],
+      cols: [{ start: 0, end: 6 }],
     });
     await click(page, { x: 100, y: cell(4, 0).y });
     await expect.poll(async () => frame(page)).toMatchObject({ focus: { row: 4, col: 0 }, selection: null });

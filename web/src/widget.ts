@@ -21,6 +21,7 @@ import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes
 import type { Content } from "./content";
 import {
   shownItems,
+  stripOf,
   type AxisSnapshot,
   type ConditionState,
   type HeaderPlacement,
@@ -41,7 +42,7 @@ import type {
   ViewSpec,
 } from "./source";
 import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
-import { pinFocused, pinnedKeys } from "./pin";
+import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -152,8 +153,11 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   viewError: string | null;
   /** The focused cell's Positions, if any. */
   focus: { row: number; col: number } | null;
-  /** The selection range as half-open Position spans, if any. */
-  selection: { rows: Span; cols: Span } | null;
+  /**
+   * The selection range, if any, as each axis's Positions in sorted
+   * half-open runs apart from each other (several when items are pinned).
+   */
+  selection: { rows: Span[]; cols: Span[] } | null;
   /** How many rows and columns are picked. */
   picked: { rows: number; cols: number };
   /** The focused cell by the Table Source's own IDs, if any. */
@@ -446,6 +450,12 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         });
         this.invalidate();
         return true;
+      },
+      freeze: (axis) => {
+        this.framed.push(() => {
+          if (this.last) this.editView(() => freezeFocused(this.grid, this.last!, axis));
+        });
+        this.invalidate();
       },
       find: (action) => {
         if (action === "open") return this.openFind();
@@ -904,14 +914,29 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.editView(() => this.grid.unpin(AXIS_CODE[axis], this.keyOf(axis, id)));
   }
 
-  /** The columns (or rows) drawn pinned to the leading edge, in pin order, as of the last frame. */
-  pinned(axis: "cols"): ColId[];
-  pinned(axis: "rows"): RowId[];
-  pinned(axis: AxisName): (RowId | ColId)[] {
+  /**
+   * Pins every column (or row) from the start of its axis up to `id`, in
+   * their current order, as many as fit with room left to scroll: on a
+   * column pinned left, unpins the ones pinned left after it instead. The
+   * axis scrolls to its start first if the grid does not hold all their IDs.
+   */
+  freeze(axis: "cols", id: ColId): void;
+  freeze(axis: "rows", id: RowId): void;
+  freeze(axis: AxisName, id: RowId | ColId): void {
+    this.editView(() => this.grid.freeze(AXIS_CODE[axis], this.keyOf(axis, id)));
+  }
+
+  /**
+   * The columns (or rows) drawn pinned to `edge` (the leading edge by
+   * default), in pin order, as of the last frame.
+   */
+  pinned(axis: "cols", edge?: PinEdge): ColId[];
+  pinned(axis: "rows", edge?: PinEdge): RowId[];
+  pinned(axis: AxisName, edge: PinEdge = "leading"): (RowId | ColId)[] {
     const s = this.last;
     if (!s) return [];
     const id = (key: bigint) => (axis === "rows" ? this.feed.rowId(key) : this.feed.colId(key));
-    return pinnedKeys(s, axis).flatMap((key) => {
+    return pinnedKeys(s, axis, edge).flatMap((key) => {
       const known = id(key);
       return known === undefined ? [] : [known];
     });
@@ -1263,7 +1288,7 @@ function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked
 function span(s: Snapshot, axis: "rows" | "cols", unmatched: (key: bigint) => boolean): AxisInfo {
   const visible = shownItems(s[axis]);
   // What scrolls: the pinned items stay whatever the scroll.
-  const scrolling = visible.slice(s[axis].pinned);
+  const scrolling = s[axis].strip.filter((item, i) => stripOf(s[axis], i) === "scrolling" && visible.includes(item));
   return {
     first: scrolling[0]?.position ?? 0,
     last: scrolling.at(-1)?.position ?? 0,

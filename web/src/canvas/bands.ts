@@ -3,7 +3,7 @@
 
 import type { AxisName } from "../codes";
 import type { HeaderPlacement, Rect, Snapshot, SortDirection } from "../snapshot";
-import { PAD, clip, drawsFrom, type PaintContext } from "./context";
+import { PAD, clip, drawsIn, type PaintContext } from "./context";
 import { paintShimmer } from "./pending";
 
 /** The sort marker's triangle, CSS px. */
@@ -170,9 +170,9 @@ export function paintColumnHeaders(p: PaintContext): void {
     const loading = h.key === null;
     const text = loading ? "…" : p.content.label("cols", item);
     // A scrolling header slides under the pinned ones.
-    const from = drawsFrom(s, "cols", h.rect.x + h.rect.width);
+    const span = drawsIn(s, "cols", h.rect.x, h.rect.x + h.rect.width);
     ctx.save();
-    clip(ctx, from, 0, p.width - from, top);
+    clip(ctx, span.start, 0, span.end - span.start, top);
     if (h.hovered) {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
@@ -201,9 +201,9 @@ export function paintRowNumbers(p: PaintContext): void {
   for (const h of s.rows.headers) {
     const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height };
     const text = p.content.label("rows", item);
-    const from = drawsFrom(s, "rows", h.rect.y + h.rect.height);
+    const span = drawsIn(s, "rows", h.rect.y, h.rect.y + h.rect.height);
     ctx.save();
-    clip(ctx, 0, from, left, p.height - from);
+    clip(ctx, 0, span.start, left, span.end - span.start);
     if (h.hovered) {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);

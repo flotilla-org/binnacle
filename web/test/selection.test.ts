@@ -4,6 +4,7 @@
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, expect, test } from "vitest";
+import { AXIS_CODE, EDGE_CODE } from "../src/codes";
 import { createSelectionEvents, type SelectionChange } from "../src/selection";
 import type { AxisSink, Located, TableSource } from "../src/source";
 import { BAND, COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
@@ -117,6 +118,34 @@ test("a range larger than the rows the grid holds reports its count and the endp
   }
 });
 
+test("with items pinned, a range reports its IDs in drawn order, and an end drawn pinned is known", () => {
+  const { h, changes, frame } = watched(table(10_000).source);
+  try {
+    frame();
+    h.grid.pin(AXIS_CODE.cols, EDGE_CODE.leading, h.feed.colKey("c"));
+    h.grid.pin(AXIS_CODE.rows, EDGE_CODE.trailing, h.feed.rowKey("r9999"));
+    h.drain();
+    frame();
+    // Drawn left to right: c, a, b.
+    h.click(...cell(1, 0));
+    h.click(...cell(3, 1), SHIFT);
+    frame();
+    expect(changes.at(-1)!.selection).toEqual({
+      rows: { count: 3, first: "r1", last: "r3", ids: ["r1", "r2", "r3"] },
+      cols: { count: 2, first: "c", last: "a", ids: ["c", "a"] },
+    });
+    h.grid.select_all();
+    h.drain();
+    frame();
+    expect(changes.at(-1)!.selection).toEqual({
+      rows: { count: 10_000, first: "r0", last: "r9999", ids: null },
+      cols: { count: 3, first: "c", last: "b", ids: ["c", "a", "b"] },
+    });
+  } finally {
+    h.destroy();
+  }
+});
+
 test("the focused row's IDs survive a reorder, so a reorder alone does not fire", () => {
   const t = table(6);
   const { h, changes, frame } = watched(t.source);
@@ -197,9 +226,13 @@ test("over any clicks, the last change describes the grid's focus, range and Pic
       if (range === null) {
         expect(last.selection).toBeNull();
       } else {
-        // Every row clicked is on screen, so the range's IDs are all known.
-        const rows = Array.from({ length: range.rows.end - range.rows.start }, (_, i) => `r${range.rows.start + i}`);
-        const cols = ["a", "b", "c"].slice(range.cols.start, range.cols.end);
+        // Nothing is pinned, so each axis's range is one run, and every row
+        // clicked is on screen, so its IDs are all known.
+        expect(range.rows).toHaveLength(1);
+        expect(range.cols).toHaveLength(1);
+        const [rs, cs] = [range.rows[0]!, range.cols[0]!];
+        const rows = Array.from({ length: rs.end - rs.start }, (_, i) => `r${rs.start + i}`);
+        const cols = ["a", "b", "c"].slice(cs.start, cs.end);
         expect(last.selection).toEqual({
           rows: { count: rows.length, first: rows[0], last: rows.at(-1), ids: rows },
           cols: { count: cols.length, first: cols[0], last: cols.at(-1), ids: cols },

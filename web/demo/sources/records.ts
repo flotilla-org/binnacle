@@ -15,10 +15,14 @@
 // or press F2 or Enter, or double-click; the port column picks from a list.
 // Ctrl/Cmd-F in the grid (or Find in the toolbar) opens the find bar under
 // the filter bar: matches are marked, Enter and Shift+Enter (or F3 and
-// Shift+F3 in the grid) step between them. Alt+Shift+ArrowLeft pins the
-// focused column to the left (again, or Alt+Shift+Backspace, unpins it), as
-// does the column menu's "Pin left": it stays after the row numbers, past a
-// line, while the rest scrolls under it, through sorts and filters.
+// Shift+F3 in the grid) step between them. Alt+Shift+ArrowLeft and
+// Alt+Shift+ArrowRight pin the focused column left or right, and
+// Alt+Shift+ArrowUp and Alt+Shift+ArrowDown its row to the top or bottom
+// (again, or Alt+Shift+Backspace for the column, unpins it), as do the column
+// and row menus' Pin buttons; "Freeze up to here" (or Alt+Shift+Home) pins
+// every column from the first to the focused one. Pinned items stay by the
+// edge, past a line, while the rest scrolls under them, through sorts and
+// filters, and the arrow keys step through them in the order drawn.
 
 import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";

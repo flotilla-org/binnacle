@@ -6,7 +6,7 @@
 
 import { drawsBandRules, lineWidth, type BorderStyle } from "../border";
 import type { AxisName } from "../codes";
-import type { StripItem } from "../snapshot";
+import { stripOf, type AxisSnapshot, type StripItem } from "../snapshot";
 import type { PaintContext } from "./context";
 
 /** A line centred across `[start, start + size)` and running over `[from, to)`, CSS px. */
@@ -34,15 +34,15 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
     if (!last) return band;
     return Math.max(band, end(last) + (isLast(axis, last) ? 0 : s[axis].gap));
   };
-  // Where the item at `index` of the axis's drawn items shows from: a
-  // scrolling item slides under the pinned ones.
-  const from = (axis: AxisName, index: number, band: number) =>
-    index < s[axis].pinned ? band : s[axis].scrolling.start;
+  // Where the item at `index` of the axis's drawn items shows: a scrolling
+  // item slides under the pinned ones.
+  const shows = (axis: AxisName, index: number, band: number) =>
+    stripOf(s[axis], index) === "scrolling" ? s[axis].scrolling : { start: band, end: s[axis].extent };
   // The end of the axis's last item, when it is shown: a closing line goes past it.
   const closing = (axis: AxisName, band: number) => {
     const last = s[axis].strip.at(-1);
-    const shows = from(axis, s[axis].strip.length - 1, band);
-    return last && isLast(axis, last) && end(last) >= shows ? end(last) : null;
+    const span = shows(axis, s[axis].strip.length - 1, band);
+    return last && isLast(axis, last) && end(last) >= span.start ? end(last) : null;
   };
   const closeX = columns ? closing("cols", left) : null;
   const closeY = grid ? closing("rows", top) : null;
@@ -59,7 +59,8 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
       const gap = s[axis].gap;
       if (gap <= 0) return;
       for (const [i, item] of s[axis].strip.entries()) {
-        if (end(item) < from(axis, i, band)) continue;
+        const span = shows(axis, i, band);
+        if (end(item) < span.start || end(item) > span.end) continue;
         const vertical = axis === "cols";
         if (isLast(axis, item)) line(vertical, end(item), width, bandEnd);
         else line(vertical, end(item), gap, body ? across : bandEnd);
@@ -160,34 +161,49 @@ export function paintBorders(p: PaintContext, style: BorderStyle, layer: BorderL
 }
 
 /**
- * The pinned edge of each axis with a leading pinned Strip: a line in the
- * Gap after it, across the whole grid, and once the body has scrolled under
- * it, a shadow falling on the scrolling side.
+ * The pinned edges of each axis: a line in the Gap after the leading pinned
+ * Strip and in the Gap before the trailing one, across the whole grid, and a
+ * shadow falling on the scrolling side once the body has scrolled under it
+ * (under the trailing Strip, until the body has scrolled to its end).
  */
 export function paintPinnedEdges(p: PaintContext): void {
   const { ctx, s, theme } = p;
   const SHADOW = 8;
   for (const axis of ["cols", "rows"] as const) {
-    const last = s[axis].strip[s[axis].pinned - 1];
-    if (!last) continue;
-    const at = end(last) + s[axis].gap / 2;
+    const a = s[axis];
     const reach = axis === "cols" ? p.bottom : p.right;
-    const scrolled = s[axis].anchor.position > 0 || s[axis].anchor.offset > 0;
-    if (scrolled) {
-      const shadow = s[axis].scrolling.start;
-      const fade =
-        axis === "cols"
-          ? ctx.createLinearGradient(shadow, 0, shadow + SHADOW, 0)
-          : ctx.createLinearGradient(0, shadow, 0, shadow + SHADOW);
-      fade.addColorStop(0, theme.pinnedShadow);
-      fade.addColorStop(1, "transparent");
-      ctx.fillStyle = fade;
-      if (axis === "cols") ctx.fillRect(shadow, 0, SHADOW, reach);
-      else ctx.fillRect(0, shadow, reach, SHADOW);
+    const edge = (at: number, shadow: number | null, toward: 1 | -1) => {
+      if (shadow !== null) {
+        const far = shadow + toward * SHADOW;
+        const fade =
+          axis === "cols" ? ctx.createLinearGradient(shadow, 0, far, 0) : ctx.createLinearGradient(0, shadow, 0, far);
+        fade.addColorStop(0, theme.pinnedShadow);
+        fade.addColorStop(1, "transparent");
+        ctx.fillStyle = fade;
+        const from = Math.min(shadow, far);
+        if (axis === "cols") ctx.fillRect(from, 0, SHADOW, reach);
+        else ctx.fillRect(0, from, reach, SHADOW);
+      }
+      ctx.fillStyle = theme.pinnedEdge;
+      const line = Math.round((at - 0.5) / p.pixel) * p.pixel;
+      if (axis === "cols") ctx.fillRect(line, 0, 1, reach);
+      else ctx.fillRect(0, line, reach, 1);
+    };
+    const last = a.strip[a.pinned - 1];
+    if (last) {
+      const scrolled = a.anchor.position > 0 || a.anchor.offset > 0;
+      edge(end(last) + a.gap / 2, scrolled ? a.scrolling.start : null, 1);
     }
-    ctx.fillStyle = theme.pinnedEdge;
-    const line = Math.round((at - 0.5) / p.pixel) * p.pixel;
-    if (axis === "cols") ctx.fillRect(line, 0, 1, reach);
-    else ctx.fillRect(0, line, reach, 1);
+    const first = a.trailing > 0 ? a.strip[a.strip.length - a.trailing] : undefined;
+    if (first) edge(first.offset - a.gap / 2, scrolledToEnd(a) ? null : a.scrolling.end, -1);
   }
+}
+
+/** Whether the scrolling Strip shows the axis's last unpinned item whole. */
+function scrolledToEnd(a: AxisSnapshot): boolean {
+  const pins = new Set(a.strip.filter((_, i) => stripOf(a, i) !== "scrolling").map((i) => i.position));
+  let last = a.count - 1;
+  while (last >= 0 && pins.has(last)) last--;
+  const item = a.strip.find((i, index) => stripOf(a, index) === "scrolling" && i.position === last);
+  return last < 0 || (item !== undefined && end(item) <= a.scrolling.end);
 }

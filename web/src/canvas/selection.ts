@@ -3,7 +3,7 @@
 // guide and the drop indicator. The resize handles are the Border Style's.
 
 import type { Line } from "../theme";
-import { clip, clipBody, drawsFrom, type PaintContext } from "./context";
+import { clip, clipBody, drawsIn, type PaintContext } from "./context";
 
 /** Laid over the body after its cells: the selection range and picked rows. */
 export function paintSelection(p: PaintContext): void {
@@ -29,8 +29,9 @@ export function paintHeaderStates(p: PaintContext): void {
   clip(ctx, left, 0, p.width - left, top);
   for (const h of s.cols.headers) {
     // A scrolling header's states slide under the pinned headers too.
-    const x = Math.max(h.rect.x, drawsFrom(s, "cols", h.rect.x + h.rect.width));
-    const width = h.rect.x + h.rect.width - x;
+    const span = drawsIn(s, "cols", h.rect.x, h.rect.x + h.rect.width);
+    const x = Math.max(h.rect.x, span.start);
+    const width = Math.min(h.rect.x + h.rect.width, span.end) - x;
     if (h.selected || (movingOn === "cols" && h.key !== null && moving.has(h.key))) {
       ctx.fillStyle = theme.selection.background;
       ctx.fillRect(x, h.rect.y, width, h.rect.height);
@@ -44,8 +45,9 @@ export function paintHeaderStates(p: PaintContext): void {
   ctx.save();
   clip(ctx, 0, top, left, p.height - top);
   for (const h of s.rows.headers) {
-    const y = Math.max(h.rect.y, drawsFrom(s, "rows", h.rect.y + h.rect.height));
-    const height = h.rect.y + h.rect.height - y;
+    const span = drawsIn(s, "rows", h.rect.y, h.rect.y + h.rect.height);
+    const y = Math.max(h.rect.y, span.start);
+    const height = Math.min(h.rect.y + h.rect.height, span.end) - y;
     if (h.selected || (movingOn === "rows" && h.key !== null && moving.has(h.key))) {
       ctx.fillStyle = theme.selection.background;
       ctx.fillRect(h.rect.x, y, h.rect.width, height);

@@ -6,7 +6,7 @@
 import { AXES, type AxisName } from "./codes";
 import type { Content } from "./content";
 import { cellText, plainText, type RendererChoice } from "./renderer";
-import { cellState, type AxisSnapshot, type Snapshot, type StripItem } from "./snapshot";
+import { cellState, itemSpan, type AxisSnapshot, type Snapshot, type StripItem } from "./snapshot";
 
 export interface AriaOptions {
   /** The grid's accessible name. */
@@ -65,13 +65,13 @@ interface Row {
 /**
  * The visible items of an axis with their places among the drawn items, in
  * Position order: pinned items read where they belong, not where they are
- * drawn. A scrolling item is hidden once it slides under the pinned Strip.
+ * drawn. A scrolling item is hidden once it slides under a pinned Strip.
  */
 function visible(axis: AxisSnapshot): { item: StripItem; index: number }[] {
   const out: { item: StripItem; index: number }[] = [];
   axis.strip.forEach((item, index) => {
-    const from = index < axis.pinned ? axis.header : axis.scrolling.start;
-    if (item.offset + item.size > from && item.offset < axis.extent) out.push({ item, index });
+    const span = itemSpan(axis, index);
+    if (item.offset + item.size > span.start && item.offset < span.end) out.push({ item, index });
   });
   return out.sort((a, b) => a.item.position - b.item.position);
 }

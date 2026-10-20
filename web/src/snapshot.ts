@@ -122,9 +122,14 @@ export interface AxisSnapshot {
   thumb: { fraction: number; size: number };
   focus: { position: number; key: bigint | null } | null;
   locating: boolean;
-  /** Every drawn item: the leading pinned Strip's `pinned` items, then the scrolling Strip's. */
+  /**
+   * Every drawn item, in drawn order: the leading pinned Strip's `pinned`
+   * items, the scrolling Strip's, then the trailing pinned Strip's `trailing`
+   * items.
+   */
   strip: StripItem[];
   pinned: number;
+  trailing: number;
   /** Where the scrolling Strip draws along the axis; its part-scrolled items reach outside it. */
   scrolling: { start: number; end: number };
   headers: HeaderPlacement[];
@@ -163,7 +168,12 @@ export interface Snapshot {
   resizeGuide: { axis: AxisName; key: bigint | null; offset: number; size: number } | null;
   dropIndicator: { axis: AxisName; to: number; offset: number } | null;
   hoveredHeader: { axis: AxisName; position: number } | null;
-  selectionRange: { rows: Span; cols: Span } | null;
+  /**
+   * The Positions the range covers on each axis, as sorted runs apart from
+   * each other: it is contiguous in drawn order, so with items pinned it may
+   * be several runs.
+   */
+  selectionRange: { rows: Span[]; cols: Span[] } | null;
   selectionRects: Rect[];
   /** The picked Keys of each axis, in Key order. */
   picked: { rows: bigint[]; cols: bigint[] };
@@ -204,16 +214,38 @@ const SELECTED = 2;
 const EDITING = 4;
 const CURRENT_MATCH = 8;
 
+/** Which Strip the `index`th drawn item of an axis is in. */
+export function stripOf(axis: AxisSnapshot, index: number): "leading" | "scrolling" | "trailing" {
+  if (index < axis.pinned) return "leading";
+  return index < axis.strip.length - axis.trailing ? "scrolling" : "trailing";
+}
+
 /**
- * The drawn items of an axis the viewport shows, in drawn order: the pinned
- * ones, then the scrolling ones not hidden under them (the scrolling Strip
- * includes overscan).
+ * Where the `index`th drawn item of an axis may draw along it: a pinned item
+ * from the Header Band to the viewport's end, a scrolling item between the
+ * pinned Strips, so it slides under them.
+ */
+export function itemSpan(axis: AxisSnapshot, index: number): Span {
+  return stripOf(axis, index) === "scrolling"
+    ? axis.scrolling
+    : { start: axis.header, end: axis.extent };
+}
+
+/**
+ * The drawn items of an axis the viewport shows, in drawn order: the leading
+ * pinned ones, the scrolling ones not hidden under the pinned Strips (the
+ * scrolling Strip includes overscan), then the trailing pinned ones.
  */
 export function shownItems(axis: AxisSnapshot): StripItem[] {
   return axis.strip.filter((item, index) => {
-    const from = index < axis.pinned ? axis.header : axis.scrolling.start;
-    return item.offset + item.size > from && item.offset < axis.extent;
+    const span = itemSpan(axis, index);
+    return item.offset + item.size > span.start && item.offset < span.end;
   });
+}
+
+/** Whether `runs` (a selection range's runs on one axis) covers Position `p`. */
+export function covers(runs: readonly Span[], p: number): boolean {
+  return runs.some((r) => r.start <= p && p < r.end);
 }
 
 /** The state of the cell where the `row`th row item and `col`th column item cross. */
@@ -346,6 +378,7 @@ function readAxis(r: Reader): AxisSnapshot {
   const locating = r.flag();
   const strip = r.list(() => ({ position: r.num(), key: r.optKey(), offset: r.num(), size: r.num() }));
   const pinned = r.num();
+  const trailing = r.num();
   const scrolling = { start: r.num(), end: r.num() };
   const headers = r.list(() => ({
     position: r.num(),
@@ -380,6 +413,7 @@ function readAxis(r: Reader): AxisSnapshot {
     locating,
     strip,
     pinned,
+    trailing,
     scrolling,
     headers,
     total,
@@ -432,10 +466,8 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const resizeGuide = r.opt(() => ({ axis: r.axis(), key: r.optKey(), offset: r.num(), size: r.num() }));
   const dropIndicator = r.opt(() => ({ axis: r.axis(), to: r.num(), offset: r.num() }));
   const hoveredHeader = r.opt(() => ({ axis: r.axis(), position: r.num() }));
-  const selectionRange = r.opt(() => ({
-    rows: { start: r.num(), end: r.num() },
-    cols: { start: r.num(), end: r.num() },
-  }));
+  const runs = () => r.list(() => ({ start: r.num(), end: r.num() }));
+  const selectionRange = r.opt(() => ({ rows: runs(), cols: runs() }));
   const selectionRects = r.list(() => r.rect());
   const picked = { rows: r.list(() => r.key()), cols: r.list(() => r.key()) };
   const movingKeys = r.list(() => r.key());

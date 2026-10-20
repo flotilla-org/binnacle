@@ -32,7 +32,9 @@ export type Action =
   /** Hides the focused item of `axis`, if the Table Source hides that axis; the key is the page's otherwise. */
   | { type: "Hide"; axis: AxisName }
   /** Opens the focused item's menu at the list of hidden items of `axis`, if a menu is mounted and the axis hides; the key is the page's otherwise. */
-  | { type: "ShowHidden"; axis: AxisName };
+  | { type: "ShowHidden"; axis: AxisName }
+  /** Pins every item of `axis` from the start up to the focused one, as far as fits. */
+  | { type: "Freeze"; axis: AxisName };
 
 export type Platform = "mac" | "other";
 
@@ -129,11 +131,14 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
  * first and last row), Mod+A, Ctrl+Space the column and Shift+Space the row,
  * Alt+ArrowDown (or Shift+F10, or the context menu key) for the column menu
  * and Alt+ArrowRight for the row menu, Mod+F for the find bar, F3 (Shift+F3
- * back) to step between matches, Alt+Shift+ArrowLeft to pin the focused
- * column left (or unpin it) and Alt+Shift+Backspace to unpin it, Mod+Alt+0
- * to hide the focused column and Mod+Alt+9 its row (as Google Sheets has
- * them), with Shift to list the hidden ones. Pinning avoids Alt with a
- * letter, which types a symbol on macOS.
+ * back) to step between matches, Alt+Shift with an arrow to pin the focused
+ * column left or right, or its row to the top or bottom (or unpin it),
+ * Alt+Shift+Backspace to unpin the column and Mod+Alt+Shift+Backspace the
+ * row, Alt+Shift+Home to freeze the columns up to the focused one and
+ * Mod+Alt+Shift+Home the rows, Mod+Alt+0 to hide the focused column and
+ * Mod+Alt+9 its row (as Google Sheets has them), with Shift to list the
+ * hidden ones. Pinning avoids Alt with a letter, which types a symbol on
+ * macOS.
  */
 export function defaultBindings(): KeyBindings {
   const bindings: KeyBindings = {};
@@ -169,6 +174,9 @@ export function defaultBindings(): KeyBindings {
   bindings["F3"] = { type: "FindNext" };
   bindings["Shift+F3"] = { type: "FindPrevious" };
   bindings["Alt+Shift+ArrowLeft"] = { type: "Pin", axis: "cols", edge: "leading" };
+  bindings["Alt+Shift+ArrowRight"] = { type: "Pin", axis: "cols", edge: "trailing" };
+  bindings["Alt+Shift+ArrowUp"] = { type: "Pin", axis: "rows", edge: "leading" };
+  bindings["Alt+Shift+ArrowDown"] = { type: "Pin", axis: "rows", edge: "trailing" };
   bindings["Alt+Shift+Backspace"] = { type: "Unpin", axis: "cols" };
   bindings["Shift+F10"] = { type: "OpenColumnMenu" };
   bindings["ContextMenu"] = { type: "OpenColumnMenu" };
@@ -176,6 +184,9 @@ export function defaultBindings(): KeyBindings {
   bindings["Mod+Alt+9"] = { type: "Hide", axis: "rows" };
   bindings["Mod+Alt+Shift+0"] = { type: "ShowHidden", axis: "cols" };
   bindings["Mod+Alt+Shift+9"] = { type: "ShowHidden", axis: "rows" };
+  bindings["Mod+Alt+Shift+Backspace"] = { type: "Unpin", axis: "rows" };
+  bindings["Alt+Shift+Home"] = { type: "Freeze", axis: "cols" };
+  bindings["Mod+Alt+Shift+Home"] = { type: "Freeze", axis: "rows" };
   return bindings;
 }
 
