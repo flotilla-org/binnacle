@@ -114,6 +114,9 @@ test.describe("records", () => {
 
   test("Alt+Shift+ArrowRight pins the focused column right, and arrow keys reach it last", async ({ page }) => {
     await page.keyboard.press("Alt+Shift+ArrowRight");
+    // The pin lands after the next frame: wait for it before stepping.
+    await expect(await pinButton(page)).toHaveText("Unpin");
+    await page.keyboard.press("Escape");
     expect(await inPositionOrder(page)).toBe(true);
     // Right from it stays; left is the last scrolling column; from the start, the first scrolling one.
     await page.keyboard.press("ArrowRight");
