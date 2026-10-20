@@ -60,6 +60,9 @@ impl Grid {
                 .map(|key| (key, st.anchor.offset)),
         });
         self.refiltering.shown[i] = Some(shown);
+        // A range drag is cancelled first: the picks it brings back are
+        // located too.
+        self.cancel_drags(axis);
         let tracked: Vec<Key> = self.refiltering.picks[i].iter().map(|a| a.key).collect();
         for &key in &self.selection.picks[i] {
             if !tracked.contains(&key) {

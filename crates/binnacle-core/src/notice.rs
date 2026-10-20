@@ -173,7 +173,7 @@ impl Grid {
 
     /// Ends the gestures a change on `axis` invalidates: a range drag, and a
     /// header move on that axis, whose Positions are stale.
-    fn cancel_drags(&mut self, axis: Axis) {
+    pub(crate) fn cancel_drags(&mut self, axis: Axis) {
         if self.gesture.mode() == Mode::DraggingSelection {
             self.cancel();
             self.relocate();

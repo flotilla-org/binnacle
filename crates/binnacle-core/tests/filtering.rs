@@ -198,6 +198,31 @@ fn picks_of_rows_a_filter_hides_are_dropped_and_the_others_stay() {
 }
 
 #[test]
+fn a_pick_a_cancelled_drag_brings_back_is_dropped_when_the_filter_took_it_out() {
+    let mut s = records();
+    s.frame(V);
+    s.click(5.0, 2.5, Modifiers::CTRL);
+    s.click(5.0, 4.5, Modifiers::CTRL);
+    // A plain press on record 0 drops the picks; dragging to record 2 makes a
+    // range the filter's notice cancels, which brings the picks back.
+    s.input(|g| {
+        g.pointer(PointerEvent::down(5.0, 1.5));
+        g.pointer(PointerEvent::moved(5.0, 3.5));
+    });
+    let mut out = s.step(
+        "pick records 1 and 3, focusing 3, then press record 0 and drag to record 2: the range drops the picks",
+        V,
+    );
+    filter(&mut s, |r| r[0] != Some(3));
+    out += &s.step(
+        "filter out record 1 (value 3) mid-drag: the drag is cancelled and brings back the picks, but record 1's goes",
+        V,
+    );
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[Key(3)]);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn size_overrides_survive_a_filter_round_trip() {
     let mut s = records();
     s.frame(V);
