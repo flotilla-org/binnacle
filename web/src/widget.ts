@@ -42,6 +42,7 @@ import type {
   ViewSpec,
 } from "./source";
 import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
+import { readLayout, restoreLayout, type Layout } from "./layout";
 import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
 import {
   capHint,
@@ -289,6 +290,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
   private raf = 0;
+  /** A frame is running, so its Snapshot is the latest. */
+  private framing = false;
   private force = true;
   /** Paint next frame without Damage: the last paint asked, or a flash was marked. */
   private repaint = false;
@@ -1096,6 +1099,41 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     });
   }
 
+  /**
+   * The grid's layout by the Table Source's IDs, to save and give to
+   * `restoreLayout` later: the View Spec last asked for, the pinned items
+   * (those the source no longer has included), every size set by hand,
+   * fitted or restored, and the header band thicknesses. The order of the
+   * items is not in it: that is the source's. Runs a frame first if one is
+   * due, so it is up to date.
+   */
+  layout(): Layout<RowId, ColId> {
+    if (!this.framing && (this.raf || !this.last) && !this.destroyed) {
+      cancelAnimationFrame(this.raf);
+      this.frame();
+    }
+    return readLayout(this.last!, { grid: this.grid, feed: this.feed });
+  }
+
+  /**
+   * Puts back a layout from `layout`, before or after the data loads. Pins,
+   * sizes and band thicknesses apply at once; the View Spec goes to the
+   * Table Source as an ordinary request, so the rows in view stay until it
+   * answers. It never fails on what the source lacks: a pinned item that
+   * is missing waits, out of sight, and comes back if it appears; hidden
+   * IDs the source does not know are dropped from its answer; a condition
+   * on a missing column shows as not applied; a size waits for its item.
+   * Returns `false`, changing nothing, for a layout of another version.
+   */
+  restoreLayout(layout: Layout<RowId, ColId>): boolean {
+    if (this.destroyed || !restoreLayout(layout, { grid: this.grid, feed: this.feed })) return false;
+    // The restored row-number band stands: no fitting it to the labels later.
+    this.bandFitted = true;
+    drainEffects(this.parts);
+    this.schedule();
+    return true;
+  }
+
   private keyOf(axis: AxisName, id: RowId | ColId): bigint {
     return axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId);
   }
@@ -1240,6 +1278,15 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private frame(): void {
     this.raf = 0;
+    this.framing = true;
+    try {
+      this.paintFrame();
+    } finally {
+      this.framing = false;
+    }
+  }
+
+  private paintFrame(): void {
     const width = this.scroller.clientWidth;
     const height = this.scroller.clientHeight;
     const dpr = window.devicePixelRatio || 1;

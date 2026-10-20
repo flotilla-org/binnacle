@@ -69,6 +69,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   colKey(id: ColId): bigint;
   /** A View Spec by Keys, issuing Keys for IDs that have none yet. */
   viewKeys(spec: AppliedView<RowId, ColId>): KeyedViewSpec;
+  /** A View Spec by IDs, leaving out each part that names a Key with no ID. */
+  viewIds(spec: KeyedViewSpec): ViewSpec<RowId, ColId>;
   /** How the rows may be viewed by column `id`, as the source declares it with the defaults filled in. */
   columnSupport(id: ColId): ColumnSupport;
   /** How the columns may be viewed by row `id`, likewise; nothing without the source's `cols.support`. */
@@ -664,6 +666,20 @@ export function createFeed<RowId, ColId, V>(
     return { filter: { quick: quick ? queryKeys(by, quick) : null, conditions }, sort: sortKeys(by, part.sort), hidden };
   };
 
+  /** One axis's part by IDs, leaving out each sort column, query, condition and hidden item naming a Key with no ID. */
+  const partKnownIds = <Id, OwnId>(by: Axis<Id>, own: Axis<OwnId>, part: KeyedAxisView): AxisView<Id, OwnId> => {
+    const sort = part.sort.flatMap((c) => sortIds(by, [c]) ?? []);
+    const quick = (part.filter.quick && queryIds(by, part.filter.quick)) ?? null;
+    const conditions = part.filter.conditions.map((c) => conditionId(by, c)).filter(known);
+    const hidden = part.hidden.map((k) => own.interner.id(k)).filter(known);
+    return { filter: { quick, conditions }, sort, hidden };
+  };
+
+  const viewIds = (spec: KeyedViewSpec): ViewSpec<RowId, ColId> => ({
+    rows: partKnownIds(cols, rows, spec.rows),
+    cols: partKnownIds(rows, cols, spec.cols),
+  });
+
   const viewKeys = (view: AppliedView<RowId, ColId>): KeyedViewSpec => ({
     rows: partKeys(cols, rows, view.rows),
     cols: partKeys(rows, cols, view.cols),
@@ -1067,6 +1083,7 @@ export function createFeed<RowId, ColId, V>(
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
     viewKeys,
+    viewIds,
     columnSupport,
     rowSupport,
     conditionKey: (c, axis) => conditionKey(cross(axis ?? "rows"), c as Condition<unknown>),

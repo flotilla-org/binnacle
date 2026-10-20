@@ -56,6 +56,7 @@ export type {
   Totals,
   ViewSpec,
 } from "./source";
+export { LAYOUT_VERSION, type Layout, type LayoutPins } from "./layout";
 export { fromRows, type RowsColumn, type RowsColumnId, type RowsOptions, type RowsSource } from "./rows";
 export {
   catppuccinMocha,

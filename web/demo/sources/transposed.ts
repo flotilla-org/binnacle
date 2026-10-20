@@ -28,6 +28,7 @@ import {
   type CellRenderer,
 } from "../../src";
 import type { DemoSource } from "./demo-source";
+import { layoutControls } from "./layout";
 import { parse, portPicker, type Value } from "./records";
 import { matches, RECORD_HIDE_CAP, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
 
@@ -86,6 +87,7 @@ export const transposed: DemoSource = {
       },
       editor: (field) => (field === "port" ? portPicker() : null),
     });
+    const layout = layoutControls(widget, "transposed");
     const columnMenu = createColumnMenu(widget);
     const chooser = createChooser(widget);
     const bar = createFilterBar(widget, {
@@ -99,7 +101,7 @@ export const transposed: DemoSource = {
     findButton.textContent = "Find";
     findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
     findButton.addEventListener("click", () => findBar.open());
-    toolbar.append(findButton);
+    toolbar.append(findButton, ...layout.elements);
     return {
       get theme() {
         return widget.theme;
@@ -115,6 +117,7 @@ export const transposed: DemoSource = {
       },
       destroy() {
         findBar.destroy();
+        layout.destroy();
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();

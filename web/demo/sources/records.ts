@@ -30,6 +30,7 @@
 
 import { createChooser, createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
+import { layoutControls } from "./layout";
 import { matches, PORTS, RECORD_HIDE_CAP, RECORDS, rows, sortedMoves, WIDTHS, type RecordRow } from "./records-data";
 
 export type Value = RecordRow[keyof RecordRow];
@@ -116,6 +117,7 @@ export const records: DemoSource = {
       },
       editor: (_id, col) => (col === "port" ? portPicker() : null),
     });
+    const layout = layoutControls(widget, "records");
     const columnMenu = createColumnMenu(widget);
     const chooser = createChooser(widget);
     const bar = createFilterBar(widget, { columnMenu });
@@ -125,7 +127,7 @@ export const records: DemoSource = {
     findButton.textContent = "Find";
     findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
     findButton.addEventListener("click", () => findBar.open());
-    toolbar.append(findButton);
+    toolbar.append(findButton, ...layout.elements);
     return {
       get theme() {
         return widget.theme;
@@ -141,6 +143,7 @@ export const records: DemoSource = {
       },
       destroy() {
         findBar.destroy();
+        layout.destroy();
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();

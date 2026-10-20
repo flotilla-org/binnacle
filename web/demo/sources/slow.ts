@@ -28,6 +28,7 @@ import {
   type TableSource,
 } from "../../src";
 import type { DemoSource } from "./demo-source";
+import { layoutControls } from "./layout";
 import { matches, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
 
 /** How late the source answers, ms: Windows and cells, then sorts and Locates. */
@@ -167,6 +168,7 @@ export const slow: DemoSource = {
       },
       ...look,
     });
+    const layout = layoutControls(widget, "slow");
     const columnMenu = createColumnMenu(widget);
     const chooser = createChooser(widget);
     const bar = createFilterBar(widget, { columnMenu });
@@ -176,7 +178,7 @@ export const slow: DemoSource = {
     findButton.textContent = "Find";
     findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
     findButton.addEventListener("click", () => findBar.open());
-    toolbar.append(findButton);
+    toolbar.append(findButton, ...layout.elements);
     return {
       get theme() {
         return widget.theme;
@@ -192,6 +194,7 @@ export const slow: DemoSource = {
       },
       destroy() {
         findBar.destroy();
+        layout.destroy();
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();
