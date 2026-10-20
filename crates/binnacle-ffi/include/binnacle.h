@@ -27,9 +27,11 @@ extern "C" {
 #define BINNACLE_ROWS 0
 #define BINNACLE_COLS 1
 
-/* An edge of an axis items can be pinned to: the left of the columns, the
- * top of the rows. */
+/* An edge of an axis items can be pinned to: the leading edge is the left of
+ * the columns and the top of the rows, the trailing edge their right and
+ * bottom. */
 #define BINNACLE_EDGE_LEADING 0
+#define BINNACLE_EDGE_TRAILING 1
 
 /* BinnacleSnapshot.damage bits. */
 #define BINNACLE_DAMAGE_LAYOUT 1u
@@ -374,7 +376,8 @@ typedef struct {
   BinnacleScrollAnchor anchor;
   BinnacleThumb thumb;
   /* The drawn items in drawn order: the leading pinned Strip's pinned_len
-   * items, then the scrolling Strip. */
+   * items, then the scrolling Strip, then the trailing pinned Strip's
+   * trailing_len items. */
   const BinnacleStripItem *strip;
   size_t strip_len;
   /* The headers of the strip's items, in strip order (headers_len ==
@@ -383,8 +386,11 @@ typedef struct {
   size_t headers_len;
   /* Set when BinnacleSnapshot.has_focus is. */
   BinnacleFocusEnd focus;
-  /* Set when BinnacleSnapshot.has_selection_range is. */
-  BinnacleRange selection_range;
+  /* Set when BinnacleSnapshot.has_selection_range is: the Positions the range
+   * covers on the axis, as sorted runs apart from each other. It is
+   * contiguous in drawn order, so with items pinned it may be several. */
+  const BinnacleRange *selection_runs;
+  size_t selection_runs_len;
   /* The axis's unfiltered count, if the Table Source gave it with the
    * applied View Spec: shown beside count. */
   uint32_t has_total;
@@ -398,11 +404,14 @@ typedef struct {
   /* The axis's picked Keys, in Key order. */
   const uint64_t *picked;
   size_t picked_len;
-  /* How many of strip's items lead it as the pinned Strip: drawn from the
-   * header band on, whatever the scroll. */
+  /* How many of strip's items lead it as the leading pinned Strip: drawn
+   * from the header band on, whatever the scroll. */
   size_t pinned_len;
+  /* How many of strip's items end it as the trailing pinned Strip: drawn
+   * ending flush with the viewport's far end, whatever the scroll. */
+  size_t trailing_len;
   /* Where the scrolling Strip draws along the axis: clip its items (those
-   * after the pinned ones) to [scrolling_start, scrolling_end). */
+   * between the pinned ones) to [scrolling_start, scrolling_end). */
   float scrolling_start;
   float scrolling_end;
   /* Header drags move the axis's items (binnacle_grid_set_movable). */
@@ -429,7 +438,7 @@ typedef struct {
   /* The focused cell, unclipped, if it is visible with its Keys known. */
   uint32_t has_focus_rect;
   BinnacleRect focus_rect;
-  /* The one contiguous range, clamped to the counts. */
+  /* The one contiguous range: see each axis's selection_runs. */
   uint32_t has_selection_range;
   /* Rects to fill: the visible part of the range, then each visible picked
    * row, then each visible picked column. They may overlap. */
@@ -659,10 +668,18 @@ int binnacle_grid_set_size(BinnacleGrid *grid, uint32_t axis, uint64_t key, floa
  * finite and non-negative are ignored. */
 int binnacle_grid_set_header(BinnacleGrid *grid, uint32_t axis, float thickness);
 
-/* Pins the item with key on axis to edge (BINNACLE_EDGE_LEADING), after the
- * keys pinned there before: it is drawn in the pinned Strip whatever the sort
- * or scroll. A key outside the Window is found with a LOCATE Effect. */
+/* Pins the item with key on axis to edge (BINNACLE_EDGE_*), after the keys
+ * pinned there before: it is drawn in that edge's pinned Strip whatever the
+ * sort or scroll. A key outside the Window is found with a LOCATE Effect.
+ * Unknown edges are ignored. */
 int binnacle_grid_pin(BinnacleGrid *grid, uint32_t axis, uint32_t edge, uint64_t key);
+
+/* "Freeze up to here": pins every item from the start of axis to the one with
+ * key, in their current order, to the leading edge, as far as they fit with
+ * room left to scroll. On a leading pin, unpins the pins after it. If the
+ * Window lacks some of their keys, the axis scrolls to its start and the
+ * freeze finishes once the next Window holds them. */
+int binnacle_grid_freeze(BinnacleGrid *grid, uint32_t axis, uint64_t key);
 
 /* Unpins the item with key on axis; the scroll stays where it is. */
 int binnacle_grid_unpin(BinnacleGrid *grid, uint32_t axis, uint64_t key);

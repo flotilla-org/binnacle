@@ -36,8 +36,9 @@ enum Op {
     Action(Action),
     SetSize(Axis, u64, f32),
     SetHeader(Axis, f32),
-    Pin(Axis, u64),
+    Pin(Axis, Edge, u64),
     Unpin(Axis, u64),
+    Freeze(Axis, u64),
     /// A press `inset` inside the end of the band leading the axis (where its
     /// edge is, given a Gap), halfway across the other band as of the last
     /// frame, with this click count; then a move by `travel` along the axis.
@@ -411,8 +412,13 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(22)) {
+    match tc.draw(gs::integers::<u8>().max_value(23)) {
         18 => Op::Pin(
+            tc.draw(axes()),
+            tc.draw(gs::sampled_from(Edge::ALL.to_vec())),
+            tc.draw(gs::integers::<u64>().max_value(10)),
+        ),
+        23 => Op::Freeze(
             tc.draw(axes()),
             tc.draw(gs::integers::<u64>().max_value(10)),
         ),
@@ -489,7 +495,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(43))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(45))),
     }
 }
 
@@ -723,6 +729,8 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             41 => binnacle_grid_set_hide_support(h, 2, 1),
             42 => binnacle_grid_hide(h, 2, &5000, 1),
             43 => binnacle_grid_show(h, 2, &5000, 1),
+            44 => binnacle_grid_pin(h, COLS, 2, 0),
+            45 => binnacle_grid_freeze(h, 2, 0),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -754,6 +762,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         let strip = unsafe { slice::from_raw_parts(a.strip, a.strip_len) };
         let expected: Vec<_> = rust.drawn(axis).collect();
         assert_eq!(a.pinned_len, rust.pinned(axis, Edge::Leading).len());
+        assert_eq!(a.trailing_len, rust.pinned(axis, Edge::Trailing).len());
         let scrolling = rust.scrolling(axis);
         assert!(same_f32(a.scrolling_start, scrolling.start));
         assert!(same_f32(a.scrolling_end, scrolling.end));
@@ -806,12 +815,13 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 assert_eq!(a.focus.key, k);
             }
         }
-        if let Some(r) = &range {
-            assert_eq!(
-                a.selection_range.start..a.selection_range.end,
-                *r.span(axis)
-            );
-        }
+        let runs = unsafe { slice::from_raw_parts(a.selection_runs, a.selection_runs_len) };
+        let runs: Vec<_> = runs.iter().map(|r| r.start..r.end).collect();
+        assert_eq!(
+            runs,
+            range.map_or(&[][..], |r| r.span(axis)),
+            "{axis:?} runs"
+        );
         assert_eq!(
             (a.has_total != 0).then_some(a.total),
             rust.total(axis),
@@ -1427,10 +1437,19 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_header(axis, thickness);
                     binnacle_grid_set_header(h, tag(axis), thickness)
                 }
-                Op::Pin(axis, key) => {
+                Op::Pin(axis, edge, key) => {
                     let key = key + 5000 * u64::from(axis == Axis::Cols);
-                    grid.pin(axis, Edge::Leading, Key(key));
-                    binnacle_grid_pin(h, tag(axis), BINNACLE_EDGE_LEADING, key)
+                    grid.pin(axis, edge, Key(key));
+                    let edge = match edge {
+                        Edge::Leading => BINNACLE_EDGE_LEADING,
+                        Edge::Trailing => BINNACLE_EDGE_TRAILING,
+                    };
+                    binnacle_grid_pin(h, tag(axis), edge, key)
+                }
+                Op::Freeze(axis, key) => {
+                    let key = key + 5000 * u64::from(axis == Axis::Cols);
+                    grid.freeze(axis, Key(key));
+                    binnacle_grid_freeze(h, tag(axis), key)
                 }
                 Op::Unpin(axis, key) => {
                     let key = key + 5000 * u64::from(axis == Axis::Cols);

@@ -131,6 +131,11 @@ impl WebGrid {
         self.grid.unpin(axis(a), Key(key));
     }
 
+    /// "Freeze up to here" on the item with `key` on axis `a`.
+    pub fn freeze(&mut self, a: u8, key: u64) {
+        self.grid.freeze(axis(a), Key(key));
+    }
+
     /// The Size Override for the item with `key` on axis `a`; NaN for none.
     pub fn size_override(&self, a: u8, key: u64) -> f64 {
         self.grid

@@ -17,6 +17,7 @@ use binnacle_core::{
 };
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
+pub const BINNACLE_EDGE_TRAILING: u32 = 1;
 pub const BINNACLE_ROWS: u32 = 0;
 pub const BINNACLE_COLS: u32 = 1;
 
@@ -142,6 +143,8 @@ pub struct BinnacleGrid {
     strips: [Vec<BinnacleStripItem>; 2],
     headers: [Vec<BinnacleHeader>; 2],
     picked: [Vec<u64>; 2],
+    /// The last Snapshot's selection range, as runs of Positions per axis.
+    runs: [Vec<BinnacleRange>; 2],
     rects: Vec<BinnacleRect>,
     cells: Vec<u8>,
     /// The last polled Effect's text.
@@ -356,7 +359,8 @@ pub struct BinnacleAxisSnapshot {
     pub headers: *const BinnacleHeader,
     pub headers_len: usize,
     pub focus: BinnacleFocusEnd,
-    pub selection_range: BinnacleRange,
+    pub selection_runs: *const BinnacleRange,
+    pub selection_runs_len: usize,
     pub has_total: u32,
     pub total: u64,
     pub quick_filter: u32,
@@ -365,6 +369,7 @@ pub struct BinnacleAxisSnapshot {
     pub picked: *const u64,
     pub picked_len: usize,
     pub pinned_len: usize,
+    pub trailing_len: usize,
     pub scrolling_start: f32,
     pub scrolling_end: f32,
     pub movable: u32,
@@ -1055,6 +1060,7 @@ pub extern "C" fn binnacle_grid_new(
         strips: Default::default(),
         headers: Default::default(),
         picked: Default::default(),
+        runs: Default::default(),
         rects: Vec::new(),
         cells: Vec::new(),
         text: String::new(),
@@ -1253,9 +1259,34 @@ pub unsafe extern "C" fn binnacle_grid_pin(
     // SAFETY: the caller's contract.
     unsafe {
         with_handle(grid, |h| {
-            let edge = (edge_tag == BINNACLE_EDGE_LEADING).then_some(Edge::Leading)?;
+            let edge = edge(edge_tag)?;
             axis(axis_tag).map(|axis| h.grid.pin(axis, edge, Key(key)))
         })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_freeze(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.freeze(axis, Key(key)))
+        })
+    }
+}
+
+/// The edge a C tag names, if any.
+fn edge(tag: u32) -> Option<Edge> {
+    match tag {
+        BINNACLE_EDGE_LEADING => Some(Edge::Leading),
+        BINNACLE_EDGE_TRAILING => Some(Edge::Trailing),
+        _ => None,
     }
 }
 
@@ -1368,6 +1399,16 @@ impl BinnacleGrid {
             }
         }
         let range = snap.selection_range();
+        for axis in Axis::ALL {
+            let runs = &mut self.runs[axis.index()];
+            runs.clear();
+            if let Some(r) = range {
+                runs.extend((r.span(axis).iter()).map(|r| BinnacleRange {
+                    start: r.start,
+                    end: r.end,
+                }));
+            }
+        }
         let axis_snapshot = |axis: Axis| {
             let anchor = snap.scroll_anchor(axis);
             let thumb = snap.thumb(axis);
@@ -1376,6 +1417,7 @@ impl BinnacleGrid {
             let listed = &self.listed_states[axis.index()];
             let picked = &self.picked[axis.index()];
             let hidden = &self.hidden_listed[axis.index()];
+            let runs = &self.runs[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -1405,19 +1447,15 @@ impl BinnacleGrid {
                 picked: picked.as_ptr(),
                 picked_len: picked.len(),
                 pinned_len: snap.pinned(axis, Edge::Leading).len(),
+                trailing_len: snap.pinned(axis, Edge::Trailing).len(),
                 scrolling_start: snap.scrolling(axis).start,
                 scrolling_end: snap.scrolling(axis).end,
                 movable: flag(snap.movable(axis)),
                 hide_support: flag(snap.hide_support(axis)),
                 hidden: hidden.as_ptr(),
                 hidden_len: hidden.len(),
-                selection_range: range.as_ref().map_or_else(Default::default, |r| {
-                    let span = r.span(axis);
-                    BinnacleRange {
-                        start: span.start,
-                        end: span.end,
-                    }
-                }),
+                selection_runs: runs.as_ptr(),
+                selection_runs_len: runs.len(),
             }
         };
         let hovered = snap.hovered_header().and_then(|(axis, item)| {

@@ -287,6 +287,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.num(item.size);
         }
         w.len(s.pinned(axis, Edge::Leading).len());
+        w.len(s.pinned(axis, Edge::Trailing).len());
         let scrolling = s.scrolling(axis);
         w.num(scrolling.start);
         w.num(scrolling.end);
@@ -348,11 +349,16 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.num(axis_code(axis));
         w.position(item.position);
     }
+    // The range as each axis's runs of Positions.
     let range = s.selection_range();
     w.flag(range.is_some());
     if let Some(r) = range {
-        for p in [r.rows.start, r.rows.end, r.cols.start, r.cols.end] {
-            w.position(p);
+        for runs in [&r.rows, &r.cols] {
+            w.len(runs.len());
+            for run in runs {
+                w.position(run.start);
+                w.position(run.end);
+            }
         }
     }
     let rects = s.selection_rects();

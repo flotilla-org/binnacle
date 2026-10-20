@@ -138,8 +138,8 @@ int main(void) {
   CHECK(snap.has_focus_rect && snap.focus_rect.x == 22 && snap.focus_rect.y == 4);
   CHECK(snap.focus_rect.width == 8 && snap.focus_rect.height == 1);
   CHECK(snap.has_selection_range);
-  CHECK(r->selection_range.start == 2 && r->selection_range.end == 4);
-  CHECK(c->selection_range.start == 1 && c->selection_range.end == 3);
+  CHECK(r->selection_runs_len == 1 && r->selection_runs[0].start == 2 && r->selection_runs[0].end == 4);
+  CHECK(c->selection_runs_len == 1 && c->selection_runs[0].start == 1 && c->selection_runs[0].end == 3);
   CHECK(snap.selection_rects_len == 1);
   CHECK(snap.selection_rects[0].x == 13 && snap.selection_rects[0].y == 3);
   CHECK(snap.selection_rects[0].width == 17 && snap.selection_rects[0].height == 2);
@@ -176,7 +176,8 @@ int main(void) {
 
   CHECK(binnacle_grid_select_all(grid));
   frame(grid, &snap);
-  CHECK(r->selection_range.end == 100 && c->selection_range.end == 10);
+  CHECK(r->selection_runs_len == 1 && r->selection_runs[0].end == 100);
+  CHECK(c->selection_runs_len == 1 && c->selection_runs[0].end == 10);
   CHECK(binnacle_grid_select_column(grid));
   CHECK(binnacle_grid_select_row(grid));
   drain(grid, &focus);
@@ -390,8 +391,8 @@ int main(void) {
   CHECK(c->strip[0].size == 12 && c->strip[1].offset == 17);
   click(grid, 6, 1.5f, 0);
   frame(grid, &snap);
-  CHECK(snap.has_selection_range && c->selection_range.start == 0);
-  CHECK(c->selection_range.end == 10 && r->selection_range.end == 1);
+  CHECK(snap.has_selection_range && c->selection_runs_len == 1 && c->selection_runs[0].start == 0);
+  CHECK(c->selection_runs[0].end == 10 && r->selection_runs_len == 1 && r->selection_runs[0].end == 1);
   uint64_t keys[] = {1000, 1001};
   float sizes[] = {2, 1};
   CHECK(binnacle_grid_set_window_sized(grid, BINNACLE_ROWS, 0, keys, sizes, 2, 1));

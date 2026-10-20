@@ -20,10 +20,12 @@ pub fn axis(code: u8) -> Axis {
     }
 }
 
-/// A pinned edge: 0 leading; `None` for an edge this bridge does not know.
+/// A pinned edge: 0 leading, 1 trailing; `None` for an edge this bridge
+/// does not know.
 pub fn edge(code: u8) -> Option<Edge> {
     match code {
         0 => Some(Edge::Leading),
+        1 => Some(Edge::Trailing),
         _ => None,
     }
 }

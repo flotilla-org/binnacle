@@ -103,6 +103,7 @@ struct DumpAxis {
     locating: bool,
     strip: Vec<DumpItem>,
     pinned: f64,
+    trailing: f64,
     scrolling: DumpSpan,
     headers: Vec<DumpHeader>,
     total: Option<f64>,
@@ -316,8 +317,8 @@ struct DumpSpan {
 
 #[derive(Serialize)]
 struct DumpRange {
-    rows: DumpSpan,
-    cols: DumpSpan,
+    rows: Vec<DumpSpan>,
+    cols: Vec<DumpSpan>,
 }
 
 fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
@@ -355,6 +356,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             })
             .collect(),
         pinned: s.pinned(axis, Edge::Leading).len() as f64,
+        trailing: s.pinned(axis, Edge::Trailing).len() as f64,
         scrolling: DumpSpan {
             start: s.scrolling(axis).start.into(),
             end: s.scrolling(axis).end.into(),
@@ -428,15 +430,19 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
             axis: axis.into(),
             position: item.position as f64,
         }),
-        selection_range: s.selection_range().map(|r| DumpRange {
-            rows: DumpSpan {
-                start: r.rows.start as f64,
-                end: r.rows.end as f64,
-            },
-            cols: DumpSpan {
-                start: r.cols.start as f64,
-                end: r.cols.end as f64,
-            },
+        selection_range: s.selection_range().map(|r| {
+            let runs = |runs: &[std::ops::Range<u64>]| {
+                (runs.iter())
+                    .map(|r| DumpSpan {
+                        start: r.start as f64,
+                        end: r.end as f64,
+                    })
+                    .collect()
+            };
+            DumpRange {
+                rows: runs(&r.rows),
+                cols: runs(&r.cols),
+            }
         }),
         selection_rects: s.selection_rects().iter().map(|r| (*r).into()).collect(),
         picked: DumpPicked {
@@ -735,10 +741,13 @@ pub fn scenario(name: &str) -> Grid {
             row_limit = 2;
         }
         "pinned" => {
-            // Column 4 and row 3 pinned, scrolled past, row 2 to column 1
-            // selected and focus on the pinned column.
+            // Column 4 and row 3 pinned leading, column 1 and row 8
+            // trailing, scrolled past, and a range from row 5 of the pinned
+            // column 4 down two rows.
             grid.pin(Axis::Cols, Edge::Leading, key(4));
             grid.pin(Axis::Rows, Edge::Leading, key(3));
+            grid.pin(Axis::Cols, Edge::Trailing, key(1));
+            grid.pin(Axis::Rows, Edge::Trailing, key(8));
             frame(&mut grid);
             grid.action(Action::Scroll { dx: 90.0, dy: 50.0 });
             frame(&mut grid);
@@ -912,16 +921,24 @@ mod tests {
                 "scrolled" => assert!(s.scroll_anchor(Axis::Rows).position > 0),
                 "pinned" => {
                     for axis in Axis::ALL {
-                        assert_eq!(s.pinned(axis, Edge::Leading).len(), 1);
+                        for edge in Edge::ALL {
+                            assert_eq!(s.pinned(axis, edge).len(), 1);
+                        }
                         assert!(!s.strip(axis).is_empty());
                     }
                     assert!(s.scroll_anchor(Axis::Cols).position > 0);
                     let range = s.selection_range().unwrap();
-                    assert_eq!((range.rows, range.cols), (5..7, 4..5));
+                    assert_eq!(
+                        (&range.rows[..], &range.cols[..]),
+                        (&[5..7][..], &[4..5][..])
+                    );
                 }
                 "dragging" => {
                     let range = s.selection_range().unwrap();
-                    assert_eq!((range.rows, range.cols), (1..5, 0..3));
+                    assert_eq!(
+                        (&range.rows[..], &range.cols[..]),
+                        (&[1..5][..], &[0..3][..])
+                    );
                 }
                 "sorted" => {
                     assert_eq!(s.applied_view().rows.sort.columns().len(), 2);
@@ -974,7 +991,7 @@ mod tests {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
                     let current = s.find_match().unwrap();
-                    assert_eq!(s.selection_range().map(|r| r.rows), Some(1..3));
+                    assert_eq!(s.selection_range().map(|r| &r.rows[..]), Some(&[1..3][..]));
                     let row = s.rows().iter().find(|i| i.key == Some(current.row));
                     let col = s.cols().iter().find(|i| i.key == Some(current.col));
                     assert!(s.cell_state(row.unwrap(), col.unwrap()).current_match);
