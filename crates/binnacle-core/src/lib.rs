@@ -18,6 +18,7 @@ mod gesture;
 mod grid;
 mod measure;
 mod notice;
+mod pin;
 mod pointer;
 mod refilter;
 mod selection;
@@ -42,7 +43,7 @@ pub use snapshot::{
     Snapshot, StripItem, Thumb,
 };
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
-pub use types::{Axis, Generation, Key, Position, Viewport};
+pub use types::{Axis, Edge, Generation, Key, Position, Viewport};
 pub use view::{
     AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HeaderFilter,
     Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,

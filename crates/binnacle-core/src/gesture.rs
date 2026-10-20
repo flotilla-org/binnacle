@@ -192,7 +192,7 @@ impl Grid {
             self.pending_damage.selection = true;
             return;
         }
-        if let Some((axis, position, key)) = self.border_at(x, y) {
+        if let Some((axis, _, key)) = self.border_at(x, y) {
             if clicks >= 2 {
                 self.push(Effect::AutoSizeRequested { axis, key });
                 return;
@@ -202,7 +202,7 @@ impl Grid {
                 axis,
                 key,
                 from: along(axis, x, y),
-                start_size: measure.size_at(position),
+                start_size: measure.size_of(key),
                 start_override: measure.size_override(key),
             };
             self.pending_damage.selection = true;
@@ -400,9 +400,13 @@ impl Grid {
     fn start_move(&mut self, axis: Axis, position: Position, x: f32, y: f32) {
         let i = axis.index();
         let measure = &self.axis(axis).measure;
+        // Moves across the pinned edge come later: a pinned header stays put.
         let Some(key) = measure.key_at(position) else {
             return;
         };
+        if self.axis(axis).pinned_at(position) == Some(key) {
+            return;
+        }
         let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
         let selected = self
             .selection
@@ -432,7 +436,7 @@ impl Grid {
     fn drop_position(&self, axis: Axis, v: f32) -> Position {
         let st = self.axis(axis);
         let body_end = f32::from_bits(st.extent.to_bits().saturating_sub(1));
-        match st.hit(v.min(body_end).max(st.header)) {
+        match st.hit(v.min(body_end).max(st.scroll_start())) {
             crate::pointer::AxisHit::Item(at) => {
                 let after =
                     at.in_gap || at.within >= f64::from(st.measure.size_at(at.position)) / 2.0;
@@ -590,7 +594,7 @@ impl Grid {
         let focus = before.focus.map(|mut f| {
             for axis in Axis::ALL {
                 let end = &mut f[axis.index()];
-                end.key = end.key.or(self.axis(axis).measure.key_at(end.position));
+                end.key = end.key.or(self.axis(axis).key_at(end.position));
             }
             f
         });

@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, ConditionKind, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection,
-    SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    Axis, ConditionKind, Cursor, Edge, FilterSpec, FocusEnd, Mode, Searched, Snapshot,
+    SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -211,6 +211,21 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
         snap.thumb(axis).fraction,
         snap.thumb(axis).size,
     );
+    let pinned = snap.pinned(axis, Edge::Leading);
+    if !pinned.is_empty() {
+        out.push_str(" pinned");
+        for item in pinned {
+            let _ = write!(
+                out,
+                " {}#{}@{}+{}",
+                item.position,
+                key_text(item),
+                item.offset,
+                item.size
+            );
+        }
+        let _ = write!(out, " | scrolling from {} |", snap.scrolling(axis).start);
+    }
     for item in snap.strip(axis) {
         let _ = write!(
             out,
@@ -361,12 +376,27 @@ fn picture(snap: &Snapshot) -> String {
         }
     };
     let (top, left) = (snap.header(Axis::Rows), snap.header(Axis::Cols));
-    for c in snap.cols() {
+    // Each drawn item with where it is clipped from: a pinned one from the
+    // Header Band, a scrolling one from where the scrolling Strip starts.
+    let drawn = |axis: Axis| {
+        let pinned = snap.pinned(axis, Edge::Leading).iter();
+        let from = snap.scrolling(axis).start;
+        (pinned.map(move |i| (i, snap.header(axis))))
+            .chain(snap.strip(axis).iter().map(move |i| (i, from)))
+    };
+    for (c, left) in drawn(Axis::Cols) {
         put(c.offset, 0.0, left, c.end(), 0.0, &key_text(c));
     }
-    for r in snap.rows() {
-        put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
-        for c in snap.cols() {
+    for (r, top) in drawn(Axis::Rows) {
+        put(
+            0.0,
+            r.offset,
+            0.0,
+            snap.header(Axis::Cols),
+            top,
+            &r.position.to_string(),
+        );
+        for (c, left) in drawn(Axis::Cols) {
             let state = snap.cell_state(r, c);
             let mut mark = if state.editing {
                 "="

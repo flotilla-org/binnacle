@@ -227,6 +227,7 @@ impl Grid {
             }
             Shift::Removed { at, n } => self.axis_mut(axis).measure.remove(at, n),
         };
+        self.shift_pins(axis, |p| shift.map(p));
         let count = self.axis(axis).measure.count();
         let mut selection = self.selection.clone();
         for &key in &gone {
@@ -328,6 +329,7 @@ impl Grid {
         let end = start + m.window_len() as u64;
         if range.start < end && start < range.end {
             self.axis_mut(axis).measure.set_keys(0, &[]);
+            self.axis_mut(axis).sync_pins();
             self.pending_damage.positions = true;
         }
     }
@@ -355,6 +357,8 @@ impl Grid {
                 }
             }
         }
+        self.axis_mut(axis).sync_pins();
+        self.locate_pins(axis);
         self.rebase_gesture();
         self.axis_mut(axis).clamp_anchor();
         self.pending_damage.layout = true;
@@ -431,6 +435,7 @@ impl Grid {
     /// are applied. An edit whose Key has left is cancelled (`EditCancelled`).
     pub fn located(&mut self, axis: Axis, key: Key, answer: Located) {
         self.edit_located(axis, key, &answer);
+        self.pin_located(axis, key, answer);
         self.refilter_located(axis, key, answer);
         self.find_located(axis, key, answer);
         self.focus_located(axis, key, answer);

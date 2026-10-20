@@ -12,7 +12,7 @@ use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
 use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
-use crate::types::{Axis, Generation, Key, Position, Viewport};
+use crate::types::{Axis, Edge, Generation, Key, Position, Viewport};
 use crate::view::ViewState;
 
 /// How one axis starts out: its count, default item size, header band, Gap
@@ -292,21 +292,22 @@ impl Grid {
     }
 
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {
+        self.axis_mut(axis).sync_pins();
         self.pending_damage.positions |= change.keys;
         self.pending_damage.layout |= change.sizes;
         if let Some(span) = &mut self.selection.span {
-            let measure = &self.axes[axis.index()].measure;
+            let st = &self.axes[axis.index()];
             for end in [&mut span.anchor, &mut span.head] {
                 let end = &mut end[axis.index()];
                 if end.key.is_none() {
-                    end.key = measure.key_at(end.position);
+                    end.key = st.key_at(end.position);
                 }
             }
         }
         if let Some(f) = &mut self.focus {
             let end = &mut f[axis.index()];
             if end.key.is_none() {
-                end.key = self.axes[axis.index()].measure.key_at(end.position);
+                end.key = self.axes[axis.index()].key_at(end.position);
                 if end.key.is_some() {
                     self.pending_damage.selection = true;
                     self.announce_focus();
@@ -461,7 +462,7 @@ impl Grid {
             (_, AxisHit::Header) => (Axis::Rows, rows.border(y, self.border_grab)?),
             _ => return None,
         };
-        let key = self.axis(axis).measure.key_at(position)?;
+        let key = self.axis(axis).key_at(position)?;
         Some((axis, position, key))
     }
 
@@ -835,12 +836,17 @@ impl Grid {
     }
 
     /// Computes the selection fill rects from the laid-out Strips: one for the
-    /// visible part of the range, one per visible picked row, then one per
-    /// visible picked column.
+    /// visible part of the range in each pair of a row Strip and a column
+    /// Strip (pinned, then scrolling), then one per visible picked row and
+    /// column Strip, then one per visible picked column and row Strip.
     fn fill_selection(&mut self) {
         let mut fills = std::mem::take(&mut self.fills);
         fills.clear();
-        let (rows, cols) = (&self.axis(Axis::Rows).strip, &self.axis(Axis::Cols).strip);
+        let strips = |axis: Axis| {
+            let st = self.axis(axis);
+            [&st.pinned[Edge::Leading.index()], &st.strip]
+        };
+        let (rows, cols) = (strips(Axis::Rows), strips(Axis::Cols));
         let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
         let extent = |items: &mut dyn Iterator<Item = &crate::snapshot::StripItem>| {
             let first = items.next()?;
@@ -848,23 +854,30 @@ impl Grid {
             Some((first.offset, last.end() - first.offset))
         };
         if let Some(range) = self.selection.span.map(|s| s.range(counts)) {
-            let r = extent(&mut rows.iter().filter(|i| range.rows.contains(&i.position)));
-            let c = extent(&mut cols.iter().filter(|i| range.cols.contains(&i.position)));
-            if let (Some((y, height)), Some((x, width))) = (r, c) {
-                fills.push(Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                });
+            for rows in rows {
+                for cols in cols {
+                    let r = extent(&mut rows.iter().filter(|i| range.rows.contains(&i.position)));
+                    let c = extent(&mut cols.iter().filter(|i| range.cols.contains(&i.position)));
+                    if let (Some((y, height)), Some((x, width))) = (r, c) {
+                        fills.push(Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
+                }
             }
         }
-        if let Some((x, width)) = extent(&mut cols.iter()) {
-            for row in rows {
-                if row
-                    .key
-                    .is_some_and(|k| self.selection.picked(Axis::Rows, k))
-                {
+        for row in rows.into_iter().flatten() {
+            if !row
+                .key
+                .is_some_and(|k| self.selection.picked(Axis::Rows, k))
+            {
+                continue;
+            }
+            for cols in cols {
+                if let Some((x, width)) = extent(&mut cols.iter()) {
                     fills.push(Rect {
                         x,
                         y: row.offset,
@@ -874,12 +887,15 @@ impl Grid {
                 }
             }
         }
-        if let Some((y, height)) = extent(&mut rows.iter()) {
-            for col in cols {
-                if col
-                    .key
-                    .is_some_and(|k| self.selection.picked(Axis::Cols, k))
-                {
+        for col in cols.into_iter().flatten() {
+            if !col
+                .key
+                .is_some_and(|k| self.selection.picked(Axis::Cols, k))
+            {
+                continue;
+            }
+            for rows in rows {
+                if let Some((y, height)) = extent(&mut rows.iter()) {
                     fills.push(Rect {
                         x: col.offset,
                         y,

@@ -4,7 +4,9 @@ use crate::gesture::Mode;
 use crate::grid::Grid;
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
-use crate::types::{Axis, Generation, Key, Position};
+use std::ops::Range;
+
+use crate::types::{Axis, Edge, Generation, Key, Position};
 use crate::view::{Condition, ConditionState, HeaderFilter, Support, TextSupport, ViewSpec};
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
@@ -194,8 +196,33 @@ impl<'a> Snapshot<'a> {
         self.grid.axis(axis).measure.gap()
     }
 
+    /// The scrolling Strip of `axis`: the visible items that follow the
+    /// Scroll Anchor, pinned items left out. Its items are drawn clipped to
+    /// [`Snapshot::scrolling`].
     pub fn strip(&self, axis: Axis) -> &'a [StripItem] {
         &self.grid.axis(axis).strip
+    }
+
+    /// The pinned Strip at `edge` of `axis`: the pinned items in pin order,
+    /// laid out from the Header Band with a Gap after each, whatever the
+    /// scroll. Its items carry their Positions, like the scrolling Strip's.
+    pub fn pinned(&self, axis: Axis, edge: Edge) -> &'a [StripItem] {
+        &self.grid.axis(axis).pinned[edge.index()]
+    }
+
+    /// Where the scrolling Strip of `axis` draws along it: past the Header
+    /// Band and the leading pinned Strip (with the Gap after it), to the
+    /// viewport's end. Its part-scrolled items reach outside it.
+    pub fn scrolling(&self, axis: Axis) -> Range<f32> {
+        let st = self.grid.axis(axis);
+        st.scroll_start().min(st.extent)..st.extent
+    }
+
+    /// Every drawn item of `axis` in drawn order: the leading pinned Strip,
+    /// then the scrolling Strip.
+    pub fn drawn(&self, axis: Axis) -> impl Iterator<Item = &'a StripItem> + 'a {
+        let st = self.grid.axis(axis);
+        st.pinned[Edge::Leading.index()].iter().chain(&st.strip)
     }
 
     pub fn rows(&self) -> &'a [StripItem] {
@@ -223,10 +250,16 @@ impl<'a> Snapshot<'a> {
     /// Key is known.
     fn focused_item(&self, axis: Axis) -> Option<&'a StripItem> {
         let end = self.focus(axis)?;
+        end.key?;
+        if let Some(item) = (self.pinned(axis, Edge::Leading).iter())
+            .find(|i| i.key == end.key && i.position == end.position)
+        {
+            return Some(item);
+        }
         let strip = self.strip(axis);
         let i = end.position.checked_sub(strip.first()?.position)?;
         let item = strip.get(usize::try_from(i).ok()?)?;
-        (end.key.is_some() && item.key == end.key).then_some(item)
+        (item.key == end.key).then_some(item)
     }
 
     /// The focused cell's rectangle, unclipped, if it is visible and its Keys
@@ -248,7 +281,7 @@ impl<'a> Snapshot<'a> {
         let Mode::Editing { row, col } = self.mode() else {
             return None;
         };
-        let find = |axis, key| self.strip(axis).iter().find(|i| i.key == Some(key));
+        let find = |axis, key| self.drawn(axis).find(|i| i.key == Some(key));
         let (row, col) = (find(Axis::Rows, row)?, find(Axis::Cols, col)?);
         Some(Rect {
             x: col.offset,
@@ -379,8 +412,9 @@ impl<'a> Snapshot<'a> {
         self.grid.view.header(Axis::Cols, key)
     }
 
-    /// The headers of the visible items on `axis`, in Strip order: column
-    /// headers for [`Axis::Cols`], row headers for [`Axis::Rows`].
+    /// The headers of the visible items on `axis`, in drawn order (the
+    /// pinned Strip, then the scrolling Strip): column headers for
+    /// [`Axis::Cols`], row headers for [`Axis::Rows`].
     pub fn headers(&self, axis: Axis) -> impl Iterator<Item = HeaderPlacement> + 'a {
         let grid = self.grid;
         let across = axis.other();
@@ -391,7 +425,7 @@ impl<'a> Snapshot<'a> {
             .filter(|r| *r.span(across) == (0..self.count(across)))
             .map(|r| r.span(axis).clone());
         let hovered = grid.hovered;
-        self.strip(axis).iter().map(move |item| {
+        self.drawn(axis).map(move |item| {
             let (x, y, width, height) = match axis {
                 Axis::Rows => (0.0, item.offset, thickness, item.size),
                 Axis::Cols => (item.offset, 0.0, item.size, thickness),
@@ -462,9 +496,21 @@ impl<'a> Snapshot<'a> {
             _ => return None,
         };
         let st = self.grid.axis(axis);
+        if let Some(item) = self
+            .pinned(axis, Edge::Leading)
+            .iter()
+            .find(|i| i.key == Some(key))
+        {
+            return Some(ResizeGuide {
+                axis,
+                key: Some(key),
+                offset: item.end(),
+                size: item.size,
+            });
+        }
         let position = st.measure.position_of(key)?;
         let size = st.measure.size_at(position);
-        let start = f64::from(st.header) - f64::from(st.anchor.offset)
+        let start = f64::from(st.scroll_start()) - f64::from(st.anchor.offset)
             + st.measure.distance(st.anchor.position, position);
         Some(ResizeGuide {
             axis,
@@ -489,7 +535,7 @@ impl<'a> Snapshot<'a> {
             return None;
         };
         let st = self.grid.axis(axis);
-        let start = f64::from(st.header) - f64::from(st.anchor.offset)
+        let start = f64::from(st.scroll_start()) - f64::from(st.anchor.offset)
             + st.measure.distance(st.anchor.position, to);
         Some(DropIndicator {
             axis,
@@ -503,7 +549,7 @@ impl<'a> Snapshot<'a> {
     /// a header, and a border, is not part of it.
     pub fn hovered_header(&self) -> Option<(Axis, &'a StripItem)> {
         let (axis, position) = self.grid.hovered?;
-        let item = self.strip(axis).iter().find(|i| i.position == position)?;
+        let item = self.drawn(axis).find(|i| i.position == position)?;
         Some((axis, item))
     }
 }

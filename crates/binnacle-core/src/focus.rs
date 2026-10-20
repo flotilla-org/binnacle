@@ -16,7 +16,7 @@ impl FocusEnd {
     pub(crate) fn at(st: &AxisState, position: Position) -> Self {
         FocusEnd {
             position,
-            key: st.measure.key_at(position),
+            key: st.key_at(position),
         }
     }
 }

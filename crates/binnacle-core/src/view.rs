@@ -714,7 +714,7 @@ impl Grid {
     /// `axis`: cycles the other axis's sort by that item (the rows' by a
     /// column, the columns' by a row).
     pub(crate) fn sort_click(&mut self, axis: Axis, position: Position, modifiers: Modifiers) {
-        let Some(key) = self.axis(axis).measure.key_at(position) else {
+        let Some(key) = self.axis(axis).key_at(position) else {
             return;
         };
         let sorted = axis.other();
