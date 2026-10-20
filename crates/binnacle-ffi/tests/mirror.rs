@@ -7,7 +7,7 @@ use std::slice;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
+    Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
     Located, Mode, Modifiers, PointerEvent, PointerKind, Searched, SelectionUnit, Snapshot,
     SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
     ViewSpec, Viewport,
@@ -36,6 +36,8 @@ enum Op {
     Action(Action),
     SetSize(Axis, u64, f32),
     SetHeader(Axis, f32),
+    Pin(Axis, u64),
+    Unpin(Axis, u64),
     /// A press `inset` inside the end of the band leading the axis (where its
     /// edge is, given a Gap), halfway across the other band as of the last
     /// frame, with this click count; then a move by `travel` along the axis.
@@ -387,7 +389,9 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(17)) {
+    match tc.draw(gs::integers::<u8>().max_value(19)) {
+        18 => Op::Pin(tc.draw(axes()), tc.draw(gs::integers::<u64>().max_value(10))),
+        19 => Op::Unpin(tc.draw(axes()), tc.draw(gs::integers::<u64>().max_value(10))),
         16 => Op::SetHeader(
             tc.draw(axes()),
             tc.draw(hegel::one_of!(
@@ -448,7 +452,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(35))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(37))),
     }
 }
 
@@ -673,6 +677,9 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 };
                 binnacle_grid_set_find(h, &find)
             }
+            35 => binnacle_grid_pin(h, ROWS, 1, 0),
+            36 => binnacle_grid_pin(h, 2, BINNACLE_EDGE_LEADING, 0),
+            37 => binnacle_grid_unpin(h, 2, 0),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -702,7 +709,11 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         assert_eq!(a.thumb.fraction.to_bits(), thumb.fraction.to_bits());
         assert_eq!(a.thumb.size.to_bits(), thumb.size.to_bits());
         let strip = unsafe { slice::from_raw_parts(a.strip, a.strip_len) };
-        let expected = rust.strip(axis);
+        let expected: Vec<_> = rust.drawn(axis).collect();
+        assert_eq!(a.pinned_len, rust.pinned(axis, Edge::Leading).len());
+        let scrolling = rust.scrolling(axis);
+        assert!(same_f32(a.scrolling_start, scrolling.start));
+        assert!(same_f32(a.scrolling_end, scrolling.end));
         assert_eq!(strip.len(), expected.len(), "{axis:?} strip length");
         for (got, want) in strip.iter().zip(expected) {
             assert_eq!(got.position, want.position);
@@ -805,7 +816,8 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             .all(|(g, w)| rect(g, w))
     );
     let cells = unsafe { slice::from_raw_parts(c.cell_states, c.cell_states_len) };
-    let (rows, cols) = (rust.rows(), rust.cols());
+    let rows: Vec<_> = rust.drawn(Axis::Rows).collect();
+    let cols: Vec<_> = rust.drawn(Axis::Cols).collect();
     assert_eq!(cells.len(), rows.len() * cols.len());
     for (r, row) in rows.iter().enumerate() {
         for (k, col) in cols.iter().enumerate() {
@@ -839,7 +851,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         Some((axis, item)) => {
             assert_eq!(c.has_hovered_header, 1);
             assert_eq!(c.hovered_axis, tag(axis));
-            assert_eq!(rust.strip(axis)[c.hovered_index], *item);
+            assert_eq!(rust.drawn(axis).nth(c.hovered_index), Some(item));
         }
     }
 }
@@ -1284,6 +1296,16 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 Op::SetHeader(axis, thickness) => {
                     grid.set_header(axis, thickness);
                     binnacle_grid_set_header(h, tag(axis), thickness)
+                }
+                Op::Pin(axis, key) => {
+                    let key = key + 5000 * u64::from(axis == Axis::Cols);
+                    grid.pin(axis, Edge::Leading, Key(key));
+                    binnacle_grid_pin(h, tag(axis), BINNACLE_EDGE_LEADING, key)
+                }
+                Op::Unpin(axis, key) => {
+                    let key = key + 5000 * u64::from(axis == Axis::Cols);
+                    grid.unpin(axis, Key(key));
+                    binnacle_grid_unpin(h, tag(axis), key)
                 }
                 Op::BandDrag {
                     axis,

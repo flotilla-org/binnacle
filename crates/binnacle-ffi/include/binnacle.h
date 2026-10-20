@@ -27,6 +27,10 @@ extern "C" {
 #define BINNACLE_ROWS 0
 #define BINNACLE_COLS 1
 
+/* An edge of an axis items can be pinned to: the left of the columns, the
+ * top of the rows. */
+#define BINNACLE_EDGE_LEADING 0
+
 /* BinnacleSnapshot.damage bits. */
 #define BINNACLE_DAMAGE_LAYOUT 1u
 #define BINNACLE_DAMAGE_SELECTION 2u
@@ -356,6 +360,8 @@ typedef struct {
   float gap;
   BinnacleScrollAnchor anchor;
   BinnacleThumb thumb;
+  /* The drawn items in drawn order: the leading pinned Strip's pinned_len
+   * items, then the scrolling Strip. */
   const BinnacleStripItem *strip;
   size_t strip_len;
   /* The headers of the strip's items, in strip order (headers_len ==
@@ -379,6 +385,13 @@ typedef struct {
   /* The axis's picked Keys, in Key order. */
   const uint64_t *picked;
   size_t picked_len;
+  /* How many of strip's items lead it as the pinned Strip: drawn from the
+   * header band on, whatever the scroll. */
+  size_t pinned_len;
+  /* Where the scrolling Strip draws along the axis: clip its items (those
+   * after the pinned ones) to [scrolling_start, scrolling_end). */
+  float scrolling_start;
+  float scrolling_end;
 } BinnacleAxisSnapshot;
 
 /*
@@ -595,6 +608,14 @@ int binnacle_grid_set_size(BinnacleGrid *grid, uint32_t axis, uint64_t key, floa
  * band, COLS for the row-number band. 0 hides the band. Values that are not
  * finite and non-negative are ignored. */
 int binnacle_grid_set_header(BinnacleGrid *grid, uint32_t axis, float thickness);
+
+/* Pins the item with key on axis to edge (BINNACLE_EDGE_LEADING), after the
+ * keys pinned there before: it is drawn in the pinned Strip whatever the sort
+ * or scroll. A key outside the Window is found with a LOCATE Effect. */
+int binnacle_grid_pin(BinnacleGrid *grid, uint32_t axis, uint32_t edge, uint64_t key);
+
+/* Unpins the item with key on axis; the scroll stays where it is. */
+int binnacle_grid_unpin(BinnacleGrid *grid, uint32_t axis, uint64_t key);
 
 /* Lays out the frame and fills out. */
 int binnacle_grid_snapshot(BinnacleGrid *grid, BinnacleSnapshot *out);

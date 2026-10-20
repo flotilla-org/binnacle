@@ -10,12 +10,13 @@ use std::slice;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Grid,
+    Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Grid,
     HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect,
     Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
     TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
+pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_ROWS: u32 = 0;
 pub const BINNACLE_COLS: u32 = 1;
 
@@ -349,6 +350,9 @@ pub struct BinnacleAxisSnapshot {
     pub conditions_len: usize,
     pub picked: *const u64,
     pub picked_len: usize,
+    pub pinned_len: usize,
+    pub scrolling_start: f32,
+    pub scrolling_end: f32,
 }
 
 #[repr(C)]
@@ -1179,6 +1183,32 @@ pub unsafe extern "C" fn binnacle_grid_set_size(
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_pin(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    edge_tag: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let edge = (edge_tag == BINNACLE_EDGE_LEADING).then_some(Edge::Leading)?;
+            axis(axis_tag).map(|axis| h.grid.pin(axis, edge, Key(key)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_unpin(grid: *mut BinnacleGrid, axis_tag: u32, key: u64) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| axis(axis_tag).map(|axis| h.grid.unpin(axis, Key(key)))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_set_header(
     grid: *mut BinnacleGrid,
     axis_tag: u32,
@@ -1214,7 +1244,7 @@ impl BinnacleGrid {
         for axis in Axis::ALL {
             let strip = &mut self.strips[axis.index()];
             strip.clear();
-            strip.extend(snap.strip(axis).iter().map(BinnacleStripItem::from));
+            strip.extend(snap.drawn(axis).map(BinnacleStripItem::from));
             let headers = &mut self.headers[axis.index()];
             headers.clear();
             headers.extend(snap.headers(axis).map(|h| {
@@ -1255,8 +1285,8 @@ impl BinnacleGrid {
                 .map(|&r| BinnacleRect::from(r)),
         );
         self.cells.clear();
-        for row in snap.rows() {
-            for col in snap.cols() {
+        for row in snap.drawn(Axis::Rows) {
+            for col in snap.drawn(Axis::Cols) {
                 let state = snap.cell_state(row, col);
                 self.cells.push(
                     bit(state.focused, BINNACLE_CELL_FOCUSED)
@@ -1301,6 +1331,9 @@ impl BinnacleGrid {
                 conditions_len: listed.len(),
                 picked: picked.as_ptr(),
                 picked_len: picked.len(),
+                pinned_len: snap.pinned(axis, Edge::Leading).len(),
+                scrolling_start: snap.scrolling(axis).start,
+                scrolling_end: snap.scrolling(axis).end,
                 selection_range: range.as_ref().map_or_else(Default::default, |r| {
                     let span = r.span(axis);
                     BinnacleRange {
@@ -1311,10 +1344,7 @@ impl BinnacleGrid {
             }
         };
         let hovered = snap.hovered_header().and_then(|(axis, item)| {
-            let i = snap
-                .strip(axis)
-                .iter()
-                .position(|s| s.position == item.position)?;
+            let i = snap.drawn(axis).position(|s| s.position == item.position)?;
             Some((axis, i))
         });
         let find = snap.find().map(|f| find_to_c(f, &mut self.find_snapshot));
