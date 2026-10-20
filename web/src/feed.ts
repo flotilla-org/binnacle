@@ -300,7 +300,8 @@ export function createFeed<RowId, ColId, V>(
     const { interner, position } = axes[axis];
     axes[axis].failed = null;
     reflag(axis);
-    remark(axis === "rows" && notice.type !== "Reordered");
+    // Items may come or go on either axis, except in a reorder.
+    remark(notice.type !== "Reordered");
     switch (notice.type) {
       case "Reset":
         cache.clear();
