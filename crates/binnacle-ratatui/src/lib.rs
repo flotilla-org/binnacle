@@ -118,13 +118,16 @@ pub trait Content {
 }
 
 /// Whether anything [`render_with`] draws from `snapshot` moves with time:
-/// the Shimmer on a visible header whose requested sort is not applied yet,
-/// or on the visible focused cell while its Locate is pending. A host
-/// redraws on a timer only while this is true (or its own data ticks).
+/// the Shimmer on a visible header whose requested sort is not applied yet
+/// or whose move is unanswered, or on the visible focused cell while its
+/// Locate is pending. A host redraws on a timer only while this is true (or
+/// its own data ticks).
 pub fn animating(snapshot: &Snapshot) -> bool {
-    let sorting = Axis::ALL
-        .into_iter()
-        .any(|axis| snapshot.headers(axis).any(|h| h.sort.pending));
+    let sorting = Axis::ALL.into_iter().any(|axis| {
+        snapshot
+            .headers(axis)
+            .any(|h| h.sort.pending || h.move_pending)
+    });
     sorting || locating(snapshot) && snapshot.focus_rect().is_some()
 }
 
@@ -235,7 +238,7 @@ pub fn render_with(
             let style = style.patch(theme.loading);
             put(buf, area, (start, 0.0), clip, LOADING, style);
         }
-        if h.sort.pending {
+        if h.sort.pending || h.move_pending {
             let (x0, x1) = (cell(start).max(cell(from)), cell(end).min(area_end));
             shimmer(buf, area, (x0..x1, 0), &sweep, 0);
         }
@@ -291,7 +294,7 @@ pub fn render_with(
             });
             put(buf, area, (at, r.offset), clip, &marker, style);
         }
-        if h.sort.pending {
+        if h.sort.pending || h.move_pending {
             let x1 = cell(left).min(area_end);
             for y in cell(r.offset.max(from_y))..cell(r.end()) {
                 shimmer(buf, area, (0..x1, y), &sweep, 0);
@@ -397,11 +400,15 @@ pub fn render_with(
         empty(ctx.empty, theme, (left, top), area, buf);
     }
     border::draw(snapshot, ctx.border, theme, area, buf);
-    let mut mark = |x: i64, y: i64, ch: char, style: Style| {
+    // Restyles a cell, and writes `ch` into it if given.
+    let mut mark = |x: i64, y: i64, ch: Option<char>, style: Style| {
         if (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y) {
             let (x, y) = (area.x + x as u16, area.y + y as u16);
             if let Some(c) = buf.cell_mut((x, y)) {
-                c.set_char(ch).set_style(style);
+                if let Some(ch) = ch {
+                    c.set_char(ch);
+                }
+                c.set_style(style);
             }
         }
     };
@@ -412,12 +419,22 @@ pub fn render_with(
         match drop.axis {
             Axis::Cols => {
                 for y in 0..i64::from(area.height) {
-                    mark(at, y, '┃', style);
+                    mark(at, y, Some('┃'), style);
+                }
+            }
+            // Rows without a Gap leave no cell between them, so the line
+            // underlines the row above rather than hiding the row below.
+            Axis::Rows if snapshot.rows().iter().any(|r| cell(r.offset) == at) => {
+                let under = Style::new()
+                    .add_modifier(Modifier::UNDERLINED)
+                    .underline_color(style.fg.unwrap_or(Color::Reset));
+                for x in 0..i64::from(area.width) {
+                    mark(x, at - 1, None, under);
                 }
             }
             Axis::Rows => {
                 for x in 0..i64::from(area.width) {
-                    mark(x, at, '━', style);
+                    mark(x, at, Some('━'), style);
                 }
             }
         }
@@ -428,12 +445,12 @@ pub fn render_with(
         match guide.axis {
             Axis::Cols if at >= cell(left) => {
                 for y in 0..i64::from(area.height) {
-                    mark(at, y, '│', style);
+                    mark(at, y, Some('│'), style);
                 }
             }
             Axis::Rows if at >= cell(top) => {
                 for x in 0..i64::from(area.width) {
-                    mark(x, at, '─', style);
+                    mark(x, at, Some('─'), style);
                 }
             }
             _ => {}
@@ -555,10 +572,11 @@ fn put(
     }
 }
 
-/// A status line for `snapshot`: the gesture in progress, or a hint when the
-/// pointer is over a header border. A terminal cannot change the pointer's
-/// shape, so this stands in for the cursor hint. Empty when there is nothing
-/// to say.
+/// A status line for `snapshot`: the gesture in progress, else why the
+/// Table Source refused the last move, or that a move waits for its answer,
+/// else a hint when the pointer is over a header border. A terminal cannot
+/// change the pointer's shape, so this stands in for the cursor hint. Empty
+/// when there is nothing to say.
 pub fn status(snapshot: &Snapshot) -> String {
     let noun = |axis| match axis {
         Axis::Rows => "row",
@@ -588,6 +606,13 @@ pub fn status(snapshot: &Snapshot) -> String {
             format!("moving {}{plural} {} to {to}", noun(axis), keys.join(","))
         }
         Mode::Idle => {
+            if let Some((_, reason)) = snapshot.move_refusal() {
+                return reason.to_string();
+            }
+            if let Some((axis, keys)) = snapshot.pending_move() {
+                let plural = if keys.len() == 1 { "" } else { "s" };
+                return format!("moving {}{plural}…", noun(axis));
+            }
             let axis = match snapshot.cursor() {
                 Cursor::ResizeCol => Axis::Cols,
                 Cursor::ResizeRow => Axis::Rows,

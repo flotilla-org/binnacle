@@ -7,7 +7,10 @@
 //! pending. Focus and picks stay on their records. Drag a column header to
 //! move the column (a selected column takes the other selected ones with
 //! it); a cyan line shows where it will drop, and widths go with their
-//! columns. Press Ctrl+R to show only records with a crew of 6 or more, again
+//! columns. Drag a row header to move the record the same way. Moving on a
+//! sorted axis keeps the order shown, drops the record there and clears the
+//! sort; `--refuse-sorted-moves` instead refuses while sorted, and the
+//! status line says why. Press Ctrl+R to show only records with a crew of 6 or more, again
 //! for a crew of 13 or more (there are none, so the body says "No rows match
 //! the filter"), and again to show them all: focus stays on its record, or
 //! moves to the nearest one left in sort order; the topmost record shown
@@ -26,8 +29,8 @@
 //! Source, so a sort by price or load holds as values move, and a column
 //! filter (Alt+Down) takes each change and each new ticker as it arrives.
 //! `binnacle-demo --slow` shows the records with sorts and Locates answered
-//! only after 1.5 s: a Shimmer sweeps across a header while its sort is
-//! pending, and the focused cell pulses while its Locate is. A filter typed
+//! only after 1.5 s: a Shimmer sweeps across a header while its sort or
+//! move is pending, and the focused cell pulses while its Locate is. A filter typed
 //! there leaves the rows as they are while the status line says
 //! "filtering…", and a newer one answers the one waiting at once with the
 //! filter in force, so only the last is drawn. The demo redraws
@@ -152,8 +155,8 @@ use binnacle_core::{
     SelectionUnit, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
-    FindStep, IdentitySource, MemorySource, Moved, PumpSource, Transposed, Viewed, answer_move,
-    pump, query_error, transpose_find,
+    FindStep, IdentitySource, MemorySource, MovePolicy, Moved, PumpSource, Transposed, Viewed,
+    answer_move, pump, query_error, transpose_find,
 };
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
@@ -1193,9 +1196,16 @@ fn preset() -> Result<Preset, String> {
     }
 }
 
-/// The records' In-Memory Table Source: every column sorts and filters.
+/// The records' In-Memory Table Source: every column sorts and filters, and
+/// records and fields move.
 fn records_source(rows: &[Record]) -> MemorySource<Record> {
+    let policy = if std::env::args().any(|a| a == "--refuse-sorted-moves") {
+        MovePolicy::Refuse
+    } else {
+        MovePolicy::Bake
+    };
     MemorySource::<Record>::new(rows.len(), HEADERS.len())
+        .with_move_policy(policy)
         .i64_column(Key(0), |r| Some(r.id))
         .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
         .f64_column(Key(2), |r| r.weight)

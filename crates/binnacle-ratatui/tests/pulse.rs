@@ -5,7 +5,7 @@ use std::time::Duration;
 use binnacle_core::{
     Action, Axis, AxisConfig, Effect, FocusStep, Grid, Key, Modifiers, PointerEvent, Viewport,
 };
-use binnacle_memory::{MemorySource, PumpSource};
+use binnacle_memory::{MemorySource, PumpSource, answer_move};
 use binnacle_ratatui::{ColorSupport, Content, RenderContext, Theme, animating, render_with};
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -36,8 +36,8 @@ impl Content for Labels {
     }
 }
 
-/// A host whose Table Source answers only when told to: sort requests and
-/// Locates wait in `held`, as from a slow source.
+/// A host whose Table Source answers only when told to: sort requests,
+/// Locates and moves wait in `held`, as from a slow source.
 struct Host {
     grid: Grid,
     rows: Vec<[i64; COLS]>,
@@ -52,10 +52,11 @@ impl Host {
         for c in 0..COLS {
             source = source.i64_column(Key(c as u64), move |r: &[i64; COLS]| Some(r[c]));
         }
-        let grid = Grid::new(
+        let mut grid = Grid::new(
             AxisConfig::new(ROWS as u64, 1.0).header(1.0),
             AxisConfig::new(COLS as u64, 6.0).header(3.0).gap(1.0),
         );
+        grid.set_movable(Axis::Rows, true);
         let mut host = Host {
             grid,
             rows,
@@ -72,7 +73,7 @@ impl Host {
         while let Some(stamped) = self.grid.poll_effect() {
             if matches!(
                 stamped.effect,
-                Effect::ViewRequested { .. } | Effect::Locate { .. }
+                Effect::ViewRequested { .. } | Effect::Locate { .. } | Effect::MoveRequested { .. }
             ) {
                 self.held.push(stamped.effect);
             }
@@ -103,7 +104,10 @@ impl Host {
                 let answer = source.locate(axis, key);
                 self.grid.located(axis, key, answer);
             }
-            _ => unreachable!("only sorts and Locates are held"),
+            Effect::MoveRequested { axis, keys, to } => {
+                answer_move(&mut self.grid, &mut source, axis, &keys, to);
+            }
+            _ => unreachable!("only sorts, Locates and moves are held"),
         }
         drop(source);
         self.frame();
@@ -117,6 +121,16 @@ impl Host {
         self.grid
             .pointer(PointerEvent::up(x, 0.0).modifiers(modifiers));
         // Off the headers, so none is drawn hovered.
+        self.grid.pointer(PointerEvent::moved(23.0, 5.0));
+        self.frame();
+    }
+
+    /// Drags the header of the row shown on line `from` to line `to`.
+    fn drag_row_header(&mut self, from: u16, to: u16) {
+        let (from, to) = (f32::from(from) + 0.5, f32::from(to) + 0.5);
+        self.grid.pointer(PointerEvent::down(1.0, from));
+        self.grid.pointer(PointerEvent::moved(1.0, to));
+        self.grid.pointer(PointerEvent::up(1.0, to));
         self.grid.pointer(PointerEvent::moved(23.0, 5.0));
         self.frame();
     }
@@ -236,6 +250,18 @@ fn without_full_rgb_the_shimmer_steps_through_dim_normal_and_bold() {
 }
 
 #[test]
+fn a_moved_row_s_header_shimmers_until_the_move_is_answered() {
+    let mut host = Host::new();
+    host.drag_row_header(1, 4);
+    let theme = Theme::classic();
+    let mut out = over_time(&mut host, &theme, ColorSupport::TrueColor, &[0, 250]);
+    host.answer();
+    assert!(!animating(&host.grid.snapshot()));
+    out += &over_time(&mut host, &theme, ColorSupport::TrueColor, &[1000]);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn the_focused_cell_pulses_while_its_locate_is_pending() {
     let mut host = sorting();
     // The sort is answered; the focused row's Locate is now held.
@@ -286,7 +312,7 @@ fn animating_is_exactly_when_the_frame_moves_with_time(tc: TestCase) {
     ]));
     let steps = tc.draw(gs::integers::<usize>().max_value(12));
     for _ in 0..steps {
-        match tc.draw(gs::integers::<u8>().max_value(4)) {
+        match tc.draw(gs::integers::<u8>().max_value(5)) {
             0 => {
                 let col = tc.draw(gs::integers::<u16>().max_value(2));
                 let shift = tc.draw(gs::booleans());
@@ -315,6 +341,11 @@ fn animating_is_exactly_when_the_frame_moves_with_time(tc: TestCase) {
             3 => {
                 let dy = f32::from(tc.draw(gs::integers::<i8>().min_value(-4).max_value(4)));
                 host.action(Action::Scroll { dx: 0.0, dy });
+            }
+            4 => {
+                let from = tc.draw(gs::integers::<u16>().min_value(1).max_value(5));
+                let to = tc.draw(gs::integers::<u16>().min_value(1).max_value(5));
+                host.drag_row_header(from, to);
             }
             _ => {
                 let row = tc.draw(gs::integers::<u64>().max_value(ROWS as u64 - 1));

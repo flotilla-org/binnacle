@@ -225,6 +225,7 @@ fn drags_draw_over_the_borders() {
         ] {
             let style = BorderStyle::new(extent, weight).band_rules(true);
             let mut grid = fixture();
+            grid.set_movable(Axis::Cols, true);
             window(&mut grid, AREA);
             drag(&mut grid);
             out += &format!("--- {name}, {style}\n{}\n", text(&draw(&mut grid, style)));
