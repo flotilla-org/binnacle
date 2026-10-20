@@ -391,6 +391,10 @@ pub struct BinnacleAxisSnapshot {
     pub trailing_len: usize,
     pub scrolling_start: f32,
     pub scrolling_end: f32,
+    pub leading_start: f32,
+    pub leading_end: f32,
+    pub trailing_start: f32,
+    pub trailing_end: f32,
     pub movable: u32,
     pub hide_support: u32,
     pub hidden: *const u64,
@@ -1381,6 +1385,22 @@ pub unsafe extern "C" fn binnacle_grid_set_pin_zone(
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_min_scrolling(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    length: f32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.set_min_scrolling(axis, length))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_set_edge_gap(
     grid: *mut BinnacleGrid,
     axis_tag: u32,
@@ -1522,6 +1542,10 @@ impl BinnacleGrid {
                 trailing_len: snap.pinned(axis, Edge::Trailing).len(),
                 scrolling_start: snap.scrolling(axis).start,
                 scrolling_end: snap.scrolling(axis).end,
+                leading_start: snap.pinned_region(axis, Edge::Leading).start,
+                leading_end: snap.pinned_region(axis, Edge::Leading).end,
+                trailing_start: snap.pinned_region(axis, Edge::Trailing).start,
+                trailing_end: snap.pinned_region(axis, Edge::Trailing).end,
                 movable: flag(snap.movable(axis)),
                 hide_support: flag(snap.hide_support(axis)),
                 hidden: hidden.as_ptr(),

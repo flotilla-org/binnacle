@@ -420,7 +420,8 @@ typedef struct {
   const uint64_t *picked;
   size_t picked_len;
   /* How many of strip's items lead it as the leading pinned Strip: drawn
-   * from the header band on, whatever the scroll. */
+   * from the header band on, whatever the scroll (slid back while focus is
+   * on one it clips). */
   size_t pinned_len;
   /* How many of strip's items end it as the trailing pinned Strip: drawn
    * ending flush with the viewport's far end, whatever the scroll. */
@@ -429,6 +430,16 @@ typedef struct {
    * between the pinned ones) to [scrolling_start, scrolling_end). */
   float scrolling_start;
   float scrolling_end;
+  /* Where each pinned Strip draws along the axis: clip the leading pinned
+   * items to [leading_start, leading_end) and the trailing ones to
+   * [trailing_start, trailing_end). Too long to leave the minimum scrolling
+   * region (binnacle_grid_set_min_scrolling), a Strip is clipped at its
+   * inside end, the trailing one first; one clipped whole still lists its
+   * items. */
+  float leading_start;
+  float leading_end;
+  float trailing_start;
+  float trailing_end;
   /* Header drags move the axis's items (binnacle_grid_set_movable). */
   uint32_t movable;
   /* Whether the Table Source hides items of the axis: offer Hide only then. */
@@ -724,6 +735,13 @@ int binnacle_grid_set_edge_gap(BinnacleGrid *grid, uint32_t axis, float gap);
  * quarter of the axis's default size. Values that are not finite and
  * non-negative are ignored. */
 int binnacle_grid_set_pin_zone(BinnacleGrid *grid, uint32_t axis, float size);
+
+/* The least length along axis the pinned Strips leave to the scrolling Strip
+ * (0 at first): pinned Strips longer than the rest are clipped at their inside
+ * ends, the trailing one first, and nothing unpins. Focus on a clipped pinned
+ * item slides its Strip to show it. Values that are not finite and
+ * non-negative are ignored. */
+int binnacle_grid_set_min_scrolling(BinnacleGrid *grid, uint32_t axis, float length);
 
 /* Pins the item with key on axis to edge (BINNACLE_EDGE_*), after the keys
  * pinned there before: it is drawn in that edge's pinned Strip whatever the

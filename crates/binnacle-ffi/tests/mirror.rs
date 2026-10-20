@@ -38,6 +38,7 @@ enum Op {
     SetHeader(Axis, f32),
     SetEdgeGap(Axis, f32),
     SetPinZone(Axis, f32),
+    SetMinScrolling(Axis, f32),
     Pin(Axis, Edge, u64),
     Unpin(Axis, u64),
     Freeze(Axis, u64),
@@ -424,12 +425,19 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(25)) {
+    match tc.draw(gs::integers::<u8>().max_value(26)) {
         25 => Op::SetPinZone(
             tc.draw(axes()),
             tc.draw(hegel::one_of!(
                 gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
                 gs::floats::<f32>().min_value(0.0).max_value(8.0),
+            )),
+        ),
+        26 => Op::SetMinScrolling(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
+                gs::floats::<f32>().min_value(0.0).max_value(40.0),
             )),
         ),
         24 => Op::SetEdgeGap(
@@ -521,7 +529,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(48))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(49))),
     }
 }
 
@@ -760,6 +768,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             46 => binnacle_grid_set_edge_gap(h, 2, 1.0),
             47 => binnacle_grid_set_hide_cap(h, 2, 1),
             48 => binnacle_grid_set_pin_zone(h, 2, 1.0),
+            49 => binnacle_grid_set_min_scrolling(h, 2, 1.0),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -795,6 +804,11 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         let scrolling = rust.scrolling(axis);
         assert!(same_f32(a.scrolling_start, scrolling.start));
         assert!(same_f32(a.scrolling_end, scrolling.end));
+        let [leading, trailing] = Edge::ALL.map(|edge| rust.pinned_region(axis, edge));
+        assert!(same_f32(a.leading_start, leading.start));
+        assert!(same_f32(a.leading_end, leading.end));
+        assert!(same_f32(a.trailing_start, trailing.start));
+        assert!(same_f32(a.trailing_end, trailing.end));
         assert_eq!(strip.len(), expected.len(), "{axis:?} strip length");
         for (got, want) in strip.iter().zip(expected) {
             assert_eq!(got.position, want.position);
@@ -1515,6 +1529,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 Op::SetEdgeGap(axis, gap) => {
                     grid.set_edge_gap(axis, gap);
                     binnacle_grid_set_edge_gap(h, tag(axis), gap)
+                }
+                Op::SetMinScrolling(axis, length) => {
+                    grid.set_min_scrolling(axis, length);
+                    binnacle_grid_set_min_scrolling(h, tag(axis), length)
                 }
                 Op::Pin(axis, edge, key) => {
                     let key = key + 5000 * u64::from(axis == Axis::Cols);
