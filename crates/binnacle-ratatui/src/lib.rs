@@ -87,9 +87,18 @@ pub trait Content {
         false
     }
 
-    /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
-    /// unless overridden.
-    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+    /// The Cell Renderer for the cell at `row`, `col`:
+    /// [`Content::column_renderer`] unless overridden. A column-major table
+    /// overrides this to choose by row. Return a renderer borrowed from
+    /// `self` where you can, since it is asked once per cell drawn.
+    fn renderer(&self, row: Key, col: Key) -> Box<dyn CellRenderer + '_> {
+        let _ = row;
+        self.column_renderer(col)
+    }
+
+    /// Column `col`'s Cell Renderer, for a table that chooses by column:
+    /// left-aligned [`Content::cell`] text unless overridden.
+    fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
         let _ = col;
         Box::new(TextRenderer::new(move |row, col| self.cell(row, col)))
     }
@@ -213,9 +222,6 @@ pub fn render_with(
     }
     let locating = locating(snapshot);
     let picked = snapshot.picked();
-    let renderers: Vec<_> = (snapshot.cols().iter())
-        .map(|c| c.key.map(|k| content.renderer(k)))
-        .collect();
     let hovered_col = match snapshot.hovered_header() {
         Some((Axis::Cols, c)) => Some(c.position),
         _ => None,
@@ -246,7 +252,7 @@ pub fn render_with(
         }
         let in_picked = r.key.is_some_and(|k| picked.contains(&k));
         let row_hovered = h.hovered;
-        for (c, renderer) in snapshot.cols().iter().zip(&renderers) {
+        for c in snapshot.cols() {
             let state = snapshot.cell_state(r, c);
             let status = CellStatus {
                 focused: state.focused,
@@ -293,9 +299,9 @@ pub fn render_with(
                 let x = canvas.visible_x().start;
                 canvas.print(x, y, &blank, row_style);
             }
-            match (r.key, c.key, renderer) {
-                (Some(row), Some(col), Some(renderer)) => {
-                    renderer.draw(row, col, &mut canvas);
+            match (r.key, c.key) {
+                (Some(row), Some(col)) => {
+                    content.renderer(row, col).draw(row, col, &mut canvas);
                     if state.current_match {
                         canvas.patch(theme.find_current);
                     } else if content.marked(row, col) {

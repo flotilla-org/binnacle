@@ -789,7 +789,7 @@ impl Content for Text<'_> {
         }
     }
 
-    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+    fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
         let text = TextRenderer::new(move |row, col| self.cell(row, col));
         let Text::Live(rows) = *self else {
             return Box::new(text);
@@ -840,8 +840,8 @@ impl Content for Marked<'_> {
         axis == Axis::Rows && self.unmatched.contains(&key)
     }
 
-    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
-        self.text.renderer(col)
+    fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+        self.text.column_renderer(col)
     }
 }
 

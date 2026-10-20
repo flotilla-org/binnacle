@@ -30,8 +30,27 @@ impl Content for Columns<'_> {
         format!("col {}", col.0)
     }
 
-    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+    fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
         Box::new(&*self.renderers[col.0 as usize])
+    }
+}
+
+/// The same renderers by row Key instead, as a column-major table wants:
+/// each column is a ticker and each row one of its fields.
+struct Rows<'a>(Columns<'a>);
+
+impl Content for Rows<'_> {
+    fn cell(&self, _row: Key, _col: Key) -> String {
+        unreachable!("every row has its own renderer")
+    }
+
+    fn column_header(&self, col: Key) -> String {
+        format!("col {}", col.0)
+    }
+
+    fn renderer(&self, row: Key, col: Key) -> Box<dyn CellRenderer + '_> {
+        let _ = col;
+        Box::new(&*self.0.renderers[row.0 as usize])
     }
 }
 
@@ -247,6 +266,49 @@ fn fit_width_is_the_widest_preferred_width_or_header() {
     assert_eq!(fit_width(&ticker, &rows, Key(3)), 10);
     // No rows: the header, "col 1".
     assert_eq!(fit_width(&ticker, &[], Key(1)), 5);
+}
+
+/// The ticker's renderers keyed by row, reading their values by column.
+fn ticker_on_its_side() -> Rows<'static> {
+    let price = |_, col: Key| PRICES[col.0 as usize % 4].to_string();
+    Rows(Columns {
+        renderers: vec![
+            Box::new(TextRenderer::new(price).align(Align::Right)),
+            Box::new(TextRenderer::new(price).align(Align::Center)),
+            Box::new(SparklineRenderer::new(|_, col: Key| {
+                HISTORY[col.0 as usize % 4]
+            })),
+            Box::new(BarRenderer::new(|_, col: Key| LOADS[col.0 as usize % 4])),
+        ],
+    })
+}
+
+#[test]
+fn a_renderer_chosen_per_cell_draws_each_row_its_own_way() {
+    let area = Rect::new(0, 0, 42, 5);
+    let mut grid = ticker_grid();
+    window(&mut grid, area, 4);
+    let theme = Theme::classic();
+    let buf = draw(
+        &grid.snapshot(),
+        &ticker_on_its_side(),
+        &RenderContext::new(&theme).scrollbars(false),
+        area,
+    );
+    insta::assert_snapshot!(text(&buf));
+}
+
+#[test]
+fn fit_width_asks_each_cells_own_renderer() {
+    let sideways = ticker_on_its_side();
+    let rows: Vec<Key> = (0..4).map(Key).collect();
+    // Ticker 3: "4096.25" twice, six history values, and the bar's 10.
+    assert_eq!(fit_width(&sideways, &rows, Key(3)), 10);
+    // Without the bar row: the price, 7.
+    assert_eq!(fit_width(&sideways, &rows[..3], Key(3)), 7);
+    // Ticker 0's price, "7", is narrower than its sparkline.
+    assert_eq!(fit_width(&sideways, &rows[..1], Key(0)), 5);
+    assert_eq!(fit_width(&sideways, &rows[..3], Key(0)), 6);
 }
 
 #[test]
