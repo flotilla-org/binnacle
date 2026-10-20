@@ -2,8 +2,8 @@
 // and the corner where they meet.
 
 import type { AxisName } from "../codes";
-import type { HeaderPlacement, Rect, Snapshot, SortDirection } from "../snapshot";
-import { PAD, clip, drawsIn, type PaintContext } from "./context";
+import { itemSpan, type HeaderPlacement, type Rect, type Snapshot, type SortDirection } from "../snapshot";
+import { PAD, clip, type PaintContext } from "./context";
 import { paintShimmer } from "./pending";
 
 /** The sort marker's triangle, CSS px. */
@@ -165,12 +165,12 @@ export function paintColumnHeaders(p: PaintContext): void {
   ctx.fillStyle = theme.header.background;
   ctx.fillRect(left, 0, p.width - left, top);
   ctx.font = theme.headerFont;
-  for (const h of s.cols.headers) {
+  for (const [i, h] of s.cols.headers.entries()) {
     const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width };
     const loading = h.key === null;
     const text = loading ? "…" : p.content.label("cols", item);
     // A scrolling header slides under the pinned ones.
-    const span = drawsIn(s, "cols", h.rect.x, h.rect.x + h.rect.width);
+    const span = itemSpan(s.cols, i);
     ctx.save();
     clip(ctx, span.start, 0, span.end - span.start, top);
     if (h.hovered) {
@@ -198,10 +198,10 @@ export function paintRowNumbers(p: PaintContext): void {
   ctx.fillRect(0, top, left, p.height - top);
   ctx.font = theme.font;
   ctx.textAlign = "right";
-  for (const h of s.rows.headers) {
+  for (const [i, h] of s.rows.headers.entries()) {
     const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height };
     const text = p.content.label("rows", item);
-    const span = drawsIn(s, "rows", h.rect.y, h.rect.y + h.rect.height);
+    const span = itemSpan(s.rows, i);
     ctx.save();
     clip(ctx, 0, span.start, left, span.end - span.start);
     if (h.hovered) {

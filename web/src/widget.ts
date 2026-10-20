@@ -259,6 +259,9 @@ const HEADER_HEIGHT = 28;
 
 /** How far in from each end a dragged header pins into an empty pinned Strip, in CSS px. */
 const PIN_ZONE = { rows: 4, cols: 16 } as const;
+
+/** The least length, CSS px, the pinned Strips leave the scrolling ones. */
+const MIN_SCROLLING = 50;
 // The grid's surfaces are not text: WebKit would tint a selected canvas. Custom
 // editors and the ARIA table opt back in; the textarea is editable, so it stays selectable.
 const ROOT_STYLE =
@@ -1219,6 +1222,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     // or the far ends, or this far in.
     grid.set_pin_zone(AXIS_CODE.rows, PIN_ZONE.rows);
     grid.set_pin_zone(AXIS_CODE.cols, PIN_ZONE.cols);
+    // Pinned Strips longer than this leaves to scroll are clipped.
+    grid.set_min_scrolling(AXIS_CODE.rows, MIN_SCROLLING);
+    grid.set_min_scrolling(AXIS_CODE.cols, MIN_SCROLLING);
     return grid;
   }
 

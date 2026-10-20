@@ -3,7 +3,8 @@
 // guide and the drop indicator. The resize handles are the Border Style's.
 
 import type { Line } from "../theme";
-import { clip, clipBody, drawsIn, type PaintContext } from "./context";
+import { focusIndex, itemSpan } from "../snapshot";
+import { clip, clipBody, clipCell, type PaintContext } from "./context";
 
 /** Laid over the body after its cells: the selection range and picked rows. */
 export function paintSelection(p: PaintContext): void {
@@ -27,9 +28,9 @@ export function paintHeaderStates(p: PaintContext): void {
   const pickedCols = new Set(s.picked.cols);
   ctx.save();
   clip(ctx, left, 0, p.width - left, top);
-  for (const h of s.cols.headers) {
+  for (const [i, h] of s.cols.headers.entries()) {
     // A scrolling header's states slide under the pinned headers too.
-    const span = drawsIn(s, "cols", h.rect.x, h.rect.x + h.rect.width);
+    const span = itemSpan(s.cols, i);
     const x = Math.max(h.rect.x, span.start);
     const width = Math.min(h.rect.x + h.rect.width, span.end) - x;
     if (h.selected || (movingOn === "cols" && h.key !== null && moving.has(h.key))) {
@@ -44,8 +45,8 @@ export function paintHeaderStates(p: PaintContext): void {
   ctx.restore();
   ctx.save();
   clip(ctx, 0, top, left, p.height - top);
-  for (const h of s.rows.headers) {
-    const span = drawsIn(s, "rows", h.rect.y, h.rect.y + h.rect.height);
+  for (const [i, h] of s.rows.headers.entries()) {
+    const span = itemSpan(s.rows, i);
     const y = Math.max(h.rect.y, span.start);
     const height = Math.min(h.rect.y + h.rect.height, span.end) - y;
     if (h.selected || (movingOn === "rows" && h.key !== null && moving.has(h.key))) {
@@ -67,7 +68,7 @@ export function paintFocus(p: PaintContext): void {
   if (!p.focused || !r) return;
   const line = theme.focus.width;
   ctx.save();
-  clipBody(p, r.x, r.y, r.width, r.height);
+  clipCell(p, focusIndex(s.rows), focusIndex(s.cols));
   ctx.strokeStyle = theme.focus.color;
   ctx.lineWidth = line;
   const x = snap(r.x, pixel) + line / 2;

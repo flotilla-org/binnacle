@@ -269,3 +269,53 @@ test("rows pinned top and bottom draw edges across the grid in the Gaps beside t
     h.destroy();
   }
 });
+
+/** Columns 0 to 4 pinned left and 9 right, 50 px kept to scroll: too wide for the 500 px grid. */
+function overfull(): Harness<number, number, string> {
+  const h = new Harness(table(30, 20));
+  h.grid.set_gap(AXIS_CODE.cols, GAP);
+  h.grid.set_min_scrolling(AXIS_CODE.cols, 50);
+  h.frame();
+  for (const c of [0, 1, 2, 3, 4]) h.grid.pin(AXIS_CODE.cols, EDGE_CODE.leading, h.feed.colKey(c));
+  h.grid.pin(AXIS_CODE.cols, EDGE_CODE.trailing, h.feed.colKey(9));
+  h.drain();
+  h.frame();
+  return h;
+}
+
+test("too wide, the pinned Strips clip at their inside ends, the trailing one first, and nothing unpins", () => {
+  const h = overfull();
+  try {
+    const s = h.frame();
+    expect(s.cols.pinned).toBe(5);
+    expect(s.cols.trailing).toBe(1);
+    // 410 px for the pins and their Gaps: column 4 (376 to 456) clips at 442, column 9 wholly.
+    expect(s.cols.regions).toEqual({ leading: { start: BAND, end: 442 }, trailing: { start: 500, end: 500 } });
+    expect(s.cols.scrolling).toEqual({ start: 446, end: 496 });
+    expect(positions(s)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(pinnedKeys(s, "cols", "trailing")).toEqual([h.feed.colKey(9)]);
+    // The edges sit where the Strips clip.
+    expect(painted(h, theme.pinnedEdge)).toEqual([
+      [444, 0, 1, h.height],
+      [498, 0, 1, h.height],
+    ]);
+  } finally {
+    h.destroy();
+  }
+});
+
+test("focus on a column the trailing Strip clips makes room for it", () => {
+  const h = overfull();
+  try {
+    h.grid.set_focus(h.feed.rowKey(2), h.feed.colKey(9));
+    h.drain();
+    const s = h.frame();
+    expect(s.cols.regions.trailing).toEqual({ start: 420, end: 500 });
+    expect(s.cols.regions.leading).toEqual({ start: BAND, end: 362 });
+    // Column 4 (376 to 456) is now clipped whole, and column 3 in part.
+    expect(positions(s)).toEqual([0, 1, 2, 3, 5, 9]);
+    expect(s.focusRect).toMatchObject({ x: 420, width: COL_WIDTH });
+  } finally {
+    h.destroy();
+  }
+});

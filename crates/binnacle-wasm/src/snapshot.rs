@@ -327,6 +327,11 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         let scrolling = s.scrolling(axis);
         w.num(scrolling.start);
         w.num(scrolling.end);
+        for edge in Edge::ALL {
+            let region = s.pinned_region(axis, edge);
+            w.num(region.start);
+            w.num(region.end);
+        }
         w.len(drawn.len());
         for h in s.headers(axis) {
             let support = h

@@ -127,6 +127,12 @@ impl WebGrid {
         self.grid.set_pin_zone(axis(a), size);
     }
 
+    /// The least length on axis `a` the pinned Strips leave to scroll:
+    /// longer, they clip at their inside ends, the trailing one first.
+    pub fn set_min_scrolling(&mut self, a: u8, length: f32) {
+        self.grid.set_min_scrolling(axis(a), length);
+    }
+
     pub fn set_size(&mut self, a: u8, key: u64, size: f32) {
         self.grid.set_size(axis(a), Key(key), size);
     }

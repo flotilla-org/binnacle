@@ -5,8 +5,8 @@
 // or column are dimmed under a wash.
 
 import type { Align, CellCanvas, CellStatus } from "../renderer";
-import { cellState } from "../snapshot";
-import { PAD, clip, clipBody, drawsIn, type PaintContext } from "./context";
+import { cellState, itemSpan } from "../snapshot";
+import { PAD, clip, clipCell, type PaintContext } from "./context";
 
 /** Paints the body; returns whether a renderer asked for another frame. */
 export function paintBody(p: PaintContext): boolean {
@@ -21,7 +21,7 @@ export function paintBody(p: PaintContext): boolean {
   const cols = s.cols.strip;
   s.rows.strip.forEach((row, i) => {
     if (theme.zebra && row.position % 2 === 1) {
-      const span = drawsIn(s, "rows", row.offset, row.offset + row.size);
+      const span = itemSpan(s.rows, i);
       const y = Math.max(row.offset, span.start);
       ctx.fillStyle = theme.zebra;
       ctx.fillRect(left, y, right - left, Math.min(row.offset + row.size, span.end) - y);
@@ -41,7 +41,7 @@ export function paintBody(p: PaintContext): boolean {
         flashing: row.key === null || col.key === null ? 0 : p.flashes.amount(row.key, col.key, p.now),
       };
       ctx.save();
-      clipBody(p, col.offset, row.offset, col.size, row.size);
+      clipCell(p, i, j);
       ctx.translate(col.offset, row.offset);
       clip(ctx, 0, 0, col.size, row.size);
       cell.place(col.size, row.size, status);

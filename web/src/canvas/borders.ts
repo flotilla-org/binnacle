@@ -6,7 +6,7 @@
 
 import { drawsBandRules, lineWidth, type BorderStyle } from "../border";
 import type { AxisName } from "../codes";
-import { stripOf, type AxisSnapshot, type StripItem } from "../snapshot";
+import { itemSpan, stripOf, type AxisSnapshot, type StripItem } from "../snapshot";
 import type { PaintContext } from "./context";
 
 /** A line centred across `[start, start + size)` and running over `[from, to)`, CSS px. */
@@ -36,16 +36,15 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
   };
   // Where the item at `index` of the axis's drawn items shows: a scrolling
   // item slides under the pinned ones.
-  const shows = (axis: AxisName, index: number, band: number) =>
-    stripOf(s[axis], index) === "scrolling" ? s[axis].scrolling : { start: band, end: s[axis].extent };
+  const shows = (axis: AxisName, index: number) => itemSpan(s[axis], index);
   // The end of the axis's last item, when it is shown: a closing line goes past it.
-  const closing = (axis: AxisName, band: number) => {
+  const closing = (axis: AxisName) => {
     const last = s[axis].strip.at(-1);
-    const span = shows(axis, s[axis].strip.length - 1, band);
+    const span = shows(axis, s[axis].strip.length - 1);
     return last && isLast(axis, last) && end(last) >= span.start ? end(last) : null;
   };
-  const closeX = columns ? closing("cols", left) : null;
-  const closeY = grid ? closing("rows", top) : null;
+  const closeX = columns ? closing("cols") : null;
+  const closeY = grid ? closing("rows") : null;
   const right = Math.max(reach("cols", left), closeX === null ? 0 : closeX + width);
   const bottom = Math.max(reach("rows", top), closeY === null ? 0 : closeY + width);
 
@@ -55,31 +54,31 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
   if (style.extent !== "none") {
     // A Gap's line runs through the body for `columns` (or `grid` for rows);
     // past the axis's last item there is no Gap, only the handle that resizes it.
-    const gaps = (axis: AxisName, band: number, body: boolean, across: number, bandEnd: number) => {
+    const gaps = (axis: AxisName, body: boolean, across: number, bandEnd: number) => {
       const gap = s[axis].gap;
       if (gap <= 0) return;
       for (const [i, item] of s[axis].strip.entries()) {
-        const span = shows(axis, i, band);
+        const span = shows(axis, i);
         if (end(item) < span.start || end(item) > span.end) continue;
         const vertical = axis === "cols";
         if (isLast(axis, item)) line(vertical, end(item), width, bandEnd);
         else line(vertical, end(item), gap, body ? across : bandEnd);
       }
     };
-    gaps("cols", left, columns, bottom, top);
-    gaps("rows", top, grid, right, left);
+    gaps("cols", columns, bottom, top);
+    gaps("rows", grid, right, left);
   }
   if (closeX !== null) line(true, closeX, width, bottom);
   if (closeY !== null) line(false, closeY, width, right);
   if (drawsBandRules(style)) {
     // A rule reaches the handle after the last item, where there is one.
-    const handle = (axis: AxisName, band: number) => (s[axis].gap > 0 ? closing(axis, band) : null);
+    const handle = (axis: AxisName) => (s[axis].gap > 0 ? closing(axis) : null);
     if (left >= 2 * width) {
-      const y = handle("rows", top);
+      const y = handle("rows");
       line(true, left - width, width, y === null ? bottom : Math.max(bottom, y + width));
     }
     if (top >= 2 * width) {
-      const x = handle("cols", left);
+      const x = handle("cols");
       line(false, top - width, width, x === null ? right : Math.max(right, x + width));
     }
   }
@@ -189,13 +188,12 @@ export function paintPinnedEdges(p: PaintContext): void {
       if (axis === "cols") ctx.fillRect(line, 0, 1, reach);
       else ctx.fillRect(0, line, reach, 1);
     };
-    const last = a.strip[a.pinned - 1];
-    if (last) {
+    // At the inside end of each pinned Strip's region, where it clips.
+    if (a.pinned > 0) {
       const scrolled = a.anchor.position > 0 || a.anchor.offset > 0;
-      edge(end(last) + a.gap / 2, scrolled ? a.scrolling.start : null, 1);
+      edge(a.regions.leading.end + a.gap / 2, scrolled ? a.scrolling.start : null, 1);
     }
-    const first = a.trailing > 0 ? a.strip[a.strip.length - a.trailing] : undefined;
-    if (first) edge(first.offset - a.gap / 2, scrolledToEnd(a) ? null : a.scrolling.end, -1);
+    if (a.trailing > 0) edge(a.regions.trailing.start - a.gap / 2, scrolledToEnd(a) ? null : a.scrolling.end, -1);
   }
 }
 

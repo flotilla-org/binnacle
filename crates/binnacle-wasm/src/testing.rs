@@ -92,6 +92,12 @@ impl From<Rect> for DumpRect {
 }
 
 #[derive(Serialize)]
+struct DumpRegions {
+    leading: DumpSpan,
+    trailing: DumpSpan,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DumpAxis {
     count: f64,
@@ -106,6 +112,7 @@ struct DumpAxis {
     pinned: f64,
     trailing: f64,
     scrolling: DumpSpan,
+    regions: DumpRegions,
     headers: Vec<DumpHeader>,
     total: Option<f64>,
     quick_filter: Option<DumpTextSupport>,
@@ -419,6 +426,16 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             start: s.scrolling(axis).start.into(),
             end: s.scrolling(axis).end.into(),
         },
+        regions: {
+            let [leading, trailing] = Edge::ALL.map(|edge| {
+                let r = s.pinned_region(axis, edge);
+                DumpSpan {
+                    start: r.start.into(),
+                    end: r.end.into(),
+                }
+            });
+            DumpRegions { leading, trailing }
+        },
         headers: s
             .headers(axis)
             .map(|h| {
@@ -684,7 +701,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 19] = [
+pub const SCENARIOS: [&str; 20] = [
     "plain",
     "busy",
     "resizing",
@@ -704,6 +721,7 @@ pub const SCENARIOS: [&str; 19] = [
     "hidden",
     "pinDrag",
     "unpinDrag",
+    "clipped",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -848,6 +866,22 @@ pub fn scenario(name: &str) -> Grid {
                 forward: true,
                 extend: true,
             });
+        }
+        "clipped" => {
+            // Four columns pinned left and one right, and rows 0 to 5
+            // pinned to the bottom, all too long to leave what each axis
+            // keeps to scroll; focus on column 3, clipped, slides it in.
+            grid.set_min_scrolling(Axis::Cols, 100.0);
+            grid.set_min_scrolling(Axis::Rows, 60.0);
+            for k in 0..4 {
+                grid.pin(Axis::Cols, Edge::Leading, key(k));
+            }
+            grid.pin(Axis::Cols, Edge::Trailing, key(5));
+            for k in 0..6 {
+                grid.pin(Axis::Rows, Edge::Trailing, key(k));
+            }
+            frame(&mut grid);
+            grid.set_focus(key(2), key(3));
         }
         "scrolled" => {
             grid.action(Action::Scroll {

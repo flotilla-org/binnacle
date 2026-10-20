@@ -132,6 +132,12 @@ export interface AxisSnapshot {
   trailing: number;
   /** Where the scrolling Strip draws along the axis; its part-scrolled items reach outside it. */
   scrolling: { start: number; end: number };
+  /**
+   * Where each pinned Strip draws along the axis. Too long to leave the
+   * minimum scrolling region, a pinned Strip is clipped at its inside end
+   * (the trailing one first); one clipped whole still lists its items.
+   */
+  regions: { leading: Span; trailing: Span };
   headers: HeaderPlacement[];
   /** The axis's count before any filter, as the Table Source last gave it; `null` if unknown. */
   total: number | null;
@@ -249,13 +255,19 @@ export function stripOf(axis: AxisSnapshot, index: number): "leading" | "scrolli
 
 /**
  * Where the `index`th drawn item of an axis may draw along it: a pinned item
- * from the Header Band to the viewport's end, a scrolling item between the
- * pinned Strips, so it slides under them.
+ * in its pinned Strip's region, a scrolling item between the pinned Strips,
+ * so it slides under them.
  */
 export function itemSpan(axis: AxisSnapshot, index: number): Span {
-  return stripOf(axis, index) === "scrolling"
-    ? axis.scrolling
-    : { start: axis.header, end: axis.extent };
+  const strip = stripOf(axis, index);
+  return strip === "scrolling" ? axis.scrolling : axis.regions[strip];
+}
+
+/** The index in drawn order of the focused item of an axis, or -1 if it is not drawn. */
+export function focusIndex(axis: AxisSnapshot): number {
+  const f = axis.focus;
+  if (!f || f.key === null) return -1;
+  return axis.strip.findIndex((i) => i.position === f.position && i.key === f.key);
 }
 
 /**
@@ -407,6 +419,7 @@ function readAxis(r: Reader): AxisSnapshot {
   const pinned = r.num();
   const trailing = r.num();
   const scrolling = { start: r.num(), end: r.num() };
+  const regions = { leading: { start: r.num(), end: r.num() }, trailing: { start: r.num(), end: r.num() } };
   const headers = r.list(() => ({
     position: r.num(),
     key: r.optKey(),
@@ -443,6 +456,7 @@ function readAxis(r: Reader): AxisSnapshot {
     pinned,
     trailing,
     scrolling,
+    regions,
     headers,
     total,
     quickFilter,

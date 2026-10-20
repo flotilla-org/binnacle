@@ -6,7 +6,7 @@
 
 import type { AxisName } from "../codes";
 import type { Rect, Snapshot } from "../snapshot";
-import { clipBody, PAD, type PaintContext } from "./context";
+import { clipCell, PAD, type PaintContext } from "./context";
 
 /** How long the shimmer takes to sweep a header, and the pulse to beat once, ms. */
 const PERIOD = 1600;
@@ -71,14 +71,16 @@ export function paintRefusal(p: PaintContext, drop: { axis: AxisName; offset: nu
 export function paintPulse(p: PaintContext): boolean {
   const { ctx, s, theme } = p;
   if (!(s.rows.locating || s.cols.locating)) return false;
-  const row = s.rows.strip.find((i) => i.position === s.rows.focus?.position);
-  const col = s.cols.strip.find((i) => i.position === s.cols.focus?.position);
+  const i = s.rows.strip.findIndex((item) => item.position === s.rows.focus?.position);
+  const j = s.cols.strip.findIndex((item) => item.position === s.cols.focus?.position);
+  const row = s.rows.strip[i];
+  const col = s.cols.strip[j];
   if (!row || !col) return false;
   // 0 to 1 and back once a period; a still midpoint with motion reduced.
   const beat = p.motion ? 0.5 - 0.5 * Math.cos((2 * Math.PI * (p.now % PERIOD)) / PERIOD) : 0.5;
   const line = theme.focus.width;
   ctx.save();
-  clipBody(p, col.offset, row.offset, col.size, row.size);
+  clipCell(p, i, j);
   ctx.globalAlpha = 0.25 + 0.45 * beat;
   ctx.fillStyle = theme.shimmerBase;
   ctx.fillRect(col.offset, row.offset, col.size, row.size);
