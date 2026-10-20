@@ -221,14 +221,20 @@ pub(crate) fn draw(
 ) {
     let (top_f, left_f) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     let (top, left) = (cell(top_f), cell(left_f));
-    // The drawn items not hidden behind the pinned Strips, in drawn order.
+    // The drawn items not hidden behind the pinned Strips, in drawn order,
+    // less the pinned ones whose line their region clips: past a leading
+    // Strip's end, or before a trailing Strip's start.
     let drawn = |axis: Axis| -> Vec<StripItem> {
         let span = snapshot.scrolling(axis);
         let scrolling =
             (snapshot.strip(axis).iter()).filter(|i| i.end() >= span.start && i.offset < span.end);
+        let [lead, trail] = Edge::ALL.map(|edge| snapshot.pinned_region(axis, edge));
+        // A slid Strip's ends are sums, so they may round past its region.
+        let within = |end: f32| end - lead.end <= 4.0 * f32::EPSILON * lead.end.abs().max(1.0);
         (snapshot.pinned(axis, Edge::Leading).iter())
+            .filter(|i| within(i.end()))
             .chain(scrolling)
-            .chain(snapshot.pinned(axis, Edge::Trailing))
+            .chain((snapshot.pinned(axis, Edge::Trailing).iter()).filter(|i| i.end() > trail.start))
             .copied()
             .collect()
     };
@@ -248,8 +254,8 @@ pub(crate) fn draw(
     let grid = style.extent == BorderExtent::Grid;
     // A scrolling item's line under the trailing pinned Strip is hidden.
     let hidden = |axis: Axis, at: i64| {
-        let first = snapshot.pinned(axis, Edge::Trailing).first();
-        first.is_some_and(|it| at >= cell(it.offset))
+        let pinned = !snapshot.pinned(axis, Edge::Trailing).is_empty();
+        pinned && at >= cell(snapshot.pinned_region(axis, Edge::Trailing).start)
     };
     // The cell past the axis's last item, when that item is shown and
     // neither pinned to the leading edge nor followed by trailing pins,
@@ -272,11 +278,12 @@ pub(crate) fn draw(
     // after the leading one, before the trailing one.
     let edges = |axis: Axis| -> Vec<i64> {
         let span = snapshot.scrolling(axis);
+        let [lead, trail] = Edge::ALL.map(|edge| snapshot.pinned_region(axis, edge));
         let leading = (snapshot.pinned(axis, Edge::Leading).last())
-            .map(|it| cell(it.end()))
+            .map(|_| cell(lead.end))
             .filter(|&at| at < cell(span.start));
         let trailing = (snapshot.pinned(axis, Edge::Trailing).first())
-            .map(|it| (cell(span.end), cell(it.offset)))
+            .map(|_| (cell(span.end), cell(trail.start)))
             .filter(|&(at, first)| at < first)
             .map(|(at, _)| at);
         leading.into_iter().chain(trailing).collect()

@@ -69,14 +69,19 @@ fn band(thickness: f32, max: u16) -> u16 {
     (thickness.max(0.0).ceil().min(f32::from(max))) as u16
 }
 
+/// The cells of each axis (rows, columns) the pinned Strips leave to
+/// scroll: a few lines, and a few columns' worth of characters.
+pub const MIN_SCROLLING: [f32; 2] = [3.0, 12.0];
+
 /// Begins a frame of `grid` to be drawn at `area` with `ctx`, leaving the
 /// scrollbars their share: `fill` begins the Grid's frame at the Viewport it
 /// is given and fills the Windows the Grid asks for. It runs once, or again
 /// when the columns' scrollbar comes or goes. Returns the layout
 /// [`render_with`](crate::render_with) will draw the Grid's Snapshot in.
 /// It also gives each axis an Edge Gap of one cell, so a pinned edge has a
-/// cell to be drawn in even where the axis has no Gap (rows, usually), and
-/// pin zones of one cell.
+/// cell to be drawn in even where the axis has no Gap (rows, usually), pin
+/// zones of one cell, and keeps [`MIN_SCROLLING`] cells of each axis to
+/// scroll, clipping pinned Strips too long to leave them.
 pub fn begin_frame(
     grid: &mut Grid,
     ctx: &RenderContext,
@@ -86,6 +91,7 @@ pub fn begin_frame(
     for axis in Axis::ALL {
         grid.set_edge_gap(axis, 1.0);
         grid.set_pin_zone(axis, 1.0);
+        grid.set_min_scrolling(axis, MIN_SCROLLING[axis.index()]);
     }
     let mut viewport = layout(&grid.snapshot(), ctx, area).viewport();
     // The width never depends on the Snapshot, so the second pass settles it.

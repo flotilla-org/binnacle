@@ -1,16 +1,17 @@
 //! Border Styles: the lines `render_with` draws in the Gaps.
 
-use binnacle_core::{Action, Axis, AxisConfig, Edge, Grid, Key, PointerEvent, Viewport};
+use binnacle_core::{Action, Axis, AxisConfig, Edge, Grid, Key, PointerEvent, StripItem, Viewport};
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
-    BorderExtent, BorderStyle, BorderWeight, Content, RenderContext, Theme, begin_frame,
-    render_with,
+    BorderExtent, BorderStyle, BorderWeight, Content, MIN_SCROLLING, RenderContext, Theme,
+    begin_frame, render_with,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
+use std::ops::Range;
 
 struct Labels;
 
@@ -371,6 +372,7 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
         dy: scroll(),
     });
     for (axis, count) in [(Axis::Rows, rows), (Axis::Cols, cols)] {
+        grid.set_min_scrolling(axis, quarters(0, 40));
         for _ in 0..tc.draw(gs::integers::<u8>().max_value(if count > 0 { 3 } else { 0 })) {
             let key = tc.draw(gs::integers::<u64>().max_value(count - 1));
             let edge = tc.draw(gs::sampled_from(Edge::ALL.to_vec()));
@@ -384,18 +386,6 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
     let style = BorderStyle::new(extent, weight).band_rules(tc.draw(gs::booleans()));
     window(&mut grid, area);
     let snapshot = grid.snapshot();
-    // Pinned Strips too large to fit overlap until they are clipped (#152).
-    for axis in Axis::ALL {
-        let (gap, [leading, trailing]) = (
-            snapshot.gap(axis),
-            Edge::ALL.map(|e| snapshot.pinned(axis, e)),
-        );
-        let lead_end = leading
-            .last()
-            .map_or(snapshot.header(axis), |i| i.end() + gap);
-        let trail_start = trailing.first().map_or(f32::INFINITY, |i| i.offset - gap);
-        tc.assume(lead_end <= trail_start && trail_start >= snapshot.header(axis));
-    }
     // The edge in a colour of its own, to find it.
     let edge = Color::Rgb(1, 2, 3);
     let theme = Theme {
@@ -422,15 +412,17 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
         (style.draws_band_rules() && thickness >= 2).then_some(thickness - 1)
     };
     let (rule_x, rule_y) = (band_last(Axis::Cols), band_last(Axis::Rows));
-    // A scrolling item is hidden where the pinned Strips draw.
+    // Each item shows only in its Strip's region: a scrolling item is
+    // hidden where the pinned Strips draw, a pinned one where its Strip
+    // clips.
     let shown = |axis, at| {
-        let span = snapshot.scrolling(axis);
-        let pinned = Edge::ALL.into_iter().flat_map(|e| snapshot.pinned(axis, e));
-        let scrolling = snapshot.strip(axis).iter();
-        pinned.clone().any(|i| covers(i.offset, i.end(), at))
-            || scrolling
-                .into_iter()
-                .any(|i| covers(i.offset.max(span.start), i.end().min(span.end), at))
+        let clipped = |span: Range<f32>, i: &StripItem| {
+            covers(i.offset.max(span.start), i.end().min(span.end), at)
+        };
+        let pinned = (Edge::ALL.into_iter()).any(|e| {
+            (snapshot.pinned(axis, e).iter()).any(|i| clipped(snapshot.pinned_region(axis, e), i))
+        });
+        pinned || (snapshot.strip(axis).iter()).any(|i| clipped(snapshot.scrolling(axis), i))
     };
 
     for p in plain.area.positions() {
@@ -483,4 +475,49 @@ fn begin_frame_gives_pinned_edges_a_cell_where_there_is_no_gap() {
     let mut buf = Buffer::empty(area);
     render_with(&grid.snapshot(), &Labels, &ctx, layout.grid, &mut buf);
     insta::assert_snapshot!(text(&buf));
+}
+
+/// [`begin_frame`] keeps [`MIN_SCROLLING`] cells of each axis to scroll:
+/// pinned Strips longer than the rest clip at their inside ends, the
+/// trailing one first, with the edge where they clip; focus on a clipped
+/// item slides its Strip to show it.
+#[test]
+fn pinned_strips_too_long_for_the_area_clip_with_the_edge_where_they_clip() {
+    let mut grid = fixture();
+    for key in [1, 2] {
+        grid.pin(Axis::Cols, Edge::Leading, Key(key));
+    }
+    grid.pin(Axis::Cols, Edge::Trailing, Key(4));
+    for key in 0..5 {
+        grid.pin(Axis::Rows, Edge::Leading, Key(key));
+    }
+    let theme = Theme::classic();
+    let style = BorderStyle::new(BorderExtent::Grid, BorderWeight::Light);
+    let ctx = RenderContext::new(&theme).scrollbars(false).border(style);
+    let mut frame = |grid: &mut Grid| {
+        let layout = begin_frame(grid, &ctx, AREA, |grid, viewport| {
+            for (axis, range) in grid.begin_frame(viewport) {
+                let keys = IdentitySource::new(range.end).window(range.clone());
+                grid.set_window(axis, range.start, &keys);
+            }
+        });
+        let mut buf = Buffer::empty(AREA);
+        render_with(&grid.snapshot(), &Labels, &ctx, layout.grid, &mut buf);
+        text(&buf)
+    };
+    let mut out = format!(
+        "--- columns 1 and 2 pinned left, 4 right; rows 0 to 4 to the top\n{}\n",
+        frame(&mut grid)
+    );
+    grid.set_focus(Key(4), Key(2));
+    out += &format!(
+        "--- focus row 4, column 2: both leading Strips slide\n{}\n",
+        frame(&mut grid)
+    );
+    grid.set_focus(Key(6), Key(4));
+    out += &format!(
+        "--- focus row 6, column 4: the trailing Strip takes room for it\n{}\n",
+        frame(&mut grid)
+    );
+    insta::assert_snapshot!(out);
 }

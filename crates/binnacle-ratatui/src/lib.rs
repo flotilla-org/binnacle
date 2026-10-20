@@ -36,7 +36,7 @@ pub use renderer::{
     TextRenderer, fit_width, flashing,
 };
 use renderer::{char_count, fit};
-pub use scrollbar::{BarEvent, Layout, begin_frame, layout};
+pub use scrollbar::{BarEvent, Layout, MIN_SCROLLING, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
@@ -519,35 +519,36 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
 }
 
 /// Where each drawn item of `axis`, by its index in drawn order, may draw
-/// along it: a pinned item from the Header Band on, a scrolling item within
-/// the scrolling Strip, so it slides under the pinned Strips.
+/// along it: a pinned item in its pinned Strip's region, a scrolling item
+/// within the scrolling Strip, so it slides under the pinned Strips.
 fn spans<'a>(snapshot: &Snapshot<'a>, axis: Axis) -> impl Fn(usize) -> Range<f32> + 'a {
     let leading = snapshot.pinned(axis, Edge::Leading).len();
     let scrolling = snapshot.scrolling(axis);
     let end = leading + snapshot.strip(axis).len();
-    let pinned = snapshot.header(axis)..f32::INFINITY;
+    let [lead, trail] = Edge::ALL.map(|edge| snapshot.pinned_region(axis, edge));
     move |i| {
-        if (leading..end).contains(&i) {
+        if i < leading {
+            lead.clone()
+        } else if i < end {
             scrolling.clone()
         } else {
-            pinned.clone()
+            trail.clone()
         }
     }
 }
 
-/// Where the item with `key` on `axis` may draw: from the Header Band on if
-/// it is pinned, else within the scrolling Strip.
+/// Where the item with `key` on `axis` may draw: in its pinned Strip's
+/// region if it is pinned, else within the scrolling Strip.
 fn span_of(snapshot: &Snapshot, axis: Axis, key: Key) -> Range<f32> {
-    let pinned = |edge| {
+    let pinned = |&edge: &Edge| {
         snapshot
             .pinned(axis, edge)
             .iter()
             .any(|i| i.key == Some(key))
     };
-    if Edge::ALL.into_iter().any(pinned) {
-        snapshot.header(axis)..f32::INFINITY
-    } else {
-        snapshot.scrolling(axis)
+    match Edge::ALL.into_iter().find(pinned) {
+        Some(edge) => snapshot.pinned_region(axis, edge),
+        None => snapshot.scrolling(axis),
     }
 }
 
