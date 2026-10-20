@@ -49,6 +49,18 @@ impl AxisState {
         (self.extent - self.scroll_start()).max(0.0)
     }
 
+    /// The anchor at the start of the scrolling Strip: its first item, past
+    /// any pinned ones.
+    fn start(&self) -> ScrollAnchor {
+        let position = (0..self.measure.count())
+            .find(|&p| !self.measure.skipped(p))
+            .unwrap_or(0);
+        ScrollAnchor {
+            position,
+            offset: 0.0,
+        }
+    }
+
     /// The last Position the scrolling Strip can show, if any.
     pub fn last_shown(&self) -> Option<Position> {
         let mut p = self.measure.count().checked_sub(1)?;
@@ -205,7 +217,7 @@ impl AxisState {
         match self.measure.locate(last, back) {
             Some(l) => self.anchor_at(l),
             // The body is shorter than the whole axis.
-            None if back < 0.0 => ScrollAnchor::default(),
+            None if back < 0.0 => self.start(),
             // A body too thin to register against the last item's size: go as
             // deep into that item as an anchor can.
             None => ScrollAnchor {
@@ -222,7 +234,7 @@ impl AxisState {
         let max = self.max_anchor();
         let to = match self.measure.locate(position, offset) {
             Some(l) => self.anchor_at(l),
-            None if offset < 0.0 => ScrollAnchor::default(),
+            None if offset < 0.0 => self.start(),
             None => max,
         };
         let to = if (to.position, to.offset) > (max.position, max.offset) {
@@ -236,7 +248,7 @@ impl AxisState {
     /// Sets the anchor, noting whether it is at a reachable end. Returns
     /// whether it moved.
     fn settle(&mut self, to: ScrollAnchor, max: ScrollAnchor) -> bool {
-        self.at_end = to == max && max != ScrollAnchor::default();
+        self.at_end = to == max && max != self.start();
         let moved = to != self.anchor;
         self.anchor = to;
         moved

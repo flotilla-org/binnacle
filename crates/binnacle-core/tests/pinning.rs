@@ -6,7 +6,9 @@ use binnacle_core::{
     Action, Axis, AxisConfig, Edge, Grid, Key, Modifiers, PointerEvent, SortColumn, SortSpec,
     ViewSpec, Viewport,
 };
-use binnacle_testkit::{ColumnMajorTable, IdentityTable, Scenario};
+use binnacle_testkit::{ColumnMajorTable, IdentityTable, KeyedTable, Scenario};
+use hegel::generators as gs;
+use hegel::{Generator, TestCase};
 
 /// 4 rows of 1 under a 1-high header band; 10 columns of 6 with a Gap of 1
 /// after a 4-wide row header band. Column p starts at x `4 + 7p`.
@@ -117,4 +119,115 @@ fn a_pin_follows_its_key_through_a_sort_and_sleeps_while_filtered_out() {
     s.input(|g| g.notify(Axis::Cols, notice));
     out += &s.step("the filter cleared: record 4 is back in its pinned Strip", NARROW);
     insta::assert_snapshot!(out);
+}
+
+/// What a step of [`every_shown_item_is_drawn_exactly_once`] does.
+#[derive(Clone, Debug)]
+enum Op {
+    Pin(u64),
+    Unpin(u64),
+    Scroll(f32),
+    Reverse,
+    Remove(u64),
+    Resize(u64, f32),
+    Width(f32),
+}
+
+#[hegel::composite]
+fn op(tc: &TestCase) -> Op {
+    let key = || gs::integers::<u64>().max_value(30);
+    tc.draw(hegel::one_of!(
+        key().map(Op::Pin),
+        key().map(Op::Pin),
+        key().map(Op::Unpin),
+        gs::floats::<f32>().min_value(-40.0).max_value(40.0).map(Op::Scroll),
+        gs::just(Op::Reverse),
+        gs::integers::<u64>().max_value(30).map(Op::Remove),
+        hegel::tuples!(key(), gs::floats::<f32>().min_value(1.0).max_value(12.0))
+            .map(|(k, s)| Op::Resize(k, s)),
+        gs::floats::<f32>().min_value(4.0).max_value(60.0).map(Op::Width),
+    ))
+}
+
+#[hegel::test(test_cases = 500)]
+fn every_shown_item_is_drawn_exactly_once(tc: TestCase) {
+    let count = tc.draw(gs::integers::<u64>().max_value(25));
+    let gap = tc.draw(gs::sampled_from(vec![0.0f32, 1.0]));
+    let size = tc.draw(gs::sampled_from(vec![1.0f32, 3.0, 6.0]));
+    let header = tc.draw(gs::sampled_from(vec![0.0f32, 4.0]));
+    let grid = Grid::new(
+        AxisConfig::new(3, 1.0).header(1.0),
+        AxisConfig::new(count, size).header(header).gap(gap),
+    );
+    let mut s = Scenario::new(grid, KeyedTable::new(3, count));
+    let mut pins: Vec<u64> = Vec::new();
+    let mut width = 30.0;
+    for op in tc.draw(gs::vecs(op()).min_size(1).max_size(12)) {
+        match op {
+            Op::Pin(k) => {
+                pins.retain(|&p| p != k);
+                pins.push(k);
+                s.input(|g| g.pin(Axis::Cols, Edge::Leading, Key(k)));
+            }
+            Op::Unpin(k) => {
+                pins.retain(|&p| p != k);
+                s.input(|g| g.unpin(Axis::Cols, Key(k)));
+            }
+            Op::Scroll(dx) => s.input(|g| g.action(Action::Scroll { dx, dy: 0.0 })),
+            Op::Reverse => {
+                let notice = s.source.reverse(Axis::Cols);
+                s.input(|g| g.notify(Axis::Cols, notice));
+            }
+            Op::Remove(at) => {
+                let notice = s.source.remove(Axis::Cols, at, 1);
+                s.input(|g| g.notify(Axis::Cols, notice));
+            }
+            Op::Resize(k, size) => s.input(|g| g.set_size(Axis::Cols, Key(k), size)),
+            Op::Width(w) => width = w,
+        }
+        let keys = s.source.axes[Axis::Cols.index()].clone();
+        let snap = s.frame(Viewport::new(width, 4.0));
+        let position = |k: u64| keys.iter().position(|&x| x == Key(k)).map(|p| p as u64);
+        // The pinned Strip draws each pinned Key the table has, in pin
+        // order, at its Position.
+        let pinned: Vec<(Option<Key>, u64)> = (snap.pinned(Axis::Cols, Edge::Leading).iter())
+            .map(|i| (i.key, i.position))
+            .collect();
+        let expected: Vec<(Option<Key>, u64)> = (pins.iter())
+            .filter_map(|&k| Some((Some(Key(k)), position(k)?)))
+            .collect();
+        assert_eq!(pinned, expected, "pinned Strip");
+        let pinned_at: Vec<u64> = expected.iter().map(|&(_, p)| p).collect();
+        // The scrolling Strip draws the Positions between its ends that are
+        // not pinned, each once, in order, side by side.
+        let strip = snap.strip(Axis::Cols);
+        for item in strip {
+            assert!(!pinned_at.contains(&item.position), "{item:?} is pinned");
+            assert_eq!(item.key, Some(keys[item.position as usize]), "{item:?}");
+        }
+        for pair in strip.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert!(
+                (a.position + 1..b.position).all(|p| pinned_at.contains(&p)),
+                "{a:?} then {b:?} leaves out an item that is not pinned"
+            );
+            assert_eq!(b.offset, a.end() + gap, "{a:?} then {b:?}");
+        }
+        // It starts at the scrolling region and reaches its end, or the
+        // last item that is not pinned.
+        let region = snap.scrolling(Axis::Cols);
+        if let (Some(first), Some(last)) = (strip.first(), strip.last()) {
+            assert!(first.offset <= region.start + gap && first.end() > region.start);
+            let last_shown = (0..keys.len() as u64).rev().find(|p| !pinned_at.contains(p));
+            assert!(
+                last.end() + gap >= region.end || Some(last.position) == last_shown,
+                "{last:?} stops short of {region:?}"
+            );
+        } else if region.start < region.end {
+            assert!(
+                keys.len() == pinned_at.len(),
+                "nothing scrolls in {region:?} though some items are not pinned"
+            );
+        }
+    }
 }

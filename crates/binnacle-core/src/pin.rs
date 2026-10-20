@@ -57,10 +57,24 @@ impl AxisState {
         self.pins.iter_mut().flatten().find(|p| p.key == key)
     }
 
-    /// The Key of the pinned item drawn at Position `p`, if any.
+    /// The Key of the pinned item at Position `p`, if any.
     pub fn pinned_at(&self, p: Position) -> Option<Key> {
         let mut pins = self.pins.iter().flatten();
-        pins.find(|pin| pin.at == Some(p)).map(|pin| pin.key)
+        pins.find(|pin| self.trusted(pin) == Some(p)).map(|pin| pin.key)
+    }
+
+    /// The pin's Position, when the Grid can act on it: the Window shows
+    /// its Key there, or no `Locate` about it is due and the Window shows
+    /// no other Key there. A pin waiting for `Locate` is still drawn at its
+    /// last known Position, but nothing is done at a Position it may have
+    /// left.
+    pub fn trusted(&self, pin: &Pin) -> Option<Position> {
+        let m = &self.measure;
+        let p = pin.at.filter(|&p| p < m.count())?;
+        match m.key_at(p) {
+            Some(k) => (k == pin.key).then_some(p),
+            None => (pin.due == 0).then_some(p),
+        }
     }
 
     /// The Key at `p`: from the Window, else from a pin drawn there.
@@ -80,21 +94,19 @@ impl AxisState {
             }
         }
         let skipped: Vec<Position> = (self.pins.iter().flatten())
-            .filter_map(|pin| {
-                let p = pin.at.filter(|&p| p < m.count())?;
-                m.key_at(p).is_none_or(|k| k == pin.key).then_some(p)
-            })
+            .filter_map(|pin| self.trusted(pin))
             .collect();
         self.measure.set_skipped(skipped);
     }
 
     /// The pinned Strip of `edge`, laid out from the Header Band in pin
-    /// order with a Gap after each item. Dormant pins are left out.
+    /// order with a Gap after each item. Dormant pins are left out, and so
+    /// are pins whose last known Position the count no longer reaches.
     pub fn pinned_items(&self, edge: Edge) -> impl Iterator<Item = StripItem> + '_ {
-        let gap = self.measure.gap();
+        let (gap, count) = (self.measure.gap(), self.measure.count());
         let mut offset = self.header;
         self.pins[edge.index()].iter().filter_map(move |pin| {
-            let position = pin.at?;
+            let position = pin.at.filter(|&p| p < count)?;
             let size = self.measure.size_of(pin.key);
             let item = StripItem {
                 position,

@@ -15,7 +15,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, EditEnd, Effect,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, Edge, EditEnd, Effect,
     FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers,
     PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, Value,
     ViewSpec, Viewport,
@@ -33,6 +33,8 @@ struct Host {
     /// Per axis, the Keys a filter leaves out, which a later `Refiltered`
     /// may bring back.
     hidden: [Vec<u64>; 2],
+    /// Per axis, the Keys pinned to the leading edge, in pin order.
+    pins: [Vec<u64>; 2],
     /// Per axis, Keys a `Refiltered` took out since the last `Reset`: once
     /// every `Locate` is answered, none of them is picked.
     refiltered_out: [BTreeSet<u64>; 2],
@@ -226,14 +228,30 @@ impl Host {
                 header.is_finite() && header >= 0.0,
                 "band {header} on {axis:?}"
             );
-            // Items start where the band ends, less the anchor's offset (or
-            // a Gap after it, when the anchor is in the Gap).
+            // Scrolling items start where the band and the pinned Strip
+            // end, less the anchor's offset (or a Gap after it, when the
+            // anchor is in the Gap).
+            let start = snap.scrolling(axis).start;
             if let Some(first) = snap.strip(axis).first() {
                 assert!(
-                    first.offset <= header + snap.gap(axis) && first.end() > header,
-                    "{first:?} does not start the body after the band {header} on {axis:?}"
+                    first.offset <= start + snap.gap(axis) && first.end() > start,
+                    "{first:?} does not start the body after {start} on {axis:?}"
                 );
             }
+            // No Key is drawn twice, pinned or scrolling.
+            let drawn: Vec<Key> = snap.drawn(axis).filter_map(|i| i.key).collect();
+            let unique: BTreeSet<Key> = drawn.iter().copied().collect();
+            assert_eq!(unique.len(), drawn.len(), "a Key drawn twice on {axis:?}: {drawn:?}");
+            // The pinned Strip draws pinned Keys only, in pin order.
+            let pinned: Vec<u64> = (snap.pinned(axis, Edge::Leading).iter())
+                .filter_map(|i| i.key.map(|k| k.0))
+                .collect();
+            let pins = &self.pins[axis.index()];
+            let mut order = pins.iter().filter(|k| pinned.contains(k));
+            assert!(
+                pinned.iter().all(|k| order.next() == Some(k)),
+                "pinned Strip {pinned:?} out of pin order {pins:?} on {axis:?}"
+            );
             let keys = &self.keys[axis.index()];
             let count = keys.len() as u64;
             assert_eq!(snap.count(axis), count, "count on {axis:?}");
@@ -502,6 +520,19 @@ impl Host {
                 );
             }
         }
+        // Once answered, every pinned Key on the axis is drawn at its
+        // Position, and no other.
+        let snap = self.grid.snapshot();
+        for axis in Axis::ALL {
+            let keys = &self.keys[axis.index()];
+            let drawn: Vec<(u64, u64)> = (snap.pinned(axis, Edge::Leading).iter())
+                .filter_map(|i| Some((i.key?.0, i.position)))
+                .collect();
+            let expected: Vec<(u64, u64)> = (self.pins[axis.index()].iter())
+                .filter_map(|k| Some((*k, keys.iter().position(|x| x == k)? as u64)))
+                .collect();
+            assert_eq!(drawn, expected, "pinned Strip on {axis:?} once settled");
+        }
         for axis in Axis::ALL {
             let picked = self.grid.snapshot().picked(axis).to_vec();
             for key in picked {
@@ -603,7 +634,8 @@ impl Host {
     }
 
     /// `set_gap` changes the Gap and never scrolls forward or across: the
-    /// anchor stays, or the end clamp or a shrunk Gap pulls it back.
+    /// anchor stays, or the end clamp or a shrunk Gap pulls it back, unless
+    /// the new Window found a pinned Key.
     fn gap(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
         let gap = tc.draw(gs::sampled_from(vec![0.0f32, 0.5, 1.0, 2.0]));
@@ -611,11 +643,21 @@ impl Host {
             let snap = grid.snapshot();
             Axis::ALL.map(|a| snap.scroll_anchor(a))
         };
+        // A Window that finds a pinned Key changes the pinned Strip, and
+        // with it the scrolling Strip's length, which may move the anchor.
+        let pinned = |grid: &mut Grid| -> Vec<Vec<Option<Key>>> {
+            let snap = grid.snapshot();
+            Axis::ALL.map(|a| snap.pinned(a, Edge::Leading).iter().map(|i| i.key).collect()).to_vec()
+        };
         self.frame_and_check();
         let before = anchors(&mut self.grid);
+        let pinned_before = pinned(&mut self.grid);
         self.grid.set_gap(axis, gap);
         self.frame_and_check();
         let after = anchors(&mut self.grid);
+        if pinned(&mut self.grid) != pinned_before {
+            return;
+        }
         assert_eq!(self.gaps[axis.index()], gap);
         let (b, a) = (before[axis.index()], after[axis.index()]);
         assert!(
@@ -743,6 +785,30 @@ impl Host {
     #[rule]
     fn set_size(&mut self, tc: TestCase) {
         self.resize(&tc);
+    }
+
+    /// Pins a Key the source has, or one it never had (which stays dormant).
+    #[rule]
+    fn pin(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let key = self.key(&tc, axis);
+        let pins = &mut self.pins[axis.index()];
+        pins.retain(|&k| k != key.0);
+        pins.push(key.0);
+        self.grid.pin(axis, Edge::Leading, key);
+    }
+
+    #[rule]
+    fn unpin(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let pins = self.pins[axis.index()].clone();
+        let key = if !pins.is_empty() && tc.draw(gs::booleans()) {
+            Key(tc.draw(gs::sampled_from(pins)))
+        } else {
+            self.key(&tc, axis)
+        };
+        self.pins[axis.index()].retain(|&k| k != key.0);
+        self.grid.unpin(axis, key);
     }
 
     /// A press on a band's edge; the drag rule then moves it.
@@ -920,6 +986,7 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         grid,
         keys: [(0..rows).collect(), (100..100 + cols).collect()],
         hidden: [Vec::new(), Vec::new()],
+        pins: [Vec::new(), Vec::new()],
         refiltered_out: Default::default(),
         next: 1000,
         pending: VecDeque::new(),
