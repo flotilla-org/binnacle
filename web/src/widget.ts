@@ -42,7 +42,7 @@ import type {
   ViewSpec,
 } from "./source";
 import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
-import { readLayout, restoreLayout, type Layout } from "./layout";
+import { readLayout, restoreLayout, type Layout, type LayoutParts } from "./layout";
 import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
 import {
   capHint,
@@ -1112,7 +1112,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       cancelAnimationFrame(this.raf);
       this.frame();
     }
-    return readLayout(this.last!, { grid: this.grid, feed: this.feed });
+    return readLayout(this.last!, this.layoutParts());
   }
 
   /**
@@ -1126,7 +1126,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * Returns `false`, changing nothing, for a layout of another version.
    */
   restoreLayout(layout: Layout<RowId, ColId>): boolean {
-    if (this.destroyed || !restoreLayout(layout, { grid: this.grid, feed: this.feed })) return false;
+    if (this.destroyed || !restoreLayout(layout, this.layoutParts())) return false;
     // The restored row-number band stands: no fitting it to the labels later.
     this.bandFitted = true;
     drainEffects(this.parts);
@@ -1394,6 +1394,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     if (s.rows.focus?.key === f.keys.rows && s.cols.focus?.key === f.keys.cols) f.resolve();
     else if (f.gone) f.reject(new Error(`binnacle: ${f.name} is gone from the Table Source`));
     else f.reject(new Error(`binnacle: focus moved on before it reached ${f.name}`));
+  }
+
+  private layoutParts(): LayoutParts<RowId, ColId> {
+    const sizes = this.sizes;
+    return { grid: this.grid, feed: this.feed, ...(sizes ? { computed: sizes.computed } : {}) };
   }
 
   private createSizes(): InitialSizes | null {

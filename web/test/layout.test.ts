@@ -306,3 +306,36 @@ test("a missing item's pin or size keeps its ID through any number of Resets, un
     h.destroy();
   }
 });
+
+test("a layout leaves out the widths the widget fitted or filled, and restoring keeps the other grid's own", () => {
+  const ids = (n: number, p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+  const source = (): TableSource<string, string, string> => ({
+    rows: { count: () => 5, window: (s, e) => ids(5, "r").slice(s, e) },
+    cols: { count: () => 4, window: (s, e) => ids(4, "c").slice(s, e) },
+    cells: (rs, cs) => rs.map(() => cs.map((c) => "x".repeat(Number(c.slice(1)) + 3))),
+  });
+  // c0 fits, c1 fills, c2 starts at a fixed 77, c3 at the default.
+  const choices = { cols: (id: string) => (["fit", "fill", 77, undefined] as const)[Number(id.slice(1))] };
+  const a = new Harness(source(), 1000, 300, choices);
+  const b = new Harness(source(), 1000, 300, choices);
+  try {
+    a.settled();
+    b.settled();
+    const width = (h: Harness<string, string, string>, id: string) => h.grid.size_override(AXIS_CODE.cols, h.feed.colKey(id));
+    const fitted = [width(a, "c0"), width(a, "c1")];
+    expect(fitted.every((w) => !Number.isNaN(w))).toBe(true);
+    expect(read(a).sizes.cols).toEqual([["c2", 77]]);
+    // A width the user sets is theirs, fitted column or not.
+    a.grid.set_size(AXIS_CODE.cols, a.feed.colKey("c0"), 123);
+    a.grid.set_size(AXIS_CODE.cols, a.feed.colKey("c3"), 60);
+    const saved = read(a);
+    expect(saved.sizes.cols).toEqual([["c0", 123], ["c2", 77], ["c3", 60]]);
+    // b keeps the width it filled; the saved ones replace the rest.
+    restore(b, saved);
+    expect([width(b, "c0"), width(b, "c1"), width(b, "c2"), width(b, "c3")]).toEqual([123, fitted[1], 77, 60]);
+    expect(read(b).sizes.cols).toEqual(saved.sizes.cols);
+  } finally {
+    a.destroy();
+    b.destroy();
+  }
+});

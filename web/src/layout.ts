@@ -37,6 +37,8 @@ export interface Layout<RowId, ColId> {
 export interface LayoutParts<RowId, ColId> {
   readonly grid: WebGrid;
   readonly feed: Feed<RowId, ColId>;
+  /** Whether the widget computed `size` for `key` itself (an initial fit or fill), which a layout leaves out. */
+  computed?(axis: AxisName, key: bigint, size: number): boolean;
 }
 
 const EDGES: PinEdge[] = ["leading", "trailing"];
@@ -46,10 +48,11 @@ const plain = (n: number) => n + 0;
 
 /**
  * The layout as of Snapshot `s`: the View Spec last asked for (else the one
- * applied), pins dormant or not, and Size Overrides for items shown or not.
- * Anything whose ID the grid no longer knows is left out.
+ * applied), pins dormant or not, and Size Overrides for items shown or not,
+ * less the sizes the widget computed itself. Anything whose ID the grid no
+ * longer knows is left out.
  */
-export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed }: LayoutParts<RowId, ColId>): Layout<RowId, ColId> {
+export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed, computed }: LayoutParts<RowId, ColId>): Layout<RowId, ColId> {
   const id = (axis: AxisName, key: bigint) => (axis === "rows" ? feed.rowId(key) : feed.colId(key));
   const ids = <Id>(axis: AxisName, keys: Iterable<bigint>): Id[] =>
     [...keys].flatMap((key) => {
@@ -65,7 +68,8 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed }: LayoutPart
     const lengths = grid.size_override_sizes(AXIS_CODE[axis]);
     return [...keys].flatMap((key, i) => {
       const known = id(axis, key);
-      return known === undefined ? [] : [[known as Id, plain(lengths[i]!)]];
+      const size = lengths[i]!;
+      return known === undefined || computed?.(axis, key, size) ? [] : [[known as Id, plain(size)]];
     });
   };
   return {
@@ -79,7 +83,8 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed }: LayoutPart
 
 /**
  * Puts `layout` back: pins, Size Overrides and band thicknesses at once
- * (overrides it does not list are cleared), and the View Spec as an
+ * (overrides it does not list are cleared, but for sizes the widget computed
+ * itself), and the View Spec as an
  * ordinary request, pending until the Table Source answers. It never fails
  * on what the source lacks: a missing pinned item sleeps until it appears,
  * the source leaves hidden IDs it does not know out of its answer, a
@@ -87,7 +92,7 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed }: LayoutPart
  * its item. Returns `false`, restoring nothing, for a layout of another
  * version. Drain the grid's Effects afterwards.
  */
-export function restoreLayout<RowId, ColId>(layout: Layout<RowId, ColId>, { grid, feed }: LayoutParts<RowId, ColId>): boolean {
+export function restoreLayout<RowId, ColId>(layout: Layout<RowId, ColId>, { grid, feed, computed }: LayoutParts<RowId, ColId>): boolean {
   if (layout.version !== LAYOUT_VERSION) return false;
   const key = (axis: AxisName, id: unknown) => (axis === "rows" ? feed.rowKey(id as RowId) : feed.colKey(id as ColId));
   for (const axis of AXES) {
@@ -97,9 +102,11 @@ export function restoreLayout<RowId, ColId>(layout: Layout<RowId, ColId>, { grid
       grid.set_pins(code, EDGE_CODE[edge], BigUint64Array.from(pins[edge], (id) => key(axis, id)));
     }
     const sizes = new Map<bigint, number>((layout.sizes[axis] as [unknown, number][]).map(([id, size]) => [key(axis, id), size]));
-    for (const k of grid.size_override_keys(code)) {
-      if (!sizes.has(k)) grid.clear_size(code, k);
-    }
+    const keys = grid.size_override_keys(code);
+    const lengths = grid.size_override_sizes(code);
+    keys.forEach((k, i) => {
+      if (!sizes.has(k) && !computed?.(axis, k, lengths[i]!)) grid.clear_size(code, k);
+    });
     for (const [k, size] of sizes) grid.set_size(code, k, size);
     grid.set_header(code, layout.bands[axis]);
   }
