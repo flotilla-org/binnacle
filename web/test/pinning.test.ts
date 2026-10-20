@@ -100,9 +100,13 @@ test("across pins, unpins and scrolls, the pinned columns lead in pin order and 
         const between = (a: number, b: number) =>
           Array.from({ length: b - a + 1 }, (_, i) => a + i).filter((p) => !model.includes(p));
         if (scrolling.length > 0) {
-          // The first shown is at the Scroll Anchor, or past it when the
-          // anchor's Position is pinned: what scrolled under the pinned Strip is hidden.
-          expect(scrolling[0]).toBe(between(s.cols.anchor.position, cols - 1)[0]);
+          // The first shown is the first unpinned item from the Scroll
+          // Anchor, or the next once the anchor's item has scrolled into its
+          // Gap: what scrolled under the pinned Strip is hidden.
+          const { position, offset } = s.cols.anchor;
+          const from = between(position, cols - 1);
+          const gone = from[0] === position && offset >= COL_WIDTH;
+          expect(scrolling[0]).toBe(from[gone ? 1 : 0]);
           expect(scrolling).toEqual(between(scrolling[0]!, scrolling.at(-1)!));
         }
       }
