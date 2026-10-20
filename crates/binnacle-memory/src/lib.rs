@@ -5,6 +5,7 @@ mod memory_source;
 mod pump;
 mod sort_keys;
 mod table;
+mod transposed;
 
 use std::ops::Range;
 
@@ -15,6 +16,9 @@ pub use memory_source::{MemorySource, Unsortable, query_error};
 pub use pump::{FindCount, FindStep, PumpSource, Viewed, pump};
 pub use sort_keys::SortKeys;
 pub use table::InMemoryTableSource;
+pub use transposed::{
+    Transposed, transpose_find, transpose_match, transpose_spec, transpose_totals,
+};
 
 /// A Table Source axis with no data behind it: the Key at each Position is the
 /// Position itself. It serves huge virtual tables and fixed column sets.

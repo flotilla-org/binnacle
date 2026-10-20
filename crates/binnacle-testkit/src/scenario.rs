@@ -7,7 +7,7 @@ use binnacle_core::{
     FindQuery, Grid, Key, Located, Modifiers, PointerEvent, Position, Snapshot, Stamped, Support,
     ViewSpec, Viewport,
 };
-use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Viewed};
+use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Transposed, Viewed};
 
 use crate::render::{Rendered, view_text};
 
@@ -206,6 +206,114 @@ impl PumpSource for RecordTable {
         direction: FindDirection,
     ) -> Option<FindStep> {
         self.source.find_next(&self.rows, query, from, direction)
+    }
+}
+
+/// Any scenario table on its side: the Grid's rows are the inner table's
+/// columns and its columns the inner table's rows.
+impl<S: ScenarioSource> ScenarioSource for Transposed<S> {
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        self.0.window(axis.other(), range)
+    }
+
+    fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        self.0.sizes(axis.other(), keys)
+    }
+}
+
+/// A [`RecordTable`] on its side, as a pivoted or transposed host has it:
+/// each record is a column and each field a row, keyed by Logical Index on
+/// both axes. The columns sort by the sortable fields, filter and change as
+/// the records' rows do; the fields move. Change Notices from its methods
+/// are for [`Axis::Cols`].
+pub struct ColumnMajorTable {
+    table: Transposed<RecordTable>,
+}
+
+impl ColumnMajorTable {
+    /// A table of `records` as columns, each `fields` long, its columns
+    /// sortable by the fields in `sortable`.
+    pub fn new(
+        records: Vec<Record>,
+        fields: usize,
+        sortable: impl IntoIterator<Item = u64>,
+    ) -> Self {
+        ColumnMajorTable {
+            table: Transposed(RecordTable::new(records, fields, sortable)),
+        }
+    }
+
+    /// The records, one per column, in base order.
+    pub fn records(&self) -> &[Record] {
+        &self.table.0.rows
+    }
+
+    /// The records' table, the right way up.
+    pub fn row_major(&mut self) -> &mut RecordTable {
+        &mut self.table.0
+    }
+
+    /// Keeps only the records for which `keep` is true.
+    pub fn filter(&mut self, keep: impl Fn(&Record) -> bool + 'static) -> ChangeNotice {
+        self.table.0.filter(keep)
+    }
+
+    /// Appends `records` as new columns.
+    pub fn append(&mut self, records: Vec<Record>) -> ChangeNotice {
+        self.table.0.append(records)
+    }
+
+    /// Sets record `record`'s value in field `field` as the user's edit (a
+    /// column in view stays even if the filter now drops it).
+    pub fn edit(
+        &mut self,
+        record: usize,
+        field: usize,
+        value: Option<i64>,
+    ) -> Option<ChangeNotice> {
+        self.table.0.edit(record, field, value)
+    }
+
+    /// Replaces the records with `records`.
+    pub fn replace(&mut self, records: Vec<Record>) -> ChangeNotice {
+        self.table.0.replace(records)
+    }
+}
+
+impl ScenarioSource for ColumnMajorTable {
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        self.table.window(axis, range)
+    }
+}
+
+impl PumpSource for ColumnMajorTable {
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        self.table.view(spec)
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.table.support(axis, key)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        self.table.distinct(axis, key, query)
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.table.locate(axis, key)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        self.table.move_items(axis, keys, to)
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        self.table.find_next(query, from, direction)
     }
 }
 
