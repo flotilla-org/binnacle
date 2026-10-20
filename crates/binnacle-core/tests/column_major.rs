@@ -129,8 +129,20 @@ fn record_view(tc: &TestCase, fields: usize) -> (SortSpec, Option<TextQuery>) {
             false => SortColumn::descending(Key(f)),
         })
         .collect();
-    let text = gs::sampled_from(vec!["1", "-", "3", "2"]).map(TextQuery::new);
-    (SortSpec::new(sort), tc.draw(gs::optional(text)))
+    let quick = tc.draw(gs::optional(gs::sampled_from(vec!["1", "-", "3", "2"])));
+    let quick = quick.map(|text| {
+        // The shown fields, or some named ones: either way, items of the
+        // other axis, which turning leaves where they are.
+        let named = tc.draw(gs::optional(
+            gs::vecs(gs::integers::<u64>().max_value(fields as u64 - 1)).max_size(fields),
+        ));
+        let query = TextQuery::new(text).regex(tc.draw(gs::booleans()));
+        match named {
+            Some(keys) => query.searching(Searched::Keys(keys.into_iter().map(Key).collect())),
+            None => query,
+        }
+    });
+    (SortSpec::new(sort), quick)
 }
 
 /// The Keys `axis` shows, in order, after `spec` is requested and

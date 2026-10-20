@@ -848,7 +848,7 @@ impl Content for Text<'_> {
             Text::Records(_) => HEADERS[col.0 as usize].to_string(),
             Text::Huge => format!("col {}", col.0),
             Text::Live(_) => TICKER_HEADERS[col.0 as usize].to_string(),
-            Text::Transposed(_) => format!("#{}", col.0),
+            Text::Transposed(_) => col.0.to_string(),
         }
     }
 

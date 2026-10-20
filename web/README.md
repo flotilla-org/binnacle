@@ -413,6 +413,15 @@ which leaves a row that stops matching in view, unmatched, until the next
 View Spec, and `changed(id)` for a change from the data itself, which the
 filter takes at once.
 
+`transpose(source)` turns any Table Source on its side: its rows are the
+source's columns and its columns the source's rows, so
+`transpose(fromRows(records, fields))` shows each record as a column, as a
+pivoted table would. Every request passes on about the other axis and every
+answer comes back swapped, so it adds nothing the source lacks. Choose the
+renderers by row with `byRow`. A Find Query naming the columns it searches
+finds nothing on the turned table (the source can search only its own
+columns); the find bar always searches the shown ones.
+
 ## Develop
 
 `pnpm dev` serves the demo on http://127.0.0.1:5754 (the React page is

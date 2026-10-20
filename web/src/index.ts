@@ -82,3 +82,4 @@ export type { Content } from "./content";
 export type { Painter } from "./painter";
 export type { Snapshot } from "./snapshot";
 export { loadBinnacle } from "./wasm";
+export { transpose } from "./transpose";
