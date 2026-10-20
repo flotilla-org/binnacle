@@ -77,6 +77,8 @@ export interface RowsOptions {
    * `"refuse"` refuses it, and the axis is not movable while sorted.
    */
   sortedMoves?: "bake" | "refuse";
+  /** The most rows and columns it hides at once, if fewer than the widget's own cap. */
+  hideCap?: { rows?: number; cols?: number };
 }
 
 export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[keyof R]> {
@@ -536,6 +538,7 @@ export function fromRows<R extends object>(
       window: (start, end) => Array.from(memory().window(ROWS, start, end)),
       quickFilter: { regex: true },
       hide: true,
+      ...(options.hideCap?.rows === undefined ? {} : { hideCap: options.hideCap.rows }),
       support: (by) => {
         const column = columns[index.get(by) ?? -1];
         const filterable = column?.filterable !== false;
@@ -552,6 +555,7 @@ export function fromRows<R extends object>(
       window: (start, end) => Array.from(memory().window(COLS, start, end), (i) => columns[i]!.key),
       quickFilter: { regex: true },
       hide: true,
+      ...(options.hideCap?.cols === undefined ? {} : { hideCap: options.hideCap.cols }),
       support: () => ({ sort: true, text: { regex: true }, oneOf: true }),
       distinct: (by, { search, limit, narrow }) => distinctAcross(by, search, limit, narrow),
       locate: (id) => located(memory().locate(COLS, index.get(id) ?? columns.length)),

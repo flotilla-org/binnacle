@@ -11,11 +11,13 @@
 // records by their values too, and a record's column menu filters the
 // fields. Find, editing, moves, pinning and hiding work as in the records,
 // a field row's header dragging the field and a record's column header the
-// record, so hiding a column hides a record.
+// record, so hiding a column hides a record, and the columns' chooser lists
+// the records (at most 100 of them hide).
 
 import {
   barRenderer,
   byRow,
+  createChooser,
   createColumnMenu,
   createFilterBar,
   createFindBar,
@@ -27,7 +29,7 @@ import {
 } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { parse, portPicker, type Value } from "./records";
-import { matches, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
+import { matches, RECORD_HIDE_CAP, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
 
 /** The renderers of the fields that do not draw as plain text. */
 const FIELD_RENDERERS: Partial<Record<keyof RecordRow, CellRenderer<Value>>> = {
@@ -45,7 +47,7 @@ export const transposed: DemoSource = {
     const records = fromRows(
       rows,
       [{ key: "id", filterable: false }, { key: "name" }, { key: "weight" }, { key: "crew" }, { key: "port" }],
-      sortedMoves(),
+      { ...sortedMoves(), hideCap: { rows: RECORD_HIDE_CAP } },
     );
     const source = transpose(records);
     const box = document.createElement("input");
@@ -85,6 +87,7 @@ export const transposed: DemoSource = {
       editor: (field) => (field === "port" ? portPicker() : null),
     });
     const columnMenu = createColumnMenu(widget);
+    const chooser = createChooser(widget);
     const bar = createFilterBar(widget, {
       columnMenu,
       axis: "cols",
@@ -115,6 +118,7 @@ export const transposed: DemoSource = {
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();
+        chooser.destroy();
         widget.destroy();
         frame.remove();
         records.destroy();

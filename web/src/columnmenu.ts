@@ -37,6 +37,7 @@ import type { AxisName, PinEdge } from "./codes";
 import type { Condition, Distinct, ListedValue, TextMatch } from "./source";
 import type { FrameInfo, GridWidget, MenuAt } from "./widget";
 import { createPause } from "./pause";
+import { capHint, type HideOutcome } from "./choose";
 
 export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   /** The popover while it is open, else `null`. */
@@ -57,10 +58,10 @@ export interface ColumnMenu<ColId = unknown, RowId = unknown> {
 /** How many values the checklist asks for; it says so when there are more. */
 const LIMIT = 1000;
 
-const MENU_STYLE =
+export const MENU_STYLE =
   "position: fixed; z-index: 50; width: 300px; box-sizing: border-box; padding: 8px; border-radius: 8px; " +
   "box-shadow: 0 10px 30px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.08);";
-const TITLE_STYLE = "margin: 0 2px 6px; font-size: 12px;";
+export const TITLE_STYLE = "margin: 0 2px 6px; font-size: 12px;";
 const ROW_STYLE = "display: flex; align-items: center; gap: 4px;";
 const FIELD_STYLE =
   "font: inherit; color: inherit; flex: 1; min-width: 0; padding: 4px 8px; border-radius: 6px; outline: none;";
@@ -68,21 +69,21 @@ const SELECT_STYLE = "font: inherit; color: inherit; padding: 3px 2px; border-ra
 const BUTTON_STYLE =
   "min-width: 24px; height: 24px; padding: 0 5px; border: 1px solid transparent; border-radius: 4px; " +
   "background: transparent; color: inherit; cursor: pointer; font: 12px ui-monospace, Menlo, monospace;";
-const FOOT_STYLE = "display: flex; gap: 6px; margin-top: 8px;";
-const ACTION_STYLE =
+export const FOOT_STYLE = "display: flex; gap: 6px; margin-top: 8px;";
+export const ACTION_STYLE =
   "font: inherit; color: inherit; padding: 3px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap;";
 const SEPARATOR_STYLE = "height: 1px; margin: 8px -8px;";
-const SEARCH_STYLE = FIELD_STYLE + " display: block; width: 100%; box-sizing: border-box;";
+export const SEARCH_STYLE = FIELD_STYLE + " display: block; width: 100%; box-sizing: border-box;";
 const LIST_HEIGHT = 220;
 const LIST_MIN_HEIGHT = 96;
-const LIST_STYLE = `max-height: ${LIST_HEIGHT}px; overflow: auto; margin: 6px 0 4px; padding: 2px 0; border-radius: 6px;`;
-const ITEM_STYLE = "display: flex; align-items: center; gap: 6px; padding: 2px 8px; white-space: nowrap;";
-const ITEM_TEXT_STYLE = "flex: 1; overflow: hidden; text-overflow: ellipsis;";
+export const LIST_STYLE = `max-height: ${LIST_HEIGHT}px; overflow: auto; margin: 6px 0 4px; padding: 2px 0; border-radius: 6px;`;
+export const ITEM_STYLE = "display: flex; align-items: center; gap: 6px; padding: 2px 8px; white-space: nowrap;";
+export const ITEM_TEXT_STYLE = "flex: 1; overflow: hidden; text-overflow: ellipsis;";
 const COUNT_STYLE = "font-size: 11px; font-variant-numeric: tabular-nums;";
-const NOTICE_STYLE = "font-size: 11px; min-height: 14px; margin: 0 2px;";
+export const NOTICE_STYLE = "font-size: 11px; min-height: 14px; margin: 0 2px;";
 const ERROR_STYLE = "font-size: 11px; margin: 4px 2px 0;";
 const ACTIONS_STYLE = "display: flex; flex-direction: column; gap: 2px;";
-const MENU_ITEM_STYLE =
+export const MENU_ITEM_STYLE =
   "display: flex; align-items: center; gap: 8px; font: inherit; color: inherit; text-align: start; " +
   "padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; cursor: pointer;";
 const FLYOUT_STYLE = MENU_STYLE.replace("width: 300px", "width: 220px");
@@ -183,17 +184,44 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       pinning.freeze();
     });
     const hideButton = lit(menuItem(`Hide ${noun}`, "binnacle-column-menu-hide"));
+    const showOnly = lit(menuItem("", "binnacle-column-menu-show-only"));
     const showHidden = lit(menuItem("", "binnacle-column-menu-show-hidden"));
-    if (!hides) hideButton.style.display = showHidden.style.display = "none";
+    const choose = lit(menuItem(`Choose ${noun}s…`, "binnacle-column-menu-choose"));
+    if (!hides) hideButton.style.display = showOnly.style.display = showHidden.style.display = "none";
+    if (!widget.canChoose(own)) choose.style.display = "none";
+    // Why the last hide hid nothing: past the cap, a filter scales.
+    const capped = el("div", "binnacle-column-menu-capped", ERROR_STYLE);
+    capped.setAttribute("role", "status");
+    capped.hidden = true;
     showHidden.setAttribute("aria-haspopup", "menu");
     showHidden.setAttribute("aria-expanded", "false");
     const actionsSeparator = el("div", "", SEPARATOR_STYLE);
     actionsSeparator.hidden = !filters;
-    actions.append(pinButton, pinTrailing, freeze, hideButton, showHidden, actionsSeparator);
-    hideButton.addEventListener("click", () => {
-      widget.hide([colId], own);
+    actions.append(pinButton, pinTrailing, freeze, hideButton, showOnly, showHidden, choose, capped, actionsSeparator);
+    /** Runs a hide on the chosen items around this one: closes the menu, unless it passed the cap. */
+    const hideWith = async (run: () => Promise<HideOutcome>) => {
+      const outcome = await run();
+      if (outcome !== "capped") return close();
+      capped.hidden = false;
+      capped.textContent = capHint(own, widget.hideCap(own));
+    };
+    hideButton.addEventListener("click", () => void hideWith(() => widget.hideChosen(own, colId as never)));
+    showOnly.addEventListener("click", () => void hideWith(() => widget.showOnly(own, colId as never)));
+    choose.addEventListener("click", () => {
+      const anchor = element.getBoundingClientRect();
       close();
+      widget.openChooser(own, anchor);
     });
+    /** Names how many items Hide and Show only reach: the chosen ones around this item. */
+    const markChosen = () => {
+      const n = widget.chosenCount(own, colId as never);
+      const many = n > 1 ? `${n.toLocaleString("en")} ${noun}s` : "";
+      const hideText = many ? `Hide ${many}` : `Hide ${noun}`;
+      const onlyText = many ? `Show only these ${many}` : `Show only this ${noun}`;
+      if (hideButton.textContent !== hideText) hideButton.textContent = hideText;
+      if (showOnly.textContent !== onlyText) showOnly.textContent = onlyText;
+    };
+    markChosen();
     let flyout: { element: HTMLElement; search: HTMLInputElement; list: HTMLElement; listed: number } | null = null;
     const hiddenItems = () =>
       widget.hidden(own).map((id) => ({ id, label: own === "cols" ? widget.columnLabel(id as ColId) : widget.rowLabel(id as RowId) }));
@@ -535,7 +563,9 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
         c.style.border = `1px solid ${t.border}`;
       }
       actionsSeparator.style.background = t.border;
+      capped.style.color = t.error;
       markHidden();
+      markChosen();
       if (flyout) {
         const f = flyout.element;
         f.style.font = t.font;
@@ -638,7 +668,7 @@ function showItem(b: HTMLElement, on: boolean) {
 }
 
 /** A button that reads as one item of a menu's list. */
-function menuItem(text: string, className: string): HTMLButtonElement {
+export function menuItem(text: string, className: string): HTMLButtonElement {
   const b = el("button", className, MENU_ITEM_STYLE);
   b.type = "button";
   b.textContent = text;
@@ -668,14 +698,14 @@ function pinningOf<RowId, ColId>(widget: GridWidget<RowId, ColId>, filtered: Axi
   };
 }
 
-function action(text: string): HTMLButtonElement {
+export function action(text: string): HTMLButtonElement {
   const b = el("button", "", ACTION_STYLE);
   b.type = "button";
   b.textContent = text;
   return b;
 }
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, style: string): HTMLElementTagNameMap[K] {
+export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, style: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
   if (className) e.className = className;
   e.style.cssText = style;

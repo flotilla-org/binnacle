@@ -43,6 +43,9 @@ export function matches(row: RecordRow, text: string): boolean {
   return row.name.toLowerCase().includes(t) || (row.port?.toLowerCase().includes(t) ?? false);
 }
 
+/** The most records the records' demos hide, below the default so the cap shows: past it, filter. */
+export const RECORD_HIDE_CAP = 100;
+
 /**
  * What a move on a sorted axis does in the records' demos: `?sortedMoves=refuse`
  * refuses it, else it keeps the order shown and drops the sort.

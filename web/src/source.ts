@@ -304,6 +304,12 @@ export interface AxisMethods<Id, CrossId> {
    * only then.
    */
   hide?: boolean;
+  /**
+   * The most items of this axis the source hides at once, if fewer than the
+   * widget's own cap (1,000): past it a hide is refused and the widget
+   * suggests a filter, which scales.
+   */
+  hideCap?: number;
   /** The distinct values of item `by` across this axis, for a column's checklist; aborted when the search changes. */
   distinct?(by: CrossId, query: DistinctQuery<CrossId>, signal: AbortSignal): MaybePromise<Distinct>;
   /** Where `id` sits now, after a reorder. */

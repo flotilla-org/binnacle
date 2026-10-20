@@ -46,6 +46,7 @@ const ACTIONS: readonly Action[] = [
   { type: "ScrollBy", axis: "rows", items: -3 },
   { type: "Hide", axis: "cols" },
   { type: "ShowHidden", axis: "rows" },
+  { type: "OpenChooser", axis: "cols" },
 ];
 
 const platforms = gs.sampledFrom<Platform>(["mac", "other"]);
@@ -185,6 +186,10 @@ test.each<[Platform, KeyChord, Action]>([
   ["other", { key: "Backspace", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "Unpin", axis: "rows" }],
   ["mac", { key: "Home", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Freeze", axis: "cols" }],
   ["other", { key: "Home", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "Freeze", axis: "rows" }],
+  ["other", { key: "o", code: "KeyO", ctrlKey: true, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenChooser", axis: "cols" }],
+  // macOS gives Option+O the key "ø", and Option+Shift+O "Ø".
+  ["mac", { key: "ø", code: "KeyO", ctrlKey: false, altKey: true, shiftKey: false, metaKey: true }, { type: "OpenChooser", axis: "cols" }],
+  ["mac", { key: "Ø", code: "KeyO", ctrlKey: false, altKey: true, shiftKey: true, metaKey: true }, { type: "OpenChooser", axis: "rows" }],
 ])("default on %s: %o is %o", (platform, event, action) => {
   expect(createKeymap({ platform }).lookup(event)).toEqual(action);
 });

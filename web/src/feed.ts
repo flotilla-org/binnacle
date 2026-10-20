@@ -212,6 +212,9 @@ const GONE: Located = { type: "Gone", suggest: null };
 /** What a refused move says when the Table Source gives no reason, as the Rust `PumpSource` default does. */
 const CANNOT_MOVE = "These can't be moved";
 
+/** The most items an axis hides unless its Table Source declares fewer, as the Rust Grid's `HIDE_CAP`. */
+export const HIDE_CAP = 1000;
+
 /** A mark the source gave, and the round it was asked in: one from an earlier round is shown until it is asked again. */
 interface Mark {
   marked: boolean;
@@ -580,6 +583,7 @@ export function createFeed<RowId, ColId, V>(
       const bits = quick ? QUICK_FILTER.on | (quick.regex ? QUICK_FILTER.regex : 0) : 0;
       g.set_quick_filter_support(AXIS_CODE[axis], bits);
       g.set_hide_support(AXIS_CODE[axis], !!source.view && axes[axis].source.hide === true);
+      g.set_hide_cap(AXIS_CODE[axis], Math.max(0, Math.min(axes[axis].source.hideCap ?? HIDE_CAP, HIDE_CAP)));
     }
   };
 

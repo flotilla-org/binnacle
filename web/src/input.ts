@@ -43,10 +43,12 @@ export interface InputHost {
   freeze(axis: AxisName): void;
   /** Opens the find bar, or steps while find is open: `false` if there is no find bar or find is closed. */
   find(action: "open" | "next" | "previous"): boolean;
-  /** Hides the focused item of `axis`: `false` if the axis does not hide or nothing is focused. */
+  /** Hides the chosen items of `axis` (the picks, else the selection, else the focused item): `false` if the axis does not hide. */
   hide(axis: AxisName): boolean;
   /** Opens the focused item's menu at the hidden items of `axis`: `false` if there is no menu or the axis does not hide. */
   showHidden(axis: AxisName): boolean;
+  /** Opens the chooser of `axis`: `false` if none is mounted or the axis does not hide. */
+  openChooser(axis: AxisName): boolean;
 }
 
 export interface Input {
@@ -120,6 +122,7 @@ export function perform(grid: WebGrid, action: Action): void {
     case "Hide":
     case "ShowHidden":
     case "Freeze":
+    case "OpenChooser":
       // The widget's, not the Grid's: see `createInput`.
       return;
   }
@@ -212,6 +215,10 @@ export function createInput(host: InputHost): Input {
     if (action.type === "Pin" || action.type === "Unpin") {
       e.preventDefault();
       host.pin(action.axis, action.type === "Pin" ? action.edge : null);
+      return;
+    }
+    if (action.type === "OpenChooser") {
+      if (host.openChooser(action.axis)) e.preventDefault();
       return;
     }
     if (action.type === "Hide" || action.type === "ShowHidden") {

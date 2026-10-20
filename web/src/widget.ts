@@ -43,6 +43,18 @@ import type {
 } from "./source";
 import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
 import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
+import {
+  capHint,
+  chosen,
+  chosenCount,
+  chosenHas,
+  gaps,
+  hiddenKeys,
+  othersCount,
+  overCap,
+  type Chosen,
+  type HideOutcome,
+} from "./choose";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -178,6 +190,12 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   columns: ColumnHeader<ColId>[];
   /** Find: whether the Table Source finds, the Find Query in force, the current match, and what the source said of them. */
   find: FindInfo<RowId, ColId>;
+  /**
+   * The last hide refused because the axis's hidden items would pass its
+   * cap, with the hint to show ("Can't hide over 1,000 rows: use a filter
+   * instead"), until the next key or press; `null` otherwise.
+   */
+  hideCapped: { axis: AxisName; cap: number; hint: string } | null;
 }
 
 /** One axis's filter as `FrameInfo` gives it, naming items of the other axis. */
@@ -286,6 +304,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private rowMenu: ((rowId: RowId, anchor: DOMRect, at: MenuAt) => void) | null = null;
   /** The mounted find bar's opener, if one is mounted. */
   private findBar: (() => void) | null = null;
+  private chooser: ((axis: AxisName, anchor?: DOMRect) => void) | null = null;
+  /** The last hide refused past its axis's cap, until the next input. */
+  private capped: { axis: AxisName; cap: number } | null = null;
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -383,6 +404,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         ...(options.platform ? { platform: options.platform } : {}),
       }),
       changed: () => {
+        // Any input after a refused hide puts its hint away.
+        if (this.capped) {
+          this.capped = null;
+          this.invalidate();
+        }
         drainEffects(this.parts);
         this.schedule();
       },
@@ -428,10 +454,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       hide: (axis) => {
         if (!this.canHide(axis)) return false;
         // After the next frame, so a focus move just made has landed.
-        this.framed.push(() => {
-          const key = this.last?.[axis].focus?.key;
-          if (key != null) this.editView(() => this.grid.hide(AXIS_CODE[axis], BigUint64Array.of(key)));
-        });
+        this.framed.push(() => void this.hideChosen(axis));
+        this.invalidate();
+        return true;
+      },
+      openChooser: (axis) => {
+        if (!this.chooser || !this.canHide(axis)) return false;
+        this.framed.push(() => this.openChooser(axis));
         this.invalidate();
         return true;
       },
@@ -698,9 +727,102 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * when a filter drops them; their sizes stay. Does nothing unless the axis
    * hides (see `canHide`).
    */
-  hide<A extends AxisName = "rows">(ids: ItemId<A, RowId, ColId>[], axis?: A): void {
+  hide<A extends AxisName = "rows">(ids: ItemId<A, RowId, ColId>[], axis?: A): boolean {
     const on = axis ?? "rows";
-    this.editView(() => this.grid.hide(AXIS_CODE[on], this.itemKeys(on, ids)));
+    return this.hideKeys(on, this.itemKeys(on, ids)) !== "capped";
+  }
+
+  /** The most items `axis` (the rows by default) hides: past it, a hide is refused and the widget suggests a filter. */
+  hideCap(axis: AxisName = "rows"): number {
+    return this.last?.[axis].hideCap ?? Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Hides the chosen items of `axis` (the rows by default): its picks, else
+   * the items the selection spans, else the focused item. With `around`, an
+   * item a menu was opened on, only that item unless it is among the
+   * chosen. Past the axis's hide cap nothing is hidden, the answer is
+   * `"capped"` and `FrameInfo.hideCapped` carries the hint.
+   */
+  async hideChosen<A extends AxisName = "rows">(axis?: A, around?: ItemId<A, RowId, ColId>): Promise<HideOutcome> {
+    const on = axis ?? "rows";
+    const c = this.chosenAround(on, around);
+    if (!c || !this.canHide(on)) return "nothing";
+    if (overCap(this.last!, on, chosenCount(c))) return this.refuseHide(on);
+    return this.hideKeys(on, await this.chosenKeys(on, c));
+  }
+
+  /**
+   * Shows only the chosen items of `axis` (as `hideChosen` chooses them):
+   * hides every other item shown at that moment, so items arriving later
+   * are shown. Past the axis's hide cap nothing is hidden.
+   */
+  async showOnly<A extends AxisName = "rows">(axis?: A, around?: ItemId<A, RowId, ColId>): Promise<HideOutcome> {
+    const on = axis ?? "rows";
+    const c = this.chosenAround(on, around);
+    if (!c || !this.canHide(on)) return "nothing";
+    if (overCap(this.last!, on, othersCount(this.last!, on, c))) return this.refuseHide(on);
+    const count = this.last![on].count;
+    // A selection's others lie between its runs; picks are within the cap of all there is.
+    const runs = c.type === "runs" ? gaps(c.runs, count) : [{ start: 0, end: count }];
+    const keep = new Set(c.type === "keys" ? c.keys : []);
+    const others = await this.chosenKeys(on, { type: "runs", runs });
+    return this.hideKeys(on, BigUint64Array.from(others.filter((k) => !keep.has(k))));
+  }
+
+  /**
+   * The items of `axis` the Table Source shows, in its order, up to `limit`,
+   * then every hidden one: what a chooser lists. `partial` if more were shown.
+   */
+  async items<A extends AxisName>(axis: A, limit = 1000): Promise<{ ids: ItemId<A, RowId, ColId>[]; partial: boolean }> {
+    const source = this.options.source[axis];
+    const count = await source.count();
+    const window = await source.window(0, Math.min(count, limit), new AbortController().signal);
+    const shown = window as ItemId<A, RowId, ColId>[];
+    const hidden = this.hidden(axis).filter((id) => !shown.includes(id));
+    return { ids: [...shown, ...hidden], partial: count > limit };
+  }
+
+  /** How many items `hideChosen` (with `around`) reaches on `axis`, as of the latest frame: 0 for none. */
+  chosenCount<A extends AxisName = "rows">(axis?: A, around?: ItemId<A, RowId, ColId>): number {
+    const c = this.chosenAround(axis ?? "rows", around);
+    return c ? chosenCount(c) : 0;
+  }
+
+  /** What the chosen items of `on` are around `around`: the chosen if it is among them, else it alone. */
+  private chosenAround(on: AxisName, around: unknown): Chosen | null {
+    const s = this.last;
+    if (!s) return null;
+    const c = chosen(s, on);
+    if (around === undefined) return c;
+    const key = this.keyOf(on, around as RowId | ColId);
+    const position = s[on].strip.find((i) => i.key === key)?.position;
+    return c && chosenHas(c, key, position) ? c : { type: "keys", keys: [key] };
+  }
+
+  /** The Keys `c` names, asking the Table Source for a span's. */
+  private async chosenKeys(on: AxisName, c: Chosen): Promise<bigint[]> {
+    if (c.type === "keys") return c.keys;
+    const source = this.options.source[on];
+    const windows = await Promise.all(c.runs.map((r) => source.window(r.start, r.end, new AbortController().signal)));
+    return Array.from(this.itemKeys(on, windows.flat()));
+  }
+
+  private hideKeys(on: AxisName, keys: BigUint64Array | bigint[]): HideOutcome {
+    if (this.destroyed || !this.canHide(on)) return "nothing";
+    const fresh = keys.length > 0 && Array.from(keys).some((k) => !this.last || !hiddenKeys(this.last, on).includes(k));
+    let hid = true;
+    this.editView(() => (hid = this.grid.hide(AXIS_CODE[on], BigUint64Array.from(keys))));
+    if (!hid) return this.refuseHide(on);
+    return fresh ? "hidden" : "nothing";
+  }
+
+  private refuseHide(on: AxisName): HideOutcome {
+    const cap = this.hideCap(on);
+    this.capped = { axis: on, cap };
+    this.aria.say(capHint(on, cap));
+    this.invalidate();
+    return "capped";
   }
 
   /** Shows the hidden items `ids` of `axis` (the rows by default) again, in their places. */
@@ -766,6 +888,32 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       this.painter.filterButtons.rows = false;
       this.invalidate();
     };
+  }
+
+  /**
+   * Mounts a chooser (see `createChooser`): Mod+Alt+O (Mod+Alt+Shift+O for
+   * the rows), a menu's "Choose columns…" or `openChooser` calls `open` with
+   * the axis and, from a menu, a rectangle to place it by. Returns how to
+   * unmount it; one chooser is mounted at a time.
+   */
+  attachChooser(open: (axis: AxisName, anchor?: DOMRect) => void): () => void {
+    this.chooser = open;
+    return () => {
+      if (this.chooser === open) this.chooser = null;
+    };
+  }
+
+  /** Whether a chooser is mounted and `axis` hides, so it can be opened there. */
+  canChoose(axis: AxisName): boolean {
+    return this.chooser !== null && this.canHide(axis);
+  }
+
+  /** Opens the mounted chooser of `axis` (the columns by default): `false` if none is mounted or the axis does not hide. */
+  openChooser(axis: AxisName = "cols", anchor?: DOMRect): boolean {
+    const open = this.chooser;
+    if (!open || this.destroyed || !this.canHide(axis)) return false;
+    open(axis, anchor);
+    return true;
   }
 
   /**
@@ -1145,6 +1293,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         current: snapshot.findMatch && this.ids(snapshot.findMatch.row, snapshot.findMatch.col),
         ...this.feed.findState(),
       },
+      hideCapped: this.capped && { ...this.capped, hint: capHint(this.capped.axis, this.capped.cap) },
     };
   }
 

@@ -9,9 +9,13 @@
 // case and regex toggles), a chip for each column condition, "+ Filter" and
 // the count. Every column but the id takes Text conditions: its header's
 // funnel, or Alt+ArrowDown, opens the column menu, which also hides the
-// column or shows hidden ones (Mod+Alt+0 hides the focused column, Mod+Alt+9
-// its row; Shift with either lists the hidden ones); the filter bar counts
-// what is left, "12 of 30 columns". Cells edit in place: type,
+// column (or the picked or selected ones), shows only those, or shows hidden
+// ones (Mod+Alt+0 hides the chosen columns, Mod+Alt+9 the rows; Shift with
+// either lists the hidden ones); the filter bar counts what is left, "12 of
+// 30 columns". "Choose columns…" in the menu, or Mod+Alt+O (Mod+Alt+Shift+O
+// for the rows), opens the chooser, a checklist of every column or row to
+// tick shown or hidden. The rows hide at most 100 at a time, so a hide past
+// that says to filter instead. Cells edit in place: type,
 // or press F2 or Enter, or double-click; the port column picks from a list.
 // Ctrl/Cmd-F in the grid (or Find in the toolbar) opens the find bar under
 // the filter bar: matches are marked, Enter and Shift+Enter (or F3 and
@@ -24,9 +28,9 @@
 // edge, past a line, while the rest scrolls under them, through sorts and
 // filters, and the arrow keys step through them in the order drawn.
 
-import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type Editor } from "../../src";
+import { createChooser, createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
-import { matches, PORTS, RECORDS, rows, sortedMoves, WIDTHS, type RecordRow } from "./records-data";
+import { matches, PORTS, RECORD_HIDE_CAP, RECORDS, rows, sortedMoves, WIDTHS, type RecordRow } from "./records-data";
 
 export type Value = RecordRow[keyof RecordRow];
 
@@ -75,7 +79,7 @@ export const records: DemoSource = {
     const source = fromRows(
       rows,
       [{ key: "id", filterable: false }, { key: "name" }, { key: "weight" }, { key: "crew" }, { key: "port" }],
-      sortedMoves(),
+      { ...sortedMoves(), hideCap: { rows: RECORD_HIDE_CAP } },
     );
     const box = document.createElement("input");
     box.type = "search";
@@ -113,6 +117,7 @@ export const records: DemoSource = {
       editor: (_id, col) => (col === "port" ? portPicker() : null),
     });
     const columnMenu = createColumnMenu(widget);
+    const chooser = createChooser(widget);
     const bar = createFilterBar(widget, { columnMenu });
     const findBar = createFindBar(widget);
     frame.prepend(bar.element, findBar.element);
@@ -139,6 +144,7 @@ export const records: DemoSource = {
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();
+        chooser.destroy();
         widget.destroy();
         frame.remove();
         source.destroy();

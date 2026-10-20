@@ -26,6 +26,8 @@ export interface Aria {
   frame(s: Snapshot, painted: boolean, content: () => Content): void;
   /** The Grid asked where `key` went on `axis` (a Locate Effect). */
   locate(axis: AxisName, key: bigint): void;
+  /** Reads `message` out in the live region, for news the table cannot show. */
+  say(message: string): void;
   destroy(): void;
 }
 
@@ -299,6 +301,7 @@ export function createAria(options: AriaOptions): Aria {
       deferred = null;
       update(s, content());
     },
+    say: announce,
     locate(axis, key) {
       // Locates for other Keys (an edit's cell) say nothing about focus.
       if (focus[axis] === key) locating[axis] = key;

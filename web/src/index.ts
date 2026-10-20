@@ -14,6 +14,8 @@ export {
 } from "./widget";
 export { createFilterBar, type FilterBar, type FilterBarOptions } from "./filterbar";
 export { createColumnMenu, type ColumnMenu } from "./columnmenu";
+export { createChooser, type Chooser } from "./chooser";
+export { capHint, type HideOutcome } from "./choose";
 export { createFindBar, type FindBar, type FindBarOptions } from "./findbar";
 export type { ColumnSupport, CrossId, FindState, ItemId } from "./feed";
 export type { ConditionState } from "./snapshot";

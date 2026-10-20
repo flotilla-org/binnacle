@@ -149,3 +149,75 @@ describe("hiding through the feed", () => {
     }
   });
 });
+
+describe("the hide cap", () => {
+  /** A declared cap: none, a small one the few items can pass, or one past 1,000. */
+  const cap = (most: number) =>
+    gs.oneOf(gs.just(undefined), gs.integers({ minValue: 0, maxValue: most }), gs.integers({ minValue: 998, maxValue: 2 ** 40 }));
+  const declare = (rows: number | undefined, cols: number | undefined) => ({
+    hideCap: { ...(rows === undefined ? {} : { rows }), ...(cols === undefined ? {} : { cols }) },
+  });
+
+  test("a source's cap reaches each axis, 1,000 at most", () =>
+    hegel.test(
+      (tc) => {
+        const rows = tc.draw(records);
+        const declared = { rows: tc.draw(cap(12)), cols: tc.draw(cap(5)) };
+        const source = fromRows(rows, COLUMNS, declare(declared.rows, declared.cols));
+        const h = new Harness(source);
+        try {
+          const snap = h.settled();
+          expect([snap.rows.hideCap, snap.cols.hideCap]).toEqual([
+            Math.min(declared.rows ?? 1000, 1000),
+            Math.min(declared.cols ?? 1000, 1000),
+          ]);
+        } finally {
+          h.destroy();
+          source.destroy();
+        }
+      },
+      { testCases: 100 },
+    ));
+
+  test("a hide is refused, hiding nothing, exactly when the items hidden would pass the cap", () =>
+    hegel.test(
+      (tc) => {
+        const rows = tc.draw(records);
+        const caps = { rows: tc.draw(gs.integers({ minValue: 0, maxValue: rows.length + 1 })), cols: tc.draw(gs.integers({ minValue: 0, maxValue: 4 })) };
+        const source = fromRows(rows, COLUMNS, declare(caps.rows, caps.cols));
+        const h = new Harness(source);
+        try {
+          h.settled();
+          const ids = { rows: rows.map((_, i) => i), cols: COLUMNS.map((c) => c.key) as unknown[] };
+          const hidden = { rows: new Set<unknown>(), cols: new Set<unknown>() };
+          const step = gs.tuples(
+            gs.sampledFrom<"rows" | "cols">(["rows", "cols"]),
+            gs.sampledFrom<"hide" | "show">(["hide", "hide", "show"]),
+            gs.arrays(gs.integers({ minValue: 0, maxValue: 9 }), { minSize: 1, maxSize: 4 }),
+          );
+          for (const [axis, type, at] of tc.draw(gs.arrays(step, { maxSize: 8 }))) {
+            const picked = at.map((i) => ids[axis][i % ids[axis].length]!);
+            const keys = BigUint64Array.from(picked, (id) => (axis === "rows" ? h.feed.rowKey(id as number) : h.feed.colKey(id as Field)));
+            const code = axis === "rows" ? ROWS : COLS;
+            if (type === "show") {
+              h.grid.show(code, keys);
+              for (const id of picked) hidden[axis].delete(id);
+            } else {
+              const after = new Set([...hidden[axis], ...picked]);
+              const over = after.size > caps[axis];
+              expect(h.grid.hide(code, keys)).toBe(!over);
+              if (!over) hidden[axis] = after;
+            }
+            h.drain();
+            const snap = h.settled();
+            expect(new Set(snap.appliedView.rows.hidden.map((k) => h.feed.rowId(k)))).toEqual(hidden.rows);
+            expect(new Set(snap.appliedView.cols.hidden.map((k) => h.feed.colId(k)))).toEqual(hidden.cols);
+          }
+        } finally {
+          h.destroy();
+          source.destroy();
+        }
+      },
+      { testCases: 150 },
+    ));
+});

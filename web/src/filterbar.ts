@@ -120,7 +120,11 @@ export function createFilterBar<RowId, ColId, V>(
   const count = el("span", "binnacle-row-count", COUNT_STYLE);
   const colCount = el("span", "binnacle-column-count", "font-variant-numeric: tabular-nums; white-space: nowrap;");
   colCount.hidden = true;
-  element.append(field, error, chips, across, add, reapply, count, colCount);
+  // Why the last hide hid nothing: past the cap, a filter scales.
+  const capped = el("span", "binnacle-hide-capped", ERROR_STYLE);
+  capped.setAttribute("role", "status");
+  capped.hidden = true;
+  element.append(field, error, chips, across, add, reapply, count, colCount, capped);
 
   let picker: HTMLElement | null = null;
   const closePicker = () => {
@@ -314,6 +318,7 @@ export function createFilterBar<RowId, ColId, V>(
     error.textContent = rejected ? (info?.viewError ?? "Not applied") : "";
     error.title = error.textContent;
     error.style.color = t.error;
+    capped.style.color = t.error;
     count.style.color = t.rowNumber.color;
     colCount.style.color = t.rowNumber.color;
     acrossLabel.style.color = t.rowNumber.color;
@@ -395,6 +400,8 @@ export function createFilterBar<RowId, ColId, V>(
     colCount.textContent = filtered("cols")
       ? `${f.cols.count.toLocaleString("en")} of ${f.cols.total!.toLocaleString("en")} ${nouns.cols[f.cols.total === 1 ? 0 : 1]}`
       : "";
+    capped.hidden = !f.hideCapped;
+    capped.textContent = f.hideCapped?.hint ?? "";
     paint();
   };
   const unsubscribe = widget.subscribe(frame);

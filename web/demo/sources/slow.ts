@@ -16,7 +16,17 @@
 // and counts like sorts, the count reading "finding…" meanwhile; an invalid
 // regex there reads "No matches" with the message.
 
-import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
+import {
+  createChooser,
+  createColumnMenu,
+  createFilterBar,
+  createFindBar,
+  fromRows,
+  GridWidget,
+  type AxisSink,
+  type MaybePromise,
+  type TableSource,
+} from "../../src";
 import type { DemoSource } from "./demo-source";
 import { matches, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
 
@@ -158,6 +168,7 @@ export const slow: DemoSource = {
       ...look,
     });
     const columnMenu = createColumnMenu(widget);
+    const chooser = createChooser(widget);
     const bar = createFilterBar(widget, { columnMenu });
     const findBar = createFindBar(widget);
     frame.prepend(bar.element, findBar.element);
@@ -184,6 +195,7 @@ export const slow: DemoSource = {
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();
+        chooser.destroy();
         widget.destroy();
         frame.remove();
         inner.destroy();

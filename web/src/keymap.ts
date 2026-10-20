@@ -29,8 +29,10 @@ export type Action =
   | { type: "Pin"; axis: AxisName; edge: PinEdge }
   /** Unpins the focused item of `axis`. */
   | { type: "Unpin"; axis: AxisName }
-  /** Hides the focused item of `axis`, if the Table Source hides that axis; the key is the page's otherwise. */
+  /** Hides the chosen items of `axis` (its picks, else the selection, else the focused item), if the Table Source hides that axis; the key is the page's otherwise. */
   | { type: "Hide"; axis: AxisName }
+  /** Opens the mounted chooser of `axis`, if the Table Source hides that axis; the key is the page's otherwise. */
+  | { type: "OpenChooser"; axis: AxisName }
   /** Opens the focused item's menu at the list of hidden items of `axis`, if a menu is mounted and the axis hides; the key is the page's otherwise. */
   | { type: "ShowHidden"; axis: AxisName }
   /** Pins every item of `axis` from the start up to the focused one, as far as fits. */
@@ -135,10 +137,10 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
  * column left or right, or its row to the top or bottom (or unpin it),
  * Alt+Shift+Backspace to unpin the column and Mod+Alt+Shift+Backspace the
  * row, Alt+Shift+Home to freeze the columns up to the focused one and
- * Mod+Alt+Shift+Home the rows, Mod+Alt+0 to hide the focused column and
- * Mod+Alt+9 its row (as Google Sheets has them), with Shift to list the
- * hidden ones. Pinning avoids Alt with a letter, which types a symbol on
- * macOS.
+ * Mod+Alt+Shift+Home the rows, Mod+Alt+0 to hide the chosen columns and
+ * Mod+Alt+9 the rows (as Google Sheets has them), with Shift to list the
+ * hidden ones, and Mod+Alt+O for the columns' chooser (with Shift the
+ * rows'). Pinning avoids Alt with a letter, which types a symbol on macOS.
  */
 export function defaultBindings(): KeyBindings {
   const bindings: KeyBindings = {};
@@ -187,6 +189,8 @@ export function defaultBindings(): KeyBindings {
   bindings["Mod+Alt+Shift+Backspace"] = { type: "Unpin", axis: "rows" };
   bindings["Alt+Shift+Home"] = { type: "Freeze", axis: "cols" };
   bindings["Mod+Alt+Shift+Home"] = { type: "Freeze", axis: "rows" };
+  bindings["Mod+Alt+O"] = { type: "OpenChooser", axis: "cols" };
+  bindings["Mod+Alt+Shift+O"] = { type: "OpenChooser", axis: "rows" };
   return bindings;
 }
 

@@ -66,6 +66,7 @@ function describe(frame: FrameInfo): string {
   }
   if (picked.rows) parts.push(`${number.format(picked.rows)} ${picked.rows === 1 ? "row" : "rows"} picked`);
   if (picked.cols) parts.push(`${number.format(picked.cols)} ${picked.cols === 1 ? "column" : "columns"} picked`);
+  if (frame.hideCapped && !shown?.filterBar) parts.push(frame.hideCapped.hint);
   if (frame.loading) parts.push("loading");
   if (frame.editing) parts.push("editing");
   return parts.join("  ·  ");
