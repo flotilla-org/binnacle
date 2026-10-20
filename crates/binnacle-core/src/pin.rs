@@ -60,7 +60,8 @@ impl AxisState {
     /// The Key of the pinned item at Position `p`, if any.
     pub fn pinned_at(&self, p: Position) -> Option<Key> {
         let mut pins = self.pins.iter().flatten();
-        pins.find(|pin| self.trusted(pin) == Some(p)).map(|pin| pin.key)
+        pins.find(|pin| self.trusted(pin) == Some(p))
+            .map(|pin| pin.key)
     }
 
     /// The pin's Position, when the Grid can act on it: the Window shows

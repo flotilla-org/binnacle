@@ -9,8 +9,8 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Grid,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState, Edge,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Grid,
     HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect,
     Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
     TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
@@ -1201,9 +1201,17 @@ pub unsafe extern "C" fn binnacle_grid_pin(
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_unpin(grid: *mut BinnacleGrid, axis_tag: u32, key: u64) -> i32 {
+pub unsafe extern "C" fn binnacle_grid_unpin(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { with_handle(grid, |h| axis(axis_tag).map(|axis| h.grid.unpin(axis, Key(key)))) }
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.unpin(axis, Key(key)))
+        })
+    }
 }
 
 /// # Safety

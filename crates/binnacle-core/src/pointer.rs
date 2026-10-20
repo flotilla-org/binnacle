@@ -157,7 +157,10 @@ impl AxisState {
             let gap = self.measure.gap();
             return (self.pinned_items(Edge::Leading))
                 .find(|it| v < it.end() + gap)
-                .filter(|it| it.key.is_some_and(|k| self.pinned_at(it.position) == Some(k)))
+                .filter(|it| {
+                    it.key
+                        .is_some_and(|k| self.pinned_at(it.position) == Some(k))
+                })
                 .map_or(AxisHit::Outside, |it| {
                     AxisHit::Item(ItemAt {
                         position: it.position,
@@ -191,7 +194,10 @@ impl AxisState {
             let (v, end) = (f64::from(v), f64::from(it.end()));
             v >= end - grab && v < end + gap + grab
         });
-        let pinned = pinned.filter(|it| it.key.is_some_and(|k| self.pinned_at(it.position) == Some(k)));
+        let pinned = pinned.filter(|it| {
+            it.key
+                .is_some_and(|k| self.pinned_at(it.position) == Some(k))
+        });
         if let Some(it) = pinned {
             return Some(it.position);
         }

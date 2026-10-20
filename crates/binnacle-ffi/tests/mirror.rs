@@ -6,8 +6,8 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState, Edge,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
     Located, Mode, Modifiers, PointerEvent, PointerKind, Searched, SelectionUnit, Snapshot,
     SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
     ViewSpec, Viewport,
@@ -390,8 +390,14 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     match tc.draw(gs::integers::<u8>().max_value(19)) {
-        18 => Op::Pin(tc.draw(axes()), tc.draw(gs::integers::<u64>().max_value(10))),
-        19 => Op::Unpin(tc.draw(axes()), tc.draw(gs::integers::<u64>().max_value(10))),
+        18 => Op::Pin(
+            tc.draw(axes()),
+            tc.draw(gs::integers::<u64>().max_value(10)),
+        ),
+        19 => Op::Unpin(
+            tc.draw(axes()),
+            tc.draw(gs::integers::<u64>().max_value(10)),
+        ),
         16 => Op::SetHeader(
             tc.draw(axes()),
             tc.draw(hegel::one_of!(

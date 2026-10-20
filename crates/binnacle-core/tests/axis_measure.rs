@@ -404,10 +404,14 @@ fn skipped_items_are_left_out_of_distances_and_locate(tc: hegel::TestCase) {
         let size = f64::from(m.size_at(p));
         let in_gap = at >= begin + size;
         let last = Some(&p) == shown.last();
-        (at >= begin && at < begin + size + f64::from(gap) && !(in_gap && last))
-            .then_some((p, at - begin, in_gap))
+        (at >= begin && at < begin + size + f64::from(gap) && !(in_gap && last)).then_some((
+            p,
+            at - begin,
+            in_gap,
+        ))
     });
-    let got = m.locate(from, delta).map(|l| (l.position, l.within, l.in_gap));
+    let got = m
+        .locate(from, delta)
+        .map(|l| (l.position, l.within, l.in_gap));
     assert_eq!(got, expected, "locate({from}, {delta}) over {shown:?}");
 }
-

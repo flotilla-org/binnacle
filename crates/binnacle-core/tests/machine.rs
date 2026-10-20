@@ -15,8 +15,8 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, Edge, EditEnd, Effect,
-    FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, Edge, EditEnd,
+    Effect, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers,
     PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, Value,
     ViewSpec, Viewport,
 };
@@ -241,7 +241,11 @@ impl Host {
             // No Key is drawn twice, pinned or scrolling.
             let drawn: Vec<Key> = snap.drawn(axis).filter_map(|i| i.key).collect();
             let unique: BTreeSet<Key> = drawn.iter().copied().collect();
-            assert_eq!(unique.len(), drawn.len(), "a Key drawn twice on {axis:?}: {drawn:?}");
+            assert_eq!(
+                unique.len(),
+                drawn.len(),
+                "a Key drawn twice on {axis:?}: {drawn:?}"
+            );
             // The pinned Strip draws pinned Keys only, in pin order.
             let pinned: Vec<u64> = (snap.pinned(axis, Edge::Leading).iter())
                 .filter_map(|i| i.key.map(|k| k.0))
@@ -647,7 +651,14 @@ impl Host {
         // with it the scrolling Strip's length, which may move the anchor.
         let pinned = |grid: &mut Grid| -> Vec<Vec<Option<Key>>> {
             let snap = grid.snapshot();
-            Axis::ALL.map(|a| snap.pinned(a, Edge::Leading).iter().map(|i| i.key).collect()).to_vec()
+            Axis::ALL
+                .map(|a| {
+                    snap.pinned(a, Edge::Leading)
+                        .iter()
+                        .map(|i| i.key)
+                        .collect()
+                })
+                .to_vec()
         };
         self.frame_and_check();
         let before = anchors(&mut self.grid);

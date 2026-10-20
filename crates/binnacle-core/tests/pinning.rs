@@ -67,7 +67,10 @@ fn clicks_and_borders_land_on_the_pinned_and_the_scrolling_strips() {
         g.pointer(PointerEvent::down(10.5, 0.5));
         g.pointer(PointerEvent::moved(12.5, 0.5));
     });
-    out += &s.step("drag it 2 right: the pinned column widens, the body follows", V);
+    out += &s.step(
+        "drag it 2 right: the pinned column widens, the body follows",
+        V,
+    );
     s.input(|g| g.pointer(PointerEvent::up(12.5, 0.5)));
     out += &s.step("release: SizeChanged", V);
     insta::assert_snapshot!(out);
@@ -117,7 +120,10 @@ fn a_pin_follows_its_key_through_a_sort_and_sleeps_while_filtered_out() {
     );
     let notice = s.source.filter(|_| true);
     s.input(|g| g.notify(Axis::Cols, notice));
-    out += &s.step("the filter cleared: record 4 is back in its pinned Strip", NARROW);
+    out += &s.step(
+        "the filter cleared: record 4 is back in its pinned Strip",
+        NARROW,
+    );
     insta::assert_snapshot!(out);
 }
 
@@ -140,12 +146,18 @@ fn op(tc: &TestCase) -> Op {
         key().map(Op::Pin),
         key().map(Op::Pin),
         key().map(Op::Unpin),
-        gs::floats::<f32>().min_value(-40.0).max_value(40.0).map(Op::Scroll),
+        gs::floats::<f32>()
+            .min_value(-40.0)
+            .max_value(40.0)
+            .map(Op::Scroll),
         gs::just(Op::Reverse),
         gs::integers::<u64>().max_value(30).map(Op::Remove),
         hegel::tuples!(key(), gs::floats::<f32>().min_value(1.0).max_value(12.0))
             .map(|(k, s)| Op::Resize(k, s)),
-        gs::floats::<f32>().min_value(4.0).max_value(60.0).map(Op::Width),
+        gs::floats::<f32>()
+            .min_value(4.0)
+            .max_value(60.0)
+            .map(Op::Width),
     ))
 }
 
@@ -218,7 +230,9 @@ fn every_shown_item_is_drawn_exactly_once(tc: TestCase) {
         let region = snap.scrolling(Axis::Cols);
         if let (Some(first), Some(last)) = (strip.first(), strip.last()) {
             assert!(first.offset <= region.start + gap && first.end() > region.start);
-            let last_shown = (0..keys.len() as u64).rev().find(|p| !pinned_at.contains(p));
+            let last_shown = (0..keys.len() as u64)
+                .rev()
+                .find(|p| !pinned_at.contains(p));
             assert!(
                 last.end() + gap >= region.end || Some(last.position) == last_shown,
                 "{last:?} stops short of {region:?}"
