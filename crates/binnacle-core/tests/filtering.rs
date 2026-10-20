@@ -3,7 +3,8 @@
 //! Key.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, FocusStep, Grid, Key, Modifiers, PointerEvent, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, FocusStep, Grid, Key, Modifiers, PointerEvent, TextQuery,
+    ViewSpec, Viewport,
 };
 use binnacle_testkit::{RecordTable, Scenario};
 
@@ -427,5 +428,42 @@ fn a_hidden_pick_goes_while_focus_stays_on_a_kept_row() {
     let snap = s.grid.snapshot();
     assert_eq!(snap.picked(Axis::Rows), &[Key(1)]);
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(1)));
+    insta::assert_snapshot!(out);
+}
+
+/// Stories 55 and 56: a condition on a row filters the columns by that
+/// row's values; each axis shows its own total. The user's edit that stops
+/// a column matching leaves it, unmatched, until the View Spec is applied
+/// again.
+#[test]
+fn a_rows_condition_filters_the_columns_and_an_edited_column_stays_until_reapplied() {
+    let rows = (0..4)
+        .map(|i| vec![Some(i), Some(10 * i), Some(5)])
+        .collect();
+    let grid = Grid::new(
+        AxisConfig::new(4, 1.0).header(1.0),
+        AxisConfig::new(3, 6.0).header(4.0).gap(1.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 3, [0, 1, 2]));
+    let mut out = s.step("four records of three columns: i, 10 times i, 5", V);
+    let ones = Condition::text(Key(1), TextQuery::new("1"));
+    s.input(|g| g.add_condition(Axis::Cols, ones));
+    out += &s.step(
+        "columns whose cell in record 1 contains 1: the 1 and the 10 stay, the 5 goes; 2 of 3 columns",
+        V,
+    );
+    let notices = s.source.edit(1, 1, Some(20));
+    assert_eq!(notices.len(), 1, "the column stays: {notices:?}");
+    s.input(|g| notices.into_iter().for_each(|(a, n)| g.notify(a, n)));
+    out += &s.step(
+        "record 1's 10 edited to 20: its column no longer matches, and stays",
+        V,
+    );
+    assert_eq!(s.source.source.unmatched(Axis::Cols, &[Key(1)]), [true]);
+    s.input(|g| g.reapply_view());
+    out += &s.step(
+        "re-apply: the same View Spec, and the column goes; 1 of 3",
+        V,
+    );
     insta::assert_snapshot!(out);
 }
