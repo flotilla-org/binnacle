@@ -57,6 +57,7 @@ impl Host {
             AxisConfig::new(COLS as u64, 6.0).header(3.0).gap(1.0),
         );
         grid.set_movable(Axis::Rows, true);
+        grid.set_movable(Axis::Cols, true);
         let mut host = Host {
             grid,
             rows,
@@ -131,6 +132,16 @@ impl Host {
         self.grid.pointer(PointerEvent::down(1.0, from));
         self.grid.pointer(PointerEvent::moved(1.0, to));
         self.grid.pointer(PointerEvent::up(1.0, to));
+        self.grid.pointer(PointerEvent::moved(23.0, 5.0));
+        self.frame();
+    }
+
+    /// Drags column `from`'s header onto column `to`'s.
+    fn drag_column_header(&mut self, from: u16, to: u16) {
+        let (from, to) = (f32::from(3 + 7 * from + 1), f32::from(3 + 7 * to + 1));
+        self.grid.pointer(PointerEvent::down(from, 0.0));
+        self.grid.pointer(PointerEvent::moved(to, 0.0));
+        self.grid.pointer(PointerEvent::up(to, 0.0));
         self.grid.pointer(PointerEvent::moved(23.0, 5.0));
         self.frame();
     }
@@ -253,6 +264,19 @@ fn without_full_rgb_the_shimmer_steps_through_dim_normal_and_bold() {
 fn a_moved_row_s_header_shimmers_until_the_move_is_answered() {
     let mut host = Host::new();
     host.drag_row_header(1, 4);
+    let theme = Theme::classic();
+    let mut out = over_time(&mut host, &theme, ColorSupport::TrueColor, &[0, 250]);
+    host.answer();
+    assert!(!animating(&host.grid.snapshot()));
+    out += &over_time(&mut host, &theme, ColorSupport::TrueColor, &[1000]);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_moved_column_s_header_shimmers_until_the_move_is_answered() {
+    let mut host = Host::new();
+    host.drag_column_header(2, 0);
+    assert!(host.grid.snapshot().pending_move().is_some());
     let theme = Theme::classic();
     let mut out = over_time(&mut host, &theme, ColorSupport::TrueColor, &[0, 250]);
     host.answer();
