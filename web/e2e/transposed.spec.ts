@@ -105,3 +105,17 @@ test("each field row draws its own way: the id and weight end-aligned, the crew 
   test.skip(browserName !== "chromium", "screenshots are taken in Chromium only");
   await expect(page.locator(".grid-box")).toHaveScreenshot("transposed-light.png", { scale: "device" });
 });
+
+test("records pick and select as columns, and a field row selects whole", async ({ page }) => {
+  const b = (await page.locator(".binnacle-layer").boundingBox())!;
+  await page.keyboard.down("ControlOrMeta");
+  await page.mouse.click(b.x + FIRST + COLUMN, b.y + HEADER / 2);
+  await page.mouse.click(b.x + FIRST + 2 * COLUMN, b.y + HEADER / 2);
+  await page.keyboard.up("ControlOrMeta");
+  await expect(status(page)).toContainText("2 columns picked");
+  await cell(page, 1, 0);
+  await page.keyboard.press("Shift+Space");
+  await expect(status(page)).toContainText(`selected 1 × ${rows.length.toLocaleString("en")}`);
+  await page.keyboard.press("Control+Space");
+  await expect(status(page)).toContainText("selected 5 × 1");
+});
