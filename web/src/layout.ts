@@ -41,6 +41,9 @@ export interface LayoutParts<RowId, ColId> {
 
 const EDGES: PinEdge[] = ["leading", "trailing"];
 
+/** `n`, with -0 as 0, which JSON writes it as. */
+const plain = (n: number) => n + 0;
+
 /**
  * The layout as of Snapshot `s`: the View Spec last asked for (else the one
  * applied), pins dormant or not, and Size Overrides for items shown or not.
@@ -62,7 +65,7 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed }: LayoutPart
     const lengths = grid.size_override_sizes(AXIS_CODE[axis]);
     return [...keys].flatMap((key, i) => {
       const known = id(axis, key);
-      return known === undefined ? [] : [[known as Id, lengths[i]!]];
+      return known === undefined ? [] : [[known as Id, plain(lengths[i]!)]];
     });
   };
   return {
@@ -70,7 +73,7 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed }: LayoutPart
     view: feed.viewIds(s.requestedView ?? s.appliedView),
     pins: { rows: pins<RowId>("rows"), cols: pins<ColId>("cols") },
     sizes: { rows: sizes<RowId>("rows"), cols: sizes<ColId>("cols") },
-    bands: { rows: s.rows.header, cols: s.cols.header },
+    bands: { rows: plain(s.rows.header), cols: plain(s.cols.header) },
   };
 }
 

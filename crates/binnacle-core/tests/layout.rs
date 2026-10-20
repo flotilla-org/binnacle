@@ -121,13 +121,9 @@ fn op(tc: &TestCase) -> Op {
     ))
 }
 
-/// Through pins, unpins, freezes, `set_pins` and items leaving and
-/// arriving on either axis, the last `PinsChanged` drained for each edge
-/// names the Keys the Snapshot lists as pinned there, dormant ones
-/// included, and `set_pins` leaves exactly its Keys (each once, in order)
-/// on its edge and none of them on the other.
-#[hegel::test(test_cases = 300)]
-fn pins_changed_always_names_the_pins_the_snapshot_holds(tc: TestCase) {
+/// A Grid whose `axis` (drawn) has a drawn number of items, framed, and
+/// the steps to put it through.
+fn pin_ops(tc: &TestCase) -> (Scenario<KeyedTable>, Axis, Vec<Op>) {
     let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
     let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(20));
     let along = AxisConfig::new(count, 2.0).header(1.0);
@@ -137,65 +133,62 @@ fn pins_changed_always_names_the_pins_the_snapshot_holds(tc: TestCase) {
         Axis::Cols => (Grid::new(across, along), KeyedTable::new(3, count)),
     };
     let mut s = Scenario::new(grid, table);
-    let v = Viewport::new(30.0, 30.0);
-    s.frame(v);
-    let mut heard: [Vec<Key>; 2] = Default::default();
-    for op in tc.draw(gs::vecs(op()).min_size(1).max_size(10)) {
-        let set = if let Op::SetPins(edge, keys) = &op {
-            Some((*edge, keys.clone()))
-        } else {
-            None
-        };
-        match op {
-            Op::Pin(k, edge) => s.input(|g| g.pin(axis, edge, Key(k))),
-            Op::Unpin(k) => s.input(|g| g.unpin(axis, Key(k))),
-            Op::SetPins(edge, keys) => {
-                let keys: Vec<Key> = keys.into_iter().map(Key).collect();
-                s.input(|g| g.set_pins(axis, edge, &keys));
-            }
-            Op::Freeze(k) => s.input(|g| g.freeze(axis, Key(k))),
-            Op::Remove(at) => {
-                let notice = s.source.remove(axis, at, 1);
-                s.input(|g| g.notify(axis, notice));
-            }
-            Op::Insert(at) => {
-                let notice = s.source.insert(axis, at, 1);
-                s.input(|g| g.notify(axis, notice));
-            }
+    s.frame(PIN_V);
+    let ops = tc.draw(gs::vecs(op()).min_size(1).max_size(10));
+    (s, axis, ops)
+}
+
+const PIN_V: Viewport = Viewport {
+    width: 30.0,
+    height: 30.0,
+};
+
+fn apply(s: &mut Scenario<KeyedTable>, axis: Axis, op: Op) {
+    match op {
+        Op::Pin(k, edge) => s.input(|g| g.pin(axis, edge, Key(k))),
+        Op::Unpin(k) => s.input(|g| g.unpin(axis, Key(k))),
+        Op::SetPins(edge, keys) => {
+            let keys: Vec<Key> = keys.into_iter().map(Key).collect();
+            s.input(|g| g.set_pins(axis, edge, &keys));
         }
-        if let Some((edge, keys)) = set {
-            let mut once: Vec<Key> = Vec::new();
-            for k in keys.into_iter().map(Key) {
-                if !once.contains(&k) {
-                    once.push(k);
+        Op::Freeze(k) => s.input(|g| g.freeze(axis, Key(k))),
+        Op::Remove(at) => {
+            let notice = s.source.remove(axis, at, 1);
+            s.input(|g| g.notify(axis, notice));
+        }
+        Op::Insert(at) => {
+            let notice = s.source.insert(axis, at, 1);
+            s.input(|g| g.notify(axis, notice));
+        }
+    }
+}
+
+/// Through pins, unpins, freezes, `set_pins` and items leaving and
+/// arriving, the last `PinsChanged` drained for each edge names the Keys
+/// the Snapshot lists as pinned there, dormant ones included.
+#[hegel::test(test_cases = 300)]
+fn pins_changed_always_names_the_pins_the_snapshot_holds(tc: TestCase) {
+    let (mut s, axis, ops) = pin_ops(&tc);
+    let mut heard: [Vec<Key>; 2] = Default::default();
+    for op in ops {
+        apply(&mut s, axis, op);
+        let mut hear = |effects: Vec<Effect>| {
+            for effect in effects {
+                if let Effect::PinsChanged {
+                    axis: a,
+                    edge,
+                    keys,
+                } = effect
+                {
+                    assert_eq!(a, axis, "PinsChanged on the other axis");
+                    heard[edge.index()] = keys;
                 }
             }
-            let snap = s.grid.snapshot();
-            assert_eq!(snap.pins(axis, edge).collect::<Vec<_>>(), once);
-            let other = match edge {
-                Edge::Leading => Edge::Trailing,
-                Edge::Trailing => Edge::Leading,
-            };
-            assert!(snap.pins(axis, other).all(|k| !once.contains(&k)));
-        }
-        for effect in s.effects() {
-            if let Effect::PinsChanged {
-                axis: a,
-                edge,
-                keys,
-            } = effect
-            {
-                assert_eq!(a, axis, "PinsChanged on the other axis");
-                heard[edge.index()] = keys;
-            }
-        }
+        };
+        hear(s.effects());
         // A freeze waiting for its Window finishes on a frame.
-        s.frame(v);
-        for effect in s.effects() {
-            if let Effect::PinsChanged { edge, keys, .. } = effect {
-                heard[edge.index()] = keys;
-            }
-        }
+        s.frame(PIN_V);
+        hear(s.effects());
         let snap = s.grid.snapshot();
         for edge in Edge::ALL {
             let pins: Vec<Key> = snap.pins(axis, edge).collect();
@@ -205,5 +198,37 @@ fn pins_changed_always_names_the_pins_the_snapshot_holds(tc: TestCase) {
                 "{edge:?} pins against the last PinsChanged"
             );
         }
+    }
+}
+
+/// Whatever was pinned before, `set_pins` leaves exactly its Keys on its
+/// edge, each once and in the order given, and none of them on the other.
+#[hegel::test(test_cases = 300)]
+fn set_pins_leaves_exactly_its_keys_on_its_edge(tc: TestCase) {
+    let (mut s, axis, ops) = pin_ops(&tc);
+    for op in ops {
+        let set = match &op {
+            Op::SetPins(edge, keys) => Some((*edge, keys.clone())),
+            _ => None,
+        };
+        apply(&mut s, axis, op);
+        let Some((edge, keys)) = set else {
+            s.frame(PIN_V);
+            continue;
+        };
+        let mut once: Vec<Key> = Vec::new();
+        for k in keys.into_iter().map(Key) {
+            if !once.contains(&k) {
+                once.push(k);
+            }
+        }
+        let snap = s.grid.snapshot();
+        assert_eq!(snap.pins(axis, edge).collect::<Vec<_>>(), once);
+        let other = match edge {
+            Edge::Leading => Edge::Trailing,
+            Edge::Trailing => Edge::Leading,
+        };
+        assert!(snap.pins(axis, other).all(|k| !once.contains(&k)));
+        s.frame(PIN_V);
     }
 }

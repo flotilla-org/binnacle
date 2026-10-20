@@ -12,7 +12,9 @@ const HEADER = 28;
 const ROW = 24;
 
 const status = (page: Page) => page.locator("#status");
-const state = (page: Page) => page.locator("#tools .layout-state");
+const state = (page: Page) => page.locator("#layout .layout-state");
+/** Waits for the grid's next frame, where a pin or an unpin lands. */
+const nextFrame = (page: Page) => page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
 
 async function click(page: Page, x: number, y: number) {
   const b = await page.locator(".binnacle-layer").boundingBox();
@@ -35,6 +37,7 @@ test.describe("records", () => {
     await cell(page, 0, column(1));
     await expect(status(page)).toContainText(`focus row 1, column 2 (${lightest} / name)`);
     await page.keyboard.press("Alt+Shift+ArrowLeft");
+    await nextFrame(page);
     // The pinned name column leads (another row, so not a double-click).
     await cell(page, 1, FIRST);
     await expect(status(page)).toContainText("focus row 2, column 2");
@@ -57,6 +60,7 @@ test.describe("records", () => {
     await cell(page, 2, FIRST);
     await expect(status(page)).toContainText("focus row 3, column 2");
     await page.keyboard.press("Alt+Shift+Backspace");
+    await nextFrame(page);
     // Descending, then no sort: the records' own order.
     await click(page, column(2), HEADER / 2);
     await click(page, column(2), HEADER / 2);

@@ -45,7 +45,10 @@ const row = gs.integers({ minValue: 0, maxValue: RECORDS.length + 2 });
 const field = gs.sampledFrom(FIELDS);
 const edge = gs.sampledFrom(["leading", "trailing"] as const);
 
-/** Puts `h` into some state by the controls a user has: pins, sizes, band thicknesses and a View Spec. */
+/**
+ * Puts `h` into some state by the controls a user has: pins, sizes, band thicknesses and a View Spec.
+ * Sizes and thicknesses are any number: the grid ignores or caps what it does not take.
+ */
 function scramble(tc: hegel.TestCase, h: Harness<number, Field, unknown>): void {
   for (const [id, e] of tc.draw(gs.arrays(gs.tuples(field, edge), { maxSize: 3 }))) {
     h.grid.pin(AXIS_CODE.cols, EDGE_CODE[e], h.feed.colKey(id));
@@ -53,14 +56,14 @@ function scramble(tc: hegel.TestCase, h: Harness<number, Field, unknown>): void 
   for (const [id, e] of tc.draw(gs.arrays(gs.tuples(row, edge), { maxSize: 3 }))) {
     h.grid.pin(AXIS_CODE.rows, EDGE_CODE[e], h.feed.rowKey(id));
   }
-  for (const [id, size] of tc.draw(gs.arrays(gs.tuples(field, gs.integers({ minValue: 30, maxValue: 200 })), { maxSize: 3 }))) {
+  for (const [id, size] of tc.draw(gs.arrays(gs.tuples(field, gs.floats()), { maxSize: 3 }))) {
     h.grid.set_size(AXIS_CODE.cols, h.feed.colKey(id), size);
   }
-  for (const [id, size] of tc.draw(gs.arrays(gs.tuples(row, gs.integers({ minValue: 20, maxValue: 60 })), { maxSize: 2 }))) {
+  for (const [id, size] of tc.draw(gs.arrays(gs.tuples(row, gs.floats()), { maxSize: 2 }))) {
     h.grid.set_size(AXIS_CODE.rows, h.feed.rowKey(id), size);
   }
-  if (tc.draw(gs.booleans())) h.grid.set_header(AXIS_CODE.rows, tc.draw(gs.integers({ minValue: 0, maxValue: 60 })));
-  if (tc.draw(gs.booleans())) h.grid.set_header(AXIS_CODE.cols, tc.draw(gs.integers({ minValue: 0, maxValue: 90 })));
+  if (tc.draw(gs.booleans())) h.grid.set_header(AXIS_CODE.rows, tc.draw(gs.floats()));
+  if (tc.draw(gs.booleans())) h.grid.set_header(AXIS_CODE.cols, tc.draw(gs.floats()));
   const sorted = tc.draw(gs.arrays(gs.tuples(gs.sampledFrom(["a", "b", "c"] as Field[]), gs.sampledFrom(["ascending", "descending"] as const)), { maxSize: 2 }));
   const view: ViewSpec<number, Field> = {
     rows: {

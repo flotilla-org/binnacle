@@ -178,7 +178,7 @@ export const slow: DemoSource = {
     findButton.textContent = "Find";
     findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
     findButton.addEventListener("click", () => findBar.open());
-    toolbar.append(findButton, ...layout.elements);
+    toolbar.append(findButton);
     return {
       get theme() {
         return widget.theme;
