@@ -67,8 +67,9 @@ fn each_record_is_a_column_and_the_records_sort_filter_and_change_as_columns() {
 fn edits_appends_and_replacements_reach_the_columns() {
     let mut s = records();
     s.frame(V);
-    let notice = s.source.append(vec![vec![Some(1), Some(60), Some(7)]]);
-    s.input(|g| g.notify(Axis::Cols, notice));
+    let notices = s.source.append(vec![vec![Some(1), Some(60), Some(7)]]);
+    assert_eq!(notices.len(), 1);
+    s.input(|g| notices.into_iter().for_each(|(a, n)| g.notify(a, n)));
     let snap = s.frame(V);
     assert_eq!(snap.count(Axis::Cols), 7);
     assert_eq!(s.source.records()[6], vec![Some(1), Some(60), Some(7)]);

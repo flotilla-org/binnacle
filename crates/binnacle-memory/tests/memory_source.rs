@@ -1,8 +1,8 @@
 //! Seam 2: `MemorySource<R>` sorts a host's rows through per-column closures.
 
 use binnacle_core::{
-    Axis, ChangeNotice, FilterSpec, Key, Located, Searched, SortColumn, SortDirection, SortSpec,
-    TextQuery, TextSupport, Totals, ViewSpec,
+    Axis, ChangeNotice, Condition, FilterSpec, Key, Located, Searched, SortColumn, SortDirection,
+    SortSpec, Support, TextQuery, TextSupport, Totals, ViewSpec,
 };
 use binnacle_memory::{MemorySource, PumpSource, Unsortable, Viewed};
 
@@ -527,7 +527,7 @@ fn the_quick_filter_and_the_hosts_filter_both_apply_and_rows_gained_are_filtered
     rows.extend([rec("adele", None, 7), rec("bob", None, 8)]);
     assert_eq!(
         source.appended(&rows, &[]),
-        ChangeNotice::Inserted { at: 1, n: 1 }
+        vec![(Axis::Rows, ChangeNotice::Inserted { at: 1, n: 1 })]
     );
     assert_eq!(shown(&source), vec![Key(1), Key(3)]);
     assert_eq!(source.clear_filter(&rows), ChangeNotice::Refiltered(3));
@@ -536,12 +536,49 @@ fn the_quick_filter_and_the_hosts_filter_both_apply_and_rows_gained_are_filtered
 }
 
 #[test]
-fn the_rows_have_a_quick_filter_with_regexes_and_the_columns_none() {
+fn both_axes_have_a_quick_filter_with_regexes() {
     let rows = [rec("eve", None, 2)];
     let mut source = source(&rows);
     let mut over = source.over(&rows);
     assert_eq!(over.quick_filter(Axis::Rows), Some(TextSupport::new(true)));
-    assert_eq!(over.quick_filter(Axis::Cols), None);
+    assert_eq!(over.quick_filter(Axis::Cols), Some(TextSupport::new(true)));
+}
+
+/// Story 55: a row's values filter the columns, conditions and quick filter
+/// alike, through the pump, and the rows stay as they were.
+#[test]
+fn a_rows_values_filter_the_columns() {
+    let rows = [rec("eve", Some(2.5), 3), rec("gus", None, 1)];
+    let mut source = source(&rows);
+    let text = Support::default()
+        .with_sort(false)
+        .with_text(Some(TextSupport::new(true)))
+        .with_one_of(true);
+    assert_eq!(source.support(Axis::Cols, Key(1)), text);
+    // Row 0's cells are "eve", "2.5", "3" and a blank in the bare column.
+    let digits = Condition::text(Key(0), TextQuery::new("^[0-9.]+$").regex(true));
+    let spec = ViewSpec::default().with_filter(
+        Axis::Cols,
+        FilterSpec::default().with_conditions(vec![digits.clone()].into()),
+    );
+    let viewed = source.over(&rows).view(&spec);
+    assert_eq!(viewed.applied, spec);
+    assert_eq!(
+        viewed.notices,
+        vec![
+            (Axis::Rows, ChangeNotice::Reordered),
+            (Axis::Cols, ChangeNotice::Refiltered(2))
+        ]
+    );
+    assert_eq!(viewed.totals.cols, Some(4));
+    assert_eq!(source.window(Axis::Cols, 0..4), vec![Key(1), Key(2)]);
+    assert_eq!(source.window(Axis::Rows, 0..4), vec![Key(0), Key(1)]);
+
+    // Row 1 has "gus" and "1": the quick filter searches the rows shown.
+    let quick = TextQuery::new("u");
+    let spec = spec.with_filter(Axis::Cols, FilterSpec::default().with_quick(Some(quick)));
+    source.view(&rows, &spec).unwrap();
+    assert_eq!(source.window(Axis::Cols, 0..4), vec![Key(0)]);
 }
 
 #[test]

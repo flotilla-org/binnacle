@@ -1,7 +1,7 @@
 //! The naive model of the spec's sort and filter that the property files
 //! check the In-Memory Table Source against.
 
-use binnacle_core::{SortDirection, SortSpec};
+use binnacle_core::{Axis, ChangeNotice, SortDirection, SortSpec};
 
 /// Base rows `0..rows` in the spec's order: sorted stably by their tuple of
 /// ranks in Sort Spec order, so ties keep base order, then the rows `keep`
@@ -45,4 +45,18 @@ pub fn model_from(
     order.sort_by_key(|&i| ranks[i].clone());
     order.retain(|&i| keep(i));
     order
+}
+
+/// The rows' Change Notice among `notices`, from a source with no filter on
+/// its columns, which tells the columns nothing.
+#[allow(dead_code)]
+pub fn rows_only(notices: Vec<(Axis, ChangeNotice)>) -> Option<ChangeNotice> {
+    assert!(notices.len() <= 1, "one notice at most: {notices:?}");
+    notices
+        .into_iter()
+        .map(|(axis, notice)| {
+            assert_eq!(axis, Axis::Rows);
+            notice
+        })
+        .next()
 }

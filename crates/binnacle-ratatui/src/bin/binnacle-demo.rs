@@ -328,7 +328,9 @@ impl Live {
             self.since_listing = 0;
             let ticker = self.ticker(self.rows.len(), now);
             self.rows.push(ticker);
-            grid.notify(Axis::Rows, self.source.appended(&self.rows, &[]));
+            for (axis, notice) in self.source.appended(&self.rows, &[]) {
+                grid.notify(axis, notice);
+            }
         }
     }
 }
@@ -690,12 +692,13 @@ impl Table {
         }
     }
 
-    /// Column `key`'s distinct values for its checklist, as the source lists them.
-    fn distinct(&self, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+    /// The distinct values of `key`, an item of the other axis, across
+    /// `axis` for its checklist, as the source lists them.
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
         match self {
-            Table::Records { rows, source, .. } => Some(source.distinct(rows, key, query)),
+            Table::Records { rows, source, .. } => Some(source.distinct(rows, axis, key, query)),
             Table::Huge(_) | Table::Transposed { .. } => None,
-            Table::Live(live) => Some(live.source.distinct(&live.rows, key, query)),
+            Table::Live(live) => Some(live.source.distinct(&live.rows, axis, key, query)),
         }
     }
 
@@ -1377,7 +1380,9 @@ fn main() -> io::Result<()> {
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
-                popup.fetch(&snapshot, |key, query| table.distinct(key, query));
+                popup.fetch(&snapshot, |key, query| {
+                    table.distinct(Axis::Rows, key, query)
+                });
                 let at = match popup.width() {
                     0 => layout.grid,
                     width => ratatui::layout::Rect {

@@ -174,11 +174,12 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
             Op::Append(records) => {
                 let new = keys.as_ref().map(|_| fresh(records.len()));
                 rows.extend(records);
-                let notice = source.appended(&rows, new.as_deref().unwrap_or(&[]));
+                let notice =
+                    support::rows_only(source.appended(&rows, new.as_deref().unwrap_or(&[])));
                 if let (Some(keys), Some(new)) = (&mut keys, new) {
                     keys.extend(new);
                 }
-                Some(notice)
+                notice
             }
             Op::Edit { row, col, value } => {
                 if rows.is_empty() {

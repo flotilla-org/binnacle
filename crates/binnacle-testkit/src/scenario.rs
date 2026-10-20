@@ -150,15 +150,15 @@ impl RecordTable {
     }
 
     /// Appends `records` to the base data; the Grid needs the returned
-    /// Change Notice.
-    pub fn append(&mut self, records: Vec<Record>) -> ChangeNotice {
+    /// Change Notices.
+    pub fn append(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
         self.rows.extend(records);
         self.source.appended(&self.rows, &[])
     }
 
     /// Sets base row `row`'s value in column `col` as the user's edit (a
-    /// row in view stays even if the filter now drops it); the Grid needs
-    /// the returned Change Notices, if any.
+    /// row or column in view stays even if the filter now drops it); the
+    /// Grid needs the returned Change Notices.
     pub fn edit(
         &mut self,
         row: usize,
@@ -229,8 +229,8 @@ impl<S: ScenarioSource> ScenarioSource for Transposed<S> {
 /// A [`RecordTable`] on its side, as a pivoted or transposed host has it:
 /// each record is a column and each field a row, keyed by Logical Index on
 /// both axes. The columns sort by the sortable fields, filter and change as
-/// the records' rows do; the fields move. Change Notices from `filter` and
-/// `append` are for [`Axis::Cols`]; `edit` and `replace` name their axes.
+/// the records' rows do; the fields move. Change Notices from its methods
+/// name the axes of the table on its side.
 pub struct ColumnMajorTable {
     table: Transposed<RecordTable>,
 }
@@ -264,8 +264,8 @@ impl ColumnMajorTable {
     }
 
     /// Appends `records` as new columns.
-    pub fn append(&mut self, records: Vec<Record>) -> ChangeNotice {
-        self.table.0.append(records)
+    pub fn append(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
+        turned(self.table.0.append(records))
     }
 
     /// Sets record `record`'s value in field `field` as the user's edit (a

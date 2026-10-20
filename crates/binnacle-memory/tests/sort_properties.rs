@@ -1,8 +1,8 @@
 //! Seam 2 properties: the In-Memory Table Source against a naive model of the
 //! spec's sort (tuple comparison in Sort Spec order, ties in base order, nulls
 //! and NaNs last in either direction) and filter (skip the rows the keep mask
-//! drops), over random tables and sequences of sorts of either axis, filters
-//! and column moves.
+//! drops), over random tables and sequences of sorts and filters of either
+//! axis and column moves (the drop Position read in the filtered order).
 
 mod support;
 
@@ -120,9 +120,9 @@ impl Table {
         support::model(self.rows, spec, |c, i| rank(&self.columns[c], i), |_| true)
     }
 
-    /// The model's columns as Keys: the order the moves left, sorted by
-    /// `state.col_spec`.
-    fn shown_columns(&self, state: &State) -> Vec<Key> {
+    /// The model's columns as Keys, filtered out ones included: the order
+    /// the moves left, sorted by `state.col_spec`.
+    fn sorted_columns(&self, state: &State) -> Vec<Key> {
         let keys = self.col_keys();
         let base = (state.columns.iter())
             .map(|k| keys.iter().position(|c| c == k).unwrap())
@@ -279,14 +279,19 @@ fn column_move(tc: &TestCase, table: Table) -> (Vec<Key>, u64) {
 
 /// The model of a column move: the moved Keys, first sight of each that is a
 /// column, then the rest in order with those before `to` ahead of them.
-fn moved(order: &[Key], keys: &[Key], to: u64) -> Vec<Key> {
+/// `to` is a Position among the columns `shown` keeps: it stands for the
+/// place in `order` of the column shown there, or the end past the last.
+fn moved(order: &[Key], keys: &[Key], to: u64, shown: impl Fn(&Key) -> bool) -> Vec<Key> {
+    let visible: Vec<&Key> = order.iter().filter(|k| shown(k)).collect();
+    let to = visible
+        .get(to as usize)
+        .map_or(order.len(), |k| order.iter().position(|o| o == *k).unwrap());
     let mut moving: Vec<Key> = Vec::new();
     for k in keys {
         if order.contains(k) && !moving.contains(k) {
             moving.push(*k);
         }
     }
-    let to = (to as usize).min(order.len());
     let stays = |k: &&Key| !moving.contains(k);
     let mut out: Vec<Key> = order[..to].iter().filter(stays).copied().collect();
     out.extend(&moving);
@@ -294,15 +299,34 @@ fn moved(order: &[Key], keys: &[Key], to: u64) -> Vec<Key> {
     out
 }
 
-/// What the source was last told: the rows' Sort Spec and keep mask in
-/// force, the columns' Sort Spec, and the column order the moves so far make
-/// before that sort.
+/// What the source was last told: the rows' Sort Spec and the keep masks in
+/// force (the columns' by Logical Index), the columns' Sort Spec, and the
+/// column order the moves so far make before that sort, filtered out columns
+/// included.
 #[derive(Clone, Debug, Default)]
 struct State {
     spec: SortSpec,
     keep: Option<Vec<bool>>,
     col_spec: SortSpec,
+    col_keep: Option<Vec<bool>>,
     columns: Vec<Key>,
+}
+
+impl State {
+    /// Whether the column filter keeps column `key` of `table`.
+    fn shows(&self, table: &Table, key: &Key) -> bool {
+        let logical = table.col_keys().iter().position(|k| k == key);
+        self.col_keep
+            .as_ref()
+            .is_none_or(|keep| logical.is_some_and(|i| keep[i]))
+    }
+
+    /// The model's columns shown, in order.
+    fn shown_columns(&self, table: &Table) -> Vec<Key> {
+        let mut order = table.sorted_columns(self);
+        order.retain(|k| self.shows(table, k));
+        order
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -312,34 +336,39 @@ enum Op {
     SortColumns(SortSpec),
     /// A keep mask, or `None` to clear the filter.
     Filter(Option<Vec<bool>>),
+    /// A keep mask for the columns, or `None` to clear their filter.
+    FilterColumns(Option<Vec<bool>>),
     /// A column move: Keys and a drop Position.
     Move(Vec<Key>, u64),
 }
 
 #[hegel::composite]
 fn op(tc: &TestCase, table: Table) -> Op {
-    match tc.draw(gs::integers::<u8>().max_value(3)) {
-        0 => return Op::Sort(tc.draw(spec(table.columns.len()))),
-        3 => return Op::SortColumns(tc.draw(spec(table.by_rows.len()))),
+    let mask = |n| {
+        gs::optional(hegel::one_of!(
+            column(n, gs::booleans()),
+            column(n, gs::weighted_booleans(0.9)),
+            column(n, gs::weighted_booleans(0.1)),
+        ))
+    };
+    match tc.draw(gs::integers::<u8>().max_value(4)) {
+        0 => Op::Sort(tc.draw(spec(table.columns.len()))),
+        3 => Op::SortColumns(tc.draw(spec(table.by_rows.len()))),
         1 => {
             let (keys, to) = tc.draw(column_move(table.clone()));
-            return Op::Move(keys, to);
+            Op::Move(keys, to)
         }
-        _ => {}
+        2 => Op::FilterColumns(tc.draw(mask(table.width))),
+        _ => Op::Filter(tc.draw(mask(table.rows))),
     }
-    let mask = hegel::one_of!(
-        column(table.rows, gs::booleans()),
-        column(table.rows, gs::weighted_booleans(0.9)),
-        column(table.rows, gs::weighted_booleans(0.1)),
-    );
-    Op::Filter(tc.draw(gs::optional(mask)))
 }
 
 /// Draws a table and a sequence of sorts, filters and column moves, applies
 /// each and hands `check` the table, the source and the state it left (the
 /// first call sees the fresh source). Asserts the Change Notice each op
 /// returns: `Reordered` for a sort or move, `Refiltered` with the new count for a
-/// filter. A move bakes the columns' sort into their order and clears it.
+/// filter of either axis. A move bakes the columns' sort into their order
+/// and clears it.
 fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTableSource, &State)) {
     let table = tc.draw(table());
     let mut source = table.source();
@@ -362,17 +391,27 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTabl
             }
             Op::Filter(keep) => {
                 let notice = match &keep {
-                    Some(keep) => source.apply_filter(keep.clone()),
-                    None => source.clear_filter(),
+                    Some(keep) => source.apply_filter(Axis::Rows, keep.clone()),
+                    None => source.clear_filter(Axis::Rows),
                 };
                 state.keep = keep;
                 let kept = table.kept(&state).len() as u64;
                 assert_eq!(notice, ChangeNotice::Refiltered(kept));
             }
+            Op::FilterColumns(keep) => {
+                let notice = match &keep {
+                    Some(keep) => source.apply_filter(Axis::Cols, keep.clone()),
+                    None => source.clear_filter(Axis::Cols),
+                };
+                state.col_keep = keep;
+                let kept = state.shown_columns(&table).len() as u64;
+                assert_eq!(notice, ChangeNotice::Refiltered(kept));
+            }
             Op::Move(keys, to) => {
                 let notice = source.move_columns(&keys, to);
                 assert_eq!(notice, ChangeNotice::Reordered);
-                state.columns = moved(&table.shown_columns(&state), &keys, to);
+                let order = table.sorted_columns(&state);
+                state.columns = moved(&order, &keys, to, |k| state.shows(&table, k));
                 state.col_spec = SortSpec::unsorted();
             }
         }
@@ -453,13 +492,26 @@ fn a_filtered_out_row_is_gone_suggesting_the_nearest_survivor_in_sort_order(tc: 
     });
 }
 
-/// The column order through moves of any Keys to any Position and sorts
-/// of the columns, mixed with the rows' sorts and filters, which leave it
-/// alone.
+/// The columns shown through moves of any Keys to any Position, sorts of
+/// the columns and column filters, mixed with the rows' sorts and filters,
+/// which leave them alone. A filtered out column is gone, suggesting the
+/// nearest shown one in column order (the following one on a tie).
 #[hegel::test(test_cases = 1000)]
 fn columns_match_the_model(tc: TestCase) {
     ops(&tc, |tc, table, source, state| {
-        let columns = &table.shown_columns(state)[..];
+        let order = table.sorted_columns(state);
+        let shown = state.shown_columns(table);
+        let columns = shown.as_slice();
+        for (rank, key) in order.iter().enumerate() {
+            if state.shows(table, key) {
+                continue;
+            }
+            let suggest = (order.iter().enumerate())
+                .filter(|(_, k)| state.shows(table, k))
+                .min_by_key(|&(r, _)| (r.abs_diff(rank), r < rank))
+                .map(|(_, k)| columns.iter().position(|c| c == k).unwrap() as u64);
+            assert_eq!(source.locate(Axis::Cols, *key), Located::Gone { suggest });
+        }
         assert_eq!(source.count(Axis::Cols), columns.len() as u64);
         assert_eq!(source.window(Axis::Cols, 0..u64::MAX), columns);
         let range = tc.draw(range());
@@ -479,7 +531,7 @@ fn columns_match_the_model(tc: TestCase) {
             gs::integers::<u64>().max_value(MAX_COLS as u64 + 2),
             gs::integers::<u64>(),
         )));
-        if !columns.contains(&key) {
+        if !state.columns.contains(&key) {
             assert_eq!(
                 source.locate(Axis::Cols, key),
                 Located::Gone { suggest: None }
