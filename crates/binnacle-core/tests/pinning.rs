@@ -822,7 +822,7 @@ fn a_pin_waiting_for_locate_is_drawn_as_before_and_one_gone_returns_in_place() {
     insta::assert_snapshot!(out);
 }
 
-/// Whatever is pinned, sized, kept to scroll or focused, every pin stays in
+/// Whatever is pinned, sized, spaced, kept to scroll or focused, every pin stays in
 /// its Strip in pin order, and each pinned Strip draws inside its region at
 /// its own end of the axis. Unless focus is on a pin, the Strips with their
 /// Edge Gaps leave the minimum scrolling region (or are clipped whole), and
@@ -832,20 +832,23 @@ fn a_pin_waiting_for_locate_is_drawn_as_before_and_one_gone_returns_in_place() {
 fn pinned_strips_clip_trailing_first_and_show_a_focused_pin(tc: TestCase) {
     let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
     let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(12));
-    let gap = tc.draw(gs::sampled_from(vec![0.0f32, 1.0]));
-    let header = tc.draw(gs::sampled_from(vec![0.0f32, 4.0]));
+    let len = |lo: f32, hi: f32| tc.draw(gs::floats::<f32>().min_value(lo).max_value(hi));
+    let gap = len(0.0, 2.0);
+    let header = len(0.0, 6.0);
+    let edge_gap = len(0.0, 3.0);
     let mut s = pinned_keyed(axis, count, &[], &[]);
-    let length = tc.draw(gs::integers::<u32>().min_value(4).max_value(60)) as f32;
-    let min = tc.draw(gs::integers::<u32>().max_value(30)) as f32;
+    let length = len(header, 80.0);
+    let min = len(0.0, 40.0);
     s.input(|g| {
         g.set_gap(axis, gap);
         g.set_header(axis, header);
         g.set_min_scrolling(axis, min);
+        g.set_edge_gap(axis, edge_gap);
     });
     let mut pins: [Vec<u64>; 2] = Default::default();
     for key in some_keys(&tc, count, 8, &[]) {
         let edge = tc.draw(gs::sampled_from(vec![Edge::Leading, Edge::Trailing]));
-        let size = tc.draw(gs::integers::<u32>().min_value(1).max_value(12)) as f32;
+        let size = len(0.5, 20.0);
         pins[edge.index()].push(key);
         s.input(|g| {
             g.pin(axis, edge, Key(key));
@@ -870,8 +873,9 @@ fn pinned_strips_clip_trailing_first_and_show_a_focused_pin(tc: TestCase) {
     };
     s.frame(viewport);
     let snap = s.frame(viewport);
-    let edge_gap = gap;
-    let eps = 1e-3;
+    let edge_gap = gap.max(edge_gap);
+    // Regions are sums of sizes and Gaps, so they round.
+    let eps = 1e-4 * length.max(1.0);
     let mut used = 0.0;
     let mut clipped = [false; 2];
     for edge in Edge::ALL {
