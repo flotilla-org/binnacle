@@ -1118,6 +1118,21 @@ mod tests {
                         ]
                     );
                 }
+                "clipped" => {
+                    // Every pin is kept; the leading columns clip, slid to
+                    // show the focused column 3, and the trailing ones
+                    // clip whole, as do the bottom rows in part.
+                    assert_eq!(s.pinned(Axis::Cols, Edge::Leading).len(), 4);
+                    let lead = s.pinned_region(Axis::Cols, Edge::Leading);
+                    let focused = s.pinned(Axis::Cols, Edge::Leading)[3];
+                    assert!(focused.offset >= lead.start && focused.end() <= lead.end);
+                    assert!(s.pinned(Axis::Cols, Edge::Leading)[0].offset < lead.start);
+                    assert!(s.pinned_region(Axis::Cols, Edge::Trailing).is_empty());
+                    assert_eq!(s.pinned(Axis::Rows, Edge::Trailing).len(), 6);
+                    let rows = s.pinned_region(Axis::Rows, Edge::Trailing);
+                    let first = s.pinned(Axis::Rows, Edge::Trailing)[0];
+                    assert!(first.offset < rows.start && !rows.is_empty());
+                }
                 "rejected" => {
                     assert!(!s.view_pending());
                     let states: Vec<ConditionState> = s
@@ -1173,7 +1188,8 @@ mod tests {
                 "Idle",
                 "Idle",
                 "MovingHeaders",
-                "MovingHeaders"
+                "MovingHeaders",
+                "Idle"
             ]
         );
     }

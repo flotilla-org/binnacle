@@ -226,6 +226,9 @@ impl AxisState {
             Some(it) if want[1] <= trail => it.offset,
             _ => self.extent - trail.min(want[1]),
         };
+        // Sums round, so the regions are kept apart and inside the viewport.
+        let lead_end = lead_end.min(self.extent).max(self.header);
+        let trail_start = (trail_start.max(lead_end + edge_gap[0] + edge_gap[1])).min(self.extent);
         [self.header..lead_end, trail_start..self.extent]
     }
 
