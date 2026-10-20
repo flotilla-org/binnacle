@@ -13,7 +13,7 @@ import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
 import { paintBody, paintEmpty } from "./body";
 import { paintBorders, paintPinnedEdges, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
-import { paintPulse, sorting } from "./pending";
+import { paintPulse, paintRefusal, shimmering } from "./pending";
 import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
 
 export interface CanvasPainter extends Painter {
@@ -45,6 +45,8 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
   let height = 0;
   let dpr = 1;
   const layer: BorderLayer = { canvas: null };
+  /** The last drop line drawn, where a refused move's reason shows. */
+  let drop: Snapshot["dropIndicator"] = null;
 
   const painter: CanvasPainter = {
     element: canvas,
@@ -105,7 +107,9 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintPinnedEdges(p);
       paintFocus(p);
       paintGuides(p);
-      const pending = painter.motion && (pulsing || sorting(s));
+      drop = s.dropIndicator ?? drop;
+      paintRefusal(p, drop);
+      const pending = painter.motion && (pulsing || shimmering(s));
       return animating || painter.flashes.sweep(p.now) || pending;
     },
   };

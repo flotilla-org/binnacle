@@ -9,8 +9,9 @@
 // The filter box keeps the records whose name or port contains its text, as
 // columns; the filter bar's quick filter and a field's row menu filter the
 // records by their values too, and a record's column menu filters the
-// fields. Find, editing and pinning a record's column to the left work as in
-// the records.
+// fields. Find, editing, moves and pinning a record's column to the left
+// work as in the records, a field row's header dragging the field and a
+// record's column header the record.
 
 import {
   barRenderer,
@@ -26,7 +27,7 @@ import {
 } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { parse, portPicker, type Value } from "./records";
-import { matches, RECORDS, rows, type RecordRow } from "./records-data";
+import { matches, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
 
 /** The renderers of the fields that do not draw as plain text. */
 const FIELD_RENDERERS: Partial<Record<keyof RecordRow, CellRenderer<Value>>> = {
@@ -40,13 +41,11 @@ export const transposed: DemoSource = {
   description: `the ${RECORDS.toLocaleString("en")} records on their side, each record a column`,
   showIds: true,
   async mount(host, toolbar, look) {
-    const records = fromRows(rows, [
-      { key: "id", filterable: false },
-      { key: "name" },
-      { key: "weight" },
-      { key: "crew" },
-      { key: "port" },
-    ]);
+    const records = fromRows(
+      rows,
+      [{ key: "id", filterable: false }, { key: "name" }, { key: "weight" }, { key: "crew" }, { key: "port" }],
+      sortedMoves(),
+    );
     const source = transpose(records);
     const box = document.createElement("input");
     box.type = "search";

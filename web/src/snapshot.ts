@@ -105,6 +105,8 @@ export interface HeaderPlacement {
   filter: { filtered: boolean; pending: boolean; notApplied: boolean };
   /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
   support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean };
+  /** Whether this item's move is requested and not yet answered. */
+  movePending: boolean;
 }
 
 export interface AxisSnapshot {
@@ -130,6 +132,8 @@ export interface AxisSnapshot {
   quickFilter: { regex: boolean } | null;
   /** The axis's conditions as the filter's chips list them: the latest request's, then the applied ones it drops. */
   conditions: { condition: KeyedCondition; state: ConditionState }[];
+  /** Whether the Table Source can move the axis's items now, so dragging a header moves them. */
+  movable: boolean;
 }
 
 export type Mode =
@@ -165,6 +169,10 @@ export interface Snapshot {
   requestedView: KeyedViewSpec | null;
   /** Whether an answer to a View Spec request is due. */
   viewPending: boolean;
+  /** The move requested and not yet answered: its axis and Keys. No other move starts until it is answered. */
+  pendingMove: { axis: AxisName; keys: bigint[] } | null;
+  /** The last move the Table Source refused and why, until the next press. */
+  moveRefusal: { axis: AxisName; reason: string } | null;
   /** The Find Query, `null` while find is closed. */
   find: KeyedFindQuery | null;
   /** The match the last find step landed on, until its row or column leaves, a step for a new Find Query lands, or find closes. */
@@ -345,6 +353,7 @@ function readAxis(r: Reader): AxisSnapshot {
     selected: r.flag(),
     hovered: r.flag(),
     filter: { filtered: r.flag(), pending: r.flag(), notApplied: r.flag() },
+    movePending: r.flag(),
     support: supportOf(r.num()),
   }));
   const conditions = r.list(() => {
@@ -353,6 +362,7 @@ function readAxis(r: Reader): AxisSnapshot {
   });
   const total = r.opt(() => r.num());
   const quickFilter = r.opt(() => ({ regex: r.flag() }));
+  const movable = r.flag();
   return {
     count,
     extent,
@@ -369,6 +379,7 @@ function readAxis(r: Reader): AxisSnapshot {
     total,
     quickFilter,
     conditions,
+    movable,
   };
 }
 
@@ -424,6 +435,8 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const appliedView = r.view();
   const requestedView = r.opt(() => r.view());
   const viewPending = r.flag();
+  const pendingMove = r.opt(() => ({ axis: r.axis(), keys: r.list(() => r.key()) }));
+  const moveRefusal = r.opt(() => ({ axis: r.axis(), reason: r.text() }));
   const find = r.opt(() => {
     const query = r.textQuery();
     return { query, by: r.axis() };
@@ -454,6 +467,8 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     appliedView,
     requestedView,
     viewPending,
+    pendingMove,
+    moveRefusal,
     find,
     findMatch,
     findSupport,

@@ -206,6 +206,8 @@ const known = <T>(v: T | undefined): v is T => v !== undefined;
 const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false };
 
 const GONE: Located = { type: "Gone", suggest: null };
+/** What a refused move says when the Table Source gives no reason, as the Rust `PumpSource` default does. */
+const CANNOT_MOVE = "These can't be moved";
 
 /** A mark the source gave, and the round it was asked in: one from an earlier round is shown until it is asked again. */
 interface Mark {
@@ -381,6 +383,7 @@ export function createFeed<RowId, ColId, V>(
   const sinkFor = (axis: AxisName) => ({
     notify: (notice: ChangeNotice) => notify(axis, notice),
     supportChanged: (ids?: unknown[]) => supportChanged(axis, ids),
+    movableChanged: () => (markMovable(), schedule()),
   });
 
   /** What a failure says, for the control it came from. */
@@ -427,6 +430,7 @@ export function createFeed<RowId, ColId, V>(
     grid?.view_applied(spec, now.rows ?? NaN, now.cols ?? NaN);
     for (const axis of AXES) reflag(axis);
     remark(true);
+    markMovable();
   };
 
   /** The unmatched flags on `axis` may have changed: the items shown are asked again on the next paint, which this brings about. */
@@ -474,6 +478,7 @@ export function createFeed<RowId, ColId, V>(
     grid?.view_changed(applied, totals.rows ?? NaN, totals.cols ?? NaN);
     if (view.error !== undefined) viewError = view.error;
     remark(true);
+    markMovable();
     landed = true;
     schedule();
   };
@@ -748,16 +753,36 @@ export function createFeed<RowId, ColId, V>(
     if (request?.pending) locating.set(at, request);
   };
 
+  /** Tells the Grid which axes the Table Source can move now. */
+  const markMovable = () => {
+    for (const axis of AXES) {
+      const s = axes[axis].source;
+      grid?.set_movable(AXIS_CODE[axis], s.move !== undefined && (s.movable?.() ?? true));
+    }
+  };
+
   const answerMove = (axis: AxisName, keys: bigint[], to: number) => {
     const { source: s, interner } = axes[axis];
     const ids = keys.map((k) => interner.id(k));
-    if (!s.move || !ids.every(known)) return;
+    const refused = (reason: string) => {
+      grid?.move_answered(reason);
+      markMovable();
+    };
+    if (!s.move || !ids.every(known)) return refused(CANNOT_MOVE);
     settle(
       () => s.move!(ids, to),
-      (moved) => {
-        if (moved) notify(axis, { type: "Reordered" });
+      (answer) => {
+        if (answer !== true) return refused(answer === false ? CANNOT_MOVE : answer.refused);
+        notify(axis, { type: "Reordered" });
+        grid?.move_answered(undefined);
+        markMovable();
       },
-      { failed: report({ type: "move", axis }) },
+      {
+        failed: (error) => {
+          report({ type: "move", axis })(error);
+          refused(message(error));
+        },
+      },
     );
   };
 
@@ -935,6 +960,7 @@ export function createFeed<RowId, ColId, V>(
     connect(g) {
       grid = g;
       markQuickFilter(g);
+      markMovable();
       g.set_find_support(finder ? FIND.on | (finder.regex ? FIND.regex : 0) : 0);
       for (const axis of AXES) {
         const count = early[axis];

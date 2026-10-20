@@ -23,6 +23,8 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "resizing",
     "band",
     "moving",
+    "movePending",
+    "moveRefused",
     "editing",
     "locating",
     "scrolled",

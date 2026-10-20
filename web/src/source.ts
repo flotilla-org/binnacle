@@ -2,7 +2,7 @@
 // per axis so every ID type follows from the axis being implemented. Every
 // request may answer at once or with a Promise; the widget settles both the
 // same way. Omitted optional methods behave like the Rust `PumpSource`
-// defaults: no View Spec applied, every Locate `Gone`, every move refused.
+// defaults: no View Spec applied, every Locate `Gone`, nothing movable.
 
 import type { Primitive } from "./interner";
 import type { RendererChoice } from "./renderer";
@@ -256,6 +256,8 @@ export interface AxisSink<_Id, CrossId = unknown> {
    * `viewChanged` leaves it out, then shows as not applied.
    */
   supportChanged(ids?: CrossId[]): void;
+  /** Whether this axis's items can move changed: the widget asks `movable` again. */
+  movableChanged(): void;
 }
 
 /** The sinks a Table Source pushes its news through. */
@@ -296,8 +298,20 @@ export interface AxisMethods<Id, CrossId> {
    * once and leave this out.
    */
   unmatched?(ids: Id[], signal: AbortSignal): MaybePromise<boolean[]>;
-  /** Moves `ids` to before Position `to`; `false` refuses. The widget sends the `Reordered`. */
-  move?(ids: Id[], to: number): MaybePromise<boolean>;
+  /**
+   * Moves `ids` to before Position `to`, read in the order shown. `false`,
+   * or `refused` with a reason the widget shows, leaves them where they
+   * are. The widget sends the `Reordered`; a source that changes its View
+   * Spec to move them (dropping a sort, say) says so through `viewChanged`
+   * before it answers.
+   */
+  move?(ids: Id[], to: number): MaybePromise<boolean | { refused: string }>;
+  /**
+   * Whether `move` can move this axis's items now, so dragging a header
+   * offers a move; `true` by default while the axis has `move`. Asked again
+   * after each View Spec and move, and when the sink's `movableChanged` says.
+   */
+  movable?(): boolean;
   /** Header text for an item; defaults to `String(id)` for columns and Position + 1 for rows. */
   label?(id: Id, position: number): string;
   /** The axis's IDs are its Positions, so the widget keeps no Key Interner for it. */

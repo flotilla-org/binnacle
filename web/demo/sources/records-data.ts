@@ -1,6 +1,8 @@
 // The records demo's rows, apart from the widget so end-to-end tests can
 // compute what they expect from the same data.
 
+import type { RowsOptions } from "../../src";
+
 export interface RecordRow {
   id: number;
   name: string;
@@ -39,4 +41,13 @@ export const rows = Array.from({ length: RECORDS }, (_, i) => generate(i));
 export function matches(row: RecordRow, text: string): boolean {
   const t = text.trim().toLowerCase();
   return row.name.toLowerCase().includes(t) || (row.port?.toLowerCase().includes(t) ?? false);
+}
+
+/**
+ * What a move on a sorted axis does in the records' demos: `?sortedMoves=refuse`
+ * refuses it, else it keeps the order shown and drops the sort.
+ */
+export function sortedMoves(): RowsOptions {
+  const refuse = new URL(location.href).searchParams.get("sortedMoves") === "refuse";
+  return { sortedMoves: refuse ? "refuse" : "bake" };
 }

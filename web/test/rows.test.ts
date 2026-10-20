@@ -11,6 +11,7 @@ import { textRenderer } from "../src/renderers/text";
 import { fromRows } from "../src/rows";
 import type {
   AppliedView,
+  AxisMethods,
   ChangeNotice,
   Condition,
   Distinct,
@@ -29,8 +30,8 @@ import { loadForTests } from "./wasm";
 function sinksTo<RowId, ColId>(notices: ChangeNotice[], cols: ChangeNotice[] = []): TableSink<RowId, ColId> {
   const ignore = () => {};
   return {
-    rows: { notify: (n) => void notices.push(n), supportChanged: ignore },
-    cols: { notify: (n) => void cols.push(n), supportChanged: ignore },
+    rows: { notify: (n) => void notices.push(n), supportChanged: ignore, movableChanged: ignore },
+    cols: { notify: (n) => void cols.push(n), supportChanged: ignore, movableChanged: ignore },
     viewChanged: ignore,
     findCounted: ignore,
   };
@@ -267,6 +268,18 @@ function filtered(rows: FilterSpec<keyof Rec>, cols: FilterSpec<number>): ViewSp
 
 const NONE = { quick: null, conditions: [] };
 
+/**
+ * `shown` after moving `ids` to before Position `to`: before the first item
+ * at or after `to` that is not moving, else at the end, in the order given.
+ */
+function placed<Id>(shown: Id[], ids: Id[], to: number): Id[] {
+  const moving = [...new Set(ids)];
+  const before = shown.slice(to).find((id) => !moving.includes(id));
+  const rest = shown.filter((id) => !moving.includes(id));
+  const at = before === undefined ? rest.length : rest.indexOf(before);
+  return [...rest.slice(0, at), ...moving, ...rest.slice(at)];
+}
+
 function order(source: ReturnType<typeof fromRows<Rec>>): number[] {
   return source.rows.window(0, source.rows.count() as number, new AbortController().signal) as number[];
 }
@@ -284,6 +297,54 @@ describe("fromRows", () => {
         expect(source.view!(rowsSorted(spec), new AbortController().signal)).toEqual(answered(rows.length, spec));
         if (filtered) source.filter((r) => keep(r));
         expect(order(source)).toEqual(reference(rows, spec, keep));
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("a move on either axis places the items in the order shown; on a sorted axis it drops the sort, or refuses with `refuse`", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const refuse = tc.draw(gs.booleans());
+      const source = fromRows(rows, COLUMNS, { sortedMoves: refuse ? "refuse" : "bake" });
+      const views: AppliedView<number, keyof Rec>[] = [];
+      const ignore = () => {};
+      const axisSink = { notify: ignore, supportChanged: ignore, movableChanged: ignore };
+      source.attach!({ rows: axisSink, cols: axisSink, viewChanged: (v) => views.push(v), findCounted: ignore });
+      try {
+        const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+        if (tc.draw(gs.booleans())) source.filter((r) => r.b !== 1);
+        const byRows: SortSpec<number> =
+          rows.length > 0 && tc.draw(gs.booleans())
+            ? [{ id: tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 })), direction: "descending" }]
+            : [];
+        const spec = { ...rowsSorted(sort), cols: { filter: { quick: null, conditions: [] }, sort: byRows } };
+        source.view!(spec, new AbortController().signal);
+        const axis = tc.draw(gs.sampledFrom<"rows" | "cols">(["rows", "cols"]));
+        const sorted = (axis === "rows" ? sort : byRows).length > 0;
+        const check = <Id,>(m: AxisMethods<Id, unknown>) => {
+          const all = () => m.window(0, m.count() as number, new AbortController().signal) as Id[];
+          const shown = all();
+          tc.assume(shown.length > 0);
+          const picks = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: shown.length - 1 }), { minSize: 1, maxSize: 3 }));
+          const ids = picks.map((i) => shown[i]!);
+          const to = tc.draw(gs.integers({ minValue: 0, maxValue: shown.length }));
+          expect(m.movable!()).toBe(!(refuse && sorted));
+          const answer = m.move!(ids, to);
+          if (refuse && sorted) {
+            expect(answer).toEqual({ refused: "Can't move while sorted: clear the sort first" });
+            expect(all()).toEqual(shown);
+            expect(views).toEqual([]);
+            return;
+          }
+          expect(answer).toBe(true);
+          expect(all()).toEqual(placed(shown, ids, to));
+          expect(m.movable!()).toBe(true);
+          const dropped = { ...spec, [axis]: { ...spec[axis], sort: [] } };
+          expect(views).toEqual(sorted ? [{ ...dropped, totals: { rows: rows.length, cols: 3 } }] : []);
+        };
+        if (axis === "rows") check(source.rows);
+        else check(source.cols as AxisMethods<keyof Rec, unknown>);
       } finally {
         source.destroy();
       }
@@ -495,8 +556,8 @@ describe("fromRows", () => {
     const notices: ChangeNotice[] = [];
     const ignore = () => {};
     source.attach!({
-      rows: { notify: ignore, supportChanged: ignore },
-      cols: { notify: (n) => void notices.push(n), supportChanged: ignore },
+      rows: { notify: ignore, supportChanged: ignore, movableChanged: ignore },
+      cols: { notify: (n) => void notices.push(n), supportChanged: ignore, movableChanged: ignore },
       viewChanged: ignore,
       findCounted: ignore,
     });

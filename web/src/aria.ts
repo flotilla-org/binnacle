@@ -146,6 +146,8 @@ export function createAria(options: AriaOptions): Aria {
     null;
   /** The focused Key per axis as of the last frame. */
   const focus: Record<AxisName, bigint | null> = { rows: null, cols: null };
+  /** The reason of the move refusal last seen, `null` while there is none. */
+  let refused: string | null = null;
   /** Per axis, the focused Key being located, until the Grid stops locating. */
   const locating: Record<AxisName, bigint | null> = { rows: null, cols: null };
 
@@ -157,7 +159,7 @@ export function createAria(options: AriaOptions): Aria {
   /**
    * Announces what the table itself cannot show: a sort applied, the rows
    * left once a filter change is applied and no other View Spec is pending,
-   * a focused item gone.
+   * a focused item gone, a move refused.
    */
   const watch = (s: Snapshot, content: () => Content) => {
     const messages: string[] = [];
@@ -173,6 +175,9 @@ export function createAria(options: AriaOptions): Aria {
       recount = false;
       messages.push(rowCount(s.rows.count, s.rows.total));
     }
+    const refusal = s.moveRefusal?.reason ?? null;
+    if (refusal !== null && refusal !== refused) messages.push(refusal);
+    refused = refusal;
     if (messages.length) announce(messages.join(". "));
     for (const axis of AXES) {
       const key = locating[axis];

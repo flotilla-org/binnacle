@@ -53,7 +53,7 @@ export type {
   Totals,
   ViewSpec,
 } from "./source";
-export { fromRows, type RowsColumn, type RowsColumnId, type RowsSource } from "./rows";
+export { fromRows, type RowsColumn, type RowsColumnId, type RowsOptions, type RowsSource } from "./rows";
 export {
   catppuccinMocha,
   light,

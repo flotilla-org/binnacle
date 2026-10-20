@@ -177,7 +177,7 @@ export function paintColumnHeaders(p: PaintContext): void {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
-    if (h.sort.pending) paintShimmer(p, h.rect);
+    if (h.sort.pending || h.movePending) paintShimmer(p, h.rect);
     const mark = marker(s, h, "rows");
     const inset = paintFilter(p, "cols", h);
     const room = h.rect.width - 2 * PAD - (mark ? MARKED : 0) - inset;
@@ -208,7 +208,7 @@ export function paintRowNumbers(p: PaintContext): void {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
-    if (h.sort.pending) paintShimmer(p, h.rect);
+    if (h.sort.pending || h.movePending) paintShimmer(p, h.rect);
     const inset = paintFilter(p, "rows", h);
     // A row the columns sort by ends in its marker, as a column header does.
     const mark = marker(s, h, "cols");

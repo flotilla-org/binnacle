@@ -24,10 +24,14 @@
 //
 // Row IDs are the rows' indices in the array (their Logical Indices); column
 // IDs are the property names.
+//
+// Rows and columns both move, read in the order shown with the filter in
+// force. A move on a sorted axis keeps the order shown and drops the sort,
+// unless `sortedMoves` refuses it.
 
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
 import type {
-  AxisSink,
+  AppliedView,
   ChangeNotice,
   Condition,
   Distinct,
@@ -36,6 +40,7 @@ import type {
   FindQuery,
   Located,
   SortSpec,
+  TableSink,
   TableSource,
   TextMatch,
   TextQuery,
@@ -61,6 +66,15 @@ export type RowsColumn<R> = {
 }[RowsColumnId<R>];
 
 export type RowsColumnId<R> = keyof R & string;
+
+export interface RowsOptions {
+  /**
+   * What a move on a sorted axis does: `"bake"` (the default) keeps the
+   * order shown, places the moved items and drops the axis's sort;
+   * `"refuse"` refuses it, and the axis is not movable while sorted.
+   */
+  sortedMoves?: "bake" | "refuse";
+}
 
 export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[keyof R]> {
   /** Find over each cell's text as its column's renderer gives it, regexes included. */
@@ -234,13 +248,17 @@ function spec<CrossId>(filter: Filter<CrossId>): FilterSpec<CrossId> {
   return { quick: filter.quick, conditions: filter.conditions.map((k) => k.condition) };
 }
 
-export function fromRows<R extends object>(rows: readonly R[], columns: readonly RowsColumn<R>[]): RowsSource<R> {
+export function fromRows<R extends object>(
+  rows: readonly R[],
+  columns: readonly RowsColumn<R>[],
+  options: RowsOptions = {},
+): RowsSource<R> {
   type ColId = RowsColumnId<R>;
   const index = new Map<ColId, number>(columns.map((c, i) => [c.key, i]));
   const keys = new Map<ColId, SortKeys>();
   /** Each row's values across the columns as sort keys, by row ID, for sorting the columns. */
   const rowKeys = new Map<number, SortKeys>();
-  const sinks = new Set<{ rows: AxisSink<number>; cols: AxisSink<ColId> }>();
+  const sinks = new Set<TableSink<number, ColId>>();
   let wasm: WebMemory | undefined;
   let applied: SortSpec<ColId> = [];
   let colsApplied: SortSpec<number> = [];
@@ -249,7 +267,12 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
   const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
   const isRow = (id: number) => Number.isInteger(id) && id >= 0 && id < rows.length;
   // Created on first use, once the widget has loaded the wasm module.
-  const memory = () => (wasm ??= new (bridge().WebMemory)(rows.length, columns.length));
+  const memory = () => {
+    if (wasm) return wasm;
+    wasm = new (bridge().WebMemory)(rows.length, columns.length);
+    wasm.refuse_sorted_moves(options.sortedMoves === "refuse");
+    return wasm;
+  };
   const tell = (notice: ChangeNotice, axis: "rows" | "cols" = "rows") => {
     for (const s of sinks) s[axis].notify(notice);
   };
@@ -431,6 +454,30 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     colsApplied = spec;
   };
 
+  /** The View Spec in force, as `view` answers it. */
+  const current = (): AppliedView<number, ColId> => ({
+    rows: { filter: spec(filters.rows), sort: applied },
+    cols: { filter: spec(filters.cols), sort: colsApplied },
+    totals: { rows: rows.length, cols: columns.length },
+  });
+
+  /**
+   * Moves the items with these Logical Indices on `axis`. Baking a sort
+   * drops it, which the sinks hear before the widget gets the answer.
+   */
+  const move = (axis: typeof ROWS | typeof COLS, items: number[], to: number): boolean | { refused: string } => {
+    const sorted = (axis === ROWS ? applied : colsApplied).length > 0;
+    if (!memory().move_items(axis, Uint32Array.from(items), to)) {
+      return { refused: "Can't move while sorted: clear the sort first" };
+    }
+    if (!sorted) return true;
+    if (axis === ROWS) applied = [];
+    else colsApplied = [];
+    const view = current();
+    for (const s of sinks) s.viewChanged(view);
+    return true;
+  };
+
   /**
    * The row `id` changed in place: told at its old Position, re-sorted, and
    * filtered again with the columns, at once or (with `defer`, for the
@@ -476,6 +523,8 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       distinct: (by, { search, limit, narrow }) => distinct(by, search, limit, narrow),
       locate: (id) => located(memory().locate(ROWS, id)),
       unmatched: (ids) => Array.from(memory().unmatched(ROWS, Uint32Array.from(ids)), (u) => u === 1),
+      move: (ids, to) => move(ROWS, ids, to),
+      movable: () => memory().movable(ROWS),
     },
     cols: {
       count: () => memory().count(COLS),
@@ -486,10 +535,13 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       locate: (id) => located(memory().locate(COLS, index.get(id) ?? columns.length)),
       unmatched: (ids) =>
         Array.from(memory().unmatched(COLS, Uint32Array.from(ids, (id) => index.get(id) ?? columns.length)), (u) => u === 1),
-      move(ids, to) {
-        memory().move_columns(Uint32Array.from(ids, (id) => index.get(id)!), to);
-        return true;
-      },
+      move: (ids, to) =>
+        move(
+          COLS,
+          ids.map((id) => index.get(id)!),
+          to,
+        ),
+      movable: () => memory().movable(COLS),
       label: (id) => columns[index.get(id) ?? -1]?.label ?? id,
     },
     // A quick filter whose pattern is not a valid RegExp leaves the one in
@@ -519,12 +571,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       const refilteredCols = forCols.changed || memory().has_unmatched(COLS);
       if (refilteredCols) refilterColumns();
       if (resorted || refilteredCols) tell({ type: refilteredCols ? "Refiltered" : "Reordered" }, "cols");
-      return {
-        rows: { filter: spec(filters.rows), sort: by },
-        cols: { filter: spec(filters.cols), sort: byRows },
-        totals: { rows: rows.length, cols: columns.length },
-        ...(error === undefined ? {} : { error }),
-      };
+      return { ...current(), ...(error === undefined ? {} : { error }) };
     },
     cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => rows[r]![c])),
     find: {

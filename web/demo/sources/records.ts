@@ -1,6 +1,9 @@
 // The records source: a few thousand generated rows through `fromRows`,
 // like the ratatui demo's records. Every column sorts (Shift-click adds a
-// column), headers drag to move columns, and the filter box keeps the rows
+// column), column and row headers drag to move columns and rows (a move on
+// a sorted axis keeps the order shown and drops the sort, or with
+// `?sortedMoves=refuse` is refused, the reason shown where it was
+// dropped), and the filter box keeps the rows
 // whose name or port contains its text. The filter bar above the grid holds
 // the quick filter, which keeps the rows with its text in any column (with
 // case and regex toggles), a chip for each column condition, "+ Filter" and
@@ -16,7 +19,7 @@
 
 import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";
-import { matches, PORTS, RECORDS, rows, WIDTHS, type RecordRow } from "./records-data";
+import { matches, PORTS, RECORDS, rows, sortedMoves, WIDTHS, type RecordRow } from "./records-data";
 
 export type Value = RecordRow[keyof RecordRow];
 
@@ -58,16 +61,14 @@ export function portPicker(): Editor<Value> {
 
 export const records: DemoSource = {
   name: "records",
-  description: `${RECORDS.toLocaleString("en")} records: sort, filter, move columns, edit`,
+  description: `${RECORDS.toLocaleString("en")} records: sort, filter, move columns and rows, edit`,
   showIds: true,
   async mount(host, toolbar, look) {
-    const source = fromRows(rows, [
-      { key: "id", filterable: false },
-      { key: "name" },
-      { key: "weight" },
-      { key: "crew" },
-      { key: "port" },
-    ]);
+    const source = fromRows(
+      rows,
+      [{ key: "id", filterable: false }, { key: "name" }, { key: "weight" }, { key: "crew" }, { key: "port" }],
+      sortedMoves(),
+    );
     const box = document.createElement("input");
     box.type = "search";
     box.placeholder = "Filter name or port";

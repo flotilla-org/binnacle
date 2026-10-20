@@ -44,8 +44,8 @@ function shown(text: string): TextQuery<Field> {
 function sinks<RowId, ColId>(notices: { rows: ChangeNotice[]; cols: ChangeNotice[] }): TableSink<RowId, ColId> {
   const ignore = () => {};
   return {
-    rows: { notify: (n) => void notices.rows.push(n), supportChanged: ignore },
-    cols: { notify: (n) => void notices.cols.push(n), supportChanged: ignore },
+    rows: { notify: (n) => void notices.rows.push(n), supportChanged: ignore, movableChanged: ignore },
+    cols: { notify: (n) => void notices.cols.push(n), supportChanged: ignore, movableChanged: ignore },
     viewChanged: ignore,
     findCounted: ignore,
   };
@@ -92,6 +92,27 @@ describe("transpose", () => {
         inner.destroy();
       }
     }));
+
+  test("moving the turned rows moves the source's columns, and baking a sort reports it on its side", () => {
+    const records: Rec[] = [
+      { n: 2, s: "b" },
+      { n: 1, s: "a" },
+    ];
+    const turned = transpose(fromRows(records, COLUMNS));
+    const views: AppliedView<Field, number>[] = [];
+    const ignore = () => {};
+    const axis = { notify: ignore, supportChanged: ignore, movableChanged: ignore };
+    turned.attach!({ rows: axis, cols: axis, viewChanged: (v) => views.push(v), findCounted: ignore });
+    const bySecond: ViewSpec<Field, number> = { rows: { ...NONE, sort: [{ id: 1, direction: "descending" }] }, cols: NONE };
+    turned.view!(bySecond, signal());
+    expect(turned.rows.window(0, 2, signal())).toEqual(["s", "n"]);
+    expect(turned.rows.movable!()).toBe(true);
+    expect(turned.rows.move!(["n"], 0)).toBe(true);
+    expect(turned.rows.window(0, 2, signal())).toEqual(["n", "s"]);
+    expect(views.map((v) => [v.rows.sort, v.cols.sort])).toEqual([[[], []]]);
+    expect(turned.cols.move!([1], 0)).toBe(true);
+    expect(turned.cols.window(0, 2, signal())).toEqual([1, 0]);
+  });
 
   test("find steps, marks and counts as on the source with rows and columns swapped", () =>
     hegel.test((tc) => {

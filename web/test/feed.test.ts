@@ -351,8 +351,10 @@ describe("answers to the Grid's Effects", () => {
       h.frame();
       drag();
       expect(order()).toEqual(["a", "b", "c"]);
+      expect(h.snapshot.moveRefusal).toEqual({ axis: "cols", reason: "These can't be moved" });
       allow = true;
       drag();
+      expect(h.snapshot.moveRefusal).toBeNull();
       expect(moves).toEqual([
         [["c"], 0],
         [["c"], 0],
@@ -360,6 +362,159 @@ describe("answers to the Grid's Effects", () => {
       expect(order()).toEqual(["c", "a", "b"]);
       // The values follow their columns.
       expect(h.values()[0]).toEqual(["0c", "0a", "0b"]);
+    } finally {
+      h.destroy();
+    }
+  });
+});
+
+describe("moves", () => {
+  /** Keyed rows `r0..` over one column; `move` as given, recording each ask. */
+  function rowsSource(move?: (ids: string[], to: number) => ReturnType<NonNullable<Source["rows"]["move"]>>) {
+    let rows = ["r0", "r1", "r2", "r3"];
+    const asked: [string[], number][] = [];
+    let sinks: Sinks | undefined;
+    let movable = true;
+    const source: Source = {
+      rows: {
+        count: () => rows.length,
+        window: (s, e) => rows.slice(s, e),
+        ...(move && {
+          move: (ids: string[], to: number) => {
+            asked.push([ids, to]);
+            return move(ids, to);
+          },
+          movable: () => movable,
+        }),
+      },
+      cols: { count: () => 1, window: (s, e) => ["c"].slice(s, e) },
+      cells: (rs, cs) => rs.map((r) => cs.map((c) => `${r}${c}`)),
+      attach: (s) => {
+        sinks = s;
+        return () => {};
+      },
+    };
+    const place = (ids: string[], to: number) => {
+      const before = rows.slice(0, to).filter((r) => !ids.includes(r));
+      rows = [...before, ...ids, ...rows.filter((r) => !ids.includes(r) && !before.includes(r))];
+    };
+    return {
+      source,
+      asked,
+      place,
+      order: () => rows,
+      withdraw: (now: boolean) => {
+        movable = now;
+        sinks!.rows.movableChanged();
+      },
+    };
+  }
+
+  /** Drags row `from`'s header to below row `to`, Effects answered. */
+  function dragRow(h: Harness<string, string, string>, from: number, to: number) {
+    const y = (r: number) => HEADER + r * ROW_HEIGHT + ROW_HEIGHT / 2;
+    h.grid.pointer(0, BAND / 2, y(from), 0, 0, 1);
+    h.grid.pointer(1, BAND / 2, y(to) + ROW_HEIGHT / 4, 0, 0, 1);
+    h.grid.pointer(2, BAND / 2, y(to) + ROW_HEIGHT / 4, 0, 0, 1);
+    h.drain();
+    h.frame();
+  }
+
+  const shown = (h: Harness<string, string, string>) => h.snapshot.rows.strip.map((r) => h.feed.rowId(r.key!));
+
+  test("an axis without move offers no move, and dragging its headers asks nothing", () => {
+    const t = rowsSource();
+    const h = new Harness(t.source);
+    try {
+      h.frame();
+      expect(h.snapshot.rows.movable).toBe(false);
+      dragRow(h, 0, 2);
+      expect(h.snapshot.pendingMove).toBeNull();
+      expect(shown(h)).toEqual(["r0", "r1", "r2", "r3"]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a row moves by its header; while the answer is due it shows pending and no other move starts", async () => {
+    let answer: (moved: boolean) => void = () => {};
+    const t = rowsSource(
+      (ids, to) =>
+        new Promise<boolean>((resolve) => {
+          answer = (moved) => {
+            if (moved) t.place(ids, to);
+            resolve(moved);
+          };
+        }),
+    );
+    const h = new Harness(t.source);
+    try {
+      h.frame();
+      expect(h.snapshot.rows.movable).toBe(true);
+      dragRow(h, 0, 2);
+      expect(t.asked).toEqual([[["r0"], 3]]);
+      const key = h.feed.rowKey("r0");
+      expect(h.snapshot.pendingMove).toEqual({ axis: "rows", keys: [key] });
+      expect(h.snapshot.rows.headers.find((p) => p.key === key)?.movePending).toBe(true);
+      // Nothing moves early, and a second drag starts no move.
+      expect(shown(h)).toEqual(["r0", "r1", "r2", "r3"]);
+      dragRow(h, 3, 0);
+      expect(t.asked).toHaveLength(1);
+      answer(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      h.frame();
+      expect(h.snapshot.pendingMove).toBeNull();
+      expect(shown(h)).toEqual(["r1", "r2", "r0", "r3"]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a refusal shows its reason until the next press, and a failure refuses with its message", async () => {
+    let next: () => MaybeMoved = () => ({ refused: "Not while sorted" });
+    type MaybeMoved = boolean | { refused: string } | Promise<boolean>;
+    const t = rowsSource(() => next());
+    const h = new Harness(t.source);
+    try {
+      h.frame();
+      dragRow(h, 0, 2);
+      expect(h.snapshot.moveRefusal).toEqual({ axis: "rows", reason: "Not while sorted" });
+      expect(h.snapshot.pendingMove).toBeNull();
+      h.click(BAND + 10, HEADER + 5);
+      h.frame();
+      expect(h.snapshot.moveRefusal).toBeNull();
+      next = () => Promise.reject(new Error("the source went away"));
+      dragRow(h, 0, 2);
+      await new Promise((resolve) => setTimeout(resolve));
+      h.frame();
+      expect(h.snapshot.moveRefusal).toEqual({ axis: "rows", reason: "the source went away" });
+      expect(h.errors.map((e) => e.request)).toEqual([{ type: "move", axis: "rows" }]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("withdrawing movable through the sink stops the move being dragged, and offering it again lets one start", () => {
+    const t = rowsSource((ids, to) => (t.place(ids, to), true));
+    const h = new Harness(t.source);
+    try {
+      h.frame();
+      const y = (r: number) => HEADER + r * ROW_HEIGHT + ROW_HEIGHT / 2;
+      h.grid.pointer(0, BAND / 2, y(0), 0, 0, 1);
+      h.grid.pointer(1, BAND / 2, y(2), 0, 0, 1);
+      h.frame();
+      expect(h.snapshot.mode.type).toBe("MovingHeaders");
+      t.withdraw(false);
+      h.frame();
+      expect(h.snapshot.mode.type).toBe("Idle");
+      expect(h.snapshot.rows.movable).toBe(false);
+      h.grid.pointer(2, BAND / 2, y(2), 0, 0, 1);
+      h.drain();
+      expect(t.asked).toEqual([]);
+      t.withdraw(true);
+      dragRow(h, 0, 2);
+      expect(shown(h)).toEqual(["r1", "r2", "r0", "r3"]);
     } finally {
       h.destroy();
     }
