@@ -104,9 +104,11 @@ pub enum Cursor {
     Move,
 }
 
-/// Where a resize in progress puts the resized item's trailing edge: a line
+/// Where a resize in progress puts the resized item's moving edge: a line
 /// across the viewport at `offset` along `axis` (viewport-relative, like Strip
-/// offsets), with the item's Key and current size. Resizing the Header Band
+/// offsets), with the item's Key and current size. That is its trailing edge,
+/// or its leading edge in the trailing pinned Strip, which grows from the
+/// viewport's far end. Resizing the Header Band
 /// leading `axis`, `key` is `None` and `size` is the band's thickness.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResizeGuide {
@@ -215,17 +217,20 @@ impl<'a> Snapshot<'a> {
 
     /// Where the scrolling Strip of `axis` draws along it: past the Header
     /// Band and the leading pinned Strip (with the Gap after it), to the
-    /// viewport's end. Its part-scrolled items reach outside it.
+    /// viewport's end or the Gap before the trailing pinned Strip. Its
+    /// part-scrolled items reach outside it.
     pub fn scrolling(&self, axis: Axis) -> Range<f32> {
         let st = self.grid.axis(axis);
-        st.scroll_start().min(st.extent)..st.extent
+        let end = st.scroll_end().clamp(0.0, st.extent);
+        st.scroll_start().min(end)..end
     }
 
     /// Every drawn item of `axis` in drawn order: the leading pinned Strip,
-    /// then the scrolling Strip.
+    /// the scrolling Strip, then the trailing pinned Strip.
     pub fn drawn(&self, axis: Axis) -> impl Iterator<Item = &'a StripItem> + 'a {
         let st = self.grid.axis(axis);
-        st.pinned[Edge::Leading.index()].iter().chain(&st.strip)
+        let [leading, trailing] = &st.pinned;
+        leading.iter().chain(&st.strip).chain(trailing)
     }
 
     pub fn rows(&self) -> &'a [StripItem] {
@@ -254,14 +259,18 @@ impl<'a> Snapshot<'a> {
     fn focused_item(&self, axis: Axis) -> Option<&'a StripItem> {
         let end = self.focus(axis)?;
         end.key?;
-        if let Some(item) = (self.pinned(axis, Edge::Leading).iter())
+        if let Some(item) = (Edge::ALL.iter())
+            .flat_map(|&edge| self.pinned(axis, edge))
             .find(|i| i.key == end.key && i.position == end.position)
         {
             return Some(item);
         }
+        // The scrolling Strip skips pinned Positions, so it is searched.
         let strip = self.strip(axis);
-        let i = end.position.checked_sub(strip.first()?.position)?;
-        let item = strip.get(usize::try_from(i).ok()?)?;
+        let i = strip
+            .binary_search_by_key(&end.position, |i| i.position)
+            .ok()?;
+        let item = &strip[i];
         (item.key == end.key).then_some(item)
     }
 
@@ -302,9 +311,8 @@ impl<'a> Snapshot<'a> {
                 f.key.is_some() && f.position == item.position && f.key == item.key
             })
         };
-        let in_range = self
-            .selection_range()
-            .is_some_and(|r| r.contains(row.position, col.position));
+        let in_range =
+            (self.selection_range()).is_some_and(|r| r.contains(row.position, col.position));
         let picked = |axis, item: &StripItem| {
             item.key
                 .is_some_and(|k| self.grid.selection.picked(axis, k))
@@ -327,10 +335,10 @@ impl<'a> Snapshot<'a> {
         }
     }
 
-    /// The one contiguous range, if any, clamped to the counts.
-    pub fn selection_range(&self) -> Option<CellRange> {
-        let counts = Axis::ALL.map(|a| self.count(a));
-        self.grid.selection.span.map(|s| s.range(counts))
+    /// The one contiguous range, if any, as the Positions it covers on each
+    /// axis: every item drawn between its corners, in drawn order.
+    pub fn selection_range(&self) -> Option<&'a CellRange> {
+        self.grid.range.as_ref()
     }
 
     /// The picked Keys of `axis`, in Key order.
@@ -436,10 +444,7 @@ impl<'a> Snapshot<'a> {
         let across = axis.other();
         let thickness = self.header(across);
         let range = self.selection_range();
-        let whole = range
-            .as_ref()
-            .filter(|r| *r.span(across) == (0..self.count(across)))
-            .map(|r| r.span(axis).clone());
+        let whole = range.filter(|r| r.span(across) == [0..self.count(across)]);
         let hovered = grid.hovered;
         self.drawn(axis).map(move |item| {
             let (x, y, width, height) = match axis {
@@ -463,7 +468,7 @@ impl<'a> Snapshot<'a> {
                 filter: (item.key).map_or(HeaderFilter::default(), |key| {
                     grid.view.header_filter(axis, key)
                 }),
-                selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
+                selected: picked || whole.is_some_and(|w| w.covers(axis, item.position)),
                 hovered: hovered == Some((axis, item.position)),
                 move_pending: item.key.is_some_and(|k| grid.move_pending(axis, k)),
             }
@@ -513,17 +518,21 @@ impl<'a> Snapshot<'a> {
             _ => return None,
         };
         let st = self.grid.axis(axis);
-        if let Some(item) = self
-            .pinned(axis, Edge::Leading)
-            .iter()
-            .find(|i| i.key == Some(key))
-        {
-            return Some(ResizeGuide {
-                axis,
-                key: Some(key),
-                offset: item.end(),
-                size: item.size,
-            });
+        for edge in Edge::ALL {
+            if let Some(item) = self.pinned(axis, edge).iter().find(|i| i.key == Some(key)) {
+                // A trailing pinned item grows from its far end, so its
+                // guide is at its start.
+                let offset = match edge {
+                    Edge::Leading => item.end(),
+                    Edge::Trailing => item.offset,
+                };
+                return Some(ResizeGuide {
+                    axis,
+                    key: Some(key),
+                    offset,
+                    size: item.size,
+                });
+            }
         }
         let position = st.measure.position_of(key)?;
         let size = st.measure.size_at(position);

@@ -11,9 +11,9 @@ use crate::moves::MoveState;
 use crate::notice::Locating;
 use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
-use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
+use crate::selection::{Cell, CellRange, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
-use crate::types::{Axis, Edge, Generation, Key, Position, Viewport};
+use crate::types::{Axis, Generation, Key, Position, Viewport};
 use crate::view::ViewState;
 
 /// How one axis starts out: its count, default item size, header band, Gap
@@ -137,6 +137,8 @@ pub struct Grid {
     /// The axis whose header border or band edge is under the pointer as of
     /// the last Snapshot.
     pub(crate) hovered_border: Option<Axis>,
+    /// The range for the last Snapshot, as the Positions it covers.
+    pub(crate) range: Option<CellRange>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
     pub(crate) view: ViewState,
@@ -183,6 +185,7 @@ impl Grid {
             pointer_at: None,
             hovered: None,
             hovered_border: None,
+            range: None,
             fills: Vec::new(),
             view: ViewState::default(),
             find: FindState::default(),
@@ -599,17 +602,14 @@ impl Grid {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return false;
         }
-        let from = self.focus.map(|f| f[axis.index()].position);
+        let from = self.focus.map(|f| f[axis.index()]);
         let mut moved = self.focus.unwrap_or_else(|| {
-            [Axis::Rows, Axis::Cols].map(|a| {
-                let st = self.axis(a);
-                FocusEnd::at(st, focus::target(st, None, FocusStep::Item, true, 1))
-            })
+            [Axis::Rows, Axis::Cols]
+                .map(|a| focus::target(self.axis(a), None, FocusStep::Item, true, 1))
         });
-        let st = self.axis(axis);
-        let to = focus::target(st, from, by, forward, times);
-        if from != Some(to) {
-            moved[axis.index()] = FocusEnd::at(st, to);
+        let to = focus::target(self.axis(axis), from, by, forward, times);
+        if from.map(|f| (f.position, f.key)) != Some((to.position, to.key)) {
+            moved[axis.index()] = to;
         }
         self.set_focus_cell(moved);
         self.reveal = true;
@@ -840,27 +840,29 @@ impl Grid {
 
     /// Computes the selection fill rects from the laid-out Strips: one for the
     /// visible part of the range in each pair of a row Strip and a column
-    /// Strip (pinned, then scrolling), then one per visible picked row and
+    /// Strip (leading pinned, scrolling, trailing pinned), then one per visible picked row and
     /// column Strip, then one per visible picked column and row Strip.
     fn fill_selection(&mut self) {
         let mut fills = std::mem::take(&mut self.fills);
         fills.clear();
         let strips = |axis: Axis| {
             let st = self.axis(axis);
-            [&st.pinned[Edge::Leading.index()], &st.strip]
+            let [leading, trailing] = &st.pinned;
+            [leading, &st.strip, trailing]
         };
         let (rows, cols) = (strips(Axis::Rows), strips(Axis::Cols));
-        let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
         let extent = |items: &mut dyn Iterator<Item = &crate::snapshot::StripItem>| {
             let first = items.next()?;
             let last = items.last().unwrap_or(first);
             Some((first.offset, last.end() - first.offset))
         };
-        if let Some(range) = self.selection.span.map(|s| s.range(counts)) {
+        if let Some(range) = &self.range {
             for rows in rows {
                 for cols in cols {
-                    let r = extent(&mut rows.iter().filter(|i| range.rows.contains(&i.position)));
-                    let c = extent(&mut cols.iter().filter(|i| range.cols.contains(&i.position)));
+                    let r =
+                        extent(&mut rows.iter().filter(|i| range.covers(Axis::Rows, i.position)));
+                    let c =
+                        extent(&mut cols.iter().filter(|i| range.covers(Axis::Cols, i.position)));
                     if let (Some((y, height)), Some((x, width))) = (r, c) {
                         fills.push(Rect {
                             x,
@@ -939,6 +941,7 @@ impl Grid {
             self.hovered_border = border;
             self.pending_damage.selection = true;
         }
+        self.range = self.selection.span.map(|s| s.range(&self.axes));
         self.fill_selection();
         self.damage = std::mem::replace(&mut self.pending_damage, Damage::NONE);
         Snapshot { grid: self }

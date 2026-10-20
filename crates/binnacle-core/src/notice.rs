@@ -360,8 +360,10 @@ impl Grid {
                 }
             }
         }
-        self.axis_mut(axis).sync_pins();
+        // Each pin is asked about before the Positions skipped are worked
+        // out, so none is skipped at a Position it may have left.
         self.locate_pins(axis);
+        self.axis_mut(axis).sync_pins();
         self.rebase_gesture();
         self.axis_mut(axis).clamp_anchor();
         self.pending_damage.layout = true;

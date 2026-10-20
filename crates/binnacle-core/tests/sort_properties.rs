@@ -272,7 +272,7 @@ impl Host {
         self.view = View {
             focus: focus.map(|(r, c)| [r, c]),
             locating: Axis::ALL.map(|a| snap.locating(a)),
-            range: snap.selection_range(),
+            range: snap.selection_range().cloned(),
             picks: snap.picked(Axis::Rows).to_vec(),
             anchors: Axis::ALL.map(|a| snap.scroll_anchor(a)),
             counts: Axis::ALL.map(|a| snap.count(a)),
@@ -457,7 +457,7 @@ fn a_reorder_drops_the_range_and_any_drag_and_leaves_the_anchor(tc: TestCase) {
         for &axis in &step.reordered {
             let i = axis.index();
             if let Some(range) = &host.view.range {
-                assert_eq!(*range.span(axis), 0..host.view.counts[i], "{axis:?}");
+                assert_eq!(range.span(axis), [0..host.view.counts[i]], "{axis:?}");
             }
             assert_ne!(host.view.mode, Mode::DraggingSelection);
         }

@@ -410,8 +410,31 @@ impl AxisMeasure {
         self.skipped.binary_search(&p).is_ok()
     }
 
+    /// How many Positions before `p` are skipped.
+    pub fn skipped_before(&self, p: Position) -> u64 {
+        self.skipped.partition_point(|&s| s < p) as u64
+    }
+
+    /// How many Positions are skipped.
+    pub fn skipped_len(&self) -> u64 {
+        self.skipped.len() as u64
+    }
+
+    /// The `n`th Position (from 0) that is not skipped, if the count reaches
+    /// it.
+    pub fn nth_unskipped(&self, n: u64) -> Option<Position> {
+        let mut p = n;
+        for &s in &self.skipped {
+            if s > p {
+                break;
+            }
+            p += 1;
+        }
+        (p < self.count).then_some(p)
+    }
+
     /// The skipped Positions in `r`, in order.
-    fn skipped_in(&self, r: Range<Position>) -> &[Position] {
+    pub(crate) fn skipped_in(&self, r: Range<Position>) -> &[Position] {
         let a = self.skipped.partition_point(|&p| p < r.start);
         let b = self.skipped.partition_point(|&p| p < r.end).max(a);
         &self.skipped[a..b]

@@ -7,7 +7,7 @@ use crate::grid::Grid;
 use crate::measure::ItemAt;
 use crate::pointer::{Button, Hit, Modifiers, PointerEvent, PointerKind};
 use crate::selection::{Cell, HeaderClick, Selection};
-use crate::types::{Axis, Key, Position};
+use crate::types::{Axis, Edge, Key, Position};
 
 /// The single interaction the Grid is in the middle of.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -80,12 +80,15 @@ pub(crate) enum Gesture {
         before: Before,
     },
     /// A press on the border after the item with `key` on `axis`, at
-    /// coordinate `from` along that axis. `start_override` is the item's Size
-    /// Override before the press, which `Cancel` puts back.
+    /// coordinate `from` along that axis; `before` when the border is before
+    /// the item (a trailing pinned one), which then grows as the pointer
+    /// moves back. `start_override` is the item's Size Override before the
+    /// press, which `Cancel` puts back.
     Resizing {
         axis: Axis,
         key: Key,
         from: f32,
+        before: bool,
         start_size: f32,
         start_override: Option<f32>,
     },
@@ -200,14 +203,16 @@ impl Grid {
                 self.push(Effect::AutoSizeRequested { axis, key });
                 return;
             }
-            let measure = &self.axis(axis).measure;
-            self.gesture = Gesture::Resizing {
+            let st = self.axis(axis);
+            let resizing = Gesture::Resizing {
                 axis,
                 key,
                 from: along(axis, x, y),
-                start_size: measure.size_of(key),
-                start_override: measure.size_override(key),
+                before: st.drawn_pins(Edge::Trailing).any(|(k, _)| k == key),
+                start_size: st.measure.size_of(key),
+                start_override: st.measure.size_override(key),
             };
+            self.gesture = resizing;
             self.pending_damage.selection = true;
             return;
         }
@@ -296,10 +301,14 @@ impl Grid {
                 axis,
                 key,
                 from,
+                before,
                 start_size,
                 start_override,
             } => {
-                let moved = f64::from(along(axis, x, y)) - f64::from(from);
+                let mut moved = f64::from(along(axis, x, y)) - f64::from(from);
+                if before {
+                    moved = -moved;
+                }
                 // Clamped here as `set_size` would, so a drag pinned at the
                 // range's edge compares equal to an item that started there.
                 let m = &self.axis(axis).measure;
@@ -410,13 +419,18 @@ impl Grid {
         if self.axis(axis).pinned_at(position) == Some(key) {
             return;
         }
-        let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
+        // A range that takes in pinned items moves only the grabbed one.
         let selected = self
             .selection
             .span
             .filter(|s| s.whole[axis.other().index()] && !s.whole[i])
-            .map(|s| s.range(counts).span(axis).clone())
-            .filter(|r| r.contains(&position));
+            .map(|s| s.range(&self.axes).span(axis).to_vec())
+            .and_then(|runs| match runs.as_slice() {
+                [r] => Some(r.clone()),
+                _ => None,
+            })
+            .filter(|r| r.contains(&position))
+            .filter(|r| measure.skipped_in(r.clone()).is_empty());
         let (keys, positions) = selected
             .and_then(|r| {
                 let keys: Option<Vec<Key>> = r.clone().map(|p| measure.key_at(p)).collect();

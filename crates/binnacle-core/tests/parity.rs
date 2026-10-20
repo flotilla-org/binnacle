@@ -391,7 +391,9 @@ fn selection_on_one_axis_is_selection_on_the_other_turned(tc: TestCase) {
         op.turned().run(&mut turned);
         let a = upright.frame(SQUARE);
         let focus = Axis::ALL.map(|axis| a.focus(axis));
-        let range = a.selection_range().map(|r| (r.rows, r.cols));
+        let range = a
+            .selection_range()
+            .map(|r| (r.rows.clone(), r.cols.clone()));
         let picks = Axis::ALL.map(|axis| a.picked(axis).to_vec());
         let b = turned.frame(SQUARE);
         assert_eq!(
@@ -399,7 +401,9 @@ fn selection_on_one_axis_is_selection_on_the_other_turned(tc: TestCase) {
             [b.focus(Axis::Cols), b.focus(Axis::Rows)],
             "focus after {op:?}"
         );
-        let turned_range = b.selection_range().map(|r| (r.cols, r.rows));
+        let turned_range = b
+            .selection_range()
+            .map(|r| (r.cols.clone(), r.rows.clone()));
         assert_eq!(range, turned_range, "range after {op:?}");
         let turned_picks = [b.picked(Axis::Cols).to_vec(), b.picked(Axis::Rows).to_vec()];
         assert_eq!(picks, turned_picks, "picks after {op:?}");

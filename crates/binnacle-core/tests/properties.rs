@@ -1443,7 +1443,7 @@ fn a_click_on_no_cell_changes_nothing(tc: TestCase) {
 /// What the host can see of the selection: the range and each axis's picks.
 fn seen_selection(snap: &Snapshot) -> (Option<CellRange>, [Vec<Key>; 2]) {
     let picks = Axis::ALL.map(|a| snap.picked(a).to_vec());
-    (snap.selection_range(), picks)
+    (snap.selection_range().cloned(), picks)
 }
 
 /// Picks are sorted and distinct, the range is not empty and inside the
@@ -1457,9 +1457,16 @@ fn the_selection_is_well_formed(tc: TestCase) {
         }
         if let Some(r) = &range {
             for axis in Axis::ALL {
+                // Runs sorted, apart and not empty, inside the count.
                 let span = r.span(axis);
+                assert!(!span.is_empty(), "{axis:?}: {r:?}");
                 assert!(
-                    span.start < span.end && span.end <= snap.count(axis),
+                    span.iter()
+                        .all(|s| s.start < s.end && s.end <= snap.count(axis)),
+                    "{axis:?}: {r:?}"
+                );
+                assert!(
+                    span.windows(2).all(|w| w[0].end < w[1].start),
                     "{axis:?}: {r:?}"
                 );
             }

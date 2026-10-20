@@ -43,10 +43,10 @@ impl AxisState {
         }
     }
 
-    /// The length the scrolling Strip shows: past the header band and the
-    /// leading pinned Strip.
+    /// The length the scrolling Strip shows: between the pinned Strips,
+    /// inside the header band.
     fn body(&self) -> f32 {
-        (self.extent - self.scroll_start()).max(0.0)
+        (self.scroll_end() - self.scroll_start()).max(0.0)
     }
 
     /// The anchor at the start of the scrolling Strip: its first item, past
@@ -116,7 +116,8 @@ impl AxisState {
         anchor_offset: f32,
         size_at: impl Fn(Position) -> f32,
     ) -> impl Iterator<Item = (Position, f32, f32)> {
-        let (count, header, extent) = (self.measure.count(), self.scroll_start(), self.extent);
+        let (count, header, extent) =
+            (self.measure.count(), self.scroll_start(), self.scroll_end());
         let (gap, m) = (self.measure.gap(), &self.measure);
         let (first, off) = (self.anchor.position, f64::from(anchor_offset));
         let first_size = f64::from(size_at(first));
@@ -162,10 +163,12 @@ impl AxisState {
     /// reusing their buffers. Never past what the Window bound reaches, so a
     /// Strip item lacks a Key only if the Table Source left it unfilled.
     pub fn layout(&mut self) {
-        let mut pinned = std::mem::take(&mut self.pinned[Edge::Leading.index()]);
-        pinned.clear();
-        pinned.extend(self.pinned_items(Edge::Leading));
-        self.pinned[Edge::Leading.index()] = pinned;
+        for edge in Edge::ALL {
+            let mut pinned = std::mem::take(&mut self.pinned[edge.index()]);
+            pinned.clear();
+            pinned.extend(self.pinned_items(edge));
+            self.pinned[edge.index()] = pinned;
+        }
         let mut strip = std::mem::take(&mut self.strip);
         strip.clear();
         let bound = self.visible_end();

@@ -3,8 +3,8 @@
 //! Strip, which skips them.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Edge, Grid, Key, Modifiers, PointerEvent, SortColumn, SortSpec,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Edge, FocusStep, Grid, Key, Modifiers, PointerEvent, SortColumn,
+    SortSpec, ViewSpec, Viewport,
 };
 use binnacle_testkit::{ColumnMajorTable, IdentityTable, KeyedTable, Scenario};
 use hegel::generators as gs;
@@ -269,4 +269,235 @@ fn a_scrolling_region_no_wider_than_the_gap_may_draw_no_item() {
     assert_eq!(snap.pinned(Axis::Cols, Edge::Leading).len(), 2);
     assert_eq!(snap.scrolling(Axis::Cols), 8.0..9.0);
     assert!(snap.cols().is_empty(), "{:?}", snap.cols());
+}
+
+/// 12 rows of 1 under a 1-high header band, columns as in [`table`].
+fn tall() -> Scenario<IdentityTable> {
+    Scenario::identity(
+        AxisConfig::new(12, 1.0).header(1.0),
+        AxisConfig::new(10, 6.0).header(4.0).gap(1.0),
+    )
+}
+
+const SHORT: Viewport = Viewport {
+    width: 40.0,
+    height: 7.0,
+};
+
+#[test]
+fn trailing_pins_sit_flush_with_the_far_edge_in_pin_order() {
+    let mut s = tall();
+    let mut out = s.step("start", SHORT);
+    s.input(|g| {
+        g.pin(Axis::Cols, Edge::Trailing, Key(1));
+        g.pin(Axis::Cols, Edge::Trailing, Key(7));
+    });
+    out += &s.step(
+        "pin columns 1 then 7 right: drawn in that order, 7 ending at the edge",
+        SHORT,
+    );
+    s.input(|g| {
+        g.pin(Axis::Rows, Edge::Leading, Key(5));
+        g.pin(Axis::Rows, Edge::Trailing, Key(0));
+    });
+    out += &s.step("pin row 5 to the top and row 0 to the bottom", SHORT);
+    s.input(|g| {
+        g.action(Action::Scroll {
+            dx: 100.0,
+            dy: 100.0,
+        })
+    });
+    out += &s.step(
+        "scroll to the far corner: the last scrolling items end where the trailing Strips begin",
+        SHORT,
+    );
+    s.input(|g| g.pin(Axis::Cols, Edge::Leading, Key(1)));
+    out += &s.step("pin column 1 left: it leaves the trailing Strip", SHORT);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_trailing_pinned_column_is_clicked_and_resized_from_its_leading_border() {
+    let mut s = tall();
+    s.input(|g| {
+        g.set_border_grab(0.5);
+        g.pin(Axis::Cols, Edge::Trailing, Key(7));
+    });
+    let mut out = s.step("column 7 pinned right, from 34 to the edge at 40", SHORT);
+    s.click(36.0, 2.5, Modifiers::NONE);
+    out += &s.step("click its cell: row 1, column 7", SHORT);
+    s.click(33.5, 2.5, Modifiers::NONE);
+    out += &s.step("click the edge Gap before it: nothing", SHORT);
+    s.input(|g| g.pointer(PointerEvent::moved(33.5, 0.5)));
+    out += &s.step("hover the Gap before its header: a resize cursor", SHORT);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(33.5, 0.5));
+        g.pointer(PointerEvent::moved(31.5, 0.5));
+    });
+    out += &s.step(
+        "drag it 2 left: column 7 widens to 8 from the edge, the guide at its start",
+        SHORT,
+    );
+    s.input(|g| g.pointer(PointerEvent::up(31.5, 0.5)));
+    out += &s.step("release: SizeChanged", SHORT);
+    insta::assert_snapshot!(out);
+}
+
+/// A Grid over a [`KeyedTable`] of `count` items along `axis` (sizes 3 with a
+/// Gap of 1 across, 1 down) and 4 along the other, both under header bands,
+/// with `leading` and `trailing` pinned to `axis`'s edges, in that order.
+fn pinned_keyed(axis: Axis, count: u64, leading: &[u64], trailing: &[u64]) -> Scenario<KeyedTable> {
+    let (rows, cols) = match axis {
+        Axis::Rows => (
+            AxisConfig::new(count, 1.0),
+            AxisConfig::new(4, 3.0).gap(1.0),
+        ),
+        Axis::Cols => (
+            AxisConfig::new(4, 1.0),
+            AxisConfig::new(count, 3.0).gap(1.0),
+        ),
+    };
+    let grid = Grid::new(rows.header(1.0), cols.header(4.0));
+    let (r, c) = match axis {
+        Axis::Rows => (count, 4),
+        Axis::Cols => (4, count),
+    };
+    let mut s = Scenario::new(grid, KeyedTable::new(r, c));
+    s.input(|g| {
+        for &k in leading {
+            g.pin(axis, Edge::Leading, Key(k));
+        }
+        for &k in trailing {
+            g.pin(axis, Edge::Trailing, Key(k));
+        }
+    });
+    s
+}
+
+/// The Keys of `axis` in drawn order, from the model: the leading pins, the
+/// rest in the table's order, then the trailing pins.
+fn drawn_order(keys: &[Key], leading: &[u64], trailing: &[u64]) -> Vec<Key> {
+    let pinned = |k: &Key| leading.contains(&k.0) || trailing.contains(&k.0);
+    (leading.iter().map(|&k| Key(k)))
+        .chain(keys.iter().copied().filter(|k| !pinned(k)))
+        .chain(trailing.iter().map(|&k| Key(k)))
+        .collect()
+}
+
+/// Up to `n` distinct Keys below `count`, none of them in `taken`.
+fn some_keys(tc: &TestCase, count: u64, n: usize, taken: &[u64]) -> Vec<u64> {
+    let keys = tc.draw(
+        gs::vecs(gs::integers::<u64>().max_value(count - 1))
+            .max_size(n)
+            .unique(true),
+    );
+    keys.into_iter().filter(|k| !taken.contains(k)).collect()
+}
+
+/// From the first drawn item, arrow keys step through every drawn item in
+/// drawn order, on either axis, each shown as it is focused, and back
+/// again.
+#[hegel::test(test_cases = 300)]
+fn arrow_keys_visit_every_drawn_item_in_drawn_order(tc: TestCase) {
+    let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(20));
+    let leading = some_keys(&tc, count, 3, &[]);
+    let trailing = some_keys(&tc, count, 3, &leading);
+    let mut s = pinned_keyed(axis, count, &leading, &trailing);
+    let viewport = Viewport::new(40.0, 10.0);
+    s.frame(viewport);
+    let expected = drawn_order(&s.source.axes[axis.index()], &leading, &trailing);
+    let step = |forward| Action::MoveFocus {
+        axis,
+        by: FocusStep::Item,
+        forward,
+        extend: false,
+    };
+    let check = |s: &mut Scenario<KeyedTable>, i: usize| {
+        let snap = s.frame(viewport);
+        let focus = snap.focus(axis).expect("focus placed");
+        assert_eq!(focus.key, Some(expected[i]), "item {i} of {expected:?}");
+        assert!(snap.focus_rect().is_some(), "item {i} focused out of view");
+    };
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis,
+            by: FocusStep::Edge,
+            forward: false,
+            extend: false,
+        })
+    });
+    check(&mut s, 0);
+    for i in 1..expected.len() {
+        s.input(|g| g.action(step(true)));
+        check(&mut s, i);
+    }
+    s.input(|g| g.action(step(true)));
+    check(&mut s, expected.len() - 1);
+    for i in (0..expected.len() - 1).rev() {
+        s.input(|g| g.action(step(false)));
+        check(&mut s, i);
+    }
+}
+
+/// Extending the range with arrow keys from any drawn item covers exactly
+/// the items drawn between its corners, by the model's drawn order, on
+/// either axis: no item drawn between them is left out, and none outside
+/// them is in.
+#[hegel::test(test_cases = 300)]
+fn the_range_covers_what_is_drawn_between_its_corners(tc: TestCase) {
+    let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(20));
+    let leading = some_keys(&tc, count, 3, &[]);
+    let trailing = some_keys(&tc, count, 3, &leading);
+    let mut s = pinned_keyed(axis, count, &leading, &trailing);
+    let viewport = Viewport::new(40.0, 10.0);
+    s.frame(viewport);
+    let keys = s.source.axes[axis.index()].clone();
+    let expected = drawn_order(&keys, &leading, &trailing);
+    let last = expected.len() - 1;
+    let start = tc.draw(gs::integers::<usize>().max_value(last));
+    let steps = tc.draw(
+        gs::integers::<i64>()
+            .min_value(-(last as i64))
+            .max_value(last as i64),
+    );
+    let (forward, by) = (steps > 0, steps.unsigned_abs());
+    let step = |forward, extend| Action::MoveFocus {
+        axis,
+        by: FocusStep::Item,
+        forward,
+        extend,
+    };
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis,
+            by: FocusStep::Edge,
+            forward: false,
+            extend: false,
+        });
+        for _ in 0..start {
+            g.action(step(true, false));
+        }
+        for _ in 0..by {
+            g.action(step(forward, true));
+        }
+    });
+    let head = (start as i64 + steps).clamp(0, last as i64) as usize;
+    let snap = s.frame(viewport);
+    assert_eq!(snap.focus(axis).and_then(|f| f.key), Some(expected[head]));
+    let (lo, hi) = (start.min(head), start.max(head));
+    let position = |k: Key| keys.iter().position(|&x| x == k).unwrap() as u64;
+    match snap.selection_range() {
+        None => assert_eq!(lo, hi, "no range from {start} to {head}"),
+        Some(range) => {
+            for (i, &k) in expected.iter().enumerate() {
+                assert_eq!(
+                    range.covers(axis, position(k)),
+                    (lo..=hi).contains(&i),
+                    "item {i} ({k:?}) of {expected:?}, range {range:?}"
+                );
+            }
+        }
+    }
 }

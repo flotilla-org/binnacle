@@ -17,7 +17,7 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// adds `focus row,col` (each `position#key`) and its rect to the summary, and
 /// marks the focused cell `*rowkey.colkey`; `locating axis` while its new
 /// Position is awaited. A range adds `range rows x cols`
-/// (half-open Positions), picks add `picks` (row Keys) and `picks cols`
+/// (runs of half-open Positions, comma-separated), picks add `picks` (row Keys) and `picks cols`
 /// (column Keys), and any of these adds the
 /// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
 /// its Mode and `capturing`, an edit its Mode and `editor x,y wxh` (the
@@ -117,7 +117,15 @@ fn summary(snap: &Snapshot) -> String {
         }
     }
     if let Some(r) = snap.selection_range() {
-        let _ = write!(out, " | range {:?} x {:?}", r.rows, r.cols);
+        let runs = |runs: &[std::ops::Range<u64>]| {
+            let runs: Vec<String> = runs.iter().map(|r| format!("{r:?}")).collect();
+            if runs.is_empty() {
+                "none".to_string()
+            } else {
+                runs.join(",")
+            }
+        };
+        let _ = write!(out, " | range {} x {}", runs(&r.rows), runs(&r.cols));
     }
     for (axis, label) in [(Axis::Rows, "picks"), (Axis::Cols, "picks cols")] {
         if !snap.picked(axis).is_empty() {
@@ -244,6 +252,24 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
             item.offset,
             item.size
         );
+    }
+    let trailing = snap.pinned(axis, Edge::Trailing);
+    if !trailing.is_empty() {
+        let _ = write!(
+            out,
+            " | scrolling to {} | trailing",
+            snap.scrolling(axis).end
+        );
+        for item in trailing {
+            let _ = write!(
+                out,
+                " {}#{}@{}+{}",
+                item.position,
+                key_text(item),
+                item.offset,
+                item.size
+            );
+        }
     }
     out
 }
@@ -383,45 +409,57 @@ fn picture(snap: &Snapshot) -> String {
     let height = (snap.extent(Axis::Rows).ceil() as usize).min(MAX_CANVAS.1);
     let mut canvas = vec![vec![' '; width]; height];
     // Writes `text` from (x, y), keeping only the characters inside the clip
-    // `[x_min, x_end) x [y_min, ..)`: cells stay out of the header bands.
-    let mut put = |x: f32, y: f32, x_min: f32, x_end: f32, y_min: f32, text: &str| {
-        let y = y.max(y_min).ceil();
-        let Some(line) = canvas.get_mut(y as usize) else {
-            return;
+    // `[x_min, x_end) x [y_min, y_end)`: cells stay out of the header bands
+    // and each in its own Strip.
+    let mut put =
+        |x: f32, y: f32, (x_min, x_end): (f32, f32), (y_min, y_end): (f32, f32), text: &str| {
+            let y = y.max(y_min).ceil();
+            if y >= y_end.ceil() {
+                return;
+            }
+            let Some(line) = canvas.get_mut(y as usize) else {
+                return;
+            };
+            let (x, x_min, x_end) = (x.ceil() as i64, x_min.ceil() as i64, x_end.ceil() as i64);
+            for (i, ch) in text.chars().enumerate() {
+                let cx = x + i as i64;
+                if cx >= x_end || cx >= line.len() as i64 {
+                    break;
+                }
+                if cx >= x_min {
+                    line[cx as usize] = ch;
+                }
+            }
         };
-        let (x, x_min, x_end) = (x.ceil() as i64, x_min.ceil() as i64, x_end.ceil() as i64);
-        for (i, ch) in text.chars().enumerate() {
-            let cx = x + i as i64;
-            if cx >= x_end || cx >= line.len() as i64 {
-                break;
-            }
-            if cx >= x_min {
-                line[cx as usize] = ch;
-            }
-        }
-    };
     let (top, left) = (snap.header(Axis::Rows), snap.header(Axis::Cols));
-    // Each drawn item with where it is clipped from: a pinned one from the
-    // Header Band, a scrolling one from where the scrolling Strip starts.
+    // Each drawn item with the span it is clipped to: a pinned one from the
+    // Header Band to the viewport's end, a scrolling one to its own region.
     let drawn = |axis: Axis| {
-        let pinned = snap.pinned(axis, Edge::Leading).iter();
-        let from = snap.scrolling(axis).start;
-        (pinned.map(move |i| (i, snap.header(axis))))
-            .chain(snap.strip(axis).iter().map(move |i| (i, from)))
+        let pinned = |edge| snap.pinned(axis, edge).iter();
+        let whole = (snap.header(axis), snap.extent(axis));
+        let scrolling = snap.scrolling(axis);
+        (pinned(Edge::Leading).map(move |i| (i, whole)))
+            .chain((snap.strip(axis).iter()).map(move |i| (i, (scrolling.start, scrolling.end))))
+            .chain(pinned(Edge::Trailing).map(move |i| (i, whole)))
     };
-    for (c, left) in drawn(Axis::Cols) {
-        put(c.offset, 0.0, left, c.end(), 0.0, &key_text(c));
+    for (c, (from, to)) in drawn(Axis::Cols) {
+        put(
+            c.offset,
+            0.0,
+            (from, c.end().min(to)),
+            (0.0, top),
+            &key_text(c),
+        );
     }
-    for (r, top) in drawn(Axis::Rows) {
+    for (r, rows_clip) in drawn(Axis::Rows) {
         put(
             0.0,
             r.offset,
-            0.0,
-            snap.header(Axis::Cols),
-            top,
+            (0.0, left),
+            rows_clip,
             &r.position.to_string(),
         );
-        for (c, left) in drawn(Axis::Cols) {
+        for (c, (from, to)) in drawn(Axis::Cols) {
             let state = snap.cell_state(r, c);
             let mut mark = if state.editing {
                 "="
@@ -439,9 +477,8 @@ fn picture(snap: &Snapshot) -> String {
             put(
                 c.offset,
                 r.offset,
-                left,
-                c.end(),
-                top,
+                (from, c.end().min(to)),
+                rows_clip,
                 &format!("{mark}{}.{}", key_text(r), key_text(c)),
             );
         }

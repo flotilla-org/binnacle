@@ -213,8 +213,8 @@ fn edit_started_ends_a_gesture_in_progress() {
     );
     let range = snap.selection_range().unwrap();
     assert_eq!(
-        (range.rows, range.cols),
-        (0..3, 0..2),
+        (&range.rows[..], &range.cols[..]),
+        (&[0..3][..], &[0..2][..]),
         "the drag stopped where it was"
     );
 }
@@ -334,8 +334,8 @@ fn set_focus_selects_like_a_focus_move_once_placed() {
     let snap = s.frame(V);
     let range = snap.selection_range().unwrap();
     assert_eq!(
-        (range.rows, range.cols),
-        (1..2, 0..3),
+        (&range.rows[..], &range.cols[..]),
+        (&[1..2][..], &[0..3][..]),
         "the row, as a click would"
     );
     s.input(|g| g.set_focus(Key(700), Key(1)));
@@ -343,8 +343,8 @@ fn set_focus_selects_like_a_focus_move_once_placed() {
     assert_eq!(snap.focus(Axis::Rows).unwrap().position, 700);
     let range = snap.selection_range().unwrap();
     assert_eq!(
-        (range.rows, range.cols),
-        (700..701, 0..3),
+        (&range.rows[..], &range.cols[..]),
+        (&[700..701][..], &[0..3][..]),
         "the located row once its Position is known"
     );
 }

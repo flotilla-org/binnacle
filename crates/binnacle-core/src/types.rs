@@ -62,18 +62,22 @@ impl Viewport {
 }
 
 /// An end of an axis that items can be pinned to: the leading edge is the
-/// left of the columns and the top of the rows.
-#[non_exhaustive]
+/// left of the columns and the top of the rows, the trailing edge their right
+/// and bottom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Edge {
     Leading,
+    Trailing,
 }
 
 impl Edge {
+    pub const ALL: [Edge; 2] = [Edge::Leading, Edge::Trailing];
+
     /// A slot in per-edge pairs: 0 for the leading edge, 1 for the trailing.
     pub fn index(self) -> usize {
         match self {
             Edge::Leading => 0,
+            Edge::Trailing => 1,
         }
     }
 }

@@ -143,8 +143,8 @@ pub(crate) enum AxisHit {
 
 impl AxisState {
     /// Hit tests `v`, a viewport-relative coordinate along this axis, against
-    /// the pinned Strip and the current Scroll Anchor. The Gap belongs to the
-    /// item before it, and only the Gap: with Gap 0 nothing is a border.
+    /// the pinned Strips and the current Scroll Anchor. The Gap belongs to
+    /// the item before it, and only the Gap: with Gap 0 nothing is a border.
     pub(crate) fn hit(&self, v: f32) -> AxisHit {
         if !(v >= 0.0 && v < self.extent) {
             return AxisHit::Outside;
@@ -152,11 +152,11 @@ impl AxisState {
         if v < self.header {
             return AxisHit::Header;
         }
-        let start = self.scroll_start();
-        if v < start {
+        let (start, end) = (self.scroll_start(), self.scroll_end());
+        let pinned = |edge| {
             let gap = self.measure.gap();
-            return (self.pinned_items(Edge::Leading))
-                .find(|it| v < it.end() + gap)
+            (self.pinned_items(edge))
+                .find(|it| v >= it.offset && v < it.end() + gap)
                 .filter(|it| {
                     it.key
                         .is_some_and(|k| self.pinned_at(it.position) == Some(k))
@@ -167,7 +167,14 @@ impl AxisState {
                         within: f64::from(v - it.offset),
                         in_gap: v >= it.end(),
                     })
-                });
+                })
+        };
+        if v < start {
+            return pinned(Edge::Leading);
+        }
+        // The Gap before the trailing Strip belongs to no item.
+        if v >= end {
+            return pinned(Edge::Trailing);
         }
         let delta = f64::from(self.anchor.offset) + (f64::from(v) - f64::from(start));
         match self.measure.locate(self.anchor.position, delta) {
@@ -178,8 +185,9 @@ impl AxisState {
 }
 
 impl AxisState {
-    /// The Position of the item whose trailing border `v` is on, if any: the
-    /// Gap after the item, widened by `grab` into the items either side. The
+    /// The Position of the item whose border `v` is on, if any: the Gap
+    /// after the item (before it, in the trailing pinned Strip), widened by
+    /// `grab` into the items either side. The
     /// first item's leading edge is no border; the last item's border is the
     /// length of a Gap (or `grab`) past its end.
     pub(crate) fn border(&self, v: f32, grab: f32) -> Option<Position> {
@@ -201,7 +209,20 @@ impl AxisState {
         if let Some(it) = pinned {
             return Some(it.position);
         }
-        if v < start {
+        // A trailing pinned item's border is the Gap before it, since the
+        // Strip grows from the far end.
+        let trailing = self.pinned_items(Edge::Trailing).find(|it| {
+            let (v, offset) = (f64::from(v), f64::from(it.offset));
+            v >= offset - gap - grab && v < offset + grab
+        });
+        let trailing = trailing.filter(|it| {
+            it.key
+                .is_some_and(|k| self.pinned_at(it.position) == Some(k))
+        });
+        if let Some(it) = trailing {
+            return Some(it.position);
+        }
+        if v < start || v >= self.scroll_end() {
             return None;
         }
         let delta = f64::from(self.anchor.offset) + (f64::from(v) - f64::from(start));

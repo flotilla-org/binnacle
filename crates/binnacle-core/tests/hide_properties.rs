@@ -233,9 +233,11 @@ fn nothing_copied_or_found_is_hidden(tc: TestCase) {
         // What a host copies: the range's items, and the picked rows.
         if let Some(range) = snap.selection_range() {
             for axis in Axis::ALL {
-                let keys = source.window(axis, range.span(axis).clone());
                 let hidden = &applied.axis(axis).hidden;
-                assert!(keys.iter().all(|k| !hidden.contains(k)), "{input:?}");
+                for run in range.span(axis) {
+                    let keys = source.window(axis, run.clone());
+                    assert!(keys.iter().all(|k| !hidden.contains(k)), "{input:?}");
+                }
             }
         }
         for axis in Axis::ALL {

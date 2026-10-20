@@ -369,17 +369,17 @@ fn a_range_keeps_the_rows_between_its_ends_through_inserts_and_removals(tc: Test
         host.input(Input::Press(a, b, Modifiers::SHIFT));
         host.input(Input::Release);
         host.frame();
-        let Some(before) = host.s.grid.snapshot().selection_range() else {
+        let Some(before) = host.s.grid.snapshot().selection_range().cloned() else {
             continue;
         };
         // A range over every row may be whole on the rows (it then grows
         // with inserts at the end and survives emptying) or not: the View
         // cannot tell which. Scenarios cover both.
-        if before.rows == (0..host.count(Axis::Rows)) {
+        if before.rows == [0..host.count(Axis::Rows)] {
             continue;
         }
         let mut member: Vec<bool> = (0..host.count(Axis::Rows))
-            .map(|p| before.rows.contains(&p))
+            .map(|p| before.covers(Axis::Rows, p))
             .collect();
         let changes = tc.draw(gs::vecs(fraction()).min_size(1).max_size(3));
         for f in changes {
@@ -404,14 +404,14 @@ fn a_range_keeps_the_rows_between_its_ends_through_inserts_and_removals(tc: Test
             }
         }
         host.frame();
-        let after = host.s.grid.snapshot().selection_range();
+        let after = host.s.grid.snapshot().selection_range().cloned();
         let first = member.iter().position(|&m| m);
         let last = member.iter().rposition(|&m| m);
         match first.zip(last) {
             None => assert_eq!(after, None),
             Some((first, last)) => {
                 let after = after.expect("some of the range is left");
-                assert_eq!(after.rows, first as u64..last as u64 + 1);
+                assert_eq!(after.rows, [first as u64..last as u64 + 1]);
                 assert_eq!(after.cols, before.cols);
             }
         }
@@ -497,7 +497,10 @@ fn positional_notices_near_the_largest_count_keep_everything_in_bounds(tc: TestC
             let anchor = snap.scroll_anchor(axis);
             assert!(anchor.position < counts[i].max(1), "{axis:?} {anchor:?}");
             if let Some(range) = snap.selection_range() {
-                assert!(range.span(axis).end <= counts[i], "{axis:?} {range:?}");
+                assert!(
+                    range.span(axis).iter().all(|r| r.end <= counts[i]),
+                    "{axis:?} {range:?}"
+                );
             }
         }
     }

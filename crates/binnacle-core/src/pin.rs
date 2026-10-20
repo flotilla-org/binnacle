@@ -100,23 +100,48 @@ impl AxisState {
         self.measure.set_skipped(skipped);
     }
 
-    /// The pinned Strip of `edge`, laid out from the Header Band in pin
-    /// order with a Gap after each item. Dormant pins are left out, and so
-    /// are pins whose last known Position the count no longer reaches.
+    /// The pins of `edge` that are drawn, in pin order: dormant pins are
+    /// left out, and so are pins whose last known Position the count no
+    /// longer reaches.
+    pub fn drawn_pins(&self, edge: Edge) -> impl Iterator<Item = (Key, Position)> + '_ {
+        let count = self.measure.count();
+        (self.pins[edge.index()].iter())
+            .filter_map(move |pin| Some((pin.key, pin.at.filter(|&p| p < count)?)))
+    }
+
+    /// The pins of `edge` the Grid can act on, in pin order, at their
+    /// trusted Positions (see [`AxisState::trusted`]): the Positions the
+    /// scrolling Strip skips. Focus and the selection range step through
+    /// these, never onto a pin whose `Locate` is still due.
+    pub fn trusted_pins(&self, edge: Edge) -> impl Iterator<Item = (Key, Position)> + '_ {
+        (self.pins[edge.index()].iter()).filter_map(|pin| Some((pin.key, self.trusted(pin)?)))
+    }
+
+    /// The pinned Strip of `edge` in pin order with a Gap between items: the
+    /// leading one laid out from the Header Band with a Gap after its last
+    /// item, the trailing one ending flush with the viewport's far end with
+    /// a Gap before its first.
     pub fn pinned_items(&self, edge: Edge) -> impl Iterator<Item = StripItem> + '_ {
-        let (gap, count) = (self.measure.gap(), self.measure.count());
-        let mut offset = self.header;
-        self.pins[edge.index()].iter().filter_map(move |pin| {
-            let position = pin.at.filter(|&p| p < count)?;
-            let size = self.measure.size_of(pin.key);
+        let gap = self.measure.gap();
+        let mut offset = match edge {
+            Edge::Leading => self.header,
+            Edge::Trailing => {
+                let length: f32 = (self.drawn_pins(edge))
+                    .map(|(key, _)| self.measure.size_of(key) + gap)
+                    .sum();
+                self.extent - (length - gap).max(0.0)
+            }
+        };
+        self.drawn_pins(edge).map(move |(key, position)| {
+            let size = self.measure.size_of(key);
             let item = StripItem {
                 position,
-                key: Some(pin.key),
+                key: Some(key),
                 offset,
                 size,
             };
             offset += size + gap;
-            Some(item)
+            item
         })
     }
 
@@ -126,6 +151,14 @@ impl AxisState {
         self.pinned_items(Edge::Leading)
             .last()
             .map_or(self.header, |it| it.end() + self.measure.gap())
+    }
+
+    /// Where the scrolling Strip ends: at the viewport's far end, or the Gap
+    /// before the trailing pinned Strip.
+    pub fn scroll_end(&self) -> f32 {
+        self.pinned_items(Edge::Trailing)
+            .next()
+            .map_or(self.extent, |it| it.offset - self.measure.gap())
     }
 }
 

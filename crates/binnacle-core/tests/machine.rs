@@ -304,7 +304,8 @@ impl Host {
             if let Some(range) = snap.selection_range() {
                 let span = range.span(axis);
                 assert!(
-                    span.start <= span.end && span.end <= count,
+                    (span.iter()).all(|s| s.start < s.end && s.end <= count)
+                        && span.windows(2).all(|w| w[0].end < w[1].start),
                     "range {range:?}, count {count} on {axis:?}"
                 );
             }
@@ -433,7 +434,7 @@ impl Host {
                 let selection = |grid: &mut Grid| {
                     let snap = grid.snapshot();
                     let picks = Axis::ALL.map(|a| snap.picked(a).to_vec());
-                    (snap.selection_range(), picks)
+                    (snap.selection_range().cloned(), picks)
                 };
                 let before = selection(&mut self.grid);
                 self.grid.find_stepped(found);

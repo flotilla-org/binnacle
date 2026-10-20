@@ -10,6 +10,7 @@
 
 mod axis;
 mod distinct;
+mod drawn;
 mod edit;
 mod effect;
 mod find;

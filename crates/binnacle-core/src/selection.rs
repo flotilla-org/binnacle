@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use crate::axis::AxisState;
 use crate::focus::FocusEnd;
 use crate::types::{Axis, Key, Position};
 
@@ -30,23 +31,40 @@ pub enum HeaderClick {
     None,
 }
 
-/// The one contiguous range as Positions, half-open on each axis.
+/// The one contiguous range, as the Positions it covers on each axis. It is
+/// contiguous in drawn order (see [`crate::Snapshot::drawn`]), so with items
+/// pinned it may cover Positions apart from each other: each axis lists
+/// half-open runs of Positions, sorted, apart and not empty. With nothing
+/// pinned in it, an axis has one run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CellRange {
-    pub rows: Range<Position>,
-    pub cols: Range<Position>,
+    pub rows: Vec<Range<Position>>,
+    pub cols: Vec<Range<Position>>,
 }
 
 impl CellRange {
     pub fn contains(&self, row: Position, col: Position) -> bool {
-        self.rows.contains(&row) && self.cols.contains(&col)
+        self.covers(Axis::Rows, row) && self.covers(Axis::Cols, col)
     }
 
-    pub fn span(&self, axis: Axis) -> &Range<Position> {
+    /// Whether the range covers the item at `p` on `axis`.
+    pub fn covers(&self, axis: Axis, p: Position) -> bool {
+        let runs = self.span(axis);
+        let i = runs.partition_point(|r| r.end <= p);
+        runs.get(i).is_some_and(|r| r.contains(&p))
+    }
+
+    /// The runs of Positions the range covers on `axis`.
+    pub fn span(&self, axis: Axis) -> &[Range<Position>] {
         match axis {
             Axis::Rows => &self.rows,
             Axis::Cols => &self.cols,
         }
+    }
+
+    /// How many items the range covers on `axis`.
+    pub fn len(&self, axis: Axis) -> u64 {
+        self.span(axis).iter().map(|r| r.end - r.start).sum()
     }
 }
 
@@ -65,17 +83,26 @@ pub(crate) struct Span {
 }
 
 impl Span {
-    pub fn range(&self, counts: [u64; 2]) -> CellRange {
+    /// The Positions the range covers: on each axis every item drawn from
+    /// one corner to the other, in drawn order, or every item where the
+    /// axis is whole.
+    pub(crate) fn range(&self, axes: &[AxisState; 2]) -> CellRange {
         let along = |axis: Axis| {
-            let i = axis.index();
-            let count = counts[i];
+            let (i, st) = (axis.index(), &axes[axis.index()]);
+            let count = st.measure.count();
             if self.whole[i] {
-                return 0..count;
+                return if count == 0 {
+                    Vec::new()
+                } else {
+                    vec![0..count]
+                };
             }
-            let (a, b) = (self.anchor[i].position, self.head[i].position);
-            let start = a.min(b).min(count);
-            let end = a.max(b).saturating_add(1).min(count);
-            start..end
+            let (a, b) = (self.anchor[i], self.head[i]);
+            if count == 0 || a.position.min(b.position) >= count {
+                return Vec::new();
+            }
+            let (a, b) = (st.drawn_index(st.slot_of(a)), st.drawn_index(st.slot_of(b)));
+            st.drawn_runs(a.min(b)..a.max(b) + 1)
         };
         CellRange {
             rows: along(Axis::Rows),
