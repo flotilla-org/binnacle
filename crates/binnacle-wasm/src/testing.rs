@@ -111,7 +111,7 @@ struct DumpAxis {
     conditions: Vec<DumpListed>,
     movable: bool,
     hide_support: bool,
-    hide_cap: usize,
+    hide_cap: f64,
 }
 
 #[derive(Serialize)]
@@ -385,7 +385,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             .collect(),
         movable: s.movable(axis),
         hide_support: s.hide_support(axis),
-        hide_cap: s.hide_cap(axis),
+        hide_cap: s.hide_cap(axis) as f64,
     }
 }
 

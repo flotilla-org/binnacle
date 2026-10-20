@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Condition, Effect, FindQuery, FocusStep, Grid, Key, Modifiers,
-    PointerEvent, Snapshot, TextQuery, TextSupport, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, Effect, FindQuery, FocusStep, Grid, HIDE_CAP, Key,
+    Modifiers, PointerEvent, Snapshot, TextQuery, TextSupport, ViewSpec, Viewport,
 };
 use binnacle_memory::MemorySource;
 use binnacle_testkit::{Record, RecordTable, Scenario};
@@ -315,14 +315,25 @@ fn a_hide_past_the_cap_changes_nothing_and_one_within_it_hides_every_item_named(
     let rows = tc.draw(records(cols));
     let n_rows = rows.len();
     let mut host = Host::new(rows, cols, tc.draw(viewport()));
-    let caps = [
-        tc.draw(gs::integers::<usize>().max_value(3)),
-        tc.draw(gs::integers::<usize>().max_value(3)),
-    ];
+    // Small caps, so the few Keys there are can pass them; a cap past
+    // HIDE_CAP is held to it.
+    let cap = || {
+        hegel::one_of!(
+            gs::integers::<usize>().max_value(3),
+            gs::integers::<usize>()
+                .min_value(HIDE_CAP - 2)
+                .max_value(usize::MAX)
+        )
+    };
+    let declared = [tc.draw(cap()), tc.draw(cap())];
     for axis in Axis::ALL {
-        host.s.grid.set_hide_cap(axis, caps[axis.index()]);
+        host.s.grid.set_hide_cap(axis, declared[axis.index()]);
     }
     host.settle();
+    let caps = declared.map(|c| c.min(HIDE_CAP));
+    for axis in Axis::ALL {
+        assert_eq!(host.s.grid.snapshot().hide_cap(axis), caps[axis.index()]);
+    }
     let step = hegel::tuples!(axis(), gs::booleans(), keys(n_rows.max(cols)));
     for (axis, hide, keys) in tc.draw(gs::vecs(step).max_size(8)) {
         let keys: Vec<Key> = keys.into_iter().map(Key).collect();
@@ -343,20 +354,20 @@ fn a_hide_past_the_cap_changes_nothing_and_one_within_it_hides_every_item_named(
         let after = snap.hidden(axis);
         let cap = caps[axis.index()];
         assert!(after.len() <= cap, "{after:?} past the cap {cap}");
+        // Refused exactly when the Keys named and those hidden together pass
+        // the cap.
+        let mut all = before.clone();
+        for &k in &keys {
+            if !all.contains(&k) {
+                all.push(k);
+            }
+        }
+        assert_eq!(hid.is_err(), all.len() > cap, "{all:?} against {cap}");
         match hid {
             Err(capped) => {
                 assert_eq!(capped.cap, cap);
                 assert!(!asked, "a refused hide asks for nothing");
                 assert_eq!(after, before.as_slice());
-                // Refused only when the Keys named and those hidden together
-                // pass the cap.
-                let mut all = before.clone();
-                for &k in &keys {
-                    if !all.contains(&k) {
-                        all.push(k);
-                    }
-                }
-                assert!(all.len() > cap, "{all:?} fit in {cap}");
             }
             Ok(()) => {
                 let count = snap.count(axis);

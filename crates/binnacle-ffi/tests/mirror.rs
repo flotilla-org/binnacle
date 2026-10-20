@@ -335,8 +335,15 @@ fn totals(tc: &TestCase) -> Totals {
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
     match tc.draw(gs::integers::<u8>().max_value(19)) {
-        // Small, so some hides pass it.
-        19 => Op::HideCap(axis, tc.draw(gs::integers::<usize>().max_value(4))),
+        // Mostly small, so some hides pass it; past HIDE_CAP it clamps.
+        19 => Op::HideCap(
+            axis,
+            tc.draw(hegel::one_of!(
+                gs::integers::<usize>().max_value(4),
+                gs::integers::<usize>().min_value(990).max_value(5000),
+                gs::just(usize::MAX)
+            )),
+        ),
         15 => Op::MoveAnswered(tc.draw(gs::optional(gs::text().max_size(8)))),
         16 => Op::HideSupport(axis, tc.draw(gs::weighted_booleans(0.75))),
         17 => Op::Hide(axis, tc.draw(gs::vecs(key(axis)).max_size(3))),
