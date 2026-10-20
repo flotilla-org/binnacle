@@ -139,7 +139,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     pinSeparator.hidden = !filters || !pinnable;
 
     const textRow = el("div", "binnacle-column-menu-text", ROW_STYLE);
-    textRow.hidden = !support.text;
+    // Its inline display would beat the `hidden` attribute.
+    if (!support.text) textRow.style.display = "none";
     const how = el("select", "", SELECT_STYLE);
     how.setAttribute("aria-label", "Condition");
     how.append(new Option("Contains", "contains"), new Option("Does not contain", "not"));
