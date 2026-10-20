@@ -3,7 +3,7 @@
 //! answers (some held back and answered late), refilters, sorts, quick
 //! filters and column conditions (answered whole, as a subset or as a
 //! failure, late or superseded, by a sort or a refilter), View Specs pushed
-//! unprompted, find steps, header moves, edits,
+//! unprompted, find steps, header moves (answered, refused or withdrawn), edits,
 //! pointer gestures (band edge drags among them), Actions, Size Overrides,
 //! `set_header`, `set_gap` and `set_focus` (with Keys the source has and Keys
 //! it never had). Every frame's Snapshot is checked
@@ -50,6 +50,10 @@ struct Host {
     find_round: u64,
     /// Find steps drained in this find round and not answered yet.
     steps_due: u32,
+    /// The Keys of the move drained and not answered yet, and its axis.
+    move_due: Option<(Axis, Vec<Key>)>,
+    /// Per axis, whether the source last declared it movable.
+    movable: [bool; 2],
     viewport: Viewport,
     /// Each axis's band thickness and Gap as of the last frame.
     headers: [f32; 2],
@@ -122,6 +126,14 @@ impl Host {
                     self.steps_due = 0;
                 }
                 Effect::FindStepRequested { .. } => self.steps_due += 1,
+                Effect::MoveRequested { axis, keys, .. } => {
+                    assert!(self.move_due.is_none(), "a move asked for while one is due");
+                    assert!(
+                        self.movable[axis.index()],
+                        "a move asked for on {axis:?}, not movable"
+                    );
+                    self.move_due = Some((*axis, keys.clone()));
+                }
                 _ => {}
             }
             self.pending.push_back((stamped.effect, self.find_round));
@@ -188,6 +200,15 @@ impl Host {
         let applied = snap.applied_view().rows.filter.conditions.conditions();
         let pending = self.views_due > 0;
         assert_eq!(snap.view_pending(), pending, "view pending");
+        let due = self.move_due.as_ref().map(|(a, k)| (*a, k.as_slice()));
+        assert_eq!(snap.pending_move(), due, "pending move");
+        for axis in Axis::ALL {
+            for h in snap.headers(axis) {
+                let moving = due
+                    .is_some_and(|(a, k)| a == axis && h.key.is_some_and(|key| k.contains(&key)));
+                assert_eq!(h.move_pending, moving, "{h:?} shows a move pending");
+            }
+        }
         let listed = snap.conditions(Axis::Rows);
         let applied_listed = (listed.iter())
             .filter(|(_, state)| {
@@ -372,6 +393,17 @@ impl Host {
                 }
             }
             Effect::MoveRequested { axis, keys, to } => {
+                self.move_due = None;
+                if tc.draw(gs::weighted_booleans(0.25)) {
+                    tc.note("move_answered(refused)");
+                    self.grid.move_answered(Some("refused".to_string()));
+                    return;
+                }
+                // The source's notice may come before or after its answer.
+                let answered_first = tc.draw(gs::booleans());
+                if answered_first {
+                    self.grid.move_answered(None);
+                }
                 let order = &mut self.keys[axis.index()];
                 let to = (to as usize).min(order.len());
                 let stays = |k: &&u64| !keys.contains(&Key(**k));
@@ -385,6 +417,9 @@ impl Host {
                 *order = before.into_iter().chain(moved).chain(after).collect();
                 tc.note(&format!("moved: {axis:?} {order:?}"));
                 self.grid.notify(axis, ChangeNotice::Reordered);
+                if !answered_first {
+                    self.grid.move_answered(None);
+                }
             }
             // Any cell will do for a match: the Grid never sees values.
             Effect::FindStepRequested { .. } => {
@@ -772,6 +807,42 @@ impl Host {
         self.pointer_event(&tc, PointerKind::Up);
     }
 
+    /// A press on a header of either axis, dragged along it and often
+    /// released: a header move, where the axis is movable.
+    #[rule(weight = 0.3)]
+    fn header_drag(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let (width, height) = (self.viewport.width, self.viewport.height);
+        let header = self.headers[axis.index()];
+        let across = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(header));
+        let point = |along: f32| match axis {
+            Axis::Rows => (across, along),
+            Axis::Cols => (along, across),
+        };
+        let length = match axis {
+            Axis::Rows => height,
+            Axis::Cols => width,
+        };
+        let from = self.coord(&tc, length);
+        let to = self.coord(&tc, length);
+        tc.note(&format!("header_drag({axis:?}, {from} -> {to})"));
+        let mut event = |kind, (x, y): (f32, f32)| {
+            self.grid.pointer(PointerEvent {
+                kind,
+                x,
+                y,
+                button: Button::Primary,
+                modifiers: Modifiers::default(),
+                clicks: 1,
+            });
+        };
+        event(PointerKind::Down, point(from));
+        event(PointerKind::Move, point(to));
+        if tc.draw(gs::weighted_booleans(0.7)) {
+            event(PointerKind::Up, point(to));
+        }
+    }
+
     #[rule]
     fn action(&mut self, tc: TestCase) {
         self.keyboard_action(&tc);
@@ -941,6 +1012,17 @@ impl Host {
         self.grid.reapply_view();
     }
 
+    /// The source offers or withdraws moves on an axis.
+    #[rule(weight = 0.5)]
+    fn set_movable(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let movable = tc.draw(gs::weighted_booleans(0.7));
+        tc.note(&format!("set_movable({axis:?}, {movable})"));
+        self.collect();
+        self.grid.set_movable(axis, movable);
+        self.movable[axis.index()] = movable;
+    }
+
     #[rule(weight = 0.5)]
     fn set_gap(&mut self, tc: TestCase) {
         self.gap(&tc);
@@ -986,6 +1068,10 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         );
     }
     grid.set_follow_focus_on_reorder(tc.draw(gs::booleans()));
+    let movable = Axis::ALL.map(|_| tc.draw(gs::weighted_booleans(0.8)));
+    for axis in Axis::ALL {
+        grid.set_movable(axis, movable[axis.index()]);
+    }
     if tc.draw(gs::booleans()) {
         grid.set_border_grab(0.5);
     }
@@ -1004,6 +1090,8 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         views_due: 0,
         find_round: 0,
         steps_due: 0,
+        move_due: None,
+        movable,
         viewport,
         headers: [1.0, 2.0],
         gaps: [gap; 2],

@@ -20,6 +20,9 @@
 - **C API:** `BinnacleAxisSnapshot.strip` lists the drawn items, the `pinned_len` pinned ones first, and gains `scrolling_start` and `scrolling_end`; the cell states run over the drawn items.
 - **ratatui:** `Theme` gains `pinned_edge`, so a Theme built field by field names it (or takes `..Theme::classic()`).
 - **web:** `AxisSnapshot.strip` lists the drawn items, the `pinned` ones first, and gains `scrolling`. `Theme` gains `pinnedEdge` and `pinnedShadow`. The `Action` union gains `Pin` and `Unpin`. The column menu opens on every column, not only those that take conditions; one that takes none shows only its pin button.
+- **core:** header drags move items only on an axis the Table Source declares movable with `Grid::set_movable`, row headers as well as column headers; no axis is movable until declared (`pump` declares it from `PumpSource::movable`). A requested move stays pending until `Grid::move_answered`, and no other move starts meanwhile.
+- **memory:** `PumpSource::move_items` returns `Result<Moved, String>`: the Change Notices and any View Spec the move left, or a short reason to refuse. `InMemoryTableSource::move_columns` and `MemorySource::move_columns` become `move_items(axis, keys, to)`, which move either axis and return `None` when refused.
+- **web:** a Table Source axis without `move` offers no move: dragging its headers no longer starts one.
 
 ### Added
 
@@ -41,6 +44,11 @@
 - **memory, web:** the In-Memory Table Source (`MemorySource`) and `fromRows` filter their columns by the rows' values: the quick filter, conditions, a row's distinct values and unmatched columns. A change from the data moves only the columns whose match changed (`refilter_items`).
 - **ratatui:** `ColumnFilter::open_row` (Alt+Right in Chords) filters the columns by a row's values; `render_conditions` adds "Columns where" chips, `count(snapshot, axis, nouns)` counts either axis, and `QuickFilter::on(Axis::Cols)` filters the columns.
 - **web:** the column menu is the row menu too (`attachRowMenu`, `openRowMenu`, Alt+ArrowRight, `menu.openRow`); the widget's filter methods and `distinct` take an axis; `rowSupport`, `rowLabel` and `FrameInfo.columnsFilter`; the filter bar shows the columns' chips and count, with `nouns` and `axis` options.
+- **core:** moves on either axis. `Grid::set_movable` says whether the Table Source can move an axis's items now (withdrawing it ends a drag on that axis), `Grid::move_answered` answers a `MoveRequested` with `None` or a refusal's reason; the Snapshot gives `movable(axis)`, `pending_move()`, `move_refusal()` (until the next press) and `HeaderPlacement::move_pending`. The C API mirrors them (`binnacle_grid_set_movable`, `binnacle_grid_move_answered`, `BINNACLE_HEADER_MOVE_PENDING`, the axis's `movable`, the snapshot's pending move and refusal) and now carries `BINNACLE_EFFECT_MOVE_REQUESTED`; wasm mirrors them too.
+- **memory:** the In-Memory Table Source moves rows as it moves columns. A move's drop Position is read in the filtered order. On a sorted axis `MovePolicy::Bake` (the default) keeps the order shown, places the items and clears the axis's sort, which `MemorySource` reports with the View Spec it leaves; `MovePolicy::Refuse` refuses and makes the axis not movable while sorted. `Moved`, `answer_move`, `InMemoryTableSource::movable`, `set_move_policy`, `MemorySource::with_move_policy`.
+- **web:** row headers drag to move rows. `move` may answer `{ refused: reason }`, which shows near the headers where it was dropped and is announced; `movable()` and the sink's `movableChanged()` say whether an axis can move now. Moved headers shimmer until the answer. `fromRows` moves either axis, and its `sortedMoves` option (`"bake"` or `"refuse"`) says what a move on a sorted axis does.
+- **ratatui:** moved headers shimmer until the move is answered (`animating` counts them), a row drop line underlines the row above when there is no row Gap, and the status line says why a move was refused, or that one waits for its answer.
+- **demos:** both demos move records and fields by their headers, upright and transposed; `binnacle-demo --refuse-sorted-moves` and the web demo's `?sortedMoves=refuse` refuse moves while sorted. The huge demos offer no moves.
 
 ### Fixed
 

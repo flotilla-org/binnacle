@@ -22,6 +22,7 @@ export function paintSelection(p: PaintContext): void {
 export function paintHeaderStates(p: PaintContext): void {
   const { ctx, s, theme, left, top } = p;
   const moving = new Set(s.movingKeys);
+  const movingOn = s.mode.type === "MovingHeaders" ? s.mode.axis : null;
   const picked = new Set(s.picked.rows);
   const pickedCols = new Set(s.picked.cols);
   ctx.save();
@@ -30,7 +31,7 @@ export function paintHeaderStates(p: PaintContext): void {
     // A scrolling header's states slide under the pinned headers too.
     const x = Math.max(h.rect.x, drawsFrom(s, "cols", h.rect.x + h.rect.width));
     const width = h.rect.x + h.rect.width - x;
-    if (h.selected || (h.key !== null && moving.has(h.key))) {
+    if (h.selected || (movingOn === "cols" && h.key !== null && moving.has(h.key))) {
       ctx.fillStyle = theme.selection.background;
       ctx.fillRect(x, h.rect.y, width, h.rect.height);
     }
@@ -45,7 +46,7 @@ export function paintHeaderStates(p: PaintContext): void {
   for (const h of s.rows.headers) {
     const y = Math.max(h.rect.y, drawsFrom(s, "rows", h.rect.y + h.rect.height));
     const height = h.rect.y + h.rect.height - y;
-    if (h.selected) {
+    if (h.selected || (movingOn === "rows" && h.key !== null && moving.has(h.key))) {
       ctx.fillStyle = theme.selection.background;
       ctx.fillRect(h.rect.x, y, h.rect.width, height);
     }
