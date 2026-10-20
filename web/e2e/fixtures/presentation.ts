@@ -1,6 +1,7 @@
 // A small fixed table for the presentation screenshots: the Theme and Border
 // Style come from the URL (`?theme=mono&border=grid+double`), text is in the
-// bundled Inter so the pixels do not depend on the machine's fonts.
+// bundled Inter so the pixels do not depend on the machine's fonts. With
+// `pin=3` the columns are wider than the grid and column 3 is pinned left.
 
 import { borderName, borderStyles, GridWidget, presets, type TableSource } from "../../src";
 
@@ -19,15 +20,17 @@ const params = new URL(location.href).searchParams;
 const preset = presets.find((t) => t.name === params.get("theme")) ?? presets[0]!;
 const border = borderStyles.find((b) => borderName(b) === params.get("border")) ?? borderStyles[0]!;
 const theme = { ...preset, font: "13px Inter", headerFont: "600 12px Inter" };
+const pin = params.get("pin");
 
 await Promise.all([document.fonts.load(theme.font), document.fonts.load(theme.headerFont)]);
 const host = document.querySelector<HTMLElement>("#grid")!;
-await GridWidget.create(host, {
+const widget = await GridWidget.create(host, {
   source,
   theme,
   border,
-  columnWidth: 96,
+  columnWidth: pin === null ? 96 : 150,
   onFrame: (frame) => {
     if (frame.painted) host.dataset.painted = "true";
   },
 });
+if (pin !== null) widget.pin("cols", Number(pin));

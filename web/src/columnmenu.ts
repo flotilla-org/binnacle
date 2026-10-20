@@ -125,11 +125,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
 
     const pins = el("div", "binnacle-column-menu-pins", ROW_STYLE);
     pins.hidden = !pinnable;
-    const pinned = pinnable && widget.pinned("cols").includes(colId as ColId);
-    const pinButton = action(pinned ? "Unpin" : "Pin left");
+    // As of the latest frame, so it follows pins made while the menu is open.
+    const pinned = () => pinnable && widget.pinned("cols").includes(colId as ColId);
+    const pinButton = action("Pin left");
     pinButton.addEventListener("click", () => {
+      const unpin = pinned();
       close();
-      if (pinned) widget.unpin("cols", colId as ColId);
+      if (unpin) widget.unpin("cols", colId as ColId);
       else widget.pin("cols", colId as ColId);
     });
     pins.append(pinButton);
@@ -356,6 +358,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       element.style.border = `1px solid ${t.border}`;
       title.style.color = t.rowNumber.color;
       name.style.color = t.body.color;
+      pinButton.textContent = pinned() ? "Unpin" : "Pin left";
       pinSeparator.style.background = t.border;
       for (const c of [how, field, search, pinButton, clearButton, closeButton]) {
         c.style.background = t.body.background;

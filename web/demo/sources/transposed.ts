@@ -9,7 +9,8 @@
 // The filter box keeps the records whose name or port contains its text, as
 // columns; the filter bar's quick filter and a field's row menu filter the
 // records by their values too, and a record's column menu filters the
-// fields. Find and editing work as in the records.
+// fields. Find, editing and pinning a record's column to the left work as in
+// the records.
 
 import {
   barRenderer,

@@ -41,7 +41,7 @@ import type {
   ViewSpec,
 } from "./source";
 import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
-import { pinnedKeys } from "./pin";
+import { pinFocused, pinnedKeys } from "./pin";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -408,6 +408,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         });
         this.invalidate();
         return true;
+      },
+      pin: (axis, edge) => {
+        // After the next frame, so a focus move just made has landed.
+        this.framed.push(() => {
+          if (this.last) this.editView(() => pinFocused(this.grid, this.last!, axis, edge));
+        });
+        this.invalidate();
       },
       find: (action) => {
         if (action === "open") return this.openFind();

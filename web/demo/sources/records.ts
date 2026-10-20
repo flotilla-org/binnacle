@@ -9,7 +9,10 @@
 // or press F2 or Enter, or double-click; the port column picks from a list.
 // Ctrl/Cmd-F in the grid (or Find in the toolbar) opens the find bar under
 // the filter bar: matches are marked, Enter and Shift+Enter (or F3 and
-// Shift+F3 in the grid) step between them.
+// Shift+F3 in the grid) step between them. Alt+Shift+ArrowLeft pins the
+// focused column to the left (again, or Alt+Shift+Backspace, unpins it), as
+// does the column menu's "Pin left": it stays after the row numbers, past a
+// line, while the rest scrolls under it, through sorts and filters.
 
 import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type Editor } from "../../src";
 import type { DemoSource } from "./demo-source";

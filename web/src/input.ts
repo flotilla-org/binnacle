@@ -9,11 +9,10 @@
 // mouse: resizing and moving headers work by touch too.
 
 import { createClickCounter } from "./clicks";
-import { AXIS_CODE, FOCUS_STEP, POINTER, modifierBits } from "./codes";
+import { AXIS_CODE, FOCUS_STEP, POINTER, modifierBits, type AxisName, type PinEdge } from "./codes";
 import { createEditing, type EditHost, type Editing } from "./editing";
 import type { Effect } from "./effects";
 import type { Action, Keymap } from "./keymap";
-import { pinFocused } from "./pin";
 import { shownItems, type Cursor, type Rect, type Snapshot } from "./snapshot";
 import type { WebGrid } from "./wasm";
 
@@ -38,6 +37,8 @@ export interface InputHost {
   openColumnMenu(): boolean;
   /** Opens the focused row's menu: `false` if there is none to open. */
   openRowMenu(): boolean;
+  /** Pins the focused item of `axis` to `edge` or unpins it (see `pinFocused`); with no `edge`, only unpins it. */
+  pin(axis: AxisName, edge: PinEdge | null): void;
   /** Opens the find bar, or steps while find is open: `false` if there is no find bar or find is closed. */
   find(action: "open" | "next" | "previous"): boolean;
 }
@@ -201,9 +202,7 @@ export function createInput(host: InputHost): Input {
     }
     if (action.type === "Pin" || action.type === "Unpin") {
       e.preventDefault();
-      const s = host.snapshot();
-      if (s) pinFocused(grid, s, action.axis, action.type === "Pin" ? action.edge : null);
-      host.changed();
+      host.pin(action.axis, action.type === "Pin" ? action.edge : null);
       return;
     }
     if (action.type === "OpenFind" || action.type === "FindNext" || action.type === "FindPrevious") {
