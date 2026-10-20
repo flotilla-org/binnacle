@@ -489,6 +489,38 @@ fn a_quick_filter_keeps_rows_matching_in_any_column_ignoring_case() {
 }
 
 #[test]
+fn a_condition_on_an_item_the_table_lacks_is_left_out() {
+    let rows = [rec("Bergen", None, 3), rec("oslo", None, 12)];
+    let mut source = source(&rows);
+    let filter = |axis, conditions: Vec<Condition>| {
+        ViewSpec::default().with_filter(
+            axis,
+            FilterSpec::default().with_conditions(conditions.into()),
+        )
+    };
+    // Column 3 has no text form, so it reads blank; column 9 is not there.
+    let blank = Condition::text(Key(3), TextQuery::new("b"));
+    let gone = Condition::text(Key(9), TextQuery::new("b"));
+    source
+        .view(&rows, &filter(Axis::Rows, vec![gone.clone()]))
+        .unwrap();
+    assert_eq!(shown(&source), vec![Key(0), Key(1)]);
+    assert_eq!(source.view_spec(), ViewSpec::default());
+    source
+        .view(&rows, &filter(Axis::Rows, vec![gone, blank.clone()]))
+        .unwrap();
+    assert_eq!(shown(&source), vec![]);
+    assert_eq!(source.view_spec(), filter(Axis::Rows, vec![blank]));
+    // Row 5 is not there either.
+    let no_row = Condition::text(Key(5), TextQuery::new("b"));
+    source
+        .view(&rows, &filter(Axis::Cols, vec![no_row]))
+        .unwrap();
+    assert_eq!(source.view_spec(), ViewSpec::default());
+    assert_eq!(source.count(Axis::Cols), 4);
+}
+
+#[test]
 fn case_and_regex_options_and_the_columns_searched_narrow_the_match() {
     let rows = [
         rec("Bergen", None, 3),

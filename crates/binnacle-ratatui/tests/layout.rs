@@ -5,8 +5,8 @@
 //! pending while pins, sizes and bands apply at once.
 
 use binnacle_core::{
-    Axis, AxisConfig, Condition, Edge, FilterSpec, Grid, Key, SortColumn, SortSpec, TextQuery,
-    Value, ViewSpec, Viewport,
+    Axis, AxisConfig, Condition, ConditionState, Edge, FilterSpec, Grid, Key, SortColumn, SortSpec,
+    TextQuery, Value, ViewSpec, Viewport,
 };
 use binnacle_ratatui::{LAYOUT_VERSION, SavedLayout, restore_layout, save_layout};
 use binnacle_testkit::{ColumnMajorTable, Record, RecordTable, Scenario, ScenarioSource};
@@ -210,12 +210,11 @@ fn restoring_keys_the_source_lacks_falls_back_and_never_fails() {
     );
     assert_eq!(snap.applied_view().rows.hidden, [Key(2)]);
     assert!(snap.applied_view().cols.hidden.is_empty());
-    // The condition on the missing column is restored; how it reads (the
-    // In-Memory Table Source reads a missing item as blanks) is the source's.
-    let conditions: Vec<Condition> = (snap.conditions(Axis::Rows).into_iter())
-        .map(|(c, _)| c)
+    // The condition on the missing column stays asked for, not applied.
+    let states: Vec<ConditionState> = (snap.conditions(Axis::Rows).into_iter())
+        .map(|(_, st)| st)
         .collect();
-    assert_eq!(conditions, layout.view.rows.filter.conditions.conditions());
+    assert_eq!(states, [ConditionState::NotApplied]);
     // Sizes wait by Key; the bands apply.
     assert_eq!(s.grid.size_override(Axis::Cols, gone), Some(9.0));
     assert_eq!(s.grid.size_override(Axis::Rows, Key(99)), Some(3.0));

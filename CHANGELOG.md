@@ -42,6 +42,7 @@
 - **core:** `Effect` gains `PinsChanged`, so a host matching every Effect adds an arm (or a wildcard).
 - **C API:** `BinnacleEffect` gains `edge` (for `BINNACLE_EFFECT_PINS_CHANGED`), and `BinnacleAxisSnapshot` gains `leading_pins`, `leading_pins_len`, `trailing_pins` and `trailing_pins_len` after `hidden_len`.
 - **memory, web:** the In-Memory Table Source (`MemorySource`, `fromRows`) leaves out a sort term naming a column or row the data lacks and answers with the rest, as it prunes unknown hidden Keys, where it rejected the whole View Spec before (`Unsortable`, or a thrown error). A column it has but cannot sort is still refused. A restored layout naming a column the table lost keeps its other parts.
+- **memory:** `MemorySource` leaves a condition on an item of the other axis the table lacks out of its answer, on either axis, so it shows as not applied (as `fromRows` already did); it applied it before, reading blanks, which kept no rows. Appending the item later does not apply it again until the View Spec is re-applied.
 - **web:** the `Effect` union gains `PinsChanged`, and `AxisSnapshot` gains `pins` (`leading` and `trailing` Keys, dormant ones included).
 
 ### Added

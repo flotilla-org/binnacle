@@ -140,15 +140,18 @@ struct Applied {
 
 impl Applied {
     /// The part of `wanted` the source applies: a quick filter with an
-    /// invalid pattern leaves the one in force, a condition with one is left
-    /// out.
-    fn take(&mut self, wanted: &FilterSpec) {
+    /// invalid pattern leaves the one in force, a condition with one, or on
+    /// an item of the other axis past its `n` items, is left out.
+    fn take(&mut self, wanted: &FilterSpec, n: u64) {
         if wanted.quick.as_ref().is_none_or(valid) {
             self.quick = wanted.quick.clone();
         }
-        let ok = |c: &&Condition| match &c.kind {
-            ConditionKind::Text(q) => valid(q),
-            _ => true,
+        let ok = |c: &&Condition| {
+            c.key.0 < n
+                && match &c.kind {
+                    ConditionKind::Text(q) => valid(q),
+                    _ => true,
+                }
         };
         self.conditions = wanted
             .conditions
@@ -288,12 +291,15 @@ fn each_axis_shows_the_models_items(tc: TestCase) {
                 wanted = ViewSpec::default()
                     .with_filter(Axis::Rows, r.clone())
                     .with_filter(Axis::Cols, c.clone());
-                model.axes[0].take(&r);
-                model.axes[1].take(&c);
+                model.axes[0].take(&r, COLS as u64);
+                model.axes[1].take(&c, rows.len() as u64);
                 model.unmatched = Default::default();
                 source.view(&rows, &wanted).unwrap()
             }
             Op::Reapply => {
+                // Taken again: rows appended since may be the ones a condition reads.
+                model.axes[0].take(&wanted.rows.filter, COLS as u64);
+                model.axes[1].take(&wanted.cols.filter, rows.len() as u64);
                 model.unmatched = Default::default();
                 source.view(&rows, &wanted).unwrap()
             }
@@ -376,7 +382,7 @@ fn each_axis_shows_the_models_items(tc: TestCase) {
 /// case), capped at `limit`; blanks counted unless searching.
 fn model_distinct(rows: &[Row], row: u64, query: &DistinctQuery) -> Distinct {
     let mut narrow = Applied::default();
-    narrow.take(&query.narrow);
+    narrow.take(&query.narrow, u64::MAX);
     let search = TextQuery::new(query.search.clone());
     let mut blanks = 0;
     let mut found: Vec<String> = Vec::new();
@@ -421,7 +427,7 @@ fn a_rows_distinct_values_across_the_columns_are_the_models(tc: TestCase) {
     let mut source = source(rows.len());
     let row = tc.draw(across(Axis::Cols));
     let mut narrow = Applied::default();
-    narrow.take(&tc.draw(filter(Axis::Cols)));
+    narrow.take(&tc.draw(filter(Axis::Cols)), u64::MAX);
     let query = DistinctQuery::new(tc.draw(gs::integers::<usize>().max_value(5)))
         .search(tc.draw(hegel::one_of!(gs::just(String::new()), text(1, 2))))
         .narrow(narrow.filter());

@@ -360,6 +360,16 @@ impl<R> MemorySource<R> {
         self.texts.contains_key(&column) || self.columns.contains_key(&column)
     }
 
+    /// `axis`'s `filter` less its conditions on items of the other axis the
+    /// table does not have, which it leaves out of its answer.
+    fn present_filter(&mut self, axis: Axis, filter: &FilterSpec) -> FilterSpec {
+        let conditions: Vec<Condition> = (filter.conditions.conditions().iter())
+            .filter(|c| self.table.logical_index(axis.other(), c.key).is_some())
+            .cloned()
+            .collect();
+        filter.clone().with_conditions(conditions.into())
+    }
+
     /// Presents the table as `spec` asks: the rows sorted and filtered by
     /// its rows part, extracting each sort column's keys and each searched
     /// column's text from `rows`, and the columns sorted (see
@@ -376,8 +386,9 @@ impl<R> MemorySource<R> {
     /// A sort term naming a column or row the table does not have is left
     /// out, as hidden Keys no item has are: a restored layout may name one.
     /// If a sort names a column with no closure, nothing changes. A quick filter with an invalid regex is not applied:
-    /// the one in force stays. A condition with an invalid regex, or of a
-    /// kind this source does not apply, is left out.
+    /// the one in force stays. A condition with an invalid regex, of a kind
+    /// this source does not apply, or on an item the table does not have, is
+    /// left out.
     ///
     /// # Panics
     ///
@@ -401,14 +412,15 @@ impl<R> MemorySource<R> {
             self.table.apply_hidden(a, hidden).is_some()
         });
         let mut notices = Vec::new();
-        let changed = self.filters[0].take(&spec.rows.filter)
+        let filters = Axis::ALL.map(|a| self.present_filter(a, &spec.axis(a).filter));
+        let changed = self.filters[0].take(&filters[0])
             || hid[0]
             || (hid[1] && self.filters[0].searches_shown());
         notices.push(match changed || self.table.has_unmatched(Axis::Rows) {
             true => (Axis::Rows, self.refilter(rows)),
             false => (Axis::Rows, sorted),
         });
-        let changed = self.filters[1].take(&spec.cols.filter)
+        let changed = self.filters[1].take(&filters[1])
             || hid[1]
             || (hid[0] && self.filters[1].searches_shown());
         if changed || self.table.has_unmatched(Axis::Cols) {
