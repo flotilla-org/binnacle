@@ -1,5 +1,5 @@
-//! Find and filter controls: the keys that reach them, by preset, the quick
-//! filter field, the column filter popup and the conditions line.
+//! Find, filter and hiding controls: the keys that reach them, by preset,
+//! the quick filter field, the column filter popup and the conditions line.
 
 use std::time::{Duration, Instant};
 
@@ -16,10 +16,9 @@ use crate::checklist::{Column, Shown};
 use crate::renderer::{char_count, fit};
 use crate::{Content, Theme};
 
-/// A find, filter or pinning control a key reaches, outside the Grid's
-/// Actions. Every
-/// [`Preset`] reaches each of [`Control::ALL`]; the host carries it out with
-/// the method each names.
+/// A find, filter, pinning or hiding control a key reaches, outside the
+/// Grid's Actions. Every [`Preset`] reaches each of [`Control::ALL`]; the
+/// host carries it out with the method each names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Control {
@@ -70,11 +69,19 @@ pub enum Control {
     Pin { axis: Axis, edge: Edge },
     /// Unpin the focused item of `axis` ([`crate::unpin_focused`]).
     Unpin { axis: Axis },
+    /// Hide the focused item of `axis` ([`crate::hide_focused`]).
+    Hide { axis: Axis },
+    /// Open the focused item's header menu at the hidden items of `axis`
+    /// ([`crate::HeaderMenu::open_hidden`]).
+    ShowHidden { axis: Axis },
+    /// Open the focused item's header menu, on the column or the row
+    /// ([`crate::HeaderMenu::open`]).
+    Menu { axis: Axis },
 }
 
 impl Control {
     /// Every Control, each of which every preset reaches.
-    pub const ALL: [Control; 18] = [
+    pub const ALL: [Control; 24] = [
         Control::QuickFilter,
         Control::ColumnFilter,
         Control::RowFilter,
@@ -96,6 +103,12 @@ impl Control {
             edge: Edge::Leading,
         },
         Control::Unpin { axis: Axis::Cols },
+        Control::Hide { axis: Axis::Cols },
+        Control::Hide { axis: Axis::Rows },
+        Control::ShowHidden { axis: Axis::Cols },
+        Control::ShowHidden { axis: Axis::Rows },
+        Control::Menu { axis: Axis::Cols },
+        Control::Menu { axis: Axis::Rows },
     ];
 }
 
@@ -113,21 +126,27 @@ pub enum Preset {
     /// column's filter popup and Alt+Right the focused row's, Alt+T and Alt+N
     /// the column's text set to contain or not, Alt+= keep the focused value, Ctrl+D remove, Ctrl+K clear, Alt+L (or
     /// Excel's Ctrl+Alt+L) apply the filter again, Esc close, Alt+, pin the
-    /// focused column left and Alt+U unpin it.
+    /// focused column left and Alt+U unpin it. Alt+0 and Alt+9 hide the
+    /// focused column and row (Excel's Ctrl+0 and Ctrl+9, as terminals drop
+    /// Ctrl with a digit), Alt+) and Alt+( list the hidden ones, and Alt+M
+    /// (or Shift+F10) and Alt+Shift+M open the column's and the row's menu.
     Chords,
     /// vim and VisiData: `/` and `?` find forwards and backwards, `n` and `N`
     /// step, `|` the quick filter, `\` and `&` the focused column's text set
     /// to contain or not, `F` its filter popup, `R` the focused row's, `=`
     /// keep the focused value, `u` and `U` remove and clear, `i` case, `m` show only matching rows,
     /// `r` apply the filter again, Esc close, `!` pin the focused column
-    /// left or unpin it (VisiData's key column), Alt+U unpin. Typing is off.
+    /// left or unpin it (VisiData's key column), Alt+U unpin, `-` and `_`
+    /// hide the column and the row (VisiData's `-`), `+` and `*` list the
+    /// hidden ones, `.` and `,` the menus. Typing is off.
     Modes,
     /// Single keys with no modes: `/ ? n N` find, `\` the quick filter, `f`
     /// the filter drawer (see [`ColumnFilter::drawer`]), `F` the focused
     /// row's, `|` and `&` the column's text set to contain or not, `=` keep the focused value, `x` and `X` remove
     /// and clear, `m` show only matching rows, `i` case, `r` apply the filter
-    /// again, Esc close, `<` pin the focused column left, `u` unpin it.
-    /// Typing is off.
+    /// again, Esc close, `<` pin the focused column left, `u` unpin it, `-`
+    /// and `_` hide the column and the row, `+` and `*` list the hidden ones,
+    /// `.` and `,` the menus. Typing is off.
     BareKeys,
 }
 
@@ -189,6 +208,13 @@ impl Controls {
                 (Esc, NONE, Close),
                 (Char(','), ALT, PIN_LEFT),
                 (Char('u'), ALT, UNPIN),
+                (Char('0'), ALT, Hide { axis: Axis::Cols }),
+                (Char('9'), ALT, Hide { axis: Axis::Rows }),
+                (Char(')'), ALT, ShowHidden { axis: Axis::Cols }),
+                (Char('('), ALT, ShowHidden { axis: Axis::Rows }),
+                (Char('m'), ALT, Menu { axis: Axis::Cols }),
+                (F(10), SHIFT, Menu { axis: Axis::Cols }),
+                (Char('M'), ALT, Menu { axis: Axis::Rows }),
             ],
             Preset::Modes => &[
                 (Char('|'), NONE, QuickFilter),
@@ -209,6 +235,12 @@ impl Controls {
                 (Esc, NONE, Close),
                 (Char('!'), NONE, PIN_LEFT),
                 (Char('u'), ALT, UNPIN),
+                (Char('-'), NONE, Hide { axis: Axis::Cols }),
+                (Char('_'), NONE, Hide { axis: Axis::Rows }),
+                (Char('+'), NONE, ShowHidden { axis: Axis::Cols }),
+                (Char('*'), NONE, ShowHidden { axis: Axis::Rows }),
+                (Char('.'), NONE, Menu { axis: Axis::Cols }),
+                (Char(','), NONE, Menu { axis: Axis::Rows }),
             ],
             Preset::BareKeys => &[
                 (Char('\\'), NONE, QuickFilter),
@@ -229,6 +261,12 @@ impl Controls {
                 (Esc, NONE, Close),
                 (Char('<'), NONE, PIN_LEFT),
                 (Char('u'), NONE, UNPIN),
+                (Char('-'), NONE, Hide { axis: Axis::Cols }),
+                (Char('_'), NONE, Hide { axis: Axis::Rows }),
+                (Char('+'), NONE, ShowHidden { axis: Axis::Cols }),
+                (Char('*'), NONE, ShowHidden { axis: Axis::Rows }),
+                (Char('.'), NONE, Menu { axis: Axis::Cols }),
+                (Char(','), NONE, Menu { axis: Axis::Rows }),
             ],
         };
         for &(code, modifiers, control) in bindings {
@@ -1402,7 +1440,7 @@ fn noun(axis: Axis) -> &'static str {
 }
 
 /// The name of `key`, an item of `axis`'s other axis, for a title or chip.
-fn label(content: &impl Content, axis: Axis, key: Key) -> String {
+pub(crate) fn label(content: &impl Content, axis: Axis, key: Key) -> String {
     match axis {
         Axis::Rows => content.column_header(key),
         Axis::Cols => content.row_label(key),

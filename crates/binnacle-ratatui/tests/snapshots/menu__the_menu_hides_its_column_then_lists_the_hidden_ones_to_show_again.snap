@@ -1,0 +1,59 @@
+---
+source: crates/binnacle-ratatui/tests/menu.rs
+expression: out
+---
+menu on name
+    name        │port        │crew        │
+1   ┌─ Column name ────────────────┐                   █
+2   │▸h Hide column                │                   █
+3   │ No hidden columns            │                   █
+4   │ ↑↓ Enter  Esc close          │                   █
+5   └──────────────────────────────┘                   █
+6   r5c0         r5c1         r5c2                     █
+                                                       █
+                                                       █
+                                                       █
+                                                       █
+                                                       █
+
+name and crew hidden; the menu at the list
+    port        │
+1   ┌─ Column port ────────────────┐                   █
+2   │ h Hide column                │                   █
+3   │ Hidden columns (2):          │                   █
+4   │▸1 name                       │                   █
+5   │ 2 crew                       │                   █
+6   │ a Show all                   │                   █
+    │ ↑↓ Enter  Esc close          │                   █
+    └──────────────────────────────┘                   █
+                                                       █
+                                                       █
+                                                       █
+
+the cursor on Show all
+    port        │crew        │
+1   ┌─ Column port ────────────────┐                   █
+2   │ h Hide column                │                   █
+3   │ Hidden columns (1):          │                   █
+4   │ 1 name                       │                   █
+5   │▸a Show all                   │                   █
+6   │ ↑↓ Enter  Esc close          │                   █
+    └──────────────────────────────┘                   █
+                                                       █
+                                                       █
+                                                       █
+                                                       █
+
+all shown again, in their places
+    name        │port        │crew        │
+1   r0c0         ┌─ Column port ────────────────┐      █
+2   r1c0         │ h Hide column                │      █
+3   r2c0         │ No hidden columns            │      █
+4   r3c0         │ ↑↓ Enter  Esc close          │      █
+5   r4c0         └──────────────────────────────┘      █
+6   r5c0         r5c1         r5c2                     █
+                                                       █
+                                                       █
+                                                       █
+                                                       █
+                                                       █

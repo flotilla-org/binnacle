@@ -112,6 +112,17 @@
 //! filters. Pinning more columns adds each after the last. The same key on a
 //! pinned column unpins it, as does Alt+U (`u` in bare keys).
 //!
+//! In the records (slow too) and on their side, Alt+0 hides the focused
+//! column and Alt+9 its row: the source leaves it out whatever the filter
+//! keeps, focus moves to its neighbour, and its width stays for when it comes
+//! back. Alt+M (or Shift+F10) opens the focused column's header menu and
+//! Alt+Shift+M the row's: `h` hides it, and the hidden ones are listed under
+//! it, `1` to `9` (or the cursor and Enter) showing one again in its place
+//! and `a` all of them; Alt+) and Alt+( open it at that list. The status line
+//! counts what is left, "4 of 5 columns". In the modes and bare-keys presets
+//! `-` and `_` hide, `+` and `*` list the hidden ones, and `.` and `,` open
+//! the menus.
+//!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
 //! huge table, typing digits goes to that row number. Enter, F2 or a
@@ -161,10 +172,10 @@ use binnacle_memory::{
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
     CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
-    Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
-    Theme, animating, begin_frame, clear_filters, count, fit_width, keep_value, remove_conditions,
-    render_conditions, render_editor, render_with, row_count, status, toggle_pin, unpin_focused,
-    wheel,
+    HeaderMenu, Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer,
+    TextRenderer, Theme, animating, begin_frame, clear_filters, count, fit_width, hide_focused,
+    keep_value, remove_conditions, render_conditions, render_editor, render_with, row_count,
+    status, toggle_pin, unpin_focused, wheel,
 };
 
 /// The Control that pins the focused column left, for the keys line.
@@ -1235,6 +1246,7 @@ fn transposed() -> (Table, Grid) {
         let mut turned = Transposed(source.over(&rows));
         for axis in Axis::ALL {
             grid.set_quick_filter_support(axis, turned.quick_filter(axis));
+            grid.set_hide_support(axis, turned.hide_support(axis));
         }
         grid.set_find_support(turned.find_support());
         for f in 0..HEADERS.len() as u64 {
@@ -1296,6 +1308,7 @@ fn main() -> io::Result<()> {
         );
         for axis in Axis::ALL {
             grid.set_quick_filter_support(axis, source.quick_filter(axis));
+            grid.set_hide_support(axis, source.hide_support(axis));
         }
         grid.set_find_support(source.find_support());
         for c in 0..HEADERS.len() as u64 {
@@ -1341,6 +1354,7 @@ fn main() -> io::Result<()> {
         Preset::BareKeys => ColumnFilter::new().drawer(),
         _ => ColumnFilter::new(),
     };
+    let mut menu = HeaderMenu::new();
     let mut find = match preset {
         Preset::Chords => FindBar::new(),
         _ => FindBar::new().table_hints(format!(
@@ -1357,13 +1371,15 @@ fn main() -> io::Result<()> {
     };
     // What the status line says while nothing else is to be said.
     let keys = format!(
-        "{} find  {} filter  {} column  {} row  {} clear  {} pin",
+        "{} find  {} filter  {} column  {} row  {} clear  {} pin  {} hide  {} menu",
         hint(Control::Find),
         hint(Control::QuickFilter),
         hint(Control::ColumnFilter),
         hint(Control::RowFilter),
         hint(Control::Clear),
-        hint(PIN_LEFT)
+        hint(PIN_LEFT),
+        hint(Control::Hide { axis: Axis::Cols }),
+        hint(Control::Menu { axis: Axis::Cols })
     );
     // What a click selects, which Alt+S cycles.
     let mut unit = SelectionUnit::Cells;
@@ -1486,6 +1502,8 @@ fn main() -> io::Result<()> {
                     at,
                     frame.buffer_mut(),
                 );
+                let buf = frame.buffer_mut();
+                menu.render(&snapshot, &table.text(), &themes[theme], layout.grid, buf);
                 if field {
                     let top = ratatui::layout::Rect { height: 1, ..full };
                     quick.render(&snapshot, &themes[theme], top, frame.buffer_mut());
@@ -1577,6 +1595,7 @@ fn main() -> io::Result<()> {
                         return Ok(());
                     }
                     if app.edit_key(&mut table, &mut grid, key.code)
+                        || menu.key(&key, &mut grid)
                         || popup.key(&key, &mut grid)
                         || quick.key(&key, &mut grid)
                         || find.key(&key, &mut grid)
@@ -1637,6 +1656,11 @@ fn main() -> io::Result<()> {
                             unpin_focused(&mut grid, axis);
                             true
                         }
+                        Some(Control::Hide { axis }) => hide_focused(&mut grid, axis),
+                        Some(Control::ShowHidden { axis }) => {
+                            menu.open_hidden(&grid.snapshot(), axis)
+                        }
+                        Some(Control::Menu { axis }) => menu.open(&grid.snapshot(), axis),
                         // Esc closes the drawer, else find, else cancels.
                         Some(Control::Close) if popup.close() => true,
                         Some(Control::Close) if find.is_open() => {

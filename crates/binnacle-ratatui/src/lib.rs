@@ -10,6 +10,7 @@ mod context;
 mod filter;
 mod find;
 mod keymap;
+mod menu;
 mod mouse;
 mod pin;
 mod renderer;
@@ -25,6 +26,7 @@ pub use filter::{
 };
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
+pub use menu::{HeaderMenu, hide_focused};
 pub use mouse::Mouse;
 pub use pin::{toggle_pin, unpin_focused};
 pub use renderer::{

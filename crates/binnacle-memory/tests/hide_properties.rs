@@ -24,7 +24,7 @@ type Record = [Option<i64>; COLS];
 
 #[derive(Clone, Debug)]
 enum Op {
-    View(ViewSpec),
+    View(Box<ViewSpec>),
     /// The host's own filter on the rows: keeps values of at least `min` in
     /// column 0, or everything with `None`.
     Filter(Option<i64>),
@@ -90,8 +90,8 @@ fn op(tc: &TestCase) -> Op {
     )
     .map(|(row, col, value)| Op::Change { row, col, value });
     tc.draw(hegel::one_of!(
-        spec().map(Op::View),
-        spec().map(Op::View),
+        spec().map(|s| Op::View(Box::new(s))),
+        spec().map(|s| Op::View(Box::new(s))),
         gs::optional(gs::integers::<i64>().min_value(-2).max_value(12)).map(Op::Filter),
         gs::vecs(record()).min_size(1).max_size(3).map(Op::Append),
         change,
@@ -198,7 +198,7 @@ fn hidden_items_leave_the_view_until_shown_and_the_answer_prunes_keys_the_data_l
                 for axis in Axis::ALL {
                     model.prune(axis, &spec.axis(axis).hidden);
                 }
-                model.spec = spec;
+                model.spec = *spec;
                 source.view(&model.rows, &model.spec).unwrap()
             }
             Op::Filter(min) => {
