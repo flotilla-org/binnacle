@@ -141,6 +141,10 @@ extern "C" {
  * (binnacle_grid_reapply_view), so rows their edits left unmatched are
  * filtered. */
 #define BINNACLE_VIEW_EDIT_REAPPLY 8
+/* The items of axis with keys (keys_len of them) were hidden, after those
+ * hidden already, or shown again. */
+#define BINNACLE_VIEW_EDIT_HIDE 9
+#define BINNACLE_VIEW_EDIT_SHOW 10
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
@@ -403,6 +407,12 @@ typedef struct {
   float scrolling_end;
   /* Header drags move the axis's items (binnacle_grid_set_movable). */
   uint32_t movable;
+  /* Whether the Table Source hides items of the axis: offer Hide only then. */
+  uint32_t hide_support;
+  /* The axis's hidden Keys in the order they were hidden, as the latest
+   * request has them: what a "Show hidden" list offers. */
+  const uint64_t *hidden;
+  size_t hidden_len;
 } BinnacleAxisSnapshot;
 
 /*
@@ -499,9 +509,11 @@ struct BinnacleListedCondition {
 };
 
 /* One axis's part of a View Spec: its sort, by items of the other axis in
- * order (empty for unsorted), and its filter: the quick filter, which keeps
- * the items with a match for it, when has_quick is 1, and the conditions,
- * which keep the items every one of them keeps. */
+ * order (empty for unsorted), its filter: the quick filter, which keeps the
+ * items with a match for it, when has_quick is 1, and the conditions, which
+ * keep the items every one of them keeps; and its hidden Keys, items of this
+ * axis the Table Source leaves out apart from the filter. A source answers
+ * with the hidden Keys its data still has. */
 typedef struct {
   const BinnacleSortColumn *sort;
   size_t sort_len;
@@ -509,6 +521,8 @@ typedef struct {
   BinnacleTextQuery quick;
   const BinnacleCondition *conditions;
   size_t conditions_len;
+  const uint64_t *hidden;
+  size_t hidden_len;
 } BinnacleAxisView;
 
 /* The view the Table Source should present: axes[BINNACLE_ROWS] and
@@ -517,12 +531,15 @@ typedef struct {
   BinnacleAxisView axes[2];
 } BinnacleViewSpec;
 
-/* The cause of a requested View Spec, a hint: the spec alone is the request. */
+/* The cause of a requested View Spec, a hint: the spec alone is the request.
+ * keys is set for HIDE and SHOW. */
 typedef struct {
   uint32_t kind;
   uint32_t axis;
   uint64_t key;
   uint32_t multi;
+  const uint64_t *keys;
+  size_t keys_len;
 } BinnacleViewEdit;
 
 /* Each axis's unfiltered count, where the Table Source knows it. */
@@ -678,6 +695,10 @@ int binnacle_grid_view_changed(BinnacleGrid *grid, const BinnacleViewSpec *spec,
 int binnacle_grid_set_quick_filter_support(BinnacleGrid *grid, uint32_t axis,
                                            uint32_t support);
 
+/* Whether the Table Source hides items of axis: 1 or 0 (the default).
+ * Adapters offer Hide only then. 0 for anything else. */
+int binnacle_grid_set_hide_support(BinnacleGrid *grid, uint32_t axis, uint32_t hides);
+
 /* What the Table Source supports when viewing axis by key, an item of the
  * other axis: BINNACLE_SUPPORT_* bits, the whole declaration. Every item
  * supports SORT | TEXT (not ONE_OF) until set otherwise. 0 for unknown bits,
@@ -729,6 +750,15 @@ int binnacle_grid_remove_condition(BinnacleGrid *grid, uint32_t axis,
 int binnacle_grid_replace_condition(BinnacleGrid *grid, uint32_t axis,
                                     const BinnacleCondition *from,
                                     const BinnacleCondition *to);
+
+/* Hides the items of axis with keys (len of them; NULL with 0 for none),
+ * adding those not hidden yet to its hidden Keys, and requests the result
+ * with BINNACLE_VIEW_EDIT_HIDE. Nothing while the source can't hide axis. */
+int binnacle_grid_hide(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, size_t len);
+
+/* Shows the hidden items of axis with keys again and requests the result
+ * with BINNACLE_VIEW_EDIT_SHOW; Keys not hidden are skipped. */
+int binnacle_grid_show(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, size_t len);
 
 /* Requests the whole of spec (NULL for the base view), say to restore a saved
  * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */

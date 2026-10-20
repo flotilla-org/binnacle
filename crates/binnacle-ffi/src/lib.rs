@@ -73,6 +73,8 @@ pub const BINNACLE_VIEW_EDIT_ADD_CONDITION: u32 = 5;
 pub const BINNACLE_VIEW_EDIT_REMOVE_CONDITION: u32 = 6;
 pub const BINNACLE_VIEW_EDIT_REPLACE_CONDITION: u32 = 7;
 pub const BINNACLE_VIEW_EDIT_REAPPLY: u32 = 8;
+pub const BINNACLE_VIEW_EDIT_HIDE: u32 = 9;
+pub const BINNACLE_VIEW_EDIT_SHOW: u32 = 10;
 
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
@@ -150,6 +152,11 @@ pub struct BinnacleGrid {
     quick_texts: [String; 2],
     quick_keys: [Vec<u64>; 2],
     conditions: [CConditions; 2],
+    hidden: [Vec<u64>; 2],
+    /// The last polled Effect's View Edit Keys.
+    edit_keys: Vec<u64>,
+    /// The last Snapshot's hidden Keys per axis.
+    hidden_listed: [Vec<u64>; 2],
     /// The last Snapshot's conditions per axis, with their states.
     listed: [CConditions; 2],
     listed_states: [Vec<BinnacleListedCondition>; 2],
@@ -361,6 +368,9 @@ pub struct BinnacleAxisSnapshot {
     pub scrolling_start: f32,
     pub scrolling_end: f32,
     pub movable: u32,
+    pub hide_support: u32,
+    pub hidden: *const u64,
+    pub hidden_len: usize,
 }
 
 #[repr(C)]
@@ -487,6 +497,8 @@ pub struct BinnacleAxisView {
     pub quick: BinnacleTextQuery,
     pub conditions: *const BinnacleCondition,
     pub conditions_len: usize,
+    pub hidden: *const u64,
+    pub hidden_len: usize,
 }
 
 impl Default for BinnacleAxisView {
@@ -498,6 +510,8 @@ impl Default for BinnacleAxisView {
             quick: BinnacleTextQuery::default(),
             conditions: std::ptr::null(),
             conditions_len: 0,
+            hidden: std::ptr::null(),
+            hidden_len: 0,
         }
     }
 }
@@ -522,12 +536,27 @@ pub struct BinnacleViewSpec {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleViewEdit {
     pub kind: u32,
     pub axis: u32,
     pub key: u64,
     pub multi: u32,
+    pub keys: *const u64,
+    pub keys_len: usize,
+}
+
+impl Default for BinnacleViewEdit {
+    fn default() -> Self {
+        BinnacleViewEdit {
+            kind: BINNACLE_VIEW_EDIT_OTHER,
+            axis: 0,
+            key: 0,
+            multi: 0,
+            keys: std::ptr::null(),
+            keys_len: 0,
+        }
+    }
 }
 
 #[repr(C)]
@@ -907,8 +936,9 @@ impl BinnacleViewSpec {
     /// text is not UTF-8.
     ///
     /// # Safety
-    /// Each non-NULL `sort` is valid for `sort_len` reads and `conditions`
-    /// for `conditions_len`, and each quick filter present and condition as
+    /// Each non-NULL `sort` is valid for `sort_len` reads, `conditions` for
+    /// `conditions_len` and `hidden` for `hidden_len`, and each quick filter
+    /// present and condition as
     /// [`BinnacleTextQuery::to_core`] requires.
     unsafe fn to_core(self) -> Option<ViewSpec> {
         let mut spec = ViewSpec::default();
@@ -934,9 +964,12 @@ impl BinnacleViewSpec {
             let filter = FilterSpec::default()
                 .with_quick(quick)
                 .with_conditions(conditions.into());
+            // SAFETY: the caller's contract.
+            let hidden = unsafe { borrowed(view.hidden, view.hidden_len) };
             spec = spec
                 .with_sort(axis, SortSpec::new(columns))
-                .with_filter(axis, filter);
+                .with_filter(axis, filter)
+                .with_hidden(axis, hidden.iter().map(|&k| Key(k)).collect());
         }
         Some(spec)
     }
@@ -1029,6 +1062,9 @@ pub extern "C" fn binnacle_grid_new(
         quick_texts: [String::new(), String::new()],
         quick_keys: [Vec::new(), Vec::new()],
         conditions: Default::default(),
+        hidden: Default::default(),
+        edit_keys: Vec::new(),
+        hidden_listed: Default::default(),
         listed: Default::default(),
         listed_states: Default::default(),
         find_effect: Default::default(),
@@ -1289,6 +1325,9 @@ impl BinnacleGrid {
                     ..BinnacleHeader::from(h)
                 }
             }));
+            let hidden = &mut self.hidden_listed[axis.index()];
+            hidden.clear();
+            hidden.extend(snap.hidden(axis).iter().map(|k| k.0));
             let listed = snap.conditions(axis);
             let c = &mut self.listed[axis.index()];
             c.fill(listed.iter().map(|(c, _)| c));
@@ -1336,6 +1375,7 @@ impl BinnacleGrid {
             let headers = &self.headers[axis.index()];
             let listed = &self.listed_states[axis.index()];
             let picked = &self.picked[axis.index()];
+            let hidden = &self.hidden_listed[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -1368,6 +1408,9 @@ impl BinnacleGrid {
                 scrolling_start: snap.scrolling(axis).start,
                 scrolling_end: snap.scrolling(axis).end,
                 movable: flag(snap.movable(axis)),
+                hide_support: flag(snap.hide_support(axis)),
+                hidden: hidden.as_ptr(),
+                hidden_len: hidden.len(),
                 selection_range: range.as_ref().map_or_else(Default::default, |r| {
                     let span = r.span(axis);
                     BinnacleRange {
@@ -1497,6 +1540,9 @@ impl BinnacleGrid {
                     }
                     let conditions = &mut self.conditions[axis.index()];
                     conditions.fill(spec.axis(axis).filter.conditions.conditions());
+                    let hidden = &mut self.hidden[axis.index()];
+                    hidden.clear();
+                    hidden.extend(spec.axis(axis).hidden.iter().map(|k| k.0));
                     effect.view.axes[axis.index()] = BinnacleAxisView {
                         sort: sort.as_ptr(),
                         sort_len: sort.len(),
@@ -1504,6 +1550,8 @@ impl BinnacleGrid {
                         quick: query,
                         conditions: conditions.items.as_ptr(),
                         conditions_len: conditions.items.len(),
+                        hidden: hidden.as_ptr(),
+                        hidden_len: hidden.len(),
                     };
                 }
                 let on = |kind, axis| BinnacleViewEdit {
@@ -1517,6 +1565,7 @@ impl BinnacleGrid {
                         axis: axis_tag(axis),
                         key: key.0,
                         multi: flag(multi),
+                        ..BinnacleViewEdit::default()
                     },
                     ViewEdit::SetQuickFilter { axis, .. } => {
                         on(BINNACLE_VIEW_EDIT_SET_QUICK_FILTER, axis)
@@ -1542,6 +1591,22 @@ impl BinnacleGrid {
                         key: to.key.0,
                         ..on(BINNACLE_VIEW_EDIT_REPLACE_CONDITION, axis)
                     },
+                    ViewEdit::Hide { axis, keys } => {
+                        self.edit_keys = keys.iter().map(|k| k.0).collect();
+                        BinnacleViewEdit {
+                            keys: self.edit_keys.as_ptr(),
+                            keys_len: self.edit_keys.len(),
+                            ..on(BINNACLE_VIEW_EDIT_HIDE, axis)
+                        }
+                    }
+                    ViewEdit::Show { axis, keys } => {
+                        self.edit_keys = keys.iter().map(|k| k.0).collect();
+                        BinnacleViewEdit {
+                            keys: self.edit_keys.as_ptr(),
+                            keys_len: self.edit_keys.len(),
+                            ..on(BINNACLE_VIEW_EDIT_SHOW, axis)
+                        }
+                    }
                     _ => BinnacleViewEdit::default(),
                 };
             }
@@ -1706,6 +1771,74 @@ pub unsafe extern "C" fn binnacle_grid_set_quick_filter(
         with_handle(grid, |h| {
             let (axis, query) = (axis(axis_tag)?, query?);
             h.grid.set_quick_filter(axis, query);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_hide_support(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    hides: u32,
+) -> i32 {
+    let hides = match hides {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_hide_support(axis(axis_tag)?, hides?);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `keys` is NULL or valid for `len` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_hide(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    keys: *const u64,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let keys: Vec<Key> = unsafe { borrowed(keys, len) }
+        .iter()
+        .map(|&k| Key(k))
+        .collect();
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.hide(axis(axis_tag)?, &keys);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// As for [`binnacle_grid_hide`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_show(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    keys: *const u64,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let keys: Vec<Key> = unsafe { borrowed(keys, len) }
+        .iter()
+        .map(|&k| Key(k))
+        .collect();
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.show(axis(axis_tag)?, &keys);
             Some(())
         })
     }

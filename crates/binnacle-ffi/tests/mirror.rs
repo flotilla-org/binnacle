@@ -60,6 +60,9 @@ enum Op {
     AddCondition(Axis, Condition),
     RemoveCondition(Axis, Condition),
     ReplaceCondition(Axis, Condition, Condition),
+    HideSupport(Axis, bool),
+    Hide(Axis, Vec<Key>),
+    Show(Axis, Vec<Key>),
     SetFind(Option<FindQuery>),
     FindSupport(Option<TextSupport>),
     /// The answer to a find step: this match, or with `Some((r, c))` the
@@ -306,6 +309,9 @@ fn view_spec(tc: &TestCase) -> ViewSpec {
                 .with_conditions(conditions.into());
             spec = spec.with_filter(axis, filter);
         }
+        if tc.draw(gs::weighted_booleans(0.25)) {
+            spec = spec.with_hidden(axis, tc.draw(gs::vecs(key(axis)).max_size(3)));
+        }
     }
     spec
 }
@@ -325,8 +331,11 @@ fn totals(tc: &TestCase) -> Totals {
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(15)) {
+    match tc.draw(gs::integers::<u8>().max_value(18)) {
         15 => Op::MoveAnswered(tc.draw(gs::optional(gs::text().max_size(8)))),
+        16 => Op::HideSupport(axis, tc.draw(gs::weighted_booleans(0.75))),
+        17 => Op::Hide(axis, tc.draw(gs::vecs(key(axis)).max_size(3))),
+        18 => Op::Show(axis, tc.draw(gs::vecs(key(axis)).max_size(3))),
         10 => Op::SetFind(
             tc.draw(gs::weighted_booleans(0.9))
                 .then(|| tc.draw(find_query())),
@@ -480,7 +489,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(39))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(43))),
     }
 }
 
@@ -710,6 +719,10 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             37 => binnacle_grid_unpin(h, 2, 0),
             38 => binnacle_grid_set_movable(h, 2, 1),
             39 => binnacle_grid_set_movable(h, COLS, 2),
+            40 => binnacle_grid_set_hide_support(h, ROWS, 2),
+            41 => binnacle_grid_set_hide_support(h, 2, 1),
+            42 => binnacle_grid_hide(h, 2, &5000, 1),
+            43 => binnacle_grid_show(h, 2, &5000, 1),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -826,6 +839,14 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         let keys: Vec<u64> = rust.picked(axis).iter().map(|k| k.0).collect();
         assert_eq!(picked, keys, "{axis:?} picks");
         assert_eq!(a.movable != 0, rust.movable(axis), "{axis:?} movable");
+        assert_eq!(
+            a.hide_support != 0,
+            rust.hide_support(axis),
+            "{axis:?} hides"
+        );
+        let hidden = unsafe { slice::from_raw_parts(a.hidden, a.hidden_len) };
+        let want: Vec<u64> = rust.hidden(axis).iter().map(|k| k.0).collect();
+        assert_eq!(hidden, want, "{axis:?} hidden");
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -921,6 +942,7 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         assert_eq!(c.generation, want.generation);
         let mut view = ViewSpec::default();
         let mut edit = BinnacleViewEdit::default();
+        let mut edit_keys: Vec<u64> = Vec::new();
         let mut size = 0.0;
         let mut find = None;
         let mut from = None;
@@ -947,7 +969,16 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                         axis: tag(axis),
                         key: key.0,
                         multi: u32::from(multi),
+                        ..BinnacleViewEdit::default()
                     },
+                    ViewEdit::Hide { axis, ref keys } => {
+                        edit_keys = keys.iter().map(|k| k.0).collect();
+                        on(9, axis)
+                    }
+                    ViewEdit::Show { axis, ref keys } => {
+                        edit_keys = keys.iter().map(|k| k.0).collect();
+                        on(10, axis)
+                    }
                     ViewEdit::SetQuickFilter { axis, .. } => on(2, axis),
                     ViewEdit::Replace => on(3, Axis::Rows),
                     ViewEdit::ShownChanged { axis } => on(4, axis),
@@ -1017,7 +1048,17 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             (kind, row, col, axis, key)
         );
         assert!(same_f32(c.size, size), "size {} for {want:?}", c.size);
-        assert_eq!(c.edit, edit);
+        let got_keys = match c.edit.keys.is_null() {
+            true => &[][..],
+            false => unsafe { slice::from_raw_parts(c.edit.keys, c.edit.keys_len) },
+        };
+        assert_eq!(got_keys, edit_keys, "edit Keys for {want:?}");
+        let bare = BinnacleViewEdit {
+            keys: std::ptr::null(),
+            keys_len: 0,
+            ..c.edit
+        };
+        assert_eq!(bare, edit);
         let got = (c.has_find != 0).then(|| unsafe { find_from_c(&c.find) });
         assert_eq!(got, find, "find for {want:?}");
         let got = (c.has_from != 0).then(|| FindMatch::new(Key(c.from.row), Key(c.from.col)));
@@ -1054,6 +1095,12 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 view.axis(axis).filter.conditions.conditions(),
                 "{axis:?} conditions"
             );
+            let hidden = match got.hidden.is_null() {
+                true => &[][..],
+                false => unsafe { slice::from_raw_parts(got.hidden, got.hidden_len) },
+            };
+            let want: Vec<u64> = view.axis(axis).hidden.iter().map(|k| k.0).collect();
+            assert_eq!(hidden, want, "{axis:?} hidden");
         }
     }
 }
@@ -1236,9 +1283,15 @@ fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T 
             .map(|(c, v)| condition_to_c(c, &[], v))
             .collect::<Vec<_>>()
     });
+    let hidden = Axis::ALL.map(|axis| {
+        (spec.axis(axis).hidden.iter())
+            .map(|k| k.0)
+            .collect::<Vec<u64>>()
+    });
     let mut c = BinnacleViewSpec::default();
     for axis in Axis::ALL {
         let sort = &sorts[axis.index()];
+        let hidden = &hidden[axis.index()];
         let quick = spec.axis(axis).filter.quick.as_ref();
         let conds = &conditions[axis.index()];
         c.axes[tag(axis) as usize] = BinnacleAxisView {
@@ -1250,6 +1303,8 @@ fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T 
             }),
             conditions: conds.as_ptr(),
             conditions_len: conds.len(),
+            hidden: hidden.as_ptr(),
+            hidden_len: hidden.len(),
         };
     }
     f(&c)
@@ -1475,6 +1530,20 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_quick_filter_support(axis, support);
                     let bits = support.map_or(0, |s| 1 | u32::from(s.regex) << 1);
                     binnacle_grid_set_quick_filter_support(h, tag(axis), bits)
+                }
+                Op::HideSupport(axis, hides) => {
+                    grid.set_hide_support(axis, hides);
+                    binnacle_grid_set_hide_support(h, tag(axis), u32::from(hides))
+                }
+                Op::Hide(axis, keys) => {
+                    grid.hide(axis, &keys);
+                    let keys: Vec<u64> = keys.iter().map(|k| k.0).collect();
+                    binnacle_grid_hide(h, tag(axis), keys.as_ptr(), keys.len())
+                }
+                Op::Show(axis, keys) => {
+                    grid.show(axis, &keys);
+                    let keys: Vec<u64> = keys.iter().map(|k| k.0).collect();
+                    binnacle_grid_show(h, tag(axis), keys.as_ptr(), keys.len())
                 }
                 Op::SetSupport(axis, key, support) => {
                     grid.set_support(axis, key, support);
