@@ -622,7 +622,10 @@ impl Table {
             } => (rows, source, step, asked.clone(), false),
             Table::Transposed {
                 rows, source, step, ..
-            } => (rows, source, step, transpose_find(asked), true),
+            } => match transpose_find(asked) {
+                Some(query) => (rows, source, step, query, true),
+                None => return Default::default(),
+            },
             Table::Huge(_) | Table::Live(_) => return Default::default(),
         };
         let (along, across) = if turned {

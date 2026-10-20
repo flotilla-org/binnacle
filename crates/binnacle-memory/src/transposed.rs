@@ -1,6 +1,6 @@
 use binnacle_core::{
     Axis, ChangeNotice, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, Key, Located,
-    Position, Support, TextSupport, Totals, ViewSpec,
+    Position, Searched, Support, TextSupport, Totals, ViewSpec,
 };
 
 use crate::{FindStep, PumpSource, Viewed};
@@ -12,8 +12,10 @@ use crate::{FindStep, PumpSource, Viewed};
 /// each record a column. It adds nothing: what the inner source does along
 /// one axis only, the transposed table does along the other only.
 ///
-/// A Text Query naming the items it searches is passed on as it is, since
-/// those items are on the same side of the table either way.
+/// A View Spec's Text Queries and Conditions name items of the other axis,
+/// which turning leaves on the same side, so they pass on as they are. A
+/// Find Query names columns, which the inner source has as rows: one naming
+/// the items it searches finds nothing (see [`transpose_find`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Transposed<S>(pub S);
 
@@ -47,9 +49,14 @@ pub fn transpose_totals(totals: Totals) -> Totals {
     }
 }
 
-/// `query` stepping along the other axis first.
-pub fn transpose_find(query: &FindQuery) -> FindQuery {
-    query.clone().by(query.by.other())
+/// `query` for the inner source of a [`Transposed`]: stepping along the
+/// other axis first. `None` if it names the columns it searches, since the
+/// inner source can search only its own columns, which are the rows here.
+pub fn transpose_find(query: &FindQuery) -> Option<FindQuery> {
+    match query.query.searches {
+        Searched::Shown => Some(query.clone().by(query.by.other())),
+        Searched::Keys(_) => None,
+    }
 }
 
 /// `m` with its row and column swapped.
@@ -96,7 +103,7 @@ impl<S: PumpSource> PumpSource for Transposed<S> {
         direction: FindDirection,
     ) -> Option<FindStep> {
         let from = from.map(transpose_match);
-        let step = self.0.find_next(&transpose_find(query), from, direction)?;
+        let step = self.0.find_next(&transpose_find(query)?, from, direction)?;
         Some(FindStep {
             at: transpose_match(step.at),
             ..step

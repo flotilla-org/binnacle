@@ -4,8 +4,8 @@
 //! does for rows it must do for columns here.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, FilterSpec, FindMatch, FindQuery, Grid, Key,
-    SortColumn, SortSpec, TextQuery, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, FilterSpec, FindDirection, FindMatch, FindQuery, Grid,
+    Key, Searched, SortColumn, SortSpec, TextQuery, ViewSpec, Viewport,
 };
 use binnacle_testkit::{
     ColumnMajorTable, PumpSource, Record, RecordTable, Scenario, ScenarioSource,
@@ -90,6 +90,21 @@ fn the_fields_move_as_the_records_columns_do() {
     assert_eq!(fields, [Some(Key(1)), Some(Key(2)), Some(Key(0))]);
     // The records are the source's rows, which it does not move.
     assert_eq!(s.source.move_items(Axis::Cols, &[Key(0)], 3), None);
+}
+
+#[test]
+fn a_find_naming_the_columns_it_searches_finds_nothing_on_its_side() {
+    let mut s = records();
+    let named = TextQuery::new("3").searching(Searched::Keys(vec![Key(1)]));
+    let next = |s: &mut Scenario<ColumnMajorTable>, query| {
+        s.source
+            .find_next(&FindQuery::new(query), None, FindDirection::Next)
+            .map(|step| step.at)
+    };
+    assert_eq!(next(&mut s, named), None);
+    // Searching every shown column, 13 in record 1 is the first match.
+    let shown = next(&mut s, TextQuery::new("3"));
+    assert_eq!(shown, Some(FindMatch::new(Key(0), Key(1))));
 }
 
 /// Records of `fields` small integers or nulls, so sorts tie and nulls
