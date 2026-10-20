@@ -7,8 +7,7 @@ use std::ops::Range;
 use binnacle_core::{
     Axis, Blanks, ChangeNotice, Condition, ConditionKind, Distinct, DistinctQuery, DistinctValue,
     FilterSpec, FindDirection, FindMatch, FindQuery, Grid, Key, Located, Position, Searched,
-    SortColumn, SortDirection, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value,
-    ViewSpec,
+    SortDirection, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewSpec,
 };
 use regex::{Regex, RegexBuilder};
 
@@ -16,8 +15,8 @@ use crate::{
     FindCount, FindStep, InMemoryTableSource, MovePolicy, Moved, PumpSource, SortKeys, Viewed,
 };
 
-/// A Sort Spec named a column with no sort-key closure, or a row that is
-/// not there; `column` is the Key it named.
+/// A Sort Spec named a column the table has but no sort-key closure for;
+/// `column` is the Key it named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unsortable {
     pub column: Key,
@@ -374,8 +373,9 @@ impl<R> MemorySource<R> {
     /// `Reordered` while they are sorted or their sort changed. Any View
     /// Spec, even the one in force, applies each axis's filter again to its
     /// unmatched items.
-    /// If a sort names a column with no closure or a row that is not there,
-    /// nothing changes. A quick filter with an invalid regex is not applied:
+    /// A sort term naming a column or row the table does not have is left
+    /// out, as hidden Keys no item has are: a restored layout may name one.
+    /// If a sort names a column with no closure, nothing changes. A quick filter with an invalid regex is not applied:
     /// the one in force stays. A condition with an invalid regex, or of a
     /// kind this source does not apply, is left out.
     ///
@@ -387,14 +387,15 @@ impl<R> MemorySource<R> {
         rows: &[R],
         spec: &ViewSpec,
     ) -> Result<Vec<(Axis, ChangeNotice)>, Unsortable> {
-        let by = &spec.cols.sort;
-        let resort = !by.is_empty() || by != self.table.sort_spec(Axis::Cols);
+        let by = self.present(Axis::Rows, &spec.cols.sort);
+        let resort = !by.is_empty() || &by != self.table.sort_spec(Axis::Cols);
         let by_rows = match resort {
-            true => Some(self.sorting_rows(by)?),
+            true => Some(self.sorting_rows(&by)),
             false => None,
         };
-        let sorted = self.sort(rows, &spec.rows.sort)?;
-        let resorted = by_rows.map(|by_rows| self.sort_columns(rows, by, &by_rows));
+        let present = self.present(Axis::Cols, &spec.rows.sort);
+        let sorted = self.sort(rows, &present)?;
+        let resorted = by_rows.map(|by_rows| self.sort_columns(rows, &by, &by_rows));
         let hid = Axis::ALL.map(|a| {
             let hidden = &spec.axis(a).hidden;
             self.table.apply_hidden(a, hidden).is_some()
@@ -428,13 +429,20 @@ impl<R> MemorySource<R> {
         Ok(self.table.apply_sort(Axis::Rows, spec, keys))
     }
 
-    /// The Logical Indices of the rows `spec` sorts the columns by, or the
-    /// Key of one that is not there.
-    fn sorting_rows(&mut self, spec: &SortSpec) -> Result<Vec<usize>, Unsortable> {
+    /// `spec` less its terms on items of `axis` the table does not have.
+    fn present(&mut self, axis: Axis, spec: &SortSpec) -> SortSpec {
+        let columns = (spec.columns().iter())
+            .filter(|c| self.table.logical_index(axis, c.key).is_some())
+            .copied()
+            .collect();
+        SortSpec::new(columns)
+    }
+
+    /// The Logical Indices of the rows `spec` sorts the columns by, every
+    /// one of which the table has.
+    fn sorting_rows(&mut self, spec: &SortSpec) -> Vec<usize> {
         (spec.columns().iter())
-            .map(|c| {
-                (self.table.logical_index(Axis::Rows, c.key)).ok_or(Unsortable { column: c.key })
-            })
+            .filter_map(|c| self.table.logical_index(Axis::Rows, c.key))
             .collect()
     }
 
@@ -859,13 +867,8 @@ impl<R> MemorySource<R> {
         let mut notices = vec![(Axis::Rows, reset)];
         let by = self.table.sort_spec(Axis::Cols).clone();
         if !by.is_empty() {
-            let left: Vec<SortColumn> = (by.columns().iter())
-                .filter(|c| self.table.logical_index(Axis::Rows, c.key).is_some())
-                .copied()
-                .collect();
-            let spec = SortSpec::new(left);
-            // Every row the spec names is there now.
-            let by_rows = self.sorting_rows(&spec).unwrap_or_default();
+            let spec = self.present(Axis::Rows, &by);
+            let by_rows = self.sorting_rows(&spec);
             notices.push((Axis::Cols, self.sort_columns(rows, &spec, &by_rows)));
         }
         notices.extend(self.recheck_columns(rows));
@@ -900,8 +903,7 @@ impl<R> MemorySource<R> {
     /// Spec in force.
     fn resort_columns(&mut self, rows: &[R]) -> ChangeNotice {
         let spec = self.table.sort_spec(Axis::Cols).clone();
-        // Every row the spec names was there when it was applied.
-        let by_rows = self.sorting_rows(&spec).unwrap_or_default();
+        let by_rows = self.sorting_rows(&spec);
         self.sort_columns(rows, &spec, &by_rows)
     }
 

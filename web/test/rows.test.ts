@@ -545,13 +545,23 @@ describe("fromRows", () => {
       }
     }));
 
-  test("a sort of the columns by a row that is not there is refused", () => {
+  test("a sort term on a row or column that is not there is left out", () => {
     const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }], COLUMNS);
-    const asked = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 1, direction: "descending" as const }], hidden: [] } };
-    expect(() => source.view!(asked, new AbortController().signal)).toThrow(/cannot sort the columns by row 1/);
-    expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(["n", "s", "b"]);
+    const none = { quick: null, conditions: [] };
+    const asked = {
+      rows: { filter: none, sort: [{ id: "gone" as keyof Rec, direction: "ascending" as const }, { id: "n" as const, direction: "descending" as const }], hidden: [] },
+      cols: { filter: none, sort: [{ id: 1, direction: "descending" as const }, { id: 0, direction: "ascending" as const }], hidden: [] },
+    };
+    expect(source.view!(asked, new AbortController().signal)).toEqual({
+      rows: { ...asked.rows, sort: [{ id: "n", direction: "descending" }] },
+      cols: { ...asked.cols, sort: [{ id: 0, direction: "ascending" }] },
+      totals: { rows: 1, cols: 3 },
+    });
+    // Row 0 holds 2, a null and 1: ascending, nulls last.
+    expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(["b", "n", "s"]);
     source.destroy();
   });
+
 
   test("a change to the row the columns sort by sorts them again and tells the columns", () => {
     const rows: Rec[] = [{ n: 1, s: null, b: 2 }];

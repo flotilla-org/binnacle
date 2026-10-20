@@ -572,17 +572,15 @@ export function fromRows<R extends object>(
     },
     // A quick filter whose pattern is not a valid RegExp leaves the one in
     // force; a condition with one, or on a column that takes none, is left
-    // out. The answer's error says what RegExp made of the first pattern it
-    // rejected, the rows' before the columns'.
+    // out, as is a sort term on an item the data lacks. The answer's error
+    // says what RegExp made of the first pattern it rejected, the rows'
+    // before the columns'.
     view(asked: ViewSpec<number, ColId>) {
-      const by = asked.rows.sort;
-      if (by.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
+      const by = asked.rows.sort.filter((c) => index.has(c.id));
+      if (by.some((c) => columns[index.get(c.id)!]!.sortable === false)) {
         throw new Error(`binnacle: fromRows cannot sort by ${by.map((c) => c.id).join(", ")}`);
       }
-      const byRows = asked.cols.sort;
-      if (byRows.some((c) => !isRow(c.id))) {
-        throw new Error(`binnacle: fromRows cannot sort the columns by row ${byRows.map((c) => c.id).join(", ")}`);
-      }
+      const byRows = asked.cols.sort.filter((c) => isRow(c.id));
       const forRows = take(filters.rows, asked.rows.filter, filterable);
       const forCols = take(filters.cols, asked.cols.filter, isRow);
       filters = { rows: forRows.filter, cols: forCols.filter };

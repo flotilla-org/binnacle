@@ -177,7 +177,7 @@ fn the_columns_follow_the_model_through_sorts_edits_replacements_and_moves(tc: T
     for op in tc.draw(gs::vecs(op(width)).max_size(8)) {
         match op {
             Op::SortColumns(by) => {
-                let spec = SortSpec::new(
+                let terms = |by: &[(usize, bool)]| {
                     (by.iter())
                         .map(|&(row, ascending)| SortColumn {
                             key: Key(row as u64),
@@ -186,16 +186,19 @@ fn the_columns_follow_the_model_through_sorts_edits_replacements_and_moves(tc: T
                                 false => SortDirection::Descending,
                             },
                         })
-                        .collect(),
-                );
-                let there = by.iter().all(|&(row, _)| row < model.rows.len());
-                let answer = source.view(&model.rows, &cols_sorted(spec.clone()));
-                assert_eq!(answer.is_ok(), there);
-                if there {
-                    let moved = spec != model.spec || !spec.is_empty();
-                    model.spec = spec;
-                    assert_eq!(moved_columns(&answer.unwrap()), moved);
-                }
+                        .collect()
+                };
+                let asked = SortSpec::new(terms(&by));
+                // Terms on rows the table does not have are left out.
+                let there: Vec<(usize, bool)> = (by.iter().copied())
+                    .filter(|&(row, _)| row < model.rows.len())
+                    .collect();
+                let spec = SortSpec::new(terms(&there));
+                let answer = source.view(&model.rows, &cols_sorted(asked));
+                let moved = spec != model.spec || !spec.is_empty();
+                model.spec = spec;
+                assert_eq!(moved_columns(&answer.unwrap()), moved);
+                assert_eq!(source.view_spec().cols.sort, model.spec);
             }
             Op::SortRows(col) => {
                 let spec = SortSpec::new(vec![SortColumn::ascending(Key(col as u64))]);

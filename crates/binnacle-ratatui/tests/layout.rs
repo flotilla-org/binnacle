@@ -182,6 +182,13 @@ fn restoring_keys_the_source_lacks_falls_back_and_never_fails() {
                 FilterSpec::default()
                     .with_conditions(vec![Condition::text(gone, TextQuery::new("q"))].into()),
             )
+            .with_sort(
+                Axis::Rows,
+                SortSpec::new(vec![
+                    SortColumn::ascending(gone),
+                    SortColumn::descending(Key(1)),
+                ]),
+            )
             .with_hidden(Axis::Rows, vec![Key(2), Key(99)])
             .with_hidden(Axis::Cols, vec![gone]),
         pins: [[vec![], vec![]], [vec![gone, Key(1)], vec![]]],
@@ -196,7 +203,11 @@ fn restoring_keys_the_source_lacks_falls_back_and_never_fails() {
         [gone, Key(1)]
     );
     assert_eq!(snap.pinned(Axis::Cols, Edge::Leading).len(), 1);
-    // The source answers with the hidden Keys it has.
+    // The source answers with the sort terms and hidden Keys it has.
+    assert_eq!(
+        snap.applied_view().rows.sort,
+        SortSpec::new(vec![SortColumn::descending(Key(1))])
+    );
     assert_eq!(snap.applied_view().rows.hidden, [Key(2)]);
     assert!(snap.applied_view().cols.hidden.is_empty());
     // The condition on the missing column is restored; how it reads (the

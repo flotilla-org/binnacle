@@ -340,18 +340,45 @@ fn the_columns_sort_by_a_row_of_mixed_kinds_as_text() {
 }
 
 #[test]
-fn a_sort_by_a_row_that_is_not_there_is_unsortable_and_leaves_the_columns_alone() {
+fn a_sort_term_on_a_row_that_is_not_there_is_left_out() {
     let rows = [rec("eve", None, 2), rec("ada", None, 1)];
     let mut source = source(&rows);
-    let by_row = |row| SortSpec::new(vec![SortColumn::descending(Key(row))]);
-    source.view(&rows, &cols_sorted(by_row(0))).unwrap();
-    let before = columns(&source);
+    let by = |rows: &[u64]| {
+        SortSpec::new(
+            rows.iter()
+                .map(|&r| SortColumn::descending(Key(r)))
+                .collect(),
+        )
+    };
+    source.view(&rows, &cols_sorted(by(&[0]))).unwrap();
+    let by_row_0 = columns(&source);
+    source.view(&rows, &ViewSpec::default()).unwrap();
+    // Row 2 is not there: the columns sort by row 0 alone, and say so.
+    source.view(&rows, &cols_sorted(by(&[2, 0]))).unwrap();
+    assert_eq!(columns(&source), by_row_0);
+    assert_eq!(source.view_spec(), cols_sorted(by(&[0])));
+    source.view(&rows, &cols_sorted(by(&[2]))).unwrap();
+    assert_eq!(source.view_spec(), ViewSpec::default());
+}
+
+#[test]
+fn a_sort_term_on_a_column_that_is_not_there_is_left_out() {
+    let rows = [
+        rec("eve", Some(2.5), 3),
+        rec("gus", None, 1),
+        rec("ada", Some(9.0), 3),
+    ];
+    let mut source = source(&rows);
+    let by_qty = || vec![SortColumn::ascending(Key(2))];
+    let asked = [vec![SortColumn::descending(Key(9))], by_qty()].concat();
+    source
+        .view(&rows, &rows_sorted(SortSpec::new(asked)))
+        .unwrap();
     assert_eq!(
-        source.view(&rows, &cols_sorted(by_row(2))),
-        Err(Unsortable { column: Key(2) })
+        source.window(Axis::Rows, 0..3),
+        vec![Key(1), Key(0), Key(2)]
     );
-    assert_eq!(columns(&source), before);
-    assert_eq!(source.view_spec(), cols_sorted(by_row(0)));
+    assert_eq!(source.view_spec(), rows_sorted(SortSpec::new(by_qty())));
 }
 
 #[test]

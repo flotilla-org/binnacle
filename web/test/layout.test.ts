@@ -141,7 +141,7 @@ describe("restoring a layout that names what the source lacks", () => {
   const missing: Layout<number, Field> = {
     version: 1,
     view: {
-      rows: { sort: [], filter: { quick: null, conditions: [{ id: GONE, kind: { type: "Text", query: { text: "q", caseSensitive: false, regex: false } }, not: false }] }, hidden: [2, 99] },
+      rows: { sort: [{ id: GONE, direction: "ascending" }, { id: "b", direction: "descending" }], filter: { quick: null, conditions: [{ id: GONE, kind: { type: "Text", query: { text: "q", caseSensitive: false, regex: false } }, not: false }] }, hidden: [2, 99] },
       cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: [GONE] },
     },
     pins: { rows: { leading: [], trailing: [] }, cols: { leading: [GONE, "b"], trailing: [] } },
@@ -149,7 +149,7 @@ describe("restoring a layout that names what the source lacks", () => {
     bands: { rows: 30, cols: 50 },
   };
 
-  test("succeeds: a missing pin sleeps, unknown hidden IDs are pruned, a condition on a missing column is not applied, sizes wait", () => {
+  test("succeeds: a missing pin sleeps, unknown sort terms and hidden IDs are pruned, a condition on a missing column is not applied, sizes wait", () => {
     const h = harness();
     try {
       h.settled();
@@ -158,7 +158,8 @@ describe("restoring a layout that names what the source lacks", () => {
       // The pin on the missing column waits, dormant; "b" is drawn pinned.
       expect(s.cols.pins.leading.map((k) => h.feed.colId(k))).toEqual(["gone", "b"]);
       expect(s.cols.pinned).toBe(1);
-      // The source answers with the hidden IDs it has.
+      // The source answers with the sort terms and hidden IDs it has.
+      expect(s.appliedView.rows.sort.map((c) => h.feed.colId(c.key))).toEqual(["b"]);
       expect(s.appliedView.rows.hidden.map((k) => h.feed.rowId(k))).toEqual([2]);
       expect(s.appliedView.cols.hidden).toEqual([]);
       // The condition on the missing column stays asked for, not applied.
