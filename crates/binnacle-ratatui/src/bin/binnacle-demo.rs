@@ -166,7 +166,14 @@
 //! without band rules), column lines, a full grid (which turns on a one-cell
 //! row Gap through `set_gap`) or none, in light, heavy and double lines.
 //! Column lines and the grid close the table and always draw the band rules;
-//! with band rules the column header band gets a second line for its rule. Press Ctrl+Q or Ctrl+C to quit.
+//! with band rules the column header band gets a second line for its rule.
+//!
+//! Ctrl+S saves the layout (the sort, filters and hidden items, the pins,
+//! the widths and heights set by hand and the header bands' thicknesses) and
+//! Ctrl+O puts it back, in any table: the status line says which. Restored
+//! in the slow records, the sort and filters show pending until the late
+//! answer, while pins, sizes and bands come back at once. The saved layout
+//! lasts as long as the demo runs. Press Ctrl+Q or Ctrl+C to quit.
 
 use std::borrow::Cow;
 use std::io;
@@ -187,9 +194,10 @@ use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
     CellRenderer, Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar,
     FindStatus, HeaderMenu, Hid, Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext,
-    SparklineRenderer, TextRenderer, Theme, animating, begin_frame, cap_hint, clear_filters, count,
-    fit_width, freeze_focused, hide_chosen, keep_value, remove_conditions, render_conditions,
-    render_editor, render_with, row_count, status, toggle_pin, unpin_focused, wheel,
+    SavedLayout, SparklineRenderer, TextRenderer, Theme, animating, begin_frame, cap_hint,
+    clear_filters, count, fit_width, freeze_focused, hide_chosen, keep_value, remove_conditions,
+    render_conditions, render_editor, render_with, restore_layout, row_count, save_layout, status,
+    toggle_pin, unpin_focused, wheel,
 };
 
 /// The most records the demo's source hides, fewer than the Grid's own cap.
@@ -1048,6 +1056,11 @@ struct App {
     fit_rows: bool,
     /// The Border Style drawn, an index into [`BORDERS`].
     border: usize,
+    /// The layout Ctrl+S saved, which Ctrl+O restores.
+    saved: Option<SavedLayout>,
+    /// What the status line says of the last save or restore, until the
+    /// next key.
+    layout_said: Option<&'static str>,
 }
 
 impl App {
@@ -1560,6 +1573,12 @@ fn main() -> io::Result<()> {
                     ..full
                 };
                 let mut said = capped.clone().unwrap_or_else(|| status(&snapshot));
+                if let Some(layout_said) = app.layout_said {
+                    if !said.is_empty() {
+                        said += " | ";
+                    }
+                    said += layout_said;
+                }
                 let [rows, cols] = [&unmatched[0], &unmatched[1]].map(|u| u.len());
                 if rows + cols > 0 {
                     if !said.is_empty() {
@@ -1624,6 +1643,7 @@ fn main() -> io::Result<()> {
                         return Ok(());
                     }
                     capped = None;
+                    app.layout_said = None;
                     if app.edit_key(&mut table, &mut grid, key.code)
                         || chooser.key(&key, &mut grid)
                         || menu.key(&key, &mut grid, |axis, range| table.window(axis, range))
@@ -1727,6 +1747,23 @@ fn main() -> io::Result<()> {
                     }
                     if ctrl && key.code == KeyCode::Char('r') {
                         table.next_filter(&mut grid);
+                        continue;
+                    }
+                    if ctrl && key.code == KeyCode::Char('s') {
+                        app.saved = Some(save_layout(&mut grid));
+                        app.layout_said = Some("layout saved");
+                        continue;
+                    }
+                    if ctrl && key.code == KeyCode::Char('o') {
+                        app.layout_said = Some(match &app.saved {
+                            Some(saved) => {
+                                restore_layout(&mut grid, saved);
+                                // The band keeps the restored thickness.
+                                app.fit_rows = false;
+                                "layout restored"
+                            }
+                            None => "no layout saved: Ctrl+S saves one",
+                        });
                         continue;
                     }
                     if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('s') {
