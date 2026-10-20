@@ -4,6 +4,11 @@
 // source (`fromRows` over records, say) serves a column-major table, each
 // record a column. It adds nothing: what the source does along one axis only,
 // the turned table does along the other only.
+//
+// It is a pure axis swap and must stay one: it is not how a source supports
+// its columns. `fromRows` supports sort, filter, hide and move on the column
+// axis natively, tested against its own model; turning it only exercises
+// those paths from the other side.
 
 import type {
   AppliedView,

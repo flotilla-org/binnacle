@@ -12,6 +12,11 @@ use crate::{FindStep, PumpSource, Viewed};
 /// each record a column. It adds nothing: what the inner source does along
 /// one axis only, the transposed table does along the other only.
 ///
+/// It is a pure axis swap and must stay one: it is not how a source supports
+/// its columns. The In-Memory Table Source supports sort, filter, hide and
+/// move on the column axis natively, tested against its own model; turning
+/// it only exercises those paths from the other side.
+///
 /// A View Spec's Text Queries and Conditions name items of the other axis,
 /// which turning leaves on the same side, so they pass on as they are. A
 /// Find Query names columns, which the inner source has as rows: one naming
