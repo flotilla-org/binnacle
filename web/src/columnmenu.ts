@@ -1,8 +1,9 @@
 // The column menu: a part that mounts on a GridWidget, after which every
 // column header whose column takes conditions draws a filter button. A press
 // on the button, Alt+ArrowDown in the grid, or `open` drops a popover under
-// the header: "Pin left" (or "Unpin" on a pinned column), then for a column
-// that takes conditions, "Contains" or "Does not contain", a text field with case and
+// the header: "Pin left" (or "Unpin" on a pinned column), "Hide column" and
+// "Show hidden columns ▸" where the columns hide, then for a column that
+// takes conditions, "Contains" or "Does not contain", a text field with case and
 // regex toggles (regex only where the column supports it), then the
 // checklist of the column's values (where it takes OneOf conditions) with a
 // search, counts, "(Blanks)" and a note on whether the list is capped and
@@ -15,11 +16,10 @@
 //
 // It is the row menu too: a row header's button, Alt+ArrowRight or `openRow`
 // drops the same popover beside the row header, filtering the columns by
-// the row's values. It has no pin row: rows pin from the widget's API.
-//
-// Where the Table Source hides the item's axis, the menu has Hide and "Show
-// hidden ▸", whose flyout lists the hidden items to show again (with a
-// search past eight of them) and "Show all".
+// the row's values, with "Hide row" where the rows hide. It has no Pin:
+// rows pin from the widget's API. "Show hidden ▸" opens a flyout listing
+// the hidden items to show again (with a search past eight of them) and
+// "Show all".
 
 import {
   columnConditions,
@@ -72,7 +72,9 @@ const FOOT_STYLE = "display: flex; gap: 6px; margin-top: 8px;";
 const ACTION_STYLE = "font: inherit; color: inherit; padding: 3px 12px; border-radius: 6px; cursor: pointer;";
 const SEPARATOR_STYLE = "height: 1px; margin: 8px -8px;";
 const SEARCH_STYLE = FIELD_STYLE + " display: block; width: 100%; box-sizing: border-box;";
-const LIST_STYLE = "max-height: 220px; overflow: auto; margin: 6px 0 4px; padding: 2px 0; border-radius: 6px;";
+const LIST_HEIGHT = 220;
+const LIST_MIN_HEIGHT = 96;
+const LIST_STYLE = `max-height: ${LIST_HEIGHT}px; overflow: auto; margin: 6px 0 4px; padding: 2px 0; border-radius: 6px;`;
 const ITEM_STYLE = "display: flex; align-items: center; gap: 6px; padding: 2px 8px; white-space: nowrap;";
 const ITEM_TEXT_STYLE = "flex: 1; overflow: hidden; text-overflow: ellipsis;";
 const COUNT_STYLE = "font-size: 11px; font-variant-numeric: tabular-nums;";
@@ -147,26 +149,10 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     name.textContent = label;
     title.append(heading, name);
 
-    const pins = el("div", "binnacle-column-menu-pins", ROW_STYLE);
-    // Its inline display would beat the `hidden` attribute.
-    if (!pinnable) pins.style.display = "none";
-    // As of the latest frame, so it follows pins made while the menu is open.
-    const pinned = () => pinnable && widget.pinned("cols").includes(colId as ColId);
-    const pinButton = action("Pin left");
-    pinButton.addEventListener("click", () => {
-      const unpin = pinned();
-      close();
-      if (unpin) widget.unpin("cols", colId as ColId);
-      else widget.pin("cols", colId as ColId);
-    });
-    pins.append(pinButton);
-    const pinSeparator = el("div", "", SEPARATOR_STYLE);
-    pinSeparator.hidden = !filters || !pinnable || hides;
-
-    // Hide, and the hidden items to show again.
+    // Pin, Hide, and the hidden items to show again.
     const actions = el("div", "binnacle-column-menu-actions", ACTIONS_STYLE);
     // Inline styles would win over the `hidden` attribute.
-    actions.style.display = hides ? "flex" : "none";
+    actions.style.display = hides || pinnable ? "flex" : "none";
     /** A menu item, lit while hovered or focused. */
     const lit = (b: HTMLButtonElement) => {
       const on = () => (b.style.background = b.disabled ? "transparent" : widget.theme.border);
@@ -177,13 +163,24 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       b.addEventListener("blur", off);
       return b;
     };
+    // As of the latest frame, so it follows pins made while the menu is open.
+    const pinned = () => pinnable && widget.pinned("cols").includes(colId as ColId);
+    const pinButton = lit(menuItem("Pin left", "binnacle-column-menu-pin"));
+    if (!pinnable) pinButton.style.display = "none";
+    pinButton.addEventListener("click", () => {
+      const unpin = pinned();
+      close();
+      if (unpin) widget.unpin("cols", colId as ColId);
+      else widget.pin("cols", colId as ColId);
+    });
     const hideButton = lit(menuItem(`Hide ${noun}`, "binnacle-column-menu-hide"));
     const showHidden = lit(menuItem("", "binnacle-column-menu-show-hidden"));
+    if (!hides) hideButton.style.display = showHidden.style.display = "none";
     showHidden.setAttribute("aria-haspopup", "menu");
     showHidden.setAttribute("aria-expanded", "false");
     const actionsSeparator = el("div", "", SEPARATOR_STYLE);
-    actionsSeparator.hidden = !hides || !filters;
-    actions.append(hideButton, showHidden, actionsSeparator);
+    actionsSeparator.hidden = !filters;
+    actions.append(pinButton, hideButton, showHidden, actionsSeparator);
     hideButton.addEventListener("click", () => {
       widget.hide([colId], own);
       close();
@@ -333,7 +330,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const spacer = el("span", "", "flex: 1;");
     const closeButton = action("Close");
     foot.append(clearButton, spacer, closeButton);
-    element.append(title, pins, pinSeparator, actions, textRow, error, values, foot);
+    element.append(title, actions, textRow, error, values, foot);
 
     const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
     /** Shows the column's Text condition in the text row. */
@@ -519,8 +516,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       // then drops the click.
       const pinText = pinned() ? "Unpin" : "Pin left";
       if (pinButton.textContent !== pinText) pinButton.textContent = pinText;
-      pinSeparator.style.background = t.border;
-      for (const c of [how, field, search, pinButton, clearButton, closeButton]) {
+      for (const c of [how, field, search, clearButton, closeButton]) {
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;
       }
@@ -572,7 +568,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const [left, top] = axis === "rows" ? [anchor.left, anchor.bottom + 4] : [anchor.right + 4, anchor.top];
     element.style.left = `${Math.max(8, Math.min(left, innerWidth - width - 8))}px`;
     // Room for the checklist once its values land.
-    const height = Math.max(element.offsetHeight, support.oneOf ? 380 : 0);
+    let height = Math.max(element.offsetHeight, support.oneOf ? 380 : 0);
+    // Short of room below its header, the list gives way before the menu covers the header.
+    const cut = Math.min(height - (innerHeight - top - 8), LIST_HEIGHT - LIST_MIN_HEIGHT);
+    if (support.oneOf && cut > 0) {
+      list.style.maxHeight = `${LIST_HEIGHT - cut}px`;
+      height -= cut;
+    }
     element.style.top = `${Math.max(8, Math.min(top, innerHeight - height - 8))}px`;
     document.addEventListener("pointerdown", outside, true);
     menu = { element, close };
