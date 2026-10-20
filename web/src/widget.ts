@@ -3,7 +3,7 @@
 // frees the wasm Grid on destroy.
 
 import { createAria, type Aria } from "./aria";
-import { answerAutoSize, fitWidth, type SizingParts } from "./autosize";
+import { answerAutoSize, bandWidth, fitWidth, type SizingParts } from "./autosize";
 import { borderGaps, headersBorder, type BorderStyle } from "./border";
 import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
@@ -18,6 +18,7 @@ import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scro
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
+import type { Content } from "./content";
 import type { AxisSnapshot, ConditionState, HeaderPlacement, KeyedTextQuery, Snapshot, Span } from "./snapshot";
 import type { Condition, Distinct, FailedRequest, FindMatch, FindQuery, Located, TableSource, TextQuery, ViewSpec } from "./source";
 import { AXES, AXIS_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName } from "./codes";
@@ -89,9 +90,11 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   typingPause?: number;
   /**
    * What a click or a focus move selects besides the focused cell: nothing
-   * (`"cells"`, the default) or its whole row (`"rows"`, for list-style views).
+   * (`"cells"`, the default), its whole row (`"rows"`, for list-style views)
+   * or its whole column (`"cols"`, for column-major views). Ctrl or Cmd with
+   * a click picks the cell's column under `"cols"`, else its row.
    */
-  selectionUnit?: "cells" | "rows";
+  selectionUnit?: "cells" | "rows" | "cols";
   /**
    * What a click on a header does, per axis: `"sort"` sorts the other axis by
    * the item (Shift adds it to the sort), `"select"` selects its whole row or
@@ -129,8 +132,8 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   focus: { row: number; col: number } | null;
   /** The selection range as half-open Position spans, if any. */
   selection: { rows: Span; cols: Span } | null;
-  /** How many rows are picked. */
-  picked: number;
+  /** How many rows and columns are picked. */
+  picked: { rows: number; cols: number };
   /** The focused cell by the Table Source's own IDs, if any. */
   focusIds: { row: RowId; col: ColId } | null;
   /** Whether a cell in view still waits for the Table Source: its row or column, or its value. */
@@ -213,6 +216,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly input: Input;
   private readonly aria: Aria;
   private readonly sizes: InitialSizes | null;
+  /** Whether the row-number band has been fitted to the first rows' labels. */
+  private bandFitted = false;
   private last: Snapshot | null = null;
   private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
@@ -318,7 +323,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       painter: this.painter,
       viewport: () => this.size,
       onEffect: (e) => this.dispatch(e),
-      settle: (s) => this.sizes?.settle(s, this.feed.content(s)) ?? false,
+      settle: (s) => {
+        const content = this.feed.content(s);
+        const band = this.fitBand(s, content);
+        return (this.sizes?.settle(s, content) ?? false) || band;
+      },
     };
 
     this.input = createInput({
@@ -917,6 +926,20 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     );
   }
 
+  /**
+   * Widens the row-number band once, when the first rows arrive, to fit their
+   * labels (a column-major table's field names, say); returns whether it did.
+   */
+  private fitBand(s: Snapshot, content: Content): boolean {
+    if (this.bandFitted || s.rows.strip.length === 0) return false;
+    const width = bandWidth(s, content, this.sizing(), true);
+    if (width === null) return false;
+    this.bandFitted = true;
+    if (Math.ceil(width) <= s.cols.header) return false;
+    this.grid.set_header(AXIS_CODE.cols, Math.ceil(width));
+    return true;
+  }
+
   private sizing(): SizingParts {
     return {
       grid: this.grid,
@@ -984,7 +1007,7 @@ function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked
   return {
     focus: rows.focus && cols.focus ? { row: rows.focus.position, col: cols.focus.position } : null,
     selection: s.selectionRange,
-    picked: s.picked.length,
+    picked: { rows: s.picked.rows.length, cols: s.picked.cols.length },
   };
 }
 

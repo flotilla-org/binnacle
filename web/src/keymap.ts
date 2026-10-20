@@ -11,6 +11,7 @@ export type Action =
   | { type: "MoveFocus"; axis: AxisName; by: FocusStep; forward: boolean; extend: boolean }
   | { type: "SelectAll" }
   | { type: "SelectColumn" }
+  | { type: "SelectRow" }
   | { type: "Cancel" }
   | { type: "Activate" }
   | { type: "BeginEdit" }
@@ -109,7 +110,8 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
 
 /**
  * The default bindings: arrows, Shift to extend, Mod+arrow to the edge,
- * pages, Home and End, Mod+A, Alt+ArrowDown for the column menu, Mod+F for
+ * pages (Alt+PageUp and Alt+PageDown along the columns), Home and End (the
+ * first and last row), Mod+A, Ctrl+Space the column and Shift+Space the row, Alt+ArrowDown for the column menu, Mod+F for
  * the find bar and F3 (Shift+F3 back) to step between matches.
  */
 export function defaultBindings(): KeyBindings {
@@ -121,6 +123,8 @@ export function defaultBindings(): KeyBindings {
     ["ArrowLeft", "cols", "item", false],
     ["PageDown", "rows", "page", true],
     ["PageUp", "rows", "page", false],
+    ["Alt+PageDown", "cols", "page", true],
+    ["Alt+PageUp", "cols", "page", false],
     ["End", "rows", "edge", true],
     ["Home", "rows", "edge", false],
     ["Mod+ArrowDown", "rows", "edge", true],
@@ -134,6 +138,7 @@ export function defaultBindings(): KeyBindings {
   }
   bindings["Mod+A"] = { type: "SelectAll" };
   bindings["Ctrl+Space"] = { type: "SelectColumn" };
+  bindings["Shift+Space"] = { type: "SelectRow" };
   bindings["Escape"] = { type: "Cancel" };
   bindings["Enter"] = { type: "Activate" };
   bindings["F2"] = { type: "BeginEdit" };

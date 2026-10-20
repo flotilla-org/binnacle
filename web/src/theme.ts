@@ -31,7 +31,7 @@ export interface Theme {
   focus: Line;
   /** Laid over the selected cells and the headers of selected rows and columns: keep `background` translucent. */
   selection: Style;
-  /** A picked row: `color` marks it beside its number. */
+  /** A picked row or column: `color` marks it beside its number or under its header. */
   picks: Style;
   sortMarker: string;
   /** The lines a resize grabs, in the header bands' Gaps. */

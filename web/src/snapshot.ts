@@ -153,7 +153,8 @@ export interface Snapshot {
   hoveredHeader: { axis: AxisName; position: number } | null;
   selectionRange: { rows: Span; cols: Span } | null;
   selectionRects: Rect[];
-  picked: bigint[];
+  /** The picked Keys of each axis, in Key order. */
+  picked: { rows: bigint[]; cols: bigint[] };
   movingKeys: bigint[];
   appliedView: KeyedViewSpec;
   /** The latest request while an answer is due (`viewPending`), then while the applied spec leaves part of it out. */
@@ -384,7 +385,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     cols: { start: r.num(), end: r.num() },
   }));
   const selectionRects = r.list(() => r.rect());
-  const picked = r.list(() => r.key());
+  const picked = { rows: r.list(() => r.key()), cols: r.list(() => r.key()) };
   const movingKeys = r.list(() => r.key());
   const appliedView = r.view();
   const requestedView = r.opt(() => r.view());

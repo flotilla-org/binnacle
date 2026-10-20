@@ -23,7 +23,7 @@ export interface SizingParts {
 
 /** Answers `AutoSizeRequested` and `BandAutoSizeRequested`; returns whether `effect` was one. */
 export function answerAutoSize(effect: Effect, s: Snapshot | null, content: Content | null, parts: SizingParts): boolean {
-  const { grid, measure, theme } = parts;
+  const { grid } = parts;
   switch (effect.type) {
     case "AutoSizeRequested": {
       // Rows hold one line of text: fitting one is going back to the default height.
@@ -42,16 +42,29 @@ export function answerAutoSize(effect: Effect, s: Snapshot | null, content: Cont
         return true;
       }
       if (!s || !content) return true;
-      let width = 0;
-      for (const row of s.rows.strip) width = Math.max(width, measure.width(content.label("rows", row), theme.font));
-      // Room for a sort marker while a row shown sorts the columns, or will.
-      const marked = s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);
-      grid.set_header(AXIS_CODE.cols, Math.ceil(width + 2 * PAD + (marked ? MARKED : 0)));
+      grid.set_header(AXIS_CODE.cols, Math.ceil(bandWidth(s, content, parts, false)!));
       return true;
     }
     default:
       return false;
   }
+}
+
+/**
+ * The width of the row-number band that shows the labels of the rows in the
+ * Strip whole; `null`, when `complete`, while any of those rows is still to
+ * come.
+ */
+export function bandWidth(s: Snapshot, content: Content, parts: SizingParts, complete: boolean): number | null {
+  const { measure, theme } = parts;
+  let width = 0;
+  for (const row of s.rows.strip) {
+    if (row.key === null && complete) return null;
+    width = Math.max(width, measure.width(content.label("rows", row), theme.font));
+  }
+  // Room for a sort marker while a row shown sorts the columns, or will.
+  const marked = s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);
+  return width + 2 * PAD + (marked ? MARKED : 0);
 }
 
 /**

@@ -16,16 +16,23 @@ export function paintSelection(p: PaintContext): void {
   ctx.restore();
 }
 
-/** Laid over the header bands: selected and moving headers, and a mark beside picked rows. */
+/** Laid over the header bands: selected and moving headers, and a mark beside picked rows and under picked columns. */
 export function paintHeaderStates(p: PaintContext): void {
   const { ctx, s, theme, left, top } = p;
   const moving = new Set(s.movingKeys);
-  const picked = new Set(s.picked);
+  const picked = new Set(s.picked.rows);
+  const pickedCols = new Set(s.picked.cols);
   ctx.save();
   clip(ctx, left, 0, p.width - left, top);
-  ctx.fillStyle = theme.selection.background;
   for (const h of s.cols.headers) {
-    if (h.selected || (h.key !== null && moving.has(h.key))) ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
+    if (h.selected || (h.key !== null && moving.has(h.key))) {
+      ctx.fillStyle = theme.selection.background;
+      ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
+    }
+    if (h.key !== null && pickedCols.has(h.key)) {
+      ctx.fillStyle = theme.picks.color;
+      ctx.fillRect(h.rect.x, top - 3, h.rect.width, 3);
+    }
   }
   ctx.restore();
   ctx.save();

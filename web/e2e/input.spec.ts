@@ -50,6 +50,21 @@ test.describe("keys on the huge table", () => {
     await expect(status(page)).toContainText("focus row 1,");
   });
 
+  test("Shift+Space selects the row, Ctrl+Space the column, and Alt+PageDown pages the columns", async ({ page }) => {
+    await page.keyboard.press("Shift+Space");
+    await expect(status(page)).toContainText("selected 1 × 12");
+    await page.keyboard.press("Control+Space");
+    await expect(status(page)).toContainText("selected 1,000,000,000,000,000 × 1");
+    const column = async () => Number((await status(page).textContent())!.match(/focus row \d+, column (\d+)/)![1]);
+    const col = await column();
+    await page.keyboard.press("Alt+PageDown");
+    await expect.poll(column).toBeGreaterThan(col + 1);
+    await page.keyboard.press("Alt+PageUp");
+    await expect.poll(column).toBe(col);
+    await page.keyboard.press("End");
+    await expect(status(page)).toContainText(`focus row 1,000,000,000,000,000, column ${col}`);
+  });
+
   test("Cmd/Ctrl+A selects every cell", async ({ page }) => {
     await page.keyboard.press(`${await mod(page)}+a`);
     await expect(status(page)).toContainText("selected 1,000,000,000,000,000 × 12");
@@ -141,7 +156,7 @@ async function onBorder(page: Page, x: number): Promise<boolean> {
 test.describe("pointer", () => {
   test.beforeEach(async ({ page }) => mount(page));
 
-  test("click focuses, Shift-click extends, Cmd/Ctrl-click picks rows", async ({ page }) => {
+  test("click focuses, Shift-click extends, Cmd/Ctrl-click picks rows and column headers", async ({ page }) => {
     await click(page, cell(2, 1));
     await expect.poll(async () => (await frame(page))?.focus).toEqual({ row: 2, col: 1 });
     await click(page, cell(5, 3), "Shift");
@@ -151,11 +166,13 @@ test.describe("pointer", () => {
     });
     await click(page, cell(8, 0), "ControlOrMeta");
     await click(page, cell(10, 0), "ControlOrMeta");
-    await expect.poll(async () => (await frame(page))?.picked).toBe(2);
+    await expect.poll(async () => (await frame(page))?.picked).toEqual({ rows: 2, cols: 0 });
     await click(page, cell(10, 0), "ControlOrMeta");
-    await expect.poll(async () => (await frame(page))?.picked).toBe(1);
+    await expect.poll(async () => (await frame(page))?.picked).toEqual({ rows: 1, cols: 0 });
+    await click(page, { x: cell(0, 2).x, y: 14 }, "ControlOrMeta");
+    await expect.poll(async () => frame(page)).toMatchObject({ focus: { col: 2 }, picked: { rows: 1, cols: 1 } });
     await click(page, cell(1, 1));
-    await expect.poll(async () => frame(page)).toMatchObject({ focus: { row: 1, col: 1 }, picked: 0 });
+    await expect.poll(async () => frame(page)).toMatchObject({ focus: { row: 1, col: 1 }, picked: { rows: 0, cols: 0 } });
     await expect(page.locator("#fixture .binnacle-input")).toBeFocused();
   });
 

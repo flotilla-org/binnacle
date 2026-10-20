@@ -35,6 +35,7 @@ const KEYS: readonly { event: string; names: readonly string[] }[] = [
 const ACTIONS: readonly Action[] = [
   { type: "SelectAll" },
   { type: "SelectColumn" },
+  { type: "SelectRow" },
   { type: "Cancel" },
   { type: "Activate" },
   { type: "BeginEdit" },
@@ -152,6 +153,10 @@ test.each<[Platform, KeyChord, Action]>([
   ["mac", { key: "a", ctrlKey: false, altKey: false, shiftKey: false, metaKey: true }, { type: "SelectAll" }],
   ["other", { key: "a", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }, { type: "SelectAll" }],
   ["mac", { key: " ", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }, { type: "SelectColumn" }],
+  ["other", { key: " ", ctrlKey: false, altKey: false, shiftKey: true, metaKey: false }, { type: "SelectRow" }],
+  ["mac", { key: "PageDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "MoveFocus", axis: "cols", by: "page", forward: true, extend: false }],
+  ["other", { key: "PageUp", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "MoveFocus", axis: "cols", by: "page", forward: false, extend: true }],
+  ["other", { key: "Home", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "MoveFocus", axis: "rows", by: "edge", forward: false, extend: false }],
   ["other", { key: "Escape", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "Cancel" }],
   ["other", { key: "Enter", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "Activate" }],
   ["mac", { key: "F2", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "BeginEdit" }],

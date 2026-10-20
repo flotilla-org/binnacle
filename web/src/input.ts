@@ -88,6 +88,8 @@ export function perform(grid: WebGrid, action: Action): void {
       return grid.select_all();
     case "SelectColumn":
       return grid.select_column();
+    case "SelectRow":
+      return grid.select_row();
     case "Cancel":
       return grid.cancel();
     case "Activate":

@@ -16,7 +16,8 @@ export function paintBody(p: PaintContext): boolean {
   ctx.fillStyle = theme.body.background;
   ctx.fillRect(left, top, p.width - left, p.height - top);
   const cell = createCell(p);
-  const picked = new Set(s.picked);
+  const pickedRows = new Set(s.picked.rows);
+  const pickedCols = new Set(s.picked.cols);
   const cols = s.cols.strip;
   s.rows.strip.forEach((row, i) => {
     if (theme.zebra && row.position % 2 === 1) {
@@ -32,7 +33,7 @@ export function paintBody(p: PaintContext): boolean {
       const status: CellStatus = {
         focused: state.focused,
         selected: state.selected,
-        picked: row.key !== null && picked.has(row.key),
+        picked: (row.key !== null && pickedRows.has(row.key)) || (col.key !== null && pickedCols.has(col.key)),
         editing: state.editing,
         loading: value === undefined && !failed,
         flashing: row.key === null || col.key === null ? 0 : p.flashes.amount(row.key, col.key, p.now),

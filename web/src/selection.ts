@@ -10,8 +10,8 @@ export interface SelectionChange<RowId = unknown, ColId = unknown> {
   focus: { rowId: RowId; colId: ColId } | null;
   /** The selected range, if any. */
   selection: { rows: AxisSelection<RowId>; cols: AxisSelection<ColId> } | null;
-  /** The picked rows, in no particular order. */
-  picked: RowId[];
+  /** The picked rows and columns, in no particular order. */
+  picked: { rows: RowId[]; cols: ColId[] };
 }
 
 /**
@@ -34,7 +34,7 @@ export function createSelectionEvents<RowId, ColId>(
   feed: Ids<RowId, ColId>,
   emit: (change: SelectionChange<RowId, ColId>) => void,
 ): (s: Snapshot) => void {
-  let last: SelectionChange<RowId, ColId> = { focus: null, selection: null, picked: [] };
+  let last: SelectionChange<RowId, ColId> = { focus: null, selection: null, picked: { rows: [], cols: [] } };
   return (s) => {
     const next = selectionChange(s, feed);
     if (same(last, next)) return;
@@ -57,7 +57,10 @@ function selectionChange<RowId, ColId>(s: Snapshot, feed: Ids<RowId, ColId>): Se
       rows: axisSelection(s.rows, range.rows, rowId),
       cols: axisSelection(s.cols, range.cols, colId),
     },
-    picked: s.picked.map(rowId).filter((id) => id !== undefined),
+    picked: {
+      rows: s.picked.rows.map(rowId).filter((id) => id !== undefined),
+      cols: s.picked.cols.map(colId).filter((id) => id !== undefined),
+    },
   };
 }
 
@@ -82,7 +85,8 @@ function same<RowId, ColId>(a: SelectionChange<RowId, ColId>, b: SelectionChange
         b.selection !== null &&
         sameAxis(a.selection.rows, b.selection.rows) &&
         sameAxis(a.selection.cols, b.selection.cols))) &&
-    sameList(a.picked, b.picked)
+    sameList(a.picked.rows, b.picked.rows) &&
+    sameList(a.picked.cols, b.picked.cols)
   );
 }
 

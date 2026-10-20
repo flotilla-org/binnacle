@@ -56,7 +56,8 @@ function describe(frame: FrameInfo): string {
     const size = (s: { start: number; end: number }) => number.format(s.end - s.start);
     parts.push(`selected ${size(selection.rows)} × ${size(selection.cols)}`);
   }
-  if (picked) parts.push(`${number.format(picked)} picked`);
+  if (picked.rows) parts.push(`${number.format(picked.rows)} ${picked.rows === 1 ? "row" : "rows"} picked`);
+  if (picked.cols) parts.push(`${number.format(picked.cols)} ${picked.cols === 1 ? "column" : "columns"} picked`);
   if (frame.loading) parts.push("loading");
   if (frame.editing) parts.push("editing");
   return parts.join("  ·  ");

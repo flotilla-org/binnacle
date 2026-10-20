@@ -20,7 +20,7 @@ export interface CellStatus {
   focused: boolean;
   /** Inside the selected range. */
   selected: boolean;
-  /** In a picked row. */
+  /** In a picked row or column. */
   picked: boolean;
   editing: boolean;
   /** The value is not there yet. Renderers are not called for such cells today, so this is false in `draw`. */

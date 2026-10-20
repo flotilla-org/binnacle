@@ -21,7 +21,7 @@ export const FOCUS_STEP = { item: 0, page: 1, edge: 2 } as const;
 
 export const EDIT_END = { commit: 0, cancel: 1 } as const;
 
-export const SELECTION_UNIT = { cells: 0, rows: 1 } as const;
+export const SELECTION_UNIT = { cells: 0, rows: 1, cols: 2 } as const;
 
 /** What a header click does, as the wasm `set_header_click` input takes it. */
 export const HEADER_CLICK = { sort: 0, select: 1, none: 2 } as const;

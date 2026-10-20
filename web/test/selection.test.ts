@@ -62,7 +62,7 @@ test("fires once per change with the focused cell's IDs, and not on frames that 
       {
         focus: { rowId: "r2", colId: "b" },
         selection: null,
-        picked: [],
+        picked: { rows: [], cols: [] },
       },
     ]);
     h.click(...cell(2, 1));
@@ -87,14 +87,14 @@ test("a range in view reports every ID in order; picked rows report theirs", () 
     h.click(...cell(5, 0), CTRL);
     h.click(...cell(4, 0), CTRL);
     frame();
-    expect(new Set(changes.at(-1)!.picked)).toEqual(new Set(["r5", "r4"]));
+    expect(new Set(changes.at(-1)!.picked.rows)).toEqual(new Set(["r5", "r4"]));
     expect(changes.at(-1)!.focus).toEqual({ rowId: "r4", colId: "a" });
     // Unpicking the focused row changes only the Picks, and still fires.
     const sent = changes.length;
     h.click(...cell(4, 0), CTRL);
     frame();
     expect(changes).toHaveLength(sent + 1);
-    expect(changes.at(-1)!.picked).toEqual(["r5"]);
+    expect(changes.at(-1)!.picked).toEqual({ rows: ["r5"], cols: [] });
   } finally {
     h.destroy();
   }
@@ -138,7 +138,21 @@ test("the focused row's IDs survive a reorder, so a reorder alone does not fire"
   }
 });
 
-/** Up to eight clicks on visible cells, each plain, Shift or Ctrl, with a frame after each. */
+test("a Ctrl-click on a column header picks the column, reported by its ID", () => {
+  const { h, changes, frame } = watched(table(10).source);
+  try {
+    frame();
+    h.click(BAND + 2 * COL_WIDTH + 10, HEADER / 2, CTRL);
+    h.click(BAND + 10, HEADER / 2, CTRL);
+    frame();
+    expect(changes.at(-1)!.picked).toEqual({ rows: [], cols: ["a", "c"] });
+    expect(changes.at(-1)!.focus?.colId).toBe("a");
+  } finally {
+    h.destroy();
+  }
+});
+
+/** Up to eight clicks on visible cells or column headers, each plain, Shift or Ctrl, with a frame after each. */
 function clicks(tc: hegel.TestCase) {
   const w = watched(table(tc.draw(gs.integers({ minValue: 1, maxValue: 40 }))).source);
   w.frame();
@@ -147,7 +161,9 @@ function clicks(tc: hegel.TestCase) {
   for (let i = tc.draw(gs.integers({ minValue: 1, maxValue: 8 })); i > 0; i--) {
     const row = tc.draw(gs.integers({ minValue: 0, maxValue: onScreen - 1 }));
     const col = tc.draw(gs.integers({ minValue: 0, maxValue: 2 }));
-    w.h.click(...cell(row, col), tc.draw(gs.sampledFrom([0, SHIFT, CTRL])));
+    const [x, y] = cell(row, col);
+    const header = tc.draw(gs.booleans());
+    w.h.click(x, header ? HEADER / 2 : y, tc.draw(gs.sampledFrom([0, SHIFT, CTRL])));
     w.frame();
   }
   return w;
@@ -172,10 +188,11 @@ test("over any clicks, the last change describes the grid's focus, range and Pic
     const { h, changes } = clicks(tc);
     try {
       const s = h.snapshot;
-      const last = changes.at(-1) ?? { focus: null, selection: null, picked: [] };
+      const last = changes.at(-1) ?? { focus: null, selection: null, picked: { rows: [], cols: [] } };
       const focus = s.rows.focus && s.cols.focus ? { rowId: h.feed.rowId(s.rows.focus.key!), colId: h.feed.colId(s.cols.focus.key!) } : null;
       expect(last.focus).toEqual(focus);
-      expect(new Set(last.picked)).toEqual(new Set(s.picked.map((k) => h.feed.rowId(k))));
+      expect(new Set(last.picked.rows)).toEqual(new Set(s.picked.rows.map((k) => h.feed.rowId(k))));
+      expect(new Set(last.picked.cols)).toEqual(new Set(s.picked.cols.map((k) => h.feed.colId(k))));
       const range = s.selectionRange;
       if (range === null) {
         expect(last.selection).toBeNull();
