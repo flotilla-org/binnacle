@@ -177,12 +177,15 @@ use binnacle_memory::{
 };
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
-    CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
-    HeaderMenu, Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer,
-    TextRenderer, Theme, animating, begin_frame, clear_filters, count, fit_width, freeze_focused,
-    hide_focused, keep_value, remove_conditions, render_conditions, render_editor, render_with,
-    row_count, status, toggle_pin, unpin_focused, wheel,
+    CellRenderer, Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar,
+    FindStatus, HeaderMenu, Hid, Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext,
+    SparklineRenderer, TextRenderer, Theme, animating, begin_frame, cap_hint, clear_filters, count,
+    fit_width, freeze_focused, hide_chosen, keep_value, remove_conditions, render_conditions,
+    render_editor, render_with, row_count, status, toggle_pin, unpin_focused, wheel,
 };
+
+/// The most records the demo's source hides, fewer than the Grid's own cap.
+const RECORD_HIDE_CAP: usize = 100;
 
 /// The Control that pins the focused column left, for the keys line.
 const PIN_LEFT: Control = Control::Pin {
@@ -1254,6 +1257,9 @@ fn transposed() -> (Table, Grid) {
             grid.set_quick_filter_support(axis, turned.quick_filter(axis));
             grid.set_hide_support(axis, turned.hide_support(axis));
         }
+        // The demo's source takes fewer hidden records than the Grid would,
+        // so hiding many of them suggests a filter.
+        grid.set_hide_cap(Axis::Cols, RECORD_HIDE_CAP);
         grid.set_find_support(turned.find_support());
         for f in 0..HEADERS.len() as u64 {
             grid.set_support(Axis::Cols, Key(f), turned.support(Axis::Cols, Key(f)));
@@ -1316,6 +1322,7 @@ fn main() -> io::Result<()> {
             grid.set_quick_filter_support(axis, source.quick_filter(axis));
             grid.set_hide_support(axis, source.hide_support(axis));
         }
+        grid.set_hide_cap(Axis::Rows, RECORD_HIDE_CAP);
         grid.set_find_support(source.find_support());
         for c in 0..HEADERS.len() as u64 {
             grid.set_support(Axis::Rows, Key(c), source.support(Axis::Rows, Key(c)));
@@ -1361,6 +1368,9 @@ fn main() -> io::Result<()> {
         _ => ColumnFilter::new(),
     };
     let mut menu = HeaderMenu::new();
+    let mut chooser = Chooser::new();
+    // A hide past the cap's suggestion, until the next key.
+    let mut capped: Option<String> = None;
     let mut find = match preset {
         Preset::Chords => FindBar::new(),
         _ => FindBar::new().table_hints(format!(
@@ -1377,7 +1387,7 @@ fn main() -> io::Result<()> {
     };
     // What the status line says while nothing else is to be said.
     let keys = format!(
-        "{} find  {} filter  {} column  {} row  {} clear  {} pin  {} hide  {} menu",
+        "{} find  {} filter  {} column  {} row  {} clear  {} pin  {} hide  {} menu  {} choose",
         hint(Control::Find),
         hint(Control::QuickFilter),
         hint(Control::ColumnFilter),
@@ -1385,7 +1395,8 @@ fn main() -> io::Result<()> {
         hint(Control::Clear),
         hint(PIN_LEFT),
         hint(Control::Hide { axis: Axis::Cols }),
-        hint(Control::Menu { axis: Axis::Cols })
+        hint(Control::Menu { axis: Axis::Cols }),
+        hint(Control::Chooser { axis: Axis::Cols })
     );
     // What a click selects, which Alt+S cycles.
     let mut unit = SelectionUnit::Cells;
@@ -1510,6 +1521,10 @@ fn main() -> io::Result<()> {
                 );
                 let buf = frame.buffer_mut();
                 menu.render(&snapshot, &table.text(), &themes[theme], layout.grid, buf);
+                chooser.fetch(&snapshot, &table.text(), |axis, range| {
+                    table.window(axis, range)
+                });
+                chooser.render(&snapshot, &themes[theme], layout.grid, buf);
                 if field {
                     let top = ratatui::layout::Rect { height: 1, ..full };
                     quick.render(&snapshot, &themes[theme], top, frame.buffer_mut());
@@ -1536,7 +1551,7 @@ fn main() -> io::Result<()> {
                     height: 1,
                     ..full
                 };
-                let mut said = status(&snapshot);
+                let mut said = capped.clone().unwrap_or_else(|| status(&snapshot));
                 let [rows, cols] = [&unmatched[0], &unmatched[1]].map(|u| u.len());
                 if rows + cols > 0 {
                     if !said.is_empty() {
@@ -1600,12 +1615,17 @@ fn main() -> io::Result<()> {
                     if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
                         return Ok(());
                     }
+                    capped = None;
                     if app.edit_key(&mut table, &mut grid, key.code)
-                        || menu.key(&key, &mut grid)
+                        || chooser.key(&key, &mut grid)
+                        || menu.key(&key, &mut grid, |axis, range| table.window(axis, range))
                         || popup.key(&key, &mut grid)
                         || quick.key(&key, &mut grid)
                         || find.key(&key, &mut grid)
                     {
+                        if let Some(axis) = menu.take_chooser() {
+                            chooser.open(&grid.snapshot(), axis);
+                        }
                         continue;
                     }
                     let took = match controls.control(&key) {
@@ -1662,7 +1682,14 @@ fn main() -> io::Result<()> {
                             unpin_focused(&mut grid, axis);
                             true
                         }
-                        Some(Control::Hide { axis }) => hide_focused(&mut grid, axis),
+                        Some(Control::Hide { axis }) => {
+                            let keys_at = |axis, range| table.window(axis, range);
+                            if let Hid::Capped(cap) = hide_chosen(&mut grid, axis, keys_at) {
+                                capped = Some(cap_hint(axis, cap));
+                            }
+                            true
+                        }
+                        Some(Control::Chooser { axis }) => chooser.open(&grid.snapshot(), axis),
                         Some(Control::ShowHidden { axis }) => {
                             menu.open_hidden(&grid.snapshot(), axis)
                         }

@@ -1,0 +1,46 @@
+---
+source: crates/binnacle-ratatui/tests/menu.rs
+assertion_line: 435
+expression: out
+---
+open
+    name        │port        │crew        │
+1   ┌─ Choose columns ─────────────────────┐           █
+2   │ Search ▏                             │           █
+3   ├─ 3 columns ──────────────────────────┤           █
+4   │ [x] (Show all)                       │           █
+5   │ [x] name                             │           █
+6   │ [x] port                             │           █
+    │ [x] crew                             │           █
+    │ 3 columns shown                      │           █
+    │ Space tick  Enter, Esc close         │           █
+    └──────────────────────────────────────┘           █
+                                                       █
+
+port unticked: hidden, and kept in its place
+    name        │crew        │
+1   ┌─ Choose columns ─────────────────────┐           █
+2   │ Search ▏                             │           █
+3   ├─ 3 columns ──────────────────────────┤           █
+4   │ [-] (Show all)                       │           █
+5   │ [x] name                             │           █
+6   │ [ ] port                             │           █
+    │ [x] crew                             │           █
+    │ 2 of 3 columns shown                 │           █
+    │ Space tick  Enter, Esc close         │           █
+    └──────────────────────────────────────┘           █
+                                                       █
+
+searching "r"
+    name        │crew        │
+1   ┌─ Choose columns ─────────────────────┐           █
+2   │ Search r▏                            │           █
+3   ├─ 3 columns ──────────────────────────┤           █
+4   │ [-] (Show all matching "r")          │           █
+5   │ [ ] port                             │           █
+6   │ [x] crew                             │           █
+    │ 2 of 3 columns shown                 │           █
+    │ Space tick  Enter, Esc close         │           █
+    └──────────────────────────────────────┘           █
+                                                       █
+                                                       █

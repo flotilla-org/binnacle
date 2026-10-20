@@ -1,11 +1,12 @@
-//! Hiding in the terminal: the hide key, and the header menu's Hide, its
-//! hidden items inline and Show all, over an In-Memory Table Source that
-//! hides both axes.
+//! Hiding in the terminal: the hide key, the header menu's Hide, Show only
+//! these, its hidden items inline and Show all, and the chooser, over an
+//! In-Memory Table Source that hides both axes.
 
-use binnacle_core::{Axis, AxisConfig, Grid, Key, Viewport};
+use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Modifiers, PointerEvent, Viewport};
 use binnacle_memory::{MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    Content, Control, Controls, HeaderMenu, Preset, RenderContext, Theme, hide_focused, render_with,
+    Chooser, Content, Control, Controls, HeaderMenu, Hid, Preset, RenderContext, Theme,
+    hide_chosen, hide_focused, render_with, show_only_chosen,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -71,9 +72,74 @@ impl Table {
     }
 
     fn press(&mut self, menu: &mut HeaderMenu, code: KeyCode) -> bool {
-        let took = menu.key(&KeyEvent::new(code, KeyModifiers::NONE), &mut self.grid);
+        let source = &self.source;
+        let event = KeyEvent::new(code, KeyModifiers::NONE);
+        let took = menu.key(&event, &mut self.grid, |axis, range| {
+            source.window(axis, range)
+        });
         self.frame();
         took
+    }
+
+    fn choose(&mut self, chooser: &mut Chooser, code: KeyCode) -> bool {
+        let took = chooser.key(&KeyEvent::new(code, KeyModifiers::NONE), &mut self.grid);
+        self.frame();
+        self.fetch(chooser);
+        took
+    }
+
+    fn fetch(&mut self, chooser: &mut Chooser) {
+        let source = &self.source;
+        chooser.fetch(&self.grid.snapshot(), &Labels, |axis, range| {
+            source.window(axis, range)
+        });
+    }
+
+    fn hide_chosen(&mut self, axis: Axis) -> Hid {
+        let source = &self.source;
+        let hid = hide_chosen(&mut self.grid, axis, |axis, range| {
+            source.window(axis, range)
+        });
+        self.frame();
+        hid
+    }
+
+    fn show_only(&mut self, axis: Axis) -> Hid {
+        let source = &self.source;
+        let hid = show_only_chosen(&mut self.grid, axis, |axis, range| {
+            source.window(axis, range)
+        });
+        self.frame();
+        hid
+    }
+
+    /// Ctrl-clicks the header of the item of `axis` at `position`, picking it.
+    fn pick(&mut self, axis: Axis, position: u64) {
+        let (x, y) = match axis {
+            Axis::Cols => (4.0 + 13.0 * position as f32 + 1.0, 0.5),
+            Axis::Rows => (1.0, 1.5 + position as f32),
+        };
+        let m = Modifiers::CTRL;
+        self.grid.pointer(PointerEvent::down(x, y).modifiers(m));
+        self.grid.pointer(PointerEvent::up(x, y).modifiers(m));
+        self.frame();
+    }
+
+    fn chooser_screen(&mut self, chooser: &mut Chooser) -> String {
+        self.frame();
+        self.fetch(chooser);
+        let snapshot = self.grid.snapshot();
+        let mut buf = Buffer::empty(Rect::new(0, 0, W, H));
+        let theme = Theme::classic();
+        render_with(
+            &snapshot,
+            &Labels,
+            &RenderContext::new(&theme),
+            buf.area,
+            &mut buf,
+        );
+        chooser.render(&snapshot, &theme, buf.area, &mut buf);
+        text(&buf)
     }
 
     fn hidden(&mut self, axis: Axis) -> Vec<u64> {
@@ -233,6 +299,15 @@ fn each_preset_reaches_hiding_with_its_own_keys() {
             key('M', alt | KeyModifiers::SHIFT),
             Control::Menu { axis: Axis::Rows },
         ),
+        (key('o', alt), Control::Chooser { axis: Axis::Cols }),
+        (
+            key('C', alt | KeyModifiers::SHIFT),
+            Control::Chooser { axis: Axis::Rows },
+        ),
+        (
+            key('O', alt | KeyModifiers::SHIFT),
+            Control::Chooser { axis: Axis::Rows },
+        ),
     ];
     for (event, control) in cases {
         assert_eq!(chords.control(&event), Some(control), "{event:?}");
@@ -263,4 +338,204 @@ fn each_preset_reaches_hiding_with_its_own_keys() {
             );
         }
     }
+    let modes = Controls::preset(Preset::Modes);
+    let cols = Control::Chooser { axis: Axis::Cols };
+    let rows = Control::Chooser { axis: Axis::Rows };
+    assert_eq!(modes.control(&key('C', KeyModifiers::SHIFT)), Some(cols));
+    assert_eq!(modes.control(&key('c', alt)), Some(rows));
+    let bare = Controls::preset(Preset::BareKeys);
+    assert_eq!(bare.control(&key('c', none)), Some(cols));
+    assert_eq!(bare.control(&key('C', KeyModifiers::SHIFT)), Some(rows));
+}
+
+#[test]
+fn hide_reaches_the_picks_or_the_selection_as_well_as_the_focused_item() {
+    let mut t = Table::new(true);
+    t.focus(0, 0);
+    t.pick(Axis::Cols, 0);
+    t.pick(Axis::Cols, 2);
+    assert_eq!(t.hide_chosen(Axis::Cols), Hid::Hidden(2));
+    assert_eq!(t.shown(Axis::Cols), [1]);
+    // Records 1 to 3, selected by a range.
+    t.focus(1, 1);
+    t.grid.action(Action::MoveFocus {
+        axis: Axis::Rows,
+        by: binnacle_core::FocusStep::Item,
+        forward: true,
+        extend: true,
+    });
+    t.grid.action(Action::MoveFocus {
+        axis: Axis::Rows,
+        by: binnacle_core::FocusStep::Item,
+        forward: true,
+        extend: true,
+    });
+    t.frame();
+    assert_eq!(t.hide_chosen(Axis::Rows), Hid::Hidden(3));
+    assert_eq!(t.shown(Axis::Rows), [0, 4, 5]);
+    assert_eq!(
+        t.hide_chosen(Axis::Rows),
+        Hid::Hidden(1),
+        "then the focused row"
+    );
+    assert_eq!(t.shown(Axis::Rows).len(), 2);
+}
+
+#[test]
+fn show_only_these_hides_every_other_item_shown_on_either_axis() {
+    let mut t = Table::new(true);
+    t.focus(0, 0);
+    t.pick(Axis::Cols, 1);
+    assert_eq!(t.show_only(Axis::Cols), Hid::Hidden(2));
+    assert_eq!(t.shown(Axis::Cols), [1]);
+    assert_eq!(t.hidden(Axis::Cols), [0, 2]);
+    t.pick(Axis::Rows, 2);
+    t.pick(Axis::Rows, 4);
+    assert_eq!(t.show_only(Axis::Rows), Hid::Hidden(4));
+    assert_eq!(t.shown(Axis::Rows), [2, 4]);
+}
+
+#[test]
+fn past_the_hide_cap_nothing_hides_and_the_menu_suggests_a_filter() {
+    let mut t = Table::new(true);
+    t.grid.set_hide_cap(Axis::Rows, 2);
+    t.focus(0, 0);
+    t.grid.action(Action::SelectAll);
+    t.frame();
+    // Asking for the selection's Keys would be wasted past the cap.
+    let hid = hide_chosen(&mut t.grid, Axis::Rows, |_, _| panic!("asked for Keys"));
+    assert_eq!(hid, Hid::Capped(2));
+    t.focus(3, 0);
+    let mut menu = HeaderMenu::new();
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    t.press(&mut menu, KeyCode::Char('o'));
+    assert!(menu.is_open(), "a refused hide leaves it open");
+    assert_eq!(t.hidden(Axis::Rows), Vec::<u64>::new());
+    insta::assert_snapshot!(t.screen(&menu));
+    t.press(&mut menu, KeyCode::Char('c'));
+    assert!(!menu.is_open());
+    assert_eq!(
+        menu.take_chooser(),
+        Some(Axis::Rows),
+        "Choose asks for the chooser"
+    );
+    assert_eq!(menu.take_chooser(), None);
+}
+
+#[test]
+fn the_chooser_lists_every_column_ticked_while_shown_and_ticks_show_and_hide() {
+    let mut t = Table::new(true);
+    t.focus(0, 0);
+    let mut chooser = Chooser::new();
+    assert!(chooser.open(&t.grid.snapshot(), Axis::Cols));
+    let mut out = format!("open\n{}\n", t.chooser_screen(&mut chooser));
+    t.choose(&mut chooser, KeyCode::Down);
+    t.choose(&mut chooser, KeyCode::Char(' '));
+    assert_eq!(t.shown(Axis::Cols), [0, 2]);
+    out += &format!(
+        "\nport unticked: hidden, and kept in its place\n{}\n",
+        t.chooser_screen(&mut chooser)
+    );
+    t.choose(&mut chooser, KeyCode::Char('r'));
+    out += &format!("\nsearching \"r\"\n{}\n", t.chooser_screen(&mut chooser));
+    t.choose(&mut chooser, KeyCode::Home);
+    t.choose(&mut chooser, KeyCode::Char(' '));
+    assert_eq!(t.shown(Axis::Cols), [0, 1, 2], "the head shows every match");
+    t.choose(&mut chooser, KeyCode::Char(' '));
+    assert_eq!(t.shown(Axis::Cols), [0], "then hides them");
+    t.choose(&mut chooser, KeyCode::Backspace);
+    t.choose(&mut chooser, KeyCode::Home);
+    t.choose(&mut chooser, KeyCode::Char(' '));
+    assert_eq!(t.shown(Axis::Cols), [0, 1, 2]);
+    assert!(t.choose(&mut chooser, KeyCode::Esc));
+    assert!(!chooser.is_open());
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn the_row_chooser_hides_rows_and_says_so_past_the_cap() {
+    let mut t = Table::new(true);
+    t.grid.set_hide_cap(Axis::Rows, 1);
+    t.focus(0, 0);
+    let mut chooser = Chooser::new();
+    assert!(chooser.open(&t.grid.snapshot(), Axis::Rows));
+    t.fetch(&mut chooser);
+    t.choose(&mut chooser, KeyCode::Down);
+    t.choose(&mut chooser, KeyCode::Char(' '));
+    assert_eq!(t.hidden(Axis::Rows), [1]);
+    t.choose(&mut chooser, KeyCode::Down);
+    t.choose(&mut chooser, KeyCode::Char(' '));
+    assert_eq!(t.hidden(Axis::Rows), [1], "past the cap of 1");
+    insta::assert_snapshot!(t.chooser_screen(&mut chooser));
+}
+
+#[test]
+fn no_chooser_opens_on_an_axis_whose_source_cannot_hide() {
+    let mut t = Table::new(false);
+    assert!(!Chooser::new().open(&t.grid.snapshot(), Axis::Cols));
+}
+
+#[test]
+fn on_a_column_major_table_the_chooser_and_show_only_act_on_its_records() {
+    use binnacle_memory::Transposed;
+    let rows: Vec<Record> = (0..4).map(|r| [r, 10 * r, 100 * r]).collect();
+    let mut source = (0..3).fold(MemorySource::<Record>::new(4, 3), |s, c| {
+        s.i64_column(Key(c as u64), move |r: &Record| Some(r[c]))
+    });
+    // The records are the columns, the fields the rows.
+    let mut grid = Grid::new(
+        AxisConfig::new(3, 1.0).header(1.0),
+        AxisConfig::new(4, 8.0).header(5.0).gap(1.0),
+    );
+    for axis in Axis::ALL {
+        grid.set_hide_support(axis, Transposed(source.over(&rows)).hide_support(axis));
+    }
+    let frame = |grid: &mut Grid, source: &mut MemorySource<Record>| {
+        for _ in 0..3 {
+            for (axis, range) in grid.begin_frame(Viewport::new(W.into(), H.into())) {
+                let keys = source.window(axis.other(), range.clone());
+                grid.set_window(axis, range.start, &keys);
+            }
+            pump(grid, &mut Transposed(source.over(&rows)), |_, _| {});
+        }
+    };
+    frame(&mut grid, &mut source);
+    grid.set_focus(Key(0), Key(2));
+    frame(&mut grid, &mut source);
+    let keys_at = |axis: Axis, range| source.window(axis.other(), range);
+    assert_eq!(
+        show_only_chosen(&mut grid, Axis::Cols, keys_at),
+        Hid::Hidden(3)
+    );
+    frame(&mut grid, &mut source);
+    assert_eq!(
+        source.window(Axis::Rows, 0..source.count(Axis::Rows)),
+        [Key(2)]
+    );
+    let mut chooser = Chooser::new();
+    assert!(chooser.open(&grid.snapshot(), Axis::Cols));
+    struct Records;
+    impl Content for Records {
+        fn cell(&self, _: Key, _: Key) -> String {
+            String::new()
+        }
+        fn column_header(&self, col: Key) -> String {
+            format!("record {}", col.0)
+        }
+    }
+    chooser.fetch(&grid.snapshot(), &Records, |axis, range| {
+        source.window(axis.other(), range)
+    });
+    // The record shown first, then the three hidden: tick record 0 back.
+    let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+    chooser.key(&down, &mut grid);
+    chooser.key(
+        &KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        &mut grid,
+    );
+    frame(&mut grid, &mut source);
+    assert_eq!(
+        source.window(Axis::Rows, 0..source.count(Axis::Rows)),
+        [Key(0), Key(2)]
+    );
 }

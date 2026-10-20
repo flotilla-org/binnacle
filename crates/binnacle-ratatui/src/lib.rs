@@ -6,6 +6,7 @@
 
 mod border;
 mod checklist;
+mod chooser;
 mod context;
 mod filter;
 mod find;
@@ -19,6 +20,7 @@ mod shimmer;
 mod theme;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
+pub use chooser::Chooser;
 pub use context::RenderContext;
 pub use filter::{
     ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, count,
@@ -26,7 +28,7 @@ pub use filter::{
 };
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
-pub use menu::{HeaderMenu, hide_focused};
+pub use menu::{Chosen, HeaderMenu, Hid, cap_hint, hide_chosen, hide_focused, show_only_chosen};
 pub use mouse::Mouse;
 pub use pin::{freeze_focused, toggle_pin, unpin_focused};
 pub use renderer::{

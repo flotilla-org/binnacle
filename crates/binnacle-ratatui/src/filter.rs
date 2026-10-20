@@ -69,7 +69,8 @@ pub enum Control {
     Pin { axis: Axis, edge: Edge },
     /// Unpin the focused item of `axis` ([`crate::unpin_focused`]).
     Unpin { axis: Axis },
-    /// Hide the focused item of `axis` ([`crate::hide_focused`]).
+    /// Hide the chosen items of `axis`: the picks, else the selection, else
+    /// the focused item ([`crate::hide_chosen`]).
     Hide { axis: Axis },
     /// Open the focused item's header menu at the hidden items of `axis`
     /// ([`crate::HeaderMenu::open_hidden`]).
@@ -80,11 +81,14 @@ pub enum Control {
     /// Pin every item of `axis` from the start up to the focused one, as
     /// many as fit ([`crate::freeze_focused`]).
     Freeze { axis: Axis },
+    /// Open the chooser of `axis`, every item with a tick for shown
+    /// ([`crate::Chooser::open`]).
+    Chooser { axis: Axis },
 }
 
 impl Control {
     /// Every Control, each of which every preset reaches.
-    pub const ALL: [Control; 30] = [
+    pub const ALL: [Control; 32] = [
         Control::QuickFilter,
         Control::ColumnFilter,
         Control::RowFilter,
@@ -127,6 +131,8 @@ impl Control {
         Control::Unpin { axis: Axis::Rows },
         Control::Freeze { axis: Axis::Cols },
         Control::Freeze { axis: Axis::Rows },
+        Control::Chooser { axis: Axis::Cols },
+        Control::Chooser { axis: Axis::Rows },
     ];
 }
 
@@ -149,8 +155,9 @@ pub enum Preset {
     /// and Alt+W and Alt+Shift+W freeze the columns and rows up to focus.
     /// Alt+0 and Alt+9 hide the focused column and row (Excel's Ctrl+0 and
     /// Ctrl+9, as terminals drop Ctrl with a digit), Alt+) and Alt+( list the
-    /// hidden ones, and Alt+M (or Shift+F10) and Alt+Shift+M open the
-    /// column's and the row's menu.
+    /// hidden ones, Alt+M (or Shift+F10) and Alt+Shift+M open the column's
+    /// and the row's menu, and Alt+O and Alt+Shift+C (or Alt+Shift+O, where
+    /// the terminal passes it) their choosers.
     Chords,
     /// vim and VisiData: `/` and `?` find forwards and backwards, `n` and `N`
     /// step, `|` the quick filter, `\` and `&` the focused column's text set
@@ -161,7 +168,8 @@ pub enum Preset {
     /// its row to the top and bottom, Alt+U and Alt+Shift+U unpin the column
     /// and the row, `z` and `Z` freeze the columns and rows up to focus, `-`
     /// and `_` hide the column and the row (VisiData's `-`), `+` and `*` list
-    /// the hidden ones, `.` and `,` the menus. Typing is off.
+    /// the hidden ones, `.` and `,` the menus, `C` (VisiData's column sheet)
+    /// and Alt+C the choosers. Typing is off.
     Modes,
     /// Single keys with no modes: `/ ? n N` find, `\` the quick filter, `f`
     /// the filter drawer (see [`ColumnFilter::drawer`]), `F` the focused
@@ -171,7 +179,8 @@ pub enum Preset {
     /// `[` and `]` its row to the top and bottom, `u` and `U` unpin the
     /// column and the row, `z` and `Z` freeze the columns and rows up to
     /// focus, `-` and `_` hide the column and the row, `+` and `*` list the
-    /// hidden ones, `.` and `,` the menus. Typing is off.
+    /// hidden ones, `.` and `,` the menus, `c` and `C` the choosers. Typing
+    /// is off.
     BareKeys,
 }
 
@@ -261,6 +270,10 @@ impl Controls {
                 (Char('U'), ALT, UNPIN_ROW),
                 (Char('w'), ALT, FREEZE),
                 (Char('W'), ALT, FREEZE_ROWS),
+                (Char('o'), ALT, Chooser { axis: Axis::Cols }),
+                // Terminals send Alt+Shift+O as ESC O, which reads as SS3.
+                (Char('C'), ALT, Chooser { axis: Axis::Rows }),
+                (Char('O'), ALT, Chooser { axis: Axis::Rows }),
             ],
             Preset::Modes => &[
                 (Char('|'), NONE, QuickFilter),
@@ -293,6 +306,8 @@ impl Controls {
                 (Char('U'), ALT, UNPIN_ROW),
                 (Char('z'), NONE, FREEZE),
                 (Char('Z'), NONE, FREEZE_ROWS),
+                (Char('C'), NONE, Chooser { axis: Axis::Cols }),
+                (Char('c'), ALT, Chooser { axis: Axis::Rows }),
             ],
             Preset::BareKeys => &[
                 (Char('\\'), NONE, QuickFilter),
@@ -325,6 +340,8 @@ impl Controls {
                 (Char('U'), NONE, UNPIN_ROW),
                 (Char('z'), NONE, FREEZE),
                 (Char('Z'), NONE, FREEZE_ROWS),
+                (Char('c'), NONE, Chooser { axis: Axis::Cols }),
+                (Char('C'), NONE, Chooser { axis: Axis::Rows }),
             ],
         };
         for &(code, modifiers, control) in bindings {
@@ -1616,7 +1633,7 @@ fn render_empty(label: &str, noun: &str, theme: &Theme, area: Rect, buf: &mut Bu
 
 /// A field's text in `room` cells: the end of a long text then a caret
 /// while focused, padded.
-fn field_text(text: &str, room: usize, focused: bool) -> String {
+pub(crate) fn field_text(text: &str, room: usize, focused: bool) -> String {
     let chars: Vec<char> = text.chars().collect();
     let shown: String = if focused {
         let tail: String = chars[chars.len().saturating_sub(room.saturating_sub(1))..]
