@@ -360,7 +360,10 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       element.style.border = `1px solid ${t.border}`;
       title.style.color = t.rowNumber.color;
       name.style.color = t.body.color;
-      pinButton.textContent = pinned() ? "Unpin" : "Pin left";
+      // Rewriting the same text swaps the node under a press, and WebKit
+      // then drops the click.
+      const pinText = pinned() ? "Unpin" : "Pin left";
+      if (pinButton.textContent !== pinText) pinButton.textContent = pinText;
       pinSeparator.style.background = t.border;
       for (const c of [how, field, search, pinButton, clearButton, closeButton]) {
         c.style.background = t.body.background;
