@@ -7,8 +7,8 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, HeaderPlacement, Key, Mode,
-    Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
+    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, Edge, HeaderPlacement, Key,
+    Mode, Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -273,15 +273,19 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.opt_key(f.key);
         }
         w.flag(s.locating(axis));
-        let strip = s.strip(axis);
-        w.len(strip.len());
-        for item in strip {
+        let drawn: Vec<_> = s.drawn(axis).collect();
+        w.len(drawn.len());
+        for item in &drawn {
             w.position(item.position);
             w.opt_key(item.key);
             w.num(item.offset);
             w.num(item.size);
         }
-        w.len(strip.len());
+        w.len(s.pinned(axis, Edge::Leading).len());
+        let scrolling = s.scrolling(axis);
+        w.num(scrolling.start);
+        w.num(scrolling.end);
+        w.len(drawn.len());
         for h in s.headers(axis) {
             let support = h
                 .key
@@ -377,9 +381,9 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.key(m.col);
     }
     w.num(find_bits(s.find_support()));
-    // Cell states, row-major over the Strips, as bit flags.
-    for row in s.rows() {
-        for col in s.cols() {
+    // Cell states, row-major over the drawn items, as bit flags.
+    for row in s.drawn(Axis::Rows) {
+        for col in s.drawn(Axis::Cols) {
             w.num(cell_bits(s.cell_state(row, col)));
         }
     }

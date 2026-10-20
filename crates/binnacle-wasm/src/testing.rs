@@ -3,10 +3,10 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Effect, FilterSpec,
-    FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers,
-    PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery,
-    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Edge, Effect,
+    FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key, Mode,
+    Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support,
+    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -88,6 +88,8 @@ struct DumpAxis {
     focus: Option<DumpFocus>,
     locating: bool,
     strip: Vec<DumpItem>,
+    pinned: f64,
+    scrolling: DumpSpan,
     headers: Vec<DumpHeader>,
     total: Option<f64>,
     quick_filter: Option<DumpTextSupport>,
@@ -325,8 +327,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             .quick_filter(axis)
             .map(|q| DumpTextSupport { regex: q.regex }),
         strip: s
-            .strip(axis)
-            .iter()
+            .drawn(axis)
             .map(|i| DumpItem {
                 position: i.position as f64,
                 key: i.key.map(|k| k.0),
@@ -334,6 +335,11 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 size: i.size,
             })
             .collect(),
+        pinned: s.pinned(axis, Edge::Leading).len() as f64,
+        scrolling: DumpSpan {
+            start: s.scrolling(axis).start.into(),
+            end: s.scrolling(axis).end.into(),
+        },
         headers: s
             .headers(axis)
             .map(|h| {
@@ -362,8 +368,8 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
 pub fn dump(s: &Snapshot<'_>) -> Dump {
     let keys = |ks: &[Key]| ks.iter().map(|k| k.0).collect();
     let mut cells = Vec::new();
-    for row in s.rows() {
-        for col in s.cols() {
+    for row in s.drawn(Axis::Rows) {
+        for col in s.drawn(Axis::Cols) {
             cells.push(cell_bits(s.cell_state(row, col)));
         }
     }
@@ -567,9 +573,9 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 13] = [
+pub const SCENARIOS: [&str; 14] = [
     "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
-    "sorted", "filtered", "found", "rejected",
+    "sorted", "filtered", "found", "rejected", "pinned",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -663,6 +669,23 @@ pub fn scenario(name: &str) -> Grid {
             frame(&mut grid);
             grid.notify(Axis::Rows, ChangeNotice::Reordered);
             row_limit = 2;
+        }
+        "pinned" => {
+            // Column 4 and row 3 pinned, scrolled past, row 2 to column 1
+            // selected and focus on the pinned column.
+            grid.pin(Axis::Cols, Edge::Leading, key(4));
+            grid.pin(Axis::Rows, Edge::Leading, key(3));
+            frame(&mut grid);
+            grid.action(Action::Scroll { dx: 90.0, dy: 50.0 });
+            frame(&mut grid);
+            grid.set_focus(key(5), key(4));
+            frame(&mut grid);
+            grid.action(Action::MoveFocus {
+                axis: Axis::Rows,
+                by: FocusStep::Item,
+                forward: true,
+                extend: true,
+            });
         }
         "scrolled" => {
             grid.action(Action::Scroll {
@@ -806,6 +829,15 @@ mod tests {
                     assert!(s.rows().iter().any(|i| i.key.is_none()));
                 }
                 "scrolled" => assert!(s.scroll_anchor(Axis::Rows).position > 0),
+                "pinned" => {
+                    for axis in Axis::ALL {
+                        assert_eq!(s.pinned(axis, Edge::Leading).len(), 1);
+                        assert!(!s.strip(axis).is_empty());
+                    }
+                    assert!(s.scroll_anchor(Axis::Cols).position > 0);
+                    let range = s.selection_range().unwrap();
+                    assert_eq!((range.rows, range.cols), (5..7, 4..5));
+                }
                 "dragging" => {
                     let range = s.selection_range().unwrap();
                     assert_eq!((range.rows, range.cols), (1..5, 0..3));
@@ -873,6 +905,7 @@ mod tests {
                 "Idle",
                 "Idle",
                 "DraggingSelection",
+                "Idle",
                 "Idle",
                 "Idle",
                 "Idle",

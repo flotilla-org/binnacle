@@ -118,7 +118,11 @@ export interface AxisSnapshot {
   thumb: { fraction: number; size: number };
   focus: { position: number; key: bigint | null } | null;
   locating: boolean;
+  /** Every drawn item: the leading pinned Strip's `pinned` items, then the scrolling Strip's. */
   strip: StripItem[];
+  pinned: number;
+  /** Where the scrolling Strip draws along the axis; its part-scrolled items reach outside it. */
+  scrolling: { start: number; end: number };
   headers: HeaderPlacement[];
   /** The axis's count before any filter, as the Table Source last gave it; `null` if unknown. */
   total: number | null;
@@ -316,6 +320,8 @@ function readAxis(r: Reader): AxisSnapshot {
   const focus = r.opt(() => ({ position: r.num(), key: r.optKey() }));
   const locating = r.flag();
   const strip = r.list(() => ({ position: r.num(), key: r.optKey(), offset: r.num(), size: r.num() }));
+  const pinned = r.num();
+  const scrolling = { start: r.num(), end: r.num() };
   const headers = r.list(() => ({
     position: r.num(),
     key: r.optKey(),
@@ -335,7 +341,23 @@ function readAxis(r: Reader): AxisSnapshot {
   });
   const total = r.opt(() => r.num());
   const quickFilter = r.opt(() => ({ regex: r.flag() }));
-  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers, total, quickFilter, conditions };
+  return {
+    count,
+    extent,
+    header,
+    gap,
+    anchor,
+    thumb,
+    focus,
+    locating,
+    strip,
+    pinned,
+    scrolling,
+    headers,
+    total,
+    quickFilter,
+    conditions,
+  };
 }
 
 function supportOf(bits: number): HeaderPlacement["support"] {

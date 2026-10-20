@@ -5,7 +5,7 @@
 use std::fmt;
 
 use binnacle_core::{
-    Axis, Button, ChangeNotice, EditEnd, FocusStep, HeaderClick, Key, Located, Modifiers,
+    Axis, Button, ChangeNotice, Edge, EditEnd, FocusStep, HeaderClick, Key, Located, Modifiers,
     PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
 };
 
@@ -17,6 +17,14 @@ pub fn axis(code: u8) -> Axis {
     match code {
         0 => Axis::Rows,
         _ => Axis::Cols,
+    }
+}
+
+/// A pinned edge: 0 leading; `None` for an edge this bridge does not know.
+pub fn edge(code: u8) -> Option<Edge> {
+    match code {
+        0 => Some(Edge::Leading),
+        _ => None,
     }
 }
 

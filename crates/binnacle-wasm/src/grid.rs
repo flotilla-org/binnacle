@@ -119,6 +119,18 @@ impl WebGrid {
         self.grid.set_size(axis(a), Key(key), size);
     }
 
+    /// Pins the item with `key` to edge `edge` of axis `a` (see
+    /// [`codes::edge`]), or moves it to the end of that edge's pins.
+    pub fn pin(&mut self, a: u8, edge: u8, key: u64) {
+        if let Some(edge) = codes::edge(edge) {
+            self.grid.pin(axis(a), edge, Key(key));
+        }
+    }
+
+    pub fn unpin(&mut self, a: u8, key: u64) {
+        self.grid.unpin(axis(a), Key(key));
+    }
+
     /// The Size Override for the item with `key` on axis `a`; NaN for none.
     pub fn size_override(&self, a: u8, key: u64) -> f64 {
         self.grid
