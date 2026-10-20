@@ -34,6 +34,14 @@
 //! on a timer only while something animates, an answer is due or the live
 //! table ticks, and otherwise waits for input.
 //!
+//! `binnacle-demo --transposed` shows the same records on their side, as a
+//! pivoted or column-major table has them: each record is a column headed
+//! with its id and each field a row, over the records' own In-Memory Table
+//! Source seen through `Transposed`. Each field row draws its own way (the
+//! id and weight right-aligned, the crew as a bar), and Ctrl+R's crew filter
+//! and find work on the records as columns. Row headers are set to sort and
+//! column headers to select, the records' settings swapped.
+//!
 //! In the records (and the slow records), Ctrl+L focuses the quick filter
 //! field on the top line: typing keeps only the records with that text in
 //! any column, ignoring case, once typing pauses for 150 ms. Alt+C matches
@@ -126,11 +134,12 @@ use std::collections::HashSet;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
-    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, Key, Located, Mode, Position,
-    Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
+    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode,
+    Position, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
-    FindStep, IdentitySource, MemorySource, PumpSource, Viewed, pump, query_error,
+    FindStep, IdentitySource, MemorySource, PumpSource, Transposed, Viewed, pump, query_error,
+    transpose_find,
 };
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
@@ -363,6 +372,16 @@ enum Table {
     },
     Huge(Huge),
     Live(Live),
+    /// The records on their side: each record a column, each field a row.
+    Transposed {
+        rows: Vec<Record>,
+        source: Box<MemorySource<Record>>,
+        /// The index into [`CREW_FILTERS`] in force.
+        filter: usize,
+        /// The Find Query of the last find step, as the source saw it, and
+        /// where it landed.
+        step: Option<(FindQuery, FindStep)>,
+    },
 }
 
 /// The huge table: Keys are Positions on both axes.
@@ -392,6 +411,7 @@ impl Table {
             Table::Records { source, .. } => source.window(axis, range),
             Table::Huge(huge) => huge.axis(axis).window(range),
             Table::Live(live) => live.source.window(axis, range),
+            Table::Transposed { source, .. } => source.window(axis.other(), range),
         }
     }
 
@@ -481,6 +501,18 @@ impl Table {
                 let text = Text::Live(rows);
                 source.pump(rows, grid, |grid, stamped| seen(&text, grid, stamped));
             }
+            Table::Transposed {
+                rows, source, step, ..
+            } => {
+                let text = Text::Transposed(rows);
+                let mut source = Transposed(Stepped {
+                    inner: source.over(rows),
+                    step,
+                });
+                pump(grid, &mut source, |grid, stamped| {
+                    seen(&text, grid, stamped)
+                });
+            }
         }
         app
     }
@@ -492,6 +524,7 @@ impl Table {
             Table::Records { held: Some(_), .. } => "slow",
             Table::Huge(_) => "huge",
             Table::Live(_) => "live",
+            Table::Transposed { .. } => "transposed",
         }
     }
 
@@ -523,7 +556,7 @@ impl Table {
                 let n: u64 = typed.parse().ok()?;
                 (1..=huge.rows.count()).contains(&n).then(|| Key(n - 1))
             }
-            Table::Live(_) => None,
+            Table::Live(_) | Table::Transposed { .. } => None,
         }
     }
 
@@ -540,26 +573,34 @@ impl Table {
     fn name(&self, row: Key) -> Option<String> {
         match self {
             Table::Records { rows, .. } => Some(rows[row.0 as usize].name.clone()),
-            Table::Huge(_) | Table::Live(_) => None,
+            Table::Huge(_) | Table::Live(_) | Table::Transposed { .. } => None,
         }
     }
 
-    /// Moves to the next crew filter and tells the Grid.
+    /// Moves to the next crew filter and tells the Grid: the records are
+    /// its rows, or on their side its columns.
     fn next_filter(&mut self, grid: &mut Grid) {
-        if let Table::Records {
-            rows,
-            source,
-            filter,
-            ..
-        } = self
-        {
-            *filter = (*filter + 1) % CREW_FILTERS.len();
-            let notice = match CREW_FILTERS[*filter] {
-                Some(min) => source.filter(rows, move |r| r.crew >= min),
-                None => source.clear_filter(rows),
-            };
-            grid.notify(Axis::Rows, notice);
-        }
+        let (rows, source, filter, axis) = match self {
+            Table::Records {
+                rows,
+                source,
+                filter,
+                ..
+            } => (rows, source, filter, Axis::Rows),
+            Table::Transposed {
+                rows,
+                source,
+                filter,
+                ..
+            } => (rows, source, filter, Axis::Cols),
+            Table::Huge(_) | Table::Live(_) => return,
+        };
+        *filter = (*filter + 1) % CREW_FILTERS.len();
+        let notice = match CREW_FILTERS[*filter] {
+            Some(min) => source.filter(rows, move |r| r.crew >= min),
+            None => source.clear_filter(rows),
+        };
+        grid.notify(axis, notice);
     }
 
     /// The marked cells among `rows` by `cols` and what the find bar shows,
@@ -570,21 +611,33 @@ impl Table {
         rows_shown: &[Key],
         cols: &[Key],
     ) -> (HashSet<(Key, Key)>, FindStatus) {
-        let (
-            Table::Records {
-                rows, source, step, ..
-            },
-            Some(query),
-        ) = (self, query)
-        else {
+        let Some(asked) = query else {
             return Default::default();
         };
-        let marks = source.find_marks(rows, rows_shown, cols, query);
-        let marked = (rows_shown.iter())
-            .flat_map(|&r| cols.iter().map(move |&c| (r, c)))
+        // On their side, the source is asked about its own rows and columns
+        // and the marks are turned back.
+        let (rows, source, step, query, turned) = match self {
+            Table::Records {
+                rows, source, step, ..
+            } => (rows, source, step, asked.clone(), false),
+            Table::Transposed {
+                rows, source, step, ..
+            } => (rows, source, step, transpose_find(asked), true),
+            Table::Huge(_) | Table::Live(_) => return Default::default(),
+        };
+        let (along, across) = if turned {
+            (cols, rows_shown)
+        } else {
+            (rows_shown, cols)
+        };
+        let marks = source.find_marks(rows, along, across, &query);
+        let marked = (along.iter())
+            .flat_map(|&r| across.iter().map(move |&c| (r, c)))
             .zip(marks)
             .filter_map(|(cell, marked)| marked.then_some(cell))
+            .map(|(r, c)| if turned { (c, r) } else { (r, c) })
             .collect();
+        let query = &query;
         let step = step.as_ref().filter(|(q, _)| q == query).map(|(_, s)| s);
         let status = FindStatus {
             count: Some(source.find_count(rows, query)),
@@ -612,6 +665,7 @@ impl Table {
     fn empty(&self, quick: bool) -> &'static str {
         match self {
             Table::Records { filter, .. } if *filter > 0 || quick => "No rows match the filter",
+            Table::Transposed { filter, .. } if *filter > 0 => "No columns match the filter",
             _ => "No rows",
         }
     }
@@ -621,6 +675,7 @@ impl Table {
             Table::Records { rows, .. } => Text::Records(rows),
             Table::Huge(_) => Text::Huge,
             Table::Live(live) => Text::Live(&live.rows),
+            Table::Transposed { rows, .. } => Text::Transposed(rows),
         }
     }
 
@@ -628,7 +683,7 @@ impl Table {
     fn distinct(&self, key: Key, query: &DistinctQuery) -> Option<Distinct> {
         match self {
             Table::Records { rows, source, .. } => Some(source.distinct(rows, key, query)),
-            Table::Huge(_) => None,
+            Table::Huge(_) | Table::Transposed { .. } => None,
             Table::Live(live) => Some(live.source.distinct(&live.rows, key, query)),
         }
     }
@@ -640,7 +695,7 @@ impl Table {
             Table::Records { rows, source, .. } => {
                 Some(source.value(col, rows.get(row.0 as usize)?))
             }
-            Table::Huge(_) => None,
+            Table::Huge(_) | Table::Transposed { .. } => None,
             Table::Live(live) => Some(live.source.value(col, live.rows.get(row.0 as usize)?)),
         }
     }
@@ -746,6 +801,8 @@ enum Text<'a> {
     Records(&'a [Record]),
     Huge,
     Live(&'a [Ticker]),
+    /// The records on their side.
+    Transposed(&'a [Record]),
 }
 
 impl Content for Text<'_> {
@@ -762,6 +819,7 @@ impl Content for Text<'_> {
                 }
             }
             Text::Huge => format!("r{}c{}", row.0, col.0),
+            Text::Transposed(rows) => Text::Records(rows).cell(col, row),
             Text::Live(rows) => {
                 let t = &rows[row.0 as usize];
                 match col.0 {
@@ -778,6 +836,7 @@ impl Content for Text<'_> {
         match self {
             Text::Records(_) | Text::Live(_) => row.0.to_string(),
             Text::Huge => position.saturating_add(1).to_string(),
+            Text::Transposed(_) => HEADERS[row.0 as usize].to_string(),
         }
     }
 
@@ -786,6 +845,23 @@ impl Content for Text<'_> {
             Text::Records(_) => HEADERS[col.0 as usize].to_string(),
             Text::Huge => format!("col {}", col.0),
             Text::Live(_) => TICKER_HEADERS[col.0 as usize].to_string(),
+            Text::Transposed(_) => format!("#{}", col.0),
+        }
+    }
+
+    /// On their side, the records draw by field, which is the row; every
+    /// other table draws by column.
+    fn renderer(&self, row: Key, col: Key) -> Box<dyn CellRenderer + '_> {
+        let Text::Transposed(rows) = *self else {
+            return self.column_renderer(col);
+        };
+        let text = TextRenderer::new(move |row, col| self.cell(row, col));
+        match row.0 {
+            0 | 2 => Box::new(text.align(Align::Right)),
+            3 => Box::new(BarRenderer::new(move |_, col: Key| {
+                rows[col.0 as usize].crew as f64 / 12.0
+            })),
+            _ => Box::new(text),
         }
     }
 
@@ -840,8 +916,8 @@ impl Content for Marked<'_> {
         axis == Axis::Rows && self.unmatched.contains(&key)
     }
 
-    fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
-        self.text.column_renderer(col)
+    fn renderer(&self, row: Key, col: Key) -> Box<dyn CellRenderer + '_> {
+        self.text.renderer(row, col)
     }
 }
 
@@ -1018,10 +1094,62 @@ fn preset() -> Result<Preset, String> {
     }
 }
 
+/// The records' In-Memory Table Source: every column sorts and filters.
+fn records_source(rows: &[Record]) -> MemorySource<Record> {
+    MemorySource::<Record>::new(rows.len(), HEADERS.len())
+        .i64_column(Key(0), |r| Some(r.id))
+        .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
+        .f64_column(Key(2), |r| r.weight)
+        .i64_column(Key(3), |r| Some(r.crew))
+        .bytes_column(Key(4), |r| r.port.map(|p| Cow::Borrowed(p.as_bytes())))
+        // The quick filter searches the weight as drawn.
+        .text_column(Key(2), |r| {
+            Some(r.weight.map_or("-".into(), |w| format!("{w:.1}").into()))
+        })
+}
+
+/// The records on their side, each record a column and each field a row.
+/// Support is declared from the turned source on both axes, and row headers
+/// sort while column headers select, the records' settings swapped.
+fn transposed() -> (Table, Grid) {
+    let rows: Vec<Record> = (0..RECORDS).map(Record::generate).collect();
+    let mut source = records_source(&rows);
+    let mut grid = Grid::new(
+        AxisConfig::new(HEADERS.len() as u64, 1.0).header(1.0),
+        AxisConfig::new(rows.len() as u64, 14.0)
+            .header(7.0)
+            .gap(1.0),
+    );
+    grid.set_header_click(Axis::Rows, HeaderClick::Sort);
+    grid.set_header_click(Axis::Cols, HeaderClick::Select);
+    {
+        let mut turned = Transposed(source.over(&rows));
+        for axis in Axis::ALL {
+            grid.set_quick_filter_support(axis, turned.quick_filter(axis));
+        }
+        grid.set_find_support(turned.find_support());
+        for f in 0..HEADERS.len() as u64 {
+            grid.set_support(Axis::Cols, Key(f), turned.support(Axis::Cols, Key(f)));
+        }
+        for r in 0..rows.len() as u64 {
+            grid.set_support(Axis::Rows, Key(r), turned.support(Axis::Rows, Key(r)));
+        }
+    }
+    let table = Table::Transposed {
+        rows,
+        source: Box::new(source),
+        filter: 0,
+        step: None,
+    };
+    (table, grid)
+}
+
 fn main() -> io::Result<()> {
     let preset = preset().map_err(io::Error::other)?;
     let live = std::env::args().any(|a| a == "--live");
-    let (mut table, mut grid) = if live {
+    let (mut table, mut grid) = if std::env::args().any(|a| a == "--transposed") {
+        transposed()
+    } else if live {
         let grid = Grid::new(
             AxisConfig::new(TICKERS as u64, 1.0).header(1.0),
             AxisConfig::new(TICKER_HEADERS.len() as u64, 12.0)
@@ -1050,16 +1178,7 @@ fn main() -> io::Result<()> {
         (table, grid)
     } else {
         let rows: Vec<Record> = (0..RECORDS).map(Record::generate).collect();
-        let source = MemorySource::<Record>::new(rows.len(), HEADERS.len())
-            .i64_column(Key(0), |r| Some(r.id))
-            .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
-            .f64_column(Key(2), |r| r.weight)
-            .i64_column(Key(3), |r| Some(r.crew))
-            .bytes_column(Key(4), |r| r.port.map(|p| Cow::Borrowed(p.as_bytes())))
-            // The quick filter searches the weight as drawn.
-            .text_column(Key(2), |r| {
-                Some(r.weight.map_or("-".into(), |w| format!("{w:.1}").into()))
-            });
+        let source = records_source(&rows);
         let mut grid = Grid::new(
             AxisConfig::new(rows.len() as u64, 1.0).header(1.0),
             AxisConfig::new(HEADERS.len() as u64, 14.0)
