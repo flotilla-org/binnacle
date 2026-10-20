@@ -16,6 +16,10 @@
 // It is the row menu too: a row header's button, Alt+ArrowRight or `openRow`
 // drops the same popover beside the row header, filtering the columns by
 // the row's values. It has no pin row: rows pin from the widget's API.
+//
+// Where the Table Source hides the item's axis, the menu has Hide and "Show
+// hidden ▸", whose flyout lists the hidden items to show again (with a
+// search past eight of them) and "Show all".
 
 import {
   columnConditions,
@@ -31,16 +35,20 @@ import {
 } from "./checklist";
 import type { AxisName } from "./codes";
 import type { Condition, Distinct, ListedValue, TextMatch } from "./source";
-import type { FrameInfo, GridWidget } from "./widget";
+import type { FrameInfo, GridWidget, MenuAt } from "./widget";
 import { createPause } from "./pause";
 
 export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   /** The popover while it is open, else `null`. */
   readonly element: HTMLElement | null;
-  /** Opens the menu for `colId` (see `GridWidget.openColumnMenu`). */
-  open(colId: ColId, anchor?: DOMRect): boolean;
-  /** Opens the menu for row `rowId`, filtering the columns (see `GridWidget.openRowMenu`); `false` if they take no conditions on it. */
-  openRow(rowId: RowId, anchor?: DOMRect): boolean;
+  /** Opens the menu for `colId` (see `GridWidget.openColumnMenu`); `false` if the column takes no conditions and the columns do not hide. */
+  open(colId: ColId, anchor?: DOMRect, at?: MenuAt): boolean;
+  /**
+   * Opens the menu for row `rowId`, filtering the columns (see
+   * `GridWidget.openRowMenu`); `false` if they take no conditions on it and
+   * the rows do not hide.
+   */
+  openRow(rowId: RowId, anchor?: DOMRect, at?: MenuAt): boolean;
   close(): void;
   /** Closes the menu and stops the headers drawing filter buttons. */
   destroy(): void;
@@ -70,6 +78,15 @@ const ITEM_TEXT_STYLE = "flex: 1; overflow: hidden; text-overflow: ellipsis;";
 const COUNT_STYLE = "font-size: 11px; font-variant-numeric: tabular-nums;";
 const NOTICE_STYLE = "font-size: 11px; min-height: 14px; margin: 0 2px;";
 const ERROR_STYLE = "font-size: 11px; margin: 4px 2px 0;";
+const ACTIONS_STYLE = "display: flex; flex-direction: column; gap: 2px;";
+const MENU_ITEM_STYLE =
+  "display: flex; align-items: center; gap: 8px; font: inherit; color: inherit; text-align: start; " +
+  "padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; cursor: pointer;";
+const FLYOUT_STYLE = MENU_STYLE.replace("width: 300px", "width: 220px");
+const HIDDEN_LIST_STYLE = "max-height: 240px; overflow: auto; display: flex; flex-direction: column; gap: 2px;";
+
+/** How many hidden items the flyout lists before it offers a search. */
+const SEARCH_PAST = 8;
 
 /** Numbers each menu's error message, for `aria-describedby`. */
 let errors = 0;
@@ -81,14 +98,20 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
   /** The conditions on `axis` as the latest frame lists them. */
   const listed = (axis: AxisName) => (axis === "rows" ? latest?.conditions : latest?.columnsFilter.conditions) ?? [];
 
-  /** Opens the menu for item `colId` of the other axis, filtering `axis` by it: a column filters the rows, a row the columns. */
-  const open = (axis: AxisName, colId: Id, anchor: DOMRect) => {
+  /**
+   * Opens the menu for item `colId` of the other axis, filtering `axis` by
+   * it: a column filters the rows, a row the columns. It hides the item on
+   * its own axis.
+   */
+  const open = (axis: AxisName, colId: Id, anchor: DOMRect, at: MenuAt) => {
     menu?.close();
     const support = axis === "rows" ? widget.columnSupport(colId as ColId) : widget.rowSupport(colId as RowId);
-    const filters = support.text !== null || support.oneOf;
+    const own: AxisName = axis === "rows" ? "cols" : "rows";
+    const hides = widget.canHide(own);
+    const filters = !!support.text || support.oneOf;
     // A column's menu also pins it; a row's only filters the columns.
     const pinnable = axis === "rows";
-    if (!filters && !pinnable) return;
+    if (!filters && !pinnable && !hides) return;
     const regexAllowed = support.text?.regex ?? false;
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // The item's conditions as this menu last asked for them, which each
@@ -116,7 +139,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const label = axis === "rows" ? widget.columnLabel(colId as ColId) : widget.rowLabel(colId as RowId);
     const element = el("div", "binnacle-column-menu", MENU_STYLE);
     element.setAttribute("role", "dialog");
-    const heading = axis === "rows" ? (filters ? "Filter " : "Column ") : "Filter columns by ";
+    const noun = own === "cols" ? "column" : "row";
+    const heading = !filters ? `${noun[0]!.toUpperCase()}${noun.slice(1)} ` : axis === "rows" ? "Filter " : "Filter columns by ";
     element.setAttribute("aria-label", heading + label);
     const title = el("div", "binnacle-column-menu-title", TITLE_STYLE);
     const name = el("b", "", "");
@@ -137,7 +161,137 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     });
     pins.append(pinButton);
     const pinSeparator = el("div", "", SEPARATOR_STYLE);
-    pinSeparator.hidden = !filters || !pinnable;
+    pinSeparator.hidden = !filters || !pinnable || hides;
+
+    // Hide, and the hidden items to show again.
+    const actions = el("div", "binnacle-column-menu-actions", ACTIONS_STYLE);
+    // Inline styles would win over the `hidden` attribute.
+    actions.style.display = hides ? "flex" : "none";
+    /** A menu item, lit while hovered or focused. */
+    const lit = (b: HTMLButtonElement) => {
+      const on = () => (b.style.background = b.disabled ? "transparent" : widget.theme.border);
+      const off = () => (b.style.background = "transparent");
+      b.addEventListener("pointerenter", on);
+      b.addEventListener("pointerleave", () => b !== document.activeElement && off());
+      b.addEventListener("focus", on);
+      b.addEventListener("blur", off);
+      return b;
+    };
+    const hideButton = lit(menuItem(`Hide ${noun}`, "binnacle-column-menu-hide"));
+    const showHidden = lit(menuItem("", "binnacle-column-menu-show-hidden"));
+    showHidden.setAttribute("aria-haspopup", "menu");
+    showHidden.setAttribute("aria-expanded", "false");
+    const actionsSeparator = el("div", "", SEPARATOR_STYLE);
+    actionsSeparator.hidden = !hides || !filters;
+    actions.append(hideButton, showHidden, actionsSeparator);
+    hideButton.addEventListener("click", () => {
+      widget.hide([colId], own);
+      close();
+    });
+    let flyout: { element: HTMLElement; search: HTMLInputElement; list: HTMLElement; listed: number } | null = null;
+    const hiddenItems = () =>
+      widget.hidden(own).map((id) => ({ id, label: own === "cols" ? widget.columnLabel(id as ColId) : widget.rowLabel(id as RowId) }));
+    /** Lists the hidden items the flyout's search keeps, each a button that shows it, then Show all. */
+    const listHidden = () => {
+      if (!flyout) return;
+      const items = hiddenItems();
+      const { search: find, list: hiddenList } = flyout;
+      const searching = items.length > SEARCH_PAST;
+      // Inline styles would win over the `hidden` attribute.
+      find.style.display = searching ? "block" : "none";
+      const text = searching ? find.value.toLowerCase() : "";
+      const kept = items.filter((i) => i.label.toLowerCase().includes(text));
+      const at = hiddenList.contains(document.activeElement) ? [...hiddenList.children].indexOf(document.activeElement!) : -1;
+      hiddenList.replaceChildren(
+        ...kept.map(({ id, label: shown }) => {
+          const b = lit(menuItem(shown, "binnacle-column-menu-hidden-item"));
+          b.setAttribute("role", "menuitem");
+          b.addEventListener("click", () => widget.show([id], own));
+          return b;
+        }),
+      );
+      if (items.length > 0) {
+        const all = lit(menuItem("Show all", "binnacle-column-menu-show-all"));
+        all.setAttribute("role", "menuitem");
+        all.addEventListener("click", () => {
+          widget.show(items.map((i) => i.id), own);
+          closeFlyout(true);
+        });
+        hiddenList.append(all);
+      } else {
+        const none = el("div", "binnacle-column-menu-empty", "padding: 4px 8px;");
+        none.textContent = `No hidden ${noun}s`;
+        none.style.color = widget.theme.loading;
+        hiddenList.append(none);
+      }
+      // Once the list empties it closes, and focus goes back to the menu; else focus stays in the list.
+      const emptied = items.length === 0 && flyout.listed > 0;
+      flyout.listed = items.length;
+      if (emptied) {
+        const lost = document.activeElement === document.body || flyout.element.contains(document.activeElement);
+        closeFlyout(false);
+        if (lost) hideButton.focus();
+      } else if (at >= 0) (hiddenList.children[Math.min(at, hiddenList.children.length - 1)] as HTMLElement | undefined)?.focus();
+    };
+    const closeFlyout = (refocus: boolean) => {
+      flyout?.element.remove();
+      flyout = null;
+      showHidden.setAttribute("aria-expanded", "false");
+      if (refocus) showHidden.focus();
+    };
+    const openFlyout = () => {
+      if (flyout) return;
+      const fly = el("div", "binnacle-column-menu-flyout", FLYOUT_STYLE);
+      fly.setAttribute("role", "menu");
+      fly.setAttribute("aria-label", `Hidden ${noun}s`);
+      const find = el("input", "binnacle-column-menu-hidden-search", SEARCH_STYLE + " margin-bottom: 6px;");
+      find.type = "search";
+      find.placeholder = `Search hidden ${noun}s`;
+      find.setAttribute("aria-label", `Search hidden ${noun}s`);
+      const hiddenList = el("div", "binnacle-column-menu-hidden", HIDDEN_LIST_STYLE);
+      fly.append(find, hiddenList);
+      find.addEventListener("input", listHidden);
+      fly.addEventListener("keydown", (e) => {
+        const items = [...hiddenList.querySelectorAll("button")];
+        const i = items.indexOf(document.activeElement as HTMLButtonElement);
+        if (e.key === "Escape" || e.key === "ArrowLeft") {
+          if (e.key === "ArrowLeft" && e.target === find) return;
+          e.preventDefault();
+          e.stopPropagation();
+          closeFlyout(true);
+        } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          const step = e.key === "ArrowDown" ? 1 : -1;
+          items[i < 0 ? (step > 0 ? 0 : items.length - 1) : (i + step + items.length) % items.length]?.focus();
+        }
+      });
+      flyout = { element: fly, search: find, list: hiddenList, listed: 0 };
+      showHidden.setAttribute("aria-expanded", "true");
+      listHidden();
+      paint();
+      document.body.append(fly);
+      const box = element.getBoundingClientRect();
+      const item = showHidden.getBoundingClientRect();
+      const width = fly.offsetWidth;
+      const left = box.right + 4 + width <= innerWidth - 8 ? box.right + 4 : Math.max(8, box.left - 4 - width);
+      fly.style.left = `${left}px`;
+      fly.style.top = `${Math.max(8, Math.min(item.top - 8, innerHeight - fly.offsetHeight - 8))}px`;
+      (find.style.display === "none" ? hiddenList.querySelector("button") : find)?.focus();
+    };
+    showHidden.addEventListener("click", () => (flyout ? closeFlyout(true) : openFlyout()));
+    showHidden.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowRight") return;
+      e.preventDefault();
+      openFlyout();
+    });
+    const markHidden = () => {
+      const n = widget.hidden(own).length;
+      showHidden.textContent = `Show hidden ${noun}s${n ? ` (${n.toLocaleString("en")})` : ""} ▸`;
+      showHidden.disabled = n === 0;
+      showHidden.style.opacity = n === 0 ? "0.5" : "";
+      showHidden.style.cursor = n === 0 ? "default" : "pointer";
+    };
+    markHidden();
 
     const textRow = el("div", "binnacle-column-menu-text", ROW_STYLE);
     // Its inline display would beat the `hidden` attribute.
@@ -179,7 +333,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const spacer = el("span", "", "flex: 1;");
     const closeButton = action("Close");
     foot.append(clearButton, spacer, closeButton);
-    element.append(title, pins, pinSeparator, textRow, error, values, foot);
+    element.append(title, pins, pinSeparator, actions, textRow, error, values, foot);
 
     const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
     /** Shows the column's Text condition in the text row. */
@@ -332,6 +486,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
 
     const close = () => {
       if (menu?.element !== element) return;
+      closeFlyout(false);
       menu = null;
       asking?.abort();
       if (pause.waiting) sendText();
@@ -341,7 +496,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       if (returnFocus?.isConnected) returnFocus.focus();
     };
     const outside = (e: PointerEvent) => {
-      if (!element.contains(e.target as Node)) close();
+      if (!element.contains(e.target as Node) && !flyout?.element.contains(e.target as Node)) close();
     };
     closeButton.addEventListener("click", close);
     element.addEventListener("keydown", (e) => {
@@ -369,6 +524,17 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;
       }
+      actionsSeparator.style.background = t.border;
+      markHidden();
+      if (flyout) {
+        const f = flyout.element;
+        f.style.font = t.font;
+        f.style.color = t.body.color;
+        f.style.background = t.body.background;
+        f.style.border = `1px solid ${t.border}`;
+        flyout.search.style.background = t.body.background;
+        flyout.search.style.border = `1px solid ${t.border}`;
+      }
       // The column's Text condition, once nothing typed waits, as the latest frame has it.
       const text = column.text;
       const rejected =
@@ -394,7 +560,10 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       }
     };
     paint();
-    const unwatch = widget.subscribe(() => paint());
+    const unwatch = widget.subscribe(() => {
+      paint();
+      listHidden();
+    });
     if (support.oneOf) ask();
 
     document.body.append(element);
@@ -407,7 +576,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     element.style.top = `${Math.max(8, Math.min(top, innerHeight - height - 8))}px`;
     document.addEventListener("pointerdown", outside, true);
     menu = { element, close };
-    const first = support.text ? field : support.oneOf ? search : pinButton;
+    if (at === "hidden" && hides) return openFlyout();
+    const first = support.text ? field : support.oneOf ? search : pinnable ? pinButton : hideButton;
     first.focus();
     if (first === field) field.select();
   };
@@ -416,15 +586,15 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
   const unsubscribe = widget.subscribe((f) => {
     latest = f;
   });
-  const detach = widget.attachColumnMenu((colId, anchor) => open("rows", colId, anchor));
-  const detachRow = widget.attachRowMenu((rowId, anchor) => open("cols", rowId, anchor));
+  const detach = widget.attachColumnMenu((colId, anchor, at) => open("rows", colId, anchor, at));
+  const detachRow = widget.attachRowMenu((rowId, anchor, at) => open("cols", rowId, anchor, at));
 
   return {
     get element() {
       return menu?.element ?? null;
     },
-    open: (colId, anchor) => widget.openColumnMenu(colId, anchor),
-    openRow: (rowId, anchor) => widget.openRowMenu(rowId, anchor),
+    open: (colId, anchor, at) => widget.openColumnMenu(colId, anchor, at),
+    openRow: (rowId, anchor, at) => widget.openRowMenu(rowId, anchor, at),
     close: () => menu?.close(),
     destroy() {
       menu?.close();
@@ -442,6 +612,14 @@ function toggle(text: string, label: string): HTMLButtonElement {
   b.title = label;
   b.setAttribute("aria-label", label);
   b.setAttribute("aria-pressed", "false");
+  return b;
+}
+
+/** A button that reads as one item of a menu's list. */
+function menuItem(text: string, className: string): HTMLButtonElement {
+  const b = el("button", className, MENU_ITEM_STYLE);
+  b.type = "button";
+  b.textContent = text;
   return b;
 }
 

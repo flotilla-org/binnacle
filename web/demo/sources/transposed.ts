@@ -9,9 +9,9 @@
 // The filter box keeps the records whose name or port contains its text, as
 // columns; the filter bar's quick filter and a field's row menu filter the
 // records by their values too, and a record's column menu filters the
-// fields. Find, editing, moves and pinning a record's column to the left
-// work as in the records, a field row's header dragging the field and a
-// record's column header the record.
+// fields. Find, editing, moves, pinning and hiding work as in the records,
+// a field row's header dragging the field and a record's column header the
+// record, so hiding a column hides a record.
 
 import {
   barRenderer,
@@ -40,6 +40,7 @@ export const transposed: DemoSource = {
   name: "transposed",
   description: `the ${RECORDS.toLocaleString("en")} records on their side, each record a column`,
   showIds: true,
+  filterBar: true,
   async mount(host, toolbar, look) {
     const records = fromRows(
       rows,

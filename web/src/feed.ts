@@ -128,6 +128,9 @@ export interface FindState {
 /** The IDs of the items an axis's View Spec part names: the columns for the rows, the rows for the columns. */
 export type CrossId<A extends AxisName, RowId, ColId> = A extends "cols" ? RowId : ColId;
 
+/** The IDs of an axis's own items: the rows' for the rows. */
+export type ItemId<A extends AxisName, RowId, ColId> = A extends "cols" ? ColId : RowId;
+
 /**
  * How the rows may be viewed by one column (or the columns by one row),
  * every kind decided: sorting, Text conditions (with regexes or not, or

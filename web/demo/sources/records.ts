@@ -8,7 +8,10 @@
 // the quick filter, which keeps the rows with its text in any column (with
 // case and regex toggles), a chip for each column condition, "+ Filter" and
 // the count. Every column but the id takes Text conditions: its header's
-// funnel, or Alt+ArrowDown, opens the column menu. Cells edit in place: type,
+// funnel, or Alt+ArrowDown, opens the column menu, which also hides the
+// column or shows hidden ones (Mod+Alt+0 hides the focused column, Mod+Alt+9
+// its row; Shift with either lists the hidden ones); the filter bar counts
+// what is left, "12 of 30 columns". Cells edit in place: type,
 // or press F2 or Enter, or double-click; the port column picks from a list.
 // Ctrl/Cmd-F in the grid (or Find in the toolbar) opens the find bar under
 // the filter bar: matches are marked, Enter and Shift+Enter (or F3 and
@@ -63,6 +66,7 @@ export const records: DemoSource = {
   name: "records",
   description: `${RECORDS.toLocaleString("en")} records: sort, filter, move columns and rows, edit`,
   showIds: true,
+  filterBar: true,
   async mount(host, toolbar, look) {
     const source = fromRows(
       rows,

@@ -10,7 +10,7 @@ import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
 import { filterButtonRect, hasFilterButton } from "./canvas/bands";
-import { createFeed, type ColumnSupport, type CrossId, type Feed, type FindState } from "./feed";
+import { createFeed, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -200,7 +200,12 @@ export interface AxisInfo {
   count: number;
   total: number | null;
   unmatched: number;
+  /** How many items are hidden, as last asked for (the Table Source's answer prunes those the data lacks). */
+  hidden: number;
 }
+
+/** Where a mounted menu opens: at its top, or at the list of the axis's hidden items. */
+export type MenuAt = "top" | "hidden";
 
 /** Find as `FrameInfo.find` gives it. */
 export interface FindInfo<RowId = unknown, ColId = unknown> extends FindState {
@@ -272,9 +277,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private framed: (() => void)[] = [];
   private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
   /** The mounted column menu's opener, if one is mounted. */
-  private columnMenu: ((colId: ColId, anchor: DOMRect) => void) | null = null;
+  private columnMenu: ((colId: ColId, anchor: DOMRect, at: MenuAt) => void) | null = null;
   /** The mounted row menu's opener, if one is mounted. */
-  private rowMenu: ((rowId: RowId, anchor: DOMRect) => void) | null = null;
+  private rowMenu: ((rowId: RowId, anchor: DOMRect, at: MenuAt) => void) | null = null;
   /** The mounted find bar's opener, if one is mounted. */
   private findBar: (() => void) | null = null;
 
@@ -415,6 +420,32 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
           if (this.last) this.editView(() => pinFocused(this.grid, this.last!, axis, edge));
         });
         this.invalidate();
+      },
+      hide: (axis) => {
+        if (!this.canHide(axis)) return false;
+        // After the next frame, so a focus move just made has landed.
+        this.framed.push(() => {
+          const key = this.last?.[axis].focus?.key;
+          if (key != null) this.editView(() => this.grid.hide(AXIS_CODE[axis], BigUint64Array.of(key)));
+        });
+        this.invalidate();
+        return true;
+      },
+      showHidden: (axis) => {
+        if (!this.canHide(axis) || !(axis === "cols" ? this.columnMenu : this.rowMenu)) return false;
+        this.framed.push(() => {
+          const key = this.last?.[axis].focus?.key;
+          if (key == null) return;
+          if (axis === "cols") {
+            const id = this.feed.colId(key);
+            if (id !== undefined) this.openColumnMenu(id, undefined, "hidden");
+          } else {
+            const id = this.feed.rowId(key);
+            if (id !== undefined) this.openRowMenu(id, undefined, "hidden");
+          }
+        });
+        this.invalidate();
+        return true;
       },
       find: (action) => {
         if (action === "open") return this.openFind();
@@ -644,6 +675,43 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     });
   }
 
+  /** Whether the Table Source hides items of `axis`: it has `view` and the axis has `hide`. */
+  canHide(axis: AxisName): boolean {
+    const source = this.options.source;
+    return source.view !== undefined && source[axis].hide === true;
+  }
+
+  /**
+   * Hides the items `ids` of `axis` (the rows by default), beside those
+   * hidden already: the grid asks the Table Source to leave them out
+   * whatever the filter keeps. Focus, the selection and picks follow as
+   * when a filter drops them; their sizes stay. Does nothing unless the axis
+   * hides (see `canHide`).
+   */
+  hide<A extends AxisName = "rows">(ids: ItemId<A, RowId, ColId>[], axis?: A): void {
+    const on = axis ?? "rows";
+    this.editView(() => this.grid.hide(AXIS_CODE[on], this.itemKeys(on, ids)));
+  }
+
+  /** Shows the hidden items `ids` of `axis` (the rows by default) again, in their places. */
+  show<A extends AxisName = "rows">(ids: ItemId<A, RowId, ColId>[], axis?: A): void {
+    const on = axis ?? "rows";
+    this.editView(() => this.grid.show(AXIS_CODE[on], this.itemKeys(on, ids)));
+  }
+
+  /** The hidden items of `axis` (the rows by default), in the order they were hidden, as of the latest frame. */
+  hidden<A extends AxisName = "rows">(axis?: A): ItemId<A, RowId, ColId>[] {
+    const on = axis ?? "rows";
+    const s = this.last;
+    const keys = s ? (s.requestedView ?? s.appliedView)[on].hidden : [];
+    const id = (key: bigint) => (on === "rows" ? this.feed.rowId(key) : this.feed.colId(key));
+    return keys.map(id).filter((i) => i !== undefined) as ItemId<A, RowId, ColId>[];
+  }
+
+  private itemKeys(axis: AxisName, ids: unknown[]): BigUint64Array {
+    return BigUint64Array.from(ids, (id) => (axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId)));
+  }
+
   private editView(edit: () => void): void {
     if (this.destroyed) return;
     edit();
@@ -654,10 +722,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   /**
    * Mounts a column menu (see `createColumnMenu`): filterable column headers
    * draw its button, and a press on one, Alt+ArrowDown, or `openColumnMenu`
-   * calls `open` with the column and a rectangle to place the menu under.
-   * Returns how to unmount it; one menu is mounted at a time.
+   * calls `open` with the column, a rectangle to place the menu under, and
+   * where in the menu to open. Returns how to unmount it; one menu is
+   * mounted at a time.
    */
-  attachColumnMenu(open: (colId: ColId, anchor: DOMRect) => void): () => void {
+  attachColumnMenu(open: (colId: ColId, anchor: DOMRect, at: MenuAt) => void): () => void {
     this.columnMenu = open;
     this.painter.filterButtons.cols = true;
     this.invalidate();
@@ -677,7 +746,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * rectangle to place the menu beside. Returns how to unmount it; one menu
    * is mounted at a time.
    */
-  attachRowMenu(open: (rowId: RowId, anchor: DOMRect) => void): () => void {
+  attachRowMenu(open: (rowId: RowId, anchor: DOMRect, at: MenuAt) => void): () => void {
     this.rowMenu = open;
     this.painter.filterButtons.rows = true;
     this.invalidate();
@@ -691,30 +760,31 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   /**
    * Opens the mounted row menu for `rowId`, beside its header if it is in
-   * view, else at `anchor` (or the grid's top left). `false` if no menu is
-   * mounted or the columns cannot be filtered by the row.
+   * view, else at `anchor` (or the grid's top left), at `at`. `false` if no
+   * menu is mounted, or the columns cannot be filtered by the row and the
+   * rows do not hide.
    */
-  openRowMenu(rowId: RowId, anchor?: DOMRect): boolean {
+  openRowMenu(rowId: RowId, anchor?: DOMRect, at: MenuAt = "top"): boolean {
     const open = this.rowMenu;
     const support = this.feed.rowSupport(rowId);
-    if (!open || this.destroyed || (!support.text && !support.oneOf)) return false;
+    if (!open || this.destroyed || (!support.text && !support.oneOf && !this.canHide("rows"))) return false;
     const key = this.feed.rowKey(rowId);
     const header = this.last?.rows.headers.find((h) => h.key === key && this.inView("rows", h));
-    open(rowId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
+    open(rowId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })), at);
     return true;
   }
 
   /**
    * Opens the mounted column menu for `colId`, under its header if it is in
-   * view, else under `anchor` (or the grid's top left). `false` if no menu is
-   * mounted.
+   * view, else under `anchor` (or the grid's top left), at `at`. `false` if
+   * no menu is mounted.
    */
-  openColumnMenu(colId: ColId, anchor?: DOMRect): boolean {
+  openColumnMenu(colId: ColId, anchor?: DOMRect, at: MenuAt = "top"): boolean {
     const open = this.columnMenu;
     if (!open || this.destroyed) return false;
     const key = this.feed.colKey(colId);
     const header = this.last?.cols.headers.find((h) => h.key === key && this.inView("cols", h));
-    open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
+    open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })), at);
     return true;
   }
 
@@ -1200,6 +1270,7 @@ function span(s: Snapshot, axis: "rows" | "cols", unmatched: (key: bigint) => bo
     count: s[axis].count,
     total: s[axis].total,
     unmatched: visible.filter((i) => i.key !== null && unmatched(i.key)).length,
+    hidden: (s.requestedView ?? s.appliedView)[axis].hidden.length,
   };
 }
 

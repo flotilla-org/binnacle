@@ -10,11 +10,12 @@ export {
   type FrameInfo,
   type GridOptions,
   type HeaderClick,
+  type MenuAt,
 } from "./widget";
 export { createFilterBar, type FilterBar, type FilterBarOptions } from "./filterbar";
 export { createColumnMenu, type ColumnMenu } from "./columnmenu";
 export { createFindBar, type FindBar, type FindBarOptions } from "./findbar";
-export type { ColumnSupport, CrossId, FindState } from "./feed";
+export type { ColumnSupport, CrossId, FindState, ItemId } from "./feed";
 export type { ConditionState } from "./snapshot";
 export type { Editor } from "./editing";
 export type { InitialSize } from "./sizes";

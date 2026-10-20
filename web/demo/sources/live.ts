@@ -100,6 +100,7 @@ const renderers: Partial<Record<Column, CellRenderer<Value>>> = {
 
 export const live: DemoSource = {
   name: "live",
+  filterBar: true,
   description: `${TICKERS} tickers ticking: sparklines, bars and flashes, filtered as they change`,
   async mount(host, toolbar, look) {
     const next = random(0x2545f491);

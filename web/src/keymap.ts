@@ -28,7 +28,11 @@ export type Action =
   /** Pins the focused item of `axis` to `edge`, or unpins it if it is pinned there already. */
   | { type: "Pin"; axis: AxisName; edge: PinEdge }
   /** Unpins the focused item of `axis`. */
-  | { type: "Unpin"; axis: AxisName };
+  | { type: "Unpin"; axis: AxisName }
+  /** Hides the focused item of `axis`, if the Table Source hides that axis; the key is the page's otherwise. */
+  | { type: "Hide"; axis: AxisName }
+  /** Opens the focused item's menu at the list of hidden items of `axis`, if a menu is mounted and the axis hides; the key is the page's otherwise. */
+  | { type: "ShowHidden"; axis: AxisName };
 
 export type Platform = "mac" | "other";
 
@@ -44,6 +48,11 @@ export type KeyBindings = Record<string, Action | null>;
 /** What a lookup reads from a `KeyboardEvent`. */
 export interface KeyChord {
   key: string;
+  /**
+   * The physical key, which a lookup falls back on for a letter or digit
+   * when `key` names no binding: macOS gives Option+0 the key `º`.
+   */
+  code?: string;
   ctrlKey: boolean;
   altKey: boolean;
   shiftKey: boolean;
@@ -118,10 +127,13 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
  * The default bindings: arrows, Shift to extend, Mod+arrow to the edge,
  * pages (Alt+PageUp and Alt+PageDown along the columns), Home and End (the
  * first and last row), Mod+A, Ctrl+Space the column and Shift+Space the row,
- * Alt+ArrowDown for the column menu and Alt+ArrowRight for the row menu, Mod+F for
- * the find bar, F3 (Shift+F3 back) to step between matches, Alt+Shift+ArrowLeft
- * to pin the focused column left (or unpin it) and Alt+Shift+Backspace to
- * unpin it. Pinning avoids Alt with a letter, which types a symbol on macOS.
+ * Alt+ArrowDown (or Shift+F10, or the context menu key) for the column menu
+ * and Alt+ArrowRight for the row menu, Mod+F for the find bar, F3 (Shift+F3
+ * back) to step between matches, Alt+Shift+ArrowLeft to pin the focused
+ * column left (or unpin it) and Alt+Shift+Backspace to unpin it, Mod+Alt+0
+ * to hide the focused column and Mod+Alt+9 its row (as Google Sheets has
+ * them), with Shift to list the hidden ones. Pinning avoids Alt with a
+ * letter, which types a symbol on macOS.
  */
 export function defaultBindings(): KeyBindings {
   const bindings: KeyBindings = {};
@@ -158,6 +170,12 @@ export function defaultBindings(): KeyBindings {
   bindings["Shift+F3"] = { type: "FindPrevious" };
   bindings["Alt+Shift+ArrowLeft"] = { type: "Pin", axis: "cols", edge: "leading" };
   bindings["Alt+Shift+Backspace"] = { type: "Unpin", axis: "cols" };
+  bindings["Shift+F10"] = { type: "OpenColumnMenu" };
+  bindings["ContextMenu"] = { type: "OpenColumnMenu" };
+  bindings["Mod+Alt+0"] = { type: "Hide", axis: "cols" };
+  bindings["Mod+Alt+9"] = { type: "Hide", axis: "rows" };
+  bindings["Mod+Alt+Shift+0"] = { type: "ShowHidden", axis: "cols" };
+  bindings["Mod+Alt+Shift+9"] = { type: "ShowHidden", axis: "rows" };
   return bindings;
 }
 
@@ -169,7 +187,14 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
   if (options.defaults ?? true) bind(defaultBindings());
   if (options.bindings) bind(options.bindings);
+  const physical = (code: string | undefined) => /^(?:Key([A-Z])|Digit(\d))$/.exec(code ?? "")?.slice(1).find(Boolean);
   return {
-    lookup: (e) => table.get(canonical(e.key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey)) ?? undefined,
+    lookup: (e) => {
+      const chord = (key: string) => canonical(key, e.ctrlKey, e.altKey, e.shiftKey, e.metaKey);
+      const named = chord(e.key);
+      if (table.has(named)) return table.get(named) ?? undefined;
+      const key = physical(e.code);
+      return key === undefined ? undefined : (table.get(chord(key)) ?? undefined);
+    },
   };
 }

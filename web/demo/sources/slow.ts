@@ -33,6 +33,7 @@ export const slow: DemoSource = {
   name: "slow",
   description: `${RECORDS.toLocaleString("en")} records answered late: loading cells, a pending sort, a pending locate`,
   showIds: true,
+  filterBar: true,
   async mount(host, toolbar, look) {
     const inner = fromRows(
       rows,

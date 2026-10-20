@@ -112,6 +112,16 @@ To filter and view from code:
   keeps those with the text in a searched row. The source declares it on its
   `cols` axis (`quickFilter`, `support`, `distinct`, `unmatched`); without
   `cols.support` the columns offer no controls.
+- `grid.hide(ids, axis?)` hides rows (or with `"cols"`, columns): the grid
+  asks the Table Source to leave them out whatever the filter keeps, so
+  clearing a filter leaves them hidden. Focus moves to a neighbour, picks
+  and a partial selection go, and their sizes stay for when they come back.
+  `grid.show(ids, axis?)` brings them back in their places, and
+  `grid.hidden(axis?)` lists them. `grid.canHide(axis)` says whether the
+  source hides that axis: it declares `hide: true` on the axis (with
+  `view`), and its `view` then leaves out the items each part's `hidden`
+  names, answering with those it has. `fromRows` hides both axes. Mod+Alt+0
+  hides the focused column and Mod+Alt+9 its row.
 - `grid.requestView(spec)` asks the Table Source for a whole View Spec, such
   as a saved view.
 - `grid.reapplyView()` asks for the View Spec in force again, so rows the
@@ -187,6 +197,14 @@ of 5 columns"), and its "Re-apply" counts edited rows and columns. Its
 options name each axis's items for the counts (`nouns: { rows: ["field",
 "fields"], cols: ["record", "records"] }`, giving "5 of 12 records"), and
 `axis: "cols"` makes its field the columns' quick filter.
+
+Where the source hides an axis, the menu leads with "Hide column" (or "Hide
+row") and "Show hidden columns ▸", whose flyout lists the hidden ones to
+show again, with a search past eight of them, and "Show all". Mod+Alt+Shift+0
+(or 9 for rows) opens it at that list, and Shift+F10 or the context menu key
+opens the focused column's menu. A column that takes no conditions gets
+just those items. The filter bar counts the columns left, "4 of 5 columns",
+hidden or filtered alike.
 
 ### React
 
@@ -302,6 +320,8 @@ interface AxisSource<Id, CrossId> {
   distinct?(by: CrossId, query: DistinctQuery<CrossId>, signal: AbortSignal): MaybePromise<Distinct>;
   /** Set if the axis takes a quick filter (with `view`); `{ regex: true }` if its Text Queries may be regexes. */
   quickFilter?: { regex?: boolean };
+  /** Set if `view` leaves out the items a View Spec's `hidden` names on this axis; the grid offers hiding only then. */
+  hide?: boolean;
   /** Where `id` sits after a reorder: `{ type: "Found", position }` or `{ type: "Gone", suggest }`. */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /**
@@ -319,10 +339,13 @@ interface AxisSource<Id, CrossId> {
   identity?: "position";
 }
 
-/** One part per axis, each naming items of the other axis: the rows sort and filter by columns. */
+/**
+ * One part per axis, its filter and sort naming items of the other axis (the rows sort and filter by
+ * columns), and its own items to leave out whatever the filter keeps (empty unless the axis hides).
+ */
 interface ViewSpec<RowId, ColId> {
-  rows: { filter: FilterSpec<ColId>; sort: SortSpec<ColId> };
-  cols: { filter: FilterSpec<RowId>; sort: SortSpec<RowId> };
+  rows: { filter: FilterSpec<ColId>; sort: SortSpec<ColId>; hidden: RowId[] };
+  cols: { filter: FilterSpec<RowId>; sort: SortSpec<RowId>; hidden: ColId[] };
 }
 
 /** Every part must keep an item: the quick filter, and each condition. */

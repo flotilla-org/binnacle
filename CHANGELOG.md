@@ -15,6 +15,7 @@
 - **web:** `SelectionChange.picked` is `{ rows, cols }` of IDs and `FrameInfo.picked` is `{ rows, cols }` of counts.
 - **ratatui:** `ColumnFilter::fetch` asks with the axis too (`|axis, key, query| ...`), and `Control` gains `RowFilter`.
 - **web:** `WebMemory`'s filter calls take the axis first.
+- **core, web, C API:** each axis's part of a View Spec gains `hidden`, the Keys (IDs on the web) of its own items to leave out, so a Table Source that builds parts by hand adds it (`AxisView::default()` has none). On the web `AxisView` and `AppliedAxisView` take the axis's own ID type second.
 - **testkit:** `append` on `RecordTable` and `ColumnMajorTable` returns `Vec<(Axis, ChangeNotice)>` too.
 - **core:** `Snapshot::headers` places the headers of every drawn item, the leading pinned Strip's first, then the scrolling Strip's; `Snapshot::rows` and `cols` stay the scrolling Strips. A host that zips `rows()` with `headers(Axis::Rows)` iterates `drawn(Axis::Rows)` instead.
 - **C API:** `BinnacleAxisSnapshot.strip` lists the drawn items, the `pinned_len` pinned ones first, and gains `scrolling_start` and `scrolling_end`; the cell states run over the drawn items.
@@ -25,6 +26,11 @@
 - **web:** a Table Source axis without `move` offers no move: dragging its headers no longer starts one.
 
 ### Added
+
+- **core:** hiding ([#148](https://github.com/flotilla-org/binnacle/issues/148)): `Grid::hide(axis, keys)` and `Grid::show(axis, keys)` ask the Table Source for the View Spec in force with those items hidden or shown (`ViewEdit::Hide`, `ViewEdit::Show`), on an axis whose source declares it (`set_hide_support`). The answer is a `Refiltered`, so focus, the selection and picks follow its rules, while Size Overrides stay for when the items come back. `Snapshot::hide_support` and `Snapshot::hidden`.
+- **memory:** the In-Memory Table Source hides items on either axis apart from the filter (`apply_hidden`, `hidden`, `is_hidden`), pruning Keys the data lacks; `MemorySource` applies a View Spec's hidden Keys, and its quick filters searching the shown items skip hidden ones, as do its distinct values. `PumpSource::hide_support`.
+- **C API:** `binnacle_grid_set_hide_support`, `binnacle_grid_hide` and `binnacle_grid_show`; `BinnacleAxisView` and `BinnacleAxisSnapshot` carry the hidden Keys, and the Snapshot each axis's hide support.
+- **web:** `grid.hide`, `grid.show`, `grid.hidden` and `grid.canHide`; an axis's `hide` flag; `fromRows` hides both axes. The column and row menus gain "Hide column" and "Show hidden columns ▸" (a flyout with a search past eight items). Keys: Mod+Alt+0 and Mod+Alt+9 hide the focused column and row, with Shift they list the hidden ones, and Shift+F10 or the context menu key opens the column menu. A key binding naming a letter or digit now also matches with Option on macOS, which changes the key reported. `FrameInfo` axes count their hidden items.
 
 - **memory:** `Transposed`, a Table Source on its side: the Grid's rows are the inner source's columns and its columns the inner source's rows. With it a row-major source, such as the In-Memory Table Source over records, serves a column-major table. `transpose_spec`, `transpose_totals`, `transpose_find` and `transpose_match` turn the values that cross it.
 - **web:** `transpose(source)`, the same for a web Table Source, so `transpose(fromRows(...))` shows each record as a column.
@@ -51,5 +57,7 @@
 - **demos:** both demos move records and fields by their headers, upright and transposed; `binnacle-demo --refuse-sorted-moves` and the web demo's `?sortedMoves=refuse` refuse moves while sorted. The huge demos offer no moves.
 
 ### Fixed
+
+- **web:** `fromRows` names a rejected regex without RegExp's prefix even when the pattern holds a line break.
 
 - **web:** the find count is asked again when the columns are refiltered ([#139](https://github.com/flotilla-org/binnacle/issues/139)).

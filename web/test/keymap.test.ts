@@ -44,6 +44,8 @@ const ACTIONS: readonly Action[] = [
   { type: "MoveFocus", axis: "rows", by: "page", forward: true, extend: true },
   { type: "MoveFocus", axis: "cols", by: "edge", forward: false, extend: false },
   { type: "ScrollBy", axis: "rows", items: -3 },
+  { type: "Hide", axis: "cols" },
+  { type: "ShowHidden", axis: "rows" },
 ];
 
 const platforms = gs.sampledFrom<Platform>(["mac", "other"]);
@@ -168,8 +170,25 @@ test.each<[Platform, KeyChord, Action]>([
   ["mac", { key: "ArrowLeft", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "leading" }],
   ["other", { key: "ArrowLeft", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "leading" }],
   ["mac", { key: "Backspace", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Unpin", axis: "cols" }],
+  ["other", { key: "F10", ctrlKey: false, altKey: false, shiftKey: true, metaKey: false }, { type: "OpenColumnMenu" }],
+  ["mac", { key: "ContextMenu", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "OpenColumnMenu" }],
+  ["other", { key: "0", code: "Digit0", ctrlKey: true, altKey: true, shiftKey: false, metaKey: false }, { type: "Hide", axis: "cols" }],
+  ["other", { key: "9", code: "Digit9", ctrlKey: true, altKey: true, shiftKey: false, metaKey: false }, { type: "Hide", axis: "rows" }],
+  // macOS gives Option+0 the key "º", and Shift+0 ")": the physical key finds the binding.
+  ["mac", { key: "º", code: "Digit0", ctrlKey: false, altKey: true, shiftKey: false, metaKey: true }, { type: "Hide", axis: "cols" }],
+  ["mac", { key: "‚", code: "Digit0", ctrlKey: false, altKey: true, shiftKey: true, metaKey: true }, { type: "ShowHidden", axis: "cols" }],
+  ["other", { key: "(", code: "Digit9", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "ShowHidden", axis: "rows" }],
 ])("default on %s: %o is %o", (platform, event, action) => {
   expect(createKeymap({ platform }).lookup(event)).toEqual(action);
+});
+
+test("the physical key finds a binding only when the key itself names none", () => {
+  const keymap = createKeymap({ platform: "other", bindings: { "Alt+º": { type: "Cancel" }, "Alt+Q": null } });
+  const alt = { ctrlKey: false, altKey: true, shiftKey: false, metaKey: false };
+  expect(keymap.lookup({ ...alt, key: "º", code: "Digit0" })).toEqual({ type: "Cancel" });
+  expect(keymap.lookup({ ...alt, key: "œ", code: "KeyQ" })).toBeUndefined();
+  expect(keymap.lookup({ ...alt, key: "ArrowDown", code: "ArrowDown" })).toEqual({ type: "OpenColumnMenu" });
+  expect(keymap.lookup({ ...alt, key: "∂", code: "KeyD" })).toBeUndefined();
 });
 
 test("Ctrl+A is not select-all on macOS, where Ctrl+A moves to the line start", () => {
