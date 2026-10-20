@@ -231,6 +231,21 @@ impl WebGrid {
     }
 
     /// Whether axis `a` has a quick filter; see [`codes::quick_filter`].
+    /// Whether the Table Source hides items of the axis.
+    pub fn set_hide_support(&mut self, a: u8, hides: bool) {
+        self.grid.set_hide_support(axis(a), hides);
+    }
+
+    pub fn hide(&mut self, a: u8, keys: &[u64]) {
+        let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+        self.grid.hide(axis(a), &keys);
+    }
+
+    pub fn show(&mut self, a: u8, keys: &[u64]) {
+        let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+        self.grid.show(axis(a), &keys);
+    }
+
     pub fn set_quick_filter_support(&mut self, a: u8, bits: u8) {
         self.grid
             .set_quick_filter_support(axis(a), codes::quick_filter(bits));

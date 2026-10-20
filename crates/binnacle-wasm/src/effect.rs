@@ -183,12 +183,14 @@ pub struct WireFilter {
 }
 
 /// One axis's part of a View Spec. A spec coming back without a filter has
-/// none.
+/// none, and without hidden Keys hides none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireAxisView {
     #[serde(default)]
     pub filter: WireFilter,
     pub sort: Vec<WireSortColumn>,
+    #[serde(default)]
+    pub hidden: Vec<u64>,
 }
 
 /// A View Spec both ways across the boundary: out in `ViewRequested` and the
@@ -209,6 +211,7 @@ impl From<&ViewSpec> for WireViewSpec {
                     .collect(),
             },
             sort: sort_columns(&spec.axis(a).sort),
+            hidden: spec.axis(a).hidden.iter().map(|k| k.0).collect(),
         };
         WireViewSpec {
             rows: axis(Axis::Rows),
@@ -239,9 +242,11 @@ impl From<WireViewSpec> for ViewSpec {
         };
         let mut view = ViewSpec::default();
         for (axis, part) in [(Axis::Rows, spec.rows), (Axis::Cols, spec.cols)] {
+            let hidden = part.hidden.into_iter().map(Key).collect();
             view = view
                 .with_sort(axis, sort(part.sort))
-                .with_filter(axis, filter(part.filter));
+                .with_filter(axis, filter(part.filter))
+                .with_hidden(axis, hidden);
         }
         view
     }
@@ -279,6 +284,14 @@ pub enum WireViewEdit {
         from: WireCondition,
         to: WireCondition,
     },
+    Hide {
+        axis: WireAxis,
+        keys: Vec<u64>,
+    },
+    Show {
+        axis: WireAxis,
+        keys: Vec<u64>,
+    },
     Other,
 }
 
@@ -309,6 +322,14 @@ impl From<ViewEdit> for WireViewEdit {
                 axis: axis.into(),
                 from: (&from).into(),
                 to: (&to).into(),
+            },
+            ViewEdit::Hide { axis, keys } => WireViewEdit::Hide {
+                axis: axis.into(),
+                keys: keys.iter().map(|k| k.0).collect(),
+            },
+            ViewEdit::Show { axis, keys } => WireViewEdit::Show {
+                axis: axis.into(),
+                keys: keys.iter().map(|k| k.0).collect(),
             },
             _ => WireViewEdit::Other,
         }
@@ -578,8 +599,9 @@ mod tests {
                     "rows": { "filter": { "quick": null, "conditions": [] }, "sort": [
                         { "key": 2, "direction": "descending" },
                         { "key": 0, "direction": "ascending" },
-                    ] },
-                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [] },
+                    ], "hidden": [] },
+                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
+                        "hidden": [] },
                 },
                 "edit": { "type": "CycleSort", "axis": "rows", "key": 2, "multi": true },
             })
@@ -605,8 +627,10 @@ mod tests {
             wire(Effect::ViewRequested { spec, edit }),
             json!({ "generation": 7.0, "type": "ViewRequested",
                 "spec": {
-                    "rows": { "filter": { "quick": quick, "conditions": [] }, "sort": [] },
-                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [] },
+                    "rows": { "filter": { "quick": quick, "conditions": [] }, "sort": [],
+                        "hidden": [] },
+                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
+                        "hidden": [] },
                 },
                 "edit": { "type": "SetQuickFilter", "axis": "rows", "query": quick },
             })
@@ -630,8 +654,10 @@ mod tests {
             wire(Effect::ViewRequested { spec, edit }),
             json!({ "generation": 7.0, "type": "ViewRequested",
                 "spec": {
-                    "rows": { "filter": { "quick": null, "conditions": [condition] }, "sort": [] },
-                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [] },
+                    "rows": { "filter": { "quick": null, "conditions": [condition] }, "sort": [],
+                        "hidden": [] },
+                    "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
+                        "hidden": [] },
                 },
                 "edit": { "type": "AddCondition", "axis": "rows", "condition": condition },
             })

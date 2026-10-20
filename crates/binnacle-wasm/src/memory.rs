@@ -160,6 +160,15 @@ impl WebMemory {
         self.table.has_unmatched(axis(a))
     }
 
+    /// Hides the base items on axis `a` with these Logical Indices and shows
+    /// every other, apart from the filter (indices past the last are
+    /// skipped). Returns whether any came or went, so the axis needs a
+    /// `Refiltered`.
+    pub fn hide(&mut self, a: u8, items: &[u32]) -> bool {
+        let keys: Vec<Key> = items.iter().map(|&i| Key(i as u64)).collect();
+        self.table.apply_hidden(axis(a), &keys).is_some()
+    }
+
     /// Moves the items on axis `a` with these Logical Indices to before
     /// Position `to`, read in the filtered order. On a sorted axis the
     /// order shown is baked and the axis's sort cleared, unless moves on a
@@ -197,6 +206,22 @@ mod tests {
 
     fn order(m: &WebMemory) -> Vec<u32> {
         m.window(ROWS, 0.0, m.count(ROWS))
+    }
+
+    #[test]
+    fn hidden_items_leave_apart_from_the_filter_until_shown() {
+        let mut m = WebMemory::new(5, 3);
+        assert!(m.hide(ROWS, &[1, 3, 9]));
+        assert_eq!(order(&m), vec![0, 2, 4]);
+        m.filter(ROWS, &[1, 1, 0, 1, 1]);
+        assert_eq!(order(&m), vec![0, 4]);
+        m.clear_filter(ROWS);
+        assert_eq!(order(&m), vec![0, 2, 4]);
+        assert!(!m.hide(ROWS, &[3, 1]), "the same items, so nothing moves");
+        assert!(m.hide(COLS, &[0]));
+        assert_eq!(m.window(COLS, 0.0, m.count(COLS)), vec![1, 2]);
+        assert!(m.hide(ROWS, &[]));
+        assert_eq!(order(&m), vec![0, 1, 2, 3, 4]);
     }
 
     #[test]

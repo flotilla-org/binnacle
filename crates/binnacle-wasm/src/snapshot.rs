@@ -192,7 +192,7 @@ impl Writer<'_> {
     }
 
     /// Each axis's part, rows first: its filter (the quick filter, then the
-    /// conditions), then its sort.
+    /// conditions), its sort, then its hidden Keys.
     fn view(&mut self, spec: &ViewSpec) {
         for axis in Axis::ALL {
             let part = spec.axis(axis);
@@ -206,6 +206,10 @@ impl Writer<'_> {
                 self.condition(c);
             }
             self.sort(&part.sort);
+            self.len(part.hidden.len());
+            for &k in &part.hidden {
+                self.key(k);
+            }
         }
     }
 
@@ -316,6 +320,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.flag(q.regex);
         }
         w.flag(s.movable(axis));
+        w.flag(s.hide_support(axis));
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());

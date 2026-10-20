@@ -109,6 +109,7 @@ struct DumpAxis {
     quick_filter: Option<DumpTextSupport>,
     conditions: Vec<DumpListed>,
     movable: bool,
+    hide_support: bool,
 }
 
 #[derive(Serialize)]
@@ -380,6 +381,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             })
             .collect(),
         movable: s.movable(axis),
+        hide_support: s.hide_support(axis),
     }
 }
 
@@ -593,6 +595,14 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             condition: listed,
         },
+        ViewEdit::Hide {
+            axis: Axis::Cols,
+            keys: vec![col, Key(u64::MAX)],
+        },
+        ViewEdit::Show {
+            axis: Axis::Rows,
+            keys: vec![Key(3)],
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -600,7 +610,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 16] = [
+pub const SCENARIOS: [&str; 17] = [
     "plain",
     "busy",
     "resizing",
@@ -617,6 +627,7 @@ pub const SCENARIOS: [&str; 16] = [
     "found",
     "rejected",
     "pinned",
+    "hidden",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -841,6 +852,21 @@ pub fn scenario(name: &str) -> Grid {
             grid.view_applied(applied, Totals::unknown());
             grid.view_changed(ViewSpec::default(), Totals::unknown());
         }
+        "hidden" => {
+            // Both axes hide: rows 2 and 5 and column 4 hidden as applied,
+            // column 1 being hidden and row 5 being shown.
+            for axis in Axis::ALL {
+                grid.set_hide_support(axis, true);
+            }
+            grid.hide(Axis::Rows, &[key(2), key(5)]);
+            grid.hide(Axis::Cols, &[key(4)]);
+            let applied = grid.snapshot().requested_view().cloned().unwrap();
+            grid.view_applied(applied.clone(), Totals::unknown());
+            grid.view_applied(applied, Totals::unknown());
+            grid.hide(Axis::Cols, &[key(1)]);
+            grid.show(Axis::Rows, &[key(5)]);
+            grid.set_hide_support(Axis::Rows, false);
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -936,6 +962,14 @@ mod tests {
                     assert!(wanted.is_some_and(|q| q.regex));
                     assert_eq!(s.applied_view(), &ViewSpec::default());
                 }
+                "hidden" => {
+                    let key = |p: u64| Key(KEY_BASE + p);
+                    assert!(!s.hide_support(Axis::Rows) && s.hide_support(Axis::Cols));
+                    assert_eq!(s.applied_view().rows.hidden, [key(2), key(5)]);
+                    assert_eq!(s.hidden(Axis::Rows), [key(2)]);
+                    assert_eq!(s.hidden(Axis::Cols), [key(4), key(1)]);
+                    assert!(s.view_pending());
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
@@ -962,6 +996,7 @@ mod tests {
                 "Idle",
                 "Idle",
                 "DraggingSelection",
+                "Idle",
                 "Idle",
                 "Idle",
                 "Idle",
