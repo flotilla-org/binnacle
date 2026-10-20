@@ -125,7 +125,7 @@ test.describe("records", () => {
     await expect(menuField(page, "name")).toBeFocused();
   });
 
-  test("the id column draws no funnel, and its menu offers no filter", async ({ page }) => {
+  test("the id column draws no funnel, and its menu pins and hides it but offers no filter", async ({ page }) => {
     const band = await page.locator(".binnacle-band-left").boundingBox();
     const top = await page.locator(".binnacle-band-top").boundingBox();
     const at = await funnel(page, "id");
@@ -137,6 +137,7 @@ test.describe("records", () => {
     await expect(menu.getByRole("button", { name: "Pin left" })).toBeFocused();
     await expect(menu.getByRole("textbox")).toBeHidden();
     await expect(menu.getByRole("button", { name: "Clear" })).toBeHidden();
+    await expect(menu.getByRole("button", { name: "Hide column" })).toBeVisible();
   });
 
   test.describe("screenshots", () => {
