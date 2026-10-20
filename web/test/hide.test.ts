@@ -43,68 +43,86 @@ type Step =
 const ROWS = 0;
 const COLS = 1;
 
-describe("hiding through the feed", () => {
-  test("hidden items leave each axis, the answer prunes IDs the data lacks, and sizes stay", () =>
-    hegel.test(
-      (tc) => {
-        const rows = tc.draw(records);
-        const source = fromRows(rows, COLUMNS);
-        const h = new Harness(source);
-        try {
-          h.settled();
-          expect([h.snapshot.rows.hideSupport, h.snapshot.cols.hideSupport]).toEqual([true, true]);
-          const step = gs.oneOf(
-            gs.tuples(gs.sampledFrom<"hide" | "show">(["hide", "hide", "show"]), gs.arrays(gs.integers({ minValue: 0, maxValue: rows.length + 1 }), { minSize: 1, maxSize: 3 })).map(
-              ([type, ids]): Step => ({ type, axis: "rows", ids }),
-            ),
-            gs.tuples(gs.sampledFrom<"hide" | "show">(["hide", "hide", "show"]), gs.arrays(gs.sampledFrom(FIELDS), { minSize: 1, maxSize: 2 })).map(
-              ([type, ids]): Step => ({ type, axis: "cols", ids }),
-            ),
-            gs.tuples(gs.sampledFrom(FIELDS.slice(0, 4)), gs.integers({ minValue: 30, maxValue: 120 })).map(
-              ([id, size]): Step => ({ type: "size", id, size }),
-            ),
-          );
-          // The model: each axis's hidden IDs as the source keeps them, and the sizes set.
-          const hidden: { rows: number[]; cols: Field[] } = { rows: [], cols: [] };
-          const sizes = new Map<Field, number>();
-          const has = { rows: (id: number) => id < rows.length, cols: (id: Field) => (FIELDS.slice(0, 4) as string[]).includes(id) };
-          for (const s of tc.draw(gs.arrays(step, { maxSize: 8 }))) {
-            if (s.type === "size") {
-              h.grid.set_size(COLS, h.feed.colKey(s.id), s.size);
-              sizes.set(s.id, s.size);
-            } else if (s.axis === "rows") {
-              const keys = BigUint64Array.from(s.ids, (id) => h.feed.rowKey(id));
-              if (s.type === "hide") h.grid.hide(ROWS, keys);
-              else h.grid.show(ROWS, keys);
-              hidden.rows = s.type === "hide" ? [...new Set([...hidden.rows, ...s.ids])] : hidden.rows.filter((i) => !s.ids.includes(i));
-              hidden.rows = hidden.rows.filter(has.rows);
-            } else {
-              const keys = BigUint64Array.from(s.ids, (id) => h.feed.colKey(id));
-              if (s.type === "hide") h.grid.hide(COLS, keys);
-              else h.grid.show(COLS, keys);
-              hidden.cols = s.type === "hide" ? [...new Set([...hidden.cols, ...s.ids])] : hidden.cols.filter((i) => !s.ids.includes(i));
-              hidden.cols = hidden.cols.filter(has.cols);
-            }
-            h.drain();
-            const snap = h.settled();
-            expect(snap.requestedView).toBeNull();
-            const applied = snap.appliedView;
-            expect(applied.rows.hidden.map((k) => h.feed.rowId(k))).toEqual(hidden.rows);
-            expect(applied.cols.hidden.map((k) => h.feed.colId(k))).toEqual(hidden.cols);
-            const shownRows = rows.map((_, i) => i).filter((i) => !hidden.rows.includes(i));
-            const shownCols = COLUMNS.map((c) => c.key).filter((c) => !hidden.cols.includes(c));
-            expect([snap.rows.count, snap.cols.count]).toEqual([shownRows.length, shownCols.length]);
-            expect(snap.rows.strip.map((i) => h.feed.rowId(i.key!))).toEqual(shownRows.slice(0, snap.rows.strip.length));
-            expect(snap.cols.strip.map((i) => h.feed.colId(i.key!))).toEqual(shownCols);
-            for (const [id, size] of sizes) expect(h.grid.size_override(COLS, h.feed.colKey(id))).toBe(size);
+interface Settled {
+  h: Harness<number, Field, unknown>;
+  rows: Rec[];
+  hidden: { rows: number[]; cols: Field[] };
+  sizes: Map<Field, number>;
+}
+
+/** Runs random hides, shows and column sizes through the feed, calling `check` once each has settled. */
+const drive = (check: (s: Settled) => void) =>
+  hegel.test(
+    (tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      const h = new Harness(source);
+      try {
+        h.settled();
+        expect([h.snapshot.rows.hideSupport, h.snapshot.cols.hideSupport]).toEqual([true, true]);
+        const step = gs.oneOf(
+          gs.tuples(gs.sampledFrom<"hide" | "show">(["hide", "hide", "show"]), gs.arrays(gs.integers({ minValue: 0, maxValue: rows.length + 1 }), { minSize: 1, maxSize: 3 })).map(
+            ([type, ids]): Step => ({ type, axis: "rows", ids }),
+          ),
+          gs.tuples(gs.sampledFrom<"hide" | "show">(["hide", "hide", "show"]), gs.arrays(gs.sampledFrom(FIELDS), { minSize: 1, maxSize: 2 })).map(
+            ([type, ids]): Step => ({ type, axis: "cols", ids }),
+          ),
+          gs.tuples(gs.sampledFrom(FIELDS.slice(0, 4)), gs.integers({ minValue: 30, maxValue: 120 })).map(
+            ([id, size]): Step => ({ type: "size", id, size }),
+          ),
+        );
+        // The model: each axis's hidden IDs as the source keeps them, and the sizes set.
+        const hidden: { rows: number[]; cols: Field[] } = { rows: [], cols: [] };
+        const sizes = new Map<Field, number>();
+        const has = { rows: (id: number) => id < rows.length, cols: (id: Field) => (FIELDS.slice(0, 4) as string[]).includes(id) };
+        for (const s of tc.draw(gs.arrays(step, { maxSize: 8 }))) {
+          if (s.type === "size") {
+            h.grid.set_size(COLS, h.feed.colKey(s.id), s.size);
+            sizes.set(s.id, s.size);
+          } else if (s.axis === "rows") {
+            const keys = BigUint64Array.from(s.ids, (id) => h.feed.rowKey(id));
+            if (s.type === "hide") h.grid.hide(ROWS, keys);
+            else h.grid.show(ROWS, keys);
+            hidden.rows = s.type === "hide" ? [...new Set([...hidden.rows, ...s.ids])] : hidden.rows.filter((i) => !s.ids.includes(i));
+            hidden.rows = hidden.rows.filter(has.rows);
+          } else {
+            const keys = BigUint64Array.from(s.ids, (id) => h.feed.colKey(id));
+            if (s.type === "hide") h.grid.hide(COLS, keys);
+            else h.grid.show(COLS, keys);
+            hidden.cols = s.type === "hide" ? [...new Set([...hidden.cols, ...s.ids])] : hidden.cols.filter((i) => !s.ids.includes(i));
+            hidden.cols = hidden.cols.filter(has.cols);
           }
-        } finally {
-          h.destroy();
-          source.destroy();
+          h.drain();
+          h.settled();
+          check({ h, rows, hidden, sizes });
         }
-      },
-      { testCases: 150 },
-    ));
+      } finally {
+        h.destroy();
+        source.destroy();
+      }
+    },
+    { testCases: 150 },
+  );
+
+describe("hiding through the feed", () => {
+  test("hidden items leave each axis and the answer prunes IDs the data lacks", () =>
+    drive(({ h, rows, hidden }) => {
+      const snap = h.snapshot;
+      expect(snap.requestedView).toBeNull();
+      const applied = snap.appliedView;
+      expect(applied.rows.hidden.map((k) => h.feed.rowId(k))).toEqual(hidden.rows);
+      expect(applied.cols.hidden.map((k) => h.feed.colId(k))).toEqual(hidden.cols);
+      const shownRows = rows.map((_, i) => i).filter((i) => !hidden.rows.includes(i));
+      const shownCols = COLUMNS.map((c) => c.key).filter((c) => !hidden.cols.includes(c));
+      expect([snap.rows.count, snap.cols.count]).toEqual([shownRows.length, shownCols.length]);
+      expect(snap.rows.strip.map((i) => h.feed.rowId(i.key!))).toEqual(shownRows.slice(0, snap.rows.strip.length));
+      expect(snap.cols.strip.map((i) => h.feed.colId(i.key!))).toEqual(shownCols);
+    }));
+
+  test("a column's size stays while it is hidden", () =>
+    drive(({ h, sizes }) => {
+      for (const [id, size] of sizes) expect(h.grid.size_override(COLS, h.feed.colKey(id))).toBe(size);
+    }));
 
   test("an axis whose source does not hide takes no hide, and a source without view hides nothing", () => {
     const rows = [{ a: 1, b: "x", c: null, d: "p" }];

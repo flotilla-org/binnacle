@@ -9,18 +9,15 @@ use std::collections::BTreeMap;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Condition, FindQuery, FocusStep, Grid, Key, Modifiers, PointerEvent,
-    TextQuery, TextSupport, Viewport,
+    Snapshot, TextQuery, TextSupport, ViewSpec, Viewport,
 };
+use binnacle_memory::MemorySource;
 use binnacle_testkit::{Record, RecordTable, Scenario};
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
 
 const ROW_HEADER: f32 = 3.0;
 const COL_WIDTH: f32 = 4.0;
-const V: Viewport = Viewport {
-    width: 24.0,
-    height: 7.0,
-};
 
 #[derive(Clone, Debug)]
 enum Input {
@@ -40,6 +37,15 @@ enum Input {
 #[hegel::composite]
 fn axis(tc: &TestCase) -> Axis {
     tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]))
+}
+
+/// From one too narrow for a column to more than the table needs.
+#[hegel::composite]
+fn viewport(tc: &TestCase) -> Viewport {
+    Viewport::new(
+        tc.draw(gs::floats::<f32>().min_value(1.0).max_value(40.0)),
+        tc.draw(gs::floats::<f32>().min_value(1.0).max_value(14.0)),
+    )
 }
 
 #[hegel::composite]
@@ -101,12 +107,13 @@ fn input(tc: &TestCase, rows: usize, cols: usize) -> Input {
 
 struct Host {
     s: Scenario<RecordTable>,
+    viewport: Viewport,
     /// The Size Overrides set, by axis and Key.
     sizes: [BTreeMap<Key, f32>; 2],
 }
 
 impl Host {
-    fn new(rows: Vec<Record>, cols: usize) -> Host {
+    fn new(rows: Vec<Record>, cols: usize, viewport: Viewport) -> Host {
         let mut grid = Grid::new(
             AxisConfig::new(rows.len() as u64, 1.0).header(1.0),
             AxisConfig::new(cols as u64, COL_WIDTH)
@@ -120,17 +127,19 @@ impl Host {
         let source = RecordTable::new(rows, cols, 0..cols as u64);
         Host {
             s: Scenario::new(grid, source),
+            viewport,
             sizes: Default::default(),
         }
     }
 
     fn input(&mut self, input: Input) {
+        let v = self.viewport;
         let g = &mut self.s.grid;
         match input {
             Input::Hide(axis, keys) => g.hide(axis, &keys.into_iter().map(Key).collect::<Vec<_>>()),
             Input::Show(axis, keys) => g.show(axis, &keys.into_iter().map(Key).collect::<Vec<_>>()),
             Input::Click(x, y, m) => {
-                let (x, y) = (x * V.width, y * V.height);
+                let (x, y) = (x * v.width, y * v.height);
                 g.pointer(PointerEvent::down(x, y).modifiers(m));
                 g.pointer(PointerEvent::up(x, y).modifiers(m));
             }
@@ -155,7 +164,7 @@ impl Host {
     /// Runs frames until no answer is due, so the Grid has settled.
     fn settle(&mut self) {
         for _ in 0..4 {
-            self.s.frame(V);
+            self.s.frame(self.viewport);
         }
     }
 }
@@ -167,34 +176,47 @@ fn records(tc: &TestCase, cols: usize) -> Vec<Record> {
     tc.draw(gs::vecs(record).min_size(1).max_size(10))
 }
 
-#[hegel::test(test_cases = 300)]
-fn hiding_keeps_positions_gapless_and_nothing_copied_or_found_is_hidden(tc: TestCase) {
+/// Drives a Host through random inputs, calling `check` with the source,
+/// the input, the View Spec the source applied and the Snapshot once each
+/// input has settled.
+fn drive(
+    tc: &TestCase,
+    mut check: impl FnMut(&MemorySource<Record>, &Input, &ViewSpec, &mut Snapshot),
+) {
     let cols = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
     let rows = tc.draw(records(cols));
     let n_rows = rows.len();
-    let mut host = Host::new(rows, cols);
+    let mut host = Host::new(rows, cols, tc.draw(viewport()));
     host.settle();
     for input in tc.draw(gs::vecs(input(n_rows, cols)).max_size(12)) {
         host.input(input.clone());
         host.settle();
-        let applied = host.s.source.source.view_spec();
-        let snap = host.s.grid.snapshot();
-        let window = |axis: Axis, positions: std::ops::Range<u64>| {
-            host.s.source.source.window(axis, positions)
-        };
+        let source = &host.s.source.source;
+        check(
+            source,
+            &input,
+            &source.view_spec(),
+            &mut host.s.grid.snapshot(),
+        );
+    }
+}
+
+#[hegel::test(test_cases = 300)]
+fn positions_stay_gapless_and_never_reach_a_hidden_item(tc: TestCase) {
+    drive(&tc, |source, input, applied, snap| {
         for axis in Axis::ALL {
             let hidden = &applied.axis(axis).hidden;
             assert_eq!(snap.hidden(axis), hidden.as_slice(), "{input:?}");
-            // Gapless: the Strip is a run of Positions below the count, each
-            // with the Key the source has there, none of them hidden.
-            assert_eq!(snap.count(axis), host.s.source.source.count(axis));
+            // The Strip is a run of Positions below the count, each with the
+            // Key the source has there, none of them hidden.
+            assert_eq!(snap.count(axis), source.count(axis));
             let strip = snap.strip(axis);
             for (a, b) in strip.iter().zip(strip.iter().skip(1)) {
                 assert_eq!(a.position + 1, b.position, "{axis:?} {input:?}");
             }
             for item in strip {
                 assert!(item.position < snap.count(axis));
-                let at = window(axis, item.position..item.position + 1);
+                let at = source.window(axis, item.position..item.position + 1);
                 assert_eq!(item.key, at.first().copied(), "{axis:?} {input:?}");
                 assert!(item.key.is_none_or(|k| !hidden.contains(&k)));
             }
@@ -202,10 +224,16 @@ fn hiding_keeps_positions_gapless_and_nothing_copied_or_found_is_hidden(tc: Test
                 assert!(f.key.is_none_or(|k| !hidden.contains(&k)), "focus {f:?}");
             }
         }
+    });
+}
+
+#[hegel::test(test_cases = 300)]
+fn nothing_copied_or_found_is_hidden(tc: TestCase) {
+    drive(&tc, |source, input, applied, snap| {
         // What a host copies: the range's items, and the picked rows.
         if let Some(range) = snap.selection_range() {
             for axis in Axis::ALL {
-                let keys = window(axis, range.span(axis).clone());
+                let keys = source.window(axis, range.span(axis).clone());
                 let hidden = &applied.axis(axis).hidden;
                 assert!(keys.iter().all(|k| !hidden.contains(k)), "{input:?}");
             }
@@ -220,10 +248,23 @@ fn hiding_keeps_positions_gapless_and_nothing_copied_or_found_is_hidden(tc: Test
                 assert!(!applied.axis(axis).hidden.contains(&m.key(axis)), "{m:?}");
             }
         }
-        // Size Overrides stay, hidden or not, until set again.
+    });
+}
+
+#[hegel::test(test_cases = 300)]
+fn size_overrides_stay_hidden_or_not_until_set_again(tc: TestCase) {
+    let cols = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let rows = tc.draw(records(cols));
+    let n_rows = rows.len();
+    let mut host = Host::new(rows, cols, tc.draw(viewport()));
+    host.settle();
+    for input in tc.draw(gs::vecs(input(n_rows, cols)).max_size(12)) {
+        host.input(input.clone());
+        host.settle();
         for axis in Axis::ALL {
             for (&key, &size) in &host.sizes[axis.index()] {
-                assert_eq!(host.s.grid.size_override(axis, key), Some(size));
+                let kept = host.s.grid.size_override(axis, key);
+                assert_eq!(kept, Some(size), "{axis:?} {key:?} {input:?}");
             }
         }
     }
@@ -234,7 +275,7 @@ fn hiding_then_showing_restores_the_view_and_the_size_overrides(tc: TestCase) {
     let cols = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
     let rows = tc.draw(records(cols));
     let n_rows = rows.len();
-    let mut host = Host::new(rows, cols);
+    let mut host = Host::new(rows, cols, tc.draw(viewport()));
     host.settle();
     let axis = tc.draw(axis());
     let n = [n_rows, cols][axis.index()];

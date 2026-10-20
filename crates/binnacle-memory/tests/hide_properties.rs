@@ -286,10 +286,14 @@ fn clearing_the_filters_leaves_hidden_items_hidden(tc: TestCase) {
         .with_filter(Axis::Rows, FilterSpec::default())
         .with_filter(Axis::Cols, FilterSpec::default());
     source.view(&rows, &cleared).unwrap();
+    let mut model = Model {
+        rows,
+        spec: cleared,
+        hidden: Default::default(),
+        host: None,
+    };
     for axis in Axis::ALL {
-        let shown = visible(&source, axis);
-        for k in &spec.axis(axis).hidden {
-            assert!(!shown.contains(k), "{axis:?} {k:?} came back");
-        }
+        model.prune(axis, &spec.axis(axis).hidden);
+        assert_eq!(visible(&source, axis), model.visible(axis), "{axis:?}");
     }
 }
