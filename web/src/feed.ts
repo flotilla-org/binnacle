@@ -4,7 +4,7 @@
 // Locate, move, find steps), and find's marks and count. Every answer goes
 // through one `settle`.
 
-import { AXES, AXIS_CODE, FIND, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, FIND, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName, type PinEdge } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -254,6 +254,17 @@ export function createFeed<RowId, ColId, V>(
   let grid: WebGrid | null = null;
   let detach: (() => void) | undefined;
   let shown: Snapshot | null = null;
+  /** Each axis's pins, dormant ones included, as the last `PinsChanged` for each edge named them. */
+  const pinned: Record<AxisName, Record<PinEdge, bigint[]>> = {
+    rows: { leading: [], trailing: [] },
+    cols: { leading: [], trailing: [] },
+  };
+  /** The Keys on `axis` whose IDs a Reset keeps, though the Table Source may lack them: pinned or sized. */
+  const held = (axis: AxisName): bigint[] => [
+    ...pinned[axis].leading,
+    ...pinned[axis].trailing,
+    ...(grid?.size_override_keys(AXIS_CODE[axis]) ?? []),
+  ];
   /** The View Spec last applied and its totals, to restore if a request fails. */
   let applied: KeyedViewSpec = BASE_VIEW;
   let totals: Totals = {};
@@ -332,7 +343,7 @@ export function createFeed<RowId, ColId, V>(
     switch (notice.type) {
       case "Reset":
         cache.clear();
-        interner.rebuild();
+        interner.rebuild(held(axis));
         settle(() => axes[axis].source.count(), (count) => reset(axis, count), {
           fresh: true,
           failed: report({ type: "count", axis }),
@@ -1037,6 +1048,9 @@ export function createFeed<RowId, ColId, V>(
     },
     answer(effect) {
       switch (effect.type) {
+        case "PinsChanged":
+          pinned[effect.axis][effect.edge] = effect.keys;
+          return true;
         case "ViewRequested":
           answerView(effect.spec);
           return true;

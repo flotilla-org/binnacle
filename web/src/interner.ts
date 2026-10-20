@@ -15,9 +15,11 @@ export interface KeyInterner<Id> {
    * Starts a new generation after a Reset. IDs seen in the generation before
    * keep their Keys when they come back (focus and Size Overrides follow
    * them); IDs not seen for two rebuilds are forgotten, so memory follows
-   * what the Table Source still shows rather than everything it ever did.
+   * what the Table Source still shows rather than everything it ever did,
+   * except the IDs of the Keys in `keep` (pinned items and sized ones, say),
+   * which last while they are kept.
    */
-  rebuild(): void;
+  rebuild(keep?: Iterable<bigint>): void;
 }
 
 interface Generation<Id> {
@@ -43,9 +45,16 @@ export function createInterner<Id>(idKey?: (id: Id) => Primitive): KeyInterner<I
       return key;
     },
     id: (key) => current.ids.get(key) ?? previous.ids.get(key),
-    rebuild() {
+    rebuild(keep = []) {
+      const kept = generation<Id>();
+      for (const key of keep) {
+        const id = current.ids.get(key) ?? previous.ids.get(key);
+        if (id === undefined) continue;
+        kept.keys.set(canonical(id), key);
+        kept.ids.set(key, id);
+      }
       previous = current;
-      current = generation();
+      current = kept;
     },
   };
 }

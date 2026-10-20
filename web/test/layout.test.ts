@@ -258,3 +258,51 @@ test("restored before data loads: the View Spec shows pending, pins, sizes and b
     h.destroy();
   }
 });
+
+test("a missing item's pin or size keeps its ID through any number of Resets, until unpinned or reset", () => {
+  let sinks!: TableSink<string, string>;
+  const ids = (n: number, p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+  const source: TableSource<string, string, string> = {
+    rows: { count: () => 10, window: (s, e) => ids(10, "r").slice(s, e) },
+    cols: { count: () => 3, window: (s, e) => ids(3, "c").slice(s, e) },
+    cells: (rs, cs) => rs.map((r) => cs.map((c) => `${r}:${c}`)),
+    attach: (s) => ((sinks = s), () => {}),
+  };
+  const h = new Harness(source);
+  const resets = () => {
+    for (let i = 0; i < 3; i++) {
+      sinks.rows.notify({ type: "Reset" });
+      sinks.cols.notify({ type: "Reset" });
+      h.drain();
+      h.settled();
+    }
+  };
+  try {
+    h.settled();
+    const none = { quick: null, conditions: [] };
+    const layout: Layout<string, string> = {
+      version: 1,
+      view: { rows: { sort: [], filter: none, hidden: [] }, cols: { sort: [], filter: none, hidden: [] } },
+      pins: { rows: { leading: [], trailing: ["gone row"] }, cols: { leading: ["gone", "c1"], trailing: [] } },
+      // Sized only, not pinned.
+      sizes: { rows: [["sized row", 40]], cols: [["sized", 90]] },
+      bands: { rows: 24, cols: 40 },
+    };
+    restore(h, layout);
+    resets();
+    expect(read(h)).toEqual(layout);
+    // Unpinned, and its size reset, a missing column's ID goes like any other.
+    const [gone, sized] = [h.feed.colKey("gone"), h.feed.colKey("sized")];
+    h.grid.unpin(AXIS_CODE.cols, gone);
+    h.grid.clear_size(AXIS_CODE.cols, sized);
+    h.drain();
+    resets();
+    expect([h.feed.colId(gone), h.feed.colId(sized)]).toEqual([undefined, undefined]);
+    expect(read(h).pins.cols.leading).toEqual(["c1"]);
+    // The rows' pin and size were left: their IDs stay.
+    expect(read(h).pins.rows.trailing).toEqual(["gone row"]);
+    expect(read(h).sizes.rows).toEqual([["sized row", 40]]);
+  } finally {
+    h.destroy();
+  }
+});
