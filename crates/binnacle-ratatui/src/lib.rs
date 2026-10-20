@@ -35,7 +35,8 @@ pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
-    Action, Axis, Cursor, HeaderPlacement, HeaderSort, Key, Mode, Snapshot, SortDirection,
+    Action, Axis, Cursor, Edge, HeaderPlacement, HeaderSort, Key, Mode, Snapshot, SortDirection,
+    StripItem,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -167,6 +168,8 @@ pub fn render_with(
     scrollbar::draw(snapshot, &bars, theme, buf);
     let area = bars.grid;
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
+    let (scroll_top, scroll_left) = (from(snapshot, Axis::Rows), from(snapshot, Axis::Cols));
+    let pinned_cols = snapshot.pinned(Axis::Cols, Edge::Leading).len();
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
     let band = |style: Style, h: &HeaderPlacement| {
@@ -185,7 +188,8 @@ pub fn render_with(
     };
     let multi = snapshot.applied_view().rows.sort.columns().len() > 1;
     let area_end = i64::from(area.width);
-    for h in snapshot.headers(Axis::Cols) {
+    for (i, h) in snapshot.headers(Axis::Cols).enumerate() {
+        let from = if i < pinned_cols { left } else { scroll_left };
         let label = h
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
@@ -203,7 +207,7 @@ pub fn render_with(
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
         let style = band(theme.header, &h);
-        let clip = (left, end, 0.0);
+        let clip = (from, end, 0.0);
         let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
         if marker.is_empty() {
             put(
@@ -230,7 +234,7 @@ pub fn render_with(
             put(buf, area, (start, 0.0), clip, LOADING, style);
         }
         if h.sort.pending {
-            let (x0, x1) = (cell(start).max(cell(left)), cell(end).min(area_end));
+            let (x0, x1) = (cell(start).max(cell(from)), cell(end).min(area_end));
             shimmer(buf, area, (x0..x1, 0), &sweep, 0);
         }
     }
@@ -241,7 +245,13 @@ pub fn render_with(
         _ => None,
     };
     let multi_rows = snapshot.applied_view().cols.sort.columns().len() > 1;
-    for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
+    let pinned_rows = snapshot.pinned(Axis::Rows, Edge::Leading).len();
+    let cols: Vec<(&StripItem, f32)> = (snapshot.drawn(Axis::Cols).enumerate())
+        .map(|(j, c)| (c, if j < pinned_cols { left } else { scroll_left }))
+        .collect();
+    let rows = snapshot.drawn(Axis::Rows).enumerate();
+    for ((i, r), h) in rows.zip(snapshot.headers(Axis::Rows)) {
+        let from_y = if i < pinned_rows { top } else { scroll_top };
         let number = r.key.map_or_else(
             || r.position.saturating_add(1).to_string(),
             |k| content.row_header(k, r.position),
@@ -261,7 +271,7 @@ pub fn render_with(
         let room = width.saturating_sub(marker.chars().count());
         let number = fit(&number, u32::try_from(room).unwrap_or(u32::MAX));
         let style = band(theme.row_number, &h);
-        let clip = (0.0, left, top);
+        let clip = (0.0, left, from_y);
         put(
             buf,
             area,
@@ -281,7 +291,7 @@ pub fn render_with(
         }
         if h.sort.pending {
             let x1 = cell(left).min(area_end);
-            for y in cell(r.offset.max(top))..cell(r.end()) {
+            for y in cell(r.offset.max(from_y))..cell(r.end()) {
                 shimmer(buf, area, (0..x1, y), &sweep, 0);
             }
         }
@@ -289,14 +299,14 @@ pub fn render_with(
         if let Some(zebra) = theme.zebra.filter(|_| r.position % 2 == 1) {
             row_style = row_style.patch(zebra);
             let blank = " ".repeat(usize::from(area.width));
-            for y in cell(r.offset.max(top))..cell(r.end()) {
-                let clip = (left, f32::INFINITY, top);
+            for y in cell(r.offset.max(from_y))..cell(r.end()) {
+                let clip = (left, f32::INFINITY, from_y);
                 put(buf, area, (0.0, y as f32), clip, &blank, row_style);
             }
         }
         let row_picked = r.key.is_some_and(|k| picked[0].contains(&k));
         let row_hovered = h.hovered;
-        for c in snapshot.cols() {
+        for &(c, from_x) in &cols {
             let state = snapshot.cell_state(r, c);
             let in_picked = row_picked || c.key.is_some_and(|k| picked[1].contains(&k));
             let status = CellStatus {
@@ -320,8 +330,8 @@ pub fn render_with(
                 let lo = lo.max(min).max(0).min(i64::from(max));
                 (lo, hi.min(i64::from(max)).max(lo))
             };
-            let (vx0, vx1) = clip(x0, x1, cell(left), area.width);
-            let (vy0, vy1) = clip(y0, y1, cell(top), area.height);
+            let (vx0, vx1) = clip(x0, x1, cell(from_x), area.width);
+            let (vy0, vy1) = clip(y0, y1, cell(from_y), area.height);
             let visible = Rect::new(
                 area.x + vx0 as u16,
                 area.y + vy0 as u16,
@@ -371,9 +381,12 @@ pub fn render_with(
                 }
             }
             if state.focused && locating {
-                let (x0, x1) = (cell(c.offset).max(cell(left)), cell(c.end()).min(area_end));
+                let (x0, x1) = (
+                    cell(c.offset).max(cell(from_x)),
+                    cell(c.end()).min(area_end),
+                );
                 let pulse = Shimmer::new(ctx, c.size.ceil().clamp(0.0, 65535.0) as u16);
-                let y = cell(r.offset.max(top));
+                let y = cell(r.offset.max(from_y));
                 shimmer(buf, area, (x0..x1, y), &pulse, cell(c.offset));
             }
         }
@@ -435,7 +448,13 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
         return;
     };
     let area = area.intersection(buf.area);
-    let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
+    let Mode::Editing { row, col } = snapshot.mode() else {
+        return;
+    };
+    let (top, left) = (
+        from_key(snapshot, Axis::Rows, row),
+        from_key(snapshot, Axis::Cols, col),
+    );
     let (x0, x1) = (cell(rect.x), cell(rect.x + rect.width));
     let y = cell(rect.y);
     let width = usize::try_from(x1 - x0).unwrap_or(0);
@@ -449,6 +468,23 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     let line = format!("{line:<width$}");
     let clip = (left, f32::INFINITY, top);
     put(buf, area, (rect.x, rect.y), clip, &line, style);
+}
+
+/// Where the scrolling Strip of `axis` starts drawing, past the Header Band
+/// and the leading pinned Strip; its items are clipped there.
+fn from(snapshot: &Snapshot, axis: Axis) -> f32 {
+    snapshot.scrolling(axis).start
+}
+
+/// Where the item with `key` on `axis` is clipped: at the Header Band if it
+/// is pinned, else where the scrolling Strip starts.
+fn from_key(snapshot: &Snapshot, axis: Axis, key: Key) -> f32 {
+    let pinned = snapshot.pinned(axis, Edge::Leading);
+    if pinned.iter().any(|i| i.key == Some(key)) {
+        snapshot.header(axis)
+    } else {
+        from(snapshot, axis)
+    }
 }
 
 /// Writes `message` centred in the body, the part of `area` past the header

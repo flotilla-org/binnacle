@@ -1,6 +1,6 @@
 //! Border Styles: the lines `render_with` draws in the Gaps.
 
-use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, PointerEvent, Viewport};
+use binnacle_core::{Action, Axis, AxisConfig, Edge, Grid, Key, PointerEvent, Viewport};
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
     BorderExtent, BorderStyle, BorderWeight, Content, RenderContext, Theme, render_with,
@@ -239,6 +239,61 @@ fn covers(offset: f32, end: f32, at: i64) -> bool {
     (offset.ceil() as i64..end.ceil() as i64).contains(&at)
 }
 
+/// [`fixture`] with column 3 pinned left: it draws after the row numbers,
+/// and the scrolling columns start past the Gap after it, part-way into
+/// column 0.
+fn pinned() -> Grid {
+    let mut grid = fixture();
+    grid.pin(Axis::Cols, Edge::Leading, Key(3));
+    grid
+}
+
+/// The pinned edge is `║` in the Gap after the pinned Strip in every Border
+/// Style, `┃` under Double, whose rules are `║` already. It caps the band
+/// rule with `╥` and the closing rule with `╨`, crosses the rules between
+/// rows, and leaves the header's handle alone.
+#[test]
+fn the_pinned_edge_is_drawn_in_its_gap_in_every_border_style() {
+    let mut out = String::new();
+    for extent in EXTENTS {
+        for weight in WEIGHTS {
+            let style = BorderStyle::new(extent, weight);
+            out += &format!("--- {style}\n{}\n", text(&draw(&mut pinned(), style)));
+        }
+    }
+    let style = BorderStyle::headers().band_rules(true);
+    out += &format!("--- {style}\n{}\n", text(&draw(&mut pinned(), style)));
+    for weight in WEIGHTS {
+        let mut grid = small();
+        grid.pin(Axis::Cols, Edge::Leading, Key(1));
+        let style = BorderStyle::new(BorderExtent::Grid, weight);
+        out += &format!("--- closed, {style}\n{}\n", text(&draw(&mut grid, style)));
+    }
+    insta::assert_snapshot!(out);
+}
+
+/// The edge takes each Theme's `pinned_edge` style: the border's in every
+/// preset, and its own where a host sets one.
+#[test]
+fn the_pinned_edge_takes_each_theme_s_style() {
+    let mut out = String::new();
+    let custom = Theme {
+        name: "custom",
+        pinned_edge: Style::default().fg(Color::Yellow),
+        ..Theme::classic()
+    };
+    for theme in Theme::presets().into_iter().chain([custom]) {
+        let style = BorderStyle::new(BorderExtent::Columns, BorderWeight::Light);
+        let ctx = RenderContext::new(&theme).border(style);
+        out += &format!(
+            "--- {}\n{}\n",
+            theme.name,
+            styled(&draw_in(&mut pinned(), &ctx, AREA))
+        );
+    }
+    insta::assert_snapshot!(out);
+}
+
 /// Every Border Style changes only Gap cells (cells no column or no row
 /// covers), the closing lines past the last column and row among them. The
 /// band rules are the only exception: they take each Header Band's last
@@ -261,6 +316,12 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
         dx: scroll(),
         dy: scroll(),
     });
+    for (axis, count) in [(Axis::Rows, rows), (Axis::Cols, cols)] {
+        if count > 0 && tc.draw(gs::booleans()) {
+            let key = tc.draw(gs::integers::<u64>().max_value(count - 1));
+            grid.pin(axis, Edge::Leading, Key(key));
+        }
+    }
     let dim = |max| tc.draw(gs::integers::<u16>().min_value(0).max_value(max));
     let area = Rect::new(dim(3), dim(3), dim(30), dim(16));
     let extent = tc.draw(gs::sampled_from(EXTENTS.to_vec()));
@@ -268,7 +329,12 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
     let style = BorderStyle::new(extent, weight).band_rules(tc.draw(gs::booleans()));
     window(&mut grid, area);
     let snapshot = grid.snapshot();
-    let theme = Theme::classic();
+    // The edge in a colour of its own, to find it.
+    let edge = Color::Rgb(1, 2, 3);
+    let theme = Theme {
+        pinned_edge: Style::default().fg(edge),
+        ..Theme::classic()
+    };
     let ctx = RenderContext::new(&theme);
     let drawn = |border| {
         // The terminal is larger than the Grid's area, on every side.
@@ -289,8 +355,23 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
         (style.draws_band_rules() && thickness >= 2).then_some(thickness - 1)
     };
     let (rule_x, rule_y) = (band_last(Axis::Cols), band_last(Axis::Rows));
+    // A scrolling item is hidden where the pinned Strip draws.
+    let shown = |axis, at| {
+        let from = snapshot.scrolling(axis).start;
+        let pinned = snapshot.pinned(axis, Edge::Leading);
+        pinned.iter().any(|i| covers(i.offset, i.end(), at))
+            || (snapshot.strip(axis).iter()).any(|i| covers(i.offset.max(from), i.end(), at))
+    };
 
     for p in plain.area.positions() {
+        let x = i64::from(p.x) - i64::from(area.x);
+        if lined[p].fg == edge {
+            assert!(area.contains(p), "the edge drew outside the area at {p:?}");
+            assert!(
+                !shown(Axis::Cols, x),
+                "the edge drew over a column at {p:?}"
+            );
+        }
         if plain[p] == lined[p] {
             continue;
         }
@@ -298,12 +379,11 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
             area.contains(p),
             "{extent:?} drew outside the area at {p:?}"
         );
-        let (x, y) = (i64::from(p.x - area.x), i64::from(p.y - area.y));
+        let y = i64::from(p.y - area.y);
         if rule_x == Some(x) || rule_y == Some(y) {
             continue;
         }
-        let in_col = snapshot.cols().iter().any(|c| covers(c.offset, c.end(), x));
-        let in_row = snapshot.rows().iter().any(|r| covers(r.offset, r.end(), y));
+        let (in_col, in_row) = (shown(Axis::Cols, x), shown(Axis::Rows, y));
         assert!(!(in_col && in_row), "{extent:?} drew over an item at {p:?}");
     }
 }

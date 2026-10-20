@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 
-use binnacle_core::{Axis, Snapshot, StripItem};
+use binnacle_core::{Axis, Edge, Snapshot, StripItem};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
@@ -221,7 +221,16 @@ pub(crate) fn draw(
 ) {
     let (top_f, left_f) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     let (top, left) = (cell(top_f), cell(left_f));
-    let (rows, cols) = (snapshot.rows(), snapshot.cols());
+    // The pinned items, then the scrolling ones not hidden behind them.
+    let drawn = |axis: Axis| -> Vec<StripItem> {
+        let from = snapshot.scrolling(axis).start;
+        let scrolling = snapshot.strip(axis).iter().filter(|i| i.end() >= from);
+        (snapshot.pinned(axis, Edge::Leading).iter())
+            .chain(scrolling)
+            .copied()
+            .collect()
+    };
+    let (rows, cols) = (&drawn(Axis::Rows)[..], &drawn(Axis::Cols)[..]);
     // Where the body's lines stop: the last item's end, or past the Gap
     // after it when more items follow out of view.
     let end = |axis: Axis, strip: &[StripItem], header: i64| {
@@ -245,6 +254,9 @@ pub(crate) fn draw(
     };
     let close_x = closing(Axis::Cols, cols, left_f).filter(|_| columns);
     let close_y = closing(Axis::Rows, rows, top_f).filter(|_| grid);
+    // The cell in the Gap after the leading pinned Strip of columns.
+    let edge = (snapshot.pinned(Axis::Cols, Edge::Leading).last())
+        .and_then(|it| gap_cell(it, snapshot.gap(Axis::Cols), u64::MAX, false));
     // The lines a closing line crosses reach it.
     if let Some(x) = close_x {
         right = right.max(x + 1);
@@ -294,6 +306,10 @@ pub(crate) fn draw(
         }
     }
     let (vertical, horizontal, junctions) = glyphs(style.weight);
+    let rule_ys: Vec<i64> = (lines.marks.iter())
+        .filter(|((x, _), m)| Some(*x) == edge && m.horizontal)
+        .map(|((_, y), _)| *y)
+        .collect();
     for ((x, y), m) in lines.marks {
         let ch = match (m.vertical, m.horizontal) {
             (true, false) => vertical,
@@ -312,6 +328,33 @@ pub(crate) fn draw(
         let style = if m.handle { theme.handle } else { theme.border };
         if let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
             c.set_char(ch).set_style(style);
+        }
+    }
+    // The pinned edge: a double line down the body whatever the Border
+    // Style draws, capped where it meets the band rule and the closing
+    // rule and crossing the rules between rows. The header keeps its
+    // handle. Double rules are already `║`, so there the edge goes heavy.
+    let Some(x) = edge.filter(|x| (0..i64::from(area.width)).contains(x)) else {
+        return;
+    };
+    let (line, cap_top, cap_bottom, cross) = match style.weight {
+        BorderWeight::Double => ('┃', '┰', '┸', '╂'),
+        BorderWeight::Light | BorderWeight::Heavy => ('║', '╥', '╨', '╫'),
+    };
+    let band_rule = style.draws_band_rules() && top >= 2;
+    let from = if band_rule { top - 1 } else { top };
+    for y in from.max(0)..bottom.min(i64::from(area.height)) {
+        let ch = if band_rule && y == top - 1 {
+            cap_top
+        } else if close_y == Some(y) {
+            cap_bottom
+        } else if rule_ys.contains(&y) {
+            cross
+        } else {
+            line
+        };
+        if let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
+            c.set_char(ch).set_style(theme.pinned_edge);
         }
     }
 }

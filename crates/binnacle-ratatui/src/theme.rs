@@ -34,6 +34,9 @@ pub struct Theme {
     pub guide: Style,
     pub drop_indicator: Style,
     pub border: Style,
+    /// The line in the Gap after a pinned Strip, where pinned items end and
+    /// the scrolling ones begin.
+    pub pinned_edge: Style,
     /// A scrollbar's track, drawn as a line.
     pub scrollbar_track: Style,
     /// A scrollbar's thumb, drawn as full blocks.
@@ -86,6 +89,7 @@ impl Theme {
             guide: none.fg(Color::Yellow),
             drop_indicator: none.fg(Color::Cyan),
             border: none.fg(Color::DarkGray),
+            pinned_edge: none.fg(Color::DarkGray),
             scrollbar_track: none.fg(Color::DarkGray),
             scrollbar_thumb: none.fg(Color::Gray),
             loading: none,
@@ -122,6 +126,7 @@ impl Theme {
             guide: none.fg(mocha::YELLOW),
             drop_indicator: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::BOLD),
             border: none.fg(mocha::SURFACE1),
+            pinned_edge: none.fg(mocha::SURFACE1),
             scrollbar_track: none.fg(mocha::SURFACE1),
             scrollbar_thumb: none.fg(mocha::OVERLAY0),
             loading: none.fg(mocha::OVERLAY0),
@@ -158,6 +163,7 @@ impl Theme {
             guide: none.add_modifier(Modifier::BOLD),
             drop_indicator: none.add_modifier(Modifier::BOLD),
             border: none.add_modifier(Modifier::DIM),
+            pinned_edge: none.add_modifier(Modifier::DIM),
             scrollbar_track: none.add_modifier(Modifier::DIM),
             scrollbar_thumb: none,
             loading: none.add_modifier(Modifier::DIM),
@@ -203,6 +209,7 @@ impl Theme {
             guide: s(self.guide),
             drop_indicator: s(self.drop_indicator),
             border: s(self.border),
+            pinned_edge: s(self.pinned_edge),
             scrollbar_track: s(self.scrollbar_track),
             scrollbar_thumb: s(self.scrollbar_thumb),
             loading: s(self.loading),
