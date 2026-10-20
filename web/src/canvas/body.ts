@@ -6,7 +6,7 @@
 
 import type { Align, CellCanvas, CellStatus } from "../renderer";
 import { cellState } from "../snapshot";
-import { PAD, clip, type PaintContext } from "./context";
+import { PAD, clip, clipBody, drawsFrom, type PaintContext } from "./context";
 
 /** Paints the body; returns whether a renderer asked for another frame. */
 export function paintBody(p: PaintContext): boolean {
@@ -21,8 +21,9 @@ export function paintBody(p: PaintContext): boolean {
   const cols = s.cols.strip;
   s.rows.strip.forEach((row, i) => {
     if (theme.zebra && row.position % 2 === 1) {
+      const y = Math.max(row.offset, drawsFrom(s, "rows", row.offset + row.size));
       ctx.fillStyle = theme.zebra;
-      ctx.fillRect(left, row.offset, right - left, row.size);
+      ctx.fillRect(left, y, right - left, row.offset + row.size - y);
     }
     const rowId = p.content.id("rows", row);
     const rowUnmatched = p.content.unmatched("rows", i);
@@ -39,6 +40,7 @@ export function paintBody(p: PaintContext): boolean {
         flashing: row.key === null || col.key === null ? 0 : p.flashes.amount(row.key, col.key, p.now),
       };
       ctx.save();
+      clipBody(p, col.offset, row.offset, col.size, row.size);
       ctx.translate(col.offset, row.offset);
       clip(ctx, 0, 0, col.size, row.size);
       cell.place(col.size, row.size, status);

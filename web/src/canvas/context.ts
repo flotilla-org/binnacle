@@ -5,6 +5,7 @@ import type { Content } from "../content";
 import type { Flashes } from "../flash";
 import type { Measure } from "../measure";
 import type { RendererChoice } from "../renderer";
+import type { AxisName } from "../codes";
 import type { Snapshot } from "../snapshot";
 import type { Theme } from "../theme";
 
@@ -45,4 +46,22 @@ export function clip(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   ctx.beginPath();
   ctx.rect(x, y, w, h);
   ctx.clip();
+}
+
+/**
+ * Where a body item ending at `end` along `axis` is clipped: a pinned item
+ * (one that ends before the scrolling Strip starts) at the Header Band, a
+ * scrolling item where the scrolling Strip starts, so it slides under the
+ * pinned Strip.
+ */
+export function drawsFrom(s: Snapshot, axis: AxisName, end: number): number {
+  const scrolling = s[axis].scrolling.start;
+  return end <= scrolling ? s[axis].header : scrolling;
+}
+
+/** Clips to where a body rect may draw: past both Header Bands, and past each pinned Strip it scrolls under. */
+export function clipBody(p: PaintContext, x: number, y: number, width: number, height: number): void {
+  const x0 = drawsFrom(p.s, "cols", x + width);
+  const y0 = drawsFrom(p.s, "rows", y + height);
+  clip(p.ctx, x0, y0, p.width - x0, p.height - y0);
 }

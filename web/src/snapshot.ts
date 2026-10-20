@@ -192,6 +192,18 @@ const SELECTED = 2;
 const EDITING = 4;
 const CURRENT_MATCH = 8;
 
+/**
+ * The drawn items of an axis the viewport shows, in drawn order: the pinned
+ * ones, then the scrolling ones not hidden under them (the scrolling Strip
+ * includes overscan).
+ */
+export function shownItems(axis: AxisSnapshot): StripItem[] {
+  return axis.strip.filter((item, index) => {
+    const from = index < axis.pinned ? axis.header : axis.scrolling.start;
+    return item.offset + item.size > from && item.offset < axis.extent;
+  });
+}
+
 /** The state of the cell where the `row`th row item and `col`th column item cross. */
 export function cellState(s: Snapshot, row: number, col: number): CellState {
   const bits = s.cells[row * s.cols.strip.length + col] ?? 0;

@@ -20,6 +20,7 @@ export type { Editor } from "./editing";
 export type { InitialSize } from "./sizes";
 export type { AxisSelection, SelectionChange } from "./selection";
 export { defaultBindings, type Action, type FocusStep, type KeyBindings, type Platform } from "./keymap";
+export type { PinEdge } from "./codes";
 export type {
   AppliedAxisView,
   AppliedView,

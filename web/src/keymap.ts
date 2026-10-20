@@ -2,7 +2,7 @@
 // conventions (Cmd on macOS, Ctrl elsewhere); the widget user extends or
 // overrides them. A key with no Action is left to the page.
 
-import type { AxisName } from "./codes";
+import type { AxisName, PinEdge } from "./codes";
 
 export type FocusStep = "item" | "page" | "edge";
 
@@ -24,7 +24,11 @@ export type Action =
   | { type: "OpenFind" }
   /** Steps to the next or previous match while find is open; the key is the page's otherwise. */
   | { type: "FindNext" }
-  | { type: "FindPrevious" };
+  | { type: "FindPrevious" }
+  /** Pins the focused item of `axis` to `edge`, or unpins it if it is pinned there already. */
+  | { type: "Pin"; axis: AxisName; edge: PinEdge }
+  /** Unpins the focused item of `axis`. */
+  | { type: "Unpin"; axis: AxisName };
 
 export type Platform = "mac" | "other";
 
@@ -115,7 +119,9 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
  * pages (Alt+PageUp and Alt+PageDown along the columns), Home and End (the
  * first and last row), Mod+A, Ctrl+Space the column and Shift+Space the row,
  * Alt+ArrowDown for the column menu and Alt+ArrowRight for the row menu, Mod+F for
- * the find bar and F3 (Shift+F3 back) to step between matches.
+ * the find bar, F3 (Shift+F3 back) to step between matches, Alt+Shift+ArrowLeft
+ * to pin the focused column left (or unpin it) and Alt+Shift+Backspace to
+ * unpin it. Pinning avoids Alt with a letter, which types a symbol on macOS.
  */
 export function defaultBindings(): KeyBindings {
   const bindings: KeyBindings = {};
@@ -150,6 +156,8 @@ export function defaultBindings(): KeyBindings {
   bindings["Mod+F"] = { type: "OpenFind" };
   bindings["F3"] = { type: "FindNext" };
   bindings["Shift+F3"] = { type: "FindPrevious" };
+  bindings["Alt+Shift+ArrowLeft"] = { type: "Pin", axis: "cols", edge: "leading" };
+  bindings["Alt+Shift+Backspace"] = { type: "Unpin", axis: "cols" };
   return bindings;
 }
 

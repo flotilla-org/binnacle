@@ -13,7 +13,8 @@ import { AXIS_CODE, FOCUS_STEP, POINTER, modifierBits } from "./codes";
 import { createEditing, type EditHost, type Editing } from "./editing";
 import type { Effect } from "./effects";
 import type { Action, Keymap } from "./keymap";
-import type { Cursor, Rect, Snapshot } from "./snapshot";
+import { pinFocused } from "./pin";
+import { shownItems, type Cursor, type Rect, type Snapshot } from "./snapshot";
 import type { WebGrid } from "./wasm";
 
 export interface InputHost {
@@ -107,6 +108,8 @@ export function perform(grid: WebGrid, action: Action): void {
     case "OpenColumnMenu":
     case "OpenRowMenu":
     case "OpenFind":
+    case "Pin":
+    case "Unpin":
       // The widget's, not the Grid's: see `createInput`.
       return;
   }
@@ -194,6 +197,13 @@ export function createInput(host: InputHost): Input {
     if (!action) return;
     if (action.type === "OpenColumnMenu" || action.type === "OpenRowMenu") {
       if (action.type === "OpenColumnMenu" ? host.openColumnMenu() : host.openRowMenu()) e.preventDefault();
+      return;
+    }
+    if (action.type === "Pin" || action.type === "Unpin") {
+      e.preventDefault();
+      const s = host.snapshot();
+      if (s) pinFocused(grid, s, action.axis, action.type === "Pin" ? action.edge : null);
+      host.changed();
       return;
     }
     if (action.type === "OpenFind" || action.type === "FindNext" || action.type === "FindPrevious") {
@@ -335,8 +345,7 @@ export function createInput(host: InputHost): Input {
   function focusFirstCell() {
     const s = host.snapshot();
     if (!s || s.rows.focus || s.cols.focus) return;
-    const first = (items: Snapshot["rows"]) =>
-      items.strip.find((i) => i.key !== null && i.offset + i.size > items.header && i.offset < items.extent)?.key;
+    const first = (items: Snapshot["rows"]) => shownItems(items).find((i) => i.key !== null)?.key;
     const row = first(s.rows);
     const col = first(s.cols);
     if (row != null && col != null) grid.set_focus(row, col);

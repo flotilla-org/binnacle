@@ -11,7 +11,7 @@ import type { Snapshot } from "../snapshot";
 import type { Theme } from "../theme";
 import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
 import { paintBody, paintEmpty } from "./body";
-import { paintBorders, type BorderLayer } from "./borders";
+import { paintBorders, paintPinnedEdges, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
 import { paintPulse, sorting } from "./pending";
 import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
@@ -102,6 +102,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintCorner(p);
       paintHeaderStates(p);
       paintBorders(p, painter.border, layer);
+      paintPinnedEdges(p);
       paintFocus(p);
       paintGuides(p);
       const pending = painter.motion && (pulsing || sorting(s));

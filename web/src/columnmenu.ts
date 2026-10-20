@@ -1,7 +1,8 @@
 // The column menu: a part that mounts on a GridWidget, after which every
 // column header whose column takes conditions draws a filter button. A press
 // on the button, Alt+ArrowDown in the grid, or `open` drops a popover under
-// the header: "Contains" or "Does not contain", a text field with case and
+// the header: "Pin left" (or "Unpin" on a pinned column), then for a column
+// that takes conditions, "Contains" or "Does not contain", a text field with case and
 // regex toggles (regex only where the column supports it), then the
 // checklist of the column's values (where it takes OneOf conditions) with a
 // search, counts, "(Blanks)" and a note on whether the list is capped and
@@ -14,7 +15,7 @@
 //
 // It is the row menu too: a row header's button, Alt+ArrowRight or `openRow`
 // drops the same popover beside the row header, filtering the columns by
-// the row's values.
+// the row's values. It has no pin row: rows pin from the widget's API.
 
 import {
   columnConditions,
@@ -36,7 +37,7 @@ import { createPause } from "./pause";
 export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   /** The popover while it is open, else `null`. */
   readonly element: HTMLElement | null;
-  /** Opens the menu for `colId` (see `GridWidget.openColumnMenu`); `false` if the column takes no conditions. */
+  /** Opens the menu for `colId` (see `GridWidget.openColumnMenu`). */
   open(colId: ColId, anchor?: DOMRect): boolean;
   /** Opens the menu for row `rowId`, filtering the columns (see `GridWidget.openRowMenu`); `false` if they take no conditions on it. */
   openRow(rowId: RowId, anchor?: DOMRect): boolean;
@@ -84,7 +85,10 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
   const open = (axis: AxisName, colId: Id, anchor: DOMRect) => {
     menu?.close();
     const support = axis === "rows" ? widget.columnSupport(colId as ColId) : widget.rowSupport(colId as RowId);
-    if (!support.text && !support.oneOf) return;
+    const filters = support.text !== null || support.oneOf;
+    // A column's menu also pins it; a row's only filters the columns.
+    const pinnable = axis === "rows";
+    if (!filters && !pinnable) return;
     const regexAllowed = support.text?.regex ?? false;
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // The item's conditions as this menu last asked for them, which each
@@ -112,12 +116,25 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const label = axis === "rows" ? widget.columnLabel(colId as ColId) : widget.rowLabel(colId as RowId);
     const element = el("div", "binnacle-column-menu", MENU_STYLE);
     element.setAttribute("role", "dialog");
-    const heading = axis === "rows" ? "Filter " : "Filter columns by ";
+    const heading = axis === "rows" ? (filters ? "Filter " : "Column ") : "Filter columns by ";
     element.setAttribute("aria-label", heading + label);
     const title = el("div", "binnacle-column-menu-title", TITLE_STYLE);
     const name = el("b", "", "");
     name.textContent = label;
     title.append(heading, name);
+
+    const pins = el("div", "binnacle-column-menu-pins", ROW_STYLE);
+    pins.hidden = !pinnable;
+    const pinned = pinnable && widget.pinned("cols").includes(colId as ColId);
+    const pinButton = action(pinned ? "Unpin" : "Pin left");
+    pinButton.addEventListener("click", () => {
+      close();
+      if (pinned) widget.unpin("cols", colId as ColId);
+      else widget.pin("cols", colId as ColId);
+    });
+    pins.append(pinButton);
+    const pinSeparator = el("div", "", SEPARATOR_STYLE);
+    pinSeparator.hidden = !filters || !pinnable;
 
     const textRow = el("div", "binnacle-column-menu-text", ROW_STYLE);
     textRow.hidden = !support.text;
@@ -154,10 +171,11 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
 
     const foot = el("div", "binnacle-column-menu-buttons", FOOT_STYLE);
     const clearButton = action("Clear");
+    clearButton.hidden = !filters;
     const spacer = el("span", "", "flex: 1;");
     const closeButton = action("Close");
     foot.append(clearButton, spacer, closeButton);
-    element.append(title, textRow, error, values, foot);
+    element.append(title, pins, pinSeparator, textRow, error, values, foot);
 
     const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
     /** Shows the column's Text condition in the text row. */
@@ -338,7 +356,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       element.style.border = `1px solid ${t.border}`;
       title.style.color = t.rowNumber.color;
       name.style.color = t.body.color;
-      for (const c of [how, field, search, clearButton, closeButton]) {
+      pinSeparator.style.background = t.border;
+      for (const c of [how, field, search, pinButton, clearButton, closeButton]) {
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;
       }
@@ -380,7 +399,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     element.style.top = `${Math.max(8, Math.min(top, innerHeight - height - 8))}px`;
     document.addEventListener("pointerdown", outside, true);
     menu = { element, close };
-    const first = support.text ? field : search;
+    const first = support.text ? field : support.oneOf ? search : pinButton;
     first.focus();
     if (first === field) field.select();
   };

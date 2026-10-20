@@ -3,7 +3,7 @@
 
 import type { AxisName } from "../codes";
 import type { HeaderPlacement, Rect, Snapshot, SortDirection } from "../snapshot";
-import { PAD, clip, type PaintContext } from "./context";
+import { PAD, clip, drawsFrom, type PaintContext } from "./context";
 import { paintShimmer } from "./pending";
 
 /** The sort marker's triangle, CSS px. */
@@ -169,6 +169,10 @@ export function paintColumnHeaders(p: PaintContext): void {
     const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width };
     const loading = h.key === null;
     const text = loading ? "…" : p.content.label("cols", item);
+    // A scrolling header slides under the pinned ones.
+    const from = drawsFrom(s, "cols", h.rect.x + h.rect.width);
+    ctx.save();
+    clip(ctx, from, 0, p.width - from, top);
     if (h.hovered) {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
@@ -180,6 +184,7 @@ export function paintColumnHeaders(p: PaintContext): void {
     ctx.fillStyle = loading ? theme.loading : h.hovered ? theme.headerHovered.color : theme.header.color;
     ctx.fillText(measure.fit(text, theme.headerFont, room), h.rect.x + PAD, top / 2);
     if (mark) paintMarker(p, h, mark, inset);
+    ctx.restore();
   }
   ctx.restore();
 }
@@ -196,6 +201,9 @@ export function paintRowNumbers(p: PaintContext): void {
   for (const h of s.rows.headers) {
     const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height };
     const text = p.content.label("rows", item);
+    const from = drawsFrom(s, "rows", h.rect.y + h.rect.height);
+    ctx.save();
+    clip(ctx, 0, from, left, p.height - from);
     if (h.hovered) {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
@@ -208,6 +216,7 @@ export function paintRowNumbers(p: PaintContext): void {
     ctx.fillStyle = h.hovered ? theme.headerHovered.color : theme.rowNumber.color;
     ctx.fillText(measure.fit(text, theme.font, room), left - PAD - (mark ? MARKED : 0), h.rect.y + h.rect.height / 2);
     if (mark) paintMarker(p, h, mark, 0);
+    ctx.restore();
   }
   ctx.restore();
 }

@@ -1,7 +1,8 @@
 // The Border Style's lines: handles in the header bands' Gaps, column and row
 // lines down the body, band rules and closing lines, as in the ratatui
 // adapter. Each line is centred in its Gap and snapped to device pixels; the
-// part inside a header band is drawn as a handle, the rest as border.
+// part inside a header band is drawn as a handle, the rest as border. The
+// pinned edge is drawn over them, whatever the Border Style.
 
 import { drawsBandRules, lineWidth, type BorderStyle } from "../border";
 import type { AxisName } from "../codes";
@@ -33,10 +34,15 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
     if (!last) return band;
     return Math.max(band, end(last) + (isLast(axis, last) ? 0 : s[axis].gap));
   };
+  // Where the item at `index` of the axis's drawn items shows from: a
+  // scrolling item slides under the pinned ones.
+  const from = (axis: AxisName, index: number, band: number) =>
+    index < s[axis].pinned ? band : s[axis].scrolling.start;
   // The end of the axis's last item, when it is shown: a closing line goes past it.
   const closing = (axis: AxisName, band: number) => {
     const last = s[axis].strip.at(-1);
-    return last && isLast(axis, last) && end(last) >= band ? end(last) : null;
+    const shows = from(axis, s[axis].strip.length - 1, band);
+    return last && isLast(axis, last) && end(last) >= shows ? end(last) : null;
   };
   const closeX = columns ? closing("cols", left) : null;
   const closeY = grid ? closing("rows", top) : null;
@@ -52,8 +58,8 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
     const gaps = (axis: AxisName, band: number, body: boolean, across: number, bandEnd: number) => {
       const gap = s[axis].gap;
       if (gap <= 0) return;
-      for (const item of s[axis].strip) {
-        if (end(item) < band) continue;
+      for (const [i, item] of s[axis].strip.entries()) {
+        if (end(item) < from(axis, i, band)) continue;
         const vertical = axis === "cols";
         if (isLast(axis, item)) line(vertical, end(item), width, bandEnd);
         else line(vertical, end(item), gap, body ? across : bandEnd);
@@ -151,4 +157,37 @@ export function paintBorders(p: PaintContext, style: BorderStyle, layer: BorderL
   lc.globalCompositeOperation = "source-over";
   ctx.drawImage(canvas, 0, 0);
   ctx.restore();
+}
+
+/**
+ * The pinned edge of each axis with a leading pinned Strip: a line in the
+ * Gap after it, across the whole grid, and once the body has scrolled under
+ * it, a shadow falling on the scrolling side.
+ */
+export function paintPinnedEdges(p: PaintContext): void {
+  const { ctx, s, theme } = p;
+  const SHADOW = 8;
+  for (const axis of ["cols", "rows"] as const) {
+    const last = s[axis].strip[s[axis].pinned - 1];
+    if (!last) continue;
+    const at = end(last) + s[axis].gap / 2;
+    const reach = axis === "cols" ? p.bottom : p.right;
+    const scrolled = s[axis].anchor.position > 0 || s[axis].anchor.offset > 0;
+    if (scrolled) {
+      const shadow = s[axis].scrolling.start;
+      const fade =
+        axis === "cols"
+          ? ctx.createLinearGradient(shadow, 0, shadow + SHADOW, 0)
+          : ctx.createLinearGradient(0, shadow, 0, shadow + SHADOW);
+      fade.addColorStop(0, theme.pinnedShadow);
+      fade.addColorStop(1, "transparent");
+      ctx.fillStyle = fade;
+      if (axis === "cols") ctx.fillRect(shadow, 0, SHADOW, reach);
+      else ctx.fillRect(0, shadow, reach, SHADOW);
+    }
+    ctx.fillStyle = theme.pinnedEdge;
+    const line = Math.round((at - 0.5) / p.pixel) * p.pixel;
+    if (axis === "cols") ctx.fillRect(line, 0, 1, reach);
+    else ctx.fillRect(0, line, reach, 1);
+  }
 }

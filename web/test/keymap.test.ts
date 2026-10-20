@@ -165,6 +165,9 @@ test.each<[Platform, KeyChord, Action]>([
   ["other", { key: "ArrowDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenColumnMenu" }],
   ["mac", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenRowMenu" }],
   ["other", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenRowMenu" }],
+  ["mac", { key: "ArrowLeft", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "leading" }],
+  ["other", { key: "ArrowLeft", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "leading" }],
+  ["mac", { key: "Backspace", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Unpin", axis: "cols" }],
 ])("default on %s: %o is %o", (platform, event, action) => {
   expect(createKeymap({ platform }).lookup(event)).toEqual(action);
 });

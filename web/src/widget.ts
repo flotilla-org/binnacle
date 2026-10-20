@@ -19,7 +19,15 @@ import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
 import type { Content } from "./content";
-import type { AxisSnapshot, ConditionState, HeaderPlacement, KeyedTextQuery, Snapshot, Span } from "./snapshot";
+import {
+  shownItems,
+  type AxisSnapshot,
+  type ConditionState,
+  type HeaderPlacement,
+  type KeyedTextQuery,
+  type Snapshot,
+  type Span,
+} from "./snapshot";
 import type {
   AppliedAxisView,
   Condition,
@@ -32,7 +40,8 @@ import type {
   TextQuery,
   ViewSpec,
 } from "./source";
-import { AXES, AXIS_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
+import { pinnedKeys } from "./pin";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -691,12 +700,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   /**
    * Opens the mounted column menu for `colId`, under its header if it is in
    * view, else under `anchor` (or the grid's top left). `false` if no menu is
-   * mounted or the column cannot be filtered.
+   * mounted.
    */
   openColumnMenu(colId: ColId, anchor?: DOMRect): boolean {
     const open = this.columnMenu;
-    const support = this.feed.columnSupport(colId);
-    if (!open || this.destroyed || (!support.text && !support.oneOf)) return false;
+    if (!open || this.destroyed) return false;
     const key = this.feed.colKey(colId);
     const header = this.last?.cols.headers.find((h) => h.key === key && this.inView("cols", h));
     open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
@@ -797,6 +805,43 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const key = this.feed.colKey(colId);
     const position = this.last?.cols.strip.find((i) => i.key === key)?.position ?? Number.NaN;
     return this.options.source.cols.label?.(colId, position) ?? String(colId);
+  }
+
+  /**
+   * Pins the column (or row) `id` to an edge of its axis, `leading` (the
+   * left of the columns, the top of the rows) by default: it is drawn there,
+   * after the items pinned before it, however the axis sorts or scrolls,
+   * while the rest scrolls past. Pinning a pinned item moves it to the end of
+   * the pins.
+   */
+  pin(axis: "cols", id: ColId, edge?: PinEdge): void;
+  pin(axis: "rows", id: RowId, edge?: PinEdge): void;
+  pin(axis: AxisName, id: RowId | ColId, edge: PinEdge = "leading"): void {
+    this.editView(() => this.grid.pin(AXIS_CODE[axis], EDGE_CODE[edge], this.keyOf(axis, id)));
+  }
+
+  /** Unpins the column (or row) `id`; the scroll stays where it is. */
+  unpin(axis: "cols", id: ColId): void;
+  unpin(axis: "rows", id: RowId): void;
+  unpin(axis: AxisName, id: RowId | ColId): void {
+    this.editView(() => this.grid.unpin(AXIS_CODE[axis], this.keyOf(axis, id)));
+  }
+
+  /** The columns (or rows) drawn pinned to the leading edge, in pin order, as of the last frame. */
+  pinned(axis: "cols"): ColId[];
+  pinned(axis: "rows"): RowId[];
+  pinned(axis: AxisName): (RowId | ColId)[] {
+    const s = this.last;
+    if (!s) return [];
+    const id = (key: bigint) => (axis === "rows" ? this.feed.rowId(key) : this.feed.colId(key));
+    return pinnedKeys(s, axis).flatMap((key) => {
+      const known = id(key);
+      return known === undefined ? [] : [known];
+    });
+  }
+
+  private keyOf(axis: AxisName, id: RowId | ColId): bigint {
+    return axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId);
   }
 
   /** The column or row whose menu button is at (x, y), if its menu is mounted and there is one. */
@@ -1127,10 +1172,7 @@ interface Focusing {
   reject(error: Error): void;
 }
 
-/** The Strip's items the viewport shows (the Strip includes overscan). */
-function visible(axis: AxisSnapshot) {
-  return axis.strip.filter((i) => i.offset + i.size > axis.header && i.offset < axis.extent);
-}
+const visible = shownItems;
 
 function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked"> {
   const { rows, cols } = s;
@@ -1142,14 +1184,12 @@ function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked
 }
 
 function span(s: Snapshot, axis: "rows" | "cols", unmatched: (key: bigint) => boolean): AxisInfo {
-  const strip = s[axis].strip;
-  // The Strip includes overscan; report what the viewport shows.
-  const start = s[axis].header;
-  const end = s[axis].extent;
-  const visible = strip.filter((i) => i.offset + i.size > start && i.offset < end);
+  const visible = shownItems(s[axis]);
+  // What scrolls: the pinned items stay whatever the scroll.
+  const scrolling = visible.slice(s[axis].pinned);
   return {
-    first: visible[0]?.position ?? 0,
-    last: visible.at(-1)?.position ?? 0,
+    first: scrolling[0]?.position ?? 0,
+    last: scrolling.at(-1)?.position ?? 0,
     count: s[axis].count,
     total: s[axis].total,
     unmatched: visible.filter((i) => i.key !== null && unmatched(i.key)).length,

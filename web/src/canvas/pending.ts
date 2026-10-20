@@ -4,7 +4,7 @@
 // reduced, both hold still at a static highlight.
 
 import type { Rect, Snapshot } from "../snapshot";
-import { clip, type PaintContext } from "./context";
+import { clipBody, type PaintContext } from "./context";
 
 /** How long the shimmer takes to sweep a header, and the pulse to beat once, ms. */
 const PERIOD = 1600;
@@ -38,7 +38,7 @@ export function sorting(s: Snapshot): boolean {
  * drawn. Returns whether it drew anything.
  */
 export function paintPulse(p: PaintContext): boolean {
-  const { ctx, s, theme, left, top } = p;
+  const { ctx, s, theme } = p;
   if (!(s.rows.locating || s.cols.locating)) return false;
   const row = s.rows.strip.find((i) => i.position === s.rows.focus?.position);
   const col = s.cols.strip.find((i) => i.position === s.cols.focus?.position);
@@ -47,7 +47,7 @@ export function paintPulse(p: PaintContext): boolean {
   const beat = p.motion ? 0.5 - 0.5 * Math.cos((2 * Math.PI * (p.now % PERIOD)) / PERIOD) : 0.5;
   const line = theme.focus.width;
   ctx.save();
-  clip(ctx, left, top, p.width - left, p.height - top);
+  clipBody(p, col.offset, row.offset, col.size, row.size);
   ctx.globalAlpha = 0.25 + 0.45 * beat;
   ctx.fillStyle = theme.shimmerBase;
   ctx.fillRect(col.offset, row.offset, col.size, row.size);

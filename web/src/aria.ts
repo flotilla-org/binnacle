@@ -62,13 +62,18 @@ interface Row {
   cells: Map<string, Cell>;
 }
 
-/** The visible items of an axis with their places in the Strip. */
+/**
+ * The visible items of an axis with their places among the drawn items, in
+ * Position order: pinned items read where they belong, not where they are
+ * drawn. A scrolling item is hidden once it slides under the pinned Strip.
+ */
 function visible(axis: AxisSnapshot): { item: StripItem; index: number }[] {
   const out: { item: StripItem; index: number }[] = [];
   axis.strip.forEach((item, index) => {
-    if (item.offset + item.size > axis.header && item.offset < axis.extent) out.push({ item, index });
+    const from = index < axis.pinned ? axis.header : axis.scrolling.start;
+    if (item.offset + item.size > from && item.offset < axis.extent) out.push({ item, index });
   });
-  return out;
+  return out.sort((a, b) => a.item.position - b.item.position);
 }
 
 /** A visible item's name among its axis's elements: its Key, or its Position while the Key is unknown. */

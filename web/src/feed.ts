@@ -10,6 +10,7 @@ import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
 import { createSettler, type Request } from "./settle";
+import { shownItems } from "./snapshot";
 import type {
   KeyedAxisView,
   KeyedCondition,
@@ -1002,8 +1003,7 @@ export function createFeed<RowId, ColId, V>(
     },
     loading(s) {
       // The Strips include overscan; only what the viewport shows counts.
-      const inView = (axis: AxisName) =>
-        s[axis].strip.filter((i) => i.offset + i.size > s[axis].header && i.offset < s[axis].extent);
+      const inView = (axis: AxisName) => shownItems(s[axis]);
       const cols = inView("cols");
       return inView("rows").some((r) => cols.some((c) => value(r, c) === undefined && !failedAt(r, c)));
     },
