@@ -7,6 +7,7 @@ use crate::notice::placement;
 use crate::snapshot::{ScrollAnchor, StripItem};
 use crate::sort::Located;
 use crate::types::{Axis, Edge, Key, Position};
+use std::ops::Range;
 
 /// A pinned Key and what the Grid knows of its Position.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,11 +130,12 @@ impl AxisState {
 
     /// The pins of `edge` that are drawn, in pin order: dormant pins are
     /// left out, and so are pins whose last known Position the count no
-    /// longer reaches.
+    /// longer reaches, unless a `Locate` about them is due: until it
+    /// answers they are drawn as they were.
     pub fn drawn_pins(&self, edge: Edge) -> impl Iterator<Item = (Key, Position)> + '_ {
         let count = self.measure.count();
         (self.pins[edge.index()].iter())
-            .filter_map(move |pin| Some((pin.key, pin.at.filter(|&p| p < count)?)))
+            .filter_map(move |pin| Some((pin.key, pin.at.filter(|&p| p < count || pin.due > 0)?)))
     }
 
     /// The pins of `edge` the Grid can act on, in pin order, at their
@@ -144,11 +146,11 @@ impl AxisState {
         (self.pins[edge.index()].iter()).filter_map(|pin| Some((pin.key, self.trusted(pin)?)))
     }
 
-    /// The pinned Strip of `edge` in pin order with a Gap between items: the
-    /// leading one laid out from the Header Band with a Gap after its last
-    /// item, the trailing one laid out back from the viewport's far end, so
+    /// The pinned Strip of `edge` in pin order with a Gap between items, as
+    /// it would draw unclipped: the leading one laid out from the Header
+    /// Band, the trailing one laid out back from the viewport's far end, so
     /// its last item ends flush with it.
-    pub fn pinned_items(&self, edge: Edge) -> impl Iterator<Item = StripItem> + '_ {
+    fn laid_out(&self, edge: Edge) -> Vec<StripItem> {
         let gap = self.measure.gap();
         let item = |(key, position)| StripItem {
             position,
@@ -173,25 +175,106 @@ impl AxisState {
                 }
             }
         }
+        items
+    }
+
+    /// The pinned Strip of `edge` as drawn: laid out as [`Self::laid_out`]
+    /// does, slid to show its focused item. Its items are clipped to
+    /// [`Self::pinned_region`].
+    pub fn pinned_items(&self, edge: Edge) -> impl Iterator<Item = StripItem> + '_ {
+        let mut items = self.laid_out(edge);
+        let slide = self.slide[edge.index()];
+        for it in &mut items {
+            match edge {
+                Edge::Leading => it.offset -= slide,
+                Edge::Trailing => it.offset += slide,
+            }
+        }
         items.into_iter()
+    }
+
+    /// Where the pinned Strips of both edges may draw. Together with their
+    /// Edge Gaps they take at most the viewport past the Header Band less
+    /// the minimum scrolling region: the leading Strip first, then the
+    /// trailing one, unless the focused item is in the trailing one, which
+    /// then keeps room for it. Each clips at its inside end, and a Strip
+    /// clipped whole keeps its Edge Gap.
+    pub fn pinned_regions(&self) -> [Range<f32>; 2] {
+        let strips = Edge::ALL.map(|edge| self.laid_out(edge));
+        let [leading, trailing] = &strips;
+        let want = [
+            leading.last().map_or(0.0, |it| it.end() - self.header),
+            trailing.first().map_or(0.0, |it| self.extent - it.offset),
+        ];
+        let edge_gap = strips
+            .clone()
+            .map(|s| if s.is_empty() { 0.0 } else { self.edge_gap() });
+        let focused = |s: &[StripItem]| {
+            let key = self.focused?;
+            s.iter().find(|it| it.key == Some(key)).map(|it| it.size)
+        };
+        let room = (self.extent - self.header - self.min_scrolling).max(0.0);
+        // The trailing Strip keeps its Edge Gap, so its edge still shows.
+        let kept = focused(trailing).map_or(0.0, |size| size.min(want[1])) + edge_gap[1];
+        let lead = (room - edge_gap[0] - kept)
+            .max(focused(leading).unwrap_or(0.0))
+            .max(0.0);
+        let trail = (room - (lead.min(want[0]) + edge_gap[0]) - edge_gap[1]).max(0.0);
+        // Unclipped, each ends where its items do.
+        let lead_end = match leading.last() {
+            Some(it) if want[0] <= lead => it.end(),
+            _ => self.header + lead.min(want[0]),
+        };
+        let trail_start = match trailing.first() {
+            Some(it) if want[1] <= trail => it.offset,
+            _ => self.extent - trail.min(want[1]),
+        };
+        [self.header..lead_end, trail_start..self.extent]
+    }
+
+    /// Where the pinned Strip of `edge` may draw.
+    pub fn pinned_region(&self, edge: Edge) -> Range<f32> {
+        self.pinned_regions()[edge.index()].clone()
+    }
+
+    /// How far the pinned Strip of `edge` slides to show the focused item,
+    /// if that item is in it and clipped: so the item ends at the inside
+    /// end of the region, or starts at its start if it is longer.
+    pub fn slide_for(&self, edge: Edge) -> f32 {
+        let Some(key) = self.focused else {
+            return 0.0;
+        };
+        let items = self.laid_out(edge);
+        let Some(it) = items.iter().find(|it| it.key == Some(key)) else {
+            return 0.0;
+        };
+        let region = self.pinned_region(edge);
+        match edge {
+            Edge::Leading => (it.end() - region.end)
+                .min(it.offset - region.start)
+                .max(0.0),
+            Edge::Trailing => (region.start - it.offset).max(0.0),
+        }
     }
 
     /// The last Position "freeze up to here" on the item at `p` pins: the
     /// items from the start to `p` not pinned already, as far as they fit
     /// whole after the leading pinned Strip and still leave the scrolling
-    /// region, past the Edge Gap, room for an item of the default size.
+    /// region, past the Edge Gap, room for an item of the default size and
+    /// the minimum scrolling region.
     /// `None` if not even the first fits.
     fn fits_through(&self, p: Position) -> Option<Position> {
         let (m, end) = (&self.measure, self.scroll_end());
         let mut offset =
-            (self.pinned_items(Edge::Leading).last()).map_or(self.header, |it| it.end() + m.gap());
+            (self.laid_out(Edge::Leading).last()).map_or(self.header, |it| it.end() + m.gap());
+        let scrolls = m.default_size().max(self.min_scrolling);
         let mut last = None;
         for q in 0..=p.min(m.count().saturating_sub(1)) {
             if m.skipped(q) {
                 continue;
             }
             let size = m.size_at(q);
-            if offset + size + self.edge_gap() + m.default_size() > end {
+            if offset + size + self.edge_gap() + scrolls > end {
                 break;
             }
             offset += size + m.gap();
@@ -208,19 +291,21 @@ impl AxisState {
     }
 
     /// Where the scrolling Strip starts: past the Header Band and the
-    /// leading pinned Strip, with the Edge Gap after its last item.
+    /// leading pinned Strip's region, with the Edge Gap after it.
     pub fn scroll_start(&self) -> f32 {
-        self.pinned_items(Edge::Leading)
-            .last()
-            .map_or(self.header, |it| it.end() + self.edge_gap())
+        if self.drawn_pins(Edge::Leading).next().is_none() {
+            return self.header;
+        }
+        self.pinned_region(Edge::Leading).end + self.edge_gap()
     }
 
     /// Where the scrolling Strip ends: at the viewport's far end, or the
-    /// Edge Gap before the trailing pinned Strip.
+    /// Edge Gap before the trailing pinned Strip's region.
     pub fn scroll_end(&self) -> f32 {
-        self.pinned_items(Edge::Trailing)
-            .next()
-            .map_or(self.extent, |it| it.offset - self.edge_gap())
+        if self.drawn_pins(Edge::Trailing).next().is_none() {
+            return self.extent;
+        }
+        self.pinned_region(Edge::Trailing).start - self.edge_gap()
     }
 }
 

@@ -493,6 +493,12 @@ impl<S: ScenarioSource> Scenario<S> {
     /// the source, then take the Snapshot.
     pub fn frame(&mut self, viewport: Viewport) -> Snapshot<'_> {
         self.pump();
+        self.fill(viewport)
+    }
+
+    /// `begin_frame`, fill each requested Window from the source, then take
+    /// the Snapshot, leaving the Effects unanswered.
+    fn fill(&mut self, viewport: Viewport) -> Snapshot<'_> {
         for (axis, range) in self.grid.begin_frame(viewport) {
             let _ = writeln!(self.log, "window {axis:?} {range:?}");
             let keys = self.source.window(axis, range.clone());
@@ -514,6 +520,17 @@ impl<S: ScenarioSource> Scenario<S> {
         self.steps += 1;
         let header = format!("--- {}. {label}\n", self.steps);
         let rendered = Rendered::of(&self.frame(viewport));
+        let log = std::mem::take(&mut self.log);
+        format!("{header}{log}{}", self.show(rendered))
+    }
+
+    /// A [`Scenario::step`] whose frame leaves the Effects unanswered, as
+    /// a host waiting on a slow Table Source would; the next step answers
+    /// them.
+    pub fn step_waiting(&mut self, label: &str, viewport: Viewport) -> String {
+        self.steps += 1;
+        let header = format!("--- {}. {label}\n", self.steps);
+        let rendered = Rendered::of(&self.fill(viewport));
         let log = std::mem::take(&mut self.log);
         format!("{header}{log}{}", self.show(rendered))
     }

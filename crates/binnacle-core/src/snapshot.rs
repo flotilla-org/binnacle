@@ -265,6 +265,15 @@ impl<'a> Snapshot<'a> {
         st.scroll_start().min(end)..end
     }
 
+    /// Where the pinned Strip at `edge` of `axis` draws along it: from the
+    /// Header Band, or back from the viewport's far end, to where it
+    /// clips. Its items are drawn clipped to it; one it clips whole is
+    /// still in [`Snapshot::pinned`]. Unclipped, it ends where its items
+    /// do (empty if there are none).
+    pub fn pinned_region(&self, axis: Axis, edge: Edge) -> Range<f32> {
+        self.grid.axis(axis).regions[edge.index()].clone()
+    }
+
     /// Every drawn item of `axis` in drawn order: the leading pinned Strip,
     /// the scrolling Strip, then the trailing pinned Strip.
     pub fn drawn(&self, axis: Axis) -> impl Iterator<Item = &'a StripItem> + 'a {

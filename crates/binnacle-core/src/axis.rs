@@ -3,7 +3,7 @@ use std::ops::Range;
 use crate::measure::{AxisMeasure, ItemAt};
 use crate::pin::Pin;
 use crate::snapshot::{ScrollAnchor, StripItem, Thumb};
-use crate::types::{Edge, Position};
+use crate::types::{Edge, Key, Position};
 
 /// Positions fetched either side of the visible ones, so small scrolls need no
 /// new Window.
@@ -35,6 +35,16 @@ pub(crate) struct AxisState {
     pub edge_gap: f32,
     /// How far each end's pin zone reaches (see [`crate::Grid::set_pin_zone`]).
     pub pin_zone: f32,
+    /// The least length the pinned Strips leave the scrolling region.
+    pub min_scrolling: f32,
+    /// The focused Key on this axis, as of the last Snapshot: a clipped
+    /// pinned item with it is shown.
+    pub focused: Option<Key>,
+    /// How far each pinned Strip has slid (towards its outside edge) to
+    /// show its focused item, as last laid out.
+    pub slide: [f32; 2],
+    /// Where the pinned Strips draw, as last laid out.
+    pub regions: [Range<f32>; 2],
 }
 
 impl AxisState {
@@ -52,6 +62,10 @@ impl AxisState {
             freezing: None,
             edge_gap: 0.0,
             pin_zone: measure_default / 4.0,
+            min_scrolling: 0.0,
+            focused: None,
+            slide: [0.0; 2],
+            regions: [0.0..0.0, 0.0..0.0],
         }
     }
 
@@ -68,6 +82,19 @@ impl AxisState {
             return false;
         }
         self.edge_gap = gap;
+        self.at_end = false;
+        self.clamp_anchor();
+        true
+    }
+
+    /// Sets the least length the pinned Strips leave to scroll, keeping
+    /// the Scroll Anchor as [`AxisState::set_gap`] does. Returns whether
+    /// anything changed.
+    pub fn set_min_scrolling(&mut self, length: f32) -> bool {
+        if !(length.is_finite() && length >= 0.0) || length == self.min_scrolling {
+            return false;
+        }
+        self.min_scrolling = length;
         self.at_end = false;
         self.clamp_anchor();
         true
@@ -189,10 +216,17 @@ impl AxisState {
         range.is_empty() || (start <= range.start && range.end <= end)
     }
 
-    /// Lays out the pinned Strips, then the visible items into `strip`,
-    /// reusing their buffers. Never past what the Window bound reaches, so a
-    /// Strip item lacks a Key only if the Table Source left it unfilled.
-    pub fn layout(&mut self) {
+    /// Lays out the pinned Strips, each slid to show its focused item, then
+    /// the visible items into `strip`, reusing their buffers. Never past
+    /// what the Window bound reaches, so a Strip item lacks a Key only if
+    /// the Table Source left it unfilled. Returns whether a pinned Strip
+    /// slid or its region changed.
+    pub fn layout(&mut self) -> bool {
+        let slide = Edge::ALL.map(|edge| self.slide_for(edge));
+        let regions = self.pinned_regions();
+        let slid = slide != self.slide || regions != self.regions;
+        self.slide = slide;
+        self.regions = regions;
         for edge in Edge::ALL {
             let mut pinned = std::mem::take(&mut self.pinned[edge.index()]);
             pinned.clear();
@@ -214,6 +248,7 @@ impl AxisState {
                 }),
         );
         self.strip = strip;
+        slid
     }
 
     /// The anchor for a located offset, rounded toward the axis start so a

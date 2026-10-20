@@ -1,0 +1,49 @@
+---
+source: crates/binnacle-core/tests/pinning.rs
+expression: out
+---
+--- 1. columns 2 and 3 pinned left, 9 right: 9 clips at its inside end
+effect (gen 0): Locate { axis: Cols, key: Key(2) }
+  locate Cols Key(2): Found(2)
+effect (gen 0): Locate { axis: Cols, key: Key(3) }
+  locate Cols Key(3): Found(3)
+effect (gen 0): Locate { axis: Cols, key: Key(9) }
+  locate Cols Key(9): Found(9)
+window Rows 0..4
+window Cols 0..7
+gen 1 | damage layout selection positions
+Rows: count 4, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.1667 | pinned 2#2@4+6 3#3@11+6 | scrolling from 18 | 0#0@18+6 1#1@25+6 | scrolling to 26 | trailing clipped at 27 9#9@26+6
+    2      3      0      1
+0   0.2    0.3    0.0    0 .9
+1   1.2    1.3    1.0    1 .9
+2   2.2    2.3    2.0    2 .9
+3   3.2    3.3    3.0    3 .9
+--- 2. pin column 5 left too: it clips at the inside end, and 9 has no room
+window Cols 0..8
+gen 2 | damage layout positions
+Rows: (unchanged)
+Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.1951 | pinned 2#2@4+6 3#3@11+6 5#5@18+6 | clipped at 22 | scrolling from 23 | 0#0@23+6 1#1@30+6 | scrolling to 31 | trailing clipped at 32 9#9@26+6
+    2      3      5    0      1
+0   0.2    0.3    0.5  0.0    0
+1   1.2    1.3    1.5  1.0    1
+2   2.2    2.3    2.5  2.0    2
+3   3.2    3.3    3.5  3.0    3
+--- 3. keep nothing to scroll: the pins take the whole width
+gen 3 | damage layout
+Rows: (unchanged)
+Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.0000 | pinned 2#2@4+6 3#3@11+6 5#5@18+6 | scrolling from 25 | | scrolling to 25 | trailing 9#9@26+6
+    2      3      5       9
+0   0.2    0.3    0.5     0.9
+1   1.2    1.3    1.5     1.9
+2   2.2    2.3    2.5     2.9
+3   3.2    3.3    3.5     3.9
+--- 4. unpin column 3: 9 comes back whole
+gen 4 | damage layout
+Rows: (unchanged)
+Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.1458 | pinned 2#2@4+6 5#5@11+6 | scrolling from 18 | 0#0@18+6 | scrolling to 25 | trailing 9#9@26+6
+    2      5      0       9
+0   0.2    0.5    0.0     0.9
+1   1.2    1.5    1.0     1.9
+2   2.2    2.5    2.0     2.9
+3   3.2    3.5    3.0     3.9

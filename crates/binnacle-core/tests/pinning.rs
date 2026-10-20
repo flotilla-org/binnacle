@@ -3,8 +3,8 @@
 //! Strip, which skips them.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Edge, FocusStep, Grid, Key, Modifiers, PointerEvent, SortColumn,
-    SortSpec, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Edge, FocusStep, Grid, Key, Modifiers, PointerEvent,
+    SortColumn, SortSpec, ViewSpec, Viewport,
 };
 use binnacle_testkit::{ColumnMajorTable, IdentityTable, KeyedTable, Scenario};
 use hegel::generators as gs;
@@ -707,4 +707,219 @@ fn an_edge_gap_that_is_negative_or_not_finite_changes_nothing(tc: TestCase) {
     ));
     s.input(|g| g.set_edge_gap(axis, bad));
     assert_eq!(s.frame(SHORT).scrolling(axis), before);
+}
+
+/// With 8 kept to scroll, the pinned Strips of [`table`]'s columns share 20
+/// of the 32: the leading one keeps its share first, the trailing one clips
+/// first, each at its inside end, and nothing unpins.
+#[test]
+fn too_wide_pinned_strips_clip_trailing_first_and_never_unpin() {
+    let mut s = table();
+    s.input(|g| {
+        g.set_min_scrolling(Axis::Cols, 8.0);
+        g.pin(Axis::Cols, Edge::Leading, Key(2));
+        g.pin(Axis::Cols, Edge::Leading, Key(3));
+        g.pin(Axis::Cols, Edge::Trailing, Key(9));
+    });
+    let mut out = s.step(
+        "columns 2 and 3 pinned left, 9 right: 9 clips at its inside end",
+        V,
+    );
+    s.input(|g| g.pin(Axis::Cols, Edge::Leading, Key(5)));
+    out += &s.step(
+        "pin column 5 left too: it clips at the inside end, and 9 has no room",
+        V,
+    );
+    s.input(|g| g.set_min_scrolling(Axis::Cols, 0.0));
+    out += &s.step("keep nothing to scroll: the pins take the whole width", V);
+    s.input(|g| g.unpin(Axis::Cols, Key(3)));
+    out += &s.step("unpin column 3: 9 comes back whole", V);
+    insta::assert_snapshot!(out);
+}
+
+/// As in [`too_wide_pinned_strips_clip_trailing_first_and_never_unpin`]:
+/// focus on a clipped pinned item slides its Strip to show it, and the
+/// trailing Strip, clipped whole, makes room for its focused item.
+#[test]
+fn focusing_a_clipped_pinned_item_slides_its_strip_to_show_it() {
+    let mut s = table();
+    s.input(|g| {
+        g.set_min_scrolling(Axis::Cols, 8.0);
+        for key in [2, 3, 5] {
+            g.pin(Axis::Cols, Edge::Leading, Key(key));
+        }
+        g.pin(Axis::Cols, Edge::Trailing, Key(9));
+        g.set_focus(Key(1), Key(3));
+    });
+    let mut out = s.step(
+        "columns 2, 3, 5 pinned left, 9 right, column 5 clipped: focus column 3",
+        V,
+    );
+    s.input(|g| g.set_focus(Key(1), Key(5)));
+    out += &s.step(
+        "focus column 5: the leading Strip slides, under the Header Band",
+        V,
+    );
+    s.click(18.0, 2.5, Modifiers::NONE);
+    out += &s.step("click column 5's cell where it slid to: it stays", V);
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Edge,
+            forward: true,
+            extend: false,
+        })
+    });
+    out += &s.step(
+        "End: focus on column 9, clipped whole: the trailing Strip takes room from the leading one",
+        V,
+    );
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Edge,
+            forward: false,
+            extend: false,
+        })
+    });
+    out += &s.step("Home: focus on column 2, and the Strips clip as before", V);
+    insta::assert_snapshot!(out);
+}
+
+/// Columns 30 and 35 of 40 pinned left, then the table refiltered to the
+/// Keys from 10 on without 35: both pins wait for `Locate`, drawn as they
+/// were, then 30 is found at 20 and 35 goes dormant. Refiltered back with
+/// 35, it returns after 30, in pin order.
+#[test]
+fn a_pin_waiting_for_locate_is_drawn_as_before_and_one_gone_returns_in_place() {
+    let mut s = pinned_keyed(Axis::Cols, 40, &[30, 35], &[]);
+    let v = Viewport::new(30.0, 4.0);
+    let mut out = s.step("columns 30 and 35 pinned left", v);
+    let refilter = |s: &mut Scenario<KeyedTable>, keep: &dyn Fn(u64) -> bool| {
+        let keys: Vec<Key> = (0..40).filter(|&k| keep(k)).map(Key).collect();
+        let count = keys.len() as u64;
+        s.source.axes[Axis::Cols.index()] = keys;
+        s.input(|g| g.notify(Axis::Cols, ChangeNotice::Refiltered(count)));
+    };
+    refilter(&mut s, &|k| k >= 10 && k != 35);
+    out += &s.step_waiting(
+        "refiltered to 10 on without 35, Locates unanswered: both pins drawn as before",
+        v,
+    );
+    out += &s.step("the answers: 30 found at 20, 35 gone and dormant", v);
+    refilter(&mut s, &|k| k >= 10);
+    out += &s.step_waiting(
+        "refiltered with 35 back: the dormant pin is asked about again",
+        v,
+    );
+    out += &s.step("found: 35 returns after 30, in pin order", v);
+    insta::assert_snapshot!(out);
+}
+
+/// Whatever is pinned, sized, kept to scroll or focused, every pin stays in
+/// its Strip in pin order, and each pinned Strip draws inside its region at
+/// its own end of the axis. Unless focus is on a pin, the Strips with their
+/// Edge Gaps leave the minimum scrolling region (or are clipped whole), and
+/// the trailing one clips before the leading one does. A focused pin is
+/// shown as far as its region allows.
+#[hegel::test(test_cases = 500)]
+fn pinned_strips_clip_trailing_first_and_show_a_focused_pin(tc: TestCase) {
+    let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(12));
+    let gap = tc.draw(gs::sampled_from(vec![0.0f32, 1.0]));
+    let header = tc.draw(gs::sampled_from(vec![0.0f32, 4.0]));
+    let mut s = pinned_keyed(axis, count, &[], &[]);
+    let length = tc.draw(gs::integers::<u32>().min_value(4).max_value(60)) as f32;
+    let min = tc.draw(gs::integers::<u32>().max_value(30)) as f32;
+    s.input(|g| {
+        g.set_gap(axis, gap);
+        g.set_header(axis, header);
+        g.set_min_scrolling(axis, min);
+    });
+    let mut pins: [Vec<u64>; 2] = Default::default();
+    for key in some_keys(&tc, count, 8, &[]) {
+        let edge = tc.draw(gs::sampled_from(vec![Edge::Leading, Edge::Trailing]));
+        let size = tc.draw(gs::integers::<u32>().min_value(1).max_value(12)) as f32;
+        pins[edge.index()].push(key);
+        s.input(|g| {
+            g.pin(axis, edge, Key(key));
+            g.set_size(axis, Key(key), size);
+        });
+    }
+    let all: Vec<u64> = pins.concat();
+    let focus = if all.is_empty() {
+        None
+    } else {
+        tc.draw(gs::optional(gs::sampled_from(all.clone())))
+    };
+    if let Some(key) = focus {
+        s.input(|g| match axis {
+            Axis::Rows => g.set_focus(Key(key), Key(0)),
+            Axis::Cols => g.set_focus(Key(0), Key(key)),
+        });
+    }
+    let viewport = match axis {
+        Axis::Rows => Viewport::new(30.0, length),
+        Axis::Cols => Viewport::new(length, 30.0),
+    };
+    s.frame(viewport);
+    let snap = s.frame(viewport);
+    let edge_gap = gap;
+    let eps = 1e-3;
+    let mut used = 0.0;
+    let mut clipped = [false; 2];
+    for edge in Edge::ALL {
+        let strip = snap.pinned(axis, edge);
+        let keys: Vec<u64> = strip.iter().filter_map(|i| i.key).map(|k| k.0).collect();
+        assert_eq!(keys, pins[edge.index()], "{edge:?} pins in pin order");
+        let region = snap.pinned_region(axis, edge);
+        match edge {
+            Edge::Leading => assert_eq!(region.start, header),
+            Edge::Trailing => assert_eq!(region.end, length),
+        }
+        assert!(region.start <= region.end, "{edge:?} {region:?}");
+        if let (Some(first), Some(last)) = (strip.first(), strip.last()) {
+            let want = last.end() - first.offset;
+            let len = region.end - region.start;
+            assert!(
+                len <= want + eps,
+                "{edge:?} region {region:?} over {strip:?}"
+            );
+            clipped[edge.index()] = len < want - eps;
+            used += len + edge_gap;
+        }
+    }
+    let focused = focus.and_then(|k| {
+        Edge::ALL.into_iter().find_map(|edge| {
+            let item = snap
+                .pinned(axis, edge)
+                .iter()
+                .find(|i| i.key == Some(Key(k)))?;
+            Some((edge, *item))
+        })
+    });
+    match focused {
+        None => {
+            let room = (length - header - min).max(0.0);
+            let whole = (Edge::ALL.iter()).all(|&e| {
+                snap.pinned_region(axis, e).is_empty() || snap.pinned(axis, e).is_empty()
+            });
+            assert!(used <= room + eps || whole, "pins take {used} of {room}");
+            if clipped[Edge::Leading.index()] {
+                assert!(
+                    snap.pinned_region(axis, Edge::Trailing).is_empty(),
+                    "the leading Strip clips while the trailing one shows"
+                );
+            }
+        }
+        Some((edge, item)) => {
+            let region = snap.pinned_region(axis, edge);
+            let shown = item.end().min(region.end) - item.offset.max(region.start);
+            let len = region.end - region.start;
+            assert!(
+                shown >= item.size.min(len) - eps,
+                "focused {item:?} shows {shown} of {region:?}"
+            );
+        }
+    }
 }

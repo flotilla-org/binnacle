@@ -10,7 +10,8 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 
 /// Renders a Snapshot as text: a summary line, each Strip as
 /// `position#key@offset+size` after its Scroll Anchor (`position+offset`) and
-/// thumb (`fraction/size`) (key `?` while unfilled), then a character
+/// thumb (`fraction/size`) (key `?` while unfilled), with `clipped at` where
+/// a pinned Strip clips, then a character
 /// picture treating one unit as one character, each item starting at the first
 /// whole character it reaches. Column headers show the column
 /// Key, row headers the row Position, cells `rowkey.colkey`. A placed focus
@@ -258,6 +259,10 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
                 item.size
             );
         }
+        let region = snap.pinned_region(axis, Edge::Leading);
+        if pinned.last().is_some_and(|it| it.end() > region.end) {
+            let _ = write!(out, " | clipped at {}", region.end);
+        }
         let _ = write!(out, " | scrolling from {} |", snap.scrolling(axis).start);
     }
     for item in snap.strip(axis) {
@@ -277,6 +282,10 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
             " | scrolling to {} | trailing",
             snap.scrolling(axis).end
         );
+        let region = snap.pinned_region(axis, Edge::Trailing);
+        if trailing.first().is_some_and(|it| it.offset < region.start) {
+            let _ = write!(out, " clipped at {}", region.start);
+        }
         for item in trailing {
             let _ = write!(
                 out,
@@ -449,15 +458,16 @@ fn picture(snap: &Snapshot) -> String {
             }
         };
     let (top, left) = (snap.header(Axis::Rows), snap.header(Axis::Cols));
-    // Each drawn item with the span it is clipped to: a pinned one from the
-    // Header Band to the viewport's end, a scrolling one to its own region.
+    // Each drawn item with the span it is clipped to: its Strip's region.
     let drawn = |axis: Axis| {
-        let pinned = |edge| snap.pinned(axis, edge).iter();
-        let whole = (snap.header(axis), snap.extent(axis));
+        let pinned = |edge| {
+            let region = snap.pinned_region(axis, edge);
+            (snap.pinned(axis, edge).iter()).map(move |i| (i, (region.start, region.end)))
+        };
         let scrolling = snap.scrolling(axis);
-        (pinned(Edge::Leading).map(move |i| (i, whole)))
+        (pinned(Edge::Leading))
             .chain((snap.strip(axis).iter()).map(move |i| (i, (scrolling.start, scrolling.end))))
-            .chain(pinned(Edge::Trailing).map(move |i| (i, whole)))
+            .chain(pinned(Edge::Trailing))
     };
     for (c, (from, to)) in drawn(Axis::Cols) {
         put(

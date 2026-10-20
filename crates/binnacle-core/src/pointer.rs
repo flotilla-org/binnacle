@@ -153,10 +153,16 @@ impl AxisState {
             return AxisHit::Header;
         }
         let (start, end) = (self.scroll_start(), self.scroll_end());
+        let [leading, trailing] = self.pinned_regions();
         let pinned = |edge| {
             let gap = self.measure.gap();
             (self.pinned_items(edge))
                 .find(|it| v >= it.offset && v < it.end() + gap)
+                // A clipped item shows only in its region.
+                .filter(|it| match edge {
+                    Edge::Leading => v < leading.end || it.end() <= leading.end,
+                    Edge::Trailing => v >= trailing.start,
+                })
                 .filter(|it| {
                     it.key
                         .is_some_and(|k| self.pinned_at(it.position) == Some(k))
@@ -198,9 +204,11 @@ impl AxisState {
         let gap = f64::from(m.gap());
         let start = self.scroll_start();
         // A pinned item's border: its Gap, widened by `grab` either side.
+        // A clipped item's border is not shown, so it is not grabbed.
+        let [leading, trailing] = self.pinned_regions();
         let pinned = self.pinned_items(Edge::Leading).find(|it| {
             let (v, end) = (f64::from(v), f64::from(it.end()));
-            v >= end - grab && v < end + gap + grab
+            it.end() <= leading.end && v >= end - grab && v < end + gap + grab
         });
         let pinned = pinned.filter(|it| {
             it.key
@@ -213,7 +221,7 @@ impl AxisState {
         // Strip grows from the far end.
         let trailing = self.pinned_items(Edge::Trailing).find(|it| {
             let (v, offset) = (f64::from(v), f64::from(it.offset));
-            v >= offset - gap - grab && v < offset + grab
+            it.offset >= trailing.start && v >= offset - gap - grab && v < offset + grab
         });
         let trailing = trailing.filter(|it| {
             it.key

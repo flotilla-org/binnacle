@@ -4,8 +4,8 @@
 //! `Refiltered` rules while Size Overrides stay.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Condition, Effect, Grid, HIDE_CAP, HideCapped, Key, Modifiers,
-    TextQuery, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, Edge, Effect, Grid, HIDE_CAP, HideCapped, Key,
+    Modifiers, TextQuery, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_testkit::{ColumnMajorTable, RecordTable, Scenario};
 
@@ -186,4 +186,28 @@ fn hiding_past_the_cap_hides_nothing_and_says_so() {
     // A host can't raise the cap past the Grid's own.
     s.input(|g| g.set_hide_cap(Axis::Cols, HIDE_CAP + 5));
     assert_eq!(s.frame(V).hide_cap(Axis::Cols), HIDE_CAP);
+}
+
+#[test]
+fn a_hidden_pinned_column_goes_dormant_and_returns_to_its_place_when_shown() {
+    let mut s = records();
+    s.input(|g| {
+        g.pin(Axis::Cols, Edge::Leading, Key(2));
+        g.pin(Axis::Cols, Edge::Leading, Key(0));
+        g.pin(Axis::Cols, Edge::Trailing, Key(3));
+    });
+    let mut out = s.step("columns 2 then 0 pinned left, 3 right", V);
+    s.input(|g| assert_eq!(g.hide(Axis::Cols, &[Key(2)]), Ok(())));
+    out += &s.step(
+        "hide column 2: its pin goes dormant, column 0 leads alone",
+        V,
+    );
+    s.input(|g| assert_eq!(g.hide(Axis::Cols, &[Key(3)]), Ok(())));
+    out += &s.step("hide column 3 too: the trailing Strip empties", V);
+    s.input(|g| g.show(Axis::Cols, &[Key(2), Key(3)]));
+    out += &s.step(
+        "show both: 2 is back before 0, in pin order, and 3 pinned right",
+        V,
+    );
+    insta::assert_snapshot!(out);
 }

@@ -389,6 +389,16 @@ impl Grid {
         }
     }
 
+    /// Sets the least length along `axis` the pinned Strips leave to the
+    /// scrolling Strip (0 at first): pinned Strips too long to leave it are
+    /// clipped at their inside ends, the trailing one first, and nothing
+    /// unpins. Negative or non-finite lengths are ignored.
+    pub fn set_min_scrolling(&mut self, axis: Axis, length: f32) {
+        if self.axis_mut(axis).set_min_scrolling(length) {
+            self.pending_damage.layout = true;
+        }
+    }
+
     /// The Size Override for the item with `key` on `axis`, if any.
     pub fn size_override(&self, axis: Axis, key: Key) -> Option<f32> {
         self.axis(axis).measure.size_override(key)
@@ -928,6 +938,10 @@ impl Grid {
     /// Lays out the frame and returns the Snapshot, whose damage covers every
     /// change since the previous Snapshot.
     pub fn snapshot(&mut self) -> Snapshot<'_> {
+        for axis in Axis::ALL {
+            let focused = self.focus.and_then(|f| f[axis.index()].key);
+            self.axis_mut(axis).focused = focused;
+        }
         for st in &mut self.axes {
             // The Window may have brought sizes that move the anchor's bounds.
             if st.clamp_anchor() {
@@ -938,7 +952,9 @@ impl Grid {
             self.reveal_focus();
         }
         for st in &mut self.axes {
-            st.layout();
+            if st.layout() {
+                self.pending_damage.layout = true;
+            }
         }
         let border = self.pointer_at.and_then(|(x, y)| {
             self.band_edge_at(x, y)
