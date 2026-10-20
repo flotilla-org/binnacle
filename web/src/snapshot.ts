@@ -2,7 +2,7 @@
 // layout `crates/binnacle-wasm/src/snapshot.rs` writes. Everything else reads
 // the typed object. The agreement tests check the decoder against Rust.
 
-import type { AxisName } from "./codes";
+import type { AxisName, PinEdge } from "./codes";
 
 export interface Rect {
   x: number;
@@ -152,8 +152,31 @@ export type Mode =
   | { type: "DraggingSelection" }
   | { type: "Resizing"; axis: AxisName; key: bigint; startSize: number }
   | { type: "ResizingBand"; axis: AxisName; startThickness: number }
-  | { type: "MovingHeaders"; axis: AxisName; key: bigint; to: number }
+  | { type: "MovingHeaders"; axis: AxisName; key: bigint; target: DropTarget }
   | { type: "Editing"; row: bigint; col: bigint };
+
+/**
+ * What releasing dragged headers would do: `Move` asks the Table Source to
+ * move them before Position `to` (unpinning the dragged item first if
+ * `unpin`); `Unpin` unpins it back to its own Position `at`, the axis being
+ * unmovable; `Pin` pins them to `edge` before the pinned `before` (`null`:
+ * after the last), `reorder` when only the pins' order changes; `Stay`
+ * drops nothing.
+ */
+export type DropTarget =
+  | { type: "Move"; to: number; unpin: boolean }
+  | { type: "Unpin"; at: number }
+  | { type: "Pin"; edge: PinEdge; before: bigint | null; reorder: boolean }
+  | { type: "Stay" };
+
+/** A lit pin zone while a header is dragged: an empty pinned Strip's edge, `size` long from `offset`; `hot` where a drop would pin. */
+export interface PinZone {
+  axis: AxisName;
+  edge: PinEdge;
+  offset: number;
+  size: number;
+  hot: boolean;
+}
 
 export type Cursor = "default" | "resizeCol" | "resizeRow" | "move";
 
@@ -168,7 +191,9 @@ export interface Snapshot {
   capturing: boolean;
   cursor: Cursor;
   resizeGuide: { axis: AxisName; key: bigint | null; offset: number; size: number } | null;
-  dropIndicator: { axis: AxisName; to: number; offset: number } | null;
+  dropIndicator: { axis: AxisName; target: DropTarget; offset: number } | null;
+  /** The lit pin zones while a header is dragged. */
+  pinZones: PinZone[];
   hoveredHeader: { axis: AxisName; position: number } | null;
   /**
    * The Positions the range covers on each axis, as sorted runs apart from
@@ -436,6 +461,23 @@ function supportOf(bits: number): HeaderPlacement["support"] {
   };
 }
 
+const EDGES: readonly PinEdge[] = ["leading", "trailing"];
+
+function readTarget(r: Reader): DropTarget {
+  switch (r.num()) {
+    case 0:
+      return { type: "Move", to: r.num(), unpin: r.flag() };
+    case 1:
+      return { type: "Unpin", at: r.num() };
+    case 2:
+      return { type: "Pin", edge: EDGES[r.num()]!, before: r.optKey(), reorder: r.flag() };
+    case 3:
+      return { type: "Stay" };
+    default:
+      throw new Error("binnacle: unknown drop target in Snapshot");
+  }
+}
+
 function readMode(r: Reader): Mode {
   switch (r.num()) {
     case 0:
@@ -447,7 +489,7 @@ function readMode(r: Reader): Mode {
     case 3:
       return { type: "ResizingBand", axis: r.axis(), startThickness: r.num() };
     case 4:
-      return { type: "MovingHeaders", axis: r.axis(), key: r.key(), to: r.num() };
+      return { type: "MovingHeaders", axis: r.axis(), key: r.key(), target: readTarget(r) };
     case 5:
       return { type: "Editing", row: r.key(), col: r.key() };
     default:
@@ -468,7 +510,14 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const capturing = r.flag();
   const cursor = CURSORS[r.num()]!;
   const resizeGuide = r.opt(() => ({ axis: r.axis(), key: r.optKey(), offset: r.num(), size: r.num() }));
-  const dropIndicator = r.opt(() => ({ axis: r.axis(), to: r.num(), offset: r.num() }));
+  const dropIndicator = r.opt(() => ({ axis: r.axis(), target: readTarget(r), offset: r.num() }));
+  const pinZones = r.list(() => ({
+    axis: r.axis(),
+    edge: EDGES[r.num()]!,
+    offset: r.num(),
+    size: r.num(),
+    hot: r.flag(),
+  }));
   const hoveredHeader = r.opt(() => ({ axis: r.axis(), position: r.num() }));
   const runs = () => r.list(() => ({ start: r.num(), end: r.num() }));
   const selectionRange = r.opt(() => ({ rows: runs(), cols: runs() }));
@@ -502,6 +551,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     cursor,
     resizeGuide,
     dropIndicator,
+    pinZones,
     hoveredHeader,
     selectionRange,
     selectionRects,

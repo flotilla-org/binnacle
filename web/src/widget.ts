@@ -256,6 +256,9 @@ export interface ColumnInfo<ColId = unknown> {
 }
 
 const HEADER_HEIGHT = 28;
+
+/** How far in from each end a dragged header pins into an empty pinned Strip, in CSS px. */
+const PIN_ZONE = { rows: 4, cols: 16 } as const;
 // The grid's surfaces are not text: WebKit would tint a selected canvas. Custom
 // editors and the ARIA table opt back in; the textarea is editable, so it stays selectable.
 const ROOT_STYLE =
@@ -1211,7 +1214,12 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const band = Math.ceil(digit * digits) + 2 * PAD;
     const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? HEADER_HEIGHT).gap(gaps.rows).min_size(rowHeight);
     const cols = new b.WebAxis(counts.cols, o.columnWidth ?? 120).header(Math.max(40, band)).gap(gaps.cols).min_size(24);
-    return new b.WebGrid(rows, cols);
+    const grid = new b.WebGrid(rows, cols);
+    // Where a dragged header pins into an empty pinned Strip: past the bands
+    // or the far ends, or this far in.
+    grid.set_pin_zone(AXIS_CODE.rows, PIN_ZONE.rows);
+    grid.set_pin_zone(AXIS_CODE.cols, PIN_ZONE.cols);
+    return grid;
   }
 
   /** Repaints the whole grid next frame (resize, DPR, fonts, theme). */

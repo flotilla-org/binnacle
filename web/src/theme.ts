@@ -39,6 +39,8 @@ export interface Theme {
   /** The line a resize in progress draws across the grid. */
   guide: Line;
   dropIndicator: Line;
+  /** Fills an empty pinned Strip's pin zone while a header is dragged, twice over where a drop would pin: keep it translucent. */
+  pinZone: string;
   /** The Border Style's lines in the body, and the band rules. */
   border: string;
   /** The line in the Gap after a pinned Strip, where pinned items end and the scrolling ones begin. */
@@ -84,6 +86,7 @@ export const light: Theme = {
   handle: "#b8c2cf",
   guide: { color: "#2563eb", width: 2 },
   dropIndicator: { color: "#0891b2", width: 2 },
+  pinZone: "rgb(8 145 178 / 0.12)",
   border: "#d8dee6",
   pinnedEdge: "#d8dee6",
   pinnedShadow: "rgb(15 23 42 / 0.16)",
@@ -131,6 +134,7 @@ export const catppuccinMocha: Theme = {
   handle: mocha.surface2,
   guide: { color: mocha.yellow, width: 2 },
   dropIndicator: { color: mocha.sapphire, width: 2 },
+  pinZone: "rgb(116 199 236 / 0.14)",
   border: mocha.surface0,
   pinnedEdge: mocha.surface0,
   pinnedShadow: "rgb(0 0 0 / 0.5)",
@@ -161,6 +165,7 @@ export const mono: Theme = {
   handle: "#8c8c8c",
   guide: { color: "#000000", width: 1 },
   dropIndicator: { color: "#000000", width: 2 },
+  pinZone: "rgb(0 0 0 / 0.08)",
   border: "#bfbfbf",
   pinnedEdge: "#bfbfbf",
   pinnedShadow: "rgb(0 0 0 / 0.16)",

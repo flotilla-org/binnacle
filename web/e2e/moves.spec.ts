@@ -36,9 +36,12 @@ async function drag(page: Page, x0: number, y0: number, x1: number, y1: number, 
   await page.mouse.up();
 }
 
-/** Drags the row header at screen row `from` to the top of screen row `to`. */
+/**
+ * Drags the row header at screen row `from` into the top half of screen row
+ * `to`, just past the top pin zone's 4 px.
+ */
 const dragRow = (page: Page, from: number, to: number) =>
-  drag(page, BAND, HEADER + from * ROW + ROW / 2, BAND, HEADER + to * ROW + 3);
+  drag(page, BAND, HEADER + from * ROW + ROW / 2, BAND, HEADER + to * ROW + 8);
 
 /** Clicks the visible cell at screen row `row` of the records' column `col`. */
 async function cell(page: Page, row: number, col = 0) {
@@ -97,12 +100,13 @@ async function moving(read: () => Promise<string>): Promise<boolean> {
 
 /**
  * Whether dragging a column header from x `from` to x `to` draws anything
- * the pointer merely resting over `to` does not: a drop line where moves
- * are offered.
+ * in the header band within 100 px of `to` (away from the lit pin zones and
+ * the dragged header's mark) that the pointer merely resting over `to` does
+ * not: a drop line where moves are offered.
  */
 async function dragDraws(page: Page, from: number, to: number): Promise<boolean> {
   const b = await layer(page);
-  const band = () => pixels(page, 0, HEADER / 2, b.width);
+  const band = () => pixels(page, to - 100, HEADER / 2, 200);
   await page.mouse.move(b.x + to, b.y + HEADER / 2);
   await page.mouse.move(b.x + to + 1, b.y + HEADER / 2);
   const resting = await band();
@@ -158,7 +162,7 @@ test.describe("records", () => {
     await expect(status(page)).toContainText(focus(0, sorted[0]!));
     await expect(announced(page)).not.toContainText("sorted");
     // The columns are not sorted, so the port column still moves first.
-    await drag(page, column(4), HEADER / 2, FIRST - 10, HEADER / 2);
+    await drag(page, column(4), HEADER / 2, FIRST, HEADER / 2);
     await cell(page, 0, 0);
     await expect(status(page)).toContainText(focus(0, sorted[0]!, "port"));
   });
@@ -219,16 +223,18 @@ test("the transposed source moves a field by its row header and a record by its 
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText("rows 1 to 5 of 5");
   // While the port field is dragged its row header is marked, and only it:
-  // record 4's column header, whose Key is the same number, is not.
+  // record 4's column header, whose Key is the same number, looks like
+  // record 3's past its label (the column header band is lit as the top pin
+  // zone's reach, both alike).
   const portHeader = () => pixels(page, 2, HEADER + 4 * ROW + ROW / 2, 4);
-  const record4 = () => pixels(page, FIRST_RECORD + 4 * COLUMN, 3, 60);
-  const before = [await portHeader(), await record4()];
-  await drag(page, BAND, HEADER + 4 * ROW + ROW / 2, BAND, HEADER + 3, async () => {
+  const recordHeader = (record: number) => pixels(page, FIRST_RECORD + record * COLUMN + 30, 3, 50);
+  const before = await portHeader();
+  await drag(page, BAND, HEADER + 4 * ROW + ROW / 2, BAND, HEADER + 8, async () => {
     await page.waitForTimeout(100);
-    expect(await portHeader()).not.toBe(before[0]);
-    expect(await record4()).toBe(before[1]);
+    expect(await portHeader()).not.toBe(before);
+    expect(await recordHeader(4)).toBe(await recordHeader(3));
   });
-  await drag(page, FIRST_RECORD + 3 * COLUMN, HEADER / 2, FIRST_RECORD - 30, HEADER / 2);
+  await drag(page, FIRST_RECORD + 3 * COLUMN, HEADER / 2, FIRST_RECORD + 30, HEADER / 2);
   const b = await layer(page);
   await page.mouse.click(b.x + FIRST_RECORD, b.y + HEADER + ROW / 2);
   await expect(status(page)).toContainText(`focus row 1, column 1 (${fields[4]} / 3)`);

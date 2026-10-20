@@ -13,6 +13,7 @@ import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
 import { paintBody, paintEmpty } from "./body";
 import { paintBorders, paintPinnedEdges, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
+import { paintDropCaption, paintPinZones } from "./drop";
 import { paintPulse, paintRefusal, shimmering } from "./pending";
 import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
 
@@ -105,8 +106,10 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintHeaderStates(p);
       paintBorders(p, painter.border, layer);
       paintPinnedEdges(p);
+      paintPinZones(p);
       paintFocus(p);
       paintGuides(p);
+      paintDropCaption(p);
       drop = s.dropIndicator ?? drop;
       paintRefusal(p, drop);
       const pending = painter.motion && (pulsing || shimmering(s));

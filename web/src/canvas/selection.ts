@@ -76,17 +76,24 @@ export function paintFocus(p: PaintContext): void {
   ctx.restore();
 }
 
-/** The resize guide and the drop indicator, across the whole grid. */
+/** The resize guide and the drop indicator, across the whole grid; the drop line is dashed where an unpinned item returns to its own place. */
 export function paintGuides(p: PaintContext): void {
   const { ctx, s, theme } = p;
-  const across = (axis: "rows" | "cols", offset: number, { color, width: line }: Line) => {
+  const across = (axis: "rows" | "cols", offset: number, { color, width: line }: Line, dashed = false) => {
     ctx.fillStyle = color;
     const at = snap(offset - line / 2, p.pixel);
-    if (axis === "cols") ctx.fillRect(at, 0, line, p.height);
-    else ctx.fillRect(0, at, p.width, line);
+    const length = axis === "cols" ? p.height : p.width;
+    // Dashes of 6 with gaps of 4, as the prototype drew a return line.
+    for (let from = 0; from < length; from += dashed ? 10 : length) {
+      const run = dashed ? Math.min(6, length - from) : length;
+      if (axis === "cols") ctx.fillRect(at, from, line, run);
+      else ctx.fillRect(from, at, run, line);
+    }
   };
   if (s.resizeGuide) across(s.resizeGuide.axis, s.resizeGuide.offset, theme.guide);
-  if (s.dropIndicator) across(s.dropIndicator.axis, s.dropIndicator.offset, theme.dropIndicator);
+  const drop = s.dropIndicator;
+  // Dashed where an unpinned item returns to its own place.
+  if (drop) across(drop.axis, drop.offset, theme.dropIndicator, drop.target.type === "Unpin");
 }
 
 function snap(v: number, pixel: number): number {

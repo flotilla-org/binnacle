@@ -330,7 +330,8 @@ fn a_header_dropped_into_the_leading_strip_lands_just_after_its_drop_line(tc: Te
         .filter(|&(_, middle)| middle >= end + 1.0 && middle < V.width)
         .collect();
     let (key, from) = tc.draw(gs::sampled_from(grabbable));
-    let to = tc.draw(gs::floats::<f32>().min_value(4.0).max_value_exclusive(end));
+    // From the row header band's start: a drop over the band pins too.
+    let to = tc.draw(gs::floats::<f32>().min_value(0.0).max_value_exclusive(end));
     drag_header(&mut s, from, to);
     let drop = s.frame(V).drop_indicator().expect("a drop line");
     let DropTarget::Pin {
@@ -354,4 +355,58 @@ fn a_header_dropped_into_the_leading_strip_lands_just_after_its_drop_line(tc: Te
     expected.insert(at, key);
     let keys: Vec<u64> = strip.iter().map(|i| i.key.unwrap().0).collect();
     assert_eq!(keys, expected);
+}
+
+/// Any header dropped past the scrolling Strip's far end, into the trailing
+/// pinned Strip, its empty pin zone or beyond the viewport, pins there in
+/// the order its drop line showed, the line at the item boundary nearest the
+/// pointer (or the viewport's end, for a pointer beyond it).
+#[hegel::test(test_cases = 300)]
+fn a_header_dropped_into_the_trailing_strip_pins_where_its_drop_line_showed(tc: TestCase) {
+    let mut s = table();
+    let pins: Vec<u64> = tc.draw(
+        gs::vecs(gs::integers::<u64>().max_value(9))
+            .max_size(3)
+            .unique(true),
+    );
+    s.input(|g| {
+        for &k in &pins {
+            g.pin(Axis::Cols, Edge::Trailing, Key(k));
+        }
+    });
+    let snap = s.frame(V);
+    let start = if pins.is_empty() {
+        V.width - 3.0
+    } else {
+        snap.scrolling(Axis::Cols).end
+    };
+    let grabbable: Vec<(u64, f32)> = (snap.strip(Axis::Cols).iter())
+        .map(|i| (i.key.unwrap().0, i.offset + i.size / 2.0))
+        .filter(|&(_, middle)| middle <= start - 1.0 && middle >= 4.0)
+        .collect();
+    let (key, from) = tc.draw(gs::sampled_from(grabbable));
+    let to = tc.draw(
+        gs::floats::<f32>()
+            .min_value(start)
+            .max_value_exclusive(V.width + 10.0),
+    );
+    drag_header(&mut s, from, to);
+    let drop = s.frame(V).drop_indicator().expect("a drop line");
+    let DropTarget::Pin {
+        edge: Edge::Trailing,
+        before,
+        reorder: false,
+    } = drop.target
+    else {
+        panic!("{drop:?} pins nothing");
+    };
+    assert!(
+        (to.min(V.width) - drop.offset).abs() <= 3.5,
+        "{drop:?} far from {to}"
+    );
+    release(&mut s, to);
+    let mut expected = pins.clone();
+    let at = before.map_or(pins.len(), |b| pins.iter().position(|&p| p == b.0).unwrap());
+    expected.insert(at, key);
+    assert_eq!(pinned(&mut s, Edge::Trailing), expected);
 }
