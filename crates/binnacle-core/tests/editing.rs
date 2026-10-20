@@ -246,11 +246,11 @@ fn an_edit_follows_its_record_through_a_sort_and_is_cancelled_when_filtered_out(
     let mut out = s.step("editing record 1, column 2; focus unplaced", TALL);
     let spec = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
     let t = &mut s.source;
-    let notice = t
+    let notices = t
         .source
         .view(&t.rows, &ViewSpec::default().with_sort(Axis::Rows, spec))
         .unwrap();
-    s.input(|g| g.notify(Axis::Rows, notice));
+    s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
     out += &s.step(
         "sorted by column 0: record 1 (value 3) is now row 2 and the editor follows; no Locate for a reorder",
         TALL,

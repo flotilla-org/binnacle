@@ -193,8 +193,8 @@ impl Grid {
     }
 
     /// What clicking the header of an item on `axis` does: `Axis::Rows` for
-    /// row headers, `Axis::Cols` for column headers. Only columns sort, so
-    /// [`HeaderClick::Sort`] on row headers makes a click do nothing.
+    /// row headers, `Axis::Cols` for column headers. [`HeaderClick::Sort`] on
+    /// row headers sorts the columns by the clicked row.
     pub fn set_header_click(&mut self, axis: Axis, click: HeaderClick) {
         self.header_click[axis.index()] = click;
     }

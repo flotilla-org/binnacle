@@ -341,11 +341,12 @@ impl Host {
                     // Any rows will do for a filter: the Grid never sees values.
                     self.refilter_axis(tc, Axis::Rows);
                 } else {
-                    // Any order will do for a sort.
-                    let rows = std::mem::take(&mut self.keys[0]);
-                    self.keys[0] = tc.draw(gs::permutations(rows));
-                    tc.note(&format!("sorted: rows {:?}", self.keys[0]));
-                    self.grid.notify(Axis::Rows, ChangeNotice::Reordered);
+                    // Any order will do for a sort, of either axis.
+                    let axis = tc.draw(gs::sampled_from(Axis::ALL.to_vec()));
+                    let keys = std::mem::take(&mut self.keys[axis.index()]);
+                    self.keys[axis.index()] = tc.draw(gs::permutations(keys));
+                    tc.note(&format!("sorted: {axis:?} {:?}", self.keys[axis.index()]));
+                    self.grid.notify(axis, ChangeNotice::Reordered);
                 }
             }
             Effect::MoveRequested { axis, keys, to } => {

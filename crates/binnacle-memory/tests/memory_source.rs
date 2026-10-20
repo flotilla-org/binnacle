@@ -1,8 +1,8 @@
 //! Seam 2: `MemorySource<R>` sorts a host's rows through per-column closures.
 
 use binnacle_core::{
-    Axis, ChangeNotice, FilterSpec, Key, Located, Searched, SortColumn, SortSpec, TextQuery,
-    TextSupport, Totals, ViewSpec,
+    Axis, ChangeNotice, FilterSpec, Key, Located, Searched, SortColumn, SortDirection, SortSpec,
+    TextQuery, TextSupport, Totals, ViewSpec,
 };
 use binnacle_memory::{MemorySource, PumpSource, Unsortable, Viewed};
 
@@ -42,7 +42,7 @@ fn sorts_rows_by_the_extracted_keys() {
     ]);
     assert_eq!(
         source.view(&rows, &rows_sorted(by_qty_then_amount)),
-        Ok(ChangeNotice::Reordered)
+        Ok(vec![(Axis::Rows, ChangeNotice::Reordered)])
     );
     assert_eq!(
         source.window(Axis::Rows, 0..3),
@@ -55,7 +55,7 @@ fn sorts_rows_by_the_extracted_keys() {
             &rows,
             &rows_sorted(SortSpec::new(vec![SortColumn::ascending(Key(0))]))
         ),
-        Ok(ChangeNotice::Reordered)
+        Ok(vec![(Axis::Rows, ChangeNotice::Reordered)])
     );
     assert_eq!(
         source.window(Axis::Rows, 0..3),
@@ -175,7 +175,7 @@ fn filtering_never_asks_for_sort_keys_and_sorting_never_runs_the_filter(tc: hege
                 }
                 assert_eq!(
                     source.view(&rows, &rows_sorted(spec)),
-                    Ok(ChangeNotice::Reordered)
+                    Ok(vec![(Axis::Rows, ChangeNotice::Reordered)])
                 );
             }
             1 => {
@@ -207,7 +207,7 @@ fn rows_sorted(sort: SortSpec) -> ViewSpec {
 }
 
 #[test]
-fn a_view_is_answered_with_the_part_applied_and_the_rows_notice() {
+fn a_view_is_answered_with_the_spec_applied_and_each_axis_notice() {
     let rows = [rec("eve", None, 2), rec("ada", None, 1)];
     let mut source = source(&rows);
     let by_qty = SortSpec::new(vec![SortColumn::ascending(Key(2))]);
@@ -217,12 +217,15 @@ fn a_view_is_answered_with_the_part_applied_and_the_rows_notice() {
     assert_eq!(
         viewed,
         Viewed {
-            applied: rows_sorted(by_qty.clone()),
+            applied: asked.clone(),
             totals: Totals {
                 rows: Some(2),
                 cols: Some(4)
             },
-            notices: vec![(Axis::Rows, ChangeNotice::Reordered)],
+            notices: vec![
+                (Axis::Rows, ChangeNotice::Reordered),
+                (Axis::Cols, ChangeNotice::Reordered)
+            ],
         }
     );
     let unsortable = rows_sorted(SortSpec::new(vec![SortColumn::ascending(Key(3))]));
@@ -230,7 +233,7 @@ fn a_view_is_answered_with_the_part_applied_and_the_rows_notice() {
     assert_eq!(
         viewed,
         Viewed {
-            applied: rows_sorted(by_qty),
+            applied: asked,
             totals: Totals {
                 rows: Some(2),
                 cols: Some(4)
@@ -241,13 +244,187 @@ fn a_view_is_answered_with_the_part_applied_and_the_rows_notice() {
 }
 
 #[test]
-fn the_rows_support_sorting_by_the_columns_with_a_closure_and_the_columns_nothing() {
+fn the_rows_sort_by_the_columns_with_a_closure_and_the_columns_by_any_row() {
     let rows = [rec("eve", None, 2)];
     let mut source = source(&rows);
     let sorts = |s: &mut MemorySource<Rec>, axis, key| s.over(&rows).support(axis, Key(key)).sort;
     assert!(sorts(&mut source, Axis::Rows, 0));
     assert!(!sorts(&mut source, Axis::Rows, 3));
-    assert!(!sorts(&mut source, Axis::Cols, 0));
+    assert!(sorts(&mut source, Axis::Cols, 0));
+    let mut none = MemorySource::<Rec>::new(1, 2);
+    assert!(!sorts(&mut none, Axis::Cols, 0));
+}
+
+/// A View Spec sorting the columns by `sort`.
+fn cols_sorted(sort: SortSpec) -> ViewSpec {
+    ViewSpec::default().with_sort(Axis::Cols, sort)
+}
+
+fn columns<R>(source: &MemorySource<R>) -> Vec<Key> {
+    source.window(Axis::Cols, 0..source.count(Axis::Cols))
+}
+
+/// Rows of three numeric columns, so the columns sort by a row as numbers:
+/// integers if every column is an integer one, else floats.
+struct Nums {
+    a: i64,
+    b: f64,
+    c: Option<i64>,
+}
+
+fn nums(rows: &[Nums]) -> MemorySource<Nums> {
+    MemorySource::<Nums>::new(rows.len(), 4)
+        .i64_column(Key(0), |r| Some(r.a))
+        .f64_column(Key(1), |r| Some(r.b))
+        .i64_column(Key(2), |r| r.c)
+}
+
+#[test]
+fn the_columns_sort_by_a_rows_values_with_columns_without_keys_last() {
+    let rows = [
+        Nums {
+            a: 5,
+            b: -1.5,
+            c: Some(3),
+        },
+        Nums {
+            a: 2,
+            b: 2.5,
+            c: None,
+        },
+    ];
+    let mut source = nums(&rows);
+    let by = |row, direction| {
+        SortSpec::new(vec![SortColumn {
+            key: Key(row),
+            direction,
+        }])
+    };
+    let notices = source.view(&rows, &cols_sorted(by(0, SortDirection::Ascending)));
+    let both = vec![
+        (Axis::Rows, ChangeNotice::Reordered),
+        (Axis::Cols, ChangeNotice::Reordered),
+    ];
+    assert_eq!(notices, Ok(both));
+    // Row 0 holds 5, -1.5, 3 and nothing for column 3.
+    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+    source
+        .view(&rows, &cols_sorted(by(0, SortDirection::Descending)))
+        .unwrap();
+    assert_eq!(columns(&source), [Key(0), Key(2), Key(1), Key(3)]);
+    // Row 1 holds 2, 2.5, a null and nothing: nulls last, ties in base order.
+    source
+        .view(&rows, &cols_sorted(by(1, SortDirection::Descending)))
+        .unwrap();
+    assert_eq!(columns(&source), [Key(1), Key(0), Key(2), Key(3)]);
+    assert_eq!(
+        source.view_spec(),
+        cols_sorted(by(1, SortDirection::Descending))
+    );
+    source.view(&rows, &ViewSpec::default()).unwrap();
+    assert_eq!(columns(&source), [Key(0), Key(1), Key(2), Key(3)]);
+    assert_eq!(source.window(Axis::Rows, 0..2), [Key(0), Key(1)]);
+}
+
+#[test]
+fn the_columns_sort_by_a_row_of_mixed_kinds_as_text() {
+    let rows = [rec("eve", Some(10.0), 9), rec("2", Some(0.5), 30)];
+    let mut source = source(&rows);
+    let by_row = |row| SortSpec::new(vec![SortColumn::ascending(Key(row))]);
+    source.view(&rows, &cols_sorted(by_row(0))).unwrap();
+    // "eve", "10", "9" by code point, then column 3 with no keys.
+    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+    source.view(&rows, &cols_sorted(by_row(1))).unwrap();
+    // "2", "0.5", "30".
+    assert_eq!(columns(&source), [Key(1), Key(0), Key(2), Key(3)]);
+}
+
+#[test]
+fn a_sort_by_a_row_that_is_not_there_is_unsortable_and_leaves_the_columns_alone() {
+    let rows = [rec("eve", None, 2), rec("ada", None, 1)];
+    let mut source = source(&rows);
+    let by_row = |row| SortSpec::new(vec![SortColumn::descending(Key(row))]);
+    source.view(&rows, &cols_sorted(by_row(0))).unwrap();
+    let before = columns(&source);
+    assert_eq!(
+        source.view(&rows, &cols_sorted(by_row(2))),
+        Err(Unsortable { column: Key(2) })
+    );
+    assert_eq!(columns(&source), before);
+    assert_eq!(source.view_spec(), cols_sorted(by_row(0)));
+}
+
+#[test]
+fn a_change_to_the_row_the_columns_sort_by_sorts_them_again() {
+    let mut rows = vec![
+        Nums {
+            a: 1,
+            b: 2.0,
+            c: Some(3),
+        },
+        Nums {
+            a: 9,
+            b: 9.0,
+            c: Some(9),
+        },
+    ];
+    let mut source = nums(&rows);
+    let by_row_0 = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
+    source.view(&rows, &cols_sorted(by_row_0)).unwrap();
+    assert_eq!(columns(&source), [Key(0), Key(1), Key(2), Key(3)]);
+    rows[0].a = 4;
+    assert_eq!(
+        source.changed(&rows, 0, Key(0)),
+        vec![
+            (Axis::Rows, ChangeNotice::ContentChanged(0..1)),
+            (Axis::Cols, ChangeNotice::Reordered)
+        ]
+    );
+    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+    rows[1].b = 0.0;
+    assert_eq!(
+        source.edited(&rows, 1, Key(1)),
+        vec![(Axis::Rows, ChangeNotice::ContentChanged(1..2))]
+    );
+    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+}
+
+#[test]
+fn replacing_the_rows_drops_the_rows_the_columns_sorted_by_that_left() {
+    let rows = vec![
+        Nums {
+            a: 1,
+            b: 2.0,
+            c: Some(3),
+        },
+        Nums {
+            a: 9,
+            b: 1.0,
+            c: Some(5),
+        },
+    ];
+    let mut source = nums(&rows);
+    let by = SortSpec::new(vec![
+        SortColumn::descending(Key(1)),
+        SortColumn::ascending(Key(0)),
+    ]);
+    source.view(&rows, &cols_sorted(by)).unwrap();
+    assert_eq!(columns(&source), [Key(0), Key(2), Key(1), Key(3)]);
+    let rows = vec![Nums {
+        a: 3,
+        b: 2.0,
+        c: Some(1),
+    }];
+    assert_eq!(
+        source.replaced(&rows, None),
+        vec![
+            (Axis::Rows, ChangeNotice::Reset(1)),
+            (Axis::Cols, ChangeNotice::Reordered)
+        ]
+    );
+    let by_row_0 = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
+    assert_eq!(source.view_spec(), cols_sorted(by_row_0));
+    assert_eq!(columns(&source), [Key(2), Key(1), Key(0), Key(3)]);
 }
 
 /// A View Spec with the rows' quick filter `query`.
@@ -270,7 +447,7 @@ fn a_quick_filter_keeps_rows_matching_in_any_column_ignoring_case() {
     let mut source = source(&rows);
     assert_eq!(
         source.view(&rows, &quick(TextQuery::new("BERGEN"))),
-        Ok(ChangeNotice::Refiltered(2))
+        Ok(vec![(Axis::Rows, ChangeNotice::Refiltered(2))])
     );
     assert_eq!(shown(&source), vec![Key(0), Key(2)]);
     // Numbers match in their `Display` form, in any column.
@@ -279,7 +456,7 @@ fn a_quick_filter_keeps_rows_matching_in_any_column_ignoring_case() {
     assert_eq!(source.view_spec(), quick(TextQuery::new("12")));
     assert_eq!(
         source.view(&rows, &ViewSpec::default()),
-        Ok(ChangeNotice::Refiltered(4))
+        Ok(vec![(Axis::Rows, ChangeNotice::Refiltered(4))])
     );
     assert_eq!(source.view_spec(), ViewSpec::default());
 }

@@ -7,13 +7,15 @@ use std::ops::Range;
 use binnacle_core::{
     Axis, Blanks, ChangeNotice, Condition, ConditionKind, Distinct, DistinctQuery, DistinctValue,
     FilterSpec, FindDirection, FindMatch, FindQuery, Grid, Key, Located, Position, Searched,
-    SortDirection, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewSpec,
+    SortColumn, SortDirection, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value,
+    ViewSpec,
 };
 use regex::{Regex, RegexBuilder};
 
 use crate::{FindCount, FindStep, InMemoryTableSource, PumpSource, SortKeys, Viewed};
 
-/// A Sort Spec named a column with no sort-key closure.
+/// A Sort Spec named a column with no sort-key closure, or a row that is
+/// not there; `column` is the Key it named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unsortable {
     pub column: Key,
@@ -21,7 +23,7 @@ pub struct Unsortable {
 
 impl fmt::Display for Unsortable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "column {:?} has no sort keys", self.column)
+        write!(f, "item {:?} has no sort keys", self.column)
     }
 }
 
@@ -251,22 +253,36 @@ impl<R> MemorySource<R> {
     }
 
     /// Presents the rows as `spec`'s rows part asks, extracting each sort
-    /// column's keys and each searched column's text from `rows`, and returns
-    /// the Change Notice the rows need: `Refiltered` if the filter changed.
+    /// column's keys and each searched column's text from `rows`, and sorts
+    /// the columns as its columns part asks (see
+    /// [`MemorySource::support`]). Returns the Change Notices the axes need:
+    /// the rows' always, `Refiltered` if the filter changed, and the
+    /// columns' `Reordered` while they are sorted or their sort changed.
     /// Any View Spec, even the one in force, applies the filter again to
     /// Unmatched Rows.
-    /// If a sort column has no closure, nothing changes. A quick filter with
-    /// an invalid regex is not applied: the one in force stays. A condition
-    /// with an invalid regex, or of a kind this source does not apply, is
-    /// left out.
-    /// The columns part is not applied: [`MemorySource::view_spec`] leaves
-    /// out what is not.
+    /// If a sort names a column with no closure or a row that is not there,
+    /// nothing changes. A quick filter with an invalid regex is not applied:
+    /// the one in force stays. A condition with an invalid regex, or of a
+    /// kind this source does not apply, is left out. The columns' filter is
+    /// not applied: [`MemorySource::view_spec`] leaves out what is not.
     ///
     /// # Panics
     ///
     /// If `rows` is not as long as the base row count.
-    pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Result<ChangeNotice, Unsortable> {
+    pub fn view(
+        &mut self,
+        rows: &[R],
+        spec: &ViewSpec,
+    ) -> Result<Vec<(Axis, ChangeNotice)>, Unsortable> {
+        let by = &spec.cols.sort;
+        let resort = !by.is_empty() || by != self.table.sort_spec(Axis::Cols);
+        let by_rows = match resort {
+            true => Some(self.sorting_rows(by)?),
+            false => None,
+        };
         let sorted = self.sort(rows, &spec.rows.sort)?;
+        let cols = by_rows.map(|by_rows| (Axis::Cols, self.sort_columns(rows, by, &by_rows)));
+        let notices = |rows| [(Axis::Rows, rows)].into_iter().chain(cols).collect();
         let filter = &spec.rows.filter;
         let query = filter.quick.as_ref();
         let mut changed = false;
@@ -287,9 +303,9 @@ impl<R> MemorySource<R> {
             self.conditions = kept;
         }
         if changed || self.table.has_unmatched(Axis::Rows) {
-            return Ok(self.refilter(rows));
+            return Ok(notices(self.refilter(rows)));
         }
-        Ok(sorted)
+        Ok(notices(sorted))
     }
 
     /// `query` ready to match, or `None` for an invalid regex.
@@ -315,7 +331,58 @@ impl<R> MemorySource<R> {
             .map(|c| self.columns.get(&c.key).ok_or(Unsortable { column: c.key }))
             .collect::<Result<Vec<_>, _>>()?;
         let keys = columns.into_iter().map(|c| c.extract(rows)).collect();
-        Ok(self.table.apply_sort(spec, keys))
+        Ok(self.table.apply_sort(Axis::Rows, spec, keys))
+    }
+
+    /// The Logical Indices of the rows `spec` sorts the columns by, or the
+    /// Key of one that is not there.
+    fn sorting_rows(&mut self, spec: &SortSpec) -> Result<Vec<usize>, Unsortable> {
+        (spec.columns().iter())
+            .map(|c| {
+                (self.table.logical_index(Axis::Rows, c.key)).ok_or(Unsortable { column: c.key })
+            })
+            .collect()
+    }
+
+    /// Sorts the columns by `spec`, whose rows have the Logical Indices
+    /// `by_rows`.
+    fn sort_columns(&mut self, rows: &[R], spec: &SortSpec, by_rows: &[usize]) -> ChangeNotice {
+        let keys = by_rows.iter().map(|&i| self.row_keys(&rows[i])).collect();
+        self.table.apply_sort(Axis::Cols, spec, keys)
+    }
+
+    /// The sort keys of `row` across the base columns, by which the columns
+    /// sort: integers if every column with a closure has an integer one,
+    /// numbers if every one is numeric, else text (bytes as they are,
+    /// numbers written with `Display`). A column without a closure is null.
+    fn row_keys<'r>(&self, row: &'r R) -> SortKeys<'r> {
+        let columns: Vec<Option<&Column<R>>> = (0..self.table.base_len(Axis::Cols))
+            .map(|c| self.columns.get(&self.table.base_key(Axis::Cols, c)))
+            .collect();
+        let mut present = columns.iter().flatten();
+        if present.clone().all(|c| matches!(c, Column::I64(_))) {
+            let key = |c: &Option<&Column<R>>| match c {
+                Some(Column::I64(f)) => f(row),
+                _ => None,
+            };
+            return SortKeys::I64(columns.iter().map(key).collect());
+        }
+        if present.all(|c| !matches!(c, Column::Bytes(_))) {
+            let key = |c: &Option<&Column<R>>| match c {
+                Some(Column::I64(f)) => f(row).map(|v| v as f64),
+                Some(Column::F64(f)) => f(row),
+                _ => None,
+            };
+            return SortKeys::F64(columns.iter().map(key).collect());
+        }
+        let key = |c: &Option<&Column<R>>| match c {
+            Some(Column::Bytes(f)) => f(row),
+            Some(c) => c
+                .display(row)
+                .map(|t| Cow::Owned(t.into_owned().into_bytes())),
+            None => None,
+        };
+        SortKeys::Bytes(columns.iter().map(key).collect())
     }
 
     /// Whether a filter is in force: the host's, the quick filter or a
@@ -458,17 +525,18 @@ impl<R> MemorySource<R> {
 
     /// The value in `column` of base row `row` (a Logical Index into `rows`)
     /// changed in the data itself, as from a live feed: the filter in force
-    /// takes it at once. Returns `ContentChanged` for the row's Position,
-    /// `Reordered` if the rows are sorted by that column, `Refiltered` if the
-    /// filter now keeps or drops the row where it did not before, or `None`
-    /// if the row is filtered out either way. An Unmatched Row is matched
-    /// again, or leaves.
+    /// takes it at once. Returns the rows' `ContentChanged` for the row's
+    /// Position, `Reordered` if the rows are sorted by that column,
+    /// `Refiltered` if the filter now keeps or drops the row where it did not
+    /// before, or nothing if the row is filtered out either way; and the
+    /// columns' `Reordered` if they are sorted by the row. An Unmatched Row
+    /// is matched again, or leaves.
     ///
     /// # Panics
     ///
     /// If `row` is not a row of `rows`, or `rows` is not as long as the base
     /// row count.
-    pub fn changed(&mut self, rows: &[R], row: usize, column: Key) -> Option<ChangeNotice> {
+    pub fn changed(&mut self, rows: &[R], row: usize, column: Key) -> Vec<(Axis, ChangeNotice)> {
         let refiltered = match self.filtered() {
             true => self.table.refilter_row(row, self.keeps(&rows[row])),
             false => None,
@@ -485,7 +553,7 @@ impl<R> MemorySource<R> {
     /// # Panics
     ///
     /// As [`MemorySource::changed`].
-    pub fn edited(&mut self, rows: &[R], row: usize, column: Key) -> Option<ChangeNotice> {
+    pub fn edited(&mut self, rows: &[R], row: usize, column: Key) -> Vec<(Axis, ChangeNotice)> {
         let refiltered = match self.filtered() {
             true => self.table.defer_row(row, self.keeps(&rows[row])),
             false => None,
@@ -493,24 +561,32 @@ impl<R> MemorySource<R> {
         self.content_changed(rows, row, column, refiltered)
     }
 
-    /// The Change Notice for a value change in `column` of base row `row`,
-    /// after any `refiltered` the filter gave, re-sorting if sorted by it.
+    /// The Change Notices for a value change in `column` of base row `row`,
+    /// after any `refiltered` the filter gave, re-sorting either axis if
+    /// sorted by it.
     fn content_changed(
         &mut self,
         rows: &[R],
         row: usize,
         column: Key,
         refiltered: Option<ChangeNotice>,
-    ) -> Option<ChangeNotice> {
-        if self.sort_spec().find(column).is_some() {
+    ) -> Vec<(Axis, ChangeNotice)> {
+        let notice = if self.sort_spec().find(column).is_some() {
             self.resort(rows);
-            return Some(refiltered.unwrap_or(ChangeNotice::Reordered));
-        }
-        if refiltered.is_some() {
-            return refiltered;
-        }
-        let p = self.table.row_position(row)?;
-        Some(ChangeNotice::ContentChanged(p..p + 1))
+            Some(refiltered.unwrap_or(ChangeNotice::Reordered))
+        } else if refiltered.is_some() {
+            refiltered
+        } else {
+            (self.table.row_position(row)).map(|p| ChangeNotice::ContentChanged(p..p + 1))
+        };
+        let key = self.table.base_key(Axis::Rows, row);
+        let by_row = self.table.sort_spec(Axis::Cols).find(key).is_some();
+        let cols = by_row.then(|| (Axis::Cols, self.resort_columns(rows)));
+        notice
+            .map(|n| (Axis::Rows, n))
+            .into_iter()
+            .chain(cols)
+            .collect()
     }
 
     /// Whether each item with `keys` on `axis` is an Unmatched Row: in view
@@ -523,15 +599,30 @@ impl<R> MemorySource<R> {
     /// The host's base data changed in some other way (rows inserted or
     /// removed anywhere, or replaced): it is now `rows`, keyed by `keys` (by
     /// Logical Index if `None`). The sort and filter in force are applied
-    /// again and the rows need the `Reset` returned.
+    /// again and the rows need the `Reset` returned. Rows the columns sort by
+    /// that left are dropped from the columns' Sort Spec, and sorted columns
+    /// are sorted again and need the `Reordered` returned.
     ///
     /// # Panics
     ///
     /// As [`InMemoryTableSource::replace_rows`].
-    pub fn replaced(&mut self, rows: &[R], keys: Option<Vec<Key>>) -> ChangeNotice {
+    pub fn replaced(&mut self, rows: &[R], keys: Option<Vec<Key>>) -> Vec<(Axis, ChangeNotice)> {
         let keep = self.keep_flags(rows);
         let sort_keys = self.sort_keys(rows);
-        self.table.replace_rows(rows.len(), keys, sort_keys, keep)
+        let reset = self.table.replace_rows(rows.len(), keys, sort_keys, keep);
+        let by = self.table.sort_spec(Axis::Cols).clone();
+        if by.is_empty() {
+            return vec![(Axis::Rows, reset)];
+        }
+        let left: Vec<SortColumn> = (by.columns().iter())
+            .filter(|c| self.table.logical_index(Axis::Rows, c.key).is_some())
+            .copied()
+            .collect();
+        let spec = SortSpec::new(left);
+        // Every row the spec names is there now.
+        let by_rows = self.sorting_rows(&spec).unwrap_or_default();
+        let cols = self.sort_columns(rows, &spec, &by_rows);
+        vec![(Axis::Rows, reset), (Axis::Cols, cols)]
     }
 
     /// The keep flags of `rows` while a filter is in force, else none.
@@ -559,13 +650,22 @@ impl<R> MemorySource<R> {
         let _ = self.sort(rows, &spec);
     }
 
+    /// Sorts the columns again by the rows' values, by the columns' Sort
+    /// Spec in force.
+    fn resort_columns(&mut self, rows: &[R]) -> ChangeNotice {
+        let spec = self.table.sort_spec(Axis::Cols).clone();
+        // Every row the spec names was there when it was applied.
+        let by_rows = self.sorting_rows(&spec).unwrap_or_default();
+        self.sort_columns(rows, &spec, &by_rows)
+    }
+
     /// The Sort Spec the rows are in, as last applied.
     fn sort_spec(&self) -> &SortSpec {
-        self.table.sort_spec()
+        self.table.sort_spec(Axis::Rows)
     }
 
     /// The View Spec the source applies: the rows' sort, quick filter and
-    /// conditions, as last applied.
+    /// conditions, and the columns' sort, as last applied.
     pub fn view_spec(&self) -> ViewSpec {
         let quick = self.quick.as_ref().map(|q| q.query.clone());
         let conditions: Vec<Condition> = self
@@ -579,6 +679,7 @@ impl<R> MemorySource<R> {
         ViewSpec::default()
             .with_sort(Axis::Rows, self.sort_spec().clone())
             .with_filter(Axis::Rows, filter)
+            .with_sort(Axis::Cols, self.table.sort_spec(Axis::Cols).clone())
     }
 
     /// The unfiltered count of each axis: every base row and column.
@@ -591,12 +692,18 @@ impl<R> MemorySource<R> {
 
     /// The rows sort by the columns given a closure, and filter by Text
     /// conditions, regex included, and OneOf conditions on the columns with
-    /// a text form; columns sort and filter by nothing.
+    /// a text form. The columns sort by any row while some column has a
+    /// closure, comparing each column's sort key in that row (see
+    /// [`MemorySource::view`]), and filter by nothing.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
         let rows = axis == Axis::Rows;
         let text = rows && (self.texts.contains_key(&key) || self.columns.contains_key(&key));
+        let sort = match axis {
+            Axis::Rows => self.columns.contains_key(&key),
+            Axis::Cols => !self.columns.is_empty(),
+        };
         Support::default()
-            .with_sort(rows && self.columns.contains_key(&key))
+            .with_sort(sort)
             .with_text(text.then_some(TextSupport::new(true)))
             .with_one_of(text)
     }
@@ -849,11 +956,11 @@ struct Over<'a, R> {
 
 impl<R> PumpSource for Over<'_, R> {
     fn view(&mut self, spec: &ViewSpec) -> Viewed {
-        let notice = self.source.view(self.rows, spec).ok();
+        let notices = self.source.view(self.rows, spec).unwrap_or_default();
         Viewed {
             applied: self.source.view_spec(),
             totals: self.source.totals(),
-            notices: notice.map(|n| (Axis::Rows, n)).into_iter().collect(),
+            notices,
         }
     }
 

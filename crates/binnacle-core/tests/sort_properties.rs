@@ -320,10 +320,10 @@ impl Host {
             }
             Input::Sort(sort) => {
                 let spec = ViewSpec::default().with_sort(Axis::Rows, sort);
-                if let Ok(notice) = self.s.source.source.view(&self.s.source.rows, &spec) {
+                if let Ok(notices) = self.s.source.source.view(&self.s.source.rows, &spec) {
                     self.s.input(|g| {
                         g.view_applied(spec, Totals::unknown());
-                        g.notify(Axis::Rows, notice);
+                        notices.into_iter().for_each(|(axis, n)| g.notify(axis, n));
                     });
                     return vec![Axis::Rows];
                 }

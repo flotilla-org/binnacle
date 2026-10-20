@@ -67,11 +67,11 @@ fn a_sorted_and_filtered_focus_lands_on_the_nearest_survivor_in_sort_order() {
     s.frame(V);
     let spec = binnacle_core::SortSpec::new(vec![binnacle_core::SortColumn::ascending(Key(0))]);
     let t = &mut s.source;
-    let notice = t
+    let notices = t
         .source
         .view(&t.rows, &ViewSpec::default().with_sort(Axis::Rows, spec))
         .unwrap();
-    s.input(|g| g.notify(Axis::Rows, notice));
+    s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
     // Sorted values 1 2 3 4 5 7 8 9 are records 3 5 1 7 0 6 2 4.
     s.click(5.0, 3.0, Modifiers::NONE);
     let mut out = s.step("sort by column 0; focus value 3 (record 1) at row 2", V);

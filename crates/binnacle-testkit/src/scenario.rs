@@ -158,15 +158,20 @@ impl RecordTable {
 
     /// Sets base row `row`'s value in column `col` as the user's edit (a
     /// row in view stays even if the filter now drops it); the Grid needs
-    /// the returned Change Notice, if any.
-    pub fn edit(&mut self, row: usize, col: usize, value: Option<i64>) -> Option<ChangeNotice> {
+    /// the returned Change Notices, if any.
+    pub fn edit(
+        &mut self,
+        row: usize,
+        col: usize,
+        value: Option<i64>,
+    ) -> Vec<(Axis, ChangeNotice)> {
         self.rows[row][col] = value;
         self.source.edited(&self.rows, row, Key(col as u64))
     }
 
     /// Replaces the base data with `rows`; the Grid needs the returned
-    /// Change Notice.
-    pub fn replace(&mut self, rows: Vec<Record>) -> ChangeNotice {
+    /// Change Notices.
+    pub fn replace(&mut self, rows: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
         self.rows = rows;
         self.source.replaced(&self.rows, None)
     }
@@ -224,8 +229,8 @@ impl<S: ScenarioSource> ScenarioSource for Transposed<S> {
 /// A [`RecordTable`] on its side, as a pivoted or transposed host has it:
 /// each record is a column and each field a row, keyed by Logical Index on
 /// both axes. The columns sort by the sortable fields, filter and change as
-/// the records' rows do; the fields move. Change Notices from its methods
-/// are for [`Axis::Cols`].
+/// the records' rows do; the fields move. Change Notices from `filter` and
+/// `append` are for [`Axis::Cols`]; `edit` and `replace` name their axes.
 pub struct ColumnMajorTable {
     table: Transposed<RecordTable>,
 }
@@ -270,14 +275,21 @@ impl ColumnMajorTable {
         record: usize,
         field: usize,
         value: Option<i64>,
-    ) -> Option<ChangeNotice> {
-        self.table.0.edit(record, field, value)
+    ) -> Vec<(Axis, ChangeNotice)> {
+        turned(self.table.0.edit(record, field, value))
     }
 
     /// Replaces the records with `records`.
-    pub fn replace(&mut self, records: Vec<Record>) -> ChangeNotice {
-        self.table.0.replace(records)
+    pub fn replace(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
+        turned(self.table.0.replace(records))
     }
+}
+
+/// Change Notices for the records' table, for the same table on its side.
+fn turned(notices: Vec<(Axis, ChangeNotice)>) -> Vec<(Axis, ChangeNotice)> {
+    (notices.into_iter())
+        .map(|(axis, notice)| (axis.other(), notice))
+        .collect()
 }
 
 impl ScenarioSource for ColumnMajorTable {

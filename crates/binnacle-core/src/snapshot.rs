@@ -74,8 +74,8 @@ pub struct HeaderPlacement {
     pub key: Option<Key>,
     /// The header's rectangle in its band, unclipped like the Strip item.
     pub rect: Rect,
-    /// How it shows the sort of the other axis (rows never sort columns yet,
-    /// so row headers show none).
+    /// How it shows the sort of the other axis: a column header the rows'
+    /// sort, a row header the columns'.
     pub sort: HeaderSort,
     /// How it shows the conditions read in it (row headers show none).
     pub filter: HeaderFilter,

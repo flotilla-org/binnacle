@@ -115,6 +115,17 @@ fn visible(source: &MemorySource<Record>, keys: Option<&[Key]>) -> Vec<u64> {
         .collect()
 }
 
+/// The rows' Change Notice of `notices`: the columns are never sorted here,
+/// so they never need one.
+fn rows_only(notices: Vec<(Axis, ChangeNotice)>) -> Option<ChangeNotice> {
+    assert!(
+        notices.iter().all(|(axis, _)| *axis == Axis::Rows),
+        "{notices:?}"
+    );
+    assert!(notices.len() <= 1, "{notices:?}");
+    notices.into_iter().next().map(|(_, n)| n)
+}
+
 /// What one op did.
 struct Step<'a> {
     op: &'a Op,
@@ -151,7 +162,7 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
         let notice = match op.clone() {
             Op::Sort(s) => {
                 spec = s;
-                Some(source.view(&rows, &rows_sorted(spec.clone())).unwrap())
+                rows_only(source.view(&rows, &rows_sorted(spec.clone())).unwrap())
             }
             Op::Filter(k) => {
                 keep = k;
@@ -175,12 +186,12 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
                 }
                 let row = row % rows.len();
                 rows[row][col] = value;
-                source.changed(&rows, row, Key(col as u64))
+                rows_only(source.changed(&rows, row, Key(col as u64)))
             }
             Op::Replace(records) => {
                 rows = records;
                 keys = keys.map(|_| fresh(rows.len()));
-                Some(source.replaced(&rows, keys.clone()))
+                rows_only(source.replaced(&rows, keys.clone()))
             }
         };
         let op = match op {

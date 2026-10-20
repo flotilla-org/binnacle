@@ -15,7 +15,19 @@ pub fn model(
     rank: impl Fn(usize, usize) -> (u8, i128),
     keep: impl Fn(usize) -> bool,
 ) -> Vec<usize> {
-    let ranks: Vec<Vec<(u8, i128)>> = (0..rows)
+    model_from((0..rows).collect(), spec, rank, keep)
+}
+
+/// [`model`] from the base order `base` (Logical Indices, all of them, in
+/// the order moves left them) rather than Logical Index order: ties keep
+/// `base`'s order.
+pub fn model_from(
+    base: Vec<usize>,
+    spec: &SortSpec,
+    rank: impl Fn(usize, usize) -> (u8, i128),
+    keep: impl Fn(usize) -> bool,
+) -> Vec<usize> {
+    let ranks: Vec<Vec<(u8, i128)>> = (0..base.len())
         .map(|i| {
             spec.columns()
                 .iter()
@@ -29,7 +41,7 @@ pub fn model(
                 .collect()
         })
         .collect();
-    let mut order: Vec<usize> = (0..rows).collect();
+    let mut order = base;
     order.sort_by_key(|&i| ranks[i].clone());
     order.retain(|&i| keep(i));
     order

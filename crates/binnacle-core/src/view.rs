@@ -710,12 +710,10 @@ impl Grid {
         self.push(Effect::ViewRequested { spec, edit });
     }
 
-    /// A Sort header click on column header `position`: cycles the rows'
-    /// sort by that column. Rows never sort columns.
+    /// A Sort header click on the header of the item at `position` on
+    /// `axis`: cycles the other axis's sort by that item (the rows' by a
+    /// column, the columns' by a row).
     pub(crate) fn sort_click(&mut self, axis: Axis, position: Position, modifiers: Modifiers) {
-        if axis != Axis::Cols {
-            return;
-        }
         let Some(key) = self.axis(axis).measure.key_at(position) else {
             return;
         };

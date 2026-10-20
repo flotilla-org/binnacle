@@ -6,15 +6,19 @@ use binnacle_core::{Axis, ChangeNotice, Key, Located, Position, SortSpec};
 
 use crate::SortKeys;
 
-/// One axis of an In-Memory Table Source: its base Keys, the sorted base
-/// order and keep mask it was given, the Remap built from both, and the lazy
-/// reverse maps that answer `locate`.
+/// One axis of an In-Memory Table Source: its base Keys, the order moves
+/// left, the sorted order and keep mask it was given, the Remap built from
+/// both, and the lazy reverse maps that answer `locate`.
 #[derive(Clone, Debug)]
 struct AxisOrder {
     len: usize,
     /// The Key of each base item; `None` keys items by Logical Index.
     keys: Option<Vec<Key>>,
-    /// Logical Indices in sorted order; `None` is base order.
+    /// Logical Indices in the order moves left them, which a sort starts
+    /// from (so ties keep it) and an empty Sort Spec restores; `None` is
+    /// Logical Index order.
+    base: Option<Vec<u32>>,
+    /// Logical Indices in sorted order; `None` is Logical Index order.
     sorted: Option<Vec<u32>>,
     /// Which base items the filter keeps, by Logical Index; `None` keeps all.
     keep: Option<Vec<bool>>,
@@ -46,6 +50,7 @@ impl AxisOrder {
         AxisOrder {
             len,
             keys: None,
+            base: None,
             sorted: None,
             keep: None,
             unmatched: HashSet::new(),
@@ -67,6 +72,18 @@ impl AxisOrder {
         self.sorted = sorted;
         self.ranks = None;
         self.rebuild();
+    }
+
+    /// Sorts the items by `spec` from the base order, ties keeping it; an
+    /// empty spec restores the base order.
+    fn sort(&mut self, spec: &SortSpec, keys: &[SortKeys<'_>]) {
+        check_sort_keys(spec, keys, self.len);
+        if spec.is_empty() {
+            return self.set_sorted(self.base.clone());
+        }
+        let mut order = (self.base.clone()).unwrap_or_else(|| (0..self.len as u32).collect());
+        order.sort_by(|&a, &b| compare(spec, keys, a, b));
+        self.set_sorted(Some(order));
     }
 
     fn set_keep(&mut self, keep: Option<Vec<bool>>) {
@@ -204,8 +221,11 @@ impl AxisOrder {
             }
             None => assert!(keys.is_empty(), "the items have no host Keys"),
         }
-        let new = (self.len as u32..len as u32).collect();
+        let new: Vec<u32> = (self.len as u32..len as u32).collect();
         self.len = len;
+        if let Some(base) = &mut self.base {
+            base.extend(&new);
+        }
         if let Some(sorted) = &mut self.sorted {
             *sorted = place(sorted, new);
             self.ranks = None;
@@ -239,7 +259,8 @@ impl AxisOrder {
 
     /// Moves the items with `keys`, in that order, to just before the item at
     /// Position `to` in the order before any filter (columns, the only axis
-    /// moved, are never filtered, so that is the current order).
+    /// moved, are never filtered, so that is the current order). The result
+    /// is the new base order: a sort is baked in.
     fn move_items(&mut self, keys: &[Key], to: Position) {
         let mut moving = vec![false; self.len];
         let mut moved = Vec::with_capacity(keys.len());
@@ -249,9 +270,6 @@ impl AxisOrder {
             {
                 moved.push(i);
             }
-        }
-        if moved.is_empty() {
-            return;
         }
         let order: Vec<u32> = match &self.sorted {
             None => (0..self.len as u32).collect(),
@@ -265,7 +283,8 @@ impl AxisOrder {
             .chain(&moved)
             .chain(order[to..].iter().filter(stays))
             .copied()
-            .collect();
+            .collect::<Vec<u32>>();
+        self.base = Some(order.clone());
         self.set_sorted(Some(order));
     }
 
@@ -282,7 +301,7 @@ impl AxisOrder {
     }
 }
 
-/// Compares base rows `a` and `b` by `spec`, as a tuple in spec order.
+/// Compares base items `a` and `b` by `spec`, as a tuple in spec order.
 fn compare(spec: &SortSpec, keys: &[SortKeys<'_>], a: u32, b: u32) -> Ordering {
     spec.columns()
         .iter()
@@ -292,16 +311,16 @@ fn compare(spec: &SortSpec, keys: &[SortKeys<'_>], a: u32, b: u32) -> Ordering {
         .unwrap_or(Ordering::Equal)
 }
 
-/// Checks that `keys` holds one entry per `spec` column, each with one key
-/// per base row of `len`.
+/// Checks that `keys` holds one entry per `spec` item, each with one key
+/// per base item of `len`.
 fn check_sort_keys(spec: &SortSpec, keys: &[SortKeys<'_>], len: usize) {
     assert_eq!(
         keys.len(),
         spec.columns().len(),
-        "one SortKeys per Sort Spec column"
+        "one SortKeys per Sort Spec item"
     );
     for column in keys {
-        assert_eq!(column.len(), len, "one sort key per base row");
+        assert_eq!(column.len(), len, "one sort key per base item");
     }
 }
 
@@ -311,7 +330,8 @@ fn check_sort_keys(spec: &SortSpec, keys: &[SortKeys<'_>], len: usize) {
 #[derive(Clone, Debug)]
 pub struct InMemoryTableSource {
     axes: [AxisOrder; 2],
-    sort: SortSpec,
+    /// Each axis's Sort Spec, as last applied.
+    sorts: [SortSpec; 2],
 }
 
 impl InMemoryTableSource {
@@ -324,7 +344,7 @@ impl InMemoryTableSource {
     pub fn new(rows: usize, cols: usize) -> Self {
         InMemoryTableSource {
             axes: [AxisOrder::new(rows), AxisOrder::new(cols)],
-            sort: SortSpec::unsorted(),
+            sorts: [SortSpec::unsorted(), SortSpec::unsorted()],
         }
     }
 
@@ -394,33 +414,34 @@ impl InMemoryTableSource {
     /// column at Position `to` (the count for the end), Positions as they
     /// were before the move: the answer to `MoveRequested` on the columns.
     /// Keys no column has, and repeats, are skipped. Row order is untouched.
+    /// On sorted columns the order shown, move included, becomes the
+    /// columns' base order and their Sort Spec is cleared.
     /// Returns the Change Notice the columns need.
     pub fn move_columns(&mut self, keys: &[Key], to: Position) -> ChangeNotice {
         self.axis_mut(Axis::Cols).move_items(keys, to);
+        self.sorts[Axis::Cols.index()] = SortSpec::unsorted();
         ChangeNotice::Reordered
     }
 
-    /// Sorts the rows by `spec`, with `keys[i]` holding the sort keys of
-    /// `spec.columns()[i]` for every base row. Rows compare as tuples in spec
-    /// order and ties keep base order. An empty spec restores base order.
-    /// Returns the Change Notice the rows need.
+    /// Sorts the items on `axis` by `spec`, which names items of the other
+    /// axis (columns, for the rows), with `keys[i]` holding the sort keys of
+    /// `spec.columns()[i]` for every base item of `axis`. Items compare as
+    /// tuples in spec order and ties keep base order (as moves left it). An
+    /// empty spec restores base order. Returns the Change Notice the axis
+    /// needs.
     ///
     /// # Panics
     ///
-    /// If `keys` does not hold one entry per spec column, or an entry does not
-    /// hold one key per base row.
-    pub fn apply_sort(&mut self, spec: &SortSpec, keys: Vec<SortKeys<'_>>) -> ChangeNotice {
-        let rows = self.axis_mut(Axis::Rows);
-        check_sort_keys(spec, &keys, rows.len);
-        if spec.is_empty() {
-            rows.set_sorted(None);
-            self.sort = SortSpec::unsorted();
-            return ChangeNotice::Reordered;
-        }
-        let mut remap: Vec<u32> = (0..rows.len as u32).collect();
-        remap.sort_by(|&a, &b| compare(spec, &keys, a, b));
-        rows.set_sorted(Some(remap));
-        self.sort = spec.clone();
+    /// If `keys` does not hold one entry per spec item, or an entry does not
+    /// hold one key per base item.
+    pub fn apply_sort(
+        &mut self,
+        axis: Axis,
+        spec: &SortSpec,
+        keys: Vec<SortKeys<'_>>,
+    ) -> ChangeNotice {
+        self.axis_mut(axis).sort(spec, &keys);
+        self.sorts[axis.index()] = spec.clone();
         ChangeNotice::Reordered
     }
 
@@ -494,6 +515,22 @@ impl InMemoryTableSource {
         !self.axis(axis).unmatched.is_empty()
     }
 
+    /// The number of base items on `axis`, kept or not.
+    pub fn base_len(&self, axis: Axis) -> usize {
+        self.axis(axis).len
+    }
+
+    /// The Key of the base item on `axis` with Logical Index `logical`.
+    ///
+    /// # Panics
+    ///
+    /// If there is no such item.
+    pub fn base_key(&self, axis: Axis, logical: usize) -> Key {
+        let order = self.axis(axis);
+        assert!(logical < order.len, "no base item {logical}");
+        order.key(logical as u32)
+    }
+
     /// The number of base rows, kept or not.
     pub fn base_rows(&self) -> usize {
         self.axis(Axis::Rows).len
@@ -525,8 +562,8 @@ impl InMemoryTableSource {
         sort_keys: Vec<SortKeys<'_>>,
         keep: &[bool],
     ) -> ChangeNotice {
-        let spec = &self.sort;
-        let rows = &mut self.axes[0];
+        let spec = &self.sorts[Axis::Rows.index()];
+        let rows = &mut self.axes[Axis::Rows.index()];
         let old = rows.len;
         check_sort_keys(spec, &sort_keys, old + n);
         let before = rows.count();
@@ -577,8 +614,8 @@ impl InMemoryTableSource {
         }
         let filtered = self.axes[0].keep.is_some();
         self.axes[0] = rows;
-        let spec = self.sort.clone();
-        self.apply_sort(&spec, sort_keys);
+        let spec = self.sorts[Axis::Rows.index()].clone();
+        self.apply_sort(Axis::Rows, &spec, sort_keys);
         if filtered {
             self.apply_filter(keep);
         } else {
@@ -587,9 +624,9 @@ impl InMemoryTableSource {
         ChangeNotice::Reset(self.count(Axis::Rows))
     }
 
-    /// The Sort Spec the rows are in, as last applied.
-    pub fn sort_spec(&self) -> &SortSpec {
-        &self.sort
+    /// The Sort Spec `axis` is in, as last applied.
+    pub fn sort_spec(&self, axis: Axis) -> &SortSpec {
+        &self.sorts[axis.index()]
     }
 }
 

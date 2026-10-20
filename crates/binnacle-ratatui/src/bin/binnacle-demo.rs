@@ -310,8 +310,8 @@ impl Live {
             t.load = (t.load + load * 0.2).clamp(0.0, 1.0);
             t.changed = now;
             for col in [Key(1), Key(3)] {
-                if let Some(notice) = self.source.changed(&self.rows, i, col) {
-                    grid.notify(Axis::Rows, notice);
+                for (axis, notice) in self.source.changed(&self.rows, i, col) {
+                    grid.notify(axis, notice);
                 }
             }
         }
@@ -564,8 +564,8 @@ impl Table {
     fn commit(&mut self, grid: &mut Grid, row: Key, text: String) {
         if let Table::Records { rows, source, .. } = self {
             rows[row.0 as usize].name = text;
-            if let Some(notice) = source.edited(rows, row.0 as usize, NAME) {
-                grid.notify(Axis::Rows, notice);
+            for (axis, notice) in source.edited(rows, row.0 as usize, NAME) {
+                grid.notify(axis, notice);
             }
         }
     }

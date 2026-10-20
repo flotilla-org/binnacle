@@ -31,7 +31,7 @@ fn a_filter_round_trip_restores_focus_sizes_and_the_surviving_picks(tc: TestCase
     let mut s = Scenario::new(grid, RecordTable::new(rows, 2, [0]));
     if tc.draw(gs::booleans()) {
         let table = &mut s.source;
-        let notice = table
+        let notices = table
             .source
             .view(
                 &table.rows,
@@ -41,7 +41,7 @@ fn a_filter_round_trip_restores_focus_sizes_and_the_surviving_picks(tc: TestCase
                 ),
             )
             .expect("column 0 sorts");
-        s.input(|g| g.notify(Axis::Rows, notice));
+        s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
     }
     // Every row shows, so any can be picked by a click.
     let all = Viewport::new(20.0, n as f32 + 1.0);

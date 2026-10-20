@@ -1,8 +1,8 @@
 //! Seam 2 properties: the In-Memory Table Source against a naive model of the
 //! spec's sort (tuple comparison in Sort Spec order, ties in base order, nulls
 //! and NaNs last in either direction) and filter (skip the rows the keep mask
-//! drops), over random tables and sequences of sorts, filters and column
-//! moves.
+//! drops), over random tables and sequences of sorts of either axis, filters
+//! and column moves.
 
 mod support;
 
@@ -20,6 +20,9 @@ const MAX_ROWS: usize = 60;
 
 /// Most columns a drawn table has, of which at most four have sort keys.
 const MAX_COLS: usize = 40;
+
+/// Most rows with sort keys for the columns.
+const MAX_SORTING_ROWS: usize = 4;
 
 /// One column of host data, as the host would extract it for sorting.
 #[derive(Clone, Debug)]
@@ -41,14 +44,16 @@ impl Values {
     }
 }
 
-/// A drawn table. Sort Specs name the columns with sort keys by Logical
-/// Index, whatever Keys the columns have: the source never reads a spec's
+/// A drawn table. Sort Specs name the columns (or rows) with sort keys by
+/// Logical Index, whatever Keys they have: the source never reads a spec's
 /// Keys, only the sort keys handed over with it.
 #[derive(Clone, Debug)]
 struct Table {
     rows: usize,
-    /// The sort keys of the first columns.
+    /// The sort keys of the first columns, one per row.
     columns: Vec<Values>,
+    /// The sort keys of the first rows, one per column.
+    by_rows: Vec<Values>,
     /// How many columns there are, `columns` and the rest.
     width: usize,
     /// Host-supplied row Keys, or `None` for Logical Indices.
@@ -83,50 +88,74 @@ impl Table {
         }
     }
 
-    fn apply(&self, source: &mut InMemoryTableSource, spec: &SortSpec) -> ChangeNotice {
+    /// Sorts `axis` by `spec`, handing over the sort keys of the items it
+    /// names.
+    fn apply(&self, source: &mut InMemoryTableSource, axis: Axis, spec: &SortSpec) -> ChangeNotice {
+        let by = match axis {
+            Axis::Rows => &self.columns,
+            Axis::Cols => &self.by_rows,
+        };
         let keys = spec
             .columns()
             .iter()
-            .map(|c| self.columns[c.key.0 as usize].sort_keys())
+            .map(|c| by[c.key.0 as usize].sort_keys())
             .collect();
-        source.apply_sort(spec, keys)
+        source.apply_sort(axis, spec, keys)
     }
 
     /// The model's rows as Logical Indices: sorted by `state.spec`, then the
     /// rows `state.keep` drops skipped.
     fn kept(&self, state: &State) -> Vec<usize> {
         let keep = |i: usize| state.keep.as_ref().is_none_or(|k| k[i]);
-        support::model(self.rows, &state.spec, |c, i| self.rank(c, i), keep)
+        support::model(
+            self.rows,
+            &state.spec,
+            |c, i| rank(&self.columns[c], i),
+            keep,
+        )
     }
 
     /// The model's rows in sorted order as Logical Indices.
     fn sorted(&self, spec: &SortSpec) -> Vec<usize> {
-        support::model(self.rows, spec, |c, i| self.rank(c, i), |_| true)
+        support::model(self.rows, spec, |c, i| rank(&self.columns[c], i), |_| true)
     }
 
-    /// Class 0 for a value, 1 for NaN, 2 for null; values rank by magnitude.
-    fn rank(&self, column: usize, i: usize) -> (u8, i128) {
-        match &self.columns[column] {
-            Values::I64(v) => v[i].map_or((2, 0), |x| (0, x as i128)),
-            Values::F64(v) => match v[i] {
-                None => (2, 0),
-                Some(x) if x.is_nan() => (1, 0),
-                // IEEE bits reordered so integer order is total float order.
-                Some(x) => {
-                    let bits = x.to_bits() as i64;
-                    (0, (bits ^ (((bits >> 63) as u64) >> 1) as i64) as i128)
-                }
-            },
-            Values::Bytes(v) => match &v[i] {
-                None => (2, 0),
-                Some(b) => {
-                    let mut distinct: Vec<&Vec<u8>> = v.iter().flatten().collect();
-                    distinct.sort();
-                    distinct.dedup();
-                    (0, distinct.binary_search(&b).unwrap() as i128)
-                }
-            },
-        }
+    /// The model's columns as Keys: the order the moves left, sorted by
+    /// `state.col_spec`.
+    fn shown_columns(&self, state: &State) -> Vec<Key> {
+        let keys = self.col_keys();
+        let base = (state.columns.iter())
+            .map(|k| keys.iter().position(|c| c == k).unwrap())
+            .collect();
+        let rank = |r: usize, i: usize| rank(&self.by_rows[r], i);
+        (support::model_from(base, &state.col_spec, rank, |_| true).into_iter())
+            .map(|i| keys[i])
+            .collect()
+    }
+}
+
+/// Class 0 for a value, 1 for NaN, 2 for null; values rank by magnitude.
+fn rank(values: &Values, i: usize) -> (u8, i128) {
+    match values {
+        Values::I64(v) => v[i].map_or((2, 0), |x| (0, x as i128)),
+        Values::F64(v) => match v[i] {
+            None => (2, 0),
+            Some(x) if x.is_nan() => (1, 0),
+            // IEEE bits reordered so integer order is total float order.
+            Some(x) => {
+                let bits = x.to_bits() as i64;
+                (0, (bits ^ (((bits >> 63) as u64) >> 1) as i64) as i128)
+            }
+        },
+        Values::Bytes(v) => match &v[i] {
+            None => (2, 0),
+            Some(b) => {
+                let mut distinct: Vec<&Vec<u8>> = v.iter().flatten().collect();
+                distinct.sort();
+                distinct.dedup();
+                (0, distinct.binary_search(&b).unwrap() as i128)
+            }
+        },
     }
 }
 
@@ -178,6 +207,8 @@ fn table(tc: &TestCase) -> Table {
     let sortable = tc.draw(gs::integers::<usize>().max_value(4));
     let columns: Vec<Values> = (0..sortable).map(|_| tc.draw(values(rows))).collect();
     let width = sortable + tc.draw(gs::integers::<usize>().max_value(MAX_COLS - sortable));
+    let sorting = tc.draw(gs::integers::<usize>().max_value(rows.min(MAX_SORTING_ROWS)));
+    let by_rows = (0..sorting).map(|_| tc.draw(values(width))).collect();
     let keys = |n| {
         gs::optional(
             gs::vecs(gs::integers::<u64>())
@@ -189,6 +220,7 @@ fn table(tc: &TestCase) -> Table {
     Table {
         rows,
         columns,
+        by_rows,
         width,
         keys: tc.draw(keys(rows)),
         col_keys: tc.draw(keys(width)),
@@ -262,18 +294,22 @@ fn moved(order: &[Key], keys: &[Key], to: u64) -> Vec<Key> {
     out
 }
 
-/// What the source was last told: the Sort Spec and keep mask in force, and
-/// the column order the moves so far make.
+/// What the source was last told: the rows' Sort Spec and keep mask in
+/// force, the columns' Sort Spec, and the column order the moves so far make
+/// before that sort.
 #[derive(Clone, Debug, Default)]
 struct State {
     spec: SortSpec,
     keep: Option<Vec<bool>>,
+    col_spec: SortSpec,
     columns: Vec<Key>,
 }
 
 #[derive(Clone, Debug)]
 enum Op {
     Sort(SortSpec),
+    /// A sort of the columns by the rows with sort keys.
+    SortColumns(SortSpec),
     /// A keep mask, or `None` to clear the filter.
     Filter(Option<Vec<bool>>),
     /// A column move: Keys and a drop Position.
@@ -282,8 +318,9 @@ enum Op {
 
 #[hegel::composite]
 fn op(tc: &TestCase, table: Table) -> Op {
-    match tc.draw(gs::integers::<u8>().max_value(2)) {
+    match tc.draw(gs::integers::<u8>().max_value(3)) {
         0 => return Op::Sort(tc.draw(spec(table.columns.len()))),
+        3 => return Op::SortColumns(tc.draw(spec(table.by_rows.len()))),
         1 => {
             let (keys, to) = tc.draw(column_move(table.clone()));
             return Op::Move(keys, to);
@@ -302,7 +339,7 @@ fn op(tc: &TestCase, table: Table) -> Op {
 /// each and hands `check` the table, the source and the state it left (the
 /// first call sees the fresh source). Asserts the Change Notice each op
 /// returns: `Reordered` for a sort or move, `Refiltered` with the new count for a
-/// filter.
+/// filter. A move bakes the columns' sort into their order and clears it.
 fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTableSource, &State)) {
     let table = tc.draw(table());
     let mut source = table.source();
@@ -315,7 +352,12 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTabl
         match op {
             Op::Sort(spec) => {
                 state.spec = spec;
-                let notice = table.apply(&mut source, &state.spec);
+                let notice = table.apply(&mut source, Axis::Rows, &state.spec);
+                assert_eq!(notice, ChangeNotice::Reordered);
+            }
+            Op::SortColumns(spec) => {
+                state.col_spec = spec;
+                let notice = table.apply(&mut source, Axis::Cols, &state.col_spec);
                 assert_eq!(notice, ChangeNotice::Reordered);
             }
             Op::Filter(keep) => {
@@ -330,9 +372,12 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&TestCase, &Table, &mut InMemoryTabl
             Op::Move(keys, to) => {
                 let notice = source.move_columns(&keys, to);
                 assert_eq!(notice, ChangeNotice::Reordered);
-                state.columns = moved(&state.columns, &keys, to);
+                state.columns = moved(&table.shown_columns(&state), &keys, to);
+                state.col_spec = SortSpec::unsorted();
             }
         }
+        assert_eq!(source.sort_spec(Axis::Rows), &state.spec);
+        assert_eq!(source.sort_spec(Axis::Cols), &state.col_spec);
         check(tc, &table, &mut source, &state);
     }
 }
@@ -408,12 +453,13 @@ fn a_filtered_out_row_is_gone_suggesting_the_nearest_survivor_in_sort_order(tc: 
     });
 }
 
-/// The column order through moves of any Keys to any Position, mixed with
-/// sorts and filters, which leave it alone.
+/// The column order through moves of any Keys to any Position and sorts
+/// of the columns, mixed with the rows' sorts and filters, which leave it
+/// alone.
 #[hegel::test(test_cases = 1000)]
 fn columns_match_the_model(tc: TestCase) {
-    ops(&tc, |tc, _, source, state| {
-        let columns = state.columns.as_slice();
+    ops(&tc, |tc, table, source, state| {
+        let columns = &table.shown_columns(state)[..];
         assert_eq!(source.count(Axis::Cols), columns.len() as u64);
         assert_eq!(source.window(Axis::Cols, 0..u64::MAX), columns);
         let range = tc.draw(range());

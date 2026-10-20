@@ -5,7 +5,8 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, FilterSpec, FindDirection, FindMatch, FindQuery, Grid,
-    Key, Searched, SortColumn, SortSpec, TextQuery, ViewSpec, Viewport,
+    HeaderClick, HeaderSort, Key, Modifiers, Searched, Snapshot, SortColumn, SortSpec, TextQuery,
+    ViewSpec, Viewport,
 };
 use binnacle_testkit::{
     ColumnMajorTable, PumpSource, Record, RecordTable, Scenario, ScenarioSource,
@@ -73,8 +74,8 @@ fn edits_appends_and_replacements_reach_the_columns() {
     assert_eq!(s.source.records()[6], vec![Some(1), Some(60), Some(7)]);
     s.source.edit(6, 2, Some(8));
     assert_eq!(s.source.records()[6][2], Some(8));
-    let notice = s.source.replace(vec![vec![None, None, None]; 2]);
-    s.input(|g| g.notify(Axis::Cols, notice));
+    let notices = s.source.replace(vec![vec![None, None, None]; 2]);
+    s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
     assert_eq!(s.frame(V).count(Axis::Cols), 2);
 }
 
@@ -226,4 +227,66 @@ fn find_steps_through_the_column_major_table_as_through_the_row_major_one_on_its
         .map(|m| FindMatch::new(m.col, m.row))
         .collect();
     assert_eq!(row_major, turned);
+}
+
+#[hegel::test(test_cases = 200)]
+fn row_header_clicks_sort_the_column_major_table_as_column_header_clicks_sort_it_upright(
+    tc: TestCase,
+) {
+    let (records, fields) = tc.draw(table());
+    let field = gs::integers::<u64>().max_value(fields as u64 - 1);
+    let clicks = tc.draw(gs::vecs(hegel::tuples!(field, gs::booleans())).max_size(6));
+    let n = records.len() as u64;
+    let all: Vec<u64> = (0..fields as u64).collect();
+    // Items 2 wide and 1 high, and header bands to match, so a header's
+    // middle is easy to find.
+    let mut rows = Scenario::new(
+        Grid::new(
+            AxisConfig::new(n, 1.0).header(1.0),
+            AxisConfig::new(fields as u64, 2.0).header(2.0),
+        ),
+        RecordTable::new(records.clone(), fields, all.clone()),
+    );
+    let mut cols = Scenario::new(
+        Grid::new(
+            AxisConfig::new(fields as u64, 1.0).header(1.0),
+            AxisConfig::new(n, 2.0).header(2.0),
+        ),
+        ColumnMajorTable::new(records, fields, all),
+    );
+    cols.input(|g| {
+        g.set_header_click(Axis::Rows, HeaderClick::Sort);
+        g.set_header_click(Axis::Cols, HeaderClick::Select);
+    });
+    let screen = Viewport::new(1000.0, 1000.0);
+    rows.frame(screen);
+    cols.frame(screen);
+    for (f, shift) in clicks {
+        let modifiers = if shift {
+            Modifiers::SHIFT
+        } else {
+            Modifiers::NONE
+        };
+        rows.click(2.0 + 2.0 * f as f32 + 1.0, 0.5, modifiers);
+        cols.click(1.0, 1.0 + f as f32 + 0.5, modifiers);
+        rows.frame(screen);
+        cols.frame(screen);
+    }
+    let order = |s: Snapshot<'_>, axis| -> Vec<Option<Key>> {
+        s.strip(axis).iter().map(|i| i.key).collect()
+    };
+    let row_major = order(rows.frame(screen), Axis::Rows);
+    let column_major = order(cols.frame(screen), Axis::Cols);
+    assert_eq!(row_major, column_major);
+    assert_eq!(
+        rows.grid.snapshot().applied_view().rows.sort,
+        cols.grid.snapshot().applied_view().cols.sort
+    );
+    // The fields' headers show the sort the records' headers do upright.
+    let marks =
+        |s: Snapshot<'_>, axis| -> Vec<HeaderSort> { s.headers(axis).map(|h| h.sort).collect() };
+    assert_eq!(
+        marks(rows.frame(screen), Axis::Cols),
+        marks(cols.frame(screen), Axis::Rows)
+    );
 }

@@ -100,7 +100,7 @@ impl WebMemory {
         let staged = std::mem::take(&mut self.staged);
         let keys = staged.iter().map(Staged::keys).collect();
         self.table
-            .apply_sort(&codes::sort_spec(cols, directions), keys);
+            .apply_sort(Axis::Rows, &codes::sort_spec(cols, directions), keys);
     }
 
     /// Keeps the base rows with `keep[i] != 0`; returns the new row count

@@ -183,8 +183,8 @@ fn down() -> Action {
 /// `Locate` it queues unanswered.
 fn sort_behind_the_grid(s: &mut Scenario<RecordTable>) {
     let spec = rows_sorted(vec![SortColumn::ascending(Key(0))]);
-    let notice = s.source.source.view(&s.source.rows, &spec).unwrap();
-    s.input(|g| g.notify(Axis::Rows, notice));
+    let notices = s.source.source.view(&s.source.rows, &spec).unwrap();
+    s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
 }
 
 #[test]
@@ -287,9 +287,9 @@ fn only_the_answer_to_the_latest_locate_places_the_focus() {
         })
     );
     let descending = rows_sorted(vec![SortColumn::descending(Key(0))]);
-    let notice = s.source.source.view(&s.source.rows, &descending).unwrap();
+    let notices = s.source.source.view(&s.source.rows, &descending).unwrap();
     s.input(|g| {
-        g.notify(Axis::Rows, notice);
+        notices.into_iter().for_each(|(axis, n)| g.notify(axis, n));
         g.located(Axis::Rows, Key(1), binnacle_core::Located::Found(2));
     });
     let snap = s.frame(V);
@@ -427,16 +427,73 @@ fn a_click_discards_a_focus_move_waiting_for_located_and_scrolls_nothing() {
     assert_eq!(snap.focus_rect(), None);
 }
 
+/// A View Spec sorting the columns by `rows`.
+fn cols_sorted(rows: Vec<SortColumn>) -> ViewSpec {
+    ViewSpec::default().with_sort(Axis::Cols, SortSpec::new(rows))
+}
+
 #[test]
-fn a_sort_click_on_a_row_header_does_nothing() {
+fn a_sort_click_on_a_row_header_cycles_the_columns_sort_as_a_column_header_does_the_rows() {
+    let mut s = table();
+    s.input(|g| g.set_header_click(Axis::Rows, binnacle_core::HeaderClick::Sort));
+    s.frame(V);
+    let (asc, desc) = (SortColumn::ascending, SortColumn::descending);
+    // Row Position p's header is at y 1 + p.
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        s.click(1.0, 2.5, Modifiers::NONE);
+        seen.extend(requested(&mut s));
+    }
+    s.click(1.0, 2.5, Modifiers::NONE);
+    s.click(1.0, 4.5, Modifiers::SHIFT);
+    seen.extend(requested(&mut s));
+    assert_eq!(
+        seen,
+        vec![
+            cols_sorted(vec![asc(Key(1))]),
+            cols_sorted(vec![desc(Key(1))]),
+            cols_sorted(vec![]),
+            cols_sorted(vec![asc(Key(1))]),
+            cols_sorted(vec![asc(Key(1)), asc(Key(3))]),
+        ]
+    );
+    // A sort click selects nothing.
+    assert_eq!(s.frame(V).focus(Axis::Rows), None);
+    // Nor does it ask for a sort the source does not support.
+    s.input(|g| g.set_support(Axis::Cols, Key(0), Support::default().with_sort(false)));
+    s.click(1.0, 1.5, Modifiers::NONE);
+    assert_eq!(requested(&mut s), vec![]);
+}
+
+#[test]
+fn a_row_header_shows_the_columns_sort_pending_until_answered() {
     let mut s = table();
     s.input(|g| g.set_header_click(Axis::Rows, binnacle_core::HeaderClick::Sort));
     s.frame(V);
     s.click(1.0, 2.5, Modifiers::NONE);
-    assert_eq!(s.pump(), vec![]);
-    let snap = s.frame(V);
-    assert_eq!(snap.requested_view(), None);
-    assert_eq!(snap.focus(Axis::Rows), None);
+    // Snapshots without pumping, so the request stays unanswered.
+    let sorts = |s: &mut Scenario<_>| -> Vec<HeaderSort> {
+        let snap = s.grid.snapshot();
+        snap.headers(Axis::Rows).map(|h| h.sort).collect()
+    };
+    let pending = HeaderSort {
+        applied: None,
+        pending: true,
+    };
+    assert_eq!(
+        sorts(&mut s)[..3],
+        [HeaderSort::default(), pending, HeaderSort::default()]
+    );
+    let spec = requested(&mut s).pop().unwrap();
+    s.input(|g| g.view_applied(spec, Totals::unknown()));
+    let applied = HeaderSort {
+        applied: Some((SortDirection::Ascending, 0)),
+        pending: false,
+    };
+    assert_eq!(
+        sorts(&mut s)[..3],
+        [HeaderSort::default(), applied, HeaderSort::default()]
+    );
 }
 
 /// One row over three columns 4 wide with Gap 1 behind a row header 3 wide,

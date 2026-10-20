@@ -18,7 +18,8 @@ fn an_empty_table_moves_and_sorts_nothing() {
     let mut source = InMemoryTableSource::new(0, 0);
     source.move_columns(&keys(&[0]), 0);
     source.move_columns(&keys(&[0]), 1);
-    source.apply_sort(&SortSpec::unsorted(), vec![]);
+    source.apply_sort(Axis::Rows, &SortSpec::unsorted(), vec![]);
+    source.apply_sort(Axis::Cols, &SortSpec::unsorted(), vec![]);
     assert_eq!(columns(&source), keys(&[]));
     assert_eq!(source.window(Axis::Rows, 0..u64::MAX), keys(&[]));
     assert_eq!(
