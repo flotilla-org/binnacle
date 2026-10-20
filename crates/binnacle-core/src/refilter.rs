@@ -32,8 +32,8 @@ struct Shown {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Refiltering {
     shown: [Option<Shown>; 2],
-    /// Picked row Keys not yet known to be still there.
-    picks: Vec<Asked>,
+    /// Per axis, picked Keys not yet known to be still there.
+    picks: [Vec<Asked>; 2],
 }
 
 impl Grid {
@@ -60,25 +60,21 @@ impl Grid {
                 .map(|key| (key, st.anchor.offset)),
         });
         self.refiltering.shown[i] = Some(shown);
-        if axis == Axis::Rows {
-            let tracked: Vec<Key> = self.refiltering.picks.iter().map(|a| a.key).collect();
-            for &key in &self.selection.picks {
-                if !tracked.contains(&key) {
-                    self.refiltering.picks.push(Asked {
-                        key,
-                        due: 0,
-                        at: None,
-                    });
-                }
+        let tracked: Vec<Key> = self.refiltering.picks[i].iter().map(|a| a.key).collect();
+        for &key in &self.selection.picks[i] {
+            if !tracked.contains(&key) {
+                self.refiltering.picks[i].push(Asked {
+                    key,
+                    due: 0,
+                    at: None,
+                });
             }
         }
-        self.reordered_or_counted(axis, Some(count), false);
+        self.reordered_or_counted(axis, Some(count));
         if count == 0 {
-            if axis == Axis::Rows {
-                self.refiltering.picks.clear();
-                for key in self.selection.picks.clone() {
-                    self.unpick(key);
-                }
+            self.refiltering.picks[i].clear();
+            for key in self.selection.picks[i].clone() {
+                self.unpick(axis, key);
             }
             self.refiltering.shown[i] = None;
             self.axis_mut(axis).clamp_anchor();
@@ -92,29 +88,21 @@ impl Grid {
     pub(crate) fn refilter_reask(&mut self, axis: Axis) {
         let i = axis.index();
         let mut shown = self.refiltering.shown[i].take();
-        let mut picks = if axis == Axis::Rows {
-            std::mem::take(&mut self.refiltering.picks)
-        } else {
-            Vec::new()
-        };
+        let mut picks = std::mem::take(&mut self.refiltering.picks[i]);
         let asked = shown.iter_mut().flat_map(|s| s.asked.iter_mut());
         for a in asked.chain(picks.iter_mut()) {
             a.at = None;
             a.due = self.request_locate(axis, a.key, a.due);
         }
         self.refiltering.shown[i] = shown;
-        if axis == Axis::Rows {
-            self.refiltering.picks = picks;
-        }
+        self.refiltering.picks[i] = picks;
     }
 
     /// A `Reset` on `axis` makes no promise about Keys: nothing waits on a
     /// `Refiltered` there any more.
     pub(crate) fn refilter_forget(&mut self, axis: Axis) {
         self.refiltering.shown[axis.index()] = None;
-        if axis == Axis::Rows {
-            self.refiltering.picks.clear();
-        }
+        self.refiltering.picks[axis.index()].clear();
     }
 
     /// The host scrolled `axis`: a `Refiltered` no longer moves its view.
@@ -142,18 +130,15 @@ impl Grid {
                 answered(a);
             });
         }
-        if axis != Axis::Rows {
-            return;
-        }
-        let Some(n) = self.refiltering.picks.iter().position(|a| a.key == key) else {
+        let Some(n) = self.refiltering.picks[i].iter().position(|a| a.key == key) else {
             return;
         };
-        if !answered(&mut self.refiltering.picks[n]) {
+        if !answered(&mut self.refiltering.picks[i][n]) {
             return;
         }
-        self.refiltering.picks.remove(n);
+        self.refiltering.picks[i].remove(n);
         if at.is_none() {
-            self.unpick(key);
+            self.unpick(axis, key);
         }
     }
 
@@ -197,13 +182,14 @@ impl Grid {
         }
     }
 
-    /// Drops `key` from the picks, and from those a press would restore.
-    fn unpick(&mut self, key: Key) {
-        if self.selection.picked(key) {
+    /// Drops `key` from the picks of `axis`, and from those a press would
+    /// restore.
+    fn unpick(&mut self, axis: Axis, key: Key) {
+        if self.selection.picked(axis, key) {
             let mut selection = self.selection.clone();
-            selection.toggle_pick(key);
+            selection.unpick(axis, key);
             self.set_selection(selection);
         }
-        self.forget_pick_before(key);
+        self.forget_pick_before(axis, key);
     }
 }

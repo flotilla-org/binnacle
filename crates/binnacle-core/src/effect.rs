@@ -106,6 +106,8 @@ pub enum Action {
     SelectAll,
     /// Selects every row of the range's columns, or of the focused column.
     SelectColumn,
+    /// Selects every column of the range's rows, or of the focused row.
+    SelectRow,
     /// Ends the gesture in progress and restores the state from before it:
     /// focus and selection, or the size of an item or band being resized.
     Cancel,

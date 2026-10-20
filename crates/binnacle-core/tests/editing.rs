@@ -447,7 +447,7 @@ fn a_drag_cancelled_after_its_pick_was_filtered_out_does_not_restore_the_pick() 
     let snap = s.frame(TALL);
     assert_eq!(snap.mode(), Mode::Idle);
     assert_eq!(
-        snap.picked(),
+        snap.picked(Axis::Rows),
         &[] as &[Key],
         "record 3 left while the drag was held"
     );

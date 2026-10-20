@@ -17,7 +17,8 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// adds `focus row,col` (each `position#key`) and its rect to the summary, and
 /// marks the focused cell `*rowkey.colkey`; `locating axis` while its new
 /// Position is awaited. A range adds `range rows x cols`
-/// (half-open Positions), picks add `picks` (row Keys), and either adds the
+/// (half-open Positions), picks add `picks` (row Keys) and `picks cols`
+/// (column Keys), and any of these adds the
 /// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
 /// its Mode and `capturing`, an edit its Mode and `editor x,y wxh` (the
 /// edited cell is marked `=`, before focus), a hovered header `hover axis position`, a resize
@@ -116,9 +117,11 @@ fn summary(snap: &Snapshot) -> String {
     if let Some(r) = snap.selection_range() {
         let _ = write!(out, " | range {:?} x {:?}", r.rows, r.cols);
     }
-    if !snap.picked().is_empty() {
-        let keys: Vec<String> = snap.picked().iter().map(|k| k.0.to_string()).collect();
-        let _ = write!(out, " | picks {}", keys.join(","));
+    for (axis, label) in [(Axis::Rows, "picks"), (Axis::Cols, "picks cols")] {
+        if !snap.picked(axis).is_empty() {
+            let keys: Vec<String> = snap.picked(axis).iter().map(|k| k.0.to_string()).collect();
+            let _ = write!(out, " | {label} {}", keys.join(","));
+        }
     }
     for f in snap.selection_rects() {
         let _ = write!(out, " | fill {},{} {}x{}", f.x, f.y, f.width, f.height);

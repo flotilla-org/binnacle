@@ -1,0 +1,47 @@
+---
+source: crates/binnacle-core/tests/parity.rs
+expression: out
+---
+--- 1. select row with nothing focused: nothing
+window Rows 0..6
+window Cols 0..5
+gen 2 | damage none
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    1.1    1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 2. focus row 1, column 1 and select row: row 1
+effect (gen 2): FocusChanged { row: Key(1), col: Key(1) }
+effect (gen 2): SelectionChanged
+gen 3 | damage selection | focus 1#1,1#1 at 11,2 6x1 | range 1..2 x 0..5 | fill 4,2 27x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   +1.0   *1.1   +1.2   +
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 3. shift-click row 3, column 2 and select row: rows 1 to 3
+effect (gen 3): FocusChanged { row: Key(3), col: Key(2) }
+effect (gen 3): SelectionChanged
+gen 4 | damage selection | focus 3#3,2#2 at 18,4 6x1 | range 1..4 x 0..5 | fill 4,2 27x3
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   +1.0   +1.1   +1.2   +
+2   +2.0   +2.1   +2.2   +
+3   +3.0   +3.1   *3.2   +
+--- 4. select column: the range spans every column, so the focused one
+effect (gen 4): SelectionChanged
+gen 5 | damage selection | focus 3#3,2#2 at 18,4 6x1 | range 0..20 x 2..3 | fill 18,1 6x4
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    +0.2   0
+1   1.0    1.1    +1.2   1
+2   2.0    2.1    +2.2   2
+3   3.0    3.1    *3.2   3

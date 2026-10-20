@@ -343,7 +343,7 @@ fn picks_hold_only_keys_the_source_still_has_when_their_rows_were_seen_leaving(t
             // Keep the whole axis in the Window between inputs.
             host.frame();
         }
-        let picks = host.s.grid.snapshot().picked().to_vec();
+        let picks = host.s.grid.snapshot().picked(Axis::Rows).to_vec();
         let rows: &Vec<Key> = &host.s.source.axes[0];
         for k in picks {
             assert!(rows.contains(&k), "{k:?} picked after it left");

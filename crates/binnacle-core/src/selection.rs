@@ -11,19 +11,22 @@ pub enum SelectionUnit {
     Cells,
     /// The cell's whole row.
     Rows,
+    /// The cell's whole column.
+    Cols,
 }
 
 /// What clicking the header of an item on an axis does (the per-axis
 /// `header_click` setting). Row headers default to [`HeaderClick::Select`],
-/// column headers to [`HeaderClick::Sort`].
+/// column headers to [`HeaderClick::Sort`]. Under either, Ctrl/Cmd toggles
+/// the item's pick instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HeaderClick {
     /// Cycles the other axis's sort by the item: a column header's the
     /// rows', a row header's the columns'. Shift adds the item to the sort.
     Sort,
-    /// Selects the whole row or column; Shift extends, Ctrl/Cmd on a row
-    /// header toggles the row's pick.
+    /// Selects the whole row or column; Shift extends.
     Select,
+    /// Nothing, picks included.
     None,
 }
 
@@ -81,25 +84,32 @@ impl Span {
     }
 }
 
-/// v1 selection: the one contiguous range and the picked row Keys (sorted,
-/// so lookups are a binary search). Focus is kept beside it in the Grid.
+/// v1 selection: the one contiguous range and the picked Keys of each axis
+/// (sorted, so lookups are a binary search). Focus is kept beside it in the
+/// Grid.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Selection {
     pub span: Option<Span>,
-    pub picks: Vec<Key>,
+    pub picks: [Vec<Key>; 2],
 }
 
 impl Selection {
-    pub fn picked(&self, key: Key) -> bool {
-        self.picks.binary_search(&key).is_ok()
+    pub fn picked(&self, axis: Axis, key: Key) -> bool {
+        self.picks[axis.index()].binary_search(&key).is_ok()
     }
 
-    pub fn toggle_pick(&mut self, key: Key) {
-        match self.picks.binary_search(&key) {
+    pub fn toggle_pick(&mut self, axis: Axis, key: Key) {
+        let picks = &mut self.picks[axis.index()];
+        match picks.binary_search(&key) {
             Ok(i) => {
-                self.picks.remove(i);
+                picks.remove(i);
             }
-            Err(i) => self.picks.insert(i, key),
+            Err(i) => picks.insert(i, key),
         }
+    }
+
+    /// Drops `key` from the picks of `axis`, if it is there.
+    pub fn unpick(&mut self, axis: Axis, key: Key) {
+        self.picks[axis.index()].retain(|&k| k != key);
     }
 }

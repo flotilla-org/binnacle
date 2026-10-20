@@ -33,7 +33,7 @@ pub struct Dump {
     hovered_header: Option<DumpHovered>,
     selection_range: Option<DumpRange>,
     selection_rects: Vec<DumpRect>,
-    picked: Vec<u64>,
+    picked: DumpPicked,
     moving_keys: Vec<u64>,
     applied_view: WireViewSpec,
     requested_view: Option<WireViewSpec>,
@@ -42,6 +42,12 @@ pub struct Dump {
     find_match: Option<WireFindMatch>,
     find_support: Option<DumpTextSupport>,
     cells: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct DumpPicked {
+    rows: Vec<u64>,
+    cols: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -406,7 +412,10 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
             },
         }),
         selection_rects: s.selection_rects().iter().map(|r| (*r).into()).collect(),
-        picked: keys(s.picked()),
+        picked: DumpPicked {
+            rows: keys(s.picked(Axis::Rows)),
+            cols: keys(s.picked(Axis::Cols)),
+        },
         moving_keys: keys(s.moving_keys()),
         applied_view: s.applied_view().into(),
         requested_view: s.requested_view().map(WireViewSpec::from),
@@ -625,6 +634,10 @@ pub fn scenario(name: &str) -> Grid {
             let y = 24.0 + 21.0 * 5.0 + 5.0;
             grid.pointer(PointerEvent::down(10.0, y).modifiers(Modifiers::CTRL));
             grid.pointer(PointerEvent::up(10.0, y).modifiers(Modifiers::CTRL));
+            // Ctrl-click on column 2's header picks it.
+            let x = 40.0 + 81.0 * 2.0 + 40.0;
+            grid.pointer(PointerEvent::down(x, 10.0).modifiers(Modifiers::CTRL));
+            grid.pointer(PointerEvent::up(x, 10.0).modifiers(Modifiers::CTRL));
             grid.pointer(PointerEvent::moved(220.0, 10.0));
             grid.set_size(Axis::Cols, key(3), 120.0);
         }
@@ -780,7 +793,8 @@ mod tests {
             match name {
                 "busy" => {
                     assert!(s.selection_range().is_some());
-                    assert_eq!(s.picked().len(), 1);
+                    assert_eq!(s.picked(Axis::Rows).len(), 1);
+                    assert_eq!(s.picked(Axis::Cols).len(), 1);
                     assert!(s.requested_view().is_some());
                     assert!(s.hovered_header().is_some());
                 }

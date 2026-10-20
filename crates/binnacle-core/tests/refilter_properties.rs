@@ -66,7 +66,7 @@ fn a_filter_round_trip_restores_focus_sizes_and_the_surviving_picks(tc: TestCase
     let height = tc.draw(gs::integers::<u32>().min_value(2).max_value(12)) as f32;
     let view = Viewport::new(20.0, height);
     s.frame(view);
-    let picked = s.grid.snapshot().picked().to_vec();
+    let picked = s.grid.snapshot().picked(Axis::Rows).to_vec();
     let overrides: Vec<Option<f32>> = (0..n)
         .map(|k| s.grid.size_override(Axis::Rows, Key(k)))
         .collect();
@@ -88,14 +88,22 @@ fn a_filter_round_trip_restores_focus_sizes_and_the_surviving_picks(tc: TestCase
         .copied()
         .filter(|k| keep[k.0 as usize])
         .collect();
-    assert_eq!(s.grid.snapshot().picked(), surviving, "picks once filtered");
+    assert_eq!(
+        s.grid.snapshot().picked(Axis::Rows),
+        surviving,
+        "picks once filtered"
+    );
 
     let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     s.frame(view);
     let snap = s.grid.snapshot();
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(focus));
-    assert_eq!(snap.picked(), surviving, "picks after the round trip");
+    assert_eq!(
+        snap.picked(Axis::Rows),
+        surviving,
+        "picks after the round trip"
+    );
     for k in 0..n {
         assert_eq!(
             s.grid.size_override(Axis::Rows, Key(k)),

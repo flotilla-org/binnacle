@@ -111,12 +111,18 @@
 //!
 //! The wheel scrolls, and so do the scrollbars: one down the right edge and,
 //! when the columns overflow, one along the bottom. Click a track to page;
-//! drag a thumb. The adapter's default keymap moves focus (arrows,
-//! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
-//! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
-//! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
-//! Ctrl+R cycles the crew filter. Click to focus, Shift-click or drag to select,
-//! Ctrl-click to pick rows, click a row number to select its row. Drag a
+//! drag a thumb. The adapter's keymap moves focus (arrows, PageUp and
+//! PageDown, Alt+PageUp and Alt+PageDown a page of columns, Home and End the
+//! first and last row, Ctrl with an arrow; Shift extends the selection) and
+//! the view follows it; Ctrl+A selects all, Ctrl+Space the column and
+//! Shift+Space the row (`V` too in the modes and bare keys presets, since few
+//! terminals report Shift with Space), Esc cancels a drag or a resize;
+//! Ctrl+G scrolls to the middle and Ctrl+R cycles the crew filter. Click to
+//! focus, Shift-click or drag to select, Ctrl-click a cell to pick its row
+//! and Ctrl-click a header to pick its row or column, click a row number to
+//! select its row. Alt+U cycles what a click selects: the cell, its row or
+//! its column (where Ctrl-click on a cell picks the column). The status line
+//! counts the picks on each axis. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to what it draws. The bottom
 //! line shows the gesture in progress and, on the right, the source, the
@@ -136,8 +142,8 @@ use std::collections::HashSet;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
-    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode,
-    Position, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
+    Effect, FindDirection, FindMatch, FindQuery, Grid, HeaderClick, Key, Located, Mode, Position,
+    SelectionUnit, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
     FindStep, IdentitySource, MemorySource, PumpSource, Transposed, Viewed, pump, query_error,
@@ -1081,6 +1087,29 @@ fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
     Some(widest as f32 + 1.0)
 }
 
+/// What the status line says of the selection: the picks on each axis and
+/// what a click selects, unless it is the cell; empty otherwise, else ending
+/// in a separator.
+fn selecting(snapshot: &Snapshot, unit: SelectionUnit) -> String {
+    let mut parts = Vec::new();
+    for (axis, noun) in [(Axis::Rows, "row"), (Axis::Cols, "column")] {
+        match snapshot.picked(axis).len() {
+            0 => {}
+            1 => parts.push(format!("1 {noun} picked")),
+            n => parts.push(format!("{n} {noun}s picked")),
+        }
+    }
+    match unit {
+        SelectionUnit::Rows => parts.push("clicks select rows".into()),
+        SelectionUnit::Cols => parts.push("clicks select columns".into()),
+        _ => {}
+    }
+    match parts.is_empty() {
+        true => String::new(),
+        false => parts.join(", ") + " | ",
+    }
+}
+
 /// The keymap preset `--preset` names (`chords`, `modes` or `bare-keys`).
 fn preset() -> Result<Preset, String> {
     let args: Vec<String> = std::env::args().collect();
@@ -1211,7 +1240,7 @@ fn main() -> io::Result<()> {
         };
         (table, grid)
     };
-    let mut keymap = Keymap::default();
+    let mut keymap = Keymap::preset(preset);
     keymap.bind(
         KeyCode::Char('g'),
         KeyModifiers::CONTROL,
@@ -1220,25 +1249,6 @@ fn main() -> io::Result<()> {
             fraction: 0.5,
         },
     );
-    keymap.set_typing(preset.typing());
-    if preset == Preset::Modes {
-        // vim's moves, on top of the arrows.
-        let moves = [
-            ('j', Axis::Rows, true),
-            ('k', Axis::Rows, false),
-            ('l', Axis::Cols, true),
-            ('h', Axis::Cols, false),
-        ];
-        for (c, axis, forward) in moves {
-            let action = Action::MoveFocus {
-                axis,
-                by: FocusStep::Item,
-                forward,
-                extend: false,
-            };
-            keymap.bind(KeyCode::Char(c), KeyModifiers::NONE, action);
-        }
-    }
     let controls = Controls::preset(preset);
     let hint = |control| controls.hint(control).unwrap_or_default();
     let mut quick = QuickFilter::new().placeholder(hint(Control::QuickFilter));
@@ -1268,6 +1278,8 @@ fn main() -> io::Result<()> {
         hint(Control::ColumnFilter),
         hint(Control::Clear)
     );
+    // What a click selects, which Alt+U cycles.
+    let mut unit = SelectionUnit::Cells;
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
@@ -1423,7 +1435,8 @@ fn main() -> io::Result<()> {
                 }
                 frame.render_widget(ratatui::text::Line::from(said), line);
                 let names = format!(
-                    "{} | {} | {preset_name} | {} | {border}",
+                    "{}{} | {} | {preset_name} | {} | {border}",
+                    selecting(&snapshot, unit),
                     row_count(&snapshot),
                     table.source(),
                     themes[theme].name
@@ -1534,6 +1547,15 @@ fn main() -> io::Result<()> {
                     }
                     if ctrl && key.code == KeyCode::Char('r') {
                         table.next_filter(&mut grid);
+                        continue;
+                    }
+                    if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('u') {
+                        unit = match unit {
+                            SelectionUnit::Cells => SelectionUnit::Rows,
+                            SelectionUnit::Rows => SelectionUnit::Cols,
+                            _ => SelectionUnit::Cells,
+                        };
+                        grid.set_selection_unit(unit);
                         continue;
                     }
                     if let Some(action) = keymap.action(&key) {

@@ -124,6 +124,7 @@ pub const BINNACLE_MOD_META: u32 = 8;
 
 pub const BINNACLE_SELECT_CELLS: u32 = 0;
 pub const BINNACLE_SELECT_ROWS: u32 = 1;
+pub const BINNACLE_SELECT_COLS: u32 = 2;
 
 pub const BINNACLE_HEADER_CLICK_SORT: u32 = 0;
 pub const BINNACLE_HEADER_CLICK_SELECT: u32 = 1;
@@ -135,7 +136,7 @@ pub struct BinnacleGrid {
     grid: Grid,
     strips: [Vec<BinnacleStripItem>; 2],
     headers: [Vec<BinnacleHeader>; 2],
-    picked: Vec<u64>,
+    picked: [Vec<u64>; 2],
     rects: Vec<BinnacleRect>,
     cells: Vec<u8>,
     /// The last polled Effect's text.
@@ -346,6 +347,8 @@ pub struct BinnacleAxisSnapshot {
     pub quick_filter: u32,
     pub conditions: *const BinnacleListedCondition,
     pub conditions_len: usize,
+    pub picked: *const u64,
+    pub picked_len: usize,
 }
 
 #[repr(C)]
@@ -358,8 +361,6 @@ pub struct BinnacleSnapshot {
     pub has_focus_rect: u32,
     pub focus_rect: BinnacleRect,
     pub has_selection_range: u32,
-    pub picked: *const u64,
-    pub picked_len: usize,
     pub selection_rects: *const BinnacleRect,
     pub selection_rects_len: usize,
     pub cell_states: *const u8,
@@ -994,7 +995,7 @@ pub extern "C" fn binnacle_grid_new(
         grid: Grid::new(rows, cols),
         strips: Default::default(),
         headers: Default::default(),
-        picked: Vec::new(),
+        picked: Default::default(),
         rects: Vec::new(),
         cells: Vec::new(),
         text: String::new(),
@@ -1029,6 +1030,7 @@ pub unsafe extern "C" fn binnacle_grid_set_selection_unit(
     let unit = match unit {
         BINNACLE_SELECT_CELLS => SelectionUnit::Cells,
         BINNACLE_SELECT_ROWS => SelectionUnit::Rows,
+        BINNACLE_SELECT_COLS => SelectionUnit::Cols,
         _ => return 0,
     };
     // SAFETY: the caller's contract.
@@ -1241,8 +1243,11 @@ impl BinnacleGrid {
                 }
             }));
         }
-        self.picked.clear();
-        self.picked.extend(snap.picked().iter().map(|k| k.0));
+        for axis in Axis::ALL {
+            let picked = &mut self.picked[axis.index()];
+            picked.clear();
+            picked.extend(snap.picked(axis).iter().map(|k| k.0));
+        }
         self.rects.clear();
         self.rects.extend(
             snap.selection_rects()
@@ -1267,6 +1272,7 @@ impl BinnacleGrid {
             let strip = &self.strips[axis.index()];
             let headers = &self.headers[axis.index()];
             let listed = &self.listed_states[axis.index()];
+            let picked = &self.picked[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -1293,6 +1299,8 @@ impl BinnacleGrid {
                 quick_filter: quick_filter_bits(snap.quick_filter(axis)),
                 conditions: listed.as_ptr(),
                 conditions_len: listed.len(),
+                picked: picked.as_ptr(),
+                picked_len: picked.len(),
                 selection_range: range.as_ref().map_or_else(Default::default, |r| {
                     let span = r.span(axis);
                     BinnacleRange {
@@ -1329,8 +1337,6 @@ impl BinnacleGrid {
             has_focus_rect: flag(focus_rect.is_some()),
             focus_rect: focus_rect.map(BinnacleRect::from).unwrap_or_default(),
             has_selection_range: flag(range.is_some()),
-            picked: self.picked.as_ptr(),
-            picked_len: self.picked.len(),
             selection_rects: self.rects.as_ptr(),
             selection_rects_len: self.rects.len(),
             cell_states: self.cells.as_ptr(),
@@ -1870,6 +1876,14 @@ pub unsafe extern "C" fn binnacle_grid_select_all(grid: *mut BinnacleGrid) -> i3
 pub unsafe extern "C" fn binnacle_grid_select_column(grid: *mut BinnacleGrid) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { act(grid, Some(Action::SelectColumn)) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_select_row(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { act(grid, Some(Action::SelectRow)) }
 }
 
 /// # Safety

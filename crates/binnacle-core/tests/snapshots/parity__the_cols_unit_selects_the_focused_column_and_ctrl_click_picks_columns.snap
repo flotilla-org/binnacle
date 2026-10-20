@@ -1,0 +1,50 @@
+---
+source: crates/binnacle-core/tests/parity.rs
+expression: out
+---
+--- 1. click row 1, column 1: its whole column
+window Rows 0..6
+window Cols 0..5
+effect (gen 1): FocusChanged { row: Key(1), col: Key(1) }
+effect (gen 1): SelectionChanged
+gen 2 | damage selection | focus 1#1,1#1 at 11,2 6x1 | range 0..20 x 1..2 | fill 11,1 6x4
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    +0.1   0.2    0
+1   1.0    *1.1   1.2    1
+2   2.0    +2.1   2.2    2
+3   3.0    +3.1   3.2    3
+--- 2. arrow right: the next column
+effect (gen 2): FocusChanged { row: Key(1), col: Key(2) }
+effect (gen 2): SelectionChanged
+gen 3 | damage selection | focus 1#1,2#2 at 18,2 6x1 | range 0..20 x 2..3 | fill 18,1 6x4
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    +0.2   0
+1   1.0    1.1    *1.2   1
+2   2.0    2.1    +2.2   2
+3   3.0    3.1    +3.2   3
+--- 3. shift-arrow down: still the whole column
+effect (gen 3): FocusChanged { row: Key(2), col: Key(2) }
+effect (gen 3): SelectionChanged
+gen 4 | damage selection | focus 2#2,2#2 at 18,3 6x1 | range 0..20 x 2..3 | fill 18,1 6x4
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    +0.2   0
+1   1.0    1.1    +1.2   1
+2   2.0    2.1    *2.2   2
+3   3.0    3.1    +3.2   3
+--- 4. ctrl-click a cell in column 0: picks the column
+effect (gen 4): SelectionChanged
+effect (gen 4): FocusChanged { row: Key(2), col: Key(0) }
+gen 5 | damage selection | focus 2#2,0#0 at 4,3 6x1 | range 0..20 x 2..3 | picks cols 0 | fill 18,1 6x4 | fill 4,1 6x4
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   +0.0   0.1    +0.2   0
+1   +1.0   1.1    +1.2   1
+2   *2.0   2.1    +2.2   2
+3   +3.0   3.1    +3.2   3

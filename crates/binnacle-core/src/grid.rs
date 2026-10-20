@@ -413,7 +413,8 @@ impl Grid {
                 }
             }
             Action::SelectAll => self.select_all(),
-            Action::SelectColumn => self.select_column(),
+            Action::SelectColumn => self.select_whole(Axis::Cols),
+            Action::SelectRow => self.select_whole(Axis::Rows),
             Action::Cancel => {
                 if self.gesture.capturing() {
                     self.cancel();
@@ -621,15 +622,27 @@ impl Grid {
     }
 
     /// What selecting `cell` alone selects: nothing beyond focus for
-    /// [`SelectionUnit::Cells`], its row for [`SelectionUnit::Rows`].
+    /// [`SelectionUnit::Cells`], its row for [`SelectionUnit::Rows`], its
+    /// column for [`SelectionUnit::Cols`].
     pub(crate) fn unit_span(&self, cell: Cell) -> Option<Span> {
+        let whole = match self.unit {
+            SelectionUnit::Cells => return None,
+            SelectionUnit::Rows => [false, true],
+            SelectionUnit::Cols => [true, false],
+        };
+        Some(Span {
+            anchor: cell,
+            head: cell,
+            whole,
+        })
+    }
+
+    /// The axis whose item a Ctrl/Cmd-click on a cell picks: the columns for
+    /// [`SelectionUnit::Cols`], else the rows.
+    pub(crate) fn pick_axis(&self) -> Axis {
         match self.unit {
-            SelectionUnit::Cells => None,
-            SelectionUnit::Rows => Some(Span {
-                anchor: cell,
-                head: cell,
-                whole: [false, true],
-            }),
+            SelectionUnit::Cols => Axis::Cols,
+            SelectionUnit::Cells | SelectionUnit::Rows => Axis::Rows,
         }
     }
 
@@ -638,7 +651,7 @@ impl Grid {
         self.set_focus_cell(cell);
         self.set_selection(Selection {
             span: self.unit_span(cell),
-            picks: Vec::new(),
+            picks: Default::default(),
         });
     }
 
@@ -674,10 +687,11 @@ impl Grid {
         self.set_span(span);
     }
 
-    pub(crate) fn toggle_pick(&mut self, cell: Cell) {
-        if let Some(key) = cell[Axis::Rows.index()].key {
+    /// Toggles the pick of `cell`'s item on `axis`, once its Key is known.
+    pub(crate) fn toggle_pick(&mut self, axis: Axis, cell: Cell) {
+        if let Some(key) = cell[axis.index()].key {
             let mut selection = self.selection.clone();
-            selection.toggle_pick(key);
+            selection.toggle_pick(axis, key);
             self.set_selection(selection);
         }
     }
@@ -695,18 +709,21 @@ impl Grid {
         }));
     }
 
-    /// Selects every row of the range's columns, or of the focused column.
-    fn select_column(&mut self) {
+    /// Selects the whole of the range's items on `axis` (every row of its
+    /// columns, for `Axis::Cols`), or of the focused item.
+    fn select_whole(&mut self, axis: Axis) {
         self.locating.moves.clear();
         let (anchor, head) = match (self.selection.span, self.focus) {
-            (Some(s), _) if !s.whole[Axis::Cols.index()] => (s.anchor, s.head),
+            (Some(s), _) if !s.whole[axis.index()] => (s.anchor, s.head),
             (_, Some(f)) => (f, f),
             _ => return,
         };
+        let mut whole = [false; 2];
+        whole[axis.other().index()] = true;
         self.set_span(Some(Span {
             anchor,
             head,
-            whole: [true, false],
+            whole,
         }));
     }
 
@@ -818,7 +835,8 @@ impl Grid {
     }
 
     /// Computes the selection fill rects from the laid-out Strips: one for the
-    /// visible part of the range, one per visible picked row.
+    /// visible part of the range, one per visible picked row, then one per
+    /// visible picked column.
     fn fill_selection(&mut self) {
         let mut fills = std::mem::take(&mut self.fills);
         fills.clear();
@@ -843,12 +861,30 @@ impl Grid {
         }
         if let Some((x, width)) = extent(&mut cols.iter()) {
             for row in rows {
-                if row.key.is_some_and(|k| self.selection.picked(k)) {
+                if row
+                    .key
+                    .is_some_and(|k| self.selection.picked(Axis::Rows, k))
+                {
                     fills.push(Rect {
                         x,
                         y: row.offset,
                         width,
                         height: row.size,
+                    });
+                }
+            }
+        }
+        if let Some((y, height)) = extent(&mut rows.iter()) {
+            for col in cols {
+                if col
+                    .key
+                    .is_some_and(|k| self.selection.picked(Axis::Cols, k))
+                {
+                    fills.push(Rect {
+                        x: col.offset,
+                        y,
+                        width: col.size,
+                        height,
                     });
                 }
             }

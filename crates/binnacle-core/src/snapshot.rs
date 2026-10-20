@@ -56,7 +56,7 @@ pub struct Rect {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellState {
     pub focused: bool,
-    /// Inside the range, or in a picked row.
+    /// Inside the range, or in a picked row or column.
     pub selected: bool,
     /// The host's editor is open on this cell.
     pub editing: bool,
@@ -80,7 +80,7 @@ pub struct HeaderPlacement {
     /// How it shows the conditions read in it (row headers show none).
     pub filter: HeaderFilter,
     /// Its whole item is selected: the range spans every item across it, or
-    /// (on a row header) its row is picked.
+    /// the item is picked.
     pub selected: bool,
     /// The pointer is over it (see [`Snapshot::hovered_header`]).
     pub hovered: bool,
@@ -269,7 +269,11 @@ impl<'a> Snapshot<'a> {
         let in_range = self
             .selection_range()
             .is_some_and(|r| r.contains(row.position, col.position));
-        let picked = row.key.is_some_and(|k| self.grid.selection.picked(k));
+        let picked = |axis, item: &StripItem| {
+            item.key
+                .is_some_and(|k| self.grid.selection.picked(axis, k))
+        };
+        let picked = picked(Axis::Rows, row) || picked(Axis::Cols, col);
         let editing = match self.mode() {
             Mode::Editing { row: r, col: c } => row.key == Some(r) && col.key == Some(c),
             _ => false,
@@ -293,13 +297,14 @@ impl<'a> Snapshot<'a> {
         self.grid.selection.span.map(|s| s.range(counts))
     }
 
-    /// The picked row Keys, in Key order.
-    pub fn picked(&self) -> &'a [Key] {
-        &self.grid.selection.picks
+    /// The picked Keys of `axis`, in Key order.
+    pub fn picked(&self, axis: Axis) -> &'a [Key] {
+        &self.grid.selection.picks[axis.index()]
     }
 
     /// Rects to fill for the selection: the visible part of the range, then
-    /// each visible picked row across the visible columns. They may overlap.
+    /// each visible picked row across the visible columns, then each visible
+    /// picked column down the visible rows. They may overlap.
     /// Edges are those of the Strip items, unclipped, like [`Self::focus_rect`].
     pub fn selection_rects(&self) -> &'a [Rect] {
         &self.grid.fills
@@ -391,7 +396,7 @@ impl<'a> Snapshot<'a> {
                 Axis::Rows => (0.0, item.offset, thickness, item.size),
                 Axis::Cols => (item.offset, 0.0, item.size, thickness),
             };
-            let picked = axis == Axis::Rows && item.key.is_some_and(|k| grid.selection.picked(k));
+            let picked = item.key.is_some_and(|k| grid.selection.picked(axis, k));
             HeaderPlacement {
                 axis,
                 position: item.position,

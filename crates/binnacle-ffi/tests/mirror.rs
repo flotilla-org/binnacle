@@ -163,7 +163,10 @@ fn action(tc: &TestCase) -> Action {
             extend: tc.draw(gs::booleans()),
         },
         2 => Action::SelectAll,
-        3 => Action::SelectColumn,
+        3 => match tc.draw(gs::booleans()) {
+            true => Action::SelectColumn,
+            false => Action::SelectRow,
+        },
         4 => Action::Cancel,
         5 => Action::Scroll {
             dx: tc.draw(gs::floats::<f32>().min_value(-50.0).max_value(50.0)),
@@ -426,6 +429,7 @@ fn op(tc: &TestCase) -> Op {
             0 => Op::Unit(tc.draw(gs::sampled_from(vec![
                 SelectionUnit::Cells,
                 SelectionUnit::Rows,
+                SelectionUnit::Cols,
             ]))),
             1 => Op::HeaderClick(
                 tc.draw(axes()),
@@ -491,6 +495,7 @@ unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
             }
             Action::SelectAll => binnacle_grid_select_all(h),
             Action::SelectColumn => binnacle_grid_select_column(h),
+            Action::SelectRow => binnacle_grid_select_row(h),
             Action::Cancel => binnacle_grid_cancel(h),
             Action::Scroll { dx, dy } => binnacle_grid_scroll(h, *dx, *dy),
             Action::ScrollTo { axis, fraction } => {
@@ -775,6 +780,9 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             })
             .collect();
         assert_eq!(got, rust.conditions(axis), "{axis:?} conditions");
+        let picked = unsafe { slice::from_raw_parts(a.picked, a.picked_len) };
+        let keys: Vec<u64> = rust.picked(axis).iter().map(|k| k.0).collect();
+        assert_eq!(picked, keys, "{axis:?} picks");
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -787,11 +795,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         assert!(rect(&c.focus_rect, &r));
     }
     assert_eq!(c.has_selection_range != 0, range.is_some());
-    let picked = unsafe { slice::from_raw_parts(c.picked, c.picked_len) };
-    assert_eq!(
-        picked,
-        rust.picked().iter().map(|k| k.0).collect::<Vec<_>>()
-    );
+
     let rects = unsafe { slice::from_raw_parts(c.selection_rects, c.selection_rects_len) };
     assert_eq!(rects.len(), rust.selection_rects().len());
     assert!(
@@ -1306,10 +1310,12 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 }
                 Op::Unit(unit) => {
                     grid.set_selection_unit(unit);
-                    binnacle_grid_set_selection_unit(
-                        h,
-                        if unit == SelectionUnit::Rows { 1 } else { 0 },
-                    )
+                    let unit = match unit {
+                        SelectionUnit::Cells => 0,
+                        SelectionUnit::Rows => 1,
+                        SelectionUnit::Cols => 2,
+                    };
+                    binnacle_grid_set_selection_unit(h, unit)
                 }
                 Op::HeaderClick(axis, click) => {
                     grid.set_header_click(axis, click);

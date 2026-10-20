@@ -34,7 +34,7 @@ extern "C" {
 
 /* BinnacleSnapshot.cell_states bits. */
 #define BINNACLE_CELL_FOCUSED 1u
-/* Inside the range, or in a picked row. */
+/* Inside the range, or in a picked row or column. */
 #define BINNACLE_CELL_SELECTED 2u
 /* The current find match, drawn apart from the other matches. */
 #define BINNACLE_CELL_CURRENT_MATCH 4u
@@ -43,8 +43,8 @@ extern "C" {
  * the applied View Spec, DESCENDING says which way and sort_place where (0
  * first). PENDING: a requested View Spec that would change this item's part
  * of that sort is unanswered. SELECTED: the
- * whole item is selected (the range spans every item across it, or its row
- * is picked). HOVERED: the pointer is over it. FILTERED: the applied View
+ * whole item is selected (the range spans every item across it, or it is
+ * picked). HOVERED: the pointer is over it. FILTERED: the applied View
  * Spec has a condition read in this item; FILTER_PENDING: a requested View
  * Spec that would change those conditions is unanswered. */
 #define BINNACLE_HEADER_SORTED 1u
@@ -218,6 +218,7 @@ extern "C" {
 /* What a plain click on a cell selects. */
 #define BINNACLE_SELECT_CELLS 0
 #define BINNACLE_SELECT_ROWS 1
+#define BINNACLE_SELECT_COLS 2
 
 /* What clicking a header does. */
 #define BINNACLE_HEADER_CLICK_SORT 0
@@ -375,6 +376,9 @@ typedef struct {
    * request's, then the applied ones it drops. */
   const BinnacleListedCondition *conditions;
   size_t conditions_len;
+  /* The axis's picked Keys, in Key order. */
+  const uint64_t *picked;
+  size_t picked_len;
 } BinnacleAxisSnapshot;
 
 /*
@@ -393,11 +397,8 @@ typedef struct {
   BinnacleRect focus_rect;
   /* The one contiguous range, clamped to the counts. */
   uint32_t has_selection_range;
-  /* Picked row Keys, in Key order. */
-  const uint64_t *picked;
-  size_t picked_len;
   /* Rects to fill: the visible part of the range, then each visible picked
-   * row. They may overlap. */
+   * row, then each visible picked column. They may overlap. */
   const BinnacleRect *selection_rects;
   size_t selection_rects_len;
   /* BINNACLE_CELL_* bits for each visible cell, row-major: the cell crossing
@@ -557,7 +558,8 @@ int binnacle_grid_set_selection_unit(BinnacleGrid *grid, uint32_t unit);
 
 /* BINNACLE_HEADER_CLICK_* for the headers of items on axis (ROWS for row
  * headers). Row headers default to SELECT, column headers to SORT. Only
- * columns sort: SORT on row headers makes a click do nothing. */
+ * columns sort: SORT on row headers makes a click do nothing. Under SORT or
+ * SELECT, Ctrl or Meta toggles the item's pick instead. */
 int binnacle_grid_set_header_click(BinnacleGrid *grid, uint32_t axis, uint32_t click);
 
 /* How far a pressed pointer must move to drag; default 1. Values that are not
@@ -705,6 +707,9 @@ int binnacle_grid_select_all(BinnacleGrid *grid);
 
 /* Every row of the range's columns, or of the focused column. */
 int binnacle_grid_select_column(BinnacleGrid *grid);
+
+/* Every column of the range's rows, or of the focused row. */
+int binnacle_grid_select_row(BinnacleGrid *grid);
 
 /* Ends the gesture in progress, restoring focus and selection from before it. */
 int binnacle_grid_cancel(BinnacleGrid *grid);

@@ -273,7 +273,7 @@ impl Host {
             focus: focus.map(|(r, c)| [r, c]),
             locating: Axis::ALL.map(|a| snap.locating(a)),
             range: snap.selection_range(),
-            picks: snap.picked().to_vec(),
+            picks: snap.picked(Axis::Rows).to_vec(),
             anchors: Axis::ALL.map(|a| snap.scroll_anchor(a)),
             counts: Axis::ALL.map(|a| snap.count(a)),
             mode: snap.mode(),

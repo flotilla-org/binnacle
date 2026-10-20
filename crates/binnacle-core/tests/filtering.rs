@@ -172,7 +172,7 @@ fn cancel_after_a_departed_key_is_located_keeps_focus_on_the_suggestion() {
     insta::assert_snapshot!(out);
     let snap = s.grid.snapshot();
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(2)));
-    assert_eq!(snap.picked(), &[] as &[Key]);
+    assert_eq!(snap.picked(Axis::Rows), &[] as &[Key]);
 }
 
 #[test]
@@ -188,11 +188,11 @@ fn picks_of_rows_a_filter_hides_are_dropped_and_the_others_stay() {
         "filter out records 1 and 3 (values 3 and 1): their picks go, record 0's stays; focus goes to record 4, the next one",
         V,
     );
-    assert_eq!(s.grid.snapshot().picked(), &[Key(0)]);
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[Key(0)]);
     let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     out += &s.step("clear the filter: the dropped picks do not come back", V);
-    assert_eq!(s.grid.snapshot().picked(), &[Key(0)]);
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[Key(0)]);
     insta::assert_snapshot!(out);
 }
 
@@ -401,7 +401,7 @@ fn cancel_after_a_filter_empties_the_rows_brings_no_pick_back() {
         "Ctrl-press record 0, filter out everything, then cancel the press: no pick comes back",
         V,
     );
-    assert_eq!(s.grid.snapshot().picked(), &[] as &[Key]);
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[] as &[Key]);
     insta::assert_snapshot!(out);
 }
 
@@ -425,7 +425,7 @@ fn a_hidden_pick_goes_while_focus_stays_on_a_kept_row() {
         V,
     );
     let snap = s.grid.snapshot();
-    assert_eq!(snap.picked(), &[Key(1)]);
+    assert_eq!(snap.picked(Axis::Rows), &[Key(1)]);
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(1)));
     insta::assert_snapshot!(out);
 }

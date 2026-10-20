@@ -315,6 +315,10 @@ impl WebGrid {
         self.grid.action(Action::SelectColumn);
     }
 
+    pub fn select_row(&mut self) {
+        self.grid.action(Action::SelectRow);
+    }
+
     pub fn cancel(&mut self) {
         self.grid.action(Action::Cancel);
     }

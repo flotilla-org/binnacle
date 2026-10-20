@@ -143,7 +143,7 @@ int main(void) {
   CHECK(snap.selection_rects_len == 1);
   CHECK(snap.selection_rects[0].x == 13 && snap.selection_rects[0].y == 3);
   CHECK(snap.selection_rects[0].width == 17 && snap.selection_rects[0].height == 2);
-  CHECK(snap.picked_len == 0);
+  CHECK(r->picked_len == 0 && c->picked_len == 0);
   CHECK(snap.cell_states_len == 5 * 4);
   CHECK(snap.cell_states[3 * 4 + 2] == (BINNACLE_CELL_FOCUSED | BINNACLE_CELL_SELECTED));
   CHECK(snap.cell_states[2 * 4 + 1] == BINNACLE_CELL_SELECTED);
@@ -155,9 +155,14 @@ int main(void) {
   click(grid, 6, 5.5f, BINNACLE_MOD_CTRL);
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 15, 0.5f, 0)));
   frame(grid, &snap);
-  CHECK(snap.picked_len == 1 && snap.picked[0] == 1004);
+  CHECK(r->picked_len == 1 && r->picked[0] == 1004);
   CHECK(snap.has_hovered_header && snap.hovered_axis == BINNACLE_COLS);
   CHECK(snap.hovered_index == 1);
+
+  /* Ctrl-click on column 1's header picks the column. */
+  click(grid, 15, 0.5f, BINNACLE_MOD_CTRL);
+  frame(grid, &snap);
+  CHECK(c->picked_len == 1 && c->picked[0] == 2001 && r->picked_len == 1);
 
   /* A drag, cancelled. */
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_DOWN, 6, 1.5f, 0)));
@@ -173,6 +178,7 @@ int main(void) {
   frame(grid, &snap);
   CHECK(r->selection_range.end == 100 && c->selection_range.end == 10);
   CHECK(binnacle_grid_select_column(grid));
+  CHECK(binnacle_grid_select_row(grid));
   drain(grid, &focus);
 
   /* Scrolling. */
@@ -372,8 +378,9 @@ int main(void) {
   CHECK(!snap.has_find && !snap.has_find_match);
 
   /* Settings, sizes and content sizes. */
+  CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_COLS));
   CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_ROWS));
-  CHECK(!binnacle_grid_set_selection_unit(grid, 2));
+  CHECK(!binnacle_grid_set_selection_unit(grid, 3));
   CHECK(binnacle_grid_set_header_click(grid, BINNACLE_COLS, BINNACLE_HEADER_CLICK_NONE));
   CHECK(!binnacle_grid_set_header_click(grid, BINNACLE_COLS, 3));
   CHECK(binnacle_grid_set_drag_threshold(grid, 2));

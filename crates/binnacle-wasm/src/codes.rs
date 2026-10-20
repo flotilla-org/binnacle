@@ -62,10 +62,12 @@ pub fn focus_step(code: u8) -> FocusStep {
     }
 }
 
-/// What a plain click selects: 0 the cell, anything else its row.
+/// What a plain click selects: 0 the cell, 2 its column, anything else its
+/// row.
 pub fn selection_unit(code: u8) -> SelectionUnit {
     match code {
         0 => SelectionUnit::Cells,
+        2 => SelectionUnit::Cols,
         _ => SelectionUnit::Rows,
     }
 }
@@ -283,9 +285,10 @@ mod tests {
     }
 
     #[test]
-    fn selection_units_are_cells_or_rows() {
+    fn selection_units_are_cells_rows_or_cols() {
         assert_eq!(selection_unit(0), SelectionUnit::Cells);
         assert_eq!(selection_unit(1), SelectionUnit::Rows);
+        assert_eq!(selection_unit(2), SelectionUnit::Cols);
     }
 
     #[test]

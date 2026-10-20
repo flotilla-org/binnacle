@@ -349,7 +349,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
     for r in rects {
         w.rect(*r);
     }
-    for keys in [s.picked(), s.moving_keys()] {
+    for keys in [s.picked(Axis::Rows), s.picked(Axis::Cols), s.moving_keys()] {
         w.len(keys.len());
         for k in keys {
             w.key(*k);

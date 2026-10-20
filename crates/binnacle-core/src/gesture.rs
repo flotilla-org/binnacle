@@ -218,7 +218,7 @@ impl Grid {
                 self.reveal = false;
                 let cell = self.cell_at(r.position, c.position);
                 if modifiers.toggle() {
-                    self.toggle_pick(cell);
+                    self.toggle_pick(self.pick_axis(), cell);
                     self.set_focus_cell(cell);
                     Press::Pick
                 } else if modifiers.shift {
@@ -506,13 +506,15 @@ impl Grid {
     }
 
     /// A click on the header of the item at `position` on `axis`, acted on
-    /// by that axis's `header_click` setting.
+    /// by that axis's `header_click` setting; under Sort or Select, Ctrl/Cmd
+    /// toggles the item's pick.
     fn header_click(&mut self, axis: Axis, position: Position, modifiers: Modifiers) {
-        if self.header_click[axis.index()] == HeaderClick::Sort {
+        let click = self.header_click[axis.index()];
+        if click == HeaderClick::Sort && !modifiers.toggle() {
             return self.sort_click(axis, position, modifiers);
         }
         // A Reset during the press may have left `position` past the count.
-        if self.header_click[axis.index()] != HeaderClick::Select
+        if click == HeaderClick::None
             || Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0)
             || position >= self.axis(axis).measure.count()
         {
@@ -527,8 +529,8 @@ impl Grid {
         // The whole of every item across the clicked one.
         let mut whole = [false; 2];
         whole[axis.other().index()] = true;
-        if modifiers.toggle() && axis == Axis::Rows {
-            self.toggle_pick(cell);
+        if modifiers.toggle() {
+            self.toggle_pick(axis, cell);
             self.set_focus_cell(cell);
         } else if modifiers.shift {
             self.extend_with(self.focus, cell, whole);
@@ -540,7 +542,7 @@ impl Grid {
                     head: cell,
                     whole,
                 }),
-                picks: Vec::new(),
+                picks: Default::default(),
             });
         }
     }

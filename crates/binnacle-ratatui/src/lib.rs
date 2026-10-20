@@ -34,7 +34,9 @@ pub use scrollbar::{BarEvent, Layout, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
-use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
+use binnacle_core::{
+    Action, Axis, Cursor, HeaderPlacement, HeaderSort, Key, Mode, Snapshot, SortDirection,
+};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -159,17 +161,19 @@ pub fn render_with(
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
-    let band = |style: Style, hovered: bool| {
-        let style = if theme.invert_headers {
+    let band = |style: Style, h: &HeaderPlacement| {
+        let mut style = if theme.invert_headers {
             style.add_modifier(Modifier::REVERSED)
         } else {
             style
         };
-        if hovered {
-            style.patch(theme.header_hovered)
-        } else {
-            style
+        if h.selected {
+            style = style.patch(theme.header_selected);
         }
+        if h.hovered {
+            style = style.patch(theme.header_hovered);
+        }
+        style
     };
     let multi = snapshot.applied_view().rows.sort.columns().len() > 1;
     let area_end = i64::from(area.width);
@@ -190,7 +194,7 @@ pub fn render_with(
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
-        let style = band(theme.header, h.hovered);
+        let style = band(theme.header, &h);
         let clip = (left, end, 0.0);
         let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
         if marker.is_empty() {
@@ -223,7 +227,7 @@ pub fn render_with(
         }
     }
     let locating = locating(snapshot);
-    let picked = snapshot.picked();
+    let picked = Axis::ALL.map(|a| snapshot.picked(a));
     let hovered_col = match snapshot.hovered_header() {
         Some((Axis::Cols, c)) => Some(c.position),
         _ => None,
@@ -239,7 +243,7 @@ pub fn render_with(
         let width = usize::try_from(cell(left)).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
         let number = fit(&number, u32::try_from(room).unwrap_or(u32::MAX));
-        let style = band(theme.row_number, h.hovered);
+        let style = band(theme.row_number, &h);
         let clip = (0.0, left, top);
         put(
             buf,
@@ -269,10 +273,11 @@ pub fn render_with(
                 put(buf, area, (0.0, y as f32), clip, &blank, row_style);
             }
         }
-        let in_picked = r.key.is_some_and(|k| picked.contains(&k));
+        let row_picked = r.key.is_some_and(|k| picked[0].contains(&k));
         let row_hovered = h.hovered;
         for c in snapshot.cols() {
             let state = snapshot.cell_state(r, c);
+            let in_picked = row_picked || c.key.is_some_and(|k| picked[1].contains(&k));
             let status = CellStatus {
                 focused: state.focused,
                 selected: state.selected && !in_picked,

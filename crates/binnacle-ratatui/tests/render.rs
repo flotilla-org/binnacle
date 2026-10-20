@@ -232,6 +232,64 @@ fn selected_cells_get_a_background_across_their_width_and_the_hovered_header_is_
 }
 
 #[test]
+fn picked_rows_and_columns_draw_as_picks_and_selected_headers_stand_out() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let none = ratatui::style::Style::default();
+    let theme = Theme {
+        picks: none.bg(Color::Magenta),
+        header_selected: none.bg(Color::Blue),
+        ..Theme::classic()
+    };
+    let click = |grid: &mut Grid, x: f32, y: f32| {
+        let ctrl = binnacle_core::Modifiers::CTRL;
+        grid.pointer(binnacle_core::PointerEvent::down(x, y).modifiers(ctrl));
+        grid.pointer(binnacle_core::PointerEvent::up(x, y).modifiers(ctrl));
+    };
+    frame_buffer(&mut grid, 30, 5, Rect::new(0, 0, 30, 5));
+    // Ctrl-click column 1's header (x 14..22), then row 2's (line 3).
+    click(&mut grid, 15.0, 0.0);
+    click(&mut grid, 1.0, 3.0);
+    for (axis, range) in grid.begin_frame(Viewport::new(30.0, 5.0)) {
+        let keys = IdentitySource::new(range.end).window(range.clone());
+        grid.set_window(axis, range.start, &keys);
+    }
+    let snapshot = grid.snapshot();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+    let ctx = RenderContext::new(&theme);
+    render_with(&snapshot, &Labels, &ctx, buf.area, &mut buf);
+    let with = |bg: Color| -> Vec<(u16, u16)> {
+        (buf.area.positions())
+            .filter(|&p| buf[p].bg == bg)
+            .map(|p| (p.x, p.y))
+            .collect()
+    };
+    // Row 2's header (x 0..4, before the band's Gap) and column 1's.
+    let headers: Vec<(u16, u16)> = (0..5)
+        .map(|x| (x, 3))
+        .chain((14..22).map(|x| (x, 0)))
+        .collect();
+    let mut sorted = with(Color::Blue);
+    sorted.sort_by_key(|&(x, y)| (y, x));
+    let mut expected = headers;
+    expected.sort_by_key(|&(x, y)| (y, x));
+    assert_eq!(sorted, expected);
+    // Column 1 down the body above the columns' scrollbar, and row 2
+    // across it but for the focused cell, row 2 column 1, drawn reversed.
+    let picked: Vec<(u16, u16)> = [(14..22, 1), (14..22, 2), (5..13, 3), (23..29, 3)]
+        .into_iter()
+        .flat_map(|(xs, y)| xs.map(move |x| (x, y)))
+        .collect();
+    let mut cells = with(Color::Magenta);
+    cells.sort_by_key(|&(x, y)| (y, x));
+    let mut picked = picked;
+    picked.sort_by_key(|&(x, y)| (y, x));
+    assert_eq!(cells, picked);
+}
+
+#[test]
 fn column_headers_show_the_applied_sort_and_pending_requests() {
     let mut grid = Grid::new(
         AxisConfig::new(3, 1.0).header(1.0),

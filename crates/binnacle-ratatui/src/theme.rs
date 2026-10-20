@@ -4,8 +4,8 @@
 use ratatui::style::{Color, Modifier, Style};
 
 /// The styles the table is drawn in. Most are patched over another: the
-/// hovered header over the header (or row number), the zebra stripe over the
-/// body, selection, picks and focus over a cell, the sort marker and the
+/// selected and the hovered header over the header (or row number), the
+/// zebra stripe over the body, selection, picks and focus over a cell, the sort marker and the
 /// loading marker over where they sit. Build your own by overriding fields
 /// of a preset: `Theme { zebra: Some(stripe), ..Theme::classic() }`.
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +15,9 @@ pub struct Theme {
     pub header: Style,
     /// The header (or row number) under the pointer.
     pub header_hovered: Style,
+    /// The header (or row number) of a selected item: the range spans every
+    /// item across it, or it is picked.
+    pub header_selected: Style,
     /// Row numbers, down the left band.
     pub row_number: Style,
     pub body: Style,
@@ -22,7 +25,7 @@ pub struct Theme {
     pub zebra: Option<Style>,
     pub focus: Style,
     pub selection: Style,
-    /// Cells in a picked row.
+    /// Cells in a picked row or column.
     pub picks: Style,
     pub sort_marker: Style,
     /// The lines a resize grabs, in the header band's Gaps.
@@ -71,6 +74,7 @@ impl Theme {
             name: "classic",
             header: none.add_modifier(Modifier::BOLD),
             header_hovered: none.add_modifier(Modifier::UNDERLINED),
+            header_selected: none.bg(Color::DarkGray),
             row_number: none.add_modifier(Modifier::BOLD),
             body: none,
             zebra: None,
@@ -106,6 +110,7 @@ impl Theme {
             name: "catppuccin_mocha",
             header: none.fg(mocha::BLUE).add_modifier(Modifier::BOLD),
             header_hovered: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::UNDERLINED),
+            header_selected: none.bg(mocha::SURFACE1),
             row_number: none.fg(mocha::OVERLAY0),
             body: none.fg(mocha::TEXT),
             zebra: Some(none.bg(mocha::MANTLE)),
@@ -141,6 +146,7 @@ impl Theme {
             name: "mono",
             header: none.add_modifier(Modifier::BOLD),
             header_hovered: none.add_modifier(Modifier::UNDERLINED),
+            header_selected: none.add_modifier(Modifier::REVERSED),
             row_number: none.add_modifier(Modifier::DIM),
             body: none,
             zebra: None,
@@ -185,6 +191,7 @@ impl Theme {
         Theme {
             header: s(self.header),
             header_hovered: s(self.header_hovered),
+            header_selected: s(self.header_selected),
             row_number: s(self.row_number),
             body: s(self.body),
             zebra: self.zebra.map(s),

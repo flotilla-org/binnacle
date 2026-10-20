@@ -33,9 +33,9 @@ struct Host {
     /// Per axis, the Keys a filter leaves out, which a later `Refiltered`
     /// may bring back.
     hidden: [Vec<u64>; 2],
-    /// Row Keys a `Refiltered` took out since the last `Reset`: once every
-    /// `Locate` is answered, none of them is picked.
-    refiltered_out: BTreeSet<u64>,
+    /// Per axis, Keys a `Refiltered` took out since the last `Reset`: once
+    /// every `Locate` is answered, none of them is picked.
+    refiltered_out: [BTreeSet<u64>; 2],
     /// The next fresh Key; row and column Keys never collide with each other
     /// or with the initial ones.
     next: u64,
@@ -375,7 +375,8 @@ impl Host {
                 tc.note(&format!("find_stepped({found:?})"));
                 let selection = |grid: &mut Grid| {
                     let snap = grid.snapshot();
-                    (snap.selection_range(), snap.picked().to_vec())
+                    let picks = Axis::ALL.map(|a| snap.picked(a).to_vec());
+                    (snap.selection_range(), picks)
                 };
                 let before = selection(&mut self.grid);
                 self.grid.find_stepped(found);
@@ -445,9 +446,7 @@ impl Host {
         }
         self.keys[axis.index()] = keys;
         let count = self.keys[axis.index()].len() as u64;
-        if axis == Axis::Rows {
-            self.refiltered_out.clear();
-        }
+        self.refiltered_out[axis.index()].clear();
         self.grid.notify(axis, ChangeNotice::Reset(count));
     }
 
@@ -472,10 +471,8 @@ impl Host {
             keys = tc.draw(gs::permutations(keys));
         }
         self.hidden[i] = pool.into_iter().filter(|k| !keys.contains(k)).collect();
-        if axis == Axis::Rows {
-            self.refiltered_out.retain(|k| !keys.contains(k));
-            self.refiltered_out.extend(&self.hidden[i]);
-        }
+        self.refiltered_out[i].retain(|k| !keys.contains(k));
+        self.refiltered_out[i].extend(&self.hidden[i]);
         self.keys[i] = keys;
         let count = self.keys[i].len() as u64;
         tc.note(&format!("refiltered: {axis:?} {:?}", self.keys[i]));
@@ -505,12 +502,14 @@ impl Host {
                 );
             }
         }
-        let picked = self.grid.snapshot().picked().to_vec();
-        for key in picked {
-            assert!(
-                !self.refiltered_out.contains(&key.0),
-                "{key:?} is still picked after a Refiltered took it out"
-            );
+        for axis in Axis::ALL {
+            let picked = self.grid.snapshot().picked(axis).to_vec();
+            for key in picked {
+                assert!(
+                    !self.refiltered_out[axis.index()].contains(&key.0),
+                    "{key:?} on {axis:?} is still picked after a Refiltered took it out"
+                );
+            }
         }
     }
 
@@ -549,6 +548,7 @@ impl Host {
             gs::sampled_from(vec![
                 Action::SelectAll,
                 Action::SelectColumn,
+                Action::SelectRow,
                 Action::Cancel,
                 Action::BeginEdit,
                 Action::Activate,
@@ -893,9 +893,11 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         AxisConfig::new(rows, 1.0).header(1.0).gap(gap),
         AxisConfig::new(cols, 3.0).header(2.0).gap(gap),
     );
-    if tc.draw(gs::booleans()) {
-        grid.set_selection_unit(SelectionUnit::Rows);
-    }
+    grid.set_selection_unit(tc.draw(gs::sampled_from(vec![
+        SelectionUnit::Cells,
+        SelectionUnit::Rows,
+        SelectionUnit::Cols,
+    ])));
     for axis in Axis::ALL {
         grid.set_header_click(
             axis,
@@ -918,7 +920,7 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         grid,
         keys: [(0..rows).collect(), (100..100 + cols).collect()],
         hidden: [Vec::new(), Vec::new()],
-        refiltered_out: BTreeSet::new(),
+        refiltered_out: Default::default(),
         next: 1000,
         pending: VecDeque::new(),
         views_due: 0,
