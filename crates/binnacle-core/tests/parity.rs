@@ -349,9 +349,11 @@ fn select_op(tc: &TestCase) -> SelectOp {
         Modifiers::META,
     ]);
     let by = gs::sampled_from(vec![FocusStep::Item, FocusStep::Page, FocusStep::Edge]);
-    // Rows never sort yet, so a plain header click only selects or does
-    // nothing.
-    let click = gs::sampled_from(vec![HeaderClick::Select, HeaderClick::None]);
+    let click = gs::sampled_from(vec![
+        HeaderClick::Sort,
+        HeaderClick::Select,
+        HeaderClick::None,
+    ]);
     tc.draw(hegel::one_of!(
         hegel::tuples!(at(), at(), modifiers).map(|(x, y, m)| SelectOp::Click(x, y, m)),
         hegel::tuples!(axis(), by, gs::booleans(), gs::weighted_booleans(0.3))
