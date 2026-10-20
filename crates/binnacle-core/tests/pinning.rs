@@ -130,89 +130,123 @@ fn a_pin_follows_its_key_through_a_sort_and_sleeps_while_filtered_out() {
 /// What a step of [`every_shown_item_is_drawn_exactly_once`] does.
 #[derive(Clone, Debug)]
 enum Op {
-    Pin(u64),
+    Pin(u64, Edge),
     Unpin(u64),
     Scroll(f32),
-    Reverse,
+    /// Any sort: the items in a new order, given as a permutation.
+    Sort(Vec<usize>),
     Remove(u64),
     Resize(u64, f32),
-    Width(f32),
+    Length(f32),
 }
 
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let key = || gs::integers::<u64>().max_value(30);
+    let edge = || gs::sampled_from(vec![Edge::Leading, Edge::Trailing]);
     tc.draw(hegel::one_of!(
-        key().map(Op::Pin),
-        key().map(Op::Pin),
+        hegel::tuples!(key(), edge()).map(|(k, e)| Op::Pin(k, e)),
+        hegel::tuples!(key(), edge()).map(|(k, e)| Op::Pin(k, e)),
         key().map(Op::Unpin),
         gs::floats::<f32>()
             .min_value(-40.0)
             .max_value(40.0)
             .map(Op::Scroll),
-        gs::just(Op::Reverse),
+        gs::permutations((0..30).collect::<Vec<usize>>()).map(Op::Sort),
         gs::integers::<u64>().max_value(30).map(Op::Remove),
         hegel::tuples!(key(), gs::floats::<f32>().min_value(1.0).max_value(12.0))
             .map(|(k, s)| Op::Resize(k, s)),
         gs::floats::<f32>()
             .min_value(4.0)
             .max_value(60.0)
-            .map(Op::Width),
+            .map(Op::Length),
     ))
 }
 
+/// Through pins on both edges, unpins, scrolls, sorts, removals and resizes
+/// on either axis, each pinned Strip draws its pinned Keys in pin order at
+/// their Positions (the trailing one ending at the viewport's end while
+/// the pins fit), and the scrolling Strip draws every other item between
+/// its ends once, in order.
 #[hegel::test(test_cases = 500)]
 fn every_shown_item_is_drawn_exactly_once(tc: TestCase) {
+    let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
     let count = tc.draw(gs::integers::<u64>().max_value(25));
     let gap = tc.draw(gs::sampled_from(vec![0.0f32, 1.0]));
     let size = tc.draw(gs::sampled_from(vec![1.0f32, 3.0, 6.0]));
     let header = tc.draw(gs::sampled_from(vec![0.0f32, 4.0]));
-    let grid = Grid::new(
-        AxisConfig::new(3, 1.0).header(1.0),
-        AxisConfig::new(count, size).header(header).gap(gap),
-    );
-    let mut s = Scenario::new(grid, KeyedTable::new(3, count));
-    let mut pins: Vec<u64> = Vec::new();
-    let mut width = 30.0;
+    let along = AxisConfig::new(count, size).header(header).gap(gap);
+    let across = AxisConfig::new(3, 1.0).header(1.0);
+    let (grid, table) = match axis {
+        Axis::Rows => (Grid::new(along, across), KeyedTable::new(count, 3)),
+        Axis::Cols => (Grid::new(across, along), KeyedTable::new(3, count)),
+    };
+    let mut s = Scenario::new(grid, table);
+    let mut pins: [Vec<u64>; 2] = Default::default();
+    let mut length = 30.0;
     for op in tc.draw(gs::vecs(op()).min_size(1).max_size(12)) {
         match op {
-            Op::Pin(k) => {
-                pins.retain(|&p| p != k);
-                pins.push(k);
-                s.input(|g| g.pin(Axis::Cols, Edge::Leading, Key(k)));
+            Op::Pin(k, edge) => {
+                pins.iter_mut().for_each(|p| p.retain(|&x| x != k));
+                pins[edge.index()].push(k);
+                s.input(|g| g.pin(axis, edge, Key(k)));
             }
             Op::Unpin(k) => {
-                pins.retain(|&p| p != k);
-                s.input(|g| g.unpin(Axis::Cols, Key(k)));
+                pins.iter_mut().for_each(|p| p.retain(|&x| x != k));
+                s.input(|g| g.unpin(axis, Key(k)));
             }
-            Op::Scroll(dx) => s.input(|g| g.action(Action::Scroll { dx, dy: 0.0 })),
-            Op::Reverse => {
-                let notice = s.source.reverse(Axis::Cols);
-                s.input(|g| g.notify(Axis::Cols, notice));
+            Op::Scroll(d) => s.input(|g| {
+                let (dx, dy) = match axis {
+                    Axis::Rows => (0.0, d),
+                    Axis::Cols => (d, 0.0),
+                };
+                g.action(Action::Scroll { dx, dy })
+            }),
+            Op::Sort(order) => {
+                let keys = &mut s.source.axes[axis.index()];
+                let sorted: Vec<Key> = (order.iter())
+                    .filter_map(|&i| keys.get(i).copied())
+                    .collect();
+                *keys = sorted;
+                s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reordered));
             }
             Op::Remove(at) => {
-                let notice = s.source.remove(Axis::Cols, at, 1);
-                s.input(|g| g.notify(Axis::Cols, notice));
+                let notice = s.source.remove(axis, at, 1);
+                s.input(|g| g.notify(axis, notice));
             }
-            Op::Resize(k, size) => s.input(|g| g.set_size(Axis::Cols, Key(k), size)),
-            Op::Width(w) => width = w,
+            Op::Resize(k, size) => s.input(|g| g.set_size(axis, Key(k), size)),
+            Op::Length(l) => length = l,
         }
-        let keys = s.source.axes[Axis::Cols.index()].clone();
-        let snap = s.frame(Viewport::new(width, 4.0));
+        // Answer every Locate a sort asked, as a host would by its frame.
+        s.frame(Viewport::new(length, length));
+        let keys = s.source.axes[axis.index()].clone();
+        let snap = s.frame(Viewport::new(length, length));
         let position = |k: u64| keys.iter().position(|&x| x == Key(k)).map(|p| p as u64);
-        // The pinned Strip draws each pinned Key the table has, in pin
-        // order, at its Position.
-        let pinned: Vec<(Option<Key>, u64)> = (snap.pinned(Axis::Cols, Edge::Leading).iter())
-            .map(|i| (i.key, i.position))
-            .collect();
-        let expected: Vec<(Option<Key>, u64)> = (pins.iter())
-            .filter_map(|&k| Some((Some(Key(k)), position(k)?)))
-            .collect();
-        assert_eq!(pinned, expected, "pinned Strip");
-        let pinned_at: Vec<u64> = expected.iter().map(|&(_, p)| p).collect();
+        let mut pinned_at = Vec::new();
+        for edge in Edge::ALL {
+            // Each pinned Strip draws each of its pinned Keys the table has,
+            // in pin order, at its Position.
+            let strip = snap.pinned(axis, edge);
+            let drawn: Vec<(Option<Key>, u64)> =
+                strip.iter().map(|i| (i.key, i.position)).collect();
+            let expected: Vec<(Option<Key>, u64)> = (pins[edge.index()].iter())
+                .filter_map(|&k| Some((Some(Key(k)), position(k)?)))
+                .collect();
+            assert_eq!(drawn, expected, "{edge:?} pinned Strip");
+            pinned_at.extend(expected.iter().map(|&(_, p)| p));
+            for pair in strip.windows(2) {
+                assert_eq!(pair[1].offset, pair[0].end() + gap, "{edge:?} {strip:?}");
+            }
+            if edge == Edge::Trailing
+                && let (Some(first), Some(last)) = (strip.first(), strip.last())
+                && first.offset >= header
+            {
+                assert_eq!(last.end(), length, "trailing Strip {strip:?}");
+            }
+        }
         // The scrolling Strip draws the Positions between its ends that are
         // not pinned, each once, in order, side by side.
-        let strip = snap.strip(Axis::Cols);
+        let strip = snap.strip(axis);
         for item in strip {
             assert!(!pinned_at.contains(&item.position), "{item:?} is pinned");
             assert_eq!(item.key, Some(keys[item.position as usize]), "{item:?}");
@@ -227,7 +261,7 @@ fn every_shown_item_is_drawn_exactly_once(tc: TestCase) {
         }
         // It starts at the scrolling region and reaches its end, or the
         // last item that is not pinned.
-        let region = snap.scrolling(Axis::Cols);
+        let region = snap.scrolling(axis);
         if let (Some(first), Some(last)) = (strip.first(), strip.last()) {
             assert!(first.offset <= region.start + gap && first.end() > region.start);
             let last_shown = (0..keys.len() as u64)
@@ -500,4 +534,104 @@ fn the_range_covers_what_is_drawn_between_its_corners(tc: TestCase) {
             }
         }
     }
+}
+
+#[test]
+fn freeze_up_to_here_pins_from_the_start_and_is_capped_at_what_fits() {
+    let mut s = tall();
+    s.frame(SHORT);
+    s.input(|g| g.pin(Axis::Cols, Edge::Trailing, Key(9)));
+    let mut out = s.step("column 9 pinned right: 4 to 32 scrolls", SHORT);
+    s.input(|g| g.freeze(Axis::Cols, Key(2)));
+    out += &s.step("freeze up to column 2: columns 0 to 2 pinned left", SHORT);
+    s.input(|g| g.freeze(Axis::Cols, Key(0)));
+    out += &s.step(
+        "freeze up to column 0, a pin: the pins after it are unpinned",
+        SHORT,
+    );
+    s.input(|g| g.freeze(Axis::Cols, Key(9)));
+    out += &s.step("freeze up to column 9, pinned right: nothing", SHORT);
+    s.input(|g| g.freeze(Axis::Cols, Key(7)));
+    out += &s.step(
+        "freeze up to column 7: only 1 and 2 fit beside columns 0 and 9, leaving room to scroll",
+        SHORT,
+    );
+    s.input(|g| g.freeze(Axis::Rows, Key(3)));
+    out += &s.step("freeze up to row 3", SHORT);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn freeze_far_from_the_start_waits_for_the_keys_from_the_start() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(4, 1.0).header(1.0),
+        AxisConfig::new(100, 6.0).header(4.0).gap(1.0),
+    );
+    s.frame(V);
+    s.input(|g| g.scroll_to_item(Axis::Cols, 50));
+    let mut out = s.step("scrolled to column 50", V);
+    s.input(|g| g.freeze(Axis::Cols, Key(51)));
+    out += &s.step(
+        "freeze up to column 51: columns 0 to 2 fit, fetched with a Window from the start",
+        V,
+    );
+    insta::assert_snapshot!(out);
+}
+
+/// "Freeze up to here" on a drawn item pins, after the leading pins, every
+/// item not pinned already from the start of the axis to it, in the
+/// table's order, but no more than fit before the trailing Strip with room
+/// left for an item to scroll; on a leading pin it unpins the pins after
+/// it, on a trailing pin it does nothing. Wherever the axis was scrolled.
+#[hegel::test(test_cases = 300)]
+fn freeze_up_to_here_pins_from_the_start_as_far_as_fits(tc: TestCase) {
+    let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(60));
+    let leading = some_keys(&tc, count, 2, &[]);
+    let trailing = some_keys(&tc, count, 2, &leading);
+    let mut s = pinned_keyed(axis, count, &leading, &trailing);
+    let viewport = Viewport::new(40.0, 10.0);
+    s.frame(viewport);
+    let scroll = tc.draw(gs::integers::<u64>().max_value(count - 1));
+    s.input(|g| g.scroll_to_item(axis, scroll));
+    let snap = s.frame(viewport);
+    let drawn: Vec<Key> = snap.drawn(axis).filter_map(|i| i.key).collect();
+    let key = tc.draw(gs::sampled_from(drawn));
+    s.input(|g| g.freeze(axis, key));
+    s.frame(viewport);
+    let keys = s.source.axes[axis.index()].clone();
+    let snap = s.frame(viewport);
+    // The model's geometry: items of `size` with a Gap of 1 across, 0 down.
+    let (size, gap, header, extent) = match axis {
+        Axis::Rows => (1.0f32, 0.0f32, 1.0f32, 10.0f32),
+        Axis::Cols => (3.0, 1.0, 4.0, 40.0),
+    };
+    let expected: Vec<u64> = if let Some(i) = leading.iter().position(|&k| k == key.0) {
+        leading[..=i].to_vec()
+    } else if trailing.contains(&key.0) {
+        leading.clone()
+    } else {
+        let stride = size + gap;
+        let mut offset = header + stride * leading.len() as f32;
+        let end = extent - stride * trailing.len() as f32;
+        let mut frozen = leading.clone();
+        for k in keys.iter().take_while(|&&k| k != key).chain([&key]) {
+            if leading.contains(&k.0) || trailing.contains(&k.0) {
+                continue;
+            }
+            if offset + stride + size > end {
+                break;
+            }
+            offset += stride;
+            frozen.push(k.0);
+        }
+        frozen
+    };
+    let pinned = |edge| -> Vec<u64> {
+        (snap.pinned(axis, edge).iter())
+            .filter_map(|i| i.key.map(|k| k.0))
+            .collect()
+    };
+    assert_eq!(pinned(Edge::Leading), expected, "freeze up to {key:?}");
+    assert_eq!(pinned(Edge::Trailing), trailing);
 }

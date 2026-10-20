@@ -27,6 +27,9 @@ pub(crate) struct AxisState {
     pub pins: [Vec<Pin>; 2],
     /// The pinned Strips per edge, as last laid out.
     pub pinned: [Vec<StripItem>; 2],
+    /// A "freeze up to here" waiting for the Window: the last Position it
+    /// pins.
+    pub freezing: Option<Position>,
 }
 
 impl AxisState {
@@ -40,6 +43,7 @@ impl AxisState {
             strip: Vec::new(),
             pins: [Vec::new(), Vec::new()],
             pinned: [Vec::new(), Vec::new()],
+            freezing: None,
         }
     }
 

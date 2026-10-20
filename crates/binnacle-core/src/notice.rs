@@ -121,6 +121,8 @@ impl Grid {
     /// ([`crate::ViewEdit::ShownChanged`]) when a quick filter searches the
     /// shown items of `axis`.
     pub fn notify(&mut self, axis: Axis, notice: ChangeNotice) {
+        // A freeze waiting for the Window named Positions that may have moved.
+        self.axis_mut(axis).freezing = None;
         // Items may have been shown or hidden.
         let shown = !matches!(
             notice,

@@ -4,7 +4,7 @@
 use crate::axis::AxisState;
 use crate::grid::Grid;
 use crate::notice::placement;
-use crate::snapshot::StripItem;
+use crate::snapshot::{ScrollAnchor, StripItem};
 use crate::sort::Located;
 use crate::types::{Axis, Edge, Key, Position};
 
@@ -145,6 +145,36 @@ impl AxisState {
         })
     }
 
+    /// The last Position "freeze up to here" on the item at `p` pins: the
+    /// items from the start to `p` not pinned already, as far as they fit
+    /// whole after the leading pinned Strip and still leave the scrolling
+    /// region room for an item of the default size. `None` if not even the
+    /// first fits.
+    fn fits_through(&self, p: Position) -> Option<Position> {
+        let (m, end) = (&self.measure, self.scroll_end());
+        let mut offset = self.scroll_start();
+        let mut last = None;
+        for q in 0..=p.min(m.count().saturating_sub(1)) {
+            if m.skipped(q) {
+                continue;
+            }
+            let size = m.size_at(q);
+            if offset + size + m.gap() + m.default_size() > end {
+                break;
+            }
+            offset += size + m.gap();
+            last = Some(q);
+        }
+        last
+    }
+
+    /// Whether the Window holds every Key a freeze waits for.
+    fn freeze_ready(&self) -> bool {
+        self.freezing.is_some_and(|last| {
+            (0..=last).all(|p| self.measure.skipped(p) || self.measure.key_at(p).is_some())
+        })
+    }
+
     /// Where the scrolling Strip starts: past the Header Band and the
     /// leading pinned Strip, with the Gap after its last item.
     pub fn scroll_start(&self) -> f32 {
@@ -183,6 +213,60 @@ impl Grid {
     pub fn unpin(&mut self, axis: Axis, key: Key) {
         if self.axis_mut(axis).unpin(key) {
             self.pending_damage.layout = true;
+        }
+    }
+
+    /// "Freeze up to here": pins every item from the start of `axis` to the
+    /// one with `key`, in their current order, to the leading edge after the
+    /// Keys pinned there already. Items pinned already keep their places,
+    /// and only what fits whole in the scrolling region as it stands, less
+    /// room for one item of the default size to scroll, is pinned, so on a
+    /// long way to `key` the freeze stops short. On a
+    /// leading pin it unpins the pins after it instead; on a trailing pin
+    /// it does nothing, as on a Key outside the Window. If the Window does
+    /// not hold every Key to freeze, the axis scrolls to its start and the
+    /// freeze finishes once the next Window does; a Change Notice on the axis
+    /// first drops it.
+    pub fn freeze(&mut self, axis: Axis, key: Key) {
+        let st = self.axis_mut(axis);
+        st.freezing = None;
+        let leading = &st.pins[Edge::Leading.index()];
+        if let Some(i) = leading.iter().position(|p| p.key == key) {
+            let after: Vec<Key> = leading[i + 1..].iter().map(|p| p.key).collect();
+            for key in after {
+                self.unpin(axis, key);
+            }
+            return;
+        }
+        if st.pins[Edge::Trailing.index()].iter().any(|p| p.key == key) {
+            return;
+        }
+        let Some(last) = st.measure.position_of(key).and_then(|p| st.fits_through(p)) else {
+            return;
+        };
+        st.freezing = Some(last);
+        if !st.freeze_ready() {
+            st.place_anchor(ScrollAnchor::default());
+            self.pending_damage.layout = true;
+            return;
+        }
+        self.finish_freeze(axis);
+    }
+
+    /// Pins what a freeze waits for, once the Window holds every Key of it.
+    pub(crate) fn finish_freeze(&mut self, axis: Axis) {
+        let st = self.axis(axis);
+        if !st.freeze_ready() {
+            return;
+        }
+        let Some(last) = st.freezing else { return };
+        let keys: Vec<Key> = (0..=last)
+            .filter(|&p| !st.measure.skipped(p))
+            .filter_map(|p| st.measure.key_at(p))
+            .collect();
+        self.axis_mut(axis).freezing = None;
+        for key in keys {
+            self.pin(axis, Edge::Leading, key);
         }
     }
 

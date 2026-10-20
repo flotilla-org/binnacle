@@ -299,6 +299,7 @@ impl Grid {
 
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {
         self.axis_mut(axis).sync_pins();
+        self.finish_freeze(axis);
         self.pending_damage.positions |= change.keys;
         self.pending_damage.layout |= change.sizes;
         if let Some(span) = &mut self.selection.span {

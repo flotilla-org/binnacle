@@ -33,8 +33,8 @@ struct Host {
     /// Per axis, the Keys a filter leaves out, which a later `Refiltered`
     /// may bring back.
     hidden: [Vec<u64>; 2],
-    /// Per axis, the Keys pinned to the leading edge, in pin order.
-    pins: [Vec<u64>; 2],
+    /// Per axis and edge, the pinned Keys, in pin order.
+    pins: [[Vec<u64>; 2]; 2],
     /// Per axis, Keys a `Refiltered` took out since the last `Reset`: once
     /// every `Locate` is answered, none of them is picked.
     refiltered_out: [BTreeSet<u64>; 2],
@@ -267,16 +267,18 @@ impl Host {
                 drawn.len(),
                 "a Key drawn twice on {axis:?}: {drawn:?}"
             );
-            // The pinned Strip draws pinned Keys only, in pin order.
-            let pinned: Vec<u64> = (snap.pinned(axis, Edge::Leading).iter())
-                .filter_map(|i| i.key.map(|k| k.0))
-                .collect();
-            let pins = &self.pins[axis.index()];
-            let mut order = pins.iter().filter(|k| pinned.contains(k));
-            assert!(
-                pinned.iter().all(|k| order.next() == Some(k)),
-                "pinned Strip {pinned:?} out of pin order {pins:?} on {axis:?}"
-            );
+            // Each pinned Strip draws its pinned Keys only, in pin order.
+            for edge in Edge::ALL {
+                let pinned: Vec<u64> = (snap.pinned(axis, edge).iter())
+                    .filter_map(|i| i.key.map(|k| k.0))
+                    .collect();
+                let pins = &self.pins[axis.index()][edge.index()];
+                let mut order = pins.iter().filter(|k| pinned.contains(k));
+                assert!(
+                    pinned.iter().all(|k| order.next() == Some(k)),
+                    "{edge:?} pinned Strip {pinned:?} out of pin order {pins:?} on {axis:?}"
+                );
+            }
             let keys = &self.keys[axis.index()];
             let count = keys.len() as u64;
             assert_eq!(snap.count(axis), count, "count on {axis:?}");
@@ -565,13 +567,18 @@ impl Host {
         let snap = self.grid.snapshot();
         for axis in Axis::ALL {
             let keys = &self.keys[axis.index()];
-            let drawn: Vec<(u64, u64)> = (snap.pinned(axis, Edge::Leading).iter())
-                .filter_map(|i| Some((i.key?.0, i.position)))
-                .collect();
-            let expected: Vec<(u64, u64)> = (self.pins[axis.index()].iter())
-                .filter_map(|k| Some((*k, keys.iter().position(|x| x == k)? as u64)))
-                .collect();
-            assert_eq!(drawn, expected, "pinned Strip on {axis:?} once settled");
+            for edge in Edge::ALL {
+                let drawn: Vec<(u64, u64)> = (snap.pinned(axis, edge).iter())
+                    .filter_map(|i| Some((i.key?.0, i.position)))
+                    .collect();
+                let expected: Vec<(u64, u64)> = (self.pins[axis.index()][edge.index()].iter())
+                    .filter_map(|k| Some((*k, keys.iter().position(|x| x == k)? as u64)))
+                    .collect();
+                assert_eq!(
+                    drawn, expected,
+                    "{edge:?} pinned Strip on {axis:?} once settled"
+                );
+            }
         }
         for axis in Axis::ALL {
             let picked = self.grid.snapshot().picked(axis).to_vec();
@@ -685,16 +692,12 @@ impl Host {
         };
         // A Window that finds a pinned Key changes the pinned Strip, and
         // with it the scrolling Strip's length, which may move the anchor.
-        let pinned = |grid: &mut Grid| -> Vec<Vec<Option<Key>>> {
+        let pinned = |grid: &mut Grid| -> Vec<Option<Key>> {
             let snap = grid.snapshot();
-            Axis::ALL
-                .map(|a| {
-                    snap.pinned(a, Edge::Leading)
-                        .iter()
-                        .map(|i| i.key)
-                        .collect()
-                })
-                .to_vec()
+            (Axis::ALL.iter())
+                .flat_map(|&a| Edge::ALL.map(|e| (a, e)))
+                .flat_map(|(a, e)| snap.pinned(a, e).iter().map(|i| i.key))
+                .collect()
         };
         self.frame_and_check();
         let before = anchors(&mut self.grid);
@@ -870,27 +873,29 @@ impl Host {
         self.resize(&tc);
     }
 
-    /// Pins a Key the source has, or one it never had (which stays dormant).
+    /// Pins a Key the source has, or one it never had (which stays
+    /// dormant), to either edge.
     #[rule]
     fn pin(&mut self, tc: TestCase) {
         let axis = tc.draw(axis());
+        let edge = tc.draw(gs::sampled_from(Edge::ALL.to_vec()));
         let key = self.key(&tc, axis);
         let pins = &mut self.pins[axis.index()];
-        pins.retain(|&k| k != key.0);
-        pins.push(key.0);
-        self.grid.pin(axis, Edge::Leading, key);
+        pins.iter_mut().for_each(|p| p.retain(|&k| k != key.0));
+        pins[edge.index()].push(key.0);
+        self.grid.pin(axis, edge, key);
     }
 
     #[rule]
     fn unpin(&mut self, tc: TestCase) {
         let axis = tc.draw(axis());
-        let pins = self.pins[axis.index()].clone();
+        let pins = self.pins[axis.index()].concat();
         let key = if !pins.is_empty() && tc.draw(gs::booleans()) {
             Key(tc.draw(gs::sampled_from(pins)))
         } else {
             self.key(&tc, axis)
         };
-        self.pins[axis.index()].retain(|&k| k != key.0);
+        (self.pins[axis.index()].iter_mut()).for_each(|p| p.retain(|&k| k != key.0));
         self.grid.unpin(axis, key);
     }
 
@@ -1084,7 +1089,7 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         grid,
         keys: [(0..rows).collect(), (100..100 + cols).collect()],
         hidden: [Vec::new(), Vec::new()],
-        pins: [Vec::new(), Vec::new()],
+        pins: Default::default(),
         refiltered_out: Default::default(),
         next: 1000,
         pending: VecDeque::new(),
