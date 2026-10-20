@@ -742,8 +742,9 @@ pub fn scenario(name: &str) -> Grid {
         }
         "pinned" => {
             // Column 4 and row 3 pinned leading, column 1 and row 8
-            // trailing, scrolled past, and a range from row 5 of the pinned
-            // column 4 down two rows.
+            // trailing, an Edge Gap on the rows, scrolled past, and a range
+            // from row 5 of the pinned column 4 down two rows.
+            grid.set_edge_gap(Axis::Rows, 6.0);
             grid.pin(Axis::Cols, Edge::Leading, key(4));
             grid.pin(Axis::Rows, Edge::Leading, key(3));
             grid.pin(Axis::Cols, Edge::Trailing, key(1));
@@ -928,16 +929,18 @@ mod tests {
                     }
                     assert!(s.scroll_anchor(Axis::Cols).position > 0);
                     let range = s.selection_range().unwrap();
+                    let (rows, cols) = (5..7, 4..5);
                     assert_eq!(
                         (&range.rows[..], &range.cols[..]),
-                        (&[5..7][..], &[4..5][..])
+                        (&[rows][..], &[cols][..])
                     );
                 }
                 "dragging" => {
                     let range = s.selection_range().unwrap();
+                    let (rows, cols) = (1..5, 0..3);
                     assert_eq!(
                         (&range.rows[..], &range.cols[..]),
-                        (&[1..5][..], &[0..3][..])
+                        (&[rows][..], &[cols][..])
                     );
                 }
                 "sorted" => {
@@ -991,7 +994,8 @@ mod tests {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
                     let current = s.find_match().unwrap();
-                    assert_eq!(s.selection_range().map(|r| &r.rows[..]), Some(&[1..3][..]));
+                    let rows = 1..3;
+                    assert_eq!(s.selection_range().map(|r| &r.rows[..]), Some(&[rows][..]));
                     let row = s.rows().iter().find(|i| i.key == Some(current.row));
                     let col = s.cols().iter().find(|i| i.key == Some(current.col));
                     assert!(s.cell_state(row.unwrap(), col.unwrap()).current_match);

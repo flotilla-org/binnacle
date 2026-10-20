@@ -77,11 +77,14 @@ pub enum Control {
     /// Open the focused item's header menu, on the column or the row
     /// ([`crate::HeaderMenu::open`]).
     Menu { axis: Axis },
+    /// Pin every item of `axis` from the start up to the focused one, as
+    /// many as fit ([`crate::freeze_focused`]).
+    Freeze { axis: Axis },
 }
 
 impl Control {
     /// Every Control, each of which every preset reaches.
-    pub const ALL: [Control; 24] = [
+    pub const ALL: [Control; 30] = [
         Control::QuickFilter,
         Control::ColumnFilter,
         Control::RowFilter,
@@ -102,6 +105,18 @@ impl Control {
             axis: Axis::Cols,
             edge: Edge::Leading,
         },
+        Control::Pin {
+            axis: Axis::Cols,
+            edge: Edge::Trailing,
+        },
+        Control::Pin {
+            axis: Axis::Rows,
+            edge: Edge::Leading,
+        },
+        Control::Pin {
+            axis: Axis::Rows,
+            edge: Edge::Trailing,
+        },
         Control::Unpin { axis: Axis::Cols },
         Control::Hide { axis: Axis::Cols },
         Control::Hide { axis: Axis::Rows },
@@ -109,6 +124,9 @@ impl Control {
         Control::ShowHidden { axis: Axis::Rows },
         Control::Menu { axis: Axis::Cols },
         Control::Menu { axis: Axis::Rows },
+        Control::Unpin { axis: Axis::Rows },
+        Control::Freeze { axis: Axis::Cols },
+        Control::Freeze { axis: Axis::Rows },
     ];
 }
 
@@ -125,28 +143,35 @@ pub enum Preset {
     /// rows, Alt+C case, Ctrl+L the quick filter, Alt+Down the focused
     /// column's filter popup and Alt+Right the focused row's, Alt+T and Alt+N
     /// the column's text set to contain or not, Alt+= keep the focused value, Ctrl+D remove, Ctrl+K clear, Alt+L (or
-    /// Excel's Ctrl+Alt+L) apply the filter again, Esc close, Alt+, pin the
-    /// focused column left and Alt+U unpin it. Alt+0 and Alt+9 hide the
-    /// focused column and row (Excel's Ctrl+0 and Ctrl+9, as terminals drop
-    /// Ctrl with a digit), Alt+) and Alt+( list the hidden ones, and Alt+M
-    /// (or Shift+F10) and Alt+Shift+M open the column's and the row's menu.
+    /// Excel's Ctrl+Alt+L) apply the filter again, Esc close, Alt+, and Alt+.
+    /// pin the focused column left and right, Alt+< and Alt+> its row to the
+    /// top and bottom, Alt+U and Alt+Shift+U unpin the column and the row,
+    /// and Alt+W and Alt+Shift+W freeze the columns and rows up to focus.
+    /// Alt+0 and Alt+9 hide the focused column and row (Excel's Ctrl+0 and
+    /// Ctrl+9, as terminals drop Ctrl with a digit), Alt+) and Alt+( list the
+    /// hidden ones, and Alt+M (or Shift+F10) and Alt+Shift+M open the
+    /// column's and the row's menu.
     Chords,
     /// vim and VisiData: `/` and `?` find forwards and backwards, `n` and `N`
     /// step, `|` the quick filter, `\` and `&` the focused column's text set
     /// to contain or not, `F` its filter popup, `R` the focused row's, `=`
     /// keep the focused value, `u` and `U` remove and clear, `i` case, `m` show only matching rows,
     /// `r` apply the filter again, Esc close, `!` pin the focused column
-    /// left or unpin it (VisiData's key column), Alt+U unpin, `-` and `_`
-    /// hide the column and the row (VisiData's `-`), `+` and `*` list the
-    /// hidden ones, `.` and `,` the menus. Typing is off.
+    /// left or unpin it (VisiData's key column) and `>` right, `[` and `]`
+    /// its row to the top and bottom, Alt+U and Alt+Shift+U unpin the column
+    /// and the row, `z` and `Z` freeze the columns and rows up to focus, `-`
+    /// and `_` hide the column and the row (VisiData's `-`), `+` and `*` list
+    /// the hidden ones, `.` and `,` the menus. Typing is off.
     Modes,
     /// Single keys with no modes: `/ ? n N` find, `\` the quick filter, `f`
     /// the filter drawer (see [`ColumnFilter::drawer`]), `F` the focused
     /// row's, `|` and `&` the column's text set to contain or not, `=` keep the focused value, `x` and `X` remove
     /// and clear, `m` show only matching rows, `i` case, `r` apply the filter
-    /// again, Esc close, `<` pin the focused column left, `u` unpin it, `-`
-    /// and `_` hide the column and the row, `+` and `*` list the hidden ones,
-    /// `.` and `,` the menus. Typing is off.
+    /// again, Esc close, `<` and `>` pin the focused column left and right,
+    /// `[` and `]` its row to the top and bottom, `u` and `U` unpin the
+    /// column and the row, `z` and `Z` freeze the columns and rows up to
+    /// focus, `-` and `_` hide the column and the row, `+` and `*` list the
+    /// hidden ones, `.` and `,` the menus. Typing is off.
     BareKeys,
 }
 
@@ -182,6 +207,21 @@ impl Controls {
             edge: Edge::Leading,
         };
         const UNPIN: Control = Unpin { axis: Axis::Cols };
+        const PIN_RIGHT: Control = Pin {
+            axis: Axis::Cols,
+            edge: Edge::Trailing,
+        };
+        const PIN_TOP: Control = Pin {
+            axis: Axis::Rows,
+            edge: Edge::Leading,
+        };
+        const PIN_BOTTOM: Control = Pin {
+            axis: Axis::Rows,
+            edge: Edge::Trailing,
+        };
+        const UNPIN_ROW: Control = Unpin { axis: Axis::Rows };
+        const FREEZE: Control = Freeze { axis: Axis::Cols };
+        const FREEZE_ROWS: Control = Freeze { axis: Axis::Rows };
         let mut controls = Controls {
             bindings: Vec::new(),
         };
@@ -207,6 +247,9 @@ impl Controls {
                 (Char('l'), CTRL.union(ALT), Reapply),
                 (Esc, NONE, Close),
                 (Char(','), ALT, PIN_LEFT),
+                (Char('.'), ALT, PIN_RIGHT),
+                (Char('<'), ALT, PIN_TOP),
+                (Char('>'), ALT, PIN_BOTTOM),
                 (Char('u'), ALT, UNPIN),
                 (Char('0'), ALT, Hide { axis: Axis::Cols }),
                 (Char('9'), ALT, Hide { axis: Axis::Rows }),
@@ -215,6 +258,9 @@ impl Controls {
                 (Char('m'), ALT, Menu { axis: Axis::Cols }),
                 (F(10), SHIFT, Menu { axis: Axis::Cols }),
                 (Char('M'), ALT, Menu { axis: Axis::Rows }),
+                (Char('U'), ALT, UNPIN_ROW),
+                (Char('w'), ALT, FREEZE),
+                (Char('W'), ALT, FREEZE_ROWS),
             ],
             Preset::Modes => &[
                 (Char('|'), NONE, QuickFilter),
@@ -234,6 +280,9 @@ impl Controls {
                 (Char('r'), NONE, Reapply),
                 (Esc, NONE, Close),
                 (Char('!'), NONE, PIN_LEFT),
+                (Char('>'), NONE, PIN_RIGHT),
+                (Char('['), NONE, PIN_TOP),
+                (Char(']'), NONE, PIN_BOTTOM),
                 (Char('u'), ALT, UNPIN),
                 (Char('-'), NONE, Hide { axis: Axis::Cols }),
                 (Char('_'), NONE, Hide { axis: Axis::Rows }),
@@ -241,6 +290,9 @@ impl Controls {
                 (Char('*'), NONE, ShowHidden { axis: Axis::Rows }),
                 (Char('.'), NONE, Menu { axis: Axis::Cols }),
                 (Char(','), NONE, Menu { axis: Axis::Rows }),
+                (Char('U'), ALT, UNPIN_ROW),
+                (Char('z'), NONE, FREEZE),
+                (Char('Z'), NONE, FREEZE_ROWS),
             ],
             Preset::BareKeys => &[
                 (Char('\\'), NONE, QuickFilter),
@@ -260,6 +312,9 @@ impl Controls {
                 (Char('r'), NONE, Reapply),
                 (Esc, NONE, Close),
                 (Char('<'), NONE, PIN_LEFT),
+                (Char('>'), NONE, PIN_RIGHT),
+                (Char('['), NONE, PIN_TOP),
+                (Char(']'), NONE, PIN_BOTTOM),
                 (Char('u'), NONE, UNPIN),
                 (Char('-'), NONE, Hide { axis: Axis::Cols }),
                 (Char('_'), NONE, Hide { axis: Axis::Rows }),
@@ -267,6 +322,9 @@ impl Controls {
                 (Char('*'), NONE, ShowHidden { axis: Axis::Rows }),
                 (Char('.'), NONE, Menu { axis: Axis::Cols }),
                 (Char(','), NONE, Menu { axis: Axis::Rows }),
+                (Char('U'), NONE, UNPIN_ROW),
+                (Char('z'), NONE, FREEZE),
+                (Char('Z'), NONE, FREEZE_ROWS),
             ],
         };
         for &(code, modifiers, control) in bindings {

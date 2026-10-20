@@ -444,7 +444,8 @@ impl<'a> Snapshot<'a> {
         let across = axis.other();
         let thickness = self.header(across);
         let range = self.selection_range();
-        let whole = range.filter(|r| r.span(across) == [0..self.count(across)]);
+        let all = self.count(across);
+        let whole = range.filter(|r| matches!(r.span(across), [run] if *run == (0..all)));
         let hovered = grid.hovered;
         self.drawn(axis).map(move |item| {
             let (x, y, width, height) = match axis {

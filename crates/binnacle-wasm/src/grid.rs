@@ -115,6 +115,12 @@ impl WebGrid {
         self.grid.set_gap(axis(a), gap);
     }
 
+    /// The least space between a pinned Strip and the scrolling Strip on
+    /// axis `a` (the Gap where larger).
+    pub fn set_edge_gap(&mut self, a: u8, gap: f32) {
+        self.grid.set_edge_gap(axis(a), gap);
+    }
+
     pub fn set_size(&mut self, a: u8, key: u64, size: f32) {
         self.grid.set_size(axis(a), Key(key), size);
     }

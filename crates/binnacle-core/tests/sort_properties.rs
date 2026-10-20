@@ -457,7 +457,8 @@ fn a_reorder_drops_the_range_and_any_drag_and_leaves_the_anchor(tc: TestCase) {
         for &axis in &step.reordered {
             let i = axis.index();
             if let Some(range) = &host.view.range {
-                assert_eq!(range.span(axis), [0..host.view.counts[i]], "{axis:?}");
+                let all = 0..host.view.counts[i];
+                assert_eq!(range.span(axis), [all], "{axis:?}");
             }
             assert_ne!(host.view.mode, Mode::DraggingSelection);
         }

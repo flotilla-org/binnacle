@@ -221,12 +221,14 @@ pub(crate) fn draw(
 ) {
     let (top_f, left_f) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     let (top, left) = (cell(top_f), cell(left_f));
-    // The pinned items, then the scrolling ones not hidden behind them.
+    // The drawn items not hidden behind the pinned Strips, in drawn order.
     let drawn = |axis: Axis| -> Vec<StripItem> {
-        let from = snapshot.scrolling(axis).start;
-        let scrolling = snapshot.strip(axis).iter().filter(|i| i.end() >= from);
+        let span = snapshot.scrolling(axis);
+        let scrolling =
+            (snapshot.strip(axis).iter()).filter(|i| i.end() >= span.start && i.offset < span.end);
         (snapshot.pinned(axis, Edge::Leading).iter())
             .chain(scrolling)
+            .chain(snapshot.pinned(axis, Edge::Trailing))
             .copied()
             .collect()
     };
@@ -244,19 +246,42 @@ pub(crate) fn draw(
     let handles = style.extent != BorderExtent::None;
     let columns = matches!(style.extent, BorderExtent::Columns | BorderExtent::Grid);
     let grid = style.extent == BorderExtent::Grid;
-    // The cell past the axis's last item, when that item is shown.
+    // A scrolling item's line under the trailing pinned Strip is hidden.
+    let hidden = |axis: Axis, at: i64| {
+        let first = snapshot.pinned(axis, Edge::Trailing).first();
+        first.is_some_and(|it| at >= cell(it.offset))
+    };
+    // The cell past the axis's last item, when that item is shown and
+    // neither pinned to the leading edge nor followed by trailing pins,
+    // where other items follow it.
     let closing = |axis: Axis, strip: &[StripItem], band: f32| {
         let count = snapshot.count(axis);
-        strip
-            .last()
-            .filter(|it| it.position.saturating_add(1) >= count && it.end() >= band)
-            .map(|it| cell(it.end()))
+        let (scrolling, leading) = (snapshot.strip(axis), snapshot.pinned(axis, Edge::Leading));
+        let trailing = snapshot.pinned(axis, Edge::Trailing);
+        let followed = &trailing[..trailing.len().saturating_sub(1)];
+        (strip.iter())
+            .filter(|it| !leading.contains(it) && !followed.contains(it))
+            .find(|it| it.position.saturating_add(1) >= count && it.end() >= band)
+            .map(|it| (it, cell(it.end())))
+            .filter(|(it, at)| !(scrolling.contains(it) && hidden(axis, *at)))
+            .map(|(_, at)| at)
     };
     let close_x = closing(Axis::Cols, cols, left_f).filter(|_| columns);
     let close_y = closing(Axis::Rows, rows, top_f).filter(|_| grid);
-    // The cell in the Gap after the leading pinned Strip of columns.
-    let edge = (snapshot.pinned(Axis::Cols, Edge::Leading).last())
-        .and_then(|it| gap_cell(it, snapshot.gap(Axis::Cols), u64::MAX, false));
+    // The cells in the Edge Gaps beside the pinned Strips of each axis:
+    // after the leading one, before the trailing one.
+    let edges = |axis: Axis| -> Vec<i64> {
+        let span = snapshot.scrolling(axis);
+        let leading = (snapshot.pinned(axis, Edge::Leading).last())
+            .map(|it| cell(it.end()))
+            .filter(|&at| at < cell(span.start));
+        let trailing = (snapshot.pinned(axis, Edge::Trailing).first())
+            .map(|it| (cell(span.end), cell(it.offset)))
+            .filter(|&(at, first)| at < first)
+            .map(|(at, _)| at);
+        leading.into_iter().chain(trailing).collect()
+    };
+    let (col_edges, row_edges) = (edges(Axis::Cols), edges(Axis::Rows));
     // The lines a closing line crosses reach it.
     if let Some(x) = close_x {
         right = right.max(x + 1);
@@ -270,16 +295,24 @@ pub(crate) fn draw(
     };
     if handles {
         let (gap, count) = (snapshot.gap(Axis::Cols), snapshot.count(Axis::Cols));
+        let scrolling = snapshot.strip(Axis::Cols);
         for c in cols.iter().filter(|c| c.end() >= left_f) {
             let body = columns && gap_cell(c, gap, count, false).is_some();
             if let Some(x) = gap_cell(c, gap, count, true) {
+                if scrolling.contains(c) && hidden(Axis::Cols, x) {
+                    continue;
+                }
                 lines.vertical(x, 0..if body { bottom } else { top }, top);
             }
         }
         let (gap, count) = (snapshot.gap(Axis::Rows), snapshot.count(Axis::Rows));
+        let scrolling = snapshot.strip(Axis::Rows);
         for r in rows.iter().filter(|r| r.end() >= top_f) {
             let body = grid && gap_cell(r, gap, count, false).is_some();
             if let Some(y) = gap_cell(r, gap, count, true) {
+                if scrolling.contains(r) && hidden(Axis::Rows, y) {
+                    continue;
+                }
                 lines.horizontal(y, 0..if body { right } else { left }, left);
             }
         }
@@ -306,9 +339,15 @@ pub(crate) fn draw(
         }
     }
     let (vertical, horizontal, junctions) = glyphs(style.weight);
-    let rule_ys: Vec<i64> = (lines.marks.iter())
-        .filter(|((x, _), m)| Some(*x) == edge && m.horizontal)
-        .map(|((_, y), _)| *y)
+    // Where the lines between rows cross each column edge, and the column
+    // lines cross each row edge.
+    let rule_ys: Vec<(i64, i64)> = (lines.marks.iter())
+        .filter(|((x, _), m)| col_edges.contains(x) && m.horizontal)
+        .map(|(&at, _)| at)
+        .collect();
+    let line_xs: Vec<(i64, i64)> = (lines.marks.iter())
+        .filter(|((_, y), m)| row_edges.contains(y) && m.vertical)
+        .map(|(&at, _)| at)
         .collect();
     for ((x, y), m) in lines.marks {
         let ch = match (m.vertical, m.horizontal) {
@@ -330,31 +369,66 @@ pub(crate) fn draw(
             c.set_char(ch).set_style(style);
         }
     }
-    // The pinned edge: a double line down the body whatever the Border
-    // Style draws, capped where it meets the band rule and the closing
-    // rule and crossing the rules between rows. The header keeps its
-    // handle. Double rules are already `║`, so there the edge goes heavy.
-    let Some(x) = edge.filter(|x| (0..i64::from(area.width)).contains(x)) else {
-        return;
-    };
-    let (line, cap_top, cap_bottom, cross) = match style.weight {
-        BorderWeight::Double => ('┃', '┰', '┸', '╂'),
-        BorderWeight::Light | BorderWeight::Heavy => ('║', '╥', '╨', '╫'),
-    };
-    let band_rule = style.draws_band_rules() && top >= 2;
-    let from = if band_rule { top - 1 } else { top };
-    for y in from.max(0)..bottom.min(i64::from(area.height)) {
-        let ch = if band_rule && y == top - 1 {
-            cap_top
-        } else if close_y == Some(y) {
-            cap_bottom
-        } else if rule_ys.contains(&y) {
-            cross
-        } else {
-            line
-        };
-        if let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
+    // The pinned edges: double lines across the body whatever the Border
+    // Style draws, capped where they meet the band rules and the closing
+    // rules and crossing the lines between items and each other. The
+    // headers keep their handles. Double lines are already double, so there
+    // the edges go heavy.
+    let (size_x, size_y) = (i64::from(area.width), i64::from(area.height));
+    let mut put = |x: i64, y: i64, ch: char| {
+        if (0..size_x).contains(&x)
+            && (0..size_y).contains(&y)
+            && let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16))
+        {
             c.set_char(ch).set_style(theme.pinned_edge);
+        }
+    };
+    let double = style.weight == BorderWeight::Double;
+    let (down, cap_top, cap_bottom, cross) = if double {
+        ('┃', '┰', '┸', '╂')
+    } else {
+        ('║', '╥', '╨', '╫')
+    };
+    let (along, cap_left, cap_right, cross_col) = if double {
+        ('━', '┝', '┥', '┿')
+    } else {
+        ('═', '╞', '╡', '╪')
+    };
+    let both = if double { '╋' } else { '╬' };
+    let rules = style.draws_band_rules();
+    let (rule_top, rule_left) = (rules && top >= 2, rules && left >= 2);
+    for &x in &col_edges {
+        let from = if rule_top { top - 1 } else { top };
+        for y in from.max(0)..bottom {
+            let ch = if rule_top && y == top - 1 {
+                cap_top
+            } else if row_edges.contains(&y) {
+                both
+            } else if close_y == Some(y) && y + 1 >= bottom {
+                cap_bottom
+            } else if rule_ys.contains(&(x, y)) {
+                cross
+            } else {
+                down
+            };
+            put(x, y, ch);
+        }
+    }
+    for &y in &row_edges {
+        let from = if rule_left { left - 1 } else { left };
+        for x in from.max(0)..right {
+            let ch = if col_edges.contains(&x) {
+                continue;
+            } else if rule_left && x == left - 1 {
+                cap_left
+            } else if close_x == Some(x) && x + 1 >= right {
+                cap_right
+            } else if line_xs.contains(&(x, y)) {
+                cross_col
+            } else {
+                along
+            };
+            put(x, y, ch);
         }
     }
 }

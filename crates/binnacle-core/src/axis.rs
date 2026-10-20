@@ -30,6 +30,9 @@ pub(crate) struct AxisState {
     /// A "freeze up to here" waiting for the Window: the last Position it
     /// pins.
     pub freezing: Option<Position>,
+    /// The least space between a pinned Strip and the scrolling Strip (see
+    /// [`AxisState::edge_gap`]).
+    pub edge_gap: f32,
 }
 
 impl AxisState {
@@ -44,7 +47,26 @@ impl AxisState {
             pins: [Vec::new(), Vec::new()],
             pinned: [Vec::new(), Vec::new()],
             freezing: None,
+            edge_gap: 0.0,
         }
+    }
+
+    /// The space between a pinned Strip and the scrolling Strip: the Edge
+    /// Gap, or the Gap if that is larger.
+    pub fn edge_gap(&self) -> f32 {
+        self.measure.gap().max(self.edge_gap)
+    }
+
+    /// Sets the Edge Gap, keeping the Scroll Anchor as [`AxisState::set_gap`]
+    /// does. Returns whether anything changed.
+    pub fn set_edge_gap(&mut self, gap: f32) -> bool {
+        if !(gap.is_finite() && gap >= 0.0) || gap == self.edge_gap {
+            return false;
+        }
+        self.edge_gap = gap;
+        self.at_end = false;
+        self.clamp_anchor();
+        true
     }
 
     /// The length the scrolling Strip shows: between the pinned Strips,

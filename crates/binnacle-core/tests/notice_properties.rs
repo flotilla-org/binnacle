@@ -375,7 +375,8 @@ fn a_range_keeps_the_rows_between_its_ends_through_inserts_and_removals(tc: Test
         // A range over every row may be whole on the rows (it then grows
         // with inserts at the end and survives emptying) or not: the View
         // cannot tell which. Scenarios cover both.
-        if before.rows == [0..host.count(Axis::Rows)] {
+        let all = 0..host.count(Axis::Rows);
+        if before.rows == [all] {
             continue;
         }
         let mut member: Vec<bool> = (0..host.count(Axis::Rows))
@@ -411,7 +412,8 @@ fn a_range_keeps_the_rows_between_its_ends_through_inserts_and_removals(tc: Test
             None => assert_eq!(after, None),
             Some((first, last)) => {
                 let after = after.expect("some of the range is left");
-                assert_eq!(after.rows, [first as u64..last as u64 + 1]);
+                let kept = first as u64..last as u64 + 1;
+                assert_eq!(after.rows, [kept]);
                 assert_eq!(after.cols, before.cols);
             }
         }

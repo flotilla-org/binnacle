@@ -110,7 +110,13 @@
 //! keys): it stays after the row numbers, past a `║` edge, while the other
 //! columns scroll behind it, and it keeps its place through sorts and
 //! filters. Pinning more columns adds each after the last. The same key on a
-//! pinned column unpins it, as does Alt+U (`u` in bare keys).
+//! pinned column unpins it, as does Alt+U (`u` in bare keys). Alt+. (`>`)
+//! pins it right, flush with the far edge; Alt+< and Alt+> (`[` and `]`)
+//! pin the focused row to the top or bottom, past a `═` edge, and
+//! Alt+Shift+U (`U` in bare keys) unpins it. Alt+W (`z`) freezes the
+//! columns from the first to the focused one, as many as fit, and
+//! Alt+Shift+W (`Z`) the rows. The arrow keys step through pinned and
+//! scrolling items in the order they are drawn.
 //!
 //! In the records (slow too) and on their side, Alt+0 hides the focused
 //! column and Alt+9 its row: the source leaves it out whatever the filter
@@ -173,9 +179,9 @@ use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
     CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     HeaderMenu, Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer,
-    TextRenderer, Theme, animating, begin_frame, clear_filters, count, fit_width, hide_focused,
-    keep_value, remove_conditions, render_conditions, render_editor, render_with, row_count,
-    status, toggle_pin, unpin_focused, wheel,
+    TextRenderer, Theme, animating, begin_frame, clear_filters, count, fit_width, freeze_focused,
+    hide_focused, keep_value, remove_conditions, render_conditions, render_editor, render_with,
+    row_count, status, toggle_pin, unpin_focused, wheel,
 };
 
 /// The Control that pins the focused column left, for the keys line.
@@ -1661,6 +1667,10 @@ fn main() -> io::Result<()> {
                             menu.open_hidden(&grid.snapshot(), axis)
                         }
                         Some(Control::Menu { axis }) => menu.open(&grid.snapshot(), axis),
+                        Some(Control::Freeze { axis }) => {
+                            freeze_focused(&mut grid, axis);
+                            true
+                        }
                         // Esc closes the drawer, else find, else cancels.
                         Some(Control::Close) if popup.close() => true,
                         Some(Control::Close) if find.is_open() => {

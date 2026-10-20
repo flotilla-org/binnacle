@@ -378,6 +378,17 @@ impl Grid {
         }
     }
 
+    /// Sets the Edge Gap on `axis`: the least space between a pinned Strip
+    /// and the scrolling Strip, where an adapter draws the pinned edge. The
+    /// Gap is used where it is larger. ratatui gives rows, which have no
+    /// Gap, a line for their edge this way. Values that are not finite and
+    /// non-negative are ignored.
+    pub fn set_edge_gap(&mut self, axis: Axis, gap: f32) {
+        if self.axis_mut(axis).set_edge_gap(gap) {
+            self.pending_damage.layout = true;
+        }
+    }
+
     /// The Size Override for the item with `key` on `axis`, if any.
     pub fn size_override(&self, axis: Axis, key: Key) -> Option<f32> {
         self.axis(axis).measure.size_override(key)

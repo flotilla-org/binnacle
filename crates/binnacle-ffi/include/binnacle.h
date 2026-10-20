@@ -668,6 +668,11 @@ int binnacle_grid_set_size(BinnacleGrid *grid, uint32_t axis, uint64_t key, floa
  * finite and non-negative are ignored. */
 int binnacle_grid_set_header(BinnacleGrid *grid, uint32_t axis, float thickness);
 
+/* The Edge Gap on axis: the least space between a pinned Strip and the
+ * scrolling Strip, where the pinned edge is drawn; the Gap is used where it is
+ * larger. Values that are not finite and non-negative are ignored. */
+int binnacle_grid_set_edge_gap(BinnacleGrid *grid, uint32_t axis, float gap);
+
 /* Pins the item with key on axis to edge (BINNACLE_EDGE_*), after the keys
  * pinned there before: it is drawn in that edge's pinned Strip whatever the
  * sort or scroll. A key outside the Window is found with a LOCATE Effect.

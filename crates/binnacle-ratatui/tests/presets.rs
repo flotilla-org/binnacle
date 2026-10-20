@@ -4,7 +4,7 @@
 
 use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key, Viewport};
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{Control, Controls, Preset, toggle_pin, unpin_focused};
+use binnacle_ratatui::{Control, Controls, Preset, freeze_focused, toggle_pin, unpin_focused};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const PRESETS: [Preset; 3] = [Preset::Chords, Preset::Modes, Preset::BareKeys];
@@ -246,4 +246,108 @@ fn pin_toggles_the_focused_column_and_unpin_unpins_it() {
     grid.set_focus(Key(0), Key(4));
     unpin_focused(&mut grid, Axis::Cols);
     assert_eq!(pinned(&mut grid), Vec::<u64>::new());
+}
+
+/// Each preset pins the focused column right and its row top or bottom,
+/// unpins the row, and freezes either axis up to focus.
+#[test]
+fn each_preset_reaches_both_edges_of_both_axes_and_freeze() {
+    use Control::{Freeze, Pin, Unpin};
+    let (alt, none) = (KeyModifiers::ALT, KeyModifiers::NONE);
+    let key = |c, m| press(KeyCode::Char(c), m);
+    let pin = |axis, edge| Pin { axis, edge };
+    let cases = [
+        (
+            Preset::Chords,
+            [
+                key('.', alt),
+                key('<', alt),
+                key('>', alt),
+                key('U', alt),
+                key('w', alt),
+                key('W', alt),
+            ],
+        ),
+        (
+            Preset::Modes,
+            [
+                key('>', none),
+                key('[', none),
+                key(']', none),
+                key('U', alt),
+                key('z', none),
+                key('Z', none),
+            ],
+        ),
+        (
+            Preset::BareKeys,
+            [
+                key('>', none),
+                key('[', none),
+                key(']', none),
+                key('U', none),
+                key('z', none),
+                key('Z', none),
+            ],
+        ),
+    ];
+    let controls = [
+        pin(Axis::Cols, Edge::Trailing),
+        pin(Axis::Rows, Edge::Leading),
+        pin(Axis::Rows, Edge::Trailing),
+        Unpin { axis: Axis::Rows },
+        Freeze { axis: Axis::Cols },
+        Freeze { axis: Axis::Rows },
+    ];
+    for (preset, keys) in cases {
+        let bound = Controls::preset(preset);
+        for (key, control) in keys.iter().zip(controls) {
+            assert_eq!(bound.control(key), Some(control), "{preset:?} {key:?}");
+        }
+    }
+}
+
+/// The Keys pinned to `edge` of `axis`.
+fn pinned_at(grid: &mut Grid, axis: Axis, edge: Edge) -> Vec<u64> {
+    pinned(grid);
+    let snapshot = grid.snapshot();
+    (snapshot.pinned(axis, edge).iter())
+        .filter_map(|i| i.key.map(|k| k.0))
+        .collect()
+}
+
+/// Pin toggles the focused row at either edge, pinning to one edge moves it
+/// from the other, and Freeze pins the columns from the first to the
+/// focused one, as many as fit with room for one more to scroll.
+#[test]
+fn pin_moves_between_edges_and_freeze_pins_from_the_start() {
+    let mut grid = Grid::new(
+        AxisConfig::new(20, 1.0).header(1.0),
+        AxisConfig::new(8, 6.0).header(3.0).gap(1.0),
+    );
+    pinned(&mut grid);
+    grid.set_focus(Key(3), Key(2));
+    toggle_pin(&mut grid, Axis::Rows, Edge::Trailing);
+    assert_eq!(pinned_at(&mut grid, Axis::Rows, Edge::Trailing), [3]);
+    toggle_pin(&mut grid, Axis::Rows, Edge::Leading);
+    assert_eq!(
+        pinned_at(&mut grid, Axis::Rows, Edge::Trailing),
+        Vec::<u64>::new()
+    );
+    assert_eq!(pinned_at(&mut grid, Axis::Rows, Edge::Leading), [3]);
+    unpin_focused(&mut grid, Axis::Rows);
+    assert_eq!(
+        pinned_at(&mut grid, Axis::Rows, Edge::Leading),
+        Vec::<u64>::new()
+    );
+    freeze_focused(&mut grid, Axis::Cols);
+    assert_eq!(pinned_at(&mut grid, Axis::Cols, Edge::Leading), [0, 1, 2]);
+    // 40 wide: after the 3-wide band, four columns and their Gaps reach 31,
+    // leaving 9, room for one more to scroll; a fifth would leave 2.
+    grid.set_focus(Key(3), Key(6));
+    freeze_focused(&mut grid, Axis::Cols);
+    assert_eq!(
+        pinned_at(&mut grid, Axis::Cols, Edge::Leading),
+        [0, 1, 2, 3]
+    );
 }

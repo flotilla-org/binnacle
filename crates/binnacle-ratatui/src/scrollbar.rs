@@ -74,12 +74,17 @@ fn band(thickness: f32, max: u16) -> u16 {
 /// is given and fills the Windows the Grid asks for. It runs once, or again
 /// when the columns' scrollbar comes or goes. Returns the layout
 /// [`render_with`](crate::render_with) will draw the Grid's Snapshot in.
+/// It also gives each axis an Edge Gap of one cell, so a pinned edge has a
+/// cell to be drawn in even where the axis has no Gap (rows, usually).
 pub fn begin_frame(
     grid: &mut Grid,
     ctx: &RenderContext,
     area: Rect,
     mut fill: impl FnMut(&mut Grid, Viewport),
 ) -> Layout {
+    for axis in Axis::ALL {
+        grid.set_edge_gap(axis, 1.0);
+    }
     let mut viewport = layout(&grid.snapshot(), ctx, area).viewport();
     // The width never depends on the Snapshot, so the second pass settles it.
     for _ in 0..3 {

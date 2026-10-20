@@ -119,47 +119,52 @@ impl AxisState {
 
     /// The pinned Strip of `edge` in pin order with a Gap between items: the
     /// leading one laid out from the Header Band with a Gap after its last
-    /// item, the trailing one ending flush with the viewport's far end with
-    /// a Gap before its first.
+    /// item, the trailing one laid out back from the viewport's far end, so
+    /// its last item ends flush with it.
     pub fn pinned_items(&self, edge: Edge) -> impl Iterator<Item = StripItem> + '_ {
         let gap = self.measure.gap();
-        let mut offset = match edge {
-            Edge::Leading => self.header,
-            Edge::Trailing => {
-                let length: f32 = (self.drawn_pins(edge))
-                    .map(|(key, _)| self.measure.size_of(key) + gap)
-                    .sum();
-                self.extent - (length - gap).max(0.0)
-            }
+        let item = |(key, position)| StripItem {
+            position,
+            key: Some(key),
+            offset: 0.0,
+            size: self.measure.size_of(key),
         };
-        self.drawn_pins(edge).map(move |(key, position)| {
-            let size = self.measure.size_of(key);
-            let item = StripItem {
-                position,
-                key: Some(key),
-                offset,
-                size,
-            };
-            offset += size + gap;
-            item
-        })
+        let mut items: Vec<StripItem> = self.drawn_pins(edge).map(item).collect();
+        match edge {
+            Edge::Leading => {
+                let mut offset = self.header;
+                for it in &mut items {
+                    it.offset = offset;
+                    offset += it.size + gap;
+                }
+            }
+            Edge::Trailing => {
+                let mut end = self.extent;
+                for it in items.iter_mut().rev() {
+                    it.offset = end - it.size;
+                    end = it.offset - gap;
+                }
+            }
+        }
+        items.into_iter()
     }
 
     /// The last Position "freeze up to here" on the item at `p` pins: the
     /// items from the start to `p` not pinned already, as far as they fit
     /// whole after the leading pinned Strip and still leave the scrolling
-    /// region room for an item of the default size. `None` if not even the
-    /// first fits.
+    /// region, past the Edge Gap, room for an item of the default size.
+    /// `None` if not even the first fits.
     fn fits_through(&self, p: Position) -> Option<Position> {
         let (m, end) = (&self.measure, self.scroll_end());
-        let mut offset = self.scroll_start();
+        let mut offset =
+            (self.pinned_items(Edge::Leading).last()).map_or(self.header, |it| it.end() + m.gap());
         let mut last = None;
         for q in 0..=p.min(m.count().saturating_sub(1)) {
             if m.skipped(q) {
                 continue;
             }
             let size = m.size_at(q);
-            if offset + size + m.gap() + m.default_size() > end {
+            if offset + size + self.edge_gap() + m.default_size() > end {
                 break;
             }
             offset += size + m.gap();
@@ -176,19 +181,19 @@ impl AxisState {
     }
 
     /// Where the scrolling Strip starts: past the Header Band and the
-    /// leading pinned Strip, with the Gap after its last item.
+    /// leading pinned Strip, with the Edge Gap after its last item.
     pub fn scroll_start(&self) -> f32 {
         self.pinned_items(Edge::Leading)
             .last()
-            .map_or(self.header, |it| it.end() + self.measure.gap())
+            .map_or(self.header, |it| it.end() + self.edge_gap())
     }
 
-    /// Where the scrolling Strip ends: at the viewport's far end, or the Gap
-    /// before the trailing pinned Strip.
+    /// Where the scrolling Strip ends: at the viewport's far end, or the
+    /// Edge Gap before the trailing pinned Strip.
     pub fn scroll_end(&self) -> f32 {
         self.pinned_items(Edge::Trailing)
             .next()
-            .map_or(self.extent, |it| it.offset - self.measure.gap())
+            .map_or(self.extent, |it| it.offset - self.edge_gap())
     }
 }
 

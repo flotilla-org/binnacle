@@ -91,11 +91,9 @@ impl Span {
             let (i, st) = (axis.index(), &axes[axis.index()]);
             let count = st.measure.count();
             if self.whole[i] {
-                return if count == 0 {
-                    Vec::new()
-                } else {
-                    vec![0..count]
-                };
+                return std::iter::once(0..count)
+                    .filter(|r| !r.is_empty())
+                    .collect();
             }
             let (a, b) = (self.anchor[i], self.head[i]);
             if count == 0 || a.position.min(b.position) >= count {

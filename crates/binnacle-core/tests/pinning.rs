@@ -138,6 +138,7 @@ enum Op {
     Remove(u64),
     Resize(u64, f32),
     Length(f32),
+    EdgeGap(f32),
 }
 
 #[hegel::composite]
@@ -160,11 +161,12 @@ fn op(tc: &TestCase) -> Op {
             .min_value(4.0)
             .max_value(60.0)
             .map(Op::Length),
+        gs::sampled_from(vec![0.0f32, 1.0, 2.5]).map(Op::EdgeGap),
     ))
 }
 
-/// Through pins on both edges, unpins, scrolls, sorts, removals and resizes
-/// on either axis, each pinned Strip draws its pinned Keys in pin order at
+/// Through pins on both edges, unpins, scrolls, sorts, removals, resizes
+/// and Edge Gaps on either axis, each pinned Strip draws its pinned Keys in pin order at
 /// their Positions (the trailing one ending at the viewport's end while
 /// the pins fit), and the scrolling Strip draws every other item between
 /// its ends once, in order.
@@ -216,6 +218,7 @@ fn every_shown_item_is_drawn_exactly_once(tc: TestCase) {
             }
             Op::Resize(k, size) => s.input(|g| g.set_size(axis, Key(k), size)),
             Op::Length(l) => length = l,
+            Op::EdgeGap(g) => s.input(|grid| grid.set_edge_gap(axis, g)),
         }
         // Answer every Locate a sort asked, as a host would by its frame.
         s.frame(Viewport::new(length, length));
@@ -235,13 +238,25 @@ fn every_shown_item_is_drawn_exactly_once(tc: TestCase) {
             assert_eq!(drawn, expected, "{edge:?} pinned Strip");
             pinned_at.extend(expected.iter().map(|&(_, p)| p));
             for pair in strip.windows(2) {
-                assert_eq!(pair[1].offset, pair[0].end() + gap, "{edge:?} {strip:?}");
+                // The trailing Strip is laid out back from the far end, so
+                // its sums round the other way.
+                let (at, want) = (pair[1].offset, pair[0].end() + gap);
+                let slack = if edge == Edge::Trailing {
+                    4.0 * f32::EPSILON * at.abs().max(1.0)
+                } else {
+                    0.0
+                };
+                assert!((at - want).abs() <= slack, "{edge:?} {strip:?}");
             }
             if edge == Edge::Trailing
                 && let (Some(first), Some(last)) = (strip.first(), strip.last())
                 && first.offset >= header
             {
-                assert_eq!(last.end(), length, "trailing Strip {strip:?}");
+                let slack = 4.0 * f32::EPSILON * length.max(1.0);
+                assert!(
+                    (last.end() - length).abs() <= slack,
+                    "trailing Strip {strip:?}"
+                );
             }
         }
         // The scrolling Strip draws the Positions between its ends that are
@@ -634,4 +649,39 @@ fn freeze_up_to_here_pins_from_the_start_as_far_as_fits(tc: TestCase) {
     };
     assert_eq!(pinned(Edge::Leading), expected, "freeze up to {key:?}");
     assert_eq!(pinned(Edge::Trailing), trailing);
+}
+
+/// An Edge Gap wider than the axis's Gap spaces the pinned Strips from the
+/// scrolling one only, as ratatui gives rows with no Gap a line for the
+/// edge's `═` rule. Freeze leaves it room too.
+#[test]
+fn an_edge_gap_spaces_the_pinned_strips_from_the_scrolling_one() {
+    let mut s = tall();
+    let mut out = s.step("start", SHORT);
+    s.input(|g| {
+        g.set_edge_gap(Axis::Rows, 1.0);
+        g.pin(Axis::Rows, Edge::Leading, Key(5));
+        g.pin(Axis::Rows, Edge::Leading, Key(7));
+        g.pin(Axis::Rows, Edge::Trailing, Key(0));
+    });
+    out += &s.step(
+        "an Edge Gap of 1 on the rows, which have none, and rows 5 and 7 pinned top and 0 bottom: a line after the top Strip and before the bottom one, none between 5 and 7",
+        SHORT,
+    );
+    s.input(|g| g.set_edge_gap(Axis::Cols, 0.5));
+    out += &s.step(
+        "an Edge Gap smaller than the columns' Gap changes nothing",
+        SHORT,
+    );
+    s.input(|g| {
+        g.unpin(Axis::Rows, Key(5));
+        g.unpin(Axis::Rows, Key(7));
+        g.unpin(Axis::Rows, Key(0));
+        g.freeze(Axis::Rows, Key(5));
+    });
+    out += &s.step(
+        "freeze up to row 5: rows 0 to 3 fit, leaving the Edge Gap and a row to scroll",
+        SHORT,
+    );
+    insta::assert_snapshot!(out);
 }
