@@ -978,3 +978,48 @@ fn a_frame_with_pins_still_waiting_for_locate_leaves_the_anchor_where_it_is() {
     assert_eq!(s.grid.snapshot().scroll_anchor(Axis::Rows), anchor);
     insta::assert_snapshot!(out);
 }
+
+#[test]
+fn a_clipped_leading_strip_leaves_the_trailing_one_empty_however_sums_round() {
+    // Rows 7 and 1 pinned to either edge with Edge Gaps of about 2, in a
+    // viewport whose length leaves the leading Strip a hair short: the room
+    // left over is a rounding error, not room for the trailing Strip.
+    let mut s = pinned_keyed(Axis::Rows, 2, &[0], &[1]);
+    s.input(|g| {
+        g.set_header(Axis::Rows, 0.0);
+        g.set_edge_gap(Axis::Rows, 2.000_000_5);
+        g.set_size(Axis::Rows, Key(0), 7.0);
+        g.set_size(Axis::Rows, Key(1), 1.0);
+    });
+    let v = Viewport::new(30.0, 10.973_386);
+    s.frame(v);
+    let snap = s.frame(v);
+    assert!(snap.pinned_region(Axis::Rows, Edge::Leading).end < 7.0);
+    let trailing = snap.pinned_region(Axis::Rows, Edge::Trailing);
+    assert!(trailing.is_empty(), "{trailing:?}");
+}
+
+#[test]
+fn focus_moves_made_while_a_pin_waits_for_locate_land_as_they_would_after() {
+    let mut s = pinned_keyed(Axis::Rows, 3, &[2], &[]);
+    let v = Viewport::new(20.0, 6.0);
+    let mut out = s.step("row 2 pinned to the top, nothing focused", v);
+    let up = Action::MoveFocus {
+        axis: Axis::Rows,
+        by: FocusStep::Item,
+        forward: false,
+        extend: false,
+    };
+    s.input(|g| {
+        g.notify(Axis::Rows, ChangeNotice::Reordered);
+        g.action(up.clone());
+        g.action(up);
+    });
+    out += &s.step(
+        "a sort that changes nothing, then Up twice before Locate answers: the moves wait; the first focuses row 0 at the top of the scrolling Strip, the second the pinned row 2 above it",
+        v,
+    );
+    let focus = s.grid.snapshot().focus(Axis::Rows).and_then(|f| f.key);
+    assert_eq!(focus, Some(Key(2)), "{out}");
+    insta::assert_snapshot!(out);
+}

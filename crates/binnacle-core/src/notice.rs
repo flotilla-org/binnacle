@@ -538,8 +538,9 @@ impl Grid {
     }
 
     /// Called when an axis stops waiting for `located`: once no axis
-    /// waits, finishes a waiting `set_focus` and applies the focus moves
-    /// held meanwhile. Returns false while an axis still waits.
+    /// waits, finishes a waiting `set_focus`, and once no pin waits either,
+    /// applies the focus moves held meanwhile. Returns false while an axis
+    /// still waits.
     pub(crate) fn resume_focus(&mut self) -> bool {
         if self.locating.any() {
             return false;
@@ -555,8 +556,10 @@ impl Grid {
             self.reveal = true;
             self.reveal_focus();
         }
-        for m in std::mem::take(&mut self.locating.moves) {
-            self.move_and_select(m);
+        if !self.pins_waiting() {
+            for m in std::mem::take(&mut self.locating.moves) {
+                self.move_and_select(m);
+            }
         }
         true
     }

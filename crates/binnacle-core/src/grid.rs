@@ -430,7 +430,7 @@ impl Grid {
                     extend,
                     times: 1,
                 };
-                if !self.locating.any() {
+                if !self.locating.any() && !self.pins_waiting() {
                     return self.move_and_select(m);
                 }
                 let moves = &mut self.locating.moves;
@@ -623,6 +623,11 @@ impl Grid {
     fn move_focus(&mut self, axis: Axis, by: FocusStep, forward: bool, times: u64) -> bool {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return false;
+        }
+        // Unfocused, the first move only places focus; the rest go from there.
+        if self.focus.is_none() && times > 1 {
+            self.move_focus(axis, by, forward, 1);
+            return self.move_focus(axis, by, forward, times - 1);
         }
         let from = self.focus.map(|f| f[axis.index()]);
         let mut moved = self.focus.unwrap_or_else(|| {

@@ -216,7 +216,13 @@ impl AxisState {
         // The trailing Strip keeps its Edge Gap, so its edge still shows.
         let kept = focused.map_or(0.0, |it| it.size.min(want[1])) + edge_gap[1];
         let lead = (room - edge_gap[0] - kept).max(0.0);
-        let trail = (room - (lead.min(want[0]) + edge_gap[0]) - edge_gap[1]).max(0.0);
+        // A leading Strip that clips leaves the trailing one only what was
+        // kept for its focused item: anything more is rounding.
+        let trail = if want[0] > lead {
+            kept - edge_gap[1]
+        } else {
+            (room - (want[0] + edge_gap[0]) - edge_gap[1]).max(0.0)
+        };
         // Unclipped, each ends where its items do.
         let lead_end = match leading.last() {
             Some(it) if want[0] <= lead => it.end(),
@@ -352,7 +358,15 @@ impl Grid {
     pub fn unpin(&mut self, axis: Axis, key: Key) {
         if self.axis_mut(axis).unpin(key) {
             self.pending_damage.layout = true;
+            self.resume_focus();
         }
+    }
+
+    /// Whether a pin on either axis waits for `Locate`: focus moves wait
+    /// too, since the order items are drawn in, which they step through,
+    /// is not known until it answers.
+    pub(crate) fn pins_waiting(&self) -> bool {
+        (self.axes.iter()).any(|st| st.pins.iter().flatten().any(|p| p.due > 0))
     }
 
     /// "Freeze up to here": pins every item from the start of `axis` to the
@@ -466,6 +480,7 @@ impl Grid {
         pin.at = placement(answer, count).ok();
         st.sync_pins();
         self.pending_damage.layout = true;
+        self.resume_focus();
     }
 
     /// Items were inserted or removed on `axis`: each pin moves with its
