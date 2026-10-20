@@ -74,6 +74,63 @@ test.describe("records", () => {
     await expect(await pinButton(page)).toHaveText("Pin left");
   });
 
+  /** Pins the focused column left and waits for it, as the pin lands after the next frame. */
+  async function pinFocused(page: Page) {
+    await page.keyboard.press("Alt+Shift+ArrowLeft");
+    await expect(await pinButton(page)).toHaveText("Unpin");
+    await page.keyboard.press("Escape");
+  }
+
+  test("pinned columns too wide clip at the inside end and stay pinned; focusing a clipped one shows it", async ({ page }) => {
+    for (const name of ["id", "name", "weight", "crew"]) {
+      await expect(status(page)).toContainText(`/ ${name})`);
+      await pinFocused(page);
+      await page.keyboard.press("ArrowRight");
+    }
+    // Four pinned columns of 120 px leave 50 px of the 360 to scroll: back
+    // on id, crew is clipped whole and weight in part.
+    await expect(status(page)).toContainText("/ port)");
+    for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowLeft");
+    await expect(status(page)).toContainText("/ id)");
+    await expect(headers(page).filter({ hasText: "crew" })).toHaveCount(0);
+    await expect(headers(page).filter({ hasText: "weight" })).toHaveCount(1);
+    // Focus on crew slides the pinned Strip to show it; it is still pinned.
+    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
+    await expect(status(page)).toContainText("/ crew)");
+    await expect(headers(page).filter({ hasText: "crew" })).toHaveCount(1);
+    await expect(headers(page).filter({ hasText: /^id$/ })).toHaveCount(0);
+    await expect(await pinButton(page)).toHaveText("Unpin");
+  });
+
+  test("a hidden pinned column comes back to its place among the pins when shown", async ({ page }) => {
+    await pinFocused(page);
+    await page.keyboard.press("ArrowRight");
+    await expect(status(page)).toContainText("/ name)");
+    await pinFocused(page);
+    await page.keyboard.press("ArrowLeft");
+    await expect(status(page)).toContainText("/ id)");
+    await page.keyboard.press(`${await mod(page)}+Alt+0`);
+    await expect(status(page)).toContainText("/ name)");
+    await expect(headers(page).filter({ hasText: /^id$/ })).toHaveCount(0);
+    await page.keyboard.press("Alt+ArrowDown");
+    await page.getByRole("dialog", { name: "Filter name" }).getByRole("button", { name: "Show hidden columns (1) ▸" }).click();
+    await page.getByRole("menu", { name: "Hidden columns" }).getByRole("menuitem", { name: "id" }).click();
+    await page.getByRole("dialog", { name: "Filter name" }).getByRole("button", { name: "Close" }).click();
+    await expect(page.getByRole("dialog")).toBeHidden();
+    // Drawn order is pin order again: id first, then name, then the
+    // scrolling ones.
+    await expect(headers(page).filter({ hasText: /^id$/ })).toHaveCount(1);
+    const at = await firstCell(page);
+    await page.mouse.click(at.x, at.y);
+    await expect(status(page)).toContainText("/ id)");
+    // Showing id focused it, so the click opened the editor.
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("ArrowRight");
+    await expect(status(page)).toContainText("/ name)");
+    await page.keyboard.press("ArrowRight");
+    await expect(status(page)).toContainText("/ weight)");
+  });
+
   test("the column menu pins and unpins any column, the id column (which takes no conditions) included", async ({ page }) => {
     const button = await pinButton(page);
     await expect(page.getByRole("dialog", { name: "Column id" })).toBeVisible();
@@ -200,6 +257,16 @@ test.describe("screenshots", () => {
 
   test("the pinned edge before any scroll casts no shadow", async ({ page }) => {
     await shot(page, "light", "columns light", false, "pinned-unscrolled");
+  });
+
+  test("columns 0 to 2 pinned left and 3 right, too wide: the right one clips whole, then the left ones at their inside end, each with its edge", async ({
+    page,
+  }) => {
+    const query = new URLSearchParams({ theme: "light", border: "grid light", pin: "0,1,2", right: "3" });
+    await page.goto(`/e2e/fixtures/presentation.html?${query}`);
+    const grid = page.locator("#grid");
+    await expect(grid).toHaveAttribute("data-painted", "true");
+    await expect(grid).toHaveScreenshot("pinned-clipped.png", { scale: "device" });
   });
 
   test("all four edges pinned, scrolled so each edge's shadow falls on the body", async ({ page }) => {

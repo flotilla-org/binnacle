@@ -300,6 +300,37 @@ impl Host {
                 drawn.len(),
                 "a Key drawn twice on {axis:?}: {drawn:?}"
             );
+            // The pinned Strips draw at their ends of the axis, outside the
+            // scrolling Strip, and a focused pinned item shows as far as
+            // its Strip's region allows.
+            let scrolling = snap.scrolling(axis);
+            let [lead, trail] = Edge::ALL.map(|e| snap.pinned_region(axis, e));
+            assert_eq!(lead.start, header, "leading region {lead:?} on {axis:?}");
+            assert_eq!(
+                trail.end,
+                snap.extent(axis),
+                "trailing region {trail:?} on {axis:?}"
+            );
+            assert!(
+                lead.start <= lead.end && lead.end <= scrolling.start.max(lead.start),
+                "leading region {lead:?} past {scrolling:?} on {axis:?}"
+            );
+            assert!(
+                trail.start <= trail.end && trail.start >= scrolling.end.min(trail.start),
+                "trailing region {trail:?} before {scrolling:?} on {axis:?}"
+            );
+            if let Some(key) = snap.focus(axis).and_then(|f| f.key) {
+                for (edge, region) in Edge::ALL.into_iter().zip([lead, trail]) {
+                    if let Some(i) = snap.pinned(axis, edge).iter().find(|i| i.key == Some(key)) {
+                        let shown = i.end().min(region.end) - i.offset.max(region.start);
+                        let room = (region.end - region.start).min(i.size);
+                        assert!(
+                            shown >= room - 1e-3 * room.abs().max(1.0),
+                            "focused {i:?} shows {shown} of {region:?} on {axis:?}"
+                        );
+                    }
+                }
+            }
             // Each pinned Strip draws its pinned Keys only, in pin order.
             for edge in Edge::ALL {
                 let pinned: Vec<u64> = (snap.pinned(axis, edge).iter())
@@ -926,6 +957,19 @@ impl Host {
         pins.iter_mut().for_each(|p| p.retain(|&k| k != key.0));
         pins[edge.index()].push(key.0);
         self.grid.pin(axis, edge, key);
+    }
+
+    /// What each axis keeps to scroll, from none to more than the
+    /// viewport, or a length the Grid ignores.
+    #[rule(weight = 0.5)]
+    fn min_scrolling(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let length = tc.draw(hegel::one_of!(
+            gs::sampled_from(vec![-1.0f32, f32::NAN]),
+            gs::floats::<f32>().min_value(0.0).max_value(60.0),
+        ));
+        tc.note(&format!("set_min_scrolling({axis:?}, {length})"));
+        self.grid.set_min_scrolling(axis, length);
     }
 
     #[rule]

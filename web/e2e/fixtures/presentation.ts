@@ -1,7 +1,8 @@
 // A small fixed table for the presentation screenshots: the Theme and Border
 // Style come from the URL (`?theme=mono&border=grid+double`), text is in the
 // bundled Inter so the pixels do not depend on the machine's fonts. With
-// `pin=3` the columns are wider than the grid and column 3 is pinned left;
+// `pin=3` the columns are wider than the grid and column 3 is pinned left
+// (`pin=0,1` pins each in turn);
 // `right`, `top` and `bottom` pin a column right and rows top and bottom, and
 // `rows` sets the row count (the names repeat).
 
@@ -36,7 +37,7 @@ const widget = await GridWidget.create(host, {
     if (frame.painted) host.dataset.painted = "true";
   },
 });
-if (pin !== null) widget.pin("cols", Number(pin));
+for (const c of pin === null ? [] : pin.split(",")) widget.pin("cols", Number(c));
 const at = (name: string) => (params.has(name) ? Number(params.get(name)) : null);
 const [right, top, bottom] = [at("right"), at("top"), at("bottom")];
 if (right !== null) widget.pin("cols", right, "trailing");

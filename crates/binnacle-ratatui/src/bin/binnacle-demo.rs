@@ -116,7 +116,11 @@
 //! Alt+Shift+U (`U` in bare keys) unpins it. Alt+W (`z`) freezes the
 //! columns from the first to the focused one, as many as fit, and
 //! Alt+Shift+W (`Z`) the rows. The arrow keys step through pinned and
-//! scrolling items in the order they are drawn.
+//! scrolling items in the order they are drawn. Pinned columns (or rows)
+//! that would leave fewer than a few to scroll are clipped at their inside
+//! end, the right ones first, with the edge where they clip; nothing unpins,
+//! and focusing a clipped one slides its Strip to show it. A pinned column
+//! that a filter or a hide takes out waits, and comes back to its place.
 //!
 //! In the records (slow too) and on their side, Alt+0 hides the focused
 //! column and Alt+9 its row: the source leaves it out whatever the filter
