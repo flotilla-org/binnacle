@@ -237,11 +237,36 @@ fn every_shown_item_is_drawn_exactly_once(tc: TestCase) {
                 last.end() + gap >= region.end || Some(last.position) == last_shown,
                 "{last:?} stops short of {region:?}"
             );
-        } else if region.start < region.end {
+        } else if region.end - region.start > gap {
+            // A region no longer than the Gap may lie wholly in one.
             assert!(
                 keys.len() == pinned_at.len(),
                 "nothing scrolls in {region:?} though some items are not pinned"
             );
         }
     }
+}
+
+/// Columns 0 and 1 pinned leave a scrolling region one wide at 8..9; with
+/// the body scrolled by 3, column 2 ends at 8 and column 3 starts at 9, so
+/// the region shows only the Gap between them and no column is drawn there.
+#[test]
+fn a_scrolling_region_no_wider_than_the_gap_may_draw_no_item() {
+    let mut s = Scenario::new(
+        Grid::new(
+            AxisConfig::new(3, 1.0).header(1.0),
+            AxisConfig::new(9, 3.0).gap(1.0),
+        ),
+        KeyedTable::new(3, 9),
+    );
+    s.input(|g| {
+        g.pin(Axis::Cols, Edge::Leading, Key(0));
+        g.pin(Axis::Cols, Edge::Leading, Key(1));
+    });
+    s.frame(Viewport::new(9.0, 4.0));
+    s.input(|g| g.action(Action::Scroll { dx: 3.0, dy: 0.0 }));
+    let snap = s.frame(Viewport::new(9.0, 4.0));
+    assert_eq!(snap.pinned(Axis::Cols, Edge::Leading).len(), 2);
+    assert_eq!(snap.scrolling(Axis::Cols), 8.0..9.0);
+    assert!(snap.cols().is_empty(), "{:?}", snap.cols());
 }
