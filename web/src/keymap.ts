@@ -18,6 +18,8 @@ export type Action =
   | { type: "ScrollBy"; axis: AxisName; items: number }
   /** Opens the focused column's menu, if a column menu is mounted; the key is the page's otherwise. */
   | { type: "OpenColumnMenu" }
+  /** Opens the focused row's menu, to filter the columns, if a row menu is mounted; the key is the page's otherwise. */
+  | { type: "OpenRowMenu" }
   /** Opens the find bar, if one is mounted and the Table Source finds; the key is the page's otherwise. */
   | { type: "OpenFind" }
   /** Steps to the next or previous match while find is open; the key is the page's otherwise. */
@@ -111,7 +113,8 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
 /**
  * The default bindings: arrows, Shift to extend, Mod+arrow to the edge,
  * pages (Alt+PageUp and Alt+PageDown along the columns), Home and End (the
- * first and last row), Mod+A, Ctrl+Space the column and Shift+Space the row, Alt+ArrowDown for the column menu, Mod+F for
+ * first and last row), Mod+A, Ctrl+Space the column and Shift+Space the row,
+ * Alt+ArrowDown for the column menu and Alt+ArrowRight for the row menu, Mod+F for
  * the find bar and F3 (Shift+F3 back) to step between matches.
  */
 export function defaultBindings(): KeyBindings {
@@ -143,6 +146,7 @@ export function defaultBindings(): KeyBindings {
   bindings["Enter"] = { type: "Activate" };
   bindings["F2"] = { type: "BeginEdit" };
   bindings["Alt+ArrowDown"] = { type: "OpenColumnMenu" };
+  bindings["Alt+ArrowRight"] = { type: "OpenRowMenu" };
   bindings["Mod+F"] = { type: "OpenFind" };
   bindings["F3"] = { type: "FindNext" };
   bindings["Shift+F3"] = { type: "FindPrevious" };

@@ -29,12 +29,14 @@ export interface InputHost {
   snapshot(): Snapshot | null;
   /** What the editor needs from the widget. */
   edits: Pick<EditHost, "editable" | "value" | "text" | "editor" | "commit" | "theme">;
-  /** Whether (x, y) is on a column menu button. */
+  /** Whether (x, y) is on a column or row menu button. */
   menuButtonAt(x: number, y: number): boolean;
-  /** A press at (x, y), before the Grid sees it: `true` if a column menu button took it. */
+  /** A press at (x, y), before the Grid sees it: `true` if a menu button took it. */
   menuPress(x: number, y: number): boolean;
   /** Opens the focused column's menu: `false` if there is none to open. */
   openColumnMenu(): boolean;
+  /** Opens the focused row's menu: `false` if there is none to open. */
+  openRowMenu(): boolean;
   /** Opens the find bar, or steps while find is open: `false` if there is no find bar or find is closed. */
   find(action: "open" | "next" | "previous"): boolean;
 }
@@ -103,6 +105,7 @@ export function perform(grid: WebGrid, action: Action): void {
     case "FindPrevious":
       return grid.find_previous();
     case "OpenColumnMenu":
+    case "OpenRowMenu":
     case "OpenFind":
       // The widget's, not the Grid's: see `createInput`.
       return;
@@ -189,8 +192,8 @@ export function createInput(host: InputHost): Input {
     }
     const action = host.keymap.lookup(e);
     if (!action) return;
-    if (action.type === "OpenColumnMenu") {
-      if (host.openColumnMenu()) e.preventDefault();
+    if (action.type === "OpenColumnMenu" || action.type === "OpenRowMenu") {
+      if (action.type === "OpenColumnMenu" ? host.openColumnMenu() : host.openRowMenu()) e.preventDefault();
       return;
     }
     if (action.type === "OpenFind" || action.type === "FindNext" || action.type === "FindPrevious") {

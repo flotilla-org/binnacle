@@ -11,6 +11,10 @@
 // the widget's typing pause has passed; a Text condition the Table Source did
 // not apply shows red with its message under the field. Escape, a press
 // outside, or Close shuts the menu. Drawn in the widget's Theme.
+//
+// It is the row menu too: a row header's button, Alt+ArrowRight or `openRow`
+// drops the same popover beside the row header, filtering the columns by
+// the row's values.
 
 import {
   columnConditions,
@@ -24,15 +28,18 @@ import {
   type Shown,
   type Written,
 } from "./checklist";
+import type { AxisName } from "./codes";
 import type { Condition, Distinct, ListedValue, TextMatch } from "./source";
 import type { FrameInfo, GridWidget } from "./widget";
 import { createPause } from "./pause";
 
-export interface ColumnMenu<ColId = unknown> {
+export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   /** The popover while it is open, else `null`. */
   readonly element: HTMLElement | null;
   /** Opens the menu for `colId` (see `GridWidget.openColumnMenu`); `false` if the column takes no conditions. */
   open(colId: ColId, anchor?: DOMRect): boolean;
+  /** Opens the menu for row `rowId`, filtering the columns (see `GridWidget.openRowMenu`); `false` if they take no conditions on it. */
+  openRow(rowId: RowId, anchor?: DOMRect): boolean;
   close(): void;
   /** Closes the menu and stops the headers drawing filter buttons. */
   destroy(): void;
@@ -66,43 +73,51 @@ const ERROR_STYLE = "font-size: 11px; margin: 4px 2px 0;";
 /** Numbers each menu's error message, for `aria-describedby`. */
 let errors = 0;
 
-export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColId, V>): ColumnMenu<ColId> {
+export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColId, V>): ColumnMenu<ColId, RowId> {
+  type Id = RowId | ColId;
   let menu: { element: HTMLElement; close(): void } | null = null;
 
-  const open = (colId: ColId, anchor: DOMRect) => {
+  /** The conditions on `axis` as the latest frame lists them. */
+  const listed = (axis: AxisName) => (axis === "rows" ? latest?.conditions : latest?.columnsFilter.conditions) ?? [];
+
+  /** Opens the menu for item `colId` of the other axis, filtering `axis` by it: a column filters the rows, a row the columns. */
+  const open = (axis: AxisName, colId: Id, anchor: DOMRect) => {
     menu?.close();
-    const support = widget.columnSupport(colId);
+    const support = axis === "rows" ? widget.columnSupport(colId as ColId) : widget.rowSupport(colId as RowId);
     if (!support.text && !support.oneOf) return;
     const regexAllowed = support.text?.regex ?? false;
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // The column's conditions as this menu last asked for them, which each
+    // The item's conditions as this menu last asked for them, which each
     // change replaces: the latest frame may not have caught up yet.
-    const asked = (latest?.conditions ?? []).filter(({ state }) => state !== "removing").map((c) => c.condition);
-    let column: ColumnConditions<ColId> = columnConditions(asked, colId);
+    const asked = listed(axis)
+      .filter(({ state }) => state !== "removing")
+      .map((c) => c.condition as Condition<Id>);
+    let column: ColumnConditions<Id> = columnConditions(asked, colId);
 
-    /** Asks the widget for `written` in place of the column's Text condition and OneOf. */
-    const write = (written: Written<ColId>) => {
+    /** Asks the widget for `written` in place of the item's Text condition and OneOf. */
+    const write = (written: Written<Id>) => {
       const pairs = [
         [column.text, written.text],
         [column.oneOf, written.oneOf],
       ] as const;
       for (const [from, to] of pairs) {
         if (from && to) {
-          if (JSON.stringify(from) !== JSON.stringify(to)) widget.replaceCondition(from, to);
-        } else if (from) widget.removeCondition(from);
-        else if (to) widget.addCondition(to);
+          if (JSON.stringify(from) !== JSON.stringify(to)) widget.replaceCondition(from, to, axis);
+        } else if (from) widget.removeCondition(from, axis);
+        else if (to) widget.addCondition(to, axis);
       }
       column = columnConditions(replaced(column, written), colId);
     };
 
-    const label = widget.columnLabel(colId);
+    const label = axis === "rows" ? widget.columnLabel(colId as ColId) : widget.rowLabel(colId as RowId);
     const element = el("div", "binnacle-column-menu", MENU_STYLE);
     element.setAttribute("role", "dialog");
-    element.setAttribute("aria-label", `Filter ${label}`);
+    const heading = axis === "rows" ? "Filter " : "Filter columns by ";
+    element.setAttribute("aria-label", heading + label);
     const title = el("div", "binnacle-column-menu-title", TITLE_STYLE);
     const name = el("b", "", "");
     name.textContent = label;
-    title.append("Filter ", name);
+    title.append(heading, name);
 
     const textRow = el("div", "binnacle-column-menu-text", ROW_STYLE);
     textRow.hidden = !support.text;
@@ -164,7 +179,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
           caseSensitive: pressed(caseToggle),
           regex: regexAllowed && pressed(regexToggle),
         };
-        const to: Condition<ColId> = { id: colId, kind: { type: "Text", query }, not: how.value === "not" };
+        const to: Condition<Id> = { id: colId, kind: { type: "Text", query }, not: how.value === "not" };
         write({ text: query.text === "" ? null : to, oneOf: column.oneOf });
         showValues();
         paint();
@@ -184,7 +199,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       paint();
     });
     clearButton.addEventListener("click", () => {
-      widget.clearConditions(colId);
+      widget.clearConditions(colId, axis);
       column = columnConditions([], colId);
       showText();
       showValues();
@@ -197,11 +212,17 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const ask = () => {
       asking?.abort();
       const searched = search.value;
-      asking = widget.distinct(colId, searched, LIMIT, (d) => {
-        asking = null;
-        answer = d;
-        showValues();
-      });
+      asking = widget.distinct(
+        colId,
+        searched,
+        LIMIT,
+        (d) => {
+          asking = null;
+          answer = d;
+          showValues();
+        },
+        axis,
+      );
       showValues();
     };
     search.addEventListener("input", ask);
@@ -326,7 +347,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       const rejected =
         !pause.waiting &&
         text !== null &&
-        (latest?.conditions ?? []).some(
+        listed(axis).some(
           ({ condition, state }) => state === "notApplied" && JSON.stringify(condition) === JSON.stringify(text),
         );
       field.style.borderColor = rejected ? t.error : t.focus.color;
@@ -351,10 +372,12 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
 
     document.body.append(element);
     const width = element.offsetWidth;
-    element.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - width - 8))}px`;
+    // Under a column header; beside a row header.
+    const [left, top] = axis === "rows" ? [anchor.left, anchor.bottom + 4] : [anchor.right + 4, anchor.top];
+    element.style.left = `${Math.max(8, Math.min(left, innerWidth - width - 8))}px`;
     // Room for the checklist once its values land.
     const height = Math.max(element.offsetHeight, support.oneOf ? 380 : 0);
-    element.style.top = `${Math.max(8, Math.min(anchor.bottom + 4, innerHeight - height - 8))}px`;
+    element.style.top = `${Math.max(8, Math.min(top, innerHeight - height - 8))}px`;
     document.addEventListener("pointerdown", outside, true);
     menu = { element, close };
     const first = support.text ? field : search;
@@ -366,17 +389,20 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
   const unsubscribe = widget.subscribe((f) => {
     latest = f;
   });
-  const detach = widget.attachColumnMenu(open);
+  const detach = widget.attachColumnMenu((colId, anchor) => open("rows", colId, anchor));
+  const detachRow = widget.attachRowMenu((rowId, anchor) => open("cols", rowId, anchor));
 
   return {
     get element() {
       return menu?.element ?? null;
     },
     open: (colId, anchor) => widget.openColumnMenu(colId, anchor),
+    openRow: (rowId, anchor) => widget.openRowMenu(rowId, anchor),
     close: () => menu?.close(),
     destroy() {
       menu?.close();
       detach();
+      detachRow();
       unsubscribe();
     },
   };

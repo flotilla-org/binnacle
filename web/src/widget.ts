@@ -10,7 +10,7 @@ import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
 import { filterButtonRect, hasFilterButton } from "./canvas/bands";
-import { createFeed, type ColumnSupport, type Feed, type FindState } from "./feed";
+import { createFeed, type ColumnSupport, type CrossId, type Feed, type FindState } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -20,7 +20,18 @@ import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
 import type { Content } from "./content";
 import type { AxisSnapshot, ConditionState, HeaderPlacement, KeyedTextQuery, Snapshot, Span } from "./snapshot";
-import type { Condition, Distinct, FailedRequest, FindMatch, FindQuery, Located, TableSource, TextQuery, ViewSpec } from "./source";
+import type {
+  AppliedAxisView,
+  Condition,
+  Distinct,
+  FailedRequest,
+  FindMatch,
+  FindQuery,
+  Located,
+  TableSource,
+  TextQuery,
+  ViewSpec,
+} from "./source";
 import { AXES, AXIS_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
@@ -115,6 +126,8 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   cols: AxisInfo;
   /** Whether the rows take a quick filter (the Table Source's `rows.quickFilter`), and with regexes; `null` if not. */
   quickFilter: { regex: boolean } | null;
+  /** The columns' filter, by rows, as `quickFilter`, `quick`, `quickState` and `conditions` give the rows'. */
+  columnsFilter: AxisFilterInfo<RowId>;
   /** The rows' quick filter as last asked for: the request still unanswered (or not applied), else the one applied. */
   quick: TextQuery<ColId> | null;
   /**
@@ -152,6 +165,18 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   columns: ColumnHeader<ColId>[];
   /** Find: whether the Table Source finds, the Find Query in force, the current match, and what the source said of them. */
   find: FindInfo<RowId, ColId>;
+}
+
+/** One axis's filter as `FrameInfo` gives it, naming items of the other axis. */
+export interface AxisFilterInfo<CrossId = unknown> {
+  /** Whether the axis takes a quick filter, and with regexes; `null` if not. */
+  quickFilter: { regex: boolean } | null;
+  /** The quick filter as last asked for: the request still unanswered (or not applied), else the one applied. */
+  quick: TextQuery<CrossId> | null;
+  /** Where `quick` stands, as `FrameInfo.quickState` says of the rows'. */
+  quickState: ConditionState | null;
+  /** The axis's conditions as a filter's chips list them, as `FrameInfo.conditions` lists the rows'. */
+  conditions: { condition: Condition<CrossId>; state: ConditionState }[];
 }
 
 /**
@@ -239,6 +264,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
   /** The mounted column menu's opener, if one is mounted. */
   private columnMenu: ((colId: ColId, anchor: DOMRect) => void) | null = null;
+  /** The mounted row menu's opener, if one is mounted. */
+  private rowMenu: ((rowId: RowId, anchor: DOMRect) => void) | null = null;
   /** The mounted find bar's opener, if one is mounted. */
   private findBar: (() => void) | null = null;
 
@@ -348,8 +375,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       snapshot: () => this.last,
       menuButtonAt: (x, y) => this.menuButtonAt(x, y) !== undefined,
       menuPress: (x, y) => {
-        const id = this.menuButtonAt(x, y);
-        return id !== undefined && this.openColumnMenu(id);
+        const at = this.menuButtonAt(x, y);
+        if (!at) return false;
+        return at.axis === "cols" ? this.openColumnMenu(at.id as ColId) : this.openRowMenu(at.id as RowId);
       },
       openColumnMenu: () => {
         if (!this.columnMenu) return false;
@@ -358,6 +386,16 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
           const key = this.last?.cols.focus?.key;
           const id = key == null ? undefined : this.feed.colId(key);
           if (id !== undefined) this.openColumnMenu(id);
+        });
+        this.invalidate();
+        return true;
+      },
+      openRowMenu: () => {
+        if (!this.rowMenu) return false;
+        this.framed.push(() => {
+          const key = this.last?.rows.focus?.key;
+          const id = key == null ? undefined : this.feed.rowId(key);
+          if (id !== undefined) this.openRowMenu(id);
         });
         this.invalidate();
         return true;
@@ -525,12 +563,21 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * Sets the rows' quick filter: keep the rows with `query`'s text in a
    * searched column. `null` or empty text clears it. The grid asks the Table
    * Source for the View Spec in force with this quick filter; setting the
-   * one already asked for does nothing.
+   * one already asked for does nothing. With `axis` `"cols"`, sets the
+   * columns' instead, searching rows.
    */
-  setQuickFilter(query: TextQuery<ColId> | null): void {
+  setQuickFilter<A extends AxisName = "rows">(query: TextQuery<CrossId<A, RowId, ColId>> | null, axis?: A): void {
     if (this.destroyed) return;
-    const keyed = query && this.feed.viewKeys({ rows: { filter: { quick: query }, sort: [] }, cols: { sort: [] } });
-    this.grid.set_quick_filter(AXIS_CODE.rows, keyed ? keyed.rows.filter.quick : null);
+    const on = axis ?? "rows";
+    const part = { filter: { quick: query }, sort: [] };
+    const keyed =
+      query &&
+      this.feed.viewKeys(
+        on === "rows"
+          ? { rows: part as AppliedAxisView<ColId>, cols: { sort: [] } }
+          : { rows: { sort: [] }, cols: part as AppliedAxisView<RowId> },
+      );
+    this.grid.set_quick_filter(AXIS_CODE[on], keyed ? keyed[on].filter.quick : null);
     drainEffects(this.parts);
     this.schedule();
   }
@@ -539,34 +586,44 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * Adds a condition on the rows: keep those whose value in the condition's
    * column matches (or with `not`, does not). A Text condition with no text
    * asks for nothing. The grid asks the Table Source for the View Spec in
-   * force with it.
+   * force with it. With `axis` `"cols"`, a condition on the columns, read
+   * in a row.
    */
-  addCondition(condition: Condition<ColId>): void {
-    this.editView(() => this.grid.add_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  addCondition<A extends AxisName = "rows">(condition: Condition<CrossId<A, RowId, ColId>>, axis?: A): void {
+    const on = axis ?? "rows";
+    this.editView(() => this.grid.add_condition(AXIS_CODE[on], this.feed.conditionKey(condition, axis)));
   }
 
-  /** Removes the first rows condition equal to `condition`, if the View Spec in force (or asked for) has one. */
-  removeCondition(condition: Condition<ColId>): void {
-    this.editView(() => this.grid.remove_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  /** Removes the first condition on `axis` (the rows by default) equal to `condition`, if the View Spec in force (or asked for) has one. */
+  removeCondition<A extends AxisName = "rows">(condition: Condition<CrossId<A, RowId, ColId>>, axis?: A): void {
+    const on = axis ?? "rows";
+    this.editView(() => this.grid.remove_condition(AXIS_CODE[on], this.feed.conditionKey(condition, axis)));
   }
 
   /**
-   * Puts `to` in place of the first rows condition equal to `from`: adds `to`
-   * if there is none, and removes `from` if `to` asks for nothing.
+   * Puts `to` in place of the first condition on `axis` (the rows by
+   * default) equal to `from`: adds `to` if there is none, and removes `from`
+   * if `to` asks for nothing.
    */
-  replaceCondition(from: Condition<ColId>, to: Condition<ColId>): void {
+  replaceCondition<A extends AxisName = "rows">(
+    from: Condition<CrossId<A, RowId, ColId>>,
+    to: Condition<CrossId<A, RowId, ColId>>,
+    axis?: A,
+  ): void {
+    const on = axis ?? "rows";
     this.editView(() =>
-      this.grid.replace_condition(AXIS_CODE.rows, this.feed.conditionKey(from), this.feed.conditionKey(to)),
+      this.grid.replace_condition(AXIS_CODE[on], this.feed.conditionKey(from, axis), this.feed.conditionKey(to, axis)),
     );
   }
 
-  /** Removes every rows condition on column `colId`. */
-  clearConditions(colId: ColId): void {
-    const listed = this.last?.rows.conditions ?? [];
-    const key = this.feed.colKey(colId);
+  /** Removes every rows condition on column `id`, or with `axis` `"cols"`, every columns condition on row `id`. */
+  clearConditions<A extends AxisName = "rows">(id: CrossId<A, RowId, ColId>, axis?: A): void {
+    const on = axis ?? "rows";
+    const listed = this.last?.[on].conditions ?? [];
+    const key = on === "rows" ? this.feed.colKey(id as ColId) : this.feed.rowKey(id as RowId);
     this.editView(() => {
       for (const { condition, state } of listed) {
-        if (state !== "removing" && condition.key === key) this.grid.remove_condition(AXIS_CODE.rows, condition);
+        if (state !== "removing" && condition.key === key) this.grid.remove_condition(AXIS_CODE[on], condition);
       }
     });
   }
@@ -586,14 +643,49 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    */
   attachColumnMenu(open: (colId: ColId, anchor: DOMRect) => void): () => void {
     this.columnMenu = open;
-    this.painter.filterButtons = true;
+    this.painter.filterButtons.cols = true;
     this.invalidate();
     return () => {
       if (this.columnMenu !== open) return;
       this.columnMenu = null;
-      this.painter.filterButtons = false;
+      this.painter.filterButtons.cols = false;
       this.invalidate();
     };
+  }
+
+  /**
+   * Mounts a row menu, to filter the columns by a row's values (see
+   * `createColumnMenu`): row headers whose row the columns take conditions
+   * on draw its button while hovered or filtering, and a press on one,
+   * Alt+ArrowRight, or `openRowMenu` calls `open` with the row and a
+   * rectangle to place the menu beside. Returns how to unmount it; one menu
+   * is mounted at a time.
+   */
+  attachRowMenu(open: (rowId: RowId, anchor: DOMRect) => void): () => void {
+    this.rowMenu = open;
+    this.painter.filterButtons.rows = true;
+    this.invalidate();
+    return () => {
+      if (this.rowMenu !== open) return;
+      this.rowMenu = null;
+      this.painter.filterButtons.rows = false;
+      this.invalidate();
+    };
+  }
+
+  /**
+   * Opens the mounted row menu for `rowId`, beside its header if it is in
+   * view, else at `anchor` (or the grid's top left). `false` if no menu is
+   * mounted or the columns cannot be filtered by the row.
+   */
+  openRowMenu(rowId: RowId, anchor?: DOMRect): boolean {
+    const open = this.rowMenu;
+    const support = this.feed.rowSupport(rowId);
+    if (!open || this.destroyed || (!support.text && !support.oneOf)) return false;
+    const key = this.feed.rowKey(rowId);
+    const header = this.last?.rows.headers.find((h) => h.key === key && this.inView("rows", h));
+    open(rowId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
+    return true;
   }
 
   /**
@@ -606,7 +698,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const support = this.feed.columnSupport(colId);
     if (!open || this.destroyed || (!support.text && !support.oneOf)) return false;
     const key = this.feed.colKey(colId);
-    const header = this.last?.cols.headers.find((h) => h.key === key && this.inView(h));
+    const header = this.last?.cols.headers.find((h) => h.key === key && this.inView("cols", h));
     open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
     return true;
   }
@@ -665,19 +757,39 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
-   * Asks the Table Source for up to `limit` distinct values of column `colId`
+   * Asks the Table Source for up to `limit` distinct values of column `id`
    * containing `search`, narrowed by the other filters applied, for a
    * checklist; `apply` gets the answer unless the request is aborted first.
-   * `null` if the column takes no OneOf conditions.
+   * `null` if the column takes no OneOf conditions. With `axis` `"cols"`,
+   * the values of row `id` across the columns.
    */
-  distinct(colId: ColId, search: string, limit: number, apply: (answer: Distinct) => void): { abort(): void } | null {
+  distinct<A extends AxisName = "rows">(
+    id: CrossId<A, RowId, ColId>,
+    search: string,
+    limit: number,
+    apply: (answer: Distinct) => void,
+    axis?: A,
+  ): { abort(): void } | null {
     if (this.destroyed) return null;
-    return this.feed.distinct(colId, search, limit, apply);
+    return this.feed.distinct(id, search, limit, apply, axis);
   }
 
   /** How the rows may be viewed by column `colId`: whether it sorts, takes Text conditions (and regexes), and OneOf ones. */
   columnSupport(colId: ColId): ColumnSupport {
     return this.feed.columnSupport(colId);
+  }
+
+  /** How the columns may be viewed by row `rowId`, likewise; nothing unless the Table Source has `cols.support`. */
+  rowSupport(rowId: RowId): ColumnSupport {
+    return this.feed.rowSupport(rowId);
+  }
+
+  /** A row's header text: the source's `rows.label` (given the row's Position if in view, else NaN), else its Position + 1, else its ID. */
+  rowLabel(rowId: RowId): string {
+    const key = this.feed.rowKey(rowId);
+    const position = this.last?.rows.strip.find((i) => i.key === key)?.position ?? Number.NaN;
+    const label = this.options.source.rows.label?.(rowId, position);
+    return label ?? (Number.isNaN(position) ? String(rowId) : String(position + 1));
   }
 
   /** A column's header text: the source's `cols.label` (given the column's Position if in view, else NaN), else its ID. */
@@ -687,21 +799,29 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return this.options.source.cols.label?.(colId, position) ?? String(colId);
   }
 
-  /** The column whose menu button is at (x, y), if a menu is mounted and there is one. */
-  private menuButtonAt(x: number, y: number): ColId | undefined {
+  /** The column or row whose menu button is at (x, y), if its menu is mounted and there is one. */
+  private menuButtonAt(x: number, y: number): { axis: AxisName; id: unknown } | undefined {
     const s = this.last;
-    if (!this.columnMenu || !s || y > s.rows.header) return undefined;
-    for (const h of s.cols.headers) {
-      if (!hasFilterButton(true, h) || !this.inView(h)) continue;
-      const r = filterButtonRect(h);
-      if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) return this.feed.colId(h.key!);
+    if (!s) return undefined;
+    const band: AxisName | null =
+      y < s.rows.header && x >= s.cols.header ? "cols" : x < s.cols.header && y >= s.rows.header ? "rows" : null;
+    if (!band || !(band === "cols" ? this.columnMenu : this.rowMenu)) return undefined;
+    for (const h of s[band].headers) {
+      if (!hasFilterButton(true, h) || !this.inView(band, h)) continue;
+      const r = filterButtonRect(band, h);
+      if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
+        const id = band === "cols" ? this.feed.colId(h.key!) : this.feed.rowId(h.key!);
+        return id === undefined ? undefined : { axis: band, id };
+      }
     }
     return undefined;
   }
 
-  private inView(h: HeaderPlacement): boolean {
+  private inView(axis: AxisName, h: HeaderPlacement): boolean {
     const s = this.last;
-    return s !== null && h.rect.x + h.rect.width > s.cols.header && h.rect.x < s.cols.extent;
+    if (s === null) return false;
+    const [at, size] = axis === "cols" ? [h.rect.x, h.rect.width] : [h.rect.y, h.rect.height];
+    return at + size > s[axis].header && at < s[axis].extent;
   }
 
   /** A viewport rectangle in client coordinates. */
@@ -844,8 +964,17 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       rows: span(snapshot, "rows", (key) => this.feed.unmatched("rows", key)),
       cols: span(snapshot, "cols", (key) => this.feed.unmatched("cols", key)),
       quickFilter: snapshot.rows.quickFilter,
-      quick: this.quick(snapshot),
-      quickState: quickState(snapshot),
+      quick: this.quick(snapshot, "rows"),
+      quickState: quickState(snapshot, "rows"),
+      columnsFilter: {
+        quickFilter: snapshot.cols.quickFilter,
+        quick: this.quick(snapshot, "cols"),
+        quickState: quickState(snapshot, "cols"),
+        conditions: snapshot.cols.conditions.flatMap(({ condition, state }) => {
+          const c = this.feed.conditionId(condition, "cols");
+          return c ? [{ condition: c, state }] : [];
+        }),
+      },
       viewPending: snapshot.viewPending,
       viewError: this.feed.viewError(),
       ...selection(snapshot),
@@ -872,9 +1001,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     };
   }
 
-  private quick(s: Snapshot): TextQuery<ColId> | null {
-    const q = (s.requestedView ?? s.appliedView).rows.filter.quick;
-    return (q && this.feed.queryIds(q)) ?? null;
+  private quick<A extends AxisName>(s: Snapshot, axis: A): TextQuery<CrossId<A, RowId, ColId>> | null {
+    const q = (s.requestedView ?? s.appliedView)[axis].filter.quick;
+    return (q && this.feed.queryIds(q, axis)) ?? null;
   }
 
   /** Waits for a frame if none has run or one is due, so the Strips are those of what is in view. */
@@ -1034,10 +1163,10 @@ function div(className: string, style: string): HTMLDivElement {
   return el;
 }
 
-/** Where the rows' quick filter stands between the latest request and the applied View Spec. */
-function quickState(s: Snapshot): ConditionState | null {
-  const applied = s.appliedView.rows.filter.quick;
-  const asked = s.requestedView ? s.requestedView.rows.filter.quick : applied;
+/** Where an axis's quick filter stands between the latest request and the applied View Spec. */
+function quickState(s: Snapshot, axis: AxisName): ConditionState | null {
+  const applied = s.appliedView[axis].filter.quick;
+  const asked = s.requestedView ? s.requestedView[axis].filter.quick : applied;
   if (sameQuery(asked, applied)) return asked ? "applied" : null;
   if (!s.viewPending) return "notApplied";
   return asked ? "adding" : "removing";

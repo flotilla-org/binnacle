@@ -40,6 +40,7 @@ const ACTIONS: readonly Action[] = [
   { type: "Activate" },
   { type: "BeginEdit" },
   { type: "OpenColumnMenu" },
+  { type: "OpenRowMenu" },
   { type: "MoveFocus", axis: "rows", by: "page", forward: true, extend: true },
   { type: "MoveFocus", axis: "cols", by: "edge", forward: false, extend: false },
   { type: "ScrollBy", axis: "rows", items: -3 },
@@ -162,6 +163,8 @@ test.each<[Platform, KeyChord, Action]>([
   ["mac", { key: "F2", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "BeginEdit" }],
   ["mac", { key: "ArrowDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenColumnMenu" }],
   ["other", { key: "ArrowDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenColumnMenu" }],
+  ["mac", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenRowMenu" }],
+  ["other", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenRowMenu" }],
 ])("default on %s: %o is %o", (platform, event, action) => {
   expect(createKeymap({ platform }).lookup(event)).toEqual(action);
 });

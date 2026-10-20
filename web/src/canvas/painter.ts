@@ -31,8 +31,8 @@ export interface CanvasPainter extends Painter {
   readonly flashes: Flashes;
   /** Centred in the body when an axis has no items. */
   empty: string;
-  /** Whether a column menu is mounted, so filterable column headers draw its button. */
-  filterButtons: boolean;
+  /** Whether a column (and a row) menu is mounted, so filterable headers in that band draw its button. */
+  filterButtons: { cols: boolean; rows: boolean };
 }
 
 export function createCanvasPainter(theme: Theme): CanvasPainter {
@@ -56,7 +56,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     renderer: () => plainText,
     flashes: createFlashes(),
     empty: "No rows",
-    filterButtons: false,
+    filterButtons: { cols: false, rows: false },
     resize(w, h, ratio) {
       width = w;
       height = h;
@@ -91,7 +91,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         flashes: painter.flashes,
         now: performance.now(),
         motion: painter.motion,
-        filterButtons: painter.filterButtons,
+        filterButtons: { ...painter.filterButtons },
       };
       const animating = paintBody(p);
       const pulsing = paintPulse(p);

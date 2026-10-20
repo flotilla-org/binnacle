@@ -1,7 +1,8 @@
 // Unmatched rows in the feed: the flags a Table Source gives for the items
-// shown, asked again after each Change Notice and applied View Spec, through
-// late answers in any order; and fromRows end to end, where the user's edit
-// leaves a row in view, flagged, until a re-apply.
+// shown, asked again after each Change Notice (on either axis) and applied
+// View Spec, through late answers in any order; and fromRows end to end,
+// where the user's edit leaves a row or column in view, flagged, until a
+// re-apply.
 
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
@@ -138,6 +139,38 @@ describe("unmatched rows in the feed", () => {
       h.frame();
       expect(h.values()).toEqual([["Bergen", "Oslo"]]);
       expect(flags(h)).toEqual([false]);
+    } finally {
+      h.destroy();
+      source.destroy();
+    }
+  });
+
+  test("in fromRows, a column an edited row stops matching stays flagged until the View Spec is applied again", () => {
+    const rows = [
+      { name: "Bergen", port: "Oslo" },
+      { name: "Cádiz", port: "Bergen" },
+    ];
+    const source = fromRows(rows, [{ key: "name" }, { key: "port" }]);
+    const h = new Harness(source);
+    const columns = () => h.snapshot.cols.strip.map((_, j) => h.content?.label("cols", h.snapshot.cols.strip[j]!) ?? "");
+    const colFlags = () => h.snapshot.cols.strip.map((_, j) => h.content?.unmatched("cols", j) ?? false);
+    try {
+      h.frame();
+      // The columns with "bergen" in the second row.
+      h.grid.set_quick_filter(1, { text: "bergen", caseSensitive: false, regex: false, searches: [h.feed.rowKey(1)] });
+      h.drain();
+      h.frame();
+      expect(columns()).toEqual(["port"]);
+      expect(colFlags()).toEqual([false]);
+      rows[1]!.port = "Leith";
+      source.edited(1);
+      h.frame();
+      expect(columns()).toEqual(["port"]);
+      expect(colFlags()).toEqual([true]);
+      h.grid.reapply_view();
+      h.drain();
+      h.frame();
+      expect(columns()).toEqual([]);
     } finally {
       h.destroy();
       source.destroy();

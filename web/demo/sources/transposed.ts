@@ -7,7 +7,9 @@
 // sorts the records by it (Shift adds a field), as a column header click
 // sorts the records upright, and a column header click selects the record.
 // The filter box keeps the records whose name or port contains its text, as
-// columns; find and editing work as in the records.
+// columns; the filter bar's quick filter and a field's row menu filter the
+// records by their values too, and a record's column menu filters the
+// fields. Find and editing work as in the records.
 
 import {
   barRenderer,
@@ -82,7 +84,11 @@ export const transposed: DemoSource = {
       editor: (field) => (field === "port" ? portPicker() : null),
     });
     const columnMenu = createColumnMenu(widget);
-    const bar = createFilterBar(widget, { columnMenu });
+    const bar = createFilterBar(widget, {
+      columnMenu,
+      axis: "cols",
+      nouns: { rows: ["field", "fields"], cols: ["record", "records"] },
+    });
     const findBar = createFindBar(widget);
     frame.prepend(bar.element, findBar.element);
     const findButton = document.createElement("button");
