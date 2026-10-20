@@ -944,3 +944,37 @@ fn pinned_strips_clip_trailing_first_and_show_a_focused_pin(tc: TestCase) {
         }
     }
 }
+
+#[test]
+fn a_frame_with_pins_still_waiting_for_locate_leaves_the_anchor_where_it_is() {
+    // Five rows of 1 under a 1-high header band, in a viewport 3 high: four
+    // pinned leave no room to scroll, and the leading Strip clips.
+    let grid = Grid::new(
+        AxisConfig::new(5, 1.0).header(1.0),
+        AxisConfig::new(1, 3.0).header(2.0),
+    );
+    let mut s = Scenario::new(grid, KeyedTable::new(5, 1));
+    let v = Viewport::new(4.0, 3.0);
+    let mut out = String::new();
+    let order = |s: &mut Scenario<KeyedTable>, keys: [u64; 5]| {
+        s.source.axes[0] = keys.map(Key).to_vec();
+        s.input(|g| g.notify(Axis::Rows, ChangeNotice::Reordered));
+    };
+    s.input(|g| {
+        for k in [3, 0, 1] {
+            g.pin(Axis::Rows, Edge::Leading, Key(k));
+        }
+    });
+    out += &s.step_waiting("pin rows 3, 0 and 1, their Locates unanswered", v);
+    order(&mut s, [0, 1, 2, 4, 3]);
+    s.input(|g| g.pin(Axis::Rows, Edge::Leading, Key(2)));
+    out += &s.step_waiting("swap rows 3 and 4 and pin row 2, still unanswered", v);
+    for keys in [[0, 1, 4, 2, 3], [0, 4, 1, 2, 3], [4, 0, 1, 2, 3]] {
+        order(&mut s, keys);
+        out += &s.step_waiting(&format!("reorder to {keys:?}"), v);
+    }
+    let anchor = s.grid.snapshot().scroll_anchor(Axis::Rows);
+    out += &s.step_waiting("another frame, nothing new: the anchor stays", v);
+    assert_eq!(s.grid.snapshot().scroll_anchor(Axis::Rows), anchor);
+    insta::assert_snapshot!(out);
+}

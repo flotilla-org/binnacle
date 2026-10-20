@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-core/tests/pinning.rs
-assertion_line: 40
 expression: out
 ---
 --- 1. start
@@ -44,7 +43,7 @@ Cols: count 10, extent 32, header 4, anchor 1+3, thumb 0.2439/0.4058 | 1#1@1+6 2
 2       2.2    2.3    2.4    2.5
 3       3.2    3.3    3.4    3.5
 --- 5. pin again and go far right: the scroll extent leaves it out
-window Cols 4..10
+window Cols 3..10
 gen 5 | damage layout positions
 Rows: (unchanged)
 Cols: count 10, extent 32, header 4, anchor 6+6, thumb 1.0000/0.3387 | pinned 2#2@4+6 | scrolling from 11 | 7#7@12+6 8#8@19+6 9#9@26+6
