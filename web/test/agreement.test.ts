@@ -243,23 +243,30 @@ describe("Find", () => {
   });
 });
 
-describe("Unmatched rows", () => {
-  test("binnacle-memory keeps an edited row in view, flagged, until the rows are filtered again", () => {
-    const memory = new (bridge().WebMemory)(4, 1);
-    const order = () => Array.from(memory.window(0, 0, memory.count(0)));
+describe("Unmatched items", () => {
+  test.each([
+    ["rows", 0],
+    ["columns", 1],
+  ])("binnacle-memory keeps edited %s in view, flagged, until the axis is filtered again", (_, a) => {
+    const memory = a === 0 ? new (bridge().WebMemory)(4, 1) : new (bridge().WebMemory)(1, 4);
+    const order = () => Array.from(memory.window(a, 0, memory.count(a)));
     try {
-      expect(memory.filter(Uint8Array.from([1, 1, 0, 1]))).toBe(3);
-      // The user's edit: row 1 no longer matches but stays; row 2 now matches and comes in.
-      expect(memory.defer_row(1, 0)).toBe(false);
-      expect(memory.defer_row(2, 1)).toBe(true);
+      expect(memory.filter(a, Uint8Array.from([1, 1, 0, 1]))).toBe(3);
+      // The user's edit: item 1 no longer matches but stays; item 2 now matches and comes in.
+      expect(memory.defer(a, 1, 0)).toBe(false);
+      expect(memory.defer(a, 2, 1)).toBe(true);
       expect(order()).toEqual([0, 1, 2, 3]);
-      expect(Array.from(memory.unmatched(Uint32Array.from([0, 1, 2, 3, 9])))).toEqual([0, 1, 0, 0, 0]);
-      expect(memory.has_unmatched()).toBe(true);
-      // A change from the data takes row 3 out at once.
-      expect(memory.refilter_row(3, 0)).toBe(true);
+      expect(Array.from(memory.unmatched(a, Uint32Array.from([0, 1, 2, 3, 9])))).toEqual([0, 1, 0, 0, 0]);
+      expect(memory.has_unmatched(a)).toBe(true);
+      expect(memory.has_unmatched(1 - a)).toBe(false);
+      // A change from the data takes item 3 out at once.
+      expect(memory.refilter(a, 3, 0)).toBe(true);
       expect(order()).toEqual([0, 1, 2]);
-      expect(memory.filter(Uint8Array.from([1, 0, 1, 0]))).toBe(2);
-      expect(memory.has_unmatched()).toBe(false);
+      // Only flags that changed move: item 1 stays unmatched, item 0 goes.
+      expect(memory.refilter_all(a, Uint8Array.from([0, 0, 1, 0]))).toBe(true);
+      expect(order()).toEqual([1, 2]);
+      expect(memory.filter(a, Uint8Array.from([1, 0, 1, 0]))).toBe(2);
+      expect(memory.has_unmatched(a)).toBe(false);
     } finally {
       memory.free();
     }

@@ -113,6 +113,7 @@ impl AxisOrder {
         }
         moved
     }
+
     /// The filter now keeps each item as `keep` says, because the data
     /// changed: an item whose flag changed comes or goes at once, no longer
     /// unmatched; the rest stay as they are. Returns whether any item came

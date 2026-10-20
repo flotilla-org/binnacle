@@ -137,6 +137,15 @@ impl WebMemory {
             .is_some()
     }
 
+    /// The data changed and the filter now keeps each base item on axis `a`
+    /// as `keep` says: an item whose flag changed comes or goes at once, the
+    /// rest stay as they are. Returns whether any came or went, so the axis
+    /// needs a `Refiltered`.
+    pub fn refilter_all(&mut self, a: u8, keep: &[u8]) -> bool {
+        let keep: Vec<bool> = keep.iter().map(|&k| k != 0).collect();
+        self.table.refilter_items(axis(a), &keep).is_some()
+    }
+
     /// For each item on axis `a` with these Logical Indices, 1 if it is
     /// unmatched: in view though the filter drops it.
     pub fn unmatched(&mut self, a: u8, items: &[u32]) -> Vec<u8> {

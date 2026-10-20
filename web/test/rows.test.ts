@@ -25,12 +25,12 @@ import type {
 import { BAND, COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
 import { loadForTests } from "./wasm";
 
-/** Sinks that keep the rows' Change Notices in `notices` and drop the rest. */
-function sinksTo<RowId, ColId>(notices: ChangeNotice[]): TableSink<RowId, ColId> {
+/** Sinks that keep the rows' Change Notices in `notices`, the columns' in `cols`, and drop the rest. */
+function sinksTo<RowId, ColId>(notices: ChangeNotice[], cols: ChangeNotice[] = []): TableSink<RowId, ColId> {
   const ignore = () => {};
   return {
     rows: { notify: (n) => void notices.push(n), supportChanged: ignore },
-    cols: { notify: ignore, supportChanged: ignore },
+    cols: { notify: (n) => void cols.push(n), supportChanged: ignore },
     viewChanged: ignore,
     findCounted: ignore,
   };
@@ -157,7 +157,11 @@ function quickKeeps(query: TextQuery<keyof Rec> | null, row: Rec): boolean {
  * opposite.
  */
 function satisfies(condition: Condition<keyof Rec>, row: Rec): boolean {
-  const value = row[condition.id];
+  return holds(condition, row[condition.id]);
+}
+
+/** Whether `condition` keeps an item whose value in the item it names is `value`. */
+function holds(condition: Condition<unknown>, value: Rec[keyof Rec]): boolean {
   const kind = condition.kind;
   const matched =
     kind.type === "OneOf"
@@ -167,7 +171,7 @@ function satisfies(condition: Condition<keyof Rec>, row: Rec): boolean {
 }
 
 /** Whether fromRows can apply `condition`: a OneOf, or Text with a pattern RegExp takes. */
-function applicable(condition: Condition<keyof Rec>): boolean {
+function applicable(condition: Condition<unknown>): boolean {
   return condition.kind.type === "OneOf" || matches(condition.kind.query, "") !== undefined;
 }
 
@@ -186,15 +190,14 @@ const queries = gs.composite((tc): TextQuery<keyof Rec> => {
   return { text, caseSensitive: tc.draw(gs.booleans()), regex, searches };
 });
 
-/** Records whose strings come from the query letters, so queries often match. */
-const texts = gs.arrays(
-  gs.record({
-    n: gs.oneOf(gs.just(null), gs.just(Number.NaN), gs.integers({ minValue: -12, maxValue: 12 }), gs.floats()),
-    s: gs.oneOf(gs.just(null), gs.arrays(pieceOf(letters), { maxSize: 4 }).map((cs) => cs.join(""))),
-    b: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 })),
-  }),
-  { maxSize: 20 },
-);
+/** A record whose strings come from the query letters, so queries often match. */
+const text = gs.record({
+  n: gs.oneOf(gs.just(null), gs.just(Number.NaN), gs.integers({ minValue: -12, maxValue: 12 }), gs.floats()),
+  s: gs.oneOf(gs.just(null), gs.arrays(pieceOf(letters), { maxSize: 4 }).map((cs) => cs.join(""))),
+  b: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 })),
+});
+
+const texts = gs.arrays(text, { maxSize: 20 });
 
 /** A value a OneOf lists: often a null, empty text, a small number or a letter, so it often matches; sometimes any text. */
 const listedOf = gs.oneOf(
@@ -214,6 +217,55 @@ const conditionOf = gs.composite((tc): Condition<keyof Rec> => {
 });
 
 const conditionsOf = gs.arrays(conditionOf, { maxSize: 3 });
+
+const COLUMN_IDS = ["n", "s", "b"] as const;
+
+/** The columns the columns' quick filter and conditions keep, in their order: as the rows' are kept, read along a row. */
+function columnsKept(rows: Rec[], filter: FilterSpec<number>): (keyof Rec)[] {
+  const { quick, conditions } = filter;
+  const searched = quick?.searches === "shown" ? rows.map((_, i) => i) : (quick?.searches ?? []);
+  return COLUMN_IDS.filter(
+    (c) =>
+      (!quick || searched.some((r) => rows[r]![c] !== null && matches(quick, String(rows[r]![c])) === true)) &&
+      conditions.every((k) => holds(k, rows[k.id]![c])),
+  );
+}
+
+/** A quick filter on the columns, searching every row or some of the `n`. */
+const colsQueryOf = (n: number) =>
+  gs.composite((tc): TextQuery<number> => {
+    const { searches: _, ...query } = tc.draw(queries);
+    const searches = tc.draw(gs.booleans())
+      ? "shown"
+      : tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: n - 1 }), { maxSize: 3 }));
+    return { ...query, searches };
+  });
+
+/** Conditions on the columns, each read in one of the `n` rows or, sometimes, a row that is not there. */
+const colsConditionsOf = (n: number) =>
+  gs.arrays(
+    gs.composite((tc): Condition<number> => ({ ...tc.draw(conditionOf), id: tc.draw(gs.integers({ minValue: 0, maxValue: n })) })),
+    { maxSize: 3 },
+  );
+
+/** Whether fromRows can apply a condition on the columns of `n` rows: as `applicable`, read in a row that is there. */
+const applicableIn = (n: number) => (condition: Condition<number>) => condition.id < n && applicable(condition);
+
+/** Whether some pattern in `spec` is one RegExp rejects. */
+function rejects(spec: FilterSpec<unknown>): boolean {
+  const patterns = [spec.quick, ...spec.conditions.map((c) => (c.kind.type === "Text" ? c.kind.query : null))];
+  return patterns.some((q) => q !== null && matches(q, "") === undefined);
+}
+
+/** A few rows, so that edits often change what the columns' filter reads. */
+const fewTexts = gs.arrays(text, { minSize: 1, maxSize: 4 });
+
+/** A View Spec filtering the rows by `rows` and the columns by `cols`. */
+function filtered(rows: FilterSpec<keyof Rec>, cols: FilterSpec<number>): ViewSpec<number, keyof Rec> {
+  return { rows: { filter: rows, sort: [] }, cols: { filter: cols, sort: [] } };
+}
+
+const NONE = { quick: null, conditions: [] };
 
 function order(source: ReturnType<typeof fromRows<Rec>>): number[] {
   return source.rows.window(0, source.rows.count() as number, new AbortController().signal) as number[];
@@ -654,4 +706,152 @@ describe("fromRows", () => {
     expect(ask("s", "", 2)).toMatchObject({ partial: true });
     source.destroy();
   });
+});
+
+describe("fromRows's columns", () => {
+  const shownColumns = (source: ReturnType<typeof fromRows<Rec>>) =>
+    source.cols.window(0, source.cols.count() as number, new AbortController().signal) as (keyof Rec)[];
+
+  test("whatever View Specs arrive, each axis shows the model's items apart from the other's filter, and only a change to the columns' filter tells them", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(fewTexts);
+      const source = fromRows(rows, COLUMNS);
+      const [notices, colsNotices]: [ChangeNotice[], ChangeNotice[]] = [[], []];
+      source.attach!(sinksTo(notices, colsNotices));
+      let applied: { rows: FilterSpec<keyof Rec>; cols: FilterSpec<number> } = { rows: NONE, cols: NONE };
+      try {
+        expect(source.cols.quickFilter).toEqual({ regex: true });
+        expect(source.cols.support!(0)).toEqual({ sort: false, text: { regex: true }, oneOf: true });
+        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 5 }));
+        for (let i = 0; i < steps; i++) {
+          colsNotices.length = 0;
+          const keepOr = <T,>(old: T, fresh: gs.Generator<T>) => tc.draw(gs.oneOf(gs.just(old), fresh));
+          const asked = {
+            rows: {
+              quick: keepOr(applied.rows.quick, gs.oneOf(gs.just(null), queries)),
+              conditions: keepOr(applied.rows.conditions, conditionsOf),
+            },
+            cols: {
+              quick: keepOr(applied.cols.quick, gs.oneOf(gs.just(null), colsQueryOf(rows.length))),
+              conditions: keepOr(applied.cols.conditions, colsConditionsOf(rows.length)),
+            },
+          };
+          const answer = source.view!(filtered(asked.rows, asked.cols), new AbortController().signal) as AppliedView<
+            number,
+            keyof Rec
+          >;
+          const take = <C,>(old: FilterSpec<C>, spec: FilterSpec<C>, takes: (c: Condition<C>) => boolean): FilterSpec<C> => ({
+            quick: spec.quick === null || matches(spec.quick, "") !== undefined ? spec.quick : old.quick,
+            conditions: spec.conditions.filter(takes),
+          });
+          const next = {
+            rows: take(applied.rows, asked.rows, applicable),
+            cols: take(applied.cols, asked.cols, applicableIn(rows.length)),
+          };
+          const changed = JSON.stringify(next.cols) !== JSON.stringify(applied.cols);
+          applied = next;
+          const { error, ...rest } = answer;
+          expect(rest).toEqual({ ...filtered(applied.rows, applied.cols), totals: { rows: rows.length, cols: 3 } });
+          expect(error !== undefined).toBe(rejects(asked.rows) || rejects(asked.cols));
+          expect(colsNotices).toEqual(changed ? [{ type: "Refiltered" }] : []);
+          expect(shownColumns(source)).toEqual(columnsKept(rows, applied.cols));
+          const keeps = (r: Rec) => quickKeeps(applied.rows.quick, r) && applied.rows.conditions.every((c) => satisfies(c, r));
+          expect(order(source)).toEqual(reference(rows, [], keeps));
+        }
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("after rows change in place, a change from the data moves the columns whose match changed at once, and the user's edit leaves a column that stops matching unmatched until the next View Spec", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(fewTexts);
+      const source = fromRows(rows, COLUMNS);
+      const colsNotices: ChangeNotice[] = [];
+      source.attach!(sinksTo([], colsNotices));
+      try {
+        const cols: FilterSpec<number> = {
+          quick: tc.draw(gs.oneOf(gs.just(null), colsQueryOf(rows.length).filter((q) => matches(q, "") !== undefined))),
+          conditions: tc.draw(colsConditionsOf(rows.length)).filter(applicableIn(rows.length)),
+        };
+        source.view!(filtered(NONE, cols), new AbortController().signal);
+        // Whether the filter keeps each column, as last told; which are shown, and which of those unmatched.
+        const filtering = cols.quick !== null || cols.conditions.length > 0;
+        const kept = () => COLUMN_IDS.map((c) => columnsKept(rows, cols).includes(c));
+        let flags = kept();
+        let shown = flags.slice();
+        const unmatched = new Set<number>();
+        const changes = tc.draw(gs.integers({ minValue: 1, maxValue: 5 }));
+        for (let i = 0; i < changes; i++) {
+          const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+          const edit = tc.draw(gs.booleans());
+          Object.assign(rows[id]!, tc.draw(text));
+          colsNotices.length = 0;
+          if (edit) source.edited(id);
+          else source.changed(id);
+          const before = shown;
+          const now = kept();
+          if (filtering) {
+            shown = now.map((k, c) => {
+              if (edit) {
+                if (before[c] && !k) unmatched.add(c);
+                else unmatched.delete(c);
+              } else if (k !== flags[c]) unmatched.delete(c);
+              else return before[c]!;
+              return k || unmatched.has(c);
+            });
+            flags = now;
+          }
+          expect(shownColumns(source)).toEqual(COLUMN_IDS.filter((_, c) => shown[c]));
+          const ids = shownColumns(source);
+          expect(source.cols.unmatched!(ids, new AbortController().signal)).toEqual(ids.map((c) => unmatched.has(COLUMN_IDS.indexOf(c))));
+          const moved = shown.some((s, c) => s !== before[c]);
+          expect(colsNotices).toEqual(moved ? [{ type: "Refiltered" }] : []);
+        }
+        // Any View Spec, even the one in force, filters the unmatched columns.
+        colsNotices.length = 0;
+        source.view!(filtered(NONE, cols), new AbortController().signal);
+        expect(shownColumns(source)).toEqual(columnsKept(rows, cols));
+        expect(colsNotices).toEqual(unmatched.size ? [{ type: "Refiltered" }] : []);
+      } finally {
+        source.destroy();
+      }
+    }, { testCases: 500 }));
+
+  test("a row's distinct values are the model's: its texts across the columns the narrowing keeps, counted, searched, in text order, capped, with blanks apart", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(texts);
+      tc.assume(rows.length > 0);
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const narrow: FilterSpec<number> = {
+          quick: tc.draw(gs.oneOf(gs.just(null), colsQueryOf(rows.length).filter((q) => matches(q, "") !== undefined))),
+          conditions: tc.draw(colsConditionsOf(rows.length)).filter(applicableIn(rows.length)),
+        };
+        const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+        const search = tc.draw(gs.oneOf(gs.just(""), pieceOf(letters)));
+        const limit = tc.draw(gs.integers({ minValue: 0, maxValue: 4 }));
+        const answer = source.cols.distinct!(id, { search, limit, narrow }, new AbortController().signal);
+        const cells = columnsKept(rows, narrow).map((c) => rows[id]![c]);
+        const blanks = cells.filter((v) => v === null).length;
+        const texts = cells
+          .flatMap((v) => (v === null ? [] : [String(v)]))
+          .filter((t) => t.toLowerCase().includes(search.toLowerCase()))
+          .sort(codePoints);
+        const values: { text: string; count: number }[] = [];
+        for (const t of texts) {
+          const v = values.find((v) => v.text === t);
+          if (v) v.count++;
+          else values.push({ text: t, count: 1 });
+        }
+        expect(answer).toEqual({
+          values: values.slice(0, limit),
+          ...(blanks > 0 && search === "" ? { blanks } : {}),
+          partial: values.length > limit,
+          narrowed: true,
+        });
+      } finally {
+        source.destroy();
+      }
+    }, { testCases: 300 }));
 });
