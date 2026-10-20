@@ -4,8 +4,8 @@
 //! `Refiltered` rules while Size Overrides stay.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Condition, Edge, Effect, Grid, HIDE_CAP, HideCapped, Key,
-    Modifiers, TextQuery, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, Edge, Effect, Grid, HIDE_CAP, HideCapped, Key, Modifiers,
+    TextQuery, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_testkit::{ColumnMajorTable, RecordTable, Scenario};
 
