@@ -24,7 +24,9 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// edited cell is marked `=`, before focus), a hovered header `hover axis position`, a resize
 /// cursor hint `cursor C`, a resize guide `guide axis offset (key K size
 /// S)` and a move `moving keys to axis position at offset` (the drop
-/// indicator, also drawn across the header band). An applied View Spec that
+/// indicator, also drawn across the header band); a move waiting for its
+/// answer adds `move pending axis keys`, and a refused one `move refused
+/// axis: reason`. An applied View Spec that
 /// sorts adds `sort`, as the rows' sort with `key^` or `keyv` per column
 /// (then `cols` and the columns' sort, if any); one that filters adds
 /// `filter` (see [`view_text`]), an unanswered request `requested` with
@@ -194,6 +196,13 @@ fn summary(snap: &Snapshot) -> String {
             d.to,
             d.offset
         );
+    }
+    if let Some((axis, keys)) = snap.pending_move() {
+        let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
+        let _ = write!(out, " | move pending {axis:?} {}", keys.join(","));
+    }
+    if let Some((axis, reason)) = snap.move_refusal() {
+        let _ = write!(out, " | move refused {axis:?}: {reason}");
     }
     out
 }

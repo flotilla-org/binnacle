@@ -38,10 +38,24 @@ pub struct Dump {
     applied_view: WireViewSpec,
     requested_view: Option<WireViewSpec>,
     view_pending: bool,
+    pending_move: Option<DumpPendingMove>,
+    move_refusal: Option<DumpRefusal>,
     find: Option<WireFindQuery>,
     find_match: Option<WireFindMatch>,
     find_support: Option<DumpTextSupport>,
     cells: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct DumpPendingMove {
+    axis: WireAxis,
+    keys: Vec<u64>,
+}
+
+#[derive(Serialize)]
+struct DumpRefusal {
+    axis: WireAxis,
+    reason: String,
 }
 
 #[derive(Serialize)]
@@ -94,6 +108,7 @@ struct DumpAxis {
     total: Option<f64>,
     quick_filter: Option<DumpTextSupport>,
     conditions: Vec<DumpListed>,
+    movable: bool,
 }
 
 #[derive(Serialize)]
@@ -170,6 +185,8 @@ struct DumpHeader {
     filter: DumpHeaderFilter,
     /// The support of the item's Key, or none (all off) for an unfilled one.
     support: DumpSupport,
+    #[serde(rename = "movePending")]
+    move_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -205,6 +222,7 @@ impl DumpHeader {
                 not_applied: h.filter.not_applied,
             },
             support: support.into(),
+            move_pending: h.move_pending,
         }
     }
 }
@@ -361,6 +379,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 },
             })
             .collect(),
+        movable: s.movable(axis),
     }
 }
 
@@ -426,6 +445,14 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         applied_view: s.applied_view().into(),
         requested_view: s.requested_view().map(WireViewSpec::from),
         view_pending: s.view_pending(),
+        pending_move: s.pending_move().map(|(axis, ks)| DumpPendingMove {
+            axis: axis.into(),
+            keys: keys(ks),
+        }),
+        move_refusal: s.move_refusal().map(|(axis, reason)| DumpRefusal {
+            axis: axis.into(),
+            reason: reason.to_string(),
+        }),
         find: s.find().map(WireFindQuery::from),
         find_match: s.find_match().map(WireFindMatch::from),
         find_support: s.find_support().map(|f| DumpTextSupport { regex: f.regex }),
@@ -573,9 +600,23 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 14] = [
-    "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
-    "sorted", "filtered", "found", "rejected", "pinned",
+pub const SCENARIOS: [&str; 16] = [
+    "plain",
+    "busy",
+    "resizing",
+    "band",
+    "moving",
+    "movePending",
+    "moveRefused",
+    "editing",
+    "locating",
+    "scrolled",
+    "dragging",
+    "sorted",
+    "filtered",
+    "found",
+    "rejected",
+    "pinned",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -656,8 +697,20 @@ pub fn scenario(name: &str) -> Grid {
             grid.pointer(PointerEvent::moved(60.0, 10.0));
         }
         "moving" => {
+            grid.set_movable(Axis::Cols, true);
             grid.pointer(PointerEvent::down(220.0, 10.0));
             grid.pointer(PointerEvent::moved(60.0, 10.0));
+        }
+        "movePending" | "moveRefused" => {
+            // Row 1's header dropped below row 3, the source yet to answer.
+            grid.set_movable(Axis::Rows, true);
+            grid.pointer(PointerEvent::down(20.0, 24.0 + 21.0 + 10.0));
+            grid.pointer(PointerEvent::moved(20.0, 24.0 + 21.0 * 3.0 + 15.0));
+            grid.pointer(PointerEvent::up(20.0, 24.0 + 21.0 * 3.0 + 15.0));
+            while grid.poll_effect().is_some() {}
+            if name == "moveRefused" {
+                grid.move_answered(Some("Can't move while sorted".into()));
+            }
         }
         "editing" => {
             grid.set_focus(key(1), key(2));
@@ -823,6 +876,8 @@ mod tests {
                 }
                 "resizing" => assert!(s.resize_guide().is_some() && s.capturing()),
                 "moving" => assert!(s.drop_indicator().is_some()),
+                "movePending" => assert!(s.headers(Axis::Rows).any(|h| h.move_pending)),
+                "moveRefused" => assert!(s.move_refusal().is_some() && s.pending_move().is_none()),
                 "editing" => assert!(s.editor_rect().is_some()),
                 "locating" => {
                     assert!(s.locating(Axis::Rows));
@@ -901,6 +956,8 @@ mod tests {
                 "Resizing",
                 "ResizingBand",
                 "MovingHeaders",
+                "Idle",
+                "Idle",
                 "Editing",
                 "Idle",
                 "Idle",

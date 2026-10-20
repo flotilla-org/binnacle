@@ -235,7 +235,7 @@ fn the_columns_follow_the_model_through_sorts_edits_replacements_and_moves(tc: T
             }
             Op::Move(cols, to) => {
                 let keys: Vec<Key> = cols.iter().map(|&c| Key(c as u64)).collect();
-                source.move_columns(&keys, to);
+                source.move_items(Axis::Cols, &keys, to);
                 let order: Vec<usize> = model.columns().iter().map(|k| k.0 as usize).collect();
                 let mut moving: Vec<usize> = Vec::new();
                 for c in cols {

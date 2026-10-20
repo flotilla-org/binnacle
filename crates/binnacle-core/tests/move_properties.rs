@@ -1,10 +1,11 @@
-//! Seam 1 properties for column moves: a real Grid over an In-Memory Table
-//! Source of records, driven through the frame loop and the shared pump with
-//! header drags, column moves and row reorders made behind the Grid's back,
-//! Size Overrides and scrolls.
+//! Seam 1 properties for moves: a real Grid over an In-Memory Table Source
+//! of records, driven through the frame loop and the shared pump with header
+//! drags, column moves and row reorders made behind the Grid's back, Size
+//! Overrides and scrolls; and a Grid whose host answers moves late or
+//! refuses them while declaring either axis movable or not.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Grid, Key, Mode, PointerEvent, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Effect, Grid, Key, Mode, PointerEvent, Viewport,
 };
 use binnacle_testkit::{Record, RecordTable, Scenario};
 use hegel::generators as gs;
@@ -140,7 +141,8 @@ impl Host {
             Input::Release => self.s.input(|g| g.pointer(PointerEvent::up(0.0, 0.0))),
             Input::Cancel => self.s.input(|g| g.action(Action::Cancel)),
             Input::Move(keys, to) => {
-                let notice = self.s.source.source.move_columns(&keys, to);
+                let notice = self.s.source.source.move_items(Axis::Cols, &keys, to);
+                let notice = notice.expect("the columns are never sorted here");
                 self.s.input(|g| g.notify(Axis::Cols, notice));
             }
             Input::Reordered(axis) => {
@@ -222,4 +224,161 @@ fn a_header_move_is_cancelled_only_by_reordering_its_own_axis(tc: TestCase) {
             _ => {}
         }
     });
+}
+
+#[derive(Clone, Debug)]
+enum Slow {
+    /// Press the header of item `from` on `axis`, move over item `to` (which
+    /// may be past the end) and release if `release`.
+    Drag {
+        axis: Axis,
+        from: u64,
+        to: u64,
+        release: bool,
+    },
+    Release,
+    Cancel,
+    SetMovable(Axis, bool),
+    /// The host answers the move waiting, if any: moved, or refused.
+    Answer {
+        refuse: bool,
+    },
+    /// A click on a cell.
+    Click,
+}
+
+#[hegel::composite]
+fn slow(tc: &TestCase) -> Slow {
+    let axis = || gs::sampled_from(vec![Axis::Rows, Axis::Cols]);
+    match tc.draw(gs::integers::<u8>().max_value(6)) {
+        0 | 1 => Slow::Drag {
+            axis: tc.draw(axis()),
+            from: tc.draw(gs::integers::<u64>().max_value(SLOW_COUNT - 1)),
+            to: tc.draw(gs::integers::<u64>().max_value(SLOW_COUNT + 1)),
+            release: tc.draw(gs::weighted_booleans(0.7)),
+        },
+        2 => Slow::Release,
+        3 => Slow::Cancel,
+        4 => Slow::SetMovable(tc.draw(axis()), tc.draw(gs::booleans())),
+        5 => Slow::Answer {
+            refuse: tc.draw(gs::booleans()),
+        },
+        _ => Slow::Click,
+    }
+}
+
+/// Items per axis in [`slow_frame`]'s table.
+const SLOW_COUNT: u64 = 6;
+
+/// A frame of a 6 by 6 table whose Keys are Positions: rows 1 high under a
+/// 1-high band, columns 3 wide after a 2-wide band, so row `p` spans y
+/// `1 + p .. 2 + p` and column `p` x `2 + 3p .. 5 + 3p`.
+fn slow_frame(grid: &mut Grid) {
+    for (axis, range) in grid.begin_frame(Viewport::new(30.0, 10.0)) {
+        let keys: Vec<Key> = range.clone().map(Key).collect();
+        grid.set_window(axis, range.start, &keys);
+    }
+}
+
+/// The middle of item `p` on `axis` along it, and the middle of its header
+/// across.
+fn header_point(axis: Axis, p: u64) -> (f32, f32) {
+    match axis {
+        Axis::Rows => (1.0, 1.5 + p as f32),
+        Axis::Cols => (3.5 + 3.0 * p as f32, 0.5),
+    }
+}
+
+/// Moves are requested one at a time and only on an axis movable as the
+/// drop is made; the moved headers show pending exactly until the host
+/// answers; a refusal shows until the next press; and nothing moves early.
+#[hegel::test(test_cases = 1000)]
+fn moves_are_requested_one_at_a_time_and_only_on_a_movable_axis(tc: TestCase) {
+    let mut grid = Grid::new(
+        AxisConfig::new(SLOW_COUNT, 1.0).header(1.0),
+        AxisConfig::new(SLOW_COUNT, 3.0).header(2.0),
+    );
+    let mut movable = [false; 2];
+    let mut pending: Option<(Axis, Vec<Key>)> = None;
+    let mut refused: Option<Axis> = None;
+    slow_frame(&mut grid);
+    for input in tc.draw(gs::vecs(slow()).min_size(1).max_size(12)) {
+        match input {
+            Slow::Drag {
+                axis,
+                from,
+                to,
+                release,
+            } => {
+                let (x, y) = header_point(axis, from);
+                let (tx, ty) = match axis {
+                    Axis::Rows => (x, header_point(axis, to).1),
+                    Axis::Cols => (header_point(axis, to).0, y),
+                };
+                grid.pointer(PointerEvent::down(x, y));
+                grid.pointer(PointerEvent::moved(tx, ty));
+                refused = None;
+                let snap = {
+                    slow_frame(&mut grid);
+                    grid.snapshot()
+                };
+                let moving =
+                    matches!(snap.mode(), Mode::MovingHeaders { axis: a, .. } if a == axis);
+                // A drag onto the item pressed never passes the threshold.
+                let dragged = from != to;
+                assert_eq!(
+                    moving,
+                    dragged && movable[axis.index()] && pending.is_none()
+                );
+                assert_eq!(snap.drop_indicator().is_some(), moving);
+                if release {
+                    grid.pointer(PointerEvent::up(tx, ty));
+                }
+            }
+            Slow::Release => grid.pointer(PointerEvent::up(0.0, 0.0)),
+            Slow::Cancel => grid.action(Action::Cancel),
+            Slow::SetMovable(axis, m) => {
+                grid.set_movable(axis, m);
+                movable[axis.index()] = m;
+            }
+            Slow::Answer { refuse } => {
+                grid.move_answered(refuse.then(|| "no".to_string()));
+                if let Some((axis, _)) = pending.take()
+                    && refuse
+                {
+                    refused = Some(axis);
+                }
+            }
+            Slow::Click => {
+                grid.pointer(PointerEvent::down(10.0, 4.5));
+                grid.pointer(PointerEvent::up(10.0, 4.5));
+                refused = None;
+            }
+        }
+        while let Some(stamped) = grid.poll_effect() {
+            if let Effect::MoveRequested { axis, keys, .. } = stamped.effect {
+                tc.event("a move requested");
+                assert!(pending.is_none(), "a second move while {pending:?} waits");
+                assert!(movable[axis.index()], "a move on {axis:?}, not movable");
+                pending = Some((axis, keys));
+            }
+        }
+        slow_frame(&mut grid);
+        let snap = grid.snapshot();
+        assert_eq!(
+            snap.pending_move().map(|(a, k)| (a, k.to_vec())),
+            pending.clone()
+        );
+        assert_eq!(snap.move_refusal().map(|(a, _)| a), refused);
+        for axis in Axis::ALL {
+            assert_eq!(snap.movable(axis), movable[axis.index()]);
+            for h in snap.headers(axis) {
+                let waits = (pending.as_ref())
+                    .is_some_and(|(a, keys)| *a == axis && keys.contains(&h.key.unwrap()));
+                assert_eq!(h.move_pending, waits, "{h:?}");
+                // Nothing moves early, nor late: the host never moves.
+                assert_eq!(h.key, Some(Key(h.position)));
+            }
+        }
+    }
 }

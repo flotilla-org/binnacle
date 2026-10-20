@@ -61,6 +61,9 @@ extern "C" {
 /* FILTER_NOT_APPLIED: no answer is due, and a condition read in this item
  * that the user asked for is left out of the applied View Spec. */
 #define BINNACLE_HEADER_FILTER_NOT_APPLIED 128u
+/* MOVE_PENDING: a move of this item waits for binnacle_grid_move_answered:
+ * draw it pending, like a sort, while the order stays as it is. */
+#define BINNACLE_HEADER_MOVE_PENDING 256u
 
 /* BinnacleSnapshot.mode. Modes the Grid gained after this header read as
  * BINNACLE_MODE_OTHER. */
@@ -95,6 +98,12 @@ extern "C" {
  * PREVIOUS), wrapping. Answer each with binnacle_grid_find_stepped, in
  * order. */
 #define BINNACLE_EFFECT_FIND_STEP_REQUESTED 9
+/* The user dropped the headers of the items with keys on axis before the
+ * item at Position to (the count for the end), Positions as they were before
+ * the move. The Grid reorders nothing: move them and tell the Grid with
+ * binnacle_grid_notify, or refuse; either way answer with
+ * binnacle_grid_move_answered. No other move starts until then. */
+#define BINNACLE_EFFECT_MOVE_REQUESTED 10
 
 /* BinnacleEffect.direction for FIND_STEP_REQUESTED. */
 #define BINNACLE_FIND_NEXT 0
@@ -392,6 +401,8 @@ typedef struct {
    * after the pinned ones) to [scrolling_start, scrolling_end). */
   float scrolling_start;
   float scrolling_end;
+  /* Header drags move the axis's items (binnacle_grid_set_movable). */
+  uint32_t movable;
 } BinnacleAxisSnapshot;
 
 /*
@@ -439,6 +450,17 @@ typedef struct {
   /* Nonzero while a binnacle_grid_view_applied is due: requested parts are
    * pending; once zero, requested parts not applied are not applied. */
   uint32_t view_pending;
+  /* The move requested and not yet answered: its axis and the Keys it
+   * moves. */
+  uint32_t has_pending_move;
+  uint32_t pending_move_axis;
+  const uint64_t *pending_move_keys;
+  size_t pending_move_keys_len;
+  /* The last move the Table Source refused and its reason, until the next
+   * press: a short message to show near the headers or in a status line. */
+  uint32_t has_move_refusal;
+  uint32_t move_refusal_axis;
+  BinnacleText move_refusal;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -545,6 +567,11 @@ typedef struct {
   uint32_t has_from;
   BinnacleFindMatch from;
   uint32_t direction;
+  /* MOVE_REQUESTED: the Keys of the items moved (axis is theirs), valid as
+   * text is, and the Position they drop before. */
+  const uint64_t *keys;
+  size_t keys_len;
+  uint64_t to;
 } BinnacleEffect;
 
 /* A raw pointer event in viewport coordinates (the host's unit, origin at the
@@ -578,6 +605,12 @@ int binnacle_grid_set_header_click(BinnacleGrid *grid, uint32_t axis, uint32_t c
 /* How far a pressed pointer must move to drag; default 1. Values that are not
  * finite and non-negative are ignored. */
 int binnacle_grid_set_drag_threshold(BinnacleGrid *grid, float threshold);
+
+/* Whether the Table Source can move the items of axis now (1) or not (0),
+ * which it may change at any time. Header drags move items only on a movable
+ * axis; withdrawing it ends a move being dragged there. No axis is movable
+ * until set. 0 for other values. */
+int binnacle_grid_set_movable(BinnacleGrid *grid, uint32_t axis, uint32_t movable);
 
 /* The frame loop. */
 
@@ -715,6 +748,11 @@ int binnacle_grid_set_find(BinnacleGrid *grid, const BinnacleFindQuery *query);
  * current match, else the focused cell. Nothing while find is closed. */
 int binnacle_grid_find_next(BinnacleGrid *grid);
 int binnacle_grid_find_previous(BinnacleGrid *grid);
+
+/* The answer to MOVE_REQUESTED: NULL refusal once the items moved, else
+ * the reason the Table Source refused, len bytes of UTF-8, which the
+ * Snapshot carries until the next press. 0 if it is not UTF-8. */
+int binnacle_grid_move_answered(BinnacleGrid *grid, const uint8_t *refusal, size_t len);
 
 /* Text the user typed; 0 if it is not UTF-8. */
 int binnacle_grid_type_text(BinnacleGrid *grid, const uint8_t *text, size_t len);

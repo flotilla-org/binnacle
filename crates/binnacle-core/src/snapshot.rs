@@ -86,6 +86,9 @@ pub struct HeaderPlacement {
     pub selected: bool,
     /// The pointer is over it (see [`Snapshot::hovered_header`]).
     pub hovered: bool,
+    /// A move of its item waits for the Table Source's answer: drawn
+    /// pending, like a sort, while the order stays as it is.
+    pub move_pending: bool,
 }
 
 /// The pointer shape the host should show, if its toolkit can change it.
@@ -449,6 +452,7 @@ impl<'a> Snapshot<'a> {
                 }),
                 selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
                 hovered: hovered == Some((axis, item.position)),
+                move_pending: item.key.is_some_and(|k| grid.move_pending(axis, k)),
             }
         })
     }
@@ -527,6 +531,27 @@ impl<'a> Snapshot<'a> {
             crate::gesture::Gesture::MovingHeaders { keys, .. } => keys,
             _ => &[],
         }
+    }
+
+    /// Whether the Table Source can move the items of `axis` now (see
+    /// [`crate::Grid::set_movable`]).
+    pub fn movable(&self, axis: Axis) -> bool {
+        self.grid.moves.movable[axis.index()]
+    }
+
+    /// The move requested and not yet answered: its axis and the Keys of
+    /// the items it moves.
+    pub fn pending_move(&self) -> Option<(Axis, &'a [Key])> {
+        let (axis, keys) = self.grid.moves.pending.as_ref()?;
+        Some((*axis, keys))
+    }
+
+    /// The axis of the last move the Table Source refused, and its reason,
+    /// until the next press: a short message for the host to show near the
+    /// headers or in its status line.
+    pub fn move_refusal(&self) -> Option<(Axis, &'a str)> {
+        let (axis, reason) = self.grid.moves.refused.as_ref()?;
+        Some((*axis, reason))
     }
 
     /// Where the headers being moved would drop, while moving headers.

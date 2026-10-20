@@ -12,7 +12,9 @@ use binnacle_core::{
 };
 use regex::{Regex, RegexBuilder};
 
-use crate::{FindCount, FindStep, InMemoryTableSource, PumpSource, SortKeys, Viewed};
+use crate::{
+    FindCount, FindStep, InMemoryTableSource, MovePolicy, Moved, PumpSource, SortKeys, Viewed,
+};
 
 /// A Sort Spec named a column with no sort-key closure, or a row that is
 /// not there; `column` is the Key it named.
@@ -1069,7 +1071,7 @@ impl<R> MemorySource<R> {
 
     /// Runs [`crate::pump`] with this source over the host's `rows`: View
     /// Specs are answered by sorting them (or rejected if a column has no
-    /// closure), `Locate` by the Remap, column moves by moving the columns.
+    /// closure), `Locate` by the Remap, moves by moving the items.
     /// `seen` gets every Effect drained.
     pub fn pump(&mut self, rows: &[R], grid: &mut Grid, seen: impl FnMut(&mut Grid, Stamped)) {
         crate::pump(grid, &mut self.over(rows), seen);
@@ -1082,10 +1084,21 @@ impl<R> MemorySource<R> {
         Over { source: self, rows }
     }
 
-    /// See [`InMemoryTableSource::move_columns`]. Sorting names columns by
-    /// Key, so it is unaffected by the column order.
-    pub fn move_columns(&mut self, keys: &[Key], to: Position) -> ChangeNotice {
-        self.table.move_columns(keys, to)
+    /// See [`InMemoryTableSource::move_items`]. Sorting names items by Key,
+    /// so it is unaffected by the order of the other axis.
+    pub fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        self.table.move_items(axis, keys, to)
+    }
+
+    /// See [`InMemoryTableSource::movable`].
+    pub fn movable(&self, axis: Axis) -> bool {
+        self.table.movable(axis)
+    }
+
+    /// See [`InMemoryTableSource::set_move_policy`].
+    pub fn with_move_policy(mut self, policy: MovePolicy) -> Self {
+        self.table.set_move_policy(policy);
+        self
     }
 
     pub fn count(&self, axis: Axis) -> u64 {
@@ -1215,8 +1228,20 @@ impl<R> PumpSource for Over<'_, R> {
         self.source.locate(axis, key)
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
-        (axis == Axis::Cols).then(|| self.source.move_columns(keys, to))
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        Some(self.source.movable(axis))
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
+        let before = self.source.view_spec();
+        let Some(notice) = self.source.move_items(axis, keys, to) else {
+            return Err("Can't move while sorted: clear the sort first".into());
+        };
+        let after = self.source.view_spec();
+        Ok(Moved {
+            notices: vec![(axis, notice)],
+            view: (after != before).then(|| (after, self.source.totals())),
+        })
     }
 
     fn find_support(&mut self) -> Option<TextSupport> {

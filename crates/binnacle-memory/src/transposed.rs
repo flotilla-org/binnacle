@@ -1,9 +1,9 @@
 use binnacle_core::{
-    Axis, ChangeNotice, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, Key, Located,
-    Position, Searched, Support, TextSupport, Totals, ViewSpec,
+    Axis, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, Key, Located, Position,
+    Searched, Support, TextSupport, Totals, ViewSpec,
 };
 
-use crate::{FindStep, PumpSource, Viewed};
+use crate::{FindStep, Moved, PumpSource, Viewed};
 
 /// A Table Source on its side: the Grid's rows are the inner source's
 /// columns and the Grid's columns its rows. Every request is passed on about
@@ -115,7 +115,18 @@ impl<S: PumpSource> PumpSource for Transposed<S> {
         })
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
-        self.0.move_items(axis.other(), keys, to)
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.0.movable(axis.other())
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
+        let moved = self.0.move_items(axis.other(), keys, to)?;
+        Ok(Moved {
+            notices: (moved.notices.into_iter())
+                .map(|(axis, notice)| (axis.other(), notice))
+                .collect(),
+            view: (moved.view)
+                .map(|(spec, totals)| (transpose_spec(&spec), transpose_totals(totals))),
+        })
     }
 }

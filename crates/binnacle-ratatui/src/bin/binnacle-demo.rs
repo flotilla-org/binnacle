@@ -147,13 +147,13 @@ use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, Edge, EditEnd,
-    Effect, FindDirection, FindMatch, FindQuery, Grid, HeaderClick, Key, Located, Mode, Position,
+    Action, Axis, AxisConfig, ConditionKind, Distinct, DistinctQuery, Edge, EditEnd, Effect,
+    FindDirection, FindMatch, FindQuery, Grid, HeaderClick, Key, Located, Mode, Position,
     SelectionUnit, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
-    FindStep, IdentitySource, MemorySource, PumpSource, Transposed, Viewed, pump, query_error,
-    transpose_find,
+    FindStep, IdentitySource, MemorySource, Moved, PumpSource, Transposed, Viewed, answer_move,
+    pump, query_error, transpose_find,
 };
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
@@ -472,6 +472,11 @@ impl Table {
                 for (_, effect) in due {
                     answer(&mut source, grid, effect);
                 }
+                for axis in Axis::ALL {
+                    if let Some(movable) = source.movable(axis) {
+                        grid.set_movable(axis, movable);
+                    }
+                }
                 while let Some(stamped) = grid.poll_effect() {
                     match &stamped.effect {
                         Effect::ViewRequested { .. } => {
@@ -492,13 +497,10 @@ impl Table {
                             });
                             held.push((now + SLOW, stamped.effect.clone()));
                         }
-                        Effect::Locate { .. } | Effect::FindStepRequested { .. } => {
+                        Effect::Locate { .. }
+                        | Effect::MoveRequested { .. }
+                        | Effect::FindStepRequested { .. } => {
                             held.push((now + SLOW, stamped.effect.clone()));
-                        }
-                        Effect::MoveRequested { axis, keys, to } => {
-                            if let Some(notice) = source.move_items(*axis, keys, *to) {
-                                grid.notify(*axis, notice);
-                            }
                         }
                         _ => {}
                     }
@@ -808,13 +810,17 @@ impl<S: PumpSource> PumpSource for Stepped<'_, S> {
         step
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.inner.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.inner.move_items(axis, keys, to)
     }
 }
 
-/// Answers a View Spec, a Locate or a find step the slow source held, as
-/// [`pump`] would have at once.
+/// Answers a View Spec, a Locate, a move or a find step the slow source
+/// held, as [`pump`] would have at once.
 fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
     match effect {
         Effect::ViewRequested { spec, .. } => {
@@ -828,6 +834,7 @@ fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
             let located = source.locate(axis, key);
             grid.located(axis, key, located);
         }
+        Effect::MoveRequested { axis, keys, to } => answer_move(grid, source, axis, &keys, to),
         Effect::FindStepRequested {
             query,
             from,

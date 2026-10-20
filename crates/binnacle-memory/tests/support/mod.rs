@@ -9,6 +9,8 @@ use binnacle_core::{Axis, ChangeNotice, SortDirection, SortSpec};
 /// with Logical Index `column` by class (0 for a value, 1 for NaN, 2 for
 /// null), then by order within the class; a descending column reverses only
 /// the order within the class, so nulls and NaNs go last either way.
+// Not every property file that shares this module uses both.
+#[allow(dead_code)]
 pub fn model(
     rows: usize,
     spec: &SortSpec,

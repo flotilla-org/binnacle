@@ -126,6 +126,7 @@ impl Writer<'_> {
         self.flag(h.filter.filtered);
         self.flag(h.filter.pending);
         self.flag(h.filter.not_applied);
+        self.flag(h.move_pending);
     }
 
     /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
@@ -314,6 +315,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         if let Some(q) = quick {
             w.flag(q.regex);
         }
+        w.flag(s.movable(axis));
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());
@@ -366,6 +368,22 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.view(spec);
     }
     w.flag(s.view_pending());
+    // The move waiting for its answer, then the last refusal.
+    let pending = s.pending_move();
+    w.flag(pending.is_some());
+    if let Some((axis, keys)) = pending {
+        w.num(axis_code(axis));
+        w.len(keys.len());
+        for &k in keys {
+            w.key(k);
+        }
+    }
+    let refusal = s.move_refusal();
+    w.flag(refusal.is_some());
+    if let Some((axis, reason)) = refusal {
+        w.num(axis_code(axis));
+        w.text(reason);
+    }
     // Find: the query and the axis it steps along, the current match, then
     // the support bits.
     let find = s.find();

@@ -7,6 +7,7 @@ use crate::find::{FindDirection, FindState};
 use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
+use crate::moves::MoveState;
 use crate::notice::Locating;
 use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
@@ -140,6 +141,7 @@ pub struct Grid {
     pub(crate) fills: Vec<Rect>,
     pub(crate) view: ViewState,
     pub(crate) find: FindState,
+    pub(crate) moves: MoveState,
 }
 
 /// The drag threshold until [`Grid::set_drag_threshold`] changes it: one unit,
@@ -184,6 +186,7 @@ impl Grid {
             fills: Vec::new(),
             view: ViewState::default(),
             find: FindState::default(),
+            moves: MoveState::default(),
         }
     }
 

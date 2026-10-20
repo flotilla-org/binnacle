@@ -7,7 +7,9 @@ use binnacle_core::{
     FindQuery, Grid, Key, Located, Modifiers, PointerEvent, Position, Snapshot, Stamped, Support,
     ViewSpec, Viewport,
 };
-use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Transposed, Viewed};
+use binnacle_memory::{
+    FindStep, IdentitySource, MemorySource, MovePolicy, Moved, PumpSource, Transposed, Viewed,
+};
 
 use crate::render::{Rendered, view_text};
 
@@ -143,6 +145,12 @@ impl RecordTable {
         RecordTable { rows, source }
     }
 
+    /// This table with `policy` for moves on a sorted axis.
+    pub fn with_move_policy(mut self, policy: MovePolicy) -> Self {
+        self.source = self.source.with_move_policy(policy);
+        self
+    }
+
     /// Keeps only the records for which `keep` is true; the Grid needs the
     /// returned Change Notice.
     pub fn filter(&mut self, keep: impl Fn(&Record) -> bool + 'static) -> ChangeNotice {
@@ -200,7 +208,11 @@ impl PumpSource for RecordTable {
         self.source.over(&self.rows).locate(axis, key)
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.source.over(&self.rows).movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.source.over(&self.rows).move_items(axis, keys, to)
     }
 
@@ -315,7 +327,11 @@ impl PumpSource for ColumnMajorTable {
         self.table.locate(axis, key)
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.table.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.table.move_items(axis, keys, to)
     }
 
@@ -360,11 +376,22 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
         answer
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.source.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         let answer = self.source.move_items(axis, keys, to);
+        let said = match &answer {
+            Ok(Moved { notices, view }) => match view {
+                Some((spec, _)) => format!("notices {notices:?}, applied {}", view_text(spec)),
+                None => format!("notices {notices:?}"),
+            },
+            Err(reason) => format!("refused: {reason}"),
+        };
         let _ = writeln!(
             self.log.borrow_mut(),
-            "  move {axis:?} {keys:?} to {to}: {answer:?}"
+            "  move {axis:?} {keys:?} to {to}: {said}"
         );
         answer
     }

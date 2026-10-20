@@ -368,6 +368,17 @@ impl WebGrid {
         self.grid.set_selection_unit(codes::selection_unit(unit));
     }
 
+    /// Whether the Table Source can move the items of `a` now.
+    pub fn set_movable(&mut self, a: u8, movable: bool) {
+        self.grid.set_movable(axis(a), movable);
+    }
+
+    /// The answer to a `MoveRequested`: `undefined` once the items moved,
+    /// else the reason the Table Source refused.
+    pub fn move_answered(&mut self, refusal: Option<String>) {
+        self.grid.move_answered(refusal);
+    }
+
     /// What a click on a header of `a` does; `click` as
     /// [`codes::header_click`].
     pub fn set_header_click(&mut self, a: u8, click: u8) {

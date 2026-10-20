@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/moving.rs
+assertion_line: 48
 expression: out
 ---
 --- 1. start
@@ -46,8 +47,8 @@ Cols: (unchanged)
 2   2.0    2.1    2.2    2.3    2.4
 --- 6. release: MoveRequested, idle
 effect (gen 5): MoveRequested { axis: Cols, keys: [Key(0)], to: 3 }
-  move Cols [Key(0)] to 3: None
-gen 6 | damage selection
+  move Cols [Key(0)] to 3: refused: These can't be moved
+gen 6 | damage selection | move refused Cols: These can't be moved
 Rows: (unchanged)
 Cols: (unchanged)
     0      1      2      3      4

@@ -81,17 +81,21 @@ fn edits_appends_and_replacements_reach_the_columns() {
 }
 
 #[test]
-fn the_fields_move_as_the_records_columns_do() {
+fn fields_and_records_move_as_the_records_columns_and_rows_do() {
     let mut s = records();
     s.frame(V);
-    let moved = s.source.move_items(Axis::Rows, &[Key(0)], 3);
-    assert_eq!(moved, Some(ChangeNotice::Reordered));
+    let moved = s.source.move_items(Axis::Rows, &[Key(0)], 3).unwrap();
+    assert_eq!(moved.notices, vec![(Axis::Rows, ChangeNotice::Reordered)]);
     s.input(|g| g.notify(Axis::Rows, ChangeNotice::Reordered));
     let snap = s.frame(V);
     let fields: Vec<_> = snap.rows().iter().map(|r| r.key).collect();
     assert_eq!(fields, [Some(Key(1)), Some(Key(2)), Some(Key(0))]);
-    // The records are the source's rows, which it does not move.
-    assert_eq!(s.source.move_items(Axis::Cols, &[Key(0)], 3), None);
+    let moved = s.source.move_items(Axis::Cols, &[Key(0)], 2).unwrap();
+    assert_eq!(moved.notices, vec![(Axis::Cols, ChangeNotice::Reordered)]);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    let snap = s.frame(V);
+    let records: Vec<_> = snap.cols().iter().take(3).map(|c| c.key).collect();
+    assert_eq!(records, [Some(Key(1)), Some(Key(0)), Some(Key(2))]);
 }
 
 #[test]

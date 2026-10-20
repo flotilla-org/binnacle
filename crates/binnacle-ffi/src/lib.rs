@@ -36,6 +36,7 @@ pub const BINNACLE_HEADER_HOVERED: u32 = 16;
 pub const BINNACLE_HEADER_FILTERED: u32 = 32;
 pub const BINNACLE_HEADER_FILTER_PENDING: u32 = 64;
 pub const BINNACLE_HEADER_FILTER_NOT_APPLIED: u32 = 128;
+pub const BINNACLE_HEADER_MOVE_PENDING: u32 = 256;
 
 pub const BINNACLE_MODE_OTHER: u32 = 0;
 pub const BINNACLE_MODE_IDLE: u32 = 1;
@@ -52,6 +53,7 @@ pub const BINNACLE_EFFECT_BAND_SIZE_CHANGED: u32 = 6;
 pub const BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED: u32 = 7;
 pub const BINNACLE_EFFECT_FIND_REQUESTED: u32 = 8;
 pub const BINNACLE_EFFECT_FIND_STEP_REQUESTED: u32 = 9;
+pub const BINNACLE_EFFECT_MOVE_REQUESTED: u32 = 10;
 
 pub const BINNACLE_FIND_NEXT: u32 = 0;
 pub const BINNACLE_FIND_PREVIOUS: u32 = 1;
@@ -155,6 +157,11 @@ pub struct BinnacleGrid {
     /// Snapshot's.
     find_effect: (String, Vec<u64>),
     find_snapshot: (String, Vec<u64>),
+    /// The last polled move's Keys.
+    move_keys: Vec<u64>,
+    /// The last Snapshot's pending move Keys and move refusal.
+    pending_move: Vec<u64>,
+    refusal: String,
 }
 
 /// Conditions in C form, with the texts, Keys and values they point into.
@@ -353,6 +360,7 @@ pub struct BinnacleAxisSnapshot {
     pub pinned_len: usize,
     pub scrolling_start: f32,
     pub scrolling_end: f32,
+    pub movable: u32,
 }
 
 #[repr(C)]
@@ -380,6 +388,13 @@ pub struct BinnacleSnapshot {
     pub find_match: BinnacleFindMatch,
     pub find_support: u32,
     pub view_pending: u32,
+    pub has_pending_move: u32,
+    pub pending_move_axis: u32,
+    pub pending_move_keys: *const u64,
+    pub pending_move_keys_len: usize,
+    pub has_move_refusal: u32,
+    pub move_refusal_axis: u32,
+    pub move_refusal: BinnacleText,
 }
 
 #[repr(C)]
@@ -549,6 +564,9 @@ pub struct BinnacleEffect {
     pub has_from: u32,
     pub from: BinnacleFindMatch,
     pub direction: u32,
+    pub keys: *const u64,
+    pub keys_len: usize,
+    pub to: u64,
 }
 
 impl Default for BinnacleEffect {
@@ -569,6 +587,9 @@ impl Default for BinnacleEffect {
             has_from: 0,
             from: BinnacleFindMatch::default(),
             direction: BINNACLE_FIND_NEXT,
+            keys: std::ptr::null(),
+            keys_len: 0,
+            to: 0,
         }
     }
 }
@@ -708,7 +729,8 @@ impl From<HeaderPlacement> for BinnacleHeader {
                 | bit(h.hovered, BINNACLE_HEADER_HOVERED)
                 | bit(h.filter.filtered, BINNACLE_HEADER_FILTERED)
                 | bit(h.filter.pending, BINNACLE_HEADER_FILTER_PENDING)
-                | bit(h.filter.not_applied, BINNACLE_HEADER_FILTER_NOT_APPLIED),
+                | bit(h.filter.not_applied, BINNACLE_HEADER_FILTER_NOT_APPLIED)
+                | bit(h.move_pending, BINNACLE_HEADER_MOVE_PENDING),
             sort_place: place.map_or(0, |p| u32::try_from(p).unwrap_or(u32::MAX)),
             support: 0,
         }
@@ -1011,6 +1033,9 @@ pub extern "C" fn binnacle_grid_new(
         listed_states: Default::default(),
         find_effect: Default::default(),
         find_snapshot: Default::default(),
+        move_keys: Vec::new(),
+        pending_move: Vec::new(),
+        refusal: String::new(),
     }))
 }
 
@@ -1342,6 +1367,7 @@ impl BinnacleGrid {
                 pinned_len: snap.pinned(axis, Edge::Leading).len(),
                 scrolling_start: snap.scrolling(axis).start,
                 scrolling_end: snap.scrolling(axis).end,
+                movable: flag(snap.movable(axis)),
                 selection_range: range.as_ref().map_or_else(Default::default, |r| {
                     let span = r.span(axis);
                     BinnacleRange {
@@ -1358,6 +1384,16 @@ impl BinnacleGrid {
         let find = snap.find().map(|f| find_to_c(f, &mut self.find_snapshot));
         let find_match = snap.find_match();
         let focus_rect = snap.focus_rect();
+        let pending_move = snap.pending_move();
+        self.pending_move.clear();
+        if let Some((_, keys)) = pending_move {
+            self.pending_move.extend(keys.iter().map(|k| k.0));
+        }
+        let refusal = snap.move_refusal();
+        self.refusal.clear();
+        if let Some((_, reason)) = refusal {
+            self.refusal.push_str(reason);
+        }
         #[allow(unreachable_patterns)] // Modes added to the Grid later are OTHER.
         let mode = match snap.mode() {
             Mode::Idle => BINNACLE_MODE_IDLE,
@@ -1390,6 +1426,16 @@ impl BinnacleGrid {
             find_match: find_match.map(BinnacleFindMatch::from).unwrap_or_default(),
             find_support: find_bits(snap.find_support()),
             view_pending: flag(snap.view_pending()),
+            has_pending_move: flag(pending_move.is_some()),
+            pending_move_axis: pending_move.map_or(0, |(axis, _)| axis_tag(axis)),
+            pending_move_keys: self.pending_move.as_ptr(),
+            pending_move_keys_len: self.pending_move.len(),
+            has_move_refusal: flag(refusal.is_some()),
+            move_refusal_axis: refusal.map_or(0, |(axis, _)| axis_tag(axis)),
+            move_refusal: BinnacleText {
+                data: self.refusal.as_ptr(),
+                len: self.refusal.len(),
+            },
         }
     }
 
@@ -1534,6 +1580,15 @@ impl BinnacleGrid {
                     FindDirection::Next => BINNACLE_FIND_NEXT,
                     FindDirection::Previous => BINNACLE_FIND_PREVIOUS,
                 };
+            }
+            Effect::MoveRequested { axis, keys, to } => {
+                self.move_keys.clear();
+                self.move_keys.extend(keys.iter().map(|k| k.0));
+                effect.kind = BINNACLE_EFFECT_MOVE_REQUESTED;
+                effect.axis = axis_tag(axis);
+                effect.keys = self.move_keys.as_ptr();
+                effect.keys_len = self.move_keys.len();
+                effect.to = to;
             }
             _ => effect.kind = BINNACLE_EFFECT_OTHER,
         }
@@ -1858,6 +1913,48 @@ pub unsafe extern "C" fn binnacle_grid_pointer(
 unsafe fn act(grid: *mut BinnacleGrid, action: Option<Action>) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| action.map(|a| h.grid.action(a))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_movable(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    movable: u32,
+) -> i32 {
+    let movable = match movable {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_movable(axis(axis_tag)?, movable?);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; a non-NULL `refusal` is valid for `len`
+/// reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_move_answered(
+    grid: *mut BinnacleGrid,
+    refusal: *const u8,
+    len: usize,
+) -> i32 {
+    let refusal = match refusal.is_null() {
+        true => Some(None),
+        // SAFETY: the caller's contract.
+        false => std::str::from_utf8(unsafe { borrowed(refusal, len) })
+            .ok()
+            .map(|r| Some(r.to_owned())),
+    };
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| refusal.map(|r| h.grid.move_answered(r))) }
 }
 
 /// # Safety

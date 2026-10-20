@@ -230,6 +230,7 @@ fn a_header_move_is_cancelled_by_columns_inserted_or_removed_but_not_by_rows() {
         ChangeNotice::Removed { at: 2, n: 1 },
     ] {
         let mut s = table();
+        s.input(|g| g.set_movable(Axis::Cols, true));
         s.frame(V);
         // Column 0's header is x 4..10.
         s.input(|g| {

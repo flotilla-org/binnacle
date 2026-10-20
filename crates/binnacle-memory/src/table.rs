@@ -281,9 +281,10 @@ impl AxisOrder {
             .map(u64::from)
     }
 
-    /// Moves the items with `keys`, in that order, to just before the item at
-    /// Position `to` among those the filter keeps (past the last, to the end).
-    /// The result is the new base order: a sort is baked in.
+    /// Moves the items with `keys`, in that order, to just before the item
+    /// now at Position `to` in the order shown (filtered), skipping moved
+    /// ones; to the end if there is none. The result is the new base order:
+    /// a sort is baked in.
     fn move_items(&mut self, keys: &[Key], to: Position) {
         let mut moving = vec![false; self.len];
         let mut moved = Vec::with_capacity(keys.len());
@@ -294,30 +295,26 @@ impl AxisOrder {
                 moved.push(i);
             }
         }
-        let order: Vec<u32> = match &self.sorted {
-            None => (0..self.len as u32).collect(),
-            Some(sorted) => sorted.clone(),
-        };
-        // The place in the whole order of the item shown at `to`.
-        let to = match &self.remap {
-            None => (to.min(self.len as u64)) as usize,
-            Some(remap) => remap.get(to as usize).map_or(self.len, |&at| {
-                order
-                    .iter()
-                    .position(|&i| i == at)
-                    .expect("a kept item is in the order")
-            }),
-        };
-        let stays = |i: &&u32| !moving[**i as usize];
-        let order = order[..to]
-            .iter()
-            .filter(stays)
-            .chain(&moved)
-            .chain(order[to..].iter().filter(stays))
-            .copied()
-            .collect::<Vec<u32>>();
-        self.base = Some(order.clone());
-        self.set_sorted(Some(order));
+        let count = self.count();
+        let at = |p: Position| self.remap.as_ref().map_or(p as u32, |r| r[p as usize]);
+        let before = (to.min(count)..count)
+            .map(at)
+            .find(|&i| !moving[i as usize]);
+        let order = (self.sorted.clone()).unwrap_or_else(|| (0..self.len as u32).collect());
+        let mut placed = Vec::with_capacity(self.len);
+        for i in order {
+            if Some(i) == before {
+                placed.extend(&moved);
+            }
+            if !moving[i as usize] {
+                placed.push(i);
+            }
+        }
+        if before.is_none() {
+            placed.extend(&moved);
+        }
+        self.base = Some(placed.clone());
+        self.set_sorted(Some(placed));
     }
 
     fn window(&self, range: Range<Position>) -> Vec<Key> {
@@ -356,6 +353,17 @@ fn check_sort_keys(spec: &SortSpec, keys: &[SortKeys<'_>], len: usize) {
     }
 }
 
+/// What an In-Memory Table Source does with a move on a sorted axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MovePolicy {
+    /// Keeps the order shown: it becomes the axis's own order, the moved
+    /// items placed in it, and the axis's sort is cleared.
+    #[default]
+    Bake,
+    /// Refuses the move; the axis is not movable while sorted.
+    Refuse,
+}
+
 /// The shared Table Source for hosts whose data lives in memory. It holds no
 /// cell data, only the order of each axis, which it computes from keys the host
 /// extracts and hands over.
@@ -364,6 +372,7 @@ pub struct InMemoryTableSource {
     axes: [AxisOrder; 2],
     /// Each axis's Sort Spec, as last applied.
     sorts: [SortSpec; 2],
+    move_policy: MovePolicy,
 }
 
 impl InMemoryTableSource {
@@ -377,6 +386,7 @@ impl InMemoryTableSource {
         InMemoryTableSource {
             axes: [AxisOrder::new(rows), AxisOrder::new(cols)],
             sorts: [SortSpec::unsorted(), SortSpec::unsorted()],
+            move_policy: MovePolicy::Bake,
         }
     }
 
@@ -442,19 +452,40 @@ impl InMemoryTableSource {
         self.axis_mut(axis).locate(key)
     }
 
-    /// Moves the columns with `keys`, in the order given, to just before the
-    /// column at Position `to` (the count for the end), Positions as they
-    /// were before the move and among the columns the filter keeps: the
-    /// answer to `MoveRequested` on the columns. Keys no column has, and
-    /// repeats, are skipped; a column the filter drops moves too, unseen.
-    /// Row order is untouched. On sorted columns the order shown, move
-    /// included, becomes the columns' base order and their Sort Spec is
-    /// cleared.
-    /// Returns the Change Notice the columns need.
-    pub fn move_columns(&mut self, keys: &[Key], to: Position) -> ChangeNotice {
-        self.axis_mut(Axis::Cols).move_items(keys, to);
-        self.sorts[Axis::Cols.index()] = SortSpec::unsorted();
-        ChangeNotice::Reordered
+    /// Moves the items on `axis` with `keys`, in the order given, to just
+    /// before the item at Position `to` (the count for the end), Positions
+    /// as they were before the move: the answer to `MoveRequested`. On a
+    /// filtered axis `to` is read in the filtered order, and the items land
+    /// just before the item now there that is not moving. Keys the axis
+    /// lacks, and repeats, are skipped; the other axis is untouched.
+    ///
+    /// On a sorted axis the [`MovePolicy`] decides: [`MovePolicy::Bake`]
+    /// makes the order shown, move included, the axis's base order and
+    /// clears its Sort Spec; [`MovePolicy::Refuse`] moves nothing and
+    /// returns `None`. Returns the Change Notice the axis needs.
+    pub fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+        if !self.movable(axis) {
+            return None;
+        }
+        self.axis_mut(axis).move_items(keys, to);
+        self.sorts[axis.index()] = SortSpec::unsorted();
+        Some(ChangeNotice::Reordered)
+    }
+
+    /// Whether the items of `axis` can move now: always under
+    /// [`MovePolicy::Bake`], and while the axis is unsorted under
+    /// [`MovePolicy::Refuse`].
+    pub fn movable(&self, axis: Axis) -> bool {
+        self.move_policy == MovePolicy::Bake || self.sorts[axis.index()].is_empty()
+    }
+
+    /// What a move on a sorted axis does; [`MovePolicy::Bake`] by default.
+    pub fn set_move_policy(&mut self, policy: MovePolicy) {
+        self.move_policy = policy;
+    }
+
+    pub fn move_policy(&self) -> MovePolicy {
+        self.move_policy
     }
 
     /// Sorts the items on `axis` by `spec`, which names items of the other

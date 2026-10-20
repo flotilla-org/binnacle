@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/moving.rs
+assertion_line: 241
 expression: out
 ---
 --- 1. focus row 1 of column 0, which is 8 wide
@@ -27,7 +28,7 @@ Cols: (unchanged)
 2   2.0      2.1    2.2    2.3
 --- 3. drop: the source moves it, the Grid refetches the columns and locates the focus
 effect (gen 3): MoveRequested { axis: Cols, keys: [Key(0)], to: 3 }
-  move Cols [Key(0)] to 3: Some(Reordered)
+  move Cols [Key(0)] to 3: notices [(Cols, Reordered)]
 effect (gen 3): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(2)
 window Cols 0..4

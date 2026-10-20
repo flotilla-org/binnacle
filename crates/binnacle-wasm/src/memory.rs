@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 
 use binnacle_core::{Key, Located};
-use binnacle_memory::{InMemoryTableSource, SortKeys};
+use binnacle_memory::{InMemoryTableSource, MovePolicy, SortKeys};
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, position};
@@ -160,11 +160,31 @@ impl WebMemory {
         self.table.has_unmatched(axis(a))
     }
 
-    /// Moves the columns with these Logical Indices to before Position `to`.
-    /// The columns need a `Reordered` notice.
-    pub fn move_columns(&mut self, items: &[u32], to: f64) {
+    /// Moves the items on axis `a` with these Logical Indices to before
+    /// Position `to`, read in the filtered order. On a sorted axis the
+    /// order shown is baked and the axis's sort cleared, unless moves on a
+    /// sorted axis are refused: then nothing moves and this is `false`.
+    /// The axis needs a `Reordered` notice if it moved.
+    pub fn move_items(&mut self, a: u8, items: &[u32], to: f64) -> bool {
         let keys: Vec<Key> = items.iter().map(|&i| Key(i as u64)).collect();
-        self.table.move_columns(&keys, position(to));
+        self.table
+            .move_items(axis(a), &keys, position(to))
+            .is_some()
+    }
+
+    /// Whether the items on axis `a` can move now.
+    pub fn movable(&self, a: u8) -> bool {
+        self.table.movable(axis(a))
+    }
+
+    /// Whether moves on a sorted axis are refused rather than baked.
+    pub fn refuse_sorted_moves(&mut self, refuse: bool) {
+        let policy = if refuse {
+            MovePolicy::Refuse
+        } else {
+            MovePolicy::Bake
+        };
+        self.table.set_move_policy(policy);
     }
 }
 
@@ -243,9 +263,23 @@ mod tests {
     }
 
     #[test]
-    fn moved_columns_take_their_new_positions() {
-        let mut m = WebMemory::new(1, 3);
-        m.move_columns(&[2], 0.0);
-        assert_eq!(m.window(1, 0.0, 3.0), vec![2, 0, 1]);
+    fn moved_items_take_their_new_positions_on_either_axis() {
+        let mut m = WebMemory::new(3, 3);
+        assert!(m.move_items(COLS, &[2], 0.0));
+        assert_eq!(m.window(COLS, 0.0, 3.0), vec![2, 0, 1]);
+        assert!(m.move_items(ROWS, &[0], 3.0));
+        assert_eq!(order(&m), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn a_sorted_axis_refuses_moves_if_asked_to() {
+        let mut m = WebMemory::new(3, 1);
+        m.refuse_sorted_moves(true);
+        m.stage_numbers(&[2.0, 0.0, 1.0], &[0, 0, 0]);
+        m.sort(ROWS, &[0], &[0]);
+        assert!(!m.movable(ROWS));
+        assert!(!m.move_items(ROWS, &[0], 0.0));
+        assert_eq!(order(&m), vec![1, 2, 0]);
+        assert!(m.movable(COLS));
     }
 }

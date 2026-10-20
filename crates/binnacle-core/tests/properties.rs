@@ -2141,6 +2141,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
     s.input(|g| {
         g.set_header_click(Axis::Cols, click);
         g.set_drag_threshold(threshold);
+        g.set_movable(Axis::Cols, true);
     });
     s.frame(viewport);
     let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));

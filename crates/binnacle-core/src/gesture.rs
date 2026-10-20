@@ -29,7 +29,7 @@ pub enum Mode {
     /// `start_thickness` thick when the press began, follows the pointer until
     /// release.
     ResizingBand { axis: Axis, start_thickness: f32 },
-    /// Column headers are being dragged: the header grabbed has `key` on
+    /// Headers are being dragged: the header grabbed has `key` on
     /// `axis`, and the dragged items would drop before Position `to` (see
     /// [`crate::Snapshot::moving_keys`] for all of them).
     MovingHeaders { axis: Axis, key: Key, to: Position },
@@ -179,6 +179,9 @@ impl Grid {
         self.end_resize();
         self.end_edit();
         self.gesture = Gesture::Idle;
+        if self.moves.refused.take().is_some() {
+            self.pending_damage.selection = true;
+        }
         if let Some(axis) = self.band_edge_at(x, y) {
             if clicks >= 2 {
                 self.push(Effect::BandAutoSizeRequested { axis });
@@ -274,11 +277,7 @@ impl Grid {
                         self.pending_damage.selection = true;
                         self.drag_selection(x, y);
                     }
-                    Press::Header {
-                        axis: Axis::Cols,
-                        position,
-                        ..
-                    } => self.start_move(Axis::Cols, position, x, y),
+                    Press::Header { axis, position, .. } => self.start_move(axis, position, x, y),
                     _ => {}
                 }
             }
@@ -396,9 +395,13 @@ impl Grid {
     /// Turns a press on the header at `position` on `axis` into a move of
     /// that item, or of every selected item if it is in a range spanning
     /// whole items on that axis whose Keys are all known. An item without a
-    /// Key cannot be moved.
+    /// Key cannot be moved, nor can any while the axis is not movable or
+    /// another move waits for its answer.
     fn start_move(&mut self, axis: Axis, position: Position, x: f32, y: f32) {
         let i = axis.index();
+        if !self.moves.movable[i] || self.moves.pending.is_some() {
+            return;
+        }
         let measure = &self.axis(axis).measure;
         // Moves across the pinned edge come later: a pinned header stays put.
         let Some(key) = measure.key_at(position) else {
@@ -502,6 +505,7 @@ impl Grid {
                 let in_place =
                     last - first + 1 == positions.len() as u64 && (first..=last + 1).contains(&to);
                 if !in_place {
+                    self.moves.pending = Some((axis, keys.clone()));
                     self.push(Effect::MoveRequested { axis, keys, to });
                 }
             }

@@ -17,6 +17,7 @@ mod focus;
 mod gesture;
 mod grid;
 mod measure;
+mod moves;
 mod notice;
 mod pin;
 mod pointer;
