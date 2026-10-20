@@ -10,8 +10,8 @@ use binnacle_core::{
 use binnacle_testkit::{
     ColumnMajorTable, PumpSource, Record, RecordTable, Scenario, ScenarioSource,
 };
+use hegel::TestCase;
 use hegel::generators as gs;
-use hegel::{Generator, TestCase};
 
 const V: Viewport = Viewport {
     width: 40.0,
