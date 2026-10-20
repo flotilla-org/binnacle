@@ -1,6 +1,6 @@
-//! Hiding in the terminal: the hide key, the header menu's Hide, Show only
-//! these, its hidden items inline and Show all, and the chooser, over an
-//! In-Memory Table Source that hides both axes.
+//! The header menu in the terminal: Pin, Unpin and Freeze, then Hide, Show
+//! only these, its hidden items inline and Show all; the hide key and the
+//! chooser, over an In-Memory Table Source that hides both axes.
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Edge, FocusStep, Grid, Key, Modifiers, PointerEvent, Viewport,
@@ -144,6 +144,13 @@ impl Table {
         text(&buf)
     }
 
+    fn pinned(&mut self, axis: Axis, edge: Edge) -> Vec<u64> {
+        let snapshot = self.grid.snapshot();
+        (snapshot.pinned(axis, edge).iter())
+            .filter_map(|i| Some(i.key?.0))
+            .collect()
+    }
+
     fn hidden(&mut self, axis: Axis) -> Vec<u64> {
         self.grid
             .snapshot()
@@ -214,7 +221,7 @@ fn the_menu_hides_its_column_then_lists_the_hidden_ones_to_show_again() {
     t.focus(0, 0);
     assert!(menu.open(&t.grid.snapshot(), Axis::Cols));
     let mut out = format!("menu on name\n{}\n", t.screen(&menu));
-    assert!(t.press(&mut menu, KeyCode::Enter), "Enter on Hide");
+    assert!(t.press(&mut menu, KeyCode::Char('h')), "h hides");
     assert!(!menu.is_open(), "hiding closes it");
     t.focus(0, 2);
     assert!(hide_focused(&mut t.grid, Axis::Cols));
@@ -264,15 +271,90 @@ fn the_row_menu_hides_rows_and_its_cursor_wraps() {
 }
 
 #[test]
-fn nothing_hides_and_no_menu_opens_on_an_axis_whose_source_cannot_hide() {
+fn nothing_hides_on_an_axis_whose_source_cannot_hide_and_its_menu_only_pins() {
     let mut t = Table::new(false);
     let mut menu = HeaderMenu::new();
     t.focus(0, 0);
     assert!(!hide_focused(&mut t.grid, Axis::Cols));
-    assert!(!menu.open(&t.grid.snapshot(), Axis::Cols));
     assert!(!menu.open_hidden(&t.grid.snapshot(), Axis::Rows));
-    t.frame();
+    assert!(menu.open(&t.grid.snapshot(), Axis::Cols));
+    let out = t.screen(&menu);
+    assert!(!out.contains("Hide"), "{out}");
+    insta::assert_snapshot!(out);
+    t.press(&mut menu, KeyCode::Char('h'));
+    t.press(&mut menu, KeyCode::Enter);
     assert_eq!(t.shown(Axis::Cols), [0, 1, 2]);
+    assert_eq!(
+        t.pinned(Axis::Cols, Edge::Leading),
+        [0],
+        "Enter on Pin left"
+    );
+}
+
+#[test]
+fn the_menu_pins_unpins_and_freezes_its_item() {
+    let mut t = Table::new(true);
+    let mut menu = HeaderMenu::new();
+    t.focus(0, 1);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Cols));
+    let mut out = format!("menu on port\n{}\n", t.screen(&menu));
+    assert!(t.press(&mut menu, KeyCode::Char('r')), "r pins right");
+    assert!(!menu.is_open(), "pinning closes it");
+    assert_eq!(t.pinned(Axis::Cols, Edge::Trailing), [1]);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Cols));
+    out += &format!(
+        "\nport pinned right: Unpin, and neither Pin right nor Freeze\n{}\n",
+        t.screen(&menu)
+    );
+    t.press(&mut menu, KeyCode::Enter);
+    assert_eq!(t.pinned(Axis::Cols, Edge::Trailing), Vec::<u64>::new());
+    menu.open(&t.grid.snapshot(), Axis::Cols);
+    t.press(&mut menu, KeyCode::Char('l'));
+    assert_eq!(t.pinned(Axis::Cols, Edge::Leading), [1]);
+    menu.open(&t.grid.snapshot(), Axis::Cols);
+    t.press(&mut menu, KeyCode::Char('u'));
+    assert_eq!(t.pinned(Axis::Cols, Edge::Leading), Vec::<u64>::new());
+    t.focus(2, 0);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    out += &format!("\nthe menu of row 2\n{}\n", t.screen(&menu));
+    t.press(&mut menu, KeyCode::Char('f'));
+    assert_eq!(t.pinned(Axis::Rows, Edge::Leading), [0, 1, 2], "f freezes");
+    t.focus(4, 0);
+    menu.open(&t.grid.snapshot(), Axis::Rows);
+    t.press(&mut menu, KeyCode::Char('b'));
+    assert_eq!(t.pinned(Axis::Rows, Edge::Trailing), [4]);
+    t.focus(5, 0);
+    menu.open(&t.grid.snapshot(), Axis::Rows);
+    t.press(&mut menu, KeyCode::Char('t'));
+    assert_eq!(t.pinned(Axis::Rows, Edge::Leading), [0, 1, 2, 5]);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_clipped_pinned_column_still_offers_unpin() {
+    let mut t = Table::new(true);
+    let mut menu = HeaderMenu::new();
+    for c in [0, 1, 2] {
+        t.grid.pin(Axis::Cols, Edge::Leading, Key(c));
+    }
+    // 30 of the 52 cells past the row header band stay for scrolling, so
+    // the three pinned columns, 38 wide, clip.
+    t.grid.set_min_scrolling(Axis::Cols, 30.0);
+    t.focus(0, 0);
+    t.frame();
+    let snapshot = t.grid.snapshot();
+    let region = snapshot.pinned_region(Axis::Cols, Edge::Leading);
+    let strip = snapshot.pinned(Axis::Cols, Edge::Leading);
+    let end = strip.last().map(|i| i.offset + i.size);
+    assert!(
+        end.is_some_and(|end| end > region.end),
+        "{region:?} {strip:?}"
+    );
+    menu.open(&snapshot, Axis::Cols);
+    let out = t.screen(&menu);
+    assert!(out.contains("u Unpin"), "{out}");
+    t.press(&mut menu, KeyCode::Enter);
+    assert_eq!(t.pinned(Axis::Cols, Edge::Leading), [1, 2]);
 }
 
 #[test]

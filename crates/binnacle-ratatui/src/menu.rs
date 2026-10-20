@@ -1,12 +1,14 @@
 //! The header menu: a popup under the focused column's header (or under the
-//! focused row) with Hide, Show only these and Choose, then the axis's
-//! hidden items inline, numbered, and Show all, each shown again in its
-//! place. Hide and Show only act on the picks or the selection as well as
-//! the focused item, and past the axis's hide cap suggest a filter.
+//! focused row) with Pin left and Pin right (Pin top and Pin bottom for a
+//! row), or Unpin on a pinned item, and Freeze up to here; then, where the
+//! axis hides, Hide, Show only these and Choose, the axis's hidden items
+//! inline, numbered, and Show all, each shown again in its place. Hide and
+//! Show only act on the picks or the selection as well as the focused item,
+//! and past the axis's hide cap suggest a filter.
 
 use std::ops::Range;
 
-use binnacle_core::{Axis, Grid, Key, Position, Snapshot};
+use binnacle_core::{Axis, Edge, Grid, Key, Position, Snapshot};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::Rect;
@@ -176,15 +178,18 @@ pub fn cap_hint(axis: Axis, cap: usize) -> String {
     format!("Can't hide over {} {noun}: filter", grouped(cap as u64))
 }
 
-/// The header menu of a column or row, on an axis whose Table Source hides.
-/// [`HeaderMenu::open`] drops it under the focused item's header with the
-/// cursor on Hide; [`HeaderMenu::open_hidden`] with it on the first hidden
-/// item. While open it takes the keys: Up and Down move the cursor, Enter
-/// does what it is on, `h` hides the chosen items ([`Chosen`]), `o` shows
-/// only them, `c` asks for the chooser ([`HeaderMenu::take_chooser`]), `1`
-/// to `9` show that hidden item, `a` shows them all, Esc closes. Hiding
-/// closes it; showing leaves it open, and so does a hide past the cap,
-/// which says to filter instead.
+/// The header menu of a column or row. [`HeaderMenu::open`] drops it under
+/// the focused item's header with the cursor on its first line;
+/// [`HeaderMenu::open_hidden`], on an axis whose Table Source hides, with it
+/// on the first hidden item. While open it takes the keys: Up and Down move
+/// the cursor, Enter does what it is on, `l` and `r` pin a column left and
+/// right (`t` and `b` a row to the top and bottom), `u` unpins it (offered
+/// wherever it is pinned, clipped or not), `f` freezes up to it, `h` hides
+/// the chosen items ([`Chosen`]), `o` shows only them, `c` asks for the
+/// chooser ([`HeaderMenu::take_chooser`]), `1` to `9` show that hidden item,
+/// `a` shows them all, Esc closes. Pinning, unpinning, freezing and hiding
+/// close it; showing leaves it open, and so does a hide past the cap, which
+/// says to filter instead.
 #[derive(Clone, Debug, Default)]
 pub struct HeaderMenu {
     open: Option<Open>,
@@ -197,15 +202,69 @@ struct Open {
     /// The item's own axis: the columns for a column's menu.
     axis: Axis,
     key: Key,
-    /// 0 is Hide, 1 Show only these, 2 Choose, then each hidden item, then
-    /// Show all.
+    /// An index into [`entries`].
     cursor: usize,
     /// Why the last hide hid nothing.
     hint: Option<String>,
 }
 
-/// The menu's lines before the hidden items.
-const ACTIONS: usize = 3;
+/// What a line of the menu does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Entry {
+    Pin(Edge),
+    Unpin,
+    Freeze,
+    Hide,
+    ShowOnly,
+    Choose,
+    Show(Key),
+    ShowAll,
+}
+
+impl Entry {
+    /// The key that picks it, but for a hidden item's number.
+    fn key(self, axis: Axis) -> char {
+        match (self, axis) {
+            (Entry::Pin(Edge::Leading), Axis::Cols) => 'l',
+            (Entry::Pin(Edge::Trailing), Axis::Cols) => 'r',
+            (Entry::Pin(Edge::Leading), Axis::Rows) => 't',
+            (Entry::Pin(Edge::Trailing), Axis::Rows) => 'b',
+            (Entry::Unpin, _) => 'u',
+            (Entry::Freeze, _) => 'f',
+            (Entry::Hide, _) => 'h',
+            (Entry::ShowOnly, _) => 'o',
+            (Entry::Choose, _) => 'c',
+            (Entry::Show(_) | Entry::ShowAll, _) => 'a',
+        }
+    }
+}
+
+/// The menu's lines for `key` on `axis`, in order, as the web's menu lists
+/// them: Pin at the leading edge, or Unpin wherever it is pinned; Pin at the
+/// trailing edge unless pinned; Freeze unless pinned at the trailing edge;
+/// then, on an axis that hides, Hide, Show only and Choose, each hidden
+/// item and Show all.
+fn entries(snapshot: &Snapshot, axis: Axis, key: Key) -> Vec<Entry> {
+    let pinned_at = |edge| (snapshot.pinned(axis, edge).iter()).any(|i| i.key == Some(key));
+    let trailing = pinned_at(Edge::Trailing);
+    let mut entries = if pinned_at(Edge::Leading) || trailing {
+        vec![Entry::Unpin]
+    } else {
+        vec![Entry::Pin(Edge::Leading), Entry::Pin(Edge::Trailing)]
+    };
+    if !trailing {
+        entries.push(Entry::Freeze);
+    }
+    if snapshot.hide_support(axis) {
+        entries.extend([Entry::Hide, Entry::ShowOnly, Entry::Choose]);
+        let hidden = snapshot.hidden(axis);
+        entries.extend(hidden.iter().map(|&k| Entry::Show(k)));
+        if !hidden.is_empty() {
+            entries.push(Entry::ShowAll);
+        }
+    }
+    entries
+}
 
 impl HeaderMenu {
     pub fn new() -> Self {
@@ -217,31 +276,32 @@ impl HeaderMenu {
     }
 
     /// Opens the menu of the focused item of `axis` (`Axis::Cols` for the
-    /// focused column's): `false` if the axis does not hide or nothing there
-    /// is focused.
+    /// focused column's): `false` if nothing there is focused.
     pub fn open(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
-        self.open_at(snapshot, axis, 0)
-    }
-
-    /// Opens the menu with the cursor on the first hidden item, as
-    /// [`HeaderMenu::open`] does.
-    pub fn open_hidden(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
-        self.open_at(snapshot, axis, ACTIONS)
-    }
-
-    fn open_at(&mut self, snapshot: &Snapshot, axis: Axis, cursor: usize) -> bool {
-        let key = snapshot.focus(axis).and_then(|f| f.key);
-        let Some(key) = key.filter(|_| snapshot.hide_support(axis)) else {
+        let Some(key) = snapshot.focus(axis).and_then(|f| f.key) else {
             return false;
         };
-        let cursor = cursor.min(snapshot.hidden(axis).len() + ACTIONS);
-        let hint = None;
         self.open = Some(Open {
             axis,
             key,
-            cursor,
-            hint,
+            cursor: 0,
+            hint: None,
         });
+        true
+    }
+
+    /// Opens the menu with the cursor on the first hidden item (or Choose,
+    /// with none), as [`HeaderMenu::open`] does: `false` as well if the axis
+    /// does not hide.
+    pub fn open_hidden(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
+        if !snapshot.hide_support(axis) || !self.open(snapshot, axis) {
+            return false;
+        }
+        if let Some(o) = &mut self.open {
+            let entries = entries(snapshot, axis, o.key);
+            let choose = entries.iter().position(|&e| e == Entry::Choose);
+            o.cursor = choose.map_or(0, |i| (i + 1).min(entries.len() - 1));
+        }
         true
     }
 
@@ -266,18 +326,19 @@ impl HeaderMenu {
         grid: &mut Grid,
         keys_at: impl FnMut(Axis, Range<Position>) -> Vec<Key>,
     ) -> bool {
-        let Some(Open { axis, cursor, .. }) = self.open.clone() else {
+        let Some(Open {
+            axis, key, cursor, ..
+        }) = self.open.clone()
+        else {
             return false;
         };
         if event.kind == KeyEventKind::Release {
             return true;
         }
-        let hidden: Vec<Key> = grid.snapshot().hidden(axis).to_vec();
-        // The actions, the hidden items, then Show all while there are any.
-        let last = match hidden.is_empty() {
-            true => ACTIONS - 1,
-            false => hidden.len() + ACTIONS,
-        };
+        let snapshot = grid.snapshot();
+        let entries = entries(&snapshot, axis, key);
+        let hidden: Vec<Key> = snapshot.hidden(axis).to_vec();
+        let last = entries.len() - 1;
         let cursor = cursor.min(last);
         let mut moved = cursor;
         let mut act = None;
@@ -285,35 +346,53 @@ impl HeaderMenu {
             KeyCode::Esc => return self.close(),
             KeyCode::Up => moved = cursor.checked_sub(1).unwrap_or(last),
             KeyCode::Down => moved = if cursor >= last { 0 } else { cursor + 1 },
-            KeyCode::Char('h') => act = Some(0),
-            KeyCode::Char('o') => act = Some(1),
-            KeyCode::Char('c') => act = Some(2),
-            KeyCode::Char('a') if !hidden.is_empty() => act = Some(last),
+            KeyCode::Enter => act = Some(entries[cursor]),
             KeyCode::Char(c @ '1'..='9') => {
-                let i = c as usize - '1' as usize;
-                act = (i < hidden.len()).then_some(i + ACTIONS);
+                act = (hidden.get(c as usize - '1' as usize)).map(|&k| Entry::Show(k));
             }
-            KeyCode::Enter => act = Some(cursor),
+            KeyCode::Char(c) => {
+                act = (entries.iter().copied())
+                    .find(|&e| !matches!(e, Entry::Show(_)) && e.key(axis) == c);
+            }
             _ => {}
         }
+        let mut closes = false;
         let hid = match act {
-            Some(0) => Some(hide_chosen(grid, axis, keys_at)),
-            Some(1) => Some(show_only_chosen(grid, axis, keys_at)),
-            Some(2) => {
+            Some(Entry::Pin(edge)) => {
+                grid.pin(axis, edge, key);
+                closes = true;
+                None
+            }
+            Some(Entry::Unpin) => {
+                grid.unpin(axis, key);
+                closes = true;
+                None
+            }
+            Some(Entry::Freeze) => {
+                grid.freeze(axis, key);
+                closes = true;
+                None
+            }
+            Some(Entry::Hide) => Some(hide_chosen(grid, axis, keys_at)),
+            Some(Entry::ShowOnly) => Some(show_only_chosen(grid, axis, keys_at)),
+            Some(Entry::Choose) => {
                 self.chooser = Some(axis);
                 self.open = None;
                 return true;
             }
-            Some(i) if i >= ACTIONS && i - ACTIONS < hidden.len() => {
-                grid.show(axis, &[hidden[i - ACTIONS]]);
+            Some(Entry::Show(k)) => {
+                grid.show(axis, &[k]);
                 None
             }
-            Some(_) => {
+            Some(Entry::ShowAll) => {
                 grid.show(axis, &hidden);
                 None
             }
             None => None,
         };
+        if closes {
+            self.open = None;
+        }
         match hid {
             Some(Hid::Hidden(_)) => self.open = None,
             Some(Hid::Capped(cap)) => {
@@ -330,8 +409,9 @@ impl HeaderMenu {
     }
 
     /// Draws the open menu in `area` (the table's), under the column's
-    /// header or under the row, moved to fit: the actions (Hide and Show
-    /// only naming how many items they reach), the hidden items numbered
+    /// header or under the row, moved to fit: the pin lines, then where the
+    /// axis hides the actions (Hide and Show only naming how many items
+    /// they reach), the hidden items numbered
     /// (scrolled to the cursor past [`LIST_ROWS`]), Show all, a hint after a
     /// hide past the cap, and the keys.
     pub fn render(
@@ -352,7 +432,11 @@ impl HeaderMenu {
             Axis::Cols => ("column", "columns"),
             Axis::Rows => ("row", "rows"),
         };
-        let hidden = snapshot.hidden(o.axis);
+        let entries = entries(snapshot, o.axis, o.key);
+        let hides = entries.contains(&Entry::Hide);
+        let hidden = if hides { snapshot.hidden(o.axis) } else { &[] };
+        // The lines above the heading: the pin lines and the actions.
+        let above = entries.len() - hidden.len() - usize::from(!hidden.is_empty());
         let (left, top) = match o.axis {
             Axis::Cols => {
                 let x = (snapshot.headers(Axis::Cols))
@@ -373,11 +457,11 @@ impl HeaderMenu {
             }
         };
         let list = hidden.len().min(LIST_ROWS);
-        // Borders, the actions, the heading, the list and Show all, any
-        // hint, the keys.
+        // Borders, the lines above the heading, the heading, the list and
+        // Show all, any hint, the keys.
         let height = 2
-            + ACTIONS as u16
-            + 1
+            + above as u16
+            + u16::from(hides)
             + list as u16
             + u16::from(!hidden.is_empty())
             + u16::from(o.hint.is_some())
@@ -433,27 +517,36 @@ impl HeaderMenu {
             1 => format!("this {noun}"),
             n => format!("these {}", grouped(n)),
         };
-        let actions = [
-            match chosen {
-                1 => format!("h Hide {noun}"),
-                n => format!("h Hide {} {nouns}", grouped(n)),
-            },
-            format!("o Show only {these}"),
-            format!("c Choose {nouns}…"),
-        ];
-        for (i, action) in actions.iter().enumerate() {
+        for (i, &entry) in entries.iter().take(above).enumerate() {
+            let label = match entry {
+                Entry::Pin(Edge::Leading) if o.axis == Axis::Cols => "Pin left".into(),
+                Entry::Pin(Edge::Trailing) if o.axis == Axis::Cols => "Pin right".into(),
+                Entry::Pin(Edge::Leading) => "Pin top".into(),
+                Entry::Pin(Edge::Trailing) => "Pin bottom".into(),
+                Entry::Unpin => "Unpin".into(),
+                Entry::Freeze => "Freeze up to here".into(),
+                Entry::Hide => match chosen {
+                    1 => format!("Hide {noun}"),
+                    n => format!("Hide {} {nouns}", grouped(n)),
+                },
+                Entry::ShowOnly => format!("Show only {these}"),
+                Entry::Choose => format!("Choose {nouns}…"),
+                Entry::Show(_) | Entry::ShowAll => continue,
+            };
             let (mark, style) = at(i);
-            line(row, &format!("{mark}{action}"), style);
+            line(row, &format!("{mark}{} {label}", entry.key(o.axis)), style);
             row += 1;
         }
-        let heading = match hidden.len() {
-            0 => format!(" No hidden {nouns}"),
-            n => format!(" Hidden {nouns} ({n}):"),
-        };
-        line(row, &heading, theme.body.patch(theme.row_number));
-        row += 1;
+        if hides {
+            let heading = match hidden.len() {
+                0 => format!(" No hidden {nouns}"),
+                n => format!(" Hidden {nouns} ({n}):"),
+            };
+            line(row, &heading, theme.body.patch(theme.row_number));
+            row += 1;
+        }
         // The window of the list that keeps the cursor in view.
-        let first = (o.cursor.saturating_sub(ACTIONS))
+        let first = (o.cursor.saturating_sub(above))
             .saturating_sub(list.saturating_sub(1))
             .min(hidden.len().saturating_sub(list));
         for (i, &key) in hidden.iter().enumerate().skip(first).take(list) {
@@ -467,12 +560,12 @@ impl HeaderMenu {
                 Axis::Cols => name(key),
                 Axis::Rows => format!("row {}", name(key)),
             };
-            let (mark, style) = at(i + ACTIONS);
+            let (mark, style) = at(above + i);
             line(row, &format!("{mark}{number} {named}"), style);
             row += 1;
         }
         if !hidden.is_empty() {
-            let (mark, style) = at(hidden.len() + ACTIONS);
+            let (mark, style) = at(above + hidden.len());
             line(row, &format!("{mark}a Show all"), style);
             row += 1;
         }

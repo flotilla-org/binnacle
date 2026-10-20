@@ -121,14 +121,18 @@
 //! end, the right ones first, with the edge where they clip; nothing unpins,
 //! and focusing a clipped one slides its Strip to show it. A pinned column
 //! that a filter or a hide takes out waits, and comes back to its place.
+//! Alt+M (or Shift+F10) opens the focused column's header menu and
+//! Alt+Shift+M the row's: `l` and `r` pin a column left and right (`t` and
+//! `b` a row to the top and bottom), `u` unpins a pinned one, clipped or
+//! not, and `f` freezes up to it, or the cursor and Enter do.
 //!
 //! In the records (slow too) and on their side, Alt+0 hides the focused
 //! column and Alt+9 its row: the source leaves it out whatever the filter
 //! keeps, focus moves to its neighbour, and its width stays for when it comes
-//! back. Alt+M (or Shift+F10) opens the focused column's header menu and
-//! Alt+Shift+M the row's: `h` hides it, and the hidden ones are listed under
-//! it, `1` to `9` (or the cursor and Enter) showing one again in its place
-//! and `a` all of them; Alt+) and Alt+( open it at that list. The status line
+//! back. There the header menu goes on: `h` hides the item, and the hidden
+//! ones are listed under it, `1` to `9` (or the cursor and Enter) showing
+//! one again in its place and `a` all of them; Alt+) and Alt+( open it at
+//! that list. The status line
 //! counts what is left, "4 of 5 columns". In the modes and bare-keys presets
 //! `-` and `_` hide, `+` and `*` list the hidden ones, and `.` and `,` open
 //! the menus.

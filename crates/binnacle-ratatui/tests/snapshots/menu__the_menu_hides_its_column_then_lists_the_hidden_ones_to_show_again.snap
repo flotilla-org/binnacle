@@ -1,60 +1,59 @@
 ---
 source: crates/binnacle-ratatui/tests/menu.rs
-assertion_line: 240
 expression: out
 ---
 menu on name
     name        │port        │crew        │
 1   ┌─ Column name ────────────────────────┐           █
-2   │▸h Hide column                        │           █
-3   │ o Show only this column              │           █
-4   │ c Choose columns…                    │           █
-5   │ No hidden columns                    │           █
-6   │ ↑↓ Enter  Esc close                  │           █
+2   │▸l Pin left                           │           █
+3   │ r Pin right                          │           █
+4   │ f Freeze up to here                  │           █
+5   │ h Hide column                        │           █
+6   │ o Show only this column              │           █
+    │ c Choose columns…                    │           █
+    │ No hidden columns                    │           █
+    │ ↑↓ Enter  Esc close                  │           █
     └──────────────────────────────────────┘           █
-                                                       █
-                                                       █
-                                                       █
                                                        █
 
 name and crew hidden; the menu at the list
-    port        │
-1   ┌─ Column port ────────────────────────┐           █
-2   │ h Hide column                        │           █
-3   │ o Show only this column              │           █
-4   │ c Choose columns…                    │           █
-5   │ Hidden columns (2):                  │           █
-6   │▸1 name                               │           █
+    ┌─ Column port ────────────────────────┐
+1   │ l Pin left                           │           █
+2   │ r Pin right                          │           █
+3   │ f Freeze up to here                  │           █
+4   │ h Hide column                        │           █
+5   │ o Show only this column              │           █
+6   │ c Choose columns…                    │           █
+    │ Hidden columns (2):                  │           █
+    │▸1 name                               │           █
     │ 2 crew                               │           █
     │ a Show all                           │           █
     │ ↑↓ Enter  Esc close                  │           █
-    └──────────────────────────────────────┘           █
-                                                       █
 
 the cursor on Show all
-    port        │crew        │
-1   ┌─ Column port ────────────────────────┐           █
-2   │ h Hide column                        │           █
-3   │ o Show only this column              │           █
-4   │ c Choose columns…                    │           █
-5   │ Hidden columns (1):                  │           █
-6   │ 1 name                               │           █
+    ┌─ Column port ────────────────────────┐
+1   │ l Pin left                           │           █
+2   │ r Pin right                          │           █
+3   │ f Freeze up to here                  │           █
+4   │ h Hide column                        │           █
+5   │ o Show only this column              │           █
+6   │ c Choose columns…                    │           █
+    │ Hidden columns (1):                  │           █
+    │ 1 name                               │           █
     │▸a Show all                           │           █
     │ ↑↓ Enter  Esc close                  │           █
     └──────────────────────────────────────┘           █
-                                                       █
-                                                       █
 
 all shown again, in their places
     name        │port        │crew        │
 1   r0c0        ┌─ Column port ────────────────────────┐
-2   r1c0        │ h Hide column                        │
-3   r2c0        │ o Show only this column              │
-4   r3c0        │ c Choose columns…                    │
-5   r4c0        │ No hidden columns                    │
-6   r5c0        │ ↑↓ Enter  Esc close                  │
+2   r1c0        │ l Pin left                           │
+3   r2c0        │ r Pin right                          │
+4   r3c0        │ f Freeze up to here                  │
+5   r4c0        │ h Hide column                        │
+6   r5c0        │ o Show only this column              │
+                │ c Choose columns…                    │
+                │ No hidden columns                    │
+                │ ↑↓ Enter  Esc close                  │
                 └──────────────────────────────────────┘
-                                                       █
-                                                       █
-                                                       █
                                                        █
