@@ -302,6 +302,12 @@ test("a missing item's pin or size keeps its ID through any number of Resets, un
     // The rows' pin and size were left: their IDs stay.
     expect(read(h).pins.rows.trailing).toEqual(["gone row"]);
     expect(read(h).sizes.rows).toEqual([["sized row", 40]]);
+    // A pin set just before the Resets, with no Effects drained between, holds its ID too.
+    h.grid.pin(AXIS_CODE.cols, EDGE_CODE.trailing, h.feed.colKey("late"));
+    for (let i = 0; i < 3; i++) sinks.cols.notify({ type: "Reset" });
+    h.drain();
+    h.settled();
+    expect(read(h).pins.cols.trailing).toEqual(["late"]);
   } finally {
     h.destroy();
   }

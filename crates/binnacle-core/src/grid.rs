@@ -13,7 +13,7 @@ use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
 use crate::selection::{Cell, CellRange, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
-use crate::types::{Axis, Generation, Key, Position, Viewport};
+use crate::types::{Axis, Edge, Generation, Key, Position, Viewport};
 use crate::view::ViewState;
 
 /// How one axis starts out: its count, default item size, header band, Gap
@@ -402,6 +402,12 @@ impl Grid {
     /// The Size Override for the item with `key` on `axis`, if any.
     pub fn size_override(&self, axis: Axis, key: Key) -> Option<f32> {
         self.axis(axis).measure.size_override(key)
+    }
+
+    /// The Keys pinned to `edge` of `axis`, in pin order, dormant pins
+    /// included, as the next Snapshot lists them ([`Snapshot::pins`]).
+    pub fn pins(&self, axis: Axis, edge: Edge) -> impl Iterator<Item = Key> + '_ {
+        self.axis(axis).pins[edge.index()].iter().map(|p| p.key)
     }
 
     /// Every Size Override on `axis` in Key order, for Keys shown or not:

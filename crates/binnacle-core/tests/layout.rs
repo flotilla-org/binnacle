@@ -201,6 +201,22 @@ fn pins_changed_always_names_the_pins_the_snapshot_holds(tc: TestCase) {
     }
 }
 
+/// Between frames, with nothing drained, `Grid::pins` lists the Keys the
+/// next Snapshot lists as pinned, dormant ones included.
+#[hegel::test(test_cases = 300)]
+fn grid_pins_lists_what_the_next_snapshot_holds(tc: TestCase) {
+    let (mut s, axis, ops) = pin_ops(&tc);
+    for op in ops {
+        apply(&mut s, axis, op);
+        let asked = Edge::ALL.map(|edge| s.grid.pins(axis, edge).collect::<Vec<_>>());
+        let snap = s.grid.snapshot();
+        for edge in Edge::ALL {
+            let pins: Vec<Key> = snap.pins(axis, edge).collect();
+            assert_eq!(asked[edge.index()], pins, "{edge:?} pins");
+        }
+    }
+}
+
 /// Whatever was pinned before, `set_pins` leaves exactly its Keys on its
 /// edge, each once and in the order given, and none of them on the other.
 #[hegel::test(test_cases = 300)]

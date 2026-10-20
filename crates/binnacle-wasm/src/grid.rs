@@ -154,6 +154,14 @@ impl WebGrid {
         }
     }
 
+    /// The Keys pinned to edge `edge` of axis `a`, in pin order, dormant
+    /// pins included, without laying out a frame; none for a bad edge.
+    pub fn pin_keys(&self, a: u8, edge: u8) -> Vec<u64> {
+        codes::edge(edge).map_or_else(Vec::new, |edge| {
+            self.grid.pins(axis(a), edge).map(|k| k.0).collect()
+        })
+    }
+
     pub fn unpin(&mut self, a: u8, key: u64) {
         self.grid.unpin(axis(a), Key(key));
     }
