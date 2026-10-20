@@ -228,6 +228,9 @@ impl Grid {
             Shift::Removed { at, n } => self.axis_mut(axis).measure.remove(at, n),
         };
         self.shift_pins(axis, |p| shift.map(p));
+        if matches!(shift, Shift::Inserted { .. }) {
+            self.locate_dormant_pins(axis);
+        }
         let count = self.axis(axis).measure.count();
         let mut selection = self.selection.clone();
         for &key in &gone {

@@ -180,6 +180,18 @@ impl Grid {
         }
     }
 
+    /// Items were inserted on `axis`: a dormant pin's Key may be among them,
+    /// so each dormant pin is asked about again.
+    pub(crate) fn locate_dormant_pins(&mut self, axis: Axis) {
+        let keys: Vec<Key> = (self.axis(axis).pins.iter().flatten())
+            .filter(|p| p.at.is_none())
+            .map(|p| p.key)
+            .collect();
+        for key in keys {
+            self.locate_pin(axis, key);
+        }
+    }
+
     /// A `located` answer about a pinned Key: found, it is drawn at its new
     /// Position; gone, the pin goes dormant until its Key comes back.
     pub(crate) fn pin_located(&mut self, axis: Axis, key: Key, answer: Located) {
