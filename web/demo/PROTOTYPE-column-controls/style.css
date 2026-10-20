@@ -1,0 +1,258 @@
+/* PROTOTYPE (#140): throwaway styles for the column presentation controls. */
+
+html, body { margin: 0; height: 100%; }
+
+body {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100vh;
+  font: var(--font);
+  color: var(--body-fg);
+  background: var(--body-bg);
+}
+
+/* The harness: prototype-only switches, styled apart from the design. */
+#harness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 6px 12px;
+  background: repeating-linear-gradient(-45deg, #1f2937, #1f2937 10px, #24303f 10px, #24303f 20px);
+  color: #e5e7eb;
+  font: 12px ui-monospace, Menlo, monospace;
+}
+#harness b { color: #fbbf24; letter-spacing: 0.05em; }
+#harness label { display: inline-flex; align-items: center; gap: 4px; }
+#harness select, #harness button {
+  font: inherit; color: #e5e7eb; background: #111827; border: 1px solid #4b5563; border-radius: 4px; padding: 2px 4px;
+}
+#harness button { cursor: pointer; }
+
+/* Variant B's bar above the grid, like the filter bar. */
+#bar:empty { display: none; }
+#bar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--border); background: var(--body-bg);
+}
+#bar .fake-field {
+  width: 220px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--loading);
+}
+#bar .count {
+  margin-left: auto; font: inherit; color: var(--body-fg); background: transparent; border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 10px; cursor: pointer; font-variant-numeric: tabular-nums;
+}
+#bar .count:hover { border-color: var(--focus); }
+#bar .count .of { color: var(--rn-fg); }
+
+#middle { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 0; }
+
+#state {
+  margin: 0; padding: 8px 10px; overflow: auto; border-left: 1px dashed #4b5563;
+  background: #111827; color: #d1d5db; font: 11px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap;
+}
+
+#status {
+  padding: 5px 12px; border-top: 1px solid var(--border); background: var(--rn-bg); color: var(--rn-fg);
+  font-variant-numeric: tabular-nums; white-space: nowrap; min-height: 16px;
+}
+#status:empty { display: none; }
+
+/* The fake grid. */
+#viewport { position: relative; overflow: auto; outline: none; background: var(--body-bg); }
+.content { display: flex; flex-direction: column; width: max-content; min-width: 100%; min-height: 100%; }
+.line { display: flex; flex-shrink: 0; }
+.fill { flex: 1; }
+.spacer { flex: 1; }
+
+.cell, .hcell, .rhead, .corner {
+  box-sizing: border-box; flex-shrink: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  padding: 0 8px; display: flex; align-items: center;
+}
+.cell { background: var(--body-bg); border-right: 1px solid var(--border); }
+.line.zebra .cell { background: var(--zebra); }
+.cell.num { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.cell.focus { box-shadow: inset 0 0 0 2px var(--focus); }
+
+.header { position: sticky; top: 0; z-index: 6; }
+.hcell {
+  font: var(--hfont); color: var(--hdr-fg); background: var(--hdr-bg); border-right: 1px solid var(--handle);
+  border-bottom: 1px solid var(--border); position: relative; cursor: grab; user-select: none; gap: 4px;
+}
+.hcell:hover, .rhead:hover { background: var(--hdr-hover); }
+.hcell .label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.hcell.picked, .rhead.picked { background: var(--sel); }
+.hcell.focused { color: var(--focus); }
+.rhead {
+  position: sticky; left: 0; z-index: 3; justify-content: flex-end; color: var(--rn-fg); background: var(--rn-bg);
+  border-right: 1px solid var(--border); font-variant-numeric: tabular-nums; cursor: grab; user-select: none; gap: 4px;
+}
+.corner {
+  position: sticky; left: 0; z-index: 4; background: var(--hdr-bg); border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border); color: var(--rn-fg); font-size: 11px; justify-content: center;
+}
+.corner button {
+  font: inherit; color: var(--rn-fg); background: transparent; border: 0; cursor: pointer; padding: 2px 4px;
+  border-radius: 4px; font-variant-numeric: tabular-nums;
+}
+.corner button:hover { background: var(--hdr-hover); color: var(--hdr-fg); }
+.hbtn {
+  border: 0; background: transparent; color: var(--rn-fg); cursor: pointer; border-radius: 4px; padding: 0 3px;
+  font: 13px system-ui; visibility: hidden; line-height: 18px;
+}
+.hcell:hover .hbtn, .rhead:hover .hbtn, .hbtn.open { visibility: visible; }
+.hbtn:hover { background: var(--hdr-bg); color: var(--hdr-fg); }
+.sort { color: var(--sort); font-size: 10px; }
+.pinmark { color: var(--rn-fg); font-size: 10px; }
+.pending { background: linear-gradient(90deg, var(--shimmer-a) 0%, var(--shimmer-b) 50%, var(--shimmer-a) 100%) !important;
+  background-size: 200% 100% !important; animation: shimmer 1s linear infinite; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: 0 0; } }
+
+/* The pinned Strips: a column Strip is a sticky wrap in every line, a row Strip a sticky group of lines. */
+.wrap { position: sticky; z-index: 2; overflow: hidden; flex-shrink: 0; background: var(--body-bg); }
+.wrap.lead { left: var(--rn-w); }
+.wrap.trail { right: 0; }
+.header .wrap { background: var(--hdr-bg); }
+.wrap > .inner { display: flex; height: 100%; }
+.group { position: sticky; z-index: 5; overflow: clip; flex-shrink: 0; }
+.group.top { top: var(--head-h); }
+.group.bottom { bottom: 0; }
+
+/* The pinned edge, by variant: a line in the border colour over the Strip's inside edge, with a shadow once the body has scrolled. */
+.wrap:not(.empty)::before, .group:not(.empty)::before {
+  content: ""; position: absolute; z-index: 4; pointer-events: none; background: var(--edge);
+}
+.wrap.lead::before { top: 0; bottom: 0; right: 0; width: var(--edge-w); }
+.wrap.trail::before { top: 0; bottom: 0; left: 0; width: var(--edge-w); }
+.group.top::before { left: 0; right: 0; bottom: 0; height: var(--edge-w); }
+.group.bottom::before { left: 0; right: 0; top: 0; height: var(--edge-w); }
+.edge-line { --edge-w: 1px; }
+.edge-line.sx .wrap.lead:not(.empty) { box-shadow: 6px 0 8px -5px var(--shadow); }
+.edge-line.ex .wrap.trail:not(.empty) { box-shadow: -6px 0 8px -5px var(--shadow); }
+.edge-line.sy .group.top:not(.empty) { box-shadow: 0 6px 8px -5px var(--shadow); }
+.edge-line.ey .group.bottom:not(.empty) { box-shadow: 0 -6px 8px -5px var(--shadow); }
+/* Variant C: a heavier line, never a shadow. */
+.edge-heavy { --edge-w: 2px; }
+
+/* A clipped pinned Strip fades at its inside edge, and its header says how much is cut. */
+.wrap.clipped::after, .group.clipped::after {
+  content: ""; position: absolute; pointer-events: none; z-index: 1;
+}
+.wrap.lead.clipped::after { top: 0; bottom: 0; right: 0; width: 18px; background: linear-gradient(90deg, transparent, var(--fade)); }
+.wrap.trail.clipped::after { top: 0; bottom: 0; left: 0; width: 18px; background: linear-gradient(270deg, transparent, var(--fade)); }
+.group.top.clipped::after { left: 0; right: 0; bottom: 0; height: 10px; background: linear-gradient(180deg, transparent, var(--fade)); }
+.group.bottom.clipped::after { left: 0; right: 0; top: 0; height: 10px; background: linear-gradient(0deg, transparent, var(--fade)); }
+.clipbadge {
+  position: absolute; top: 3px; z-index: 3; font: 10px ui-monospace, Menlo, monospace; padding: 1px 4px; border-radius: 4px;
+  background: var(--body-bg); color: var(--rn-fg); border: 1px solid var(--border); pointer-events: none;
+}
+.wrap.lead .clipbadge { right: 3px; }
+.wrap.trail .clipbadge { left: 3px; }
+
+/* Drag feedback, drawn over everything. */
+#overlay { position: fixed; inset: 0; pointer-events: none; z-index: 40; }
+.dropline { position: fixed; background: var(--drop); }
+.dropline.return { background: repeating-linear-gradient(0deg, var(--drop) 0 6px, transparent 6px 10px); }
+.dropline.return.h { background: repeating-linear-gradient(90deg, var(--drop) 0 6px, transparent 6px 10px); }
+.droplabel {
+  position: fixed; font: 11px system-ui; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+  background: var(--drop); color: var(--body-bg); box-shadow: 0 2px 6px rgb(0 0 0 / 0.2);
+}
+.droplabel.no { background: var(--error); }
+.zone {
+  position: fixed; border: 1px dashed var(--drop); background: color-mix(in srgb, var(--drop) 10%, transparent);
+  color: var(--drop); font: 600 11px system-ui; display: flex; align-items: flex-start; justify-content: center; padding-top: 40px;
+  box-sizing: border-box;
+}
+.zone.hot { background: color-mix(in srgb, var(--drop) 22%, transparent); border-style: solid; }
+.ghost {
+  position: fixed; font: var(--hfont); color: var(--hdr-fg); background: var(--hdr-bg); border: 1px solid var(--drop);
+  padding: 6px 10px; border-radius: 6px; box-shadow: 0 8px 20px rgb(0 0 0 / 0.25); opacity: 0.95; white-space: nowrap;
+}
+.ghost small { display: block; font: 11px system-ui; color: var(--drop); margin-top: 2px; }
+.ghost.no small { color: var(--error); }
+body.dragging, body.dragging * { cursor: grabbing !important; }
+body.dragging.refused, body.dragging.refused * { cursor: not-allowed !important; }
+
+/* Messages near the header (refusals, caps). */
+.toast {
+  position: fixed; z-index: 45; font: 12px system-ui; padding: 4px 10px; border-radius: 6px; max-width: 360px;
+  background: var(--body-bg); border: 1px solid var(--border); box-shadow: 0 6px 18px rgb(0 0 0 / 0.18);
+}
+.toast.error { color: var(--error); border-color: var(--error); }
+
+/* Popovers: the menus and choosers, after the column menu's look. */
+.pop {
+  position: fixed; z-index: 50; box-sizing: border-box; padding: 6px; border-radius: 8px;
+  background: var(--body-bg); color: var(--body-fg); border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.08); font: var(--font);
+}
+.pop .title { margin: 2px 4px 6px; font-size: 12px; color: var(--rn-fg); }
+.pop .title b { color: var(--body-fg); }
+.mi {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; font: inherit; color: inherit;
+  background: transparent; border: 0; border-radius: 5px; padding: 5px 10px; cursor: pointer; white-space: nowrap;
+}
+.mi:hover:not(:disabled), .mi:focus-visible, .mi.sel { background: var(--sel); outline: none; }
+.mi:disabled { color: var(--loading); cursor: default; }
+.mi .grow { flex: 1; }
+.mi .hint { color: var(--rn-fg); font-size: 11px; }
+.sep { height: 1px; margin: 5px -6px; background: var(--border); }
+.field {
+  font: inherit; color: inherit; background: var(--body-bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; outline: none; display: block; width: 100%; box-sizing: border-box;
+}
+.field:focus { border-color: var(--focus); }
+.list { max-height: 300px; overflow: auto; margin: 6px 0 4px; padding: 2px 0; border: 1px solid var(--border); border-radius: 6px; }
+.check { display: flex; align-items: center; gap: 6px; padding: 2px 8px; white-space: nowrap; cursor: pointer; }
+.check:hover { background: var(--hdr-hover); }
+.check input { margin: 0; accent-color: var(--focus); }
+.check .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.tag { font-size: 10px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--rn-fg); }
+.tag.dormant { border-style: dashed; }
+.note { font-size: 11px; color: var(--rn-fg); margin: 2px 4px; }
+.foot { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+.btn { font: inherit; color: inherit; background: var(--body-bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.btn:hover { border-color: var(--focus); }
+.btn.small { padding: 1px 6px; font-size: 11px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { font: inherit; font-size: 12px; color: inherit; background: transparent; border: 0; padding: 3px 9px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--focus); color: var(--body-bg); }
+.seg button[aria-pressed="true"][data-none] { background: var(--hdr-bg); color: var(--rn-fg); }
+.row { display: flex; align-items: center; gap: 8px; margin: 6px 4px; }
+.row .lbl { width: 44px; color: var(--rn-fg); font-size: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px; }
+.chip { font: inherit; font-size: 12px; color: inherit; background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; cursor: pointer; }
+.chip:hover { border-color: var(--focus); color: var(--focus); }
+.section { font-size: 11px; color: var(--rn-fg); margin: 8px 6px 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Variant B's chooser: a drawer holding a small grid of the axis's items. */
+.drawer {
+  position: fixed; z-index: 50; top: 0; right: 0; bottom: 0; width: 420px; display: flex; flex-direction: column;
+  background: var(--body-bg); color: var(--body-fg); border-left: 1px solid var(--border);
+  box-shadow: -10px 0 30px rgb(15 23 42 / 0.18); font: var(--font);
+}
+.drawer header { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border); }
+.drawer header b { flex: 1; }
+.drawer .tablebox { flex: 1; overflow: auto; }
+.drawer table { border-collapse: collapse; width: 100%; }
+.drawer th {
+  position: sticky; top: 0; font: var(--hfont); color: var(--hdr-fg); background: var(--hdr-bg); text-align: left;
+  padding: 5px 8px; border-bottom: 1px solid var(--border); cursor: pointer; white-space: nowrap;
+}
+.drawer td { padding: 2px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.drawer tr.hidden td.name { color: var(--loading); }
+.drawer td input[type="number"] { width: 64px; font: inherit; color: inherit; background: transparent; border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; }
+.drawer .seg button { padding: 1px 7px; }
+.drawer footer { padding: 8px 10px; border-top: 1px solid var(--border); color: var(--rn-fg); display: flex; gap: 8px; align-items: center; }
+
+/* The variant switcher: prototype chrome, not part of the design. */
+#switcher {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 60; display: flex; align-items: center;
+  gap: 4px; padding: 4px; border-radius: 999px; background: #111827; color: #f9fafb;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35); font: 12px ui-monospace, Menlo, monospace;
+}
+#switcher button { font: inherit; color: inherit; background: #374151; border: 0; border-radius: 999px; width: 28px; height: 28px; cursor: pointer; }
+#switcher span { padding: 0 10px; min-width: 260px; text-align: center; }

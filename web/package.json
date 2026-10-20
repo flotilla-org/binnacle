@@ -26,6 +26,7 @@
     "wasm:debug": "wasm-pack build ../crates/binnacle-wasm --target web --dev --no-pack --out-dir ../../web/wasm",
     "build": "pnpm wasm && rolldown -c && tsc -p tsconfig.build.json",
     "dev": "pnpm wasm && vite --port 5754 --strictPort --host 127.0.0.1",
+    "prototype:columns": "vite --port 6400 --strictPort --host 127.0.0.1 --open /demo/PROTOTYPE-column-controls/",
     "typecheck": "pnpm wasm && tsc --noEmit",
     "test": "pnpm wasm && vitest run && pnpm test:wasm",
     "test:wasm": "wasm-pack test --node ../crates/binnacle-wasm",
