@@ -1,0 +1,40 @@
+---
+source: crates/binnacle-ratatui/tests/pin_drags.rs
+expression: out
+---
+--- columns 5 and 6 pinned left, movable
+    col 5 │col 6 │col 0 │col 1 │col 2 │c
+1   r0c5   r0c6  ║r0c0   r0c1   r0c2   r
+2   r1c5   r1c6  ║r1c0   r1c1   r1c2   r
+3   r2c5   r2c6  ║r2c0   r2c1   r2c2   r
+4   r3c5   r3c6  ║r3c0   r3c1   r3c2   r
+5   r4c5   r4c6  ║r4c0   r4c1   r4c2   r
+zones  
+status 
+--- column 6 dragged before 5: reorder
+   ┃col 5 │col 6 │col 0 │col 1 │col 2 │c
+1  ┃r0c5   r0c6  ║r0c0   r0c1   r0c2   r
+2  ┃r1c5   r1c6  ║r1c0   r1c1   r1c2   r
+3  ┃r2c5   r2c6  ║r2c0   r2c1   r2c2   r
+4  ┃r3c5   r3c6  ║r3c0   r3c1   r3c2   r
+5  ┃r4c5   r4c6  ║r4c0   r4c1   r4c2   r
+zones                                         z
+status reorder pinned column 6
+--- over the body: unpin and move
+    col 5 │col 6 │col 0 │col 1 ┃col 2 │c
+1   r0c5   r0c6  ║r0c0   r0c1  ┃r0c2   r
+2   r1c5   r1c6  ║r1c0   r1c1  ┃r1c2   r
+3   r2c5   r2c6  ║r2c0   r2c1  ┃r2c2   r
+4   r3c5   r3c6  ║r3c0   r3c1  ┃r3c2   r
+5   r4c5   r4c6  ║r4c0   r4c1  ┃r4c2   r
+zones                                         z
+status unpin column 6 and move to 2
+--- over the trailing zone: pin right
+    col 5 │col 6 │col 0 │col 1 │col 2 │┃
+1   r0c5   r0c6  ║r0c0   r0c1   r0c2   ┃
+2   r1c5   r1c6  ║r1c0   r1c1   r1c2   ┃
+3   r2c5   r2c6  ║r2c0   r2c1   r2c2   ┃
+4   r3c5   r3c6  ║r3c0   r3c1   r3c2   ┃
+5   r4c5   r4c6  ║r4c0   r4c1   r4c2   ┃
+zones                                         Z
+status pin column 6 right

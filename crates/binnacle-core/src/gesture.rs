@@ -7,6 +7,7 @@ use crate::grid::Grid;
 use crate::measure::ItemAt;
 use crate::pointer::{Button, Hit, Modifiers, PointerEvent, PointerKind};
 use crate::selection::{Cell, HeaderClick, Selection};
+use crate::snapshot::DropTarget;
 use crate::types::{Axis, Edge, Key, Position};
 
 /// The single interaction the Grid is in the middle of.
@@ -30,9 +31,13 @@ pub enum Mode {
     /// release.
     ResizingBand { axis: Axis, start_thickness: f32 },
     /// Headers are being dragged: the header grabbed has `key` on
-    /// `axis`, and the dragged items would drop before Position `to` (see
-    /// [`crate::Snapshot::moving_keys`] for all of them).
-    MovingHeaders { axis: Axis, key: Key, to: Position },
+    /// `axis`, and releasing would do what `target` says (see
+    /// [`crate::Snapshot::moving_keys`] for all the dragged items).
+    MovingHeaders {
+        axis: Axis,
+        key: Key,
+        target: DropTarget,
+    },
     /// The host's editor is open on the cell with these row and column Keys
     /// (see [`crate::Grid::edit_started`]).
     Editing { row: Key, col: Key },
@@ -102,13 +107,13 @@ pub(crate) enum Gesture {
     },
     /// The headers of the items with `keys` on `axis`, at `positions` when
     /// the drag began (both in Position order), are being dragged by the
-    /// header of `key` and would drop before Position `to`.
+    /// header of `key`, and releasing would do what `target` says.
     MovingHeaders {
         axis: Axis,
         key: Key,
         keys: Vec<Key>,
         positions: Vec<Position>,
-        to: Position,
+        target: DropTarget,
     },
     /// The host's editor is open on the cell with `keys`. `due` counts, per
     /// axis, the `Locate` answers still to come for its Key.
@@ -140,7 +145,9 @@ impl Gesture {
                 axis,
                 start_thickness,
             },
-            &Gesture::MovingHeaders { axis, key, to, .. } => Mode::MovingHeaders { axis, key, to },
+            &Gesture::MovingHeaders {
+                axis, key, target, ..
+            } => Mode::MovingHeaders { axis, key, target },
             &Gesture::Editing {
                 keys: [row, col], ..
             } => Mode::Editing { row, col },
@@ -286,13 +293,12 @@ impl Grid {
                     _ => {}
                 }
             }
-            Gesture::MovingHeaders { axis, .. } => {
-                let axis = *axis;
-                let to = self.drop_position(axis, along(axis, x, y));
-                if let Gesture::MovingHeaders { to: old, .. } = &mut self.gesture
-                    && *old != to
+            &mut Gesture::MovingHeaders { axis, key, .. } => {
+                let target = self.drop_target(axis, key, along(axis, x, y));
+                if let Gesture::MovingHeaders { target: old, .. } = &mut self.gesture
+                    && *old != target
                 {
-                    *old = to;
+                    *old = target;
                     self.pending_damage.selection = true;
                 }
             }
@@ -401,28 +407,28 @@ impl Grid {
         }
     }
 
-    /// Turns a press on the header at `position` on `axis` into a move of
+    /// Turns a press on the header at `position` on `axis` into a drag of
     /// that item, or of every selected item if it is in a range spanning
-    /// whole items on that axis whose Keys are all known. An item without a
-    /// Key cannot be moved, nor can any while the axis is not movable or
-    /// another move waits for its answer.
+    /// whole items on that axis whose Keys are all known and none pinned. A
+    /// pinned item is dragged alone. Header drags are available on any axis,
+    /// since pinning is the Grid's own; only a movable one also moves items.
+    /// An item without a Key cannot be dragged, nor can any while another
+    /// move waits for its answer.
     fn start_move(&mut self, axis: Axis, position: Position, x: f32, y: f32) {
         let i = axis.index();
-        if !self.moves.movable[i] || self.moves.pending.is_some() {
+        if self.moves.pending.is_some() {
             return;
         }
-        let measure = &self.axis(axis).measure;
-        // Moves across the pinned edge come later: a pinned header stays put.
-        let Some(key) = measure.key_at(position) else {
+        let st = self.axis(axis);
+        let measure = &st.measure;
+        let Some(key) = st.key_at(position) else {
             return;
         };
-        if self.axis(axis).pinned_at(position) == Some(key) {
-            return;
-        }
+        let pinned = st.pinned_at(position) == Some(key);
         // A range that takes in pinned items moves only the grabbed one.
-        let selected = self
-            .selection
-            .span
+        let selected = (!pinned)
+            .then_some(self.selection.span)
+            .flatten()
             .filter(|s| s.whole[axis.other().index()] && !s.whole[i])
             .map(|s| s.range(&self.axes).span(axis).to_vec())
             .and_then(|runs| match runs.as_slice() {
@@ -442,17 +448,51 @@ impl Grid {
             key,
             keys,
             positions,
-            to: self.drop_position(axis, along(axis, x, y)),
+            target: self.drop_target(axis, key, along(axis, x, y)),
         };
         self.pending_damage.selection = true;
     }
 
-    /// Where items dragged to `v` along `axis` would drop: before the item
-    /// under it if `v` is in its first half, else after it. A point beyond
-    /// the body counts as over the nearest end of it.
+    /// What releasing the headers dragged by the header of `key` at `v`
+    /// along `axis` would do: in a pinned Strip, or an empty pin zone, pin
+    /// them there; elsewhere move them where the axis can, unpinning a
+    /// pinned item first; where it can't, a pinned item is unpinned back to
+    /// its own Position and an unpinned one stays.
+    fn drop_target(&self, axis: Axis, key: Key, v: f32) -> DropTarget {
+        let st = self.axis(axis);
+        let from = Edge::ALL
+            .into_iter()
+            .find(|&e| st.drawn_pins(e).any(|(k, _)| k == key));
+        if let Some((edge, before)) = st.pin_slot(v) {
+            return DropTarget::Pin {
+                edge,
+                before,
+                reorder: from == Some(edge),
+            };
+        }
+        let movable = self.moves.movable[axis.index()];
+        match from {
+            _ if movable => DropTarget::Move {
+                to: self.drop_position(axis, v),
+                unpin: from.is_some(),
+            },
+            Some(edge) => {
+                let at = st.drawn_pins(edge).find(|&(k, _)| k == key);
+                DropTarget::Unpin {
+                    at: at.map_or(0, |(_, p)| p),
+                }
+            }
+            None => DropTarget::Stay,
+        }
+    }
+
+    /// Where items dragged to `v` along `axis` would drop in the scrolling
+    /// Strip: before the item under it if `v` is in its first half, else
+    /// after it. A point beyond the scrolling region counts as over the
+    /// nearest end of it.
     fn drop_position(&self, axis: Axis, v: f32) -> Position {
         let st = self.axis(axis);
-        let body_end = f32::from_bits(st.extent.to_bits().saturating_sub(1));
+        let body_end = f32::from_bits(st.scroll_end().to_bits().saturating_sub(1));
         match st.hit(v.min(body_end).max(st.scroll_start())) {
             crate::pointer::AxisHit::Item(at) => {
                 let after =
@@ -510,19 +550,27 @@ impl Grid {
             } => self.header_click(axis, position, modifiers),
             Gesture::MovingHeaders {
                 axis,
+                key,
                 keys,
                 positions,
-                to,
-                ..
-            } => {
-                let (first, last) = (positions[0], positions[positions.len() - 1]);
-                let in_place =
-                    last - first + 1 == positions.len() as u64 && (first..=last + 1).contains(&to);
-                if !in_place {
-                    self.moves.pending = Some((axis, keys.clone()));
-                    self.push(Effect::MoveRequested { axis, keys, to });
+                target,
+            } => match target {
+                DropTarget::Pin { edge, before, .. } => self.pin_before(axis, edge, &keys, before),
+                DropTarget::Unpin { .. } => self.unpin(axis, key),
+                DropTarget::Move { to, unpin } => {
+                    if unpin {
+                        self.unpin(axis, key);
+                    }
+                    let (first, last) = (positions[0], positions[positions.len() - 1]);
+                    let in_place = last - first + 1 == positions.len() as u64
+                        && (first..=last + 1).contains(&to);
+                    if !in_place {
+                        self.moves.pending = Some((axis, keys.clone()));
+                        self.push(Effect::MoveRequested { axis, keys, to });
+                    }
                 }
-            }
+                DropTarget::Stay => {}
+            },
             _ => {}
         }
     }

@@ -4,7 +4,7 @@
 //! move on a sorted axis of the In-Memory Table Source.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, Grid, Key, Mode, Modifiers,
+    Action, Axis, AxisConfig, ChangeNotice, Cursor, DropTarget, Effect, Grid, Key, Mode, Modifiers,
     PointerEvent, SortColumn, SortSpec, Support, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_memory::MovePolicy;
@@ -14,12 +14,18 @@ use binnacle_testkit::{IdentityTable, RecordTable, Scenario};
 /// with a Gap of 1 after a 4-wide row header band. Column p spans x
 /// `4 + 7p .. 10 + 7p`; the Gap after it is the next unit.
 /// The columns are declared movable; the identity source refuses each move.
+/// No pin zones, so a drop near or past either end moves (`pin_drags.rs`
+/// drags into them).
 fn table() -> Scenario<IdentityTable> {
     let mut s = Scenario::identity(
         AxisConfig::new(20, 1.0).header(1.0).gap(1.0),
         AxisConfig::new(5, 6.0).header(4.0).gap(1.0),
     );
-    s.input(|g| g.set_movable(Axis::Cols, true));
+    s.input(|g| {
+        g.set_movable(Axis::Cols, true);
+        g.set_pin_zone(Axis::Cols, 0.0);
+        g.set_pin_zone(Axis::Rows, 0.0);
+    });
     s
 }
 
@@ -55,13 +61,18 @@ fn the_drop_position_follows_the_pointer_and_clamps_past_either_end() {
     let drop_at = |s: &mut Scenario<IdentityTable>, x: f32| {
         s.input(|g| g.pointer(PointerEvent::moved(x, 0.5)));
         let snap = s.frame(V);
-        let Mode::MovingHeaders { axis, key, to } = snap.mode() else {
+        let Mode::MovingHeaders {
+            axis,
+            key,
+            target: DropTarget::Move { to, unpin: false },
+        } = snap.mode()
+        else {
             panic!("{:?}", snap.mode());
         };
         assert_eq!((axis, key), (Axis::Cols, Key(2)));
         assert_eq!(snap.cursor(), Cursor::Move);
         let indicator = snap.drop_indicator().expect("an indicator while moving");
-        assert_eq!((indicator.axis, indicator.to), (Axis::Cols, to));
+        assert_eq!(indicator.axis, Axis::Cols);
         (to, indicator.offset)
     };
     s.input(|g| g.pointer(PointerEvent::down(20.0, 0.5)));
@@ -146,7 +157,10 @@ fn row_header_drags_move_nothing_while_the_rows_are_not_movable() {
         g.pointer(PointerEvent::down(1.0, 1.5));
         g.pointer(PointerEvent::moved(1.0, 5.5));
     });
-    assert_eq!(s.frame(V).mode(), Mode::Idle);
+    // The drag is on, since it could pin the row, but drops nothing here.
+    let snap = s.frame(V);
+    assert!(matches!(snap.mode(), Mode::MovingHeaders { .. }));
+    assert_eq!(snap.drop_indicator(), None);
     s.input(|g| g.pointer(PointerEvent::up(1.0, 5.5)));
     assert_eq!(s.effects(), vec![]);
 }
@@ -329,8 +343,8 @@ fn focus_placed_before_a_move_is_answered_follows_its_column() {
     s.frame(V);
     s.input(|g| {
         g.pointer(PointerEvent::down(14.0, 0.5));
-        g.pointer(PointerEvent::moved(5.0, 0.5));
-        g.pointer(PointerEvent::up(5.0, 0.5));
+        g.pointer(PointerEvent::moved(6.5, 0.5));
+        g.pointer(PointerEvent::up(6.5, 0.5));
         g.action(Action::MoveFocus {
             axis: Axis::Rows,
             by: binnacle_core::FocusStep::Item,
@@ -382,10 +396,16 @@ fn a_header_drag_on_an_axis_that_is_not_movable_shows_no_drop_line_and_requests_
             g.pointer(PointerEvent::down(x, y));
             g.pointer(PointerEvent::moved(to.0, to.1));
         });
+        // Over the body, a drag that could only pin drops nothing.
         let snap = s.frame(V);
-        assert_eq!(snap.mode(), Mode::Idle);
+        assert!(matches!(
+            snap.mode(),
+            Mode::MovingHeaders {
+                target: DropTarget::Stay,
+                ..
+            }
+        ));
         assert_eq!(snap.drop_indicator(), None);
-        assert_eq!(snap.cursor(), Cursor::Default);
         s.input(|g| g.pointer(PointerEvent::up(to.0, to.1)));
         assert_eq!(s.effects(), vec![]);
     }
@@ -520,10 +540,10 @@ fn a_source_that_refuses_moves_while_sorted_withdraws_them_until_unsorted() {
     assert!(snap.movable(Axis::Cols));
     s.input(|g| {
         g.pointer(PointerEvent::down(1.0, 5.5));
-        g.pointer(PointerEvent::moved(1.0, 1.2));
+        g.pointer(PointerEvent::moved(1.0, 1.4));
     });
     assert_eq!(s.frame(V).drop_indicator(), None);
-    s.input(|g| g.pointer(PointerEvent::up(1.0, 1.2)));
+    s.input(|g| g.pointer(PointerEvent::up(1.0, 1.4)));
     assert_eq!(s.effects(), vec![]);
     // Clicked twice more, the sort cycles to descending, then off.
     s.click(7.0, 0.5, Modifiers::NONE);
@@ -543,8 +563,8 @@ fn a_move_that_reaches_a_source_sorted_since_is_refused_with_its_reason() {
             SortSpec::new(vec![SortColumn::ascending(Key(0))]),
         ));
         g.pointer(PointerEvent::down(1.0, 5.5));
-        g.pointer(PointerEvent::moved(1.0, 1.2));
-        g.pointer(PointerEvent::up(1.0, 1.2));
+        g.pointer(PointerEvent::moved(1.0, 1.4));
+        g.pointer(PointerEvent::up(1.0, 1.4));
     });
     let snap = s.frame(V);
     assert_eq!(

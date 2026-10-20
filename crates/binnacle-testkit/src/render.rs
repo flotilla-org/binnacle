@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, ConditionKind, Cursor, Edge, FilterSpec, FocusEnd, Key, Mode, Searched, Snapshot,
-    SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    Axis, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Key, Mode, Searched,
+    Snapshot, SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -196,13 +196,30 @@ fn summary(snap: &Snapshot) -> String {
     }
     if let Some(d) = snap.drop_indicator() {
         let keys: Vec<String> = snap.moving_keys().iter().map(|k| k.0.to_string()).collect();
+        let what = match d.target {
+            DropTarget::Move { to, unpin: false } => format!("to {:?} {to}", d.axis),
+            DropTarget::Move { to, unpin: true } => format!("unpinned to {:?} {to}", d.axis),
+            DropTarget::Unpin { at } => format!("unpinned back to {:?} {at}", d.axis),
+            DropTarget::Pin {
+                edge,
+                before,
+                reorder,
+            } => format!(
+                "{} {:?} {edge:?} before {}",
+                if reorder { "reordering pins" } else { "pinned" },
+                d.axis,
+                before.map_or("end".into(), |k| k.0.to_string())
+            ),
+            DropTarget::Stay => unreachable!("no indicator for Stay"),
+        };
+        let _ = write!(out, " | moving {} {what} at {}", keys.join(","), d.offset);
+    }
+    for z in snap.pin_zones() {
+        let hot = if z.hot { " hot" } else { "" };
         let _ = write!(
             out,
-            " | moving {} to {:?} {} at {}",
-            keys.join(","),
-            d.axis,
-            d.to,
-            d.offset
+            " | zone {:?} {:?} {}+{}{hot}",
+            z.axis, z.edge, z.offset, z.size
         );
     }
     if let Some((axis, keys)) = snap.pending_move() {

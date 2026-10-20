@@ -20,23 +20,50 @@ pub(crate) struct Pin {
 }
 
 impl AxisState {
-    /// Pins `key` at the inside end of `edge`'s Strip, at `at` if known,
+    /// Pins `key` to `edge`, drawn just before the pinned `before` (at the
+    /// end of the list for `None`, or if `before` is not pinned there),
     /// moving it there if it was pinned already. Returns whether anything
     /// changed.
-    pub fn pin(&mut self, edge: Edge, key: Key) -> bool {
-        let list = &self.pins[edge.index()];
-        if list.last().is_some_and(|p| p.key == key) {
+    pub fn pin_before(&mut self, edge: Edge, key: Key, before: Option<Key>) -> bool {
+        if before == Some(key) {
             return false;
         }
-        let kept = self.take_pin(key);
-        let pin = kept.unwrap_or(Pin {
+        let was = self.pins.clone();
+        let pin = self.take_pin(key).unwrap_or(Pin {
             key,
             at: self.measure.position_of(key),
             due: 0,
         });
-        self.pins[edge.index()].push(pin);
+        let list = &mut self.pins[edge.index()];
+        let at = (before.and_then(|b| list.iter().position(|p| p.key == b))).unwrap_or(list.len());
+        list.insert(at, pin);
+        if self.pins == was {
+            return false;
+        }
         self.sync_pins();
         true
+    }
+
+    /// Where a header dragged to `v` would be pinned: into the pinned Strip
+    /// of the edge `v` is over, drawn before the pinned item whose first
+    /// half `v` is in (`None` past the last), or into an edge whose Strip is
+    /// empty while `v` is in its pin zone or past it, out of the scrolling
+    /// region. `None` over the scrolling region.
+    pub fn pin_slot(&self, v: f32) -> Option<(Edge, Option<Key>)> {
+        let edge = Edge::ALL.into_iter().find(|&edge| {
+            let empty = self.drawn_pins(edge).next().is_none();
+            let zone = self.pin_zone > 0.0;
+            match (edge, empty) {
+                (Edge::Leading, true) => zone && v < self.header + self.pin_zone,
+                (Edge::Leading, false) => v < self.scroll_start(),
+                (Edge::Trailing, true) => zone && v >= self.extent - self.pin_zone,
+                (Edge::Trailing, false) => v >= self.scroll_end(),
+            }
+        })?;
+        let before = (self.pinned_items(edge))
+            .find(|it| v < it.offset + it.size / 2.0)
+            .and_then(|it| it.key);
+        Some((edge, before))
     }
 
     /// Unpins `key`. Returns whether it was pinned.
@@ -198,19 +225,41 @@ impl AxisState {
 }
 
 impl Grid {
+    /// Pins the items with `keys` on `axis` to `edge`, in that order, drawn
+    /// just before the pinned `before` (after the last for `None`).
+    pub(crate) fn pin_before(&mut self, axis: Axis, edge: Edge, keys: &[Key], before: Option<Key>) {
+        for &key in keys {
+            if self.axis_mut(axis).pin_before(edge, key, before) {
+                if self.axis(axis).measure.position_of(key).is_none() {
+                    self.locate_pin(axis, key);
+                }
+                self.pending_damage.layout = true;
+            }
+        }
+    }
+
     /// Pins the item with `key` on `axis` to `edge`: it is drawn in that
     /// edge's pinned Strip, after the Keys pinned there before, however the
     /// axis is sorted or scrolled. A Key pinned already moves to the end of
     /// `edge`'s list. A Key outside the Window is found with `Locate`, and
     /// drawn once `located` answers.
     pub fn pin(&mut self, axis: Axis, edge: Edge, key: Key) {
-        if !self.axis_mut(axis).pin(edge, key) {
-            return;
+        self.pin_before(axis, edge, &[key], None);
+    }
+
+    /// How far, along `axis`, the zone at each end of its scrolling region
+    /// reaches while headers are dragged: a drop there, or past it over the
+    /// Header Band or beyond the viewport, pins to that edge when its pinned
+    /// Strip is empty; 0 turns that off. Default a quarter of the axis's
+    /// default item size, which leaves the first item's first half room to
+    /// drop before it. Values that are not finite and non-negative are
+    /// ignored.
+    pub fn set_pin_zone(&mut self, axis: Axis, size: f32) {
+        let zone = &mut self.axis_mut(axis).pin_zone;
+        if size.is_finite() && size >= 0.0 && *zone != size {
+            *zone = size;
+            self.pending_damage.selection = true;
         }
-        if self.axis(axis).measure.position_of(key).is_none() {
-            self.locate_pin(axis, key);
-        }
-        self.pending_damage.layout = true;
     }
 
     /// Unpins the item with `key` on `axis`: it goes back to its Position in

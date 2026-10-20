@@ -75,6 +75,21 @@ extern "C" {
 /* The edge of a Header Band is being dragged; the band's axis snapshot shows
  * its thickness as it follows the pointer. */
 #define BINNACLE_MODE_RESIZING_BAND 3
+/* Headers are being dragged: see has_drop and pin_zones for where a release
+ * would drop them. With no drop, the release does nothing (unpinned items
+ * over the body of an axis that can't move). */
+#define BINNACLE_MODE_MOVING_HEADERS 4
+
+/* BinnacleSnapshot.drop_target: what releasing the dragged headers would do.
+ * MOVE: request a move to before drop_position (the count for the end),
+ * unpinning the dragged item first if drop_unpin. UNPIN: unpin the dragged
+ * item, which returns to its own Position, drop_position (the axis can't
+ * move). PIN: pin the dragged items to drop_edge, drawn before the pinned
+ * drop_before if has_drop_before, else after the last pin there; drop_reorder
+ * when they are pinned there already. */
+#define BINNACLE_DROP_MOVE 0
+#define BINNACLE_DROP_UNPIN 1
+#define BINNACLE_DROP_PIN 2
 
 /* BinnacleEffect.kind. Effects the Grid gained after this header arrive as
  * BINNACLE_EFFECT_OTHER: skip them. */
@@ -431,6 +446,17 @@ typedef struct {
  * What to draw this frame. Its arrays stay valid until the next
  * binnacle_grid_snapshot or binnacle_grid_free on the same Grid.
  */
+/* A pin zone lit while headers are dragged on axis: the edge (BINNACLE_EDGE_*)
+ * whose pinned Strip is empty, size long from offset; hot while a drop would
+ * pin there. */
+typedef struct {
+  uint32_t axis;
+  uint32_t edge;
+  float offset;
+  float size;
+  uint32_t hot;
+} BinnacleZone;
+
 typedef struct {
   uint64_t generation;
   /* BINNACLE_DAMAGE_* bits: what changed since the previous Snapshot. */
@@ -483,6 +509,22 @@ typedef struct {
   uint32_t has_move_refusal;
   uint32_t move_refusal_axis;
   BinnacleText move_refusal;
+  /* While headers are dragged and a release would do something: a line
+   * across the viewport at drop_offset along drop_axis, and what the drop
+   * does (BINNACLE_DROP_*, with the fields it names). */
+  uint32_t has_drop;
+  uint32_t drop_axis;
+  uint32_t drop_target;
+  float drop_offset;
+  uint64_t drop_position;
+  uint32_t drop_unpin;
+  uint32_t drop_edge;
+  uint32_t has_drop_before;
+  uint64_t drop_before;
+  uint32_t drop_reorder;
+  /* The lit pin zones while headers are dragged: the first pin_zones_len. */
+  BinnacleZone pin_zones[2];
+  size_t pin_zones_len;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -675,6 +717,13 @@ int binnacle_grid_set_header(BinnacleGrid *grid, uint32_t axis, float thickness)
  * scrolling Strip, where the pinned edge is drawn; the Gap is used where it is
  * larger. Values that are not finite and non-negative are ignored. */
 int binnacle_grid_set_edge_gap(BinnacleGrid *grid, uint32_t axis, float gap);
+
+/* How far the pin zone at each end of axis reaches while headers are
+ * dragged: a drop there, or past it over the Header Band or beyond the
+ * viewport, pins to that edge while its pinned Strip is empty. Default a
+ * quarter of the axis's default size. Values that are not finite and
+ * non-negative are ignored. */
+int binnacle_grid_set_pin_zone(BinnacleGrid *grid, uint32_t axis, float size);
 
 /* Pins the item with key on axis to edge (BINNACLE_EDGE_*), after the keys
  * pinned there before: it is drawn in that edge's pinned Strip whatever the

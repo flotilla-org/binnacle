@@ -427,6 +427,25 @@ int main(void) {
   CHECK(c->header == 0 && c->strip[0].offset == 0);
   CHECK(snap.damage & BINNACLE_DAMAGE_LAYOUT);
 
+  /* Dragging column 1's header into the empty leading pin zone pins it. */
+  CHECK(binnacle_grid_set_pin_zone(grid, BINNACLE_COLS, 3));
+  CHECK(!binnacle_grid_set_pin_zone(grid, 2, 3));
+  frame(grid, &snap);
+  uint64_t dragged = c->strip[1].key;
+  float grab = c->strip[1].offset + 2;
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_DOWN, grab, 0.5f, 0)));
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 1, 0.5f, 0)));
+  frame(grid, &snap);
+  CHECK(snap.mode == BINNACLE_MODE_MOVING_HEADERS && snap.has_drop);
+  CHECK(snap.drop_axis == BINNACLE_COLS && snap.drop_target == BINNACLE_DROP_PIN);
+  CHECK(snap.drop_edge == BINNACLE_EDGE_LEADING && !snap.has_drop_before && !snap.drop_reorder);
+  CHECK(snap.pin_zones_len == 2 && snap.pin_zones[0].hot && !snap.pin_zones[1].hot);
+  CHECK(snap.pin_zones[0].edge == BINNACLE_EDGE_LEADING && snap.pin_zones[0].size == 3);
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_UP, 1, 0.5f, 0)));
+  frame(grid, &snap);
+  CHECK(!snap.has_drop && snap.pin_zones_len == 0);
+  CHECK(c->pinned_len == 1 && c->strip[0].key == dragged);
+
   binnacle_grid_free(grid);
   binnacle_grid_free(NULL);
   printf("ok\n");

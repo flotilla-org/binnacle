@@ -326,11 +326,13 @@ fn moves_are_requested_one_at_a_time_and_only_on_a_movable_axis(tc: TestCase) {
                     matches!(snap.mode(), Mode::MovingHeaders { axis: a, .. } if a == axis);
                 // A drag onto the item pressed never passes the threshold.
                 let dragged = from != to;
+                // A header drag starts on any axis, since it may pin; over
+                // an item's middle it moves only on a movable axis.
+                assert_eq!(moving, dragged && pending.is_none());
                 assert_eq!(
-                    moving,
-                    dragged && movable[axis.index()] && pending.is_none()
+                    snap.drop_indicator().is_some(),
+                    moving && movable[axis.index()]
                 );
-                assert_eq!(snap.drop_indicator().is_some(), moving);
                 if release {
                     grid.pointer(PointerEvent::up(tx, ty));
                 }

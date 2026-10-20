@@ -33,6 +33,11 @@ pub struct Theme {
     /// The line a resize in progress draws across the area.
     pub guide: Style,
     pub drop_indicator: Style,
+    /// Patched over an empty pinned Strip's pin zone while headers are
+    /// dragged, where a drop pins to that edge.
+    pub pin_zone: Style,
+    /// Patched over the pin zone a drop would pin to.
+    pub pin_zone_hot: Style,
     pub border: Style,
     /// The line in the Gap after a pinned Strip, where pinned items end and
     /// the scrolling ones begin.
@@ -88,6 +93,8 @@ impl Theme {
             handle: none.fg(Color::DarkGray),
             guide: none.fg(Color::Yellow),
             drop_indicator: none.fg(Color::Cyan),
+            pin_zone: none.bg(Color::Rgb(0, 50, 60)),
+            pin_zone_hot: none.fg(Color::Black).bg(Color::Cyan),
             border: none.fg(Color::DarkGray),
             pinned_edge: none.fg(Color::DarkGray),
             scrollbar_track: none.fg(Color::DarkGray),
@@ -125,6 +132,8 @@ impl Theme {
             handle: none.fg(mocha::SURFACE2),
             guide: none.fg(mocha::YELLOW),
             drop_indicator: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::BOLD),
+            pin_zone: none.bg(mocha::SAPPHIRE_WASH),
+            pin_zone_hot: none.fg(mocha::CRUST).bg(mocha::SAPPHIRE),
             border: none.fg(mocha::SURFACE1),
             pinned_edge: none.fg(mocha::SURFACE1),
             scrollbar_track: none.fg(mocha::SURFACE1),
@@ -162,6 +171,8 @@ impl Theme {
             handle: none.add_modifier(Modifier::DIM),
             guide: none.add_modifier(Modifier::BOLD),
             drop_indicator: none.add_modifier(Modifier::BOLD),
+            pin_zone: none.add_modifier(Modifier::DIM),
+            pin_zone_hot: none.add_modifier(Modifier::REVERSED),
             border: none.add_modifier(Modifier::DIM),
             pinned_edge: none.add_modifier(Modifier::DIM),
             scrollbar_track: none.add_modifier(Modifier::DIM),
@@ -208,6 +219,8 @@ impl Theme {
             handle: s(self.handle),
             guide: s(self.guide),
             drop_indicator: s(self.drop_indicator),
+            pin_zone: s(self.pin_zone),
+            pin_zone_hot: s(self.pin_zone_hot),
             border: s(self.border),
             pinned_edge: s(self.pinned_edge),
             scrollbar_track: s(self.scrollbar_track),
@@ -297,4 +310,6 @@ mod mocha {
     pub const YELLOW: Color = Color::Rgb(249, 226, 175);
     pub const SAPPHIRE: Color = Color::Rgb(116, 199, 236);
     pub const BLUE: Color = Color::Rgb(137, 180, 250);
+    /// Not Catppuccin's: Sapphire mixed into the base, for lit pin zones.
+    pub const SAPPHIRE_WASH: Color = Color::Rgb(34, 58, 74);
 }

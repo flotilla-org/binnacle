@@ -6,11 +6,11 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState, Edge,
-    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
-    Located, Mode, Modifiers, PointerEvent, PointerKind, Searched, SelectionUnit, Snapshot,
-    SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
+    DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid,
+    HeaderClick, Key, Located, Mode, Modifiers, PinZone, PointerEvent, PointerKind, Searched,
+    SelectionUnit, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport,
+    Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -37,6 +37,7 @@ enum Op {
     SetSize(Axis, u64, f32),
     SetHeader(Axis, f32),
     SetEdgeGap(Axis, f32),
+    SetPinZone(Axis, f32),
     Pin(Axis, Edge, u64),
     Unpin(Axis, u64),
     Freeze(Axis, u64),
@@ -423,7 +424,14 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(24)) {
+    match tc.draw(gs::integers::<u8>().max_value(25)) {
+        25 => Op::SetPinZone(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
+                gs::floats::<f32>().min_value(0.0).max_value(8.0),
+            )),
+        ),
         24 => Op::SetEdgeGap(
             tc.draw(axes()),
             tc.draw(hegel::one_of!(
@@ -513,7 +521,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(47))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(48))),
     }
 }
 
@@ -751,6 +759,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             45 => binnacle_grid_freeze(h, 2, 0),
             46 => binnacle_grid_set_edge_gap(h, 2, 1.0),
             47 => binnacle_grid_set_hide_cap(h, 2, 1),
+            48 => binnacle_grid_set_pin_zone(h, 2, 1.0),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -916,6 +925,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         Mode::Idle => 1,
         Mode::DraggingSelection => 2,
         Mode::ResizingBand { .. } => 3,
+        Mode::MovingHeaders { .. } => 4,
         _ => 0,
     };
     assert_eq!(c.mode, mode);
@@ -948,6 +958,46 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     });
     let want = rust.move_refusal().map(|(a, r)| (tag(a), r.to_owned()));
     assert_eq!(refusal, want, "move refusal");
+    let edge_of = |t: u32| match t {
+        BINNACLE_EDGE_LEADING => Edge::Leading,
+        BINNACLE_EDGE_TRAILING => Edge::Trailing,
+        _ => panic!("edge tag {t}"),
+    };
+    let drop = (c.has_drop != 0).then(|| {
+        let target = match c.drop_target {
+            BINNACLE_DROP_MOVE => DropTarget::Move {
+                to: c.drop_position,
+                unpin: c.drop_unpin != 0,
+            },
+            BINNACLE_DROP_UNPIN => DropTarget::Unpin {
+                at: c.drop_position,
+            },
+            BINNACLE_DROP_PIN => DropTarget::Pin {
+                edge: edge_of(c.drop_edge),
+                before: (c.has_drop_before != 0).then_some(Key(c.drop_before)),
+                reorder: c.drop_reorder != 0,
+            },
+            t => panic!("drop target tag {t}"),
+        };
+        (c.drop_axis, target, c.drop_offset.to_bits())
+    });
+    let want = (rust.drop_indicator()).map(|d| (tag(d.axis), d.target, d.offset.to_bits()));
+    assert_eq!(drop, want, "drop indicator");
+    let zones: Vec<PinZone> = c.pin_zones[..c.pin_zones_len]
+        .iter()
+        .map(|z| PinZone {
+            axis: if z.axis == ROWS {
+                Axis::Rows
+            } else {
+                Axis::Cols
+            },
+            edge: edge_of(z.edge),
+            offset: z.offset,
+            size: z.size,
+            hot: z.hot != 0,
+        })
+        .collect();
+    assert_eq!(zones, rust.pin_zones(), "pin zones");
     match rust.hovered_header() {
         None => assert_eq!(c.has_hovered_header, 0),
         Some((axis, item)) => {
@@ -1457,6 +1507,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 Op::SetHeader(axis, thickness) => {
                     grid.set_header(axis, thickness);
                     binnacle_grid_set_header(h, tag(axis), thickness)
+                }
+                Op::SetPinZone(axis, size) => {
+                    grid.set_pin_zone(axis, size);
+                    binnacle_grid_set_pin_zone(h, tag(axis), size)
                 }
                 Op::SetEdgeGap(axis, gap) => {
                     grid.set_edge_gap(axis, gap);

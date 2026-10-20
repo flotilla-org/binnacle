@@ -138,7 +138,8 @@ impl Host {
 
     /// Drags column `from`'s header onto column `to`'s.
     fn drag_column_header(&mut self, from: u16, to: u16) {
-        let (from, to) = (f32::from(3 + 7 * from + 1), f32::from(3 + 7 * to + 1));
+        // Two cells into each header, past the pin zone at the first one.
+        let (from, to) = (f32::from(3 + 7 * from + 2), f32::from(3 + 7 * to + 2));
         self.grid.pointer(PointerEvent::down(from, 0.0));
         self.grid.pointer(PointerEvent::moved(to, 0.0));
         self.grid.pointer(PointerEvent::up(to, 0.0));

@@ -7,8 +7,9 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, Edge, HeaderPlacement, Key,
-    Mode, Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
+    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, DropTarget, Edge,
+    HeaderPlacement, Key, Mode, Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery,
+    Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -47,6 +48,14 @@ pub fn axis_code(axis: Axis) -> f64 {
     match axis {
         Axis::Rows => 0.0,
         Axis::Cols => 1.0,
+    }
+}
+
+/// The pinned edge codes `codes::edge` reads: 0 leading, 1 trailing.
+fn edge_code(edge: Edge) -> f64 {
+    match edge {
+        Edge::Leading => 0.0,
+        Edge::Trailing => 1.0,
     }
 }
 
@@ -89,6 +98,33 @@ impl Writer<'_> {
 
     fn key(&mut self, key: Key) {
         self.out.keys.push(key.0);
+    }
+
+    /// A drop target: a code (0 move, 1 unpin, 2 pin, 3 stay) and its
+    /// fields.
+    fn target(&mut self, target: DropTarget) {
+        match target {
+            DropTarget::Move { to, unpin } => {
+                self.num(0);
+                self.position(to);
+                self.flag(unpin);
+            }
+            DropTarget::Unpin { at } => {
+                self.num(1);
+                self.position(at);
+            }
+            DropTarget::Pin {
+                edge,
+                before,
+                reorder,
+            } => {
+                self.num(2);
+                self.num(edge_code(edge));
+                self.opt_key(before);
+                self.flag(reorder);
+            }
+            DropTarget::Stay => self.num(3),
+        }
     }
 
     fn opt_key(&mut self, key: Option<Key>) {
@@ -235,11 +271,11 @@ impl Writer<'_> {
                 self.num(axis_code(axis));
                 self.num(start_thickness);
             }
-            Mode::MovingHeaders { axis, key, to } => {
+            Mode::MovingHeaders { axis, key, target } => {
                 self.num(4);
                 self.num(axis_code(axis));
                 self.key(key);
-                self.position(to);
+                self.target(target);
             }
             Mode::Editing { row, col } => {
                 self.num(5);
@@ -341,8 +377,17 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
     w.flag(drop.is_some());
     if let Some(d) = drop {
         w.num(axis_code(d.axis));
-        w.position(d.to);
+        w.target(d.target);
         w.num(d.offset);
+    }
+    let zones = s.pin_zones();
+    w.len(zones.len());
+    for z in zones {
+        w.num(axis_code(z.axis));
+        w.num(edge_code(z.edge));
+        w.num(z.offset);
+        w.num(z.size);
+        w.flag(z.hot);
     }
     let hovered = s.hovered_header();
     w.flag(hovered.is_some());

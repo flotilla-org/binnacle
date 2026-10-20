@@ -121,6 +121,12 @@ impl WebGrid {
         self.grid.set_edge_gap(axis(a), gap);
     }
 
+    /// How far each end's pin zone on axis `a` reaches while headers are
+    /// dragged.
+    pub fn set_pin_zone(&mut self, a: u8, size: f32) {
+        self.grid.set_pin_zone(axis(a), size);
+    }
+
     pub fn set_size(&mut self, a: u8, key: u64, size: f32) {
         self.grid.set_size(axis(a), Key(key), size);
     }

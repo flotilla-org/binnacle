@@ -41,8 +41,8 @@ pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
-    Action, Axis, Cursor, Edge, HeaderPlacement, HeaderSort, Key, Mode, Snapshot, SortDirection,
-    StripItem,
+    Action, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, Key, Mode, Snapshot,
+    SortDirection, StripItem,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -422,14 +422,32 @@ pub fn render_with(
             }
         }
     };
+    for zone in snapshot.pin_zones() {
+        let style = if zone.hot {
+            theme.pin_zone_hot
+        } else {
+            theme.pin_zone
+        };
+        let cells = cell(zone.offset)..cell(zone.offset + zone.size);
+        let (w, h) = (i64::from(area.width), i64::from(area.height));
+        for a in cells {
+            match zone.axis {
+                Axis::Cols => (0..h).for_each(|y| mark(a, y, None, style)),
+                Axis::Rows => (0..w).for_each(|x| mark(x, a, None, style)),
+            }
+        }
+    }
     if let Some(drop) = snapshot.drop_indicator() {
         let style = theme.drop_indicator;
         // The middle of a Gap rounds down onto the Gap's cell.
         let at = drop.offset.floor() as i64;
+        // Dashed where an unpinned item returns to its own place.
+        let returns = matches!(drop.target, DropTarget::Unpin { .. });
         match drop.axis {
             Axis::Cols => {
+                let ch = if returns { '┇' } else { '┃' };
                 for y in 0..i64::from(area.height) {
-                    mark(at, y, Some('┃'), style);
+                    mark(at, y, Some(ch), style);
                 }
             }
             // Rows without a Gap leave no cell between them, so the line
@@ -443,8 +461,9 @@ pub fn render_with(
                 }
             }
             Axis::Rows => {
+                let ch = if returns { '╍' } else { '━' };
                 for x in 0..i64::from(area.width) {
-                    mark(x, at, Some('━'), style);
+                    mark(x, at, Some(ch), style);
                 }
             }
         }
@@ -629,14 +648,30 @@ pub fn status(snapshot: &Snapshot) -> String {
         }
         Mode::DraggingSelection => "selecting".to_string(),
         Mode::Editing { row, col } => format!("editing row {} column {}", row.0, col.0),
-        Mode::MovingHeaders { axis, to, .. } => {
+        Mode::MovingHeaders { axis, target, .. } => {
             let keys: Vec<String> = snapshot
                 .moving_keys()
                 .iter()
                 .map(|k| k.0.to_string())
                 .collect();
             let plural = if keys.len() == 1 { "" } else { "s" };
-            format!("moving {}{plural} {} to {to}", noun(axis), keys.join(","))
+            let what = format!("{}{plural} {}", noun(axis), keys.join(","));
+            match target {
+                DropTarget::Move { to, unpin: false } => format!("moving {what} to {to}"),
+                DropTarget::Move { to, unpin: true } => format!("unpin {what} and move to {to}"),
+                DropTarget::Unpin { .. } => format!("unpin {what}: returns to its place"),
+                DropTarget::Pin { reorder: true, .. } => format!("reorder pinned {what}"),
+                DropTarget::Pin { edge, .. } => {
+                    let side = match (axis, edge) {
+                        (Axis::Cols, Edge::Leading) => "left",
+                        (Axis::Cols, Edge::Trailing) => "right",
+                        (Axis::Rows, Edge::Leading) => "top",
+                        (Axis::Rows, Edge::Trailing) => "bottom",
+                    };
+                    format!("pin {what} {side}")
+                }
+                DropTarget::Stay => format!("{what} can't move: drag to an edge to pin"),
+            }
         }
         Mode::Idle => {
             if let Some((_, reason)) = snapshot.move_refusal() {

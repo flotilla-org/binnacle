@@ -33,10 +33,13 @@ pub(crate) struct AxisState {
     /// The least space between a pinned Strip and the scrolling Strip (see
     /// [`AxisState::edge_gap`]).
     pub edge_gap: f32,
+    /// How far each end's pin zone reaches (see [`crate::Grid::set_pin_zone`]).
+    pub pin_zone: f32,
 }
 
 impl AxisState {
     pub fn new(measure: AxisMeasure, header: f32) -> Self {
+        let measure_default = measure.default_size();
         AxisState {
             measure,
             header,
@@ -48,6 +51,7 @@ impl AxisState {
             pinned: [Vec::new(), Vec::new()],
             freezing: None,
             edge_gap: 0.0,
+            pin_zone: measure_default / 4.0,
         }
     }
 

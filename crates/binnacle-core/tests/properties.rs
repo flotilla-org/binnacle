@@ -8,9 +8,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, Effect, FocusEnd, FocusStep,
-    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, ScrollAnchor,
-    SelectionUnit, Snapshot, Viewport,
+    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, DropTarget, Effect, FocusEnd,
+    FocusStep, Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position,
+    ScrollAnchor, SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
@@ -606,6 +606,11 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         requests: requests.clone(),
     };
     let mut grid = Grid::new(rows, cols);
+    // Moves, but no pins: these properties hold for unpinned axes.
+    grid.set_movable(Axis::Cols, true);
+    for axis in Axis::ALL {
+        grid.set_pin_zone(axis, 0.0);
+    }
     configure(tc, &mut grid);
     let mut s = Scenario::new(grid, source);
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
@@ -2084,23 +2089,36 @@ fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) 
 #[hegel::test(test_cases = 2000)]
 fn a_header_move_in_progress_shows_its_drop(tc: TestCase) {
     frames(&tc, BODIES, |snap, _| {
-        let Mode::MovingHeaders { axis, key, to } = snap.mode() else {
+        let Mode::MovingHeaders { axis, key, target } = snap.mode() else {
             assert!(snap.moving_keys().is_empty());
             assert_eq!(snap.drop_indicator(), None);
+            assert_eq!(snap.pin_zones(), vec![]);
             return;
         };
         tc.event("moving");
-        assert_eq!(axis, Axis::Cols);
         assert!(snap.capturing());
         assert_eq!(snap.cursor(), Cursor::Move);
-        assert!(to <= snap.count(axis));
         let keys = snap.moving_keys();
         check_moved_keys(keys);
         assert!(keys.contains(&key));
+        // Nothing is pinned and the pin zones are off, so nothing pins.
+        assert_eq!(snap.pin_zones(), vec![]);
+        let to = match target {
+            // Only the columns are movable.
+            DropTarget::Stay => {
+                assert_eq!(axis, Axis::Rows);
+                assert_eq!(snap.drop_indicator(), None);
+                return;
+            }
+            DropTarget::Move { to, unpin: false } => to,
+            other => panic!("nothing pins, yet {other:?}"),
+        };
+        assert_eq!(axis, Axis::Cols);
+        assert!(to <= snap.count(axis));
         let drop = snap
             .drop_indicator()
             .expect("no drop indicator while moving");
-        assert_eq!((drop.axis, drop.to), (axis, to));
+        assert_eq!((drop.axis, drop.target), (axis, target));
         let strip = snap.strip(axis);
         let half = snap.gap(axis) / 2.0;
         let at = match strip.iter().find(|i| i.position == to) {
@@ -2149,6 +2167,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
         g.set_header_click(Axis::Cols, click);
         g.set_drag_threshold(threshold);
         g.set_movable(Axis::Cols, true);
+        g.set_pin_zone(Axis::Cols, 0.0);
     });
     s.frame(viewport);
     let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
@@ -2204,7 +2223,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
         Mode::MovingHeaders {
             axis: Axis::Cols,
             key,
-            to
+            target: DropTarget::Move { to, unpin: false }
         },
         "dragged from {from} to {x} over {over:?}"
     );

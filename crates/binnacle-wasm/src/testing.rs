@@ -3,10 +3,10 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Edge, Effect,
-    FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key, Mode,
-    Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support,
-    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, DropTarget, Edge,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key,
+    Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped,
+    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -30,6 +30,7 @@ pub struct Dump {
     cursor: &'static str,
     resize_guide: Option<DumpGuide>,
     drop_indicator: Option<DumpDrop>,
+    pin_zones: Vec<DumpZone>,
     hovered_header: Option<DumpHovered>,
     selection_range: Option<DumpRange>,
     selection_rects: Vec<DumpRect>,
@@ -247,7 +248,7 @@ enum DumpMode {
     MovingHeaders {
         axis: WireAxis,
         key: u64,
-        to: f64,
+        target: DumpTarget,
     },
     Editing {
         row: u64,
@@ -276,10 +277,10 @@ impl From<Mode> for DumpMode {
                 axis: axis.into(),
                 start_thickness,
             },
-            Mode::MovingHeaders { axis, key, to } => DumpMode::MovingHeaders {
+            Mode::MovingHeaders { axis, key, target } => DumpMode::MovingHeaders {
                 axis: axis.into(),
                 key: key.0,
-                to: to as f64,
+                target: target.into(),
             },
             Mode::Editing { row, col } => DumpMode::Editing {
                 row: row.0,
@@ -300,8 +301,64 @@ struct DumpGuide {
 #[derive(Serialize)]
 struct DumpDrop {
     axis: WireAxis,
-    to: f64,
+    target: DumpTarget,
     offset: f32,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum DumpTarget {
+    Move {
+        to: f64,
+        unpin: bool,
+    },
+    Unpin {
+        at: f64,
+    },
+    Pin {
+        edge: &'static str,
+        before: Option<u64>,
+        reorder: bool,
+    },
+    Stay,
+}
+
+fn edge_name(edge: Edge) -> &'static str {
+    match edge {
+        Edge::Leading => "leading",
+        Edge::Trailing => "trailing",
+    }
+}
+
+impl From<DropTarget> for DumpTarget {
+    fn from(target: DropTarget) -> Self {
+        match target {
+            DropTarget::Move { to, unpin } => DumpTarget::Move {
+                to: to as f64,
+                unpin,
+            },
+            DropTarget::Unpin { at } => DumpTarget::Unpin { at: at as f64 },
+            DropTarget::Pin {
+                edge,
+                before,
+                reorder,
+            } => DumpTarget::Pin {
+                edge: edge_name(edge),
+                before: before.map(|k| k.0),
+                reorder,
+            },
+            DropTarget::Stay => DumpTarget::Stay,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DumpZone {
+    axis: WireAxis,
+    edge: &'static str,
+    offset: f32,
+    size: f32,
+    hot: bool,
 }
 
 #[derive(Serialize)]
@@ -425,9 +482,18 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         }),
         drop_indicator: s.drop_indicator().map(|d| DumpDrop {
             axis: d.axis.into(),
-            to: d.to as f64,
+            target: d.target.into(),
             offset: d.offset,
         }),
+        pin_zones: (s.pin_zones().into_iter())
+            .map(|z| DumpZone {
+                axis: z.axis.into(),
+                edge: edge_name(z.edge),
+                offset: z.offset,
+                size: z.size,
+                hot: z.hot,
+            })
+            .collect(),
         hovered_header: s.hovered_header().map(|(axis, item)| DumpHovered {
             axis: axis.into(),
             position: item.position as f64,
@@ -618,7 +684,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 17] = [
+pub const SCENARIOS: [&str; 19] = [
     "plain",
     "busy",
     "resizing",
@@ -636,6 +702,8 @@ pub const SCENARIOS: [&str; 17] = [
     "rejected",
     "pinned",
     "hidden",
+    "pinDrag",
+    "unpinDrag",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -716,9 +784,27 @@ pub fn scenario(name: &str) -> Grid {
             grid.pointer(PointerEvent::moved(60.0, 10.0));
         }
         "moving" => {
+            // Column 2 over column 1's first half, clear of the pin zones.
             grid.set_movable(Axis::Cols, true);
             grid.pointer(PointerEvent::down(220.0, 10.0));
-            grid.pointer(PointerEvent::moved(60.0, 10.0));
+            grid.pointer(PointerEvent::moved(140.0, 10.0));
+        }
+        "pinDrag" => {
+            // Columns 4 and 5 pinned leading; 5 dragged before 4, reordering
+            // the pins, the empty trailing zone lit.
+            grid.pin(Axis::Cols, Edge::Leading, key(4));
+            grid.pin(Axis::Cols, Edge::Leading, key(5));
+            frame(&mut grid);
+            grid.pointer(PointerEvent::down(160.0, 10.0));
+            grid.pointer(PointerEvent::moved(50.0, 10.0));
+        }
+        "unpinDrag" => {
+            // Row 6 pinned to the bottom, dragged up into the body of rows
+            // that can't move: it returns to its own Position.
+            grid.pin(Axis::Rows, Edge::Trailing, key(6));
+            frame(&mut grid);
+            grid.pointer(PointerEvent::down(20.0, 190.0));
+            grid.pointer(PointerEvent::moved(20.0, 80.0));
         }
         "movePending" | "moveRefused" => {
             // Row 1's header dropped below row 3, the source yet to answer.
@@ -916,7 +1002,30 @@ mod tests {
                     assert!(s.hovered_header().is_some());
                 }
                 "resizing" => assert!(s.resize_guide().is_some() && s.capturing()),
-                "moving" => assert!(s.drop_indicator().is_some()),
+                "moving" => assert!(s.drop_indicator().is_some_and(|d| matches!(
+                    d.target,
+                    DropTarget::Move {
+                        to: 1,
+                        unpin: false
+                    }
+                ))),
+                "pinDrag" => {
+                    let target = s.drop_indicator().map(|d| d.target);
+                    let before = Some(Key(KEY_BASE + 4));
+                    assert_eq!(
+                        target,
+                        Some(DropTarget::Pin {
+                            edge: Edge::Leading,
+                            before,
+                            reorder: true
+                        })
+                    );
+                    assert_eq!(s.pin_zones().len(), 1);
+                }
+                "unpinDrag" => {
+                    let target = s.drop_indicator().map(|d| d.target);
+                    assert_eq!(target, Some(DropTarget::Unpin { at: 6 }));
+                }
                 "movePending" => assert!(s.headers(Axis::Rows).any(|h| h.move_pending)),
                 "moveRefused" => assert!(s.move_refusal().is_some() && s.pending_move().is_none()),
                 "editing" => assert!(s.editor_rect().is_some()),
@@ -1028,7 +1137,9 @@ mod tests {
                 "Idle",
                 "Idle",
                 "Idle",
-                "Idle"
+                "Idle",
+                "MovingHeaders",
+                "MovingHeaders"
             ]
         );
     }

@@ -9,11 +9,11 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState, Edge,
-    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Grid,
-    HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind, Rect,
-    Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
-    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
+    DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
+    Grid, HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind,
+    Rect, Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support,
+    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
@@ -46,6 +46,11 @@ pub const BINNACLE_MODE_OTHER: u32 = 0;
 pub const BINNACLE_MODE_IDLE: u32 = 1;
 pub const BINNACLE_MODE_DRAGGING_SELECTION: u32 = 2;
 pub const BINNACLE_MODE_RESIZING_BAND: u32 = 3;
+pub const BINNACLE_MODE_MOVING_HEADERS: u32 = 4;
+
+pub const BINNACLE_DROP_MOVE: u32 = 0;
+pub const BINNACLE_DROP_UNPIN: u32 = 1;
+pub const BINNACLE_DROP_PIN: u32 = 2;
 
 pub const BINNACLE_EFFECT_OTHER: u32 = 0;
 pub const BINNACLE_EFFECT_TEXT_TYPED: u32 = 1;
@@ -295,6 +300,17 @@ pub struct BinnacleRange {
     pub end: u64,
 }
 
+/// A lit pin zone while headers are dragged.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleZone {
+    pub axis: u32,
+    pub edge: u32,
+    pub offset: f32,
+    pub size: f32,
+    pub hot: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BinnacleRect {
@@ -414,6 +430,18 @@ pub struct BinnacleSnapshot {
     pub has_move_refusal: u32,
     pub move_refusal_axis: u32,
     pub move_refusal: BinnacleText,
+    pub has_drop: u32,
+    pub drop_axis: u32,
+    pub drop_target: u32,
+    pub drop_offset: f32,
+    pub drop_position: u64,
+    pub drop_unpin: u32,
+    pub drop_edge: u32,
+    pub has_drop_before: u32,
+    pub drop_before: u64,
+    pub drop_reorder: u32,
+    pub pin_zones: [BinnacleZone; 2],
+    pub pin_zones_len: usize,
 }
 
 #[repr(C)]
@@ -1326,6 +1354,30 @@ pub unsafe extern "C" fn binnacle_grid_set_header(
     }
 }
 
+/// An edge's C tag.
+fn edge_tag(edge: Edge) -> u32 {
+    match edge {
+        Edge::Leading => BINNACLE_EDGE_LEADING,
+        Edge::Trailing => BINNACLE_EDGE_TRAILING,
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_pin_zone(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    size: f32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.set_pin_zone(axis, size))
+        })
+    }
+}
+
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
@@ -1501,8 +1553,33 @@ impl BinnacleGrid {
             Mode::Idle => BINNACLE_MODE_IDLE,
             Mode::DraggingSelection => BINNACLE_MODE_DRAGGING_SELECTION,
             Mode::ResizingBand { .. } => BINNACLE_MODE_RESIZING_BAND,
+            Mode::MovingHeaders { .. } => BINNACLE_MODE_MOVING_HEADERS,
             _ => BINNACLE_MODE_OTHER,
         };
+        let drop = snap.drop_indicator();
+        let (target, position, unpin, edge, before, reorder) = match drop.map(|d| d.target) {
+            Some(DropTarget::Move { to, unpin }) => {
+                (BINNACLE_DROP_MOVE, to, unpin, None, None, false)
+            }
+            Some(DropTarget::Unpin { at }) => (BINNACLE_DROP_UNPIN, at, false, None, None, false),
+            Some(DropTarget::Pin {
+                edge,
+                before,
+                reorder,
+            }) => (BINNACLE_DROP_PIN, 0, false, Some(edge), before, reorder),
+            Some(DropTarget::Stay) | None => (0, 0, false, None, None, false),
+        };
+        let mut pin_zones = [BinnacleZone::default(); 2];
+        let zones = snap.pin_zones();
+        for (out, z) in pin_zones.iter_mut().zip(&zones) {
+            *out = BinnacleZone {
+                axis: axis_tag(z.axis),
+                edge: edge_tag(z.edge),
+                offset: z.offset,
+                size: z.size,
+                hot: flag(z.hot),
+            };
+        }
         BinnacleSnapshot {
             generation: snap.generation(),
             damage: bit(damage.layout, BINNACLE_DAMAGE_LAYOUT)
@@ -1538,6 +1615,18 @@ impl BinnacleGrid {
                 data: self.refusal.as_ptr(),
                 len: self.refusal.len(),
             },
+            has_drop: flag(drop.is_some()),
+            drop_axis: drop.map_or(0, |d| axis_tag(d.axis)),
+            drop_target: target,
+            drop_offset: drop.map_or(0.0, |d| d.offset),
+            drop_position: position,
+            drop_unpin: flag(unpin),
+            drop_edge: edge.map_or(0, edge_tag),
+            has_drop_before: flag(before.is_some()),
+            drop_before: before.map_or(0, |k| k.0),
+            drop_reorder: flag(reorder),
+            pin_zones,
+            pin_zones_len: zones.len().min(2),
         }
     }
 

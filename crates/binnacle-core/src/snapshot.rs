@@ -118,15 +118,55 @@ pub struct ResizeGuide {
     pub size: f32,
 }
 
-/// Where headers being moved would drop: before the item at Position `to` on
-/// `axis` (the count for the end), drawn as a line across the viewport at
-/// `offset` along `axis` (viewport-relative, like Strip offsets), the middle
-/// of the Gap before that item, as if a Gap also led the first.
+/// What releasing headers being dragged would do. Pinning, unpinning and
+/// reordering pins are the Grid's own, so they are offered on any axis;
+/// moving is asked of the Table Source, and only on a movable axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropTarget {
+    /// Request a move of the dragged items to before Position `to` (the
+    /// count for the end). `unpin` when the dragged item is pinned: it is
+    /// unpinned at once, and stays unpinned in its own place if the move is
+    /// refused.
+    Move { to: Position, unpin: bool },
+    /// Unpin the dragged item, which returns to its own Position `at`: the
+    /// axis can't move.
+    Unpin { at: Position },
+    /// Pin the dragged items to `edge`, drawn just before the pinned item
+    /// with Key `before` (after the last for `None`). `reorder` when the
+    /// dragged item is pinned there already, so the drop only reorders the
+    /// pins.
+    Pin {
+        edge: Edge,
+        before: Option<Key>,
+        reorder: bool,
+    },
+    /// Nothing: unpinned items over the body of an axis that can't move.
+    Stay,
+}
+
+/// Where headers being dragged would drop, and what that would do, drawn as
+/// a line across the viewport at `offset` along `axis` (viewport-relative,
+/// like Strip offsets): the middle of the Gap before the item they drop
+/// before, as if a Gap also led the first; into a pinned Strip, kept inside
+/// the viewport. For [`DropTarget::Unpin`] it marks the item's own Position,
+/// kept inside the scrolling region when that is out of view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DropIndicator {
     pub axis: Axis,
-    pub to: Position,
+    pub target: DropTarget,
     pub offset: f32,
+}
+
+/// The pin zone at `edge` of `axis` while headers are dragged on it and that
+/// edge's pinned Strip is empty: `size` long from `offset` (viewport
+/// relative), lit for the host to draw; `hot` while a drop would pin there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PinZone {
+    pub axis: Axis,
+    pub edge: Edge,
+    pub offset: f32,
+    pub size: f32,
+    pub hot: bool,
 }
 
 /// What changed since the previous Snapshot, so a host can skip work.
@@ -583,19 +623,72 @@ impl<'a> Snapshot<'a> {
         Some((*axis, reason))
     }
 
-    /// Where the headers being moved would drop, while moving headers.
+    /// Where the headers being dragged would drop and what that would do,
+    /// while dragging headers; `None` while the drop would do nothing.
     pub fn drop_indicator(&self) -> Option<DropIndicator> {
-        let Mode::MovingHeaders { axis, to, .. } = self.mode() else {
+        let Mode::MovingHeaders { axis, target, .. } = self.mode() else {
             return None;
         };
         let st = self.grid.axis(axis);
-        let start = f64::from(st.scroll_start()) - f64::from(st.anchor.offset)
-            + st.measure.distance(st.anchor.position, to);
+        let gap = f64::from(st.measure.gap());
+        let in_body = |p: Position| {
+            f64::from(st.scroll_start()) - f64::from(st.anchor.offset)
+                + st.measure.distance(st.anchor.position, p)
+                - gap / 2.0
+        };
+        let last = f64::from(f32::from_bits(st.extent.to_bits().saturating_sub(1)).max(0.0));
+        let offset = match target {
+            DropTarget::Stay => return None,
+            DropTarget::Move { to, .. } => in_body(to),
+            DropTarget::Unpin { at } => in_body(at).clamp(
+                f64::from(st.scroll_start()) - gap / 2.0,
+                f64::from(st.scroll_end()) - gap / 2.0,
+            ),
+            DropTarget::Pin { edge, before, .. } => {
+                let items: Vec<StripItem> = st.pinned_items(edge).collect();
+                let at = before.and_then(|b| items.iter().find(|it| it.key == Some(b)));
+                let offset = match (at, items.last(), edge) {
+                    (Some(it), _, _) => f64::from(it.offset) - gap / 2.0,
+                    (None, Some(end), _) => f64::from(end.end()) + gap / 2.0,
+                    (None, None, Edge::Leading) => f64::from(st.header) - gap / 2.0,
+                    (None, None, Edge::Trailing) => f64::from(st.extent) - gap / 2.0,
+                };
+                offset.clamp(0.0, last)
+            }
+        };
         Some(DropIndicator {
             axis,
-            to,
-            offset: (start - f64::from(st.measure.gap()) / 2.0) as f32,
+            target,
+            offset: offset as f32,
         })
+    }
+
+    /// The lit pin zones while headers are dragged: one at each edge of the
+    /// dragged axis whose pinned Strip is empty, unless the zones there have
+    /// no size (see [`crate::Grid::set_pin_zone`]).
+    pub fn pin_zones(&self) -> Vec<PinZone> {
+        let Mode::MovingHeaders { axis, target, .. } = self.mode() else {
+            return Vec::new();
+        };
+        let st = self.grid.axis(axis);
+        let hot = |edge| matches!(target, DropTarget::Pin { edge: e, .. } if e == edge);
+        (Edge::ALL.into_iter())
+            .filter(|&edge| st.drawn_pins(edge).next().is_none() && st.pin_zone > 0.0)
+            .map(|edge| {
+                let size = st.pin_zone.min((st.extent - st.header).max(0.0));
+                let offset = match edge {
+                    Edge::Leading => st.header,
+                    Edge::Trailing => st.extent - size,
+                };
+                PinZone {
+                    axis,
+                    edge,
+                    offset,
+                    size,
+                    hot: hot(edge),
+                }
+            })
+            .collect()
     }
 
     /// The header under the pointer: the axis whose item it heads (a row

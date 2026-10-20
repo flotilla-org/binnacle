@@ -15,10 +15,10 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, Edge, EditEnd,
-    Effect, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers,
-    PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, Value,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, DropTarget, Edge,
+    EditEnd, Effect, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode,
+    Modifiers, PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals,
+    Value, ViewSpec, Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -97,7 +97,40 @@ impl Host {
         }
     }
 
+    /// Before a release: a header drag in progress pins, unpins or moves
+    /// as its drop target says, so the model follows that.
+    fn expect_drop(&mut self) {
+        let snap = self.grid.snapshot();
+        let Mode::MovingHeaders { axis, key, target } = snap.mode() else {
+            return;
+        };
+        let keys: Vec<u64> = snap.moving_keys().iter().map(|k| k.0).collect();
+        let pins = &mut self.pins[axis.index()];
+        match target {
+            DropTarget::Pin { edge, before, .. } => {
+                for k in keys {
+                    if before == Some(Key(k)) {
+                        continue;
+                    }
+                    pins.iter_mut().for_each(|p| p.retain(|&p| p != k));
+                    let list = &mut pins[edge.index()];
+                    let at = before
+                        .and_then(|b| list.iter().position(|&p| p == b.0))
+                        .unwrap_or(list.len());
+                    list.insert(at, k);
+                }
+            }
+            DropTarget::Unpin { .. } | DropTarget::Move { unpin: true, .. } => {
+                pins.iter_mut().for_each(|p| p.retain(|&p| p != key.0));
+            }
+            DropTarget::Move { unpin: false, .. } | DropTarget::Stay => {}
+        }
+    }
+
     fn pointer_event(&mut self, tc: &TestCase, kind: PointerKind) {
+        if kind == PointerKind::Up {
+            self.expect_drop();
+        }
         let x = self.coord(tc, self.viewport.width);
         let y = self.coord(tc, self.viewport.height);
         let modifiers = Modifiers {
@@ -812,7 +845,8 @@ impl Host {
     }
 
     /// A press on a header of either axis, dragged along it and often
-    /// released: a header move, where the axis is movable.
+    /// released: a header move where the axis is movable, and a pin, unpin
+    /// or reorder of the pins across the pinned edge on any axis.
     #[rule(weight = 0.3)]
     fn header_drag(&mut self, tc: TestCase) {
         let axis = tc.draw(axis());
@@ -843,7 +877,15 @@ impl Host {
         event(PointerKind::Down, point(from));
         event(PointerKind::Move, point(to));
         if tc.draw(gs::weighted_booleans(0.7)) {
-            event(PointerKind::Up, point(to));
+            self.expect_drop();
+            self.grid.pointer(PointerEvent {
+                kind: PointerKind::Up,
+                x: point(to).0,
+                y: point(to).1,
+                button: Button::Primary,
+                modifiers: Modifiers::default(),
+                clicks: 1,
+            });
         }
     }
 

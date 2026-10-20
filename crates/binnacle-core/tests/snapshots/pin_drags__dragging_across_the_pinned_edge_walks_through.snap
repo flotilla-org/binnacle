@@ -1,0 +1,63 @@
+---
+source: crates/binnacle-core/tests/pin_drags.rs
+expression: out
+---
+--- 1. start: nothing pinned, columns movable
+window Rows 0..4
+window Cols 0..7
+gen 1 | damage layout selection positions
+Rows: count 4, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 10, extent 39, header 4, anchor 0+0, thumb 0.0000/0.5072 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6 4#4@32+6
+    0      1      2      3      4
+0   0.0    0.1    0.2    0.3    0.4
+1   1.0    1.1    1.2    1.3    1.4
+2   2.0    2.1    2.2    2.3    2.4
+3   3.0    3.1    3.2    3.3    3.4
+--- 2. drag column 2 over the body: both zones lit, a move
+gen 2 | damage selection | mode MovingHeaders { axis: Cols, key: Key(2), target: Move { to: 4, unpin: false } } | capturing | hover Cols 3 | cursor Move | moving 2 to Cols 4 at 31.5 | zone Cols Leading 4+3 | zone Cols Trailing 36+3
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3     |4
+0   0.0    0.1    0.2    0.3    0.4
+1   1.0    1.1    1.2    1.3    1.4
+2   2.0    2.1    2.2    2.3    2.4
+3   3.0    3.1    3.2    3.3    3.4
+--- 3. into the leading zone: it is hot, pin left
+gen 3 | damage selection | mode MovingHeaders { axis: Cols, key: Key(2), target: Pin { edge: Leading, before: None, reorder: false } } | capturing | hover Cols 0 | cursor Move | moving 2 pinned Cols Leading before end at 3.5 | zone Cols Leading 4+3 hot | zone Cols Trailing 36+3
+Rows: (unchanged)
+Cols: (unchanged)
+   |0      1      2      3      4
+0   0.0    0.1    0.2    0.3    0.4
+1   1.0    1.1    1.2    1.3    1.4
+2   2.0    2.1    2.2    2.3    2.4
+3   3.0    3.1    3.2    3.3    3.4
+--- 4. release: column 2 pinned left
+window Cols 0..8
+gen 4 | damage layout selection positions | hover Cols 2
+Rows: (unchanged)
+Cols: count 10, extent 39, header 4, anchor 0+0, thumb 0.0000/0.4516 | pinned 2#2@4+6 | scrolling from 11 | 0#0@11+6 1#1@18+6 3#3@25+6 4#4@32+6
+    2      0      1      3      4
+0   0.2    0.0    0.1    0.3    0.4
+1   1.2    1.0    1.1    1.3    1.4
+2   2.2    2.0    2.1    2.3    2.4
+3   3.2    3.0    3.1    3.3    3.4
+--- 5. drag it out over the body: unpin and move
+gen 5 | damage selection | mode MovingHeaders { axis: Cols, key: Key(2), target: Move { to: 4, unpin: true } } | capturing | hover Cols 3 | cursor Move | moving 2 unpinned to Cols 4 at 31.5 | zone Cols Trailing 36+3
+Rows: (unchanged)
+Cols: (unchanged)
+    2      0      1      3     |4
+0   0.2    0.0    0.1    0.3    0.4
+1   1.2    1.0    1.1    1.3    1.4
+2   2.2    2.0    2.1    2.3    2.4
+3   3.2    3.0    3.1    3.3    3.4
+--- 6. release: unpinned, the move requested
+effect (gen 5): MoveRequested { axis: Cols, keys: [Key(2)], to: 4 }
+  move Cols [Key(2)] to 4: refused: These can't be moved
+gen 6 | damage layout selection | hover Cols 3 | move refused Cols: These can't be moved
+Rows: (unchanged)
+Cols: count 10, extent 39, header 4, anchor 0+0, thumb 0.0000/0.5072 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6 4#4@32+6
+    0      1      2      3      4
+0   0.0    0.1    0.2    0.3    0.4
+1   1.0    1.1    1.2    1.3    1.4
+2   2.0    2.1    2.2    2.3    2.4
+3   3.0    3.1    3.2    3.3    3.4
