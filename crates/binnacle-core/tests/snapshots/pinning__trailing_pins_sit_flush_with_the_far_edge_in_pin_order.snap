@@ -16,6 +16,7 @@ Cols: count 10, extent 40, header 4, anchor 0+0, thumb 0.0000/0.5217 | 0#0@4+6 1
 4   4.0    4.1    4.2    4.3    4.4    4
 5   5.0    5.1    5.2    5.3    5.4    5
 --- 2. pin columns 1 then 7 right: drawn in that order, 7 ending at the edge
+effect (gen 1): PinsChanged { axis: Cols, edge: Trailing, keys: [Key(1), Key(7)] }
 window Cols 0..9
 gen 2 | damage layout positions
 Rows: (unchanged)
@@ -28,6 +29,8 @@ Cols: count 10, extent 40, header 4, anchor 0+0, thumb 0.0000/0.4000 | 0#0@4+6 2
 4   4.0    4.2    4.3    4 4.1    4.7
 5   5.0    5.2    5.3    5 5.1    5.7
 --- 3. pin row 5 to the top and row 0 to the bottom
+effect (gen 2): PinsChanged { axis: Rows, edge: Leading, keys: [Key(5)] }
+effect (gen 2): PinsChanged { axis: Rows, edge: Trailing, keys: [Key(0)] }
 window Rows 0..9
 gen 3 | damage layout positions
 Rows: count 12, extent 7, header 1, anchor 1+0, thumb 0.0000/0.4000 | pinned 5#5@1+1 | scrolling from 2 | 1#1@2+1 2#2@3+1 3#3@4+1 4#4@5+1 | scrolling to 6 | trailing 0#0@6+1
@@ -53,6 +56,8 @@ Cols: count 10, extent 40, header 4, anchor 5+5, thumb 1.0000/0.4000 | 5#5@-1+6 
 11    11.6   11.8   11.9   11.1   11.7
 0     0.6    0.8    0.9    0.1    0.7
 --- 5. pin column 1 left: it leaves the trailing Strip
+effect (gen 4): PinsChanged { axis: Cols, edge: Leading, keys: [Key(1)] }
+effect (gen 4): PinsChanged { axis: Cols, edge: Trailing, keys: [Key(7)] }
 gen 5 | damage layout
 Rows: (unchanged)
 Cols: count 10, extent 40, header 4, anchor 5+5, thumb 1.0000/0.4000 | pinned 1#1@4+6 | scrolling from 11 | 5#5@6+6 6#6@13+6 8#8@20+6 9#9@27+6 | scrolling to 33 | trailing 7#7@34+6

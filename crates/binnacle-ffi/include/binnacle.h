@@ -121,6 +121,11 @@ extern "C" {
  * binnacle_grid_notify, or refuse; either way answer with
  * binnacle_grid_move_answered. No other move starts until then. */
 #define BINNACLE_EFFECT_MOVE_REQUESTED 10
+/* The Keys pinned to edge (BINNACLE_EDGE_*) of axis changed to keys, in pin
+ * order, dormant pins included: by a pin, an unpin, a freeze or
+ * binnacle_grid_set_pins. A host that saves layouts keeps them and restores
+ * them with binnacle_grid_set_pins. At most one per edge is queued. */
+#define BINNACLE_EFFECT_PINS_CHANGED 11
 
 /* BinnacleEffect.direction for FIND_STEP_REQUESTED. */
 #define BINNACLE_FIND_NEXT 0
@@ -451,6 +456,12 @@ typedef struct {
   /* The most hidden Keys the axis takes: past it a hide is refused and the
    * host suggests a filter (binnacle_grid_set_hide_cap). */
   size_t hide_cap;
+  /* The Keys pinned to each edge, in pin order, dormant pins (their items
+   * gone for now) included: what a saved layout keeps. */
+  const uint64_t *leading_pins;
+  size_t leading_pins_len;
+  const uint64_t *trailing_pins;
+  size_t trailing_pins_len;
 } BinnacleAxisSnapshot;
 
 /*
@@ -650,11 +661,23 @@ typedef struct {
   BinnacleFindMatch from;
   uint32_t direction;
   /* MOVE_REQUESTED: the Keys of the items moved (axis is theirs), valid as
-   * text is, and the Position they drop before. */
+   * text is, and the Position they drop before. PINS_CHANGED: the Keys now
+   * pinned to edge, in pin order. */
   const uint64_t *keys;
   size_t keys_len;
   uint64_t to;
+  /* PINS_CHANGED: the edge (BINNACLE_EDGE_*). */
+  uint32_t edge;
 } BinnacleEffect;
+
+/* Every Size Override on an axis, in Key order: keys[i] has sizes[i]. Valid
+ * until the next binnacle_grid_size_overrides or binnacle_grid_free on the
+ * same Grid. */
+typedef struct {
+  const uint64_t *keys;
+  const float *sizes;
+  size_t len;
+} BinnacleSizeOverrides;
 
 /* A raw pointer event in viewport coordinates (the host's unit, origin at the
  * top-left including the header bands). clicks is the host's click count for
@@ -758,6 +781,20 @@ int binnacle_grid_freeze(BinnacleGrid *grid, uint32_t axis, uint64_t key);
 
 /* Unpins the item with key on axis; the scroll stays where it is. */
 int binnacle_grid_unpin(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Makes the len keys the pins of edge on axis, in that order, say to restore
+ * a saved layout: keys pinned there before and not listed are unpinned, a
+ * key pinned to the other edge moves here, a key listed twice counts once.
+ * A key outside the Window is found with a LOCATE Effect; one the Table
+ * Source lacks sleeps as a dormant pin until it comes back. Unknown edges
+ * are ignored. */
+int binnacle_grid_set_pins(BinnacleGrid *grid, uint32_t axis, uint32_t edge,
+                           const uint64_t *keys, size_t len);
+
+/* Lists every Size Override on axis into out, for Keys shown or not: what a
+ * saved layout keeps, restored with binnacle_grid_set_size. */
+int binnacle_grid_size_overrides(BinnacleGrid *grid, uint32_t axis,
+                                 BinnacleSizeOverrides *out);
 
 /* Lays out the frame and fills out. */
 int binnacle_grid_snapshot(BinnacleGrid *grid, BinnacleSnapshot *out);

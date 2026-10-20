@@ -364,6 +364,13 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.flag(s.movable(axis));
         w.flag(s.hide_support(axis));
         w.len(s.hide_cap(axis));
+        for edge in Edge::ALL {
+            let pins: Vec<Key> = s.pins(axis, edge).collect();
+            w.len(pins.len());
+            for k in pins {
+                w.key(k);
+            }
+        }
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());

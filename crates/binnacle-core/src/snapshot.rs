@@ -255,6 +255,14 @@ impl<'a> Snapshot<'a> {
         &self.grid.axis(axis).pinned[edge.index()]
     }
 
+    /// The Keys pinned to `edge` of `axis`, in pin order, dormant pins
+    /// included: what a saved layout keeps, and what `PinsChanged` reports.
+    pub fn pins(&self, axis: Axis, edge: Edge) -> impl Iterator<Item = Key> + 'a {
+        self.grid.axis(axis).pins[edge.index()]
+            .iter()
+            .map(|p| p.key)
+    }
+
     /// Where the scrolling Strip of `axis` draws along it: past the Header
     /// Band and the leading pinned Strip (with the Gap after it), to the
     /// viewport's end or the Gap before the trailing pinned Strip. Its

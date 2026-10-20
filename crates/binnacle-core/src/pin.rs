@@ -2,6 +2,7 @@
 //! Strip of their own while the scrolling Strip skips them.
 
 use crate::axis::AxisState;
+use crate::effect::Effect;
 use crate::grid::Grid;
 use crate::notice::placement;
 use crate::snapshot::{ScrollAnchor, StripItem};
@@ -319,6 +320,7 @@ impl Grid {
     /// Pins the items with `keys` on `axis` to `edge`, in that order, drawn
     /// just before the pinned `before` (after the last for `None`).
     pub(crate) fn pin_before(&mut self, axis: Axis, edge: Edge, keys: &[Key], before: Option<Key>) {
+        let was = self.pin_lists(axis);
         for &key in keys {
             if self.axis_mut(axis).pin_before(edge, key, before) {
                 if self.axis(axis).measure.position_of(key).is_none() {
@@ -327,6 +329,7 @@ impl Grid {
                 self.pending_damage.layout = true;
             }
         }
+        self.announce_pins(axis, was);
     }
 
     /// Pins the item with `key` on `axis` to `edge`: it is drawn in that
@@ -356,9 +359,75 @@ impl Grid {
     /// Unpins the item with `key` on `axis`: it goes back to its Position in
     /// the scrolling Strip, and the Scroll Anchor stays where it is.
     pub fn unpin(&mut self, axis: Axis, key: Key) {
+        let before = self.pin_lists(axis);
         if self.axis_mut(axis).unpin(key) {
             self.pending_damage.layout = true;
             self.resume_focus();
+            self.announce_pins(axis, before);
+        }
+    }
+
+    /// Makes `keys` the pins of `edge` on `axis`, in that order, say to
+    /// restore a saved layout: Keys pinned there before and not listed are
+    /// unpinned, a listed Key pinned to the other edge moves here, and a
+    /// Key listed twice counts once. A Key outside the Window is found with
+    /// `Locate`, and one the Table Source does not have sleeps as a dormant
+    /// pin until it comes back.
+    pub fn set_pins(&mut self, axis: Axis, edge: Edge, keys: &[Key]) {
+        let before = self.pin_lists(axis);
+        let st = self.axis_mut(axis);
+        let mut listed: Vec<Key> = Vec::new();
+        for &key in keys {
+            if !listed.contains(&key) {
+                listed.push(key);
+            }
+        }
+        let unlisted: Vec<Key> = (st.pins[edge.index()].iter())
+            .map(|p| p.key)
+            .filter(|k| !listed.contains(k))
+            .collect();
+        let unpinned = !unlisted.is_empty();
+        for key in unlisted {
+            st.unpin(key);
+        }
+        let mut new = Vec::new();
+        for &key in &listed {
+            let pinned = st.pins.iter().flatten().any(|p| p.key == key);
+            st.pin_before(edge, key, None);
+            if !pinned && st.measure.position_of(key).is_none() {
+                new.push(key);
+            }
+        }
+        for key in new {
+            self.locate_pin(axis, key);
+        }
+        if self.pin_lists(axis) != before {
+            self.pending_damage.layout = true;
+            if unpinned {
+                self.resume_focus();
+            }
+            self.announce_pins(axis, before);
+        }
+    }
+
+    /// The Keys pinned to each edge of `axis`, in pin order.
+    fn pin_lists(&self, axis: Axis) -> [Vec<Key>; 2] {
+        let pins = &self.axis(axis).pins;
+        Edge::ALL.map(|edge| pins[edge.index()].iter().map(|p| p.key).collect())
+    }
+
+    /// Queues `PinsChanged` for each edge of `axis` whose pins differ from
+    /// `before`, in place of one queued for it already.
+    fn announce_pins(&mut self, axis: Axis, before: [Vec<Key>; 2]) {
+        let now = self.pin_lists(axis);
+        for (edge, keys) in Edge::ALL.into_iter().zip(now) {
+            if keys == before[edge.index()] {
+                continue;
+            }
+            self.effects.retain(|s| {
+                !matches!(&s.effect, Effect::PinsChanged { axis: a, edge: e, .. } if (*a, *e) == (axis, edge))
+            });
+            self.push(Effect::PinsChanged { axis, edge, keys });
         }
     }
 

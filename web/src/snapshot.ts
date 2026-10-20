@@ -151,6 +151,8 @@ export interface AxisSnapshot {
   conditions: { condition: KeyedCondition; state: ConditionState }[];
   /** Whether the Table Source can move the axis's items now, so dragging a header moves them. */
   movable: boolean;
+  /** The Keys pinned to each edge, in pin order, dormant pins (their items gone for now) included. */
+  pins: { leading: bigint[]; trailing: bigint[] };
 }
 
 export type Mode =
@@ -443,6 +445,7 @@ function readAxis(r: Reader): AxisSnapshot {
   const movable = r.flag();
   const hideSupport = r.flag();
   const hideCap = r.num();
+  const pins = { leading: r.list(() => r.key()), trailing: r.list(() => r.key()) };
   return {
     count,
     extent,
@@ -464,6 +467,7 @@ function readAxis(r: Reader): AxisSnapshot {
     hideCap,
     conditions,
     movable,
+    pins,
   };
 }
 

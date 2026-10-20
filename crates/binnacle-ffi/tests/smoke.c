@@ -445,6 +445,32 @@ int main(void) {
   frame(grid, &snap);
   CHECK(!snap.has_drop && snap.pin_zones_len == 0);
   CHECK(c->pinned_len == 1 && c->strip[0].key == dragged);
+  /* The drop reports the pins it made. */
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.edge == BINNACLE_EDGE_LEADING);
+  CHECK(effect.keys_len == 1 && effect.keys[0] == dragged);
+
+  /* Restoring a saved layout: column 2003 and a column the source lacks
+   * pinned right (the missing one sleeps, after its LOCATE), and a size for
+   * each; both pins and both sizes are listed back. */
+  uint64_t pins[] = {2003, 2999};
+  CHECK(binnacle_grid_set_pins(grid, BINNACLE_COLS, BINNACLE_EDGE_TRAILING, pins, 2));
+  CHECK(binnacle_grid_set_size(grid, BINNACLE_COLS, 2003, 4));
+  CHECK(binnacle_grid_set_size(grid, BINNACLE_COLS, 2999, 5));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == 2999);
+  CHECK(binnacle_grid_located(grid, BINNACLE_COLS, 2999, BINNACLE_LOCATED_GONE, 0));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.edge == BINNACLE_EDGE_TRAILING);
+  CHECK(effect.keys_len == 2 && effect.keys[0] == 2003 && effect.keys[1] == 2999);
+  frame(grid, &snap);
+  CHECK(c->trailing_len == 1 && c->trailing_pins_len == 2 && c->trailing_pins[1] == 2999);
+  BinnacleSizeOverrides overrides;
+  CHECK(binnacle_grid_size_overrides(grid, BINNACLE_COLS, &overrides));
+  /* In Key order, after any sizes set earlier. */
+  size_t last = overrides.len - 1;
+  CHECK(overrides.len >= 2 && overrides.keys[last] == 2999 && overrides.sizes[last] == 5);
+  CHECK(overrides.keys[last - 1] == 2003 && overrides.sizes[last - 1] == 4);
 
   binnacle_grid_free(grid);
   binnacle_grid_free(NULL);

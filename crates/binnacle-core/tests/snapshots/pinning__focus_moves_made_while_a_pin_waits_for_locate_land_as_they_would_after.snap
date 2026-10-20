@@ -5,6 +5,7 @@ expression: out
 --- 1. row 2 pinned to the top, nothing focused
 effect (gen 0): Locate { axis: Rows, key: Key(2) }
   locate Rows Key(2): Found(2)
+effect (gen 0): PinsChanged { axis: Rows, edge: Leading, keys: [Key(2)] }
 window Rows 0..3
 window Cols 0..4
 gen 1 | damage layout selection positions

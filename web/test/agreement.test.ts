@@ -38,6 +38,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "pinDrag",
     "unpinDrag",
     "clipped",
+    "restored",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -68,6 +69,10 @@ describe("Effects", () => {
     expect(isEffect({ type: "Nope" })).toBe(false);
     expect(isEffect({ type: "FocusChanged", generation: 1, row: 1, col: 2n })).toBe(false);
     expect(isEffect({ type: "Locate", generation: 1, axis: "diagonal", key: 1n })).toBe(false);
+    const pins = { type: "PinsChanged", generation: 1, axis: "cols", edge: "trailing", keys: [3n] };
+    expect(isEffect(pins)).toBe(true);
+    expect(isEffect({ ...pins, edge: "middle" })).toBe(false);
+    expect(isEffect({ ...pins, keys: [3] })).toBe(false);
     expect(isEffect(null)).toBe(false);
     const edit = { type: "CycleSort", axis: "rows", key: 1n, multi: false };
     const view = (spec: unknown, e: unknown = edit) => ({ type: "ViewRequested", generation: 1, spec, edit: e });

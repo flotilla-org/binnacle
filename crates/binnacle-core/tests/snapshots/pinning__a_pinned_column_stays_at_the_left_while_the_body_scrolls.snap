@@ -14,6 +14,7 @@ Cols: count 10, extent 32, header 4, anchor 0+0, thumb 0.0000/0.4058 | 0#0@4+6 1
 2   2.0    2.1    2.2    2.3
 3   3.0    3.1    3.2    3.3
 --- 2. pin column 2: it leads, the body skips it
+effect (gen 1): PinsChanged { axis: Cols, edge: Leading, keys: [Key(2)] }
 window Cols 0..7
 gen 2 | damage layout positions
 Rows: (unchanged)
@@ -34,6 +35,7 @@ Cols: count 10, extent 32, header 4, anchor 1+3, thumb 0.2439/0.3387 | pinned 2#
 2   2.2        2.3    2.4    2.5
 3   3.2        3.3    3.4    3.5
 --- 4. unpin: back in its place, the anchor kept
+effect (gen 3): PinsChanged { axis: Cols, edge: Leading, keys: [] }
 gen 4 | damage layout
 Rows: (unchanged)
 Cols: count 10, extent 32, header 4, anchor 1+3, thumb 0.2439/0.4058 | 1#1@1+6 2#2@8+6 3#3@15+6 4#4@22+6 5#5@29+6
@@ -43,6 +45,7 @@ Cols: count 10, extent 32, header 4, anchor 1+3, thumb 0.2439/0.4058 | 1#1@1+6 2
 2       2.2    2.3    2.4    2.5
 3       3.2    3.3    3.4    3.5
 --- 5. pin again and go far right: the scroll extent leaves it out
+effect (gen 4): PinsChanged { axis: Cols, edge: Leading, keys: [Key(2)] }
 window Cols 3..10
 gen 5 | damage layout positions
 Rows: (unchanged)

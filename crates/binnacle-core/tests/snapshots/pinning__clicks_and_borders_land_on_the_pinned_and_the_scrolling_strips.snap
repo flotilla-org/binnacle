@@ -1,10 +1,12 @@
 ---
 source: crates/binnacle-core/tests/pinning.rs
+assertion_line: 76
 expression: out
 ---
 --- 1. column 5 pinned, the body scrolled right 10
 effect (gen 0): Locate { axis: Cols, key: Key(5) }
   locate Cols Key(5): Found(5)
+effect (gen 0): PinsChanged { axis: Cols, edge: Leading, keys: [Key(5)] }
 window Rows 0..4
 window Cols 0..6
 window Cols 0..8

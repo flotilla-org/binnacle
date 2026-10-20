@@ -1,10 +1,12 @@
 ---
 source: crates/binnacle-core/tests/pinning.rs
+assertion_line: 392
 expression: out
 ---
 --- 1. column 7 pinned right, from 34 to the edge at 40
 effect (gen 0): Locate { axis: Cols, key: Key(7) }
   locate Cols Key(7): Found(7)
+effect (gen 0): PinsChanged { axis: Cols, edge: Trailing, keys: [Key(7)] }
 window Rows 0..8
 window Cols 0..8
 gen 1 | damage layout selection positions

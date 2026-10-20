@@ -3,8 +3,9 @@
 //! directions as strings. `web/src/effects.ts` holds the matching union.
 
 use binnacle_core::{
-    Axis, Condition, ConditionKind, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, Key,
-    Searched, SortColumn, SortDirection, SortSpec, Stamped, TextQuery, Value, ViewEdit, ViewSpec,
+    Axis, Condition, ConditionKind, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery,
+    Key, Searched, SortColumn, SortDirection, SortSpec, Stamped, TextQuery, Value, ViewEdit,
+    ViewSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -387,6 +388,23 @@ pub enum WireFindDirection {
     Previous,
 }
 
+/// A pinned edge, as the widget names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireEdge {
+    Leading,
+    Trailing,
+}
+
+impl From<Edge> for WireEdge {
+    fn from(edge: Edge) -> Self {
+        match edge {
+            Edge::Leading => WireEdge::Leading,
+            Edge::Trailing => WireEdge::Trailing,
+        }
+    }
+}
+
 /// One Effect with the generation it was stamped with.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct WireStamped {
@@ -436,6 +454,11 @@ pub enum WireEffect {
     AutoSizeRequested {
         axis: WireAxis,
         key: u64,
+    },
+    PinsChanged {
+        axis: WireAxis,
+        edge: WireEdge,
+        keys: Vec<u64>,
     },
     BandSizeChanged {
         axis: WireAxis,
@@ -506,6 +529,11 @@ impl From<Effect> for WireEffect {
             Effect::AutoSizeRequested { axis, key } => WireEffect::AutoSizeRequested {
                 axis: axis.into(),
                 key: k(key),
+            },
+            Effect::PinsChanged { axis, edge, keys } => WireEffect::PinsChanged {
+                axis: axis.into(),
+                edge: edge.into(),
+                keys: keys.into_iter().map(k).collect(),
             },
             Effect::BandSizeChanged { axis, thickness } => WireEffect::BandSizeChanged {
                 axis: axis.into(),
@@ -771,6 +799,18 @@ mod tests {
                 thickness: 30.0
             }),
             json!({ "generation": 7.0, "type": "BandSizeChanged", "axis": "rows", "thickness": 30.0 })
+        );
+    }
+
+    #[test]
+    fn pins_changed_names_the_edge_and_its_keys_in_order() {
+        assert_eq!(
+            wire(Effect::PinsChanged {
+                axis: Axis::Cols,
+                edge: Edge::Trailing,
+                keys: vec![Key(9), Key(u64::MAX), Key(2)],
+            }),
+            json!({ "generation": 7.0, "type": "PinsChanged", "axis": "cols", "edge": "trailing", "keys": [9, u64::MAX, 2] })
         );
     }
 }

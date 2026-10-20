@@ -40,6 +40,7 @@ enum Op {
     SetPinZone(Axis, f32),
     SetMinScrolling(Axis, f32),
     Pin(Axis, Edge, u64),
+    SetPins(Axis, Edge, Vec<u64>),
     Unpin(Axis, u64),
     Freeze(Axis, u64),
     /// A press `inset` inside the end of the band leading the axis (where its
@@ -425,7 +426,12 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(26)) {
+    match tc.draw(gs::integers::<u8>().max_value(27)) {
+        27 => Op::SetPins(
+            tc.draw(axes()),
+            tc.draw(gs::sampled_from(Edge::ALL.to_vec())),
+            tc.draw(gs::vecs(gs::integers::<u64>().max_value(10)).max_size(4)),
+        ),
         25 => Op::SetPinZone(
             tc.draw(axes()),
             tc.draw(hegel::one_of!(
@@ -529,7 +535,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(49))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(52))),
     }
 }
 
@@ -769,6 +775,16 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             47 => binnacle_grid_set_hide_cap(h, 2, 1),
             48 => binnacle_grid_set_pin_zone(h, 2, 1.0),
             49 => binnacle_grid_set_min_scrolling(h, 2, 1.0),
+            50 => binnacle_grid_set_pins(h, 2, BINNACLE_EDGE_LEADING, &5000, 1),
+            51 => binnacle_grid_set_pins(h, COLS, 2, &5000, 1),
+            52 => {
+                let mut out = BinnacleSizeOverrides {
+                    keys: std::ptr::null(),
+                    sizes: std::ptr::null(),
+                    len: 0,
+                };
+                binnacle_grid_size_overrides(h, 2, &mut out)
+            }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -901,6 +917,15 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         let want: Vec<u64> = rust.hidden(axis).iter().map(|k| k.0).collect();
         assert_eq!(hidden, want, "{axis:?} hidden");
         assert_eq!(a.hide_cap, rust.hide_cap(axis), "{axis:?} hide cap");
+        let pins = [
+            (a.leading_pins, a.leading_pins_len, Edge::Leading),
+            (a.trailing_pins, a.trailing_pins_len, Edge::Trailing),
+        ];
+        for (keys, len, edge) in pins {
+            let got = unsafe { slice::from_raw_parts(keys, len) };
+            let want: Vec<u64> = rust.pins(axis, edge).map(|k| k.0).collect();
+            assert_eq!(got, want, "{axis:?} {edge:?} pins");
+        }
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -1043,6 +1068,7 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         let mut from = None;
         let mut direction = BINNACLE_FIND_NEXT;
         let mut moved: (Vec<u64>, u64) = (Vec::new(), 0);
+        let mut edge = BINNACLE_EDGE_LEADING;
         let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
                 let got = unsafe { slice::from_raw_parts(c.text.data, c.text.len) };
@@ -1130,6 +1156,17 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 moved = (keys.iter().map(|k| k.0).collect(), *to);
                 (10, 0, 0, tag(*axis), 0)
             }
+            Effect::PinsChanged {
+                axis,
+                edge: e,
+                keys,
+            } => {
+                moved = (keys.iter().map(|k| k.0).collect(), 0);
+                if *e == Edge::Trailing {
+                    edge = BINNACLE_EDGE_TRAILING;
+                }
+                (11, 0, 0, tag(*axis), 0)
+            }
             #[allow(unreachable_patterns)] // Effects added to the Grid later are OTHER.
             _ => (0, 0, 0, 0, 0),
         };
@@ -1138,6 +1175,7 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             false => unsafe { slice::from_raw_parts(c.keys, c.keys_len) },
         };
         assert_eq!((keys.to_vec(), c.to), moved, "move for {want:?}");
+        assert_eq!(c.edge, edge, "edge for {want:?}");
         assert_eq!(
             (c.kind, c.row, c.col, c.axis, c.key),
             (kind, row, col, axis, key)
@@ -1543,6 +1581,18 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     };
                     binnacle_grid_pin(h, tag(axis), edge, key)
                 }
+                Op::SetPins(axis, edge, keys) => {
+                    let keys: Vec<u64> = (keys.into_iter())
+                        .map(|k| k + 5000 * u64::from(axis == Axis::Cols))
+                        .collect();
+                    let rust: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+                    grid.set_pins(axis, edge, &rust);
+                    let edge = match edge {
+                        Edge::Leading => BINNACLE_EDGE_LEADING,
+                        Edge::Trailing => BINNACLE_EDGE_TRAILING,
+                    };
+                    binnacle_grid_set_pins(h, tag(axis), edge, keys.as_ptr(), keys.len())
+                }
                 Op::Freeze(axis, key) => {
                     let key = key + 5000 * u64::from(axis == Axis::Cols);
                     grid.freeze(axis, Key(key));
@@ -1804,9 +1854,34 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
             };
             assert_eq!(ok, 1);
             asked = check_effects(h, &mut grid).or(asked);
+            check_size_overrides(h, &grid);
         }
     }
     unsafe { binnacle_grid_free(h) };
+}
+
+/// The handle lists every Size Override the Grid holds, on each axis.
+unsafe fn check_size_overrides(h: *mut BinnacleGrid, grid: &Grid) {
+    for axis in Axis::ALL {
+        let mut out = BinnacleSizeOverrides {
+            keys: std::ptr::null(),
+            sizes: std::ptr::null(),
+            len: 0,
+        };
+        assert_eq!(
+            unsafe { binnacle_grid_size_overrides(h, tag(axis), &mut out) },
+            1
+        );
+        let keys = unsafe { slice::from_raw_parts(out.keys, out.len) };
+        let sizes = unsafe { slice::from_raw_parts(out.sizes, out.len) };
+        let got: Vec<(u64, u32)> = (keys.iter().zip(sizes))
+            .map(|(&k, s)| (k, s.to_bits()))
+            .collect();
+        let want: Vec<(u64, u32)> = (grid.size_overrides(axis))
+            .map(|(k, s)| (k.0, s.to_bits()))
+            .collect();
+        assert_eq!(got, want, "{axis:?} Size Overrides");
+    }
 }
 
 /// Runs a frame on both, answering the Windows with Position Keys, and

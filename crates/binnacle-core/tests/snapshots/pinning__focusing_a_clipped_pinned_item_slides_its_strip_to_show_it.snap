@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/pinning.rs
+assertion_line: 792
 expression: out
 ---
 --- 1. columns 2, 3, 5 pinned left, 9 right, column 5 clipped: focus column 3
@@ -13,6 +14,8 @@ effect (gen 0): Locate { axis: Cols, key: Key(9) }
   locate Cols Key(9): Found(9)
 effect (gen 0): Locate { axis: Rows, key: Key(1) }
   locate Rows Key(1): Found(1)
+effect (gen 0): PinsChanged { axis: Cols, edge: Leading, keys: [Key(2), Key(3), Key(5)] }
+effect (gen 0): PinsChanged { axis: Cols, edge: Trailing, keys: [Key(9)] }
 effect (gen 0): FocusChanged { row: Key(1), col: Key(3) }
 window Rows 0..4
 window Cols 0..8

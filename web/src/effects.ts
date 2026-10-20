@@ -2,7 +2,7 @@
 // Keys as `bigint`. The union is hand-written against
 // `crates/binnacle-wasm/src/effect.rs`; the agreement tests keep them in step.
 
-import type { AxisName } from "./codes";
+import type { AxisName, PinEdge } from "./codes";
 import type { FindMatch, KeyedCondition, KeyedFindQuery, KeyedTextQuery, KeyedViewSpec, SortColumn } from "./snapshot";
 
 type Stamped<T> = T & { generation: number };
@@ -39,6 +39,8 @@ export type Effect = Stamped<
   | { type: "Locate"; axis: AxisName; key: bigint }
   | { type: "SizeChanged"; axis: AxisName; key: bigint; size: number }
   | { type: "AutoSizeRequested"; axis: AxisName; key: bigint }
+  /** The Keys pinned to `edge` of `axis` are now `keys`, in pin order, dormant pins included. */
+  | { type: "PinsChanged"; axis: AxisName; edge: PinEdge; keys: bigint[] }
   | { type: "BandSizeChanged"; axis: AxisName; thickness: number }
   | { type: "BandAutoSizeRequested"; axis: AxisName }
   | { type: "MoveRequested"; axis: AxisName; keys: bigint[]; to: number }
@@ -50,7 +52,7 @@ export type Effect = Stamped<
 
 export type EffectType = Effect["type"];
 
-type Field = "string" | "number" | "key" | "axis" | "keys" | "view" | "edit" | "find" | "find?" | "from" | "direction";
+type Field = "string" | "number" | "key" | "axis" | "edge" | "keys" | "view" | "edit" | "find" | "find?" | "from" | "direction";
 
 const FIELDS: { [T in EffectType]: Record<string, Field> } = {
   TextTyped: { text: "string" },
@@ -63,6 +65,7 @@ const FIELDS: { [T in EffectType]: Record<string, Field> } = {
   Locate: { axis: "axis", key: "key" },
   SizeChanged: { axis: "axis", key: "key", size: "number" },
   AutoSizeRequested: { axis: "axis", key: "key" },
+  PinsChanged: { axis: "axis", edge: "edge", keys: "keys" },
   BandSizeChanged: { axis: "axis", thickness: "number" },
   BandAutoSizeRequested: { axis: "axis" },
   MoveRequested: { axis: "axis", keys: "keys", to: "number" },
@@ -155,6 +158,8 @@ function fits(field: Field, v: unknown): boolean {
       return typeof v === "bigint";
     case "axis":
       return v === "rows" || v === "cols";
+    case "edge":
+      return v === "leading" || v === "trailing";
     case "keys":
       return isKeys(v);
     case "view":

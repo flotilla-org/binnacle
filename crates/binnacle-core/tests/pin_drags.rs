@@ -45,6 +45,15 @@ fn drag_header(s: &mut Scenario<IdentityTable>, from: f32, to: f32) {
     });
 }
 
+/// The report that the columns' leading pins are now `keys`, in pin order.
+fn leading_pins(keys: &[u64]) -> Effect {
+    Effect::PinsChanged {
+        axis: Axis::Cols,
+        edge: Edge::Leading,
+        keys: keys.iter().map(|&k| Key(k)).collect(),
+    }
+}
+
 fn release(s: &mut Scenario<IdentityTable>, at: f32) {
     s.input(|g| g.pointer(PointerEvent::up(at, 0.5)));
 }
@@ -65,7 +74,7 @@ fn dropping_a_header_in_the_empty_leading_zone_pins_it_on_an_unmovable_axis() {
         }
     );
     release(&mut s, 5.0);
-    assert_eq!(s.effects(), vec![]);
+    assert_eq!(s.effects(), [leading_pins(&[2])]);
     assert_eq!(pinned(&mut s, Edge::Leading), vec![2]);
 }
 
@@ -89,7 +98,7 @@ fn dropping_into_a_pinned_strip_pins_before_the_item_whose_first_half_it_is_over
     );
     assert_eq!(drop.offset, 10.5);
     release(&mut s, 13.0);
-    assert_eq!(s.effects(), vec![]);
+    assert_eq!(s.effects(), [leading_pins(&[0, 4, 1])]);
     assert_eq!(pinned(&mut s, Edge::Leading), vec![0, 4, 1]);
 }
 
@@ -112,7 +121,7 @@ fn dragging_a_pin_within_its_strip_reorders_the_pins() {
         }
     );
     release(&mut s, 5.0);
-    assert_eq!(s.effects(), vec![]);
+    assert_eq!(s.effects(), [leading_pins(&[2, 0, 1])]);
     assert_eq!(pinned(&mut s, Edge::Leading), vec![2, 0, 1]);
 }
 
@@ -127,7 +136,7 @@ fn dragging_a_pin_out_on_an_unmovable_axis_unpins_it_back_to_its_own_place() {
     // Its own place: before column 4, after columns 0 to 2 (11 + 3 * 7).
     assert_eq!(drop.offset, 31.5);
     release(&mut s, 30.0);
-    assert_eq!(s.effects(), vec![]);
+    assert_eq!(s.effects(), [leading_pins(&[])]);
     assert_eq!(pinned(&mut s, Edge::Leading), Vec::<u64>::new());
 }
 
@@ -155,11 +164,14 @@ fn dragging_a_pin_out_on_a_movable_axis_unpins_it_and_requests_the_move() {
     release(&mut s, 30.0);
     assert_eq!(
         s.effects(),
-        vec![Effect::MoveRequested {
-            axis: Axis::Cols,
-            keys: vec![Key(0)],
-            to: 4
-        }]
+        vec![
+            Effect::MoveRequested {
+                axis: Axis::Cols,
+                keys: vec![Key(0)],
+                to: 4
+            },
+            leading_pins(&[])
+        ]
     );
     assert_eq!(pinned(&mut s, Edge::Leading), Vec::<u64>::new());
 }

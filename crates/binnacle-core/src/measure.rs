@@ -264,6 +264,11 @@ impl AxisMeasure {
         self.overrides.get(&key).copied()
     }
 
+    /// Every Size Override, in Key order.
+    pub fn size_overrides(&self) -> impl Iterator<Item = (Key, f32)> + '_ {
+        self.overrides.iter().map(|(&k, &s)| (k, s))
+    }
+
     /// The smallest size any item can have: the default, the smallest Size
     /// Override and the content size hint. Bounds how many items a length can
     /// hold before their Keys are known.

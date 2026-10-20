@@ -120,6 +120,13 @@ struct DumpAxis {
     movable: bool,
     hide_support: bool,
     hide_cap: f64,
+    pins: DumpPins,
+}
+
+#[derive(Serialize)]
+struct DumpPins {
+    leading: Vec<u64>,
+    trailing: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -460,6 +467,10 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
         movable: s.movable(axis),
         hide_support: s.hide_support(axis),
         hide_cap: s.hide_cap(axis) as f64,
+        pins: DumpPins {
+            leading: s.pins(axis, Edge::Leading).map(|k| k.0).collect(),
+            trailing: s.pins(axis, Edge::Trailing).map(|k| k.0).collect(),
+        },
     }
 }
 
@@ -614,6 +625,11 @@ pub fn every_effect() -> Vec<WireStamped> {
             axis: Axis::Cols,
             key: col,
         },
+        Effect::PinsChanged {
+            axis: Axis::Cols,
+            edge: Edge::Trailing,
+            keys: vec![col, row],
+        },
         Effect::BandSizeChanged {
             axis: Axis::Rows,
             thickness: 30.0,
@@ -701,7 +717,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 20] = [
+pub const SCENARIOS: [&str; 21] = [
     "plain",
     "busy",
     "resizing",
@@ -722,6 +738,7 @@ pub const SCENARIOS: [&str; 20] = [
     "pinDrag",
     "unpinDrag",
     "clipped",
+    "restored",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -866,6 +883,15 @@ pub fn scenario(name: &str) -> Grid {
                 forward: true,
                 extend: true,
             });
+        }
+        "restored" => {
+            // A saved layout put back: column 2 and one the source does not
+            // have (dormant) pinned left, row 4 to the bottom, and sizes,
+            // one for a column the source does not have.
+            grid.set_pins(Axis::Cols, Edge::Leading, &[key(2), key(900)]);
+            grid.set_pins(Axis::Rows, Edge::Trailing, &[key(4)]);
+            grid.set_size(Axis::Cols, key(2), 44.0);
+            grid.set_size(Axis::Cols, key(900), 61.0);
         }
         "clipped" => {
             // Four columns pinned left and one right, and rows 0 to 5
@@ -1118,6 +1144,16 @@ mod tests {
                         ]
                     );
                 }
+                "restored" => {
+                    let key = |p: u64| Key(KEY_BASE + p);
+                    let pins: Vec<Key> = s.pins(Axis::Cols, Edge::Leading).collect();
+                    assert_eq!(pins, [key(2), key(900)]);
+                    assert_eq!(s.pinned(Axis::Cols, Edge::Leading).len(), 1);
+                    assert_eq!(
+                        s.pins(Axis::Rows, Edge::Trailing).collect::<Vec<_>>(),
+                        [key(4)]
+                    );
+                }
                 "clipped" => {
                     // Every pin is kept; the leading columns clip, slid to
                     // show the focused column 3, and the trailing ones
@@ -1189,6 +1225,7 @@ mod tests {
                 "Idle",
                 "MovingHeaders",
                 "MovingHeaders",
+                "Idle",
                 "Idle"
             ]
         );
@@ -1211,6 +1248,7 @@ mod tests {
                 crate::effect::WireEffect::Locate { .. } => "Locate",
                 crate::effect::WireEffect::SizeChanged { .. } => "SizeChanged",
                 crate::effect::WireEffect::AutoSizeRequested { .. } => "AutoSizeRequested",
+                crate::effect::WireEffect::PinsChanged { .. } => "PinsChanged",
                 crate::effect::WireEffect::BandSizeChanged { .. } => "BandSizeChanged",
                 crate::effect::WireEffect::BandAutoSizeRequested { .. } => "BandAutoSizeRequested",
                 crate::effect::WireEffect::MoveRequested { .. } => "MoveRequested",
@@ -1220,6 +1258,6 @@ mod tests {
             .collect();
         let mut unique = seen.clone();
         unique.dedup();
-        assert_eq!(unique.len(), 15, "{seen:?}");
+        assert_eq!(unique.len(), 16, "{seen:?}");
     }
 }

@@ -63,6 +63,7 @@ pub const BINNACLE_EFFECT_BAND_AUTO_SIZE_REQUESTED: u32 = 7;
 pub const BINNACLE_EFFECT_FIND_REQUESTED: u32 = 8;
 pub const BINNACLE_EFFECT_FIND_STEP_REQUESTED: u32 = 9;
 pub const BINNACLE_EFFECT_MOVE_REQUESTED: u32 = 10;
+pub const BINNACLE_EFFECT_PINS_CHANGED: u32 = 11;
 
 pub const BINNACLE_FIND_NEXT: u32 = 0;
 pub const BINNACLE_FIND_PREVIOUS: u32 = 1;
@@ -175,8 +176,12 @@ pub struct BinnacleGrid {
     /// Snapshot's.
     find_effect: (String, Vec<u64>),
     find_snapshot: (String, Vec<u64>),
-    /// The last polled move's Keys.
+    /// The last polled move's or pins' Keys.
     move_keys: Vec<u64>,
+    /// The last Snapshot's pinned Keys per axis and edge, dormant included.
+    pins: [[Vec<u64>; 2]; 2],
+    /// The last listed Size Overrides' Keys and sizes.
+    overrides: (Vec<u64>, Vec<f32>),
     /// The last Snapshot's pending move Keys and move refusal.
     pending_move: Vec<u64>,
     refusal: String,
@@ -400,6 +405,10 @@ pub struct BinnacleAxisSnapshot {
     pub hidden: *const u64,
     pub hidden_len: usize,
     pub hide_cap: usize,
+    pub leading_pins: *const u64,
+    pub leading_pins_len: usize,
+    pub trailing_pins: *const u64,
+    pub trailing_pins_len: usize,
 }
 
 #[repr(C)]
@@ -637,6 +646,16 @@ pub struct BinnacleEffect {
     pub keys: *const u64,
     pub keys_len: usize,
     pub to: u64,
+    pub edge: u32,
+}
+
+/// Every Size Override on an axis, in Key order: `keys[i]` has `sizes[i]`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BinnacleSizeOverrides {
+    pub keys: *const u64,
+    pub sizes: *const f32,
+    pub len: usize,
 }
 
 impl Default for BinnacleEffect {
@@ -660,6 +679,7 @@ impl Default for BinnacleEffect {
             keys: std::ptr::null(),
             keys_len: 0,
             to: 0,
+            edge: 0,
         }
     }
 }
@@ -687,6 +707,13 @@ fn axis_tag(axis: Axis) -> u32 {
     match axis {
         Axis::Rows => BINNACLE_ROWS,
         Axis::Cols => BINNACLE_COLS,
+    }
+}
+
+fn edge_tag(edge: Edge) -> u32 {
+    match edge {
+        Edge::Leading => BINNACLE_EDGE_LEADING,
+        Edge::Trailing => BINNACLE_EDGE_TRAILING,
     }
 }
 
@@ -1112,6 +1139,8 @@ pub extern "C" fn binnacle_grid_new(
         find_effect: Default::default(),
         find_snapshot: Default::default(),
         move_keys: Vec::new(),
+        pins: Default::default(),
+        overrides: Default::default(),
         pending_move: Vec::new(),
         refusal: String::new(),
     }))
@@ -1302,6 +1331,63 @@ pub unsafe extern "C" fn binnacle_grid_pin(
 }
 
 /// # Safety
+/// `grid` is NULL or a live handle; `keys` is valid for `len` reads (or NULL
+/// with `len` 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_pins(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    edge_tag: u32,
+    keys: *const u64,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let keys: Vec<Key> = unsafe { borrowed(keys, len) }
+        .iter()
+        .map(|&k| Key(k))
+        .collect();
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let edge = edge(edge_tag)?;
+            axis(axis_tag).map(|axis| h.grid.set_pins(axis, edge, &keys))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `out` is NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_size_overrides(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    out: *mut BinnacleSizeOverrides,
+) -> i32 {
+    if out.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let axis = axis(axis_tag)?;
+            let (keys, sizes) = &mut h.overrides;
+            keys.clear();
+            sizes.clear();
+            for (key, size) in h.grid.size_overrides(axis) {
+                keys.push(key.0);
+                sizes.push(size);
+            }
+            out.write(BinnacleSizeOverrides {
+                keys: keys.as_ptr(),
+                sizes: sizes.as_ptr(),
+                len: keys.len(),
+            });
+            Some(())
+        })
+    }
+}
+
+/// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_freeze(
@@ -1355,14 +1441,6 @@ pub unsafe extern "C" fn binnacle_grid_set_header(
         with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_header(axis, thickness))
         })
-    }
-}
-
-/// An edge's C tag.
-fn edge_tag(edge: Edge) -> u32 {
-    match edge {
-        Edge::Leading => BINNACLE_EDGE_LEADING,
-        Edge::Trailing => BINNACLE_EDGE_TRAILING,
     }
 }
 
@@ -1472,6 +1550,11 @@ impl BinnacleGrid {
             let picked = &mut self.picked[axis.index()];
             picked.clear();
             picked.extend(snap.picked(axis).iter().map(|k| k.0));
+            for edge in Edge::ALL {
+                let pins = &mut self.pins[axis.index()][edge.index()];
+                pins.clear();
+                pins.extend(snap.pins(axis, edge).map(|k| k.0));
+            }
         }
         self.rects.clear();
         self.rects.extend(
@@ -1510,6 +1593,7 @@ impl BinnacleGrid {
             let picked = &self.picked[axis.index()];
             let hidden = &self.hidden_listed[axis.index()];
             let runs = &self.runs[axis.index()];
+            let [leading_pins, trailing_pins] = &self.pins[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -1551,6 +1635,10 @@ impl BinnacleGrid {
                 hidden: hidden.as_ptr(),
                 hidden_len: hidden.len(),
                 hide_cap: snap.hide_cap(axis),
+                leading_pins: leading_pins.as_ptr(),
+                leading_pins_len: leading_pins.len(),
+                trailing_pins: trailing_pins.as_ptr(),
+                trailing_pins_len: trailing_pins.len(),
                 selection_runs: runs.as_ptr(),
                 selection_runs_len: runs.len(),
             }
@@ -1826,6 +1914,15 @@ impl BinnacleGrid {
                 effect.keys = self.move_keys.as_ptr();
                 effect.keys_len = self.move_keys.len();
                 effect.to = to;
+            }
+            Effect::PinsChanged { axis, edge, keys } => {
+                self.move_keys.clear();
+                self.move_keys.extend(keys.iter().map(|k| k.0));
+                effect.kind = BINNACLE_EFFECT_PINS_CHANGED;
+                effect.axis = axis_tag(axis);
+                effect.edge = edge_tag(edge);
+                effect.keys = self.move_keys.as_ptr();
+                effect.keys_len = self.move_keys.len();
             }
             _ => effect.kind = BINNACLE_EFFECT_OTHER,
         }

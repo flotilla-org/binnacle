@@ -1,11 +1,12 @@
 ---
 source: crates/binnacle-core/tests/pinning.rs
-assertion_line: 119
+assertion_line: 127
 expression: out
 ---
 --- 1. record 4 pinned
 effect (gen 0): Locate { axis: Cols, key: Key(4) }
   locate Cols Key(4): Found(4)
+effect (gen 0): PinsChanged { axis: Cols, edge: Leading, keys: [Key(4)] }
 window Rows 0..2
 window Cols 0..6
 gen 1 | damage layout selection positions

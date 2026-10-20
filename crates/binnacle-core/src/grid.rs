@@ -404,6 +404,12 @@ impl Grid {
         self.axis(axis).measure.size_override(key)
     }
 
+    /// Every Size Override on `axis` in Key order, for Keys shown or not:
+    /// what a saved layout keeps.
+    pub fn size_overrides(&self, axis: Axis) -> impl Iterator<Item = (Key, f32)> + '_ {
+        self.axis(axis).measure.size_overrides()
+    }
+
     pub fn action(&mut self, action: Action) {
         match action {
             Action::TypeText(text) => self.push(Effect::TextTyped { text }),

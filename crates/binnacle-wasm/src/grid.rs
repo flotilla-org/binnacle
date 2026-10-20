@@ -145,6 +145,15 @@ impl WebGrid {
         }
     }
 
+    /// Makes `keys` the pins of edge `edge` of axis `a`, in that order (see
+    /// [`binnacle_core::Grid::set_pins`]).
+    pub fn set_pins(&mut self, a: u8, edge: u8, keys: &[u64]) {
+        if let Some(edge) = codes::edge(edge) {
+            let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+            self.grid.set_pins(axis(a), edge, &keys);
+        }
+    }
+
     pub fn unpin(&mut self, a: u8, key: u64) {
         self.grid.unpin(axis(a), Key(key));
     }
@@ -159,6 +168,20 @@ impl WebGrid {
         self.grid
             .size_override(axis(a), Key(key))
             .map_or(f64::NAN, f64::from)
+    }
+
+    /// The Keys of every Size Override on axis `a`, in Key order;
+    /// `size_override_sizes` gives their sizes in the same order.
+    pub fn size_override_keys(&self, a: u8) -> Vec<u64> {
+        self.grid
+            .size_overrides(axis(a))
+            .map(|(k, _)| k.0)
+            .collect()
+    }
+
+    /// The sizes of every Size Override on axis `a`, in Key order.
+    pub fn size_override_sizes(&self, a: u8) -> Vec<f32> {
+        self.grid.size_overrides(axis(a)).map(|(_, s)| s).collect()
     }
 
     /// What the Table Source supports when viewing axis `a` by `key`, an

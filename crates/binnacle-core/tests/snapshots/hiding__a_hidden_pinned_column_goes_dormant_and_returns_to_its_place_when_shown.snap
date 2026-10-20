@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/hiding.rs
+assertion_line: 192
 expression: out
 ---
 --- 1. columns 2 then 0 pinned left, 3 right
@@ -9,6 +10,8 @@ effect (gen 0): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(0)
 effect (gen 0): Locate { axis: Cols, key: Key(3) }
   locate Cols Key(3): Found(3)
+effect (gen 0): PinsChanged { axis: Cols, edge: Leading, keys: [Key(2), Key(0)] }
+effect (gen 0): PinsChanged { axis: Cols, edge: Trailing, keys: [Key(3)] }
 window Rows 0..6
 window Cols 0..4
 gen 1 | damage layout selection positions

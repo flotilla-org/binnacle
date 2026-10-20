@@ -32,6 +32,7 @@ Cols: (unchanged)
 2   2.0    2.1    2.2    2.3    2.4
 3   3.0    3.1    3.2    3.3    3.4
 --- 4. release: column 2 pinned left
+effect (gen 3): PinsChanged { axis: Cols, edge: Leading, keys: [Key(2)] }
 window Cols 0..8
 gen 4 | damage layout selection positions | hover Cols 2
 Rows: (unchanged)
@@ -53,6 +54,7 @@ Cols: (unchanged)
 --- 6. release: unpinned, the move requested
 effect (gen 5): MoveRequested { axis: Cols, keys: [Key(2)], to: 4 }
   move Cols [Key(2)] to 4: refused: These can't be moved
+effect (gen 5): PinsChanged { axis: Cols, edge: Leading, keys: [] }
 gen 6 | damage layout selection | hover Cols 3 | move refused Cols: These can't be moved
 Rows: (unchanged)
 Cols: count 10, extent 39, header 4, anchor 0+0, thumb 0.0000/0.5072 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6 4#4@32+6
