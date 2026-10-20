@@ -1,0 +1,42 @@
+---
+source: crates/binnacle-core/tests/hiding.rs
+expression: out
+---
+--- 1. hide record 0; keep values in column 0 holding a 1
+window Rows 0..6
+window Cols 0..4
+effect (gen 1): ViewRequested unsorted hide 0 by Hide { axis: Rows, keys: [Key(0)] }
+  view: applied unsorted hide 0, notices [(Rows, Refiltered(5))]
+effect (gen 1): ViewRequested unsorted filter 0: "1" hide 0 by AddCondition { axis: Rows, condition: Condition { key: Key(0), kind: Text(TextQuery { text: "1", case_sensitive: false, regex: false, searches: Keys([Key(0)]) }), not: false } }
+  view: applied unsorted filter 0: "1" hide 0, notices [(Rows, Refiltered(1))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(0)
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Gone { suggest: Some(0) }
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: Some(0) }
+window Rows 0..1
+gen 2 | damage layout selection positions | filter 0: "1" | total Rows 6 | total Cols 4
+Rows: count 1, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1@1+1
+Cols: count 4, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   1.0    1.1    1.2    1.3
+
+
+
+--- 2. remove the condition: every record comes back but 0
+effect (gen 2): ViewRequested unsorted hide 0 by RemoveCondition { axis: Rows, condition: Condition { key: Key(0), kind: Text(TextQuery { text: "1", case_sensitive: false, regex: false, searches: Keys([Key(0)]) }), not: false } }
+  view: applied unsorted hide 0, notices [(Rows, Refiltered(5))]
+effect (gen 2): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(0)
+window Rows 0..5
+gen 3 | damage layout selection positions | total Rows 6 | total Cols 4
+Rows: count 5, extent 5, header 1, anchor 0+0, thumb 0.0000/0.8000 | 0#1@1+1 1#2@2+1 2#3@3+1 3#4@4+1
+Cols: (unchanged)
+    0      1      2      3
+0   1.0    1.1    1.2    1.3
+1   2.0    2.1    2.2    2.3
+2   3.0    3.1    3.2    3.3
+3   4.0    4.1    4.2    4.3

@@ -89,6 +89,10 @@ impl<S: PumpSource> PumpSource for Transposed<S> {
         self.0.quick_filter(axis.other())
     }
 
+    fn hide_support(&mut self, axis: Axis) -> bool {
+        self.0.hide_support(axis.other())
+    }
+
     fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
         self.0.distinct(axis.other(), key, query)
     }

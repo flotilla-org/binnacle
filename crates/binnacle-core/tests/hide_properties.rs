@@ -1,0 +1,263 @@
+//! Seam 1 properties for hiding: a real Grid over an In-Memory Table Source
+//! of random records, driven through the frame loop and the shared pump with
+//! hides and shows on both axes mixed with clicks, focus moves, selections,
+//! resizes, filters and find steps. Once every answer is in, Positions are
+//! gapless and never reach a hidden item, Size Overrides of hidden items
+//! stay, and nothing a host copies or find lands on is hidden.
+
+use std::collections::BTreeMap;
+
+use binnacle_core::{
+    Action, Axis, AxisConfig, Condition, FindQuery, FocusStep, Grid, Key, Modifiers, PointerEvent,
+    TextQuery, TextSupport, Viewport,
+};
+use binnacle_testkit::{Record, RecordTable, Scenario};
+use hegel::generators as gs;
+use hegel::{Generator, TestCase};
+
+const ROW_HEADER: f32 = 3.0;
+const COL_WIDTH: f32 = 4.0;
+const V: Viewport = Viewport {
+    width: 24.0,
+    height: 7.0,
+};
+
+#[derive(Clone, Debug)]
+enum Input {
+    Hide(Axis, Vec<u64>),
+    Show(Axis, Vec<u64>),
+    /// A press and release at fractions of the viewport.
+    Click(f32, f32, Modifiers),
+    Action(Action),
+    /// Sets the size of the item with this Key, if the axis has it.
+    Size(Axis, u64, f32),
+    /// A condition on the rows: column `c` holds text containing `t`, or
+    /// clears the conditions with `None`.
+    Condition(Option<(u64, String)>),
+    Find(String),
+}
+
+#[hegel::composite]
+fn axis(tc: &TestCase) -> Axis {
+    tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]))
+}
+
+#[hegel::composite]
+fn fraction(tc: &TestCase) -> f32 {
+    tc.draw(gs::floats::<f32>().min_value(0.0).max_value(0.999))
+}
+
+/// Keys of an item on either axis (some past the last).
+#[hegel::composite]
+fn keys(tc: &TestCase, n: usize) -> Vec<u64> {
+    tc.draw(
+        gs::vecs(gs::integers::<u64>().max_value(n as u64))
+            .min_size(1)
+            .max_size(3),
+    )
+}
+
+#[hegel::composite]
+fn input(tc: &TestCase, rows: usize, cols: usize) -> Input {
+    let n = rows.max(cols);
+    let modifiers = gs::sampled_from(vec![Modifiers::NONE, Modifiers::SHIFT, Modifiers::CTRL]);
+    let step = gs::sampled_from(vec![FocusStep::Item, FocusStep::Item, FocusStep::Edge]);
+    let move_focus = hegel::tuples!(axis(), step, gs::booleans(), gs::weighted_booleans(0.3)).map(
+        |(axis, by, forward, extend)| {
+            Input::Action(Action::MoveFocus {
+                axis,
+                by,
+                forward,
+                extend,
+            })
+        },
+    );
+    let text = || gs::sampled_from(vec!["1".to_string(), "2".to_string(), "-".to_string()]);
+    tc.draw(hegel::one_of!(
+        hegel::tuples!(axis(), keys(n)).map(|(a, k)| Input::Hide(a, k)),
+        hegel::tuples!(axis(), keys(n)).map(|(a, k)| Input::Hide(a, k)),
+        hegel::tuples!(axis(), keys(n)).map(|(a, k)| Input::Show(a, k)),
+        hegel::tuples!(fraction(), fraction(), modifiers).map(|(x, y, m)| Input::Click(x, y, m)),
+        move_focus,
+        gs::sampled_from(vec![
+            Input::Action(Action::SelectAll),
+            Input::Action(Action::SelectColumn),
+            Input::Action(Action::FindNext),
+        ]),
+        hegel::tuples!(
+            axis(),
+            gs::integers::<u64>().max_value(n as u64),
+            gs::floats::<f32>().min_value(1.0).max_value(6.0)
+        )
+        .map(|(a, k, size)| Input::Size(a, k, size)),
+        gs::optional(hegel::tuples!(
+            gs::integers::<u64>().max_value(cols as u64 - 1),
+            text()
+        ))
+        .map(Input::Condition),
+        text().map(Input::Find),
+    ))
+}
+
+struct Host {
+    s: Scenario<RecordTable>,
+    /// The Size Overrides set, by axis and Key.
+    sizes: [BTreeMap<Key, f32>; 2],
+}
+
+impl Host {
+    fn new(rows: Vec<Record>, cols: usize) -> Host {
+        let mut grid = Grid::new(
+            AxisConfig::new(rows.len() as u64, 1.0).header(1.0),
+            AxisConfig::new(cols as u64, COL_WIDTH)
+                .header(ROW_HEADER)
+                .gap(1.0),
+        );
+        for axis in Axis::ALL {
+            grid.set_hide_support(axis, true);
+        }
+        grid.set_find_support(Some(TextSupport::new(false)));
+        let source = RecordTable::new(rows, cols, 0..cols as u64);
+        Host {
+            s: Scenario::new(grid, source),
+            sizes: Default::default(),
+        }
+    }
+
+    fn input(&mut self, input: Input) {
+        let g = &mut self.s.grid;
+        match input {
+            Input::Hide(axis, keys) => g.hide(axis, &keys.into_iter().map(Key).collect::<Vec<_>>()),
+            Input::Show(axis, keys) => g.show(axis, &keys.into_iter().map(Key).collect::<Vec<_>>()),
+            Input::Click(x, y, m) => {
+                let (x, y) = (x * V.width, y * V.height);
+                g.pointer(PointerEvent::down(x, y).modifiers(m));
+                g.pointer(PointerEvent::up(x, y).modifiers(m));
+            }
+            Input::Action(action) => g.action(action),
+            Input::Size(axis, key, size) => {
+                g.set_size(axis, Key(key), size);
+                self.sizes[axis.index()].insert(Key(key), size);
+            }
+            Input::Condition(None) => {
+                let spec = g.snapshot().applied_view().clone();
+                for c in spec.rows.filter.conditions.conditions() {
+                    g.remove_condition(Axis::Rows, c);
+                }
+            }
+            Input::Condition(Some((c, text))) => {
+                g.add_condition(Axis::Rows, Condition::text(Key(c), TextQuery::new(text)));
+            }
+            Input::Find(text) => g.set_find(Some(FindQuery::new(TextQuery::new(text)))),
+        }
+    }
+
+    /// Runs frames until no answer is due, so the Grid has settled.
+    fn settle(&mut self) {
+        for _ in 0..4 {
+            self.s.frame(V);
+        }
+    }
+}
+
+#[hegel::composite]
+fn records(tc: &TestCase, cols: usize) -> Vec<Record> {
+    let value = gs::optional(gs::integers::<i64>().min_value(-2).max_value(12));
+    let record = gs::vecs(value).min_size(cols).max_size(cols);
+    tc.draw(gs::vecs(record).min_size(1).max_size(10))
+}
+
+#[hegel::test(test_cases = 300)]
+fn hiding_keeps_positions_gapless_and_nothing_copied_or_found_is_hidden(tc: TestCase) {
+    let cols = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let rows = tc.draw(records(cols));
+    let n_rows = rows.len();
+    let mut host = Host::new(rows, cols);
+    host.settle();
+    for input in tc.draw(gs::vecs(input(n_rows, cols)).max_size(12)) {
+        host.input(input.clone());
+        host.settle();
+        let applied = host.s.source.source.view_spec();
+        let snap = host.s.grid.snapshot();
+        let window = |axis: Axis, positions: std::ops::Range<u64>| {
+            host.s.source.source.window(axis, positions)
+        };
+        for axis in Axis::ALL {
+            let hidden = &applied.axis(axis).hidden;
+            assert_eq!(snap.hidden(axis), hidden.as_slice(), "{input:?}");
+            // Gapless: the Strip is a run of Positions below the count, each
+            // with the Key the source has there, none of them hidden.
+            assert_eq!(snap.count(axis), host.s.source.source.count(axis));
+            let strip = snap.strip(axis);
+            for (a, b) in strip.iter().zip(strip.iter().skip(1)) {
+                assert_eq!(a.position + 1, b.position, "{axis:?} {input:?}");
+            }
+            for item in strip {
+                assert!(item.position < snap.count(axis));
+                let at = window(axis, item.position..item.position + 1);
+                assert_eq!(item.key, at.first().copied(), "{axis:?} {input:?}");
+                assert!(item.key.is_none_or(|k| !hidden.contains(&k)));
+            }
+            if let Some(f) = snap.focus(axis) {
+                assert!(f.key.is_none_or(|k| !hidden.contains(&k)), "focus {f:?}");
+            }
+        }
+        // What a host copies: the range's items, and the picked rows.
+        if let Some(range) = snap.selection_range() {
+            for axis in Axis::ALL {
+                let keys = window(axis, range.span(axis).clone());
+                let hidden = &applied.axis(axis).hidden;
+                assert!(keys.iter().all(|k| !hidden.contains(k)), "{input:?}");
+            }
+        }
+        for axis in Axis::ALL {
+            for k in snap.picked(axis) {
+                assert!(!applied.axis(axis).hidden.contains(k), "picked {k:?}");
+            }
+        }
+        if let Some(m) = snap.find_match() {
+            for axis in Axis::ALL {
+                assert!(!applied.axis(axis).hidden.contains(&m.key(axis)), "{m:?}");
+            }
+        }
+        // Size Overrides stay, hidden or not, until set again.
+        for axis in Axis::ALL {
+            for (&key, &size) in &host.sizes[axis.index()] {
+                assert_eq!(host.s.grid.size_override(axis, key), Some(size));
+            }
+        }
+    }
+}
+
+#[hegel::test(test_cases = 200)]
+fn hiding_then_showing_restores_the_view_and_the_size_overrides(tc: TestCase) {
+    let cols = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let rows = tc.draw(records(cols));
+    let n_rows = rows.len();
+    let mut host = Host::new(rows, cols);
+    host.settle();
+    let axis = tc.draw(axis());
+    let n = [n_rows, cols][axis.index()];
+    let sized = tc.draw(keys(n));
+    for &k in &sized {
+        host.input(Input::Size(axis, k, 2.5 + k as f32));
+    }
+    host.settle();
+    // The view keeps its place on the item at its top, so the Strip may
+    // start elsewhere; the items come back in their places.
+    let strip = |host: &mut Host| {
+        let count = host.s.grid.snapshot().count(axis);
+        (count, host.s.source.source.window(axis, 0..count))
+    };
+    let before = strip(&mut host);
+    let hidden = tc.draw(keys(n));
+    host.input(Input::Hide(axis, hidden.clone()));
+    host.settle();
+    host.input(Input::Show(axis, hidden));
+    host.settle();
+    assert_eq!(strip(&mut host), before);
+    for &k in &sized {
+        let size = host.s.grid.size_override(axis, Key(k));
+        assert_eq!(size, Some(2.5 + k as f32));
+    }
+}

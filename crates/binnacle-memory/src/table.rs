@@ -7,8 +7,8 @@ use binnacle_core::{Axis, ChangeNotice, Key, Located, Position, SortSpec};
 use crate::SortKeys;
 
 /// One axis of an In-Memory Table Source: its base Keys, the order moves
-/// left, the sorted order and keep mask it was given, the Remap built from
-/// both, and the lazy reverse maps that answer `locate`.
+/// left, the sorted order, keep mask and hidden mask it was given, the Remap
+/// built from them, and the lazy reverse maps that answer `locate`.
 #[derive(Clone, Debug)]
 struct AxisOrder {
     len: usize,
@@ -25,8 +25,11 @@ struct AxisOrder {
     /// Unmatched items, by Logical Index: the filter drops them but they stay
     /// until it is applied again.
     unmatched: HashSet<u32>,
-    /// The Remap, Position to Logical Index: the sorted order with items the
-    /// filter drops skipped, unless unmatched. `None` is base order.
+    /// Which base items are hidden, by Logical Index; `None` hides none.
+    hidden: Option<Vec<bool>>,
+    /// The Remap, Position to Logical Index: the sorted order with hidden
+    /// items skipped, and items the filter drops unless unmatched. `None` is
+    /// base order.
     remap: Option<Vec<u32>>,
     /// Supplied Key to Logical Index, built on the first `locate`.
     logical: Option<HashMap<Key, u32>>,
@@ -54,6 +57,7 @@ impl AxisOrder {
             sorted: None,
             keep: None,
             unmatched: HashSet::new(),
+            hidden: None,
             remap: None,
             logical: None,
             positions: None,
@@ -92,11 +96,31 @@ impl AxisOrder {
         self.rebuild();
     }
 
+    fn is_hidden(&self, logical: usize) -> bool {
+        self.hidden.as_ref().is_some_and(|h| h[logical])
+    }
+
+    /// Hides the items `hidden` marks, by Logical Index, and shows the rest;
+    /// a hidden item is no longer unmatched. Returns whether any item came
+    /// or went.
+    fn set_hidden(&mut self, hidden: Option<Vec<bool>>) -> bool {
+        let hides = |h: &Option<Vec<bool>>, i: usize| h.as_ref().is_some_and(|h| h[i]);
+        let changed = (0..self.len).any(|i| hides(&self.hidden, i) != hides(&hidden, i));
+        self.hidden = hidden;
+        if changed {
+            let hidden = &self.hidden;
+            self.unmatched.retain(|&i| !hides(hidden, i as usize));
+            self.rebuild();
+        }
+        changed
+    }
+
     /// The filter now keeps item `logical` or not. With `defer`, an item in
     /// view stays, unmatched while the filter drops it. Returns whether the
     /// item came into view or left it; `false` with no filter in force.
     fn rekeep(&mut self, logical: usize, keep: bool, defer: bool) -> bool {
         let shown = self.position(logical).is_some();
+        let hidden = self.is_hidden(logical);
         let Some(flags) = &mut self.keep else {
             return false;
         };
@@ -107,7 +131,7 @@ impl AxisOrder {
         } else {
             self.unmatched.remove(&i);
         }
-        let moved = shown != (keep || self.unmatched.contains(&i));
+        let moved = shown != (!hidden && (keep || self.unmatched.contains(&i)));
         if moved {
             self.rebuild();
         }
@@ -123,12 +147,15 @@ impl AxisOrder {
         let Some(flags) = &mut self.keep else {
             return false;
         };
+        let hidden = &self.hidden;
         let mut moved = false;
         for (i, (flag, &k)) in flags.iter_mut().zip(keep).enumerate() {
             if *flag != k {
                 *flag = k;
-                // An unmatched item now kept was in view already.
-                moved |= !self.unmatched.remove(&(i as u32));
+                // An unmatched item now kept was in view already, and a
+                // hidden one stays out of view.
+                let unmatched = self.unmatched.remove(&(i as u32));
+                moved |= !unmatched && !hidden.as_ref().is_some_and(|h| h[i]);
             }
         }
         if moved {
@@ -137,15 +164,17 @@ impl AxisOrder {
         moved
     }
 
-    /// Rebuilds the Remap from the sorted order and keep mask in one pass.
+    /// Rebuilds the Remap from the sorted order, keep mask and hidden mask
+    /// in one pass.
     fn rebuild(&mut self) {
         self.positions = None;
-        self.remap = match (&self.sorted, &self.keep) {
-            (None, None) => None,
-            (sorted, keep) => {
+        self.remap = match (&self.sorted, &self.keep, &self.hidden) {
+            (None, None, None) => None,
+            (sorted, keep, hidden) => {
                 let unmatched = &self.unmatched;
                 let kept = |&i: &u32| {
-                    keep.as_ref().is_none_or(|k| k[i as usize]) || unmatched.contains(&i)
+                    !hidden.as_ref().is_some_and(|h| h[i as usize])
+                        && (keep.as_ref().is_none_or(|k| k[i as usize]) || unmatched.contains(&i))
                 };
                 Some(match sorted {
                     Some(sorted) => sorted.iter().copied().filter(kept).collect(),
@@ -256,6 +285,9 @@ impl AxisOrder {
         }
         if let Some(own) = &mut self.keep {
             own.extend_from_slice(keep);
+        }
+        if let Some(hidden) = &mut self.hidden {
+            hidden.resize(len, false);
         }
         self.rebuild();
     }
@@ -373,6 +405,8 @@ pub struct InMemoryTableSource {
     /// Each axis's Sort Spec, as last applied.
     sorts: [SortSpec; 2],
     move_policy: MovePolicy,
+    /// Each axis's hidden Keys, as last applied, less those no item has.
+    hides: [Vec<Key>; 2],
 }
 
 impl InMemoryTableSource {
@@ -387,6 +421,7 @@ impl InMemoryTableSource {
             axes: [AxisOrder::new(rows), AxisOrder::new(cols)],
             sorts: [SortSpec::unsorted(), SortSpec::unsorted()],
             move_policy: MovePolicy::Bake,
+            hides: [Vec::new(), Vec::new()],
         }
     }
 
@@ -533,6 +568,48 @@ impl InMemoryTableSource {
         ChangeNotice::Refiltered(order.count())
     }
 
+    /// Hides the items on `axis` with Keys in `hidden` and shows every
+    /// other, apart from the filter: an item both hidden and kept by the
+    /// filter stays out of view, and clearing the filter shows no hidden
+    /// item. Keys no item has, and repeats, are dropped
+    /// ([`InMemoryTableSource::hidden`] lists the rest). Items keep their
+    /// place in the sort. Returns the `Refiltered` the axis needs if any
+    /// item came or went.
+    pub fn apply_hidden(&mut self, axis: Axis, hidden: &[Key]) -> Option<ChangeNotice> {
+        let order = self.axis_mut(axis);
+        let mut mask = vec![false; order.len];
+        let mut kept = Vec::new();
+        for &key in hidden {
+            if let Some(i) = order.logical(key)
+                && !std::mem::replace(&mut mask[i as usize], true)
+            {
+                kept.push(key);
+            }
+        }
+        let mask = (!kept.is_empty()).then_some(mask);
+        let moved = order.set_hidden(mask);
+        let count = order.count();
+        self.hides[axis.index()] = kept;
+        moved.then_some(ChangeNotice::Refiltered(count))
+    }
+
+    /// The hidden Keys of `axis` in the order last applied, less those no
+    /// item has (since the base data changed, say).
+    pub fn hidden(&self, axis: Axis) -> &[Key] {
+        &self.hides[axis.index()]
+    }
+
+    /// Whether base item `item` (a Logical Index) on `axis` is hidden.
+    ///
+    /// # Panics
+    ///
+    /// If there is no such item.
+    pub fn is_hidden(&self, axis: Axis, item: usize) -> bool {
+        let order = self.axis(axis);
+        assert!(item < order.len, "no base item {item}");
+        order.is_hidden(item)
+    }
+
     /// Whether a filter is in force on `axis`.
     pub fn filtered(&self, axis: Axis) -> bool {
         self.axis(axis).keep.is_some()
@@ -634,7 +711,8 @@ impl InMemoryTableSource {
     /// sort keys of every base row, new ones included, as for
     /// [`InMemoryTableSource::apply_sort`] with the applied Sort Spec (empty
     /// when unsorted), and `keep` the new rows' keep flags while a filter is
-    /// in force (empty otherwise). Returns `Inserted` if the rows kept land
+    /// in force (empty otherwise). New rows arrive shown, never hidden.
+    /// Returns `Inserted` if the rows kept land
     /// together (`n` 0 if none is kept), else `Reset`.
     ///
     /// # Panics
@@ -675,8 +753,9 @@ impl InMemoryTableSource {
     }
 
     /// The base rows changed in some other way: there are now `len`, keyed
-    /// by `keys` (or by Logical Index if `None`). The sort and filter in
-    /// force are applied to them again: `sort_keys` holds every row's sort
+    /// by `keys` (or by Logical Index if `None`). The sort, filter and
+    /// hidden Keys in force are applied to them again (hidden Keys no row
+    /// has any more are dropped): `sort_keys` holds every row's sort
     /// keys for the applied Sort Spec (empty when unsorted) and `keep` every
     /// row's keep flag while a filter is in force (empty otherwise). Returns
     /// the `Reset` the rows need.
@@ -706,6 +785,8 @@ impl InMemoryTableSource {
         } else {
             assert!(keep.is_empty(), "no filter is in force");
         }
+        let hidden = std::mem::take(&mut self.hides[Axis::Rows.index()]);
+        self.apply_hidden(Axis::Rows, &hidden);
         ChangeNotice::Reset(self.count(Axis::Rows))
     }
 

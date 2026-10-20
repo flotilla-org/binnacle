@@ -211,16 +211,22 @@ impl FilterSpec {
 }
 
 /// One axis's part of a View Spec: which of its items to keep and how to
-/// order them, each named by Keys on the other axis.
+/// order them, each named by Keys on the other axis, and which of its own
+/// items the user hid.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AxisView {
     pub filter: FilterSpec,
     pub sort: SortSpec,
+    /// The hidden Keys, in the order they were hidden: items of this axis
+    /// the Table Source leaves out, apart from the filter, so clearing the
+    /// filter never shows them. A source answers with the Keys its data
+    /// still has.
+    pub hidden: Vec<Key>,
 }
 
 impl AxisView {
     pub fn is_empty(&self) -> bool {
-        self.filter.is_empty() && self.sort.is_empty()
+        self.filter.is_empty() && self.sort.is_empty() && self.hidden.is_empty()
     }
 }
 
@@ -257,6 +263,12 @@ impl ViewSpec {
     /// This spec with `axis` filtered by `filter`.
     pub fn with_filter(mut self, axis: Axis, filter: FilterSpec) -> Self {
         self.axis_mut(axis).filter = filter;
+        self
+    }
+
+    /// This spec with the items of `axis` keyed by `hidden` hidden.
+    pub fn with_hidden(mut self, axis: Axis, hidden: Vec<Key>) -> Self {
+        self.axis_mut(axis).hidden = hidden;
         self
     }
 
@@ -299,6 +311,11 @@ pub enum ViewEdit {
         from: Condition,
         to: Condition,
     },
+    /// The items of `axis` with `keys` were hidden, after those hidden
+    /// already.
+    Hide { axis: Axis, keys: Vec<Key> },
+    /// The hidden items of `axis` with `keys` were shown again.
+    Show { axis: Axis, keys: Vec<Key> },
 }
 
 /// How a Table Source matches a Text Query: `regex` if it takes patterns as
@@ -428,6 +445,8 @@ pub(crate) struct ViewState {
     support: [BTreeMap<Key, Support>; 2],
     /// Per axis, its quick filter's support, if it has one.
     pub quick_filter: [Option<TextSupport>; 2],
+    /// Per axis, whether the Table Source hides its items.
+    pub hides: [bool; 2],
     /// The unfiltered counts from the last `view_applied`.
     pub totals: Totals,
 }
@@ -514,8 +533,9 @@ impl ViewState {
 }
 
 /// What the user asked for, `wanted`, once the Table Source has answered with
-/// `applied`: the source's sort, its conditions plus the wanted ones it left
-/// out, and the wanted quick filter if there is one, else its own.
+/// `applied`: the source's sort and hidden Keys (pruned of those its data
+/// lost), its conditions plus the wanted ones it left out, and the wanted
+/// quick filter if there is one, else its own.
 fn kept(wanted: ViewSpec, applied: &ViewSpec) -> ViewSpec {
     let mut kept = applied.clone();
     for axis in Axis::ALL {
@@ -653,8 +673,47 @@ impl Grid {
         self.edit_view(ViewEdit::Reapply);
     }
 
+    /// Whether the Table Source hides items of `axis`: the adapters offer
+    /// hiding only then. Not by default.
+    pub fn set_hide_support(&mut self, axis: Axis, hides: bool) {
+        self.view.hides[axis.index()] = hides;
+    }
+
+    /// Hides the items of `axis` with `keys`, adding those not hidden yet to
+    /// its hidden Keys, and requests the result. Nothing happens while the
+    /// Table Source can't hide `axis`.
+    pub fn hide(&mut self, axis: Axis, keys: &[Key]) {
+        if !self.view.hides[axis.index()] {
+            return;
+        }
+        let hidden = &self.latest_view().axis(axis).hidden;
+        let mut new: Vec<Key> = Vec::new();
+        for &key in keys {
+            if !hidden.contains(&key) && !new.contains(&key) {
+                new.push(key);
+            }
+        }
+        if !new.is_empty() {
+            self.edit_view(ViewEdit::Hide { axis, keys: new });
+        }
+    }
+
+    /// Shows the hidden items of `axis` with `keys` again and requests the
+    /// result. Keys not hidden are skipped.
+    pub fn show(&mut self, axis: Axis, keys: &[Key]) {
+        let hidden = &self.latest_view().axis(axis).hidden;
+        let keys: Vec<Key> = hidden
+            .iter()
+            .copied()
+            .filter(|k| keys.contains(k))
+            .collect();
+        if !keys.is_empty() {
+            self.edit_view(ViewEdit::Show { axis, keys });
+        }
+    }
+
     /// The View Spec the latest request asks for, else the applied one.
-    fn latest_view(&self) -> &ViewSpec {
+    pub(crate) fn latest_view(&self) -> &ViewSpec {
         self.view.requested.as_ref().unwrap_or(&self.view.applied)
     }
 
@@ -697,6 +756,12 @@ impl Grid {
                 if let Some(i) = tree.find(from) {
                     tree.list_mut()[i] = to.clone();
                 }
+            }
+            ViewEdit::Hide { axis, keys } => {
+                spec.axis_mut(*axis).hidden.extend(keys);
+            }
+            ViewEdit::Show { axis, keys } => {
+                spec.axis_mut(*axis).hidden.retain(|k| !keys.contains(k));
             }
             ViewEdit::Replace | ViewEdit::ShownChanged { .. } | ViewEdit::Reapply => {}
         }

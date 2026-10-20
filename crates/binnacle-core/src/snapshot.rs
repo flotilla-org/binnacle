@@ -392,6 +392,19 @@ impl<'a> Snapshot<'a> {
         self.grid.view.quick_filter[axis.index()]
     }
 
+    /// Whether the Table Source hides items of `axis`: adapters offer Hide
+    /// only then.
+    pub fn hide_support(&self, axis: Axis) -> bool {
+        self.grid.view.hides[axis.index()]
+    }
+
+    /// The hidden Keys of `axis` in the order they were hidden, as the
+    /// latest request has them (else the applied View Spec): what a "Show
+    /// hidden" list offers.
+    pub fn hidden(&self, axis: Axis) -> &'a [Key] {
+        &self.grid.latest_view().axis(axis).hidden
+    }
+
     /// What the Table Source supports when viewing `axis` by `key`, an item
     /// of the other axis: adapters offer only these controls.
     pub fn support(&self, axis: Axis, key: Key) -> Support {

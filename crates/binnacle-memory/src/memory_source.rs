@@ -215,6 +215,12 @@ impl Filter {
         self.quick.is_some() || !self.conditions.is_empty()
     }
 
+    /// Whether its quick filter searches the shown items of the other axis,
+    /// so hiding them changes what it keeps.
+    fn searches_shown(&self) -> bool {
+        (self.quick.as_ref()).is_some_and(|q| q.query.searches == Searched::Shown)
+    }
+
     fn spec(&self) -> FilterSpec {
         let quick = self.quick.as_ref().map(|q| q.query.clone());
         let conditions: Vec<Condition> = (self.conditions.iter())
@@ -235,11 +241,14 @@ struct RowsRead {
 
 impl RowsRead {
     /// What `filter` reads of `rows` base rows in `table`: a quick filter
-    /// searching the shown rows searches every one, since none is hidden.
+    /// searching the shown rows searches every row not hidden, filtered out
+    /// or not.
     fn new(table: &mut InMemoryTableSource, filter: &Filter, rows: usize) -> RowsRead {
         let searched = match filter.quick.as_ref().map(|q| &q.query.searches) {
             None => Vec::new(),
-            Some(Searched::Shown) => (0..rows).collect(),
+            Some(Searched::Shown) => (0..rows)
+                .filter(|&r| !table.is_hidden(Axis::Rows, r))
+                .collect(),
             Some(Searched::Keys(keys)) => (keys.iter())
                 .filter_map(|&k| table.logical_index(Axis::Rows, k))
                 .collect(),
@@ -263,9 +272,10 @@ impl RowsRead {
 ///
 /// Both axes filter: the rows by their columns' text forms, the columns by
 /// their rows' (a column meets a row in the cell of that column's text
-/// form). A quick filter searching the shown items of the other axis
-/// searches all of them, since this source hides none: filtering one axis
-/// never changes what the other's quick filter searches.
+/// form). Both axes hide, apart from the filter. A quick filter searching
+/// the shown items of the other axis searches every one not hidden, whether
+/// filtered out or not: filtering one axis never changes what the other's
+/// quick filter searches, while hiding does.
 pub struct MemorySource<R> {
     table: InMemoryTableSource,
     columns: HashMap<Key, Column<R>>,
@@ -355,12 +365,15 @@ impl<R> MemorySource<R> {
     /// its rows part, extracting each sort column's keys and each searched
     /// column's text from `rows`, and the columns sorted (see
     /// [`MemorySource::support`]) and filtered by its columns part, reading
-    /// the rows' sort keys and text forms. Returns the Change Notices the
-    /// axes need: the rows' first, `Refiltered` if their filter changed
-    /// (else the sort's), then the columns' `Refiltered` if theirs did, else
-    /// their `Reordered` while they are sorted or their sort changed. Any
-    /// View Spec, even the one in force, applies each axis's filter again to
-    /// its unmatched items.
+    /// the rows' sort keys and text forms. Each axis hides the items its
+    /// hidden Keys name; Keys no item has are dropped from the spec
+    /// [`MemorySource::view_spec`] gives. Returns the Change Notices the
+    /// axes need: the rows' first, `Refiltered` if their filter or hidden
+    /// items changed, or the columns their quick filter searches (else the
+    /// sort's), then the columns' `Refiltered` likewise, else their
+    /// `Reordered` while they are sorted or their sort changed. Any View
+    /// Spec, even the one in force, applies each axis's filter again to its
+    /// unmatched items.
     /// If a sort names a column with no closure or a row that is not there,
     /// nothing changes. A quick filter with an invalid regex is not applied:
     /// the one in force stays. A condition with an invalid regex, or of a
@@ -382,13 +395,21 @@ impl<R> MemorySource<R> {
         };
         let sorted = self.sort(rows, &spec.rows.sort)?;
         let resorted = by_rows.map(|by_rows| self.sort_columns(rows, by, &by_rows));
+        let hid = Axis::ALL.map(|a| {
+            let hidden = &spec.axis(a).hidden;
+            self.table.apply_hidden(a, hidden).is_some()
+        });
         let mut notices = Vec::new();
-        let changed = self.filters[0].take(&spec.rows.filter);
+        let changed = self.filters[0].take(&spec.rows.filter)
+            || hid[0]
+            || (hid[1] && self.filters[0].searches_shown());
         notices.push(match changed || self.table.has_unmatched(Axis::Rows) {
             true => (Axis::Rows, self.refilter(rows)),
             false => (Axis::Rows, sorted),
         });
-        let changed = self.filters[1].take(&spec.cols.filter);
+        let changed = self.filters[1].take(&spec.cols.filter)
+            || hid[1]
+            || (hid[0] && self.filters[1].searches_shown());
         if changed || self.table.has_unmatched(Axis::Cols) {
             notices.push((Axis::Cols, self.refilter_columns(rows)));
         } else if let Some(resorted) = resorted {
@@ -465,11 +486,12 @@ impl<R> MemorySource<R> {
     }
 
     /// The columns with a text form `query` searches: a quick filter
-    /// searching the shown columns searches every one, since none is
-    /// hidden.
+    /// searching the shown columns searches every one not hidden, filtered
+    /// out or not.
     fn searched_columns(&self, query: &TextQuery) -> Vec<Key> {
         let columns = match &query.searches {
             Searched::Shown => (0..self.table.base_len(Axis::Cols))
+                .filter(|&i| !self.table.is_hidden(Axis::Cols, i))
                 .map(|i| self.table.base_key(Axis::Cols, i))
                 .collect(),
             Searched::Keys(keys) => keys.clone(),
@@ -620,7 +642,9 @@ impl<R> MemorySource<R> {
         // Each value's count and the row with its least sort key.
         let mut seen: HashMap<Cow<'_, str>, (u64, usize)> = HashMap::new();
         for (i, row) in rows.iter().enumerate() {
-            if !(self.kept_by_host(row) && self.passes(&narrow, &searched, row)) {
+            if self.table.is_hidden(Axis::Rows, i)
+                || !(self.kept_by_host(row) && self.passes(&narrow, &searched, row))
+            {
                 continue;
             }
             let Some(text) = self.text(column, row) else {
@@ -659,7 +683,9 @@ impl<R> MemorySource<R> {
         let mut seen: HashMap<Cow<'_, str>, u64> = HashMap::new();
         for i in 0..self.table.base_len(Axis::Cols) {
             let column = self.table.base_key(Axis::Cols, i);
-            if !self.column_passes(&narrow, &read, rows, column) {
+            if self.table.is_hidden(Axis::Cols, i)
+                || !self.column_passes(&narrow, &read, rows, column)
+            {
                 continue;
             }
             let Some(text) = row.and_then(|r| self.text(column, r)) else {
@@ -884,14 +910,17 @@ impl<R> MemorySource<R> {
         self.table.sort_spec(Axis::Rows)
     }
 
-    /// The View Spec the source applies: each axis's sort, quick filter
-    /// and conditions, as last applied.
+    /// The View Spec the source applies: each axis's sort, quick filter,
+    /// conditions and hidden Keys, as last applied, less hidden Keys no item
+    /// has.
     pub fn view_spec(&self) -> ViewSpec {
         ViewSpec::default()
             .with_sort(Axis::Rows, self.sort_spec().clone())
             .with_filter(Axis::Rows, self.filters[0].spec())
+            .with_hidden(Axis::Rows, self.table.hidden(Axis::Rows).to_vec())
             .with_sort(Axis::Cols, self.table.sort_spec(Axis::Cols).clone())
             .with_filter(Axis::Cols, self.filters[1].spec())
+            .with_hidden(Axis::Cols, self.table.hidden(Axis::Cols).to_vec())
     }
 
     /// The unfiltered count of each axis: every base row and column.
@@ -918,6 +947,11 @@ impl<R> MemorySource<R> {
             .with_sort(sort)
             .with_text(text.then_some(TextSupport::new(true)))
             .with_one_of(text)
+    }
+
+    /// Both axes hide.
+    pub fn hide_support(&self, _axis: Axis) -> bool {
+        true
     }
 
     /// Both axes have a quick filter, regex included.
@@ -1218,6 +1252,10 @@ impl<R> PumpSource for Over<'_, R> {
 
     fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {
         self.source.quick_filter(axis)
+    }
+
+    fn hide_support(&mut self, axis: Axis) -> bool {
+        self.source.hide_support(axis)
     }
 
     fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {

@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, ConditionKind, Cursor, Edge, FilterSpec, FocusEnd, Mode, Searched, Snapshot,
+    Axis, ConditionKind, Cursor, Edge, FilterSpec, FocusEnd, Key, Mode, Searched, Snapshot,
     SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
@@ -248,11 +248,27 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
     out
 }
 
-/// A View Spec's sorts, then its filters if any (see [`filters_text`]).
+/// A View Spec's sorts, then its filters if any (see [`filters_text`]), then
+/// its hidden Keys if any: `hide` and the rows' Keys, then `cols` and the
+/// columns'.
 pub(crate) fn view_text(spec: &ViewSpec) -> String {
     let mut text = sorts_text(spec);
     if !(spec.rows.filter.is_empty() && spec.cols.filter.is_empty()) {
         text += &format!(" filter {}", filters_text(spec));
+    }
+    if !(spec.rows.hidden.is_empty() && spec.cols.hidden.is_empty()) {
+        let keys = |keys: &[Key]| {
+            let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
+            if keys.is_empty() {
+                "none".to_string()
+            } else {
+                keys.join(",")
+            }
+        };
+        text += &format!(" hide {}", keys(&spec.rows.hidden));
+        if !spec.cols.hidden.is_empty() {
+            text += &format!(" cols {}", keys(&spec.cols.hidden));
+        }
     }
     text
 }

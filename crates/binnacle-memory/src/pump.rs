@@ -62,6 +62,13 @@ pub trait PumpSource {
         None
     }
 
+    /// Whether the source hides items of `axis` named in the View Spec's
+    /// hidden Keys, for the host to declare with [`Grid::set_hide_support`].
+    /// The default hides none.
+    fn hide_support(&mut self, _axis: Axis) -> bool {
+        false
+    }
+
     /// The distinct values `key`, an item of the other axis, holds across
     /// the items of `axis`, as `query` asks, for a checklist; `None` if the
     /// source can't list them (the default), so OneOf conditions are not
