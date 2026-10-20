@@ -4,8 +4,8 @@
 use std::time::{Duration, Instant};
 
 use binnacle_core::{
-    Axis, Blanks, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery, FilterSpec,
-    Grid, Key, Snapshot, TextQuery, TextSupport, Value,
+    Axis, Blanks, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery, Edge,
+    FilterSpec, Grid, Key, Snapshot, TextQuery, TextSupport, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -16,7 +16,8 @@ use crate::checklist::{Column, Shown};
 use crate::renderer::{char_count, fit};
 use crate::{Content, Theme};
 
-/// A find or filter control a key reaches, outside the Grid's Actions. Every
+/// A find, filter or pinning control a key reaches, outside the Grid's
+/// Actions. Every
 /// [`Preset`] reaches each of [`Control::ALL`]; the host carries it out with
 /// the method each names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -64,11 +65,16 @@ pub enum Control {
     /// goes on to the [`crate::Keymap`] ([`ColumnFilter::close`],
     /// [`crate::FindBar::close`]).
     Close,
+    /// Pin the focused item of `axis` to `edge`, or unpin it if it is pinned
+    /// there already ([`crate::toggle_pin`]).
+    Pin { axis: Axis, edge: Edge },
+    /// Unpin the focused item of `axis` ([`crate::unpin_focused`]).
+    Unpin { axis: Axis },
 }
 
 impl Control {
     /// Every Control, each of which every preset reaches.
-    pub const ALL: [Control; 16] = [
+    pub const ALL: [Control; 18] = [
         Control::QuickFilter,
         Control::ColumnFilter,
         Control::RowFilter,
@@ -85,6 +91,11 @@ impl Control {
         Control::Case,
         Control::Reapply,
         Control::Close,
+        Control::Pin {
+            axis: Axis::Cols,
+            edge: Edge::Leading,
+        },
+        Control::Unpin { axis: Axis::Cols },
     ];
 }
 
@@ -101,19 +112,22 @@ pub enum Preset {
     /// rows, Alt+C case, Ctrl+L the quick filter, Alt+Down the focused
     /// column's filter popup and Alt+Right the focused row's, Alt+T and Alt+N
     /// the column's text set to contain or not, Alt+= keep the focused value, Ctrl+D remove, Ctrl+K clear, Alt+L (or
-    /// Excel's Ctrl+Alt+L) apply the filter again, Esc close.
+    /// Excel's Ctrl+Alt+L) apply the filter again, Esc close, Alt+, pin the
+    /// focused column left and Alt+U unpin it.
     Chords,
     /// vim and VisiData: `/` and `?` find forwards and backwards, `n` and `N`
     /// step, `|` the quick filter, `\` and `&` the focused column's text set
     /// to contain or not, `F` its filter popup, `R` the focused row's, `=`
     /// keep the focused value, `u` and `U` remove and clear, `i` case, `m` show only matching rows,
-    /// `r` apply the filter again, Esc close. Typing is off.
+    /// `r` apply the filter again, Esc close, `!` pin the focused column
+    /// left or unpin it (VisiData's key column), Alt+U unpin. Typing is off.
     Modes,
     /// Single keys with no modes: `/ ? n N` find, `\` the quick filter, `f`
     /// the filter drawer (see [`ColumnFilter::drawer`]), `F` the focused
     /// row's, `|` and `&` the column's text set to contain or not, `=` keep the focused value, `x` and `X` remove
     /// and clear, `m` show only matching rows, `i` case, `r` apply the filter
-    /// again, Esc close. Typing is off.
+    /// again, Esc close, `<` pin the focused column left, `u` unpin it.
+    /// Typing is off.
     BareKeys,
 }
 
@@ -144,6 +158,11 @@ impl Controls {
         const CTRL: KeyModifiers = KeyModifiers::CONTROL;
         const ALT: KeyModifiers = KeyModifiers::ALT;
         const SHIFT: KeyModifiers = KeyModifiers::SHIFT;
+        const PIN_LEFT: Control = Pin {
+            axis: Axis::Cols,
+            edge: Edge::Leading,
+        };
+        const UNPIN: Control = Unpin { axis: Axis::Cols };
         let mut controls = Controls {
             bindings: Vec::new(),
         };
@@ -168,6 +187,8 @@ impl Controls {
                 (Char('l'), ALT, Reapply),
                 (Char('l'), CTRL.union(ALT), Reapply),
                 (Esc, NONE, Close),
+                (Char(','), ALT, PIN_LEFT),
+                (Char('u'), ALT, UNPIN),
             ],
             Preset::Modes => &[
                 (Char('|'), NONE, QuickFilter),
@@ -186,6 +207,8 @@ impl Controls {
                 (Char('i'), NONE, Case),
                 (Char('r'), NONE, Reapply),
                 (Esc, NONE, Close),
+                (Char('!'), NONE, PIN_LEFT),
+                (Char('u'), ALT, UNPIN),
             ],
             Preset::BareKeys => &[
                 (Char('\\'), NONE, QuickFilter),
@@ -204,6 +227,8 @@ impl Controls {
                 (Char('i'), NONE, Case),
                 (Char('r'), NONE, Reapply),
                 (Esc, NONE, Close),
+                (Char('<'), NONE, PIN_LEFT),
+                (Char('u'), NONE, UNPIN),
             ],
         };
         for &(code, modifiers, control) in bindings {

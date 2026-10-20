@@ -2,7 +2,9 @@
 //! reaching every Control, none only through a function key, and a host's
 //! own bindings over them.
 
-use binnacle_ratatui::{Control, Controls, Preset};
+use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key, Viewport};
+use binnacle_memory::IdentitySource;
+use binnacle_ratatui::{Control, Controls, Preset, toggle_pin, unpin_focused};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const PRESETS: [Preset; 3] = [Preset::Chords, Preset::Modes, Preset::BareKeys];
@@ -183,4 +185,65 @@ fn a_host_overrides_single_keys_over_a_preset() {
         chords.hint(Control::FindPrevious).as_deref(),
         Some("Shift+F3")
     );
+}
+
+const PIN_LEFT: Control = Control::Pin {
+    axis: Axis::Cols,
+    edge: Edge::Leading,
+};
+const UNPIN: Control = Control::Unpin { axis: Axis::Cols };
+
+#[test]
+fn each_preset_pins_the_focused_column_left_and_unpins_it() {
+    let alt = KeyModifiers::ALT;
+    let cases = [
+        (
+            Preset::Chords,
+            press(KeyCode::Char(','), alt),
+            press(KeyCode::Char('u'), alt),
+        ),
+        (Preset::Modes, char('!'), press(KeyCode::Char('u'), alt)),
+        (Preset::BareKeys, char('<'), char('u')),
+    ];
+    for (preset, pin, unpin) in cases {
+        let controls = Controls::preset(preset);
+        assert_eq!(controls.control(&pin), Some(PIN_LEFT), "{preset:?}");
+        assert_eq!(controls.control(&unpin), Some(UNPIN), "{preset:?}");
+    }
+}
+
+/// The Keys of the columns pinned left.
+fn pinned(grid: &mut Grid) -> Vec<u64> {
+    for (axis, range) in grid.begin_frame(Viewport::new(40.0, 10.0)) {
+        let keys = IdentitySource::new(range.end).window(range.clone());
+        grid.set_window(axis, range.start, &keys);
+    }
+    let snapshot = grid.snapshot();
+    (snapshot.pinned(Axis::Cols, Edge::Leading).iter())
+        .filter_map(|i| i.key.map(|k| k.0))
+        .collect()
+}
+
+/// Pin toggles the focused column; Unpin unpins it and leaves an unpinned
+/// one alone.
+#[test]
+fn pin_toggles_the_focused_column_and_unpin_unpins_it() {
+    let mut grid = Grid::new(
+        AxisConfig::new(20, 1.0).header(1.0),
+        AxisConfig::new(8, 6.0).header(3.0).gap(1.0),
+    );
+    pinned(&mut grid);
+    grid.set_focus(Key(0), Key(4));
+    toggle_pin(&mut grid, Axis::Cols, Edge::Leading);
+    assert_eq!(pinned(&mut grid), [4]);
+    grid.set_focus(Key(0), Key(2));
+    toggle_pin(&mut grid, Axis::Cols, Edge::Leading);
+    assert_eq!(pinned(&mut grid), [4, 2]);
+    toggle_pin(&mut grid, Axis::Cols, Edge::Leading);
+    assert_eq!(pinned(&mut grid), [4]);
+    unpin_focused(&mut grid, Axis::Cols);
+    assert_eq!(pinned(&mut grid), [4]);
+    grid.set_focus(Key(0), Key(4));
+    unpin_focused(&mut grid, Axis::Cols);
+    assert_eq!(pinned(&mut grid), Vec::<u64>::new());
 }

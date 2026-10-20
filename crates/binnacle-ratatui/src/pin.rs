@@ -1,0 +1,26 @@
+//! Pinning the focused item, as [`crate::Control::Pin`] and
+//! [`crate::Control::Unpin`] ask.
+
+use binnacle_core::{Axis, Edge, Grid};
+
+/// Pins the focused item of `axis` to `edge`, or unpins it if it is pinned
+/// there already. Does nothing while focus is unplaced or its Key unknown.
+pub fn toggle_pin(grid: &mut Grid, axis: Axis, edge: Edge) {
+    let snapshot = grid.snapshot();
+    let Some(key) = snapshot.focus(axis).and_then(|f| f.key) else {
+        return;
+    };
+    let pinned = (snapshot.pinned(axis, edge).iter()).any(|i| i.key == Some(key));
+    if pinned {
+        grid.unpin(axis, key);
+    } else {
+        grid.pin(axis, edge, key);
+    }
+}
+
+/// Unpins the focused item of `axis`, if it is pinned.
+pub fn unpin_focused(grid: &mut Grid, axis: Axis) {
+    if let Some(key) = grid.snapshot().focus(axis).and_then(|f| f.key) {
+        grid.unpin(axis, key);
+    }
+}

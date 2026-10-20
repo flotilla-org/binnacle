@@ -103,6 +103,12 @@
 //! closes it. The status line names the preset's main keys while it has
 //! nothing else to say.
 //!
+//! Alt+, pins the focused column to the left (`!` in modes, `<` in bare
+//! keys): it stays after the row numbers, past a `║` edge, while the other
+//! columns scroll behind it, and it keeps its place through sorts and
+//! filters. Pinning more columns adds each after the last. The same key on a
+//! pinned column unpins it, as does Alt+U (`u` in bare keys).
+//!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
 //! huge table, typing digits goes to that row number. Enter, F2 or a
@@ -120,7 +126,7 @@
 //! Ctrl+G scrolls to the middle and Ctrl+R cycles the crew filter. Click to
 //! focus, Shift-click or drag to select, Ctrl-click a cell to pick its row
 //! and Ctrl-click a header to pick its row or column, click a row number to
-//! select its row. Alt+U cycles what a click selects: the cell, its row or
+//! select its row. Alt+S cycles what a click selects: the cell, its row or
 //! its column (where Ctrl-click on a cell picks the column). The status line
 //! counts the picks on each axis. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
@@ -141,7 +147,7 @@ use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
+    Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, Edge, EditEnd,
     Effect, FindDirection, FindMatch, FindQuery, Grid, HeaderClick, Key, Located, Mode, Position,
     SelectionUnit, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
@@ -154,7 +160,14 @@ use binnacle_ratatui::{
     CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
     Theme, animating, begin_frame, clear_filters, count, fit_width, keep_value, remove_conditions,
-    render_conditions, render_editor, render_with, row_count, status, wheel,
+    render_conditions, render_editor, render_with, row_count, status, toggle_pin, unpin_focused,
+    wheel,
+};
+
+/// The Control that pins the focused column left, for the keys line.
+const PIN_LEFT: Control = Control::Pin {
+    axis: Axis::Cols,
+    edge: Edge::Leading,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -1120,7 +1133,7 @@ fn fill(grid: &mut Grid, table: &Table, viewport: Viewport) {
 /// shown, and a cell after it for the band rule (or a blank when none is
 /// drawn).
 fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
-    let widest = (snapshot.rows().iter())
+    let widest = (snapshot.drawn(Axis::Rows))
         .map(|r| {
             let label = r.key.map_or_else(
                 || r.position.saturating_add(1).to_string(),
@@ -1327,14 +1340,15 @@ fn main() -> io::Result<()> {
     };
     // What the status line says while nothing else is to be said.
     let keys = format!(
-        "{} find  {} filter  {} column  {} row  {} clear",
+        "{} find  {} filter  {} column  {} row  {} clear  {} pin",
         hint(Control::Find),
         hint(Control::QuickFilter),
         hint(Control::ColumnFilter),
         hint(Control::RowFilter),
-        hint(Control::Clear)
+        hint(Control::Clear),
+        hint(PIN_LEFT)
     );
-    // What a click selects, which Alt+U cycles.
+    // What a click selects, which Alt+S cycles.
     let mut unit = SelectionUnit::Cells;
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
@@ -1421,10 +1435,11 @@ fn main() -> io::Result<()> {
                 }
                 let snapshot = grid.snapshot();
                 shown_rows.clear();
-                shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
+                shown_rows.extend(snapshot.drawn(Axis::Rows).filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 moving = animating(&snapshot);
-                let shown_cols: Vec<Key> = snapshot.cols().iter().filter_map(|c| c.key).collect();
+                let shown_cols: Vec<Key> =
+                    snapshot.drawn(Axis::Cols).filter_map(|c| c.key).collect();
                 let (marks, found) = table.find(snapshot.find(), &shown_rows, &shown_cols);
                 let unmatched = table.unmatched(&shown_rows, &shown_cols);
                 let content = Marked {
@@ -1597,6 +1612,14 @@ fn main() -> io::Result<()> {
                             grid.reapply_view();
                             true
                         }
+                        Some(Control::Pin { axis, edge }) => {
+                            toggle_pin(&mut grid, axis, edge);
+                            true
+                        }
+                        Some(Control::Unpin { axis }) => {
+                            unpin_focused(&mut grid, axis);
+                            true
+                        }
                         // Esc closes the drawer, else find, else cancels.
                         Some(Control::Close) if popup.close() => true,
                         Some(Control::Close) if find.is_open() => {
@@ -1620,7 +1643,7 @@ fn main() -> io::Result<()> {
                         table.next_filter(&mut grid);
                         continue;
                     }
-                    if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('u') {
+                    if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('s') {
                         unit = match unit {
                             SelectionUnit::Cells => SelectionUnit::Rows,
                             SelectionUnit::Rows => SelectionUnit::Cols,

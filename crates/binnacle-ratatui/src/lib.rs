@@ -11,6 +11,7 @@ mod filter;
 mod find;
 mod keymap;
 mod mouse;
+mod pin;
 mod renderer;
 mod scrollbar;
 mod shimmer;
@@ -25,6 +26,7 @@ pub use filter::{
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
 pub use mouse::Mouse;
+pub use pin::{toggle_pin, unpin_focused};
 pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
