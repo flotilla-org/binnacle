@@ -551,7 +551,7 @@ fn a_rows_values_filter_the_columns() {
     let rows = [rec("eve", Some(2.5), 3), rec("gus", None, 1)];
     let mut source = source(&rows);
     let text = Support::default()
-        .with_sort(false)
+        .with_sort(true)
         .with_text(Some(TextSupport::new(true)))
         .with_one_of(true);
     assert_eq!(source.support(Axis::Cols, Key(1)), text);

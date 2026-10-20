@@ -721,7 +721,7 @@ describe("fromRows's columns", () => {
       let applied: { rows: FilterSpec<keyof Rec>; cols: FilterSpec<number> } = { rows: NONE, cols: NONE };
       try {
         expect(source.cols.quickFilter).toEqual({ regex: true });
-        expect(source.cols.support!(0)).toEqual({ sort: false, text: { regex: true }, oneOf: true });
+        expect(source.cols.support!(0)).toEqual({ sort: true, text: { regex: true }, oneOf: true });
         const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 5 }));
         for (let i = 0; i < steps; i++) {
           colsNotices.length = 0;

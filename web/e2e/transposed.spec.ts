@@ -49,12 +49,15 @@ test("the filter box keeps the matching records as columns", async ({ page }) =>
   await expect(status(page)).toContainText(`of ${rows.length.toLocaleString("en")}`);
 });
 
-/** Clicks the row header of the field at screen row `row` (0 first), with Shift if `shift`. */
+/**
+ * Clicks the row header of the field at screen row `row` (0 first), with
+ * Shift if `shift`, past the row menu's button at the header's left.
+ */
 async function rowHeader(page: Page, row: number, shift = false) {
   const b = await page.locator(".binnacle-layer").boundingBox();
   if (!b) throw new Error("no grid");
   if (shift) await page.keyboard.down("Shift");
-  await page.mouse.click(b.x + 8, b.y + HEADER + row * ROW + ROW / 2);
+  await page.mouse.click(b.x + 32, b.y + HEADER + row * ROW + ROW / 2);
   if (shift) await page.keyboard.up("Shift");
 }
 
