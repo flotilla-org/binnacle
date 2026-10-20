@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Condition, FindQuery, FocusStep, Grid, Key, Modifiers, PointerEvent,
-    Snapshot, TextQuery, TextSupport, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, Effect, FindQuery, FocusStep, Grid, Key, Modifiers,
+    PointerEvent, Snapshot, TextQuery, TextSupport, ViewSpec, Viewport,
 };
 use binnacle_memory::MemorySource;
 use binnacle_testkit::{Record, RecordTable, Scenario};
@@ -136,7 +136,11 @@ impl Host {
         let v = self.viewport;
         let g = &mut self.s.grid;
         match input {
-            Input::Hide(axis, keys) => g.hide(axis, &keys.into_iter().map(Key).collect::<Vec<_>>()),
+            Input::Hide(axis, keys) => {
+                let keys: Vec<Key> = keys.into_iter().map(Key).collect();
+                // The default cap is far past these tables.
+                g.hide(axis, &keys).unwrap();
+            }
             Input::Show(axis, keys) => g.show(axis, &keys.into_iter().map(Key).collect::<Vec<_>>()),
             Input::Click(x, y, m) => {
                 let (x, y) = (x * v.width, y * v.height);
@@ -302,5 +306,66 @@ fn hiding_then_showing_restores_the_view_and_the_size_overrides(tc: TestCase) {
     for &k in &sized {
         let size = host.s.grid.size_override(axis, Key(k));
         assert_eq!(size, Some(2.5 + k as f32));
+    }
+}
+
+#[hegel::test(test_cases = 200)]
+fn a_hide_past_the_cap_changes_nothing_and_one_within_it_hides_every_item_named(tc: TestCase) {
+    let cols = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let rows = tc.draw(records(cols));
+    let n_rows = rows.len();
+    let mut host = Host::new(rows, cols, tc.draw(viewport()));
+    let caps = [
+        tc.draw(gs::integers::<usize>().max_value(3)),
+        tc.draw(gs::integers::<usize>().max_value(3)),
+    ];
+    for axis in Axis::ALL {
+        host.s.grid.set_hide_cap(axis, caps[axis.index()]);
+    }
+    host.settle();
+    let step = hegel::tuples!(axis(), gs::booleans(), keys(n_rows.max(cols)));
+    for (axis, hide, keys) in tc.draw(gs::vecs(step).max_size(8)) {
+        let keys: Vec<Key> = keys.into_iter().map(Key).collect();
+        let before = host.s.grid.snapshot().hidden(axis).to_vec();
+        if !hide {
+            host.s.grid.show(axis, &keys);
+            host.settle();
+            continue;
+        }
+        let hid = host.s.grid.hide(axis, &keys);
+        let asked = host
+            .s
+            .effects()
+            .iter()
+            .any(|e| matches!(e, Effect::ViewRequested { .. }));
+        host.settle();
+        let snap = host.s.grid.snapshot();
+        let after = snap.hidden(axis);
+        let cap = caps[axis.index()];
+        assert!(after.len() <= cap, "{after:?} past the cap {cap}");
+        match hid {
+            Err(capped) => {
+                assert_eq!(capped.cap, cap);
+                assert!(!asked, "a refused hide asks for nothing");
+                assert_eq!(after, before.as_slice());
+                // Refused only when the Keys named and those hidden together
+                // pass the cap.
+                let mut all = before.clone();
+                for &k in &keys {
+                    if !all.contains(&k) {
+                        all.push(k);
+                    }
+                }
+                assert!(all.len() > cap, "{all:?} fit in {cap}");
+            }
+            Ok(()) => {
+                let count = snap.count(axis);
+                let shown = host.s.source.source.window(axis, 0..count);
+                assert!(
+                    keys.iter().all(|k| !shown.contains(k)),
+                    "{keys:?} in {shown:?}"
+                );
+            }
+        }
     }
 }

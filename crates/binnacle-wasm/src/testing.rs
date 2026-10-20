@@ -111,6 +111,7 @@ struct DumpAxis {
     conditions: Vec<DumpListed>,
     movable: bool,
     hide_support: bool,
+    hide_cap: usize,
 }
 
 #[derive(Serialize)]
@@ -384,6 +385,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             .collect(),
         movable: s.movable(axis),
         hide_support: s.hide_support(axis),
+        hide_cap: s.hide_cap(axis),
     }
 }
 
@@ -868,12 +870,15 @@ pub fn scenario(name: &str) -> Grid {
             for axis in Axis::ALL {
                 grid.set_hide_support(axis, true);
             }
-            grid.hide(Axis::Rows, &[key(2), key(5)]);
-            grid.hide(Axis::Cols, &[key(4)]);
+            grid.set_hide_cap(Axis::Cols, 2);
+            grid.hide(Axis::Rows, &[key(2), key(5)]).unwrap();
+            grid.hide(Axis::Cols, &[key(4)]).unwrap();
             let applied = grid.snapshot().requested_view().cloned().unwrap();
             grid.view_applied(applied.clone(), Totals::unknown());
             grid.view_applied(applied, Totals::unknown());
-            grid.hide(Axis::Cols, &[key(1)]);
+            grid.hide(Axis::Cols, &[key(1)]).unwrap();
+            // Past the columns' cap of 2: nothing more is hidden.
+            grid.hide(Axis::Cols, &[key(0)]).unwrap_err();
             grid.show(Axis::Rows, &[key(5)]);
             grid.set_hide_support(Axis::Rows, false);
         }
@@ -988,6 +993,7 @@ mod tests {
                     assert_eq!(s.applied_view().rows.hidden, [key(2), key(5)]);
                     assert_eq!(s.hidden(Axis::Rows), [key(2)]);
                     assert_eq!(s.hidden(Axis::Cols), [key(4), key(1)]);
+                    assert_eq!(s.hide_cap(Axis::Cols), 2);
                     assert!(s.view_pending());
                 }
                 "found" => {

@@ -246,9 +246,16 @@ impl WebGrid {
         self.grid.set_hide_support(axis(a), hides);
     }
 
-    pub fn hide(&mut self, a: u8, keys: &[u64]) {
+    /// The most hidden Keys the Table Source takes on the axis.
+    pub fn set_hide_cap(&mut self, a: u8, cap: u32) {
+        self.grid.set_hide_cap(axis(a), cap as usize);
+    }
+
+    /// `false` if the axis's hidden Keys would pass its cap, so nothing was
+    /// hidden.
+    pub fn hide(&mut self, a: u8, keys: &[u64]) -> bool {
         let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
-        self.grid.hide(axis(a), &keys);
+        self.grid.hide(axis(a), &keys).is_ok()
     }
 
     pub fn show(&mut self, a: u8, keys: &[u64]) {

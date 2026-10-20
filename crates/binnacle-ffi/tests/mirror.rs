@@ -64,6 +64,7 @@ enum Op {
     ReplaceCondition(Axis, Condition, Condition),
     HideSupport(Axis, bool),
     Hide(Axis, Vec<Key>),
+    HideCap(Axis, usize),
     Show(Axis, Vec<Key>),
     SetFind(Option<FindQuery>),
     FindSupport(Option<TextSupport>),
@@ -333,7 +334,9 @@ fn totals(tc: &TestCase) -> Totals {
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(18)) {
+    match tc.draw(gs::integers::<u8>().max_value(19)) {
+        // Small, so some hides pass it.
+        19 => Op::HideCap(axis, tc.draw(gs::integers::<usize>().max_value(4))),
         15 => Op::MoveAnswered(tc.draw(gs::optional(gs::text().max_size(8)))),
         16 => Op::HideSupport(axis, tc.draw(gs::weighted_booleans(0.75))),
         17 => Op::Hide(axis, tc.draw(gs::vecs(key(axis)).max_size(3))),
@@ -503,7 +506,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(46))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(47))),
     }
 }
 
@@ -740,6 +743,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             44 => binnacle_grid_pin(h, COLS, 2, 0),
             45 => binnacle_grid_freeze(h, 2, 0),
             46 => binnacle_grid_set_edge_gap(h, 2, 1.0),
+            47 => binnacle_grid_set_hide_cap(h, 2, 1),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -866,6 +870,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         let hidden = unsafe { slice::from_raw_parts(a.hidden, a.hidden_len) };
         let want: Vec<u64> = rust.hidden(axis).iter().map(|k| k.0).collect();
         assert_eq!(hidden, want, "{axis:?} hidden");
+        assert_eq!(a.hide_cap, rust.hide_cap(axis), "{axis:?} hide cap");
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -1568,9 +1573,18 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     binnacle_grid_set_hide_support(h, tag(axis), u32::from(hides))
                 }
                 Op::Hide(axis, keys) => {
-                    grid.hide(axis, &keys);
+                    let want = match grid.hide(axis, &keys) {
+                        Ok(()) => 1,
+                        Err(_) => BINNACLE_HIDE_CAPPED,
+                    };
                     let keys: Vec<u64> = keys.iter().map(|k| k.0).collect();
-                    binnacle_grid_hide(h, tag(axis), keys.as_ptr(), keys.len())
+                    let got = binnacle_grid_hide(h, tag(axis), keys.as_ptr(), keys.len());
+                    assert_eq!(got, want, "hide past the cap or not");
+                    1
+                }
+                Op::HideCap(axis, cap) => {
+                    grid.set_hide_cap(axis, cap);
+                    binnacle_grid_set_hide_cap(h, tag(axis), cap)
                 }
                 Op::Show(axis, keys) => {
                     grid.show(axis, &keys);

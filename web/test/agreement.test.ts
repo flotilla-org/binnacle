@@ -219,6 +219,26 @@ describe("Hiding", () => {
       grid.free();
     }
   });
+
+  test("a hide past the axis's cap returns false and asks for nothing", () => {
+    const { WebAxis, WebGrid } = bridge();
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(3, 80));
+    try {
+      grid.set_hide_support(0, true);
+      grid.set_hide_cap(0, 2);
+      expect(grid.hide(0, BigUint64Array.from([1n, 2n, 3n]))).toBe(false);
+      expect(grid.hide(0, BigUint64Array.from([1n, 2n]))).toBe(true);
+      const requested = (grid.poll_effects() as { type: string; spec?: KeyedViewSpec }[]).filter(
+        (e) => e.type === "ViewRequested",
+      );
+      expect(requested.map((e) => e.spec?.rows.hidden)).toEqual([[1n, 2n]]);
+      grid.begin_frame(400, 200);
+      const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+      expect([s.rows.hideCap, s.cols.hideCap]).toEqual([2, 1000]);
+    } finally {
+      grid.free();
+    }
+  });
 });
 
 describe("Support", () => {

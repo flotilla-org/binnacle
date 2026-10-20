@@ -4,8 +4,8 @@
 //! `Refiltered` rules while Size Overrides stay.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Condition, Effect, Grid, Key, Modifiers, TextQuery, ViewEdit,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, Effect, Grid, HIDE_CAP, HideCapped, Key, Modifiers,
+    TextQuery, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_testkit::{ColumnMajorTable, RecordTable, Scenario};
 
@@ -48,14 +48,14 @@ fn hiding_the_focused_column_moves_focus_to_its_neighbour_and_keeps_its_width() 
     s.input(|g| g.set_size(Axis::Cols, Key(1), 4.0));
     s.click(14.0, 2.0, Modifiers::NONE);
     let mut out = s.step("column 1 sized 4; focus record 1, column 1", V);
-    s.input(|g| g.hide(Axis::Cols, &[Key(1)]));
+    s.input(|g| g.hide(Axis::Cols, &[Key(1)]).unwrap());
     out += &s.step(
         "hide column 1: the source leaves it out, focus goes to column 2, the next one",
         V,
     );
     assert_eq!(s.grid.snapshot().hidden(Axis::Cols), &[Key(1)]);
     assert_eq!(s.grid.size_override(Axis::Cols, Key(1)), Some(4.0));
-    s.input(|g| g.hide(Axis::Cols, &[Key(3), Key(1)]));
+    s.input(|g| g.hide(Axis::Cols, &[Key(3), Key(1)]).unwrap());
     out += &s.step("hide column 3 too (column 1 is hidden already)", V);
     s.input(|g| g.show(Axis::Cols, &[Key(1)]));
     out += &s.step(
@@ -75,7 +75,7 @@ fn hiding_rows_drops_their_picks_and_a_range_whole_across_them_stays_whole() {
     s.click(1.0, 2.0, Modifiers::CTRL);
     s.click(1.0, 4.0, Modifiers::CTRL);
     out += &s.step("pick records 1 and 3", V);
-    s.input(|g| g.hide(Axis::Rows, &[Key(1), Key(4)]));
+    s.input(|g| g.hide(Axis::Rows, &[Key(1), Key(4)]).unwrap());
     out += &s.step(
         "hide records 1 and 4: the pick of 1 goes, 3 stays; column 0 stays selected whole",
         V,
@@ -88,7 +88,7 @@ fn clearing_the_filter_leaves_hidden_items_hidden() {
     let mut s = records();
     s.frame(V);
     s.input(|g| {
-        g.hide(Axis::Rows, &[Key(0)]);
+        g.hide(Axis::Rows, &[Key(0)]).unwrap();
         g.add_condition(Axis::Rows, Condition::text(Key(0), TextQuery::new("1")));
     });
     let mut out = s.step("hide record 0; keep values in column 0 holding a 1", V);
@@ -104,12 +104,12 @@ fn clearing_the_filter_leaves_hidden_items_hidden() {
 fn hidden_keys_the_data_lost_are_pruned_from_the_answer() {
     let mut s = records();
     s.frame(V);
-    s.input(|g| g.hide(Axis::Rows, &[Key(5), Key(2)]));
+    s.input(|g| g.hide(Axis::Rows, &[Key(5), Key(2)]).unwrap());
     s.frame(V);
     let notices = s.source.replace(vec![vec![Some(1); 4]; 3]);
     s.input(|g| notices.into_iter().for_each(|(a, n)| g.notify(a, n)));
     s.frame(V);
-    s.input(|g| g.hide(Axis::Rows, &[Key(0)]));
+    s.input(|g| g.hide(Axis::Rows, &[Key(0)]).unwrap());
     let effects = s.effects();
     let (spec, edit) = requests(&effects).pop().expect("a request");
     assert_eq!(spec.rows.hidden, [Key(5), Key(2), Key(0)]);
@@ -134,9 +134,9 @@ fn nothing_hides_on_an_axis_whose_source_cannot() {
     let snap = s.frame(V);
     assert!(!snap.hide_support(Axis::Rows));
     assert!(snap.hide_support(Axis::Cols));
-    s.input(|g| g.hide(Axis::Rows, &[Key(0)]));
+    s.input(|g| g.hide(Axis::Rows, &[Key(0)]).unwrap());
     assert_eq!(requests(&s.effects()), []);
-    s.input(|g| g.hide(Axis::Cols, &[Key(0), Key(0)]));
+    s.input(|g| g.hide(Axis::Cols, &[Key(0), Key(0)]).unwrap());
     let hidden = ViewSpec::default().with_hidden(Axis::Cols, vec![Key(0)]);
     let edit = ViewEdit::Hide {
         axis: Axis::Cols,
@@ -145,7 +145,7 @@ fn nothing_hides_on_an_axis_whose_source_cannot() {
     assert_eq!(requests(&s.effects()), [(hidden, edit)]);
     s.input(|g| {
         g.show(Axis::Cols, &[Key(3)]);
-        g.hide(Axis::Cols, &[Key(0)]);
+        g.hide(Axis::Cols, &[Key(0)]).unwrap();
     });
     assert_eq!(requests(&s.effects()), [], "nothing to show or hide");
 }
@@ -161,9 +161,29 @@ fn hidden_records_of_a_column_major_table_are_its_columns() {
     let mut s = Scenario::new(grid, ColumnMajorTable::new(records, 2, [0, 1]));
     s.frame(V);
     s.input(|g| {
-        g.hide(Axis::Cols, &[Key(1), Key(3)]);
+        g.hide(Axis::Cols, &[Key(1), Key(3)]).unwrap();
         g.action(Action::SelectAll);
     });
     let out = s.step("hide records 1 and 3, the table's columns 1 and 3", V);
     insta::assert_snapshot!(out);
+}
+
+#[test]
+fn hiding_past_the_cap_hides_nothing_and_says_so() {
+    let mut s = records();
+    let snap = s.frame(V);
+    assert_eq!(snap.hide_cap(Axis::Rows), HIDE_CAP);
+    s.input(|g| g.set_hide_cap(Axis::Rows, 2));
+    assert_eq!(s.frame(V).hide_cap(Axis::Rows), 2);
+    s.input(|g| assert_eq!(g.hide(Axis::Rows, &[Key(0)]), Ok(())));
+    s.frame(V);
+    let refused = s.grid.hide(Axis::Rows, &[Key(1), Key(2)]);
+    assert_eq!(refused, Err(HideCapped { cap: 2 }));
+    assert_eq!(requests(&s.effects()), [], "nothing is asked for");
+    assert_eq!(s.grid.snapshot().hidden(Axis::Rows), &[Key(0)]);
+    s.input(|g| assert_eq!(g.hide(Axis::Rows, &[Key(0), Key(1)]), Ok(())));
+    assert_eq!(s.frame(V).hidden(Axis::Rows), &[Key(0), Key(1)]);
+    // A host can't raise the cap past the Grid's own.
+    s.input(|g| g.set_hide_cap(Axis::Cols, HIDE_CAP + 5));
+    assert_eq!(s.frame(V).hide_cap(Axis::Cols), HIDE_CAP);
 }

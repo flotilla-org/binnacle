@@ -101,6 +101,7 @@ int main(void) {
   CHECK(c->strip[3].key == 2003 && c->strip[3].offset == 31);
   CHECK(r->anchor.position == 0 && r->anchor.offset == 0);
   CHECK(r->thumb.fraction == 0 && r->thumb.size > 0 && r->thumb.size < 1);
+  CHECK(r->hide_cap == BINNACLE_HIDE_CAP && c->hide_cap == BINNACLE_HIDE_CAP);
 
   /* Typed text comes back as an Effect stamped with the frame it was typed on. */
   const char typed[] = "h\xc3\xa9llo";

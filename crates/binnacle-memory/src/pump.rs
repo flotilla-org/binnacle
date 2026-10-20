@@ -69,6 +69,12 @@ pub trait PumpSource {
         false
     }
 
+    /// The most hidden Keys the source takes on `axis`, if fewer than the
+    /// Grid's own cap, for the host to declare with [`Grid::set_hide_cap`].
+    fn hide_cap(&mut self, _axis: Axis) -> Option<usize> {
+        None
+    }
+
     /// The distinct values `key`, an item of the other axis, holds across
     /// the items of `axis`, as `query` asks, for a checklist; `None` if the
     /// source can't list them (the default), so OneOf conditions are not

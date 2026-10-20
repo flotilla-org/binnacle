@@ -93,6 +93,10 @@ impl<S: PumpSource> PumpSource for Transposed<S> {
         self.0.hide_support(axis.other())
     }
 
+    fn hide_cap(&mut self, axis: Axis) -> Option<usize> {
+        self.0.hide_cap(axis.other())
+    }
+
     fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
         self.0.distinct(axis.other(), key, query)
     }

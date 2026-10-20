@@ -406,6 +406,12 @@ impl<'a> Snapshot<'a> {
         self.grid.view.hides[axis.index()]
     }
 
+    /// The most hidden Keys `axis` takes ([`crate::HIDE_CAP`] unless the
+    /// Table Source declared fewer): adapters suggest a filter past it.
+    pub fn hide_cap(&self, axis: Axis) -> usize {
+        self.grid.view.hide_cap(axis)
+    }
+
     /// The hidden Keys of `axis` in the order they were hidden, as the
     /// latest request has them (else the applied View Spec): what a "Show
     /// hidden" list offers.

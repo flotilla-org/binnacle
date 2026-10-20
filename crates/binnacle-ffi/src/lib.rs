@@ -20,6 +20,9 @@ pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
 pub const BINNACLE_ROWS: u32 = 0;
 pub const BINNACLE_COLS: u32 = 1;
+/// What `binnacle_grid_hide` returns when the hide would pass the axis's cap.
+pub const BINNACLE_HIDE_CAPPED: i32 = 2;
+pub const BINNACLE_HIDE_CAP: usize = binnacle_core::HIDE_CAP;
 
 pub const BINNACLE_DAMAGE_LAYOUT: u32 = 1;
 pub const BINNACLE_DAMAGE_SELECTION: u32 = 2;
@@ -376,6 +379,7 @@ pub struct BinnacleAxisSnapshot {
     pub hide_support: u32,
     pub hidden: *const u64,
     pub hidden_len: usize,
+    pub hide_cap: usize,
 }
 
 #[repr(C)]
@@ -1470,6 +1474,7 @@ impl BinnacleGrid {
                 hide_support: flag(snap.hide_support(axis)),
                 hidden: hidden.as_ptr(),
                 hidden_len: hidden.len(),
+                hide_cap: snap.hide_cap(axis),
                 selection_runs: runs.as_ptr(),
                 selection_runs_len: runs.len(),
             }
@@ -1833,6 +1838,23 @@ pub unsafe extern "C" fn binnacle_grid_set_quick_filter(
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_hide_cap(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    cap: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_hide_cap(axis(axis_tag)?, cap);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_set_hide_support(
     grid: *mut BinnacleGrid,
     axis_tag: u32,
@@ -1867,11 +1889,13 @@ pub unsafe extern "C" fn binnacle_grid_hide(
         .map(|&k| Key(k))
         .collect();
     // SAFETY: the caller's contract.
-    unsafe {
-        with_handle(grid, |h| {
-            h.grid.hide(axis(axis_tag)?, &keys);
-            Some(())
-        })
+    let Some(h) = (unsafe { grid.as_mut() }) else {
+        return 0;
+    };
+    match axis(axis_tag).map(|a| h.grid.hide(a, &keys)) {
+        None => 0,
+        Some(Ok(())) => 1,
+        Some(Err(_)) => BINNACLE_HIDE_CAPPED,
     }
 }
 

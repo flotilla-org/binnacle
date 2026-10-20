@@ -430,6 +430,18 @@ pub enum ConditionState {
     NotApplied,
 }
 
+/// The most hidden Keys an axis takes, unless its Table Source declares
+/// fewer ([`Grid::set_hide_cap`]). The View Spec carries them whole, so
+/// past this many a filter is the tool that scales.
+pub const HIDE_CAP: usize = 1000;
+
+/// A hide refused because the axis's hidden Keys would number more than its
+/// cap: nothing was hidden. Adapters suggest a filter instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HideCapped {
+    pub cap: usize,
+}
+
 /// The Grid's view state: the View Spec the Table Source last applied and the
 /// one the user last asked for while answers are still due, or while the
 /// source leaves part of it out.
@@ -447,11 +459,19 @@ pub(crate) struct ViewState {
     pub quick_filter: [Option<TextSupport>; 2],
     /// Per axis, whether the Table Source hides its items.
     pub hides: [bool; 2],
+    /// Per axis, the most hidden Keys the Table Source takes, if it declared
+    /// fewer than [`HIDE_CAP`].
+    pub hide_caps: [Option<usize>; 2],
     /// The unfiltered counts from the last `view_applied`.
     pub totals: Totals,
 }
 
 impl ViewState {
+    /// The most hidden Keys `axis` takes.
+    pub fn hide_cap(&self, axis: Axis) -> usize {
+        self.hide_caps[axis.index()].unwrap_or(HIDE_CAP)
+    }
+
     /// How the header of `key` shows the sort of the other axis.
     pub fn header(&self, header_axis: Axis, key: Key) -> HeaderSort {
         let sorted = header_axis.other();
@@ -679,12 +699,21 @@ impl Grid {
         self.view.hides[axis.index()] = hides;
     }
 
+    /// The most hidden Keys the Table Source takes on `axis`, at most
+    /// [`HIDE_CAP`] (the default): past it, hiding is refused and adapters
+    /// suggest a filter, which scales.
+    pub fn set_hide_cap(&mut self, axis: Axis, cap: usize) {
+        self.view.hide_caps[axis.index()] = (cap < HIDE_CAP).then_some(cap);
+    }
+
     /// Hides the items of `axis` with `keys`, adding those not hidden yet to
     /// its hidden Keys, and requests the result. Nothing happens while the
-    /// Table Source can't hide `axis`.
-    pub fn hide(&mut self, axis: Axis, keys: &[Key]) {
+    /// Table Source can't hide `axis`. If the hidden Keys would then number
+    /// more than the axis's hide cap, nothing is hidden and nothing asked
+    /// for: the error carries the cap, so the adapter can suggest a filter.
+    pub fn hide(&mut self, axis: Axis, keys: &[Key]) -> Result<(), HideCapped> {
         if !self.view.hides[axis.index()] {
-            return;
+            return Ok(());
         }
         let hidden = &self.latest_view().axis(axis).hidden;
         let mut new: Vec<Key> = Vec::new();
@@ -693,9 +722,14 @@ impl Grid {
                 new.push(key);
             }
         }
+        let cap = self.view.hide_cap(axis);
+        if hidden.len() + new.len() > cap {
+            return Err(HideCapped { cap });
+        }
         if !new.is_empty() {
             self.edit_view(ViewEdit::Hide { axis, keys: new });
         }
+        Ok(())
     }
 
     /// Shows the hidden items of `axis` with `keys` again and requests the

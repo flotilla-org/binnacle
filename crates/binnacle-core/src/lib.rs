@@ -47,6 +47,7 @@ pub use snapshot::{
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Edge, Generation, Key, Position, Viewport};
 pub use view::{
-    AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HeaderFilter,
-    Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
+    AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HIDE_CAP,
+    HeaderFilter, HideCapped, Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec,
 };

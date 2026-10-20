@@ -139,6 +139,8 @@ export interface AxisSnapshot {
   quickFilter: { regex: boolean } | null;
   /** Whether the Table Source hides items of the axis. */
   hideSupport: boolean;
+  /** The most hidden items the axis takes: past it a hide is refused, and the widget suggests a filter. */
+  hideCap: number;
   /** The axis's conditions as the filter's chips list them: the latest request's, then the applied ones it drops. */
   conditions: { condition: KeyedCondition; state: ConditionState }[];
   /** Whether the Table Source can move the axis's items now, so dragging a header moves them. */
@@ -402,6 +404,7 @@ function readAxis(r: Reader): AxisSnapshot {
   const quickFilter = r.opt(() => ({ regex: r.flag() }));
   const movable = r.flag();
   const hideSupport = r.flag();
+  const hideCap = r.num();
   return {
     count,
     extent,
@@ -419,6 +422,7 @@ function readAxis(r: Reader): AxisSnapshot {
     total,
     quickFilter,
     hideSupport,
+    hideCap,
     conditions,
     movable,
   };

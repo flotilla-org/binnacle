@@ -422,6 +422,9 @@ typedef struct {
    * request has them: what a "Show hidden" list offers. */
   const uint64_t *hidden;
   size_t hidden_len;
+  /* The most hidden Keys the axis takes: past it a hide is refused and the
+   * host suggests a filter (binnacle_grid_set_hide_cap). */
+  size_t hide_cap;
 } BinnacleAxisSnapshot;
 
 /*
@@ -773,9 +776,20 @@ int binnacle_grid_replace_condition(BinnacleGrid *grid, uint32_t axis,
                                     const BinnacleCondition *from,
                                     const BinnacleCondition *to);
 
+/* The most hidden Keys the Table Source takes on axis, at most (and by
+ * default) BINNACLE_HIDE_CAP. */
+#define BINNACLE_HIDE_CAP 1000
+int binnacle_grid_set_hide_cap(BinnacleGrid *grid, uint32_t axis, size_t cap);
+
+/* What binnacle_grid_hide returns when the axis's hidden Keys would then
+ * number more than its cap: nothing is hidden or requested, and the host
+ * suggests a filter instead. */
+#define BINNACLE_HIDE_CAPPED 2
+
 /* Hides the items of axis with keys (len of them; NULL with 0 for none),
  * adding those not hidden yet to its hidden Keys, and requests the result
- * with BINNACLE_VIEW_EDIT_HIDE. Nothing while the source can't hide axis. */
+ * with BINNACLE_VIEW_EDIT_HIDE. Nothing while the source can't hide axis.
+ * BINNACLE_HIDE_CAPPED past the axis's cap. */
 int binnacle_grid_hide(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, size_t len);
 
 /* Shows the hidden items of axis with keys again and requests the result
