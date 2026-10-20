@@ -1,0 +1,19 @@
+---
+source: crates/binnacle-ratatui/tests/render.rs
+expression: out
+---
+--- the columns by row 2 ascending
+     col 0   │col 1   │col 2   │col 3
+1    r0c0     r0c1     r0c2     r0c3    █
+2    r1c0     r1c1     r1c2     r1c3    █
+3   ▲r2c0     r2c1     r2c2     r2c3    █
+--- then row 0 descending
+     col 0   │col 1   │col 2   │col 3
+1  ▼2r0c0     r0c1     r0c2     r0c3    █
+2    r1c0     r1c1     r1c2     r1c3    █
+3  ▲1r2c0     r2c1     r2c2     r2c3    █
+--- click row 1, unanswered
+     col 0   │col 1   │col 2   │col 3
+1 ▼2~r0c0     r0c1     r0c2     r0c3    █
+2   ~r1c0     r1c1     r1c2     r1c3    █
+3 ▲1~r2c0     r2c1     r2c2     r2c3    █

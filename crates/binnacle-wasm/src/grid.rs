@@ -352,6 +352,13 @@ impl WebGrid {
         self.grid.set_selection_unit(codes::selection_unit(unit));
     }
 
+    /// What a click on a header of `a` does; `click` as
+    /// [`codes::header_click`].
+    pub fn set_header_click(&mut self, a: u8, click: u8) {
+        self.grid
+            .set_header_click(axis(a), codes::header_click(click));
+    }
+
     pub fn scroll_by(&mut self, a: u8, items: f64) {
         self.grid.action(Action::ScrollBy {
             axis: axis(a),

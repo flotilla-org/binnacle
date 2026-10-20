@@ -20,7 +20,7 @@ import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
 import type { AxisSnapshot, ConditionState, HeaderPlacement, KeyedTextQuery, Snapshot, Span } from "./snapshot";
 import type { Condition, Distinct, FailedRequest, FindMatch, FindQuery, Located, TableSource, TextQuery, ViewSpec } from "./source";
-import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName } from "./codes";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -92,7 +92,17 @@ export interface GridOptions<RowId, ColId, V = unknown> {
    * (`"cells"`, the default) or its whole row (`"rows"`, for list-style views).
    */
   selectionUnit?: "cells" | "rows";
+  /**
+   * What a click on a header does, per axis: `"sort"` sorts the other axis by
+   * the item (Shift adds it to the sort), `"select"` selects its whole row or
+   * column, `"none"` does nothing. Column headers sort and row headers
+   * select by default; a column-major table swaps them.
+   */
+  headerClick?: { rows?: HeaderClick; cols?: HeaderClick };
 }
+
+/** What a click on a header does: see `GridOptions.headerClick`. */
+export type HeaderClick = keyof typeof HEADER_CLICK;
 
 export interface FrameInfo<RowId = unknown, ColId = unknown> {
   /** Whether the frame painted. */
@@ -268,6 +278,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     });
     this.grid = this.createGrid();
     if (options.selectionUnit) this.grid.set_selection_unit(SELECTION_UNIT[options.selectionUnit]);
+    for (const axis of AXES) {
+      const click = options.headerClick?.[axis];
+      if (click) this.grid.set_header_click(AXIS_CODE[axis], HEADER_CLICK[click]);
+    }
     this.sizes = this.createSizes();
     this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);

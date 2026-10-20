@@ -1,6 +1,7 @@
 // Answers to the Grid's auto-size Effects, measured from the visible cells
 // through their Cell Renderers: the Grid never measures, the widget does.
 
+import { MARKED } from "./canvas/bands";
 import { PAD } from "./canvas/context";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -43,7 +44,9 @@ export function answerAutoSize(effect: Effect, s: Snapshot | null, content: Cont
       if (!s || !content) return true;
       let width = 0;
       for (const row of s.rows.strip) width = Math.max(width, measure.width(content.label("rows", row), theme.font));
-      grid.set_header(AXIS_CODE.cols, Math.ceil(width + 2 * PAD));
+      // Room for a sort marker while a row shown sorts the columns, or will.
+      const marked = s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);
+      grid.set_header(AXIS_CODE.cols, Math.ceil(width + 2 * PAD + (marked ? MARKED : 0)));
       return true;
     }
     default:

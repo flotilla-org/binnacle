@@ -76,6 +76,30 @@ function compare(a: number | string | null, b: number | string | null, direction
   return direction === "ascending" ? sign : -sign;
 }
 
+/**
+ * The columns in the order `spec` sorts them by rows' values: each row
+ * compares its values as numbers if every one that is not null is a number,
+ * else all as strings (`String` of each).
+ */
+function columnReference(rows: Rec[], spec: SortSpec<number>): (keyof Rec)[] {
+  const ids = COLUMNS.map((c) => c.key);
+  const keyed = spec.map(({ id, direction }) => {
+    const values = ids.map((c) => rows[id]![c]);
+    const numbers = values.every((v) => v === null || typeof v === "number");
+    return { direction, values: numbers ? values : values.map((v) => (v === null ? null : String(v))) };
+  });
+  return ids
+    .map((_, i) => i)
+    .sort((i, j) => {
+      for (const { direction, values } of keyed) {
+        const c = compare(values[i]!, values[j]!, direction);
+        if (c !== 0) return c;
+      }
+      return i - j;
+    })
+    .map((i) => ids[i]!);
+}
+
 function reference(rows: Rec[], spec: SortSpec<keyof Rec>, keep: (r: Rec) => boolean): number[] {
   return rows
     .map((_, i) => i)
@@ -375,15 +399,66 @@ describe("fromRows", () => {
     source.destroy();
   });
 
-  test("a View Spec that also sorts the columns is answered with the rows' sort alone", () => {
-    const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }, { n: 1, s: null, b: 0 }], COLUMNS);
-    const byN: SortSpec<keyof Rec> = [{ id: "n", direction: "ascending" }];
-    const asked = {
-      rows: { filter: { quick: null, conditions: [] }, sort: byN },
-      cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 1, direction: "descending" as const }] },
-    };
-    expect(source.view!(asked, new AbortController().signal)).toEqual(answered(2, byN));
-    expect(order(source)).toEqual([1, 0]);
+  test("sorting the columns by rows agrees with a reference sort, whatever the rows' sort", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const byRows = rows.length
+          ? tc.draw(
+              gs.arrays(
+                gs.tuples(
+                  gs.integers({ minValue: 0, maxValue: rows.length - 1 }),
+                  gs.sampledFrom<SortDirection>(["ascending", "descending"]),
+                ),
+                { maxSize: 3 },
+              ),
+            )
+          : [];
+        const spec: SortSpec<number> = byRows.map(([id, direction]) => ({ id, direction }));
+        const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+        const asked = { ...rowsSorted(sort), cols: { filter: { quick: null, conditions: [] }, sort: spec } };
+        expect(source.view!(asked, new AbortController().signal)).toEqual({
+          ...asked,
+          totals: { rows: rows.length, cols: 3 },
+        });
+        expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(columnReference(rows, spec));
+        expect(order(source)).toEqual(reference(rows, sort, () => true));
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("a sort of the columns by a row that is not there is refused", () => {
+    const source = fromRows<Rec>([{ n: 2, s: null, b: 1 }], COLUMNS);
+    const asked = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 1, direction: "descending" as const }] } };
+    expect(() => source.view!(asked, new AbortController().signal)).toThrow(/cannot sort the columns by row 1/);
+    expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(["n", "s", "b"]);
+    source.destroy();
+  });
+
+  test("a change to the row the columns sort by sorts them again and tells the columns", () => {
+    const rows: Rec[] = [{ n: 1, s: null, b: 2 }];
+    const source = fromRows(rows, [{ key: "n" }, { key: "b" }]);
+    const notices: ChangeNotice[] = [];
+    const ignore = () => {};
+    source.attach!({
+      rows: { notify: ignore, supportChanged: ignore },
+      cols: { notify: (n) => void notices.push(n), supportChanged: ignore },
+      viewChanged: ignore,
+      findCounted: ignore,
+    });
+    const byRow0 = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 0, direction: "ascending" as const }] } };
+    source.view!(byRow0, new AbortController().signal);
+    expect(source.cols.window(0, 2, new AbortController().signal)).toEqual(["n", "b"]);
+    rows[0]!.n = 5;
+    source.changed(0);
+    expect(source.cols.window(0, 2, new AbortController().signal)).toEqual(["b", "n"]);
+    expect(notices.map((n) => n.type)).toEqual(["Reordered", "Reordered"]);
+    // Clearing the sort puts the columns back in their own order.
+    source.view!(rowsSorted([]), new AbortController().signal);
+    expect(source.cols.window(0, 2, new AbortController().signal)).toEqual(["n", "b"]);
+    expect(notices.length).toBe(3);
     source.destroy();
   });
 
@@ -417,6 +492,36 @@ describe("fromRows", () => {
     expect(source.cols.label?.("n", 0)).toBe("Number");
     expect(source.cols.label?.("s", 1)).toBe("s");
     source.destroy();
+  });
+
+  test("in the Grid, a row-header click set to sort sorts the columns by that row and marks its header", () => {
+    const rows: Rec[] = [
+      { n: 3, s: null, b: 1 },
+      { n: 1, s: null, b: 2 },
+    ];
+    const source = fromRows(rows, COLUMNS);
+    const h = new Harness(source);
+    try {
+      h.grid.set_header_click(0, 0);
+      h.frame();
+      // Row 1 holds 1, null, 2.
+      h.click(BAND / 2, HEADER + ROW_HEIGHT * 1.5);
+      h.frame();
+      h.drain();
+      h.frame();
+      expect(h.snapshot.cols.strip.map((i) => h.feed.colId(i.key!))).toEqual(["n", "b", "s"]);
+      expect(h.snapshot.rows.headers.map((r) => r.sort)).toEqual([
+        { applied: null, pending: false },
+        { applied: { direction: "ascending", index: 0 }, pending: false },
+      ]);
+      expect(h.values()).toEqual([
+        [3, 1, null],
+        [1, 2, null],
+      ]);
+    } finally {
+      h.destroy();
+      source.destroy();
+    }
   });
 
   test("in the Grid, a header click sorts, focus follows its row, and a filter that drops it moves focus", () => {

@@ -76,8 +76,8 @@ impl WebMemory {
         }
     }
 
-    /// Stages the next sort column's keys as numbers, one per base row;
-    /// `nulls[i] != 0` makes row `i` null.
+    /// Stages the next sort item's keys as numbers, one per base item of
+    /// the axis to sort; `nulls[i] != 0` makes item `i` null.
     pub fn stage_numbers(&mut self, values: &[f64], nulls: &[u8]) {
         let keys = values
             .iter()
@@ -87,20 +87,20 @@ impl WebMemory {
         self.staged.push(Staged::Numbers(keys));
     }
 
-    /// Stages the next sort column's keys as UTF-8 strings, which sort by
-    /// code point: row `i`'s bytes end at `ends[i]`.
+    /// Stages the next sort item's keys as UTF-8 strings, which sort by
+    /// code point: item `i`'s bytes end at `ends[i]`.
     pub fn stage_strings(&mut self, bytes: Vec<u8>, ends: Vec<u32>, nulls: Vec<u8>) {
         self.staged.push(Staged::Strings { bytes, ends, nulls });
     }
 
-    /// Sorts the rows by the Sort Spec of column Logical Indices and
-    /// directions (see [`codes::sort_spec`]), one staged column each, in
-    /// order. The rows need a `Reordered` notice.
-    pub fn sort(&mut self, cols: &[u64], directions: &[u8]) {
+    /// Sorts axis `a` by the Sort Spec of Logical Indices of the other
+    /// axis's items and directions (see [`codes::sort_spec`]), one staged
+    /// item each, in order. The axis needs a `Reordered` notice.
+    pub fn sort(&mut self, a: u8, items: &[u64], directions: &[u8]) {
         let staged = std::mem::take(&mut self.staged);
         let keys = staged.iter().map(Staged::keys).collect();
         self.table
-            .apply_sort(Axis::Rows, &codes::sort_spec(cols, directions), keys);
+            .apply_sort(axis(a), &codes::sort_spec(items, directions), keys);
     }
 
     /// Keeps the base rows with `keep[i] != 0`; returns the new row count
@@ -158,6 +158,7 @@ mod tests {
     use super::*;
 
     const ROWS: u8 = 0;
+    const COLS: u8 = 1;
 
     fn order(m: &WebMemory) -> Vec<u32> {
         m.window(ROWS, 0.0, m.count(ROWS))
@@ -169,7 +170,7 @@ mod tests {
         // "b", null, "a", "é" (two bytes, after every ASCII letter).
         let bytes = b"ba\xc3\xa9".to_vec();
         m.stage_strings(bytes, vec![1, 1, 2, 4], vec![0, 1, 0, 0]);
-        m.sort(&[0], &[1]);
+        m.sort(ROWS, &[0], &[1]);
         assert_eq!(order(&m), vec![3, 0, 2, 1]);
     }
 
@@ -177,7 +178,7 @@ mod tests {
     fn staged_numbers_put_nan_after_numbers_and_nulls_last() {
         let mut m = WebMemory::new(4, 1);
         m.stage_numbers(&[f64::NAN, 2.0, 0.0, 1.0], &[0, 0, 1, 0]);
-        m.sort(&[0], &[0]);
+        m.sort(ROWS, &[0], &[0]);
         assert_eq!(order(&m), vec![3, 1, 0, 2]);
     }
 
@@ -201,6 +202,15 @@ mod tests {
         assert!(m.refilter_row(1, 0));
         assert_eq!(order(&m), vec![0]);
         assert!(!m.has_unmatched());
+    }
+
+    #[test]
+    fn staged_keys_of_a_row_sort_the_columns() {
+        let mut m = WebMemory::new(1, 3);
+        m.stage_numbers(&[2.0, 0.0, 1.0], &[0, 1, 0]);
+        m.sort(COLS, &[0], &[0]);
+        assert_eq!(m.window(COLS, 0.0, 3.0), vec![2, 0, 1]);
+        assert_eq!(order(&m), vec![0]);
     }
 
     #[test]

@@ -5,8 +5,8 @@
 use std::fmt;
 
 use binnacle_core::{
-    Axis, Button, ChangeNotice, EditEnd, FocusStep, Key, Located, Modifiers, PointerKind, Position,
-    SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
+    Axis, Button, ChangeNotice, EditEnd, FocusStep, HeaderClick, Key, Located, Modifiers,
+    PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -67,6 +67,16 @@ pub fn selection_unit(code: u8) -> SelectionUnit {
     match code {
         0 => SelectionUnit::Cells,
         _ => SelectionUnit::Rows,
+    }
+}
+
+/// What a header click does: 0 sort, 1 select, anything else nothing (the
+/// C API's `BINNACLE_HEADER_CLICK_*` numbering).
+pub fn header_click(code: u8) -> HeaderClick {
+    match code {
+        0 => HeaderClick::Sort,
+        1 => HeaderClick::Select,
+        _ => HeaderClick::None,
     }
 }
 
@@ -276,6 +286,13 @@ mod tests {
     fn selection_units_are_cells_or_rows() {
         assert_eq!(selection_unit(0), SelectionUnit::Cells);
         assert_eq!(selection_unit(1), SelectionUnit::Rows);
+    }
+
+    #[test]
+    fn header_clicks_sort_select_or_do_nothing() {
+        assert_eq!(header_click(0), HeaderClick::Sort);
+        assert_eq!(header_click(1), HeaderClick::Select);
+        assert_eq!(header_click(2), HeaderClick::None);
     }
 
     #[test]

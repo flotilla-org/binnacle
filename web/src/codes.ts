@@ -23,6 +23,9 @@ export const EDIT_END = { commit: 0, cancel: 1 } as const;
 
 export const SELECTION_UNIT = { cells: 0, rows: 1 } as const;
 
+/** What a header click does, as the wasm `set_header_click` input takes it. */
+export const HEADER_CLICK = { sort: 0, select: 1, none: 2 } as const;
+
 /** The support bits the wasm `set_support` input takes; `textRegex` needs `text`. */
 export const SUPPORT = { sort: 1, text: 2, textRegex: 4, oneOf: 8 } as const;
 

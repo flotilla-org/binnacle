@@ -126,8 +126,8 @@ export function createAria(options: AriaOptions): Aria {
 
   let headers = new Map<string, HTMLTableCellElement>();
   let rows = new Map<string, Row>();
-  /** The applied Sort Spec last seen, `null` before the first frame. */
-  let sorted: string | null = null;
+  /** Each axis's applied Sort Spec last seen, `null` before the first frame. */
+  const sorted: Record<AxisName, string | null> = { rows: null, cols: null };
   /** The applied rows filter last seen, `null` before the first frame. */
   let filtered: string | null = null;
   /** The rows filter changed and its count is not announced yet. */
@@ -156,9 +156,11 @@ export function createAria(options: AriaOptions): Aria {
    */
   const watch = (s: Snapshot, content: () => Content) => {
     const messages: string[] = [];
-    const sort = s.appliedView.rows.sort.map((c) => `${c.key}:${c.direction}`).join(",");
-    if (sorted !== null && sort !== sorted) messages.push(sortMessage(s, content()));
-    sorted = sort;
+    for (const axis of AXES) {
+      const sort = s.appliedView[axis].sort.map((c) => `${c.key}:${c.direction}`).join(",");
+      if (sorted[axis] !== null && sort !== sorted[axis]) messages.push(sortMessage(s, content(), axis));
+      sorted[axis] = sort;
+    }
     const filter = JSON.stringify(s.appliedView.rows.filter, (_, v: unknown) => (typeof v === "bigint" ? String(v) : v));
     recount ||= filtered !== null && filter !== filtered;
     filtered = filter;
@@ -181,6 +183,7 @@ export function createAria(options: AriaOptions): Aria {
   const update = (s: Snapshot, content: Content) => {
     const choose = options.renderer();
     const primary = s.appliedView.rows.sort[0];
+    const primaryRow = s.appliedView.cols.sort[0];
     set(table, "aria-rowcount", String(s.rows.count + 1));
     set(table, "aria-colcount", String(s.cols.count + 1));
     const cols = visible(s.cols);
@@ -207,6 +210,7 @@ export function createAria(options: AriaOptions): Aria {
       nextRows.set(key, row);
       set(row.el, "aria-rowindex", String(rowItem.position + 2));
       set(row.header, "id", rowItem.key === null ? null : `${prefix}-r${rowItem.key}`);
+      set(row.header, "aria-sort", primaryRow && primaryRow.key === rowItem.key ? primaryRow.direction : null);
       text(row.header, content.label("rows", rowItem));
       const rowId = content.id("rows", rowItem);
       const cells = new Map<string, Cell>();
@@ -310,13 +314,17 @@ export function rowCount(count: number, total: number | null): string {
   return `${grouped.format(count)} of ${grouped.format(total)} ${noun}`;
 }
 
-function sortMessage(s: Snapshot, content: Content): string {
-  if (s.appliedView.rows.sort.length === 0) return "Not sorted";
-  const columns = s.appliedView.rows.sort.map(({ key, direction }) => {
-    const item = s.cols.strip.find((i) => i.key === key);
-    return `${item ? content.label("cols", item) : "a column out of view"}, ${direction}`;
+/** What a change to `axis`'s sort says: the rows' as "Sorted by …", the columns' as "Columns sorted by …". */
+function sortMessage(s: Snapshot, content: Content, axis: AxisName): string {
+  const by = axis === "rows" ? "cols" : "rows";
+  const sort = s.appliedView[axis].sort;
+  if (sort.length === 0) return axis === "rows" ? "Not sorted" : "Columns not sorted";
+  const items = sort.map(({ key, direction }) => {
+    const item = s[by].strip.find((i) => i.key === key);
+    const absent = by === "cols" ? "a column out of view" : "a row out of view";
+    return `${item ? content.label(by, item) : absent}, ${direction}`;
   });
-  return `Sorted by ${columns.join(", then ")}`;
+  return `${axis === "rows" ? "Sorted" : "Columns sorted"} by ${items.join(", then ")}`;
 }
 
 function newRow(): Row {

@@ -18,10 +18,13 @@ import {
   type TableSource,
 } from "../src";
 import { answerAutoSize } from "../src/autosize";
+import { MARKED } from "../src/canvas/bands";
+import { PAD } from "../src/canvas/context";
 import { createCanvasPainter } from "../src/canvas/painter";
+import { AXIS_CODE, HEADER_CLICK } from "../src/codes";
 import { FLASH_MS } from "../src/flash";
 import { fakeDocument } from "./canvas";
-import { COL_WIDTH, Harness, ROW_HEIGHT } from "./harness";
+import { COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
 import { loadForTests } from "./wasm";
 
 const named = (name: string): CellRenderer<unknown> => ({ draw() {}, text: () => name });
@@ -182,6 +185,42 @@ describe("auto-size", () => {
       renderer: renderer as RendererChoice<unknown, unknown, unknown>,
     });
     expect(h.frame().cols.strip[0]!.size).toBe(90);
+  });
+
+  test("the row header band fits its labels, with room for a sort marker while the columns sort by a row shown", () => {
+    const source = fromRows(
+      [
+        { a: 2, b: 1 },
+        { a: 1, b: 2 },
+      ],
+      [{ key: "a" }, { key: "b" }],
+    );
+    const h = new Harness(source);
+    try {
+      const measure = { width: (t: string) => 10 * t.length, fit: (t: string) => t, clear() {} };
+      const fit = () => {
+        const s = h.frame();
+        answerAutoSize({ type: "BandAutoSizeRequested", generation: s.generation, axis: "cols" }, s, h.feed.content(s), {
+          grid: h.grid,
+          measure,
+          theme: light,
+          headerHeight: 24,
+          renderer: () => plainText,
+        });
+        return h.frame().cols.header;
+      };
+      h.frame();
+      // Labels "1" and "2".
+      expect(fit()).toBe(10 + 2 * PAD);
+      h.grid.set_header_click(AXIS_CODE.rows, HEADER_CLICK.sort);
+      h.click(5, HEADER + ROW_HEIGHT / 2);
+      h.frame();
+      expect(h.snapshot.rows.headers[0]!.sort.applied).not.toBeNull();
+      expect(fit()).toBe(10 + 2 * PAD + MARKED);
+    } finally {
+      h.destroy();
+      source.destroy();
+    }
   });
 });
 

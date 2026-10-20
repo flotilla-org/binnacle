@@ -27,9 +27,9 @@ export function paintShimmer(p: PaintContext, rect: Rect): void {
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 }
 
-/** Whether any visible column header shows a sort still pending. */
+/** Whether any visible header shows a sort still pending. */
 export function sorting(s: Snapshot): boolean {
-  return s.cols.headers.some((h) => h.sort.pending);
+  return s.cols.headers.some((h) => h.sort.pending) || s.rows.headers.some((h) => h.sort.pending);
 }
 
 /**

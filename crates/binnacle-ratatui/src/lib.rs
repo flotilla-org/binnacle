@@ -109,7 +109,9 @@ pub trait Content {
 /// or on the visible focused cell while its Locate is pending. A host
 /// redraws on a timer only while this is true (or its own data ticks).
 pub fn animating(snapshot: &Snapshot) -> bool {
-    let sorting = snapshot.headers(Axis::Cols).any(|h| h.sort.pending);
+    let sorting = Axis::ALL
+        .into_iter()
+        .any(|axis| snapshot.headers(axis).any(|h| h.sort.pending));
     sorting || locating(snapshot) && snapshot.focus_rect().is_some()
 }
 
@@ -137,7 +139,7 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
 /// area's right column and, when the columns overflow, its bottom line (see
 /// [`layout`]; [`begin_frame`] gives the Grid the Viewport left over). A sorted column's header ends in its
 /// direction (and place, in a multi-column sort), and `~` marks a sort
-/// change still pending. Every style comes from the Theme. A Shimmer at
+/// change still pending; so does a row header the columns sort by. Every style comes from the Theme. A Shimmer at
 /// `ctx.now` sweeps across the headers of a pending sort and across the
 /// focused cell while its Locate is pending (see [`animating`]).
 pub fn render_with(
@@ -226,21 +228,38 @@ pub fn render_with(
         Some((Axis::Cols, c)) => Some(c.position),
         _ => None,
     };
+    let multi_rows = snapshot.applied_view().cols.sort.columns().len() > 1;
     for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
         let number = r.key.map_or_else(
             || r.position.saturating_add(1).to_string(),
             |k| content.row_header(k, r.position),
         );
-        let number = fit(&number, u32::try_from(cell(left)).unwrap_or(0)).into_owned();
+        // As on column headers, the marker keeps the header's last cells.
+        let marker = header_marker(h.sort, false, false, multi_rows);
+        let width = usize::try_from(cell(left)).unwrap_or(0);
+        let room = width.saturating_sub(marker.chars().count());
+        let number = fit(&number, u32::try_from(room).unwrap_or(u32::MAX));
         let style = band(theme.row_number, h.hovered);
+        let clip = (0.0, left, top);
         put(
             buf,
             area,
             (0.0, r.offset),
-            (0.0, left, top),
-            &pad(number),
+            clip,
+            &pad(format!("{number:<room$}")),
             style,
         );
+        if !marker.is_empty() {
+            let at = room as f32;
+            let style = style.patch(theme.sort_marker);
+            put(buf, area, (at, r.offset), clip, &marker, style);
+        }
+        if h.sort.pending {
+            let x1 = cell(left).min(area_end);
+            for y in cell(r.offset.max(top))..cell(r.end()) {
+                shimmer(buf, area, (0..x1, y), &sweep, 0);
+            }
+        }
         let mut row_style = theme.body;
         if let Some(zebra) = theme.zebra.filter(|_| r.position % 2 == 1) {
             row_style = row_style.patch(zebra);

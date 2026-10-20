@@ -1,6 +1,7 @@
 // The header bands: column headers along the top, row numbers down the left,
 // and the corner where they meet.
 
+import type { AxisName } from "../codes";
 import type { HeaderPlacement, Rect, Snapshot, SortDirection } from "../snapshot";
 import { PAD, clip, type PaintContext } from "./context";
 import { paintShimmer } from "./pending";
@@ -8,7 +9,7 @@ import { paintShimmer } from "./pending";
 /** The sort marker's triangle, CSS px. */
 const MARKER = 7;
 /** Room a sorted header keeps for its marker (and its place in a multi-column sort). */
-const MARKED = MARKER + 14;
+export const MARKED = MARKER + 14;
 /** The column menu's button at a header's right end, CSS px square, and the funnel drawn in it. */
 const BUTTON = 18;
 const FUNNEL = 10;
@@ -88,15 +89,24 @@ function paintFilter(p: PaintContext, h: HeaderPlacement): number {
   return r.width + 3;
 }
 
-/** The direction to mark a header with, and whether it is only requested so far. */
-function marker(s: Snapshot, h: HeaderPlacement): { direction: SortDirection; place: number; pending: boolean } | null {
+/**
+ * The direction to mark a header with, and whether it is only requested so
+ * far: a column header shows the rows' sort, a row header the columns'.
+ */
+function marker(
+  s: Snapshot,
+  h: HeaderPlacement,
+  sorted: AxisName,
+): { direction: SortDirection; place: number; pending: boolean; multi: boolean } | null {
   if (h.sort.pending) {
-    const index = s.requestedView?.rows.sort.findIndex((c) => c.key === h.key) ?? -1;
-    const requested = s.requestedView?.rows.sort[index];
+    const sort = s.requestedView?.[sorted].sort ?? [];
+    const index = sort.findIndex((c) => c.key === h.key);
+    const requested = sort[index];
     // A pending removal shows nothing; a pending change shows where it is going.
-    return requested ? { direction: requested.direction, place: index, pending: true } : null;
+    return requested ? { direction: requested.direction, place: index, pending: true, multi: sort.length > 1 } : null;
   }
-  return h.sort.applied && { direction: h.sort.applied.direction, place: h.sort.applied.index, pending: false };
+  const multi = s.appliedView[sorted].sort.length > 1;
+  return h.sort.applied && { direction: h.sort.applied.direction, place: h.sort.applied.index, pending: false, multi };
 }
 
 function paintMarker(
@@ -105,13 +115,13 @@ function paintMarker(
   mark: NonNullable<ReturnType<typeof marker>>,
   inset: number,
 ): void {
-  const { ctx, theme, s } = p;
+  const { ctx, theme } = p;
   const right = h.rect.x + h.rect.width - Math.max(PAD, inset + 2);
   const y = h.rect.y + h.rect.height / 2;
   ctx.save();
   if (mark.pending) ctx.globalAlpha = 0.4;
   ctx.fillStyle = theme.sortMarker;
-  const multi = (mark.pending ? (s.requestedView?.rows.sort.length ?? 0) : s.appliedView.rows.sort.length) > 1;
+  const { multi } = mark;
   const x = multi ? right - 8 - MARKER : right - MARKER;
   const half = MARKER / 2;
   ctx.beginPath();
@@ -150,7 +160,7 @@ export function paintColumnHeaders(p: PaintContext): void {
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
     if (h.sort.pending) paintShimmer(p, h.rect);
-    const mark = marker(s, h);
+    const mark = marker(s, h, "rows");
     const inset = paintFilter(p, h);
     const room = h.rect.width - 2 * PAD - (mark ? MARKED : 0) - inset;
     ctx.fillStyle = loading ? theme.loading : h.hovered ? theme.headerHovered.color : theme.header.color;
@@ -176,8 +186,13 @@ export function paintRowNumbers(p: PaintContext): void {
       ctx.fillStyle = theme.headerHovered.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
+    if (h.sort.pending) paintShimmer(p, h.rect);
+    // A row the columns sort by ends in its marker, as a column header does.
+    const mark = marker(s, h, "cols");
+    const room = left - 2 * PAD - (mark ? MARKED : 0);
     ctx.fillStyle = h.hovered ? theme.headerHovered.color : theme.rowNumber.color;
-    ctx.fillText(measure.fit(text, theme.font, left - 2 * PAD), left - PAD, h.rect.y + h.rect.height / 2);
+    ctx.fillText(measure.fit(text, theme.font, room), PAD + room, h.rect.y + h.rect.height / 2);
+    if (mark) paintMarker(p, h, mark, 0);
   }
   ctx.restore();
 }

@@ -276,6 +276,51 @@ fn column_headers_show_the_applied_sort_and_pending_requests() {
 }
 
 #[test]
+fn row_headers_show_the_columns_sort_and_pending_requests() {
+    let mut grid = Grid::new(
+        AxisConfig::new(3, 1.0).header(1.0),
+        AxisConfig::new(4, 8.0).header(5.0).gap(1.0),
+    );
+    grid.set_header_click(Axis::Rows, binnacle_core::HeaderClick::Sort);
+    let area = Rect::new(0, 0, 41, 4);
+    let mut out = String::new();
+    grid.view_applied(
+        ViewSpec::default().with_sort(
+            Axis::Cols,
+            SortSpec::new(vec![SortColumn::ascending(Key(2))]),
+        ),
+        Totals::unknown(),
+    );
+    out += &format!(
+        "--- the columns by row 2 ascending\n{}\n",
+        frame(&mut grid, 41, 4, area)
+    );
+    grid.view_applied(
+        ViewSpec::default().with_sort(
+            Axis::Cols,
+            SortSpec::new(vec![
+                SortColumn::ascending(Key(2)),
+                SortColumn::descending(Key(0)),
+            ]),
+        ),
+        Totals::unknown(),
+    );
+    out += &format!(
+        "--- then row 0 descending\n{}\n",
+        frame(&mut grid, 41, 4, area)
+    );
+    // Click row 1's header: a request, not yet answered.
+    grid.pointer(binnacle_core::PointerEvent::down(1.0, 2.5));
+    grid.pointer(binnacle_core::PointerEvent::up(1.0, 2.5));
+    out += &format!(
+        "--- click row 1, unanswered\n{}\n",
+        frame(&mut grid, 41, 4, area)
+    );
+    assert!(binnacle_ratatui::animating(&grid.snapshot()));
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn column_header_gaps_are_drawn_as_handles_and_a_resize_draws_its_guide() {
     let mut grid = Grid::new(
         AxisConfig::new(100, 1.0).header(1.0),

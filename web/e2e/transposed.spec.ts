@@ -48,6 +48,59 @@ test("the filter box keeps the matching records as columns", async ({ page }) =>
   await expect(status(page)).toContainText(`of ${rows.length.toLocaleString("en")}`);
 });
 
+/** Clicks the row header of the field at screen row `row` (0 first), with Shift if `shift`. */
+async function rowHeader(page: Page, row: number, shift = false) {
+  const b = await page.locator(".binnacle-layer").boundingBox();
+  if (!b) throw new Error("no grid");
+  if (shift) await page.keyboard.down("Shift");
+  await page.mouse.click(b.x + 8, b.y + HEADER + row * ROW + ROW / 2);
+  if (shift) await page.keyboard.up("Shift");
+}
+
+/** The records' indices sorted by weight, nulls last and ties in base order. */
+function byWeight(direction: 1 | -1): number[] {
+  return rows
+    .map((_, i) => i)
+    .sort((i, j) => {
+      const [a, b] = [rows[i]!.weight, rows[j]!.weight];
+      if (a === null || b === null) return Number(a === null) - Number(b === null);
+      return direction * (a - b) || i - j;
+    });
+}
+
+test("a click on a field's row header sorts the records, as columns, by it", async ({ page }) => {
+  const aria = page.locator(".binnacle-aria");
+  const weight = aria.getByRole("rowheader", { name: "weight" });
+  await rowHeader(page, 2);
+  await expect(weight).toHaveAttribute("aria-sort", "ascending");
+  await expect(aria.getByRole("status")).toHaveText("Columns sorted by weight, ascending");
+  const ascending = byWeight(1);
+  await cell(page, 1, 0);
+  await expect(status(page)).toContainText(focus(1, "name", 0, ascending[0]!));
+  await cell(page, 1, 1);
+  await expect(status(page)).toContainText(focus(1, "name", 1, ascending[1]!));
+  await rowHeader(page, 2);
+  await expect(weight).toHaveAttribute("aria-sort", "descending");
+  await cell(page, 0, 0);
+  await expect(status(page)).toContainText(focus(0, "id", 0, byWeight(-1)[0]!));
+  // A column header selects its record rather than sorting.
+  const b = await page.locator(".binnacle-layer").boundingBox();
+  await page.mouse.click(b!.x + FIRST + COLUMN, b!.y + HEADER / 2);
+  await expect(weight).toHaveAttribute("aria-sort", "descending");
+  await rowHeader(page, 2);
+  await expect(weight).not.toHaveAttribute("aria-sort");
+  await expect(aria.getByRole("status")).toHaveText("Columns not sorted");
+});
+
+test("a sorted field's row header shows its marker", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "screenshots are taken in Chromium only");
+  await rowHeader(page, 2);
+  await rowHeader(page, 3, true);
+  const status = page.locator(".binnacle-aria").getByRole("status");
+  await expect(status).toHaveText("Columns sorted by weight, ascending, then crew, ascending");
+  await expect(page.locator(".grid-box")).toHaveScreenshot("transposed-sorted-light.png", { scale: "device" });
+});
+
 test("each field row draws its own way: the id and weight end-aligned, the crew as a bar", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "screenshots are taken in Chromium only");
   await expect(page.locator(".grid-box")).toHaveScreenshot("transposed-light.png", { scale: "device" });

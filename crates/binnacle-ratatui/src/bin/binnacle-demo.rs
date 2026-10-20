@@ -40,7 +40,9 @@
 //! Source seen through `Transposed`. Each field row draws its own way (the
 //! id and weight right-aligned, the crew as a bar), and Ctrl+R's crew filter
 //! and find work on the records as columns. Row headers are set to sort and
-//! column headers to select, the records' settings swapped.
+//! column headers to select, the records' settings swapped: click a field's
+//! row header to sort the records by it, Shift-click to add a field, and the
+//! header shows `▲`, `▼` and `~` as a column header does.
 //!
 //! In the records (and the slow records), Ctrl+L focuses the quick filter
 //! field on the top line: typing keeps only the records with that text in

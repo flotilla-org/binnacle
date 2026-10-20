@@ -3,9 +3,11 @@
 // each field a row; the Table Source is the records' own `fromRows` seen
 // through `transpose`, so it adds and fixes nothing: what works along one
 // axis only shows up here. Each field row draws its own way (the id and
-// weight end-aligned, the crew as a bar). The filter box keeps the records
-// whose name or port contains its text, as columns; find and editing work as
-// in the records.
+// weight end-aligned, the crew as a bar). A click on a field's row header
+// sorts the records by it (Shift adds a field), as a column header click
+// sorts the records upright, and a column header click selects the record.
+// The filter box keeps the records whose name or port contains its text, as
+// columns; find and editing work as in the records.
 
 import {
   barRenderer,
@@ -63,6 +65,7 @@ export const transposed: DemoSource = {
     const widget = await GridWidget.create(gridBox, {
       source,
       columnWidth: 112,
+      headerClick: { rows: "sort", cols: "select" },
       renderer: byRow((field: keyof RecordRow) => FIELD_RENDERERS[field]),
       ...look,
       onCommit(field, id, value) {

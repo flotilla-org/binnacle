@@ -3,6 +3,8 @@
 // the Grid's wasm module. The rows stay in JS: only the Remap lives in wasm,
 // and a column's sort keys cross only when it is first sorted (numbers as a
 // Float64Array, strings UTF-8 encoded once, so they sort by code point).
+// The columns sort by rows' values the same way, a row's values across the
+// columns taken as one sort key each.
 //
 // Rows are treated as immutable until `edited` or `changed` says one was
 // changed in place. The user's edit leaves a row that stops matching the
@@ -181,9 +183,12 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
   type ColId = RowsColumnId<R>;
   const index = new Map<ColId, number>(columns.map((c, i) => [c.key, i]));
   const keys = new Map<ColId, SortKeys>();
+  /** Each row's values across the columns as sort keys, by row ID, for sorting the columns. */
+  const rowKeys = new Map<number, SortKeys>();
   const sinks = new Set<{ rows: AxisSink<number>; cols: AxisSink<ColId> }>();
   let wasm: WebMemory | undefined;
   let applied: SortSpec<ColId> = [];
+  let colsApplied: SortSpec<number> = [];
   let quick: TextQuery<ColId> | null = null;
   let quickMatch: Match | undefined;
   let conditions: { condition: Condition<ColId>; test: Test }[] = [];
@@ -193,6 +198,9 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
   const memory = () => (wasm ??= new (bridge().WebMemory)(rows.length, columns.length));
   const tell = (notice: ChangeNotice) => {
     for (const s of sinks) s.rows.notify(notice);
+  };
+  const tellCols = (notice: ChangeNotice) => {
+    for (const s of sinks) s.cols.notify(notice);
   };
   const located = ([code, position]: Float64Array): Located =>
     code === 0
@@ -319,10 +327,28 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       else m.stage_strings(k.bytes, k.ends, k.nulls);
     }
     m.sort(
+      ROWS,
       BigUint64Array.from(spec, (c) => BigInt(index.get(c.id)!)),
       Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
     );
     applied = spec;
+  };
+
+  /** Sorts the columns by the rows `spec` names, each row's values across the columns as its keys. */
+  const sortColumns = (spec: SortSpec<number>) => {
+    const m = memory();
+    for (const { id } of spec) {
+      let k = rowKeys.get(id);
+      if (!k) rowKeys.set(id, (k = extract(columns.map((c) => rows[id]![c.key]))));
+      if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
+      else m.stage_strings(k.bytes, k.ends, k.nulls);
+    }
+    m.sort(
+      COLS,
+      BigUint64Array.from(spec, (c) => BigInt(c.id)),
+      Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
+    );
+    colsApplied = spec;
   };
 
   /**
@@ -335,6 +361,7 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     const at = located(m.locate(ROWS, id));
     if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
     keys.clear();
+    rowKeys.delete(id);
     hits = undefined;
     let moved = false;
     if (keep || quick || conditions.length) {
@@ -344,6 +371,10 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     if (applied.length) sort(applied);
     if (moved) tell({ type: "Refiltered" });
     else if (applied.length) tell({ type: "Reordered" });
+    if (colsApplied.some((c) => c.id === id)) {
+      sortColumns(colsApplied);
+      tellCols({ type: "Reordered" });
+    }
   };
 
   return {
@@ -370,15 +401,19 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       },
       label: (id) => columns[index.get(id) ?? -1]?.label ?? id,
     },
-    // Columns never sort or filter by rows, so their part of the spec is
-    // dropped. A quick filter whose pattern is not a valid RegExp leaves the
-    // one in force; a condition with one, or on a column that takes none, is
-    // left out. The answer's error says what RegExp made of the first pattern
-    // it rejected.
+    // The columns sort by rows but never filter, so the filter of their
+    // part of the spec is dropped. A quick filter whose pattern is not a
+    // valid RegExp leaves the one in force; a condition with one, or on a
+    // column that takes none, is left out. The answer's error says what
+    // RegExp made of the first pattern it rejected.
     view(spec: ViewSpec<number, ColId>) {
       const by = spec.rows.sort;
       if (by.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
         throw new Error(`binnacle: fromRows cannot sort by ${by.map((c) => c.id).join(", ")}`);
+      }
+      const byRows = spec.cols.sort;
+      if (byRows.some((c) => !Number.isInteger(c.id) || c.id < 0 || c.id >= rows.length)) {
+        throw new Error(`binnacle: fromRows cannot sort the columns by row ${byRows.map((c) => c.id).join(", ")}`);
       }
       const asked = spec.rows.filter?.quick ?? null;
       const match = asked && matcher(asked);
@@ -403,9 +438,13 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       const refiltered = quickChanged || conditionsChanged || memory().has_unmatched();
       if (refiltered) refilter();
       tell({ type: refiltered ? "Refiltered" : "Reordered" });
+      if (byRows.length || colsApplied.length) {
+        sortColumns(byRows);
+        tellCols({ type: "Reordered" });
+      }
       return {
         rows: { filter: { quick, conditions: conditions.map((k) => k.condition) }, sort: by },
-        cols: { filter: { quick: null, conditions: [] }, sort: [] },
+        cols: { filter: { quick: null, conditions: [] }, sort: byRows },
         totals: { rows: rows.length, cols: columns.length },
         ...(error === undefined ? {} : { error }),
       };

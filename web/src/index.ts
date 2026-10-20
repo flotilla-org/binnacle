@@ -1,6 +1,6 @@
 // @flotilla-org/binnacle: the binnacle Grid on a web page.
 
-export { GridWidget, type AxisInfo, type ColumnHeader, type ColumnInfo, type FindInfo, type FrameInfo, type GridOptions } from "./widget";
+export { GridWidget, type AxisInfo, type ColumnHeader, type ColumnInfo, type FindInfo, type FrameInfo, type GridOptions, type HeaderClick } from "./widget";
 export { createFilterBar, type FilterBar, type FilterBarOptions } from "./filterbar";
 export { createColumnMenu, type ColumnMenu } from "./columnmenu";
 export { createFindBar, type FindBar, type FindBarOptions } from "./findbar";

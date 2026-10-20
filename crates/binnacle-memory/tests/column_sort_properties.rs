@@ -2,15 +2,18 @@
 //! integer records, its columns sorted by rows' values and put through row
 //! sorts, value edits, wholesale replacements and column moves, against a
 //! naive model (a stable sort of the columns, as moves left them, with
-//! nulls last). Each op's Change Notices must say whether the columns moved.
+//! nulls last, comparing as integers, numbers or text by the columns' kinds
+//! of sort key). Each op's Change Notices must say whether the columns moved.
 
 #[allow(dead_code)]
 mod support;
 
+use std::borrow::Cow;
+
 use binnacle_core::{Axis, ChangeNotice, Key, SortColumn, SortDirection, SortSpec, ViewSpec};
 use binnacle_memory::MemorySource;
-use hegel::generators as gs;
 use hegel::TestCase;
+use hegel::generators as gs;
 
 /// Most columns a drawn table has.
 const MAX_COLS: usize = 6;
@@ -71,21 +74,58 @@ fn op(tc: &TestCase, width: usize) -> Op {
     }
 }
 
-/// What the model holds: the records, which columns have sort keys, the
+/// The kind of sort key a column has: none, an integer (the value), a
+/// float (half the value) or text (`t` and the value).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    None,
+    I64,
+    F64,
+    Text,
+}
+
+/// What the model holds: the records, each column's kind of sort key, the
 /// column order moves left (Logical Indices) and the columns' Sort Spec.
 struct Model {
     rows: Vec<Record>,
-    sortable: Vec<bool>,
+    kinds: Vec<Kind>,
     base: Vec<usize>,
     spec: SortSpec,
 }
 
 impl Model {
+    /// A row's sort key in column `c` as the source compares it: integers
+    /// while every column with keys is an integer one, numbers while none is
+    /// text (doubled, so halves stay whole), else text written with
+    /// `Display`.
+    fn key(&self, r: usize, c: usize) -> Option<Result<i128, String>> {
+        let v = self.rows[r][c]?;
+        let present = || self.kinds.iter().filter(|k| **k != Kind::None);
+        let text = present().any(|k| *k == Kind::Text);
+        let floats = present().any(|k| *k == Kind::F64);
+        match (self.kinds[c], text, floats) {
+            (Kind::None, ..) => None,
+            (Kind::I64, false, false) => Some(Ok(i128::from(v))),
+            (Kind::I64, false, true) => Some(Ok(2 * i128::from(v))),
+            (Kind::F64, false, _) => Some(Ok(i128::from(v))),
+            (Kind::I64, true, _) => Some(Err(v.to_string())),
+            (Kind::F64, true, _) => Some(Err((v as f64 / 2.0).to_string())),
+            (Kind::Text, ..) => Some(Err(format!("t{v}"))),
+        }
+    }
+
     /// The columns as Keys (their Logical Indices) in the model's order.
     fn columns(&self) -> Vec<Key> {
-        let rank = |r: usize, c: usize| match self.rows[r][c] {
-            Some(v) if self.sortable[c] => (0, i128::from(v)),
-            _ => (2, 0),
+        let rank = |r: usize, c: usize| match self.key(r, c) {
+            None => (2, 0),
+            Some(Ok(n)) => (0, n),
+            Some(Err(text)) => {
+                let mut texts: Vec<String> = (0..self.kinds.len())
+                    .filter_map(|c| self.key(r, c)?.err())
+                    .collect();
+                texts.sort();
+                (0, texts.binary_search(&text).unwrap() as i128)
+            }
         };
         (support::model_from(self.base.clone(), &self.spec, rank, |_| true).into_iter())
             .map(|c| Key(c as u64))
@@ -105,15 +145,32 @@ fn moved_columns(notices: &[(Axis, ChangeNotice)]) -> bool {
 #[hegel::test(test_cases = 1000)]
 fn the_columns_follow_the_model_through_sorts_edits_replacements_and_moves(tc: TestCase) {
     let width = tc.draw(gs::integers::<usize>().min_value(1).max_value(MAX_COLS));
-    let sortable: Vec<bool> = tc.draw(gs::vecs(gs::booleans()).min_size(width).max_size(width));
+    // Mostly integers, so the integer case is common.
+    let kind = gs::sampled_from(vec![
+        Kind::None,
+        Kind::I64,
+        Kind::I64,
+        Kind::F64,
+        Kind::Text,
+    ]);
+    let kinds: Vec<Kind> = tc.draw(gs::vecs(kind).min_size(width).max_size(width));
     let rows = tc.draw(records(width));
     let mut source = MemorySource::<Record>::new(rows.len(), width);
-    for (c, _) in sortable.iter().enumerate().filter(|(_, s)| **s) {
-        source = source.i64_column(Key(c as u64), move |r: &Record| r[c]);
+    for (c, kind) in kinds.iter().enumerate() {
+        let key = Key(c as u64);
+        source = match kind {
+            Kind::None => source,
+            Kind::I64 => source.i64_column(key, move |r: &Record| r[c]),
+            Kind::F64 => source.f64_column(key, move |r: &Record| r[c].map(|v| v as f64 / 2.0)),
+            Kind::Text => source.bytes_column(key, move |r: &Record| {
+                r[c].map(|v| Cow::Owned(format!("t{v}").into_bytes()))
+            }),
+        };
     }
+    let sortable: Vec<bool> = kinds.iter().map(|k| *k != Kind::None).collect();
     let mut model = Model {
         rows,
-        sortable: sortable.clone(),
+        kinds,
         base: (0..width).collect(),
         spec: SortSpec::unsorted(),
     };
