@@ -2,7 +2,7 @@
 // "+ Filter" open the column menu; contains and does-not-contain conditions
 // AND with each other and with the quick filter, each shows as a chip whose
 // × removes it, and filtered columns' funnels are drawn solid. The id column
-// takes no conditions, and the slow source, which declares no support,
+// takes no conditions (its menu only pins), and the slow source, which declares no support,
 // offers no regex toggle and shows conditions pending until its answer.
 
 import { expect, test, type Page } from "@playwright/test";
@@ -125,7 +125,7 @@ test.describe("records", () => {
     await expect(menuField(page, "name")).toBeFocused();
   });
 
-  test("the id column draws no funnel and opens no menu", async ({ page }) => {
+  test("the id column draws no funnel, and its menu pins and hides it but offers no filter", async ({ page }) => {
     const band = await page.locator(".binnacle-band-left").boundingBox();
     const top = await page.locator(".binnacle-band-top").boundingBox();
     const at = await funnel(page, "id");
@@ -133,7 +133,11 @@ test.describe("records", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.mouse.click(band!.x + band!.width + 20, top!.y + top!.height + 10);
     await page.keyboard.press("Alt+ArrowDown");
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    const menu = page.getByRole("dialog", { name: "Column id" });
+    await expect(menu.getByRole("button", { name: "Pin left" })).toBeFocused();
+    await expect(menu.getByRole("textbox")).toBeHidden();
+    await expect(menu.getByRole("button", { name: "Clear" })).toBeHidden();
+    await expect(menu.getByRole("button", { name: "Hide column" })).toBeVisible();
   });
 
   test.describe("screenshots", () => {

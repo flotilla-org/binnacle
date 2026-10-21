@@ -26,8 +26,9 @@ pub enum ChangeNotice {
     /// Anything may have changed, and the axis now holds `count` items:
     /// always safe to send. Focus follows its Key (the Grid sends `Locate`)
     /// and falls back to its last Position clamped to the count; the range is
-    /// dropped unless it spans the whole axis; row Size Overrides are dropped
-    /// (column ones kept); the Scroll Anchor keeps its Position, clamped.
+    /// dropped unless it spans the whole axis; Size Overrides stay with their
+    /// Keys, so an item that comes back keeps its size; the Scroll Anchor
+    /// keeps its Position, clamped.
     Reset(u64),
     /// The axis holds `count` of the same Keys as before, some left out or
     /// brought back and possibly reordered: a filter changed. Focus follows
@@ -46,7 +47,7 @@ pub enum ChangeNotice {
     /// The `n` items from Position `at` were removed and those after them
     /// move `n` earlier. Focus on a removed item falls back as for a `Gone`
     /// answer, to the item that took its place; removed Keys the Grid can
-    /// see leave the picks and, on the rows, lose their Size Overrides.
+    /// see leave the picks and lose their Size Overrides.
     Removed { at: Position, n: u64 },
     /// The content of the items at these Positions changed; their Keys and
     /// order did not. Their Keys and content sizes are fetched again.
@@ -120,6 +121,8 @@ impl Grid {
     /// ([`crate::ViewEdit::ShownChanged`]) when a quick filter searches the
     /// shown items of `axis`.
     pub fn notify(&mut self, axis: Axis, notice: ChangeNotice) {
+        // A freeze waiting for the Window named Positions that may have moved.
+        self.axis_mut(axis).freezing = None;
         // Items may have been shown or hidden.
         let shown = !matches!(
             notice,
@@ -132,11 +135,11 @@ impl Grid {
         );
         match notice {
             ChangeNotice::Reordered => {
-                self.reordered_or_reset(axis, None);
+                self.reordered_or_counted(axis, None, false);
                 self.refilter_reask(axis);
             }
             ChangeNotice::Reset(count) => {
-                self.reordered_or_reset(axis, Some(count));
+                self.reordered_or_counted(axis, Some(count), false);
                 self.refilter_forget(axis);
             }
             ChangeNotice::Refiltered(count) => self.refiltered(axis, count),
@@ -170,7 +173,7 @@ impl Grid {
 
     /// Ends the gestures a change on `axis` invalidates: a range drag, and a
     /// header move on that axis, whose Positions are stale.
-    fn cancel_drags(&mut self, axis: Axis) {
+    pub(crate) fn cancel_drags(&mut self, axis: Axis) {
         if self.gesture.mode() == Mode::DraggingSelection {
             self.cancel();
             self.relocate();
@@ -226,21 +229,28 @@ impl Grid {
             }
             Shift::Removed { at, n } => self.axis_mut(axis).measure.remove(at, n),
         };
+        self.shift_pins(axis, |p| shift.map(p));
+        if matches!(shift, Shift::Inserted { .. }) {
+            self.locate_dormant_pins(axis);
+        }
         let count = self.axis(axis).measure.count();
         let mut selection = self.selection.clone();
-        if axis == Axis::Rows {
-            for &key in &gone {
-                self.axis_mut(axis).measure.clear_size(key);
-            }
-            selection.picks.retain(|k| !gone.contains(k));
+        for &key in &gone {
+            self.axis_mut(axis).measure.clear_size(key);
         }
+        selection.picks[i].retain(|k| !gone.contains(k));
         selection.span = selection
             .span
             .and_then(|span| shift_span(span, axis, shift, &self.axis(axis).measure));
         if count == 0 {
             selection.span = None;
         }
+        // Corners a `Refiltered` still locates are asked about again.
+        let corners = self.refiltering.corners;
         self.set_selection(selection);
+        if self.selection.span.is_some() {
+            self.refiltering.corners = corners;
+        }
         let whereabouts = &mut self.locating.whereabouts[i];
         if let Some(w) = whereabouts {
             match w.at.map(|p| shift.map(p)) {
@@ -329,27 +339,23 @@ impl Grid {
         let end = start + m.window_len() as u64;
         if range.start < end && start < range.end {
             self.axis_mut(axis).measure.set_keys(0, &[]);
+            self.axis_mut(axis).sync_pins();
             self.pending_damage.positions = true;
         }
     }
 
     /// The items on `axis` moved, and if `count` is given the count changed
-    /// too (a `Reset`).
-    fn reordered_or_reset(&mut self, axis: Axis, count: Option<u64>) {
-        self.reordered_or_counted(axis, count, axis == Axis::Rows);
-    }
-
-    /// As [`Grid::reordered_or_reset`], dropping the Size Overrides on `axis`
-    /// with a new count only if `drop_sizes`.
+    /// too (a `Reset` or a `Refiltered`). A range not whole on `axis` goes,
+    /// unless `refiltered` (its corners are located instead).
     pub(crate) fn reordered_or_counted(
         &mut self,
         axis: Axis,
         count: Option<u64>,
-        drop_sizes: bool,
+        refiltered: bool,
     ) {
         let i = axis.index();
         self.cancel_drags(axis);
-        if self.selection.span.is_some_and(|s| !s.whole[i]) || count == Some(0) {
+        if self.selection.span.is_some_and(|s| !s.whole[i]) && !refiltered || count == Some(0) {
             self.set_span(None);
         }
         let st = self.axis_mut(axis);
@@ -360,9 +366,6 @@ impl Grid {
             Some(count) => {
                 let resized = st.measure.count() != count;
                 st.measure.set_count(count);
-                if drop_sizes {
-                    st.measure.clear_sizes();
-                }
                 self.clamp_positions(axis, count);
                 // A range whole on this axis now spans a different count.
                 if resized && self.selection.span.is_some() {
@@ -370,6 +373,10 @@ impl Grid {
                 }
             }
         }
+        // Each pin is asked about before the Positions skipped are worked
+        // out, so none is skipped at a Position it may have left.
+        self.locate_pins(axis);
+        self.axis_mut(axis).sync_pins();
         self.rebase_gesture();
         self.axis_mut(axis).clamp_anchor();
         self.pending_damage.layout = true;
@@ -389,8 +396,8 @@ impl Grid {
 
     /// Keeps focus below a new `count` on `axis`: with no items it is
     /// unplaced, otherwise it keeps its Key and its last known Position is
-    /// clamped, the fallback if that Key has left. (A range survives only if
-    /// whole on `axis`, where its corners do not count.)
+    /// clamped, the fallback if that Key has left. So are the range's
+    /// corners, until located.
     fn clamp_positions(&mut self, axis: Axis, count: u64) {
         let i = axis.index();
         if count == 0 {
@@ -403,6 +410,11 @@ impl Grid {
         }
         if let Some(f) = &mut self.focus {
             f[i].position = f[i].position.min(count - 1);
+        }
+        if let Some(span) = &mut self.selection.span {
+            for end in [&mut span.anchor, &mut span.head] {
+                end[i].position = end[i].position.min(count - 1);
+            }
         }
     }
 
@@ -446,6 +458,7 @@ impl Grid {
     /// are applied. An edit whose Key has left is cancelled (`EditCancelled`).
     pub fn located(&mut self, axis: Axis, key: Key, answer: Located) {
         self.edit_located(axis, key, &answer);
+        self.pin_located(axis, key, answer);
         self.refilter_located(axis, key, answer);
         self.find_located(axis, key, answer);
         self.focus_located(axis, key, answer);
@@ -490,9 +503,9 @@ impl Grid {
     /// known Position, clamped to the count.
     fn key_departed(&mut self, axis: Axis, key: Key, focused: bool, suggest: Option<Position>) {
         self.locating.whereabouts[axis.index()] = None;
-        if axis == Axis::Rows && self.selection.picked(key) {
+        if self.selection.picked(axis, key) {
             let mut selection = self.selection.clone();
-            selection.toggle_pick(key);
+            selection.unpick(axis, key);
             self.set_selection(selection);
         }
         self.forget_before(axis, key, suggest);
@@ -519,9 +532,7 @@ impl Grid {
         else {
             return;
         };
-        if axis == Axis::Rows {
-            before.selection.picks.retain(|&k| k != key);
-        }
+        before.selection.unpick(axis, key);
         if let Some(mut f) = before.focus
             && f[i].key == Some(key)
         {
@@ -533,18 +544,19 @@ impl Grid {
     }
 
     /// The state a press would restore on `Cancel` must not bring back a
-    /// pick of a row that has left.
-    pub(crate) fn forget_pick_before(&mut self, key: Key) {
+    /// pick of an item on `axis` that has left.
+    pub(crate) fn forget_pick_before(&mut self, axis: Axis, key: Key) {
         if let Gesture::Pressed { before, .. } | Gesture::DraggingSelection { before } =
             &mut self.gesture
         {
-            before.selection.picks.retain(|&k| k != key);
+            before.selection.unpick(axis, key);
         }
     }
 
     /// Called when an axis stops waiting for `located`: once no axis
-    /// waits, finishes a waiting `set_focus` and applies the focus moves
-    /// held meanwhile. Returns false while an axis still waits.
+    /// waits, finishes a waiting `set_focus`, and once no pin waits either,
+    /// applies the focus moves held meanwhile. Returns false while an axis
+    /// still waits.
     pub(crate) fn resume_focus(&mut self) -> bool {
         if self.locating.any() {
             return false;
@@ -560,8 +572,10 @@ impl Grid {
             self.reveal = true;
             self.reveal_focus();
         }
-        for m in std::mem::take(&mut self.locating.moves) {
-            self.move_and_select(m);
+        if !self.pins_waiting() {
+            for m in std::mem::take(&mut self.locating.moves) {
+                self.move_and_select(m);
+            }
         }
         true
     }

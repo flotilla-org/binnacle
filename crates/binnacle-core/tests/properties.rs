@@ -8,9 +8,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, Effect, FocusEnd, FocusStep,
-    Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position, ScrollAnchor,
-    SelectionUnit, Snapshot, Viewport,
+    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, DropTarget, Effect, FocusEnd,
+    FocusStep, Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position,
+    ScrollAnchor, SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
@@ -606,6 +606,11 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         requests: requests.clone(),
     };
     let mut grid = Grid::new(rows, cols);
+    // Moves, but no pins: these properties hold for unpinned axes.
+    grid.set_movable(Axis::Cols, true);
+    for axis in Axis::ALL {
+        grid.set_pin_zone(axis, 0.0);
+    }
     configure(tc, &mut grid);
     let mut s = Scenario::new(grid, source);
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
@@ -691,9 +696,6 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
                     }
                     let model = &mut models[axis.index()];
                     model.config.count = count;
-                    if axis == Axis::Rows {
-                        model.overrides.clear();
-                    }
                     s.input(|g| g.notify(axis, binnacle_core::ChangeNotice::Reset(count)))
                 }
                 Input::SetFocus(row, col) => s.input(|g| g.set_focus(row, col)),
@@ -1443,9 +1445,10 @@ fn a_click_on_no_cell_changes_nothing(tc: TestCase) {
     assert_eq!(after, before, "press at {point:?} acted");
 }
 
-/// What the host can see of the selection.
-fn seen_selection(snap: &Snapshot) -> (Option<CellRange>, Vec<Key>) {
-    (snap.selection_range(), snap.picked().to_vec())
+/// What the host can see of the selection: the range and each axis's picks.
+fn seen_selection(snap: &Snapshot) -> (Option<CellRange>, [Vec<Key>; 2]) {
+    let picks = Axis::ALL.map(|a| snap.picked(a).to_vec());
+    (snap.selection_range().cloned(), picks)
 }
 
 /// Picks are sorted and distinct, the range is not empty and inside the
@@ -1454,12 +1457,21 @@ fn seen_selection(snap: &Snapshot) -> (Option<CellRange>, Vec<Key>) {
 fn the_selection_is_well_formed(tc: TestCase) {
     frames(&tc, BODIES, |snap, _| {
         let (range, picks) = seen_selection(snap);
-        assert!(picks.windows(2).all(|w| w[0] < w[1]), "{picks:?}");
+        for picks in &picks {
+            assert!(picks.windows(2).all(|w| w[0] < w[1]), "{picks:?}");
+        }
         if let Some(r) = &range {
             for axis in Axis::ALL {
+                // Runs sorted, apart and not empty, inside the count.
                 let span = r.span(axis);
+                assert!(!span.is_empty(), "{axis:?}: {r:?}");
                 assert!(
-                    span.start < span.end && span.end <= snap.count(axis),
+                    span.iter()
+                        .all(|s| s.start < s.end && s.end <= snap.count(axis)),
+                    "{axis:?}: {r:?}"
+                );
+                assert!(
+                    span.windows(2).all(|w| w[0].end < w[1].start),
                     "{axis:?}: {r:?}"
                 );
             }
@@ -1472,13 +1484,17 @@ fn the_selection_is_well_formed(tc: TestCase) {
 }
 
 /// Every visible cell's `selected` flag says whether it is in the range or in
-/// a picked row, and the fill rects cover exactly the selected cells.
+/// a picked row or column, and the fill rects cover exactly the selected
+/// cells.
 #[hegel::test(test_cases = 2000)]
 fn cell_state_and_fill_rects_agree_with_the_range_and_picks(tc: TestCase) {
     frames(&tc, BODIES, |snap, _| {
-        let (range, picks) = seen_selection(snap);
-        if !picks.is_empty() {
-            tc.event("picks");
+        let (range, [row_picks, col_picks]) = seen_selection(snap);
+        if !row_picks.is_empty() {
+            tc.event("row picks");
+        }
+        if !col_picks.is_empty() {
+            tc.event("column picks");
         }
         if range.is_some() {
             tc.event("range");
@@ -1489,7 +1505,8 @@ fn cell_state_and_fill_rects_agree_with_the_range_and_picks(tc: TestCase) {
                 let in_range = range
                     .as_ref()
                     .is_some_and(|r| r.contains(row.position, col.position));
-                let picked = row.key.is_some_and(|k| picks.contains(&k));
+                let picked = row.key.is_some_and(|k| row_picks.contains(&k))
+                    || col.key.is_some_and(|k| col_picks.contains(&k));
                 let selected = snap.cell_state(row, col).selected;
                 assert_eq!(
                     selected,
@@ -1521,7 +1538,7 @@ fn cell_state_and_fill_rects_agree_with_the_range_and_picks(tc: TestCase) {
 /// can see between frames was announced in the drain before the later one.
 #[hegel::test(test_cases = 2000)]
 fn selection_changed_comes_once_per_drain_and_for_every_change(tc: TestCase) {
-    let mut last: Option<(Option<CellRange>, Vec<Key>)> = None;
+    let mut last: Option<(Option<CellRange>, [Vec<Key>; 2])> = None;
     frames(&tc, BODIES, |snap, step| {
         let announced = step
             .drained
@@ -2072,23 +2089,36 @@ fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) 
 #[hegel::test(test_cases = 2000)]
 fn a_header_move_in_progress_shows_its_drop(tc: TestCase) {
     frames(&tc, BODIES, |snap, _| {
-        let Mode::MovingHeaders { axis, key, to } = snap.mode() else {
+        let Mode::MovingHeaders { axis, key, target } = snap.mode() else {
             assert!(snap.moving_keys().is_empty());
             assert_eq!(snap.drop_indicator(), None);
+            assert_eq!(snap.pin_zones(), vec![]);
             return;
         };
         tc.event("moving");
-        assert_eq!(axis, Axis::Cols);
         assert!(snap.capturing());
         assert_eq!(snap.cursor(), Cursor::Move);
-        assert!(to <= snap.count(axis));
         let keys = snap.moving_keys();
         check_moved_keys(keys);
         assert!(keys.contains(&key));
+        // Nothing is pinned and the pin zones are off, so nothing pins.
+        assert_eq!(snap.pin_zones(), vec![]);
+        let to = match target {
+            // Only the columns are movable.
+            DropTarget::Stay => {
+                assert_eq!(axis, Axis::Rows);
+                assert_eq!(snap.drop_indicator(), None);
+                return;
+            }
+            DropTarget::Move { to, unpin: false } => to,
+            other => panic!("nothing pins, yet {other:?}"),
+        };
+        assert_eq!(axis, Axis::Cols);
+        assert!(to <= snap.count(axis));
         let drop = snap
             .drop_indicator()
             .expect("no drop indicator while moving");
-        assert_eq!((drop.axis, drop.to), (axis, to));
+        assert_eq!((drop.axis, drop.target), (axis, target));
         let strip = snap.strip(axis);
         let half = snap.gap(axis) / 2.0;
         let at = match strip.iter().find(|i| i.position == to) {
@@ -2136,6 +2166,8 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
     s.input(|g| {
         g.set_header_click(Axis::Cols, click);
         g.set_drag_threshold(threshold);
+        g.set_movable(Axis::Cols, true);
+        g.set_pin_zone(Axis::Cols, 0.0);
     });
     s.frame(viewport);
     let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
@@ -2191,7 +2223,7 @@ fn dropping_a_dragged_column_header_requests_the_move_the_pointer_shows(tc: Test
         Mode::MovingHeaders {
             axis: Axis::Cols,
             key,
-            to
+            target: DropTarget::Move { to, unpin: false }
         },
         "dragged from {from} to {x} over {over:?}"
     );
@@ -2328,10 +2360,10 @@ fn a_size_range_that_is_not_positive_finite_and_ordered_is_rejected(tc: TestCase
     assert!(built.is_err(), "Grid accepted the size range {min}..={max}");
 }
 
-/// A `Reset` on the rows drops every row Size Override; one on the columns
-/// keeps theirs, as does the other axis either way.
+/// A `Reset` on either axis keeps every Size Override, on both axes: a Key
+/// that comes back keeps its size.
 #[hegel::test(test_cases = 1000)]
-fn a_row_reset_drops_row_size_overrides_and_a_column_reset_keeps_them(tc: TestCase) {
+fn a_reset_keeps_size_overrides_on_both_axes(tc: TestCase) {
     let count = || hegel::one_of!(gs::integers::<u64>().max_value(30), gs::integers::<u64>());
     let mut grid = Grid::new(
         AxisConfig::new(tc.draw(count()), 1.0),
@@ -2354,8 +2386,11 @@ fn a_row_reset_drops_row_size_overrides_and_a_column_reset_keeps_them(tc: TestCa
     grid.notify(reset, binnacle_core::ChangeNotice::Reset(tc.draw(count())));
     for (&(i, key), &size) in &model {
         let axis = Axis::ALL[i];
-        let expected = (axis != Axis::Rows || reset != Axis::Rows).then_some(size);
-        assert_eq!(grid.size_override(axis, key), expected, "{axis:?} {key:?}");
+        assert_eq!(
+            grid.size_override(axis, key),
+            Some(size),
+            "{axis:?} {key:?}"
+        );
     }
 }
 

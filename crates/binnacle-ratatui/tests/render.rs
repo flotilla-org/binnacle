@@ -232,6 +232,64 @@ fn selected_cells_get_a_background_across_their_width_and_the_hovered_header_is_
 }
 
 #[test]
+fn picked_rows_and_columns_draw_as_picks_and_selected_headers_stand_out() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
+    );
+    let none = ratatui::style::Style::default();
+    let theme = Theme {
+        picks: none.bg(Color::Magenta),
+        header_selected: none.bg(Color::Blue),
+        ..Theme::classic()
+    };
+    let click = |grid: &mut Grid, x: f32, y: f32| {
+        let ctrl = binnacle_core::Modifiers::CTRL;
+        grid.pointer(binnacle_core::PointerEvent::down(x, y).modifiers(ctrl));
+        grid.pointer(binnacle_core::PointerEvent::up(x, y).modifiers(ctrl));
+    };
+    frame_buffer(&mut grid, 30, 5, Rect::new(0, 0, 30, 5));
+    // Ctrl-click column 1's header (x 14..22), then row 2's (line 3).
+    click(&mut grid, 15.0, 0.0);
+    click(&mut grid, 1.0, 3.0);
+    for (axis, range) in grid.begin_frame(Viewport::new(30.0, 5.0)) {
+        let keys = IdentitySource::new(range.end).window(range.clone());
+        grid.set_window(axis, range.start, &keys);
+    }
+    let snapshot = grid.snapshot();
+    let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+    let ctx = RenderContext::new(&theme);
+    render_with(&snapshot, &Labels, &ctx, buf.area, &mut buf);
+    let with = |bg: Color| -> Vec<(u16, u16)> {
+        (buf.area.positions())
+            .filter(|&p| buf[p].bg == bg)
+            .map(|p| (p.x, p.y))
+            .collect()
+    };
+    // Row 2's header (x 0..4, before the band's Gap) and column 1's.
+    let headers: Vec<(u16, u16)> = (0..5)
+        .map(|x| (x, 3))
+        .chain((14..22).map(|x| (x, 0)))
+        .collect();
+    let mut sorted = with(Color::Blue);
+    sorted.sort_by_key(|&(x, y)| (y, x));
+    let mut expected = headers;
+    expected.sort_by_key(|&(x, y)| (y, x));
+    assert_eq!(sorted, expected);
+    // Column 1 down the body above the columns' scrollbar, and row 2
+    // across it but for the focused cell, row 2 column 1, drawn reversed.
+    let picked: Vec<(u16, u16)> = [(14..22, 1), (14..22, 2), (5..13, 3), (23..29, 3)]
+        .into_iter()
+        .flat_map(|(xs, y)| xs.map(move |x| (x, y)))
+        .collect();
+    let mut cells = with(Color::Magenta);
+    cells.sort_by_key(|&(x, y)| (y, x));
+    let mut picked = picked;
+    picked.sort_by_key(|&(x, y)| (y, x));
+    assert_eq!(cells, picked);
+}
+
+#[test]
 fn column_headers_show_the_applied_sort_and_pending_requests() {
     let mut grid = Grid::new(
         AxisConfig::new(3, 1.0).header(1.0),
@@ -276,6 +334,51 @@ fn column_headers_show_the_applied_sort_and_pending_requests() {
 }
 
 #[test]
+fn row_headers_show_the_columns_sort_and_pending_requests() {
+    let mut grid = Grid::new(
+        AxisConfig::new(3, 1.0).header(1.0),
+        AxisConfig::new(4, 8.0).header(5.0).gap(1.0),
+    );
+    grid.set_header_click(Axis::Rows, binnacle_core::HeaderClick::Sort);
+    let area = Rect::new(0, 0, 41, 4);
+    let mut out = String::new();
+    grid.view_applied(
+        ViewSpec::default().with_sort(
+            Axis::Cols,
+            SortSpec::new(vec![SortColumn::ascending(Key(2))]),
+        ),
+        Totals::unknown(),
+    );
+    out += &format!(
+        "--- the columns by row 2 ascending\n{}\n",
+        frame(&mut grid, 41, 4, area)
+    );
+    grid.view_applied(
+        ViewSpec::default().with_sort(
+            Axis::Cols,
+            SortSpec::new(vec![
+                SortColumn::ascending(Key(2)),
+                SortColumn::descending(Key(0)),
+            ]),
+        ),
+        Totals::unknown(),
+    );
+    out += &format!(
+        "--- then row 0 descending\n{}\n",
+        frame(&mut grid, 41, 4, area)
+    );
+    // Click row 1's header: a request, not yet answered.
+    grid.pointer(binnacle_core::PointerEvent::down(1.0, 2.5));
+    grid.pointer(binnacle_core::PointerEvent::up(1.0, 2.5));
+    out += &format!(
+        "--- click row 1, unanswered\n{}\n",
+        frame(&mut grid, 41, 4, area)
+    );
+    assert!(binnacle_ratatui::animating(&grid.snapshot()));
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn column_header_gaps_are_drawn_as_handles_and_a_resize_draws_its_guide() {
     let mut grid = Grid::new(
         AxisConfig::new(100, 1.0).header(1.0),
@@ -298,6 +401,7 @@ fn a_column_move_draws_its_drop_indicator() {
         AxisConfig::new(100, 1.0).header(1.0),
         AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
     );
+    grid.set_movable(Axis::Cols, true);
     let area = Rect::new(0, 0, 32, 4);
     frame(&mut grid, 32, 4, area);
     // Column 0 spans x 5..13 and column 1 x 14..22; dropping past column 1's
@@ -309,11 +413,85 @@ fn a_column_move_draws_its_drop_indicator() {
 }
 
 #[test]
+fn a_row_move_draws_its_drop_indicator() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0).gap(1.0),
+        AxisConfig::new(10, 8.0).header(5.0),
+    );
+    grid.set_movable(Axis::Rows, true);
+    let area = Rect::new(0, 0, 24, 8);
+    frame(&mut grid, 24, 8, area);
+    // Row 0 spans y 1..2 and row 1 y 3..4; dropping past row 1's middle
+    // puts the indicator on the Gap at y 4.
+    grid.pointer(binnacle_core::PointerEvent::down(1.0, 1.5));
+    grid.pointer(binnacle_core::PointerEvent::moved(1.0, 3.8));
+    let out = frame(&mut grid, 24, 8, area);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn without_a_row_gap_a_row_move_underlines_the_row_above_its_drop() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0),
+    );
+    grid.set_movable(Axis::Rows, true);
+    let area = Rect::new(0, 0, 24, 6);
+    frame(&mut grid, 24, 6, area);
+    // Rows sit on lines 1, 2, 3...; dropping past row 1's middle drops
+    // between rows 1 and 2, under line 2.
+    grid.pointer(binnacle_core::PointerEvent::down(1.0, 1.5));
+    grid.pointer(binnacle_core::PointerEvent::moved(1.0, 2.8));
+    let buf = frame_buffer(&mut grid, 24, 6, area);
+    insta::assert_snapshot!(text(&buf));
+    let underlined = |y: u16| {
+        (0..20).all(|x| {
+            buf[(x, y)]
+                .style()
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        })
+    };
+    assert_eq!(
+        (1..6).map(underlined).collect::<Vec<_>>(),
+        [false, true, false, false, false]
+    );
+}
+
+#[test]
+fn the_status_line_says_a_move_waits_then_why_it_was_refused() {
+    let mut grid = Grid::new(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(5.0),
+    );
+    grid.set_movable(Axis::Rows, true);
+    let status_after = |grid: &mut Grid, events: &[binnacle_core::PointerEvent]| {
+        for &e in events {
+            grid.pointer(e);
+        }
+        for (axis, range) in grid.begin_frame(Viewport::new(30.0, 8.0)) {
+            let keys = IdentitySource::new(range.end).window(range.clone());
+            grid.set_window(axis, range.start, &keys);
+        }
+        status(&grid.snapshot())
+    };
+    use binnacle_core::PointerEvent as P;
+    assert_eq!(status_after(&mut grid, &[]), "");
+    let drag = [P::down(1.0, 1.5), P::moved(1.0, 4.5)];
+    assert_eq!(status_after(&mut grid, &drag), "moving row 0 to 4");
+    assert_eq!(status_after(&mut grid, &[P::up(1.0, 4.5)]), "moving row…");
+    grid.move_answered(Some("Can't move while sorted".to_string()));
+    assert_eq!(status_after(&mut grid, &[]), "Can't move while sorted");
+    assert_eq!(status_after(&mut grid, &[P::down(9.0, 3.0)]), "");
+}
+
+#[test]
 fn the_status_line_names_the_mode_and_hints_at_borders() {
     let mut grid = Grid::new(
         AxisConfig::new(100, 1.0).header(1.0).gap(1.0),
         AxisConfig::new(10, 8.0).header(5.0).gap(1.0),
     );
+    grid.set_movable(Axis::Cols, true);
     let mut status_after = |events: &[binnacle_core::PointerEvent]| {
         for &e in events {
             grid.pointer(e);

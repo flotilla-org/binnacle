@@ -4,7 +4,9 @@ use crate::gesture::Mode;
 use crate::grid::Grid;
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
-use crate::types::{Axis, Generation, Key, Position};
+use std::ops::Range;
+
+use crate::types::{Axis, Edge, Generation, Key, Position};
 use crate::view::{Condition, ConditionState, HeaderFilter, Support, TextSupport, ViewSpec};
 
 /// One visible item on an axis. `offset` is from the viewport's leading edge
@@ -56,7 +58,7 @@ pub struct Rect {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellState {
     pub focused: bool,
-    /// Inside the range, or in a picked row.
+    /// Inside the range, or in a picked row or column.
     pub selected: bool,
     /// The host's editor is open on this cell.
     pub editing: bool,
@@ -74,16 +76,19 @@ pub struct HeaderPlacement {
     pub key: Option<Key>,
     /// The header's rectangle in its band, unclipped like the Strip item.
     pub rect: Rect,
-    /// How it shows the sort of the other axis (rows never sort columns yet,
-    /// so row headers show none).
+    /// How it shows the sort of the other axis: a column header the rows'
+    /// sort, a row header the columns'.
     pub sort: HeaderSort,
     /// How it shows the conditions read in it (row headers show none).
     pub filter: HeaderFilter,
     /// Its whole item is selected: the range spans every item across it, or
-    /// (on a row header) its row is picked.
+    /// the item is picked.
     pub selected: bool,
     /// The pointer is over it (see [`Snapshot::hovered_header`]).
     pub hovered: bool,
+    /// A move of its item waits for the Table Source's answer: drawn
+    /// pending, like a sort, while the order stays as it is.
+    pub move_pending: bool,
 }
 
 /// The pointer shape the host should show, if its toolkit can change it.
@@ -99,9 +104,11 @@ pub enum Cursor {
     Move,
 }
 
-/// Where a resize in progress puts the resized item's trailing edge: a line
+/// Where a resize in progress puts the resized item's moving edge: a line
 /// across the viewport at `offset` along `axis` (viewport-relative, like Strip
-/// offsets), with the item's Key and current size. Resizing the Header Band
+/// offsets), with the item's Key and current size. That is its trailing edge,
+/// or its leading edge in the trailing pinned Strip, which grows from the
+/// viewport's far end. Resizing the Header Band
 /// leading `axis`, `key` is `None` and `size` is the band's thickness.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResizeGuide {
@@ -111,15 +118,55 @@ pub struct ResizeGuide {
     pub size: f32,
 }
 
-/// Where headers being moved would drop: before the item at Position `to` on
-/// `axis` (the count for the end), drawn as a line across the viewport at
-/// `offset` along `axis` (viewport-relative, like Strip offsets), the middle
-/// of the Gap before that item, as if a Gap also led the first.
+/// What releasing headers being dragged would do. Pinning, unpinning and
+/// reordering pins are the Grid's own, so they are offered on any axis;
+/// moving is asked of the Table Source, and only on a movable axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropTarget {
+    /// Request a move of the dragged items to before Position `to` (the
+    /// count for the end). `unpin` when the dragged item is pinned: it is
+    /// unpinned at once, and stays unpinned in its own place if the move is
+    /// refused.
+    Move { to: Position, unpin: bool },
+    /// Unpin the dragged item, which returns to its own Position `at`: the
+    /// axis can't move.
+    Unpin { at: Position },
+    /// Pin the dragged items to `edge`, drawn just before the pinned item
+    /// with Key `before` (after the last for `None`). `reorder` when the
+    /// dragged item is pinned there already, so the drop only reorders the
+    /// pins.
+    Pin {
+        edge: Edge,
+        before: Option<Key>,
+        reorder: bool,
+    },
+    /// Nothing: unpinned items over the body of an axis that can't move.
+    Stay,
+}
+
+/// Where headers being dragged would drop, and what that would do, drawn as
+/// a line across the viewport at `offset` along `axis` (viewport-relative,
+/// like Strip offsets): the middle of the Gap before the item they drop
+/// before, as if a Gap also led the first; into a pinned Strip, kept inside
+/// the viewport. For [`DropTarget::Unpin`] it marks the item's own Position,
+/// kept inside the scrolling region when that is out of view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DropIndicator {
     pub axis: Axis,
-    pub to: Position,
+    pub target: DropTarget,
     pub offset: f32,
+}
+
+/// The pin zone at `edge` of `axis` while headers are dragged on it and that
+/// edge's pinned Strip is empty: `size` long from `offset` (viewport
+/// relative), lit for the host to draw; `hot` while a drop would pin there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PinZone {
+    pub axis: Axis,
+    pub edge: Edge,
+    pub offset: f32,
+    pub size: f32,
+    pub hot: bool,
 }
 
 /// What changed since the previous Snapshot, so a host can skip work.
@@ -194,8 +241,53 @@ impl<'a> Snapshot<'a> {
         self.grid.axis(axis).measure.gap()
     }
 
+    /// The scrolling Strip of `axis`: the visible items that follow the
+    /// Scroll Anchor, pinned items left out. Its items are drawn clipped to
+    /// [`Snapshot::scrolling`].
     pub fn strip(&self, axis: Axis) -> &'a [StripItem] {
         &self.grid.axis(axis).strip
+    }
+
+    /// The pinned Strip at `edge` of `axis`: the pinned items in pin order,
+    /// laid out from the Header Band with a Gap after each, whatever the
+    /// scroll. Its items carry their Positions, like the scrolling Strip's.
+    pub fn pinned(&self, axis: Axis, edge: Edge) -> &'a [StripItem] {
+        &self.grid.axis(axis).pinned[edge.index()]
+    }
+
+    /// The Keys pinned to `edge` of `axis`, in pin order, dormant pins
+    /// included: what a saved layout keeps, and what `PinsChanged` reports.
+    pub fn pins(&self, axis: Axis, edge: Edge) -> impl Iterator<Item = Key> + 'a {
+        self.grid.axis(axis).pins[edge.index()]
+            .iter()
+            .map(|p| p.key)
+    }
+
+    /// Where the scrolling Strip of `axis` draws along it: past the Header
+    /// Band and the leading pinned Strip (with the Gap after it), to the
+    /// viewport's end or the Gap before the trailing pinned Strip. Its
+    /// part-scrolled items reach outside it.
+    pub fn scrolling(&self, axis: Axis) -> Range<f32> {
+        let st = self.grid.axis(axis);
+        let end = st.scroll_end().clamp(0.0, st.extent);
+        st.scroll_start().min(end)..end
+    }
+
+    /// Where the pinned Strip at `edge` of `axis` draws along it: from the
+    /// Header Band, or back from the viewport's far end, to where it
+    /// clips. Its items are drawn clipped to it; one it clips whole is
+    /// still in [`Snapshot::pinned`]. Unclipped, it ends where its items
+    /// do (empty if there are none).
+    pub fn pinned_region(&self, axis: Axis, edge: Edge) -> Range<f32> {
+        self.grid.axis(axis).regions[edge.index()].clone()
+    }
+
+    /// Every drawn item of `axis` in drawn order: the leading pinned Strip,
+    /// the scrolling Strip, then the trailing pinned Strip.
+    pub fn drawn(&self, axis: Axis) -> impl Iterator<Item = &'a StripItem> + 'a {
+        let st = self.grid.axis(axis);
+        let [leading, trailing] = &st.pinned;
+        leading.iter().chain(&st.strip).chain(trailing)
     }
 
     pub fn rows(&self) -> &'a [StripItem] {
@@ -223,10 +315,20 @@ impl<'a> Snapshot<'a> {
     /// Key is known.
     fn focused_item(&self, axis: Axis) -> Option<&'a StripItem> {
         let end = self.focus(axis)?;
+        end.key?;
+        if let Some(item) = (Edge::ALL.iter())
+            .flat_map(|&edge| self.pinned(axis, edge))
+            .find(|i| i.key == end.key && i.position == end.position)
+        {
+            return Some(item);
+        }
+        // The scrolling Strip skips pinned Positions, so it is searched.
         let strip = self.strip(axis);
-        let i = end.position.checked_sub(strip.first()?.position)?;
-        let item = strip.get(usize::try_from(i).ok()?)?;
-        (end.key.is_some() && item.key == end.key).then_some(item)
+        let i = strip
+            .binary_search_by_key(&end.position, |i| i.position)
+            .ok()?;
+        let item = &strip[i];
+        (item.key == end.key).then_some(item)
     }
 
     /// The focused cell's rectangle, unclipped, if it is visible and its Keys
@@ -248,7 +350,7 @@ impl<'a> Snapshot<'a> {
         let Mode::Editing { row, col } = self.mode() else {
             return None;
         };
-        let find = |axis, key| self.strip(axis).iter().find(|i| i.key == Some(key));
+        let find = |axis, key| self.drawn(axis).find(|i| i.key == Some(key));
         let (row, col) = (find(Axis::Rows, row)?, find(Axis::Cols, col)?);
         Some(Rect {
             x: col.offset,
@@ -266,10 +368,13 @@ impl<'a> Snapshot<'a> {
                 f.key.is_some() && f.position == item.position && f.key == item.key
             })
         };
-        let in_range = self
-            .selection_range()
-            .is_some_and(|r| r.contains(row.position, col.position));
-        let picked = row.key.is_some_and(|k| self.grid.selection.picked(k));
+        let in_range =
+            (self.selection_range()).is_some_and(|r| r.contains(row.position, col.position));
+        let picked = |axis, item: &StripItem| {
+            item.key
+                .is_some_and(|k| self.grid.selection.picked(axis, k))
+        };
+        let picked = picked(Axis::Rows, row) || picked(Axis::Cols, col);
         let editing = match self.mode() {
             Mode::Editing { row: r, col: c } => row.key == Some(r) && col.key == Some(c),
             _ => false,
@@ -287,19 +392,20 @@ impl<'a> Snapshot<'a> {
         }
     }
 
-    /// The one contiguous range, if any, clamped to the counts.
-    pub fn selection_range(&self) -> Option<CellRange> {
-        let counts = Axis::ALL.map(|a| self.count(a));
-        self.grid.selection.span.map(|s| s.range(counts))
+    /// The one contiguous range, if any, as the Positions it covers on each
+    /// axis: every item drawn between its corners, in drawn order.
+    pub fn selection_range(&self) -> Option<&'a CellRange> {
+        self.grid.range.as_ref()
     }
 
-    /// The picked row Keys, in Key order.
-    pub fn picked(&self) -> &'a [Key] {
-        &self.grid.selection.picks
+    /// The picked Keys of `axis`, in Key order.
+    pub fn picked(&self, axis: Axis) -> &'a [Key] {
+        &self.grid.selection.picks[axis.index()]
     }
 
     /// Rects to fill for the selection: the visible part of the range, then
-    /// each visible picked row across the visible columns. They may overlap.
+    /// each visible picked row across the visible columns, then each visible
+    /// picked column down the visible rows. They may overlap.
     /// Edges are those of the Strip items, unclipped, like [`Self::focus_rect`].
     pub fn selection_rects(&self) -> &'a [Rect] {
         &self.grid.fills
@@ -351,6 +457,25 @@ impl<'a> Snapshot<'a> {
         self.grid.view.quick_filter[axis.index()]
     }
 
+    /// Whether the Table Source hides items of `axis`: adapters offer Hide
+    /// only then.
+    pub fn hide_support(&self, axis: Axis) -> bool {
+        self.grid.view.hides[axis.index()]
+    }
+
+    /// The most hidden Keys `axis` takes ([`crate::HIDE_CAP`] unless the
+    /// Table Source declared fewer): adapters suggest a filter past it.
+    pub fn hide_cap(&self, axis: Axis) -> usize {
+        self.grid.view.hide_cap(axis)
+    }
+
+    /// The hidden Keys of `axis` in the order they were hidden, as the
+    /// latest request has them (else the applied View Spec): what a "Show
+    /// hidden" list offers.
+    pub fn hidden(&self, axis: Axis) -> &'a [Key] {
+        &self.grid.latest_view().axis(axis).hidden
+    }
+
     /// What the Table Source supports when viewing `axis` by `key`, an item
     /// of the other axis: adapters offer only these controls.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
@@ -374,24 +499,23 @@ impl<'a> Snapshot<'a> {
         self.grid.view.header(Axis::Cols, key)
     }
 
-    /// The headers of the visible items on `axis`, in Strip order: column
-    /// headers for [`Axis::Cols`], row headers for [`Axis::Rows`].
+    /// The headers of the visible items on `axis`, in drawn order (the
+    /// pinned Strip, then the scrolling Strip): column headers for
+    /// [`Axis::Cols`], row headers for [`Axis::Rows`].
     pub fn headers(&self, axis: Axis) -> impl Iterator<Item = HeaderPlacement> + 'a {
         let grid = self.grid;
         let across = axis.other();
         let thickness = self.header(across);
         let range = self.selection_range();
-        let whole = range
-            .as_ref()
-            .filter(|r| *r.span(across) == (0..self.count(across)))
-            .map(|r| r.span(axis).clone());
+        let all = self.count(across);
+        let whole = range.filter(|r| matches!(r.span(across), [run] if *run == (0..all)));
         let hovered = grid.hovered;
-        self.strip(axis).iter().map(move |item| {
+        self.drawn(axis).map(move |item| {
             let (x, y, width, height) = match axis {
                 Axis::Rows => (0.0, item.offset, thickness, item.size),
                 Axis::Cols => (item.offset, 0.0, item.size, thickness),
             };
-            let picked = axis == Axis::Rows && item.key.is_some_and(|k| grid.selection.picked(k));
+            let picked = item.key.is_some_and(|k| grid.selection.picked(axis, k));
             HeaderPlacement {
                 axis,
                 position: item.position,
@@ -408,8 +532,9 @@ impl<'a> Snapshot<'a> {
                 filter: (item.key).map_or(HeaderFilter::default(), |key| {
                     grid.view.header_filter(axis, key)
                 }),
-                selected: picked || whole.as_ref().is_some_and(|w| w.contains(&item.position)),
+                selected: picked || whole.is_some_and(|w| w.covers(axis, item.position)),
                 hovered: hovered == Some((axis, item.position)),
+                move_pending: item.key.is_some_and(|k| grid.move_pending(axis, k)),
             }
         })
     }
@@ -457,9 +582,25 @@ impl<'a> Snapshot<'a> {
             _ => return None,
         };
         let st = self.grid.axis(axis);
+        for edge in Edge::ALL {
+            if let Some(item) = self.pinned(axis, edge).iter().find(|i| i.key == Some(key)) {
+                // A trailing pinned item grows from its far end, so its
+                // guide is at its start.
+                let offset = match edge {
+                    Edge::Leading => item.end(),
+                    Edge::Trailing => item.offset,
+                };
+                return Some(ResizeGuide {
+                    axis,
+                    key: Some(key),
+                    offset,
+                    size: item.size,
+                });
+            }
+        }
         let position = st.measure.position_of(key)?;
         let size = st.measure.size_at(position);
-        let start = f64::from(st.header) - f64::from(st.anchor.offset)
+        let start = f64::from(st.scroll_start()) - f64::from(st.anchor.offset)
             + st.measure.distance(st.anchor.position, position);
         Some(ResizeGuide {
             axis,
@@ -478,19 +619,93 @@ impl<'a> Snapshot<'a> {
         }
     }
 
-    /// Where the headers being moved would drop, while moving headers.
+    /// Whether the Table Source can move the items of `axis` now (see
+    /// [`crate::Grid::set_movable`]).
+    pub fn movable(&self, axis: Axis) -> bool {
+        self.grid.moves.movable[axis.index()]
+    }
+
+    /// The move requested and not yet answered: its axis and the Keys of
+    /// the items it moves.
+    pub fn pending_move(&self) -> Option<(Axis, &'a [Key])> {
+        let (axis, keys) = self.grid.moves.pending.as_ref()?;
+        Some((*axis, keys))
+    }
+
+    /// The axis of the last move the Table Source refused, and its reason,
+    /// until the next press: a short message for the host to show near the
+    /// headers or in its status line.
+    pub fn move_refusal(&self) -> Option<(Axis, &'a str)> {
+        let (axis, reason) = self.grid.moves.refused.as_ref()?;
+        Some((*axis, reason))
+    }
+
+    /// Where the headers being dragged would drop and what that would do,
+    /// while dragging headers; `None` while the drop would do nothing.
     pub fn drop_indicator(&self) -> Option<DropIndicator> {
-        let Mode::MovingHeaders { axis, to, .. } = self.mode() else {
+        let Mode::MovingHeaders { axis, target, .. } = self.mode() else {
             return None;
         };
         let st = self.grid.axis(axis);
-        let start = f64::from(st.header) - f64::from(st.anchor.offset)
-            + st.measure.distance(st.anchor.position, to);
+        let gap = f64::from(st.measure.gap());
+        let in_body = |p: Position| {
+            f64::from(st.scroll_start()) - f64::from(st.anchor.offset)
+                + st.measure.distance(st.anchor.position, p)
+                - gap / 2.0
+        };
+        let last = f64::from(f32::from_bits(st.extent.to_bits().saturating_sub(1)).max(0.0));
+        let offset = match target {
+            DropTarget::Stay => return None,
+            DropTarget::Move { to, .. } => in_body(to),
+            DropTarget::Unpin { at } => in_body(at).clamp(
+                f64::from(st.scroll_start()) - gap / 2.0,
+                f64::from(st.scroll_end()) - gap / 2.0,
+            ),
+            DropTarget::Pin { edge, before, .. } => {
+                let items: Vec<StripItem> = st.pinned_items(edge).collect();
+                let at = before.and_then(|b| items.iter().find(|it| it.key == Some(b)));
+                let offset = match (at, items.last(), edge) {
+                    (Some(it), _, _) => f64::from(it.offset) - gap / 2.0,
+                    (None, Some(end), _) => f64::from(end.end()) + gap / 2.0,
+                    (None, None, Edge::Leading) => f64::from(st.header) - gap / 2.0,
+                    (None, None, Edge::Trailing) => f64::from(st.extent) - gap / 2.0,
+                };
+                offset.clamp(0.0, last)
+            }
+        };
         Some(DropIndicator {
             axis,
-            to,
-            offset: (start - f64::from(st.measure.gap()) / 2.0) as f32,
+            target,
+            offset: offset as f32,
         })
+    }
+
+    /// The lit pin zones while headers are dragged: one at each edge of the
+    /// dragged axis whose pinned Strip is empty, unless the zones there have
+    /// no size (see [`crate::Grid::set_pin_zone`]).
+    pub fn pin_zones(&self) -> Vec<PinZone> {
+        let Mode::MovingHeaders { axis, target, .. } = self.mode() else {
+            return Vec::new();
+        };
+        let st = self.grid.axis(axis);
+        let hot = |edge| matches!(target, DropTarget::Pin { edge: e, .. } if e == edge);
+        (Edge::ALL.into_iter())
+            .filter(|&edge| st.drawn_pins(edge).next().is_none() && st.pin_zone > 0.0)
+            .map(|edge| {
+                let size = st.pin_zone.min((st.extent - st.header).max(0.0));
+                let offset = match edge {
+                    Edge::Leading => st.header,
+                    Edge::Trailing => st.extent - size,
+                };
+                PinZone {
+                    axis,
+                    edge,
+                    offset,
+                    size,
+                    hot: hot(edge),
+                }
+            })
+            .collect()
     }
 
     /// The header under the pointer: the axis whose item it heads (a row
@@ -498,7 +713,7 @@ impl<'a> Snapshot<'a> {
     /// a header, and a border, is not part of it.
     pub fn hovered_header(&self) -> Option<(Axis, &'a StripItem)> {
         let (axis, position) = self.grid.hovered?;
-        let item = self.strip(axis).iter().find(|i| i.position == position)?;
+        let item = self.drawn(axis).find(|i| i.position == position)?;
         Some((axis, item))
     }
 }

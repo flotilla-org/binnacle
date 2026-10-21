@@ -1,0 +1,45 @@
+---
+source: crates/binnacle-ratatui/tests/menu.rs
+expression: out
+---
+menu on port
+    name        │port        │crew        │
+1   r0c0        ┌─ Column port ────────────────────────┐
+2   r1c0        │▸l Pin left                           │
+3   r2c0        │ r Pin right                          │
+4   r3c0        │ f Freeze up to here                  │
+5   r4c0        │ h Hide column                        │
+6   r5c0        │ o Show only this column              │
+                │ c Choose columns…                    │
+                │ No hidden columns                    │
+                │ ↑↓ Enter  Esc close                  │
+                └──────────────────────────────────────┘
+                                                       █
+
+port pinned right: Unpin, and neither Pin right nor Freeze
+    name        │crew        │              port
+1   r0c0        ┌─ Column port ────────────────────────┐
+2   r1c0        │▸u Unpin                              │
+3   r2c0        │ h Hide column                        │
+4   r3c0        │ o Show only this column              │
+5   r4c0        │ c Choose columns…                    │
+6   r5c0        │ No hidden columns                    │
+                │ ↑↓ Enter  Esc close                  │
+                └──────────────────────────────────────┘
+                                                       █
+                                                       █
+                                                       █
+
+the menu of row 2
+    name        │port        │crew        │
+1   r0c0         r0c1         r0c2                     █
+2   ┌─ Row 3 ──────────────────────────────┐           █
+3   │▸t Pin top                            │           █
+4   │ b Pin bottom                         │           █
+5   │ f Freeze up to here                  │           █
+6   │ h Hide row                           │           █
+    │ o Show only this row                 │           █
+    │ c Choose rows…                       │           █
+    │ No hidden rows                       │           █
+    │ ↑↓ Enter  Esc close                  │           █
+    └──────────────────────────────────────┘           █

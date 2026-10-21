@@ -11,9 +11,10 @@ import type { Snapshot } from "../snapshot";
 import type { Theme } from "../theme";
 import { paintColumnHeaders, paintCorner, paintRowNumbers } from "./bands";
 import { paintBody, paintEmpty } from "./body";
-import { paintBorders, type BorderLayer } from "./borders";
+import { paintBorders, paintPinnedEdges, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
-import { paintPulse, sorting } from "./pending";
+import { paintDropCaption, paintPinZones } from "./drop";
+import { paintPulse, paintRefusal, shimmering } from "./pending";
 import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
 
 export interface CanvasPainter extends Painter {
@@ -31,8 +32,8 @@ export interface CanvasPainter extends Painter {
   readonly flashes: Flashes;
   /** Centred in the body when an axis has no items. */
   empty: string;
-  /** Whether a column menu is mounted, so filterable column headers draw its button. */
-  filterButtons: boolean;
+  /** Whether a column (and a row) menu is mounted, so filterable headers in that band draw its button. */
+  filterButtons: { cols: boolean; rows: boolean };
 }
 
 export function createCanvasPainter(theme: Theme): CanvasPainter {
@@ -45,6 +46,8 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
   let height = 0;
   let dpr = 1;
   const layer: BorderLayer = { canvas: null };
+  /** The last drop line drawn, where a refused move's reason shows. */
+  let drop: Snapshot["dropIndicator"] = null;
 
   const painter: CanvasPainter = {
     element: canvas,
@@ -56,7 +59,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     renderer: () => plainText,
     flashes: createFlashes(),
     empty: "No rows",
-    filterButtons: false,
+    filterButtons: { cols: false, rows: false },
     resize(w, h, ratio) {
       width = w;
       height = h;
@@ -91,7 +94,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         flashes: painter.flashes,
         now: performance.now(),
         motion: painter.motion,
-        filterButtons: painter.filterButtons,
+        filterButtons: { ...painter.filterButtons },
       };
       const animating = paintBody(p);
       const pulsing = paintPulse(p);
@@ -102,9 +105,14 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintCorner(p);
       paintHeaderStates(p);
       paintBorders(p, painter.border, layer);
+      paintPinnedEdges(p);
+      paintPinZones(p);
       paintFocus(p);
       paintGuides(p);
-      const pending = painter.motion && (pulsing || sorting(s));
+      paintDropCaption(p);
+      drop = s.dropIndicator ?? drop;
+      paintRefusal(p, drop);
+      const pending = painter.motion && (pulsing || shimmering(s));
       return animating || painter.flashes.sweep(p.now) || pending;
     },
   };

@@ -7,7 +7,9 @@ use binnacle_core::{
     FindQuery, Grid, Key, Located, Modifiers, PointerEvent, Position, Snapshot, Stamped, Support,
     ViewSpec, Viewport,
 };
-use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Viewed};
+use binnacle_memory::{
+    FindStep, IdentitySource, MemorySource, MovePolicy, Moved, PumpSource, Transposed, Viewed,
+};
 
 use crate::render::{Rendered, view_text};
 
@@ -143,6 +145,12 @@ impl RecordTable {
         RecordTable { rows, source }
     }
 
+    /// This table with `policy` for moves on a sorted axis.
+    pub fn with_move_policy(mut self, policy: MovePolicy) -> Self {
+        self.source = self.source.with_move_policy(policy);
+        self
+    }
+
     /// Keeps only the records for which `keep` is true; the Grid needs the
     /// returned Change Notice.
     pub fn filter(&mut self, keep: impl Fn(&Record) -> bool + 'static) -> ChangeNotice {
@@ -150,23 +158,28 @@ impl RecordTable {
     }
 
     /// Appends `records` to the base data; the Grid needs the returned
-    /// Change Notice.
-    pub fn append(&mut self, records: Vec<Record>) -> ChangeNotice {
+    /// Change Notices.
+    pub fn append(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
         self.rows.extend(records);
         self.source.appended(&self.rows, &[])
     }
 
     /// Sets base row `row`'s value in column `col` as the user's edit (a
-    /// row in view stays even if the filter now drops it); the Grid needs
-    /// the returned Change Notice, if any.
-    pub fn edit(&mut self, row: usize, col: usize, value: Option<i64>) -> Option<ChangeNotice> {
+    /// row or column in view stays even if the filter now drops it); the
+    /// Grid needs the returned Change Notices.
+    pub fn edit(
+        &mut self,
+        row: usize,
+        col: usize,
+        value: Option<i64>,
+    ) -> Vec<(Axis, ChangeNotice)> {
         self.rows[row][col] = value;
         self.source.edited(&self.rows, row, Key(col as u64))
     }
 
     /// Replaces the base data with `rows`; the Grid needs the returned
-    /// Change Notice.
-    pub fn replace(&mut self, rows: Vec<Record>) -> ChangeNotice {
+    /// Change Notices.
+    pub fn replace(&mut self, rows: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
         self.rows = rows;
         self.source.replaced(&self.rows, None)
     }
@@ -195,7 +208,11 @@ impl PumpSource for RecordTable {
         self.source.over(&self.rows).locate(axis, key)
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.source.over(&self.rows).movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.source.over(&self.rows).move_items(axis, keys, to)
     }
 
@@ -206,6 +223,125 @@ impl PumpSource for RecordTable {
         direction: FindDirection,
     ) -> Option<FindStep> {
         self.source.find_next(&self.rows, query, from, direction)
+    }
+}
+
+/// Any scenario table on its side: the Grid's rows are the inner table's
+/// columns and its columns the inner table's rows.
+impl<S: ScenarioSource> ScenarioSource for Transposed<S> {
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        self.0.window(axis.other(), range)
+    }
+
+    fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        self.0.sizes(axis.other(), keys)
+    }
+}
+
+/// A [`RecordTable`] on its side, as a pivoted or transposed host has it:
+/// each record is a column and each field a row, keyed by Logical Index on
+/// both axes. The columns sort by the sortable fields, filter and change as
+/// the records' rows do; the fields move. Change Notices from its methods
+/// name the axes of the table on its side.
+pub struct ColumnMajorTable {
+    table: Transposed<RecordTable>,
+}
+
+impl ColumnMajorTable {
+    /// A table of `records` as columns, each `fields` long, its columns
+    /// sortable by the fields in `sortable`.
+    pub fn new(
+        records: Vec<Record>,
+        fields: usize,
+        sortable: impl IntoIterator<Item = u64>,
+    ) -> Self {
+        ColumnMajorTable {
+            table: Transposed(RecordTable::new(records, fields, sortable)),
+        }
+    }
+
+    /// The records, one per column, in base order.
+    pub fn records(&self) -> &[Record] {
+        &self.table.0.rows
+    }
+
+    /// The records' table, the right way up.
+    pub fn row_major(&mut self) -> &mut RecordTable {
+        &mut self.table.0
+    }
+
+    /// Keeps only the records for which `keep` is true.
+    pub fn filter(&mut self, keep: impl Fn(&Record) -> bool + 'static) -> ChangeNotice {
+        self.table.0.filter(keep)
+    }
+
+    /// Appends `records` as new columns.
+    pub fn append(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
+        turned(self.table.0.append(records))
+    }
+
+    /// Sets record `record`'s value in field `field` as the user's edit (a
+    /// column in view stays even if the filter now drops it).
+    pub fn edit(
+        &mut self,
+        record: usize,
+        field: usize,
+        value: Option<i64>,
+    ) -> Vec<(Axis, ChangeNotice)> {
+        turned(self.table.0.edit(record, field, value))
+    }
+
+    /// Replaces the records with `records`.
+    pub fn replace(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
+        turned(self.table.0.replace(records))
+    }
+}
+
+/// Change Notices for the records' table, for the same table on its side.
+fn turned(notices: Vec<(Axis, ChangeNotice)>) -> Vec<(Axis, ChangeNotice)> {
+    (notices.into_iter())
+        .map(|(axis, notice)| (axis.other(), notice))
+        .collect()
+}
+
+impl ScenarioSource for ColumnMajorTable {
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        self.table.window(axis, range)
+    }
+}
+
+impl PumpSource for ColumnMajorTable {
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        self.table.view(spec)
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.table.support(axis, key)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        self.table.distinct(axis, key, query)
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.table.locate(axis, key)
+    }
+
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.table.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
+        self.table.move_items(axis, keys, to)
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        self.table.find_next(query, from, direction)
     }
 }
 
@@ -240,11 +376,22 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
         answer
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.source.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         let answer = self.source.move_items(axis, keys, to);
+        let said = match &answer {
+            Ok(Moved { notices, view }) => match view {
+                Some((spec, _)) => format!("notices {notices:?}, applied {}", view_text(spec)),
+                None => format!("notices {notices:?}"),
+            },
+            Err(reason) => format!("refused: {reason}"),
+        };
         let _ = writeln!(
             self.log.borrow_mut(),
-            "  move {axis:?} {keys:?} to {to}: {answer:?}"
+            "  move {axis:?} {keys:?} to {to}: {said}"
         );
         answer
     }
@@ -346,6 +493,12 @@ impl<S: ScenarioSource> Scenario<S> {
     /// the source, then take the Snapshot.
     pub fn frame(&mut self, viewport: Viewport) -> Snapshot<'_> {
         self.pump();
+        self.fill(viewport)
+    }
+
+    /// `begin_frame`, fill each requested Window from the source, then take
+    /// the Snapshot, leaving the Effects unanswered.
+    fn fill(&mut self, viewport: Viewport) -> Snapshot<'_> {
         for (axis, range) in self.grid.begin_frame(viewport) {
             let _ = writeln!(self.log, "window {axis:?} {range:?}");
             let keys = self.source.window(axis, range.clone());
@@ -367,6 +520,17 @@ impl<S: ScenarioSource> Scenario<S> {
         self.steps += 1;
         let header = format!("--- {}. {label}\n", self.steps);
         let rendered = Rendered::of(&self.frame(viewport));
+        let log = std::mem::take(&mut self.log);
+        format!("{header}{log}{}", self.show(rendered))
+    }
+
+    /// A [`Scenario::step`] whose frame leaves the Effects unanswered, as
+    /// a host waiting on a slow Table Source would; the next step answers
+    /// them.
+    pub fn step_waiting(&mut self, label: &str, viewport: Viewport) -> String {
+        self.steps += 1;
+        let header = format!("--- {}. {label}\n", self.steps);
+        let rendered = Rendered::of(&self.fill(viewport));
         let log = std::mem::take(&mut self.log);
         format!("{header}{log}{}", self.show(rendered))
     }

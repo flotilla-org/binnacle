@@ -355,3 +355,63 @@ fn an_insert_past_the_largest_count_is_clipped() {
     assert_eq!(m.window_start(), u64::MAX - 2);
     assert_eq!(m.key_at(u64::MAX - 1), Some(Key(8)));
 }
+
+/// With some items skipped, distances and `locate` agree with walking the
+/// items that are not skipped one by one, whether the Window holds them or
+/// not. Whole sizes keep the walk exact.
+#[hegel::test(test_cases = 1000)]
+fn skipped_items_are_left_out_of_distances_and_locate(tc: hegel::TestCase) {
+    use hegel::generators as gs;
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(12));
+    let gap = tc.draw(gs::sampled_from(vec![0.0f32, 1.0]));
+    let mut m = AxisMeasure::new(count, 2.0, gap);
+    let start = tc.draw(gs::integers::<u64>().max_value(count));
+    let len = tc.draw(gs::integers::<u64>().max_value(count - start));
+    let sizes: Vec<f32> = (0..len)
+        .map(|_| tc.draw(gs::integers::<u32>().min_value(1).max_value(5)) as f32)
+        .collect();
+    let keys: Vec<Key> = (start..start + len).map(Key).collect();
+    m.set_keys_sized(start, &keys, &sizes, 1.0);
+    let skipped = tc.draw(gs::vecs(gs::integers::<u64>().max_value(count - 1)).max_size(8));
+    m.set_skipped(skipped.iter().copied());
+    // The model: each Position's stride, zero where skipped.
+    let stride = |p: u64| {
+        if skipped.contains(&p) {
+            0.0
+        } else {
+            f64::from(m.size_at(p)) + f64::from(gap)
+        }
+    };
+    let walk = |a: u64, b: u64| (a..b).map(stride).sum::<f64>();
+    let (a, b) = (
+        tc.draw(gs::integers::<u64>().max_value(count)),
+        tc.draw(gs::integers::<u64>().max_value(count)),
+    );
+    let expected = if a <= b { walk(a, b) } else { -walk(b, a) };
+    assert_eq!(m.distance(a, b), expected, "distance({a}, {b})");
+    let shown: Vec<u64> = (0..count).filter(|p| !skipped.contains(p)).collect();
+    let extent = (walk(0, count) - f64::from(gap)).max(0.0);
+    assert_eq!(m.extent(), extent);
+    // Any whole offset from `from` lands where the walk does: mostly near
+    // the start of some item `to`, where the edge cases are.
+    let from = tc.draw(gs::integers::<u64>().max_value(count - 1));
+    let to = tc.draw(gs::integers::<u64>().max_value(count));
+    let near = f64::from(tc.draw(gs::integers::<i32>().min_value(-2).max_value(7)));
+    let at = walk(0, to) + near;
+    let delta = at - walk(0, from);
+    let expected = shown.iter().find_map(|&p| {
+        let begin = walk(0, p);
+        let size = f64::from(m.size_at(p));
+        let in_gap = at >= begin + size;
+        let last = Some(&p) == shown.last();
+        (at >= begin && at < begin + size + f64::from(gap) && !(in_gap && last)).then_some((
+            p,
+            at - begin,
+            in_gap,
+        ))
+    });
+    let got = m
+        .locate(from, delta)
+        .map(|l| (l.position, l.within, l.in_gap));
+    assert_eq!(got, expected, "locate({from}, {delta}) over {shown:?}");
+}

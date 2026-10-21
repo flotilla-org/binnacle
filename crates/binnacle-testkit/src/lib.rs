@@ -7,6 +7,8 @@
 mod render;
 mod scenario;
 
-pub use binnacle_memory::PumpSource;
+pub use binnacle_memory::{PumpSource, Transposed};
 pub use render::render;
-pub use scenario::{IdentityTable, KeyedTable, Record, RecordTable, Scenario, ScenarioSource};
+pub use scenario::{
+    ColumnMajorTable, IdentityTable, KeyedTable, Record, RecordTable, Scenario, ScenarioSource,
+};

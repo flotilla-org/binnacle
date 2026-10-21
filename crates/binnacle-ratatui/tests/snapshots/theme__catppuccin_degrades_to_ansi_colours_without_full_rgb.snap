@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-ratatui/tests/theme.rs
-assertion_line: 220
 expression: styled(&buf)
 ---
    l 0 │col 1▲│col 2~│col 3 │
@@ -15,10 +14,10 @@ expression: styled(&buf)
 aaabbbbcbbbbbdceeeeeecffffffcb
 cccggggaggggggaggggggaggggggac
 ccchhhhhhhhhhhhhhhhhhhhhhhhhhc
-ccciiiiaiiiiiiaiiiiiiaiiiiiiac
-ccchhhhhiiiiiihiiiiiihhhhhhhhc
-cccggggaiiiiiiajjjjjjaggggggac
-ccchhhhhkhhhhhhkhhhhhhkhhhhhhc
+iiijjjjajjjjjjajjjjjjajjjjjjac
+ccchhhhhjjjjjjhjjjjjjhhhhhhhhc
+cccggggajjjjjjakkkkkkaggggggac
+ccchhhhhlhhhhhhlhhhhhhlhhhhhhc
 gggccccccccccccccccccccccccccg
 
 a: fg Reset bg Reset
@@ -29,6 +28,7 @@ e: fg Gray bg Reset DIM
 f: fg LightBlue bg Reset BOLD | UNDERLINED
 g: fg Gray bg Reset
 h: fg Gray bg Black
-i: fg Gray bg DarkGray
-j: fg Black bg LightBlue
-k: fg DarkGray bg Black
+i: fg DarkGray bg DarkGray
+j: fg Gray bg DarkGray
+k: fg Black bg LightBlue
+l: fg DarkGray bg Black

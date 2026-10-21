@@ -3,7 +3,7 @@
 //! answers (some held back and answered late), refilters, sorts, quick
 //! filters and column conditions (answered whole, as a subset or as a
 //! failure, late or superseded, by a sort or a refilter), View Specs pushed
-//! unprompted, find steps, header moves, edits,
+//! unprompted, find steps, header moves (answered, refused or withdrawn), edits,
 //! pointer gestures (band edge drags among them), Actions, Size Overrides,
 //! `set_header`, `set_gap` and `set_focus` (with Keys the source has and Keys
 //! it never had). Every frame's Snapshot is checked
@@ -15,10 +15,10 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, EditEnd, Effect,
-    FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers,
-    PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals, Value,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, DropTarget, Edge,
+    EditEnd, Effect, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode,
+    Modifiers, PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals,
+    Value, ViewSpec, Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -33,9 +33,11 @@ struct Host {
     /// Per axis, the Keys a filter leaves out, which a later `Refiltered`
     /// may bring back.
     hidden: [Vec<u64>; 2],
-    /// Row Keys a `Refiltered` took out since the last `Reset`: once every
-    /// `Locate` is answered, none of them is picked.
-    refiltered_out: BTreeSet<u64>,
+    /// Per axis and edge, the pinned Keys, in pin order.
+    pins: [[Vec<u64>; 2]; 2],
+    /// Per axis, Keys a `Refiltered` took out since the last `Reset`: once
+    /// every `Locate` is answered, none of them is picked.
+    refiltered_out: [BTreeSet<u64>; 2],
     /// The next fresh Key; row and column Keys never collide with each other
     /// or with the initial ones.
     next: u64,
@@ -48,6 +50,10 @@ struct Host {
     find_round: u64,
     /// Find steps drained in this find round and not answered yet.
     steps_due: u32,
+    /// The Keys of the move drained and not answered yet, and its axis.
+    move_due: Option<(Axis, Vec<Key>)>,
+    /// Per axis, whether the source last declared it movable.
+    movable: [bool; 2],
     viewport: Viewport,
     /// Each axis's band thickness and Gap as of the last frame.
     headers: [f32; 2],
@@ -91,7 +97,40 @@ impl Host {
         }
     }
 
+    /// Before a release: a header drag in progress pins, unpins or moves
+    /// as its drop target says, so the model follows that.
+    fn expect_drop(&mut self) {
+        let snap = self.grid.snapshot();
+        let Mode::MovingHeaders { axis, key, target } = snap.mode() else {
+            return;
+        };
+        let keys: Vec<u64> = snap.moving_keys().iter().map(|k| k.0).collect();
+        let pins = &mut self.pins[axis.index()];
+        match target {
+            DropTarget::Pin { edge, before, .. } => {
+                for k in keys {
+                    if before == Some(Key(k)) {
+                        continue;
+                    }
+                    pins.iter_mut().for_each(|p| p.retain(|&p| p != k));
+                    let list = &mut pins[edge.index()];
+                    let at = before
+                        .and_then(|b| list.iter().position(|&p| p == b.0))
+                        .unwrap_or(list.len());
+                    list.insert(at, k);
+                }
+            }
+            DropTarget::Unpin { .. } | DropTarget::Move { unpin: true, .. } => {
+                pins.iter_mut().for_each(|p| p.retain(|&p| p != key.0));
+            }
+            DropTarget::Move { unpin: false, .. } | DropTarget::Stay => {}
+        }
+    }
+
     fn pointer_event(&mut self, tc: &TestCase, kind: PointerKind) {
+        if kind == PointerKind::Up {
+            self.expect_drop();
+        }
         let x = self.coord(tc, self.viewport.width);
         let y = self.coord(tc, self.viewport.height);
         let modifiers = Modifiers {
@@ -120,6 +159,14 @@ impl Host {
                     self.steps_due = 0;
                 }
                 Effect::FindStepRequested { .. } => self.steps_due += 1,
+                Effect::MoveRequested { axis, keys, .. } => {
+                    assert!(self.move_due.is_none(), "a move asked for while one is due");
+                    assert!(
+                        self.movable[axis.index()],
+                        "a move asked for on {axis:?}, not movable"
+                    );
+                    self.move_due = Some((*axis, keys.clone()));
+                }
                 _ => {}
             }
             self.pending.push_back((stamped.effect, self.find_round));
@@ -186,6 +233,15 @@ impl Host {
         let applied = snap.applied_view().rows.filter.conditions.conditions();
         let pending = self.views_due > 0;
         assert_eq!(snap.view_pending(), pending, "view pending");
+        let due = self.move_due.as_ref().map(|(a, k)| (*a, k.as_slice()));
+        assert_eq!(snap.pending_move(), due, "pending move");
+        for axis in Axis::ALL {
+            for h in snap.headers(axis) {
+                let moving = due
+                    .is_some_and(|(a, k)| a == axis && h.key.is_some_and(|key| k.contains(&key)));
+                assert_eq!(h.move_pending, moving, "{h:?} shows a move pending");
+            }
+        }
         let listed = snap.conditions(Axis::Rows);
         let applied_listed = (listed.iter())
             .filter(|(_, state)| {
@@ -226,12 +282,65 @@ impl Host {
                 header.is_finite() && header >= 0.0,
                 "band {header} on {axis:?}"
             );
-            // Items start where the band ends, less the anchor's offset (or
-            // a Gap after it, when the anchor is in the Gap).
+            // Scrolling items start where the band and the pinned Strip
+            // end, less the anchor's offset (or a Gap after it, when the
+            // anchor is in the Gap).
+            let start = snap.scrolling(axis).start;
             if let Some(first) = snap.strip(axis).first() {
                 assert!(
-                    first.offset <= header + snap.gap(axis) && first.end() > header,
-                    "{first:?} does not start the body after the band {header} on {axis:?}"
+                    first.offset <= start + snap.gap(axis) && first.end() > start,
+                    "{first:?} does not start the body after {start} on {axis:?}"
+                );
+            }
+            // No Key is drawn twice, pinned or scrolling.
+            let drawn: Vec<Key> = snap.drawn(axis).filter_map(|i| i.key).collect();
+            let unique: BTreeSet<Key> = drawn.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                drawn.len(),
+                "a Key drawn twice on {axis:?}: {drawn:?}"
+            );
+            // The pinned Strips draw at their ends of the axis, outside the
+            // scrolling Strip, and a focused pinned item shows as far as
+            // its Strip's region allows.
+            let scrolling = snap.scrolling(axis);
+            let [lead, trail] = Edge::ALL.map(|e| snap.pinned_region(axis, e));
+            assert_eq!(lead.start, header, "leading region {lead:?} on {axis:?}");
+            assert_eq!(
+                trail.end,
+                snap.extent(axis),
+                "trailing region {trail:?} on {axis:?}"
+            );
+            assert!(
+                lead.start <= lead.end && lead.end <= scrolling.start.max(lead.start),
+                "leading region {lead:?} past {scrolling:?} on {axis:?}"
+            );
+            assert!(
+                trail.start <= trail.end && trail.start >= scrolling.end.min(trail.start),
+                "trailing region {trail:?} before {scrolling:?} on {axis:?}"
+            );
+            if let Some(key) = snap.focus(axis).and_then(|f| f.key) {
+                for (edge, region) in Edge::ALL.into_iter().zip([lead, trail]) {
+                    if let Some(i) = snap.pinned(axis, edge).iter().find(|i| i.key == Some(key)) {
+                        let shown = i.end().min(region.end) - i.offset.max(region.start);
+                        let room = (region.end - region.start).min(i.size);
+                        assert!(
+                            shown >= room - 1e-3 * room.abs().max(1.0),
+                            "focused {i:?} shows {shown} of {region:?} on {axis:?}"
+                        );
+                    }
+                }
+            }
+            // Each pinned Strip draws its pinned Keys only, in pin order.
+            for edge in Edge::ALL {
+                let pinned: Vec<u64> = (snap.pinned(axis, edge).iter())
+                    .filter_map(|i| i.key.map(|k| k.0))
+                    .collect();
+                let pins = &self.pins[axis.index()][edge.index()];
+                let mut order = pins.iter().filter(|k| pinned.contains(k));
+                assert!(
+                    pinned.iter().all(|k| order.next() == Some(k)),
+                    "{edge:?} pinned Strip {pinned:?} out of pin order {pins:?} on {axis:?}"
                 );
             }
             let keys = &self.keys[axis.index()];
@@ -261,7 +370,8 @@ impl Host {
             if let Some(range) = snap.selection_range() {
                 let span = range.span(axis);
                 assert!(
-                    span.start <= span.end && span.end <= count,
+                    (span.iter()).all(|s| s.start < s.end && s.end <= count)
+                        && span.windows(2).all(|w| w[0].end < w[1].start),
                     "range {range:?}, count {count} on {axis:?}"
                 );
             }
@@ -341,14 +451,26 @@ impl Host {
                     // Any rows will do for a filter: the Grid never sees values.
                     self.refilter_axis(tc, Axis::Rows);
                 } else {
-                    // Any order will do for a sort.
-                    let rows = std::mem::take(&mut self.keys[0]);
-                    self.keys[0] = tc.draw(gs::permutations(rows));
-                    tc.note(&format!("sorted: rows {:?}", self.keys[0]));
-                    self.grid.notify(Axis::Rows, ChangeNotice::Reordered);
+                    // Any order will do for a sort, of either axis.
+                    let axis = tc.draw(gs::sampled_from(Axis::ALL.to_vec()));
+                    let keys = std::mem::take(&mut self.keys[axis.index()]);
+                    self.keys[axis.index()] = tc.draw(gs::permutations(keys));
+                    tc.note(&format!("sorted: {axis:?} {:?}", self.keys[axis.index()]));
+                    self.grid.notify(axis, ChangeNotice::Reordered);
                 }
             }
             Effect::MoveRequested { axis, keys, to } => {
+                self.move_due = None;
+                if tc.draw(gs::weighted_booleans(0.25)) {
+                    tc.note("move_answered(refused)");
+                    self.grid.move_answered(Some("refused".to_string()));
+                    return;
+                }
+                // The source's notice may come before or after its answer.
+                let answered_first = tc.draw(gs::booleans());
+                if answered_first {
+                    self.grid.move_answered(None);
+                }
                 let order = &mut self.keys[axis.index()];
                 let to = (to as usize).min(order.len());
                 let stays = |k: &&u64| !keys.contains(&Key(**k));
@@ -362,6 +484,9 @@ impl Host {
                 *order = before.into_iter().chain(moved).chain(after).collect();
                 tc.note(&format!("moved: {axis:?} {order:?}"));
                 self.grid.notify(axis, ChangeNotice::Reordered);
+                if !answered_first {
+                    self.grid.move_answered(None);
+                }
             }
             // Any cell will do for a match: the Grid never sees values.
             Effect::FindStepRequested { .. } => {
@@ -374,7 +499,8 @@ impl Host {
                 tc.note(&format!("find_stepped({found:?})"));
                 let selection = |grid: &mut Grid| {
                     let snap = grid.snapshot();
-                    (snap.selection_range(), snap.picked().to_vec())
+                    let picks = Axis::ALL.map(|a| snap.picked(a).to_vec());
+                    (snap.selection_range().cloned(), picks)
                 };
                 let before = selection(&mut self.grid);
                 self.grid.find_stepped(found);
@@ -444,9 +570,7 @@ impl Host {
         }
         self.keys[axis.index()] = keys;
         let count = self.keys[axis.index()].len() as u64;
-        if axis == Axis::Rows {
-            self.refiltered_out.clear();
-        }
+        self.refiltered_out[axis.index()].clear();
         self.grid.notify(axis, ChangeNotice::Reset(count));
     }
 
@@ -471,10 +595,8 @@ impl Host {
             keys = tc.draw(gs::permutations(keys));
         }
         self.hidden[i] = pool.into_iter().filter(|k| !keys.contains(k)).collect();
-        if axis == Axis::Rows {
-            self.refiltered_out.retain(|k| !keys.contains(k));
-            self.refiltered_out.extend(&self.hidden[i]);
-        }
+        self.refiltered_out[i].retain(|k| !keys.contains(k));
+        self.refiltered_out[i].extend(&self.hidden[i]);
         self.keys[i] = keys;
         let count = self.keys[i].len() as u64;
         tc.note(&format!("refiltered: {axis:?} {:?}", self.keys[i]));
@@ -504,12 +626,32 @@ impl Host {
                 );
             }
         }
-        let picked = self.grid.snapshot().picked().to_vec();
-        for key in picked {
-            assert!(
-                !self.refiltered_out.contains(&key.0),
-                "{key:?} is still picked after a Refiltered took it out"
-            );
+        // Once answered, every pinned Key on the axis is drawn at its
+        // Position, and no other.
+        let snap = self.grid.snapshot();
+        for axis in Axis::ALL {
+            let keys = &self.keys[axis.index()];
+            for edge in Edge::ALL {
+                let drawn: Vec<(u64, u64)> = (snap.pinned(axis, edge).iter())
+                    .filter_map(|i| Some((i.key?.0, i.position)))
+                    .collect();
+                let expected: Vec<(u64, u64)> = (self.pins[axis.index()][edge.index()].iter())
+                    .filter_map(|k| Some((*k, keys.iter().position(|x| x == k)? as u64)))
+                    .collect();
+                assert_eq!(
+                    drawn, expected,
+                    "{edge:?} pinned Strip on {axis:?} once settled"
+                );
+            }
+        }
+        for axis in Axis::ALL {
+            let picked = self.grid.snapshot().picked(axis).to_vec();
+            for key in picked {
+                assert!(
+                    !self.refiltered_out[axis.index()].contains(&key.0),
+                    "{key:?} on {axis:?} is still picked after a Refiltered took it out"
+                );
+            }
         }
     }
 
@@ -548,6 +690,7 @@ impl Host {
             gs::sampled_from(vec![
                 Action::SelectAll,
                 Action::SelectColumn,
+                Action::SelectRow,
                 Action::Cancel,
                 Action::BeginEdit,
                 Action::Activate,
@@ -602,7 +745,8 @@ impl Host {
     }
 
     /// `set_gap` changes the Gap and never scrolls forward or across: the
-    /// anchor stays, or the end clamp or a shrunk Gap pulls it back.
+    /// anchor stays, or the end clamp or a shrunk Gap pulls it back, unless
+    /// the new Window found a pinned Key.
     fn gap(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
         let gap = tc.draw(gs::sampled_from(vec![0.0f32, 0.5, 1.0, 2.0]));
@@ -610,11 +754,24 @@ impl Host {
             let snap = grid.snapshot();
             Axis::ALL.map(|a| snap.scroll_anchor(a))
         };
+        // A Window that finds a pinned Key changes the pinned Strip, and
+        // with it the scrolling Strip's length, which may move the anchor.
+        let pinned = |grid: &mut Grid| -> Vec<Option<Key>> {
+            let snap = grid.snapshot();
+            (Axis::ALL.iter())
+                .flat_map(|&a| Edge::ALL.map(|e| (a, e)))
+                .flat_map(|(a, e)| snap.pinned(a, e).iter().map(|i| i.key))
+                .collect()
+        };
         self.frame_and_check();
         let before = anchors(&mut self.grid);
+        let pinned_before = pinned(&mut self.grid);
         self.grid.set_gap(axis, gap);
         self.frame_and_check();
         let after = anchors(&mut self.grid);
+        if pinned(&mut self.grid) != pinned_before {
+            return;
+        }
         assert_eq!(self.gaps[axis.index()], gap);
         let (b, a) = (before[axis.index()], after[axis.index()]);
         assert!(
@@ -718,6 +875,51 @@ impl Host {
         self.pointer_event(&tc, PointerKind::Up);
     }
 
+    /// A press on a header of either axis, dragged along it and often
+    /// released: a header move where the axis is movable, and a pin, unpin
+    /// or reorder of the pins across the pinned edge on any axis.
+    #[rule(weight = 0.3)]
+    fn header_drag(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let (width, height) = (self.viewport.width, self.viewport.height);
+        let header = self.headers[axis.index()];
+        let across = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(header));
+        let point = |along: f32| match axis {
+            Axis::Rows => (across, along),
+            Axis::Cols => (along, across),
+        };
+        let length = match axis {
+            Axis::Rows => height,
+            Axis::Cols => width,
+        };
+        let from = self.coord(&tc, length);
+        let to = self.coord(&tc, length);
+        tc.note(&format!("header_drag({axis:?}, {from} -> {to})"));
+        let mut event = |kind, (x, y): (f32, f32)| {
+            self.grid.pointer(PointerEvent {
+                kind,
+                x,
+                y,
+                button: Button::Primary,
+                modifiers: Modifiers::default(),
+                clicks: 1,
+            });
+        };
+        event(PointerKind::Down, point(from));
+        event(PointerKind::Move, point(to));
+        if tc.draw(gs::weighted_booleans(0.7)) {
+            self.expect_drop();
+            self.grid.pointer(PointerEvent {
+                kind: PointerKind::Up,
+                x: point(to).0,
+                y: point(to).1,
+                button: Button::Primary,
+                modifiers: Modifiers::default(),
+                clicks: 1,
+            });
+        }
+    }
+
     #[rule]
     fn action(&mut self, tc: TestCase) {
         self.keyboard_action(&tc);
@@ -742,6 +944,45 @@ impl Host {
     #[rule]
     fn set_size(&mut self, tc: TestCase) {
         self.resize(&tc);
+    }
+
+    /// Pins a Key the source has, or one it never had (which stays
+    /// dormant), to either edge.
+    #[rule]
+    fn pin(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let edge = tc.draw(gs::sampled_from(Edge::ALL.to_vec()));
+        let key = self.key(&tc, axis);
+        let pins = &mut self.pins[axis.index()];
+        pins.iter_mut().for_each(|p| p.retain(|&k| k != key.0));
+        pins[edge.index()].push(key.0);
+        self.grid.pin(axis, edge, key);
+    }
+
+    /// What each axis keeps to scroll, from none to more than the
+    /// viewport, or a length the Grid ignores.
+    #[rule(weight = 0.5)]
+    fn min_scrolling(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let length = tc.draw(hegel::one_of!(
+            gs::sampled_from(vec![-1.0f32, f32::NAN]),
+            gs::floats::<f32>().min_value(0.0).max_value(60.0),
+        ));
+        tc.note(&format!("set_min_scrolling({axis:?}, {length})"));
+        self.grid.set_min_scrolling(axis, length);
+    }
+
+    #[rule]
+    fn unpin(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let pins = self.pins[axis.index()].concat();
+        let key = if !pins.is_empty() && tc.draw(gs::booleans()) {
+            Key(tc.draw(gs::sampled_from(pins)))
+        } else {
+            self.key(&tc, axis)
+        };
+        (self.pins[axis.index()].iter_mut()).for_each(|p| p.retain(|&k| k != key.0));
+        self.grid.unpin(axis, key);
     }
 
     /// A press on a band's edge; the drag rule then moves it.
@@ -863,6 +1104,17 @@ impl Host {
         self.grid.reapply_view();
     }
 
+    /// The source offers or withdraws moves on an axis.
+    #[rule(weight = 0.5)]
+    fn set_movable(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let movable = tc.draw(gs::weighted_booleans(0.7));
+        tc.note(&format!("set_movable({axis:?}, {movable})"));
+        self.collect();
+        self.grid.set_movable(axis, movable);
+        self.movable[axis.index()] = movable;
+    }
+
     #[rule(weight = 0.5)]
     fn set_gap(&mut self, tc: TestCase) {
         self.gap(&tc);
@@ -892,9 +1144,11 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         AxisConfig::new(rows, 1.0).header(1.0).gap(gap),
         AxisConfig::new(cols, 3.0).header(2.0).gap(gap),
     );
-    if tc.draw(gs::booleans()) {
-        grid.set_selection_unit(SelectionUnit::Rows);
-    }
+    grid.set_selection_unit(tc.draw(gs::sampled_from(vec![
+        SelectionUnit::Cells,
+        SelectionUnit::Rows,
+        SelectionUnit::Cols,
+    ])));
     for axis in Axis::ALL {
         grid.set_header_click(
             axis,
@@ -906,6 +1160,10 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         );
     }
     grid.set_follow_focus_on_reorder(tc.draw(gs::booleans()));
+    let movable = Axis::ALL.map(|_| tc.draw(gs::weighted_booleans(0.8)));
+    for axis in Axis::ALL {
+        grid.set_movable(axis, movable[axis.index()]);
+    }
     if tc.draw(gs::booleans()) {
         grid.set_border_grab(0.5);
     }
@@ -917,12 +1175,15 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         grid,
         keys: [(0..rows).collect(), (100..100 + cols).collect()],
         hidden: [Vec::new(), Vec::new()],
-        refiltered_out: BTreeSet::new(),
+        pins: Default::default(),
+        refiltered_out: Default::default(),
         next: 1000,
         pending: VecDeque::new(),
         views_due: 0,
         find_round: 0,
         steps_due: 0,
+        move_due: None,
+        movable,
         viewport,
         headers: [1.0, 2.0],
         gaps: [gap; 2],

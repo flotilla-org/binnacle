@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-ratatui/tests/theme.rs
-assertion_line: 149
 expression: "both_ways(Theme::classic(), stripe)"
 ---
 --- classic
@@ -16,9 +15,9 @@ expression: "both_ways(Theme::classic(), stripe)"
 aaabbbbcbbbbbbcddddddceeeeeecb
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaac
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaaf
-bbbggggaggggggaggggggaggggggaf
-bbbaaaaaggggggaggggggaaaaaaaac
-bbbaaaaaggggggahhhhhhaaaaaaaac
+ggghhhhahhhhhhahhhhhhahhhhhhaf
+bbbaaaaahhhhhhahhhhhhaaaaaaaac
+bbbaaaaahhhhhhaiiiiiiaaaaaaaac
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaac
 aaacfffffffffffffffffffffcccca
 
@@ -28,8 +27,9 @@ c: fg DarkGray bg Reset
 d: fg #8C8228 bg Reset BOLD
 e: fg Reset bg Reset BOLD | UNDERLINED
 f: fg Gray bg Reset
-g: fg Reset bg DarkGray
-h: fg Reset bg Reset REVERSED
+g: fg Reset bg DarkGray BOLD
+h: fg Reset bg DarkGray
+i: fg Reset bg Reset REVERSED
 
 --- inverted headers, zebra
    l 0 │col 1▲│col 2~│col 3 │
@@ -44,9 +44,9 @@ h: fg Reset bg Reset REVERSED
 aaabbbbcbbbbbbcddddddceeeeeecf
 bbbaaaaaaaaaaaaaaaaaaaaaaaaaac
 bbbggggggggggggggggggggggggggh
-bbbiiiiaiiiiiiaiiiiiiaiiiiiiah
-bbbgggggiiiiiigiiiiiiggggggggc
-bbbaaaaaiiiiiiajjjjjjaaaaaaaac
+iiijjjjajjjjjjajjjjjjajjjjjjah
+bbbgggggjjjjjjgjjjjjjggggggggc
+bbbaaaaajjjjjjakkkkkkaaaaaaaac
 bbbggggggggggggggggggggggggggc
 aaachhhhhhhhhhhhhhhhhhhhhcccca
 
@@ -58,5 +58,6 @@ e: fg Reset bg Reset BOLD | UNDERLINED | REVERSED
 f: fg Reset bg Reset BOLD
 g: fg Reset bg 235
 h: fg Gray bg Reset
-i: fg Reset bg DarkGray
-j: fg Reset bg Reset REVERSED
+i: fg Reset bg DarkGray BOLD | REVERSED
+j: fg Reset bg DarkGray
+k: fg Reset bg Reset REVERSED

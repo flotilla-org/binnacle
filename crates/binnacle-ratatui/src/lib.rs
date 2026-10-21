@@ -6,39 +6,51 @@
 
 mod border;
 mod checklist;
+mod chooser;
 mod context;
 mod filter;
 mod find;
 mod keymap;
+mod layout;
+mod menu;
 mod mouse;
+mod pin;
 mod renderer;
 mod scrollbar;
 mod shimmer;
 mod theme;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
+pub use chooser::Chooser;
 pub use context::RenderContext;
 pub use filter::{
-    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, keep_value,
-    remove_conditions, render_conditions, row_count,
+    ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, count,
+    keep_value, remove_conditions, render_conditions, row_count,
 };
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
+pub use layout::{LAYOUT_VERSION, SavedLayout, restore_layout, save_layout};
+pub use menu::{Chosen, HeaderMenu, Hid, cap_hint, hide_chosen, hide_focused, show_only_chosen};
 pub use mouse::Mouse;
+pub use pin::{freeze_focused, toggle_pin, unpin_focused};
 pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
 };
 use renderer::{char_count, fit};
-pub use scrollbar::{BarEvent, Layout, begin_frame, layout};
+pub use scrollbar::{BarEvent, Layout, MIN_SCROLLING, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
-use binnacle_core::{Action, Axis, Cursor, HeaderSort, Key, Mode, Snapshot, SortDirection};
+use binnacle_core::{
+    Action, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, Key, Mode, Snapshot,
+    SortDirection, StripItem,
+};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use std::ops::Range;
 
 /// Shown in a cell or header whose Key the Table Source has not filled yet.
 const LOADING: &str = "…";
@@ -71,6 +83,14 @@ pub trait Content {
         position.saturating_add(1).to_string()
     }
 
+    /// The name of the row with Key `row` away from its header, such as on
+    /// a filter chip or popup title for a condition on it:
+    /// [`Content::row_header`] as if at Position `row.0` unless overridden,
+    /// which suits rows keyed by Logical Index.
+    fn row_label(&self, row: Key) -> String {
+        self.row_header(row, row.0)
+    }
+
     /// Whether the cell matches the Find Query in force, as the host's Table
     /// Source says for the cells shown: no cell unless overridden.
     fn marked(&self, row: Key, col: Key) -> bool {
@@ -87,20 +107,34 @@ pub trait Content {
         false
     }
 
-    /// Column `col`'s Cell Renderer: left-aligned [`Content::cell`] text
-    /// unless overridden.
-    fn renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+    /// The Cell Renderer for the cell at `row`, `col`:
+    /// [`Content::column_renderer`] unless overridden. A column-major table
+    /// overrides this to choose by row. Return a renderer borrowed from
+    /// `self` where you can, since it is asked once per cell drawn.
+    fn renderer(&self, row: Key, col: Key) -> Box<dyn CellRenderer + '_> {
+        let _ = row;
+        self.column_renderer(col)
+    }
+
+    /// Column `col`'s Cell Renderer, for a table that chooses by column:
+    /// left-aligned [`Content::cell`] text unless overridden.
+    fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
         let _ = col;
         Box::new(TextRenderer::new(move |row, col| self.cell(row, col)))
     }
 }
 
 /// Whether anything [`render_with`] draws from `snapshot` moves with time:
-/// the Shimmer on a visible header whose requested sort is not applied yet,
-/// or on the visible focused cell while its Locate is pending. A host
-/// redraws on a timer only while this is true (or its own data ticks).
+/// the Shimmer on a visible header whose requested sort is not applied yet
+/// or whose move is unanswered, or on the visible focused cell while its
+/// Locate is pending. A host redraws on a timer only while this is true (or
+/// its own data ticks).
 pub fn animating(snapshot: &Snapshot) -> bool {
-    let sorting = snapshot.headers(Axis::Cols).any(|h| h.sort.pending);
+    let sorting = Axis::ALL.into_iter().any(|axis| {
+        snapshot
+            .headers(axis)
+            .any(|h| h.sort.pending || h.move_pending)
+    });
     sorting || locating(snapshot) && snapshot.focus_rect().is_some()
 }
 
@@ -128,7 +162,7 @@ pub fn render(snapshot: &Snapshot, content: &impl Content, area: Rect, buf: &mut
 /// area's right column and, when the columns overflow, its bottom line (see
 /// [`layout`]; [`begin_frame`] gives the Grid the Viewport left over). A sorted column's header ends in its
 /// direction (and place, in a multi-column sort), and `~` marks a sort
-/// change still pending. Every style comes from the Theme. A Shimmer at
+/// change still pending; so does a row header the columns sort by. Every style comes from the Theme. A Shimmer at
 /// `ctx.now` sweeps across the headers of a pending sort and across the
 /// focused cell while its Locate is pending (see [`animating`]).
 pub fn render_with(
@@ -148,21 +182,24 @@ pub fn render_with(
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     // Pads `text` so a style fills its item; `put` clips it.
     let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
-    let band = |style: Style, hovered: bool| {
-        let style = if theme.invert_headers {
+    let band = |style: Style, h: &HeaderPlacement| {
+        let mut style = if theme.invert_headers {
             style.add_modifier(Modifier::REVERSED)
         } else {
             style
         };
-        if hovered {
-            style.patch(theme.header_hovered)
-        } else {
-            style
+        if h.selected {
+            style = style.patch(theme.header_selected);
         }
+        if h.hovered {
+            style = style.patch(theme.header_hovered);
+        }
+        style
     };
     let multi = snapshot.applied_view().rows.sort.columns().len() > 1;
     let area_end = i64::from(area.width);
-    for h in snapshot.headers(Axis::Cols) {
+    for (i, h) in snapshot.headers(Axis::Cols).enumerate() {
+        let span = spans(snapshot, Axis::Cols)(i);
         let label = h
             .key
             .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
@@ -179,8 +216,8 @@ pub fn render_with(
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
-        let style = band(theme.header, h.hovered);
-        let clip = (left, end, 0.0);
+        let style = band(theme.header, &h);
+        let clip = (span.start, end.min(span.end), 0.0, f32::INFINITY);
         let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
         if marker.is_empty() {
             put(
@@ -206,48 +243,88 @@ pub fn render_with(
             let style = style.patch(theme.loading);
             put(buf, area, (start, 0.0), clip, LOADING, style);
         }
-        if h.sort.pending {
-            let (x0, x1) = (cell(start).max(cell(left)), cell(end).min(area_end));
+        if h.sort.pending || h.move_pending {
+            let (x0, x1) = (
+                cell(start.max(span.start)),
+                cell(end.min(span.end)).min(area_end),
+            );
             shimmer(buf, area, (x0..x1, 0), &sweep, 0);
         }
     }
     let locating = locating(snapshot);
-    let picked = snapshot.picked();
-    let renderers: Vec<_> = (snapshot.cols().iter())
-        .map(|c| c.key.map(|k| content.renderer(k)))
-        .collect();
+    let picked = Axis::ALL.map(|a| snapshot.picked(a));
     let hovered_col = match snapshot.hovered_header() {
         Some((Axis::Cols, c)) => Some(c.position),
         _ => None,
     };
-    for (r, h) in snapshot.rows().iter().zip(snapshot.headers(Axis::Rows)) {
+    let multi_rows = snapshot.applied_view().cols.sort.columns().len() > 1;
+    let col_span = spans(snapshot, Axis::Cols);
+    let cols: Vec<(&StripItem, Range<f32>)> = (snapshot.drawn(Axis::Cols).enumerate())
+        .map(|(j, c)| (c, col_span(j)))
+        .collect();
+    let row_span = spans(snapshot, Axis::Rows);
+    let rows = snapshot.drawn(Axis::Rows).enumerate();
+    for ((i, r), h) in rows.zip(snapshot.headers(Axis::Rows)) {
+        let span_y = row_span(i);
+        // The lines of the row it may draw on.
+        let ys = cell(r.offset.max(span_y.start))..cell(r.end().min(span_y.end));
         let number = r.key.map_or_else(
             || r.position.saturating_add(1).to_string(),
             |k| content.row_header(k, r.position),
         );
-        let number = fit(&number, u32::try_from(cell(left)).unwrap_or(0)).into_owned();
-        let style = band(theme.row_number, h.hovered);
+        // As on column headers, the marker keeps the header's last cells; a
+        // row the columns are filtered by marks it too.
+        let requested = snapshot.requested_view().map(|v| &v.cols.filter.conditions);
+        let filtered = match (h.filter.pending, h.key, requested) {
+            (true, Some(key), Some(conditions)) => conditions.on(key).next().is_some(),
+            _ => h.filter.filtered,
+        };
+        let mut marker = header_marker(h.sort, filtered, h.filter.pending, multi_rows);
+        if h.filter.not_applied {
+            marker.push('!');
+        }
+        let width = usize::try_from(cell(left)).unwrap_or(0);
+        let room = width.saturating_sub(marker.chars().count());
+        let number = fit(&number, u32::try_from(room).unwrap_or(u32::MAX));
+        let style = band(theme.row_number, &h);
+        let clip = (0.0, left, span_y.start, span_y.end);
         put(
             buf,
             area,
             (0.0, r.offset),
-            (0.0, left, top),
-            &pad(number),
+            clip,
+            &pad(format!("{number:<room$}")),
             style,
         );
+        if !marker.is_empty() {
+            let at = room as f32;
+            let style = style.patch(if h.filter.not_applied {
+                theme.error
+            } else {
+                theme.sort_marker
+            });
+            put(buf, area, (at, r.offset), clip, &marker, style);
+        }
+        if h.sort.pending || h.move_pending {
+            let x1 = cell(left).min(area_end);
+            for y in ys.clone() {
+                shimmer(buf, area, (0..x1, y), &sweep, 0);
+            }
+        }
         let mut row_style = theme.body;
         if let Some(zebra) = theme.zebra.filter(|_| r.position % 2 == 1) {
             row_style = row_style.patch(zebra);
             let blank = " ".repeat(usize::from(area.width));
-            for y in cell(r.offset.max(top))..cell(r.end()) {
-                let clip = (left, f32::INFINITY, top);
+            for y in ys.clone() {
+                let clip = (left, f32::INFINITY, span_y.start, span_y.end);
                 put(buf, area, (0.0, y as f32), clip, &blank, row_style);
             }
         }
-        let in_picked = r.key.is_some_and(|k| picked.contains(&k));
+        let row_picked = r.key.is_some_and(|k| picked[0].contains(&k));
         let row_hovered = h.hovered;
-        for (c, renderer) in snapshot.cols().iter().zip(&renderers) {
+        for (c, span_x) in &cols {
             let state = snapshot.cell_state(r, c);
+            let in_picked = row_picked || c.key.is_some_and(|k| picked[1].contains(&k));
             let status = CellStatus {
                 focused: state.focused,
                 selected: state.selected && !in_picked,
@@ -265,12 +342,13 @@ pub fn render_with(
             };
             let (x0, y0) = (cell(c.offset), cell(r.offset));
             let (x1, y1) = (cell(c.end()), cell(r.end()));
-            let clip = |lo: i64, hi: i64, min: i64, max: u16| {
-                let lo = lo.max(min).max(0).min(i64::from(max));
-                (lo, hi.min(i64::from(max)).max(lo))
+            let clip = |lo: i64, hi: i64, span: &Range<f32>, max: u16| {
+                let max = cell(span.end).min(i64::from(max));
+                let lo = lo.max(cell(span.start)).max(0).min(max);
+                (lo, hi.min(max).max(lo))
             };
-            let (vx0, vx1) = clip(x0, x1, cell(left), area.width);
-            let (vy0, vy1) = clip(y0, y1, cell(top), area.height);
+            let (vx0, vx1) = clip(x0, x1, span_x, area.width);
+            let (vy0, vy1) = clip(y0, y1, &span_y, area.height);
             let visible = Rect::new(
                 area.x + vx0 as u16,
                 area.y + vy0 as u16,
@@ -293,9 +371,9 @@ pub fn render_with(
                 let x = canvas.visible_x().start;
                 canvas.print(x, y, &blank, row_style);
             }
-            match (r.key, c.key, renderer) {
-                (Some(row), Some(col), Some(renderer)) => {
-                    renderer.draw(row, col, &mut canvas);
+            match (r.key, c.key) {
+                (Some(row), Some(col)) => {
+                    content.renderer(row, col).draw(row, col, &mut canvas);
                     if state.current_match {
                         canvas.patch(theme.find_current);
                     } else if content.marked(row, col) {
@@ -320,9 +398,12 @@ pub fn render_with(
                 }
             }
             if state.focused && locating {
-                let (x0, x1) = (cell(c.offset).max(cell(left)), cell(c.end()).min(area_end));
+                let (x0, x1) = (
+                    cell(c.offset.max(span_x.start)),
+                    cell(c.end().min(span_x.end)).min(area_end),
+                );
                 let pulse = Shimmer::new(ctx, c.size.ceil().clamp(0.0, 65535.0) as u16);
-                let y = cell(r.offset.max(top));
+                let y = ys.start;
                 shimmer(buf, area, (x0..x1, y), &pulse, cell(c.offset));
             }
         }
@@ -331,27 +412,60 @@ pub fn render_with(
         empty(ctx.empty, theme, (left, top), area, buf);
     }
     border::draw(snapshot, ctx.border, theme, area, buf);
-    let mut mark = |x: i64, y: i64, ch: char, style: Style| {
+    // Restyles a cell, and writes `ch` into it if given.
+    let mut mark = |x: i64, y: i64, ch: Option<char>, style: Style| {
         if (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y) {
             let (x, y) = (area.x + x as u16, area.y + y as u16);
             if let Some(c) = buf.cell_mut((x, y)) {
-                c.set_char(ch).set_style(style);
+                if let Some(ch) = ch {
+                    c.set_char(ch);
+                }
+                c.set_style(style);
             }
         }
     };
+    for zone in snapshot.pin_zones() {
+        let style = if zone.hot {
+            theme.pin_zone_hot
+        } else {
+            theme.pin_zone
+        };
+        let cells = cell(zone.offset)..cell(zone.offset + zone.size);
+        let (w, h) = (i64::from(area.width), i64::from(area.height));
+        for a in cells {
+            match zone.axis {
+                Axis::Cols => (0..h).for_each(|y| mark(a, y, None, style)),
+                Axis::Rows => (0..w).for_each(|x| mark(x, a, None, style)),
+            }
+        }
+    }
     if let Some(drop) = snapshot.drop_indicator() {
         let style = theme.drop_indicator;
         // The middle of a Gap rounds down onto the Gap's cell.
         let at = drop.offset.floor() as i64;
+        // Dashed where an unpinned item returns to its own place.
+        let returns = matches!(drop.target, DropTarget::Unpin { .. });
         match drop.axis {
             Axis::Cols => {
+                let ch = if returns { '┇' } else { '┃' };
                 for y in 0..i64::from(area.height) {
-                    mark(at, y, '┃', style);
+                    mark(at, y, Some(ch), style);
+                }
+            }
+            // Rows without a Gap leave no cell between them, so the line
+            // underlines the row above rather than hiding the row below.
+            Axis::Rows if snapshot.rows().iter().any(|r| cell(r.offset) == at) => {
+                let under = Style::new()
+                    .add_modifier(Modifier::UNDERLINED)
+                    .underline_color(style.fg.unwrap_or(Color::Reset));
+                for x in 0..i64::from(area.width) {
+                    mark(x, at - 1, None, under);
                 }
             }
             Axis::Rows => {
+                let ch = if returns { '╍' } else { '━' };
                 for x in 0..i64::from(area.width) {
-                    mark(x, at, '━', style);
+                    mark(x, at, Some(ch), style);
                 }
             }
         }
@@ -362,12 +476,12 @@ pub fn render_with(
         match guide.axis {
             Axis::Cols if at >= cell(left) => {
                 for y in 0..i64::from(area.height) {
-                    mark(at, y, '│', style);
+                    mark(at, y, Some('│'), style);
                 }
             }
             Axis::Rows if at >= cell(top) => {
                 for x in 0..i64::from(area.width) {
-                    mark(x, at, '─', style);
+                    mark(x, at, Some('─'), style);
                 }
             }
             _ => {}
@@ -384,11 +498,17 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
         return;
     };
     let area = area.intersection(buf.area);
-    let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
+    let Mode::Editing { row, col } = snapshot.mode() else {
+        return;
+    };
+    let (rows, cols) = (
+        span_of(snapshot, Axis::Rows, row),
+        span_of(snapshot, Axis::Cols, col),
+    );
     let (x0, x1) = (cell(rect.x), cell(rect.x + rect.width));
     let y = cell(rect.y);
     let width = usize::try_from(x1 - x0).unwrap_or(0);
-    if width == 0 || y < cell(top) || y >= i64::from(area.height) {
+    if width == 0 || y < cell(rows.start) || y >= cell(rows.end).min(i64::from(area.height)) {
         return;
     }
     let chars: Vec<char> = text.chars().collect();
@@ -396,8 +516,42 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     let line: String = shown.iter().chain(['▏'].iter()).collect();
     let style = Style::default().fg(Color::Black).bg(Color::Yellow);
     let line = format!("{line:<width$}");
-    let clip = (left, f32::INFINITY, top);
+    let clip = (cols.start, cols.end, rows.start, rows.end);
     put(buf, area, (rect.x, rect.y), clip, &line, style);
+}
+
+/// Where each drawn item of `axis`, by its index in drawn order, may draw
+/// along it: a pinned item in its pinned Strip's region, a scrolling item
+/// within the scrolling Strip, so it slides under the pinned Strips.
+fn spans<'a>(snapshot: &Snapshot<'a>, axis: Axis) -> impl Fn(usize) -> Range<f32> + 'a {
+    let leading = snapshot.pinned(axis, Edge::Leading).len();
+    let scrolling = snapshot.scrolling(axis);
+    let end = leading + snapshot.strip(axis).len();
+    let [lead, trail] = Edge::ALL.map(|edge| snapshot.pinned_region(axis, edge));
+    move |i| {
+        if i < leading {
+            lead.clone()
+        } else if i < end {
+            scrolling.clone()
+        } else {
+            trail.clone()
+        }
+    }
+}
+
+/// Where the item with `key` on `axis` may draw: in its pinned Strip's
+/// region if it is pinned, else within the scrolling Strip.
+fn span_of(snapshot: &Snapshot, axis: Axis, key: Key) -> Range<f32> {
+    let pinned = |&edge: &Edge| {
+        snapshot
+            .pinned(axis, edge)
+            .iter()
+            .any(|i| i.key == Some(key))
+    };
+    match Edge::ALL.into_iter().find(pinned) {
+        Some(edge) => snapshot.pinned_region(axis, edge),
+        None => snapshot.scrolling(axis),
+    }
 }
 
 /// Writes `message` centred in the body, the part of `area` past the header
@@ -412,7 +566,14 @@ fn empty(message: &str, theme: &Theme, (left, top): (f32, f32), area: Rect, buf:
     let room = width - i64::from(char_count(&message));
     let at = ((x0 + room / 2) as f32, (y0 + (height - 1) / 2) as f32);
     let style = theme.body.patch(theme.loading);
-    put(buf, area, at, (left, f32::INFINITY, top), &message, style);
+    put(
+        buf,
+        area,
+        at,
+        (left, f32::INFINITY, top, f32::INFINITY),
+        &message,
+        style,
+    );
 }
 
 /// Patches `sweep` over the cells `xs` of line `y` in `area` (relative to
@@ -436,19 +597,19 @@ fn shimmer(
 }
 
 /// Writes `text` from `(x, y)` into `area` of `buf`, keeping the characters
-/// in `[x_min, x_end)` on rows at or below `y_min`, all in cells relative to
-/// `area`.
+/// in `[x_min, x_end)` on a line in `[y_min, y_end)` (moving `y` down to
+/// `y_min`), all in cells relative to `area`.
 fn put(
     buf: &mut Buffer,
     area: Rect,
     (x, y): (f32, f32),
-    (x_min, x_end, y_min): (f32, f32, f32),
+    (x_min, x_end, y_min, y_end): (f32, f32, f32, f32),
     text: &str,
     style: Style,
 ) {
     let y = cell(y.max(y_min));
     let (x, x_min, x_end) = (cell(x), cell(x_min), cell(x_end).min(i64::from(area.width)));
-    if y >= i64::from(area.height) {
+    if y >= cell(y_end).min(i64::from(area.height)) {
         return;
     }
     for (i, ch) in text.chars().enumerate() {
@@ -466,10 +627,11 @@ fn put(
     }
 }
 
-/// A status line for `snapshot`: the gesture in progress, or a hint when the
-/// pointer is over a header border. A terminal cannot change the pointer's
-/// shape, so this stands in for the cursor hint. Empty when there is nothing
-/// to say.
+/// A status line for `snapshot`: the gesture in progress, else why the
+/// Table Source refused the last move, or that a move waits for its answer,
+/// else a hint when the pointer is over a header border. A terminal cannot
+/// change the pointer's shape, so this stands in for the cursor hint. Empty
+/// when there is nothing to say.
 pub fn status(snapshot: &Snapshot) -> String {
     let noun = |axis| match axis {
         Axis::Rows => "row",
@@ -489,16 +651,39 @@ pub fn status(snapshot: &Snapshot) -> String {
         }
         Mode::DraggingSelection => "selecting".to_string(),
         Mode::Editing { row, col } => format!("editing row {} column {}", row.0, col.0),
-        Mode::MovingHeaders { axis, to, .. } => {
+        Mode::MovingHeaders { axis, target, .. } => {
             let keys: Vec<String> = snapshot
                 .moving_keys()
                 .iter()
                 .map(|k| k.0.to_string())
                 .collect();
             let plural = if keys.len() == 1 { "" } else { "s" };
-            format!("moving {}{plural} {} to {to}", noun(axis), keys.join(","))
+            let what = format!("{}{plural} {}", noun(axis), keys.join(","));
+            match target {
+                DropTarget::Move { to, unpin: false } => format!("moving {what} to {to}"),
+                DropTarget::Move { to, unpin: true } => format!("unpin {what} and move to {to}"),
+                DropTarget::Unpin { .. } => format!("unpin {what}: returns to its place"),
+                DropTarget::Pin { reorder: true, .. } => format!("reorder pinned {what}"),
+                DropTarget::Pin { edge, .. } => {
+                    let side = match (axis, edge) {
+                        (Axis::Cols, Edge::Leading) => "left",
+                        (Axis::Cols, Edge::Trailing) => "right",
+                        (Axis::Rows, Edge::Leading) => "top",
+                        (Axis::Rows, Edge::Trailing) => "bottom",
+                    };
+                    format!("pin {what} {side}")
+                }
+                DropTarget::Stay => format!("{what} can't move: drag to an edge to pin"),
+            }
         }
         Mode::Idle => {
+            if let Some((_, reason)) = snapshot.move_refusal() {
+                return reason.to_string();
+            }
+            if let Some((axis, keys)) = snapshot.pending_move() {
+                let plural = if keys.len() == 1 { "" } else { "s" };
+                return format!("moving {}{plural}…", noun(axis));
+            }
             let axis = match snapshot.cursor() {
                 Cursor::ResizeCol => Axis::Cols,
                 Cursor::ResizeRow => Axis::Rows,

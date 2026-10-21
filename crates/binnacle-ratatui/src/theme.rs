@@ -4,8 +4,8 @@
 use ratatui::style::{Color, Modifier, Style};
 
 /// The styles the table is drawn in. Most are patched over another: the
-/// hovered header over the header (or row number), the zebra stripe over the
-/// body, selection, picks and focus over a cell, the sort marker and the
+/// selected and the hovered header over the header (or row number), the
+/// zebra stripe over the body, selection, picks and focus over a cell, the sort marker and the
 /// loading marker over where they sit. Build your own by overriding fields
 /// of a preset: `Theme { zebra: Some(stripe), ..Theme::classic() }`.
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +15,9 @@ pub struct Theme {
     pub header: Style,
     /// The header (or row number) under the pointer.
     pub header_hovered: Style,
+    /// The header (or row number) of a selected item: the range spans every
+    /// item across it, or it is picked.
+    pub header_selected: Style,
     /// Row numbers, down the left band.
     pub row_number: Style,
     pub body: Style,
@@ -22,7 +25,7 @@ pub struct Theme {
     pub zebra: Option<Style>,
     pub focus: Style,
     pub selection: Style,
-    /// Cells in a picked row.
+    /// Cells in a picked row or column.
     pub picks: Style,
     pub sort_marker: Style,
     /// The lines a resize grabs, in the header band's Gaps.
@@ -30,7 +33,15 @@ pub struct Theme {
     /// The line a resize in progress draws across the area.
     pub guide: Style,
     pub drop_indicator: Style,
+    /// Patched over an empty pinned Strip's pin zone while headers are
+    /// dragged, where a drop pins to that edge.
+    pub pin_zone: Style,
+    /// Patched over the pin zone a drop would pin to.
+    pub pin_zone_hot: Style,
     pub border: Style,
+    /// The line in the Gap after a pinned Strip, where pinned items end and
+    /// the scrolling ones begin.
+    pub pinned_edge: Style,
     /// A scrollbar's track, drawn as a line.
     pub scrollbar_track: Style,
     /// A scrollbar's thumb, drawn as full blocks.
@@ -71,6 +82,7 @@ impl Theme {
             name: "classic",
             header: none.add_modifier(Modifier::BOLD),
             header_hovered: none.add_modifier(Modifier::UNDERLINED),
+            header_selected: none.bg(Color::DarkGray),
             row_number: none.add_modifier(Modifier::BOLD),
             body: none,
             zebra: None,
@@ -81,7 +93,10 @@ impl Theme {
             handle: none.fg(Color::DarkGray),
             guide: none.fg(Color::Yellow),
             drop_indicator: none.fg(Color::Cyan),
+            pin_zone: none.bg(Color::Rgb(0, 50, 60)),
+            pin_zone_hot: none.fg(Color::Black).bg(Color::Cyan),
             border: none.fg(Color::DarkGray),
+            pinned_edge: none.fg(Color::DarkGray),
             scrollbar_track: none.fg(Color::DarkGray),
             scrollbar_thumb: none.fg(Color::Gray),
             loading: none,
@@ -106,6 +121,7 @@ impl Theme {
             name: "catppuccin_mocha",
             header: none.fg(mocha::BLUE).add_modifier(Modifier::BOLD),
             header_hovered: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::UNDERLINED),
+            header_selected: none.bg(mocha::SURFACE1),
             row_number: none.fg(mocha::OVERLAY0),
             body: none.fg(mocha::TEXT),
             zebra: Some(none.bg(mocha::MANTLE)),
@@ -116,7 +132,10 @@ impl Theme {
             handle: none.fg(mocha::SURFACE2),
             guide: none.fg(mocha::YELLOW),
             drop_indicator: none.fg(mocha::SAPPHIRE).add_modifier(Modifier::BOLD),
+            pin_zone: none.bg(mocha::SAPPHIRE_WASH),
+            pin_zone_hot: none.fg(mocha::CRUST).bg(mocha::SAPPHIRE),
             border: none.fg(mocha::SURFACE1),
+            pinned_edge: none.fg(mocha::SURFACE1),
             scrollbar_track: none.fg(mocha::SURFACE1),
             scrollbar_thumb: none.fg(mocha::OVERLAY0),
             loading: none.fg(mocha::OVERLAY0),
@@ -141,6 +160,7 @@ impl Theme {
             name: "mono",
             header: none.add_modifier(Modifier::BOLD),
             header_hovered: none.add_modifier(Modifier::UNDERLINED),
+            header_selected: none.add_modifier(Modifier::REVERSED),
             row_number: none.add_modifier(Modifier::DIM),
             body: none,
             zebra: None,
@@ -151,7 +171,10 @@ impl Theme {
             handle: none.add_modifier(Modifier::DIM),
             guide: none.add_modifier(Modifier::BOLD),
             drop_indicator: none.add_modifier(Modifier::BOLD),
+            pin_zone: none.add_modifier(Modifier::DIM),
+            pin_zone_hot: none.add_modifier(Modifier::REVERSED),
             border: none.add_modifier(Modifier::DIM),
+            pinned_edge: none.add_modifier(Modifier::DIM),
             scrollbar_track: none.add_modifier(Modifier::DIM),
             scrollbar_thumb: none,
             loading: none.add_modifier(Modifier::DIM),
@@ -185,6 +208,7 @@ impl Theme {
         Theme {
             header: s(self.header),
             header_hovered: s(self.header_hovered),
+            header_selected: s(self.header_selected),
             row_number: s(self.row_number),
             body: s(self.body),
             zebra: self.zebra.map(s),
@@ -195,7 +219,10 @@ impl Theme {
             handle: s(self.handle),
             guide: s(self.guide),
             drop_indicator: s(self.drop_indicator),
+            pin_zone: s(self.pin_zone),
+            pin_zone_hot: s(self.pin_zone_hot),
             border: s(self.border),
+            pinned_edge: s(self.pinned_edge),
             scrollbar_track: s(self.scrollbar_track),
             scrollbar_thumb: s(self.scrollbar_thumb),
             loading: s(self.loading),
@@ -283,4 +310,6 @@ mod mocha {
     pub const YELLOW: Color = Color::Rgb(249, 226, 175);
     pub const SAPPHIRE: Color = Color::Rgb(116, 199, 236);
     pub const BLUE: Color = Color::Rgb(137, 180, 250);
+    /// Not Catppuccin's: Sapphire mixed into the base, for lit pin zones.
+    pub const SAPPHIRE_WASH: Color = Color::Rgb(34, 58, 74);
 }

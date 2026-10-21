@@ -3,7 +3,8 @@
 //! Key.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, FocusStep, Grid, Key, Modifiers, PointerEvent, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, FocusStep, Grid, Key, Modifiers, PointerEvent, TextQuery,
+    ViewSpec, Viewport,
 };
 use binnacle_testkit::{RecordTable, Scenario};
 
@@ -30,6 +31,13 @@ fn records() -> Scenario<RecordTable> {
 fn filter(s: &mut Scenario<RecordTable>, keep: impl Fn(&Vec<Option<i64>>) -> bool + 'static) {
     let notice = s.source.filter(keep);
     s.input(|g| g.notify(Axis::Rows, notice));
+}
+
+/// The runs of Positions the range covers on `axis`, as `(start, end)`.
+fn runs(s: &mut Scenario<RecordTable>, axis: Axis) -> Option<Vec<(u64, u64)>> {
+    let snap = s.grid.snapshot();
+    let range = snap.selection_range()?;
+    Some(range.span(axis).iter().map(|r| (r.start, r.end)).collect())
 }
 
 #[test]
@@ -62,22 +70,22 @@ fn a_filtered_out_focus_moves_to_the_nearest_survivor_and_leaves_the_picks() {
 }
 
 #[test]
-fn a_sorted_and_filtered_focus_lands_on_the_nearest_survivor_in_sort_order() {
+fn a_sorted_and_filtered_focus_lands_on_the_next_survivor_in_sort_order() {
     let mut s = records();
     s.frame(V);
     let spec = binnacle_core::SortSpec::new(vec![binnacle_core::SortColumn::ascending(Key(0))]);
     let t = &mut s.source;
-    let notice = t
+    let notices = t
         .source
         .view(&t.rows, &ViewSpec::default().with_sort(Axis::Rows, spec))
         .unwrap();
-    s.input(|g| g.notify(Axis::Rows, notice));
+    s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
     // Sorted values 1 2 3 4 5 7 8 9 are records 3 5 1 7 0 6 2 4.
     s.click(5.0, 3.0, Modifiers::NONE);
     let mut out = s.step("sort by column 0; focus value 3 (record 1) at row 2", V);
     filter(&mut s, |r| matches!(r[0], Some(1 | 2 | 7 | 8 | 9)));
     out += &s.step(
-        "keep 1, 2, 7, 8, 9: value 3 is one from 2 and three from 7, so focus goes to 2 at row 1",
+        "keep 1, 2, 7, 8, 9: focus goes to the next survivor after value 3 in sort order, 7 at row 2",
         V,
     );
     insta::assert_snapshot!(out);
@@ -172,7 +180,7 @@ fn cancel_after_a_departed_key_is_located_keeps_focus_on_the_suggestion() {
     insta::assert_snapshot!(out);
     let snap = s.grid.snapshot();
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(2)));
-    assert_eq!(snap.picked(), &[] as &[Key]);
+    assert_eq!(snap.picked(Axis::Rows), &[] as &[Key]);
 }
 
 #[test]
@@ -188,11 +196,36 @@ fn picks_of_rows_a_filter_hides_are_dropped_and_the_others_stay() {
         "filter out records 1 and 3 (values 3 and 1): their picks go, record 0's stays; focus goes to record 4, the next one",
         V,
     );
-    assert_eq!(s.grid.snapshot().picked(), &[Key(0)]);
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[Key(0)]);
     let notice = s.source.source.clear_filter(&s.source.rows);
     s.input(|g| g.notify(Axis::Rows, notice));
     out += &s.step("clear the filter: the dropped picks do not come back", V);
-    assert_eq!(s.grid.snapshot().picked(), &[Key(0)]);
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[Key(0)]);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_pick_a_cancelled_drag_brings_back_is_dropped_when_the_filter_took_it_out() {
+    let mut s = records();
+    s.frame(V);
+    s.click(5.0, 2.5, Modifiers::CTRL);
+    s.click(5.0, 4.5, Modifiers::CTRL);
+    // A plain press on record 0 drops the picks; dragging to record 2 makes a
+    // range the filter's notice cancels, which brings the picks back.
+    s.input(|g| {
+        g.pointer(PointerEvent::down(5.0, 1.5));
+        g.pointer(PointerEvent::moved(5.0, 3.5));
+    });
+    let mut out = s.step(
+        "pick records 1 and 3, focusing 3, then press record 0 and drag to record 2: the range drops the picks",
+        V,
+    );
+    filter(&mut s, |r| r[0] != Some(3));
+    out += &s.step(
+        "filter out record 1 (value 3) mid-drag: the drag is cancelled and brings back the picks, but record 1's goes",
+        V,
+    );
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[Key(3)]);
     insta::assert_snapshot!(out);
 }
 
@@ -371,19 +404,40 @@ fn an_edit_on_a_row_the_filter_hides_ends() {
 }
 
 #[test]
-fn a_range_is_dropped_unless_it_spans_the_axis() {
+fn a_range_shrinks_around_filtered_out_items_and_clears_when_none_remain() {
+    const TALL: Viewport = Viewport {
+        width: 26.0,
+        height: 9.0,
+    };
     let mut s = records();
-    s.frame(V);
-    s.click(5.0, 1.5, Modifiers::NONE);
-    s.click(12.0, 3.5, Modifiers::SHIFT);
-    let mut out = s.step("select records 0 to 2 in columns 0 and 1", V);
+    s.frame(TALL);
+    s.click(5.0, 2.5, Modifiers::NONE);
+    s.click(12.0, 6.5, Modifiers::SHIFT);
+    let mut out = s.step("select records 1 to 5 in columns 0 and 1", TALL);
     filter(&mut s, |r| r[0] != Some(9));
-    out += &s.step("filter out record 4: the range goes, focus stays", V);
+    out += &s.step(
+        "filter out record 4, inside the range: the range keeps records 1 to 5, now rows 1 to 4",
+        TALL,
+    );
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(1, 5)]));
+    filter(&mut s, |r| {
+        r[0] != Some(9) && r[0] != Some(3) && r[0] != Some(2)
+    });
+    out += &s.step(
+        "filter out records 1 and 5, its corners, too: the range pulls in to records 2 and 3, rows 1 and 2",
+        TALL,
+    );
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(1, 3)]));
+    filter(&mut s, |r| [Some(5), Some(7), Some(4)].contains(&r[0]));
+    out += &s.step(
+        "keep only records 0, 6 and 7: nothing of the range remains, so it clears",
+        TALL,
+    );
     assert_eq!(s.grid.snapshot().selection_range(), None);
     s.input(|g| g.action(Action::SelectColumn));
-    out += &s.step("select column 1 whole", V);
-    filter(&mut s, |r| r[0] != Some(8));
-    out += &s.step("filter out record 2: the whole column stays selected", V);
+    out += &s.step("select the focused column whole", TALL);
+    filter(&mut s, |r| r[0] != Some(4));
+    out += &s.step("filter out record 7: the whole column stays selected", TALL);
     assert!(s.grid.snapshot().selection_range().is_some());
     insta::assert_snapshot!(out);
 }
@@ -401,7 +455,7 @@ fn cancel_after_a_filter_empties_the_rows_brings_no_pick_back() {
         "Ctrl-press record 0, filter out everything, then cancel the press: no pick comes back",
         V,
     );
-    assert_eq!(s.grid.snapshot().picked(), &[] as &[Key]);
+    assert_eq!(s.grid.snapshot().picked(Axis::Rows), &[] as &[Key]);
     insta::assert_snapshot!(out);
 }
 
@@ -425,7 +479,44 @@ fn a_hidden_pick_goes_while_focus_stays_on_a_kept_row() {
         V,
     );
     let snap = s.grid.snapshot();
-    assert_eq!(snap.picked(), &[Key(1)]);
+    assert_eq!(snap.picked(Axis::Rows), &[Key(1)]);
     assert_eq!(snap.focus(Axis::Rows).and_then(|f| f.key), Some(Key(1)));
+    insta::assert_snapshot!(out);
+}
+
+/// Stories 55 and 56: a condition on a row filters the columns by that
+/// row's values; each axis shows its own total. The user's edit that stops
+/// a column matching leaves it, unmatched, until the View Spec is applied
+/// again.
+#[test]
+fn a_rows_condition_filters_the_columns_and_an_edited_column_stays_until_reapplied() {
+    let rows = (0..4)
+        .map(|i| vec![Some(i), Some(10 * i), Some(5)])
+        .collect();
+    let grid = Grid::new(
+        AxisConfig::new(4, 1.0).header(1.0),
+        AxisConfig::new(3, 6.0).header(4.0).gap(1.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 3, [0, 1, 2]));
+    let mut out = s.step("four records of three columns: i, 10 times i, 5", V);
+    let ones = Condition::text(Key(1), TextQuery::new("1"));
+    s.input(|g| g.add_condition(Axis::Cols, ones));
+    out += &s.step(
+        "columns whose cell in record 1 contains 1: the 1 and the 10 stay, the 5 goes; 2 of 3 columns",
+        V,
+    );
+    let notices = s.source.edit(1, 1, Some(20));
+    assert_eq!(notices.len(), 1, "the column stays: {notices:?}");
+    s.input(|g| notices.into_iter().for_each(|(a, n)| g.notify(a, n)));
+    out += &s.step(
+        "record 1's 10 edited to 20: its column no longer matches, and stays",
+        V,
+    );
+    assert_eq!(s.source.source.unmatched(Axis::Cols, &[Key(1)]), [true]);
+    s.input(|g| g.reapply_view());
+    out += &s.step(
+        "re-apply: the same View Spec, and the column goes; 1 of 3",
+        V,
+    );
     insta::assert_snapshot!(out);
 }

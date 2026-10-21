@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/bands.rs
+assertion_line: 131
 expression: out
 ---
 --- 1. set_header(Cols, 0): no row-number band
@@ -20,7 +21,7 @@ Rows: (unchanged)
 Cols: (unchanged)
 (picture unchanged)
 --- 3. drag from there: a header move, never a band resize
-gen 3 | damage selection | mode MovingHeaders { axis: Cols, key: Key(0), to: 1 } | capturing | hover Cols 0 | cursor Move | moving 0 to Cols 1 at 6.5
+gen 3 | damage selection | mode MovingHeaders { axis: Cols, key: Key(0), target: Move { to: 1, unpin: false } } | capturing | hover Cols 0 | cursor Move | moving 0 to Cols 1 at 6.5 | zone Cols Leading 0+1.5 | zone Cols Trailing 28.5+1.5
 Rows: (unchanged)
 Cols: (unchanged)
 0     |1      2      3      4

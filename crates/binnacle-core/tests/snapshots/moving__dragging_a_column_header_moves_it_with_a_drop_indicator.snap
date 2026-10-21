@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/moving.rs
+assertion_line: 54
 expression: out
 ---
 --- 1. start
@@ -25,7 +26,7 @@ Rows: (unchanged)
 Cols: (unchanged)
 (picture unchanged)
 --- 4. past the threshold, over column 1's first half: drop at 1
-gen 4 | damage selection | mode MovingHeaders { axis: Cols, key: Key(0), to: 1 } | capturing | hover Cols 1 | cursor Move | moving 0 to Cols 1 at 10.5
+gen 4 | damage selection | mode MovingHeaders { axis: Cols, key: Key(0), target: Move { to: 1, unpin: false } } | capturing | hover Cols 1 | cursor Move | moving 0 to Cols 1 at 10.5
 Rows: (unchanged)
 Cols: (unchanged)
     0     |1      2      3      4
@@ -35,7 +36,7 @@ Cols: (unchanged)
 
 2   2.0    2.1    2.2    2.3    2.4
 --- 5. over column 2's second half, in the body: drop at 3
-gen 5 | damage selection | mode MovingHeaders { axis: Cols, key: Key(0), to: 3 } | capturing | cursor Move | moving 0 to Cols 3 at 24.5
+gen 5 | damage selection | mode MovingHeaders { axis: Cols, key: Key(0), target: Move { to: 3, unpin: false } } | capturing | cursor Move | moving 0 to Cols 3 at 24.5
 Rows: (unchanged)
 Cols: (unchanged)
     0      1      2     |3      4
@@ -46,8 +47,8 @@ Cols: (unchanged)
 2   2.0    2.1    2.2    2.3    2.4
 --- 6. release: MoveRequested, idle
 effect (gen 5): MoveRequested { axis: Cols, keys: [Key(0)], to: 3 }
-  move Cols [Key(0)] to 3: None
-gen 6 | damage selection
+  move Cols [Key(0)] to 3: refused: These can't be moved
+gen 6 | damage selection | move refused Cols: These can't be moved
 Rows: (unchanged)
 Cols: (unchanged)
     0      1      2      3      4

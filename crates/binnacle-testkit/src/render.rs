@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, ConditionKind, Cursor, FilterSpec, FocusEnd, Mode, Searched, Snapshot, SortDirection,
-    SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    Axis, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Key, Mode, Searched,
+    Snapshot, SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -10,20 +10,24 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 
 /// Renders a Snapshot as text: a summary line, each Strip as
 /// `position#key@offset+size` after its Scroll Anchor (`position+offset`) and
-/// thumb (`fraction/size`) (key `?` while unfilled), then a character
+/// thumb (`fraction/size`) (key `?` while unfilled), with `clipped at` where
+/// a pinned Strip clips, then a character
 /// picture treating one unit as one character, each item starting at the first
 /// whole character it reaches. Column headers show the column
 /// Key, row headers the row Position, cells `rowkey.colkey`. A placed focus
 /// adds `focus row,col` (each `position#key`) and its rect to the summary, and
 /// marks the focused cell `*rowkey.colkey`; `locating axis` while its new
 /// Position is awaited. A range adds `range rows x cols`
-/// (half-open Positions), picks add `picks` (row Keys), and either adds the
+/// (runs of half-open Positions, comma-separated), picks add `picks` (row Keys) and `picks cols`
+/// (column Keys), and any of these adds the
 /// fill rects as `fill x,y wxh`; selected cells are marked `+`. A gesture adds
 /// its Mode and `capturing`, an edit its Mode and `editor x,y wxh` (the
 /// edited cell is marked `=`, before focus), a hovered header `hover axis position`, a resize
 /// cursor hint `cursor C`, a resize guide `guide axis offset (key K size
 /// S)` and a move `moving keys to axis position at offset` (the drop
-/// indicator, also drawn across the header band). An applied View Spec that
+/// indicator, also drawn across the header band); a move waiting for its
+/// answer adds `move pending axis keys`, and a refused one `move refused
+/// axis: reason`. An applied View Spec that
 /// sorts adds `sort`, as the rows' sort with `key^` or `keyv` per column
 /// (then `cols` and the columns' sort, if any); one that filters adds
 /// `filter` (see [`view_text`]), an unanswered request `requested` with
@@ -114,11 +118,21 @@ fn summary(snap: &Snapshot) -> String {
         }
     }
     if let Some(r) = snap.selection_range() {
-        let _ = write!(out, " | range {:?} x {:?}", r.rows, r.cols);
+        let runs = |runs: &[std::ops::Range<u64>]| {
+            let runs: Vec<String> = runs.iter().map(|r| format!("{r:?}")).collect();
+            if runs.is_empty() {
+                "none".to_string()
+            } else {
+                runs.join(",")
+            }
+        };
+        let _ = write!(out, " | range {} x {}", runs(&r.rows), runs(&r.cols));
     }
-    if !snap.picked().is_empty() {
-        let keys: Vec<String> = snap.picked().iter().map(|k| k.0.to_string()).collect();
-        let _ = write!(out, " | picks {}", keys.join(","));
+    for (axis, label) in [(Axis::Rows, "picks"), (Axis::Cols, "picks cols")] {
+        if !snap.picked(axis).is_empty() {
+            let keys: Vec<String> = snap.picked(axis).iter().map(|k| k.0.to_string()).collect();
+            let _ = write!(out, " | {label} {}", keys.join(","));
+        }
     }
     for f in snap.selection_rects() {
         let _ = write!(out, " | fill {},{} {}x{}", f.x, f.y, f.width, f.height);
@@ -183,14 +197,38 @@ fn summary(snap: &Snapshot) -> String {
     }
     if let Some(d) = snap.drop_indicator() {
         let keys: Vec<String> = snap.moving_keys().iter().map(|k| k.0.to_string()).collect();
+        let what = match d.target {
+            DropTarget::Move { to, unpin: false } => format!("to {:?} {to}", d.axis),
+            DropTarget::Move { to, unpin: true } => format!("unpinned to {:?} {to}", d.axis),
+            DropTarget::Unpin { at } => format!("unpinned back to {:?} {at}", d.axis),
+            DropTarget::Pin {
+                edge,
+                before,
+                reorder,
+            } => format!(
+                "{} {:?} {edge:?} before {}",
+                if reorder { "reordering pins" } else { "pinned" },
+                d.axis,
+                before.map_or("end".into(), |k| k.0.to_string())
+            ),
+            DropTarget::Stay => unreachable!("no indicator for Stay"),
+        };
+        let _ = write!(out, " | moving {} {what} at {}", keys.join(","), d.offset);
+    }
+    for z in snap.pin_zones() {
+        let hot = if z.hot { " hot" } else { "" };
         let _ = write!(
             out,
-            " | moving {} to {:?} {} at {}",
-            keys.join(","),
-            d.axis,
-            d.to,
-            d.offset
+            " | zone {:?} {:?} {}+{}{hot}",
+            z.axis, z.edge, z.offset, z.size
         );
+    }
+    if let Some((axis, keys)) = snap.pending_move() {
+        let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
+        let _ = write!(out, " | move pending {axis:?} {}", keys.join(","));
+    }
+    if let Some((axis, reason)) = snap.move_refusal() {
+        let _ = write!(out, " | move refused {axis:?}: {reason}");
     }
     out
 }
@@ -208,6 +246,25 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
         snap.thumb(axis).fraction,
         snap.thumb(axis).size,
     );
+    let pinned = snap.pinned(axis, Edge::Leading);
+    if !pinned.is_empty() {
+        out.push_str(" pinned");
+        for item in pinned {
+            let _ = write!(
+                out,
+                " {}#{}@{}+{}",
+                item.position,
+                key_text(item),
+                item.offset,
+                item.size
+            );
+        }
+        let region = snap.pinned_region(axis, Edge::Leading);
+        if pinned.last().is_some_and(|it| it.end() > region.end) {
+            let _ = write!(out, " | clipped at {}", region.end);
+        }
+        let _ = write!(out, " | scrolling from {} |", snap.scrolling(axis).start);
+    }
     for item in snap.strip(axis) {
         let _ = write!(
             out,
@@ -218,14 +275,52 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
             item.size
         );
     }
+    let trailing = snap.pinned(axis, Edge::Trailing);
+    if !trailing.is_empty() {
+        let _ = write!(
+            out,
+            " | scrolling to {} | trailing",
+            snap.scrolling(axis).end
+        );
+        let region = snap.pinned_region(axis, Edge::Trailing);
+        if trailing.first().is_some_and(|it| it.offset < region.start) {
+            let _ = write!(out, " clipped at {}", region.start);
+        }
+        for item in trailing {
+            let _ = write!(
+                out,
+                " {}#{}@{}+{}",
+                item.position,
+                key_text(item),
+                item.offset,
+                item.size
+            );
+        }
+    }
     out
 }
 
-/// A View Spec's sorts, then its filters if any (see [`filters_text`]).
+/// A View Spec's sorts, then its filters if any (see [`filters_text`]), then
+/// its hidden Keys if any: `hide` and the rows' Keys, then `cols` and the
+/// columns'.
 pub(crate) fn view_text(spec: &ViewSpec) -> String {
     let mut text = sorts_text(spec);
     if !(spec.rows.filter.is_empty() && spec.cols.filter.is_empty()) {
         text += &format!(" filter {}", filters_text(spec));
+    }
+    if !(spec.rows.hidden.is_empty() && spec.cols.hidden.is_empty()) {
+        let keys = |keys: &[Key]| {
+            let keys: Vec<String> = keys.iter().map(|k| k.0.to_string()).collect();
+            if keys.is_empty() {
+                "none".to_string()
+            } else {
+                keys.join(",")
+            }
+        };
+        text += &format!(" hide {}", keys(&spec.rows.hidden));
+        if !spec.cols.hidden.is_empty() {
+            text += &format!(" cols {}", keys(&spec.cols.hidden));
+        }
     }
     text
 }
@@ -340,30 +435,58 @@ fn picture(snap: &Snapshot) -> String {
     let height = (snap.extent(Axis::Rows).ceil() as usize).min(MAX_CANVAS.1);
     let mut canvas = vec![vec![' '; width]; height];
     // Writes `text` from (x, y), keeping only the characters inside the clip
-    // `[x_min, x_end) x [y_min, ..)`: cells stay out of the header bands.
-    let mut put = |x: f32, y: f32, x_min: f32, x_end: f32, y_min: f32, text: &str| {
-        let y = y.max(y_min).ceil();
-        let Some(line) = canvas.get_mut(y as usize) else {
-            return;
+    // `[x_min, x_end) x [y_min, y_end)`: cells stay out of the header bands
+    // and each in its own Strip.
+    let mut put =
+        |x: f32, y: f32, (x_min, x_end): (f32, f32), (y_min, y_end): (f32, f32), text: &str| {
+            let y = y.max(y_min).ceil();
+            if y >= y_end.ceil() {
+                return;
+            }
+            let Some(line) = canvas.get_mut(y as usize) else {
+                return;
+            };
+            let (x, x_min, x_end) = (x.ceil() as i64, x_min.ceil() as i64, x_end.ceil() as i64);
+            for (i, ch) in text.chars().enumerate() {
+                let cx = x + i as i64;
+                if cx >= x_end || cx >= line.len() as i64 {
+                    break;
+                }
+                if cx >= x_min {
+                    line[cx as usize] = ch;
+                }
+            }
         };
-        let (x, x_min, x_end) = (x.ceil() as i64, x_min.ceil() as i64, x_end.ceil() as i64);
-        for (i, ch) in text.chars().enumerate() {
-            let cx = x + i as i64;
-            if cx >= x_end || cx >= line.len() as i64 {
-                break;
-            }
-            if cx >= x_min {
-                line[cx as usize] = ch;
-            }
-        }
-    };
     let (top, left) = (snap.header(Axis::Rows), snap.header(Axis::Cols));
-    for c in snap.cols() {
-        put(c.offset, 0.0, left, c.end(), 0.0, &key_text(c));
+    // Each drawn item with the span it is clipped to: its Strip's region.
+    let drawn = |axis: Axis| {
+        let pinned = |edge| {
+            let region = snap.pinned_region(axis, edge);
+            (snap.pinned(axis, edge).iter()).map(move |i| (i, (region.start, region.end)))
+        };
+        let scrolling = snap.scrolling(axis);
+        (pinned(Edge::Leading))
+            .chain((snap.strip(axis).iter()).map(move |i| (i, (scrolling.start, scrolling.end))))
+            .chain(pinned(Edge::Trailing))
+    };
+    for (c, (from, to)) in drawn(Axis::Cols) {
+        put(
+            c.offset,
+            0.0,
+            (from, c.end().min(to)),
+            (0.0, top),
+            &key_text(c),
+        );
     }
-    for r in snap.rows() {
-        put(0.0, r.offset, 0.0, left, top, &r.position.to_string());
-        for c in snap.cols() {
+    for (r, rows_clip) in drawn(Axis::Rows) {
+        put(
+            0.0,
+            r.offset,
+            (0.0, left),
+            rows_clip,
+            &r.position.to_string(),
+        );
+        for (c, (from, to)) in drawn(Axis::Cols) {
             let state = snap.cell_state(r, c);
             let mut mark = if state.editing {
                 "="
@@ -381,9 +504,8 @@ fn picture(snap: &Snapshot) -> String {
             put(
                 c.offset,
                 r.offset,
-                left,
-                c.end(),
-                top,
+                (from, c.end().min(to)),
+                rows_clip,
                 &format!("{mark}{}.{}", key_text(r), key_text(c)),
             );
         }

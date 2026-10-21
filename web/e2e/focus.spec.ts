@@ -138,7 +138,7 @@ test.describe("the row selection unit", () => {
   test("focus selects its whole row, and onSelectionChange reports it", async ({ page }) => {
     await open(page, "?unit=rows");
     await outcome(page, `focus("row-4", "b")`);
-    expect((await frame(page)).selection).toEqual({ rows: { start: 4, end: 5 }, cols: { start: 0, end: 8 } });
+    expect((await frame(page)).selection).toEqual({ rows: [{ start: 4, end: 5 }], cols: [{ start: 0, end: 8 }] });
     await expect
       .poll(() => run<SelectionChange<string, string>>(page, "return f.change"))
       .toMatchObject({

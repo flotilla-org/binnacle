@@ -7,6 +7,7 @@ import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
 import { fromRows, type RowsSource } from "../src/rows";
+import { transpose } from "../src/transpose";
 import type { FindMatch, FindQuery, FindStep, SortDirection, TableSource, TextQuery } from "../src/source";
 import { Harness } from "./harness";
 import { loadForTests } from "./wasm";
@@ -50,7 +51,7 @@ const finds = gs.composite(
   (tc): FindQuery<Col> => ({ query: tc.draw(queries), by: tc.draw(gs.sampledFrom<"rows" | "cols">(["rows", "cols"])) }),
 );
 
-/** A source under a random view: maybe sorted, maybe quick filtered, maybe filtered by the host, columns maybe moved. */
+/** A source under a random view: maybe sorted, maybe quick filtered on either axis, maybe filtered by the host, columns maybe moved. */
 const viewed = gs.composite((tc): { rows: Rec[]; source: RowsSource<Rec> } => {
   const rows = tc.draw(records);
   const source = fromRows(rows, COLUMNS);
@@ -58,10 +59,20 @@ const viewed = gs.composite((tc): { rows: Rec[]; source: RowsSource<Rec> } => {
     gs.arrays(gs.tuples(gs.sampledFrom(IDS), gs.sampledFrom<SortDirection>(["ascending", "descending"])), { maxSize: 2 }),
   );
   const quick = tc.draw(gs.oneOf(gs.just(null), queries));
+  const searchedRows = rows.length ? gs.arrays(gs.integers({ minValue: 0, maxValue: rows.length - 1 }), { maxSize: 3 }) : gs.just([]);
+  const colsQuick = tc.draw(
+    gs.oneOf(
+      gs.just(null),
+      gs.composite((tc): TextQuery<number> => ({
+        ...tc.draw(queries),
+        searches: tc.draw(gs.booleans()) ? "shown" : tc.draw(searchedRows),
+      })),
+    ),
+  );
   source.view!(
     {
-      rows: { filter: { quick, conditions: [] }, sort: sort.map(([id, direction]) => ({ id, direction })) },
-      cols: { filter: { quick: null, conditions: [] }, sort: [] },
+      rows: { filter: { quick, conditions: [] }, sort: sort.map(([id, direction]) => ({ id, direction })), hidden: [] },
+      cols: { filter: { quick: colsQuick, conditions: [] }, sort: [], hidden: [] },
     },
     signal,
   );
@@ -216,6 +227,34 @@ describe("find in fromRows", () => {
         source.destroy();
       }
     }));
+
+  test("in the Grid, the count is asked again when the columns alone are refiltered", () => {
+    const rows: Rec[] = [
+      { n: 1, s: "a", b: null },
+      { n: 2, s: "b", b: null },
+    ];
+    // On their side, the host's filter on the records refilters the columns.
+    const records = fromRows(rows, COLUMNS);
+    const h = new Harness(transpose(records));
+    const settle = () => {
+      for (let i = 0; i < 3; i++) {
+        h.drain();
+        h.frame();
+      }
+    };
+    try {
+      h.frame();
+      h.grid.set_find(h.feed.findKeys({ query: { text: "a", caseSensitive: false, regex: false, searches: "shown" }, by: "rows" }));
+      settle();
+      expect(h.feed.findState().count).toEqual({ total: 1 });
+      records.filter((r) => r.n === 2);
+      settle();
+      expect(h.feed.findState().count).toEqual({ total: 0 });
+    } finally {
+      h.destroy();
+      records.destroy();
+    }
+  });
 
   test("a changed row is matched again", () => {
     const rows: Rec[] = [

@@ -7,8 +7,9 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, HeaderPlacement, Key, Mode,
-    Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
+    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, DropTarget, Edge,
+    HeaderPlacement, Key, Mode, Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery,
+    Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -47,6 +48,14 @@ pub fn axis_code(axis: Axis) -> f64 {
     match axis {
         Axis::Rows => 0.0,
         Axis::Cols => 1.0,
+    }
+}
+
+/// The pinned edge codes `codes::edge` reads: 0 leading, 1 trailing.
+fn edge_code(edge: Edge) -> f64 {
+    match edge {
+        Edge::Leading => 0.0,
+        Edge::Trailing => 1.0,
     }
 }
 
@@ -91,6 +100,33 @@ impl Writer<'_> {
         self.out.keys.push(key.0);
     }
 
+    /// A drop target: a code (0 move, 1 unpin, 2 pin, 3 stay) and its
+    /// fields.
+    fn target(&mut self, target: DropTarget) {
+        match target {
+            DropTarget::Move { to, unpin } => {
+                self.num(0);
+                self.position(to);
+                self.flag(unpin);
+            }
+            DropTarget::Unpin { at } => {
+                self.num(1);
+                self.position(at);
+            }
+            DropTarget::Pin {
+                edge,
+                before,
+                reorder,
+            } => {
+                self.num(2);
+                self.num(edge_code(edge));
+                self.opt_key(before);
+                self.flag(reorder);
+            }
+            DropTarget::Stay => self.num(3),
+        }
+    }
+
     fn opt_key(&mut self, key: Option<Key>) {
         self.flag(key.is_some());
         if let Some(k) = key {
@@ -126,6 +162,7 @@ impl Writer<'_> {
         self.flag(h.filter.filtered);
         self.flag(h.filter.pending);
         self.flag(h.filter.not_applied);
+        self.flag(h.move_pending);
     }
 
     /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
@@ -191,7 +228,7 @@ impl Writer<'_> {
     }
 
     /// Each axis's part, rows first: its filter (the quick filter, then the
-    /// conditions), then its sort.
+    /// conditions), its sort, then its hidden Keys.
     fn view(&mut self, spec: &ViewSpec) {
         for axis in Axis::ALL {
             let part = spec.axis(axis);
@@ -205,6 +242,10 @@ impl Writer<'_> {
                 self.condition(c);
             }
             self.sort(&part.sort);
+            self.len(part.hidden.len());
+            for &k in &part.hidden {
+                self.key(k);
+            }
         }
     }
 
@@ -230,11 +271,11 @@ impl Writer<'_> {
                 self.num(axis_code(axis));
                 self.num(start_thickness);
             }
-            Mode::MovingHeaders { axis, key, to } => {
+            Mode::MovingHeaders { axis, key, target } => {
                 self.num(4);
                 self.num(axis_code(axis));
                 self.key(key);
-                self.position(to);
+                self.target(target);
             }
             Mode::Editing { row, col } => {
                 self.num(5);
@@ -273,15 +314,25 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.opt_key(f.key);
         }
         w.flag(s.locating(axis));
-        let strip = s.strip(axis);
-        w.len(strip.len());
-        for item in strip {
+        let drawn: Vec<_> = s.drawn(axis).collect();
+        w.len(drawn.len());
+        for item in &drawn {
             w.position(item.position);
             w.opt_key(item.key);
             w.num(item.offset);
             w.num(item.size);
         }
-        w.len(strip.len());
+        w.len(s.pinned(axis, Edge::Leading).len());
+        w.len(s.pinned(axis, Edge::Trailing).len());
+        let scrolling = s.scrolling(axis);
+        w.num(scrolling.start);
+        w.num(scrolling.end);
+        for edge in Edge::ALL {
+            let region = s.pinned_region(axis, edge);
+            w.num(region.start);
+            w.num(region.end);
+        }
+        w.len(drawn.len());
         for h in s.headers(axis) {
             let support = h
                 .key
@@ -310,6 +361,16 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         if let Some(q) = quick {
             w.flag(q.regex);
         }
+        w.flag(s.movable(axis));
+        w.flag(s.hide_support(axis));
+        w.len(s.hide_cap(axis));
+        for edge in Edge::ALL {
+            let pins: Vec<Key> = s.pins(axis, edge).collect();
+            w.len(pins.len());
+            for k in pins {
+                w.key(k);
+            }
+        }
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());
@@ -328,8 +389,17 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
     w.flag(drop.is_some());
     if let Some(d) = drop {
         w.num(axis_code(d.axis));
-        w.position(d.to);
+        w.target(d.target);
         w.num(d.offset);
+    }
+    let zones = s.pin_zones();
+    w.len(zones.len());
+    for z in zones {
+        w.num(axis_code(z.axis));
+        w.num(edge_code(z.edge));
+        w.num(z.offset);
+        w.num(z.size);
+        w.flag(z.hot);
     }
     let hovered = s.hovered_header();
     w.flag(hovered.is_some());
@@ -337,11 +407,16 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.num(axis_code(axis));
         w.position(item.position);
     }
+    // The range as each axis's runs of Positions.
     let range = s.selection_range();
     w.flag(range.is_some());
     if let Some(r) = range {
-        for p in [r.rows.start, r.rows.end, r.cols.start, r.cols.end] {
-            w.position(p);
+        for runs in [&r.rows, &r.cols] {
+            w.len(runs.len());
+            for run in runs {
+                w.position(run.start);
+                w.position(run.end);
+            }
         }
     }
     let rects = s.selection_rects();
@@ -349,7 +424,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
     for r in rects {
         w.rect(*r);
     }
-    for keys in [s.picked(), s.moving_keys()] {
+    for keys in [s.picked(Axis::Rows), s.picked(Axis::Cols), s.moving_keys()] {
         w.len(keys.len());
         for k in keys {
             w.key(*k);
@@ -362,6 +437,22 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.view(spec);
     }
     w.flag(s.view_pending());
+    // The move waiting for its answer, then the last refusal.
+    let pending = s.pending_move();
+    w.flag(pending.is_some());
+    if let Some((axis, keys)) = pending {
+        w.num(axis_code(axis));
+        w.len(keys.len());
+        for &k in keys {
+            w.key(k);
+        }
+    }
+    let refusal = s.move_refusal();
+    w.flag(refusal.is_some());
+    if let Some((axis, reason)) = refusal {
+        w.num(axis_code(axis));
+        w.text(reason);
+    }
     // Find: the query and the axis it steps along, the current match, then
     // the support bits.
     let find = s.find();
@@ -377,9 +468,9 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.key(m.col);
     }
     w.num(find_bits(s.find_support()));
-    // Cell states, row-major over the Strips, as bit flags.
-    for row in s.rows() {
-        for col in s.cols() {
+    // Cell states, row-major over the drawn items, as bit flags.
+    for row in s.drawn(Axis::Rows) {
+        for col in s.drawn(Axis::Cols) {
             w.num(cell_bits(s.cell_state(row, col)));
         }
     }

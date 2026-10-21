@@ -10,6 +10,7 @@
 
 mod axis;
 mod distinct;
+mod drawn;
 mod edit;
 mod effect;
 mod find;
@@ -17,7 +18,9 @@ mod focus;
 mod gesture;
 mod grid;
 mod measure;
+mod moves;
 mod notice;
+mod pin;
 mod pointer;
 mod refilter;
 mod selection;
@@ -38,12 +41,13 @@ pub use notice::ChangeNotice;
 pub use pointer::{Button, Modifiers, PointerEvent, PointerKind};
 pub use selection::{CellRange, HeaderClick, SelectionUnit};
 pub use snapshot::{
-    CellState, Cursor, Damage, DropIndicator, HeaderPlacement, Rect, ResizeGuide, ScrollAnchor,
-    Snapshot, StripItem, Thumb,
+    CellState, Cursor, Damage, DropIndicator, DropTarget, HeaderPlacement, PinZone, Rect,
+    ResizeGuide, ScrollAnchor, Snapshot, StripItem, Thumb,
 };
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
-pub use types::{Axis, Generation, Key, Position, Viewport};
+pub use types::{Axis, Edge, Generation, Key, Position, Viewport};
 pub use view::{
-    AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HeaderFilter,
-    Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
+    AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HIDE_CAP,
+    HeaderFilter, HideCapped, Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec,
 };

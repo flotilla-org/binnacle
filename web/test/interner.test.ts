@@ -81,3 +81,18 @@ test("a rebuild forgets IDs not seen since the rebuild before it", () => {
   expect(interner.id(a)).toBeUndefined();
   expect(interner.key("a")).not.toBe(a);
 });
+
+test("Keys a rebuild is told to keep keep their IDs through any number of rebuilds; the rest go after two", () =>
+  hegel.test((tc) => {
+    const interner = createInterner<string>();
+    const ids = [...new Set(tc.draw(gs.arrays(strings, { minSize: 1, maxSize: 10 })))];
+    const keys = new Map(ids.map((id) => [id, interner.key(id)]));
+    const kept = new Set(tc.draw(gs.arrays(gs.sampledFrom(ids), { maxSize: ids.length })));
+    const rebuilds = tc.draw(gs.integers({ minValue: 2, maxValue: 5 }));
+    for (let r = 0; r < rebuilds; r++) interner.rebuild([...kept].map((id) => keys.get(id)!));
+    for (const id of ids) {
+      const key = keys.get(id)!;
+      expect(interner.id(key)).toBe(kept.has(id) ? id : undefined);
+      if (kept.has(id)) expect(interner.key(id)).toBe(key);
+    }
+  }));

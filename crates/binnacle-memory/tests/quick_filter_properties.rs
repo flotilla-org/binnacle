@@ -534,7 +534,7 @@ fn distinct_values_are_the_models(tc: TestCase) {
         .narrow(tc.draw(narrow()));
     tc.note(&format!("{query:?}"));
     assert_eq!(
-        source.distinct(&rows, column, &query),
+        source.distinct(&rows, Axis::Rows, column, &query),
         model_distinct(&rows, column, &query, min)
     );
 }
@@ -550,14 +550,14 @@ fn distinct_values_ignore_the_filter_in_force(tc: TestCase) {
     let asked = DistinctQuery::new(100)
         .search(search)
         .narrow(tc.draw(narrow()));
-    let before = source.distinct(&rows, column, &asked);
+    let before = source.distinct(&rows, Axis::Rows, column, &asked);
     let spec = filtered(
         tc.draw(sort()),
         tc.draw(gs::optional(query())),
         tc.draw(conditions()),
     );
     source.view(&rows, &spec).unwrap();
-    assert_eq!(source.distinct(&rows, column, &asked), before);
+    assert_eq!(source.distinct(&rows, Axis::Rows, column, &asked), before);
 }
 
 /// Keeping a record's value in a column (as a OneOf of the value the source

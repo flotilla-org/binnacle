@@ -99,7 +99,7 @@ fn source(rows: &[Record], view: &View) -> MemorySource<Record> {
         .with_filter(Axis::Rows, filter);
     source.view(rows, &spec).unwrap();
     for (keys, to) in &view.moves {
-        source.move_columns(keys, *to);
+        source.move_items(Axis::Cols, keys, *to);
     }
     source
 }

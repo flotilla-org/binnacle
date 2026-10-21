@@ -1,0 +1,17 @@
+---
+source: crates/binnacle-ratatui/tests/menu.rs
+assertion_line: 469
+expression: t.chooser_screen(&mut chooser)
+---
+    name        │port        │crew        │
+1   ┌─ Choose rows ────────────────────────┐           █
+2   │ Search ▏                             │           █
+3   ├─ 6 rows ─────────────────────────────┤           █
+4   │ [-] (Show all)                       │           █
+5   │ [x] row 1                            │           █
+    │ [ ] row 2                            │           █
+    │ [x] row 3                            │           █
+    │ 5 of 6 rows shown                    │           █
+    │ Can't hide over 1 row: filter        │           █
+    │ Space tick  Enter, Esc close         │           █
+    └──────────────────────────────────────┘           █

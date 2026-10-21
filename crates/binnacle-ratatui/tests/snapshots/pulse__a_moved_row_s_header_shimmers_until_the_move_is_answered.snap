@@ -1,0 +1,65 @@
+---
+source: crates/binnacle-ratatui/tests/pulse.rs
+expression: out
+---
+--- at 0 ms
+   col 0 │col 1 │col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
+
+aaabbbbbbcbbbbbbcbbbbbbb
+dddaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaaaaaaaaaaaaaae
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+
+a: fg Reset bg Reset
+b: fg Reset bg Reset BOLD
+c: fg DarkGray bg Reset
+d: fg #8C8228 bg Reset BOLD
+e: fg Gray bg Reset
+--- at 250 ms
+   col 0 │col 1 │col 2
+1  r0c0   r0c1   r0c2  █
+2  r1c0   r1c1   r1c2  █
+3  r2c0   r2c1   r2c2  │
+4  r3c0   r3c1   r3c2  │
+5  r4c0   r4c1   r4c2  │
+
+aaabbbbbbcbbbbbbcbbbbbbb
+defaaaaaaaaaaaaaaaaaaaag
+bbbaaaaaaaaaaaaaaaaaaaag
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+
+a: fg Reset bg Reset
+b: fg Reset bg Reset BOLD
+c: fg DarkGray bg Reset
+d: fg #F9EA74 bg Reset BOLD
+e: fg #E0D262 bg Reset BOLD
+f: fg #BDB04A bg Reset BOLD
+g: fg Gray bg Reset
+--- at 1000 ms
+   col 0 │col 1 │col 2
+1  r1c0   r1c1   r1c2  █
+2  r2c0   r2c1   r2c2  █
+3  r3c0   r3c1   r3c2  │
+4  r0c0   r0c1   r0c2  │
+5  r4c0   r4c1   r4c2  │
+
+aaabbbbbbcbbbbbbcbbbbbbb
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaaaaaaaaaaaaaad
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+bbbaaaaaaaaaaaaaaaaaaaac
+
+a: fg Reset bg Reset
+b: fg Reset bg Reset BOLD
+c: fg DarkGray bg Reset
+d: fg Gray bg Reset

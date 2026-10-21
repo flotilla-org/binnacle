@@ -101,6 +101,7 @@ int main(void) {
   CHECK(c->strip[3].key == 2003 && c->strip[3].offset == 31);
   CHECK(r->anchor.position == 0 && r->anchor.offset == 0);
   CHECK(r->thumb.fraction == 0 && r->thumb.size > 0 && r->thumb.size < 1);
+  CHECK(r->hide_cap == BINNACLE_HIDE_CAP && c->hide_cap == BINNACLE_HIDE_CAP);
 
   /* Typed text comes back as an Effect stamped with the frame it was typed on. */
   const char typed[] = "h\xc3\xa9llo";
@@ -138,12 +139,12 @@ int main(void) {
   CHECK(snap.has_focus_rect && snap.focus_rect.x == 22 && snap.focus_rect.y == 4);
   CHECK(snap.focus_rect.width == 8 && snap.focus_rect.height == 1);
   CHECK(snap.has_selection_range);
-  CHECK(r->selection_range.start == 2 && r->selection_range.end == 4);
-  CHECK(c->selection_range.start == 1 && c->selection_range.end == 3);
+  CHECK(r->selection_runs_len == 1 && r->selection_runs[0].start == 2 && r->selection_runs[0].end == 4);
+  CHECK(c->selection_runs_len == 1 && c->selection_runs[0].start == 1 && c->selection_runs[0].end == 3);
   CHECK(snap.selection_rects_len == 1);
   CHECK(snap.selection_rects[0].x == 13 && snap.selection_rects[0].y == 3);
   CHECK(snap.selection_rects[0].width == 17 && snap.selection_rects[0].height == 2);
-  CHECK(snap.picked_len == 0);
+  CHECK(r->picked_len == 0 && c->picked_len == 0);
   CHECK(snap.cell_states_len == 5 * 4);
   CHECK(snap.cell_states[3 * 4 + 2] == (BINNACLE_CELL_FOCUSED | BINNACLE_CELL_SELECTED));
   CHECK(snap.cell_states[2 * 4 + 1] == BINNACLE_CELL_SELECTED);
@@ -155,9 +156,14 @@ int main(void) {
   click(grid, 6, 5.5f, BINNACLE_MOD_CTRL);
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 15, 0.5f, 0)));
   frame(grid, &snap);
-  CHECK(snap.picked_len == 1 && snap.picked[0] == 1004);
+  CHECK(r->picked_len == 1 && r->picked[0] == 1004);
   CHECK(snap.has_hovered_header && snap.hovered_axis == BINNACLE_COLS);
   CHECK(snap.hovered_index == 1);
+
+  /* Ctrl-click on column 1's header picks the column. */
+  click(grid, 15, 0.5f, BINNACLE_MOD_CTRL);
+  frame(grid, &snap);
+  CHECK(c->picked_len == 1 && c->picked[0] == 2001 && r->picked_len == 1);
 
   /* A drag, cancelled. */
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_DOWN, 6, 1.5f, 0)));
@@ -171,8 +177,10 @@ int main(void) {
 
   CHECK(binnacle_grid_select_all(grid));
   frame(grid, &snap);
-  CHECK(r->selection_range.end == 100 && c->selection_range.end == 10);
+  CHECK(r->selection_runs_len == 1 && r->selection_runs[0].end == 100);
+  CHECK(c->selection_runs_len == 1 && c->selection_runs[0].end == 10);
   CHECK(binnacle_grid_select_column(grid));
+  CHECK(binnacle_grid_select_row(grid));
   drain(grid, &focus);
 
   /* Scrolling. */
@@ -372,8 +380,9 @@ int main(void) {
   CHECK(!snap.has_find && !snap.has_find_match);
 
   /* Settings, sizes and content sizes. */
+  CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_COLS));
   CHECK(binnacle_grid_set_selection_unit(grid, BINNACLE_SELECT_ROWS));
-  CHECK(!binnacle_grid_set_selection_unit(grid, 2));
+  CHECK(!binnacle_grid_set_selection_unit(grid, 3));
   CHECK(binnacle_grid_set_header_click(grid, BINNACLE_COLS, BINNACLE_HEADER_CLICK_NONE));
   CHECK(!binnacle_grid_set_header_click(grid, BINNACLE_COLS, 3));
   CHECK(binnacle_grid_set_drag_threshold(grid, 2));
@@ -383,8 +392,8 @@ int main(void) {
   CHECK(c->strip[0].size == 12 && c->strip[1].offset == 17);
   click(grid, 6, 1.5f, 0);
   frame(grid, &snap);
-  CHECK(snap.has_selection_range && c->selection_range.start == 0);
-  CHECK(c->selection_range.end == 10 && r->selection_range.end == 1);
+  CHECK(snap.has_selection_range && c->selection_runs_len == 1 && c->selection_runs[0].start == 0);
+  CHECK(c->selection_runs[0].end == 10 && r->selection_runs_len == 1 && r->selection_runs[0].end == 1);
   uint64_t keys[] = {1000, 1001};
   float sizes[] = {2, 1};
   CHECK(binnacle_grid_set_window_sized(grid, BINNACLE_ROWS, 0, keys, sizes, 2, 1));
@@ -417,6 +426,51 @@ int main(void) {
   CHECK(snap.mode == BINNACLE_MODE_IDLE);
   CHECK(c->header == 0 && c->strip[0].offset == 0);
   CHECK(snap.damage & BINNACLE_DAMAGE_LAYOUT);
+
+  /* Dragging column 1's header into the empty leading pin zone pins it. */
+  CHECK(binnacle_grid_set_pin_zone(grid, BINNACLE_COLS, 3));
+  CHECK(!binnacle_grid_set_pin_zone(grid, 2, 3));
+  frame(grid, &snap);
+  uint64_t dragged = c->strip[1].key;
+  float grab = c->strip[1].offset + 2;
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_DOWN, grab, 0.5f, 0)));
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 1, 0.5f, 0)));
+  frame(grid, &snap);
+  CHECK(snap.mode == BINNACLE_MODE_MOVING_HEADERS && snap.has_drop);
+  CHECK(snap.drop_axis == BINNACLE_COLS && snap.drop_target == BINNACLE_DROP_PIN);
+  CHECK(snap.drop_edge == BINNACLE_EDGE_LEADING && !snap.has_drop_before && !snap.drop_reorder);
+  CHECK(snap.pin_zones_len == 2 && snap.pin_zones[0].hot && !snap.pin_zones[1].hot);
+  CHECK(snap.pin_zones[0].edge == BINNACLE_EDGE_LEADING && snap.pin_zones[0].size == 3);
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_UP, 1, 0.5f, 0)));
+  frame(grid, &snap);
+  CHECK(!snap.has_drop && snap.pin_zones_len == 0);
+  CHECK(c->pinned_len == 1 && c->strip[0].key == dragged);
+  /* The drop reports the pins it made. */
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.edge == BINNACLE_EDGE_LEADING);
+  CHECK(effect.keys_len == 1 && effect.keys[0] == dragged);
+
+  /* Restoring a saved layout: column 2003 and a column the source lacks
+   * pinned right (the missing one sleeps, after its LOCATE), and a size for
+   * each; both pins and both sizes are listed back. */
+  uint64_t pins[] = {2003, 2999};
+  CHECK(binnacle_grid_set_pins(grid, BINNACLE_COLS, BINNACLE_EDGE_TRAILING, pins, 2));
+  CHECK(binnacle_grid_set_size(grid, BINNACLE_COLS, 2003, 4));
+  CHECK(binnacle_grid_set_size(grid, BINNACLE_COLS, 2999, 5));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == 2999);
+  CHECK(binnacle_grid_located(grid, BINNACLE_COLS, 2999, BINNACLE_LOCATED_GONE, 0));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.edge == BINNACLE_EDGE_TRAILING);
+  CHECK(effect.keys_len == 2 && effect.keys[0] == 2003 && effect.keys[1] == 2999);
+  frame(grid, &snap);
+  CHECK(c->trailing_len == 1 && c->trailing_pins_len == 2 && c->trailing_pins[1] == 2999);
+  BinnacleSizeOverrides overrides;
+  CHECK(binnacle_grid_size_overrides(grid, BINNACLE_COLS, &overrides));
+  /* In Key order, after any sizes set earlier. */
+  size_t last = overrides.len - 1;
+  CHECK(overrides.len >= 2 && overrides.keys[last] == 2999 && overrides.sizes[last] == 5);
+  CHECK(overrides.keys[last - 1] == 2003 && overrides.sizes[last - 1] == 4);
 
   binnacle_grid_free(grid);
   binnacle_grid_free(NULL);

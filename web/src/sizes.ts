@@ -36,6 +36,8 @@ export interface InitialSizes {
   arrived(axis: AxisName, keys: Iterable<bigint>): void;
   /** Sets the fits and fills `s` makes possible; returns whether any size changed. */
   settle(s: Snapshot, content: Content): boolean;
+  /** Whether `size` is the fit or fill this set for `key` on `axis`: the widget's own, not the app's or the user's. */
+  computed(axis: AxisName, key: bigint, size: number): boolean;
 }
 
 export function createInitialSizes(choices: SizeChoices<unknown, unknown>, parts: SizingParts): InitialSizes {
@@ -44,6 +46,12 @@ export function createInitialSizes(choices: SizeChoices<unknown, unknown>, parts
     AXES.map((axis) => [axis, { seen: new Set<bigint>(), fits: new Set<bigint>(), fills: new Set<bigint>() }]),
   ) as Record<AxisName, { seen: Set<bigint>; fits: Set<bigint>; fills: Set<bigint> }>;
   const sized = (axis: AxisName, key: bigint) => !Number.isNaN(grid.size_override(AXIS_CODE[axis], key));
+  /** The fits and fills set, by Key. */
+  const computed: Record<AxisName, Map<bigint, number>> = { rows: new Map(), cols: new Map() };
+  const compute = (axis: AxisName, key: bigint, size: number) => {
+    grid.set_size(AXIS_CODE[axis], key, size);
+    computed[axis].set(key, size);
+  };
 
   /** Shares the room left on `axis` between `fills`, once every item is in the Strip; whether any size changed. */
   const fill = (s: Snapshot, axis: AxisName, fills: Set<bigint>): boolean => {
@@ -62,7 +70,7 @@ export function createInitialSizes(choices: SizeChoices<unknown, unknown>, parts
     let changed = false;
     for (const i of sharing) {
       if (share <= i.size) continue;
-      grid.set_size(AXIS_CODE[axis], i.key!, share);
+      compute(axis, i.key!, share);
       changed = true;
     }
     return changed;
@@ -97,7 +105,7 @@ export function createInitialSizes(choices: SizeChoices<unknown, unknown>, parts
           const size = parts.fit(s, content, key);
           if (size === null) continue;
           fits.delete(key);
-          grid.set_size(AXIS_CODE[axis], key, Math.ceil(size));
+          compute(axis, key, Math.ceil(size));
           fitted = true;
         }
         // Fills share what is left once the other sizes are known and laid out.
@@ -106,5 +114,6 @@ export function createInitialSizes(choices: SizeChoices<unknown, unknown>, parts
       }
       return changed;
     },
+    computed: (axis, key, size) => computed[axis].get(key) === size,
   };
 }

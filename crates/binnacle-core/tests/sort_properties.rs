@@ -272,8 +272,8 @@ impl Host {
         self.view = View {
             focus: focus.map(|(r, c)| [r, c]),
             locating: Axis::ALL.map(|a| snap.locating(a)),
-            range: snap.selection_range(),
-            picks: snap.picked().to_vec(),
+            range: snap.selection_range().cloned(),
+            picks: snap.picked(Axis::Rows).to_vec(),
             anchors: Axis::ALL.map(|a| snap.scroll_anchor(a)),
             counts: Axis::ALL.map(|a| snap.count(a)),
             mode: snap.mode(),
@@ -320,12 +320,17 @@ impl Host {
             }
             Input::Sort(sort) => {
                 let spec = ViewSpec::default().with_sort(Axis::Rows, sort);
-                if let Ok(notice) = self.s.source.source.view(&self.s.source.rows, &spec) {
+                if let Ok(notices) = self.s.source.source.view(&self.s.source.rows, &spec) {
+                    // A sort leaving the rows in order reorders nothing.
+                    let reordered = (notices.iter())
+                        .filter(|(_, n)| *n == ChangeNotice::Reordered)
+                        .map(|&(axis, _)| axis)
+                        .collect();
                     self.s.input(|g| {
                         g.view_applied(spec, Totals::unknown());
-                        g.notify(Axis::Rows, notice);
+                        notices.into_iter().for_each(|(axis, n)| g.notify(axis, n));
                     });
-                    return vec![Axis::Rows];
+                    return reordered;
                 }
             }
             Input::Filter(keep) => {
@@ -457,7 +462,8 @@ fn a_reorder_drops_the_range_and_any_drag_and_leaves_the_anchor(tc: TestCase) {
         for &axis in &step.reordered {
             let i = axis.index();
             if let Some(range) = &host.view.range {
-                assert_eq!(*range.span(axis), 0..host.view.counts[i], "{axis:?}");
+                let all = 0..host.view.counts[i];
+                assert_eq!(range.span(axis), [all], "{axis:?}");
             }
             assert_ne!(host.view.mode, Mode::DraggingSelection);
         }
@@ -578,6 +584,9 @@ fn a_filtered_out_focus_moves_to_the_suggestion_and_hidden_picks_go(tc: TestCase
                 return;
             }
             Located::Gone { suggest: Some(p) } => {
+                // The suggestion is where the Key would sit: past the last
+                // item when none follows, so focus goes to the last.
+                let p = p.min(host.view.counts[0] - 1);
                 let end = after.expect("focus stays placed")[0];
                 assert_eq!(end.position, p);
                 // The suggested item's Key is known once a Window holds it.

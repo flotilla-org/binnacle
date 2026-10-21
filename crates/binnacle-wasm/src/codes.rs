@@ -5,8 +5,8 @@
 use std::fmt;
 
 use binnacle_core::{
-    Axis, Button, ChangeNotice, EditEnd, FocusStep, Key, Located, Modifiers, PointerKind, Position,
-    SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
+    Axis, Button, ChangeNotice, Edge, EditEnd, FocusStep, HeaderClick, Key, Located, Modifiers,
+    PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -17,6 +17,16 @@ pub fn axis(code: u8) -> Axis {
     match code {
         0 => Axis::Rows,
         _ => Axis::Cols,
+    }
+}
+
+/// A pinned edge: 0 leading, 1 trailing; `None` for an edge this bridge
+/// does not know.
+pub fn edge(code: u8) -> Option<Edge> {
+    match code {
+        0 => Some(Edge::Leading),
+        1 => Some(Edge::Trailing),
+        _ => None,
     }
 }
 
@@ -62,11 +72,23 @@ pub fn focus_step(code: u8) -> FocusStep {
     }
 }
 
-/// What a plain click selects: 0 the cell, anything else its row.
+/// What a plain click selects: 0 the cell, 2 its column, anything else its
+/// row.
 pub fn selection_unit(code: u8) -> SelectionUnit {
     match code {
         0 => SelectionUnit::Cells,
+        2 => SelectionUnit::Cols,
         _ => SelectionUnit::Rows,
+    }
+}
+
+/// What a header click does: 0 sort, 1 select, anything else nothing (the
+/// C API's `BINNACLE_HEADER_CLICK_*` numbering).
+pub fn header_click(code: u8) -> HeaderClick {
+    match code {
+        0 => HeaderClick::Sort,
+        1 => HeaderClick::Select,
+        _ => HeaderClick::None,
     }
 }
 
@@ -131,7 +153,8 @@ pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
 }
 
 /// A `Locate` answer: Found 0 (at `position`) or Gone 1 (suggesting
-/// `position`, `NaN` for no suggestion).
+/// `position`, where the Key would sit among the items left, which may be
+/// the count; `NaN` for no suggestion).
 pub fn located(code: u8, position: f64) -> Located {
     match code {
         0 => Located::Found(self::position(position)),
@@ -273,9 +296,17 @@ mod tests {
     }
 
     #[test]
-    fn selection_units_are_cells_or_rows() {
+    fn selection_units_are_cells_rows_or_cols() {
         assert_eq!(selection_unit(0), SelectionUnit::Cells);
         assert_eq!(selection_unit(1), SelectionUnit::Rows);
+        assert_eq!(selection_unit(2), SelectionUnit::Cols);
+    }
+
+    #[test]
+    fn header_clicks_sort_select_or_do_nothing() {
+        assert_eq!(header_click(0), HeaderClick::Sort);
+        assert_eq!(header_click(1), HeaderClick::Select);
+        assert_eq!(header_click(2), HeaderClick::None);
     }
 
     #[test]

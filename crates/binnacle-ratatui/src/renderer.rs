@@ -1,4 +1,4 @@
-//! Cell Renderers: per-column drawing into a canvas clipped to the cell's
+//! Cell Renderers: per-cell drawing into a canvas clipped to the cell's
 //! visible part.
 
 use std::borrow::Cow;
@@ -13,8 +13,8 @@ use ratatui::style::Style;
 
 use crate::{ColorSupport, Content, Theme};
 
-/// Draws a column's cells. [`Content::renderer`] picks one per column; the
-/// text renderer is the default.
+/// Draws cells. [`Content::renderer`] picks one per cell (by column unless
+/// the host says otherwise); the text renderer is the default.
 pub trait CellRenderer {
     /// Draws the cell at `row`, `col` into `canvas`, which starts filled with
     /// blanks in the body style. Focus and selection are patched on after.
@@ -377,12 +377,12 @@ impl<F: Fn(Key, Key) -> f64> CellRenderer for BarRenderer<F> {
 }
 
 /// The width that fits column `col`: the widest of its header text and the
-/// preferred widths of its cells in `rows` (the rows on screen, say). What a
-/// host answers a column's auto-size Effect with.
+/// preferred widths of its cells in `rows` (the rows on screen, say), each
+/// asked of the cell's own Cell Renderer. What a host answers a column's
+/// auto-size Effect with.
 pub fn fit_width(content: &impl Content, rows: &[Key], col: Key) -> u32 {
-    let renderer = content.renderer(col);
     rows.iter()
-        .map(|&row| renderer.preferred_width(row, col))
+        .map(|&row| content.renderer(row, col).preferred_width(row, col))
         .chain([char_count(&content.column_header(col))])
         .max()
         .unwrap_or(0)

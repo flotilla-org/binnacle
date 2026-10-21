@@ -1,7 +1,8 @@
 // The slow source: the records, answered late, like the ratatui demo's
 // `--slow`. Windows and cells arrive after a short delay, sorts and Locates
 // after a longer one, so loading cells, a shimmering pending sort and a
-// pulsing locate all show before the grid settles. Every request honours its
+// pulsing locate all show before the grid settles. Moves are answered as
+// late as sorts, the moved headers shimmering meanwhile. Every request honours its
 // AbortSignal: one the widget no longer wants is never answered, and the
 // toolbar counts both. "Fail" makes Windows and cells fail instead: the
 // failed cells show the error marker, and Retry asks again with a Reset.
@@ -15,9 +16,20 @@
 // and counts like sorts, the count reading "finding…" meanwhile; an invalid
 // regex there reads "No matches" with the message.
 
-import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, type AxisSink, type MaybePromise, type TableSource } from "../../src";
+import {
+  createChooser,
+  createColumnMenu,
+  createFilterBar,
+  createFindBar,
+  fromRows,
+  GridWidget,
+  type AxisSink,
+  type MaybePromise,
+  type TableSource,
+} from "../../src";
 import type { DemoSource } from "./demo-source";
-import { matches, RECORDS, rows, type RecordRow } from "./records-data";
+import { layoutControls } from "./layout";
+import { matches, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
 
 /** How late the source answers, ms: Windows and cells, then sorts and Locates. */
 export const PACES = {
@@ -32,14 +44,13 @@ export const slow: DemoSource = {
   name: "slow",
   description: `${RECORDS.toLocaleString("en")} records answered late: loading cells, a pending sort, a pending locate`,
   showIds: true,
+  filterBar: true,
   async mount(host, toolbar, look) {
-    const inner = fromRows(rows, [
-      { key: "id" },
-      { key: "name" },
-      { key: "weight" },
-      { key: "crew" },
-      { key: "port" },
-    ]);
+    const inner = fromRows(
+      rows,
+      [{ key: "id" }, { key: "name" }, { key: "weight" }, { key: "crew" }, { key: "port" }],
+      sortedMoves(),
+    );
     const url = new URL(location.href);
     let pace: Pace = (url.searchParams.get("pace") as Pace | null) ?? "slow";
     if (!(pace in PACES)) pace = "slow";
@@ -88,8 +99,13 @@ export const slow: DemoSource = {
         window: (start, end, signal) => later("data", signal, () => inner.rows.window(start, end, signal)),
         locate: (id, signal) => later("order", signal, () => inner.rows.locate!(id, signal)),
         quickFilter: inner.rows.quickFilter!,
+        move: (ids, to) => later("order", new AbortController().signal, () => inner.rows.move!(ids, to)),
+        movable: () => inner.rows.movable!(),
       },
-      cols: inner.cols,
+      cols: {
+        ...inner.cols,
+        move: (ids, to) => later("order", new AbortController().signal, () => inner.cols.move!(ids, to)),
+      },
       view: (spec, signal) => later("order", signal, () => inner.view!(spec, signal)),
       cells: (rowIds, colIds, signal) => later("data", signal, () => inner.cells(rowIds, colIds, signal)),
       find: {
@@ -152,7 +168,9 @@ export const slow: DemoSource = {
       },
       ...look,
     });
+    const layout = layoutControls(widget, "slow");
     const columnMenu = createColumnMenu(widget);
+    const chooser = createChooser(widget);
     const bar = createFilterBar(widget, { columnMenu });
     const findBar = createFindBar(widget);
     frame.prepend(bar.element, findBar.element);
@@ -176,9 +194,11 @@ export const slow: DemoSource = {
       },
       destroy() {
         findBar.destroy();
+        layout.destroy();
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();
+        chooser.destroy();
         widget.destroy();
         frame.remove();
         inner.destroy();

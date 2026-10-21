@@ -17,6 +17,7 @@ export function fakeContext(calls: DrawCall[] = []): CanvasRenderingContext2D {
       if (prop === "measureText") return (text: string) => ({ width: text.length * 7 });
       return (...args: unknown[]) => {
         calls.push({ name: String(prop), args, fill: target.fillStyle });
+        if (prop === "createLinearGradient") return { addColorStop() {} };
       };
     },
     set(target, prop, value) {

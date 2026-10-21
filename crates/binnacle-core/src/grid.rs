@@ -7,12 +7,13 @@ use crate::find::{FindDirection, FindState};
 use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
 use crate::measure::{AxisMeasure, WindowChange};
+use crate::moves::MoveState;
 use crate::notice::Locating;
 use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
-use crate::selection::{Cell, HeaderClick, Selection, SelectionUnit, Span};
+use crate::selection::{Cell, CellRange, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
-use crate::types::{Axis, Generation, Key, Position, Viewport};
+use crate::types::{Axis, Edge, Generation, Key, Position, Viewport};
 use crate::view::ViewState;
 
 /// How one axis starts out: its count, default item size, header band, Gap
@@ -136,10 +137,13 @@ pub struct Grid {
     /// The axis whose header border or band edge is under the pointer as of
     /// the last Snapshot.
     pub(crate) hovered_border: Option<Axis>,
+    /// The range for the last Snapshot, as the Positions it covers.
+    pub(crate) range: Option<CellRange>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
     pub(crate) view: ViewState,
     pub(crate) find: FindState,
+    pub(crate) moves: MoveState,
 }
 
 /// The drag threshold until [`Grid::set_drag_threshold`] changes it: one unit,
@@ -181,9 +185,11 @@ impl Grid {
             pointer_at: None,
             hovered: None,
             hovered_border: None,
+            range: None,
             fills: Vec::new(),
             view: ViewState::default(),
             find: FindState::default(),
+            moves: MoveState::default(),
         }
     }
 
@@ -193,8 +199,8 @@ impl Grid {
     }
 
     /// What clicking the header of an item on `axis` does: `Axis::Rows` for
-    /// row headers, `Axis::Cols` for column headers. Only columns sort, so
-    /// [`HeaderClick::Sort`] on row headers makes a click do nothing.
+    /// row headers, `Axis::Cols` for column headers. [`HeaderClick::Sort`] on
+    /// row headers sorts the columns by the clicked row.
     pub fn set_header_click(&mut self, axis: Axis, click: HeaderClick) {
         self.header_click[axis.index()] = click;
     }
@@ -292,21 +298,23 @@ impl Grid {
     }
 
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {
+        self.axis_mut(axis).sync_pins();
+        self.finish_freeze(axis);
         self.pending_damage.positions |= change.keys;
         self.pending_damage.layout |= change.sizes;
         if let Some(span) = &mut self.selection.span {
-            let measure = &self.axes[axis.index()].measure;
+            let st = &self.axes[axis.index()];
             for end in [&mut span.anchor, &mut span.head] {
                 let end = &mut end[axis.index()];
                 if end.key.is_none() {
-                    end.key = measure.key_at(end.position);
+                    end.key = st.key_at(end.position);
                 }
             }
         }
         if let Some(f) = &mut self.focus {
             let end = &mut f[axis.index()];
             if end.key.is_none() {
-                end.key = self.axes[axis.index()].measure.key_at(end.position);
+                end.key = self.axes[axis.index()].key_at(end.position);
                 if end.key.is_some() {
                     self.pending_damage.selection = true;
                     self.announce_focus();
@@ -370,9 +378,42 @@ impl Grid {
         }
     }
 
+    /// Sets the Edge Gap on `axis`: the least space between a pinned Strip
+    /// and the scrolling Strip, where an adapter draws the pinned edge. The
+    /// Gap is used where it is larger. ratatui gives rows, which have no
+    /// Gap, a line for their edge this way. Values that are not finite and
+    /// non-negative are ignored.
+    pub fn set_edge_gap(&mut self, axis: Axis, gap: f32) {
+        if self.axis_mut(axis).set_edge_gap(gap) {
+            self.pending_damage.layout = true;
+        }
+    }
+
+    /// Sets the least length along `axis` the pinned Strips leave to the
+    /// scrolling Strip (0 at first): pinned Strips too long to leave it are
+    /// clipped at their inside ends, the trailing one first, and nothing
+    /// unpins. Negative or non-finite lengths are ignored.
+    pub fn set_min_scrolling(&mut self, axis: Axis, length: f32) {
+        if self.axis_mut(axis).set_min_scrolling(length) {
+            self.pending_damage.layout = true;
+        }
+    }
+
     /// The Size Override for the item with `key` on `axis`, if any.
     pub fn size_override(&self, axis: Axis, key: Key) -> Option<f32> {
         self.axis(axis).measure.size_override(key)
+    }
+
+    /// The Keys pinned to `edge` of `axis`, in pin order, dormant pins
+    /// included, as the next Snapshot lists them ([`Snapshot::pins`]).
+    pub fn pins(&self, axis: Axis, edge: Edge) -> impl Iterator<Item = Key> + '_ {
+        self.axis(axis).pins[edge.index()].iter().map(|p| p.key)
+    }
+
+    /// Every Size Override on `axis` in Key order, for Keys shown or not:
+    /// what a saved layout keeps.
+    pub fn size_overrides(&self, axis: Axis) -> impl Iterator<Item = (Key, f32)> + '_ {
+        self.axis(axis).measure.size_overrides()
     }
 
     pub fn action(&mut self, action: Action) {
@@ -401,7 +442,7 @@ impl Grid {
                     extend,
                     times: 1,
                 };
-                if !self.locating.any() {
+                if !self.locating.any() && !self.pins_waiting() {
                     return self.move_and_select(m);
                 }
                 let moves = &mut self.locating.moves;
@@ -413,7 +454,8 @@ impl Grid {
                 }
             }
             Action::SelectAll => self.select_all(),
-            Action::SelectColumn => self.select_column(),
+            Action::SelectColumn => self.select_whole(Axis::Cols),
+            Action::SelectRow => self.select_whole(Axis::Rows),
             Action::Cancel => {
                 if self.gesture.capturing() {
                     self.cancel();
@@ -460,7 +502,7 @@ impl Grid {
             (_, AxisHit::Header) => (Axis::Rows, rows.border(y, self.border_grab)?),
             _ => return None,
         };
-        let key = self.axis(axis).measure.key_at(position)?;
+        let key = self.axis(axis).key_at(position)?;
         Some((axis, position, key))
     }
 
@@ -594,17 +636,19 @@ impl Grid {
         if Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0) {
             return false;
         }
-        let from = self.focus.map(|f| f[axis.index()].position);
+        // Unfocused, the first move only places focus; the rest go from there.
+        if self.focus.is_none() && times > 1 {
+            self.move_focus(axis, by, forward, 1);
+            return self.move_focus(axis, by, forward, times - 1);
+        }
+        let from = self.focus.map(|f| f[axis.index()]);
         let mut moved = self.focus.unwrap_or_else(|| {
-            [Axis::Rows, Axis::Cols].map(|a| {
-                let st = self.axis(a);
-                FocusEnd::at(st, focus::target(st, None, FocusStep::Item, true, 1))
-            })
+            [Axis::Rows, Axis::Cols]
+                .map(|a| focus::target(self.axis(a), None, FocusStep::Item, true, 1))
         });
-        let st = self.axis(axis);
-        let to = focus::target(st, from, by, forward, times);
-        if from != Some(to) {
-            moved[axis.index()] = FocusEnd::at(st, to);
+        let to = focus::target(self.axis(axis), from, by, forward, times);
+        if from.map(|f| (f.position, f.key)) != Some((to.position, to.key)) {
+            moved[axis.index()] = to;
         }
         self.set_focus_cell(moved);
         self.reveal = true;
@@ -621,15 +665,27 @@ impl Grid {
     }
 
     /// What selecting `cell` alone selects: nothing beyond focus for
-    /// [`SelectionUnit::Cells`], its row for [`SelectionUnit::Rows`].
+    /// [`SelectionUnit::Cells`], its row for [`SelectionUnit::Rows`], its
+    /// column for [`SelectionUnit::Cols`].
     pub(crate) fn unit_span(&self, cell: Cell) -> Option<Span> {
+        let whole = match self.unit {
+            SelectionUnit::Cells => return None,
+            SelectionUnit::Rows => [false, true],
+            SelectionUnit::Cols => [true, false],
+        };
+        Some(Span {
+            anchor: cell,
+            head: cell,
+            whole,
+        })
+    }
+
+    /// The axis whose item a Ctrl/Cmd-click on a cell picks: the columns for
+    /// [`SelectionUnit::Cols`], else the rows.
+    pub(crate) fn pick_axis(&self) -> Axis {
         match self.unit {
-            SelectionUnit::Cells => None,
-            SelectionUnit::Rows => Some(Span {
-                anchor: cell,
-                head: cell,
-                whole: [false, true],
-            }),
+            SelectionUnit::Cols => Axis::Cols,
+            SelectionUnit::Cells | SelectionUnit::Rows => Axis::Rows,
         }
     }
 
@@ -638,7 +694,7 @@ impl Grid {
         self.set_focus_cell(cell);
         self.set_selection(Selection {
             span: self.unit_span(cell),
-            picks: Vec::new(),
+            picks: Default::default(),
         });
     }
 
@@ -674,10 +730,11 @@ impl Grid {
         self.set_span(span);
     }
 
-    pub(crate) fn toggle_pick(&mut self, cell: Cell) {
-        if let Some(key) = cell[Axis::Rows.index()].key {
+    /// Toggles the pick of `cell`'s item on `axis`, once its Key is known.
+    pub(crate) fn toggle_pick(&mut self, axis: Axis, cell: Cell) {
+        if let Some(key) = cell[axis.index()].key {
             let mut selection = self.selection.clone();
-            selection.toggle_pick(key);
+            selection.toggle_pick(axis, key);
             self.set_selection(selection);
         }
     }
@@ -695,18 +752,21 @@ impl Grid {
         }));
     }
 
-    /// Selects every row of the range's columns, or of the focused column.
-    fn select_column(&mut self) {
+    /// Selects the whole of the range's items on `axis` (every row of its
+    /// columns, for `Axis::Cols`), or of the focused item.
+    fn select_whole(&mut self, axis: Axis) {
         self.locating.moves.clear();
         let (anchor, head) = match (self.selection.span, self.focus) {
-            (Some(s), _) if !s.whole[Axis::Cols.index()] => (s.anchor, s.head),
+            (Some(s), _) if !s.whole[axis.index()] => (s.anchor, s.head),
             (_, Some(f)) => (f, f),
             _ => return,
         };
+        let mut whole = [false; 2];
+        whole[axis.other().index()] = true;
         self.set_span(Some(Span {
             anchor,
             head,
-            whole: [true, false],
+            whole,
         }));
     }
 
@@ -721,6 +781,10 @@ impl Grid {
     pub(crate) fn set_selection(&mut self, selection: Selection) {
         if self.selection == selection {
             return;
+        }
+        // A range set anew no longer waits on a `Refiltered`.
+        if selection.span != self.selection.span {
+            self.refiltering.corners = [None, None];
         }
         self.selection = selection;
         self.announce_selection();
@@ -818,38 +882,83 @@ impl Grid {
     }
 
     /// Computes the selection fill rects from the laid-out Strips: one for the
-    /// visible part of the range, one per visible picked row.
+    /// visible part of the range in each pair of a row Strip and a column
+    /// Strip (leading pinned, scrolling, trailing pinned), then one per visible picked row and
+    /// column Strip, then one per visible picked column and row Strip. A
+    /// pinned Strip's part is clipped to its region; one it clips whole is
+    /// left out.
     fn fill_selection(&mut self) {
         let mut fills = std::mem::take(&mut self.fills);
         fills.clear();
-        let (rows, cols) = (&self.axis(Axis::Rows).strip, &self.axis(Axis::Cols).strip);
-        let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
-        let extent = |items: &mut dyn Iterator<Item = &crate::snapshot::StripItem>| {
-            let first = items.next()?;
-            let last = items.last().unwrap_or(first);
-            Some((first.offset, last.end() - first.offset))
+        // Each Strip with where it draws: a pinned one's region, while the
+        // scrolling one's items are left unclipped.
+        let strips = |axis: Axis| {
+            let st = self.axis(axis);
+            let [leading, trailing] = &st.pinned;
+            let [lead, trail] = st.regions.clone();
+            let all = f32::NEG_INFINITY..f32::INFINITY;
+            [(leading, lead), (&st.strip, all), (trailing, trail)]
         };
-        if let Some(range) = self.selection.span.map(|s| s.range(counts)) {
-            let r = extent(&mut rows.iter().filter(|i| range.rows.contains(&i.position)));
-            let c = extent(&mut cols.iter().filter(|i| range.cols.contains(&i.position)));
-            if let (Some((y, height)), Some((x, width))) = (r, c) {
-                fills.push(Rect {
-                    x,
-                    y,
-                    width,
-                    height,
-                });
+        let (rows, cols) = (strips(Axis::Rows), strips(Axis::Cols));
+        let extent =
+            |(items, region): &(&Vec<crate::snapshot::StripItem>, std::ops::Range<f32>),
+             keep: &dyn Fn(&crate::snapshot::StripItem) -> bool| {
+                let mut items = items.iter().filter(|i| keep(i));
+                let first = items.next()?;
+                let last = items.last().unwrap_or(first);
+                let (start, end) = (first.offset.max(region.start), last.end().min(region.end));
+                (start < end).then_some((start, end - start))
+            };
+        if let Some(range) = &self.range {
+            for rows in &rows {
+                for cols in &cols {
+                    let r = extent(rows, &|i| range.covers(Axis::Rows, i.position));
+                    let c = extent(cols, &|i| range.covers(Axis::Cols, i.position));
+                    if let (Some((y, height)), Some((x, width))) = (r, c) {
+                        fills.push(Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
+                }
             }
         }
-        if let Some((x, width)) = extent(&mut cols.iter()) {
-            for row in rows {
-                if row.key.is_some_and(|k| self.selection.picked(k)) {
-                    fills.push(Rect {
-                        x,
-                        y: row.offset,
-                        width,
-                        height: row.size,
-                    });
+        let picked = |axis, i: &crate::snapshot::StripItem| {
+            i.key.is_some_and(|k| self.selection.picked(axis, k))
+        };
+        for strip in &rows {
+            for row in strip.0.iter().filter(|i| picked(Axis::Rows, i)) {
+                let Some((y, height)) = extent(&(strip.0, strip.1.clone()), &|i| i == row) else {
+                    continue;
+                };
+                for cols in &cols {
+                    if let Some((x, width)) = extent(cols, &|_| true) {
+                        fills.push(Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
+                }
+            }
+        }
+        for strip in &cols {
+            for col in strip.0.iter().filter(|i| picked(Axis::Cols, i)) {
+                let Some((x, width)) = extent(&(strip.0, strip.1.clone()), &|i| i == col) else {
+                    continue;
+                };
+                for rows in &rows {
+                    if let Some((y, height)) = extent(rows, &|_| true) {
+                        fills.push(Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        });
+                    }
                 }
             }
         }
@@ -859,6 +968,10 @@ impl Grid {
     /// Lays out the frame and returns the Snapshot, whose damage covers every
     /// change since the previous Snapshot.
     pub fn snapshot(&mut self) -> Snapshot<'_> {
+        for axis in Axis::ALL {
+            let focused = self.focus.and_then(|f| f[axis.index()].key);
+            self.axis_mut(axis).focused = focused;
+        }
         for st in &mut self.axes {
             // The Window may have brought sizes that move the anchor's bounds.
             if st.clamp_anchor() {
@@ -869,7 +982,9 @@ impl Grid {
             self.reveal_focus();
         }
         for st in &mut self.axes {
-            st.layout();
+            if st.layout() {
+                self.pending_damage.layout = true;
+            }
         }
         let border = self.pointer_at.and_then(|(x, y)| {
             self.band_edge_at(x, y)
@@ -884,6 +999,9 @@ impl Grid {
             self.hovered_border = border;
             self.pending_damage.selection = true;
         }
+        self.range = (self.selection.span)
+            .filter(|_| !self.refiltering.locating_corners())
+            .map(|s| s.range(&self.axes));
         self.fill_selection();
         self.damage = std::mem::replace(&mut self.pending_damage, Damage::NONE);
         Snapshot { grid: self }

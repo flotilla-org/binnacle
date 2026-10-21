@@ -1,28 +1,37 @@
 // The filter bar: a part the embedder places beside a GridWidget, usually
-// above it. It holds the rows' quick filter field with its case and regex
-// toggles and a clear button, a chip for each column condition (× removes
-// it), "+ Filter" to add one through a column menu, "Re-apply" while rows in
-// view were left unmatched by the user's edits, and the row count. Each
+// above it. It holds the rows' quick filter field (or the columns', with
+// `axis`) with its case and regex toggles and a clear button, a chip for
+// each column condition (× removes it), then after "Columns where" one for
+// each condition on the columns, read in a row, "+ Filter" to add one
+// through a column menu, "Re-apply" while items in view were left unmatched
+// by the user's edits, and the row count, with the column count beside it
+// while the columns are filtered ("5 of 12 fields", with `nouns`). Each
 // change to the field sets the widget's quick filter, typing once a pause
 // has passed (`typingPause`) and Enter, the toggles and × at once; the widget
 // announces the count to assistive technology once the filter is applied.
 // While a filter is pending the count reads "filtering…" and its chips fade;
 // a quick filter or condition the Table Source did not apply turns red with
 // its message, the text kept. Drawn in the widget's Theme; hidden while the
-// rows take no quick filter, have no conditions and no column menu is given.
+// axis takes no quick filter, neither axis has conditions and no column menu
+// is given.
 
 import { rowCount } from "./aria";
+import { AXES, type AxisName } from "./codes";
 import type { ColumnMenu } from "./columnmenu";
 import type { Condition } from "./source";
 import type { ConditionState } from "./snapshot";
 import type { FrameInfo, GridWidget } from "./widget";
 import { createPause } from "./pause";
 
-export interface FilterBarOptions<ColId = unknown> {
-  /** What the empty field says; "Filter rows…" by default. */
+export interface FilterBarOptions<ColId = unknown, RowId = unknown> {
+  /** Which axis the field's quick filter filters; the rows by default. */
+  axis?: AxisName;
+  /** What the empty field says; "Filter rows…" (or "Filter columns…") by default. */
   placeholder?: string;
   /** The column menu (`createColumnMenu`) that "+ Filter" and a press on a chip open; without one, neither does. */
-  columnMenu?: ColumnMenu<ColId>;
+  columnMenu?: ColumnMenu<ColId, RowId>;
+  /** What the counts call each axis's items, singular and plural; "row(s)" and "column(s)" by default. */
+  nouns?: { rows?: [string, string]; cols?: [string, string] };
 }
 
 export interface FilterBar {
@@ -66,16 +75,18 @@ let errors = 0;
 
 export function createFilterBar<RowId, ColId, V>(
   widget: GridWidget<RowId, ColId, V>,
-  options: FilterBarOptions<ColId> = {},
+  options: FilterBarOptions<ColId, RowId> = {},
 ): FilterBar {
+  const axis = options.axis ?? "rows";
+  const nouns = { rows: options.nouns?.rows ?? ["row", "rows"], cols: options.nouns?.cols ?? ["column", "columns"] };
   const element = el("div", "binnacle-filter-bar", BAR_STYLE);
   element.setAttribute("role", "search");
   const field = el("div", "binnacle-quick-filter", FIELD_STYLE);
   const input = el("input", "", INPUT_STYLE);
   // Text, not search: a search input's own clear button would duplicate the bar's.
   input.type = "text";
-  input.placeholder = options.placeholder ?? "Filter rows…";
-  input.setAttribute("aria-label", "Filter rows");
+  input.placeholder = options.placeholder ?? `Filter ${nouns[axis][1]}…`;
+  input.setAttribute("aria-label", `Filter ${nouns[axis][1]}`);
   const caseToggle = toggle("Aa", "Match case");
   const regexToggle = toggle(".*", "Use regular expression");
   const clearButton = el("button", "binnacle-clear", BUTTON_STYLE);
@@ -91,6 +102,10 @@ export function createFilterBar<RowId, ColId, V>(
   const chips = el("div", "binnacle-chips", CHIPS_STYLE);
   chips.setAttribute("role", "list");
   chips.setAttribute("aria-label", "Column filters");
+  const across = el("div", "binnacle-column-chips", CHIPS_STYLE + " align-items: center;");
+  across.setAttribute("role", "list");
+  across.setAttribute("aria-label", `Filters on the ${nouns.cols[1]}`);
+  across.style.display = "none";
   const menu = options.columnMenu;
   const add = el("button", "binnacle-add-filter", ADD_STYLE);
   add.type = "button";
@@ -103,7 +118,13 @@ export function createFilterBar<RowId, ColId, V>(
   reapply.hidden = true;
   reapply.addEventListener("click", () => widget.reapplyView());
   const count = el("span", "binnacle-row-count", COUNT_STYLE);
-  element.append(field, error, chips, add, reapply, count);
+  const colCount = el("span", "binnacle-column-count", "font-variant-numeric: tabular-nums; white-space: nowrap;");
+  colCount.hidden = true;
+  // Why the last hide hid nothing: past the cap, a filter scales.
+  const capped = el("span", "binnacle-hide-capped", ERROR_STYLE);
+  capped.setAttribute("role", "status");
+  capped.hidden = true;
+  element.append(field, error, chips, across, add, reapply, count, colCount, capped);
 
   let picker: HTMLElement | null = null;
   const closePicker = () => {
@@ -164,28 +185,37 @@ export function createFilterBar<RowId, ColId, V>(
   };
   add.addEventListener("click", () => (picker ? closePicker() : void openPicker()));
 
+  /** A condition's chip text: "port: not Bergen" on the rows, "3: Bergen" on the columns. */
+  const chipOf = (on: AxisName, condition: Condition<RowId | ColId>) =>
+    chipText(on === "rows" ? widget.columnLabel(condition.id as ColId) : widget.rowLabel(condition.id as RowId), condition);
+
   /**
-   * One chip: "port: not Bergen", faded while pending, red with `message`
-   * when not applied; the label opens the column menu, × removes it.
+   * One chip of a condition on `on`, faded while pending, red with
+   * `message` when not applied; the label opens the menu of the item it
+   * reads, × removes it.
    */
-  const chip = (condition: Condition<ColId>, state: ConditionState, message: string) => {
+  const chip = (on: AxisName, condition: Condition<RowId | ColId>, state: ConditionState, message: string) => {
     const t = widget.theme;
     const item = el("div", "binnacle-chip", CHIP_STYLE);
     item.setAttribute("role", "listitem");
-    const text = chipText(widget.columnLabel(condition.id), condition);
+    const text = chipOf(on, condition);
     const label = el("button", "binnacle-chip-label", CHIP_LABEL_STYLE);
     label.type = "button";
     label.textContent = text;
     label.disabled = !menu || state === "removing";
     label.style.cursor = label.disabled ? "default" : "pointer";
-    label.addEventListener("click", () => menu?.open(condition.id, item.getBoundingClientRect()));
+    label.addEventListener("click", () => {
+      const anchor = item.getBoundingClientRect();
+      if (on === "rows") menu?.open(condition.id as ColId, anchor);
+      else menu?.openRow(condition.id as RowId, anchor);
+    });
     const remove = el("button", "binnacle-chip-remove", CHIP_REMOVE_STYLE);
     remove.type = "button";
     remove.textContent = "×";
     remove.setAttribute("aria-label", `Remove filter ${text}`);
     remove.hidden = state === "removing";
     remove.style.color = t.rowNumber.color;
-    remove.addEventListener("click", () => widget.removeCondition(condition));
+    remove.addEventListener("click", () => widget.removeCondition(condition, on));
     item.append(label, remove);
     item.style.border = `1px solid ${t.sortMarker}`;
     item.style.background = t.picks.background;
@@ -206,6 +236,11 @@ export function createFilterBar<RowId, ColId, V>(
     return item;
   };
   let shownChips = "";
+  const acrossLabel = el("span", "binnacle-column-chips-label", "white-space: nowrap;");
+  acrossLabel.textContent = `${nouns.cols[1][0]!.toUpperCase()}${nouns.cols[1].slice(1)} where`;
+  /** A frame's quick filter and conditions on `on` (the field's axis by default). */
+  const quickOf = (f: FrameInfo<RowId, ColId> | null, on: AxisName = axis) =>
+    f && (on === "rows" ? { quickFilter: f.quickFilter, quick: f.quick, quickState: f.quickState, conditions: f.conditions } : f.columnsFilter);
   let shownQuick = "null";
 
   let regexAllowed = false;
@@ -225,6 +260,7 @@ export function createFilterBar<RowId, ColId, V>(
               regex: regexAllowed && pressed(regexToggle),
               searches: "shown",
             },
+        axis,
       );
       paint();
     },
@@ -272,7 +308,7 @@ export function createFilterBar<RowId, ColId, V>(
     field.style.color = t.body.color;
     // The field's border stands in for the input's focus ring.
     const lit = input.value !== "" || document.activeElement === input;
-    const rejected = !pause.waiting && info?.quickState === "notApplied";
+    const rejected = !pause.waiting && quickOf(info)?.quickState === "notApplied";
     field.style.border = `1px solid ${rejected ? t.error : lit ? t.focus.color : t.border}`;
     input.style.color = rejected ? t.error : "inherit";
     input.toggleAttribute("aria-invalid", rejected);
@@ -282,7 +318,10 @@ export function createFilterBar<RowId, ColId, V>(
     error.textContent = rejected ? (info?.viewError ?? "Not applied") : "";
     error.title = error.textContent;
     error.style.color = t.error;
+    capped.style.color = t.error;
     count.style.color = t.rowNumber.color;
+    colCount.style.color = t.rowNumber.color;
+    acrossLabel.style.color = t.rowNumber.color;
     add.style.color = t.rowNumber.color;
     add.style.border = `1px dashed ${t.border}`;
     reapply.style.color = t.focus.color;
@@ -296,18 +335,21 @@ export function createFilterBar<RowId, ColId, V>(
 
   const frame = (f: FrameInfo<RowId, ColId>) => {
     info = f;
+    const q = quickOf(f)!;
+    const conditions = { rows: f.conditions, cols: f.columnsFilter.conditions };
     // Inline styles would win over the `hidden` attribute.
-    element.style.display = f.quickFilter === null && f.conditions.length === 0 && !menu ? "none" : "flex";
-    field.style.display = f.quickFilter === null ? "none" : "flex";
-    regexAllowed = f.quickFilter?.regex ?? false;
+    const bare = q.quickFilter === null && !conditions.rows.length && !conditions.cols.length && !menu;
+    element.style.display = bare ? "none" : "flex";
+    field.style.display = q.quickFilter === null ? "none" : "flex";
+    regexAllowed = q.quickFilter?.regex ?? false;
     // Follows a quick filter set from elsewhere (the find bar's "Show only matching rows").
-    const quick = JSON.stringify(f.quick);
+    const quick = JSON.stringify(q.quick);
     const changed = quick !== shownQuick;
     shownQuick = quick;
-    if (changed && document.activeElement !== input && (f.quick?.text ?? "") !== input.value) {
-      input.value = f.quick?.text ?? "";
-      caseToggle.setAttribute("aria-pressed", String(f.quick?.caseSensitive ?? false));
-      regexToggle.setAttribute("aria-pressed", String(f.quick?.regex ?? false));
+    if (changed && document.activeElement !== input && (q.quick?.text ?? "") !== input.value) {
+      input.value = q.quick?.text ?? "";
+      caseToggle.setAttribute("aria-pressed", String(q.quick?.caseSensitive ?? false));
+      regexToggle.setAttribute("aria-pressed", String(q.quick?.regex ?? false));
       clearButton.hidden = input.value === "";
     }
     // Rebuilt only when they change, so a press on a chip is not lost to a repaint.
@@ -315,29 +357,51 @@ export function createFilterBar<RowId, ColId, V>(
     const key = [
       widget.theme.name,
       message,
-      ...f.conditions.map(
-        ({ condition, state }) => `${state} ${chipText(widget.columnLabel(condition.id), condition)}`,
+      ...AXES.flatMap((on) =>
+        conditions[on].map(({ condition, state }) => `${on} ${state} ${chipOf(on, condition as Condition<RowId | ColId>)}`),
       ),
     ].join("\n");
     if (key !== shownChips) {
       shownChips = key;
-      chips.replaceChildren(...f.conditions.map(({ condition, state }) => chip(condition, state, message)));
+      const chipsOf = (on: AxisName) =>
+        conditions[on].map(({ condition, state }) => chip(on, condition as Condition<RowId | ColId>, state, message));
+      chips.replaceChildren(...chipsOf("rows"));
+      across.replaceChildren(...(conditions.cols.length ? [acrossLabel, ...chipsOf("cols")] : []));
+      // Inline styles would win over the `hidden` attribute, and an empty list would still take a gap.
+      across.style.display = conditions.cols.length ? "flex" : "none";
     }
     regexToggle.hidden = !regexAllowed;
-    const unmatched = f.rows.unmatched;
-    reapply.hidden = unmatched === 0;
-    const rows = unmatched === 1 ? "1 edited row no longer matches" : `${unmatched} edited rows no longer match`;
-    reapply.title = `${rows} the filter: apply it again`;
-    reapply.setAttribute("aria-label", `Re-apply the filter: ${rows}`);
-    const filtered = f.rows.total !== null && f.rows.total !== f.rows.count;
+    const edited = AXES.flatMap((on) => {
+      const n = f[on].unmatched;
+      return n === 0 ? [] : [`${n.toLocaleString("en")} edited ${nouns[on][n === 1 ? 0 : 1]}`];
+    });
+    reapply.hidden = edited.length === 0;
+    const total = f.rows.unmatched + f.cols.unmatched;
+    const what = `${edited.join(" and ")} no longer ${total === 1 ? "matches" : "match"}`;
+    reapply.title = `${what} the filter: apply it again`;
+    reapply.setAttribute("aria-label", `Re-apply the filter: ${what}`);
+    const filtered = (on: AxisName) => f[on].total !== null && f[on].total !== f[on].count;
     const changing = (s: ConditionState | null) => s === "adding" || s === "removing";
-    const filtering = f.viewPending && (changing(f.quickState) || f.conditions.some((c) => changing(c.state)));
+    const filtering =
+      f.viewPending &&
+      [quickOf(f, "rows")!, quickOf(f, "cols")!].some(
+        (a) => changing(a.quickState) || a.conditions.some((c) => changing(c.state)),
+      );
     count.toggleAttribute("aria-busy", filtering);
+    const [one, many] = nouns.rows;
     count.textContent = filtering
       ? "filtering…"
-      : filtered
+      : filtered("rows")
         ? `${f.rows.count.toLocaleString("en")} of ${f.rows.total!.toLocaleString("en")}`
-        : rowCount(f.rows.count, null);
+        : options.nouns?.rows
+          ? `${f.rows.count.toLocaleString("en")} ${f.rows.count === 1 ? one : many}`
+          : rowCount(f.rows.count, null);
+    colCount.hidden = filtering || !filtered("cols");
+    colCount.textContent = filtered("cols")
+      ? `${f.cols.count.toLocaleString("en")} of ${f.cols.total!.toLocaleString("en")} ${nouns.cols[f.cols.total === 1 ? 0 : 1]}`
+      : "";
+    capped.hidden = !f.hideCapped;
+    capped.textContent = f.hideCapped?.hint ?? "";
     paint();
   };
   const unsubscribe = widget.subscribe(frame);

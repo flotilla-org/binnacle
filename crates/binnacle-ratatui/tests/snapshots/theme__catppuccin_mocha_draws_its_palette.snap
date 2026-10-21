@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-ratatui/tests/theme.rs
-assertion_line: 156
 expression: "both_ways(theme, stripe)"
 ---
 --- catppuccin_mocha
@@ -16,10 +15,10 @@ expression: "both_ways(theme, stripe)"
 aaabbbbcbbbbbdcddddddceeeeeecb
 fffggggaggggggaggggggaggggggah
 fffiiiiiiiiiiiiiiiiiiiiiiiiiif
-fffjjjjajjjjjjajjjjjjajjjjjjaf
-fffiiiiikkkkkkikkkkkkiiiiiiiih
-fffggggakkkkkkallllllaggggggah
-fffiiiiimiiiiiimiiiiiimiiiiiih
+jjjkkkkakkkkkkakkkkkkakkkkkkaf
+fffiiiiillllllilllllliiiiiiiih
+fffggggallllllammmmmmaggggggah
+fffiiiiiniiiiiiniiiiiiniiiiiih
 ggghfffffffffffffffffffffhhhhg
 
 a: fg Reset bg Reset
@@ -31,10 +30,11 @@ f: fg #6C7086 bg Reset
 g: fg #CDD6F4 bg Reset
 h: fg #45475A bg Reset
 i: fg #CDD6F4 bg #181825
-j: fg #CBA6F7 bg #45475A
-k: fg #CDD6F4 bg #45475A
-l: fg #11111B bg #89B4FA
-m: fg #6C7086 bg #181825
+j: fg #6C7086 bg #45475A
+k: fg #CBA6F7 bg #45475A
+l: fg #CDD6F4 bg #45475A
+m: fg #11111B bg #89B4FA
+n: fg #6C7086 bg #181825
 
 --- inverted headers, zebra
    l 0 │col 1▲│col 2~│col 3 │
@@ -49,10 +49,10 @@ m: fg #6C7086 bg #181825
 aaabbbbcbbbbbdcddddddceeeeeecf
 ggghhhhahhhhhhahhhhhhahhhhhhai
 gggjjjjjjjjjjjjjjjjjjjjjjjjjjk
-gggllllallllllallllllallllllak
-gggjjjjjmmmmmmjmmmmmmjjjjjjjji
-ggghhhhammmmmmannnnnnahhhhhhai
-gggjjjjjojjjjjjojjjjjjojjjjjji
+lllmmmmammmmmmammmmmmammmmmmak
+gggjjjjjnnnnnnjnnnnnnjjjjjjjji
+ggghhhhannnnnnaooooooahhhhhhai
+gggjjjjjpjjjjjjpjjjjjjpjjjjjji
 hhhikkkkkkkkkkkkkkkkkkkkkiiiih
 
 a: fg Reset bg Reset
@@ -66,7 +66,8 @@ h: fg #CDD6F4 bg Reset
 i: fg #45475A bg Reset
 j: fg #CDD6F4 bg #181825
 k: fg #6C7086 bg Reset
-l: fg #CBA6F7 bg #45475A
-m: fg #CDD6F4 bg #45475A
-n: fg #11111B bg #89B4FA
-o: fg #6C7086 bg #181825
+l: fg #6C7086 bg #45475A REVERSED
+m: fg #CBA6F7 bg #45475A
+n: fg #CDD6F4 bg #45475A
+o: fg #11111B bg #89B4FA
+p: fg #6C7086 bg #181825

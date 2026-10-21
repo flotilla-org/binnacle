@@ -1,5 +1,6 @@
 ---
 source: crates/binnacle-core/tests/moving.rs
+assertion_line: 258
 expression: out
 ---
 --- 1. focus row 1 of column 0, which is 8 wide
@@ -16,7 +17,7 @@ Cols: count 4, extent 40, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+8 1#
 
 2   2.0      2.1    2.2    2.3
 --- 2. drag its header past column 2's middle
-gen 3 | damage selection | focus 1#1,0#0 at 4,3 8x1 | mode MovingHeaders { axis: Cols, key: Key(0), to: 3 } | capturing | hover Cols 2 | cursor Move | moving 0 to Cols 3 at 26.5
+gen 3 | damage selection | focus 1#1,0#0 at 4,3 8x1 | mode MovingHeaders { axis: Cols, key: Key(0), target: Move { to: 3, unpin: false } } | capturing | hover Cols 2 | cursor Move | moving 0 to Cols 3 at 26.5 | zone Cols Leading 4+1.5 | zone Cols Trailing 38.5+1.5
 Rows: (unchanged)
 Cols: (unchanged)
     0        1      2     |3
@@ -27,7 +28,7 @@ Cols: (unchanged)
 2   2.0      2.1    2.2    2.3
 --- 3. drop: the source moves it, the Grid refetches the columns and locates the focus
 effect (gen 3): MoveRequested { axis: Cols, keys: [Key(0)], to: 3 }
-  move Cols [Key(0)] to 3: Some(Reordered)
+  move Cols [Key(0)] to 3: notices [(Cols, Reordered)]
 effect (gen 3): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(2)
 window Cols 0..4
