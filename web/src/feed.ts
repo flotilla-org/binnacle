@@ -4,12 +4,13 @@
 // Locate, move, find steps), and find's marks and count. Every answer goes
 // through one `settle`.
 
-import { AXES, AXIS_CODE, FIND, NOTICE_CODE, QUICK_FILTER, SUPPORT, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, EDGE_CODE, FIND, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
 import { createInterner, positionInterner, type KeyInterner } from "./interner";
 import { createSettler, type Request } from "./settle";
+import { shownItems } from "./snapshot";
 import type {
   KeyedAxisView,
   KeyedCondition,
@@ -68,24 +69,35 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   colKey(id: ColId): bigint;
   /** A View Spec by Keys, issuing Keys for IDs that have none yet. */
   viewKeys(spec: AppliedView<RowId, ColId>): KeyedViewSpec;
+  /** A View Spec by IDs, leaving out each part that names a Key with no ID. */
+  viewIds(spec: KeyedViewSpec): ViewSpec<RowId, ColId>;
   /** How the rows may be viewed by column `id`, as the source declares it with the defaults filled in. */
   columnSupport(id: ColId): ColumnSupport;
-  /** A rows condition by Keys, issuing a Key for its column if it has none yet. */
-  conditionKey(condition: Condition<ColId>): KeyedCondition;
-  /** A rows condition by its column's ID, if the column and the kind are known. */
-  conditionId(condition: KeyedCondition): Condition<ColId> | undefined;
+  /** How the columns may be viewed by row `id`, likewise; nothing without the source's `cols.support`. */
+  rowSupport(id: RowId): ColumnSupport;
+  /** A condition on `axis` (the rows by default) by Keys, issuing a Key for the item it reads if it has none yet. */
+  conditionKey<A extends AxisName = "rows">(condition: Condition<CrossId<A, RowId, ColId>>, axis?: A): KeyedCondition;
+  /** A condition on `axis` by the ID of the item it reads, if that item and the kind are known. */
+  conditionId<A extends AxisName = "rows">(condition: KeyedCondition, axis?: A): Condition<CrossId<A, RowId, ColId>> | undefined;
   /**
-   * Asks the source for up to `limit` distinct values of column `id`
-   * containing `search`, narrowed by the applied rows filter less the
-   * column's own conditions; `apply` gets the answer. `null` if the column
-   * takes no OneOf conditions. Abort the request when its answer is no longer
+   * Asks the source for up to `limit` distinct values of item `id` of the
+   * other axis across `axis` (column `id` across the rows by default)
+   * containing `search`, narrowed by the axis's applied filter less the
+   * item's own conditions; `apply` gets the answer. `null` if the item takes
+   * no OneOf conditions. Abort the request when its answer is no longer
    * wanted, such as when the search changes.
    */
-  distinct(id: ColId, search: string, limit: number, apply: (answer: Distinct) => void): Request | null;
+  distinct<A extends AxisName = "rows">(
+    id: CrossId<A, RowId, ColId>,
+    search: string,
+    limit: number,
+    apply: (answer: Distinct) => void,
+    axis?: A,
+  ): Request | null;
   /** Where the item with `key` sits now: from the last painted Strip if it is there, else from the Table Source. */
   find(axis: AxisName, key: bigint): Promise<Located>;
-  /** A rows Text Query by its columns' IDs, if every column it names is known. */
-  queryIds(query: KeyedTextQuery): TextQuery<ColId> | undefined;
+  /** A Text Query on `axis` (the rows by default) by the IDs of the items it searches, if every one it names is known. */
+  queryIds<A extends AxisName = "rows">(query: KeyedTextQuery, axis?: A): TextQuery<CrossId<A, RowId, ColId>> | undefined;
   /** A Find Query by Keys, issuing Keys for columns that have none yet. */
   findKeys(query: FindQuery<ColId>): KeyedFindQuery;
   /** A Find Query by IDs, if every column it names is known. */
@@ -115,10 +127,16 @@ export interface FindState {
   error: string | null;
 }
 
+/** The IDs of the items an axis's View Spec part names: the columns for the rows, the rows for the columns. */
+export type CrossId<A extends AxisName, RowId, ColId> = A extends "cols" ? RowId : ColId;
+
+/** The IDs of an axis's own items: the rows' for the rows. */
+export type ItemId<A extends AxisName, RowId, ColId> = A extends "cols" ? ColId : RowId;
+
 /**
- * How the rows may be viewed by one column, every kind decided: sorting,
- * Text conditions (with regexes or not, or `null` for none), and OneOf
- * conditions from a checklist of its values.
+ * How the rows may be viewed by one column (or the columns by one row),
+ * every kind decided: sorting, Text conditions (with regexes or not, or
+ * `null` for none), and OneOf conditions from a checklist of its values.
  */
 export interface ColumnSupport {
   sort: boolean;
@@ -142,8 +160,8 @@ const NOTICE: Record<ChangeNotice["type"], number> = NOTICE_CODE;
 
 /** The base view: nothing filtered, unsorted. */
 const BASE_VIEW: KeyedViewSpec = {
-  rows: { filter: { quick: null, conditions: [] }, sort: [] },
-  cols: { filter: { quick: null, conditions: [] }, sort: [] },
+  rows: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
+  cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
 };
 
 interface Axis<Id> {
@@ -193,6 +211,11 @@ const known = <T>(v: T | undefined): v is T => v !== undefined;
 const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false };
 
 const GONE: Located = { type: "Gone", suggest: null };
+/** What a refused move says when the Table Source gives no reason, as the Rust `PumpSource` default does. */
+const CANNOT_MOVE = "These can't be moved";
+
+/** The most items an axis hides unless its Table Source declares fewer, as the Rust Grid's `HIDE_CAP`. */
+export const HIDE_CAP = 1000;
 
 /** A mark the source gave, and the round it was asked in: one from an earlier round is shown until it is asked again. */
 interface Mark {
@@ -222,6 +245,8 @@ export function createFeed<RowId, ColId, V>(
   const rows = axisOf<RowId>(source.rows as AxisMethods<RowId, unknown>);
   const cols = axisOf<ColId>(source.cols as AxisMethods<ColId, unknown>);
   const axes: Record<AxisName, Axis<unknown>> = { rows: rows as Axis<unknown>, cols: cols as Axis<unknown> };
+  /** The axis whose items `axis`'s View Spec part names. */
+  const cross = (axis: AxisName) => axes[other(axis)];
   const cache = createValueCache<V>();
   /** Committed edits by Key pair, until a fresh answer for the cell lands. */
   const edits = new Map<string, unknown>();
@@ -229,6 +254,15 @@ export function createFeed<RowId, ColId, V>(
   let grid: WebGrid | null = null;
   let detach: (() => void) | undefined;
   let shown: Snapshot | null = null;
+  /** The Keys on `axis` whose IDs a Reset keeps, though the Table Source may lack them: pinned (dormant too) or sized. */
+  const held = (axis: AxisName): bigint[] =>
+    grid
+      ? [
+          ...grid.pin_keys(AXIS_CODE[axis], EDGE_CODE.leading),
+          ...grid.pin_keys(AXIS_CODE[axis], EDGE_CODE.trailing),
+          ...grid.size_override_keys(AXIS_CODE[axis]),
+        ]
+      : [];
   /** The View Spec last applied and its totals, to restore if a request fails. */
   let applied: KeyedViewSpec = BASE_VIEW;
   let totals: Totals = {};
@@ -299,12 +333,15 @@ export function createFeed<RowId, ColId, V>(
     settler.bump();
     const { interner, position } = axes[axis];
     axes[axis].failed = null;
-    reflag(axis);
-    remark(axis === "rows" && notice.type !== "Reordered");
+    // A change to one axis's items can change which items of the other the
+    // filter in force keeps, so both axes' flags are asked again.
+    for (const a of AXES) reflag(a);
+    // Items may come or go on either axis, except in a reorder.
+    remark(notice.type !== "Reordered");
     switch (notice.type) {
       case "Reset":
         cache.clear();
-        interner.rebuild();
+        interner.rebuild(held(axis));
         settle(() => axes[axis].source.count(), (count) => reset(axis, count), {
           fresh: true,
           failed: report({ type: "count", axis }),
@@ -350,19 +387,20 @@ export function createFeed<RowId, ColId, V>(
     schedule();
   };
 
-  /** Asks the source again how the rows may be viewed by the columns `ids`, or by every column in view. */
+  /** Asks the source again how `axis` may be viewed by the items `ids` of the other axis, or by every one in view. */
   const supportChanged = (axis: AxisName, ids?: unknown[]) => {
-    if (axis !== "rows") return;
+    const by = cross(axis);
     const keys = ids
-      ? ids.map((id) => cols.interner.key(id as ColId))
-      : (shown?.cols.strip ?? []).flatMap((i) => (i.key === null ? [] : [i.key]));
-    markSupport(BigUint64Array.from(keys));
+      ? ids.map((id) => by.interner.key(id))
+      : (shown?.[other(axis)].strip ?? []).flatMap((i) => (i.key === null ? [] : [i.key]));
+    markSupport(axis, BigUint64Array.from(keys));
     schedule();
   };
 
   const sinkFor = (axis: AxisName) => ({
     notify: (notice: ChangeNotice) => notify(axis, notice),
     supportChanged: (ids?: unknown[]) => supportChanged(axis, ids),
+    movableChanged: () => (markMovable(), schedule()),
   });
 
   /** What a failure says, for the control it came from. */
@@ -370,27 +408,36 @@ export function createFeed<RowId, ColId, V>(
 
   const keysOf = <Id>(axis: Axis<Id>, ids: Id[]) => BigUint64Array.from(ids, (id) => axis.interner.key(id));
 
-  /** How the rows may be viewed by column `id`, defaults filled in: nothing without `view`. */
-  const columnSupport = (id: ColId): ColumnSupport => {
-    if (source.view === undefined) return NO_SUPPORT;
-    const support = source.rows.support?.(id) ?? {};
+  /**
+   * How `axis` may be viewed by item `id` of the other axis, defaults filled
+   * in: nothing without `view`, and on the columns nothing without
+   * `cols.support`, so a source that does not filter its columns offers no
+   * controls for it.
+   */
+  const supportOf = (axis: AxisName, id: unknown): ColumnSupport => {
+    const methods = axes[axis].source;
+    if (source.view === undefined || (axis === "cols" && !methods.support)) return NO_SUPPORT;
+    const support = methods.support?.(id) ?? {};
     const text = support.text ?? {};
-    const listed = source.rows.distinct !== undefined;
+    const listed = methods.distinct !== undefined;
     return {
       sort: support.sort ?? true,
       text: text ? { regex: text.regex ?? false } : null,
       oneOf: listed && (support.oneOf ?? true),
     };
   };
+  const columnSupport = (id: ColId) => supportOf("rows", id);
+  const rowSupport = (id: RowId) => supportOf("cols", id);
 
-  /** Tells the Grid how the rows may be viewed by the columns with `keys`. */
-  const markSupport = (keys: BigUint64Array) => {
+  /** Tells the Grid how `axis` may be viewed by the items of the other axis with `keys`. */
+  const markSupport = (axis: AxisName, keys: BigUint64Array) => {
+    const by = cross(axis);
     for (const key of keys) {
-      const id = cols.interner.id(key);
-      const support = id === undefined ? NO_SUPPORT : columnSupport(id);
+      const id = by.interner.id(key);
+      const support = id === undefined ? NO_SUPPORT : supportOf(axis, id);
       const text = support.text ? SUPPORT.text | (support.text.regex ? SUPPORT.textRegex : 0) : 0;
       const oneOf = support.oneOf ? SUPPORT.oneOf : 0;
-      grid?.set_support(AXIS_CODE.rows, key, (support.sort ? SUPPORT.sort : 0) | text | oneOf);
+      grid?.set_support(AXIS_CODE[axis], key, (support.sort ? SUPPORT.sort : 0) | text | oneOf);
     }
   };
 
@@ -400,6 +447,7 @@ export function createFeed<RowId, ColId, V>(
     grid?.view_applied(spec, now.rows ?? NaN, now.cols ?? NaN);
     for (const axis of AXES) reflag(axis);
     remark(true);
+    markMovable();
   };
 
   /** The unmatched flags on `axis` may have changed: the items shown are asked again on the next paint, which this brings about. */
@@ -442,11 +490,12 @@ export function createFeed<RowId, ColId, V>(
 
   /** The source's news: what it applies now, or new totals; answers due stay due. */
   const viewChanged = (view: AppliedView<RowId, ColId>) => {
-    applied = { rows: partKeys(cols, view.rows), cols: partKeys(rows, view.cols) };
+    applied = viewKeys(view);
     totals = view.totals ?? totals;
     grid?.view_changed(applied, totals.rows ?? NaN, totals.cols ?? NaN);
     if (view.error !== undefined) viewError = view.error;
     remark(true);
+    markMovable();
     landed = true;
     schedule();
   };
@@ -538,12 +587,14 @@ export function createFeed<RowId, ColId, V>(
     );
   };
 
-  /** Tells the Grid which axes take a quick filter: only with `view`. */
+  /** Tells the Grid which axes take a quick filter and which hide: only with `view`. */
   const markQuickFilter = (g: WebGrid) => {
     for (const axis of AXES) {
       const quick = source.view ? axes[axis].source.quickFilter : undefined;
       const bits = quick ? QUICK_FILTER.on | (quick.regex ? QUICK_FILTER.regex : 0) : 0;
       g.set_quick_filter_support(AXIS_CODE[axis], bits);
+      g.set_hide_support(AXIS_CODE[axis], !!source.view && axes[axis].source.hide === true);
+      g.set_hide_cap(AXIS_CODE[axis], Math.max(0, Math.min(axes[axis].source.hideCap ?? HIDE_CAP, HIDE_CAP)));
     }
   };
 
@@ -603,42 +654,75 @@ export function createFeed<RowId, ColId, V>(
     return { key, kind: { type: "Text", query: { text, caseSensitive, regex, searches: [key] } }, not: c.not };
   };
 
-  /** One axis's part by IDs of `by`, or `undefined` if an item it names is not known. */
-  const partIds = <Id>(by: Axis<Id>, part: KeyedAxisView): AxisView<Id> | undefined => {
+  /**
+   * One axis's part by IDs of `by` (its hidden items by IDs of `own`), or
+   * `undefined` if an item of `by` it names is not known. A hidden Key with
+   * no ID is left out, as the source would prune it.
+   */
+  const partIds = <Id, OwnId>(by: Axis<Id>, own: Axis<OwnId>, part: KeyedAxisView): AxisView<Id, OwnId> | undefined => {
     const sort = sortIds(by, part.sort);
     const quick = part.filter.quick && queryIds(by, part.filter.quick);
     const conditions = part.filter.conditions.map((c) => conditionId(by, c));
     if (!sort || quick === undefined || !conditions.every(known)) return undefined;
-    return { filter: { quick, conditions }, sort };
+    const hidden = part.hidden.map((k) => own.interner.id(k)).filter(known);
+    return { filter: { quick, conditions }, sort, hidden };
   };
 
-  const partKeys = <Id>(by: Axis<Id>, part: AppliedAxisView<Id>): KeyedAxisView => {
+  const partKeys = <Id, OwnId>(by: Axis<Id>, own: Axis<OwnId>, part: AppliedAxisView<Id, OwnId>): KeyedAxisView => {
     const quick = part.filter?.quick;
     const conditions = (part.filter?.conditions ?? []).map((c) => conditionKey(by, c));
-    return { filter: { quick: quick ? queryKeys(by, quick) : null, conditions }, sort: sortKeys(by, part.sort) };
+    const hidden = (part.hidden ?? []).map((id) => own.interner.key(id));
+    return { filter: { quick: quick ? queryKeys(by, quick) : null, conditions }, sort: sortKeys(by, part.sort), hidden };
   };
 
-  /** The applied rows filter by column IDs less the conditions on column `key`, leaving out parts naming unknown columns. */
-  const narrowing = (key: bigint): FilterSpec<ColId> => {
-    const filter = applied.rows.filter;
-    const quick = filter.quick && queryIds(cols, filter.quick);
-    const conditions = filter.conditions.filter((c) => c.key !== key).map((c) => conditionId(cols, c));
+  /** One axis's part by IDs, leaving out each sort column, query, condition and hidden item naming a Key with no ID. */
+  const partKnownIds = <Id, OwnId>(by: Axis<Id>, own: Axis<OwnId>, part: KeyedAxisView): AxisView<Id, OwnId> => {
+    const sort = part.sort.flatMap((c) => sortIds(by, [c]) ?? []);
+    const quick = (part.filter.quick && queryIds(by, part.filter.quick)) ?? null;
+    const conditions = part.filter.conditions.map((c) => conditionId(by, c)).filter(known);
+    const hidden = part.hidden.map((k) => own.interner.id(k)).filter(known);
+    return { filter: { quick, conditions }, sort, hidden };
+  };
+
+  const viewIds = (spec: KeyedViewSpec): ViewSpec<RowId, ColId> => ({
+    rows: partKnownIds(cols, rows, spec.rows),
+    cols: partKnownIds(rows, cols, spec.cols),
+  });
+
+  const viewKeys = (view: AppliedView<RowId, ColId>): KeyedViewSpec => ({
+    rows: partKeys(cols, rows, view.rows),
+    cols: partKeys(rows, cols, view.cols),
+  });
+
+  /** The applied filter of `axis` by IDs less the conditions on item `key`, leaving out parts naming unknown items. */
+  const narrowing = (axis: AxisName, key: bigint): FilterSpec<unknown> => {
+    const by = cross(axis);
+    const filter = applied[axis].filter;
+    const quick = filter.quick && queryIds(by, filter.quick);
+    const conditions = filter.conditions.filter((c) => c.key !== key).map((c) => conditionId(by, c));
     return { quick: quick ?? null, conditions: conditions.filter(known) };
   };
 
-  const distinct = (id: ColId, search: string, limit: number, apply: (answer: Distinct) => void): Request | null => {
-    const ask = source.rows.distinct;
-    if (!ask || !columnSupport(id).oneOf) return null;
-    const narrow = narrowing(cols.interner.key(id));
-    return settle((signal) => ask.call(source.rows, id, { search, limit, narrow }, signal), apply, {
-      failed: report({ type: "distinct", axis: "rows" }),
+  const distinct = (
+    id: unknown,
+    search: string,
+    limit: number,
+    apply: (answer: Distinct) => void,
+    axis: AxisName = "rows",
+  ): Request | null => {
+    const methods = axes[axis].source;
+    const ask = methods.distinct;
+    if (!ask || !supportOf(axis, id).oneOf) return null;
+    const narrow = narrowing(axis, cross(axis).interner.key(id));
+    return settle((signal) => ask.call(methods, id, { search, limit, narrow }, signal), apply, {
+      failed: report({ type: "distinct", axis }),
     });
   };
 
   const answerView = (requested: KeyedViewSpec) => {
     const view = source.view;
     if (!view) return viewApplied(BASE_VIEW);
-    const [rowPart, colPart] = [partIds(cols, requested.rows), partIds(rows, requested.cols)];
+    const [rowPart, colPart] = [partIds(cols, rows, requested.rows), partIds(rows, cols, requested.cols)];
     if (!rowPart || !colPart) return viewApplied(applied, totals);
     const failed = report({ type: "view" });
     const spec: ViewSpec<RowId, ColId> = { rows: rowPart, cols: colPart };
@@ -651,7 +735,7 @@ export function createFeed<RowId, ColId, V>(
       (now) => {
         viewError = now.error ?? null;
         if (now.error !== undefined) failed(new Error(now.error));
-        viewApplied({ rows: partKeys(cols, now.rows), cols: partKeys(rows, now.cols) }, now.totals ?? {});
+        viewApplied(viewKeys(now), now.totals ?? {});
       },
       {
         otherwise: () => viewApplied(previous.applied, previous.totals),
@@ -713,16 +797,36 @@ export function createFeed<RowId, ColId, V>(
     if (request?.pending) locating.set(at, request);
   };
 
+  /** Tells the Grid which axes the Table Source can move now. */
+  const markMovable = () => {
+    for (const axis of AXES) {
+      const s = axes[axis].source;
+      grid?.set_movable(AXIS_CODE[axis], s.move !== undefined && (s.movable?.() ?? true));
+    }
+  };
+
   const answerMove = (axis: AxisName, keys: bigint[], to: number) => {
     const { source: s, interner } = axes[axis];
     const ids = keys.map((k) => interner.id(k));
-    if (!s.move || !ids.every(known)) return;
+    const refused = (reason: string) => {
+      grid?.move_answered(reason);
+      markMovable();
+    };
+    if (!s.move || !ids.every(known)) return refused(CANNOT_MOVE);
     settle(
       () => s.move!(ids, to),
-      (moved) => {
-        if (moved) notify(axis, { type: "Reordered" });
+      (answer) => {
+        if (answer !== true) return refused(answer === false ? CANNOT_MOVE : answer.refused);
+        notify(axis, { type: "Reordered" });
+        grid?.move_answered(undefined);
+        markMovable();
       },
-      { failed: report({ type: "move", axis }) },
+      {
+        failed: (error) => {
+          report({ type: "move", axis })(error);
+          refused(message(error));
+        },
+      },
     );
   };
 
@@ -900,6 +1004,7 @@ export function createFeed<RowId, ColId, V>(
     connect(g) {
       grid = g;
       markQuickFilter(g);
+      markMovable();
       g.set_find_support(finder ? FIND.on | (finder.regex ? FIND.regex : 0) : 0);
       for (const axis of AXES) {
         const count = early[axis];
@@ -924,7 +1029,7 @@ export function createFeed<RowId, ColId, V>(
             axis.failed = null;
             const keys = keysOf(axis, ids);
             (grid ?? g).set_window(i, start, keys);
-            if (name === "cols") markSupport(keys);
+            markSupport(other(name), keys);
             hooks.windowed?.(name, keys);
           },
           {
@@ -968,8 +1073,7 @@ export function createFeed<RowId, ColId, V>(
     },
     loading(s) {
       // The Strips include overscan; only what the viewport shows counts.
-      const inView = (axis: AxisName) =>
-        s[axis].strip.filter((i) => i.offset + i.size > s[axis].header && i.offset < s[axis].extent);
+      const inView = (axis: AxisName) => shownItems(s[axis]);
       const cols = inView("cols");
       return inView("rows").some((r) => cols.some((c) => value(r, c) === undefined && !failedAt(r, c)));
     },
@@ -987,17 +1091,21 @@ export function createFeed<RowId, ColId, V>(
     colId: (key) => cols.interner.id(key),
     rowKey: (id) => rows.interner.key(id),
     colKey: (id) => cols.interner.key(id),
-    viewKeys: (spec) => ({ rows: partKeys(cols, spec.rows), cols: partKeys(rows, spec.cols) }),
+    viewKeys,
+    viewIds,
     columnSupport,
-    conditionKey: (c) => conditionKey(cols, c),
-    conditionId: (c) => conditionId(cols, c),
-    distinct,
+    rowSupport,
+    conditionKey: (c, axis) => conditionKey(cross(axis ?? "rows"), c as Condition<unknown>),
+    conditionId: <A extends AxisName>(c: KeyedCondition, axis?: A) =>
+      conditionId(cross(axis ?? "rows"), c) as Condition<CrossId<A, RowId, ColId>> | undefined,
+    distinct: (id, search, limit, apply, axis) => distinct(id, search, limit, apply, axis),
     find(axis, key) {
       const item = shown?.[axis].strip.find((i) => i.key === key);
       if (item) return Promise.resolve({ type: "Found", position: item.position });
       return new Promise((resolve) => whereIs(axis, key, resolve, () => resolve(GONE)));
     },
-    queryIds: (q) => queryIds(cols, q),
+    queryIds: <A extends AxisName>(q: KeyedTextQuery, axis?: A) =>
+      queryIds(cross(axis ?? "rows"), q) as TextQuery<CrossId<A, RowId, ColId>> | undefined,
     findKeys: (q) => ({ query: queryKeys(cols, q.query), by: q.by }),
     findIds,
     findState: () => findState,

@@ -139,7 +139,7 @@ test("dragging a header moves its column", async ({ page }) => {
   await page.mouse.move(b.x + column(4), b.y + HEADER / 2);
   await page.mouse.down();
   await page.mouse.move(b.x + column(2), b.y + HEADER / 2, { steps: 5 });
-  await page.mouse.move(b.x + FIRST - 10, b.y + HEADER / 2, { steps: 5 });
+  await page.mouse.move(b.x + FIRST, b.y + HEADER / 2, { steps: 5 });
   await page.mouse.up();
   await cell(page, 0, 0);
   await expect(status(page)).toContainText(focus(0, 0, "port"));

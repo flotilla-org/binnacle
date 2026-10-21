@@ -64,11 +64,18 @@ impl From<Vec<SortColumn>> for SortSpec {
 }
 
 /// A Table Source's answer to `Locate`: where a Key sits now, or that it has
-/// left the axis, optionally suggesting a Position for focus to move to.
+/// left the axis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Located {
     Found(Position),
-    Gone { suggest: Option<Position> },
+    /// `suggest` is where the Key would sit among the items left: the
+    /// Position of the next one in the order it had, or the count when none
+    /// follows. Focus moves there (the last item when it is the count), and
+    /// a range's corner pulls in from it. With no suggestion focus falls
+    /// back to its last known Position and a range there clears.
+    Gone {
+        suggest: Option<Position>,
+    },
 }
 
 impl SortSpec {

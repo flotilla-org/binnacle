@@ -7,10 +7,10 @@ use std::slice;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
-    Located, Mode, Modifiers, PointerEvent, PointerKind, Searched, SelectionUnit, Snapshot,
-    SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid,
+    HeaderClick, Key, Located, Mode, Modifiers, PinZone, PointerEvent, PointerKind, Searched,
+    SelectionUnit, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport,
+    Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -36,6 +36,13 @@ enum Op {
     Action(Action),
     SetSize(Axis, u64, f32),
     SetHeader(Axis, f32),
+    SetEdgeGap(Axis, f32),
+    SetPinZone(Axis, f32),
+    SetMinScrolling(Axis, f32),
+    Pin(Axis, Edge, u64),
+    SetPins(Axis, Edge, Vec<u64>),
+    Unpin(Axis, u64),
+    Freeze(Axis, u64),
     /// A press `inset` inside the end of the band leading the axis (where its
     /// edge is, given a Gap), halfway across the other band as of the last
     /// frame, with this click count; then a move by `travel` along the axis.
@@ -58,6 +65,10 @@ enum Op {
     AddCondition(Axis, Condition),
     RemoveCondition(Axis, Condition),
     ReplaceCondition(Axis, Condition, Condition),
+    HideSupport(Axis, bool),
+    Hide(Axis, Vec<Key>),
+    HideCap(Axis, usize),
+    Show(Axis, Vec<Key>),
     SetFind(Option<FindQuery>),
     FindSupport(Option<TextSupport>),
     /// The answer to a find step: this match, or with `Some((r, c))` the
@@ -67,6 +78,18 @@ enum Op {
     /// last `Locate` drained, if any.
     Located(Option<(Axis, Key)>, Located),
     Notify(Axis, ChangeNotice),
+    SetMovable(Axis, bool),
+    /// A press on the header of the item at index `from` of the last
+    /// frame's strip on the axis (wrapped), a move over item `to`, and the
+    /// release if `release`.
+    HeaderDrag {
+        axis: Axis,
+        from: usize,
+        to: usize,
+        release: bool,
+    },
+    /// The answer to a move: moved, or refused with this reason.
+    MoveAnswered(Option<String>),
     /// Text that is not UTF-8: refused.
     BadText(Vec<u8>),
     /// An input with an unknown tag: refused.
@@ -163,7 +186,10 @@ fn action(tc: &TestCase) -> Action {
             extend: tc.draw(gs::booleans()),
         },
         2 => Action::SelectAll,
-        3 => Action::SelectColumn,
+        3 => match tc.draw(gs::booleans()) {
+            true => Action::SelectColumn,
+            false => Action::SelectRow,
+        },
         4 => Action::Cancel,
         5 => Action::Scroll {
             dx: tc.draw(gs::floats::<f32>().min_value(-50.0).max_value(50.0)),
@@ -289,6 +315,9 @@ fn view_spec(tc: &TestCase) -> ViewSpec {
                 .with_conditions(conditions.into());
             spec = spec.with_filter(axis, filter);
         }
+        if tc.draw(gs::weighted_booleans(0.25)) {
+            spec = spec.with_hidden(axis, tc.draw(gs::vecs(key(axis)).max_size(3)));
+        }
     }
     spec
 }
@@ -308,7 +337,20 @@ fn totals(tc: &TestCase) -> Totals {
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(14)) {
+    match tc.draw(gs::integers::<u8>().max_value(19)) {
+        // Mostly small, so some hides pass it; past HIDE_CAP it clamps.
+        19 => Op::HideCap(
+            axis,
+            tc.draw(hegel::one_of!(
+                gs::integers::<usize>().max_value(4),
+                gs::integers::<usize>().min_value(990).max_value(5000),
+                gs::just(usize::MAX)
+            )),
+        ),
+        15 => Op::MoveAnswered(tc.draw(gs::optional(gs::text().max_size(8)))),
+        16 => Op::HideSupport(axis, tc.draw(gs::weighted_booleans(0.75))),
+        17 => Op::Hide(axis, tc.draw(gs::vecs(key(axis)).max_size(3))),
+        18 => Op::Show(axis, tc.draw(gs::vecs(key(axis)).max_size(3))),
         10 => Op::SetFind(
             tc.draw(gs::weighted_booleans(0.9))
                 .then(|| tc.draw(find_query())),
@@ -384,7 +426,48 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(17)) {
+    match tc.draw(gs::integers::<u8>().max_value(27)) {
+        27 => Op::SetPins(
+            tc.draw(axes()),
+            tc.draw(gs::sampled_from(Edge::ALL.to_vec())),
+            tc.draw(gs::vecs(gs::integers::<u64>().max_value(10)).max_size(4)),
+        ),
+        25 => Op::SetPinZone(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
+                gs::floats::<f32>().min_value(0.0).max_value(8.0),
+            )),
+        ),
+        26 => Op::SetMinScrolling(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
+                gs::floats::<f32>().min_value(0.0).max_value(40.0),
+            )),
+        ),
+        24 => Op::SetEdgeGap(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
+                gs::floats::<f32>().min_value(0.0).max_value(3.0),
+            )),
+        ),
+        18 => Op::Pin(
+            tc.draw(axes()),
+            tc.draw(gs::sampled_from(Edge::ALL.to_vec())),
+            tc.draw(gs::integers::<u64>().max_value(10)),
+        ),
+        23 => Op::Freeze(
+            tc.draw(axes()),
+            tc.draw(gs::integers::<u64>().max_value(10)),
+        ),
+        19 => Op::Unpin(
+            tc.draw(axes()),
+            tc.draw(gs::integers::<u64>().max_value(10)),
+        ),
+        // Often, so moves are answered while a refusal or a frame can show it.
+        22 => Op::MoveAnswered(tc.draw(gs::optional(gs::text().max_size(8)))),
         16 => Op::SetHeader(
             tc.draw(axes()),
             tc.draw(hegel::one_of!(
@@ -392,6 +475,12 @@ fn op(tc: &TestCase) -> Op {
                 gs::floats::<f32>().min_value(0.0).max_value(8.0),
             )),
         ),
+        20 | 21 => Op::HeaderDrag {
+            axis: tc.draw(axes()),
+            from: tc.draw(gs::integers::<usize>().max_value(20)),
+            to: tc.draw(gs::integers::<usize>().max_value(20)),
+            release: tc.draw(gs::weighted_booleans(0.8)),
+        },
         17 => Op::BandDrag {
             axis: tc.draw(axes()),
             inset: tc.draw(gs::floats::<f32>().min_value(0.0).max_value(1.0)),
@@ -422,10 +511,12 @@ fn op(tc: &TestCase) -> Op {
                 sane_size(),
             )),
         ),
-        7 => match tc.draw(gs::integers::<u8>().max_value(2)) {
+        7 => match tc.draw(gs::integers::<u8>().max_value(3)) {
+            3 => Op::SetMovable(tc.draw(axes()), tc.draw(gs::weighted_booleans(0.75))),
             0 => Op::Unit(tc.draw(gs::sampled_from(vec![
                 SelectionUnit::Cells,
                 SelectionUnit::Rows,
+                SelectionUnit::Cols,
             ]))),
             1 => Op::HeaderClick(
                 tc.draw(axes()),
@@ -444,7 +535,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(35))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(52))),
     }
 }
 
@@ -491,6 +582,7 @@ unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
             }
             Action::SelectAll => binnacle_grid_select_all(h),
             Action::SelectColumn => binnacle_grid_select_column(h),
+            Action::SelectRow => binnacle_grid_select_row(h),
             Action::Cancel => binnacle_grid_cancel(h),
             Action::Scroll { dx, dy } => binnacle_grid_scroll(h, *dx, *dy),
             Action::ScrollTo { axis, fraction } => {
@@ -668,6 +760,31 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 };
                 binnacle_grid_set_find(h, &find)
             }
+            35 => binnacle_grid_pin(h, ROWS, 1, 0),
+            36 => binnacle_grid_pin(h, 2, BINNACLE_EDGE_LEADING, 0),
+            37 => binnacle_grid_unpin(h, 2, 0),
+            38 => binnacle_grid_set_movable(h, 2, 1),
+            39 => binnacle_grid_set_movable(h, COLS, 2),
+            40 => binnacle_grid_set_hide_support(h, ROWS, 2),
+            41 => binnacle_grid_set_hide_support(h, 2, 1),
+            42 => binnacle_grid_hide(h, 2, &5000, 1),
+            43 => binnacle_grid_show(h, 2, &5000, 1),
+            44 => binnacle_grid_pin(h, COLS, 2, 0),
+            45 => binnacle_grid_freeze(h, 2, 0),
+            46 => binnacle_grid_set_edge_gap(h, 2, 1.0),
+            47 => binnacle_grid_set_hide_cap(h, 2, 1),
+            48 => binnacle_grid_set_pin_zone(h, 2, 1.0),
+            49 => binnacle_grid_set_min_scrolling(h, 2, 1.0),
+            50 => binnacle_grid_set_pins(h, 2, BINNACLE_EDGE_LEADING, &5000, 1),
+            51 => binnacle_grid_set_pins(h, COLS, 2, &5000, 1),
+            52 => {
+                let mut out = BinnacleSizeOverrides {
+                    keys: std::ptr::null(),
+                    sizes: std::ptr::null(),
+                    len: 0,
+                };
+                binnacle_grid_size_overrides(h, 2, &mut out)
+            }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -697,7 +814,17 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         assert_eq!(a.thumb.fraction.to_bits(), thumb.fraction.to_bits());
         assert_eq!(a.thumb.size.to_bits(), thumb.size.to_bits());
         let strip = unsafe { slice::from_raw_parts(a.strip, a.strip_len) };
-        let expected = rust.strip(axis);
+        let expected: Vec<_> = rust.drawn(axis).collect();
+        assert_eq!(a.pinned_len, rust.pinned(axis, Edge::Leading).len());
+        assert_eq!(a.trailing_len, rust.pinned(axis, Edge::Trailing).len());
+        let scrolling = rust.scrolling(axis);
+        assert!(same_f32(a.scrolling_start, scrolling.start));
+        assert!(same_f32(a.scrolling_end, scrolling.end));
+        let [leading, trailing] = Edge::ALL.map(|edge| rust.pinned_region(axis, edge));
+        assert!(same_f32(a.leading_start, leading.start));
+        assert!(same_f32(a.leading_end, leading.end));
+        assert!(same_f32(a.trailing_start, trailing.start));
+        assert!(same_f32(a.trailing_end, trailing.end));
         assert_eq!(strip.len(), expected.len(), "{axis:?} strip length");
         for (got, want) in strip.iter().zip(expected) {
             assert_eq!(got.position, want.position);
@@ -730,7 +857,8 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 | u32::from(want.hovered) << 4
                 | u32::from(want.filter.filtered) << 5
                 | u32::from(want.filter.pending) << 6
-                | u32::from(want.filter.not_applied) << 7;
+                | u32::from(want.filter.not_applied) << 7
+                | u32::from(want.move_pending) << 8;
             assert_eq!(got.flags, flags, "{want:?}");
             assert_eq!(got.sort_place as usize, place.unwrap_or(0));
             let support = want
@@ -746,12 +874,13 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 assert_eq!(a.focus.key, k);
             }
         }
-        if let Some(r) = &range {
-            assert_eq!(
-                a.selection_range.start..a.selection_range.end,
-                *r.span(axis)
-            );
-        }
+        let runs = unsafe { slice::from_raw_parts(a.selection_runs, a.selection_runs_len) };
+        let runs: Vec<_> = runs.iter().map(|r| r.start..r.end).collect();
+        assert_eq!(
+            runs,
+            range.map_or(&[][..], |r| r.span(axis)),
+            "{axis:?} runs"
+        );
         assert_eq!(
             (a.has_total != 0).then_some(a.total),
             rust.total(axis),
@@ -775,6 +904,28 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             })
             .collect();
         assert_eq!(got, rust.conditions(axis), "{axis:?} conditions");
+        let picked = unsafe { slice::from_raw_parts(a.picked, a.picked_len) };
+        let keys: Vec<u64> = rust.picked(axis).iter().map(|k| k.0).collect();
+        assert_eq!(picked, keys, "{axis:?} picks");
+        assert_eq!(a.movable != 0, rust.movable(axis), "{axis:?} movable");
+        assert_eq!(
+            a.hide_support != 0,
+            rust.hide_support(axis),
+            "{axis:?} hides"
+        );
+        let hidden = unsafe { slice::from_raw_parts(a.hidden, a.hidden_len) };
+        let want: Vec<u64> = rust.hidden(axis).iter().map(|k| k.0).collect();
+        assert_eq!(hidden, want, "{axis:?} hidden");
+        assert_eq!(a.hide_cap, rust.hide_cap(axis), "{axis:?} hide cap");
+        let pins = [
+            (a.leading_pins, a.leading_pins_len, Edge::Leading),
+            (a.trailing_pins, a.trailing_pins_len, Edge::Trailing),
+        ];
+        for (keys, len, edge) in pins {
+            let got = unsafe { slice::from_raw_parts(keys, len) };
+            let want: Vec<u64> = rust.pins(axis, edge).map(|k| k.0).collect();
+            assert_eq!(got, want, "{axis:?} {edge:?} pins");
+        }
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -787,11 +938,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         assert!(rect(&c.focus_rect, &r));
     }
     assert_eq!(c.has_selection_range != 0, range.is_some());
-    let picked = unsafe { slice::from_raw_parts(c.picked, c.picked_len) };
-    assert_eq!(
-        picked,
-        rust.picked().iter().map(|k| k.0).collect::<Vec<_>>()
-    );
+
     let rects = unsafe { slice::from_raw_parts(c.selection_rects, c.selection_rects_len) };
     assert_eq!(rects.len(), rust.selection_rects().len());
     assert!(
@@ -801,7 +948,8 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             .all(|(g, w)| rect(g, w))
     );
     let cells = unsafe { slice::from_raw_parts(c.cell_states, c.cell_states_len) };
-    let (rows, cols) = (rust.rows(), rust.cols());
+    let rows: Vec<_> = rust.drawn(Axis::Rows).collect();
+    let cols: Vec<_> = rust.drawn(Axis::Cols).collect();
     assert_eq!(cells.len(), rows.len() * cols.len());
     for (r, row) in rows.iter().enumerate() {
         for (k, col) in cols.iter().enumerate() {
@@ -816,6 +964,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         Mode::Idle => 1,
         Mode::DraggingSelection => 2,
         Mode::ResizingBand { .. } => 3,
+        Mode::MovingHeaders { .. } => 4,
         _ => 0,
     };
     assert_eq!(c.mode, mode);
@@ -830,12 +979,70 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     });
     assert_eq!(c.find_support, support, "find support");
     assert_eq!(c.view_pending != 0, rust.view_pending(), "view pending");
+    let pending = (c.has_pending_move != 0).then(|| {
+        let keys = unsafe { slice::from_raw_parts(c.pending_move_keys, c.pending_move_keys_len) };
+        (
+            c.pending_move_axis,
+            keys.iter().map(|&k| Key(k)).collect::<Vec<_>>(),
+        )
+    });
+    let want = rust.pending_move().map(|(a, k)| (tag(a), k.to_vec()));
+    assert_eq!(pending, want, "pending move");
+    let refusal = (c.has_move_refusal != 0).then(|| {
+        let text = unsafe { slice::from_raw_parts(c.move_refusal.data, c.move_refusal.len) };
+        (
+            c.move_refusal_axis,
+            std::str::from_utf8(text).unwrap().to_owned(),
+        )
+    });
+    let want = rust.move_refusal().map(|(a, r)| (tag(a), r.to_owned()));
+    assert_eq!(refusal, want, "move refusal");
+    let edge_of = |t: u32| match t {
+        BINNACLE_EDGE_LEADING => Edge::Leading,
+        BINNACLE_EDGE_TRAILING => Edge::Trailing,
+        _ => panic!("edge tag {t}"),
+    };
+    let drop = (c.has_drop != 0).then(|| {
+        let target = match c.drop_target {
+            BINNACLE_DROP_MOVE => DropTarget::Move {
+                to: c.drop_position,
+                unpin: c.drop_unpin != 0,
+            },
+            BINNACLE_DROP_UNPIN => DropTarget::Unpin {
+                at: c.drop_position,
+            },
+            BINNACLE_DROP_PIN => DropTarget::Pin {
+                edge: edge_of(c.drop_edge),
+                before: (c.has_drop_before != 0).then_some(Key(c.drop_before)),
+                reorder: c.drop_reorder != 0,
+            },
+            t => panic!("drop target tag {t}"),
+        };
+        (c.drop_axis, target, c.drop_offset.to_bits())
+    });
+    let want = (rust.drop_indicator()).map(|d| (tag(d.axis), d.target, d.offset.to_bits()));
+    assert_eq!(drop, want, "drop indicator");
+    let zones: Vec<PinZone> = c.pin_zones[..c.pin_zones_len]
+        .iter()
+        .map(|z| PinZone {
+            axis: if z.axis == ROWS {
+                Axis::Rows
+            } else {
+                Axis::Cols
+            },
+            edge: edge_of(z.edge),
+            offset: z.offset,
+            size: z.size,
+            hot: z.hot != 0,
+        })
+        .collect();
+    assert_eq!(zones, rust.pin_zones(), "pin zones");
     match rust.hovered_header() {
         None => assert_eq!(c.has_hovered_header, 0),
         Some((axis, item)) => {
             assert_eq!(c.has_hovered_header, 1);
             assert_eq!(c.hovered_axis, tag(axis));
-            assert_eq!(rust.strip(axis)[c.hovered_index], *item);
+            assert_eq!(rust.drawn(axis).nth(c.hovered_index), Some(item));
         }
     }
 }
@@ -855,10 +1062,13 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         assert_eq!(c.generation, want.generation);
         let mut view = ViewSpec::default();
         let mut edit = BinnacleViewEdit::default();
+        let mut edit_keys: Vec<u64> = Vec::new();
         let mut size = 0.0;
         let mut find = None;
         let mut from = None;
         let mut direction = BINNACLE_FIND_NEXT;
+        let mut moved: (Vec<u64>, u64) = (Vec::new(), 0);
+        let mut edge = BINNACLE_EDGE_LEADING;
         let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
                 let got = unsafe { slice::from_raw_parts(c.text.data, c.text.len) };
@@ -880,7 +1090,16 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                         axis: tag(axis),
                         key: key.0,
                         multi: u32::from(multi),
+                        ..BinnacleViewEdit::default()
                     },
+                    ViewEdit::Hide { axis, ref keys } => {
+                        edit_keys = keys.iter().map(|k| k.0).collect();
+                        on(9, axis)
+                    }
+                    ViewEdit::Show { axis, ref keys } => {
+                        edit_keys = keys.iter().map(|k| k.0).collect();
+                        on(10, axis)
+                    }
                     ViewEdit::SetQuickFilter { axis, .. } => on(2, axis),
                     ViewEdit::Replace => on(3, Axis::Rows),
                     ViewEdit::ShownChanged { axis } => on(4, axis),
@@ -933,15 +1152,46 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 }
                 (9, 0, 0, 0, 0)
             }
+            Effect::MoveRequested { axis, keys, to } => {
+                moved = (keys.iter().map(|k| k.0).collect(), *to);
+                (10, 0, 0, tag(*axis), 0)
+            }
+            Effect::PinsChanged {
+                axis,
+                edge: e,
+                keys,
+            } => {
+                moved = (keys.iter().map(|k| k.0).collect(), 0);
+                if *e == Edge::Trailing {
+                    edge = BINNACLE_EDGE_TRAILING;
+                }
+                (11, 0, 0, tag(*axis), 0)
+            }
             #[allow(unreachable_patterns)] // Effects added to the Grid later are OTHER.
             _ => (0, 0, 0, 0, 0),
         };
+        let keys = match c.keys.is_null() {
+            true => &[][..],
+            false => unsafe { slice::from_raw_parts(c.keys, c.keys_len) },
+        };
+        assert_eq!((keys.to_vec(), c.to), moved, "move for {want:?}");
+        assert_eq!(c.edge, edge, "edge for {want:?}");
         assert_eq!(
             (c.kind, c.row, c.col, c.axis, c.key),
             (kind, row, col, axis, key)
         );
         assert!(same_f32(c.size, size), "size {} for {want:?}", c.size);
-        assert_eq!(c.edit, edit);
+        let got_keys = match c.edit.keys.is_null() {
+            true => &[][..],
+            false => unsafe { slice::from_raw_parts(c.edit.keys, c.edit.keys_len) },
+        };
+        assert_eq!(got_keys, edit_keys, "edit Keys for {want:?}");
+        let bare = BinnacleViewEdit {
+            keys: std::ptr::null(),
+            keys_len: 0,
+            ..c.edit
+        };
+        assert_eq!(bare, edit);
         let got = (c.has_find != 0).then(|| unsafe { find_from_c(&c.find) });
         assert_eq!(got, find, "find for {want:?}");
         let got = (c.has_from != 0).then(|| FindMatch::new(Key(c.from.row), Key(c.from.col)));
@@ -978,6 +1228,12 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 view.axis(axis).filter.conditions.conditions(),
                 "{axis:?} conditions"
             );
+            let hidden = match got.hidden.is_null() {
+                true => &[][..],
+                false => unsafe { slice::from_raw_parts(got.hidden, got.hidden_len) },
+            };
+            let want: Vec<u64> = view.axis(axis).hidden.iter().map(|k| k.0).collect();
+            assert_eq!(hidden, want, "{axis:?} hidden");
         }
     }
 }
@@ -1160,9 +1416,15 @@ fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T 
             .map(|(c, v)| condition_to_c(c, &[], v))
             .collect::<Vec<_>>()
     });
+    let hidden = Axis::ALL.map(|axis| {
+        (spec.axis(axis).hidden.iter())
+            .map(|k| k.0)
+            .collect::<Vec<u64>>()
+    });
     let mut c = BinnacleViewSpec::default();
     for axis in Axis::ALL {
         let sort = &sorts[axis.index()];
+        let hidden = &hidden[axis.index()];
         let quick = spec.axis(axis).filter.quick.as_ref();
         let conds = &conditions[axis.index()];
         c.axes[tag(axis) as usize] = BinnacleAxisView {
@@ -1174,6 +1436,8 @@ fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T 
             }),
             conditions: conds.as_ptr(),
             conditions_len: conds.len(),
+            hidden: hidden.as_ptr(),
+            hidden_len: hidden.len(),
         };
     }
     f(&c)
@@ -1204,13 +1468,22 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
     // Each band's thickness and each strip's Keys as of the last frame.
     let mut bands = [0.0f32; 2];
     let mut shown: [Vec<Key>; 2] = Default::default();
+    // Each strip item's middle along its axis, as of the last frame.
+    let mut middles: [Vec<f32>; 2] = Default::default();
     // Find open from the start half the time, so steps land while it is.
     let find = tc
         .draw(gs::booleans())
         .then(|| Op::SetFind(Some(FindQuery::new(TextQuery::new("a")))));
+    // Both axes movable from the start half the time, so header drags move.
+    let movable = tc
+        .draw(gs::booleans())
+        .then(|| Axis::ALL.map(|a| Op::SetMovable(a, true)))
+        .into_iter()
+        .flatten();
     let ops = [first]
         .into_iter()
         .chain(find)
+        .chain(movable)
         .chain(tc.draw(gs::vecs(op()).min_size(5).max_size(60)));
     for op in ops {
         unsafe {
@@ -1250,6 +1523,12 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     check_snapshot(&snap, &rust);
                     bands = Axis::ALL.map(|a| rust.header(a));
                     shown = Axis::ALL.map(|a| rust.strip(a).iter().filter_map(|i| i.key).collect());
+                    middles = Axis::ALL.map(|a| {
+                        rust.strip(a)
+                            .iter()
+                            .map(|i| i.offset + i.size / 2.0)
+                            .collect()
+                    });
                     1
                 }
                 Op::Pointer(e) => {
@@ -1281,6 +1560,49 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_header(axis, thickness);
                     binnacle_grid_set_header(h, tag(axis), thickness)
                 }
+                Op::SetPinZone(axis, size) => {
+                    grid.set_pin_zone(axis, size);
+                    binnacle_grid_set_pin_zone(h, tag(axis), size)
+                }
+                Op::SetEdgeGap(axis, gap) => {
+                    grid.set_edge_gap(axis, gap);
+                    binnacle_grid_set_edge_gap(h, tag(axis), gap)
+                }
+                Op::SetMinScrolling(axis, length) => {
+                    grid.set_min_scrolling(axis, length);
+                    binnacle_grid_set_min_scrolling(h, tag(axis), length)
+                }
+                Op::Pin(axis, edge, key) => {
+                    let key = key + 5000 * u64::from(axis == Axis::Cols);
+                    grid.pin(axis, edge, Key(key));
+                    let edge = match edge {
+                        Edge::Leading => BINNACLE_EDGE_LEADING,
+                        Edge::Trailing => BINNACLE_EDGE_TRAILING,
+                    };
+                    binnacle_grid_pin(h, tag(axis), edge, key)
+                }
+                Op::SetPins(axis, edge, keys) => {
+                    let keys: Vec<u64> = (keys.into_iter())
+                        .map(|k| k + 5000 * u64::from(axis == Axis::Cols))
+                        .collect();
+                    let rust: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+                    grid.set_pins(axis, edge, &rust);
+                    let edge = match edge {
+                        Edge::Leading => BINNACLE_EDGE_LEADING,
+                        Edge::Trailing => BINNACLE_EDGE_TRAILING,
+                    };
+                    binnacle_grid_set_pins(h, tag(axis), edge, keys.as_ptr(), keys.len())
+                }
+                Op::Freeze(axis, key) => {
+                    let key = key + 5000 * u64::from(axis == Axis::Cols);
+                    grid.freeze(axis, Key(key));
+                    binnacle_grid_freeze(h, tag(axis), key)
+                }
+                Op::Unpin(axis, key) => {
+                    let key = key + 5000 * u64::from(axis == Axis::Cols);
+                    grid.unpin(axis, Key(key));
+                    binnacle_grid_unpin(h, tag(axis), key)
+                }
                 Op::BandDrag {
                     axis,
                     inset,
@@ -1306,10 +1628,12 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 }
                 Op::Unit(unit) => {
                     grid.set_selection_unit(unit);
-                    binnacle_grid_set_selection_unit(
-                        h,
-                        if unit == SelectionUnit::Rows { 1 } else { 0 },
-                    )
+                    let unit = match unit {
+                        SelectionUnit::Cells => 0,
+                        SelectionUnit::Rows => 1,
+                        SelectionUnit::Cols => 2,
+                    };
+                    binnacle_grid_set_selection_unit(h, unit)
                 }
                 Op::HeaderClick(axis, click) => {
                     grid.set_header_click(axis, click);
@@ -1372,6 +1696,29 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_quick_filter_support(axis, support);
                     let bits = support.map_or(0, |s| 1 | u32::from(s.regex) << 1);
                     binnacle_grid_set_quick_filter_support(h, tag(axis), bits)
+                }
+                Op::HideSupport(axis, hides) => {
+                    grid.set_hide_support(axis, hides);
+                    binnacle_grid_set_hide_support(h, tag(axis), u32::from(hides))
+                }
+                Op::Hide(axis, keys) => {
+                    let want = match grid.hide(axis, &keys) {
+                        Ok(()) => 1,
+                        Err(_) => BINNACLE_HIDE_CAPPED,
+                    };
+                    let keys: Vec<u64> = keys.iter().map(|k| k.0).collect();
+                    let got = binnacle_grid_hide(h, tag(axis), keys.as_ptr(), keys.len());
+                    assert_eq!(got, want, "hide past the cap or not");
+                    1
+                }
+                Op::HideCap(axis, cap) => {
+                    grid.set_hide_cap(axis, cap);
+                    binnacle_grid_set_hide_cap(h, tag(axis), cap)
+                }
+                Op::Show(axis, keys) => {
+                    grid.show(axis, &keys);
+                    let keys: Vec<u64> = keys.iter().map(|k| k.0).collect();
+                    binnacle_grid_show(h, tag(axis), keys.as_ptr(), keys.len())
                 }
                 Op::SetSupport(axis, key, support) => {
                     grid.set_support(axis, key, support);
@@ -1453,8 +1800,51 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.notify(axis, notice);
                     binnacle_grid_notify(h, tag(axis), kind, at, n)
                 }
+                Op::HeaderDrag {
+                    axis,
+                    from,
+                    to,
+                    release,
+                } => {
+                    let along = &middles[axis.index()];
+                    if along.is_empty() {
+                        continue;
+                    }
+                    let across = bands[axis.other().index()] / 2.0;
+                    let at = |v: f32| match axis {
+                        Axis::Rows => (across, v),
+                        Axis::Cols => (v, across),
+                    };
+                    let (x, y) = at(along[from % along.len()]);
+                    let (mx, my) = at(along[to % along.len()]);
+                    let up = release.then(|| PointerEvent::up(mx, my));
+                    for e in [PointerEvent::down(x, y), PointerEvent::moved(mx, my)]
+                        .into_iter()
+                        .chain(up)
+                    {
+                        grid.pointer(e);
+                        assert_eq!(binnacle_grid_pointer(h, pointer_event(e)), 1);
+                    }
+                    1
+                }
+                Op::SetMovable(axis, movable) => {
+                    grid.set_movable(axis, movable);
+                    binnacle_grid_set_movable(h, tag(axis), u32::from(movable))
+                }
+                Op::MoveAnswered(refusal) => {
+                    let ok = match &refusal {
+                        None => binnacle_grid_move_answered(h, std::ptr::null(), 0),
+                        Some(r) => binnacle_grid_move_answered(h, r.as_ptr(), r.len()),
+                    };
+                    grid.move_answered(refusal);
+                    ok
+                }
                 Op::BadText(bytes) => {
                     assert_eq!(binnacle_grid_type_text(h, bytes.as_ptr(), bytes.len()), 0);
+                    assert_eq!(
+                        binnacle_grid_move_answered(h, bytes.as_ptr(), bytes.len()),
+                        0
+                    );
                     1
                 }
                 Op::BadTag(which) => {
@@ -1464,9 +1854,168 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
             };
             assert_eq!(ok, 1);
             asked = check_effects(h, &mut grid).or(asked);
+            check_size_overrides(h, &grid);
         }
     }
     unsafe { binnacle_grid_free(h) };
+}
+
+/// The handle lists every Size Override the Grid holds, on each axis.
+unsafe fn check_size_overrides(h: *mut BinnacleGrid, grid: &Grid) {
+    for axis in Axis::ALL {
+        let mut out = BinnacleSizeOverrides {
+            keys: std::ptr::null(),
+            sizes: std::ptr::null(),
+            len: 0,
+        };
+        assert_eq!(
+            unsafe { binnacle_grid_size_overrides(h, tag(axis), &mut out) },
+            1
+        );
+        let keys = unsafe { slice::from_raw_parts(out.keys, out.len) };
+        let sizes = unsafe { slice::from_raw_parts(out.sizes, out.len) };
+        let got: Vec<(u64, u32)> = (keys.iter().zip(sizes))
+            .map(|(&k, s)| (k, s.to_bits()))
+            .collect();
+        let want: Vec<(u64, u32)> = (grid.size_overrides(axis))
+            .map(|(k, s)| (k.0, s.to_bits()))
+            .collect();
+        assert_eq!(got, want, "{axis:?} Size Overrides");
+    }
+}
+
+/// Runs a frame on both, answering the Windows with Position Keys, and
+/// checks the Snapshots match; returns each strip item's middle along its
+/// axis and each band's thickness.
+unsafe fn mirrored_frame(h: *mut BinnacleGrid, grid: &mut Grid) -> ([Vec<f32>; 2], [f32; 2]) {
+    let mut requests = BinnacleWindowRequests::default();
+    assert_eq!(
+        unsafe { binnacle_grid_begin_frame(h, 40.0, 30.0, &mut requests) },
+        1
+    );
+    for (axis, range) in grid.begin_frame(Viewport::new(40.0, 30.0)) {
+        let k: Vec<u64> = range.clone().collect();
+        unsafe { binnacle_grid_set_window(h, tag(axis), range.start, k.as_ptr(), k.len()) };
+        let k: Vec<Key> = k.into_iter().map(Key).collect();
+        grid.set_window(axis, range.start, &k);
+    }
+    let mut snap = unsafe { std::mem::zeroed::<BinnacleSnapshot>() };
+    assert_eq!(unsafe { binnacle_grid_snapshot(h, &mut snap) }, 1);
+    let rust = grid.snapshot();
+    unsafe { check_snapshot(&snap, &rust) };
+    let middles = Axis::ALL.map(|a| {
+        (rust.strip(a).iter())
+            .map(|i| i.offset + i.size / 2.0)
+            .collect()
+    });
+    (middles, Axis::ALL.map(|a| rust.header(a)))
+}
+
+#[derive(Clone, Debug)]
+enum MoveOp {
+    Frame,
+    Drag {
+        axis: Axis,
+        from: usize,
+        to: usize,
+        release: bool,
+    },
+    SetMovable(Axis, bool),
+    Answered(Option<String>),
+    /// A click on a cell, which clears a refusal.
+    Click,
+}
+
+#[hegel::composite]
+fn move_op(tc: &TestCase) -> MoveOp {
+    match tc.draw(gs::integers::<u8>().max_value(6)) {
+        0 | 1 => MoveOp::Frame,
+        2 | 3 => MoveOp::Drag {
+            axis: tc.draw(axes()),
+            from: tc.draw(gs::integers::<usize>().max_value(8)),
+            to: tc.draw(gs::integers::<usize>().max_value(8)),
+            release: tc.draw(gs::weighted_booleans(0.8)),
+        },
+        4 => MoveOp::SetMovable(tc.draw(axes()), tc.draw(gs::weighted_booleans(0.8))),
+        5 => MoveOp::Answered(
+            tc.draw(gs::booleans())
+                .then(|| tc.draw(gs::text().max_size(8))),
+        ),
+        _ => MoveOp::Click,
+    }
+}
+
+/// Moves through the C API: header drags on either axis, movability, the
+/// pending move and its answer, and refusals mirror the Grid's.
+#[hegel::test(test_cases = 500)]
+fn moves_through_the_c_api_mirror_the_grid(tc: TestCase) {
+    let config = || AxisConfig::new(8, 3.0).header(2.0).gap(1.0);
+    let c = BinnacleAxisConfig {
+        count: 8,
+        default_size: 3.0,
+        header: 2.0,
+        gap: 1.0,
+    };
+    let h = binnacle_grid_new(c, c);
+    let mut grid = Grid::new(config(), config());
+    unsafe {
+        let (mut middles, mut bands) = mirrored_frame(h, &mut grid);
+        for op in tc.draw(gs::vecs(move_op()).min_size(1).max_size(30)) {
+            let ok = match op {
+                MoveOp::Frame => {
+                    (middles, bands) = mirrored_frame(h, &mut grid);
+                    1
+                }
+                MoveOp::Drag {
+                    axis,
+                    from,
+                    to,
+                    release,
+                } => {
+                    let along = &middles[axis.index()];
+                    let across = bands[axis.other().index()] / 2.0;
+                    let at = |v: f32| match axis {
+                        Axis::Rows => (across, v),
+                        Axis::Cols => (v, across),
+                    };
+                    let (x, y) = at(along[from % along.len()]);
+                    let (mx, my) = at(along[to % along.len()]);
+                    let up = release.then(|| PointerEvent::up(mx, my));
+                    for e in [PointerEvent::down(x, y), PointerEvent::moved(mx, my)]
+                        .into_iter()
+                        .chain(up)
+                    {
+                        grid.pointer(e);
+                        assert_eq!(binnacle_grid_pointer(h, pointer_event(e)), 1);
+                    }
+                    1
+                }
+                MoveOp::SetMovable(axis, movable) => {
+                    grid.set_movable(axis, movable);
+                    binnacle_grid_set_movable(h, tag(axis), u32::from(movable))
+                }
+                MoveOp::Answered(refusal) => {
+                    let ok = match &refusal {
+                        None => binnacle_grid_move_answered(h, std::ptr::null(), 0),
+                        Some(r) => binnacle_grid_move_answered(h, r.as_ptr(), r.len()),
+                    };
+                    grid.move_answered(refusal);
+                    ok
+                }
+                MoveOp::Click => {
+                    for e in [PointerEvent::down(20.0, 20.0), PointerEvent::up(20.0, 20.0)] {
+                        grid.pointer(e);
+                        assert_eq!(binnacle_grid_pointer(h, pointer_event(e)), 1);
+                    }
+                    1
+                }
+            };
+            assert_eq!(ok, 1);
+            check_effects(h, &mut grid);
+        }
+        mirrored_frame(h, &mut grid);
+        binnacle_grid_free(h);
+    }
 }
 
 fn valid(c: &BinnacleAxisConfig) -> bool {

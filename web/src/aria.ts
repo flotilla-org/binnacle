@@ -6,7 +6,7 @@
 import { AXES, type AxisName } from "./codes";
 import type { Content } from "./content";
 import { cellText, plainText, type RendererChoice } from "./renderer";
-import { cellState, type AxisSnapshot, type Snapshot, type StripItem } from "./snapshot";
+import { cellState, itemSpan, type AxisSnapshot, type Snapshot, type StripItem } from "./snapshot";
 
 export interface AriaOptions {
   /** The grid's accessible name. */
@@ -26,6 +26,8 @@ export interface Aria {
   frame(s: Snapshot, painted: boolean, content: () => Content): void;
   /** The Grid asked where `key` went on `axis` (a Locate Effect). */
   locate(axis: AxisName, key: bigint): void;
+  /** Reads `message` out in the live region, for news the table cannot show. */
+  say(message: string): void;
   destroy(): void;
 }
 
@@ -62,13 +64,18 @@ interface Row {
   cells: Map<string, Cell>;
 }
 
-/** The visible items of an axis with their places in the Strip. */
+/**
+ * The visible items of an axis with their places among the drawn items, in
+ * Position order: pinned items read where they belong, not where they are
+ * drawn. A scrolling item is hidden once it slides under a pinned Strip.
+ */
 function visible(axis: AxisSnapshot): { item: StripItem; index: number }[] {
   const out: { item: StripItem; index: number }[] = [];
   axis.strip.forEach((item, index) => {
-    if (item.offset + item.size > axis.header && item.offset < axis.extent) out.push({ item, index });
+    const span = itemSpan(axis, index);
+    if (item.offset + item.size > span.start && item.offset < span.end) out.push({ item, index });
   });
-  return out;
+  return out.sort((a, b) => a.item.position - b.item.position);
 }
 
 /** A visible item's name among its axis's elements: its Key, or its Position while the Key is unknown. */
@@ -126,8 +133,8 @@ export function createAria(options: AriaOptions): Aria {
 
   let headers = new Map<string, HTMLTableCellElement>();
   let rows = new Map<string, Row>();
-  /** The applied Sort Spec last seen, `null` before the first frame. */
-  let sorted: string | null = null;
+  /** Each axis's applied Sort Spec last seen, `null` before the first frame. */
+  const sorted: Record<AxisName, string | null> = { rows: null, cols: null };
   /** The applied rows filter last seen, `null` before the first frame. */
   let filtered: string | null = null;
   /** The rows filter changed and its count is not announced yet. */
@@ -141,6 +148,8 @@ export function createAria(options: AriaOptions): Aria {
     null;
   /** The focused Key per axis as of the last frame. */
   const focus: Record<AxisName, bigint | null> = { rows: null, cols: null };
+  /** The reason of the move refusal last seen, `null` while there is none. */
+  let refused: string | null = null;
   /** Per axis, the focused Key being located, until the Grid stops locating. */
   const locating: Record<AxisName, bigint | null> = { rows: null, cols: null };
 
@@ -152,13 +161,15 @@ export function createAria(options: AriaOptions): Aria {
   /**
    * Announces what the table itself cannot show: a sort applied, the rows
    * left once a filter change is applied and no other View Spec is pending,
-   * a focused item gone.
+   * a focused item gone, a move refused.
    */
   const watch = (s: Snapshot, content: () => Content) => {
     const messages: string[] = [];
-    const sort = s.appliedView.rows.sort.map((c) => `${c.key}:${c.direction}`).join(",");
-    if (sorted !== null && sort !== sorted) messages.push(sortMessage(s, content()));
-    sorted = sort;
+    for (const axis of AXES) {
+      const sort = s.appliedView[axis].sort.map((c) => `${c.key}:${c.direction}`).join(",");
+      if (sorted[axis] !== null && sort !== sorted[axis]) messages.push(sortMessage(s, content(), axis));
+      sorted[axis] = sort;
+    }
     const filter = JSON.stringify(s.appliedView.rows.filter, (_, v: unknown) => (typeof v === "bigint" ? String(v) : v));
     recount ||= filtered !== null && filter !== filtered;
     filtered = filter;
@@ -166,6 +177,9 @@ export function createAria(options: AriaOptions): Aria {
       recount = false;
       messages.push(rowCount(s.rows.count, s.rows.total));
     }
+    const refusal = s.moveRefusal?.reason ?? null;
+    if (refusal !== null && refusal !== refused) messages.push(refusal);
+    refused = refusal;
     if (messages.length) announce(messages.join(". "));
     for (const axis of AXES) {
       const key = locating[axis];
@@ -181,6 +195,7 @@ export function createAria(options: AriaOptions): Aria {
   const update = (s: Snapshot, content: Content) => {
     const choose = options.renderer();
     const primary = s.appliedView.rows.sort[0];
+    const primaryRow = s.appliedView.cols.sort[0];
     set(table, "aria-rowcount", String(s.rows.count + 1));
     set(table, "aria-colcount", String(s.cols.count + 1));
     const cols = visible(s.cols);
@@ -207,6 +222,7 @@ export function createAria(options: AriaOptions): Aria {
       nextRows.set(key, row);
       set(row.el, "aria-rowindex", String(rowItem.position + 2));
       set(row.header, "id", rowItem.key === null ? null : `${prefix}-r${rowItem.key}`);
+      set(row.header, "aria-sort", primaryRow && primaryRow.key === rowItem.key ? primaryRow.direction : null);
       text(row.header, content.label("rows", rowItem));
       const rowId = content.id("rows", rowItem);
       const cells = new Map<string, Cell>();
@@ -285,6 +301,7 @@ export function createAria(options: AriaOptions): Aria {
       deferred = null;
       update(s, content());
     },
+    say: announce,
     locate(axis, key) {
       // Locates for other Keys (an edit's cell) say nothing about focus.
       if (focus[axis] === key) locating[axis] = key;
@@ -310,13 +327,17 @@ export function rowCount(count: number, total: number | null): string {
   return `${grouped.format(count)} of ${grouped.format(total)} ${noun}`;
 }
 
-function sortMessage(s: Snapshot, content: Content): string {
-  if (s.appliedView.rows.sort.length === 0) return "Not sorted";
-  const columns = s.appliedView.rows.sort.map(({ key, direction }) => {
-    const item = s.cols.strip.find((i) => i.key === key);
-    return `${item ? content.label("cols", item) : "a column out of view"}, ${direction}`;
+/** What a change to `axis`'s sort says: the rows' as "Sorted by …", the columns' as "Columns sorted by …". */
+function sortMessage(s: Snapshot, content: Content, axis: AxisName): string {
+  const by = axis === "rows" ? "cols" : "rows";
+  const sort = s.appliedView[axis].sort;
+  if (sort.length === 0) return axis === "rows" ? "Not sorted" : "Columns not sorted";
+  const items = sort.map(({ key, direction }) => {
+    const item = s[by].strip.find((i) => i.key === key);
+    const absent = by === "cols" ? "a column out of view" : "a row out of view";
+    return `${item ? content.label(by, item) : absent}, ${direction}`;
   });
-  return `Sorted by ${columns.join(", then ")}`;
+  return `${axis === "rows" ? "Sorted" : "Columns sorted"} by ${items.join(", then ")}`;
 }
 
 function newRow(): Row {

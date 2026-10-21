@@ -113,7 +113,10 @@ fn a_drag_clamps_the_band_into_the_axis_size_range() {
 #[test]
 fn a_band_of_thickness_zero_has_no_edge() {
     let mut s = table();
-    s.input(|g| g.set_header(Axis::Cols, 0.0));
+    s.input(|g| {
+        g.set_header(Axis::Cols, 0.0);
+        g.set_movable(Axis::Cols, true);
+    });
     let mut out = s.step("set_header(Cols, 0): no row-number band", V);
     s.input(|g| g.pointer(PointerEvent::moved(0.0, 0.5)));
     out += &s.step(

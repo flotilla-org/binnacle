@@ -34,7 +34,7 @@ effect (gen 3): Locate { axis: Rows, key: Key(2) }
 effect (gen 3): Locate { axis: Rows, key: Key(3) }
   locate Rows Key(3): Found(0)
 effect (gen 3): Locate { axis: Rows, key: Key(4) }
-  locate Rows Key(4): Gone { suggest: Some(0) }
+  locate Rows Key(4): Gone { suggest: Some(1) }
 window Rows 0..1
 gen 4 | damage layout selection positions | filter quick "31" | total Rows 8 | total Cols 3
 Rows: count 1, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#3@1+1

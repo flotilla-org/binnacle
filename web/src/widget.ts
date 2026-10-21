@@ -3,14 +3,14 @@
 // frees the wasm Grid on destroy.
 
 import { createAria, type Aria } from "./aria";
-import { answerAutoSize, fitWidth, type SizingParts } from "./autosize";
+import { answerAutoSize, bandWidth, fitWidth, type SizingParts } from "./autosize";
 import { borderGaps, headersBorder, type BorderStyle } from "./border";
 import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
 import { filterButtonRect, hasFilterButton } from "./canvas/bands";
-import { createFeed, type ColumnSupport, type Feed, type FindState } from "./feed";
+import { createFeed, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -18,9 +18,44 @@ import { createScrollMapping, type ScrollMapping, type ScrollPort } from "./scro
 import { plainText, type RendererChoice } from "./renderer";
 import { createSelectionEvents, type SelectionChange } from "./selection";
 import { createInitialSizes, type InitialSize, type InitialSizes } from "./sizes";
-import type { AxisSnapshot, ConditionState, HeaderPlacement, KeyedTextQuery, Snapshot, Span } from "./snapshot";
-import type { Condition, Distinct, FailedRequest, FindMatch, FindQuery, Located, TableSource, TextQuery, ViewSpec } from "./source";
-import { AXIS_CODE, SELECTION_UNIT, type AxisName } from "./codes";
+import type { Content } from "./content";
+import {
+  shownItems,
+  stripOf,
+  type AxisSnapshot,
+  type ConditionState,
+  type HeaderPlacement,
+  type KeyedTextQuery,
+  type Snapshot,
+  type Span,
+} from "./snapshot";
+import type {
+  AppliedAxisView,
+  Condition,
+  Distinct,
+  FailedRequest,
+  FindMatch,
+  FindQuery,
+  Located,
+  TableSource,
+  TextQuery,
+  ViewSpec,
+} from "./source";
+import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
+import { readLayout, restoreLayout, type Layout, type LayoutParts } from "./layout";
+import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
+import {
+  capHint,
+  chosen,
+  chosenCount,
+  chosenHas,
+  gaps,
+  hiddenKeys,
+  othersCount,
+  overCap,
+  type Chosen,
+  type HideOutcome,
+} from "./choose";
 import { systemTheme, type ColorScheme, type Theme, type ThemeChoice } from "./theme";
 import { bridge, loadBinnacle, type WebGrid } from "./wasm";
 
@@ -89,10 +124,22 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   typingPause?: number;
   /**
    * What a click or a focus move selects besides the focused cell: nothing
-   * (`"cells"`, the default) or its whole row (`"rows"`, for list-style views).
+   * (`"cells"`, the default), its whole row (`"rows"`, for list-style views)
+   * or its whole column (`"cols"`, for column-major views). Ctrl or Cmd with
+   * a click picks the cell's column under `"cols"`, else its row.
    */
-  selectionUnit?: "cells" | "rows";
+  selectionUnit?: "cells" | "rows" | "cols";
+  /**
+   * What a click on a header does, per axis: `"sort"` sorts the other axis by
+   * the item (Shift adds it to the sort), `"select"` selects its whole row or
+   * column, `"none"` does nothing. Column headers sort and row headers
+   * select by default; a column-major table swaps them.
+   */
+  headerClick?: { rows?: HeaderClick; cols?: HeaderClick };
 }
+
+/** What a click on a header does: see `GridOptions.headerClick`. */
+export type HeaderClick = keyof typeof HEADER_CLICK;
 
 export interface FrameInfo<RowId = unknown, ColId = unknown> {
   /** Whether the frame painted. */
@@ -102,6 +149,8 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   cols: AxisInfo;
   /** Whether the rows take a quick filter (the Table Source's `rows.quickFilter`), and with regexes; `null` if not. */
   quickFilter: { regex: boolean } | null;
+  /** The columns' filter, by rows, as `quickFilter`, `quick`, `quickState` and `conditions` give the rows'. */
+  columnsFilter: AxisFilterInfo<RowId>;
   /** The rows' quick filter as last asked for: the request still unanswered (or not applied), else the one applied. */
   quick: TextQuery<ColId> | null;
   /**
@@ -117,10 +166,13 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   viewError: string | null;
   /** The focused cell's Positions, if any. */
   focus: { row: number; col: number } | null;
-  /** The selection range as half-open Position spans, if any. */
-  selection: { rows: Span; cols: Span } | null;
-  /** How many rows are picked. */
-  picked: number;
+  /**
+   * The selection range, if any, as each axis's Positions in sorted
+   * half-open runs apart from each other (several when items are pinned).
+   */
+  selection: { rows: Span[]; cols: Span[] } | null;
+  /** How many rows and columns are picked. */
+  picked: { rows: number; cols: number };
   /** The focused cell by the Table Source's own IDs, if any. */
   focusIds: { row: RowId; col: ColId } | null;
   /** Whether a cell in view still waits for the Table Source: its row or column, or its value. */
@@ -139,6 +191,24 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
   columns: ColumnHeader<ColId>[];
   /** Find: whether the Table Source finds, the Find Query in force, the current match, and what the source said of them. */
   find: FindInfo<RowId, ColId>;
+  /**
+   * The last hide refused because the axis's hidden items would pass its
+   * cap, with the hint to show ("Can't hide over 1,000 rows: use a filter
+   * instead"), until the next key or press; `null` otherwise.
+   */
+  hideCapped: { axis: AxisName; cap: number; hint: string } | null;
+}
+
+/** One axis's filter as `FrameInfo` gives it, naming items of the other axis. */
+export interface AxisFilterInfo<CrossId = unknown> {
+  /** Whether the axis takes a quick filter, and with regexes; `null` if not. */
+  quickFilter: { regex: boolean } | null;
+  /** The quick filter as last asked for: the request still unanswered (or not applied), else the one applied. */
+  quick: TextQuery<CrossId> | null;
+  /** Where `quick` stands, as `FrameInfo.quickState` says of the rows'. */
+  quickState: ConditionState | null;
+  /** The axis's conditions as a filter's chips list them, as `FrameInfo.conditions` lists the rows'. */
+  conditions: { condition: Condition<CrossId>; state: ConditionState }[];
 }
 
 /**
@@ -153,7 +223,12 @@ export interface AxisInfo {
   count: number;
   total: number | null;
   unmatched: number;
+  /** How many items are hidden, as last asked for (the Table Source's answer prunes those the data lacks). */
+  hidden: number;
 }
+
+/** Where a mounted menu opens: at its top, or at the list of the axis's hidden items. */
+export type MenuAt = "top" | "hidden";
 
 /** Find as `FrameInfo.find` gives it. */
 export interface FindInfo<RowId = unknown, ColId = unknown> extends FindState {
@@ -182,6 +257,12 @@ export interface ColumnInfo<ColId = unknown> {
 }
 
 const HEADER_HEIGHT = 28;
+
+/** How far in from each end a dragged header pins into an empty pinned Strip, in CSS px. */
+const PIN_ZONE = { rows: 4, cols: 16 } as const;
+
+/** The least length, CSS px, the pinned Strips leave the scrolling ones. */
+const MIN_SCROLLING = 50;
 // The grid's surfaces are not text: WebKit would tint a selected canvas. Custom
 // editors and the ARIA table opt back in; the textarea is editable, so it stays selectable.
 const ROOT_STYLE =
@@ -203,10 +284,14 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly input: Input;
   private readonly aria: Aria;
   private readonly sizes: InitialSizes | null;
+  /** Whether the row-number band has been fitted to the first rows' labels. */
+  private bandFitted = false;
   private last: Snapshot | null = null;
   private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
   private raf = 0;
+  /** A frame is running, so its Snapshot is the latest. */
+  private framing = false;
   private force = true;
   /** Paint next frame without Damage: the last paint asked, or a flash was marked. */
   private repaint = false;
@@ -223,9 +308,14 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private framed: (() => void)[] = [];
   private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
   /** The mounted column menu's opener, if one is mounted. */
-  private columnMenu: ((colId: ColId, anchor: DOMRect) => void) | null = null;
+  private columnMenu: ((colId: ColId, anchor: DOMRect, at: MenuAt) => void) | null = null;
+  /** The mounted row menu's opener, if one is mounted. */
+  private rowMenu: ((rowId: RowId, anchor: DOMRect, at: MenuAt) => void) | null = null;
   /** The mounted find bar's opener, if one is mounted. */
   private findBar: (() => void) | null = null;
+  private chooser: ((axis: AxisName, anchor?: DOMRect) => void) | null = null;
+  /** The last hide refused past its axis's cap, until the next input. */
+  private capped: { axis: AxisName; cap: number } | null = null;
 
   /** Loads the wasm module if needed, then mounts a grid into `container`. */
   static async create<RowId, ColId, V>(
@@ -268,6 +358,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     });
     this.grid = this.createGrid();
     if (options.selectionUnit) this.grid.set_selection_unit(SELECTION_UNIT[options.selectionUnit]);
+    for (const axis of AXES) {
+      const click = options.headerClick?.[axis];
+      if (click) this.grid.set_header_click(AXIS_CODE[axis], HEADER_CLICK[click]);
+    }
     this.sizes = this.createSizes();
     this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);
@@ -304,7 +398,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       painter: this.painter,
       viewport: () => this.size,
       onEffect: (e) => this.dispatch(e),
-      settle: (s) => this.sizes?.settle(s, this.feed.content(s)) ?? false,
+      settle: (s) => {
+        const content = this.feed.content(s);
+        const band = this.fitBand(s, content);
+        return (this.sizes?.settle(s, content) ?? false) || band;
+      },
     };
 
     this.input = createInput({
@@ -315,6 +413,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         ...(options.platform ? { platform: options.platform } : {}),
       }),
       changed: () => {
+        // Any input after a refused hide puts its hint away.
+        if (this.capped) {
+          this.capped = null;
+          this.invalidate();
+        }
         drainEffects(this.parts);
         this.schedule();
       },
@@ -325,8 +428,9 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       snapshot: () => this.last,
       menuButtonAt: (x, y) => this.menuButtonAt(x, y) !== undefined,
       menuPress: (x, y) => {
-        const id = this.menuButtonAt(x, y);
-        return id !== undefined && this.openColumnMenu(id);
+        const at = this.menuButtonAt(x, y);
+        if (!at) return false;
+        return at.axis === "cols" ? this.openColumnMenu(at.id as ColId) : this.openRowMenu(at.id as RowId);
       },
       openColumnMenu: () => {
         if (!this.columnMenu) return false;
@@ -338,6 +442,58 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         });
         this.invalidate();
         return true;
+      },
+      openRowMenu: () => {
+        if (!this.rowMenu) return false;
+        this.framed.push(() => {
+          const key = this.last?.rows.focus?.key;
+          const id = key == null ? undefined : this.feed.rowId(key);
+          if (id !== undefined) this.openRowMenu(id);
+        });
+        this.invalidate();
+        return true;
+      },
+      pin: (axis, edge) => {
+        // After the next frame, so a focus move just made has landed.
+        this.framed.push(() => {
+          if (this.last) this.editView(() => pinFocused(this.grid, this.last!, axis, edge));
+        });
+        this.invalidate();
+      },
+      hide: (axis) => {
+        if (!this.canHide(axis)) return false;
+        // After the next frame, so a focus move just made has landed.
+        this.framed.push(() => void this.hideChosen(axis));
+        this.invalidate();
+        return true;
+      },
+      openChooser: (axis) => {
+        if (!this.chooser || !this.canHide(axis)) return false;
+        this.framed.push(() => this.openChooser(axis));
+        this.invalidate();
+        return true;
+      },
+      showHidden: (axis) => {
+        if (!this.canHide(axis) || !(axis === "cols" ? this.columnMenu : this.rowMenu)) return false;
+        this.framed.push(() => {
+          const key = this.last?.[axis].focus?.key;
+          if (key == null) return;
+          if (axis === "cols") {
+            const id = this.feed.colId(key);
+            if (id !== undefined) this.openColumnMenu(id, undefined, "hidden");
+          } else {
+            const id = this.feed.rowId(key);
+            if (id !== undefined) this.openRowMenu(id, undefined, "hidden");
+          }
+        });
+        this.invalidate();
+        return true;
+      },
+      freeze: (axis) => {
+        this.framed.push(() => {
+          if (this.last) this.editView(() => freezeFocused(this.grid, this.last!, axis));
+        });
+        this.invalidate();
       },
       find: (action) => {
         if (action === "open") return this.openFind();
@@ -502,12 +658,21 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * Sets the rows' quick filter: keep the rows with `query`'s text in a
    * searched column. `null` or empty text clears it. The grid asks the Table
    * Source for the View Spec in force with this quick filter; setting the
-   * one already asked for does nothing.
+   * one already asked for does nothing. With `axis` `"cols"`, sets the
+   * columns' instead, searching rows.
    */
-  setQuickFilter(query: TextQuery<ColId> | null): void {
+  setQuickFilter<A extends AxisName = "rows">(query: TextQuery<CrossId<A, RowId, ColId>> | null, axis?: A): void {
     if (this.destroyed) return;
-    const keyed = query && this.feed.viewKeys({ rows: { filter: { quick: query }, sort: [] }, cols: { sort: [] } });
-    this.grid.set_quick_filter(AXIS_CODE.rows, keyed ? keyed.rows.filter.quick : null);
+    const on = axis ?? "rows";
+    const part = { filter: { quick: query }, sort: [] };
+    const keyed =
+      query &&
+      this.feed.viewKeys(
+        on === "rows"
+          ? { rows: part as AppliedAxisView<ColId, RowId>, cols: { sort: [] } }
+          : { rows: { sort: [] }, cols: part as AppliedAxisView<RowId, ColId> },
+      );
+    this.grid.set_quick_filter(AXIS_CODE[on], keyed ? keyed[on].filter.quick : null);
     drainEffects(this.parts);
     this.schedule();
   }
@@ -516,36 +681,176 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * Adds a condition on the rows: keep those whose value in the condition's
    * column matches (or with `not`, does not). A Text condition with no text
    * asks for nothing. The grid asks the Table Source for the View Spec in
-   * force with it.
+   * force with it. With `axis` `"cols"`, a condition on the columns, read
+   * in a row.
    */
-  addCondition(condition: Condition<ColId>): void {
-    this.editView(() => this.grid.add_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  addCondition<A extends AxisName = "rows">(condition: Condition<CrossId<A, RowId, ColId>>, axis?: A): void {
+    const on = axis ?? "rows";
+    this.editView(() => this.grid.add_condition(AXIS_CODE[on], this.feed.conditionKey(condition, axis)));
   }
 
-  /** Removes the first rows condition equal to `condition`, if the View Spec in force (or asked for) has one. */
-  removeCondition(condition: Condition<ColId>): void {
-    this.editView(() => this.grid.remove_condition(AXIS_CODE.rows, this.feed.conditionKey(condition)));
+  /** Removes the first condition on `axis` (the rows by default) equal to `condition`, if the View Spec in force (or asked for) has one. */
+  removeCondition<A extends AxisName = "rows">(condition: Condition<CrossId<A, RowId, ColId>>, axis?: A): void {
+    const on = axis ?? "rows";
+    this.editView(() => this.grid.remove_condition(AXIS_CODE[on], this.feed.conditionKey(condition, axis)));
   }
 
   /**
-   * Puts `to` in place of the first rows condition equal to `from`: adds `to`
-   * if there is none, and removes `from` if `to` asks for nothing.
+   * Puts `to` in place of the first condition on `axis` (the rows by
+   * default) equal to `from`: adds `to` if there is none, and removes `from`
+   * if `to` asks for nothing.
    */
-  replaceCondition(from: Condition<ColId>, to: Condition<ColId>): void {
+  replaceCondition<A extends AxisName = "rows">(
+    from: Condition<CrossId<A, RowId, ColId>>,
+    to: Condition<CrossId<A, RowId, ColId>>,
+    axis?: A,
+  ): void {
+    const on = axis ?? "rows";
     this.editView(() =>
-      this.grid.replace_condition(AXIS_CODE.rows, this.feed.conditionKey(from), this.feed.conditionKey(to)),
+      this.grid.replace_condition(AXIS_CODE[on], this.feed.conditionKey(from, axis), this.feed.conditionKey(to, axis)),
     );
   }
 
-  /** Removes every rows condition on column `colId`. */
-  clearConditions(colId: ColId): void {
-    const listed = this.last?.rows.conditions ?? [];
-    const key = this.feed.colKey(colId);
+  /** Removes every rows condition on column `id`, or with `axis` `"cols"`, every columns condition on row `id`. */
+  clearConditions<A extends AxisName = "rows">(id: CrossId<A, RowId, ColId>, axis?: A): void {
+    const on = axis ?? "rows";
+    const listed = this.last?.[on].conditions ?? [];
+    const key = on === "rows" ? this.feed.colKey(id as ColId) : this.feed.rowKey(id as RowId);
     this.editView(() => {
       for (const { condition, state } of listed) {
-        if (state !== "removing" && condition.key === key) this.grid.remove_condition(AXIS_CODE.rows, condition);
+        if (state !== "removing" && condition.key === key) this.grid.remove_condition(AXIS_CODE[on], condition);
       }
     });
+  }
+
+  /** Whether the Table Source hides items of `axis`: it has `view` and the axis has `hide`. */
+  canHide(axis: AxisName): boolean {
+    const source = this.options.source;
+    return source.view !== undefined && source[axis].hide === true;
+  }
+
+  /**
+   * Hides the items `ids` of `axis` (the rows by default), beside those
+   * hidden already: the grid asks the Table Source to leave them out
+   * whatever the filter keeps. Focus, the selection and picks follow as
+   * when a filter drops them; their sizes stay. Does nothing unless the axis
+   * hides (see `canHide`).
+   */
+  hide<A extends AxisName = "rows">(ids: ItemId<A, RowId, ColId>[], axis?: A): boolean {
+    const on = axis ?? "rows";
+    return this.hideKeys(on, this.itemKeys(on, ids)) !== "capped";
+  }
+
+  /** The most items `axis` (the rows by default) hides: past it, a hide is refused and the widget suggests a filter. */
+  hideCap(axis: AxisName = "rows"): number {
+    return this.last?.[axis].hideCap ?? Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Hides the chosen items of `axis` (the rows by default): its picks, else
+   * the items the selection spans, else the focused item. With `around`, an
+   * item a menu was opened on, only that item unless it is among the
+   * chosen. Past the axis's hide cap nothing is hidden, the answer is
+   * `"capped"` and `FrameInfo.hideCapped` carries the hint.
+   */
+  async hideChosen<A extends AxisName = "rows">(axis?: A, around?: ItemId<A, RowId, ColId>): Promise<HideOutcome> {
+    const on = axis ?? "rows";
+    const c = this.chosenAround(on, around);
+    if (!c || !this.canHide(on)) return "nothing";
+    if (overCap(this.last!, on, chosenCount(c))) return this.refuseHide(on);
+    return this.hideKeys(on, await this.chosenKeys(on, c));
+  }
+
+  /**
+   * Shows only the chosen items of `axis` (as `hideChosen` chooses them):
+   * hides every other item shown at that moment, so items arriving later
+   * are shown. Past the axis's hide cap nothing is hidden.
+   */
+  async showOnly<A extends AxisName = "rows">(axis?: A, around?: ItemId<A, RowId, ColId>): Promise<HideOutcome> {
+    const on = axis ?? "rows";
+    const c = this.chosenAround(on, around);
+    if (!c || !this.canHide(on)) return "nothing";
+    if (overCap(this.last!, on, othersCount(this.last!, on, c))) return this.refuseHide(on);
+    const count = this.last![on].count;
+    // A selection's others lie between its runs; picks are within the cap of all there is.
+    const runs = c.type === "runs" ? gaps(c.runs, count) : [{ start: 0, end: count }];
+    const keep = new Set(c.type === "keys" ? c.keys : []);
+    const others = await this.chosenKeys(on, { type: "runs", runs });
+    return this.hideKeys(on, BigUint64Array.from(others.filter((k) => !keep.has(k))));
+  }
+
+  /**
+   * The items of `axis` the Table Source shows, in its order, up to `limit`,
+   * then every hidden one: what a chooser lists. `partial` if more were shown.
+   */
+  async items<A extends AxisName>(axis: A, limit = 1000): Promise<{ ids: ItemId<A, RowId, ColId>[]; partial: boolean }> {
+    const source = this.options.source[axis];
+    const count = await source.count();
+    const window = await source.window(0, Math.min(count, limit), new AbortController().signal);
+    const shown = window as ItemId<A, RowId, ColId>[];
+    const hidden = this.hidden(axis).filter((id) => !shown.includes(id));
+    return { ids: [...shown, ...hidden], partial: count > limit };
+  }
+
+  /** How many items `hideChosen` (with `around`) reaches on `axis`, as of the latest frame: 0 for none. */
+  chosenCount<A extends AxisName = "rows">(axis?: A, around?: ItemId<A, RowId, ColId>): number {
+    const c = this.chosenAround(axis ?? "rows", around);
+    return c ? chosenCount(c) : 0;
+  }
+
+  /** What the chosen items of `on` are around `around`: the chosen if it is among them, else it alone. */
+  private chosenAround(on: AxisName, around: unknown): Chosen | null {
+    const s = this.last;
+    if (!s) return null;
+    const c = chosen(s, on);
+    if (around === undefined) return c;
+    const key = this.keyOf(on, around as RowId | ColId);
+    const position = s[on].strip.find((i) => i.key === key)?.position;
+    return c && chosenHas(c, key, position) ? c : { type: "keys", keys: [key] };
+  }
+
+  /** The Keys `c` names, asking the Table Source for a span's. */
+  private async chosenKeys(on: AxisName, c: Chosen): Promise<bigint[]> {
+    if (c.type === "keys") return c.keys;
+    const source = this.options.source[on];
+    const windows = await Promise.all(c.runs.map((r) => source.window(r.start, r.end, new AbortController().signal)));
+    return Array.from(this.itemKeys(on, windows.flat()));
+  }
+
+  private hideKeys(on: AxisName, keys: BigUint64Array | bigint[]): HideOutcome {
+    if (this.destroyed || !this.canHide(on)) return "nothing";
+    const fresh = keys.length > 0 && Array.from(keys).some((k) => !this.last || !hiddenKeys(this.last, on).includes(k));
+    let hid = true;
+    this.editView(() => (hid = this.grid.hide(AXIS_CODE[on], BigUint64Array.from(keys))));
+    if (!hid) return this.refuseHide(on);
+    return fresh ? "hidden" : "nothing";
+  }
+
+  private refuseHide(on: AxisName): HideOutcome {
+    const cap = this.hideCap(on);
+    this.capped = { axis: on, cap };
+    this.aria.say(capHint(on, cap));
+    this.invalidate();
+    return "capped";
+  }
+
+  /** Shows the hidden items `ids` of `axis` (the rows by default) again, in their places. */
+  show<A extends AxisName = "rows">(ids: ItemId<A, RowId, ColId>[], axis?: A): void {
+    const on = axis ?? "rows";
+    this.editView(() => this.grid.show(AXIS_CODE[on], this.itemKeys(on, ids)));
+  }
+
+  /** The hidden items of `axis` (the rows by default), in the order they were hidden, as of the latest frame. */
+  hidden<A extends AxisName = "rows">(axis?: A): ItemId<A, RowId, ColId>[] {
+    const on = axis ?? "rows";
+    const s = this.last;
+    const keys = s ? (s.requestedView ?? s.appliedView)[on].hidden : [];
+    const id = (key: bigint) => (on === "rows" ? this.feed.rowId(key) : this.feed.colId(key));
+    return keys.map(id).filter((i) => i !== undefined) as ItemId<A, RowId, ColId>[];
+  }
+
+  private itemKeys(axis: AxisName, ids: unknown[]): BigUint64Array {
+    return BigUint64Array.from(ids, (id) => (axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId)));
   }
 
   private editView(edit: () => void): void {
@@ -558,33 +863,95 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   /**
    * Mounts a column menu (see `createColumnMenu`): filterable column headers
    * draw its button, and a press on one, Alt+ArrowDown, or `openColumnMenu`
-   * calls `open` with the column and a rectangle to place the menu under.
-   * Returns how to unmount it; one menu is mounted at a time.
+   * calls `open` with the column, a rectangle to place the menu under, and
+   * where in the menu to open. Returns how to unmount it; one menu is
+   * mounted at a time.
    */
-  attachColumnMenu(open: (colId: ColId, anchor: DOMRect) => void): () => void {
+  attachColumnMenu(open: (colId: ColId, anchor: DOMRect, at: MenuAt) => void): () => void {
     this.columnMenu = open;
-    this.painter.filterButtons = true;
+    this.painter.filterButtons.cols = true;
     this.invalidate();
     return () => {
       if (this.columnMenu !== open) return;
       this.columnMenu = null;
-      this.painter.filterButtons = false;
+      this.painter.filterButtons.cols = false;
       this.invalidate();
     };
   }
 
   /**
-   * Opens the mounted column menu for `colId`, under its header if it is in
-   * view, else under `anchor` (or the grid's top left). `false` if no menu is
-   * mounted or the column cannot be filtered.
+   * Mounts a row menu, to filter the columns by a row's values (see
+   * `createColumnMenu`): row headers whose row the columns take conditions
+   * on draw its button while hovered or filtering, and a press on one,
+   * Alt+ArrowRight, or `openRowMenu` calls `open` with the row and a
+   * rectangle to place the menu beside. Returns how to unmount it; one menu
+   * is mounted at a time.
    */
-  openColumnMenu(colId: ColId, anchor?: DOMRect): boolean {
+  attachRowMenu(open: (rowId: RowId, anchor: DOMRect, at: MenuAt) => void): () => void {
+    this.rowMenu = open;
+    this.painter.filterButtons.rows = true;
+    this.invalidate();
+    return () => {
+      if (this.rowMenu !== open) return;
+      this.rowMenu = null;
+      this.painter.filterButtons.rows = false;
+      this.invalidate();
+    };
+  }
+
+  /**
+   * Mounts a chooser (see `createChooser`): Mod+Alt+O (Mod+Alt+Shift+O for
+   * the rows), a menu's "Choose columns…" or `openChooser` calls `open` with
+   * the axis and, from a menu, a rectangle to place it by. Returns how to
+   * unmount it; one chooser is mounted at a time.
+   */
+  attachChooser(open: (axis: AxisName, anchor?: DOMRect) => void): () => void {
+    this.chooser = open;
+    return () => {
+      if (this.chooser === open) this.chooser = null;
+    };
+  }
+
+  /** Whether a chooser is mounted and `axis` hides, so it can be opened there. */
+  canChoose(axis: AxisName): boolean {
+    return this.chooser !== null && this.canHide(axis);
+  }
+
+  /** Opens the mounted chooser of `axis` (the columns by default): `false` if none is mounted or the axis does not hide. */
+  openChooser(axis: AxisName = "cols", anchor?: DOMRect): boolean {
+    const open = this.chooser;
+    if (!open || this.destroyed || !this.canHide(axis)) return false;
+    open(axis, anchor);
+    return true;
+  }
+
+  /**
+   * Opens the mounted row menu for `rowId`, beside its header if it is in
+   * view, else at `anchor` (or the grid's top left), at `at`. `false` if no
+   * menu is mounted, or the columns cannot be filtered by the row and the
+   * rows do not hide.
+   */
+  openRowMenu(rowId: RowId, anchor?: DOMRect, at: MenuAt = "top"): boolean {
+    const open = this.rowMenu;
+    const support = this.feed.rowSupport(rowId);
+    if (!open || this.destroyed || (!support.text && !support.oneOf && !this.canHide("rows"))) return false;
+    const key = this.feed.rowKey(rowId);
+    const header = this.last?.rows.headers.find((h) => h.key === key && this.inView("rows", h));
+    open(rowId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })), at);
+    return true;
+  }
+
+  /**
+   * Opens the mounted column menu for `colId`, under its header if it is in
+   * view, else under `anchor` (or the grid's top left), at `at`. `false` if
+   * no menu is mounted.
+   */
+  openColumnMenu(colId: ColId, anchor?: DOMRect, at: MenuAt = "top"): boolean {
     const open = this.columnMenu;
-    const support = this.feed.columnSupport(colId);
-    if (!open || this.destroyed || (!support.text && !support.oneOf)) return false;
+    if (!open || this.destroyed) return false;
     const key = this.feed.colKey(colId);
-    const header = this.last?.cols.headers.find((h) => h.key === key && this.inView(h));
-    open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })));
+    const header = this.last?.cols.headers.find((h) => h.key === key && this.inView("cols", h));
+    open(colId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })), at);
     return true;
   }
 
@@ -642,19 +1009,39 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
-   * Asks the Table Source for up to `limit` distinct values of column `colId`
+   * Asks the Table Source for up to `limit` distinct values of column `id`
    * containing `search`, narrowed by the other filters applied, for a
    * checklist; `apply` gets the answer unless the request is aborted first.
-   * `null` if the column takes no OneOf conditions.
+   * `null` if the column takes no OneOf conditions. With `axis` `"cols"`,
+   * the values of row `id` across the columns.
    */
-  distinct(colId: ColId, search: string, limit: number, apply: (answer: Distinct) => void): { abort(): void } | null {
+  distinct<A extends AxisName = "rows">(
+    id: CrossId<A, RowId, ColId>,
+    search: string,
+    limit: number,
+    apply: (answer: Distinct) => void,
+    axis?: A,
+  ): { abort(): void } | null {
     if (this.destroyed) return null;
-    return this.feed.distinct(colId, search, limit, apply);
+    return this.feed.distinct(id, search, limit, apply, axis);
   }
 
   /** How the rows may be viewed by column `colId`: whether it sorts, takes Text conditions (and regexes), and OneOf ones. */
   columnSupport(colId: ColId): ColumnSupport {
     return this.feed.columnSupport(colId);
+  }
+
+  /** How the columns may be viewed by row `rowId`, likewise; nothing unless the Table Source has `cols.support`. */
+  rowSupport(rowId: RowId): ColumnSupport {
+    return this.feed.rowSupport(rowId);
+  }
+
+  /** A row's header text: the source's `rows.label` (given the row's Position if in view, else NaN), else its Position + 1, else its ID. */
+  rowLabel(rowId: RowId): string {
+    const key = this.feed.rowKey(rowId);
+    const position = this.last?.rows.strip.find((i) => i.key === key)?.position ?? Number.NaN;
+    const label = this.options.source.rows.label?.(rowId, position);
+    return label ?? (Number.isNaN(position) ? String(rowId) : String(position + 1));
   }
 
   /** A column's header text: the source's `cols.label` (given the column's Position if in view, else NaN), else its ID. */
@@ -664,21 +1051,116 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return this.options.source.cols.label?.(colId, position) ?? String(colId);
   }
 
-  /** The column whose menu button is at (x, y), if a menu is mounted and there is one. */
-  private menuButtonAt(x: number, y: number): ColId | undefined {
+  /**
+   * Pins the column (or row) `id` to an edge of its axis, `leading` (the
+   * left of the columns, the top of the rows) by default: it is drawn there,
+   * after the items pinned before it, however the axis sorts or scrolls,
+   * while the rest scrolls past. Pinning a pinned item moves it to the end of
+   * the pins.
+   */
+  pin(axis: "cols", id: ColId, edge?: PinEdge): void;
+  pin(axis: "rows", id: RowId, edge?: PinEdge): void;
+  pin(axis: AxisName, id: RowId | ColId, edge: PinEdge = "leading"): void {
+    this.editView(() => this.grid.pin(AXIS_CODE[axis], EDGE_CODE[edge], this.keyOf(axis, id)));
+  }
+
+  /** Unpins the column (or row) `id`; the scroll stays where it is. */
+  unpin(axis: "cols", id: ColId): void;
+  unpin(axis: "rows", id: RowId): void;
+  unpin(axis: AxisName, id: RowId | ColId): void {
+    this.editView(() => this.grid.unpin(AXIS_CODE[axis], this.keyOf(axis, id)));
+  }
+
+  /**
+   * Pins every column (or row) from the start of its axis up to `id`, in
+   * their current order, as many as fit with room left to scroll: on a
+   * column pinned left, unpins the ones pinned left after it instead. The
+   * axis scrolls to its start first if the grid does not hold all their IDs.
+   */
+  freeze(axis: "cols", id: ColId): void;
+  freeze(axis: "rows", id: RowId): void;
+  freeze(axis: AxisName, id: RowId | ColId): void {
+    this.editView(() => this.grid.freeze(AXIS_CODE[axis], this.keyOf(axis, id)));
+  }
+
+  /**
+   * The columns (or rows) drawn pinned to `edge` (the leading edge by
+   * default), in pin order, as of the last frame.
+   */
+  pinned(axis: "cols", edge?: PinEdge): ColId[];
+  pinned(axis: "rows", edge?: PinEdge): RowId[];
+  pinned(axis: AxisName, edge: PinEdge = "leading"): (RowId | ColId)[] {
     const s = this.last;
-    if (!this.columnMenu || !s || y > s.rows.header) return undefined;
-    for (const h of s.cols.headers) {
-      if (!hasFilterButton(true, h) || !this.inView(h)) continue;
-      const r = filterButtonRect(h);
-      if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) return this.feed.colId(h.key!);
+    if (!s) return [];
+    const id = (key: bigint) => (axis === "rows" ? this.feed.rowId(key) : this.feed.colId(key));
+    return pinnedKeys(s, axis, edge).flatMap((key) => {
+      const known = id(key);
+      return known === undefined ? [] : [known];
+    });
+  }
+
+  /**
+   * The grid's layout by the Table Source's IDs, to save and give to
+   * `restoreLayout` later: the View Spec last asked for, the pinned items
+   * (those the source no longer has included), every size set by hand,
+   * fitted or restored, and the header band thicknesses. The order of the
+   * items is not in it: that is the source's. Runs a frame first if one is
+   * due, so it is up to date.
+   */
+  layout(): Layout<RowId, ColId> {
+    if (!this.framing && (this.raf || !this.last) && !this.destroyed) {
+      cancelAnimationFrame(this.raf);
+      this.frame();
+    }
+    return readLayout(this.last!, this.layoutParts());
+  }
+
+  /**
+   * Puts back a layout from `layout`, before or after the data loads. Pins,
+   * sizes and band thicknesses apply at once; the View Spec goes to the
+   * Table Source as an ordinary request, so the rows in view stay until it
+   * answers. It never fails on what the source lacks: a pinned item that
+   * is missing waits, out of sight, and comes back if it appears; hidden
+   * IDs the source does not know are dropped from its answer; a condition
+   * on a missing column shows as not applied; a size waits for its item.
+   * Returns `false`, changing nothing, for a layout of another version.
+   */
+  restoreLayout(layout: Layout<RowId, ColId>): boolean {
+    if (this.destroyed || !restoreLayout(layout, this.layoutParts())) return false;
+    // The restored row-number band stands: no fitting it to the labels later.
+    this.bandFitted = true;
+    drainEffects(this.parts);
+    this.schedule();
+    return true;
+  }
+
+  private keyOf(axis: AxisName, id: RowId | ColId): bigint {
+    return axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId);
+  }
+
+  /** The column or row whose menu button is at (x, y), if its menu is mounted and there is one. */
+  private menuButtonAt(x: number, y: number): { axis: AxisName; id: unknown } | undefined {
+    const s = this.last;
+    if (!s) return undefined;
+    const band: AxisName | null =
+      y < s.rows.header && x >= s.cols.header ? "cols" : x < s.cols.header && y >= s.rows.header ? "rows" : null;
+    if (!band || !(band === "cols" ? this.columnMenu : this.rowMenu)) return undefined;
+    for (const h of s[band].headers) {
+      if (!hasFilterButton(true, h) || !this.inView(band, h)) continue;
+      const r = filterButtonRect(band, h);
+      if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
+        const id = band === "cols" ? this.feed.colId(h.key!) : this.feed.rowId(h.key!);
+        return id === undefined ? undefined : { axis: band, id };
+      }
     }
     return undefined;
   }
 
-  private inView(h: HeaderPlacement): boolean {
+  private inView(axis: AxisName, h: HeaderPlacement): boolean {
     const s = this.last;
-    return s !== null && h.rect.x + h.rect.width > s.cols.header && h.rect.x < s.cols.extent;
+    if (s === null) return false;
+    const [at, size] = axis === "cols" ? [h.rect.x, h.rect.width] : [h.rect.y, h.rect.height];
+    return at + size > s[axis].header && at < s[axis].extent;
   }
 
   /** A viewport rectangle in client coordinates. */
@@ -773,7 +1255,15 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const band = Math.ceil(digit * digits) + 2 * PAD;
     const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? HEADER_HEIGHT).gap(gaps.rows).min_size(rowHeight);
     const cols = new b.WebAxis(counts.cols, o.columnWidth ?? 120).header(Math.max(40, band)).gap(gaps.cols).min_size(24);
-    return new b.WebGrid(rows, cols);
+    const grid = new b.WebGrid(rows, cols);
+    // Where a dragged header pins into an empty pinned Strip: past the bands
+    // or the far ends, or this far in.
+    grid.set_pin_zone(AXIS_CODE.rows, PIN_ZONE.rows);
+    grid.set_pin_zone(AXIS_CODE.cols, PIN_ZONE.cols);
+    // Pinned Strips longer than this leaves to scroll are clipped.
+    grid.set_min_scrolling(AXIS_CODE.rows, MIN_SCROLLING);
+    grid.set_min_scrolling(AXIS_CODE.cols, MIN_SCROLLING);
+    return grid;
   }
 
   /** Repaints the whole grid next frame (resize, DPR, fonts, theme). */
@@ -788,6 +1278,15 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private frame(): void {
     this.raf = 0;
+    this.framing = true;
+    try {
+      this.paintFrame();
+    } finally {
+      this.framing = false;
+    }
+  }
+
+  private paintFrame(): void {
     const width = this.scroller.clientWidth;
     const height = this.scroller.clientHeight;
     const dpr = window.devicePixelRatio || 1;
@@ -821,8 +1320,17 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       rows: span(snapshot, "rows", (key) => this.feed.unmatched("rows", key)),
       cols: span(snapshot, "cols", (key) => this.feed.unmatched("cols", key)),
       quickFilter: snapshot.rows.quickFilter,
-      quick: this.quick(snapshot),
-      quickState: quickState(snapshot),
+      quick: this.quick(snapshot, "rows"),
+      quickState: quickState(snapshot, "rows"),
+      columnsFilter: {
+        quickFilter: snapshot.cols.quickFilter,
+        quick: this.quick(snapshot, "cols"),
+        quickState: quickState(snapshot, "cols"),
+        conditions: snapshot.cols.conditions.flatMap(({ condition, state }) => {
+          const c = this.feed.conditionId(condition, "cols");
+          return c ? [{ condition: c, state }] : [];
+        }),
+      },
       viewPending: snapshot.viewPending,
       viewError: this.feed.viewError(),
       ...selection(snapshot),
@@ -846,12 +1354,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         current: snapshot.findMatch && this.ids(snapshot.findMatch.row, snapshot.findMatch.col),
         ...this.feed.findState(),
       },
+      hideCapped: this.capped && { ...this.capped, hint: capHint(this.capped.axis, this.capped.cap) },
     };
   }
 
-  private quick(s: Snapshot): TextQuery<ColId> | null {
-    const q = (s.requestedView ?? s.appliedView).rows.filter.quick;
-    return (q && this.feed.queryIds(q)) ?? null;
+  private quick<A extends AxisName>(s: Snapshot, axis: A): TextQuery<CrossId<A, RowId, ColId>> | null {
+    const q = (s.requestedView ?? s.appliedView)[axis].filter.quick;
+    return (q && this.feed.queryIds(q, axis)) ?? null;
   }
 
   /** Waits for a frame if none has run or one is due, so the Strips are those of what is in view. */
@@ -887,6 +1396,11 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     else f.reject(new Error(`binnacle: focus moved on before it reached ${f.name}`));
   }
 
+  private layoutParts(): LayoutParts<RowId, ColId> {
+    const sizes = this.sizes;
+    return { grid: this.grid, feed: this.feed, ...(sizes ? { computed: sizes.computed } : {}) };
+  }
+
   private createSizes(): InitialSizes | null {
     const { initialColumnWidth: cols, initialRowHeight: rows } = this.options;
     if (!cols && !rows) return null;
@@ -901,6 +1415,21 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         fit: (s, content, key) => fitWidth(s, content, key, this.sizing(), true),
       },
     );
+  }
+
+  /**
+   * Widens the row-number band once, when the first rows arrive, to fit their
+   * labels (a column-major table's field names, say) and, where a row header
+   * click sorts, a sort marker; returns whether it did.
+   */
+  private fitBand(s: Snapshot, content: Content): boolean {
+    if (this.bandFitted || s.rows.strip.length === 0) return false;
+    const width = bandWidth(s, content, this.sizing(), true, this.options.headerClick?.rows === "sort");
+    if (width === null) return false;
+    this.bandFitted = true;
+    if (Math.ceil(width) <= s.cols.header) return false;
+    this.grid.set_header(AXIS_CODE.cols, Math.ceil(width));
+    return true;
   }
 
   private sizing(): SizingParts {
@@ -960,32 +1489,28 @@ interface Focusing {
   reject(error: Error): void;
 }
 
-/** The Strip's items the viewport shows (the Strip includes overscan). */
-function visible(axis: AxisSnapshot) {
-  return axis.strip.filter((i) => i.offset + i.size > axis.header && i.offset < axis.extent);
-}
+const visible = shownItems;
 
 function selection(s: Snapshot): Pick<FrameInfo, "focus" | "selection" | "picked"> {
   const { rows, cols } = s;
   return {
     focus: rows.focus && cols.focus ? { row: rows.focus.position, col: cols.focus.position } : null,
     selection: s.selectionRange,
-    picked: s.picked.length,
+    picked: { rows: s.picked.rows.length, cols: s.picked.cols.length },
   };
 }
 
 function span(s: Snapshot, axis: "rows" | "cols", unmatched: (key: bigint) => boolean): AxisInfo {
-  const strip = s[axis].strip;
-  // The Strip includes overscan; report what the viewport shows.
-  const start = s[axis].header;
-  const end = s[axis].extent;
-  const visible = strip.filter((i) => i.offset + i.size > start && i.offset < end);
+  const visible = shownItems(s[axis]);
+  // What scrolls: the pinned items stay whatever the scroll.
+  const scrolling = s[axis].strip.filter((item, i) => stripOf(s[axis], i) === "scrolling" && visible.includes(item));
   return {
-    first: visible[0]?.position ?? 0,
-    last: visible.at(-1)?.position ?? 0,
+    first: scrolling[0]?.position ?? 0,
+    last: scrolling.at(-1)?.position ?? 0,
     count: s[axis].count,
     total: s[axis].total,
     unmatched: visible.filter((i) => i.key !== null && unmatched(i.key)).length,
+    hidden: (s.requestedView ?? s.appliedView)[axis].hidden.length,
   };
 }
 
@@ -996,10 +1521,10 @@ function div(className: string, style: string): HTMLDivElement {
   return el;
 }
 
-/** Where the rows' quick filter stands between the latest request and the applied View Spec. */
-function quickState(s: Snapshot): ConditionState | null {
-  const applied = s.appliedView.rows.filter.quick;
-  const asked = s.requestedView ? s.requestedView.rows.filter.quick : applied;
+/** Where an axis's quick filter stands between the latest request and the applied View Spec. */
+function quickState(s: Snapshot, axis: AxisName): ConditionState | null {
+  const applied = s.appliedView[axis].filter.quick;
+  const asked = s.requestedView ? s.requestedView[axis].filter.quick : applied;
   if (sameQuery(asked, applied)) return asked ? "applied" : null;
   if (!s.viewPending) return "notApplied";
   return asked ? "adding" : "removing";

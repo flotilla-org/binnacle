@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-ratatui/tests/menu.rs
+expression: out
+---
+    ┌─ Row 4 ──────────────────────────────┐
+1   │ t Pin top                            │           █
+2   │ b Pin bottom                         │           █
+3   │ f Freeze up to here                  │           █
+4   │ h Hide row                           │           █
+5   │ o Show only this row                 │           █
+    │ c Choose rows…                       │           █
+    │ Hidden rows (1):                     │           █
+    │▸1 row 2                              │           █
+    │ a Show all                           │           █
+    │ ↑↓ Enter  Esc close                  │           █
+    └──────────────────────────────────────┘           █

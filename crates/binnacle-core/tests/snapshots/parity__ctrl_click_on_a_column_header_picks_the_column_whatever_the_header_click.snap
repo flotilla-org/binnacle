@@ -1,0 +1,76 @@
+---
+source: crates/binnacle-core/tests/parity.rs
+expression: out
+---
+--- 1. focus row 1, column 1
+window Rows 0..6
+window Cols 0..5
+effect (gen 1): FocusChanged { row: Key(1), col: Key(1) }
+gen 2 | damage selection | focus 1#1,1#1 at 11,2 6x1
+Rows: count 20, extent 5, header 1, anchor 0+0, thumb 0.0000/0.2000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 5, extent 26, header 4, anchor 0+0, thumb 0.0000/0.6471 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    *1.1   1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3
+--- 2. ctrl-click column header 0 (Sort): picks the column, focus moves to it
+effect (gen 2): SelectionChanged
+effect (gen 2): FocusChanged { row: Key(1), col: Key(0) }
+gen 3 | damage selection | focus 1#1,0#0 at 4,2 6x1 | picks cols 0 | fill 4,1 6x4 | hover Cols 0
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   +0.0   0.1    0.2    0
+1   *1.0   1.1    1.2    1
+2   +2.0   2.1    2.2    2
+3   +3.0   3.1    3.2    3
+--- 3. cmd-click column header 2 (Select): picked too
+effect (gen 3): SelectionChanged
+effect (gen 3): FocusChanged { row: Key(1), col: Key(2) }
+gen 4 | damage selection | focus 1#1,2#2 at 18,2 6x1 | picks cols 0,2 | fill 4,1 6x4 | fill 18,1 6x4 | hover Cols 2
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   +0.0   0.1    +0.2   0
+1   +1.0   1.1    *1.2   1
+2   +2.0   2.1    +2.2   2
+3   +3.0   3.1    +3.2   3
+--- 4. ctrl-click row header 2: a row pick beside them
+effect (gen 4): SelectionChanged
+effect (gen 4): FocusChanged { row: Key(2), col: Key(2) }
+gen 5 | damage selection | focus 2#2,2#2 at 18,3 6x1 | picks 2 | picks cols 0,2 | fill 4,3 27x1 | fill 4,1 6x4 | fill 18,1 6x4 | hover Rows 2
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   +0.0   0.1    +0.2   0
+1   +1.0   1.1    +1.2   1
+2   +2.0   +2.1   *2.2   +
+3   +3.0   3.1    +3.2   3
+--- 5. ctrl-click column header 0 again: unpicked
+effect (gen 5): SelectionChanged
+effect (gen 5): FocusChanged { row: Key(2), col: Key(0) }
+gen 6 | damage selection | focus 2#2,0#0 at 4,3 6x1 | picks 2 | picks cols 2 | fill 4,3 27x1 | fill 18,1 6x4 | hover Cols 0
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    +0.2   0
+1   1.0    1.1    +1.2   1
+2   *2.0   +2.1   +2.2   +
+3   3.0    3.1    +3.2   3
+--- 6. header click None: ctrl-click column header 1 does nothing
+gen 8 | damage selection | focus 2#2,0#0 at 4,3 6x1 | picks 2 | picks cols 2 | fill 4,3 27x1 | fill 18,1 6x4 | hover Cols 1
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 7. plain click: every pick goes
+effect (gen 8): FocusChanged { row: Key(1), col: Key(1) }
+effect (gen 8): SelectionChanged
+gen 9 | damage selection | focus 1#1,1#1 at 11,2 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+    0      1      2      3
+0   0.0    0.1    0.2    0
+1   1.0    *1.1   1.2    1
+2   2.0    2.1    2.2    2
+3   3.0    3.1    3.2    3

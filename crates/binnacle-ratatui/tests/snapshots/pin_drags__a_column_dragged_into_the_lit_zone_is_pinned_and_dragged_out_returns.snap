@@ -1,0 +1,58 @@
+---
+source: crates/binnacle-ratatui/tests/pin_drags.rs
+expression: out
+---
+--- nothing pinned, columns can't move
+    col 0 │col 1 │col 2 │col 3 │col 4 │c
+1   r0c0   r0c1   r0c2   r0c3   r0c4   r
+2   r1c0   r1c1   r1c2   r1c3   r1c4   r
+3   r2c0   r2c1   r2c2   r2c3   r2c4   r
+4   r3c0   r3c1   r3c2   r3c3   r3c4   r
+5   r4c0   r4c1   r4c2   r4c3   r4c4   r
+zones  
+status 
+--- column 2 over the body: both zones lit, nothing to drop
+    col 0 │col 1 │col 2 │col 3 │col 4 │c
+1   r0c0   r0c1   r0c2   r0c3   r0c4   r
+2   r1c0   r1c1   r1c2   r1c3   r1c4   r
+3   r2c0   r2c1   r2c2   r2c3   r2c4   r
+4   r3c0   r3c1   r3c2   r3c3   r3c4   r
+5   r4c0   r4c1   r4c2   r4c3   r4c4   r
+zones      z                                  z
+status column 2 can't move: drag to an edge to pin
+--- over the leading zone: hot, pin left
+   ┃col 0 │col 1 │col 2 │col 3 │col 4 │c
+1  ┃r0c0   r0c1   r0c2   r0c3   r0c4   r
+2  ┃r1c0   r1c1   r1c2   r1c3   r1c4   r
+3  ┃r2c0   r2c1   r2c2   r2c3   r2c4   r
+4  ┃r3c0   r3c1   r3c2   r3c3   r3c4   r
+5  ┃r4c0   r4c1   r4c2   r4c3   r4c4   r
+zones      Z                                  z
+status pin column 2 left
+--- released: column 2 pinned left
+    col 2 │col 0 │col 1 │col 3 │col 4 │c
+1   r0c2  ║r0c0   r0c1   r0c3   r0c4   r
+2   r1c2  ║r1c0   r1c1   r1c3   r1c4   r
+3   r2c2  ║r2c0   r2c1   r2c3   r2c4   r
+4   r3c2  ║r3c0   r3c1   r3c3   r3c4   r
+5   r4c2  ║r4c0   r4c1   r4c3   r4c4   r
+zones  
+status 
+--- dragged out: returns to its place, dashed
+    col 2 │col 0 │col 1 ┇col 3 │col 4 │c
+1   r0c2  ║r0c0   r0c1  ┇r0c3   r0c4   r
+2   r1c2  ║r1c0   r1c1  ┇r1c3   r1c4   r
+3   r2c2  ║r2c0   r2c1  ┇r2c3   r2c4   r
+4   r3c2  ║r3c0   r3c1  ┇r3c3   r3c4   r
+5   r4c2  ║r4c0   r4c1  ┇r4c3   r4c4   r
+zones                                         z
+status unpin column 2: returns to its place
+--- released: unpinned
+    col 0 │col 1 │col 2 │col 3 │col 4 │c
+1   r0c0   r0c1   r0c2   r0c3   r0c4   r
+2   r1c0   r1c1   r1c2   r1c3   r1c4   r
+3   r2c0   r2c1   r2c2   r2c3   r2c4   r
+4   r3c0   r3c1   r3c2   r3c3   r3c4   r
+5   r4c0   r4c1   r4c2   r4c3   r4c4   r
+zones  
+status

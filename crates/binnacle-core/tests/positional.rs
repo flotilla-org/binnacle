@@ -86,10 +86,10 @@ fn a_removed_focus_falls_to_the_item_that_took_its_place_and_removed_keys_leave_
     assert_eq!(s.grid.size_override(Axis::Rows, Key(2)), None);
     remove(&mut s, Axis::Cols, 1, 1);
     out += &s.step(
-        "remove column 1: focus falls to column 2, now column 1; column sizes are kept",
+        "remove column 1: focus falls to column 2, now column 1; its size goes too",
         V,
     );
-    assert_eq!(s.grid.size_override(Axis::Cols, Key(1)), Some(4.0));
+    assert_eq!(s.grid.size_override(Axis::Cols, Key(1)), None);
     remove(&mut s, Axis::Cols, 1, 1);
     out += &s.step("remove the last column: focus falls back to column 0", V);
     remove(&mut s, Axis::Rows, 0, 18);
@@ -230,6 +230,7 @@ fn a_header_move_is_cancelled_by_columns_inserted_or_removed_but_not_by_rows() {
         ChangeNotice::Removed { at: 2, n: 1 },
     ] {
         let mut s = table();
+        s.input(|g| g.set_movable(Axis::Cols, true));
         s.frame(V);
         // Column 0's header is x 4..10.
         s.input(|g| {

@@ -7,7 +7,10 @@
 //! pending. Focus and picks stay on their records. Drag a column header to
 //! move the column (a selected column takes the other selected ones with
 //! it); a cyan line shows where it will drop, and widths go with their
-//! columns. Press Ctrl+R to show only records with a crew of 6 or more, again
+//! columns. Drag a row header to move the record the same way. Moving on a
+//! sorted axis keeps the order shown, drops the record there and clears the
+//! sort; `--refuse-sorted-moves` instead refuses while sorted, and the
+//! status line says why. Press Ctrl+R to show only records with a crew of 6 or more, again
 //! for a crew of 13 or more (there are none, so the body says "No rows match
 //! the filter"), and again to show them all: focus stays on its record, or
 //! moves to the nearest one left in sort order; the topmost record shown
@@ -26,8 +29,8 @@
 //! Source, so a sort by price or load holds as values move, and a column
 //! filter (Alt+Down) takes each change and each new ticker as it arrives.
 //! `binnacle-demo --slow` shows the records with sorts and Locates answered
-//! only after 1.5 s: a Shimmer sweeps across a header while its sort is
-//! pending, and the focused cell pulses while its Locate is. A filter typed
+//! only after 1.5 s: a Shimmer sweeps across a header while its sort or
+//! move is pending, and the focused cell pulses while its Locate is. A filter typed
 //! there leaves the rows as they are while the status line says
 //! "filtering…", and a newer one answers the one waiting at once with the
 //! filter in force, so only the last is drawn. The demo redraws
@@ -40,7 +43,9 @@
 //! Source seen through `Transposed`. Each field row draws its own way (the
 //! id and weight right-aligned, the crew as a bar), and Ctrl+R's crew filter
 //! and find work on the records as columns. Row headers are set to sort and
-//! column headers to select, the records' settings swapped.
+//! column headers to select, the records' settings swapped: click a field's
+//! row header to sort the records by it, Shift-click to add a field, and the
+//! header shows `▲`, `▼` and `~` as a column header does.
 //!
 //! In the records (and the slow records), Ctrl+L focuses the quick filter
 //! field on the top line: typing keeps only the records with that text in
@@ -101,6 +106,37 @@
 //! closes it. The status line names the preset's main keys while it has
 //! nothing else to say.
 //!
+//! Alt+, pins the focused column to the left (`!` in modes, `<` in bare
+//! keys): it stays after the row numbers, past a `║` edge, while the other
+//! columns scroll behind it, and it keeps its place through sorts and
+//! filters. Pinning more columns adds each after the last. The same key on a
+//! pinned column unpins it, as does Alt+U (`u` in bare keys). Alt+. (`>`)
+//! pins it right, flush with the far edge; Alt+< and Alt+> (`[` and `]`)
+//! pin the focused row to the top or bottom, past a `═` edge, and
+//! Alt+Shift+U (`U` in bare keys) unpins it. Alt+W (`z`) freezes the
+//! columns from the first to the focused one, as many as fit, and
+//! Alt+Shift+W (`Z`) the rows. The arrow keys step through pinned and
+//! scrolling items in the order they are drawn. Pinned columns (or rows)
+//! that would leave fewer than a few to scroll are clipped at their inside
+//! end, the right ones first, with the edge where they clip; nothing unpins,
+//! and focusing a clipped one slides its Strip to show it. A pinned column
+//! that a filter or a hide takes out waits, and comes back to its place.
+//! Alt+M (or Shift+F10) opens the focused column's header menu and
+//! Alt+Shift+M the row's: `l` and `r` pin a column left and right (`t` and
+//! `b` a row to the top and bottom), `u` unpins a pinned one, clipped or
+//! not, and `f` freezes up to it, or the cursor and Enter do.
+//!
+//! In the records (slow too) and on their side, Alt+0 hides the focused
+//! column and Alt+9 its row: the source leaves it out whatever the filter
+//! keeps, focus moves to its neighbour, and its width stays for when it comes
+//! back. There the header menu goes on: `h` hides the item, and the hidden
+//! ones are listed under it, `1` to `9` (or the cursor and Enter) showing
+//! one again in its place and `a` all of them; Alt+) and Alt+( open it at
+//! that list. The status line
+//! counts what is left, "4 of 5 columns". In the modes and bare-keys presets
+//! `-` and `_` hide, `+` and `*` list the hidden ones, and `.` and `,` open
+//! the menus.
+//!
 //! Typing jumps to the next record whose name starts with what was typed
 //! (type-ahead through `set_focus`; pause a second to start over); in the
 //! huge table, typing digits goes to that row number. Enter, F2 or a
@@ -109,12 +145,18 @@
 //!
 //! The wheel scrolls, and so do the scrollbars: one down the right edge and,
 //! when the columns overflow, one along the bottom. Click a track to page;
-//! drag a thumb. The adapter's default keymap moves focus (arrows,
-//! PageUp and PageDown, Home and End, Ctrl with an arrow; Shift extends the
-//! selection) and the view follows it; Ctrl+A selects all, Ctrl+Space the
-//! column, Esc cancels a drag or a resize; Ctrl+G scrolls to the middle and
-//! Ctrl+R cycles the crew filter. Click to focus, Shift-click or drag to select,
-//! Ctrl-click to pick rows, click a row number to select its row. Drag a
+//! drag a thumb. The adapter's keymap moves focus (arrows, PageUp and
+//! PageDown, Alt+PageUp and Alt+PageDown a page of columns, Home and End the
+//! first and last row, Ctrl with an arrow; Shift extends the selection) and
+//! the view follows it; Ctrl+A selects all, Ctrl+Space the column and
+//! Shift+Space the row (`V` too in the modes and bare keys presets, since few
+//! terminals report Shift with Space), Esc cancels a drag or a resize;
+//! Ctrl+G scrolls to the middle and Ctrl+R cycles the crew filter. Click to
+//! focus, Shift-click or drag to select, Ctrl-click a cell to pick its row
+//! and Ctrl-click a header to pick its row or column, click a row number to
+//! select its row. Alt+S cycles what a click selects: the cell, its row or
+//! its column (where Ctrl-click on a cell picks the column). The status line
+//! counts the picks on each axis. Drag a
 //! column header's border (the line in the one-cell Gap) to resize the
 //! column; double-click it to fit the column to what it draws. The bottom
 //! line shows the gesture in progress and, on the right, the source, the
@@ -124,7 +166,14 @@
 //! without band rules), column lines, a full grid (which turns on a one-cell
 //! row Gap through `set_gap`) or none, in light, heavy and double lines.
 //! Column lines and the grid close the table and always draw the band rules;
-//! with band rules the column header band gets a second line for its rule. Press Ctrl+Q or Ctrl+C to quit.
+//! with band rules the column header band gets a second line for its rule.
+//!
+//! Ctrl+S saves the layout (the sort, filters and hidden items, the pins,
+//! the widths and heights set by hand and the header bands' thicknesses) and
+//! Ctrl+O puts it back, in any table: the status line says which. Restored
+//! in the slow records, the sort and filters show pending until the late
+//! answer, while pins, sizes and bands come back at once. The saved layout
+//! lasts as long as the demo runs. Press Ctrl+Q or Ctrl+C to quit.
 
 use std::borrow::Cow;
 use std::io;
@@ -133,20 +182,31 @@ use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, ConditionKind, Distinct, DistinctQuery, EditEnd,
-    Effect, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode,
-    Position, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ConditionKind, Distinct, DistinctQuery, Edge, EditEnd, Effect,
+    FindDirection, FindMatch, FindQuery, Grid, HeaderClick, Key, Located, Mode, Position,
+    SelectionUnit, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
-    FindStep, IdentitySource, MemorySource, PumpSource, Transposed, Viewed, pump, query_error,
-    transpose_find,
+    FindStep, IdentitySource, MemorySource, MovePolicy, Moved, PumpSource, Transposed, Viewed,
+    answer_move, pump, query_error, transpose_find,
 };
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
-    CellRenderer, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
-    Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext, SparklineRenderer, TextRenderer,
-    Theme, animating, begin_frame, clear_filters, fit_width, keep_value, remove_conditions,
-    render_conditions, render_editor, render_with, row_count, status, wheel,
+    CellRenderer, Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar,
+    FindStatus, HeaderMenu, Hid, Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext,
+    SavedLayout, SparklineRenderer, TextRenderer, Theme, animating, begin_frame, cap_hint,
+    clear_filters, count, fit_width, freeze_focused, hide_chosen, keep_value, remove_conditions,
+    render_conditions, render_editor, render_with, restore_layout, row_count, save_layout, status,
+    toggle_pin, unpin_focused, wheel,
+};
+
+/// The most records the demo's source hides, fewer than the Grid's own cap.
+const RECORD_HIDE_CAP: usize = 100;
+
+/// The Control that pins the focused column left, for the keys line.
+const PIN_LEFT: Control = Control::Pin {
+    axis: Axis::Cols,
+    edge: Edge::Leading,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -310,8 +370,8 @@ impl Live {
             t.load = (t.load + load * 0.2).clamp(0.0, 1.0);
             t.changed = now;
             for col in [Key(1), Key(3)] {
-                if let Some(notice) = self.source.changed(&self.rows, i, col) {
-                    grid.notify(Axis::Rows, notice);
+                for (axis, notice) in self.source.changed(&self.rows, i, col) {
+                    grid.notify(axis, notice);
                 }
             }
         }
@@ -320,7 +380,9 @@ impl Live {
             self.since_listing = 0;
             let ticker = self.ticker(self.rows.len(), now);
             self.rows.push(ticker);
-            grid.notify(Axis::Rows, self.source.appended(&self.rows, &[]));
+            for (axis, notice) in self.source.appended(&self.rows, &[]) {
+                grid.notify(axis, notice);
+            }
         }
     }
 }
@@ -449,6 +511,11 @@ impl Table {
                 for (_, effect) in due {
                     answer(&mut source, grid, effect);
                 }
+                for axis in Axis::ALL {
+                    if let Some(movable) = source.movable(axis) {
+                        grid.set_movable(axis, movable);
+                    }
+                }
                 while let Some(stamped) = grid.poll_effect() {
                     match &stamped.effect {
                         Effect::ViewRequested { .. } => {
@@ -469,13 +536,10 @@ impl Table {
                             });
                             held.push((now + SLOW, stamped.effect.clone()));
                         }
-                        Effect::Locate { .. } | Effect::FindStepRequested { .. } => {
+                        Effect::Locate { .. }
+                        | Effect::MoveRequested { .. }
+                        | Effect::FindStepRequested { .. } => {
                             held.push((now + SLOW, stamped.effect.clone()));
-                        }
-                        Effect::MoveRequested { axis, keys, to } => {
-                            if let Some(notice) = source.move_items(*axis, keys, *to) {
-                                grid.notify(*axis, notice);
-                            }
                         }
                         _ => {}
                     }
@@ -564,8 +628,8 @@ impl Table {
     fn commit(&mut self, grid: &mut Grid, row: Key, text: String) {
         if let Table::Records { rows, source, .. } = self {
             rows[row.0 as usize].name = text;
-            if let Some(notice) = source.edited(rows, row.0 as usize, NAME) {
-                grid.notify(Axis::Rows, notice);
+            for (axis, notice) in source.edited(rows, row.0 as usize, NAME) {
+                grid.notify(axis, notice);
             }
         }
     }
@@ -652,15 +716,18 @@ impl Table {
         (marked, status)
     }
 
-    /// The rows among `rows_shown` the source keeps unmatched after an edit.
-    fn unmatched(&mut self, rows_shown: &[Key]) -> HashSet<Key> {
+    /// The rows among `rows_shown` and the columns among `cols_shown` the
+    /// source keeps unmatched after an edit.
+    fn unmatched(&mut self, rows_shown: &[Key], cols_shown: &[Key]) -> [HashSet<Key>; 2] {
         let Table::Records { source, .. } = self else {
-            return HashSet::new();
+            return Default::default();
         };
-        let flags = source.unmatched(Axis::Rows, rows_shown);
-        (rows_shown.iter().zip(flags))
-            .filter_map(|(&r, unmatched)| unmatched.then_some(r))
-            .collect()
+        [(Axis::Rows, rows_shown), (Axis::Cols, cols_shown)].map(|(axis, shown)| {
+            let flags = source.unmatched(axis, shown);
+            (shown.iter().zip(flags))
+                .filter_map(|(&k, unmatched)| unmatched.then_some(k))
+                .collect()
+        })
     }
 
     /// What the body says when no rows are left, with the quick filter
@@ -668,8 +735,31 @@ impl Table {
     fn empty(&self, quick: bool) -> &'static str {
         match self {
             Table::Records { filter, .. } if *filter > 0 || quick => "No rows match the filter",
-            Table::Transposed { filter, .. } if *filter > 0 => "No columns match the filter",
+            Table::Transposed { filter, .. } if *filter > 0 || quick => {
+                "No columns match the filter"
+            }
             _ => "No rows",
+        }
+    }
+
+    /// The counts for the status line: the records' (the rows, or on their
+    /// side the columns), then the other axis's while it is filtered, such
+    /// as "120 of 1,000 rows, 3 of 5 columns".
+    fn counts(&self, snapshot: &Snapshot) -> String {
+        let (records, other) = match self {
+            Table::Transposed { .. } => (
+                count(snapshot, Axis::Cols, ("record", "records")),
+                (Axis::Rows, ("field", "fields")),
+            ),
+            _ => (row_count(snapshot), (Axis::Cols, ("column", "columns"))),
+        };
+        let (axis, noun) = other;
+        let filtered = snapshot
+            .total(axis)
+            .is_some_and(|t| t != snapshot.count(axis));
+        match filtered {
+            true => format!("{records}, {}", count(snapshot, axis, noun)),
+            false => records,
         }
     }
 
@@ -682,12 +772,16 @@ impl Table {
         }
     }
 
-    /// Column `key`'s distinct values for its checklist, as the source lists them.
-    fn distinct(&self, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+    /// The distinct values of `key`, an item of the other axis, across
+    /// `axis` for its checklist, as the source lists them.
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
         match self {
-            Table::Records { rows, source, .. } => Some(source.distinct(rows, key, query)),
-            Table::Huge(_) | Table::Transposed { .. } => None,
-            Table::Live(live) => Some(live.source.distinct(&live.rows, key, query)),
+            Table::Records { rows, source, .. } => Some(source.distinct(rows, axis, key, query)),
+            Table::Transposed { rows, source, .. } => {
+                Transposed(source.over(rows)).distinct(axis, key, query)
+            }
+            Table::Huge(_) => None,
+            Table::Live(live) => Some(live.source.distinct(&live.rows, axis, key, query)),
         }
     }
 
@@ -755,13 +849,17 @@ impl<S: PumpSource> PumpSource for Stepped<'_, S> {
         step
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.inner.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.inner.move_items(axis, keys, to)
     }
 }
 
-/// Answers a View Spec, a Locate or a find step the slow source held, as
-/// [`pump`] would have at once.
+/// Answers a View Spec, a Locate, a move or a find step the slow source
+/// held, as [`pump`] would have at once.
 fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
     match effect {
         Effect::ViewRequested { spec, .. } => {
@@ -775,6 +873,7 @@ fn answer(source: &mut impl PumpSource, grid: &mut Grid, effect: Effect) {
             let located = source.locate(axis, key);
             grid.located(axis, key, located);
         }
+        Effect::MoveRequested { axis, keys, to } => answer_move(grid, source, axis, &keys, to),
         Effect::FindStepRequested {
             query,
             from,
@@ -835,6 +934,15 @@ impl Content for Text<'_> {
         }
     }
 
+    /// A record's row is named by its name, a ticker's by its symbol.
+    fn row_label(&self, row: Key) -> String {
+        match self {
+            Text::Records(_) => self.cell(row, Key(1)),
+            Text::Live(_) => self.cell(row, Key(0)),
+            Text::Huge | Text::Transposed(_) => self.row_header(row, row.0),
+        }
+    }
+
     fn row_header(&self, row: Key, position: u64) -> String {
         match self {
             Text::Records(_) | Text::Live(_) => row.0.to_string(),
@@ -891,11 +999,11 @@ impl Content for Text<'_> {
 }
 
 /// The text a [`Table`] draws, with the cells that match the Find Query
-/// and the unmatched rows.
+/// and the unmatched rows and columns.
 struct Marked<'a> {
     text: Text<'a>,
     marks: &'a HashSet<(Key, Key)>,
-    unmatched: &'a HashSet<Key>,
+    unmatched: &'a [HashSet<Key>; 2],
 }
 
 impl Content for Marked<'_> {
@@ -907,6 +1015,10 @@ impl Content for Marked<'_> {
         self.text.row_header(row, position)
     }
 
+    fn row_label(&self, row: Key) -> String {
+        self.text.row_label(row)
+    }
+
     fn column_header(&self, col: Key) -> String {
         self.text.column_header(col)
     }
@@ -916,7 +1028,7 @@ impl Content for Marked<'_> {
     }
 
     fn unmatched(&self, axis: Axis, key: Key) -> bool {
-        axis == Axis::Rows && self.unmatched.contains(&key)
+        self.unmatched[axis.index()].contains(&key)
     }
 
     fn renderer(&self, row: Key, col: Key) -> Box<dyn CellRenderer + '_> {
@@ -944,6 +1056,11 @@ struct App {
     fit_rows: bool,
     /// The Border Style drawn, an index into [`BORDERS`].
     border: usize,
+    /// The layout Ctrl+S saved, which Ctrl+O restores.
+    saved: Option<SavedLayout>,
+    /// What the status line says of the last save or restore, until the
+    /// next key.
+    layout_said: Option<&'static str>,
 }
 
 impl App {
@@ -1067,7 +1184,7 @@ fn fill(grid: &mut Grid, table: &Table, viewport: Viewport) {
 /// shown, and a cell after it for the band rule (or a blank when none is
 /// drawn).
 fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
-    let widest = (snapshot.rows().iter())
+    let widest = (snapshot.drawn(Axis::Rows))
         .map(|r| {
             let label = r.key.map_or_else(
                 || r.position.saturating_add(1).to_string(),
@@ -1077,6 +1194,29 @@ fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
         })
         .max()?;
     Some(widest as f32 + 1.0)
+}
+
+/// What the status line says of the selection: the picks on each axis and
+/// what a click selects, unless it is the cell; empty otherwise, else ending
+/// in a separator.
+fn selecting(snapshot: &Snapshot, unit: SelectionUnit) -> String {
+    let mut parts = Vec::new();
+    for (axis, noun) in [(Axis::Rows, "row"), (Axis::Cols, "column")] {
+        match snapshot.picked(axis).len() {
+            0 => {}
+            1 => parts.push(format!("1 {noun} picked")),
+            n => parts.push(format!("{n} {noun}s picked")),
+        }
+    }
+    match unit {
+        SelectionUnit::Rows => parts.push("clicks select rows".into()),
+        SelectionUnit::Cols => parts.push("clicks select columns".into()),
+        _ => {}
+    }
+    match parts.is_empty() {
+        true => String::new(),
+        false => parts.join(", ") + " | ",
+    }
 }
 
 /// The keymap preset `--preset` names (`chords`, `modes` or `bare-keys`).
@@ -1097,9 +1237,16 @@ fn preset() -> Result<Preset, String> {
     }
 }
 
-/// The records' In-Memory Table Source: every column sorts and filters.
+/// The records' In-Memory Table Source: every column sorts and filters, and
+/// records and fields move.
 fn records_source(rows: &[Record]) -> MemorySource<Record> {
+    let policy = if std::env::args().any(|a| a == "--refuse-sorted-moves") {
+        MovePolicy::Refuse
+    } else {
+        MovePolicy::Bake
+    };
     MemorySource::<Record>::new(rows.len(), HEADERS.len())
+        .with_move_policy(policy)
         .i64_column(Key(0), |r| Some(r.id))
         .bytes_column(Key(1), |r| Some(Cow::Borrowed(r.name.as_bytes())))
         .f64_column(Key(2), |r| r.weight)
@@ -1129,7 +1276,11 @@ fn transposed() -> (Table, Grid) {
         let mut turned = Transposed(source.over(&rows));
         for axis in Axis::ALL {
             grid.set_quick_filter_support(axis, turned.quick_filter(axis));
+            grid.set_hide_support(axis, turned.hide_support(axis));
         }
+        // The demo's source takes fewer hidden records than the Grid would,
+        // so hiding many of them suggests a filter.
+        grid.set_hide_cap(Axis::Cols, RECORD_HIDE_CAP);
         grid.set_find_support(turned.find_support());
         for f in 0..HEADERS.len() as u64 {
             grid.set_support(Axis::Cols, Key(f), turned.support(Axis::Cols, Key(f)));
@@ -1188,10 +1339,18 @@ fn main() -> io::Result<()> {
                 .header(5.0)
                 .gap(1.0),
         );
-        grid.set_quick_filter_support(Axis::Rows, source.quick_filter(Axis::Rows));
+        for axis in Axis::ALL {
+            grid.set_quick_filter_support(axis, source.quick_filter(axis));
+            grid.set_hide_support(axis, source.hide_support(axis));
+        }
+        grid.set_hide_cap(Axis::Rows, RECORD_HIDE_CAP);
         grid.set_find_support(source.find_support());
         for c in 0..HEADERS.len() as u64 {
             grid.set_support(Axis::Rows, Key(c), source.support(Axis::Rows, Key(c)));
+        }
+        // A record's values filter the columns too.
+        for r in 0..rows.len() as u64 {
+            grid.set_support(Axis::Cols, Key(r), source.support(Axis::Cols, Key(r)));
         }
         // The ids take no conditions, as on the web.
         let id = (source.support(Axis::Rows, Key(0)))
@@ -1209,7 +1368,7 @@ fn main() -> io::Result<()> {
         };
         (table, grid)
     };
-    let mut keymap = Keymap::default();
+    let mut keymap = Keymap::preset(preset);
     keymap.bind(
         KeyCode::Char('g'),
         KeyModifiers::CONTROL,
@@ -1218,32 +1377,21 @@ fn main() -> io::Result<()> {
             fraction: 0.5,
         },
     );
-    keymap.set_typing(preset.typing());
-    if preset == Preset::Modes {
-        // vim's moves, on top of the arrows.
-        let moves = [
-            ('j', Axis::Rows, true),
-            ('k', Axis::Rows, false),
-            ('l', Axis::Cols, true),
-            ('h', Axis::Cols, false),
-        ];
-        for (c, axis, forward) in moves {
-            let action = Action::MoveFocus {
-                axis,
-                by: FocusStep::Item,
-                forward,
-                extend: false,
-            };
-            keymap.bind(KeyCode::Char(c), KeyModifiers::NONE, action);
-        }
-    }
     let controls = Controls::preset(preset);
     let hint = |control| controls.hint(control).unwrap_or_default();
+    // On their side, the quick filter narrows the records, now the columns.
     let mut quick = QuickFilter::new().placeholder(hint(Control::QuickFilter));
+    if let Table::Transposed { .. } = table {
+        quick = quick.on(Axis::Cols);
+    }
     let mut popup = match preset {
         Preset::BareKeys => ColumnFilter::new().drawer(),
         _ => ColumnFilter::new(),
     };
+    let mut menu = HeaderMenu::new();
+    let mut chooser = Chooser::new();
+    // A hide past the cap's suggestion, until the next key.
+    let mut capped: Option<String> = None;
     let mut find = match preset {
         Preset::Chords => FindBar::new(),
         _ => FindBar::new().table_hints(format!(
@@ -1260,12 +1408,19 @@ fn main() -> io::Result<()> {
     };
     // What the status line says while nothing else is to be said.
     let keys = format!(
-        "{} find  {} filter  {} column  {} clear",
+        "{} find  {} filter  {} column  {} row  {} clear  {} pin  {} hide  {} menu  {} choose",
         hint(Control::Find),
         hint(Control::QuickFilter),
         hint(Control::ColumnFilter),
-        hint(Control::Clear)
+        hint(Control::RowFilter),
+        hint(Control::Clear),
+        hint(PIN_LEFT),
+        hint(Control::Hide { axis: Axis::Cols }),
+        hint(Control::Menu { axis: Axis::Cols }),
+        hint(Control::Chooser { axis: Axis::Cols })
     );
+    // What a click selects, which Alt+S cycles.
+    let mut unit = SelectionUnit::Cells;
     let mut mouse = Mouse::default();
     let mut layout = Layout::default();
     // The row Keys last drawn, which auto-size measures.
@@ -1309,10 +1464,11 @@ fn main() -> io::Result<()> {
                 // The source's reasons for what it did not apply.
                 let snapshot = grid.snapshot();
                 let wanted = snapshot.requested_view().unwrap_or(snapshot.applied_view());
-                quick.set_error(wanted.rows.filter.quick.as_ref().and_then(query_error));
-                let column = popup.column().and_then(|key| {
+                let asked = wanted.axis(quick.axis()).filter.quick.as_ref();
+                quick.set_error(asked.and_then(query_error));
+                let item = popup.filtering().zip(popup.item()).and_then(|(axis, key)| {
                     wanted
-                        .rows
+                        .axis(axis)
                         .filter
                         .conditions
                         .on(key)
@@ -1321,9 +1477,11 @@ fn main() -> io::Result<()> {
                             _ => None,
                         })
                 });
-                popup.set_error(column);
-                let field = grid.snapshot().quick_filter(Axis::Rows).is_some();
-                let chips = !grid.snapshot().conditions(Axis::Rows).is_empty();
+                popup.set_error(item);
+                let field = grid.snapshot().quick_filter(quick.axis()).is_some();
+                let chips = Axis::ALL
+                    .into_iter()
+                    .any(|axis| !grid.snapshot().conditions(axis).is_empty());
                 for _ in 0..u16::from(field) + u16::from(chips) {
                     area.y += 1;
                     area.height = area.height.saturating_sub(1);
@@ -1348,12 +1506,13 @@ fn main() -> io::Result<()> {
                 }
                 let snapshot = grid.snapshot();
                 shown_rows.clear();
-                shown_rows.extend(snapshot.rows().iter().filter_map(|r| r.key));
+                shown_rows.extend(snapshot.drawn(Axis::Rows).filter_map(|r| r.key));
                 app.focus = snapshot.focus(Axis::Rows).zip(snapshot.focus(Axis::Cols));
                 moving = animating(&snapshot);
-                let shown_cols: Vec<Key> = snapshot.cols().iter().filter_map(|c| c.key).collect();
+                let shown_cols: Vec<Key> =
+                    snapshot.drawn(Axis::Cols).filter_map(|c| c.key).collect();
                 let (marks, found) = table.find(snapshot.find(), &shown_rows, &shown_cols);
-                let unmatched = table.unmatched(&shown_rows);
+                let unmatched = table.unmatched(&shown_rows, &shown_cols);
                 let content = Marked {
                     text: table.text(),
                     marks: &marks,
@@ -1363,7 +1522,9 @@ fn main() -> io::Result<()> {
                 if let Some(editor) = &app.editor {
                     render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
                 }
-                popup.fetch(&snapshot, |key, query| table.distinct(key, query));
+                popup.fetch(&snapshot, |axis, key, query| {
+                    table.distinct(axis, key, query)
+                });
                 let at = match popup.width() {
                     0 => layout.grid,
                     width => ratatui::layout::Rect {
@@ -1379,6 +1540,12 @@ fn main() -> io::Result<()> {
                     at,
                     frame.buffer_mut(),
                 );
+                let buf = frame.buffer_mut();
+                menu.render(&snapshot, &table.text(), &themes[theme], layout.grid, buf);
+                chooser.fetch(&snapshot, &table.text(), |axis, range| {
+                    table.window(axis, range)
+                });
+                chooser.render(&snapshot, &themes[theme], layout.grid, buf);
                 if field {
                     let top = ratatui::layout::Rect { height: 1, ..full };
                     quick.render(&snapshot, &themes[theme], top, frame.buffer_mut());
@@ -1405,24 +1572,40 @@ fn main() -> io::Result<()> {
                     height: 1,
                     ..full
                 };
-                let mut said = status(&snapshot);
-                if !unmatched.is_empty() {
+                let mut said = capped.clone().unwrap_or_else(|| status(&snapshot));
+                if let Some(layout_said) = app.layout_said {
+                    if !said.is_empty() {
+                        said += " | ";
+                    }
+                    said += layout_said;
+                }
+                let [rows, cols] = [&unmatched[0], &unmatched[1]].map(|u| u.len());
+                if rows + cols > 0 {
                     if !said.is_empty() {
                         said += " | ";
                     }
                     let again = hint(Control::Reapply);
-                    said += &match unmatched.len() {
-                        1 => format!("1 edited row no longer matches: {again} re-applies"),
-                        n => format!("{n} edited rows no longer match: {again} re-applies"),
+                    let named = |n: usize, noun: &str| match n {
+                        0 => None,
+                        1 => Some(format!("1 {noun}")),
+                        n => Some(format!("{n} {noun}s")),
                     };
+                    let edited = [named(rows, "row"), named(cols, "column")];
+                    let edited: Vec<String> = edited.into_iter().flatten().collect();
+                    let verb = if rows + cols == 1 { "matches" } else { "match" };
+                    said += &format!(
+                        "{} edited no longer {verb}: {again} re-applies",
+                        edited.join(" and ")
+                    );
                 }
                 if said.is_empty() {
                     said = keys.clone();
                 }
                 frame.render_widget(ratatui::text::Line::from(said), line);
                 let names = format!(
-                    "{} | {} | {preset_name} | {} | {border}",
-                    row_count(&snapshot),
+                    "{}{} | {} | {preset_name} | {} | {border}",
+                    selecting(&snapshot, unit),
+                    table.counts(&snapshot),
                     table.source(),
                     themes[theme].name
                 );
@@ -1459,16 +1642,24 @@ fn main() -> io::Result<()> {
                     if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
                         return Ok(());
                     }
+                    capped = None;
+                    app.layout_said = None;
                     if app.edit_key(&mut table, &mut grid, key.code)
+                        || chooser.key(&key, &mut grid)
+                        || menu.key(&key, &mut grid, |axis, range| table.window(axis, range))
                         || popup.key(&key, &mut grid)
                         || quick.key(&key, &mut grid)
                         || find.key(&key, &mut grid)
                     {
+                        if let Some(axis) = menu.take_chooser() {
+                            chooser.open(&grid.snapshot(), axis);
+                        }
                         continue;
                     }
                     let took = match controls.control(&key) {
                         Some(Control::QuickFilter) => quick.focus(&grid.snapshot()),
                         Some(Control::ColumnFilter) => popup.open(&grid.snapshot()),
+                        Some(Control::RowFilter) => popup.open_row(&grid.snapshot()),
                         Some(Control::ColumnText { not }) => popup.open_text(&mut grid, not),
                         Some(Control::KeepValue) => {
                             let snapshot = grid.snapshot();
@@ -1511,6 +1702,30 @@ fn main() -> io::Result<()> {
                             grid.reapply_view();
                             true
                         }
+                        Some(Control::Pin { axis, edge }) => {
+                            toggle_pin(&mut grid, axis, edge);
+                            true
+                        }
+                        Some(Control::Unpin { axis }) => {
+                            unpin_focused(&mut grid, axis);
+                            true
+                        }
+                        Some(Control::Hide { axis }) => {
+                            let keys_at = |axis, range| table.window(axis, range);
+                            if let Hid::Capped(cap) = hide_chosen(&mut grid, axis, keys_at) {
+                                capped = Some(cap_hint(axis, cap));
+                            }
+                            true
+                        }
+                        Some(Control::Chooser { axis }) => chooser.open(&grid.snapshot(), axis),
+                        Some(Control::ShowHidden { axis }) => {
+                            menu.open_hidden(&grid.snapshot(), axis)
+                        }
+                        Some(Control::Menu { axis }) => menu.open(&grid.snapshot(), axis),
+                        Some(Control::Freeze { axis }) => {
+                            freeze_focused(&mut grid, axis);
+                            true
+                        }
                         // Esc closes the drawer, else find, else cancels.
                         Some(Control::Close) if popup.close() => true,
                         Some(Control::Close) if find.is_open() => {
@@ -1532,6 +1747,32 @@ fn main() -> io::Result<()> {
                     }
                     if ctrl && key.code == KeyCode::Char('r') {
                         table.next_filter(&mut grid);
+                        continue;
+                    }
+                    if ctrl && key.code == KeyCode::Char('s') {
+                        app.saved = Some(save_layout(&mut grid));
+                        app.layout_said = Some("layout saved");
+                        continue;
+                    }
+                    if ctrl && key.code == KeyCode::Char('o') {
+                        app.layout_said = Some(match &app.saved {
+                            Some(saved) => {
+                                restore_layout(&mut grid, saved);
+                                // The band keeps the restored thickness.
+                                app.fit_rows = false;
+                                "layout restored"
+                            }
+                            None => "no layout saved: Ctrl+S saves one",
+                        });
+                        continue;
+                    }
+                    if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('s') {
+                        unit = match unit {
+                            SelectionUnit::Cells => SelectionUnit::Rows,
+                            SelectionUnit::Rows => SelectionUnit::Cols,
+                            _ => SelectionUnit::Cells,
+                        };
+                        grid.set_selection_unit(unit);
                         continue;
                     }
                     if let Some(action) = keymap.action(&key) {

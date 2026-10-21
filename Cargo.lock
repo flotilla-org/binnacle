@@ -97,6 +97,7 @@ version = "0.1.0"
 dependencies = [
  "binnacle-core",
  "binnacle-memory",
+ "binnacle-testkit",
  "hegeltest",
  "insta",
  "ratatui",

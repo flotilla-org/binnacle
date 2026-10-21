@@ -1,7 +1,7 @@
 //! The adapter's default keymap from crossterm keys to Actions, and rebinding.
 
 use binnacle_core::{Action, Axis, FocusStep};
-use binnacle_ratatui::Keymap;
+use binnacle_ratatui::{Keymap, Preset};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -77,6 +77,21 @@ fn the_default_keymap_moves_focus_with_arrows_pages_and_edges() {
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
             focus(Axis::Cols, FocusStep::Edge, false, true),
         ),
+        (
+            KeyCode::PageDown,
+            KeyModifiers::ALT,
+            focus(Axis::Cols, FocusStep::Page, true, false),
+        ),
+        (
+            KeyCode::PageUp,
+            KeyModifiers::ALT,
+            focus(Axis::Cols, FocusStep::Page, false, false),
+        ),
+        (
+            KeyCode::PageUp,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+            focus(Axis::Cols, FocusStep::Page, false, true),
+        ),
         (KeyCode::Char('x'), KeyModifiers::ALT, None),
     ];
     for (code, modifiers, expected) in cases {
@@ -116,7 +131,7 @@ fn hosts_rebind_and_unbind_keys() {
 }
 
 #[test]
-fn the_default_keymap_selects_all_selects_columns_and_cancels() {
+fn the_default_keymap_selects_all_selects_columns_and_rows_and_cancels() {
     let keys = Keymap::default();
     let cases = [
         (KeyCode::Char('a'), KeyModifiers::CONTROL, Action::SelectAll),
@@ -125,6 +140,7 @@ fn the_default_keymap_selects_all_selects_columns_and_cancels() {
             KeyModifiers::CONTROL,
             Action::SelectColumn,
         ),
+        (KeyCode::Char(' '), KeyModifiers::SHIFT, Action::SelectRow),
         (KeyCode::Esc, KeyModifiers::NONE, Action::Cancel),
     ];
     for (code, modifiers, expected) in cases {
@@ -176,4 +192,69 @@ fn enter_activates_f2_begins_an_edit_and_unbound_characters_type() {
         None,
         "typing is part of the default keymap"
     );
+}
+
+const PRESETS: [Preset; 3] = [Preset::Chords, Preset::Modes, Preset::BareKeys];
+
+/// The Actions every preset's keymap reaches, beside moving by item.
+fn parity_actions() -> Vec<Action> {
+    let page = |forward| focus(Axis::Cols, FocusStep::Page, forward, false).unwrap();
+    vec![
+        Action::SelectRow,
+        Action::SelectColumn,
+        Action::SelectAll,
+        page(true),
+        page(false),
+    ]
+}
+
+#[test]
+fn each_preset_keymap_selects_rows_and_columns_and_pages_the_columns() {
+    for preset in PRESETS {
+        let keys = Keymap::preset(preset);
+        for action in parity_actions() {
+            assert!(
+                !keys.keys(&action).is_empty(),
+                "{preset:?} reaches {action:?}"
+            );
+            for (code, modifiers) in keys.keys(&action) {
+                let pressed = keys.action(&press(code, modifiers));
+                assert_eq!(pressed, Some(action.clone()), "{preset:?} {code:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn home_and_end_stay_the_first_and_last_row_in_every_preset() {
+    for preset in PRESETS {
+        let keys = Keymap::preset(preset);
+        let none = KeyModifiers::NONE;
+        let home = keys.action(&press(KeyCode::Home, none));
+        let end = keys.action(&press(KeyCode::End, none));
+        assert_eq!(home, focus(Axis::Rows, FocusStep::Edge, false, false));
+        assert_eq!(end, focus(Axis::Rows, FocusStep::Edge, true, false));
+    }
+}
+
+#[test]
+fn the_modes_and_bare_keys_presets_select_the_row_with_a_bare_key_too() {
+    // Few terminals report Shift with Space, so a key without modifiers
+    // reaches it where typing is off.
+    for preset in [Preset::Modes, Preset::BareKeys] {
+        let keys = Keymap::preset(preset);
+        let row = press(KeyCode::Char('V'), KeyModifiers::SHIFT);
+        assert_eq!(keys.action(&row), Some(Action::SelectRow), "{preset:?}");
+        let typed = press(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(keys.action(&typed), None, "{preset:?} types");
+    }
+    let modes = Keymap::preset(Preset::Modes);
+    let l = press(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert_eq!(
+        modes.action(&l),
+        focus(Axis::Cols, FocusStep::Item, true, false)
+    );
+    let chords = Keymap::preset(Preset::Chords);
+    let typed = chords.action(&press(KeyCode::Char('q'), KeyModifiers::NONE));
+    assert_eq!(typed, Some(Action::TypeText("q".into())));
 }

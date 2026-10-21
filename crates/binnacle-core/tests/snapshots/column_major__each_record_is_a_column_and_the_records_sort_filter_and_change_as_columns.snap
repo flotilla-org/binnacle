@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-core/tests/column_major.rs
-assertion_line: 59
 expression: out
 ---
 --- 1. six records as columns, three fields as rows
@@ -36,11 +35,11 @@ effect (gen 2): Locate { axis: Cols, key: Key(5) }
 effect (gen 2): Locate { axis: Cols, key: Key(1) }
   locate Cols Key(1): Found(2)
 effect (gen 2): Locate { axis: Cols, key: Key(4) }
-  locate Cols Key(4): Gone { suggest: Some(2) }
+  locate Cols Key(4): Gone { suggest: Some(3) }
 effect (gen 2): Locate { axis: Cols, key: Key(2) }
-  locate Cols Key(2): Gone { suggest: Some(2) }
+  locate Cols Key(2): Gone { suggest: Some(3) }
 effect (gen 2): Locate { axis: Cols, key: Key(0) }
-  locate Cols Key(0): Gone { suggest: Some(2) }
+  locate Cols Key(0): Gone { suggest: Some(3) }
 window Cols 0..3
 gen 3 | damage layout selection positions | sort unsorted cols 0v | filter none cols quick "3" | total Rows 3 | total Cols 6
 Rows: (unchanged)
@@ -56,7 +55,7 @@ effect (gen 3): Locate { axis: Cols, key: Key(3) }
 effect (gen 3): Locate { axis: Cols, key: Key(5) }
   locate Cols Key(5): Found(1)
 effect (gen 3): Locate { axis: Cols, key: Key(1) }
-  locate Cols Key(1): Gone { suggest: Some(1) }
+  locate Cols Key(1): Gone { suggest: Some(2) }
 window Cols 0..2
 gen 4 | damage layout positions | sort unsorted cols 0v | filter none cols quick "3" | total Rows 3 | total Cols 6
 Rows: (unchanged)

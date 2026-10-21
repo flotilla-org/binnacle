@@ -5,8 +5,8 @@
 // or column are dimmed under a wash.
 
 import type { Align, CellCanvas, CellStatus } from "../renderer";
-import { cellState } from "../snapshot";
-import { PAD, clip, type PaintContext } from "./context";
+import { cellState, itemSpan } from "../snapshot";
+import { PAD, clip, clipCell, type PaintContext } from "./context";
 
 /** Paints the body; returns whether a renderer asked for another frame. */
 export function paintBody(p: PaintContext): boolean {
@@ -16,12 +16,15 @@ export function paintBody(p: PaintContext): boolean {
   ctx.fillStyle = theme.body.background;
   ctx.fillRect(left, top, p.width - left, p.height - top);
   const cell = createCell(p);
-  const picked = new Set(s.picked);
+  const pickedRows = new Set(s.picked.rows);
+  const pickedCols = new Set(s.picked.cols);
   const cols = s.cols.strip;
   s.rows.strip.forEach((row, i) => {
     if (theme.zebra && row.position % 2 === 1) {
+      const span = itemSpan(s.rows, i);
+      const y = Math.max(row.offset, span.start);
       ctx.fillStyle = theme.zebra;
-      ctx.fillRect(left, row.offset, right - left, row.size);
+      ctx.fillRect(left, y, right - left, Math.min(row.offset + row.size, span.end) - y);
     }
     const rowId = p.content.id("rows", row);
     const rowUnmatched = p.content.unmatched("rows", i);
@@ -32,12 +35,13 @@ export function paintBody(p: PaintContext): boolean {
       const status: CellStatus = {
         focused: state.focused,
         selected: state.selected,
-        picked: row.key !== null && picked.has(row.key),
+        picked: (row.key !== null && pickedRows.has(row.key)) || (col.key !== null && pickedCols.has(col.key)),
         editing: state.editing,
         loading: value === undefined && !failed,
         flashing: row.key === null || col.key === null ? 0 : p.flashes.amount(row.key, col.key, p.now),
       };
       ctx.save();
+      clipCell(p, i, j);
       ctx.translate(col.offset, row.offset);
       clip(ctx, 0, 0, col.size, row.size);
       cell.place(col.size, row.size, status);

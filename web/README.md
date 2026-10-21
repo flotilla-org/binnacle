@@ -105,6 +105,23 @@ To filter and view from code:
   `grid.removeCondition(c)`, `grid.replaceCondition(from, to)` and
   `grid.clearConditions(colId)` change them; each asks the Table Source for
   the View Spec in force with the change.
+- Each of these takes the axis to filter last, the rows by default: with
+  `"cols"` it filters the columns by their values in rows, so
+  `grid.addCondition({ id: rowId, kind, not }, "cols")` keeps the columns
+  whose value in that row matches, and `grid.setQuickFilter(query, "cols")`
+  keeps those with the text in a searched row. The source declares it on its
+  `cols` axis (`quickFilter`, `support`, `distinct`, `unmatched`); without
+  `cols.support` the columns offer no controls.
+- `grid.hide(ids, axis?)` hides rows (or with `"cols"`, columns): the grid
+  asks the Table Source to leave them out whatever the filter keeps, so
+  clearing a filter leaves them hidden. Focus moves to a neighbour, picks
+  and a partial selection go, and their sizes stay for when they come back.
+  `grid.show(ids, axis?)` brings them back in their places, and
+  `grid.hidden(axis?)` lists them. `grid.canHide(axis)` says whether the
+  source hides that axis: it declares `hide: true` on the axis (with
+  `view`), and its `view` then leaves out the items each part's `hidden`
+  names, answering with those it has. `fromRows` hides both axes. Mod+Alt+0
+  hides the focused column and Mod+Alt+9 its row.
 - `grid.requestView(spec)` asks the Table Source for a whole View Spec, such
   as a saved view.
 - `grid.reapplyView()` asks for the View Spec in force again, so rows the
@@ -121,15 +138,21 @@ To filter and view from code:
   still to be answered, `frame.viewError` holds the source's message for the
   part it left out, and `frame.columns` the column headers in view, each
   with whether it is filtered (and pending, or not applied) and what it
-  supports. While a View Spec is pending the rows shown stay as they are; a
-  newer one aborts the request in flight, so only the latest answer paints.
+  supports. `frame.columnsFilter` gives the same for the columns' filter
+  (`quickFilter`, `quick`, `quickState`, `conditions`), and `frame.cols`
+  their count, total and unmatched. While a View Spec is pending the rows
+  shown stay as they are; a newer one aborts the request in flight, so only
+  the latest answer paints.
 - `grid.columnSupport(colId)` says whether a column sorts and takes Text
   conditions (and regexes) and OneOf conditions; `grid.columns()` lists the
-  table's columns with their labels and support.
+  table's columns with their labels and support. `grid.rowSupport(rowId)`
+  says the same of the columns by a row, and `grid.rowLabel(rowId)` gives a
+  row's header text.
 - `grid.distinct(colId, search, limit, apply)` asks the source for a
   column's distinct values, narrowed by the filter in force less the
   column's own conditions, and calls `apply` with them; it returns a request
-  to `abort()`, or `null` if the column takes no OneOf conditions.
+  to `abort()`, or `null` if the column takes no OneOf conditions. With a
+  last argument `"cols"`, a row's values across the columns.
 
 `createFilterBar(grid)` builds the filter bar: the quick filter field with
 match case, regex (when the source takes regexes) and clear buttons, and the
@@ -162,6 +185,26 @@ source did not apply turns the field red with its message. Escape, a press outsi
 condition ("port: not Bergen ×": the label reopens the menu, × removes the
 condition) and "+ Filter", which picks a column and opens its menu. With a
 column menu the bar shows even when the rows take no quick filter.
+
+The column menu is the row menu too, where the source filters its columns:
+a row header's funnel (drawn while hovered, and as a mark while the row
+filters the columns), Alt+ArrowRight in the grid, or `menu.openRow(rowId)`
+opens the same popover beside the row header, "Filter columns by" the row,
+with the checklist of the row's values across the columns. The filter bar
+then lists those conditions after "Columns where" ("3: not Bergen ×"), shows
+the column count beside the row count while the columns are filtered ("4
+of 5 columns"), and its "Re-apply" counts edited rows and columns. Its
+options name each axis's items for the counts (`nouns: { rows: ["field",
+"fields"], cols: ["record", "records"] }`, giving "5 of 12 records"), and
+`axis: "cols"` makes its field the columns' quick filter.
+
+Where the source hides an axis, the menu leads with "Hide column" (or "Hide
+row") and "Show hidden columns ▸", whose flyout lists the hidden ones to
+show again, with a search past eight of them, and "Show all". Mod+Alt+Shift+0
+(or 9 for rows) opens it at that list, and Shift+F10 or the context menu key
+opens the focused column's menu. A column that takes no conditions gets
+just those items. The filter bar counts the columns left, "4 of 5 columns",
+hidden or filtered alike.
 
 ### React
 
@@ -277,7 +320,9 @@ interface AxisSource<Id, CrossId> {
   distinct?(by: CrossId, query: DistinctQuery<CrossId>, signal: AbortSignal): MaybePromise<Distinct>;
   /** Set if the axis takes a quick filter (with `view`); `{ regex: true }` if its Text Queries may be regexes. */
   quickFilter?: { regex?: boolean };
-  /** Where `id` sits after a reorder: `{ type: "Found", position }` or `{ type: "Gone", suggest }`. */
+  /** Set if `view` leaves out the items a View Spec's `hidden` names on this axis; the grid offers hiding only then. */
+  hide?: boolean;
+  /** Where `id` sits after a reorder: `{ type: "Found", position }`, or `{ type: "Gone", suggest }` with where it would sit among the items left (the next one's position, or the count when none follows). */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /**
    * Whether each of `ids` is unmatched: kept in view after the user's edit though the filter drops
@@ -294,10 +339,13 @@ interface AxisSource<Id, CrossId> {
   identity?: "position";
 }
 
-/** One part per axis, each naming items of the other axis: the rows sort and filter by columns. */
+/**
+ * One part per axis, its filter and sort naming items of the other axis (the rows sort and filter by
+ * columns), and its own items to leave out whatever the filter keeps (empty unless the axis hides).
+ */
 interface ViewSpec<RowId, ColId> {
-  rows: { filter: FilterSpec<ColId>; sort: SortSpec<ColId> };
-  cols: { filter: FilterSpec<RowId>; sort: SortSpec<RowId> };
+  rows: { filter: FilterSpec<ColId>; sort: SortSpec<ColId>; hidden: RowId[] };
+  cols: { filter: FilterSpec<RowId>; sort: SortSpec<RowId>; hidden: ColId[] };
 }
 
 /** Every part must keep an item: the quick filter, and each condition. */

@@ -1,11 +1,12 @@
 // The Border Style's lines: handles in the header bands' Gaps, column and row
 // lines down the body, band rules and closing lines, as in the ratatui
 // adapter. Each line is centred in its Gap and snapped to device pixels; the
-// part inside a header band is drawn as a handle, the rest as border.
+// part inside a header band is drawn as a handle, the rest as border. The
+// pinned edge is drawn over them, whatever the Border Style.
 
 import { drawsBandRules, lineWidth, type BorderStyle } from "../border";
 import type { AxisName } from "../codes";
-import type { StripItem } from "../snapshot";
+import { itemSpan, stripOf, type AxisSnapshot, type StripItem } from "../snapshot";
 import type { PaintContext } from "./context";
 
 /** A line centred across `[start, start + size)` and running over `[from, to)`, CSS px. */
@@ -33,13 +34,17 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
     if (!last) return band;
     return Math.max(band, end(last) + (isLast(axis, last) ? 0 : s[axis].gap));
   };
+  // Where the item at `index` of the axis's drawn items shows: a scrolling
+  // item slides under the pinned ones.
+  const shows = (axis: AxisName, index: number) => itemSpan(s[axis], index);
   // The end of the axis's last item, when it is shown: a closing line goes past it.
-  const closing = (axis: AxisName, band: number) => {
+  const closing = (axis: AxisName) => {
     const last = s[axis].strip.at(-1);
-    return last && isLast(axis, last) && end(last) >= band ? end(last) : null;
+    const span = shows(axis, s[axis].strip.length - 1);
+    return last && isLast(axis, last) && end(last) >= span.start ? end(last) : null;
   };
-  const closeX = columns ? closing("cols", left) : null;
-  const closeY = grid ? closing("rows", top) : null;
+  const closeX = columns ? closing("cols") : null;
+  const closeY = grid ? closing("rows") : null;
   const right = Math.max(reach("cols", left), closeX === null ? 0 : closeX + width);
   const bottom = Math.max(reach("rows", top), closeY === null ? 0 : closeY + width);
 
@@ -49,30 +54,31 @@ function rules(p: PaintContext, style: BorderStyle): Rule[] {
   if (style.extent !== "none") {
     // A Gap's line runs through the body for `columns` (or `grid` for rows);
     // past the axis's last item there is no Gap, only the handle that resizes it.
-    const gaps = (axis: AxisName, band: number, body: boolean, across: number, bandEnd: number) => {
+    const gaps = (axis: AxisName, body: boolean, across: number, bandEnd: number) => {
       const gap = s[axis].gap;
       if (gap <= 0) return;
-      for (const item of s[axis].strip) {
-        if (end(item) < band) continue;
+      for (const [i, item] of s[axis].strip.entries()) {
+        const span = shows(axis, i);
+        if (end(item) < span.start || end(item) > span.end) continue;
         const vertical = axis === "cols";
         if (isLast(axis, item)) line(vertical, end(item), width, bandEnd);
         else line(vertical, end(item), gap, body ? across : bandEnd);
       }
     };
-    gaps("cols", left, columns, bottom, top);
-    gaps("rows", top, grid, right, left);
+    gaps("cols", columns, bottom, top);
+    gaps("rows", grid, right, left);
   }
   if (closeX !== null) line(true, closeX, width, bottom);
   if (closeY !== null) line(false, closeY, width, right);
   if (drawsBandRules(style)) {
     // A rule reaches the handle after the last item, where there is one.
-    const handle = (axis: AxisName, band: number) => (s[axis].gap > 0 ? closing(axis, band) : null);
+    const handle = (axis: AxisName) => (s[axis].gap > 0 ? closing(axis) : null);
     if (left >= 2 * width) {
-      const y = handle("rows", top);
+      const y = handle("rows");
       line(true, left - width, width, y === null ? bottom : Math.max(bottom, y + width));
     }
     if (top >= 2 * width) {
-      const x = handle("cols", left);
+      const x = handle("cols");
       line(false, top - width, width, x === null ? right : Math.max(right, x + width));
     }
   }
@@ -151,4 +157,51 @@ export function paintBorders(p: PaintContext, style: BorderStyle, layer: BorderL
   lc.globalCompositeOperation = "source-over";
   ctx.drawImage(canvas, 0, 0);
   ctx.restore();
+}
+
+/**
+ * The pinned edges of each axis: a line in the Gap after the leading pinned
+ * Strip and in the Gap before the trailing one, across the whole grid, and a
+ * shadow falling on the scrolling side once the body has scrolled under it
+ * (under the trailing Strip, until the body has scrolled to its end).
+ */
+export function paintPinnedEdges(p: PaintContext): void {
+  const { ctx, s, theme } = p;
+  const SHADOW = 8;
+  for (const axis of ["cols", "rows"] as const) {
+    const a = s[axis];
+    const reach = axis === "cols" ? p.bottom : p.right;
+    const edge = (at: number, shadow: number | null, toward: 1 | -1) => {
+      if (shadow !== null) {
+        const far = shadow + toward * SHADOW;
+        const fade =
+          axis === "cols" ? ctx.createLinearGradient(shadow, 0, far, 0) : ctx.createLinearGradient(0, shadow, 0, far);
+        fade.addColorStop(0, theme.pinnedShadow);
+        fade.addColorStop(1, "transparent");
+        ctx.fillStyle = fade;
+        const from = Math.min(shadow, far);
+        if (axis === "cols") ctx.fillRect(from, 0, SHADOW, reach);
+        else ctx.fillRect(0, from, reach, SHADOW);
+      }
+      ctx.fillStyle = theme.pinnedEdge;
+      const line = Math.round((at - 0.5) / p.pixel) * p.pixel;
+      if (axis === "cols") ctx.fillRect(line, 0, 1, reach);
+      else ctx.fillRect(0, line, reach, 1);
+    };
+    // At the inside end of each pinned Strip's region, where it clips.
+    if (a.pinned > 0) {
+      const scrolled = a.anchor.position > 0 || a.anchor.offset > 0;
+      edge(a.regions.leading.end + a.gap / 2, scrolled ? a.scrolling.start : null, 1);
+    }
+    if (a.trailing > 0) edge(a.regions.trailing.start - a.gap / 2, scrolledToEnd(a) ? null : a.scrolling.end, -1);
+  }
+}
+
+/** Whether the scrolling Strip shows the axis's last unpinned item whole. */
+function scrolledToEnd(a: AxisSnapshot): boolean {
+  const pins = new Set(a.strip.filter((_, i) => stripOf(a, i) !== "scrolling").map((i) => i.position));
+  let last = a.count - 1;
+  while (last >= 0 && pins.has(last)) last--;
+  const item = a.strip.find((i, index) => stripOf(a, index) === "scrolling" && i.position === last);
+  return last < 0 || (item !== undefined && end(item) <= a.scrolling.end);
 }

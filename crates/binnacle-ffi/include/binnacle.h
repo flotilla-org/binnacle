@@ -27,6 +27,12 @@ extern "C" {
 #define BINNACLE_ROWS 0
 #define BINNACLE_COLS 1
 
+/* An edge of an axis items can be pinned to: the leading edge is the left of
+ * the columns and the top of the rows, the trailing edge their right and
+ * bottom. */
+#define BINNACLE_EDGE_LEADING 0
+#define BINNACLE_EDGE_TRAILING 1
+
 /* BinnacleSnapshot.damage bits. */
 #define BINNACLE_DAMAGE_LAYOUT 1u
 #define BINNACLE_DAMAGE_SELECTION 2u
@@ -34,7 +40,7 @@ extern "C" {
 
 /* BinnacleSnapshot.cell_states bits. */
 #define BINNACLE_CELL_FOCUSED 1u
-/* Inside the range, or in a picked row. */
+/* Inside the range, or in a picked row or column. */
 #define BINNACLE_CELL_SELECTED 2u
 /* The current find match, drawn apart from the other matches. */
 #define BINNACLE_CELL_CURRENT_MATCH 4u
@@ -43,8 +49,8 @@ extern "C" {
  * the applied View Spec, DESCENDING says which way and sort_place where (0
  * first). PENDING: a requested View Spec that would change this item's part
  * of that sort is unanswered. SELECTED: the
- * whole item is selected (the range spans every item across it, or its row
- * is picked). HOVERED: the pointer is over it. FILTERED: the applied View
+ * whole item is selected (the range spans every item across it, or it is
+ * picked). HOVERED: the pointer is over it. FILTERED: the applied View
  * Spec has a condition read in this item; FILTER_PENDING: a requested View
  * Spec that would change those conditions is unanswered. */
 #define BINNACLE_HEADER_SORTED 1u
@@ -57,6 +63,9 @@ extern "C" {
 /* FILTER_NOT_APPLIED: no answer is due, and a condition read in this item
  * that the user asked for is left out of the applied View Spec. */
 #define BINNACLE_HEADER_FILTER_NOT_APPLIED 128u
+/* MOVE_PENDING: a move of this item waits for binnacle_grid_move_answered:
+ * draw it pending, like a sort, while the order stays as it is. */
+#define BINNACLE_HEADER_MOVE_PENDING 256u
 
 /* BinnacleSnapshot.mode. Modes the Grid gained after this header read as
  * BINNACLE_MODE_OTHER. */
@@ -66,6 +75,21 @@ extern "C" {
 /* The edge of a Header Band is being dragged; the band's axis snapshot shows
  * its thickness as it follows the pointer. */
 #define BINNACLE_MODE_RESIZING_BAND 3
+/* Headers are being dragged: see has_drop and pin_zones for where a release
+ * would drop them. With no drop, the release does nothing (unpinned items
+ * over the body of an axis that can't move). */
+#define BINNACLE_MODE_MOVING_HEADERS 4
+
+/* BinnacleSnapshot.drop_target: what releasing the dragged headers would do.
+ * MOVE: request a move to before drop_position (the count for the end),
+ * unpinning the dragged item first if drop_unpin. UNPIN: unpin the dragged
+ * item, which returns to its own Position, drop_position (the axis can't
+ * move). PIN: pin the dragged items to drop_edge, drawn before the pinned
+ * drop_before if has_drop_before, else after the last pin there; drop_reorder
+ * when they are pinned there already. */
+#define BINNACLE_DROP_MOVE 0
+#define BINNACLE_DROP_UNPIN 1
+#define BINNACLE_DROP_PIN 2
 
 /* BinnacleEffect.kind. Effects the Grid gained after this header arrive as
  * BINNACLE_EFFECT_OTHER: skip them. */
@@ -91,6 +115,17 @@ extern "C" {
  * PREVIOUS), wrapping. Answer each with binnacle_grid_find_stepped, in
  * order. */
 #define BINNACLE_EFFECT_FIND_STEP_REQUESTED 9
+/* The user dropped the headers of the items with keys on axis before the
+ * item at Position to (the count for the end), Positions as they were before
+ * the move. The Grid reorders nothing: move them and tell the Grid with
+ * binnacle_grid_notify, or refuse; either way answer with
+ * binnacle_grid_move_answered. No other move starts until then. */
+#define BINNACLE_EFFECT_MOVE_REQUESTED 10
+/* The Keys pinned to edge (BINNACLE_EDGE_*) of axis changed to keys, in pin
+ * order, dormant pins included: by a pin, an unpin, a freeze or
+ * binnacle_grid_set_pins. A host that saves layouts keeps them and restores
+ * them with binnacle_grid_set_pins. At most one per edge is queued. */
+#define BINNACLE_EFFECT_PINS_CHANGED 11
 
 /* BinnacleEffect.direction for FIND_STEP_REQUESTED. */
 #define BINNACLE_FIND_NEXT 0
@@ -128,6 +163,10 @@ extern "C" {
  * (binnacle_grid_reapply_view), so rows their edits left unmatched are
  * filtered. */
 #define BINNACLE_VIEW_EDIT_REAPPLY 8
+/* The items of axis with keys (keys_len of them) were hidden, after those
+ * hidden already, or shown again. */
+#define BINNACLE_VIEW_EDIT_HIDE 9
+#define BINNACLE_VIEW_EDIT_SHOW 10
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
@@ -218,6 +257,7 @@ extern "C" {
 /* What a plain click on a cell selects. */
 #define BINNACLE_SELECT_CELLS 0
 #define BINNACLE_SELECT_ROWS 1
+#define BINNACLE_SELECT_COLS 2
 
 /* What clicking a header does. */
 #define BINNACLE_HEADER_CLICK_SORT 0
@@ -355,6 +395,9 @@ typedef struct {
   float gap;
   BinnacleScrollAnchor anchor;
   BinnacleThumb thumb;
+  /* The drawn items in drawn order: the leading pinned Strip's pinned_len
+   * items, then the scrolling Strip, then the trailing pinned Strip's
+   * trailing_len items. */
   const BinnacleStripItem *strip;
   size_t strip_len;
   /* The headers of the strip's items, in strip order (headers_len ==
@@ -363,8 +406,11 @@ typedef struct {
   size_t headers_len;
   /* Set when BinnacleSnapshot.has_focus is. */
   BinnacleFocusEnd focus;
-  /* Set when BinnacleSnapshot.has_selection_range is. */
-  BinnacleRange selection_range;
+  /* Set when BinnacleSnapshot.has_selection_range is: the Positions the range
+   * covers on the axis, as sorted runs apart from each other. It is
+   * contiguous in drawn order, so with items pinned it may be several. */
+  const BinnacleRange *selection_runs;
+  size_t selection_runs_len;
   /* The axis's unfiltered count, if the Table Source gave it with the
    * applied View Spec: shown beside count. */
   uint32_t has_total;
@@ -375,12 +421,64 @@ typedef struct {
    * request's, then the applied ones it drops. */
   const BinnacleListedCondition *conditions;
   size_t conditions_len;
+  /* The axis's picked Keys, in Key order. */
+  const uint64_t *picked;
+  size_t picked_len;
+  /* How many of strip's items lead it as the leading pinned Strip: drawn
+   * from the header band on, whatever the scroll (slid back while focus is
+   * on one it clips). */
+  size_t pinned_len;
+  /* How many of strip's items end it as the trailing pinned Strip: drawn
+   * ending flush with the viewport's far end, whatever the scroll. */
+  size_t trailing_len;
+  /* Where the scrolling Strip draws along the axis: clip its items (those
+   * between the pinned ones) to [scrolling_start, scrolling_end). */
+  float scrolling_start;
+  float scrolling_end;
+  /* Where each pinned Strip draws along the axis: clip the leading pinned
+   * items to [leading_start, leading_end) and the trailing ones to
+   * [trailing_start, trailing_end). Too long to leave the minimum scrolling
+   * region (binnacle_grid_set_min_scrolling), a Strip is clipped at its
+   * inside end, the trailing one first; one clipped whole still lists its
+   * items. */
+  float leading_start;
+  float leading_end;
+  float trailing_start;
+  float trailing_end;
+  /* Header drags move the axis's items (binnacle_grid_set_movable). */
+  uint32_t movable;
+  /* Whether the Table Source hides items of the axis: offer Hide only then. */
+  uint32_t hide_support;
+  /* The axis's hidden Keys in the order they were hidden, as the latest
+   * request has them: what a "Show hidden" list offers. */
+  const uint64_t *hidden;
+  size_t hidden_len;
+  /* The most hidden Keys the axis takes: past it a hide is refused and the
+   * host suggests a filter (binnacle_grid_set_hide_cap). */
+  size_t hide_cap;
+  /* The Keys pinned to each edge, in pin order, dormant pins (their items
+   * gone for now) included: what a saved layout keeps. */
+  const uint64_t *leading_pins;
+  size_t leading_pins_len;
+  const uint64_t *trailing_pins;
+  size_t trailing_pins_len;
 } BinnacleAxisSnapshot;
 
 /*
  * What to draw this frame. Its arrays stay valid until the next
  * binnacle_grid_snapshot or binnacle_grid_free on the same Grid.
  */
+/* A pin zone lit while headers are dragged on axis: the edge (BINNACLE_EDGE_*)
+ * whose pinned Strip is empty, size long from offset; hot while a drop would
+ * pin there. */
+typedef struct {
+  uint32_t axis;
+  uint32_t edge;
+  float offset;
+  float size;
+  uint32_t hot;
+} BinnacleZone;
+
 typedef struct {
   uint64_t generation;
   /* BINNACLE_DAMAGE_* bits: what changed since the previous Snapshot. */
@@ -391,13 +489,10 @@ typedef struct {
   /* The focused cell, unclipped, if it is visible with its Keys known. */
   uint32_t has_focus_rect;
   BinnacleRect focus_rect;
-  /* The one contiguous range, clamped to the counts. */
+  /* The one contiguous range: see each axis's selection_runs. */
   uint32_t has_selection_range;
-  /* Picked row Keys, in Key order. */
-  const uint64_t *picked;
-  size_t picked_len;
   /* Rects to fill: the visible part of the range, then each visible picked
-   * row. They may overlap. */
+   * row, then each visible picked column. They may overlap. */
   const BinnacleRect *selection_rects;
   size_t selection_rects_len;
   /* BINNACLE_CELL_* bits for each visible cell, row-major: the cell crossing
@@ -425,6 +520,33 @@ typedef struct {
   /* Nonzero while a binnacle_grid_view_applied is due: requested parts are
    * pending; once zero, requested parts not applied are not applied. */
   uint32_t view_pending;
+  /* The move requested and not yet answered: its axis and the Keys it
+   * moves. */
+  uint32_t has_pending_move;
+  uint32_t pending_move_axis;
+  const uint64_t *pending_move_keys;
+  size_t pending_move_keys_len;
+  /* The last move the Table Source refused and its reason, until the next
+   * press: a short message to show near the headers or in a status line. */
+  uint32_t has_move_refusal;
+  uint32_t move_refusal_axis;
+  BinnacleText move_refusal;
+  /* While headers are dragged and a release would do something: a line
+   * across the viewport at drop_offset along drop_axis, and what the drop
+   * does (BINNACLE_DROP_*, with the fields it names). */
+  uint32_t has_drop;
+  uint32_t drop_axis;
+  uint32_t drop_target;
+  float drop_offset;
+  uint64_t drop_position;
+  uint32_t drop_unpin;
+  uint32_t drop_edge;
+  uint32_t has_drop_before;
+  uint64_t drop_before;
+  uint32_t drop_reorder;
+  /* The lit pin zones while headers are dragged: the first pin_zones_len. */
+  BinnacleZone pin_zones[2];
+  size_t pin_zones_len;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -463,9 +585,11 @@ struct BinnacleListedCondition {
 };
 
 /* One axis's part of a View Spec: its sort, by items of the other axis in
- * order (empty for unsorted), and its filter: the quick filter, which keeps
- * the items with a match for it, when has_quick is 1, and the conditions,
- * which keep the items every one of them keeps. */
+ * order (empty for unsorted), its filter: the quick filter, which keeps the
+ * items with a match for it, when has_quick is 1, and the conditions, which
+ * keep the items every one of them keeps; and its hidden Keys, items of this
+ * axis the Table Source leaves out apart from the filter. A source answers
+ * with the hidden Keys its data still has. */
 typedef struct {
   const BinnacleSortColumn *sort;
   size_t sort_len;
@@ -473,6 +597,8 @@ typedef struct {
   BinnacleTextQuery quick;
   const BinnacleCondition *conditions;
   size_t conditions_len;
+  const uint64_t *hidden;
+  size_t hidden_len;
 } BinnacleAxisView;
 
 /* The view the Table Source should present: axes[BINNACLE_ROWS] and
@@ -481,12 +607,15 @@ typedef struct {
   BinnacleAxisView axes[2];
 } BinnacleViewSpec;
 
-/* The cause of a requested View Spec, a hint: the spec alone is the request. */
+/* The cause of a requested View Spec, a hint: the spec alone is the request.
+ * keys is set for HIDE and SHOW. */
 typedef struct {
   uint32_t kind;
   uint32_t axis;
   uint64_t key;
   uint32_t multi;
+  const uint64_t *keys;
+  size_t keys_len;
 } BinnacleViewEdit;
 
 /* Each axis's unfiltered count, where the Table Source knows it. */
@@ -531,7 +660,24 @@ typedef struct {
   uint32_t has_from;
   BinnacleFindMatch from;
   uint32_t direction;
+  /* MOVE_REQUESTED: the Keys of the items moved (axis is theirs), valid as
+   * text is, and the Position they drop before. PINS_CHANGED: the Keys now
+   * pinned to edge, in pin order. */
+  const uint64_t *keys;
+  size_t keys_len;
+  uint64_t to;
+  /* PINS_CHANGED: the edge (BINNACLE_EDGE_*). */
+  uint32_t edge;
 } BinnacleEffect;
+
+/* Every Size Override on an axis, in Key order: keys[i] has sizes[i]. Valid
+ * until the next binnacle_grid_size_overrides or binnacle_grid_free on the
+ * same Grid. */
+typedef struct {
+  const uint64_t *keys;
+  const float *sizes;
+  size_t len;
+} BinnacleSizeOverrides;
 
 /* A raw pointer event in viewport coordinates (the host's unit, origin at the
  * top-left including the header bands). clicks is the host's click count for
@@ -557,12 +703,19 @@ int binnacle_grid_set_selection_unit(BinnacleGrid *grid, uint32_t unit);
 
 /* BINNACLE_HEADER_CLICK_* for the headers of items on axis (ROWS for row
  * headers). Row headers default to SELECT, column headers to SORT. Only
- * columns sort: SORT on row headers makes a click do nothing. */
+ * columns sort: SORT on row headers makes a click do nothing. Under SORT or
+ * SELECT, Ctrl or Meta toggles the item's pick instead. */
 int binnacle_grid_set_header_click(BinnacleGrid *grid, uint32_t axis, uint32_t click);
 
 /* How far a pressed pointer must move to drag; default 1. Values that are not
  * finite and non-negative are ignored. */
 int binnacle_grid_set_drag_threshold(BinnacleGrid *grid, float threshold);
+
+/* Whether the Table Source can move the items of axis now (1) or not (0),
+ * which it may change at any time. Header drags move items only on a movable
+ * axis; withdrawing it ends a move being dragged there. No axis is movable
+ * until set. 0 for other values. */
+int binnacle_grid_set_movable(BinnacleGrid *grid, uint32_t axis, uint32_t movable);
 
 /* The frame loop. */
 
@@ -594,6 +747,55 @@ int binnacle_grid_set_size(BinnacleGrid *grid, uint32_t axis, uint64_t key, floa
  * finite and non-negative are ignored. */
 int binnacle_grid_set_header(BinnacleGrid *grid, uint32_t axis, float thickness);
 
+/* The Edge Gap on axis: the least space between a pinned Strip and the
+ * scrolling Strip, where the pinned edge is drawn; the Gap is used where it is
+ * larger. Values that are not finite and non-negative are ignored. */
+int binnacle_grid_set_edge_gap(BinnacleGrid *grid, uint32_t axis, float gap);
+
+/* How far the pin zone at each end of axis reaches while headers are
+ * dragged: a drop there, or past it over the Header Band or beyond the
+ * viewport, pins to that edge while its pinned Strip is empty. Default a
+ * quarter of the axis's default size. Values that are not finite and
+ * non-negative are ignored. */
+int binnacle_grid_set_pin_zone(BinnacleGrid *grid, uint32_t axis, float size);
+
+/* The least length along axis the pinned Strips leave to the scrolling Strip
+ * (0 at first): pinned Strips longer than the rest are clipped at their inside
+ * ends, the trailing one first, and nothing unpins. Focus on a clipped pinned
+ * item slides its Strip to show it. Values that are not finite and
+ * non-negative are ignored. */
+int binnacle_grid_set_min_scrolling(BinnacleGrid *grid, uint32_t axis, float length);
+
+/* Pins the item with key on axis to edge (BINNACLE_EDGE_*), after the keys
+ * pinned there before: it is drawn in that edge's pinned Strip whatever the
+ * sort or scroll. A key outside the Window is found with a LOCATE Effect.
+ * Unknown edges are ignored. */
+int binnacle_grid_pin(BinnacleGrid *grid, uint32_t axis, uint32_t edge, uint64_t key);
+
+/* "Freeze up to here": pins every item from the start of axis to the one with
+ * key, in their current order, to the leading edge, as far as they fit with
+ * room left to scroll. On a leading pin, unpins the pins after it. If the
+ * Window lacks some of their keys, the axis scrolls to its start and the
+ * freeze finishes once the next Window holds them. */
+int binnacle_grid_freeze(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Unpins the item with key on axis; the scroll stays where it is. */
+int binnacle_grid_unpin(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Makes the len keys the pins of edge on axis, in that order, say to restore
+ * a saved layout: keys pinned there before and not listed are unpinned, a
+ * key pinned to the other edge moves here, a key listed twice counts once.
+ * A key outside the Window is found with a LOCATE Effect; one the Table
+ * Source lacks sleeps as a dormant pin until it comes back. Unknown edges
+ * are ignored. */
+int binnacle_grid_set_pins(BinnacleGrid *grid, uint32_t axis, uint32_t edge,
+                           const uint64_t *keys, size_t len);
+
+/* Lists every Size Override on axis into out, for Keys shown or not: what a
+ * saved layout keeps, restored with binnacle_grid_set_size. */
+int binnacle_grid_size_overrides(BinnacleGrid *grid, uint32_t axis,
+                                 BinnacleSizeOverrides *out);
+
 /* Lays out the frame and fills out. */
 int binnacle_grid_snapshot(BinnacleGrid *grid, BinnacleSnapshot *out);
 
@@ -622,6 +824,10 @@ int binnacle_grid_view_changed(BinnacleGrid *grid, const BinnacleViewSpec *spec,
 int binnacle_grid_set_quick_filter_support(BinnacleGrid *grid, uint32_t axis,
                                            uint32_t support);
 
+/* Whether the Table Source hides items of axis: 1 or 0 (the default).
+ * Adapters offer Hide only then. 0 for anything else. */
+int binnacle_grid_set_hide_support(BinnacleGrid *grid, uint32_t axis, uint32_t hides);
+
 /* What the Table Source supports when viewing axis by key, an item of the
  * other axis: BINNACLE_SUPPORT_* bits, the whole declaration. Every item
  * supports SORT | TEXT (not ONE_OF) until set otherwise. 0 for unknown bits,
@@ -630,7 +836,9 @@ int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
                               uint32_t support);
 
 /* The answer to LOCATE for key on axis: BINNACLE_LOCATED_*, with position
- * for FOUND and GONE_SUGGEST (ignored for GONE). */
+ * for FOUND and GONE_SUGGEST (ignored for GONE). A GONE_SUGGEST position is
+ * where the key would sit among the items left: the next one's position in
+ * the order it had, or the count when none follows. */
 int binnacle_grid_located(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint32_t answer,
                           uint64_t position);
 
@@ -674,6 +882,26 @@ int binnacle_grid_replace_condition(BinnacleGrid *grid, uint32_t axis,
                                     const BinnacleCondition *from,
                                     const BinnacleCondition *to);
 
+/* The most hidden Keys the Table Source takes on axis, at most (and by
+ * default) BINNACLE_HIDE_CAP. */
+#define BINNACLE_HIDE_CAP 1000
+int binnacle_grid_set_hide_cap(BinnacleGrid *grid, uint32_t axis, size_t cap);
+
+/* What binnacle_grid_hide returns when the axis's hidden Keys would then
+ * number more than its cap: nothing is hidden or requested, and the host
+ * suggests a filter instead. */
+#define BINNACLE_HIDE_CAPPED 2
+
+/* Hides the items of axis with keys (len of them; NULL with 0 for none),
+ * adding those not hidden yet to its hidden Keys, and requests the result
+ * with BINNACLE_VIEW_EDIT_HIDE. Nothing while the source can't hide axis.
+ * BINNACLE_HIDE_CAPPED past the axis's cap. */
+int binnacle_grid_hide(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, size_t len);
+
+/* Shows the hidden items of axis with keys again and requests the result
+ * with BINNACLE_VIEW_EDIT_SHOW; Keys not hidden are skipped. */
+int binnacle_grid_show(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, size_t len);
+
 /* Requests the whole of spec (NULL for the base view), say to restore a saved
  * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */
 int binnacle_grid_request_view(BinnacleGrid *grid, const BinnacleViewSpec *spec);
@@ -693,6 +921,11 @@ int binnacle_grid_set_find(BinnacleGrid *grid, const BinnacleFindQuery *query);
 int binnacle_grid_find_next(BinnacleGrid *grid);
 int binnacle_grid_find_previous(BinnacleGrid *grid);
 
+/* The answer to MOVE_REQUESTED: NULL refusal once the items moved, else
+ * the reason the Table Source refused, len bytes of UTF-8, which the
+ * Snapshot carries until the next press. 0 if it is not UTF-8. */
+int binnacle_grid_move_answered(BinnacleGrid *grid, const uint8_t *refusal, size_t len);
+
 /* Text the user typed; 0 if it is not UTF-8. */
 int binnacle_grid_type_text(BinnacleGrid *grid, const uint8_t *text, size_t len);
 
@@ -705,6 +938,9 @@ int binnacle_grid_select_all(BinnacleGrid *grid);
 
 /* Every row of the range's columns, or of the focused column. */
 int binnacle_grid_select_column(BinnacleGrid *grid);
+
+/* Every column of the range's rows, or of the focused row. */
+int binnacle_grid_select_row(BinnacleGrid *grid);
 
 /* Ends the gesture in progress, restoring focus and selection from before it. */
 int binnacle_grid_cancel(BinnacleGrid *grid);

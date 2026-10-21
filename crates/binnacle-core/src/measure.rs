@@ -54,6 +54,8 @@ pub struct AxisMeasure {
     content: Vec<f32>,
     /// Effective size of each Window item.
     sizes: Vec<f32>,
+    /// Positions left out of the axis's length, sorted.
+    skipped: Vec<Position>,
 }
 
 impl AxisMeasure {
@@ -113,6 +115,7 @@ impl AxisMeasure {
             keys: Vec::new(),
             content: Vec::new(),
             sizes: Vec::new(),
+            skipped: Vec::new(),
         }
     }
 
@@ -248,9 +251,22 @@ impl AxisMeasure {
         gone
     }
 
+    /// The size of the item with `key`: its Size Override, else its size in
+    /// the Window, else the default.
+    pub fn size_of(&self, key: Key) -> f32 {
+        self.size_override(key)
+            .or_else(|| self.position_of(key).map(|p| self.size_at(p)))
+            .unwrap_or(self.default_size)
+    }
+
     /// The Size Override set for `key`, if any.
     pub fn size_override(&self, key: Key) -> Option<f32> {
         self.overrides.get(&key).copied()
+    }
+
+    /// Every Size Override, in Key order.
+    pub fn size_overrides(&self) -> impl Iterator<Item = (Key, f32)> + '_ {
+        self.overrides.iter().map(|(&k, &s)| (k, s))
     }
 
     /// The smallest size any item can have: the default, the smallest Size
@@ -381,13 +397,131 @@ impl AxisMeasure {
         self.stride(self.default_size)
     }
 
+    /// Leaves the items at `positions` out of the axis's length, as if they
+    /// had no size and no Gap after them: pinned items, drawn apart from the
+    /// scrolling ones. [`AxisMeasure::distance`] and [`AxisMeasure::locate`]
+    /// step over them and [`AxisMeasure::extent`] leaves them out. Replaces
+    /// the Positions left out before; the caller keeps them up to date as
+    /// the count and order change.
+    pub fn set_skipped(&mut self, positions: impl IntoIterator<Item = Position>) {
+        self.skipped.clear();
+        self.skipped.extend(positions);
+        self.skipped.sort_unstable();
+        self.skipped.dedup();
+    }
+
+    /// Whether the item at `p` is left out of the axis's length.
+    pub fn skipped(&self, p: Position) -> bool {
+        self.skipped.binary_search(&p).is_ok()
+    }
+
+    /// How many Positions before `p` are skipped.
+    pub fn skipped_before(&self, p: Position) -> u64 {
+        self.skipped.partition_point(|&s| s < p) as u64
+    }
+
+    /// How many Positions are skipped.
+    pub fn skipped_len(&self) -> u64 {
+        self.skipped.len() as u64
+    }
+
+    /// The `n`th Position (from 0) that is not skipped, if the count reaches
+    /// it.
+    pub fn nth_unskipped(&self, n: u64) -> Option<Position> {
+        let mut p = n;
+        for &s in &self.skipped {
+            if s > p {
+                break;
+            }
+            p += 1;
+        }
+        (p < self.count).then_some(p)
+    }
+
+    /// The skipped Positions in `r`, in order.
+    pub(crate) fn skipped_in(&self, r: Range<Position>) -> &[Position] {
+        let a = self.skipped.partition_point(|&p| p < r.start);
+        let b = self.skipped.partition_point(|&p| p < r.end).max(a);
+        &self.skipped[a..b]
+    }
+
     /// The distance from the start of item `from` to the start of item `to`
-    /// (negative if `to` comes first). Positions are clamped to the count; the
-    /// "start" of Position `count` is one Gap past the last item's end.
+    /// (negative if `to` comes first), leaving out skipped items. Positions
+    /// are clamped to the count; the "start" of Position `count` is one Gap
+    /// past the last item's end.
     pub fn distance(&self, from: Position, to: Position) -> f64 {
         let (from, to) = (from.min(self.count), to.min(self.count));
         if from > to {
             return -self.distance(to, from);
+        }
+        let skipped: f64 = (self.skipped_in(from..to).iter())
+            .map(|&p| self.stride(self.size_at(p)))
+            .sum();
+        self.full_distance(from, to) - skipped
+    }
+
+    /// The length of the whole axis: every item not skipped plus the Gaps
+    /// between them.
+    pub fn extent(&self) -> f64 {
+        (self.distance(0, self.count) - f64::from(self.gap)).max(0.0)
+    }
+
+    /// The item at `delta` past the start of item `from` (before it if
+    /// negative), stepping over skipped items, or `None` if that is outside
+    /// the axis. Starting on a skipped item starts at the next one. The Gap
+    /// after the last item not skipped is not part of the axis.
+    pub fn locate(&self, from: Position, delta: f64) -> Option<ItemAt> {
+        if self.count == 0 || !delta.is_finite() {
+            return None;
+        }
+        let from = from.min(self.count - 1);
+        let at = if delta >= 0.0 {
+            self.locate_forward(from, delta)
+        } else {
+            self.locate_back(from, delta)
+        }?;
+        let after = at.position + 1..self.count;
+        let shown_after = after.end - after.start - self.skipped_in(after).len() as u64;
+        if at.in_gap && shown_after == 0 {
+            return None;
+        }
+        Some(at)
+    }
+
+    fn locate_forward(&self, mut p: Position, mut rem: f64) -> Option<ItemAt> {
+        for &s in self.skipped_in(p..self.count) {
+            if s > p {
+                let run = self.full_distance(p, s);
+                if rem < run {
+                    return self.full_locate(p, rem);
+                }
+                rem -= run;
+            }
+            p = s + 1;
+        }
+        if p >= self.count {
+            return None;
+        }
+        self.full_locate(p, rem)
+    }
+
+    fn locate_back(&self, mut p: Position, mut rem: f64) -> Option<ItemAt> {
+        for &s in self.skipped_in(0..p).iter().rev() {
+            let run = self.full_distance(s + 1, p);
+            if -rem <= run {
+                return self.full_locate(p, rem);
+            }
+            rem += run;
+            p = s;
+        }
+        self.full_locate(p, rem)
+    }
+
+    /// [`AxisMeasure::distance`] counting skipped items too.
+    fn full_distance(&self, from: Position, to: Position) -> f64 {
+        let (from, to) = (from.min(self.count), to.min(self.count));
+        if from > to {
+            return -self.full_distance(to, from);
         }
         let w = self.window();
         let (lo, hi) = (from.max(w.start), to.min(w.end));
@@ -401,19 +535,8 @@ impl AxisMeasure {
         known + (to - from - inside) as f64 * self.default_stride()
     }
 
-    /// The length of the whole axis: every item plus the Gaps between them.
-    pub fn extent(&self) -> f64 {
-        if self.count == 0 {
-            0.0
-        } else {
-            self.distance(0, self.count) - f64::from(self.gap)
-        }
-    }
-
-    /// The item at `delta` past the start of item `from` (before it if
-    /// negative), or `None` if that is outside the axis. The Gap after the last
-    /// item is not part of the axis.
-    pub fn locate(&self, from: Position, delta: f64) -> Option<ItemAt> {
+    /// [`AxisMeasure::locate`] counting skipped items too.
+    fn full_locate(&self, from: Position, delta: f64) -> Option<ItemAt> {
         if self.count == 0 || !delta.is_finite() {
             return None;
         }

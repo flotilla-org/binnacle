@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-ratatui/tests/theme.rs
-assertion_line: 163
 expression: out
 ---
 --- mono
@@ -16,9 +15,9 @@ expression: out
 aaabbbbcbbbbbbccccccccddddddcb
 cccaaaaaaaaaaaaaaaaaaaaaaaaaac
 cccaaaaaaaaaaaaaaaaaaaaaaaaaaa
-ccceeeeaeeeeeeaeeeeeeaeeeeeeaa
-cccaaaaaeeeeeeaeeeeeeaaaaaaaac
-cccaaaaaeeeeeeaffffffaaaaaaaac
+eeeffffaffffffaffffffaffffffaa
+cccaaaaaffffffaffffffaaaaaaaac
+cccaaaaaffffffaggggggaaaaaaaac
 cccaaaaacaaaaaacaaaaaacaaaaaac
 aaacaaaaaaaaaaaaaaaaaaaaacccca
 
@@ -26,8 +25,9 @@ a: fg Reset bg Reset
 b: fg Reset bg Reset BOLD
 c: fg Reset bg Reset DIM
 d: fg Reset bg Reset BOLD | UNDERLINED
-e: fg Reset bg Reset UNDERLINED
-f: fg Reset bg Reset REVERSED
+e: fg Reset bg Reset DIM | REVERSED
+f: fg Reset bg Reset UNDERLINED
+g: fg Reset bg Reset REVERSED
 
 --- inverted headers, zebra
    l 0 │col 1▲│col 2~│col 3 │

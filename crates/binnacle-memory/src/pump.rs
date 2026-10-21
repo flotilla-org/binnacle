@@ -14,6 +14,15 @@ pub struct Viewed {
     pub notices: Vec<(Axis, ChangeNotice)>,
 }
 
+/// A Table Source's answer to a move it made: the Change Notices the axes
+/// need, and the View Spec it applies now with each axis's unfiltered count
+/// if the move changed it (a sort it cleared to keep the moved order).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Moved {
+    pub notices: Vec<(Axis, ChangeNotice)>,
+    pub view: Option<(ViewSpec, Totals)>,
+}
+
 /// A Table Source's answer to a find step: the match stepped to, its place
 /// among every match in the Find Query's order (from 0) if known, and
 /// whether the step went past the end (or the start) and wrapped.
@@ -53,6 +62,19 @@ pub trait PumpSource {
         None
     }
 
+    /// Whether the source hides items of `axis` named in the View Spec's
+    /// hidden Keys, for the host to declare with [`Grid::set_hide_support`].
+    /// The default hides none.
+    fn hide_support(&mut self, _axis: Axis) -> bool {
+        false
+    }
+
+    /// The most hidden Keys the source takes on `axis`, if fewer than the
+    /// Grid's own cap, for the host to declare with [`Grid::set_hide_cap`].
+    fn hide_cap(&mut self, _axis: Axis) -> Option<usize> {
+        None
+    }
+
     /// The distinct values `key`, an item of the other axis, holds across
     /// the items of `axis`, as `query` asks, for a checklist; `None` if the
     /// source can't list them (the default), so OneOf conditions are not
@@ -85,27 +107,68 @@ pub trait PumpSource {
         None
     }
 
-    /// Moves the items with `keys` on `axis` to before Position `to`.
-    /// Returns the Change Notice the axis needs, or `None` to refuse (the
-    /// default: the Table Source moves nothing).
-    fn move_items(&mut self, _axis: Axis, _keys: &[Key], _to: Position) -> Option<ChangeNotice> {
+    /// Whether the items of `axis` can move now, which [`pump`] declares
+    /// with [`Grid::set_movable`] before it drains and after each answer
+    /// (so a source can withdraw moves while sorted, say). The default,
+    /// `None`, leaves what the host declared.
+    fn movable(&mut self, _axis: Axis) -> Option<bool> {
         None
+    }
+
+    /// Moves the items with `keys` on `axis` to before Position `to`.
+    /// Returns what the move changed, or a short reason to refuse it, for
+    /// the user (the default: the Table Source moves nothing).
+    fn move_items(&mut self, _axis: Axis, _keys: &[Key], _to: Position) -> Result<Moved, String> {
+        Err("These can't be moved".into())
+    }
+}
+
+/// Declares to `grid` what `source` says of each axis's movability.
+fn declare_movable(grid: &mut Grid, source: &mut (impl PumpSource + ?Sized)) {
+    for axis in Axis::ALL {
+        if let Some(movable) = source.movable(axis) {
+            grid.set_movable(axis, movable);
+        }
+    }
+}
+
+/// Answers a `MoveRequested` from `source`: the View Spec the move left in
+/// force, the Change Notices, then [`Grid::move_answered`].
+pub fn answer_move(
+    grid: &mut Grid,
+    source: &mut (impl PumpSource + ?Sized),
+    axis: Axis,
+    keys: &[Key],
+    to: Position,
+) {
+    match source.move_items(axis, keys, to) {
+        Ok(moved) => {
+            if let Some((spec, totals)) = moved.view {
+                grid.view_changed(spec, totals);
+            }
+            for (axis, notice) in moved.notices {
+                grid.notify(axis, notice);
+            }
+            grid.move_answered(None);
+        }
+        Err(reason) => grid.move_answered(Some(reason)),
     }
 }
 
 /// Drains the Grid's Effects until the queue is empty, answering those the
 /// Table Source handles: `ViewRequested` with `view_applied` and the axes'
 /// Change Notices (or `view_applied` of the previous spec to reject it), and
-/// `Locate` with `located`, `MoveRequested` with the axis's Change
-/// Notice if the source moves the items, and `FindStepRequested` with
-/// `find_stepped`. Answers can queue more Effects, which the same
-/// loop drains. `seen` gets every Effect drained, in order, after the pump
-/// has answered it.
+/// `Locate` with `located`, `MoveRequested` as [`answer_move`] does, and
+/// `FindStepRequested` with `find_stepped`. Answers can queue more Effects,
+/// which the same loop drains. Movability is declared from
+/// [`PumpSource::movable`] before draining and after each answer. `seen`
+/// gets every Effect drained, in order, after the pump has answered it.
 pub fn pump(
     grid: &mut Grid,
     source: &mut (impl PumpSource + ?Sized),
     mut seen: impl FnMut(&mut Grid, Stamped),
 ) {
+    declare_movable(grid, source);
     while let Some(stamped) = grid.poll_effect() {
         match &stamped.effect {
             Effect::ViewRequested { spec, .. } => {
@@ -119,11 +182,7 @@ pub fn pump(
                 let answer = source.locate(axis, key);
                 grid.located(axis, key, answer);
             }
-            Effect::MoveRequested { axis, keys, to } => {
-                if let Some(notice) = source.move_items(*axis, keys, *to) {
-                    grid.notify(*axis, notice);
-                }
-            }
+            Effect::MoveRequested { axis, keys, to } => answer_move(grid, source, *axis, keys, *to),
             Effect::FindStepRequested {
                 query,
                 from,
@@ -133,6 +192,12 @@ pub fn pump(
                 grid.find_stepped(step.map(|s| s.at));
             }
             _ => {}
+        }
+        if matches!(
+            stamped.effect,
+            Effect::ViewRequested { .. } | Effect::MoveRequested { .. }
+        ) {
+            declare_movable(grid, source);
         }
         seen(grid, stamped);
     }

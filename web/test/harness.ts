@@ -4,6 +4,7 @@
 import type { Content } from "../src/content";
 import { createFeed, type Feed } from "../src/feed";
 import { runFrame, type FrameParts } from "../src/frame";
+import type { AxisName } from "../src/codes";
 import { createInitialSizes, type SizeChoices } from "../src/sizes";
 import type { ScrollMapping } from "../src/scroller";
 import type { Snapshot } from "../src/snapshot";
@@ -22,6 +23,8 @@ export class Harness<RowId, ColId, V> {
   readonly parts: FrameParts;
   snapshot!: Snapshot;
   content: Content | null = null;
+  /** Whether the initial sizes computed `size` for `key`, as the widget asks for a layout. */
+  readonly computed: (axis: AxisName, key: bigint, size: number) => boolean;
   /** Every failed request the feed reported, with its error's message. */
   readonly errors: { message: string; request: FailedRequest<RowId, ColId> }[] = [];
 
@@ -48,6 +51,7 @@ export class Harness<RowId, ColId, V> {
         id: (axis, key) => (axis === "rows" ? this.feed.rowId(key) : this.feed.colId(key)),
         fit: fitLength,
       });
+    this.computed = (axis, key, size) => sizing?.computed(axis, key, size) ?? false;
     this.feed.connect(grid);
     this.parts = {
       grid,

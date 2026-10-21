@@ -189,8 +189,8 @@ fn an_edited_row_the_filter_drops_stays_until_the_view_spec_is_applied_again() {
     s.input(|g| g.set_quick_filter(Axis::Rows, Some(TextQuery::new("3"))));
     let mut out = s.step("quick filter \"3\": 13, 31, 23, 3 and the 30", V);
     // The user edits 13 (base row 1) to 12: it no longer matches, and stays.
-    let notice = s.source.edit(1, 0, Some(12)).unwrap();
-    s.input(|g| g.notify(Axis::Rows, notice));
+    let notices = s.source.edit(1, 0, Some(12));
+    s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
     out += &s.step("13 edited to 12 stays, unmatched", V);
     s.input(|g| g.reapply_view());
     out += &s.step("re-apply: the same View Spec, and 12 goes", V);

@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-ratatui/tests/menu.rs
+expression: out
+---
+    name        │port        │crew        │
+1   ┌─ Column name ────────────────────────┐           █
+2   │▸l Pin left                           │           █
+3   │ r Pin right                          │           █
+4   │ f Freeze up to here                  │           █
+5   │ ↑↓ Enter  Esc close                  │           █
+6   └──────────────────────────────────────┘           █
+                                                       █
+                                                       █
+                                                       █
+                                                       █
+                                                       █

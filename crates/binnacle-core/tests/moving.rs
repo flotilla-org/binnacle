@@ -1,21 +1,32 @@
-//! Seam 1 scenarios for column moves: dragging a column header past the
+//! Seam 1 scenarios for moves on either axis: dragging a header past the
 //! threshold, the drop indicator, the move cursor, `MoveRequested` and
-//! `Cancel`.
+//! `Cancel`; which axes are movable, the pending move and refusals; and a
+//! move on a sorted axis of the In-Memory Table Source.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Cursor, Effect, Grid, Key, Mode, Modifiers,
+    Action, Axis, AxisConfig, ChangeNotice, Cursor, DropTarget, Effect, Grid, Key, Mode, Modifiers,
     PointerEvent, SortColumn, SortSpec, Support, ViewEdit, ViewSpec, Viewport,
 };
+use binnacle_memory::MovePolicy;
 use binnacle_testkit::{IdentityTable, RecordTable, Scenario};
 
 /// 20 rows of 1 with a Gap of 1 under a 1-high header band; 5 columns of 6
 /// with a Gap of 1 after a 4-wide row header band. Column p spans x
 /// `4 + 7p .. 10 + 7p`; the Gap after it is the next unit.
+/// The columns are declared movable; the identity source refuses each move.
+/// No pin zones, so a drop near or past either end moves (`pin_drags.rs`
+/// drags into them).
 fn table() -> Scenario<IdentityTable> {
-    Scenario::identity(
+    let mut s = Scenario::identity(
         AxisConfig::new(20, 1.0).header(1.0).gap(1.0),
         AxisConfig::new(5, 6.0).header(4.0).gap(1.0),
-    )
+    );
+    s.input(|g| {
+        g.set_movable(Axis::Cols, true);
+        g.set_pin_zone(Axis::Cols, 0.0);
+        g.set_pin_zone(Axis::Rows, 0.0);
+    });
+    s
 }
 
 const V: Viewport = Viewport {
@@ -50,13 +61,18 @@ fn the_drop_position_follows_the_pointer_and_clamps_past_either_end() {
     let drop_at = |s: &mut Scenario<IdentityTable>, x: f32| {
         s.input(|g| g.pointer(PointerEvent::moved(x, 0.5)));
         let snap = s.frame(V);
-        let Mode::MovingHeaders { axis, key, to } = snap.mode() else {
+        let Mode::MovingHeaders {
+            axis,
+            key,
+            target: DropTarget::Move { to, unpin: false },
+        } = snap.mode()
+        else {
             panic!("{:?}", snap.mode());
         };
         assert_eq!((axis, key), (Axis::Cols, Key(2)));
         assert_eq!(snap.cursor(), Cursor::Move);
         let indicator = snap.drop_indicator().expect("an indicator while moving");
-        assert_eq!((indicator.axis, indicator.to), (Axis::Cols, to));
+        assert_eq!(indicator.axis, Axis::Cols);
         (to, indicator.offset)
     };
     s.input(|g| g.pointer(PointerEvent::down(20.0, 0.5)));
@@ -134,14 +150,17 @@ fn a_header_drag_is_no_click_and_a_border_drag_resizes_instead() {
 }
 
 #[test]
-fn row_header_drags_move_nothing() {
+fn row_header_drags_move_nothing_while_the_rows_are_not_movable() {
     let mut s = table();
     s.frame(V);
     s.input(|g| {
         g.pointer(PointerEvent::down(1.0, 1.5));
         g.pointer(PointerEvent::moved(1.0, 5.5));
     });
-    assert_eq!(s.frame(V).mode(), Mode::Idle);
+    // The drag is on, since it could pin the row, but drops nothing here.
+    let snap = s.frame(V);
+    assert!(matches!(snap.mode(), Mode::MovingHeaders { .. }));
+    assert_eq!(snap.drop_indicator(), None);
     s.input(|g| g.pointer(PointerEvent::up(1.0, 5.5)));
     assert_eq!(s.effects(), vec![]);
 }
@@ -193,6 +212,11 @@ fn dragging_a_selected_column_moves_every_selected_column() {
 /// Three records of four integer columns behind an In-Memory Table Source,
 /// laid out like [`table`].
 fn records() -> Scenario<RecordTable> {
+    records_moved_by(MovePolicy::Bake)
+}
+
+/// [`records`] with `policy` for moves on a sorted axis.
+fn records_moved_by(policy: MovePolicy) -> Scenario<RecordTable> {
     let rows = vec![
         vec![Some(3), Some(30), Some(300), Some(3000)],
         vec![Some(1), Some(10), Some(100), Some(1000)],
@@ -203,7 +227,7 @@ fn records() -> Scenario<RecordTable> {
             AxisConfig::new(3, 1.0).header(1.0).gap(1.0),
             AxisConfig::new(4, 6.0).header(4.0).gap(1.0),
         ),
-        RecordTable::new(rows, 4, [0, 1, 2, 3]),
+        RecordTable::new(rows, 4, [0, 1, 2, 3]).with_move_policy(policy),
     )
 }
 
@@ -319,8 +343,8 @@ fn focus_placed_before_a_move_is_answered_follows_its_column() {
     s.frame(V);
     s.input(|g| {
         g.pointer(PointerEvent::down(14.0, 0.5));
-        g.pointer(PointerEvent::moved(5.0, 0.5));
-        g.pointer(PointerEvent::up(5.0, 0.5));
+        g.pointer(PointerEvent::moved(6.5, 0.5));
+        g.pointer(PointerEvent::up(6.5, 0.5));
         g.action(Action::MoveFocus {
             axis: Axis::Rows,
             by: binnacle_core::FocusStep::Item,
@@ -342,4 +366,212 @@ fn focus_placed_before_a_move_is_answered_follows_its_column() {
         V,
     );
     insta::assert_snapshot!(out);
+}
+
+#[test]
+fn dragging_a_row_header_moves_the_row() {
+    let mut s = records();
+    s.frame(V);
+    // Row p spans y 1 + 2p .. 2 + 2p; the row header band x 0..4.
+    s.input(|g| {
+        g.pointer(PointerEvent::down(1.0, 1.5));
+        g.pointer(PointerEvent::moved(1.0, 4.5));
+    });
+    let mut out = s.step("drag row 0's header over the Gap after row 1", V);
+    s.input(|g| g.pointer(PointerEvent::up(1.0, 4.5)));
+    out += &s.step("drop: the source moves the row", V);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_header_drag_on_an_axis_that_is_not_movable_shows_no_drop_line_and_requests_nothing() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(20, 1.0).header(1.0).gap(1.0),
+        AxisConfig::new(5, 6.0).header(4.0).gap(1.0),
+    );
+    let snap = s.frame(V);
+    assert!(!snap.movable(Axis::Rows) && !snap.movable(Axis::Cols));
+    for (x, y, to) in [(7.0, 0.5, (30.0, 0.5)), (1.0, 1.5, (1.0, 5.5))] {
+        s.input(|g| {
+            g.pointer(PointerEvent::down(x, y));
+            g.pointer(PointerEvent::moved(to.0, to.1));
+        });
+        // Over the body, a drag that could only pin drops nothing.
+        let snap = s.frame(V);
+        assert!(matches!(
+            snap.mode(),
+            Mode::MovingHeaders {
+                target: DropTarget::Stay,
+                ..
+            }
+        ));
+        assert_eq!(snap.drop_indicator(), None);
+        s.input(|g| g.pointer(PointerEvent::up(to.0, to.1)));
+        assert_eq!(s.effects(), vec![]);
+    }
+}
+
+#[test]
+fn withdrawing_movable_ends_a_move_being_dragged_on_that_axis_only() {
+    let mut s = table();
+    s.input(|g| g.set_movable(Axis::Rows, true));
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(30.0, 0.5));
+        g.set_movable(Axis::Rows, false);
+    });
+    assert!(matches!(s.frame(V).mode(), Mode::MovingHeaders { .. }));
+    s.input(|g| g.set_movable(Axis::Cols, false));
+    let snap = s.frame(V);
+    assert_eq!(snap.mode(), Mode::Idle);
+    assert_eq!(snap.drop_indicator(), None);
+    assert!(!snap.movable(Axis::Cols));
+    s.input(|g| g.pointer(PointerEvent::up(30.0, 0.5)));
+    assert_eq!(s.effects(), vec![]);
+}
+
+/// A slow source: the move is drained but not answered.
+#[test]
+fn a_pending_move_shows_on_its_headers_and_no_other_starts_until_it_is_answered() {
+    let mut s = table();
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(30.0, 0.5));
+        g.pointer(PointerEvent::up(30.0, 0.5));
+    });
+    let request = s.grid.poll_effect().map(|e| e.effect);
+    assert!(matches!(request, Some(Effect::MoveRequested { .. })));
+    let mut out = s.step("column 0 dropped at 4, not yet answered", V);
+    let pending = |s: &mut Scenario<IdentityTable>| -> Vec<Key> {
+        let snap = s.frame(V);
+        (snap.headers(Axis::Cols))
+            .filter(|h| h.move_pending)
+            .filter_map(|h| h.key)
+            .collect()
+    };
+    assert_eq!(pending(&mut s), [Key(0)]);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(14.0, 0.5));
+        g.pointer(PointerEvent::moved(37.0, 0.5));
+    });
+    out += &s.step("drag column 1 meanwhile: no move starts", V);
+    s.input(|g| {
+        g.pointer(PointerEvent::up(37.0, 0.5));
+        g.move_answered(None);
+    });
+    out += &s.step(
+        "the source answers: nothing pending, the order as it was",
+        V,
+    );
+    assert_eq!(pending(&mut s), []);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(14.0, 0.5));
+        g.pointer(PointerEvent::moved(37.0, 0.5));
+    });
+    assert!(matches!(s.frame(V).mode(), Mode::MovingHeaders { .. }));
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_refused_move_moves_nothing_and_its_reason_shows_until_the_next_press() {
+    let mut s = table();
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(30.0, 0.5));
+        g.pointer(PointerEvent::up(30.0, 0.5));
+    });
+    let snap = s.frame(V);
+    assert_eq!(snap.pending_move(), None);
+    assert_eq!(
+        snap.move_refusal(),
+        Some((Axis::Cols, "These can't be moved"))
+    );
+    let keys: Vec<_> = snap.cols().iter().map(|c| c.key).collect();
+    assert_eq!(keys, [0, 1, 2, 3, 4].map(|k| Some(Key(k))));
+    // An answer with nothing pending is ignored.
+    s.input(|g| g.move_answered(Some("again".into())));
+    assert_eq!(
+        s.frame(V).move_refusal(),
+        Some((Axis::Cols, "These can't be moved"))
+    );
+    s.click(6.0, 3.0, Modifiers::NONE);
+    assert_eq!(s.frame(V).move_refusal(), None);
+}
+
+/// Records sorted by column 0 (3, 1, 2 in it): rows shown 1, 2, 0.
+fn sorted_records(policy: MovePolicy) -> Scenario<RecordTable> {
+    let mut s = records_moved_by(policy);
+    s.frame(V);
+    s.click(7.0, 0.5, Modifiers::NONE);
+    s.frame(V);
+    s
+}
+
+#[test]
+fn moving_a_row_on_sorted_rows_keeps_the_order_shown_and_drops_the_sort_marker() {
+    let mut s = sorted_records(MovePolicy::Bake);
+    let mut out = s.step("rows sorted by column 0", V);
+    // Row Key 0, last, dropped before Key 2 at Position 1.
+    s.input(|g| {
+        g.pointer(PointerEvent::down(1.0, 5.5));
+        g.pointer(PointerEvent::moved(1.0, 3.2));
+        g.pointer(PointerEvent::up(1.0, 3.2));
+    });
+    out += &s.step(
+        "drop row 0 before Position 1: the order is baked, the sort cleared",
+        V,
+    );
+    let snap = s.frame(V);
+    assert!(snap.applied_view().rows.sort.is_empty());
+    assert_eq!(snap.header_sort(Key(0)).applied, None);
+    let rows: Vec<_> = snap.rows().iter().map(|r| r.key).collect();
+    assert_eq!(rows, [1, 0, 2].map(|k| Some(Key(k))));
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_source_that_refuses_moves_while_sorted_withdraws_them_until_unsorted() {
+    let mut s = sorted_records(MovePolicy::Refuse);
+    let snap = s.frame(V);
+    assert!(!snap.movable(Axis::Rows));
+    assert!(snap.movable(Axis::Cols));
+    s.input(|g| {
+        g.pointer(PointerEvent::down(1.0, 5.5));
+        g.pointer(PointerEvent::moved(1.0, 1.4));
+    });
+    assert_eq!(s.frame(V).drop_indicator(), None);
+    s.input(|g| g.pointer(PointerEvent::up(1.0, 1.4)));
+    assert_eq!(s.effects(), vec![]);
+    // Clicked twice more, the sort cycles to descending, then off.
+    s.click(7.0, 0.5, Modifiers::NONE);
+    s.click(7.0, 0.5, Modifiers::NONE);
+    assert!(s.frame(V).movable(Axis::Rows));
+}
+
+/// A move requested before the sort it races is answered: the source,
+/// sorted by then, refuses it.
+#[test]
+fn a_move_that_reaches_a_source_sorted_since_is_refused_with_its_reason() {
+    let mut s = records_moved_by(MovePolicy::Refuse);
+    s.frame(V);
+    s.input(|g| {
+        g.request_view(ViewSpec::default().with_sort(
+            Axis::Rows,
+            SortSpec::new(vec![SortColumn::ascending(Key(0))]),
+        ));
+        g.pointer(PointerEvent::down(1.0, 5.5));
+        g.pointer(PointerEvent::moved(1.0, 1.4));
+        g.pointer(PointerEvent::up(1.0, 1.4));
+    });
+    let snap = s.frame(V);
+    assert_eq!(
+        snap.move_refusal(),
+        Some((Axis::Rows, "Can't move while sorted: clear the sort first"))
+    );
+    let rows: Vec<_> = snap.rows().iter().map(|r| r.key).collect();
+    assert_eq!(rows, [1, 2, 0].map(|k| Some(Key(k))));
+    assert!(!snap.movable(Axis::Rows));
 }

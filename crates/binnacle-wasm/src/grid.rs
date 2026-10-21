@@ -115,8 +115,60 @@ impl WebGrid {
         self.grid.set_gap(axis(a), gap);
     }
 
+    /// The least space between a pinned Strip and the scrolling Strip on
+    /// axis `a` (the Gap where larger).
+    pub fn set_edge_gap(&mut self, a: u8, gap: f32) {
+        self.grid.set_edge_gap(axis(a), gap);
+    }
+
+    /// How far each end's pin zone on axis `a` reaches while headers are
+    /// dragged.
+    pub fn set_pin_zone(&mut self, a: u8, size: f32) {
+        self.grid.set_pin_zone(axis(a), size);
+    }
+
+    /// The least length on axis `a` the pinned Strips leave to scroll:
+    /// longer, they clip at their inside ends, the trailing one first.
+    pub fn set_min_scrolling(&mut self, a: u8, length: f32) {
+        self.grid.set_min_scrolling(axis(a), length);
+    }
+
     pub fn set_size(&mut self, a: u8, key: u64, size: f32) {
         self.grid.set_size(axis(a), Key(key), size);
+    }
+
+    /// Pins the item with `key` to edge `edge` of axis `a` (see
+    /// [`codes::edge`]), or moves it to the end of that edge's pins.
+    pub fn pin(&mut self, a: u8, edge: u8, key: u64) {
+        if let Some(edge) = codes::edge(edge) {
+            self.grid.pin(axis(a), edge, Key(key));
+        }
+    }
+
+    /// Makes `keys` the pins of edge `edge` of axis `a`, in that order (see
+    /// [`binnacle_core::Grid::set_pins`]).
+    pub fn set_pins(&mut self, a: u8, edge: u8, keys: &[u64]) {
+        if let Some(edge) = codes::edge(edge) {
+            let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+            self.grid.set_pins(axis(a), edge, &keys);
+        }
+    }
+
+    /// The Keys pinned to edge `edge` of axis `a`, in pin order, dormant
+    /// pins included, without laying out a frame; none for a bad edge.
+    pub fn pin_keys(&self, a: u8, edge: u8) -> Vec<u64> {
+        codes::edge(edge).map_or_else(Vec::new, |edge| {
+            self.grid.pins(axis(a), edge).map(|k| k.0).collect()
+        })
+    }
+
+    pub fn unpin(&mut self, a: u8, key: u64) {
+        self.grid.unpin(axis(a), Key(key));
+    }
+
+    /// "Freeze up to here" on the item with `key` on axis `a`.
+    pub fn freeze(&mut self, a: u8, key: u64) {
+        self.grid.freeze(axis(a), Key(key));
     }
 
     /// The Size Override for the item with `key` on axis `a`; NaN for none.
@@ -124,6 +176,20 @@ impl WebGrid {
         self.grid
             .size_override(axis(a), Key(key))
             .map_or(f64::NAN, f64::from)
+    }
+
+    /// The Keys of every Size Override on axis `a`, in Key order;
+    /// `size_override_sizes` gives their sizes in the same order.
+    pub fn size_override_keys(&self, a: u8) -> Vec<u64> {
+        self.grid
+            .size_overrides(axis(a))
+            .map(|(k, _)| k.0)
+            .collect()
+    }
+
+    /// The sizes of every Size Override on axis `a`, in Key order.
+    pub fn size_override_sizes(&self, a: u8) -> Vec<f32> {
+        self.grid.size_overrides(axis(a)).map(|(_, s)| s).collect()
     }
 
     /// What the Table Source supports when viewing axis `a` by `key`, an
@@ -216,6 +282,28 @@ impl WebGrid {
         let (from, to) = (self::condition(from)?, self::condition(to)?);
         self.grid.replace_condition(axis(a), &from, to);
         Ok(())
+    }
+
+    /// Whether the Table Source hides items of the axis.
+    pub fn set_hide_support(&mut self, a: u8, hides: bool) {
+        self.grid.set_hide_support(axis(a), hides);
+    }
+
+    /// The most hidden Keys the Table Source takes on the axis.
+    pub fn set_hide_cap(&mut self, a: u8, cap: u32) {
+        self.grid.set_hide_cap(axis(a), cap as usize);
+    }
+
+    /// `false` if the axis's hidden Keys would pass its cap, so nothing was
+    /// hidden.
+    pub fn hide(&mut self, a: u8, keys: &[u64]) -> bool {
+        let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+        self.grid.hide(axis(a), &keys).is_ok()
+    }
+
+    pub fn show(&mut self, a: u8, keys: &[u64]) {
+        let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+        self.grid.show(axis(a), &keys);
     }
 
     /// Whether axis `a` has a quick filter; see [`codes::quick_filter`].
@@ -315,6 +403,10 @@ impl WebGrid {
         self.grid.action(Action::SelectColumn);
     }
 
+    pub fn select_row(&mut self) {
+        self.grid.action(Action::SelectRow);
+    }
+
     pub fn cancel(&mut self) {
         self.grid.action(Action::Cancel);
     }
@@ -350,6 +442,24 @@ impl WebGrid {
     /// What a plain click selects; `unit` as [`codes::selection_unit`].
     pub fn set_selection_unit(&mut self, unit: u8) {
         self.grid.set_selection_unit(codes::selection_unit(unit));
+    }
+
+    /// Whether the Table Source can move the items of `a` now.
+    pub fn set_movable(&mut self, a: u8, movable: bool) {
+        self.grid.set_movable(axis(a), movable);
+    }
+
+    /// The answer to a `MoveRequested`: `undefined` once the items moved,
+    /// else the reason the Table Source refused.
+    pub fn move_answered(&mut self, refusal: Option<String>) {
+        self.grid.move_answered(refusal);
+    }
+
+    /// What a click on a header of `a` does; `click` as
+    /// [`codes::header_click`].
+    pub fn set_header_click(&mut self, a: u8, click: u8) {
+        self.grid
+            .set_header_click(axis(a), codes::header_click(click));
     }
 
     pub fn scroll_by(&mut self, a: u8, items: f64) {

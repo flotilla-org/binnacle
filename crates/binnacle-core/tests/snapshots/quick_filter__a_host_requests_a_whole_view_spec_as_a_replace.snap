@@ -8,15 +8,15 @@ window Cols 0..3
 effect (gen 1): ViewRequested 1v filter quick "2" in 0 by Replace
   view: applied 1v filter quick "2" in 0, notices [(Rows, Refiltered(1))]
 effect (gen 1): Locate { axis: Rows, key: Key(0) }
-  locate Rows Key(0): Gone { suggest: Some(0) }
+  locate Rows Key(0): Gone { suggest: Some(1) }
 effect (gen 1): Locate { axis: Rows, key: Key(1) }
-  locate Rows Key(1): Gone { suggest: Some(0) }
+  locate Rows Key(1): Gone { suggest: Some(1) }
 effect (gen 1): Locate { axis: Rows, key: Key(2) }
-  locate Rows Key(2): Gone { suggest: Some(0) }
+  locate Rows Key(2): Gone { suggest: Some(1) }
 effect (gen 1): Locate { axis: Rows, key: Key(3) }
-  locate Rows Key(3): Gone { suggest: Some(0) }
+  locate Rows Key(3): Gone { suggest: Some(1) }
 effect (gen 1): Locate { axis: Rows, key: Key(4) }
-  locate Rows Key(4): Gone { suggest: Some(0) }
+  locate Rows Key(4): Gone { suggest: Some(1) }
 window Rows 0..1
 gen 2 | damage layout selection positions | sort 1v | filter quick "2" in 0 | total Rows 8 | total Cols 3
 Rows: count 1, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#5@1+1

@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-ratatui/tests/menu.rs
+expression: t.screen(&menu)
+---
+    name        │port        │crew        │
+1   ┌─ Row 4 ──────────────────────────────┐           █
+2   │▸t Pin top                            │           █
+3   │ b Pin bottom                         │           █
+4   │ f Freeze up to here                  │           █
+5   │ h Hide row                           │           █
+6   │ o Show only this row                 │           █
+    │ c Choose rows…                       │           █
+    │ No hidden rows                       │           █
+    │ Can't hide over 2 rows: filter       │           █
+    │ ↑↓ Enter  Esc close                  │           █
+    └──────────────────────────────────────┘           █

@@ -4,6 +4,7 @@
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, expect, test } from "vitest";
+import { AXIS_CODE, EDGE_CODE } from "../src/codes";
 import { createSelectionEvents, type SelectionChange } from "../src/selection";
 import type { AxisSink, Located, TableSource } from "../src/source";
 import { BAND, COL_WIDTH, HEADER, Harness, ROW_HEIGHT } from "./harness";
@@ -62,7 +63,7 @@ test("fires once per change with the focused cell's IDs, and not on frames that 
       {
         focus: { rowId: "r2", colId: "b" },
         selection: null,
-        picked: [],
+        picked: { rows: [], cols: [] },
       },
     ]);
     h.click(...cell(2, 1));
@@ -87,14 +88,14 @@ test("a range in view reports every ID in order; picked rows report theirs", () 
     h.click(...cell(5, 0), CTRL);
     h.click(...cell(4, 0), CTRL);
     frame();
-    expect(new Set(changes.at(-1)!.picked)).toEqual(new Set(["r5", "r4"]));
+    expect(new Set(changes.at(-1)!.picked.rows)).toEqual(new Set(["r5", "r4"]));
     expect(changes.at(-1)!.focus).toEqual({ rowId: "r4", colId: "a" });
     // Unpicking the focused row changes only the Picks, and still fires.
     const sent = changes.length;
     h.click(...cell(4, 0), CTRL);
     frame();
     expect(changes).toHaveLength(sent + 1);
-    expect(changes.at(-1)!.picked).toEqual(["r5"]);
+    expect(changes.at(-1)!.picked).toEqual({ rows: ["r5"], cols: [] });
   } finally {
     h.destroy();
   }
@@ -111,6 +112,34 @@ test("a range larger than the rows the grid holds reports its count and the endp
     expect(changes.at(-1)!.selection).toEqual({
       rows: { count: 10_000, first: "r0", last: null, ids: null },
       cols: { count: 3, first: "a", last: "c", ids: ["a", "b", "c"] },
+    });
+  } finally {
+    h.destroy();
+  }
+});
+
+test("with items pinned, a range reports its IDs in drawn order, and an end drawn pinned is known", () => {
+  const { h, changes, frame } = watched(table(10_000).source);
+  try {
+    frame();
+    h.grid.pin(AXIS_CODE.cols, EDGE_CODE.leading, h.feed.colKey("c"));
+    h.grid.pin(AXIS_CODE.rows, EDGE_CODE.trailing, h.feed.rowKey("r9999"));
+    h.drain();
+    frame();
+    // Drawn left to right: c, a, b.
+    h.click(...cell(1, 0));
+    h.click(...cell(3, 1), SHIFT);
+    frame();
+    expect(changes.at(-1)!.selection).toEqual({
+      rows: { count: 3, first: "r1", last: "r3", ids: ["r1", "r2", "r3"] },
+      cols: { count: 2, first: "c", last: "a", ids: ["c", "a"] },
+    });
+    h.grid.select_all();
+    h.drain();
+    frame();
+    expect(changes.at(-1)!.selection).toEqual({
+      rows: { count: 10_000, first: "r0", last: "r9999", ids: null },
+      cols: { count: 3, first: "c", last: "b", ids: ["c", "a", "b"] },
     });
   } finally {
     h.destroy();
@@ -138,7 +167,21 @@ test("the focused row's IDs survive a reorder, so a reorder alone does not fire"
   }
 });
 
-/** Up to eight clicks on visible cells, each plain, Shift or Ctrl, with a frame after each. */
+test("a Ctrl-click on a column header picks the column, reported by its ID", () => {
+  const { h, changes, frame } = watched(table(10).source);
+  try {
+    frame();
+    h.click(BAND + 2 * COL_WIDTH + 10, HEADER / 2, CTRL);
+    h.click(BAND + 10, HEADER / 2, CTRL);
+    frame();
+    expect(changes.at(-1)!.picked).toEqual({ rows: [], cols: ["a", "c"] });
+    expect(changes.at(-1)!.focus?.colId).toBe("a");
+  } finally {
+    h.destroy();
+  }
+});
+
+/** Up to eight clicks on visible cells or column headers, each plain, Shift or Ctrl, with a frame after each. */
 function clicks(tc: hegel.TestCase) {
   const w = watched(table(tc.draw(gs.integers({ minValue: 1, maxValue: 40 }))).source);
   w.frame();
@@ -147,7 +190,9 @@ function clicks(tc: hegel.TestCase) {
   for (let i = tc.draw(gs.integers({ minValue: 1, maxValue: 8 })); i > 0; i--) {
     const row = tc.draw(gs.integers({ minValue: 0, maxValue: onScreen - 1 }));
     const col = tc.draw(gs.integers({ minValue: 0, maxValue: 2 }));
-    w.h.click(...cell(row, col), tc.draw(gs.sampledFrom([0, SHIFT, CTRL])));
+    const [x, y] = cell(row, col);
+    const header = tc.draw(gs.booleans());
+    w.h.click(x, header ? HEADER / 2 : y, tc.draw(gs.sampledFrom([0, SHIFT, CTRL])));
     w.frame();
   }
   return w;
@@ -172,17 +217,22 @@ test("over any clicks, the last change describes the grid's focus, range and Pic
     const { h, changes } = clicks(tc);
     try {
       const s = h.snapshot;
-      const last = changes.at(-1) ?? { focus: null, selection: null, picked: [] };
+      const last = changes.at(-1) ?? { focus: null, selection: null, picked: { rows: [], cols: [] } };
       const focus = s.rows.focus && s.cols.focus ? { rowId: h.feed.rowId(s.rows.focus.key!), colId: h.feed.colId(s.cols.focus.key!) } : null;
       expect(last.focus).toEqual(focus);
-      expect(new Set(last.picked)).toEqual(new Set(s.picked.map((k) => h.feed.rowId(k))));
+      expect(new Set(last.picked.rows)).toEqual(new Set(s.picked.rows.map((k) => h.feed.rowId(k))));
+      expect(new Set(last.picked.cols)).toEqual(new Set(s.picked.cols.map((k) => h.feed.colId(k))));
       const range = s.selectionRange;
       if (range === null) {
         expect(last.selection).toBeNull();
       } else {
-        // Every row clicked is on screen, so the range's IDs are all known.
-        const rows = Array.from({ length: range.rows.end - range.rows.start }, (_, i) => `r${range.rows.start + i}`);
-        const cols = ["a", "b", "c"].slice(range.cols.start, range.cols.end);
+        // Nothing is pinned, so each axis's range is one run, and every row
+        // clicked is on screen, so its IDs are all known.
+        expect(range.rows).toHaveLength(1);
+        expect(range.cols).toHaveLength(1);
+        const [rs, cs] = [range.rows[0]!, range.cols[0]!];
+        const rows = Array.from({ length: rs.end - rs.start }, (_, i) => `r${rs.start + i}`);
+        const cols = ["a", "b", "c"].slice(cs.start, cs.end);
         expect(last.selection).toEqual({
           rows: { count: rows.length, first: rows[0], last: rows.at(-1), ids: rows },
           cols: { count: cols.length, first: cols[0], last: cols.at(-1), ids: cols },

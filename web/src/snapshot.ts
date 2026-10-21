@@ -2,7 +2,7 @@
 // layout `crates/binnacle-wasm/src/snapshot.rs` writes. Everything else reads
 // the typed object. The agreement tests check the decoder against Rust.
 
-import type { AxisName } from "./codes";
+import type { AxisName, PinEdge } from "./codes";
 
 export interface Rect {
   x: number;
@@ -60,6 +60,8 @@ export interface KeyedFilter {
 export interface KeyedAxisView {
   filter: KeyedFilter;
   sort: SortColumn[];
+  /** Keys of the axis's own items left out of view, apart from the filter. */
+  hidden: bigint[];
 }
 
 /**
@@ -85,7 +87,7 @@ export interface FindMatch {
   col: bigint;
 }
 
-/** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis. */
+/** A View Spec as the Grid holds it, by Keys: each axis's filter and sort, by items of the other axis, and its hidden items. */
 export interface KeyedViewSpec {
   rows: KeyedAxisView;
   cols: KeyedAxisView;
@@ -105,6 +107,8 @@ export interface HeaderPlacement {
   filter: { filtered: boolean; pending: boolean; notApplied: boolean };
   /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
   support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean };
+  /** Whether this item's move is requested and not yet answered. */
+  movePending: boolean;
 }
 
 export interface AxisSnapshot {
@@ -118,14 +122,37 @@ export interface AxisSnapshot {
   thumb: { fraction: number; size: number };
   focus: { position: number; key: bigint | null } | null;
   locating: boolean;
+  /**
+   * Every drawn item, in drawn order: the leading pinned Strip's `pinned`
+   * items, the scrolling Strip's, then the trailing pinned Strip's `trailing`
+   * items.
+   */
   strip: StripItem[];
+  pinned: number;
+  trailing: number;
+  /** Where the scrolling Strip draws along the axis; its part-scrolled items reach outside it. */
+  scrolling: { start: number; end: number };
+  /**
+   * Where each pinned Strip draws along the axis. Too long to leave the
+   * minimum scrolling region, a pinned Strip is clipped at its inside end
+   * (the trailing one first); one clipped whole still lists its items.
+   */
+  regions: { leading: Span; trailing: Span };
   headers: HeaderPlacement[];
   /** The axis's count before any filter, as the Table Source last gave it; `null` if unknown. */
   total: number | null;
   /** Whether the axis has a quick filter, and whether it takes regexes; `null` if it has none. */
   quickFilter: { regex: boolean } | null;
+  /** Whether the Table Source hides items of the axis. */
+  hideSupport: boolean;
+  /** The most hidden items the axis takes: past it a hide is refused, and the widget suggests a filter. */
+  hideCap: number;
   /** The axis's conditions as the filter's chips list them: the latest request's, then the applied ones it drops. */
   conditions: { condition: KeyedCondition; state: ConditionState }[];
+  /** Whether the Table Source can move the axis's items now, so dragging a header moves them. */
+  movable: boolean;
+  /** The Keys pinned to each edge, in pin order, dormant pins (their items gone for now) included. */
+  pins: { leading: bigint[]; trailing: bigint[] };
 }
 
 export type Mode =
@@ -133,8 +160,31 @@ export type Mode =
   | { type: "DraggingSelection" }
   | { type: "Resizing"; axis: AxisName; key: bigint; startSize: number }
   | { type: "ResizingBand"; axis: AxisName; startThickness: number }
-  | { type: "MovingHeaders"; axis: AxisName; key: bigint; to: number }
+  | { type: "MovingHeaders"; axis: AxisName; key: bigint; target: DropTarget }
   | { type: "Editing"; row: bigint; col: bigint };
+
+/**
+ * What releasing dragged headers would do: `Move` asks the Table Source to
+ * move them before Position `to` (unpinning the dragged item first if
+ * `unpin`); `Unpin` unpins it back to its own Position `at`, the axis being
+ * unmovable; `Pin` pins them to `edge` before the pinned `before` (`null`:
+ * after the last), `reorder` when only the pins' order changes; `Stay`
+ * drops nothing.
+ */
+export type DropTarget =
+  | { type: "Move"; to: number; unpin: boolean }
+  | { type: "Unpin"; at: number }
+  | { type: "Pin"; edge: PinEdge; before: bigint | null; reorder: boolean }
+  | { type: "Stay" };
+
+/** A lit pin zone while a header is dragged: an empty pinned Strip's edge, `size` long from `offset`; `hot` where a drop would pin. */
+export interface PinZone {
+  axis: AxisName;
+  edge: PinEdge;
+  offset: number;
+  size: number;
+  hot: boolean;
+}
 
 export type Cursor = "default" | "resizeCol" | "resizeRow" | "move";
 
@@ -149,17 +199,29 @@ export interface Snapshot {
   capturing: boolean;
   cursor: Cursor;
   resizeGuide: { axis: AxisName; key: bigint | null; offset: number; size: number } | null;
-  dropIndicator: { axis: AxisName; to: number; offset: number } | null;
+  dropIndicator: { axis: AxisName; target: DropTarget; offset: number } | null;
+  /** The lit pin zones while a header is dragged. */
+  pinZones: PinZone[];
   hoveredHeader: { axis: AxisName; position: number } | null;
-  selectionRange: { rows: Span; cols: Span } | null;
+  /**
+   * The Positions the range covers on each axis, as sorted runs apart from
+   * each other: it is contiguous in drawn order, so with items pinned it may
+   * be several runs.
+   */
+  selectionRange: { rows: Span[]; cols: Span[] } | null;
   selectionRects: Rect[];
-  picked: bigint[];
+  /** The picked Keys of each axis, in Key order. */
+  picked: { rows: bigint[]; cols: bigint[] };
   movingKeys: bigint[];
   appliedView: KeyedViewSpec;
   /** The latest request while an answer is due (`viewPending`), then while the applied spec leaves part of it out. */
   requestedView: KeyedViewSpec | null;
   /** Whether an answer to a View Spec request is due. */
   viewPending: boolean;
+  /** The move requested and not yet answered: its axis and Keys. No other move starts until it is answered. */
+  pendingMove: { axis: AxisName; keys: bigint[] } | null;
+  /** The last move the Table Source refused and why, until the next press. */
+  moveRefusal: { axis: AxisName; reason: string } | null;
   /** The Find Query, `null` while find is closed. */
   find: KeyedFindQuery | null;
   /** The match the last find step landed on, until its row or column leaves, a step for a new Find Query lands, or find closes. */
@@ -186,6 +248,46 @@ const FOCUSED = 1;
 const SELECTED = 2;
 const EDITING = 4;
 const CURRENT_MATCH = 8;
+
+/** Which Strip the `index`th drawn item of an axis is in. */
+export function stripOf(axis: AxisSnapshot, index: number): "leading" | "scrolling" | "trailing" {
+  if (index < axis.pinned) return "leading";
+  return index < axis.strip.length - axis.trailing ? "scrolling" : "trailing";
+}
+
+/**
+ * Where the `index`th drawn item of an axis may draw along it: a pinned item
+ * in its pinned Strip's region, a scrolling item between the pinned Strips,
+ * so it slides under them.
+ */
+export function itemSpan(axis: AxisSnapshot, index: number): Span {
+  const strip = stripOf(axis, index);
+  return strip === "scrolling" ? axis.scrolling : axis.regions[strip];
+}
+
+/** The index in drawn order of the focused item of an axis, or -1 if it is not drawn. */
+export function focusIndex(axis: AxisSnapshot): number {
+  const f = axis.focus;
+  if (!f || f.key === null) return -1;
+  return axis.strip.findIndex((i) => i.position === f.position && i.key === f.key);
+}
+
+/**
+ * The drawn items of an axis the viewport shows, in drawn order: the leading
+ * pinned ones, the scrolling ones not hidden under the pinned Strips (the
+ * scrolling Strip includes overscan), then the trailing pinned ones.
+ */
+export function shownItems(axis: AxisSnapshot): StripItem[] {
+  return axis.strip.filter((item, index) => {
+    const span = itemSpan(axis, index);
+    return item.offset + item.size > span.start && item.offset < span.end;
+  });
+}
+
+/** Whether `runs` (a selection range's runs on one axis) covers Position `p`. */
+export function covers(runs: readonly Span[], p: number): boolean {
+  return runs.some((r) => r.start <= p && p < r.end);
+}
 
 /** The state of the cell where the `row`th row item and `col`th column item cross. */
 export function cellState(s: Snapshot, row: number, col: number): CellState {
@@ -292,7 +394,8 @@ class Reader {
   axisView(): KeyedAxisView {
     const quick = this.opt(() => this.textQuery());
     const conditions = this.list(() => this.condition());
-    return { filter: { quick, conditions }, sort: this.sort() };
+    const sort = this.sort();
+    return { filter: { quick, conditions }, sort, hidden: this.list(() => this.key()) };
   }
 
   view(): KeyedViewSpec {
@@ -315,6 +418,10 @@ function readAxis(r: Reader): AxisSnapshot {
   const focus = r.opt(() => ({ position: r.num(), key: r.optKey() }));
   const locating = r.flag();
   const strip = r.list(() => ({ position: r.num(), key: r.optKey(), offset: r.num(), size: r.num() }));
+  const pinned = r.num();
+  const trailing = r.num();
+  const scrolling = { start: r.num(), end: r.num() };
+  const regions = { leading: { start: r.num(), end: r.num() }, trailing: { start: r.num(), end: r.num() } };
   const headers = r.list(() => ({
     position: r.num(),
     key: r.optKey(),
@@ -326,6 +433,7 @@ function readAxis(r: Reader): AxisSnapshot {
     selected: r.flag(),
     hovered: r.flag(),
     filter: { filtered: r.flag(), pending: r.flag(), notApplied: r.flag() },
+    movePending: r.flag(),
     support: supportOf(r.num()),
   }));
   const conditions = r.list(() => {
@@ -334,7 +442,33 @@ function readAxis(r: Reader): AxisSnapshot {
   });
   const total = r.opt(() => r.num());
   const quickFilter = r.opt(() => ({ regex: r.flag() }));
-  return { count, extent, header, gap, anchor, thumb, focus, locating, strip, headers, total, quickFilter, conditions };
+  const movable = r.flag();
+  const hideSupport = r.flag();
+  const hideCap = r.num();
+  const pins = { leading: r.list(() => r.key()), trailing: r.list(() => r.key()) };
+  return {
+    count,
+    extent,
+    header,
+    gap,
+    anchor,
+    thumb,
+    focus,
+    locating,
+    strip,
+    pinned,
+    trailing,
+    scrolling,
+    regions,
+    headers,
+    total,
+    quickFilter,
+    hideSupport,
+    hideCap,
+    conditions,
+    movable,
+    pins,
+  };
 }
 
 function supportOf(bits: number): HeaderPlacement["support"] {
@@ -343,6 +477,23 @@ function supportOf(bits: number): HeaderPlacement["support"] {
     text: (bits & TEXT_BIT) !== 0 ? { regex: (bits & REGEX_BIT) !== 0 } : null,
     oneOf: (bits & ONE_OF_BIT) !== 0,
   };
+}
+
+const EDGES: readonly PinEdge[] = ["leading", "trailing"];
+
+function readTarget(r: Reader): DropTarget {
+  switch (r.num()) {
+    case 0:
+      return { type: "Move", to: r.num(), unpin: r.flag() };
+    case 1:
+      return { type: "Unpin", at: r.num() };
+    case 2:
+      return { type: "Pin", edge: EDGES[r.num()]!, before: r.optKey(), reorder: r.flag() };
+    case 3:
+      return { type: "Stay" };
+    default:
+      throw new Error("binnacle: unknown drop target in Snapshot");
+  }
 }
 
 function readMode(r: Reader): Mode {
@@ -356,7 +507,7 @@ function readMode(r: Reader): Mode {
     case 3:
       return { type: "ResizingBand", axis: r.axis(), startThickness: r.num() };
     case 4:
-      return { type: "MovingHeaders", axis: r.axis(), key: r.key(), to: r.num() };
+      return { type: "MovingHeaders", axis: r.axis(), key: r.key(), target: readTarget(r) };
     case 5:
       return { type: "Editing", row: r.key(), col: r.key() };
     default:
@@ -377,18 +528,25 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const capturing = r.flag();
   const cursor = CURSORS[r.num()]!;
   const resizeGuide = r.opt(() => ({ axis: r.axis(), key: r.optKey(), offset: r.num(), size: r.num() }));
-  const dropIndicator = r.opt(() => ({ axis: r.axis(), to: r.num(), offset: r.num() }));
-  const hoveredHeader = r.opt(() => ({ axis: r.axis(), position: r.num() }));
-  const selectionRange = r.opt(() => ({
-    rows: { start: r.num(), end: r.num() },
-    cols: { start: r.num(), end: r.num() },
+  const dropIndicator = r.opt(() => ({ axis: r.axis(), target: readTarget(r), offset: r.num() }));
+  const pinZones = r.list(() => ({
+    axis: r.axis(),
+    edge: EDGES[r.num()]!,
+    offset: r.num(),
+    size: r.num(),
+    hot: r.flag(),
   }));
+  const hoveredHeader = r.opt(() => ({ axis: r.axis(), position: r.num() }));
+  const runs = () => r.list(() => ({ start: r.num(), end: r.num() }));
+  const selectionRange = r.opt(() => ({ rows: runs(), cols: runs() }));
   const selectionRects = r.list(() => r.rect());
-  const picked = r.list(() => r.key());
+  const picked = { rows: r.list(() => r.key()), cols: r.list(() => r.key()) };
   const movingKeys = r.list(() => r.key());
   const appliedView = r.view();
   const requestedView = r.opt(() => r.view());
   const viewPending = r.flag();
+  const pendingMove = r.opt(() => ({ axis: r.axis(), keys: r.list(() => r.key()) }));
+  const moveRefusal = r.opt(() => ({ axis: r.axis(), reason: r.text() }));
   const find = r.opt(() => {
     const query = r.textQuery();
     return { query, by: r.axis() };
@@ -411,6 +569,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     cursor,
     resizeGuide,
     dropIndicator,
+    pinZones,
     hoveredHeader,
     selectionRange,
     selectionRects,
@@ -419,6 +578,8 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     appliedView,
     requestedView,
     viewPending,
+    pendingMove,
+    moveRefusal,
     find,
     findMatch,
     findSupport,
