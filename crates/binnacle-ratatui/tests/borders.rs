@@ -521,3 +521,74 @@ fn pinned_strips_too_long_for_the_area_clip_with_the_edge_where_they_clip() {
     );
     insta::assert_snapshot!(out);
 }
+
+/// Scrolled so that row 1 ends exactly at the column header band's end and
+/// column 0 exactly at the row band's end, the first visible row and
+/// column still have their lines before them: in the Gap cells that start
+/// the body.
+#[test]
+fn an_item_ending_at_the_header_band_still_has_its_line() {
+    let mut out = String::new();
+    for extent in [BorderExtent::Columns, BorderExtent::Grid] {
+        let style = BorderStyle::new(extent, BorderWeight::Light);
+        let mut grid = Grid::new(
+            AxisConfig::new(20, 1.0).header(2.0).gap(1.0),
+            AxisConfig::new(5, 6.0).header(4.0).gap(1.0),
+        );
+        grid.action(Action::Scroll { dx: 6.0, dy: 3.0 });
+        out += &format!("--- {style}\n{}\n", text(&draw(&mut grid, style)));
+    }
+    insta::assert_snapshot!(out);
+}
+
+/// With `Grid`, every whole Gap cell between two rows in the body carries
+/// a line, reaching into the row band, and every one between two columns
+/// one reaching into the column band, wherever the scroll leaves the
+/// items: an item ending exactly at its Header Band among them.
+#[hegel::test(test_cases = 500)]
+fn every_gap_cell_between_items_carries_a_line(tc: TestCase) {
+    let whole = |lo, hi| tc.draw(gs::integers::<u8>().min_value(lo).max_value(hi)) as f32;
+    let rows = tc.draw(gs::integers::<u64>().min_value(2).max_value(30));
+    let cols = tc.draw(gs::integers::<u64>().min_value(2).max_value(8));
+    let mut grid = Grid::new(
+        AxisConfig::new(rows, whole(1, 3))
+            .header(whole(1, 3))
+            .gap(whole(1, 2)),
+        AxisConfig::new(cols, whole(2, 7))
+            .header(whole(1, 5))
+            .gap(whole(1, 2)),
+    );
+    let scroll = || whole(0, 60);
+    grid.action(Action::Scroll {
+        dx: scroll(),
+        dy: scroll(),
+    });
+    let style = BorderStyle::new(BorderExtent::Grid, BorderWeight::Light);
+    let buf = draw(&mut grid, style);
+    let snapshot = grid.snapshot();
+    let blank = |x: u16, y: u16| buf[(x, y)].symbol() == " ";
+    // The last line and column hold the scrollbars.
+    for (axis, len) in [(Axis::Rows, AREA.height - 1), (Axis::Cols, AREA.width - 1)] {
+        let (strip, gap) = (snapshot.strip(axis), snapshot.gap(axis));
+        let band = snapshot.header(axis).ceil() as i64;
+        for (i, item) in strip.iter().enumerate().filter(|(_, it)| it.position > 0) {
+            // The cells of the Gap before `item`. A line takes the first,
+            // so a Gap that starts under the Header Band shows none.
+            let after = i
+                .checked_sub(1)
+                .map_or(item.offset - gap, |p| strip[p].end());
+            let cells = after.ceil() as i64..(item.offset.ceil() as i64).min(i64::from(len));
+            if cells.start < band {
+                continue;
+            }
+            if cells.is_empty() {
+                continue;
+            }
+            let lined = cells.clone().any(|at| match axis {
+                Axis::Rows => !blank(0, at as u16),
+                Axis::Cols => !blank(at as u16, 0),
+            });
+            assert!(lined, "no line in the Gap cells {cells:?} on {axis:?}");
+        }
+    }
+}

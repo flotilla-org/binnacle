@@ -226,16 +226,35 @@ pub(crate) fn draw(
     // Strip's end, or before a trailing Strip's start.
     let drawn = |axis: Axis| -> Vec<StripItem> {
         let span = snapshot.scrolling(axis);
-        let scrolling =
-            (snapshot.strip(axis).iter()).filter(|i| i.end() >= span.start && i.offset < span.end);
+        let scrolling: Vec<StripItem> = (snapshot.strip(axis).iter())
+            .filter(|i| i.end() >= span.start && i.offset < span.end)
+            .copied()
+            .collect();
+        // The item before the first scrolling one ends at or before the
+        // scrolling Strip's start, so it is not drawn, but its Gap may
+        // still start the body: it stands in for its line there.
+        let before = (scrolling.first())
+            .filter(|f| f.position > 0 && f.offset > span.start)
+            .map(|f| StripItem {
+                position: f.position - 1,
+                key: None,
+                offset: f.offset - snapshot.gap(axis),
+                size: 0.0,
+            })
+            .filter(|b| cell(b.end()) >= cell(span.start));
         let [lead, trail] = Edge::ALL.map(|edge| snapshot.pinned_region(axis, edge));
         // A slid Strip's ends are sums, so they may round past its region.
         let within = |end: f32| end - lead.end <= 4.0 * f32::EPSILON * lead.end.abs().max(1.0);
         (snapshot.pinned(axis, Edge::Leading).iter())
             .filter(|i| within(i.end()))
-            .chain(scrolling)
-            .chain((snapshot.pinned(axis, Edge::Trailing).iter()).filter(|i| i.end() > trail.start))
             .copied()
+            .chain(before)
+            .chain(scrolling)
+            .chain(
+                (snapshot.pinned(axis, Edge::Trailing).iter())
+                    .filter(|i| i.end() > trail.start)
+                    .copied(),
+            )
             .collect()
     };
     let (rows, cols) = (&drawn(Axis::Rows)[..], &drawn(Axis::Cols)[..]);
