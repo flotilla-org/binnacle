@@ -300,6 +300,20 @@ impl Host {
                 drawn.len(),
                 "a Key drawn twice on {axis:?}: {drawn:?}"
             );
+            // Nor is a pinned item drawn again as a loading scrolling item.
+            // A pin waiting for `Locate` is drawn where it was, so a
+            // scrolling item may share its Position only when the Window
+            // shows another Key there (#173).
+            let pinned: BTreeSet<_> = (Edge::ALL.iter())
+                .flat_map(|&e| snap.pinned(axis, e).iter().map(|i| i.position))
+                .collect();
+            for item in snap.strip(axis) {
+                assert!(
+                    item.key.is_some() || !pinned.contains(&item.position),
+                    "pinned Position {} also scrolls, loading, on {axis:?}",
+                    item.position
+                );
+            }
             // The pinned Strips draw at their ends of the axis, outside the
             // scrolling Strip, and a focused pinned item shows as far as
             // its Strip's region allows.
