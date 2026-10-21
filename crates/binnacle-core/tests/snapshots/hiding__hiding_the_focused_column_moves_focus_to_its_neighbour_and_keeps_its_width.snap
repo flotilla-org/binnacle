@@ -47,7 +47,7 @@ effect (gen 3): Locate { axis: Cols, key: Key(2) }
 effect (gen 3): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(0)
 effect (gen 3): Locate { axis: Cols, key: Key(3) }
-  locate Cols Key(3): Gone { suggest: Some(1) }
+  locate Cols Key(3): Gone { suggest: Some(2) }
 effect (gen 3): FocusChanged { row: Key(1), col: Key(2) }
 window Rows 0..6
 window Cols 0..2

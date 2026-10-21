@@ -135,11 +135,11 @@ impl Grid {
         );
         match notice {
             ChangeNotice::Reordered => {
-                self.reordered_or_counted(axis, None);
+                self.reordered_or_counted(axis, None, false);
                 self.refilter_reask(axis);
             }
             ChangeNotice::Reset(count) => {
-                self.reordered_or_counted(axis, Some(count));
+                self.reordered_or_counted(axis, Some(count), false);
                 self.refilter_forget(axis);
             }
             ChangeNotice::Refiltered(count) => self.refiltered(axis, count),
@@ -245,7 +245,12 @@ impl Grid {
         if count == 0 {
             selection.span = None;
         }
+        // Corners a `Refiltered` still locates are asked about again.
+        let corners = self.refiltering.corners;
         self.set_selection(selection);
+        if self.selection.span.is_some() {
+            self.refiltering.corners = corners;
+        }
         let whereabouts = &mut self.locating.whereabouts[i];
         if let Some(w) = whereabouts {
             match w.at.map(|p| shift.map(p)) {
@@ -340,11 +345,17 @@ impl Grid {
     }
 
     /// The items on `axis` moved, and if `count` is given the count changed
-    /// too (a `Reset` or a `Refiltered`).
-    pub(crate) fn reordered_or_counted(&mut self, axis: Axis, count: Option<u64>) {
+    /// too (a `Reset` or a `Refiltered`). A range not whole on `axis` goes,
+    /// unless `refiltered` (its corners are located instead).
+    pub(crate) fn reordered_or_counted(
+        &mut self,
+        axis: Axis,
+        count: Option<u64>,
+        refiltered: bool,
+    ) {
         let i = axis.index();
         self.cancel_drags(axis);
-        if self.selection.span.is_some_and(|s| !s.whole[i]) || count == Some(0) {
+        if self.selection.span.is_some_and(|s| !s.whole[i]) && !refiltered || count == Some(0) {
             self.set_span(None);
         }
         let st = self.axis_mut(axis);
@@ -385,8 +396,8 @@ impl Grid {
 
     /// Keeps focus below a new `count` on `axis`: with no items it is
     /// unplaced, otherwise it keeps its Key and its last known Position is
-    /// clamped, the fallback if that Key has left. (A range survives only if
-    /// whole on `axis`, where its corners do not count.)
+    /// clamped, the fallback if that Key has left. So are the range's
+    /// corners, until located.
     fn clamp_positions(&mut self, axis: Axis, count: u64) {
         let i = axis.index();
         if count == 0 {
@@ -399,6 +410,11 @@ impl Grid {
         }
         if let Some(f) = &mut self.focus {
             f[i].position = f[i].position.min(count - 1);
+        }
+        if let Some(span) = &mut self.selection.span {
+            for end in [&mut span.anchor, &mut span.head] {
+                end[i].position = end[i].position.min(count - 1);
+            }
         }
     }
 

@@ -782,6 +782,10 @@ impl Grid {
         if self.selection == selection {
             return;
         }
+        // A range set anew no longer waits on a `Refiltered`.
+        if selection.span != self.selection.span {
+            self.refiltering.corners = [None, None];
+        }
         self.selection = selection;
         self.announce_selection();
     }
@@ -995,7 +999,9 @@ impl Grid {
             self.hovered_border = border;
             self.pending_damage.selection = true;
         }
-        self.range = self.selection.span.map(|s| s.range(&self.axes));
+        self.range = (self.selection.span)
+            .filter(|_| !self.refiltering.locating_corners())
+            .map(|s| s.range(&self.axes));
         self.fill_selection();
         self.damage = std::mem::replace(&mut self.pending_damage, Damage::NONE);
         Snapshot { grid: self }

@@ -41,6 +41,13 @@ fn requests(effects: &[Effect]) -> Vec<(ViewSpec, ViewEdit)> {
         .collect()
 }
 
+/// The runs of Positions the range covers on `axis`, as `(start, end)`.
+fn runs(s: &mut Scenario<RecordTable>, axis: Axis) -> Option<Vec<(u64, u64)>> {
+    let snap = s.grid.snapshot();
+    let range = snap.selection_range()?;
+    Some(range.span(axis).iter().map(|r| (r.start, r.end)).collect())
+}
+
 #[test]
 fn hiding_the_focused_column_moves_focus_to_its_neighbour_and_keeps_its_width() {
     let mut s = records();
@@ -80,6 +87,32 @@ fn hiding_rows_drops_their_picks_and_a_range_whole_across_them_stays_whole() {
         "hide records 1 and 4: the pick of 1 goes, 3 stays; column 0 stays selected whole",
         V,
     );
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn hiding_columns_shrinks_a_range_across_them_and_clears_it_when_none_remain() {
+    let mut s = records();
+    s.frame(V);
+    s.click(8.0, 2.0, Modifiers::NONE);
+    s.click(29.0, 2.0, Modifiers::SHIFT);
+    s.input(|g| g.action(Action::SelectColumn));
+    let mut out = s.step("select columns 0 to 3 whole", V);
+    s.input(|g| g.hide(Axis::Cols, &[Key(0), Key(2)]).unwrap());
+    out += &s.step(
+        "hide columns 0 and 2: the range pulls in to columns 1 and 3, now Positions 0 and 1",
+        V,
+    );
+    assert_eq!(runs(&mut s, Axis::Cols), Some(vec![(0, 2)]));
+    s.click(8.0, 2.0, Modifiers::NONE);
+    s.input(|g| g.action(Action::SelectColumn));
+    out += &s.step("select column 1 whole", V);
+    s.input(|g| g.hide(Axis::Cols, &[Key(0), Key(2), Key(1)]).unwrap());
+    out += &s.step(
+        "hide column 1 too: nothing of the range remains, so it clears",
+        V,
+    );
+    assert_eq!(s.grid.snapshot().selection_range(), None);
     insta::assert_snapshot!(out);
 }
 

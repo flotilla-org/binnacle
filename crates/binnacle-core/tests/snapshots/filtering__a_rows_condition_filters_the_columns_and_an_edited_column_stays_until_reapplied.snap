@@ -21,7 +21,7 @@ effect (gen 1): Locate { axis: Cols, key: Key(0) }
 effect (gen 1): Locate { axis: Cols, key: Key(1) }
   locate Cols Key(1): Found(1)
 effect (gen 1): Locate { axis: Cols, key: Key(2) }
-  locate Cols Key(2): Gone { suggest: Some(1) }
+  locate Cols Key(2): Gone { suggest: Some(2) }
 window Rows 0..4
 window Cols 0..2
 gen 2 | damage layout selection positions | filter none cols 1: "1" | total Rows 4 | total Cols 3
@@ -44,7 +44,7 @@ effect (gen 3): ViewRequested unsorted filter none cols 1: "1" by Reapply
 effect (gen 3): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(0)
 effect (gen 3): Locate { axis: Cols, key: Key(1) }
-  locate Cols Key(1): Gone { suggest: Some(0) }
+  locate Cols Key(1): Gone { suggest: Some(1) }
 window Rows 0..4
 window Cols 0..1
 gen 4 | damage layout selection positions | filter none cols 1: "1" | total Rows 4 | total Cols 3

@@ -21,11 +21,11 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 2   2.0    2.1    2.2
 3   *!3.0  3.1    3.2
 4   4.0    4.1    4.2
---- 2. a quick filter on "2" keeps 20 and 23: row 3 leaves, and the match with it
+--- 2. a quick filter on "2" keeps 20 and 23: row 3 leaves, and the match with it; focus falls to the next row kept, 5
 effect (gen 3): ViewRequested unsorted filter quick "2" by SetQuickFilter { axis: Rows, query: Some(TextQuery { text: "2", case_sensitive: false, regex: false, searches: Shown }) }
   view: applied unsorted filter quick "2", notices [(Rows, Refiltered(2))]
 effect (gen 3): Locate { axis: Rows, key: Key(3) }
-  locate Rows Key(3): Gone { suggest: Some(0) }
+  locate Rows Key(3): Gone { suggest: Some(1) }
 effect (gen 3): Locate { axis: Rows, key: Key(0) }
   locate Rows Key(0): Gone { suggest: Some(0) }
 effect (gen 3): Locate { axis: Rows, key: Key(1) }
@@ -35,20 +35,20 @@ effect (gen 3): Locate { axis: Rows, key: Key(2) }
 effect (gen 3): Locate { axis: Rows, key: Key(4) }
   locate Rows Key(4): Gone { suggest: Some(1) }
 window Rows 0..2
-gen 4 | damage layout selection positions | focus 0#2,0#0 at 4,1 6x1 | filter quick "2" | total Rows 8 | total Cols 3 | find "3"
+gen 4 | damage layout selection positions | focus 1#5,0#0 at 4,2 6x1 | filter quick "2" | total Rows 8 | total Cols 3 | find "3"
 Rows: count 2, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#2@1+1 1#5@2+1
 Cols: (unchanged)
     0      1      2
-0   *2.0   2.1    2.2
-1   5.0    5.1    5.2
+0   2.0    2.1    2.2
+1   *5.0   5.1    5.2
 
 
 
---- 3. next steps from the focused cell, where focus fell: 23 in row 5
-effect (gen 4): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(2), col: Key(0) }), direction: Next }
-  find: Some(FindStep { at: FindMatch { row: Key(5), col: Key(0) }, index: Some(0), wrapped: false })
+--- 3. next steps from the focused cell, where focus fell: past the last match, it wraps round to 23 in row 5
+effect (gen 4): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(5), col: Key(0) }), direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(5), col: Key(0) }, index: Some(0), wrapped: true })
 effect (gen 4): FocusChanged { row: Key(5), col: Key(0) }
-gen 5 | damage selection | focus 1#5,0#0 at 4,2 6x1 | filter quick "2" | total Rows 8 | total Cols 3 | find "3" | match 5,0
+gen 5 | damage none | focus 1#5,0#0 at 4,2 6x1 | filter quick "2" | total Rows 8 | total Cols 3 | find "3" | match 5,0
 Rows: (unchanged)
 Cols: (unchanged)
     0      1      2

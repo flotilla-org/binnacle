@@ -836,7 +836,9 @@ int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
                               uint32_t support);
 
 /* The answer to LOCATE for key on axis: BINNACLE_LOCATED_*, with position
- * for FOUND and GONE_SUGGEST (ignored for GONE). */
+ * for FOUND and GONE_SUGGEST (ignored for GONE). A GONE_SUGGEST position is
+ * where the key would sit among the items left: the next one's position in
+ * the order it had, or the count when none follows. */
 int binnacle_grid_located(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint32_t answer,
                           uint64_t position);
 

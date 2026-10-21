@@ -579,6 +579,9 @@ fn a_filtered_out_focus_moves_to_the_suggestion_and_hidden_picks_go(tc: TestCase
                 return;
             }
             Located::Gone { suggest: Some(p) } => {
+                // The suggestion is where the Key would sit: past the last
+                // item when none follows, so focus goes to the last.
+                let p = p.min(host.view.counts[0] - 1);
                 let end = after.expect("focus stays placed")[0];
                 assert_eq!(end.position, p);
                 // The suggested item's Key is known once a Window holds it.

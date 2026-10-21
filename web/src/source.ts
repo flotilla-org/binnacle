@@ -221,7 +221,11 @@ export interface Distinct {
   narrowed: boolean;
 }
 
-/** Where an item sits now, or that it left the axis (with a Position for focus to fall back to). */
+/**
+ * Where an item sits now, or that it left the axis. `suggest` is where it would sit among the items
+ * left: the next one's Position in the order it had, or the count when none follows. Focus falls
+ * back there, and a selection range's corner pulls in from it; `null` clears a range across it.
+ */
 export type Located = { type: "Found"; position: number } | { type: "Gone"; suggest: number | null };
 
 /** How an axis changed, pushed by the Table Source through its sink. */

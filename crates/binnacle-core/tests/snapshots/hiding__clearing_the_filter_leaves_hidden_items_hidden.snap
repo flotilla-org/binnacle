@@ -14,9 +14,9 @@ effect (gen 1): Locate { axis: Rows, key: Key(0) }
 effect (gen 1): Locate { axis: Rows, key: Key(1) }
   locate Rows Key(1): Found(0)
 effect (gen 1): Locate { axis: Rows, key: Key(2) }
-  locate Rows Key(2): Gone { suggest: Some(0) }
+  locate Rows Key(2): Gone { suggest: Some(1) }
 effect (gen 1): Locate { axis: Rows, key: Key(3) }
-  locate Rows Key(3): Gone { suggest: Some(0) }
+  locate Rows Key(3): Gone { suggest: Some(1) }
 window Rows 0..1
 gen 2 | damage layout selection positions | filter 0: "1" | total Rows 6 | total Cols 4
 Rows: count 1, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1@1+1

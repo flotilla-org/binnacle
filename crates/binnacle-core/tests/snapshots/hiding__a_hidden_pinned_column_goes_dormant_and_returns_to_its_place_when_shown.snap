@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-core/tests/hiding.rs
-assertion_line: 192
 expression: out
 ---
 --- 1. columns 2 then 0 pinned left, 3 right
@@ -47,11 +46,11 @@ Cols: count 3, extent 33, header 4, anchor 1+0, thumb 0.0000/1.0000 | pinned 0#0
 effect (gen 2): ViewRequested unsorted hide none cols 2,3 by Hide { axis: Cols, keys: [Key(3)] }
   view: applied unsorted hide none cols 2,3, notices [(Rows, Reordered), (Cols, Refiltered(2))]
 effect (gen 2): Locate { axis: Cols, key: Key(2) }
-  locate Cols Key(2): Gone { suggest: Some(1) }
+  locate Cols Key(2): Gone { suggest: Some(2) }
 effect (gen 2): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(0)
 effect (gen 2): Locate { axis: Cols, key: Key(3) }
-  locate Cols Key(3): Gone { suggest: Some(1) }
+  locate Cols Key(3): Gone { suggest: Some(2) }
 effect (gen 2): Locate { axis: Cols, key: Key(1) }
   locate Cols Key(1): Found(1)
 window Rows 0..6

@@ -64,7 +64,7 @@ effect (gen 3): ViewRequested unsorted filter quick "5" & 0: "3" & 0: not "1" by
 effect (gen 3): Locate { axis: Rows, key: Key(5) }
   locate Rows Key(5): Found(0)
 effect (gen 3): Locate { axis: Rows, key: Key(7) }
-  locate Rows Key(7): Gone { suggest: Some(0) }
+  locate Rows Key(7): Gone { suggest: Some(1) }
 window Rows 0..1
 gen 4 | damage layout selection positions | filter quick "5" & 0: "3" & 0: not "1" | total Rows 8 | total Cols 3
 Rows: count 1, extent 6, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#5@1+1

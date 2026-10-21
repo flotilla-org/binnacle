@@ -33,6 +33,13 @@ fn filter(s: &mut Scenario<RecordTable>, keep: impl Fn(&Vec<Option<i64>>) -> boo
     s.input(|g| g.notify(Axis::Rows, notice));
 }
 
+/// The runs of Positions the range covers on `axis`, as `(start, end)`.
+fn runs(s: &mut Scenario<RecordTable>, axis: Axis) -> Option<Vec<(u64, u64)>> {
+    let snap = s.grid.snapshot();
+    let range = snap.selection_range()?;
+    Some(range.span(axis).iter().map(|r| (r.start, r.end)).collect())
+}
+
 #[test]
 fn a_filtered_out_focus_moves_to_the_nearest_survivor_and_leaves_the_picks() {
     let mut s = records();
@@ -63,7 +70,7 @@ fn a_filtered_out_focus_moves_to_the_nearest_survivor_and_leaves_the_picks() {
 }
 
 #[test]
-fn a_sorted_and_filtered_focus_lands_on_the_nearest_survivor_in_sort_order() {
+fn a_sorted_and_filtered_focus_lands_on_the_next_survivor_in_sort_order() {
     let mut s = records();
     s.frame(V);
     let spec = binnacle_core::SortSpec::new(vec![binnacle_core::SortColumn::ascending(Key(0))]);
@@ -78,7 +85,7 @@ fn a_sorted_and_filtered_focus_lands_on_the_nearest_survivor_in_sort_order() {
     let mut out = s.step("sort by column 0; focus value 3 (record 1) at row 2", V);
     filter(&mut s, |r| matches!(r[0], Some(1 | 2 | 7 | 8 | 9)));
     out += &s.step(
-        "keep 1, 2, 7, 8, 9: value 3 is one from 2 and three from 7, so focus goes to 2 at row 1",
+        "keep 1, 2, 7, 8, 9: focus goes to the next survivor after value 3 in sort order, 7 at row 2",
         V,
     );
     insta::assert_snapshot!(out);
@@ -397,19 +404,40 @@ fn an_edit_on_a_row_the_filter_hides_ends() {
 }
 
 #[test]
-fn a_range_is_dropped_unless_it_spans_the_axis() {
+fn a_range_shrinks_around_filtered_out_items_and_clears_when_none_remain() {
+    const TALL: Viewport = Viewport {
+        width: 26.0,
+        height: 9.0,
+    };
     let mut s = records();
-    s.frame(V);
-    s.click(5.0, 1.5, Modifiers::NONE);
-    s.click(12.0, 3.5, Modifiers::SHIFT);
-    let mut out = s.step("select records 0 to 2 in columns 0 and 1", V);
+    s.frame(TALL);
+    s.click(5.0, 2.5, Modifiers::NONE);
+    s.click(12.0, 6.5, Modifiers::SHIFT);
+    let mut out = s.step("select records 1 to 5 in columns 0 and 1", TALL);
     filter(&mut s, |r| r[0] != Some(9));
-    out += &s.step("filter out record 4: the range goes, focus stays", V);
+    out += &s.step(
+        "filter out record 4, inside the range: the range keeps records 1 to 5, now rows 1 to 4",
+        TALL,
+    );
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(1, 5)]));
+    filter(&mut s, |r| {
+        r[0] != Some(9) && r[0] != Some(3) && r[0] != Some(2)
+    });
+    out += &s.step(
+        "filter out records 1 and 5, its corners, too: the range pulls in to records 2 and 3, rows 1 and 2",
+        TALL,
+    );
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(1, 3)]));
+    filter(&mut s, |r| [Some(5), Some(7), Some(4)].contains(&r[0]));
+    out += &s.step(
+        "keep only records 0, 6 and 7: nothing of the range remains, so it clears",
+        TALL,
+    );
     assert_eq!(s.grid.snapshot().selection_range(), None);
     s.input(|g| g.action(Action::SelectColumn));
-    out += &s.step("select column 1 whole", V);
-    filter(&mut s, |r| r[0] != Some(8));
-    out += &s.step("filter out record 2: the whole column stays selected", V);
+    out += &s.step("select the focused column whole", TALL);
+    filter(&mut s, |r| r[0] != Some(4));
+    out += &s.step("filter out record 7: the whole column stays selected", TALL);
     assert!(s.grid.snapshot().selection_range().is_some());
     insta::assert_snapshot!(out);
 }

@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-core/tests/pinning.rs
-assertion_line: 127
 expression: out
 ---
 --- 1. record 4 pinned
@@ -29,7 +28,7 @@ Cols: count 6, extent 24, header 4, anchor 0+0, thumb 0.0000/0.6250 | pinned 3#4
 1   1.4  1.3  1.5  1.1
 --- 3. filter to field 0 over 10: record 4 has gone, its pin sleeps
 effect (gen 2): Locate { axis: Cols, key: Key(4) }
-  locate Cols Key(4): Gone { suggest: Some(2) }
+  locate Cols Key(4): Gone { suggest: Some(3) }
 effect (gen 2): Locate { axis: Cols, key: Key(3) }
   locate Cols Key(3): Found(0)
 effect (gen 2): Locate { axis: Cols, key: Key(5) }

@@ -527,7 +527,7 @@ fn locate_agrees_with_window(tc: TestCase) {
 }
 
 #[hegel::test(test_cases = 2000)]
-fn a_filtered_out_row_is_gone_suggesting_the_nearest_survivor_in_sort_order(tc: TestCase) {
+fn a_filtered_out_row_is_gone_suggesting_where_it_would_sit_among_the_survivors(tc: TestCase) {
     ops(&tc, |_, table, source, state| {
         let sorted = table.sorted(state);
         let kept = table.kept(state);
@@ -535,16 +535,14 @@ fn a_filtered_out_row_is_gone_suggesting_the_nearest_survivor_in_sort_order(tc: 
             if kept.contains(&i) {
                 continue;
             }
-            // Brute force over every survivor: the least distance in sorted
-            // order, the one after on a tie.
-            let suggest = kept
+            // Brute force: how many survivors come before it in sorted
+            // order, the next one's Position (or the count when none
+            // follows).
+            let before = kept
                 .iter()
-                .enumerate()
-                .min_by_key(|&(_, j)| {
-                    let r = sorted.iter().position(|k| k == j).unwrap();
-                    (r.abs_diff(rank), r < rank)
-                })
-                .map(|(position, _)| position as u64);
+                .filter(|j| sorted.iter().position(|k| k == *j).unwrap() < rank)
+                .count();
+            let suggest = (!kept.is_empty()).then_some(before as u64);
             assert_eq!(
                 source.locate(Axis::Rows, table.key(i)),
                 Located::Gone { suggest },
@@ -556,8 +554,9 @@ fn a_filtered_out_row_is_gone_suggesting_the_nearest_survivor_in_sort_order(tc: 
 
 /// The columns shown through moves of any Keys to any Position, sorts of
 /// the columns and column filters, mixed with the rows' sorts and filters,
-/// which leave them alone. A filtered out column is gone, suggesting the
-/// nearest shown one in column order (the following one on a tie).
+/// which leave them alone. A filtered out column is gone, suggesting where
+/// it would sit among the shown ones: the next one's Position in column
+/// order, or the count when none follows.
 #[hegel::test(test_cases = 1000)]
 fn columns_match_the_model(tc: TestCase) {
     ops(&tc, |tc, table, source, state| {
@@ -568,10 +567,11 @@ fn columns_match_the_model(tc: TestCase) {
             if state.shows(table, key) {
                 continue;
             }
-            let suggest = (order.iter().enumerate())
-                .filter(|(_, k)| state.shows(table, k))
-                .min_by_key(|&(r, _)| (r.abs_diff(rank), r < rank))
-                .map(|(_, k)| columns.iter().position(|c| c == k).unwrap() as u64);
+            let before = order[..rank]
+                .iter()
+                .filter(|k| state.shows(table, k))
+                .count();
+            let suggest = (!columns.is_empty()).then_some(before as u64);
             assert_eq!(source.locate(Axis::Cols, *key), Located::Gone { suggest });
         }
         assert_eq!(source.count(Axis::Cols), columns.len() as u64);

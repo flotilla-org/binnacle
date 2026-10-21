@@ -210,15 +210,20 @@ impl AxisOrder {
         match self.position(logical as usize) {
             Some(position) => Located::Found(position),
             None => Located::Gone {
-                suggest: self.nearest_kept(logical),
+                suggest: self.next_kept(logical),
             },
         }
     }
 
-    /// The Position of the kept item nearest to `logical` in sorted order,
-    /// the following one on a tie. Needs `positions` built.
-    fn nearest_kept(&mut self, logical: u32) -> Option<Position> {
+    /// Where `logical` would sit among the kept items in sorted order: the
+    /// Position of the next kept item, or the count when none follows.
+    /// `None` when nothing is kept. Needs `positions` built.
+    fn next_kept(&mut self, logical: u32) -> Option<Position> {
+        let count = self.count();
         let positions = self.positions.as_ref()?;
+        if count == 0 {
+            return None;
+        }
         let rank = match &self.sorted {
             None => logical as usize,
             Some(sorted) => self.ranks.get_or_insert_with(|| {
@@ -233,11 +238,8 @@ impl AxisOrder {
             let i = self.sorted.as_ref().map_or(rank as u32, |s| s[rank]);
             Some(positions[i as usize]).filter(|&p| p != GONE)
         };
-        (1..self.len).find_map(|d| {
-            let after = (rank + d < self.len).then(|| at(rank + d)).flatten();
-            let before = rank.checked_sub(d).and_then(at);
-            after.or(before).map(u64::from)
-        })
+        let next = (rank + 1..self.len).find_map(at).map(u64::from);
+        Some(next.unwrap_or(count))
     }
 
     fn count(&self) -> u64 {
@@ -479,9 +481,9 @@ impl InMemoryTableSource {
     }
 
     /// Answers `Locate`: the Key's current Position, or `Gone` if no item on
-    /// the axis has it. A Key the filter dropped is `Gone` with the Position
-    /// of the kept item nearest it in sort order suggested (the following one
-    /// on a tie). The reverse maps are built on the first ask after a
+    /// the axis has it. A Key the filter dropped is `Gone`, suggesting where
+    /// it would sit among the kept items in sort order: the next kept item's
+    /// Position, or the count when none follows. The reverse maps are built on the first ask after a
     /// change, so hosts that never locate never pay for them.
     pub fn locate(&mut self, axis: Axis, key: Key) -> Located {
         self.axis_mut(axis).locate(key)
