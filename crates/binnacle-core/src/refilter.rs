@@ -201,7 +201,7 @@ impl Grid {
             .asked
             .iter()
             .find_map(|a| a.at.flatten().map(|p| (a.key, p)));
-        let focused = self.focus.map(|f| f[i].position);
+        let focused = self.focus.map(|f| f[i]);
         let st = self.axis_mut(axis);
         match (top, focused) {
             (Some((key, position)), _) => {
@@ -211,8 +211,8 @@ impl Grid {
                 };
                 st.place_anchor(ScrollAnchor { position, offset });
             }
-            (None, Some(p)) => {
-                st.reveal(p);
+            (None, Some(end)) => {
+                st.reveal_focused(end);
             }
             (None, None) => {
                 st.place_anchor(ScrollAnchor::default());

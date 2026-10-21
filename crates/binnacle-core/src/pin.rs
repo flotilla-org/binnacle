@@ -3,6 +3,7 @@
 
 use crate::axis::AxisState;
 use crate::effect::Effect;
+use crate::focus::FocusEnd;
 use crate::grid::Grid;
 use crate::notice::placement;
 use crate::snapshot::{ScrollAnchor, StripItem};
@@ -137,6 +138,18 @@ impl AxisState {
         let count = self.measure.count();
         (self.pins[edge.index()].iter())
             .filter_map(move |pin| Some((pin.key, pin.at.filter(|&p| p < count || pin.due > 0)?)))
+    }
+
+    /// Scrolls the least distance that shows the focused item, as
+    /// [`AxisState::reveal`] does, unless its Key is drawn pinned, where it
+    /// always shows: even while a `Locate` is due and the Window has moved
+    /// past it, so its Position is not trusted.
+    pub fn reveal_focused(&mut self, end: FocusEnd) -> bool {
+        let pinned = |edge| self.drawn_pins(edge).any(|(k, _)| Some(k) == end.key);
+        if Edge::ALL.into_iter().any(pinned) {
+            return false;
+        }
+        self.reveal(end.position)
     }
 
     /// The pins of `edge` the Grid can act on, in pin order, at their

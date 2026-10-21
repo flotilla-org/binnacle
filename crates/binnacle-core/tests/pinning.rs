@@ -1023,3 +1023,31 @@ fn focus_moves_made_while_a_pin_waits_for_locate_land_as_they_would_after() {
     assert_eq!(focus, Some(Key(2)), "{out}");
     insta::assert_snapshot!(out);
 }
+
+#[test]
+fn focusing_a_pinned_row_the_window_has_scrolled_past_leaves_the_anchor() {
+    // Eleven rows of 1 under a 1-high header band, row 0 pinned, its
+    // Locate never answered: once the Window has moved past row 0 the Grid
+    // no longer trusts its Position, but it is still drawn pinned, so
+    // focusing it scrolls nothing (#173).
+    let grid = Grid::new(
+        AxisConfig::new(11, 1.0).header(1.0),
+        AxisConfig::new(1, 3.0).header(2.0),
+    );
+    let mut s = Scenario::new(grid, KeyedTable::new(11, 1));
+    let v = Viewport::new(5.0, 3.0);
+    s.input(|g| g.pin(Axis::Rows, Edge::Leading, Key(0)));
+    let mut out = s.step_waiting("pin row 0, its Locate unanswered", v);
+    s.input(|g| {
+        g.set_focus(Key(3), Key(0));
+        g.set_focus(Key(0), Key(0));
+    });
+    out += &s.step_waiting("focus row 3, then the pinned row 0", v);
+    let anchor = s.grid.snapshot().scroll_anchor(Axis::Rows);
+    assert_eq!(anchor.position, 3, "{out}");
+    out += &s.step_waiting("another frame: the anchor stays on row 3", v);
+    assert_eq!(s.grid.snapshot().scroll_anchor(Axis::Rows), anchor, "{out}");
+    s.input(|g| g.set_gap(Axis::Rows, 0.0));
+    out += &s.step_waiting("set the Gap it already has: nothing moves", v);
+    assert_eq!(s.grid.snapshot().scroll_anchor(Axis::Rows), anchor, "{out}");
+}

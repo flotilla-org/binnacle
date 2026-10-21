@@ -818,7 +818,7 @@ impl Grid {
     pub(crate) fn reveal_focus(&mut self) {
         let Some(f) = self.focus else { return };
         for axis in Axis::ALL {
-            if self.axis_mut(axis).reveal(f[axis.index()].position) {
+            if self.axis_mut(axis).reveal_focused(f[axis.index()]) {
                 self.pending_damage.layout = true;
             }
         }
