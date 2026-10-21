@@ -133,6 +133,12 @@ impl WebGrid {
         self.grid.set_min_scrolling(axis(a), length);
     }
 
+    /// The room kept past the last item on axis `a` when scrolled to the
+    /// end, where a closing line is drawn.
+    pub fn set_end_gap(&mut self, a: u8, gap: f32) {
+        self.grid.set_end_gap(axis(a), gap);
+    }
+
     pub fn set_size(&mut self, a: u8, key: u64, size: f32) {
         self.grid.set_size(axis(a), Key(key), size);
     }

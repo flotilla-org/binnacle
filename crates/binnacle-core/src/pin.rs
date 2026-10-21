@@ -150,7 +150,7 @@ impl AxisState {
     /// The pinned Strip of `edge` in pin order with a Gap between items, as
     /// it would draw unclipped: the leading one laid out from the Header
     /// Band, the trailing one laid out back from the viewport's far end, so
-    /// its last item ends flush with it.
+    /// its last item ends flush with it, or the End Gap before it.
     fn laid_out(&self, edge: Edge) -> Vec<StripItem> {
         let gap = self.measure.gap();
         let item = |(key, position)| StripItem {
@@ -169,7 +169,7 @@ impl AxisState {
                 }
             }
             Edge::Trailing => {
-                let mut end = self.extent;
+                let mut end = self.far_end();
                 for it in items.iter_mut().rev() {
                     it.offset = end - it.size;
                     end = it.offset - gap;
@@ -195,17 +195,19 @@ impl AxisState {
     }
 
     /// Where the pinned Strips of both edges may draw. Together with their
-    /// Edge Gaps they take at most the viewport past the Header Band less
-    /// the minimum scrolling region: the leading Strip first, then the
+    /// Edge Gaps they take at most the viewport past the Header Band (and
+    /// short of the End Gap, with a trailing Strip), less the minimum
+    /// scrolling region: the leading Strip first, then the
     /// trailing one, unless the focused item is in the trailing one, which
     /// then keeps room for it. Each clips at its inside end, and a Strip
     /// clipped whole keeps its Edge Gap.
     pub fn pinned_regions(&self) -> [Range<f32>; 2] {
         let strips = Edge::ALL.map(|edge| self.laid_out(edge));
         let [leading, trailing] = &strips;
+        let far = self.far_end();
         let want = [
             leading.last().map_or(0.0, |it| it.end() - self.header),
-            trailing.first().map_or(0.0, |it| self.extent - it.offset),
+            trailing.first().map_or(0.0, |it| far - it.offset),
         ];
         let edge_gap = strips
             .clone()
@@ -213,7 +215,13 @@ impl AxisState {
         let focused = self
             .focused
             .and_then(|key| trailing.iter().find(|it| it.key == Some(key)));
-        let room = (self.extent - self.header - self.min_scrolling).max(0.0);
+        // The End Gap is kept past a trailing Strip only.
+        let end = if trailing.is_empty() {
+            self.extent
+        } else {
+            far
+        };
+        let room = (end - self.header - self.min_scrolling).max(0.0);
         // The trailing Strip keeps its Edge Gap, so its edge still shows.
         let kept = focused.map_or(0.0, |it| it.size.min(want[1])) + edge_gap[1];
         let lead = (room - edge_gap[0] - kept).max(0.0);
@@ -231,12 +239,12 @@ impl AxisState {
         };
         let trail_start = match trailing.first() {
             Some(it) if want[1] <= trail => it.offset,
-            _ => self.extent - trail.min(want[1]),
+            _ => far - trail.min(want[1]),
         };
         // Sums round, so the regions are kept apart and inside the viewport.
-        let lead_end = lead_end.min(self.extent).max(self.header);
-        let trail_start = (trail_start.max(lead_end + edge_gap[0] + edge_gap[1])).min(self.extent);
-        [self.header..lead_end, trail_start..self.extent]
+        let lead_end = lead_end.min(end).max(self.header);
+        let trail_start = (trail_start.max(lead_end + edge_gap[0] + edge_gap[1])).min(end);
+        [self.header..lead_end, trail_start..end]
     }
 
     /// Where the pinned Strip of `edge` may draw.

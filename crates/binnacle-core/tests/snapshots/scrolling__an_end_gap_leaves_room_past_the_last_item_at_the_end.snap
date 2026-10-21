@@ -1,0 +1,47 @@
+---
+source: crates/binnacle-core/tests/scrolling.rs
+assertion_line: 670
+expression: out
+---
+--- 1. an End Gap of 1 on both axes: nothing moves at the start
+window Rows 0..5
+window Cols 0..5
+gen 1 | damage layout selection positions
+Rows: count 20, extent 4, header 1, anchor 0+0, thumb 0.0000/0.1429 | 0#0@1+1 1#1@2+1 2#2@3+1
+Cols: count 5, extent 22, header 4, anchor 0+0, thumb 0.0000/0.5806 | 0#0@4+6 1#1@10+6 2#2@16+6
+    0     1     2
+0   0.0   0.1   0.2
+1   1.0   1.1   1.2
+2   2.0   2.1   2.2
+--- 2. far down and right: the last row and column end 1 short
+window Rows 14..20
+gen 3 | damage layout positions
+Rows: count 20, extent 4, header 1, anchor 18+0, thumb 1.0000/0.1429 | 18#18@1+1 19#19@2+1
+Cols: count 5, extent 22, header 4, anchor 2+1, thumb 1.0000/0.5806 | 2#2@3+6 3#3@9+6 4#4@15+6
+         3     4
+18  8.2  18.3  18.4
+19  9.2  19.3  19.4
+
+--- 3. row 0 pinned bottom: its Strip ends 1 short, and the last scrolling row ends where it starts
+effect (gen 5): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 5): FocusChanged { row: Key(19), col: Key(0) }
+effect (gen 7): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 7): PinsChanged { axis: Rows, edge: Trailing, keys: [Key(0)] }
+gen 8 | damage layout | focus 19#19,0#0 not drawn
+Rows: count 20, extent 4, header 1, anchor 19+0, thumb 1.0000/0.0526 | 19#19@1+1 | scrolling to 2 | trailing 0#0@2+1
+Cols: (unchanged)
+         3     4
+19  9.2  19.3  19.4
+0   .2   0.3   0.4
+
+--- 4. no End Gap on the rows: the last row ends the viewport again
+effect (gen 9): PinsChanged { axis: Rows, edge: Trailing, keys: [] }
+gen 10 | damage layout | focus 19#19,0#0 not drawn
+Rows: count 20, extent 4, header 1, anchor 17+0, thumb 1.0000/0.1500 | 17#17@1+1 18#18@2+1 19#19@3+1
+Cols: (unchanged)
+         3     4
+17  7.2  17.3  17.4
+18  8.2  18.3  18.4
+19  9.2  19.3  19.4

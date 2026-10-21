@@ -373,6 +373,7 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
     });
     for (axis, count) in [(Axis::Rows, rows), (Axis::Cols, cols)] {
         grid.set_min_scrolling(axis, quarters(0, 40));
+        grid.set_end_gap(axis, quarters(0, 8));
         for _ in 0..tc.draw(gs::integers::<u8>().max_value(if count > 0 { 3 } else { 0 })) {
             let key = tc.draw(gs::integers::<u64>().max_value(count - 1));
             let edge = tc.draw(gs::sampled_from(Edge::ALL.to_vec()));
@@ -541,9 +542,9 @@ fn an_item_ending_at_the_header_band_still_has_its_line() {
     insta::assert_snapshot!(out);
 }
 
-/// With `Grid`, every whole Gap cell between two rows in the body carries
-/// a line, reaching into the row band, and every one between two columns
-/// one reaching into the column band, wherever the scroll leaves the
+/// With `Columns` or `Grid`, the Gap between two rows in the body carries
+/// a line reaching into the row band, and the Gap between two columns one
+/// reaching into the column band, wherever the scroll leaves the
 /// items: an item ending exactly at its Header Band among them.
 #[hegel::test(test_cases = 500)]
 fn every_gap_cell_between_items_carries_a_line(tc: TestCase) {
@@ -563,12 +564,18 @@ fn every_gap_cell_between_items_carries_a_line(tc: TestCase) {
         dx: scroll(),
         dy: scroll(),
     });
-    let style = BorderStyle::new(BorderExtent::Grid, BorderWeight::Light);
+    let extent = tc.draw(gs::sampled_from(vec![
+        BorderExtent::Columns,
+        BorderExtent::Grid,
+    ]));
+    let style = BorderStyle::new(extent, tc.draw(gs::sampled_from(WEIGHTS.to_vec())));
     let buf = draw(&mut grid, style);
     let snapshot = grid.snapshot();
     let blank = |x: u16, y: u16| buf[(x, y)].symbol() == " ";
     // The last line and column hold the scrollbars.
     for (axis, len) in [(Axis::Rows, AREA.height - 1), (Axis::Cols, AREA.width - 1)] {
+        // Columns draws handles in the row band too, so rows are lined
+        // with either extent.
         let (strip, gap) = (snapshot.strip(axis), snapshot.gap(axis));
         let band = snapshot.header(axis).ceil() as i64;
         for (i, item) in strip.iter().enumerate().filter(|(_, it)| it.position > 0) {
@@ -591,4 +598,70 @@ fn every_gap_cell_between_items_carries_a_line(tc: TestCase) {
             assert!(lined, "no line in the Gap cells {cells:?} on {axis:?}");
         }
     }
+}
+
+/// [`begin_frame`] asks for an End Gap of one cell where the Border Style
+/// closes the table (after the last column for `Columns` and `Grid`, under
+/// the last row for `Grid`), so scrolled to the end of a long table the
+/// closing lines show. A trailing pinned Strip keeps that cell past it,
+/// and the closing line follows it. Without closing lines no room is kept.
+#[test]
+fn scrolled_to_the_end_the_closing_lines_show() {
+    let theme = Theme::classic();
+    let frame_in = |grid: &mut Grid, style: BorderStyle, area: Rect| {
+        let ctx = RenderContext::new(&theme).border(style);
+        begin_frame(grid, &ctx, area, |grid, viewport| {
+            for (axis, range) in grid.begin_frame(viewport) {
+                let keys = IdentitySource::new(range.end).window(range.clone());
+                grid.set_window(axis, range.start, &keys);
+            }
+        });
+        let mut buf = Buffer::empty(area);
+        render_with(&grid.snapshot(), &Labels, &ctx, area, &mut buf);
+        text(&buf)
+    };
+    let frame = |grid: &mut Grid, style| frame_in(grid, style, AREA);
+    let at_end = |pin: bool| {
+        let mut grid = fixture();
+        if pin {
+            grid.pin(Axis::Cols, Edge::Trailing, Key(1));
+            grid.pin(Axis::Rows, Edge::Trailing, Key(16));
+        }
+        grid.action(Action::Scroll {
+            dx: 1000.0,
+            dy: 1000.0,
+        });
+        grid
+    };
+    let mut out = String::new();
+    for extent in [
+        BorderExtent::Headers,
+        BorderExtent::Columns,
+        BorderExtent::Grid,
+    ] {
+        let style = BorderStyle::new(extent, BorderWeight::Light);
+        let mut grid = at_end(false);
+        // Settle the end clamp with the End Gap's room.
+        frame(&mut grid, style);
+        out += &format!("--- {style}, at the end\n{}\n", frame(&mut grid, style));
+    }
+    for extent in [BorderExtent::Columns, BorderExtent::Grid] {
+        let style = BorderStyle::new(extent, BorderWeight::Light);
+        let mut grid = at_end(true);
+        frame(&mut grid, style);
+        out += &format!(
+            "--- {style}, at the end, column 1 pinned right and row 16 to the bottom\n{}\n",
+            frame(&mut grid, style)
+        );
+    }
+    // A line taller, row 16 ends exactly at the column header band's end.
+    let style = BorderStyle::new(BorderExtent::Grid, BorderWeight::Light);
+    let taller = Rect::new(0, 0, 30, 10);
+    let mut grid = at_end(false);
+    frame_in(&mut grid, style, taller);
+    out += &format!(
+        "--- {style}, at the end, a line taller: a rule above the first row\n{}\n",
+        frame_in(&mut grid, style, taller)
+    );
+    insta::assert_snapshot!(out);
 }

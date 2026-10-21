@@ -389,6 +389,18 @@ impl Grid {
         }
     }
 
+    /// Sets the End Gap on `axis` (0 at first): the room kept past the last
+    /// item when scrolled to the end, where an adapter draws a closing
+    /// line. The end clamp stops the End Gap short of the viewport's end,
+    /// and a trailing pinned Strip ends that far short of it; short of the
+    /// end, items still reach the viewport's end. A view at the end stays
+    /// at the end. Values that are not finite and non-negative are ignored.
+    pub fn set_end_gap(&mut self, axis: Axis, gap: f32) {
+        if self.axis_mut(axis).set_end_gap(gap) {
+            self.pending_damage.layout = true;
+        }
+    }
+
     /// Sets the least length along `axis` the pinned Strips leave to the
     /// scrolling Strip (0 at first): pinned Strips too long to leave it are
     /// clipped at their inside ends, the trailing one first, and nothing

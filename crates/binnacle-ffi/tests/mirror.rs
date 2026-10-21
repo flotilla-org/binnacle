@@ -39,6 +39,7 @@ enum Op {
     SetEdgeGap(Axis, f32),
     SetPinZone(Axis, f32),
     SetMinScrolling(Axis, f32),
+    SetEndGap(Axis, f32),
     Pin(Axis, Edge, u64),
     SetPins(Axis, Edge, Vec<u64>),
     Unpin(Axis, u64),
@@ -426,7 +427,14 @@ fn answer(tc: &TestCase) -> Op {
 #[hegel::composite]
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
-    match tc.draw(gs::integers::<u8>().max_value(27)) {
+    match tc.draw(gs::integers::<u8>().max_value(28)) {
+        28 => Op::SetEndGap(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY, 1.0]),
+                gs::floats::<f32>().min_value(0.0).max_value(8.0),
+            )),
+        ),
         27 => Op::SetPins(
             tc.draw(axes()),
             tc.draw(gs::sampled_from(Edge::ALL.to_vec())),
@@ -535,7 +543,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(52))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(53))),
     }
 }
 
@@ -785,6 +793,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 };
                 binnacle_grid_size_overrides(h, 2, &mut out)
             }
+            53 => binnacle_grid_set_end_gap(h, 2, 1.0),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -1571,6 +1580,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 Op::SetMinScrolling(axis, length) => {
                     grid.set_min_scrolling(axis, length);
                     binnacle_grid_set_min_scrolling(h, tag(axis), length)
+                }
+                Op::SetEndGap(axis, gap) => {
+                    grid.set_end_gap(axis, gap);
+                    binnacle_grid_set_end_gap(h, tag(axis), gap)
                 }
                 Op::Pin(axis, edge, key) => {
                     let key = key + 5000 * u64::from(axis == Axis::Cols);

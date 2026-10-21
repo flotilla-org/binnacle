@@ -717,7 +717,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 21] = [
+pub const SCENARIOS: [&str; 22] = [
     "plain",
     "busy",
     "resizing",
@@ -739,6 +739,7 @@ pub const SCENARIOS: [&str; 21] = [
     "unpinDrag",
     "clipped",
     "restored",
+    "endGap",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -914,6 +915,19 @@ pub fn scenario(name: &str) -> Grid {
                 dx: 130.0,
                 dy: 333.0,
             });
+        }
+        "endGap" => {
+            // End Gaps of 6 on the rows and 9 on the columns, scrolled to
+            // the end of both, with row 4 pinned to the bottom.
+            grid.set_end_gap(Axis::Rows, 6.0);
+            grid.set_end_gap(Axis::Cols, 9.0);
+            grid.pin(Axis::Rows, Edge::Trailing, key(4));
+            frame(&mut grid);
+            grid.action(Action::Scroll {
+                dx: 1.0e4,
+                dy: 1.0e4,
+            });
+            frame(&mut grid);
         }
         "dragging" => {
             // Pressed on row 1, column 0 and dragged to row 4, column 2.
@@ -1154,6 +1168,19 @@ mod tests {
                         [key(4)]
                     );
                 }
+                "endGap" => {
+                    let width = VIEWPORT.width;
+                    assert_eq!(
+                        s.cols().last().map(|c| (c.position, c.end())),
+                        Some((5, width - 9.0))
+                    );
+                    let bottom = s.pinned(Axis::Rows, Edge::Trailing)[0];
+                    assert_eq!(bottom.end(), VIEWPORT.height - 6.0);
+                    assert_eq!(
+                        s.rows().last().map(|r| r.end()),
+                        Some(s.scrolling(Axis::Rows).end)
+                    );
+                }
                 "clipped" => {
                     // Every pin is kept; the leading columns clip, slid to
                     // show the focused column 3, and the trailing ones
@@ -1225,6 +1252,7 @@ mod tests {
                 "Idle",
                 "MovingHeaders",
                 "MovingHeaders",
+                "Idle",
                 "Idle",
                 "Idle"
             ]

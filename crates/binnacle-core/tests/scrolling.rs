@@ -3,7 +3,9 @@
 
 use std::ops::Range;
 
-use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, Position, ScrollAnchor, Viewport};
+use binnacle_core::{
+    Action, Axis, AxisConfig, Edge, FocusStep, Grid, Key, Position, ScrollAnchor, Viewport,
+};
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{PumpSource, Scenario, ScenarioSource};
 
@@ -556,5 +558,148 @@ fn scrolling_to_a_position_puts_it_at_the_start() {
             offset: 0.0
         },
         "past the end: ignored"
+    );
+}
+
+/// An End Gap leaves room past the last item when scrolled to the end, for
+/// an adapter's closing line, on both axes: by a scroll, `ScrollTo`, a
+/// reveal of the last item, or a focus move to it. Short of the end the
+/// items still reach the viewport's end. A trailing pinned Strip ends the
+/// End Gap short of the viewport's end, so the room stays past it.
+#[test]
+fn an_end_gap_leaves_room_past_the_last_item_at_the_end() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 4.0);
+    s.input(|g| {
+        g.set_end_gap(Axis::Rows, 1.0);
+        g.set_end_gap(Axis::Cols, 1.0);
+    });
+    let mut out = s.step(
+        "an End Gap of 1 on both axes: nothing moves at the start",
+        v,
+    );
+    let snap = s.frame(v);
+    assert_eq!(snap.rows().last().unwrap().end(), 4.0, "short of the end");
+    s.input(|g| {
+        g.action(Action::Scroll {
+            dx: 100.0,
+            dy: 100.0,
+        })
+    });
+    out += &s.step("far down and right: the last row and column end 1 short", v);
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.rows().last().map(|r| (r.position, r.end())),
+        Some((19, 3.0))
+    );
+    assert_eq!(
+        snap.cols().last().map(|c| (c.position, c.end())),
+        Some((4, 21.0))
+    );
+    assert_eq!(snap.thumb(Axis::Rows).fraction, 1.0);
+    s.input(|g| {
+        g.action(Action::Scroll {
+            dx: -100.0,
+            dy: -100.0,
+        });
+        g.reveal(Axis::Rows, 19);
+    });
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.rows().last().map(|r| (r.position, r.end())),
+        Some((19, 3.0)),
+        "reveal"
+    );
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Rows,
+            fraction: 0.0,
+        });
+        g.set_focus(Key(0), Key(0));
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: FocusStep::Edge,
+            forward: true,
+            extend: false,
+        });
+    });
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.rows().last().map(|r| (r.position, r.end())),
+        Some((19, 3.0)),
+        "focus to the end"
+    );
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Cols,
+            fraction: 1.0,
+        })
+    });
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.cols().last().map(|c| (c.position, c.end())),
+        Some((4, 21.0)),
+        "ScrollTo"
+    );
+    s.input(|g| g.pin(Axis::Rows, Edge::Trailing, Key(0)));
+    out += &s.step(
+        "row 0 pinned bottom: its Strip ends 1 short, and the last scrolling row ends where it starts",
+        v,
+    );
+    let snap = s.frame(v);
+    let pinned = snap.pinned(Axis::Rows, Edge::Trailing);
+    assert_eq!(pinned.last().map(|r| r.end()), Some(3.0));
+    assert_eq!(snap.pinned_region(Axis::Rows, Edge::Trailing), 2.0..3.0);
+    assert_eq!(
+        snap.rows().last().map(|r| (r.position, r.end())),
+        Some((19, 2.0))
+    );
+    s.input(|g| {
+        g.unpin(Axis::Rows, Key(0));
+        g.set_end_gap(Axis::Rows, 0.0);
+    });
+    out += &s.step(
+        "no End Gap on the rows: the last row ends the viewport again",
+        v,
+    );
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.rows().last().map(|r| (r.position, r.end())),
+        Some((19, 4.0))
+    );
+    insta::assert_snapshot!(out);
+}
+
+/// A view at the end stays at the end when the End Gap changes, so a
+/// closing line asked for there shows at once.
+#[test]
+fn an_end_gap_set_at_the_end_keeps_the_view_at_the_end() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 4.0);
+    s.input(|g| {
+        g.action(Action::Scroll {
+            dx: 100.0,
+            dy: 100.0,
+        })
+    });
+    s.frame(v);
+    s.input(|g| {
+        g.set_end_gap(Axis::Rows, 1.0);
+        g.set_end_gap(Axis::Cols, 1.0);
+    });
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.rows().last().map(|r| (r.position, r.end())),
+        Some((19, 3.0))
+    );
+    assert_eq!(
+        snap.cols().last().map(|c| (c.position, c.end())),
+        Some((4, 21.0))
+    );
+    s.input(|g| g.set_end_gap(Axis::Rows, 0.0));
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.rows().last().map(|r| (r.position, r.end())),
+        Some((19, 4.0))
     );
 }

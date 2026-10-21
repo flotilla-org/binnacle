@@ -556,6 +556,8 @@ struct Step<'a> {
     reveals_focus: bool,
     /// The Windows the Grid asked for in this step's frame.
     requests: &'a RefCell<Vec<(Axis, Range<Position>)>>,
+    /// The End Gap of each axis.
+    end_gaps: [f32; 2],
 }
 
 /// Draws a table, then a few steps of random inputs, each followed by a pump
@@ -612,6 +614,15 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
         grid.set_pin_zone(axis, 0.0);
     }
     configure(tc, &mut grid);
+    let end_gaps = Axis::ALL.map(|axis| {
+        let gap = tc.draw(hegel::one_of!(
+            gs::just(0.0f32),
+            gs::just(1.0f32),
+            gs::floats::<f32>().min_value(0.0).max_value(8.0),
+        ));
+        grid.set_end_gap(axis, gap);
+        gap
+    });
     let mut s = Scenario::new(grid, source);
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
     let mut target = Target::default();
@@ -736,6 +747,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             moved_focus,
             reveals_focus,
             requests: &requests,
+            end_gaps,
         };
         let snap = s.frame(next);
         if let Mode::Resizing { axis, key, .. } = snap.mode() {
@@ -934,7 +946,7 @@ fn the_scroll_anchor_and_thumb_stay_in_bounds(tc: TestCase) {
 }
 
 /// Once scrolled off the start, the view never shows empty space after the
-/// last item. Without Size Overrides or content sizes every size is known in
+/// last item, past the End Gap. Without Size Overrides or content sizes every size is known in
 /// advance (sizes the Grid has not seen are estimates), so the clamp is exact up
 /// to f32 stepping across the Strip.
 #[hegel::test(test_cases = 2000)]
@@ -949,7 +961,10 @@ fn scrolling_stops_where_the_last_item_ends_the_viewport(tc: TestCase) {
         |snap, step| {
             let models = step.models;
             for axis in Axis::ALL {
-                let (start, end) = body(snap, axis);
+                // The last item stops the End Gap short of the viewport's end.
+                let (start, extent) = body(snap, axis);
+                let end_gap = step.end_gaps[axis.index()];
+                let end = (extent - end_gap).max(start.min(extent));
                 let count = snap.count(axis);
                 let anchor = snap.scroll_anchor(axis);
                 let resolvable = models[axis.index()].smallest() >= next_f32(end) - end;
@@ -1006,15 +1021,21 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
         extent(rows, rows.default_size)
     ));
     let viewport = Viewport::new(w, h);
+    let end_gap = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(8.0),
+    ));
     let mut s = Scenario::identity(rows, cols);
+    s.input(|g| g.set_end_gap(axis, end_gap));
     s.frame(viewport);
     s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
     let snap = s.frame(viewport);
     let thumb = snap.thumb(axis).fraction;
+    // The End Gap shortens the body the last item may end in.
     let scrollable = scrollable(
         snap.count(axis),
         config,
-        snap.extent(axis) - snap.header(axis),
+        snap.extent(axis) - snap.header(axis) - end_gap,
     );
     if scrollable <= 0.0 {
         assert_eq!(thumb, 0.0);
@@ -2610,4 +2631,91 @@ fn scroll_to_item_starts_the_body_with_the_item_or_reaches_the_end(tc: TestCase)
         ),
         _ => panic!("{p} does not start the body {start}..{stop}: {strip:?}"),
     }
+}
+
+/// Scrolled to the end however it gets there, the last scrolling item ends
+/// the End Gap short of the viewport's end, or with a trailing pinned
+/// Strip, where the scrolling Strip ends, that Strip ending the End Gap
+/// short instead. Sizes are whole quarters, so every sum is exact.
+#[hegel::test(test_cases = 1000)]
+fn scrolled_to_the_end_the_last_item_ends_the_end_gap_short(tc: TestCase) {
+    use binnacle_core::Edge;
+    let quarters = |lo, hi| tc.draw(gs::integers::<u16>().min_value(lo).max_value(hi)) as f32 / 4.0;
+    let axis = tc.draw(axis());
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(40));
+    let (size, gap, header) = (quarters(4, 24), quarters(0, 8), quarters(0, 12));
+    let end_gap = quarters(0, 12);
+    let config = AxisConfig::new(count, size).header(header).gap(gap);
+    let other = AxisConfig::new(3, 2.0);
+    let extent = quarters(0, 160);
+    let viewport = match axis {
+        Axis::Rows => Viewport::new(10.0, extent),
+        Axis::Cols => Viewport::new(extent, 10.0),
+    };
+    let mut s = match axis {
+        Axis::Rows => Scenario::identity(config, other),
+        Axis::Cols => Scenario::identity(other, config),
+    };
+    let pinned = (count > 1 && tc.draw(gs::booleans()))
+        .then(|| tc.draw(gs::integers::<u64>().max_value(count - 1)));
+    s.input(|g| {
+        g.set_end_gap(axis, end_gap);
+        if let Some(key) = pinned {
+            g.pin(axis, Edge::Trailing, Key(key));
+        }
+    });
+    let last_scrolling = if pinned == Some(count - 1) {
+        count - 2
+    } else {
+        count - 1
+    };
+    s.frame(viewport);
+    let ways = if pinned.is_some() { 3 } else { 4 };
+    let way = tc.draw(gs::integers::<u8>().max_value(ways - 1));
+    s.input(|g| match way {
+        0 => g.action(Action::Scroll {
+            dx: 1.0e6,
+            dy: 1.0e6,
+        }),
+        1 => g.action(Action::ScrollTo {
+            axis,
+            fraction: 1.0,
+        }),
+        2 => g.reveal(axis, last_scrolling),
+        _ => {
+            g.set_focus(Key(0), Key(0));
+            g.action(Action::MoveFocus {
+                axis,
+                by: FocusStep::Edge,
+                forward: true,
+                extend: false,
+            });
+        }
+    });
+    s.frame(viewport);
+    let snap = s.frame(viewport);
+    let far = (extent - end_gap).max(header.min(extent));
+    let trailing = snap.pinned(axis, Edge::Trailing);
+    let end = match trailing.last() {
+        Some(last) => {
+            assert_eq!(last.end(), far, "the trailing pinned Strip's end");
+            snap.scrolling(axis).end
+        }
+        None => far,
+    };
+    let scrolling = count - u64::from(pinned.is_some());
+    let length = scrolling as f32 * size + (scrolling - 1) as f32 * gap;
+    let start = snap.scrolling(axis).start;
+    // A reveal shows the start of an item longer than the body.
+    let reveals = way >= 2;
+    if end <= start || length <= end - start || reveals && size >= end - start {
+        return;
+    }
+    let last = snap.strip(axis).last().copied();
+    assert_eq!(
+        last.map(|it| it.end()),
+        Some(end),
+        "the last scrolling item's end ({:?} pinned)",
+        trailing.first().map(|it| it.position)
+    );
 }

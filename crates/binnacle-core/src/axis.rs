@@ -33,6 +33,9 @@ pub(crate) struct AxisState {
     /// The least space between a pinned Strip and the scrolling Strip (see
     /// [`AxisState::edge_gap`]).
     pub edge_gap: f32,
+    /// The room kept past the last item at the end of the axis (see
+    /// [`crate::Grid::set_end_gap`]).
+    pub end_gap: f32,
     /// How far each end's pin zone reaches (see [`crate::Grid::set_pin_zone`]).
     pub pin_zone: f32,
     /// The least length the pinned Strips leave the scrolling region.
@@ -61,6 +64,7 @@ impl AxisState {
             pinned: [Vec::new(), Vec::new()],
             freezing: None,
             edge_gap: 0.0,
+            end_gap: 0.0,
             pin_zone: measure_default / 4.0,
             min_scrolling: 0.0,
             focused: None,
@@ -87,6 +91,24 @@ impl AxisState {
         true
     }
 
+    /// Sets the End Gap, keeping the Scroll Anchor as [`AxisState::set_gap`]
+    /// does, except that an anchor at the end follows the end. Returns
+    /// whether anything changed.
+    pub fn set_end_gap(&mut self, gap: f32) -> bool {
+        if !(gap.is_finite() && gap >= 0.0) || gap == self.end_gap {
+            return false;
+        }
+        self.end_gap = gap;
+        self.clamp_anchor();
+        true
+    }
+
+    /// Where the axis's content may end: the End Gap before the viewport's
+    /// far end, though never before the Header Band.
+    pub fn far_end(&self) -> f32 {
+        (self.extent - self.end_gap).max(self.header.min(self.extent))
+    }
+
     /// Sets the least length the pinned Strips leave to scroll, keeping
     /// the Scroll Anchor as [`AxisState::set_gap`] does. Returns whether
     /// anything changed.
@@ -104,6 +126,15 @@ impl AxisState {
     /// inside the header band.
     fn body(&self) -> f32 {
         (self.scroll_end() - self.scroll_start()).max(0.0)
+    }
+
+    /// The length the scrolling Strip's last item may end in: its body,
+    /// less the End Gap unless a trailing pinned Strip follows it.
+    fn end_body(&self) -> f32 {
+        if self.drawn_pins(Edge::Trailing).next().is_some() {
+            return self.body();
+        }
+        (self.far_end() - self.scroll_start()).max(0.0)
     }
 
     /// The anchor at the start of the scrolling Strip: its first item, past
@@ -269,9 +300,10 @@ impl AxisState {
         }
     }
 
-    /// The furthest the anchor may go: where the last item ends the viewport.
+    /// The furthest the anchor may go: where the last item ends the viewport,
+    /// or the End Gap before its end.
     fn max_anchor(&self) -> ScrollAnchor {
-        let body = self.body();
+        let body = self.end_body();
         let Some(last) = self.last_shown() else {
             return ScrollAnchor::default();
         };
@@ -414,10 +446,15 @@ impl AxisState {
     /// it is longer than the body. A pinned item always shows. With no body (no viewport yet) nothing can
     /// show, so the anchor stays. Returns whether the anchor moved.
     pub fn reveal(&mut self, p: Position) -> bool {
-        let body = f64::from(self.body());
-        if body <= 0.0 || self.pinned_at(p).is_some() {
+        if self.body() <= 0.0 || self.pinned_at(p).is_some() {
             return false;
         }
+        // The last item shows with the End Gap after it.
+        let body = f64::from(if Some(p) == self.last_shown() {
+            self.end_body()
+        } else {
+            self.body()
+        });
         let start = self.measure.distance(self.anchor.position, p) - f64::from(self.anchor.offset);
         let size = f64::from(self.measure.size_at(p));
         if start < 0.0 || size >= body {
@@ -478,7 +515,8 @@ impl AxisState {
     /// Window are assumed default.
     pub fn thumb(&self) -> Thumb {
         let (scrolled, scrollable) = self.scrolled();
-        let extent = self.measure.extent();
+        // The room the End Gap keeps at the end scrolls like content.
+        let extent = self.measure.extent() + f64::from(self.body() - self.end_body());
         Thumb {
             fraction: if scrollable > 0.0 {
                 (scrolled / scrollable).clamp(0.0, 1.0)
