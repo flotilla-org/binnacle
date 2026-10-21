@@ -83,6 +83,24 @@ test("a column pinned right draws flush with the far edge, and the scrolling col
   }
 });
 
+test("an End Gap keeps room past the last column scrolled to the end, and past a column pinned right", () => {
+  const h = new Harness(table(30, 20));
+  try {
+    h.grid.set_end_gap(AXIS_CODE.cols, 6);
+    h.grid.scroll_to(AXIS_CODE.cols, 1);
+    let s = h.frame();
+    expect(s.cols.strip.at(-1)).toMatchObject({ position: 19, size: COL_WIDTH });
+    expect(s.cols.strip.at(-1)!.offset + COL_WIDTH).toBe(h.width - 6);
+    h.grid.pin(AXIS_CODE.cols, EDGE_CODE.trailing, h.feed.colKey(6));
+    h.drain();
+    s = h.frame();
+    expect(s.cols.strip.at(-1)).toMatchObject({ position: 6, offset: h.width - 6 - COL_WIDTH });
+    expect(s.cols.regions.trailing.end).toBe(h.width - 6);
+  } finally {
+    h.destroy();
+  }
+});
+
 test("across pins at either edge, unpins and scrolls, the pinned columns lead and trail in pin order and the scrolling ones lie between in Position order, none twice", () =>
   hegel.test((tc) => {
     const cols = 20;

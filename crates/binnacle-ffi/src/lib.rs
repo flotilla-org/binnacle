@@ -1479,6 +1479,22 @@ pub unsafe extern "C" fn binnacle_grid_set_min_scrolling(
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_end_gap(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    gap: f32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.set_end_gap(axis, gap))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_set_edge_gap(
     grid: *mut BinnacleGrid,
     axis_tag: u32,

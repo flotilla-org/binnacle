@@ -58,6 +58,8 @@ struct Host {
     /// Each axis's band thickness and Gap as of the last frame.
     headers: [f32; 2],
     gaps: [f32; 2],
+    /// Each axis's End Gap, as last set.
+    end_gaps: [f32; 2],
 }
 
 fn axis() -> impl hegel::PrintableGenerator<Axis> {
@@ -306,11 +308,15 @@ impl Host {
             let scrolling = snap.scrolling(axis);
             let [lead, trail] = Edge::ALL.map(|e| snap.pinned_region(axis, e));
             assert_eq!(lead.start, header, "leading region {lead:?} on {axis:?}");
-            assert_eq!(
-                trail.end,
-                snap.extent(axis),
-                "trailing region {trail:?} on {axis:?}"
-            );
+            // A trailing Strip keeps the End Gap past it, short of the
+            // Header Band.
+            let extent = snap.extent(axis);
+            let far = if snap.pinned(axis, Edge::Trailing).is_empty() {
+                extent
+            } else {
+                (extent - self.end_gaps[axis.index()]).max(header.min(extent))
+            };
+            assert_eq!(trail.end, far, "trailing region {trail:?} on {axis:?}");
             assert!(
                 lead.start <= lead.end && lead.end <= scrolling.start.max(lead.start),
                 "leading region {lead:?} past {scrolling:?} on {axis:?}"
@@ -972,6 +978,22 @@ impl Host {
         self.grid.set_min_scrolling(axis, length);
     }
 
+    /// The room each axis keeps past its last item at the end, or a
+    /// length the Grid ignores.
+    #[rule(weight = 0.5)]
+    fn end_gap(&mut self, tc: TestCase) {
+        let axis = tc.draw(axis());
+        let gap = tc.draw(hegel::one_of!(
+            gs::sampled_from(vec![-1.0f32, f32::NAN, 1.0]),
+            gs::floats::<f32>().min_value(0.0).max_value(20.0),
+        ));
+        tc.note(&format!("set_end_gap({axis:?}, {gap})"));
+        self.grid.set_end_gap(axis, gap);
+        if gap.is_finite() && gap >= 0.0 {
+            self.end_gaps[axis.index()] = gap;
+        }
+    }
+
     #[rule]
     fn unpin(&mut self, tc: TestCase) {
         let axis = tc.draw(axis());
@@ -1187,6 +1209,7 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         viewport,
         headers: [1.0, 2.0],
         gaps: [gap; 2],
+        end_gaps: [0.0; 2],
     };
     hegel::stateful::machine(host).steps(300).run(tc);
 }

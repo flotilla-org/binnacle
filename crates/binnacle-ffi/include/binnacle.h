@@ -766,6 +766,12 @@ int binnacle_grid_set_pin_zone(BinnacleGrid *grid, uint32_t axis, float size);
  * non-negative are ignored. */
 int binnacle_grid_set_min_scrolling(BinnacleGrid *grid, uint32_t axis, float length);
 
+/* The End Gap on axis (0 at first): the room kept past the last item when
+ * scrolled to the end, where a closing line is drawn. The end clamp stops the
+ * End Gap short of the viewport's end, and a trailing pinned Strip ends that
+ * far short of it. Values that are not finite and non-negative are ignored. */
+int binnacle_grid_set_end_gap(BinnacleGrid *grid, uint32_t axis, float gap);
+
 /* Pins the item with key on axis to edge (BINNACLE_EDGE_*), after the keys
  * pinned there before: it is drawn in that edge's pinned Strip whatever the
  * sort or scroll. A key outside the Window is found with a LOCATE Effect.

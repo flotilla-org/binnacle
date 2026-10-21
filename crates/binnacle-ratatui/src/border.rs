@@ -83,6 +83,18 @@ impl BorderStyle {
     }
 }
 
+impl BorderStyle {
+    /// Whether a line closes the table after the last item on `axis`: after
+    /// the last column for `Columns` and `Grid`, under the last row for
+    /// `Grid`.
+    pub const fn closes(self, axis: Axis) -> bool {
+        match axis {
+            Axis::Rows => matches!(self.extent, BorderExtent::Grid),
+            Axis::Cols => matches!(self.extent, BorderExtent::Columns | BorderExtent::Grid),
+        }
+    }
+}
+
 /// Names the style as `<extent> <weight>`, then ` + band rules` for
 /// `Headers` with them on.
 impl fmt::Display for BorderStyle {
@@ -149,9 +161,11 @@ const LEFT: u8 = 2;
 const RIGHT: u8 = 1;
 
 /// The lines of one frame, in cells relative to the area. A line reaching
-/// the area's edge is taken to run on past it.
+/// the area's edge is taken to run on past it, unless a closing line ends
+/// the table there (`closed`, across then down).
 struct Lines {
     size: (i64, i64),
+    closed: (bool, bool),
     marks: HashMap<(i64, i64), Mark>,
 }
 
@@ -169,7 +183,7 @@ impl Lines {
             if y > ys.start || y == 0 {
                 m.arms |= UP;
             }
-            if y + 1 < ys.end || y + 1 == h {
+            if y + 1 < ys.end || (y + 1 == h && !self.closed.1) {
                 m.arms |= DOWN;
             }
         }
@@ -188,7 +202,7 @@ impl Lines {
             if x > xs.start || x == 0 {
                 m.arms |= LEFT;
             }
-            if x + 1 < xs.end || x + 1 == w {
+            if x + 1 < xs.end || (x + 1 == w && !self.closed.0) {
                 m.arms |= RIGHT;
             }
         }
@@ -226,16 +240,35 @@ pub(crate) fn draw(
     // Strip's end, or before a trailing Strip's start.
     let drawn = |axis: Axis| -> Vec<StripItem> {
         let span = snapshot.scrolling(axis);
-        let scrolling =
-            (snapshot.strip(axis).iter()).filter(|i| i.end() >= span.start && i.offset < span.end);
+        let scrolling: Vec<StripItem> = (snapshot.strip(axis).iter())
+            .filter(|i| i.end() >= span.start && i.offset < span.end)
+            .copied()
+            .collect();
+        // The item before the first scrolling one ends at or before the
+        // scrolling Strip's start, so it is not drawn, but its Gap may
+        // still start the body: it stands in for its line there.
+        let before = (scrolling.first())
+            .filter(|f| f.position > 0 && f.offset > span.start)
+            .map(|f| StripItem {
+                position: f.position - 1,
+                key: None,
+                offset: f.offset - snapshot.gap(axis),
+                size: 0.0,
+            })
+            .filter(|b| cell(b.end()) >= cell(span.start));
         let [lead, trail] = Edge::ALL.map(|edge| snapshot.pinned_region(axis, edge));
         // A slid Strip's ends are sums, so they may round past its region.
         let within = |end: f32| end - lead.end <= 4.0 * f32::EPSILON * lead.end.abs().max(1.0);
         (snapshot.pinned(axis, Edge::Leading).iter())
             .filter(|i| within(i.end()))
-            .chain(scrolling)
-            .chain((snapshot.pinned(axis, Edge::Trailing).iter()).filter(|i| i.end() > trail.start))
             .copied()
+            .chain(before)
+            .chain(scrolling)
+            .chain(
+                (snapshot.pinned(axis, Edge::Trailing).iter())
+                    .filter(|i| i.end() > trail.start)
+                    .copied(),
+            )
             .collect()
     };
     let (rows, cols) = (&drawn(Axis::Rows)[..], &drawn(Axis::Cols)[..]);
@@ -272,8 +305,25 @@ pub(crate) fn draw(
             .filter(|(it, at)| !(scrolling.contains(it) && hidden(axis, *at)))
             .map(|(_, at)| at)
     };
-    let close_x = closing(Axis::Cols, cols, left_f).filter(|_| columns);
-    let close_y = closing(Axis::Rows, rows, top_f).filter(|_| grid);
+    // The cells that close the table on `axis`, where its Border Style
+    // closes it: past its last item, and past the trailing pinned Strip
+    // where that shows, as the table ends there too.
+    let closings = |axis: Axis, strip: &[StripItem], band: f32| -> Vec<i64> {
+        if !style.closes(axis) {
+            return Vec::new();
+        }
+        let trailing = (snapshot.pinned(axis, Edge::Trailing).last())
+            .filter(|&last| strip.last() == Some(last) && last.end() >= band)
+            .map(|last| cell(last.end()));
+        let mut at: Vec<i64> = closing(axis, strip, band)
+            .into_iter()
+            .chain(trailing)
+            .collect();
+        at.dedup();
+        at
+    };
+    let close_x = closings(Axis::Cols, cols, left_f);
+    let close_y = closings(Axis::Rows, rows, top_f);
     // The cells in the Edge Gaps beside the pinned Strips of each axis:
     // after the leading one, before the trailing one.
     let edges = |axis: Axis| -> Vec<i64> {
@@ -290,14 +340,15 @@ pub(crate) fn draw(
     };
     let (col_edges, row_edges) = (edges(Axis::Cols), edges(Axis::Rows));
     // The lines a closing line crosses reach it.
-    if let Some(x) = close_x {
+    if let Some(&x) = close_x.iter().max() {
         right = right.max(x + 1);
     }
-    if let Some(y) = close_y {
+    if let Some(&y) = close_y.iter().max() {
         bottom = bottom.max(y + 1);
     }
     let mut lines = Lines {
         size: (i64::from(area.width), i64::from(area.height)),
+        closed: (!close_x.is_empty(), !close_y.is_empty()),
         marks: HashMap::new(),
     };
     if handles {
@@ -324,10 +375,10 @@ pub(crate) fn draw(
             }
         }
     }
-    if let Some(x) = close_x {
+    for &x in &close_x {
         lines.vertical(x, 0..bottom, top);
     }
-    if let Some(y) = close_y {
+    for &y in &close_y {
         lines.horizontal(y, 0..right, left);
     }
     // A band too thin for a rule keeps its only cell for its text. A rule
@@ -411,7 +462,7 @@ pub(crate) fn draw(
                 cap_top
             } else if row_edges.contains(&y) {
                 both
-            } else if close_y == Some(y) && y + 1 >= bottom {
+            } else if close_y.contains(&y) && y + 1 >= bottom {
                 cap_bottom
             } else if rule_ys.contains(&(x, y)) {
                 cross
@@ -428,7 +479,7 @@ pub(crate) fn draw(
                 continue;
             } else if rule_left && x == left - 1 {
                 cap_left
-            } else if close_x == Some(x) && x + 1 >= right {
+            } else if close_x.contains(&x) && x + 1 >= right {
                 cap_right
             } else if line_xs.contains(&(x, y)) {
                 cross_col

@@ -81,7 +81,10 @@ pub const MIN_SCROLLING: [f32; 2] = [3.0, 12.0];
 /// It also gives each axis an Edge Gap of one cell, so a pinned edge has a
 /// cell to be drawn in even where the axis has no Gap (rows, usually), pin
 /// zones of one cell, and keeps [`MIN_SCROLLING`] cells of each axis to
-/// scroll, clipping pinned Strips too long to leave them.
+/// scroll, clipping pinned Strips too long to leave them. Where the Border
+/// Style closes the table (columns for `Columns` and `Grid`, rows for
+/// `Grid`) it asks for an End Gap of one cell, so the closing line shows
+/// scrolled to the end; elsewhere none.
 pub fn begin_frame(
     grid: &mut Grid,
     ctx: &RenderContext,
@@ -90,6 +93,7 @@ pub fn begin_frame(
 ) -> Layout {
     for axis in Axis::ALL {
         grid.set_edge_gap(axis, 1.0);
+        grid.set_end_gap(axis, if ctx.border.closes(axis) { 1.0 } else { 0.0 });
         grid.set_pin_zone(axis, 1.0);
         grid.set_min_scrolling(axis, MIN_SCROLLING[axis.index()]);
     }
