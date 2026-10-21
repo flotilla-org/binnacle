@@ -15,14 +15,13 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 3   3.0    3.1    3.2
 --- 2. columns whose cell in record 1 contains 1: the 1 and the 10 stay, the 5 goes; 2 of 3 columns
 effect (gen 1): ViewRequested unsorted filter none cols 1: "1" by AddCondition { axis: Cols, condition: Condition { key: Key(1), kind: Text(TextQuery { text: "1", case_sensitive: false, regex: false, searches: Keys([Key(1)]) }), not: false } }
-  view: applied unsorted filter none cols 1: "1", notices [(Rows, Reordered), (Cols, Refiltered(2))]
+  view: applied unsorted filter none cols 1: "1", notices [(Cols, Refiltered(2))]
 effect (gen 1): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(0)
 effect (gen 1): Locate { axis: Cols, key: Key(1) }
   locate Cols Key(1): Found(1)
 effect (gen 1): Locate { axis: Cols, key: Key(2) }
   locate Cols Key(2): Gone { suggest: Some(2) }
-window Rows 0..4
 window Cols 0..2
 gen 2 | damage layout selection positions | filter none cols 1: "1" | total Rows 4 | total Cols 3
 Rows: (unchanged)
@@ -40,12 +39,11 @@ Cols: (unchanged)
 (picture unchanged)
 --- 4. re-apply: the same View Spec, and the column goes; 1 of 3
 effect (gen 3): ViewRequested unsorted filter none cols 1: "1" by Reapply
-  view: applied unsorted filter none cols 1: "1", notices [(Rows, Reordered), (Cols, Refiltered(1))]
+  view: applied unsorted filter none cols 1: "1", notices [(Cols, Refiltered(1))]
 effect (gen 3): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(0)
 effect (gen 3): Locate { axis: Cols, key: Key(1) }
   locate Cols Key(1): Gone { suggest: Some(1) }
-window Rows 0..4
 window Cols 0..1
 gen 4 | damage layout selection positions | filter none cols 1: "1" | total Rows 4 | total Cols 3
 Rows: (unchanged)

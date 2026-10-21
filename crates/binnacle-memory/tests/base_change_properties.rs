@@ -285,11 +285,13 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
             }
             Some(ChangeNotice::Removed { .. }) => panic!("{op:?}"),
             None => {
-                let Op::Edit { row, .. } = op else {
-                    panic!("{op:?}")
-                };
-                assert_eq!(after, before);
-                assert!(!after.contains(&(*row as u64)));
+                assert_eq!(after, before, "{op:?}");
+                match op {
+                    Op::Edit { row, .. } => assert!(!after.contains(&(*row as u64))),
+                    // A sort leaving the rows in order says nothing.
+                    Op::Sort(_) => {}
+                    _ => panic!("{op:?}"),
+                }
             }
         }
     });

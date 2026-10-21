@@ -273,6 +273,35 @@ fn hidden_items_leave_the_view_until_shown_and_the_answer_prunes_keys_the_data_l
     }
 }
 
+/// A View Spec answers an axis it leaves in the same order with no
+/// `Reordered` (which would clear a range across that axis), and one it
+/// reorders with a Change Notice saying so.
+#[hegel::test(test_cases = 400)]
+fn a_view_spec_reorders_only_the_axes_whose_order_it_changes(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).max_size(MAX_ROWS));
+    let mut source = (0..COLS).fold(MemorySource::<Record>::new(rows.len(), COLS), |s, c| {
+        s.i64_column(Key(c as u64), move |r: &Record| r[c])
+    });
+    for spec in tc.draw(gs::vecs(spec()).min_size(1).max_size(6)) {
+        let before = Axis::ALL.map(|a| visible(&source, a));
+        let notices = source.view(&rows, &spec).unwrap();
+        for axis in Axis::ALL {
+            let told: Vec<&ChangeNotice> = (notices.iter())
+                .filter(|(a, _)| *a == axis)
+                .map(|(_, n)| n)
+                .collect();
+            if visible(&source, axis) == before[axis.index()] {
+                assert!(
+                    !told.contains(&&ChangeNotice::Reordered),
+                    "{axis:?} kept its order but was told {told:?} for {spec:?}"
+                );
+            } else {
+                assert!(!told.is_empty(), "{axis:?} changed untold for {spec:?}");
+            }
+        }
+    }
+}
+
 #[hegel::test(test_cases = 200)]
 fn clearing_the_filters_leaves_hidden_items_hidden(tc: TestCase) {
     let rows = tc.draw(gs::vecs(record()).min_size(1).max_size(MAX_ROWS));

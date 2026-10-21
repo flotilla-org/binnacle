@@ -45,6 +45,9 @@
 - **memory:** `MemorySource` leaves a condition on an item of the other axis the table lacks out of its answer, on either axis, so it shows as not applied (as `fromRows` already did); it applied it before, reading blanks, which kept no rows. Appending the item later does not apply it again until the View Spec is re-applied.
 - **web:** the `Effect` union gains `PinsChanged`, and `AxisSnapshot` gains `pins` (`leading` and `trailing` Keys, dormant ones included).
 
+- **core, memory, C API, web:** `Located::Gone { suggest }` (`GONE_SUGGEST` in C, `{ type: "Gone", suggest }` on the web) is where the Key would sit among the items left: the next one's Position in the order it had, or the count when none follows. Focus falls back there, clamped to the last item, so a filtered out focus moves to the next item, else the previous ([#134](https://github.com/flotilla-org/binnacle/issues/134)). The In-Memory Table Source and `fromRows` suggested the nearest item either side before. A Table Source of its own that suggests positions follows the same rule.
+- **memory:** `MemorySource::view` tells an axis nothing when the View Spec leaves it in the same order: hiding or filtering the columns no longer answers `(Rows, Reordered)` (nor a sort that changes no Position).
+
 ### Added
 
 - **core:** a header dropped into a pinned Strip pins its item there, before the pinned item under the drop's first half (reordering if it was pinned there already); an empty Strip takes the drop over its pin zone, the Header Band or past the viewport's far end, and `Snapshot::pin_zones` lights those zones while a header is dragged. Dragged out, a pin unpins and, on a movable axis, asks to move to the drop Position (a refused move leaves it unpinned in its own place); elsewhere it returns to its own place, which the drop line marks. `Grid::set_pin_zone` sizes the zones (a quarter of the axis's default item size until set; 0 turns empty-Strip drops off).
@@ -93,6 +96,7 @@
 
 ### Fixed
 
+- **core:** a selection range that a filter or a hide partly removes shrinks to the items still shown between its corners, on either axis, and clears only when none is left; it was cleared ([#164](https://github.com/flotilla-org/binnacle/issues/164)).
 - **web:** `fromRows` names a rejected regex without RegExp's prefix even when the pattern holds a line break.
 
 - **web:** the find count is asked again when the columns are refiltered ([#139](https://github.com/flotilla-org/binnacle/issues/139)).

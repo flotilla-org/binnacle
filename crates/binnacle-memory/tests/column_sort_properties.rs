@@ -194,8 +194,9 @@ fn the_columns_follow_the_model_through_sorts_edits_replacements_and_moves(tc: T
                     .filter(|&(row, _)| row < model.rows.len())
                     .collect();
                 let spec = SortSpec::new(terms(&there));
+                let before = source.window(Axis::Cols, 0..u64::MAX);
                 let answer = source.view(&model.rows, &cols_sorted(asked));
-                let moved = spec != model.spec || !spec.is_empty();
+                let moved = source.window(Axis::Cols, 0..u64::MAX) != before;
                 model.spec = spec;
                 assert_eq!(moved_columns(&answer.unwrap()), moved);
                 assert_eq!(source.view_spec().cols.sort, model.spec);

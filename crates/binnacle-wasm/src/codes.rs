@@ -153,7 +153,8 @@ pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
 }
 
 /// A `Locate` answer: Found 0 (at `position`) or Gone 1 (suggesting
-/// `position`, `NaN` for no suggestion).
+/// `position`, where the Key would sit among the items left, which may be
+/// the count; `NaN` for no suggestion).
 pub fn located(code: u8, position: f64) -> Located {
     match code {
         0 => Located::Found(self::position(position)),

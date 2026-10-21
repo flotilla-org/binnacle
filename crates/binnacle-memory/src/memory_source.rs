@@ -378,9 +378,10 @@ impl<R> MemorySource<R> {
     /// hidden Keys name; Keys no item has are dropped from the spec
     /// [`MemorySource::view_spec`] gives. Returns the Change Notices the
     /// axes need: the rows' first, `Refiltered` if their filter or hidden
-    /// items changed, or the columns their quick filter searches (else the
-    /// sort's), then the columns' `Refiltered` likewise, else their
-    /// `Reordered` while they are sorted or their sort changed. Any View
+    /// items changed, or the columns their quick filter searches, else
+    /// `Reordered` if the sort moved them; then the columns' `Refiltered`
+    /// likewise, else their `Reordered` if their sort moved them. An axis
+    /// left in the same order is told nothing. Any View
     /// Spec, even the one in force, applies each axis's filter again to its
     /// unmatched items.
     /// A sort term naming a column or row the table does not have is left
@@ -406,7 +407,11 @@ impl<R> MemorySource<R> {
         };
         let present = self.present(Axis::Cols, &spec.rows.sort);
         let sorted = self.sort(rows, &present)?;
-        let resorted = by_rows.map(|by_rows| self.sort_columns(rows, &by, &by_rows));
+        // An axis the spec leaves in the same order is told nothing.
+        let resorted = by_rows.and_then(|by_rows| {
+            let keys = by_rows.iter().map(|&i| self.row_keys(&rows[i])).collect();
+            self.table.resort(Axis::Cols, &by, keys)
+        });
         let hid = Axis::ALL.map(|a| {
             let hidden = &spec.axis(a).hidden;
             self.table.apply_hidden(a, hidden).is_some()
@@ -416,10 +421,11 @@ impl<R> MemorySource<R> {
         let changed = self.filters[0].take(&filters[0])
             || hid[0]
             || (hid[1] && self.filters[0].searches_shown());
-        notices.push(match changed || self.table.has_unmatched(Axis::Rows) {
-            true => (Axis::Rows, self.refilter(rows)),
-            false => (Axis::Rows, sorted),
-        });
+        let notice = match changed || self.table.has_unmatched(Axis::Rows) {
+            true => Some(self.refilter(rows)),
+            false => sorted,
+        };
+        notices.extend(notice.map(|n| (Axis::Rows, n)));
         let changed = self.filters[1].take(&filters[1])
             || hid[1]
             || (hid[0] && self.filters[1].searches_shown());
@@ -431,14 +437,15 @@ impl<R> MemorySource<R> {
         Ok(notices)
     }
 
-    fn sort(&mut self, rows: &[R], spec: &SortSpec) -> Result<ChangeNotice, Unsortable> {
+    /// Sorts the rows by `spec`: `None` if the rows shown stay in order.
+    fn sort(&mut self, rows: &[R], spec: &SortSpec) -> Result<Option<ChangeNotice>, Unsortable> {
         let columns = spec
             .columns()
             .iter()
             .map(|c| self.columns.get(&c.key).ok_or(Unsortable { column: c.key }))
             .collect::<Result<Vec<_>, _>>()?;
         let keys = columns.into_iter().map(|c| c.extract(rows)).collect();
-        Ok(self.table.apply_sort(Axis::Rows, spec, keys))
+        Ok(self.table.resort(Axis::Rows, spec, keys))
     }
 
     /// `spec` less its terms on items of `axis` the table does not have.

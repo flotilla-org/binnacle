@@ -253,13 +253,11 @@ fn a_users_edit_that_stops_a_column_matching_keeps_it_unmatched_until_the_next_v
         source.unmatched(Axis::Cols, &[Key(0), Key(1)]),
         [false, true]
     );
-    // The same View Spec again applies the filter to it.
+    // The same View Spec again applies the filter to it, and leaves the
+    // rows as they were.
     assert_eq!(
         source.view(&rows, &spec),
-        Ok(vec![
-            (Axis::Rows, ChangeNotice::Reordered),
-            (Axis::Cols, ChangeNotice::Refiltered(1))
-        ])
+        Ok(vec![(Axis::Cols, ChangeNotice::Refiltered(1))])
     );
     assert_eq!(columns(&source), [0]);
     assert_eq!(source.unmatched(Axis::Cols, &[Key(1)]), [false]);

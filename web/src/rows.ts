@@ -451,12 +451,13 @@ export function fromRows<R extends object>(
       if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
       else m.stage_strings(k.bytes, k.ends, k.nulls);
     }
-    m.sort(
+    const moved = m.sort(
       ROWS,
       BigUint64Array.from(spec, (c) => BigInt(index.get(c.id)!)),
       Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
     );
     applied = spec;
+    return moved;
   };
 
   /** Sorts the columns by the rows `spec` names, each row's values across the columns as its keys. */
@@ -468,12 +469,13 @@ export function fromRows<R extends object>(
       if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
       else m.stage_strings(k.bytes, k.ends, k.nulls);
     }
-    m.sort(
+    const moved = m.sort(
       COLS,
       BigUint64Array.from(spec, (c) => BigInt(c.id)),
       Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
     );
     colsApplied = spec;
+    return moved;
   };
 
   /** The View Spec in force, as `view` answers it. */
@@ -598,13 +600,13 @@ export function fromRows<R extends object>(
         rows: !sameItems(was.cols, hidden.cols) && searchesShown(filters.rows),
         cols: !sameItems(was.rows, hidden.rows) && searchesShown(filters.cols),
       };
-      sort(by);
+      const sorted = sort(by);
       // Any View Spec, even the one in force, filters the unmatched items.
       const refiltered = forRows.changed || shownChanged.rows || m.has_unmatched(ROWS);
       if (refiltered) refilter();
-      tell({ type: refiltered || hid.rows ? "Refiltered" : "Reordered" });
-      const resorted = byRows.length > 0 || colsApplied.length > 0;
-      if (resorted) sortColumns(byRows);
+      // An axis left in the same order is told nothing.
+      if (refiltered || hid.rows || sorted) tell({ type: refiltered || hid.rows ? "Refiltered" : "Reordered" });
+      const resorted = (byRows.length > 0 || colsApplied.length > 0) && sortColumns(byRows);
       const refilteredCols = forCols.changed || shownChanged.cols || hid.cols || m.has_unmatched(COLS);
       if (refilteredCols) refilterColumns();
       if (resorted || refilteredCols) tell({ type: refilteredCols ? "Refiltered" : "Reordered" }, "cols");

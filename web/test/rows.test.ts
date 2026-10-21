@@ -305,6 +305,43 @@ describe("fromRows", () => {
       }
     }));
 
+  test("a View Spec tells an axis it leaves in the same order no Reordered, and one it changes something", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      const told = { rows: [] as ChangeNotice[], cols: [] as ChangeNotice[] };
+      source.attach!(sinksTo(told.rows, told.cols));
+      const shownCols = () => source.cols.window(0, source.cols.count() as number, new AbortController().signal);
+      try {
+        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 5 }));
+        for (let i = 0; i < steps; i++) {
+          const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+          const hidden = tc.draw(gs.arrays(gs.sampledFrom<keyof Rec>(["n", "s", "b"]), { maxSize: 2 }));
+          const byRow0 = rows.length > 0 && tc.draw(gs.booleans());
+          const spec = rowsSorted(sort);
+          spec.cols = {
+            filter: { quick: null, conditions: [] },
+            sort: byRow0 ? [{ id: 0, direction: "descending" }] : [],
+            hidden,
+          };
+          const before = { rows: order(source), cols: shownCols() };
+          told.rows.length = 0;
+          told.cols.length = 0;
+          source.view!(spec, new AbortController().signal);
+          const after = { rows: order(source), cols: shownCols() };
+          for (const axis of ["rows", "cols"] as const) {
+            if (JSON.stringify(after[axis]) === JSON.stringify(before[axis])) {
+              expect(told[axis], axis).not.toContainEqual({ type: "Reordered" });
+            } else {
+              expect(told[axis].length, axis).toBeGreaterThan(0);
+            }
+          }
+        }
+      } finally {
+        source.destroy();
+      }
+    }));
+
   test("a move on either axis places the items in the order shown; on a sorted axis it drops the sort, or refuses with `refuse`", () =>
     hegel.test((tc) => {
       const rows = tc.draw(records);
@@ -387,11 +424,12 @@ describe("fromRows", () => {
           else if (spec.length) told.push({ type: "Reordered" });
           expect(notices).toEqual(told);
         }
-        // Any View Spec, even the one in force, filters the unmatched rows.
+        // Any View Spec, even the one in force, filters the unmatched rows;
+        // with none, the rows stay in order and are told nothing.
         notices.length = 0;
         source.view!(rowsSorted(spec), new AbortController().signal);
         expect(order(source)).toEqual(reference(rows, spec, keep));
-        expect(notices).toEqual([{ type: unmatched.size ? "Refiltered" : "Reordered" }]);
+        expect(notices).toEqual(unmatched.size ? [{ type: "Refiltered" }] : []);
       } finally {
         source.destroy();
       }
@@ -413,6 +451,7 @@ describe("fromRows", () => {
             const asked = tc.draw(gs.oneOf(gs.just(null), queries));
             const conditions = tc.draw(gs.oneOf(gs.just(applied), conditionsOf));
             sort = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+            const before = order(source);
             const answer = source.view!(rowsSorted(sort, asked, conditions), new AbortController().signal);
             const changed = JSON.stringify(asked) !== JSON.stringify(quick);
             const valid = asked === null || matches(asked, "") !== undefined;
@@ -426,7 +465,8 @@ describe("fromRows", () => {
             // What RegExp said of the first pattern it rejected.
             expect(error !== undefined).toBe(!valid || kept.length < conditions.length);
             if (error !== undefined) expect(error).toMatch(/^(?!Invalid regular expression)\S/);
-            expect(notices).toEqual([{ type: refiltered ? "Refiltered" : "Reordered" }]);
+            const moved = JSON.stringify(order(source)) !== JSON.stringify(before);
+            expect(notices).toEqual(refiltered ? [{ type: "Refiltered" }] : moved ? [{ type: "Reordered" }] : []);
           } else {
             const m = tc.draw(gs.oneOf(gs.just(null), gs.integers({ minValue: -12, maxValue: 12 })));
             min = m;
@@ -575,16 +615,17 @@ describe("fromRows", () => {
       findCounted: ignore,
     });
     const byRow0 = { ...rowsSorted<keyof Rec>([]), cols: { filter: { quick: null, conditions: [] }, sort: [{ id: 0, direction: "ascending" as const }], hidden: [] } };
+    // Already in that order: the columns are told nothing.
     source.view!(byRow0, new AbortController().signal);
     expect(source.cols.window(0, 2, new AbortController().signal)).toEqual(["n", "b"]);
     rows[0]!.n = 5;
     source.changed(0);
     expect(source.cols.window(0, 2, new AbortController().signal)).toEqual(["b", "n"]);
-    expect(notices.map((n) => n.type)).toEqual(["Reordered", "Reordered"]);
+    expect(notices.map((n) => n.type)).toEqual(["Reordered"]);
     // Clearing the sort puts the columns back in their own order.
     source.view!(rowsSorted([]), new AbortController().signal);
     expect(source.cols.window(0, 2, new AbortController().signal)).toEqual(["n", "b"]);
-    expect(notices.length).toBe(3);
+    expect(notices.length).toBe(2);
     source.destroy();
   });
 

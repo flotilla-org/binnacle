@@ -50,12 +50,13 @@ fn sorts_rows_by_the_extracted_keys() {
     );
     assert_eq!(source.locate(Axis::Rows, Key(1)), Located::Found(2));
 
+    // By name the rows fall in the same order: nothing to tell.
     assert_eq!(
         source.view(
             &rows,
             &rows_sorted(SortSpec::new(vec![SortColumn::ascending(Key(0))]))
         ),
-        Ok(vec![(Axis::Rows, ChangeNotice::Reordered)])
+        Ok(vec![])
     );
     assert_eq!(
         source.window(Axis::Rows, 0..3),
@@ -173,10 +174,11 @@ fn filtering_never_asks_for_sort_keys_and_sorting_never_runs_the_filter(tc: hege
                 for &(key, _) in &columns {
                     expected[key as usize] += n;
                 }
-                assert_eq!(
-                    source.view(&rows, &rows_sorted(spec)),
-                    Ok(vec![(Axis::Rows, ChangeNotice::Reordered)])
-                );
+                let before = source.window(Axis::Rows, 0..u64::MAX);
+                let notices = source.view(&rows, &rows_sorted(spec)).unwrap();
+                let moved = source.window(Axis::Rows, 0..u64::MAX) != before;
+                let told = moved.then_some((Axis::Rows, ChangeNotice::Reordered));
+                assert_eq!(notices, Vec::from_iter(told));
             }
             1 => {
                 let at_least = tc.draw(gs::integers::<i64>().min_value(-6).max_value(6));
@@ -301,11 +303,8 @@ fn the_columns_sort_by_a_rows_values_with_columns_without_keys_last() {
         }])
     };
     let notices = source.view(&rows, &cols_sorted(by(0, SortDirection::Ascending)));
-    let both = vec![
-        (Axis::Rows, ChangeNotice::Reordered),
-        (Axis::Cols, ChangeNotice::Reordered),
-    ];
-    assert_eq!(notices, Ok(both));
+    // The rows are left as they were.
+    assert_eq!(notices, Ok(vec![(Axis::Cols, ChangeNotice::Reordered)]));
     // Row 0 holds 5, -1.5, 3 and nothing for column 3.
     assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
     source
@@ -555,7 +554,7 @@ fn an_invalid_regex_leaves_the_quick_filter_in_force() {
         .over(&rows)
         .view(&quick(TextQuery::new("a(").regex(true)));
     assert_eq!(viewed.applied, quick(ada));
-    assert_eq!(viewed.notices, vec![(Axis::Rows, ChangeNotice::Reordered)]);
+    assert_eq!(viewed.notices, vec![]);
     assert_eq!(shown(&source), vec![Key(0)]);
 }
 
@@ -624,10 +623,7 @@ fn a_rows_values_filter_the_columns() {
     assert_eq!(viewed.applied, spec);
     assert_eq!(
         viewed.notices,
-        vec![
-            (Axis::Rows, ChangeNotice::Reordered),
-            (Axis::Cols, ChangeNotice::Refiltered(2))
-        ]
+        vec![(Axis::Cols, ChangeNotice::Refiltered(2))]
     );
     assert_eq!(viewed.totals.cols, Some(4));
     assert_eq!(source.window(Axis::Cols, 0..4), vec![Key(1), Key(2)]);

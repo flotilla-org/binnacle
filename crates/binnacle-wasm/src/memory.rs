@@ -95,12 +95,13 @@ impl WebMemory {
 
     /// Sorts axis `a` by the Sort Spec of Logical Indices of the other
     /// axis's items and directions (see [`codes::sort_spec`]), one staged
-    /// item each, in order. The axis needs a `Reordered` notice.
-    pub fn sort(&mut self, a: u8, items: &[u64], directions: &[u8]) {
+    /// item each, in order. Returns whether the items shown moved: the axis
+    /// then needs a `Reordered` notice.
+    pub fn sort(&mut self, a: u8, items: &[u64], directions: &[u8]) -> bool {
         let staged = std::mem::take(&mut self.staged);
         let keys = staged.iter().map(Staged::keys).collect();
-        self.table
-            .apply_sort(axis(a), &codes::sort_spec(items, directions), keys);
+        let spec = codes::sort_spec(items, directions);
+        self.table.resort(axis(a), &spec, keys).is_some()
     }
 
     /// Keeps the base items on axis `a` with `keep[i] != 0`; returns the

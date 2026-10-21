@@ -117,6 +117,23 @@ fn hiding_columns_shrinks_a_range_across_them_and_clears_it_when_none_remain() {
 }
 
 #[test]
+fn hiding_columns_shrinks_a_cell_range_across_them() {
+    let mut s = records();
+    s.frame(V);
+    s.click(8.0, 2.0, Modifiers::NONE);
+    s.click(29.0, 3.0, Modifiers::SHIFT);
+    let mut out = s.step("select records 1 and 2 in columns 0 to 3", V);
+    s.input(|g| g.hide(Axis::Cols, &[Key(0), Key(2)]).unwrap());
+    out += &s.step(
+        "hide columns 0 and 2: the rows are left alone and the range pulls in to columns 1 and 3",
+        V,
+    );
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(1, 3)]));
+    assert_eq!(runs(&mut s, Axis::Cols), Some(vec![(0, 2)]));
+    insta::assert_snapshot!(out);
+}
+
+#[test]
 fn clearing_the_filter_leaves_hidden_items_hidden() {
     let mut s = records();
     s.frame(V);

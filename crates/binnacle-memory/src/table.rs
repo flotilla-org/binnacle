@@ -79,15 +79,25 @@ impl AxisOrder {
     }
 
     /// Sorts the items by `spec` from the base order, ties keeping it; an
-    /// empty spec restores the base order.
-    fn sort(&mut self, spec: &SortSpec, keys: &[SortKeys<'_>]) {
+    /// empty spec restores the base order. Returns whether the items shown
+    /// moved.
+    fn sort(&mut self, spec: &SortSpec, keys: &[SortKeys<'_>]) -> bool {
         check_sort_keys(spec, keys, self.len);
+        let before = self.remap.take();
         if spec.is_empty() {
-            return self.set_sorted(self.base.clone());
+            self.set_sorted(self.base.clone());
+        } else {
+            let mut order = (self.base.clone()).unwrap_or_else(|| (0..self.len as u32).collect());
+            order.sort_by(|&a, &b| compare(spec, keys, a, b));
+            self.set_sorted(Some(order));
         }
-        let mut order = (self.base.clone()).unwrap_or_else(|| (0..self.len as u32).collect());
-        order.sort_by(|&a, &b| compare(spec, keys, a, b));
-        self.set_sorted(Some(order));
+        // No Remap is Logical Index order.
+        let in_order = |r: &[u32]| r.iter().enumerate().all(|(i, &l)| i == l as usize);
+        match (&before, &self.remap) {
+            (None, None) => false,
+            (Some(a), Some(b)) => a != b,
+            (Some(r), None) | (None, Some(r)) => r.len() != self.len || !in_order(r),
+        }
     }
 
     fn set_keep(&mut self, keep: Option<Vec<bool>>) {
@@ -542,9 +552,21 @@ impl InMemoryTableSource {
         spec: &SortSpec,
         keys: Vec<SortKeys<'_>>,
     ) -> ChangeNotice {
-        self.axis_mut(axis).sort(spec, &keys);
-        self.sorts[axis.index()] = spec.clone();
+        self.resort(axis, spec, keys);
         ChangeNotice::Reordered
+    }
+
+    /// [`InMemoryTableSource::apply_sort`], answering `None` when the items
+    /// shown stay in the same order, so the axis needs no notice.
+    pub fn resort(
+        &mut self,
+        axis: Axis,
+        spec: &SortSpec,
+        keys: Vec<SortKeys<'_>>,
+    ) -> Option<ChangeNotice> {
+        let moved = self.axis_mut(axis).sort(spec, &keys);
+        self.sorts[axis.index()] = spec.clone();
+        moved.then_some(ChangeNotice::Reordered)
     }
 
     /// Filters `axis`: `keep[i]` says whether base item `i` (by Logical

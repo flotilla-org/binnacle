@@ -322,7 +322,7 @@ interface AxisSource<Id, CrossId> {
   quickFilter?: { regex?: boolean };
   /** Set if `view` leaves out the items a View Spec's `hidden` names on this axis; the grid offers hiding only then. */
   hide?: boolean;
-  /** Where `id` sits after a reorder: `{ type: "Found", position }` or `{ type: "Gone", suggest }`. */
+  /** Where `id` sits after a reorder: `{ type: "Found", position }`, or `{ type: "Gone", suggest }` with where it would sit among the items left (the next one's position, or the count when none follows). */
   locate?(id: Id, signal: AbortSignal): MaybePromise<Located>;
   /**
    * Whether each of `ids` is unmatched: kept in view after the user's edit though the filter drops

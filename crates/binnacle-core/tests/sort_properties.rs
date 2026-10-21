@@ -321,11 +321,16 @@ impl Host {
             Input::Sort(sort) => {
                 let spec = ViewSpec::default().with_sort(Axis::Rows, sort);
                 if let Ok(notices) = self.s.source.source.view(&self.s.source.rows, &spec) {
+                    // A sort leaving the rows in order reorders nothing.
+                    let reordered = (notices.iter())
+                        .filter(|(_, n)| *n == ChangeNotice::Reordered)
+                        .map(|&(axis, _)| axis)
+                        .collect();
                     self.s.input(|g| {
                         g.view_applied(spec, Totals::unknown());
                         notices.into_iter().for_each(|(axis, n)| g.notify(axis, n));
                     });
-                    return vec![Axis::Rows];
+                    return reordered;
                 }
             }
             Input::Filter(keep) => {
