@@ -48,15 +48,25 @@ function describe(frame: FrameInfo): string {
     `rows ${number.format(rows.first + 1)} to ${number.format(rows.last + 1)} of ${number.format(rows.count)}`,
     `columns ${number.format(cols.first + 1)} to ${number.format(cols.last + 1)} of ${number.format(cols.count)}`,
   ];
+  // What is filtered or hidden, as the filter bar says it where there is one.
+  if (!shown?.filterBar) {
+    for (const [axis, noun] of [[cols, "columns"], [rows, "rows"]] as const) {
+      if (axis.total !== null && axis.total !== axis.count) {
+        parts.push(`${number.format(axis.count)} of ${number.format(axis.total)} ${noun}`);
+      }
+    }
+  }
   if (focus) {
     const ids = shown?.showIds && change?.focus ? ` (${String(change.focus.rowId)} / ${String(change.focus.colId)})` : "";
     parts.push(`focus row ${number.format(focus.row + 1)}, column ${number.format(focus.col + 1)}${ids}`);
   }
   if (selection) {
-    const size = (s: { start: number; end: number }) => number.format(s.end - s.start);
+    const size = (runs: { start: number; end: number }[]) => number.format(runs.reduce((n, r) => n + r.end - r.start, 0));
     parts.push(`selected ${size(selection.rows)} × ${size(selection.cols)}`);
   }
-  if (picked) parts.push(`${number.format(picked)} picked`);
+  if (picked.rows) parts.push(`${number.format(picked.rows)} ${picked.rows === 1 ? "row" : "rows"} picked`);
+  if (picked.cols) parts.push(`${number.format(picked.cols)} ${picked.cols === 1 ? "column" : "columns"} picked`);
+  if (frame.hideCapped && !shown?.filterBar) parts.push(frame.hideCapped.hint);
   if (frame.loading) parts.push("loading");
   if (frame.editing) parts.push("editing");
   return parts.join("  ·  ");

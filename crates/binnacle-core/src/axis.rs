@@ -1,8 +1,9 @@
 use std::ops::Range;
 
 use crate::measure::{AxisMeasure, ItemAt};
+use crate::pin::Pin;
 use crate::snapshot::{ScrollAnchor, StripItem, Thumb};
-use crate::types::Position;
+use crate::types::{Edge, Key, Position};
 
 /// Positions fetched either side of the visible ones, so small scrolls need no
 /// new Window.
@@ -20,11 +21,35 @@ pub(crate) struct AxisState {
     /// rather than keep an anchor computed from older sizes: the end is found
     /// in f64 along whatever path the Window allows, and paths round apart.
     at_end: bool,
+    /// The scrolling Strip.
     pub strip: Vec<StripItem>,
+    /// The pinned Keys per edge (leading, trailing), in pin order.
+    pub pins: [Vec<Pin>; 2],
+    /// The pinned Strips per edge, as last laid out.
+    pub pinned: [Vec<StripItem>; 2],
+    /// A "freeze up to here" waiting for the Window: the last Position it
+    /// pins.
+    pub freezing: Option<Position>,
+    /// The least space between a pinned Strip and the scrolling Strip (see
+    /// [`AxisState::edge_gap`]).
+    pub edge_gap: f32,
+    /// How far each end's pin zone reaches (see [`crate::Grid::set_pin_zone`]).
+    pub pin_zone: f32,
+    /// The least length the pinned Strips leave the scrolling region.
+    pub min_scrolling: f32,
+    /// The focused Key on this axis, as of the last Snapshot: a clipped
+    /// pinned item with it is shown.
+    pub focused: Option<Key>,
+    /// How far each pinned Strip has slid (towards its outside edge) to
+    /// show its focused item, as last laid out.
+    pub slide: [f32; 2],
+    /// Where the pinned Strips draw, as last laid out.
+    pub regions: [Range<f32>; 2],
 }
 
 impl AxisState {
     pub fn new(measure: AxisMeasure, header: f32) -> Self {
+        let measure_default = measure.default_size();
         AxisState {
             measure,
             header,
@@ -32,12 +57,74 @@ impl AxisState {
             anchor: ScrollAnchor::default(),
             at_end: false,
             strip: Vec::new(),
+            pins: [Vec::new(), Vec::new()],
+            pinned: [Vec::new(), Vec::new()],
+            freezing: None,
+            edge_gap: 0.0,
+            pin_zone: measure_default / 4.0,
+            min_scrolling: 0.0,
+            focused: None,
+            slide: [0.0; 2],
+            regions: [0.0..0.0, 0.0..0.0],
         }
     }
 
-    /// The length past the header band where items show.
+    /// The space between a pinned Strip and the scrolling Strip: the Edge
+    /// Gap, or the Gap if that is larger.
+    pub fn edge_gap(&self) -> f32 {
+        self.measure.gap().max(self.edge_gap)
+    }
+
+    /// Sets the Edge Gap, keeping the Scroll Anchor as [`AxisState::set_gap`]
+    /// does. Returns whether anything changed.
+    pub fn set_edge_gap(&mut self, gap: f32) -> bool {
+        if !(gap.is_finite() && gap >= 0.0) || gap == self.edge_gap {
+            return false;
+        }
+        self.edge_gap = gap;
+        self.at_end = false;
+        self.clamp_anchor();
+        true
+    }
+
+    /// Sets the least length the pinned Strips leave to scroll, keeping
+    /// the Scroll Anchor as [`AxisState::set_gap`] does. Returns whether
+    /// anything changed.
+    pub fn set_min_scrolling(&mut self, length: f32) -> bool {
+        if !(length.is_finite() && length >= 0.0) || length == self.min_scrolling {
+            return false;
+        }
+        self.min_scrolling = length;
+        self.at_end = false;
+        self.clamp_anchor();
+        true
+    }
+
+    /// The length the scrolling Strip shows: between the pinned Strips,
+    /// inside the header band.
     fn body(&self) -> f32 {
-        (self.extent - self.header).max(0.0)
+        (self.scroll_end() - self.scroll_start()).max(0.0)
+    }
+
+    /// The anchor at the start of the scrolling Strip: its first item, past
+    /// any pinned ones.
+    fn start(&self) -> ScrollAnchor {
+        let position = (0..self.measure.count())
+            .find(|&p| !self.measure.skipped(p))
+            .unwrap_or(0);
+        ScrollAnchor {
+            position,
+            offset: 0.0,
+        }
+    }
+
+    /// The last Position the scrolling Strip can show, if any.
+    pub fn last_shown(&self) -> Option<Position> {
+        let mut p = self.measure.count().checked_sub(1)?;
+        while self.measure.skipped(p) {
+            p = p.checked_sub(1)?;
+        }
+        Some(p)
     }
 
     /// The Window this axis needs for the current viewport: the visible items
@@ -46,18 +133,21 @@ impl AxisState {
     ///
     /// When the last item can show, the end clamp may pull the anchor back once
     /// the Window's sizes are known, so the Window also reaches back a body's
-    /// length of smallest items from the end.
+    /// length of smallest items from the end. Both ends reach one Position
+    /// further per pin, since the scrolling Strip skips pinned Keys it holds,
+    /// wherever a pin still waiting for `Locate` turns out to be.
     pub fn needed(&self) -> Range<Position> {
         let count = self.measure.count();
         let visible_end = self.visible_end();
+        let pins = self.pins.iter().flatten().count() as u64;
         let mut first = self.anchor.position;
         if visible_end == count {
             let stride = f64::from(self.measure.smallest_size()) + f64::from(self.measure.gap());
             let back = (f64::from(self.body()) / stride).ceil() as u64;
-            first = first.min(count.saturating_sub(back.saturating_add(1)));
+            first = first.min(count.saturating_sub(back.saturating_add(1 + pins)));
         }
         let start = first.saturating_sub(OVERSCAN);
-        let end = visible_end.saturating_add(OVERSCAN).min(count);
+        let end = (visible_end.saturating_add(OVERSCAN + pins)).min(count);
         start.min(end)..end
     }
 
@@ -75,16 +165,18 @@ impl AxisState {
             .map_or(anchor_end, |(p, _, _)| p + 1)
     }
 
-    /// The Position, offset and size of each visible item from the Scroll
-    /// Anchor's Position, `anchor_offset` into it, in order. Stops early if an
-    /// item is too small to advance an f32 offset, rather than spin.
+    /// The Position, offset and size of each visible item of the scrolling
+    /// Strip from the Scroll Anchor's Position, `anchor_offset` into it, in
+    /// order, skipping pinned items. Stops early if an item is too small to
+    /// advance an f32 offset, rather than spin.
     fn placements(
         &self,
         anchor_offset: f32,
         size_at: impl Fn(Position) -> f32,
     ) -> impl Iterator<Item = (Position, f32, f32)> {
-        let (count, header, extent) = (self.measure.count(), self.header, self.extent);
-        let gap = self.measure.gap();
+        let (count, header, extent) =
+            (self.measure.count(), self.scroll_start(), self.scroll_end());
+        let (gap, m) = (self.measure.gap(), &self.measure);
         let (first, off) = (self.anchor.position, f64::from(anchor_offset));
         let first_size = f64::from(size_at(first));
         // An anchor in the Gap after its item starts at the next item, placed
@@ -101,6 +193,10 @@ impl AxisState {
         std::iter::from_fn(move || {
             loop {
                 let (position, offset) = next?;
+                if position < count && m.skipped(position) {
+                    next = Some((position + 1, offset));
+                    continue;
+                }
                 let size = size_at(position);
                 let end = offset + size;
                 if position >= count || offset.max(header) >= extent || end <= offset {
@@ -121,10 +217,23 @@ impl AxisState {
         range.is_empty() || (start <= range.start && range.end <= end)
     }
 
-    /// Lays out the visible items into `strip`, reusing its buffer. Never past
-    /// what the Window bound reaches, so a Strip item lacks a Key only if the
-    /// Table Source left it unfilled.
-    pub fn layout(&mut self) {
+    /// Lays out the pinned Strips, each slid to show its focused item, then
+    /// the visible items into `strip`, reusing their buffers. Never past
+    /// what the Window bound reaches, so a Strip item lacks a Key only if
+    /// the Table Source left it unfilled. Returns whether a pinned Strip
+    /// slid or its region changed.
+    pub fn layout(&mut self) -> bool {
+        let slide = Edge::ALL.map(|edge| self.slide_for(edge));
+        let regions = self.pinned_regions();
+        let slid = slide != self.slide || regions != self.regions;
+        self.slide = slide;
+        self.regions = regions;
+        for edge in Edge::ALL {
+            let mut pinned = std::mem::take(&mut self.pinned[edge.index()]);
+            pinned.clear();
+            pinned.extend(self.pinned_items(edge));
+            self.pinned[edge.index()] = pinned;
+        }
         let mut strip = std::mem::take(&mut self.strip);
         strip.clear();
         let bound = self.visible_end();
@@ -140,6 +249,7 @@ impl AxisState {
                 }),
         );
         self.strip = strip;
+        slid
     }
 
     /// The anchor for a located offset, rounded toward the axis start so a
@@ -161,12 +271,10 @@ impl AxisState {
 
     /// The furthest the anchor may go: where the last item ends the viewport.
     fn max_anchor(&self) -> ScrollAnchor {
-        let count = self.measure.count();
         let body = self.body();
-        if count == 0 {
+        let Some(last) = self.last_shown() else {
             return ScrollAnchor::default();
-        }
-        let last = count - 1;
+        };
         if body <= 0.0 {
             return ScrollAnchor {
                 position: last,
@@ -178,7 +286,7 @@ impl AxisState {
         match self.measure.locate(last, back) {
             Some(l) => self.anchor_at(l),
             // The body is shorter than the whole axis.
-            None if back < 0.0 => ScrollAnchor::default(),
+            None if back < 0.0 => self.start(),
             // A body too thin to register against the last item's size: go as
             // deep into that item as an anchor can.
             None => ScrollAnchor {
@@ -195,7 +303,7 @@ impl AxisState {
         let max = self.max_anchor();
         let to = match self.measure.locate(position, offset) {
             Some(l) => self.anchor_at(l),
-            None if offset < 0.0 => ScrollAnchor::default(),
+            None if offset < 0.0 => self.start(),
             None => max,
         };
         let to = if (to.position, to.offset) > (max.position, max.offset) {
@@ -209,7 +317,7 @@ impl AxisState {
     /// Sets the anchor, noting whether it is at a reachable end. Returns
     /// whether it moved.
     fn settle(&mut self, to: ScrollAnchor, max: ScrollAnchor) -> bool {
-        self.at_end = to == max && max != ScrollAnchor::default();
+        self.at_end = to == max && max != self.start();
         let moved = to != self.anchor;
         self.anchor = to;
         moved
@@ -225,6 +333,15 @@ impl AxisState {
     /// it is measured over. An empty axis has no item to wait for: its anchor
     /// goes back to the start.
     pub fn clamp_anchor(&mut self) -> bool {
+        // An item pinned since takes the anchor to the next scrolling one.
+        if self.measure.skipped(self.anchor.position)
+            && let Some(at) = self.measure.locate(self.anchor.position, 0.0)
+        {
+            self.anchor = ScrollAnchor {
+                position: at.position,
+                offset: 0.0,
+            };
+        }
         let count = self.measure.count();
         let position = self.anchor.position.min(count.saturating_sub(1));
         let max = self.max_anchor();
@@ -294,11 +411,11 @@ impl AxisState {
     }
 
     /// Scrolls the least distance that shows all of item `p`, or its start if
-    /// it is longer than the body. With no body (no viewport yet) nothing can
+    /// it is longer than the body. A pinned item always shows. With no body (no viewport yet) nothing can
     /// show, so the anchor stays. Returns whether the anchor moved.
     pub fn reveal(&mut self, p: Position) -> bool {
         let body = f64::from(self.body());
-        if body <= 0.0 {
+        if body <= 0.0 || self.pinned_at(p).is_some() {
             return false;
         }
         let start = self.measure.distance(self.anchor.position, p) - f64::from(self.anchor.offset);

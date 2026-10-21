@@ -1,15 +1,17 @@
 // What a pending state looks like, interpolated by time: a shimmer sweeping
-// across the headers of a sort the Table Source has not answered, and a
-// pulse on the focused cell while its Locate is pending. With motion
-// reduced, both hold still at a static highlight.
+// across the headers of a sort or move the Table Source has not answered,
+// and a pulse on the focused cell while its Locate is pending. With motion
+// reduced, both hold still at a static highlight. A refused move's reason
+// shows where it was dropped.
 
+import type { AxisName } from "../codes";
 import type { Rect, Snapshot } from "../snapshot";
-import { clip, type PaintContext } from "./context";
+import { clipCell, PAD, type PaintContext } from "./context";
 
 /** How long the shimmer takes to sweep a header, and the pulse to beat once, ms. */
 const PERIOD = 1600;
 
-/** Fills a pending sort's header in the shimmer, under its label. */
+/** Fills a pending sort's or move's header in the shimmer, under its label. */
 export function paintShimmer(p: PaintContext, rect: Rect): void {
   const { ctx, theme } = p;
   // The band enters past the header's left edge and leaves past its right,
@@ -27,9 +29,38 @@ export function paintShimmer(p: PaintContext, rect: Rect): void {
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 }
 
-/** Whether any visible header shows a sort still pending. */
-export function sorting(s: Snapshot): boolean {
-  return s.cols.headers.some((h) => h.sort.pending) || s.rows.headers.some((h) => h.sort.pending);
+/** Whether any visible header shows a sort or move still pending. */
+export function shimmering(s: Snapshot): boolean {
+  const pending = (h: Snapshot["rows"]["headers"][number]) => h.sort.pending || h.movePending;
+  return s.cols.headers.some(pending) || s.rows.headers.some(pending);
+}
+
+/**
+ * The reason the Table Source refused the last move, in a box at the edge
+ * of the header band where the move was dropped (`drop`, the last drop
+ * line drawn on the refusal's axis), else at the band's start.
+ */
+export function paintRefusal(p: PaintContext, drop: { axis: AxisName; offset: number } | null): void {
+  const refusal = p.s.moveRefusal;
+  if (!refusal) return;
+  const { ctx, theme, measure, left, top } = p;
+  const at = drop?.axis === refusal.axis ? drop.offset : refusal.axis === "cols" ? left : top;
+  const text = measure.fit(refusal.reason, theme.font, p.width - left - 4 * PAD);
+  if (text === "") return;
+  const width = measure.width(text, theme.font) + 2 * PAD;
+  const height = 2 * PAD + 12;
+  const x = refusal.axis === "cols" ? Math.min(Math.max(at - width / 2, left), p.width - width) : left;
+  const y = refusal.axis === "cols" ? top : Math.min(Math.max(at - height / 2, top), p.height - height);
+  ctx.save();
+  ctx.fillStyle = theme.header.background;
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = theme.error;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+  ctx.font = theme.font;
+  ctx.fillStyle = theme.error;
+  ctx.fillText(text, x + PAD, y + height / 2);
+  ctx.restore();
 }
 
 /**
@@ -38,16 +69,18 @@ export function sorting(s: Snapshot): boolean {
  * drawn. Returns whether it drew anything.
  */
 export function paintPulse(p: PaintContext): boolean {
-  const { ctx, s, theme, left, top } = p;
+  const { ctx, s, theme } = p;
   if (!(s.rows.locating || s.cols.locating)) return false;
-  const row = s.rows.strip.find((i) => i.position === s.rows.focus?.position);
-  const col = s.cols.strip.find((i) => i.position === s.cols.focus?.position);
+  const i = s.rows.strip.findIndex((item) => item.position === s.rows.focus?.position);
+  const j = s.cols.strip.findIndex((item) => item.position === s.cols.focus?.position);
+  const row = s.rows.strip[i];
+  const col = s.cols.strip[j];
   if (!row || !col) return false;
   // 0 to 1 and back once a period; a still midpoint with motion reduced.
   const beat = p.motion ? 0.5 - 0.5 * Math.cos((2 * Math.PI * (p.now % PERIOD)) / PERIOD) : 0.5;
   const line = theme.focus.width;
   ctx.save();
-  clip(ctx, left, top, p.width - left, p.height - top);
+  clipCell(p, i, j);
   ctx.globalAlpha = 0.25 + 0.45 * beat;
   ctx.fillStyle = theme.shimmerBase;
   ctx.fillRect(col.offset, row.offset, col.size, row.size);

@@ -7,8 +7,16 @@ export const AXIS_CODE: Record<AxisName, number> = { rows: 0, cols: 1 };
 
 export const AXES: readonly AxisName[] = ["rows", "cols"];
 
+/** The axis across `axis`. */
+export const other = (axis: AxisName): AxisName => (axis === "rows" ? "cols" : "rows");
+
 /** Change Notice types, as the wasm `notify` input takes them. */
 export const NOTICE_CODE = { Reordered: 0, Reset: 1, Inserted: 2, Removed: 3, ContentChanged: 4, Refiltered: 5 } as const;
+
+/** Pinned edges, as the wasm `pin` input takes them: `leading` is the left of the columns, the top of the rows. */
+export const EDGE_CODE = { leading: 0, trailing: 1 } as const;
+
+export type PinEdge = keyof typeof EDGE_CODE;
 
 export const POINTER = { down: 0, move: 1, up: 2 } as const;
 
@@ -21,7 +29,7 @@ export const FOCUS_STEP = { item: 0, page: 1, edge: 2 } as const;
 
 export const EDIT_END = { commit: 0, cancel: 1 } as const;
 
-export const SELECTION_UNIT = { cells: 0, rows: 1 } as const;
+export const SELECTION_UNIT = { cells: 0, rows: 1, cols: 2 } as const;
 
 /** What a header click does, as the wasm `set_header_click` input takes it. */
 export const HEADER_CLICK = { sort: 0, select: 1, none: 2 } as const;

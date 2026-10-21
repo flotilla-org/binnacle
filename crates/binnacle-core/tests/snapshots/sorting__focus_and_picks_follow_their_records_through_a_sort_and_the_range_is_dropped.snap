@@ -47,11 +47,8 @@ Cols: (unchanged)
 4   7.0    7.1    7.2
 --- 4. shift-click column 1: added second; column 0 has no ties, so the order holds
 effect (gen 4): ViewRequested 0v,1^ by CycleSort { axis: Rows, key: Key(1), multi: true }
-  view: applied 0v,1^, notices [(Rows, Reordered)]
-effect (gen 4): Locate { axis: Rows, key: Key(3) }
-  locate Rows Key(3): Found(7)
-window Rows 0..7
-gen 5 | damage layout selection positions | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | total Rows 8 | total Cols 3 | hover Cols 1
+  view: applied 0v,1^, notices []
+gen 5 | damage selection | focus 7#3,1#1 not drawn | picks 0,2 | fill 4,1 20x1 | fill 4,3 20x1 | sort 0v,1^ | total Rows 8 | total Cols 3 | hover Cols 1
 Rows: (unchanged)
 Cols: (unchanged)
 (picture unchanged)

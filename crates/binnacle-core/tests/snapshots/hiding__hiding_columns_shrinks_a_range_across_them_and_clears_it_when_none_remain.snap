@@ -1,0 +1,66 @@
+---
+source: crates/binnacle-core/tests/hiding.rs
+expression: out
+---
+--- 1. select columns 0 to 3 whole
+window Rows 0..6
+window Cols 0..4
+effect (gen 1): FocusChanged { row: Key(1), col: Key(3) }
+effect (gen 1): SelectionChanged
+gen 2 | damage selection | focus 1#1,3#3 at 25,2 6x1 | range 0..6 x 0..4 | fill 4,1 27x4
+Rows: count 6, extent 5, header 1, anchor 0+0, thumb 0.0000/0.6667 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 4, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6
+    0      1      2      3
+0   +0.0   +0.1   +0.2   +0.3
+1   +1.0   +1.1   +1.2   *1.3
+2   +2.0   +2.1   +2.2   +2.3
+3   +3.0   +3.1   +3.2   +3.3
+--- 2. hide columns 0 and 2: the range pulls in to columns 1 and 3, now Positions 0 and 1
+effect (gen 2): ViewRequested unsorted hide none cols 0,2 by Hide { axis: Cols, keys: [Key(0), Key(2)] }
+  view: applied unsorted hide none cols 0,2, notices [(Cols, Refiltered(2))]
+effect (gen 2): Locate { axis: Cols, key: Key(3) }
+  locate Cols Key(3): Found(1)
+effect (gen 2): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Gone { suggest: Some(0) }
+effect (gen 2): Locate { axis: Cols, key: Key(1) }
+  locate Cols Key(1): Found(0)
+effect (gen 2): Locate { axis: Cols, key: Key(2) }
+  locate Cols Key(2): Gone { suggest: Some(1) }
+effect (gen 2): SelectionChanged
+window Cols 0..2
+gen 3 | damage layout selection positions | focus 1#1,1#3 at 11,2 6x1 | range 0..6 x 0..2 | fill 4,1 13x4 | total Rows 6 | total Cols 4
+Rows: (unchanged)
+Cols: count 2, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#1@4+6 1#3@11+6
+    1      3
+0   +0.1   +0.3
+1   +1.1   *1.3
+2   +2.1   +2.3
+3   +3.1   +3.3
+--- 3. select column 1 whole
+effect (gen 3): FocusChanged { row: Key(1), col: Key(1) }
+effect (gen 3): SelectionChanged
+gen 4 | damage selection | focus 1#1,0#1 at 4,2 6x1 | range 0..6 x 0..1 | fill 4,1 6x4 | total Rows 6 | total Cols 4
+Rows: (unchanged)
+Cols: (unchanged)
+    1      3
+0   +0.1   0.3
+1   *1.1   1.3
+2   +2.1   2.3
+3   +3.1   3.3
+--- 4. hide column 1 too: nothing of the range remains, so it clears
+effect (gen 4): ViewRequested unsorted hide none cols 0,2,1 by Hide { axis: Cols, keys: [Key(1)] }
+  view: applied unsorted hide none cols 0,2,1, notices [(Cols, Refiltered(1))]
+effect (gen 4): Locate { axis: Cols, key: Key(1) }
+  locate Cols Key(1): Gone { suggest: Some(0) }
+effect (gen 4): Locate { axis: Cols, key: Key(3) }
+  locate Cols Key(3): Found(0)
+effect (gen 4): SelectionChanged
+window Cols 0..1
+gen 5 | damage layout selection positions | focus 1#1,0#3 at 4,2 6x1 | total Rows 6 | total Cols 4
+Rows: (unchanged)
+Cols: count 1, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#3@4+6
+    3
+0   0.3
+1   *1.3
+2   2.3
+3   3.3

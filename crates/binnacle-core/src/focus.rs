@@ -1,6 +1,7 @@
 use crate::axis::AxisState;
+use crate::drawn::Slot;
 use crate::effect::FocusStep;
-use crate::types::{Axis, Key, Position};
+use crate::types::{Axis, Edge, Key, Position};
 
 /// One axis's half of the focused cell: the focused item's Key, which the
 /// focus follows, and its last known Position.
@@ -16,7 +17,7 @@ impl FocusEnd {
     pub(crate) fn at(st: &AxisState, position: Position) -> Self {
         FocusEnd {
             position,
-            key: st.measure.key_at(position),
+            key: st.key_at(position),
         }
     }
 }
@@ -34,27 +35,60 @@ pub(crate) struct Move {
 
 /// Where a focus move on one axis lands, from `from` (`None` while focus is
 /// unplaced: the first move then lands on the Scroll Anchor's item, the first
-/// visible one, unless it goes to an edge), made `times` times over. The axis
+/// visible scrolling one, unless it goes to an edge), made `times` times
+/// over. Items and edges are counted in drawn order, so focus steps through
+/// the leading pinned Strip, the scrolling items and the trailing pinned
+/// Strip as they are drawn. A page is a body's length of scrolling items; a
+/// page out of a pinned Strip lands on the scrolling item beside it, a page
+/// towards the outside edge of one on the first or last drawn item. The axis
 /// must not be empty.
 pub(crate) fn target(
     st: &AxisState,
-    from: Option<Position>,
+    from: Option<FocusEnd>,
     by: FocusStep,
     forward: bool,
     times: u64,
-) -> Position {
-    let last = st.measure.count() - 1;
-    let Some(p) = from else {
-        return match (by, forward) {
-            (FocusStep::Edge, true) => last,
-            (FocusStep::Edge, false) => 0,
-            _ => st.anchor.position.min(last),
+) -> FocusEnd {
+    let last = st.drawn_len().saturating_sub(1);
+    let edge = |forward: bool| st.end_at(st.slot_at(if forward { last } else { 0 }));
+    let Some(from) = from else {
+        return match by {
+            FocusStep::Edge => edge(forward),
+            _ => {
+                let p = st.anchor.position.min(st.measure.count() - 1);
+                match st.unpinned_near(p, true) {
+                    Some(p) => FocusEnd::at(st, p),
+                    None => edge(false),
+                }
+            }
         };
     };
-    match (by, forward) {
-        (FocusStep::Item, true) => p.saturating_add(times).min(last),
-        (FocusStep::Item, false) => p.saturating_sub(times),
-        (FocusStep::Page, _) => {
+    let slot = st.slot_of(from);
+    match by {
+        FocusStep::Item => {
+            let at = st.drawn_index(slot);
+            let to = if forward {
+                at.saturating_add(times).min(last)
+            } else {
+                at.saturating_sub(times)
+            };
+            st.end_at(st.slot_at(to))
+        }
+        FocusStep::Edge => edge(forward),
+        FocusStep::Page => {
+            let p = match (slot, forward) {
+                (Slot::Scrolling(p), _) => p,
+                (Slot::Pinned(Edge::Leading, _), false)
+                | (Slot::Pinned(Edge::Trailing, _), true) => {
+                    return edge(forward);
+                }
+                (Slot::Pinned(..), _) => {
+                    return match st.unpinned_near(if forward { 0 } else { u64::MAX }, forward) {
+                        Some(p) => FocusEnd::at(st, p),
+                        None => edge(forward),
+                    };
+                }
+            };
             let mut p = p;
             for _ in 0..times {
                 let next = st.page_from(p, forward);
@@ -63,9 +97,7 @@ pub(crate) fn target(
                 }
                 p = next;
             }
-            p
+            FocusEnd::at(st, st.unpinned_near(p, forward).unwrap_or(p))
         }
-        (FocusStep::Edge, true) => last,
-        (FocusStep::Edge, false) => 0,
     }
 }

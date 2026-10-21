@@ -1,0 +1,71 @@
+---
+source: crates/binnacle-core/tests/hiding.rs
+expression: out
+---
+--- 1. column 1 sized 4; focus record 1, column 1
+window Rows 0..6
+window Cols 0..4
+effect (gen 1): FocusChanged { row: Key(1), col: Key(1) }
+gen 2 | damage layout selection | focus 1#1,1#1 at 11,2 4x1
+Rows: count 6, extent 5, header 1, anchor 0+0, thumb 0.0000/0.6667 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 4, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+4 2#2@16+6 3#3@23+6
+    0      1    2      3
+0   0.0    0.1  0.2    0.3
+1   1.0    *1.1 1.2    1.3
+2   2.0    2.1  2.2    2.3
+3   3.0    3.1  3.2    3.3
+--- 2. hide column 1: the source leaves it out, focus goes to column 2, the next one
+effect (gen 2): ViewRequested unsorted hide none cols 1 by Hide { axis: Cols, keys: [Key(1)] }
+  view: applied unsorted hide none cols 1, notices [(Cols, Refiltered(3))]
+effect (gen 2): Locate { axis: Cols, key: Key(1) }
+  locate Cols Key(1): Gone { suggest: Some(1) }
+effect (gen 2): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Found(0)
+effect (gen 2): Locate { axis: Cols, key: Key(2) }
+  locate Cols Key(2): Found(1)
+effect (gen 2): Locate { axis: Cols, key: Key(3) }
+  locate Cols Key(3): Found(2)
+window Cols 0..3
+gen 3 | damage layout selection positions | focus 1#1,1#2 at 11,2 6x1 | total Rows 6 | total Cols 4
+Rows: (unchanged)
+Cols: count 3, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#2@11+6 2#3@18+6
+    0      2      3
+0   0.0    0.2    0.3
+1   1.0    *1.2   1.3
+2   2.0    2.2    2.3
+3   3.0    3.2    3.3
+--- 3. hide column 3 too (column 1 is hidden already)
+effect (gen 3): ViewRequested unsorted hide none cols 1,3 by Hide { axis: Cols, keys: [Key(3)] }
+  view: applied unsorted hide none cols 1,3, notices [(Cols, Refiltered(2))]
+effect (gen 3): Locate { axis: Cols, key: Key(2) }
+  locate Cols Key(2): Found(1)
+effect (gen 3): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Found(0)
+effect (gen 3): Locate { axis: Cols, key: Key(3) }
+  locate Cols Key(3): Gone { suggest: Some(2) }
+effect (gen 3): FocusChanged { row: Key(1), col: Key(2) }
+window Cols 0..2
+gen 4 | damage layout selection positions | focus 1#1,1#2 at 11,2 6x1 | total Rows 6 | total Cols 4
+Rows: (unchanged)
+Cols: count 2, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#2@11+6
+    0      2
+0   0.0    0.2
+1   1.0    *1.2
+2   2.0    2.2
+3   3.0    3.2
+--- 4. show column 1 again: it comes back in its place, 4 wide; focus stays on column 2
+effect (gen 4): ViewRequested unsorted hide none cols 3 by Show { axis: Cols, keys: [Key(1)] }
+  view: applied unsorted hide none cols 3, notices [(Cols, Refiltered(3))]
+effect (gen 4): Locate { axis: Cols, key: Key(2) }
+  locate Cols Key(2): Found(2)
+effect (gen 4): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Found(0)
+window Cols 0..3
+gen 5 | damage layout selection positions | focus 1#1,2#2 at 16,2 6x1 | total Rows 6 | total Cols 4
+Rows: (unchanged)
+Cols: count 3, extent 33, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#1@11+4 2#2@16+6
+    0      1    2
+0   0.0    0.1  0.2
+1   1.0    1.1  *1.2
+2   2.0    2.1  2.2
+3   3.0    3.1  3.2

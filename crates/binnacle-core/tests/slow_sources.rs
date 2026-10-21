@@ -5,7 +5,7 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Condition, ConditionState, Effect, FilterSpec, FindMatch, FindQuery,
-    Grid, HeaderFilter, Key, TextQuery, Totals, ViewSpec, Viewport,
+    Grid, HeaderFilter, Key, Modifiers, TextQuery, Totals, ViewSpec, Viewport,
 };
 use binnacle_testkit::{PumpSource, RecordTable, Scenario};
 
@@ -70,6 +70,13 @@ fn unanswered(s: &mut Scenario<RecordTable>, label: &str) -> String {
 
 fn rows(s: &mut Scenario<RecordTable>) -> Vec<Option<Key>> {
     s.frame(V).rows().iter().map(|i| i.key).collect()
+}
+
+/// The runs of Positions the range covers on `axis`, as `(start, end)`.
+fn runs(s: &mut Scenario<RecordTable>, axis: Axis) -> Option<Vec<(u64, u64)>> {
+    let snap = s.grid.snapshot();
+    let range = snap.selection_range()?;
+    Some(range.span(axis).iter().map(|r| (r.start, r.end)).collect())
 }
 
 #[test]
@@ -328,4 +335,36 @@ fn the_current_match_stays_until_the_first_step_for_a_new_query() {
     );
     s.input(|g| g.set_find(None));
     assert_eq!(s.frame(V).find_match(), None, "closing find drops it");
+}
+
+#[test]
+fn a_range_waits_for_its_corners_after_a_filter_and_a_new_one_made_meanwhile_stands() {
+    let mut s = records();
+    s.frame(V);
+    s.click(5.0, 2.5, Modifiers::NONE);
+    s.click(12.0, 5.5, Modifiers::SHIFT);
+    let mut out = s.step("select records 1 to 4 in columns 0 and 1", V);
+    let notice = s.source.filter(|r| r[0] != Some(13) && r[0] != Some(31));
+    s.input(|g| g.notify(Axis::Rows, notice));
+    out += &s.step_waiting(
+        "filter out records 1 and 3, the source slow to say where Keys went: the range is drawn nowhere",
+        V,
+    );
+    assert_eq!(s.grid.snapshot().selection_range(), None);
+    out += &s.step(
+        "the answers: record 1 pulls in to record 2, so records 2 to 4 stay, rows 1 to 2",
+        V,
+    );
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(1, 3)]));
+    let notice = s.source.filter(|r| r[0] != Some(13));
+    s.input(|g| g.notify(Axis::Rows, notice));
+    s.click(5.0, 1.5, Modifiers::NONE);
+    s.click(5.0, 2.5, Modifiers::SHIFT);
+    out += &s.step_waiting(
+        "bring record 3 back; before the answers, select records 0 and 2",
+        V,
+    );
+    out += &s.step("the answers leave the new range alone", V);
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(0, 2)]));
+    insta::assert_snapshot!(out);
 }

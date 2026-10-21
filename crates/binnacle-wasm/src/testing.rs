@@ -3,10 +3,10 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, Effect, FilterSpec,
-    FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers,
-    PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery,
-    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, DropTarget, Edge,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key,
+    Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped,
+    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -30,18 +30,39 @@ pub struct Dump {
     cursor: &'static str,
     resize_guide: Option<DumpGuide>,
     drop_indicator: Option<DumpDrop>,
+    pin_zones: Vec<DumpZone>,
     hovered_header: Option<DumpHovered>,
     selection_range: Option<DumpRange>,
     selection_rects: Vec<DumpRect>,
-    picked: Vec<u64>,
+    picked: DumpPicked,
     moving_keys: Vec<u64>,
     applied_view: WireViewSpec,
     requested_view: Option<WireViewSpec>,
     view_pending: bool,
+    pending_move: Option<DumpPendingMove>,
+    move_refusal: Option<DumpRefusal>,
     find: Option<WireFindQuery>,
     find_match: Option<WireFindMatch>,
     find_support: Option<DumpTextSupport>,
     cells: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct DumpPendingMove {
+    axis: WireAxis,
+    keys: Vec<u64>,
+}
+
+#[derive(Serialize)]
+struct DumpRefusal {
+    axis: WireAxis,
+    reason: String,
+}
+
+#[derive(Serialize)]
+struct DumpPicked {
+    rows: Vec<u64>,
+    cols: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -71,6 +92,12 @@ impl From<Rect> for DumpRect {
 }
 
 #[derive(Serialize)]
+struct DumpRegions {
+    leading: DumpSpan,
+    trailing: DumpSpan,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DumpAxis {
     count: f64,
@@ -82,10 +109,24 @@ struct DumpAxis {
     focus: Option<DumpFocus>,
     locating: bool,
     strip: Vec<DumpItem>,
+    pinned: f64,
+    trailing: f64,
+    scrolling: DumpSpan,
+    regions: DumpRegions,
     headers: Vec<DumpHeader>,
     total: Option<f64>,
     quick_filter: Option<DumpTextSupport>,
     conditions: Vec<DumpListed>,
+    movable: bool,
+    hide_support: bool,
+    hide_cap: f64,
+    pins: DumpPins,
+}
+
+#[derive(Serialize)]
+struct DumpPins {
+    leading: Vec<u64>,
+    trailing: Vec<u64>,
 }
 
 #[derive(Serialize)]
@@ -162,6 +203,8 @@ struct DumpHeader {
     filter: DumpHeaderFilter,
     /// The support of the item's Key, or none (all off) for an unfilled one.
     support: DumpSupport,
+    #[serde(rename = "movePending")]
+    move_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -197,6 +240,7 @@ impl DumpHeader {
                 not_applied: h.filter.not_applied,
             },
             support: support.into(),
+            move_pending: h.move_pending,
         }
     }
 }
@@ -218,7 +262,7 @@ enum DumpMode {
     MovingHeaders {
         axis: WireAxis,
         key: u64,
-        to: f64,
+        target: DumpTarget,
     },
     Editing {
         row: u64,
@@ -247,10 +291,10 @@ impl From<Mode> for DumpMode {
                 axis: axis.into(),
                 start_thickness,
             },
-            Mode::MovingHeaders { axis, key, to } => DumpMode::MovingHeaders {
+            Mode::MovingHeaders { axis, key, target } => DumpMode::MovingHeaders {
                 axis: axis.into(),
                 key: key.0,
-                to: to as f64,
+                target: target.into(),
             },
             Mode::Editing { row, col } => DumpMode::Editing {
                 row: row.0,
@@ -271,8 +315,64 @@ struct DumpGuide {
 #[derive(Serialize)]
 struct DumpDrop {
     axis: WireAxis,
-    to: f64,
+    target: DumpTarget,
     offset: f32,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum DumpTarget {
+    Move {
+        to: f64,
+        unpin: bool,
+    },
+    Unpin {
+        at: f64,
+    },
+    Pin {
+        edge: &'static str,
+        before: Option<u64>,
+        reorder: bool,
+    },
+    Stay,
+}
+
+fn edge_name(edge: Edge) -> &'static str {
+    match edge {
+        Edge::Leading => "leading",
+        Edge::Trailing => "trailing",
+    }
+}
+
+impl From<DropTarget> for DumpTarget {
+    fn from(target: DropTarget) -> Self {
+        match target {
+            DropTarget::Move { to, unpin } => DumpTarget::Move {
+                to: to as f64,
+                unpin,
+            },
+            DropTarget::Unpin { at } => DumpTarget::Unpin { at: at as f64 },
+            DropTarget::Pin {
+                edge,
+                before,
+                reorder,
+            } => DumpTarget::Pin {
+                edge: edge_name(edge),
+                before: before.map(|k| k.0),
+                reorder,
+            },
+            DropTarget::Stay => DumpTarget::Stay,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct DumpZone {
+    axis: WireAxis,
+    edge: &'static str,
+    offset: f32,
+    size: f32,
+    hot: bool,
 }
 
 #[derive(Serialize)]
@@ -289,8 +389,8 @@ struct DumpSpan {
 
 #[derive(Serialize)]
 struct DumpRange {
-    rows: DumpSpan,
-    cols: DumpSpan,
+    rows: Vec<DumpSpan>,
+    cols: Vec<DumpSpan>,
 }
 
 fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
@@ -319,8 +419,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             .quick_filter(axis)
             .map(|q| DumpTextSupport { regex: q.regex }),
         strip: s
-            .strip(axis)
-            .iter()
+            .drawn(axis)
             .map(|i| DumpItem {
                 position: i.position as f64,
                 key: i.key.map(|k| k.0),
@@ -328,6 +427,22 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 size: i.size,
             })
             .collect(),
+        pinned: s.pinned(axis, Edge::Leading).len() as f64,
+        trailing: s.pinned(axis, Edge::Trailing).len() as f64,
+        scrolling: DumpSpan {
+            start: s.scrolling(axis).start.into(),
+            end: s.scrolling(axis).end.into(),
+        },
+        regions: {
+            let [leading, trailing] = Edge::ALL.map(|edge| {
+                let r = s.pinned_region(axis, edge);
+                DumpSpan {
+                    start: r.start.into(),
+                    end: r.end.into(),
+                }
+            });
+            DumpRegions { leading, trailing }
+        },
         headers: s
             .headers(axis)
             .map(|h| {
@@ -349,6 +464,13 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 },
             })
             .collect(),
+        movable: s.movable(axis),
+        hide_support: s.hide_support(axis),
+        hide_cap: s.hide_cap(axis) as f64,
+        pins: DumpPins {
+            leading: s.pins(axis, Edge::Leading).map(|k| k.0).collect(),
+            trailing: s.pins(axis, Edge::Trailing).map(|k| k.0).collect(),
+        },
     }
 }
 
@@ -356,8 +478,8 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
 pub fn dump(s: &Snapshot<'_>) -> Dump {
     let keys = |ks: &[Key]| ks.iter().map(|k| k.0).collect();
     let mut cells = Vec::new();
-    for row in s.rows() {
-        for col in s.cols() {
+    for row in s.drawn(Axis::Rows) {
+        for col in s.drawn(Axis::Cols) {
             cells.push(cell_bits(s.cell_state(row, col)));
         }
     }
@@ -388,29 +510,53 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         }),
         drop_indicator: s.drop_indicator().map(|d| DumpDrop {
             axis: d.axis.into(),
-            to: d.to as f64,
+            target: d.target.into(),
             offset: d.offset,
         }),
+        pin_zones: (s.pin_zones().into_iter())
+            .map(|z| DumpZone {
+                axis: z.axis.into(),
+                edge: edge_name(z.edge),
+                offset: z.offset,
+                size: z.size,
+                hot: z.hot,
+            })
+            .collect(),
         hovered_header: s.hovered_header().map(|(axis, item)| DumpHovered {
             axis: axis.into(),
             position: item.position as f64,
         }),
-        selection_range: s.selection_range().map(|r| DumpRange {
-            rows: DumpSpan {
-                start: r.rows.start as f64,
-                end: r.rows.end as f64,
-            },
-            cols: DumpSpan {
-                start: r.cols.start as f64,
-                end: r.cols.end as f64,
-            },
+        selection_range: s.selection_range().map(|r| {
+            let runs = |runs: &[std::ops::Range<u64>]| {
+                (runs.iter())
+                    .map(|r| DumpSpan {
+                        start: r.start as f64,
+                        end: r.end as f64,
+                    })
+                    .collect()
+            };
+            DumpRange {
+                rows: runs(&r.rows),
+                cols: runs(&r.cols),
+            }
         }),
         selection_rects: s.selection_rects().iter().map(|r| (*r).into()).collect(),
-        picked: keys(s.picked()),
+        picked: DumpPicked {
+            rows: keys(s.picked(Axis::Rows)),
+            cols: keys(s.picked(Axis::Cols)),
+        },
         moving_keys: keys(s.moving_keys()),
         applied_view: s.applied_view().into(),
         requested_view: s.requested_view().map(WireViewSpec::from),
         view_pending: s.view_pending(),
+        pending_move: s.pending_move().map(|(axis, ks)| DumpPendingMove {
+            axis: axis.into(),
+            keys: keys(ks),
+        }),
+        move_refusal: s.move_refusal().map(|(axis, reason)| DumpRefusal {
+            axis: axis.into(),
+            reason: reason.to_string(),
+        }),
         find: s.find().map(WireFindQuery::from),
         find_match: s.find_match().map(WireFindMatch::from),
         find_support: s.find_support().map(|f| DumpTextSupport { regex: f.regex }),
@@ -478,6 +624,11 @@ pub fn every_effect() -> Vec<WireStamped> {
         Effect::AutoSizeRequested {
             axis: Axis::Cols,
             key: col,
+        },
+        Effect::PinsChanged {
+            axis: Axis::Cols,
+            edge: Edge::Trailing,
+            keys: vec![col, row],
         },
         Effect::BandSizeChanged {
             axis: Axis::Rows,
@@ -551,6 +702,14 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             condition: listed,
         },
+        ViewEdit::Hide {
+            axis: Axis::Cols,
+            keys: vec![col, Key(u64::MAX)],
+        },
+        ViewEdit::Show {
+            axis: Axis::Rows,
+            keys: vec![Key(3)],
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -558,9 +717,28 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 13] = [
-    "plain", "busy", "resizing", "band", "moving", "editing", "locating", "scrolled", "dragging",
-    "sorted", "filtered", "found", "rejected",
+pub const SCENARIOS: [&str; 21] = [
+    "plain",
+    "busy",
+    "resizing",
+    "band",
+    "moving",
+    "movePending",
+    "moveRefused",
+    "editing",
+    "locating",
+    "scrolled",
+    "dragging",
+    "sorted",
+    "filtered",
+    "found",
+    "rejected",
+    "pinned",
+    "hidden",
+    "pinDrag",
+    "unpinDrag",
+    "clipped",
+    "restored",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -625,6 +803,10 @@ pub fn scenario(name: &str) -> Grid {
             let y = 24.0 + 21.0 * 5.0 + 5.0;
             grid.pointer(PointerEvent::down(10.0, y).modifiers(Modifiers::CTRL));
             grid.pointer(PointerEvent::up(10.0, y).modifiers(Modifiers::CTRL));
+            // Ctrl-click on column 2's header picks it.
+            let x = 40.0 + 81.0 * 2.0 + 40.0;
+            grid.pointer(PointerEvent::down(x, 10.0).modifiers(Modifiers::CTRL));
+            grid.pointer(PointerEvent::up(x, 10.0).modifiers(Modifiers::CTRL));
             grid.pointer(PointerEvent::moved(220.0, 10.0));
             grid.set_size(Axis::Cols, key(3), 120.0);
         }
@@ -637,8 +819,38 @@ pub fn scenario(name: &str) -> Grid {
             grid.pointer(PointerEvent::moved(60.0, 10.0));
         }
         "moving" => {
+            // Column 2 over column 1's first half, clear of the pin zones.
+            grid.set_movable(Axis::Cols, true);
             grid.pointer(PointerEvent::down(220.0, 10.0));
-            grid.pointer(PointerEvent::moved(60.0, 10.0));
+            grid.pointer(PointerEvent::moved(140.0, 10.0));
+        }
+        "pinDrag" => {
+            // Columns 4 and 5 pinned leading; 5 dragged before 4, reordering
+            // the pins, the empty trailing zone lit.
+            grid.pin(Axis::Cols, Edge::Leading, key(4));
+            grid.pin(Axis::Cols, Edge::Leading, key(5));
+            frame(&mut grid);
+            grid.pointer(PointerEvent::down(160.0, 10.0));
+            grid.pointer(PointerEvent::moved(50.0, 10.0));
+        }
+        "unpinDrag" => {
+            // Row 6 pinned to the bottom, dragged up into the body of rows
+            // that can't move: it returns to its own Position.
+            grid.pin(Axis::Rows, Edge::Trailing, key(6));
+            frame(&mut grid);
+            grid.pointer(PointerEvent::down(20.0, 190.0));
+            grid.pointer(PointerEvent::moved(20.0, 80.0));
+        }
+        "movePending" | "moveRefused" => {
+            // Row 1's header dropped below row 3, the source yet to answer.
+            grid.set_movable(Axis::Rows, true);
+            grid.pointer(PointerEvent::down(20.0, 24.0 + 21.0 + 10.0));
+            grid.pointer(PointerEvent::moved(20.0, 24.0 + 21.0 * 3.0 + 15.0));
+            grid.pointer(PointerEvent::up(20.0, 24.0 + 21.0 * 3.0 + 15.0));
+            while grid.poll_effect().is_some() {}
+            if name == "moveRefused" {
+                grid.move_answered(Some("Can't move while sorted".into()));
+            }
         }
         "editing" => {
             grid.set_focus(key(1), key(2));
@@ -650,6 +862,52 @@ pub fn scenario(name: &str) -> Grid {
             frame(&mut grid);
             grid.notify(Axis::Rows, ChangeNotice::Reordered);
             row_limit = 2;
+        }
+        "pinned" => {
+            // Column 4 and row 3 pinned leading, column 1 and row 8
+            // trailing, an Edge Gap on the rows, scrolled past, and a range
+            // from row 5 of the pinned column 4 down two rows.
+            grid.set_edge_gap(Axis::Rows, 6.0);
+            grid.pin(Axis::Cols, Edge::Leading, key(4));
+            grid.pin(Axis::Rows, Edge::Leading, key(3));
+            grid.pin(Axis::Cols, Edge::Trailing, key(1));
+            grid.pin(Axis::Rows, Edge::Trailing, key(8));
+            frame(&mut grid);
+            grid.action(Action::Scroll { dx: 90.0, dy: 50.0 });
+            frame(&mut grid);
+            grid.set_focus(key(5), key(4));
+            frame(&mut grid);
+            grid.action(Action::MoveFocus {
+                axis: Axis::Rows,
+                by: FocusStep::Item,
+                forward: true,
+                extend: true,
+            });
+        }
+        "restored" => {
+            // A saved layout put back: column 2 and one the source does not
+            // have (dormant) pinned left, row 4 to the bottom, and sizes,
+            // one for a column the source does not have.
+            grid.set_pins(Axis::Cols, Edge::Leading, &[key(2), key(900)]);
+            grid.set_pins(Axis::Rows, Edge::Trailing, &[key(4)]);
+            grid.set_size(Axis::Cols, key(2), 44.0);
+            grid.set_size(Axis::Cols, key(900), 61.0);
+        }
+        "clipped" => {
+            // Four columns pinned left and one right, and rows 0 to 5
+            // pinned to the bottom, all too long to leave what each axis
+            // keeps to scroll; focus on column 3, clipped, slides it in.
+            grid.set_min_scrolling(Axis::Cols, 100.0);
+            grid.set_min_scrolling(Axis::Rows, 60.0);
+            for k in 0..4 {
+                grid.pin(Axis::Cols, Edge::Leading, key(k));
+            }
+            grid.pin(Axis::Cols, Edge::Trailing, key(5));
+            for k in 0..6 {
+                grid.pin(Axis::Rows, Edge::Trailing, key(k));
+            }
+            frame(&mut grid);
+            grid.set_focus(key(2), key(3));
         }
         "scrolled" => {
             grid.action(Action::Scroll {
@@ -752,6 +1010,24 @@ pub fn scenario(name: &str) -> Grid {
             grid.view_applied(applied, Totals::unknown());
             grid.view_changed(ViewSpec::default(), Totals::unknown());
         }
+        "hidden" => {
+            // Both axes hide: rows 2 and 5 and column 4 hidden as applied,
+            // column 1 being hidden and row 5 being shown.
+            for axis in Axis::ALL {
+                grid.set_hide_support(axis, true);
+            }
+            grid.set_hide_cap(Axis::Cols, 2);
+            grid.hide(Axis::Rows, &[key(2), key(5)]).unwrap();
+            grid.hide(Axis::Cols, &[key(4)]).unwrap();
+            let applied = grid.snapshot().requested_view().cloned().unwrap();
+            grid.view_applied(applied.clone(), Totals::unknown());
+            grid.view_applied(applied, Totals::unknown());
+            grid.hide(Axis::Cols, &[key(1)]).unwrap();
+            // Past the columns' cap of 2: nothing more is hidden.
+            grid.hide(Axis::Cols, &[key(0)]).unwrap_err();
+            grid.show(Axis::Rows, &[key(5)]);
+            grid.set_hide_support(Axis::Rows, false);
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -780,21 +1056,66 @@ mod tests {
             match name {
                 "busy" => {
                     assert!(s.selection_range().is_some());
-                    assert_eq!(s.picked().len(), 1);
+                    assert_eq!(s.picked(Axis::Rows).len(), 1);
+                    assert_eq!(s.picked(Axis::Cols).len(), 1);
                     assert!(s.requested_view().is_some());
                     assert!(s.hovered_header().is_some());
                 }
                 "resizing" => assert!(s.resize_guide().is_some() && s.capturing()),
-                "moving" => assert!(s.drop_indicator().is_some()),
+                "moving" => assert!(s.drop_indicator().is_some_and(|d| matches!(
+                    d.target,
+                    DropTarget::Move {
+                        to: 1,
+                        unpin: false
+                    }
+                ))),
+                "pinDrag" => {
+                    let target = s.drop_indicator().map(|d| d.target);
+                    let before = Some(Key(KEY_BASE + 4));
+                    assert_eq!(
+                        target,
+                        Some(DropTarget::Pin {
+                            edge: Edge::Leading,
+                            before,
+                            reorder: true
+                        })
+                    );
+                    assert_eq!(s.pin_zones().len(), 1);
+                }
+                "unpinDrag" => {
+                    let target = s.drop_indicator().map(|d| d.target);
+                    assert_eq!(target, Some(DropTarget::Unpin { at: 6 }));
+                }
+                "movePending" => assert!(s.headers(Axis::Rows).any(|h| h.move_pending)),
+                "moveRefused" => assert!(s.move_refusal().is_some() && s.pending_move().is_none()),
                 "editing" => assert!(s.editor_rect().is_some()),
                 "locating" => {
                     assert!(s.locating(Axis::Rows));
                     assert!(s.rows().iter().any(|i| i.key.is_none()));
                 }
                 "scrolled" => assert!(s.scroll_anchor(Axis::Rows).position > 0),
+                "pinned" => {
+                    for axis in Axis::ALL {
+                        for edge in Edge::ALL {
+                            assert_eq!(s.pinned(axis, edge).len(), 1);
+                        }
+                        assert!(!s.strip(axis).is_empty());
+                    }
+                    assert!(s.scroll_anchor(Axis::Cols).position > 0);
+                    let range = s.selection_range().unwrap();
+                    let (rows, cols) = (5..7, 4..5);
+                    assert_eq!(
+                        (&range.rows[..], &range.cols[..]),
+                        (&[rows][..], &[cols][..])
+                    );
+                }
                 "dragging" => {
                     let range = s.selection_range().unwrap();
-                    assert_eq!((range.rows, range.cols), (1..5, 0..3));
+                    let (rows, cols) = (1..5, 0..3);
+                    assert_eq!(
+                        (&range.rows[..], &range.cols[..]),
+                        (&[rows][..], &[cols][..])
+                    );
                 }
                 "sorted" => {
                     assert_eq!(s.applied_view().rows.sort.columns().len(), 2);
@@ -823,6 +1144,31 @@ mod tests {
                         ]
                     );
                 }
+                "restored" => {
+                    let key = |p: u64| Key(KEY_BASE + p);
+                    let pins: Vec<Key> = s.pins(Axis::Cols, Edge::Leading).collect();
+                    assert_eq!(pins, [key(2), key(900)]);
+                    assert_eq!(s.pinned(Axis::Cols, Edge::Leading).len(), 1);
+                    assert_eq!(
+                        s.pins(Axis::Rows, Edge::Trailing).collect::<Vec<_>>(),
+                        [key(4)]
+                    );
+                }
+                "clipped" => {
+                    // Every pin is kept; the leading columns clip, slid to
+                    // show the focused column 3, and the trailing ones
+                    // clip whole, as do the bottom rows in part.
+                    assert_eq!(s.pinned(Axis::Cols, Edge::Leading).len(), 4);
+                    let lead = s.pinned_region(Axis::Cols, Edge::Leading);
+                    let focused = s.pinned(Axis::Cols, Edge::Leading)[3];
+                    assert!(focused.offset >= lead.start && focused.end() <= lead.end);
+                    assert!(s.pinned(Axis::Cols, Edge::Leading)[0].offset < lead.start);
+                    assert!(s.pinned_region(Axis::Cols, Edge::Trailing).is_empty());
+                    assert_eq!(s.pinned(Axis::Rows, Edge::Trailing).len(), 6);
+                    let rows = s.pinned_region(Axis::Rows, Edge::Trailing);
+                    let first = s.pinned(Axis::Rows, Edge::Trailing)[0];
+                    assert!(first.offset < rows.start && !rows.is_empty());
+                }
                 "rejected" => {
                     assert!(!s.view_pending());
                     let states: Vec<ConditionState> = s
@@ -835,11 +1181,21 @@ mod tests {
                     assert!(wanted.is_some_and(|q| q.regex));
                     assert_eq!(s.applied_view(), &ViewSpec::default());
                 }
+                "hidden" => {
+                    let key = |p: u64| Key(KEY_BASE + p);
+                    assert!(!s.hide_support(Axis::Rows) && s.hide_support(Axis::Cols));
+                    assert_eq!(s.applied_view().rows.hidden, [key(2), key(5)]);
+                    assert_eq!(s.hidden(Axis::Rows), [key(2)]);
+                    assert_eq!(s.hidden(Axis::Cols), [key(4), key(1)]);
+                    assert_eq!(s.hide_cap(Axis::Cols), 2);
+                    assert!(s.view_pending());
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
                     let current = s.find_match().unwrap();
-                    assert_eq!(s.selection_range().map(|r| r.rows), Some(1..3));
+                    let rows = 1..3;
+                    assert_eq!(s.selection_range().map(|r| &r.rows[..]), Some(&[rows][..]));
                     let row = s.rows().iter().find(|i| i.key == Some(current.row));
                     let col = s.cols().iter().find(|i| i.key == Some(current.col));
                     assert!(s.cell_state(row.unwrap(), col.unwrap()).current_match);
@@ -855,12 +1211,20 @@ mod tests {
                 "Resizing",
                 "ResizingBand",
                 "MovingHeaders",
+                "Idle",
+                "Idle",
                 "Editing",
                 "Idle",
                 "Idle",
                 "DraggingSelection",
                 "Idle",
                 "Idle",
+                "Idle",
+                "Idle",
+                "Idle",
+                "Idle",
+                "MovingHeaders",
+                "MovingHeaders",
                 "Idle",
                 "Idle"
             ]
@@ -884,6 +1248,7 @@ mod tests {
                 crate::effect::WireEffect::Locate { .. } => "Locate",
                 crate::effect::WireEffect::SizeChanged { .. } => "SizeChanged",
                 crate::effect::WireEffect::AutoSizeRequested { .. } => "AutoSizeRequested",
+                crate::effect::WireEffect::PinsChanged { .. } => "PinsChanged",
                 crate::effect::WireEffect::BandSizeChanged { .. } => "BandSizeChanged",
                 crate::effect::WireEffect::BandAutoSizeRequested { .. } => "BandAutoSizeRequested",
                 crate::effect::WireEffect::MoveRequested { .. } => "MoveRequested",
@@ -893,6 +1258,6 @@ mod tests {
             .collect();
         let mut unique = seen.clone();
         unique.dedup();
-        assert_eq!(unique.len(), 15, "{seen:?}");
+        assert_eq!(unique.len(), 16, "{seen:?}");
     }
 }

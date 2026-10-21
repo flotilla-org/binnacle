@@ -5,10 +5,11 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { matches, rows } from "../demo/sources/records-data";
-import { FIRST } from "./records-columns";
 
 const HEADER = 28;
 const ROW = 24;
+/** Inside the first record's column: the row-number band fits the field names and a sort marker. */
+const FIRST = 90;
 /** The demo's column width and the Gap after it. */
 const COLUMN = 112 + 1;
 
@@ -48,12 +49,15 @@ test("the filter box keeps the matching records as columns", async ({ page }) =>
   await expect(status(page)).toContainText(`of ${rows.length.toLocaleString("en")}`);
 });
 
-/** Clicks the row header of the field at screen row `row` (0 first), with Shift if `shift`. */
+/**
+ * Clicks the row header of the field at screen row `row` (0 first), with
+ * Shift if `shift`, past the row menu's button at the header's left.
+ */
 async function rowHeader(page: Page, row: number, shift = false) {
   const b = await page.locator(".binnacle-layer").boundingBox();
   if (!b) throw new Error("no grid");
   if (shift) await page.keyboard.down("Shift");
-  await page.mouse.click(b.x + 8, b.y + HEADER + row * ROW + ROW / 2);
+  await page.mouse.click(b.x + 32, b.y + HEADER + row * ROW + ROW / 2);
   if (shift) await page.keyboard.up("Shift");
 }
 
@@ -104,4 +108,18 @@ test("a sorted field's row header shows its marker", async ({ page, browserName 
 test("each field row draws its own way: the id and weight end-aligned, the crew as a bar", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "screenshots are taken in Chromium only");
   await expect(page.locator(".grid-box")).toHaveScreenshot("transposed-light.png", { scale: "device" });
+});
+
+test("records pick and select as columns, and a field row selects whole", async ({ page }) => {
+  const b = (await page.locator(".binnacle-layer").boundingBox())!;
+  await page.keyboard.down("ControlOrMeta");
+  await page.mouse.click(b.x + FIRST + COLUMN, b.y + HEADER / 2);
+  await page.mouse.click(b.x + FIRST + 2 * COLUMN, b.y + HEADER / 2);
+  await page.keyboard.up("ControlOrMeta");
+  await expect(status(page)).toContainText("2 columns picked");
+  await cell(page, 1, 0);
+  await page.keyboard.press("Shift+Space");
+  await expect(status(page)).toContainText(`selected 1 × ${rows.length.toLocaleString("en")}`);
+  await page.keyboard.press("Control+Space");
+  await expect(status(page)).toContainText("selected 5 × 1");
 });

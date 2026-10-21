@@ -1,0 +1,49 @@
+---
+source: crates/binnacle-core/tests/layout.rs
+assertion_line: 58
+expression: out
+---
+--- 1. start
+window Rows 0..4
+window Cols 0..8
+gen 1 | damage layout selection positions
+Rows: count 4, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 10, extent 46, header 4, anchor 0+0, thumb 0.0000/0.6087 | 0#0@4+6 1#1@11+6 2#2@18+6 3#3@25+6 4#4@32+6 5#5@39+6
+    0      1      2      3      4      5
+0   0.0    0.1    0.2    0.3    0.4    0.5
+1   1.0    1.1    1.2    1.3    1.4    1.5
+2   2.0    2.1    2.2    2.3    2.4    2.5
+3   3.0    3.1    3.2    3.3    3.4    3.5
+--- 2. pin 1 left and 7 right: one PinsChanged per edge
+effect (gen 1): PinsChanged { axis: Cols, edge: Leading, keys: [Key(1)] }
+effect (gen 1): PinsChanged { axis: Cols, edge: Trailing, keys: [Key(7)] }
+window Cols 0..9
+gen 2 | damage layout positions
+Rows: (unchanged)
+Cols: count 10, extent 46, header 4, anchor 0+0, thumb 0.0000/0.5091 | pinned 1#1@4+6 | scrolling from 11 | 0#0@11+6 2#2@18+6 3#3@25+6 4#4@32+6 | scrolling to 39 | trailing 7#7@40+6
+    1      0      2      3      4       7
+0   0.1    0.0    0.2    0.3    0.4     0.7
+1   1.1    1.0    1.2    1.3    1.4     1.7
+2   2.1    2.0    2.2    2.3    2.4     2.7
+3   3.1    3.0    3.2    3.3    3.4     3.7
+pins Cols: leading [1], trailing [7]
+--- 3. set the leading pins to 7, 3, 3, 40: 7 leaves the trailing edge, 1 unpins, 3 counts once, 40 is located, gone, and sleeps
+effect (gen 2): Locate { axis: Cols, key: Key(40) }
+  locate Cols Key(40): Gone { suggest: None }
+effect (gen 2): PinsChanged { axis: Cols, edge: Leading, keys: [Key(7), Key(3), Key(40)] }
+effect (gen 2): PinsChanged { axis: Cols, edge: Trailing, keys: [] }
+window Cols 0..10
+gen 3 | damage layout positions
+Rows: (unchanged)
+Cols: count 10, extent 46, header 4, anchor 0+0, thumb 0.0000/0.5091 | pinned 7#7@4+6 3#3@11+6 | scrolling from 18 | 0#0@18+6 1#1@25+6 2#2@32+6 4#4@39+6
+    7      3      0      1      2      4
+0   0.7    0.3    0.0    0.1    0.2    0.4
+1   1.7    1.3    1.0    1.1    1.2    1.4
+2   2.7    2.3    2.0    2.1    2.2    2.4
+3   3.7    3.3    3.0    3.1    3.2    3.4
+pins Cols: leading [7 3 40], trailing []
+--- 4. the same pins again: nothing to report
+gen 4 | damage none
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

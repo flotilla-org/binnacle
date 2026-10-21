@@ -1,12 +1,13 @@
 ---
 source: crates/binnacle-core/tests/moving.rs
+assertion_line: 354
 expression: out
 ---
 --- 1. drop column 1 first, then place focus before the pump
 window Rows 0..3
 window Cols 0..4
 effect (gen 1): MoveRequested { axis: Cols, keys: [Key(1)], to: 0 }
-  move Cols [Key(1)] to 0: Some(Reordered)
+  move Cols [Key(1)] to 0: notices [(Cols, Reordered)]
 effect (gen 1): Locate { axis: Cols, key: Key(0) }
   locate Cols Key(0): Found(1)
 effect (gen 1): FocusChanged { row: Key(0), col: Key(0) }

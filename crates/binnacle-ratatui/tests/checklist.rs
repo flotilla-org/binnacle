@@ -9,12 +9,14 @@ use std::time::Duration;
 use std::cell::RefCell;
 
 use binnacle_core::{
-    Axis, AxisConfig, Blanks, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery,
-    DistinctValue, Effect, FilterSpec, Grid, Key, Snapshot, Support, TextQuery, TextSupport,
-    Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Axis, AxisConfig, Blanks, ChangeNotice, Condition, ConditionKind, ConditionState, Distinct,
+    DistinctQuery, DistinctValue, Effect, FilterSpec, Grid, Key, Snapshot, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_memory::IdentitySource;
-use binnacle_ratatui::{ColumnFilter, Content, RenderContext, Theme, render_with};
+use binnacle_ratatui::{
+    ColumnFilter, Content, RenderContext, Theme, count, render_conditions, render_with,
+};
 use hegel::TestCase;
 use hegel::generators as gs;
 use ratatui::buffer::Buffer;
@@ -113,7 +115,7 @@ fn ports(query: &DistinctQuery) -> Distinct {
 
 /// Fetches the ports into the popup, as a host does before each render.
 fn fetch(popup: &mut ColumnFilter, grid: &mut Grid) {
-    popup.fetch(&snapshot(grid), |_, q| Some(ports(q)));
+    popup.fetch(&snapshot(grid), |_, _, q| Some(ports(q)));
 }
 
 fn text(buf: &Buffer) -> String {
@@ -181,7 +183,7 @@ fn the_popup_opens_on_a_column_that_takes_only_one_of_and_asks_for_its_values_na
     );
     let mut popup = open(&mut grid, 2);
     let asked = RefCell::new(vec![]);
-    let ask = |key: Key, q: &DistinctQuery| {
+    let ask = |_: Axis, key: Key, q: &DistinctQuery| {
         asked.borrow_mut().push((key, q.clone()));
         Some(ports(q))
     };
@@ -334,10 +336,10 @@ fn the_checklist_draws_ticks_counts_and_dims_the_values_the_text_condition_rejec
     );
     let mut out = vec![text(&buf)];
     let mut crew = open(&mut grid, 2);
-    crew.fetch(&snapshot(&mut grid), |_, _| None);
+    crew.fetch(&snapshot(&mut grid), |_, _, _| None);
     out.push(text(&screen(&crew, &mut grid)));
     let mut empty = open(&mut grid, 2);
-    empty.fetch(&snapshot(&mut grid), |_, _| Some(Distinct::default()));
+    empty.fetch(&snapshot(&mut grid), |_, _, _| Some(Distinct::default()));
     out.push(text(&screen(&empty, &mut grid)));
     insta::assert_snapshot!(out.join("\n\n"));
 }
@@ -433,7 +435,7 @@ fn whatever_the_user_ticks_the_conditions_keep_exactly_the_values_left_ticked(tc
     let mut ticked: Vec<Value> = universe.clone();
     let mut text: Option<String> = None;
     let mut search = String::new();
-    popup.fetch(&snapshot(&mut grid), |_, q| Some(answer(q)));
+    popup.fetch(&snapshot(&mut grid), |_, _, q| Some(answer(q)));
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(20));
     for _ in 0..steps {
         if tc.draw(gs::integers::<u8>().max_value(3)) == 0 {
@@ -445,7 +447,7 @@ fn whatever_the_user_ticks_the_conditions_keep_exactly_the_values_left_ticked(tc
             for c in search.chars() {
                 popup.key(&char(c), &mut grid);
             }
-            popup.fetch(&snapshot(&mut grid), |_, q| Some(answer(q)));
+            popup.fetch(&snapshot(&mut grid), |_, _, q| Some(answer(q)));
         }
         // The values listed, the blank first, as the popup shows them.
         let blank = (universe.iter()).filter(|v| **v == Value::Blank && search.is_empty());
@@ -538,4 +540,62 @@ fn head_mark(popup: &ColumnFilter, grid: &mut Grid) -> String {
         .expect("the head");
     let at = line.find('[').expect("a tick box");
     line[at..at + 3].to_string()
+}
+
+/// Story 55: opened on a row, the popup filters the columns by the row's
+/// values, asking for the row's distinct values across the columns and
+/// writing conditions on the columns, drawn under the row; the chips line
+/// lists them after "Columns where" and the count is the columns'.
+#[test]
+fn a_rows_popup_filters_the_columns_by_its_values() {
+    let mut grid = grid();
+    let row = Support::default()
+        .with_text(Some(TextSupport::new(false)))
+        .with_one_of(true);
+    grid.set_support(Axis::Cols, Key(2), row);
+    let mut popup = ColumnFilter::new().pause(Duration::ZERO);
+    assert!(popup.open_on(&snapshot(&mut grid), Axis::Cols, Key(2)));
+    assert_eq!(popup.filtering(), Some(Axis::Cols));
+    assert_eq!(popup.column(), None);
+    let asked = RefCell::new(vec![]);
+    popup.fetch(&snapshot(&mut grid), |axis, key, q| {
+        asked.borrow_mut().push((axis, key));
+        Some(ports(q))
+    });
+    assert_eq!(asked.into_inner(), vec![(Axis::Cols, Key(2))]);
+    for key in [char('e'), char('n')] {
+        popup.key(&key, &mut grid);
+    }
+    let en = contains(2, "en");
+    let ens = |from: &Condition| ViewEdit::ReplaceCondition {
+        axis: Axis::Cols,
+        from: from.clone(),
+        to: en.clone(),
+    };
+    let e = contains(2, "e");
+    let first = ViewEdit::AddCondition {
+        axis: Axis::Cols,
+        condition: e.clone(),
+    };
+    assert_eq!(edits(&mut grid), vec![first, ens(&e)]);
+    let spec = ViewSpec::default().with_filter(
+        Axis::Cols,
+        FilterSpec::default().with_conditions(vec![en].into()),
+    );
+    grid.view_applied(spec, Totals::default().with(Axis::Cols, Some(3)));
+    grid.notify(Axis::Cols, ChangeNotice::Refiltered(2));
+    let mut buf = screen(&popup, &mut grid);
+    let snapshot = snapshot(&mut grid);
+    render_conditions(
+        &snapshot,
+        &Labels,
+        &Theme::classic(),
+        Rect::new(0, H - 1, W, 1),
+        &mut buf,
+    );
+    assert_eq!(
+        count(&snapshot, Axis::Cols, ("column", "columns")),
+        "2 of 3 columns"
+    );
+    insta::assert_snapshot!(text(&buf));
 }

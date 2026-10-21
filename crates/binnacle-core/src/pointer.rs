@@ -1,6 +1,6 @@
 use crate::axis::AxisState;
 use crate::measure::ItemAt;
-use crate::types::{Axis, Position};
+use crate::types::{Axis, Edge, Position};
 
 /// A pointer button. v1 gestures use only [`Button::Primary`]; the others are
 /// ignored.
@@ -143,8 +143,8 @@ pub(crate) enum AxisHit {
 
 impl AxisState {
     /// Hit tests `v`, a viewport-relative coordinate along this axis, against
-    /// the current Scroll Anchor. The Gap belongs to the item before it, and
-    /// only the Gap: with Gap 0 nothing is a border.
+    /// the pinned Strips and the current Scroll Anchor. The Gap belongs to
+    /// the item before it, and only the Gap: with Gap 0 nothing is a border.
     pub(crate) fn hit(&self, v: f32) -> AxisHit {
         if !(v >= 0.0 && v < self.extent) {
             return AxisHit::Outside;
@@ -152,7 +152,37 @@ impl AxisState {
         if v < self.header {
             return AxisHit::Header;
         }
-        let delta = f64::from(self.anchor.offset) + (f64::from(v) - f64::from(self.header));
+        let (start, end) = (self.scroll_start(), self.scroll_end());
+        let [leading, trailing] = self.pinned_regions();
+        let pinned = |edge| {
+            let gap = self.measure.gap();
+            (self.pinned_items(edge))
+                .find(|it| v >= it.offset && v < it.end() + gap)
+                // A clipped item shows only in its region.
+                .filter(|it| match edge {
+                    Edge::Leading => v < leading.end || it.end() <= leading.end,
+                    Edge::Trailing => v >= trailing.start,
+                })
+                .filter(|it| {
+                    it.key
+                        .is_some_and(|k| self.pinned_at(it.position) == Some(k))
+                })
+                .map_or(AxisHit::Outside, |it| {
+                    AxisHit::Item(ItemAt {
+                        position: it.position,
+                        within: f64::from(v - it.offset),
+                        in_gap: v >= it.end(),
+                    })
+                })
+        };
+        if v < start {
+            return pinned(Edge::Leading);
+        }
+        // The Gap before the trailing Strip belongs to no item.
+        if v >= end {
+            return pinned(Edge::Trailing);
+        }
+        let delta = f64::from(self.anchor.offset) + (f64::from(v) - f64::from(start));
         match self.measure.locate(self.anchor.position, delta) {
             Some(at) => AxisHit::Item(at),
             None => AxisHit::Outside,
@@ -161,8 +191,9 @@ impl AxisState {
 }
 
 impl AxisState {
-    /// The Position of the item whose trailing border `v` is on, if any: the
-    /// Gap after the item, widened by `grab` into the items either side. The
+    /// The Position of the item whose border `v` is on, if any: the Gap
+    /// after the item (before it, in the trailing pinned Strip), widened by
+    /// `grab` into the items either side. The
     /// first item's leading edge is no border; the last item's border is the
     /// length of a Gap (or `grab`) past its end.
     pub(crate) fn border(&self, v: f32, grab: f32) -> Option<Position> {
@@ -170,25 +201,58 @@ impl AxisState {
             return None;
         }
         let (grab, m) = (f64::from(grab), &self.measure);
-        let delta = f64::from(self.anchor.offset) + (f64::from(v) - f64::from(self.header));
+        let gap = f64::from(m.gap());
+        let start = self.scroll_start();
+        // A pinned item's border: its Gap, widened by `grab` either side.
+        // A clipped item's border is not shown, so it is not grabbed.
+        let [leading, trailing] = self.pinned_regions();
+        let pinned = self.pinned_items(Edge::Leading).find(|it| {
+            let (v, end) = (f64::from(v), f64::from(it.end()));
+            it.end() <= leading.end && v >= end - grab && v < end + gap + grab
+        });
+        let pinned = pinned.filter(|it| {
+            it.key
+                .is_some_and(|k| self.pinned_at(it.position) == Some(k))
+        });
+        if let Some(it) = pinned {
+            return Some(it.position);
+        }
+        // A trailing pinned item's border is the Gap before it, since the
+        // Strip grows from the far end.
+        let trailing = self.pinned_items(Edge::Trailing).find(|it| {
+            let (v, offset) = (f64::from(v), f64::from(it.offset));
+            it.offset >= trailing.start && v >= offset - gap - grab && v < offset + grab
+        });
+        let trailing = trailing.filter(|it| {
+            it.key
+                .is_some_and(|k| self.pinned_at(it.position) == Some(k))
+        });
+        if let Some(it) = trailing {
+            return Some(it.position);
+        }
+        if v < start || v >= self.scroll_end() {
+            return None;
+        }
+        let delta = f64::from(self.anchor.offset) + (f64::from(v) - f64::from(start));
         match m.locate(self.anchor.position, delta) {
             Some(at) => {
                 // Past the item's size is its Gap.
                 if at.within >= f64::from(m.size_at(at.position)) - grab {
                     Some(at.position)
-                } else if at.within < grab && at.position > 0 {
-                    Some(at.position - 1)
+                } else if at.within < grab {
+                    // The scrolling item before it, if one comes first.
+                    (0..at.position).rev().find(|&p| !m.skipped(p))
                 } else {
                     None
                 }
             }
             // Past the last item: `locate` found nothing, so this is beyond
             // its end.
-            None if m.count() > 0 && delta >= 0.0 => {
-                let last = m.count() - 1;
+            None if delta >= 0.0 => {
+                let last = self.last_shown()?;
                 let past =
                     delta - m.distance(self.anchor.position, last) - f64::from(m.size_at(last));
-                (past < f64::from(m.gap()).max(grab)).then_some(last)
+                (past < gap.max(grab)).then_some(last)
             }
             None => None,
         }

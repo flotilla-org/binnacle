@@ -316,3 +316,7 @@ footer {
 .gap-evidence a:hover { text-decoration: underline; }
 .gap-evidence a::after { content: " ↗" / ""; font-size: 11px; }
 .gap-host { display: block; font-size: 11px; color: var(--muted); }
+
+#layout { display: flex; align-items: center; gap: 6px; }
+#layout:empty { display: none; }
+#layout .layout-state { font-size: 12px; }

@@ -7,24 +7,34 @@
 // columns taken as one sort key each.
 //
 // Rows are treated as immutable until `edited` or `changed` says one was
-// changed in place. The user's edit leaves a row that stops matching the
-// filter in view, unmatched, until the next View Spec; a change from the
-// data is filtered at once.
+// changed in place. The user's edit leaves a row or column that stops
+// matching its filter in view, unmatched, until the next View Spec; a change
+// from the data is filtered at once.
 //
-// The quick filter and column conditions match in JS (a `RegExp` for a
+// Each axis's quick filter and conditions match in JS (a `RegExp` for a
 // regex, lowercased substrings otherwise, exact text for OneOf) against each
 // cell's text as its column's renderer gives it, and hand binnacle-memory
-// the rows to keep. Distinct values are counted in JS too.
+// the items to keep: rows by their values across the columns, columns by
+// theirs across the rows. A quick filter searching the shown items of the
+// other axis searches those not hidden. Distinct values are counted in JS
+// too, over the items not hidden.
+//
+// Both axes hide: binnacle-memory leaves the hidden items out whatever the
+// filter keeps, and the answer prunes IDs the data lacks.
 // Find matches the same way, once per Find Query, and walks the view's order
 // for steps and the count; a pattern RegExp rejects fails both and marks
 // nothing.
 //
 // Row IDs are the rows' indices in the array (their Logical Indices); column
 // IDs are the property names.
+//
+// Rows and columns both move, read in the order shown with the filter in
+// force. A move on a sorted axis keeps the order shown and drops the sort,
+// unless `sortedMoves` refuses it.
 
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
 import type {
-  AxisSink,
+  AppliedView,
   ChangeNotice,
   Condition,
   Distinct,
@@ -33,6 +43,7 @@ import type {
   FindQuery,
   Located,
   SortSpec,
+  TableSink,
   TableSource,
   TextMatch,
   TextQuery,
@@ -58,6 +69,17 @@ export type RowsColumn<R> = {
 }[RowsColumnId<R>];
 
 export type RowsColumnId<R> = keyof R & string;
+
+export interface RowsOptions {
+  /**
+   * What a move on a sorted axis does: `"bake"` (the default) keeps the
+   * order shown, places the moved items and drops the axis's sort;
+   * `"refuse"` refuses it, and the axis is not movable while sorted.
+   */
+  sortedMoves?: "bake" | "refuse";
+  /** The most rows and columns it hides at once, if fewer than the widget's own cap. */
+  hideCap?: { rows?: number; cols?: number };
+}
 
 export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[keyof R]> {
   /** Find over each cell's text as its column's renderer gives it, regexes included. */
@@ -125,7 +147,7 @@ function invalid(query: TextMatch): string | undefined {
     new RegExp(query.text, "u");
     return undefined;
   } catch (e) {
-    return String((e as Error).message).replace(/^Invalid regular expression: \/.*\/[a-z]*: /, "");
+    return String((e as Error).message).replace(/^Invalid regular expression: \/.*\/[a-z]*: /s, "");
   }
 }
 
@@ -172,6 +194,16 @@ function byCodePoint(a: string, b: string): number {
   return x.length - y.length;
 }
 
+/** The first of each ID of `ids` that `has` accepts, in order. */
+function pruned<Id>(ids: readonly Id[], has: (id: Id) => boolean): Id[] {
+  return [...new Set(ids)].filter(has);
+}
+
+/** Whether two lists without repeats hold the same items. */
+function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((x) => b.includes(x));
+}
+
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -179,28 +211,86 @@ function same(a: unknown, b: unknown): boolean {
 type Match = (text: string) => boolean;
 type Test = (text: string | null) => boolean;
 
-export function fromRows<R extends object>(rows: readonly R[], columns: readonly RowsColumn<R>[]): RowsSource<R> {
+/** One axis's filter in force: its quick filter with its matcher, and its conditions each with its test. */
+interface Filter<CrossId> {
+  quick: TextQuery<CrossId> | null;
+  match: Match | undefined;
+  conditions: { condition: Condition<CrossId>; test: Test }[];
+}
+
+const NO_FILTER = { quick: null, match: undefined, conditions: [] };
+
+/** Whether a filter keeps an item whose text in item `id` of the other axis is `text(id)`; the quick filter searches `searched`. */
+function keeps<CrossId>({ match, conditions }: Filter<CrossId>, searched: CrossId[], text: (id: CrossId) => string | null) {
+  return (
+    (!match ||
+      searched.some((id) => {
+        const t = text(id);
+        return t !== null && match(t);
+      })) &&
+    conditions.every(({ condition, test }) => test(text(condition.id)) !== condition.not)
+  );
+}
+
+/** The conditions of `asked` a filter applies, each with its test: those on items that take them, with a valid pattern. */
+function testable<CrossId>(asked: Condition<CrossId>[], takes: (id: CrossId) => boolean) {
+  return asked.flatMap((condition) => {
+    const test = takes(condition.id) ? tester(condition.kind) : undefined;
+    return test ? [{ condition, test }] : [];
+  });
+}
+
+/**
+ * `filter` with what `asked` asks for: a quick filter whose pattern is not
+ * a valid RegExp leaves the one in force, and only testable conditions are
+ * kept. Also whether that changed it, and why RegExp rejected the first
+ * pattern it did, if any.
+ */
+function take<CrossId>(filter: Filter<CrossId>, asked: FilterSpec<CrossId> | undefined, takes: (id: CrossId) => boolean) {
+  const quick = asked?.quick ?? null;
+  const match = quick && matcher(quick);
+  let next = filter;
+  if (!same(quick, filter.quick) && match !== undefined) next = { ...next, quick, match: match ?? undefined };
+  const kept = testable(asked?.conditions ?? [], takes);
+  if (!same(kept.map((k) => k.condition), filter.conditions.map((k) => k.condition))) next = { ...next, conditions: kept };
+  const patterns = [quick, ...(asked?.conditions ?? []).map((c) => c.kind.type === "Text" && c.kind.query)];
+  const error = patterns.flatMap((q) => (q ? [invalid(q)] : [])).find((e) => e !== undefined);
+  return { filter: next, changed: next !== filter, error };
+}
+
+/** What a filter spec says of `filter`. */
+function spec<CrossId>(filter: Filter<CrossId>): FilterSpec<CrossId> {
+  return { quick: filter.quick, conditions: filter.conditions.map((k) => k.condition) };
+}
+
+export function fromRows<R extends object>(
+  rows: readonly R[],
+  columns: readonly RowsColumn<R>[],
+  options: RowsOptions = {},
+): RowsSource<R> {
   type ColId = RowsColumnId<R>;
   const index = new Map<ColId, number>(columns.map((c, i) => [c.key, i]));
   const keys = new Map<ColId, SortKeys>();
   /** Each row's values across the columns as sort keys, by row ID, for sorting the columns. */
   const rowKeys = new Map<number, SortKeys>();
-  const sinks = new Set<{ rows: AxisSink<number>; cols: AxisSink<ColId> }>();
+  const sinks = new Set<TableSink<number, ColId>>();
   let wasm: WebMemory | undefined;
   let applied: SortSpec<ColId> = [];
   let colsApplied: SortSpec<number> = [];
-  let quick: TextQuery<ColId> | null = null;
-  let quickMatch: Match | undefined;
-  let conditions: { condition: Condition<ColId>; test: Test }[] = [];
+  let filters: { rows: Filter<ColId>; cols: Filter<number> } = { rows: NO_FILTER, cols: NO_FILTER };
+  let hidden: { rows: number[]; cols: ColId[] } = { rows: [], cols: [] };
   let keep: ((row: R) => boolean) | null = null;
   const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
+  const isRow = (id: number) => Number.isInteger(id) && id >= 0 && id < rows.length;
   // Created on first use, once the widget has loaded the wasm module.
-  const memory = () => (wasm ??= new (bridge().WebMemory)(rows.length, columns.length));
-  const tell = (notice: ChangeNotice) => {
-    for (const s of sinks) s.rows.notify(notice);
+  const memory = () => {
+    if (wasm) return wasm;
+    wasm = new (bridge().WebMemory)(rows.length, columns.length);
+    wasm.refuse_sorted_moves(options.sortedMoves === "refuse");
+    return wasm;
   };
-  const tellCols = (notice: ChangeNotice) => {
-    for (const s of sinks) s.cols.notify(notice);
+  const tell = (notice: ChangeNotice, axis: "rows" | "cols" = "rows") => {
+    for (const s of sinks) s[axis].notify(notice);
   };
   const located = ([code, position]: Float64Array): Located =>
     code === 0
@@ -215,31 +305,35 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     return cellText(renderer, value);
   };
 
-  /** Whether a row passes the quick filter `query` (matching with `match`) and every one of `tested`, and `keep`. */
-  const keeper = (
-    query: TextQuery<ColId> | null,
-    match: Match | undefined,
-    tested: { condition: Condition<ColId>; test: Test }[],
-  ) => {
-    // The shown columns are all of them: fromRows hides none.
-    const searched = query?.searches === "shown" ? columns.map((c) => c.key) : (query?.searches ?? []);
-    const named = searched.filter((id) => index.has(id));
-    return (row: R) =>
-      (!match ||
-        named.some((id) => {
-          const t = text(row, id);
-          return t !== null && match(t);
-        })) &&
-      tested.every(({ condition, test }) => test(text(row, condition.id)) !== condition.not) &&
-      (keep?.(row) ?? true);
+  /** Whether a row passes `filter` and `keep`. */
+  const rowKeeper = (filter: Filter<ColId>) => {
+    const { quick } = filter;
+    const shownColumns = () => columns.map((c) => c.key).filter((id) => !hidden.cols.includes(id));
+    const searched = (quick?.searches === "shown" ? shownColumns() : (quick?.searches ?? [])).filter((id) =>
+      index.has(id),
+    );
+    return (row: R) => keeps(filter, searched, (id) => text(row, id)) && (keep?.(row) ?? true);
   };
 
-  /** The conditions of `asked` this source applies, each with its test: those on filterable columns, with a valid pattern. */
-  const testable = (asked: Condition<ColId>[]) =>
-    asked.flatMap((condition) => {
-      const test = filterable(condition.id) ? tester(condition.kind) : undefined;
-      return test ? [{ condition, test }] : [];
-    });
+  /** Whether the column at index `c` passes `filter`. */
+  const columnKeeper = (filter: Filter<number>) => {
+    const { quick } = filter;
+    const shownRows = () => {
+      const out = new Set(hidden.rows);
+      return rows.map((_, i) => i).filter((i) => !out.has(i));
+    };
+    const searched = (quick?.searches === "shown" ? shownRows() : (quick?.searches ?? [])).filter(isRow);
+    return (c: number) => keeps(filter, searched, (r) => text(rows[r]!, columns[c]!.key));
+  };
+
+  /** A filter for `narrow`, as a checklist asks: its quick filter if valid, its testable conditions. */
+  const narrowing = <C,>(narrow: FilterSpec<C>, takes: (id: C) => boolean): Filter<C> => {
+    const match = (narrow.quick && matcher(narrow.quick)) ?? undefined;
+    return { quick: match ? narrow.quick : null, match, conditions: testable(narrow.conditions, takes) };
+  };
+
+  const columnKeeps = () => Uint8Array.from(columns, (_, c) => (columnKeeper(filters.cols)(c) ? 1 : 0));
+  const filtering = (filter: Filter<unknown>) => filter.quick !== null || filter.conditions.length > 0;
 
   /** Which cells match a Find Query's text, by Logical Index then column index; worked out once per query. */
   let hits: { query: string; cells: Uint8Array } | undefined;
@@ -271,12 +365,19 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     return { rowsAt: Array.from(m.window(ROWS, 0, m.count(ROWS))), colsAt: Array.from(m.window(COLS, 0, columns.length)) };
   };
 
-  /** Hands binnacle-memory the rows the quick filter, every condition and `keep` keep. */
+  /** Hands binnacle-memory the rows the rows' filter and `keep` keep. */
   const refilter = () => {
     const m = memory();
-    if (!keep && !quick && !conditions.length) return void m.clear_filter();
-    const keeps = keeper(quick, quickMatch, conditions);
-    m.filter(Uint8Array.from(rows, (r) => (keeps(r) ? 1 : 0)));
+    if (!keep && !filtering(filters.rows)) return void m.clear_filter(ROWS);
+    const keeps = rowKeeper(filters.rows);
+    m.filter(ROWS, Uint8Array.from(rows, (r) => (keeps(r) ? 1 : 0)));
+  };
+
+  /** Hands binnacle-memory the columns the columns' filter keeps. */
+  const refilterColumns = () => {
+    const m = memory();
+    if (!filtering(filters.cols)) m.clear_filter(COLS);
+    else m.filter(COLS, columnKeeps());
   };
 
   /**
@@ -285,17 +386,16 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
    * (ties by text), up to `limit`; blanks counted unless searching.
    */
   const distinct = (id: ColId, search: string, limit: number, narrow: FilterSpec<ColId>): Distinct => {
-    const asked = narrow.quick;
-    const match = (asked && matcher(asked)) ?? undefined;
-    const keeps = keeper(match ? asked : null, match, testable(narrow.conditions));
+    const keeps = rowKeeper(narrowing(narrow, filterable));
     const found = search ? matcher({ text: search, caseSensitive: false, regex: false })! : undefined;
     const values = rows.map((r) => r[id]);
     const numbers = values.every((v) => v == null || numeric(v) !== undefined);
     // Each text's count and least sort key.
     const seen = new Map<string, { count: number; rank: number | string }>();
     let blanks = 0;
+    const out = new Set(hidden.rows);
     rows.forEach((row, i) => {
-      if (!index.has(id) || !keeps(row)) return;
+      if (!index.has(id) || !keeps(row) || out.has(i)) return;
       const t = text(row, id);
       if (t === null) return void blanks++;
       if (found && !found(t)) return;
@@ -318,6 +418,31 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     };
   };
 
+  /**
+   * The distinct texts of row `id` across the columns `narrow` keeps,
+   * counted, containing `search` (ignoring case), in text order, up to
+   * `limit`; blanks counted unless searching.
+   */
+  const distinctAcross = (id: number, search: string, limit: number, narrow: FilterSpec<number>): Distinct => {
+    const keeps = columnKeeper(narrowing(narrow, isRow));
+    const found = search ? matcher({ text: search, caseSensitive: false, regex: false })! : undefined;
+    const seen = new Map<string, number>();
+    let blanks = 0;
+    columns.forEach((c, i) => {
+      if (!isRow(id) || !keeps(i) || hidden.cols.includes(c.key)) return;
+      const t = text(rows[id]!, c.key);
+      if (t === null) return void blanks++;
+      if (!found || found(t)) seen.set(t, (seen.get(t) ?? 0) + 1);
+    });
+    const listed = [...seen].sort(([a], [b]) => byCodePoint(a, b));
+    return {
+      values: listed.slice(0, limit).map(([text, count]) => ({ text, count })),
+      ...(blanks > 0 && !search ? { blanks } : {}),
+      partial: listed.length > limit,
+      narrowed: true,
+    };
+  };
+
   const sort = (spec: SortSpec<ColId>) => {
     const m = memory();
     for (const { id } of spec) {
@@ -326,12 +451,13 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
       else m.stage_strings(k.bytes, k.ends, k.nulls);
     }
-    m.sort(
+    const moved = m.sort(
       ROWS,
       BigUint64Array.from(spec, (c) => BigInt(index.get(c.id)!)),
       Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
     );
     applied = spec;
+    return moved;
   };
 
   /** Sorts the columns by the rows `spec` names, each row's values across the columns as its keys. */
@@ -343,18 +469,43 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
       else m.stage_strings(k.bytes, k.ends, k.nulls);
     }
-    m.sort(
+    const moved = m.sort(
       COLS,
       BigUint64Array.from(spec, (c) => BigInt(c.id)),
       Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
     );
     colsApplied = spec;
+    return moved;
+  };
+
+  /** The View Spec in force, as `view` answers it. */
+  const current = (): AppliedView<number, ColId> => ({
+    rows: { filter: spec(filters.rows), sort: applied, hidden: hidden.rows },
+    cols: { filter: spec(filters.cols), sort: colsApplied, hidden: hidden.cols },
+    totals: { rows: rows.length, cols: columns.length },
+  });
+
+  /**
+   * Moves the items with these Logical Indices on `axis`. Baking a sort
+   * drops it, which the sinks hear before the widget gets the answer.
+   */
+  const move = (axis: typeof ROWS | typeof COLS, items: number[], to: number): boolean | { refused: string } => {
+    const sorted = (axis === ROWS ? applied : colsApplied).length > 0;
+    if (!memory().move_items(axis, Uint32Array.from(items), to)) {
+      return { refused: "Can't move while sorted: clear the sort first" };
+    }
+    if (!sorted) return true;
+    if (axis === ROWS) applied = [];
+    else colsApplied = [];
+    const view = current();
+    for (const s of sinks) s.viewChanged(view);
+    return true;
   };
 
   /**
    * The row `id` changed in place: told at its old Position, re-sorted, and
-   * filtered again, at once or (with `defer`, for the user's edit) only if
-   * it was out of view.
+   * filtered again with the columns, at once or (with `defer`, for the
+   * user's edit) only those out of view.
    */
   const update = (id: number, defer: boolean) => {
     const m = memory();
@@ -364,17 +515,23 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
     rowKeys.delete(id);
     hits = undefined;
     let moved = false;
-    if (keep || quick || conditions.length) {
-      const kept = keeper(quick, quickMatch, conditions)(rows[id]!) ? 1 : 0;
-      moved = defer ? m.defer_row(id, kept) : m.refilter_row(id, kept);
+    if (keep || filtering(filters.rows)) {
+      const kept = rowKeeper(filters.rows)(rows[id]!) ? 1 : 0;
+      moved = defer ? m.defer(ROWS, id, kept) : m.refilter(ROWS, id, kept);
     }
     if (applied.length) sort(applied);
     if (moved) tell({ type: "Refiltered" });
     else if (applied.length) tell({ type: "Reordered" });
     if (colsApplied.some((c) => c.id === id)) {
       sortColumns(colsApplied);
-      tellCols({ type: "Reordered" });
+      tell({ type: "Reordered" }, "cols");
     }
+    if (!filtering(filters.cols)) return;
+    const kept = columnKeeps();
+    const shifted = defer
+      ? kept.reduce((any, k, c) => m.defer(COLS, c, k) || any, false)
+      : m.refilter_all(COLS, kept);
+    if (shifted) tell({ type: "Refiltered" }, "cols");
   };
 
   return {
@@ -382,6 +539,8 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       count: () => memory().count(ROWS),
       window: (start, end) => Array.from(memory().window(ROWS, start, end)),
       quickFilter: { regex: true },
+      hide: true,
+      ...(options.hideCap?.rows === undefined ? {} : { hideCap: options.hideCap.rows }),
       support: (by) => {
         const column = columns[index.get(by) ?? -1];
         const filterable = column?.filterable !== false;
@@ -389,65 +548,69 @@ export function fromRows<R extends object>(rows: readonly R[], columns: readonly
       },
       distinct: (by, { search, limit, narrow }) => distinct(by, search, limit, narrow),
       locate: (id) => located(memory().locate(ROWS, id)),
-      unmatched: (ids) => Array.from(memory().unmatched(Uint32Array.from(ids)), (u) => u === 1),
+      unmatched: (ids) => Array.from(memory().unmatched(ROWS, Uint32Array.from(ids)), (u) => u === 1),
+      move: (ids, to) => move(ROWS, ids, to),
+      movable: () => memory().movable(ROWS),
     },
     cols: {
-      count: () => columns.length,
+      count: () => memory().count(COLS),
       window: (start, end) => Array.from(memory().window(COLS, start, end), (i) => columns[i]!.key),
+      quickFilter: { regex: true },
+      hide: true,
+      ...(options.hideCap?.cols === undefined ? {} : { hideCap: options.hideCap.cols }),
+      support: () => ({ sort: true, text: { regex: true }, oneOf: true }),
+      distinct: (by, { search, limit, narrow }) => distinctAcross(by, search, limit, narrow),
       locate: (id) => located(memory().locate(COLS, index.get(id) ?? columns.length)),
-      move(ids, to) {
-        memory().move_columns(Uint32Array.from(ids, (id) => index.get(id)!), to);
-        return true;
-      },
+      unmatched: (ids) =>
+        Array.from(memory().unmatched(COLS, Uint32Array.from(ids, (id) => index.get(id) ?? columns.length)), (u) => u === 1),
+      move: (ids, to) =>
+        move(
+          COLS,
+          ids.map((id) => index.get(id)!),
+          to,
+        ),
+      movable: () => memory().movable(COLS),
       label: (id) => columns[index.get(id) ?? -1]?.label ?? id,
     },
-    // The columns sort by rows but never filter, so the filter of their
-    // part of the spec is dropped. A quick filter whose pattern is not a
-    // valid RegExp leaves the one in force; a condition with one, or on a
-    // column that takes none, is left out. The answer's error says what
-    // RegExp made of the first pattern it rejected.
-    view(spec: ViewSpec<number, ColId>) {
-      const by = spec.rows.sort;
-      if (by.some((c) => !index.has(c.id) || columns[index.get(c.id)!]!.sortable === false)) {
+    // A quick filter whose pattern is not a valid RegExp leaves the one in
+    // force; a condition with one, or on a column that takes none, is left
+    // out, as is a sort term on an item the data lacks. The answer's error
+    // says what RegExp made of the first pattern it rejected, the rows'
+    // before the columns'.
+    view(asked: ViewSpec<number, ColId>) {
+      const by = asked.rows.sort.filter((c) => index.has(c.id));
+      if (by.some((c) => columns[index.get(c.id)!]!.sortable === false)) {
         throw new Error(`binnacle: fromRows cannot sort by ${by.map((c) => c.id).join(", ")}`);
       }
-      const byRows = spec.cols.sort;
-      if (byRows.some((c) => !Number.isInteger(c.id) || c.id < 0 || c.id >= rows.length)) {
-        throw new Error(`binnacle: fromRows cannot sort the columns by row ${byRows.map((c) => c.id).join(", ")}`);
-      }
-      const asked = spec.rows.filter?.quick ?? null;
-      const match = asked && matcher(asked);
-      const quickChanged = !same(asked, quick) && match !== undefined;
-      if (quickChanged) {
-        quick = asked;
-        quickMatch = match ?? undefined;
-      }
-      const kept = testable(spec.rows.filter?.conditions ?? []);
-      const conditionsChanged = !same(
-        kept.map((k) => k.condition),
-        conditions.map((k) => k.condition),
-      );
-      if (conditionsChanged) conditions = kept;
-      const patterns = [
-        asked,
-        ...(spec.rows.filter?.conditions ?? []).map((c) => c.kind.type === "Text" && c.kind.query),
-      ];
-      const error = patterns.flatMap((q) => (q ? [invalid(q)] : [])).find((e) => e !== undefined);
-      sort(by);
-      // Any View Spec, even the one in force, filters the unmatched rows.
-      const refiltered = quickChanged || conditionsChanged || memory().has_unmatched();
-      if (refiltered) refilter();
-      tell({ type: refiltered ? "Refiltered" : "Reordered" });
-      if (byRows.length || colsApplied.length) {
-        sortColumns(byRows);
-        tellCols({ type: "Reordered" });
-      }
-      return {
-        rows: { filter: { quick, conditions: conditions.map((k) => k.condition) }, sort: by },
-        cols: { filter: { quick: null, conditions: [] }, sort: byRows },
-        totals: { rows: rows.length, cols: columns.length },
-        ...(error === undefined ? {} : { error }),
+      const byRows = asked.cols.sort.filter((c) => isRow(c.id));
+      const forRows = take(filters.rows, asked.rows.filter, filterable);
+      const forCols = take(filters.cols, asked.cols.filter, isRow);
+      filters = { rows: forRows.filter, cols: forCols.filter };
+      const error = forRows.error ?? forCols.error;
+      const was = hidden;
+      hidden = { rows: pruned(asked.rows.hidden, isRow), cols: pruned(asked.cols.hidden, (id) => index.has(id)) };
+      const m = memory();
+      const hid = {
+        rows: m.hide(ROWS, Uint32Array.from(hidden.rows)),
+        cols: m.hide(COLS, Uint32Array.from(hidden.cols, (id) => index.get(id)!)),
       };
+      // A quick filter searching the shown items of the other axis asks again when they change.
+      const searchesShown = (filter: Filter<unknown>) => filter.quick?.searches === "shown";
+      const shownChanged = {
+        rows: !sameItems(was.cols, hidden.cols) && searchesShown(filters.rows),
+        cols: !sameItems(was.rows, hidden.rows) && searchesShown(filters.cols),
+      };
+      const sorted = sort(by);
+      // Any View Spec, even the one in force, filters the unmatched items.
+      const refiltered = forRows.changed || shownChanged.rows || m.has_unmatched(ROWS);
+      if (refiltered) refilter();
+      // An axis left in the same order is told nothing.
+      if (refiltered || hid.rows || sorted) tell({ type: refiltered || hid.rows ? "Refiltered" : "Reordered" });
+      const resorted = (byRows.length > 0 || colsApplied.length > 0) && sortColumns(byRows);
+      const refilteredCols = forCols.changed || shownChanged.cols || hid.cols || m.has_unmatched(COLS);
+      if (refilteredCols) refilterColumns();
+      if (resorted || refilteredCols) tell({ type: refilteredCols ? "Refiltered" : "Reordered" }, "cols");
+      return { ...current(), ...(error === undefined ? {} : { error }) };
     },
     cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => rows[r]![c])),
     find: {

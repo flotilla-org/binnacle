@@ -1,15 +1,17 @@
 //! Border Styles: the lines `render_with` draws in the Gaps.
 
-use binnacle_core::{Action, Axis, AxisConfig, Grid, Key, PointerEvent, Viewport};
+use binnacle_core::{Action, Axis, AxisConfig, Edge, Grid, Key, PointerEvent, StripItem, Viewport};
 use binnacle_memory::IdentitySource;
 use binnacle_ratatui::{
-    BorderExtent, BorderStyle, BorderWeight, Content, RenderContext, Theme, render_with,
+    BorderExtent, BorderStyle, BorderWeight, Content, RenderContext, Theme, begin_frame,
+    render_with,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
+use std::ops::Range;
 
 struct Labels;
 
@@ -225,6 +227,7 @@ fn drags_draw_over_the_borders() {
         ] {
             let style = BorderStyle::new(extent, weight).band_rules(true);
             let mut grid = fixture();
+            grid.set_movable(Axis::Cols, true);
             window(&mut grid, AREA);
             drag(&mut grid);
             out += &format!("--- {name}, {style}\n{}\n", text(&draw(&mut grid, style)));
@@ -239,11 +242,118 @@ fn covers(offset: f32, end: f32, at: i64) -> bool {
     (offset.ceil() as i64..end.ceil() as i64).contains(&at)
 }
 
+/// [`fixture`] with column 3 pinned left: it draws after the row numbers,
+/// and the scrolling columns start past the Gap after it, part-way into
+/// column 0.
+fn pinned() -> Grid {
+    let mut grid = fixture();
+    grid.pin(Axis::Cols, Edge::Leading, Key(3));
+    grid
+}
+
+/// The pinned edge is `║` in the Gap after the pinned Strip in every Border
+/// Style, `┃` under Double, whose rules are `║` already. It caps the band
+/// rule with `╥` and the closing rule with `╨`, crosses the rules between
+/// rows, and leaves the header's handle alone.
+#[test]
+fn the_pinned_edge_is_drawn_in_its_gap_in_every_border_style() {
+    let mut out = String::new();
+    for extent in EXTENTS {
+        for weight in WEIGHTS {
+            let style = BorderStyle::new(extent, weight);
+            out += &format!("--- {style}\n{}\n", text(&draw(&mut pinned(), style)));
+        }
+    }
+    let style = BorderStyle::headers().band_rules(true);
+    out += &format!("--- {style}\n{}\n", text(&draw(&mut pinned(), style)));
+    for weight in WEIGHTS {
+        let mut grid = small();
+        grid.pin(Axis::Cols, Edge::Leading, Key(1));
+        let style = BorderStyle::new(BorderExtent::Grid, weight);
+        out += &format!("--- closed, {style}\n{}\n", text(&draw(&mut grid, style)));
+    }
+    insta::assert_snapshot!(out);
+}
+
+/// [`fixture`] pinned on every edge: column 3 left and column 1 right, row
+/// 5 to the top and row 9 to the bottom.
+fn pinned_all_round() -> Grid {
+    let mut grid = pinned();
+    grid.pin(Axis::Cols, Edge::Trailing, Key(1));
+    grid.pin(Axis::Rows, Edge::Leading, Key(5));
+    grid.pin(Axis::Rows, Edge::Trailing, Key(9));
+    grid
+}
+
+/// With items pinned at both ends of both axes, the trailing Strips sit
+/// flush with the far edges and the scrolling items stop short of them.
+/// Each edge is drawn in the Gap beside its Strip: a column edge `║` as
+/// before, a row edge `═` (`━` under Double) across the body, capped `╞`
+/// on the row band's rule and `╡` on the closing line, crossing column
+/// lines with `╪` and column edges with `╬`. No scrollbars, so the far
+/// edges show.
+#[test]
+fn edges_are_drawn_beside_pinned_strips_at_both_ends_of_both_axes() {
+    let theme = Theme::classic();
+    let draw = |grid: &mut Grid, style| {
+        draw_in(
+            grid,
+            &RenderContext::new(&theme).border(style).scrollbars(false),
+            AREA,
+        )
+    };
+    let mut out = String::new();
+    for extent in EXTENTS {
+        for weight in WEIGHTS {
+            let style = BorderStyle::new(extent, weight);
+            out += &format!(
+                "--- {style}\n{}\n",
+                text(&draw(&mut pinned_all_round(), style))
+            );
+        }
+    }
+    let style = BorderStyle::headers().band_rules(true);
+    out += &format!(
+        "--- {style}\n{}\n",
+        text(&draw(&mut pinned_all_round(), style))
+    );
+    for weight in WEIGHTS {
+        let mut grid = small();
+        grid.pin(Axis::Cols, Edge::Trailing, Key(0));
+        grid.pin(Axis::Rows, Edge::Trailing, Key(0));
+        let style = BorderStyle::new(BorderExtent::Grid, weight);
+        out += &format!("--- closed, {style}\n{}\n", text(&draw(&mut grid, style)));
+    }
+    insta::assert_snapshot!(out);
+}
+
+/// The edge takes each Theme's `pinned_edge` style: the border's in every
+/// preset, and its own where a host sets one.
+#[test]
+fn the_pinned_edge_takes_each_theme_s_style() {
+    let mut out = String::new();
+    let custom = Theme {
+        name: "custom",
+        pinned_edge: Style::default().fg(Color::Yellow),
+        ..Theme::classic()
+    };
+    for theme in Theme::presets().into_iter().chain([custom]) {
+        let style = BorderStyle::new(BorderExtent::Columns, BorderWeight::Light);
+        let ctx = RenderContext::new(&theme).border(style);
+        out += &format!(
+            "--- {}\n{}\n",
+            theme.name,
+            styled(&draw_in(&mut pinned(), &ctx, AREA))
+        );
+    }
+    insta::assert_snapshot!(out);
+}
+
 /// Every Border Style changes only Gap cells (cells no column or no row
 /// covers), the closing lines past the last column and row among them. The
 /// band rules are the only exception: they take each Header Band's last
 /// cell, which a part-scrolled item may lie under.
-#[hegel::test(test_cases = 300)]
+#[hegel::test(test_cases = 2000)]
 fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
     // Quarter cells, so items and Gaps start and end part-way into cells.
     let quarters = |lo, hi| tc.draw(gs::integers::<u8>().min_value(lo).max_value(hi)) as f32 / 4.0;
@@ -261,6 +371,14 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
         dx: scroll(),
         dy: scroll(),
     });
+    for (axis, count) in [(Axis::Rows, rows), (Axis::Cols, cols)] {
+        grid.set_min_scrolling(axis, quarters(0, 40));
+        for _ in 0..tc.draw(gs::integers::<u8>().max_value(if count > 0 { 3 } else { 0 })) {
+            let key = tc.draw(gs::integers::<u64>().max_value(count - 1));
+            let edge = tc.draw(gs::sampled_from(Edge::ALL.to_vec()));
+            grid.pin(axis, edge, Key(key));
+        }
+    }
     let dim = |max| tc.draw(gs::integers::<u16>().min_value(0).max_value(max));
     let area = Rect::new(dim(3), dim(3), dim(30), dim(16));
     let extent = tc.draw(gs::sampled_from(EXTENTS.to_vec()));
@@ -268,7 +386,12 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
     let style = BorderStyle::new(extent, weight).band_rules(tc.draw(gs::booleans()));
     window(&mut grid, area);
     let snapshot = grid.snapshot();
-    let theme = Theme::classic();
+    // The edge in a colour of its own, to find it.
+    let edge = Color::Rgb(1, 2, 3);
+    let theme = Theme {
+        pinned_edge: Style::default().fg(edge),
+        ..Theme::classic()
+    };
     let ctx = RenderContext::new(&theme);
     let drawn = |border| {
         // The terminal is larger than the Grid's area, on every side.
@@ -289,8 +412,29 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
         (style.draws_band_rules() && thickness >= 2).then_some(thickness - 1)
     };
     let (rule_x, rule_y) = (band_last(Axis::Cols), band_last(Axis::Rows));
+    // Each item shows only in its Strip's region: a scrolling item is
+    // hidden where the pinned Strips draw, a pinned one where its Strip
+    // clips.
+    let shown = |axis, at| {
+        let clipped = |span: Range<f32>, i: &StripItem| {
+            covers(i.offset.max(span.start), i.end().min(span.end), at)
+        };
+        let pinned = (Edge::ALL.into_iter()).any(|e| {
+            (snapshot.pinned(axis, e).iter()).any(|i| clipped(snapshot.pinned_region(axis, e), i))
+        });
+        pinned || (snapshot.strip(axis).iter()).any(|i| clipped(snapshot.scrolling(axis), i))
+    };
 
     for p in plain.area.positions() {
+        let x = i64::from(p.x) - i64::from(area.x);
+        if lined[p].fg == edge {
+            let y = i64::from(p.y) - i64::from(area.y);
+            assert!(area.contains(p), "the edge drew outside the area at {p:?}");
+            assert!(
+                !shown(Axis::Cols, x) || !shown(Axis::Rows, y),
+                "the edge drew over a cell at {p:?}"
+            );
+        }
         if plain[p] == lined[p] {
             continue;
         }
@@ -298,12 +442,82 @@ fn lines_are_drawn_only_in_gap_cells(tc: TestCase) {
             area.contains(p),
             "{extent:?} drew outside the area at {p:?}"
         );
-        let (x, y) = (i64::from(p.x - area.x), i64::from(p.y - area.y));
+        let y = i64::from(p.y - area.y);
         if rule_x == Some(x) || rule_y == Some(y) {
             continue;
         }
-        let in_col = snapshot.cols().iter().any(|c| covers(c.offset, c.end(), x));
-        let in_row = snapshot.rows().iter().any(|r| covers(r.offset, r.end(), y));
+        let (in_col, in_row) = (shown(Axis::Cols, x), shown(Axis::Rows, y));
         assert!(!(in_col && in_row), "{extent:?} drew over an item at {p:?}");
     }
+}
+
+/// Rows have no Gap, so [`begin_frame`] gives each pinned edge one cell of
+/// Edge Gap: a row pinned to the top or bottom costs a line for its `═`
+/// rule, as a column with no Gap costs a cell for its `║`.
+#[test]
+fn begin_frame_gives_pinned_edges_a_cell_where_there_is_no_gap() {
+    let mut grid = Grid::new(
+        AxisConfig::new(20, 1.0).header(1.0),
+        AxisConfig::new(5, 6.0).header(4.0),
+    );
+    grid.pin(Axis::Rows, Edge::Leading, Key(4));
+    grid.pin(Axis::Rows, Edge::Trailing, Key(9));
+    grid.pin(Axis::Cols, Edge::Trailing, Key(0));
+    let theme = Theme::classic();
+    let ctx = RenderContext::new(&theme).scrollbars(false);
+    let area = Rect::new(0, 0, 30, 8);
+    let layout = begin_frame(&mut grid, &ctx, area, |grid, viewport| {
+        for (axis, range) in grid.begin_frame(viewport) {
+            let keys = IdentitySource::new(range.end).window(range.clone());
+            grid.set_window(axis, range.start, &keys);
+        }
+    });
+    let mut buf = Buffer::empty(area);
+    render_with(&grid.snapshot(), &Labels, &ctx, layout.grid, &mut buf);
+    insta::assert_snapshot!(text(&buf));
+}
+
+/// [`begin_frame`] keeps `MIN_SCROLLING` cells of each axis to scroll:
+/// pinned Strips longer than the rest clip at their inside ends, the
+/// trailing one first, with the edge where they clip; focus on a clipped
+/// item slides its Strip to show it.
+#[test]
+fn pinned_strips_too_long_for_the_area_clip_with_the_edge_where_they_clip() {
+    let mut grid = fixture();
+    for key in [1, 2] {
+        grid.pin(Axis::Cols, Edge::Leading, Key(key));
+    }
+    grid.pin(Axis::Cols, Edge::Trailing, Key(4));
+    for key in 0..5 {
+        grid.pin(Axis::Rows, Edge::Leading, Key(key));
+    }
+    let theme = Theme::classic();
+    let style = BorderStyle::new(BorderExtent::Grid, BorderWeight::Light);
+    let ctx = RenderContext::new(&theme).scrollbars(false).border(style);
+    let frame = |grid: &mut Grid| {
+        let layout = begin_frame(grid, &ctx, AREA, |grid, viewport| {
+            for (axis, range) in grid.begin_frame(viewport) {
+                let keys = IdentitySource::new(range.end).window(range.clone());
+                grid.set_window(axis, range.start, &keys);
+            }
+        });
+        let mut buf = Buffer::empty(AREA);
+        render_with(&grid.snapshot(), &Labels, &ctx, layout.grid, &mut buf);
+        text(&buf)
+    };
+    let mut out = format!(
+        "--- columns 1 and 2 pinned left, 4 right; rows 0 to 4 to the top\n{}\n",
+        frame(&mut grid)
+    );
+    grid.set_focus(Key(4), Key(2));
+    out += &format!(
+        "--- focus row 4, column 2: both leading Strips slide\n{}\n",
+        frame(&mut grid)
+    );
+    grid.set_focus(Key(6), Key(4));
+    out += &format!(
+        "--- focus row 6, column 4: the trailing Strip takes room for it\n{}\n",
+        frame(&mut grid)
+    );
+    insta::assert_snapshot!(out);
 }

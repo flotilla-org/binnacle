@@ -1,15 +1,29 @@
 // @flotilla-org/binnacle: the binnacle Grid on a web page.
 
-export { GridWidget, type AxisInfo, type ColumnHeader, type ColumnInfo, type FindInfo, type FrameInfo, type GridOptions, type HeaderClick } from "./widget";
+export {
+  GridWidget,
+  type AxisFilterInfo,
+  type AxisInfo,
+  type ColumnHeader,
+  type ColumnInfo,
+  type FindInfo,
+  type FrameInfo,
+  type GridOptions,
+  type HeaderClick,
+  type MenuAt,
+} from "./widget";
 export { createFilterBar, type FilterBar, type FilterBarOptions } from "./filterbar";
 export { createColumnMenu, type ColumnMenu } from "./columnmenu";
+export { createChooser, type Chooser } from "./chooser";
+export { capHint, type HideOutcome } from "./choose";
 export { createFindBar, type FindBar, type FindBarOptions } from "./findbar";
-export type { ColumnSupport, FindState } from "./feed";
+export type { ColumnSupport, CrossId, FindState, ItemId } from "./feed";
 export type { ConditionState } from "./snapshot";
 export type { Editor } from "./editing";
 export type { InitialSize } from "./sizes";
 export type { AxisSelection, SelectionChange } from "./selection";
 export { defaultBindings, type Action, type FocusStep, type KeyBindings, type Platform } from "./keymap";
+export type { PinEdge } from "./codes";
 export type {
   AppliedAxisView,
   AppliedView,
@@ -42,7 +56,8 @@ export type {
   Totals,
   ViewSpec,
 } from "./source";
-export { fromRows, type RowsColumn, type RowsColumnId, type RowsSource } from "./rows";
+export { LAYOUT_VERSION, type Layout, type LayoutPins } from "./layout";
+export { fromRows, type RowsColumn, type RowsColumnId, type RowsOptions, type RowsSource } from "./rows";
 export {
   catppuccinMocha,
   light,
@@ -80,6 +95,6 @@ export { sparklineRenderer, type SparklineOptions } from "./renderers/sparkline"
 export { barRenderer, type BarOptions } from "./renderers/bar";
 export type { Content } from "./content";
 export type { Painter } from "./painter";
-export type { Snapshot } from "./snapshot";
+export type { DropTarget, PinZone, Snapshot } from "./snapshot";
 export { loadBinnacle } from "./wasm";
 export { transpose } from "./transpose";

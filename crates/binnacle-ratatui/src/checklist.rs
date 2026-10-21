@@ -12,9 +12,12 @@
 use binnacle_core::{Axis, Condition, ConditionKind, Grid, Key, TextQuery, Value};
 use regex::RegexBuilder;
 
-/// The conditions on one column the checklist reads and writes.
+/// The conditions on one column the checklist reads and writes: on the
+/// rows, or on a row filtering the columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Column {
+    /// The axis the conditions filter.
+    pub axis: Axis,
     pub key: Key,
     /// Its first Text condition.
     pub text: Option<Condition>,
@@ -33,8 +36,12 @@ pub(crate) struct Shown<'a> {
 }
 
 impl Column {
-    /// The conditions on column `key` among `conditions`.
-    pub fn of<'a>(conditions: impl IntoIterator<Item = &'a Condition>, key: Key) -> Column {
+    /// The conditions on `key` among `conditions`, which filter `axis`.
+    pub fn of<'a>(
+        conditions: impl IntoIterator<Item = &'a Condition>,
+        axis: Axis,
+        key: Key,
+    ) -> Column {
         let all: Vec<Condition> = (conditions.into_iter())
             .filter(|c| c.key == key)
             .cloned()
@@ -45,6 +52,7 @@ impl Column {
                 .cloned()
         };
         Column {
+            axis,
             key,
             text: first(false),
             one_of: first(true),
@@ -76,21 +84,21 @@ impl Column {
             let at = from.as_ref().and_then(|f| all.iter().position(|c| c == f));
             match (from, at, to) {
                 (Some(f), Some(i), Some(t)) => {
-                    grid.replace_condition(Axis::Rows, f, t.clone());
+                    grid.replace_condition(self.axis, f, t.clone());
                     all[i] = t;
                 }
                 (Some(f), Some(i), None) => {
-                    grid.remove_condition(Axis::Rows, f);
+                    grid.remove_condition(self.axis, f);
                     all.remove(i);
                 }
                 (_, _, Some(t)) => {
-                    grid.add_condition(Axis::Rows, t.clone());
+                    grid.add_condition(self.axis, t.clone());
                     all.push(t);
                 }
                 _ => {}
             }
         }
-        Column::of(&all, self.key)
+        Column::of(&all, self.axis, self.key)
     }
 
     /// Ticks (`on`) or unticks `value`: with no OneOf, unticking writes `not

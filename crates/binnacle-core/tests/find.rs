@@ -131,12 +131,12 @@ fn the_current_match_goes_when_a_filter_takes_its_row() {
     let mut out = s.step("find \"3\", stepped twice: 31 in row 3", V);
     s.input(|g| g.set_quick_filter(Axis::Rows, Some(TextQuery::new("2"))));
     out += &s.step(
-        "a quick filter on \"2\" keeps 20 and 23: row 3 leaves, and the match with it",
+        "a quick filter on \"2\" keeps 20 and 23: row 3 leaves, and the match with it; focus falls to the next row kept, 5",
         V,
     );
     s.input(|g| g.action(Action::FindNext));
     out += &s.step(
-        "next steps from the focused cell, where focus fell: 23 in row 5",
+        "next steps from the focused cell, where focus fell: past the last match, it wraps round to 23 in row 5",
         V,
     );
     insta::assert_snapshot!(out);

@@ -33,6 +33,8 @@ export interface DemoSource {
   description: string;
   /** Whether the status line shows the focused cell's IDs, for sources whose IDs are not Positions. */
   showIds?: boolean;
+  /** Whether it mounts a filter bar, which counts the items filtered or hidden in place of the status line. */
+  filterBar?: boolean;
   /** Mounts the grid; `toolbar` takes any controls the source offers. */
   mount(host: HTMLElement, toolbar: HTMLElement, look: Look): Promise<Mounted>;
 }

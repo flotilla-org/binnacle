@@ -1,0 +1,65 @@
+---
+source: crates/binnacle-core/tests/pinning.rs
+assertion_line: 76
+expression: out
+---
+--- 1. column 5 pinned, the body scrolled right 10
+effect (gen 0): Locate { axis: Cols, key: Key(5) }
+  locate Cols Key(5): Found(5)
+effect (gen 0): PinsChanged { axis: Cols, edge: Leading, keys: [Key(5)] }
+window Rows 0..4
+window Cols 0..6
+window Cols 0..8
+gen 2 | damage layout positions
+Rows: count 4, extent 5, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1 2#2@3+1 3#3@4+1
+Cols: count 10, extent 32, header 4, anchor 1+3, thumb 0.2439/0.3387 | pinned 5#5@4+6 | scrolling from 11 | 1#1@8+6 2#2@15+6 3#3@22+6 4#4@29+6
+    5          2      3      4
+0   0.5        0.2    0.3    0.4
+1   1.5        1.2    1.3    1.4
+2   2.5        2.2    2.3    2.4
+3   3.5        3.2    3.3    3.4
+--- 2. click the pinned column's cell: row 1, column 5
+effect (gen 2): FocusChanged { row: Key(1), col: Key(5) }
+gen 3 | damage selection | focus 1#1,5#5 at 4,2 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+    5          2      3      4
+0   0.5        0.2    0.3    0.4
+1   *1.5       1.2    1.3    1.4
+2   2.5        2.2    2.3    2.4
+3   3.5        3.2    3.3    3.4
+--- 3. click the scrolling Strip: row 2, column 2
+effect (gen 3): FocusChanged { row: Key(2), col: Key(2) }
+gen 4 | damage selection | focus 2#2,2#2 at 15,3 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+    5          2      3      4
+0   0.5        0.2    0.3    0.4
+1   1.5        1.2    1.3    1.4
+2   2.5        *2.2   2.3    2.4
+3   3.5        3.2    3.3    3.4
+--- 4. click the edge Gap: the pinned column's Gap, nothing
+gen 5 | damage none | focus 2#2,2#2 at 15,3 6x1
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 5. hover the pinned header's border: a resize cursor
+gen 6 | damage selection | focus 2#2,2#2 at 15,3 6x1 | cursor ResizeCol
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 6. drag it 2 right: the pinned column widens, the body follows
+gen 7 | damage layout selection | focus 2#2,2#2 at 17,3 6x1 | mode Resizing { axis: Cols, key: Key(5), start_size: 6.0 } | capturing | cursor ResizeCol | guide Cols 12 (key 5 size 8)
+Rows: (unchanged)
+Cols: count 10, extent 32, header 4, anchor 1+3, thumb 0.2326/0.3065 | pinned 5#5@4+8 | scrolling from 13 | 1#1@10+6 2#2@17+6 3#3@24+6 4#4@31+6
+    5            2      3      4
+0   0.5          0.2    0.3    0
+1   1.5          1.2    1.3    1
+2   2.5          *2.2   2.3    2
+3   3.5          3.2    3.3    3
+--- 7. release: SizeChanged
+effect (gen 7): SizeChanged { axis: Cols, key: Key(5), size: 8.0 }
+gen 8 | damage selection | focus 2#2,2#2 at 17,3 6x1 | cursor ResizeCol
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)

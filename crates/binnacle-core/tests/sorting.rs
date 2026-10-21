@@ -181,10 +181,12 @@ fn down() -> Action {
 
 /// Sorts the records' source by column 0 and tells the Grid, leaving the
 /// `Locate` it queues unanswered.
+/// The host sorts by column 0 and says the rows were reordered, even when
+/// sorted already.
 fn sort_behind_the_grid(s: &mut Scenario<RecordTable>) {
     let spec = rows_sorted(vec![SortColumn::ascending(Key(0))]);
-    let notices = s.source.source.view(&s.source.rows, &spec).unwrap();
-    s.input(|g| notices.into_iter().for_each(|(axis, n)| g.notify(axis, n)));
+    s.source.source.view(&s.source.rows, &spec).unwrap();
+    s.input(|g| g.notify(Axis::Rows, binnacle_core::ChangeNotice::Reordered));
 }
 
 #[test]

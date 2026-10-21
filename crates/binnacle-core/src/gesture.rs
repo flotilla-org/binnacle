@@ -7,7 +7,8 @@ use crate::grid::Grid;
 use crate::measure::ItemAt;
 use crate::pointer::{Button, Hit, Modifiers, PointerEvent, PointerKind};
 use crate::selection::{Cell, HeaderClick, Selection};
-use crate::types::{Axis, Key, Position};
+use crate::snapshot::DropTarget;
+use crate::types::{Axis, Edge, Key, Position};
 
 /// The single interaction the Grid is in the middle of.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -29,10 +30,14 @@ pub enum Mode {
     /// `start_thickness` thick when the press began, follows the pointer until
     /// release.
     ResizingBand { axis: Axis, start_thickness: f32 },
-    /// Column headers are being dragged: the header grabbed has `key` on
-    /// `axis`, and the dragged items would drop before Position `to` (see
-    /// [`crate::Snapshot::moving_keys`] for all of them).
-    MovingHeaders { axis: Axis, key: Key, to: Position },
+    /// Headers are being dragged: the header grabbed has `key` on
+    /// `axis`, and releasing would do what `target` says (see
+    /// [`crate::Snapshot::moving_keys`] for all the dragged items).
+    MovingHeaders {
+        axis: Axis,
+        key: Key,
+        target: DropTarget,
+    },
     /// The host's editor is open on the cell with these row and column Keys
     /// (see [`crate::Grid::edit_started`]).
     Editing { row: Key, col: Key },
@@ -80,12 +85,15 @@ pub(crate) enum Gesture {
         before: Before,
     },
     /// A press on the border after the item with `key` on `axis`, at
-    /// coordinate `from` along that axis. `start_override` is the item's Size
-    /// Override before the press, which `Cancel` puts back.
+    /// coordinate `from` along that axis; `before` when the border is before
+    /// the item (a trailing pinned one), which then grows as the pointer
+    /// moves back. `start_override` is the item's Size Override before the
+    /// press, which `Cancel` puts back.
     Resizing {
         axis: Axis,
         key: Key,
         from: f32,
+        before: bool,
         start_size: f32,
         start_override: Option<f32>,
     },
@@ -99,13 +107,13 @@ pub(crate) enum Gesture {
     },
     /// The headers of the items with `keys` on `axis`, at `positions` when
     /// the drag began (both in Position order), are being dragged by the
-    /// header of `key` and would drop before Position `to`.
+    /// header of `key`, and releasing would do what `target` says.
     MovingHeaders {
         axis: Axis,
         key: Key,
         keys: Vec<Key>,
         positions: Vec<Position>,
-        to: Position,
+        target: DropTarget,
     },
     /// The host's editor is open on the cell with `keys`. `due` counts, per
     /// axis, the `Locate` answers still to come for its Key.
@@ -137,7 +145,9 @@ impl Gesture {
                 axis,
                 start_thickness,
             },
-            &Gesture::MovingHeaders { axis, key, to, .. } => Mode::MovingHeaders { axis, key, to },
+            &Gesture::MovingHeaders {
+                axis, key, target, ..
+            } => Mode::MovingHeaders { axis, key, target },
             &Gesture::Editing {
                 keys: [row, col], ..
             } => Mode::Editing { row, col },
@@ -179,6 +189,9 @@ impl Grid {
         self.end_resize();
         self.end_edit();
         self.gesture = Gesture::Idle;
+        if self.moves.refused.take().is_some() {
+            self.pending_damage.selection = true;
+        }
         if let Some(axis) = self.band_edge_at(x, y) {
             if clicks >= 2 {
                 self.push(Effect::BandAutoSizeRequested { axis });
@@ -192,19 +205,21 @@ impl Grid {
             self.pending_damage.selection = true;
             return;
         }
-        if let Some((axis, position, key)) = self.border_at(x, y) {
+        if let Some((axis, _, key)) = self.border_at(x, y) {
             if clicks >= 2 {
                 self.push(Effect::AutoSizeRequested { axis, key });
                 return;
             }
-            let measure = &self.axis(axis).measure;
-            self.gesture = Gesture::Resizing {
+            let st = self.axis(axis);
+            let resizing = Gesture::Resizing {
                 axis,
                 key,
                 from: along(axis, x, y),
-                start_size: measure.size_at(position),
-                start_override: measure.size_override(key),
+                before: st.drawn_pins(Edge::Trailing).any(|(k, _)| k == key),
+                start_size: st.measure.size_of(key),
+                start_override: st.measure.size_override(key),
             };
+            self.gesture = resizing;
             self.pending_damage.selection = true;
             return;
         }
@@ -218,7 +233,7 @@ impl Grid {
                 self.reveal = false;
                 let cell = self.cell_at(r.position, c.position);
                 if modifiers.toggle() {
-                    self.toggle_pick(cell);
+                    self.toggle_pick(self.pick_axis(), cell);
                     self.set_focus_cell(cell);
                     Press::Pick
                 } else if modifiers.shift {
@@ -274,21 +289,16 @@ impl Grid {
                         self.pending_damage.selection = true;
                         self.drag_selection(x, y);
                     }
-                    Press::Header {
-                        axis: Axis::Cols,
-                        position,
-                        ..
-                    } => self.start_move(Axis::Cols, position, x, y),
+                    Press::Header { axis, position, .. } => self.start_move(axis, position, x, y),
                     _ => {}
                 }
             }
-            Gesture::MovingHeaders { axis, .. } => {
-                let axis = *axis;
-                let to = self.drop_position(axis, along(axis, x, y));
-                if let Gesture::MovingHeaders { to: old, .. } = &mut self.gesture
-                    && *old != to
+            &mut Gesture::MovingHeaders { axis, key, .. } => {
+                let target = self.drop_target(axis, key, along(axis, x, y));
+                if let Gesture::MovingHeaders { target: old, .. } = &mut self.gesture
+                    && *old != target
                 {
-                    *old = to;
+                    *old = target;
                     self.pending_damage.selection = true;
                 }
             }
@@ -297,10 +307,14 @@ impl Grid {
                 axis,
                 key,
                 from,
+                before,
                 start_size,
                 start_override,
             } => {
-                let moved = f64::from(along(axis, x, y)) - f64::from(from);
+                let mut moved = f64::from(along(axis, x, y)) - f64::from(from);
+                if before {
+                    moved = -moved;
+                }
                 // Clamped here as `set_size` would, so a drag pinned at the
                 // range's edge compares equal to an item that started there.
                 let m = &self.axis(axis).measure;
@@ -393,23 +407,36 @@ impl Grid {
         }
     }
 
-    /// Turns a press on the header at `position` on `axis` into a move of
+    /// Turns a press on the header at `position` on `axis` into a drag of
     /// that item, or of every selected item if it is in a range spanning
-    /// whole items on that axis whose Keys are all known. An item without a
-    /// Key cannot be moved.
+    /// whole items on that axis whose Keys are all known and none pinned. A
+    /// pinned item is dragged alone. Header drags are available on any axis,
+    /// since pinning is the Grid's own; only a movable one also moves items.
+    /// An item without a Key cannot be dragged, nor can any while another
+    /// move waits for its answer.
     fn start_move(&mut self, axis: Axis, position: Position, x: f32, y: f32) {
         let i = axis.index();
-        let measure = &self.axis(axis).measure;
-        let Some(key) = measure.key_at(position) else {
+        if self.moves.pending.is_some() {
+            return;
+        }
+        let st = self.axis(axis);
+        let measure = &st.measure;
+        let Some(key) = st.key_at(position) else {
             return;
         };
-        let counts = Axis::ALL.map(|a| self.axis(a).measure.count());
-        let selected = self
-            .selection
-            .span
+        let pinned = st.pinned_at(position) == Some(key);
+        // A range that takes in pinned items moves only the grabbed one.
+        let selected = (!pinned)
+            .then_some(self.selection.span)
+            .flatten()
             .filter(|s| s.whole[axis.other().index()] && !s.whole[i])
-            .map(|s| s.range(counts).span(axis).clone())
-            .filter(|r| r.contains(&position));
+            .map(|s| s.range(&self.axes).span(axis).to_vec())
+            .and_then(|runs| match runs.as_slice() {
+                [r] => Some(r.clone()),
+                _ => None,
+            })
+            .filter(|r| r.contains(&position))
+            .filter(|r| measure.skipped_in(r.clone()).is_empty());
         let (keys, positions) = selected
             .and_then(|r| {
                 let keys: Option<Vec<Key>> = r.clone().map(|p| measure.key_at(p)).collect();
@@ -421,18 +448,52 @@ impl Grid {
             key,
             keys,
             positions,
-            to: self.drop_position(axis, along(axis, x, y)),
+            target: self.drop_target(axis, key, along(axis, x, y)),
         };
         self.pending_damage.selection = true;
     }
 
-    /// Where items dragged to `v` along `axis` would drop: before the item
-    /// under it if `v` is in its first half, else after it. A point beyond
-    /// the body counts as over the nearest end of it.
+    /// What releasing the headers dragged by the header of `key` at `v`
+    /// along `axis` would do: in a pinned Strip, or an empty pin zone, pin
+    /// them there; elsewhere move them where the axis can, unpinning a
+    /// pinned item first; where it can't, a pinned item is unpinned back to
+    /// its own Position and an unpinned one stays.
+    fn drop_target(&self, axis: Axis, key: Key, v: f32) -> DropTarget {
+        let st = self.axis(axis);
+        let from = Edge::ALL
+            .into_iter()
+            .find(|&e| st.drawn_pins(e).any(|(k, _)| k == key));
+        if let Some((edge, before)) = st.pin_slot(v) {
+            return DropTarget::Pin {
+                edge,
+                before,
+                reorder: from == Some(edge),
+            };
+        }
+        let movable = self.moves.movable[axis.index()];
+        match from {
+            _ if movable => DropTarget::Move {
+                to: self.drop_position(axis, v),
+                unpin: from.is_some(),
+            },
+            Some(edge) => {
+                let at = st.drawn_pins(edge).find(|&(k, _)| k == key);
+                DropTarget::Unpin {
+                    at: at.map_or(0, |(_, p)| p),
+                }
+            }
+            None => DropTarget::Stay,
+        }
+    }
+
+    /// Where items dragged to `v` along `axis` would drop in the scrolling
+    /// Strip: before the item under it if `v` is in its first half, else
+    /// after it. A point beyond the scrolling region counts as over the
+    /// nearest end of it.
     fn drop_position(&self, axis: Axis, v: f32) -> Position {
         let st = self.axis(axis);
-        let body_end = f32::from_bits(st.extent.to_bits().saturating_sub(1));
-        match st.hit(v.min(body_end).max(st.header)) {
+        let body_end = f32::from_bits(st.scroll_end().to_bits().saturating_sub(1));
+        match st.hit(v.min(body_end).max(st.scroll_start())) {
             crate::pointer::AxisHit::Item(at) => {
                 let after =
                     at.in_gap || at.within >= f64::from(st.measure.size_at(at.position)) / 2.0;
@@ -489,30 +550,41 @@ impl Grid {
             } => self.header_click(axis, position, modifiers),
             Gesture::MovingHeaders {
                 axis,
+                key,
                 keys,
                 positions,
-                to,
-                ..
-            } => {
-                let (first, last) = (positions[0], positions[positions.len() - 1]);
-                let in_place =
-                    last - first + 1 == positions.len() as u64 && (first..=last + 1).contains(&to);
-                if !in_place {
-                    self.push(Effect::MoveRequested { axis, keys, to });
+                target,
+            } => match target {
+                DropTarget::Pin { edge, before, .. } => self.pin_before(axis, edge, &keys, before),
+                DropTarget::Unpin { .. } => self.unpin(axis, key),
+                DropTarget::Move { to, unpin } => {
+                    if unpin {
+                        self.unpin(axis, key);
+                    }
+                    let (first, last) = (positions[0], positions[positions.len() - 1]);
+                    let in_place = last - first + 1 == positions.len() as u64
+                        && (first..=last + 1).contains(&to);
+                    if !in_place {
+                        self.moves.pending = Some((axis, keys.clone()));
+                        self.push(Effect::MoveRequested { axis, keys, to });
+                    }
                 }
-            }
+                DropTarget::Stay => {}
+            },
             _ => {}
         }
     }
 
     /// A click on the header of the item at `position` on `axis`, acted on
-    /// by that axis's `header_click` setting.
+    /// by that axis's `header_click` setting; under Sort or Select, Ctrl/Cmd
+    /// toggles the item's pick.
     fn header_click(&mut self, axis: Axis, position: Position, modifiers: Modifiers) {
-        if self.header_click[axis.index()] == HeaderClick::Sort {
+        let click = self.header_click[axis.index()];
+        if click == HeaderClick::Sort && !modifiers.toggle() {
             return self.sort_click(axis, position, modifiers);
         }
         // A Reset during the press may have left `position` past the count.
-        if self.header_click[axis.index()] != HeaderClick::Select
+        if click == HeaderClick::None
             || Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0)
             || position >= self.axis(axis).measure.count()
         {
@@ -527,8 +599,8 @@ impl Grid {
         // The whole of every item across the clicked one.
         let mut whole = [false; 2];
         whole[axis.other().index()] = true;
-        if modifiers.toggle() && axis == Axis::Rows {
-            self.toggle_pick(cell);
+        if modifiers.toggle() {
+            self.toggle_pick(axis, cell);
             self.set_focus_cell(cell);
         } else if modifiers.shift {
             self.extend_with(self.focus, cell, whole);
@@ -540,7 +612,7 @@ impl Grid {
                     head: cell,
                     whole,
                 }),
-                picks: Vec::new(),
+                picks: Default::default(),
             });
         }
     }
@@ -588,7 +660,7 @@ impl Grid {
         let focus = before.focus.map(|mut f| {
             for axis in Axis::ALL {
                 let end = &mut f[axis.index()];
-                end.key = end.key.or(self.axis(axis).measure.key_at(end.position));
+                end.key = end.key.or(self.axis(axis).key_at(end.position));
             }
             f
         });

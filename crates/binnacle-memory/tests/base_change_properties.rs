@@ -174,11 +174,12 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
             Op::Append(records) => {
                 let new = keys.as_ref().map(|_| fresh(records.len()));
                 rows.extend(records);
-                let notice = source.appended(&rows, new.as_deref().unwrap_or(&[]));
+                let notice =
+                    support::rows_only(source.appended(&rows, new.as_deref().unwrap_or(&[])));
                 if let (Some(keys), Some(new)) = (&mut keys, new) {
                     keys.extend(new);
                 }
-                Some(notice)
+                notice
             }
             Op::Edit { row, col, value } => {
                 if rows.is_empty() {
@@ -284,11 +285,13 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
             }
             Some(ChangeNotice::Removed { .. }) => panic!("{op:?}"),
             None => {
-                let Op::Edit { row, .. } = op else {
-                    panic!("{op:?}")
-                };
-                assert_eq!(after, before);
-                assert!(!after.contains(&(*row as u64)));
+                assert_eq!(after, before, "{op:?}");
+                match op {
+                    Op::Edit { row, .. } => assert!(!after.contains(&(*row as u64))),
+                    // A sort leaving the rows in order says nothing.
+                    Op::Sort(_) => {}
+                    _ => panic!("{op:?}"),
+                }
             }
         }
     });

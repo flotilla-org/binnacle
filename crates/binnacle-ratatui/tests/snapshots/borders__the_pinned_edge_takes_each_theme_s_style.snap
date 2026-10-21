@@ -1,0 +1,113 @@
+---
+source: crates/binnacle-ratatui/tests/borders.rs
+expression: out
+---
+--- classic
+   │col 3 │l 0 │col 1 │col 2
+───┼──────╥────┼──────┼──────
+3  │r2c3  ║c0  │r2c1  │r2c2  │
+───┤      ║    │      │      █
+4  │r3c3  ║c0  │r3c1  │r3c2  │
+───┤      ║    │      │      │
+5  │r4c3  ║c0  │r4c1  │r4c2  │
+───┤      ║    │      │      │
+    ──██████████████████─────
+
+aaabccccccbccccbccccccbccccccc
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+cccdaaaaaabaaaabaaaaaabaaaaaab
+bbbbaaaaaabaaaabaaaaaabaaaaaae
+cccdaaaaaabaaaabaaaaaabaaaaaab
+bbbbaaaaaabaaaabaaaaaabaaaaaab
+cccdaaaaaabaaaabaaaaaabaaaaaab
+bbbbaaaaaabaaaabaaaaaabaaaaaab
+aaaabbeeeeeeeeeeeeeeeeeebbbbba
+
+a: fg Reset bg Reset
+b: fg DarkGray bg Reset
+c: fg Reset bg Reset BOLD
+d: fg DarkGray bg Reset BOLD
+e: fg Gray bg Reset
+
+--- catppuccin_mocha
+   │col 3 │l 0 │col 1 │col 2
+───┼──────╥────┼──────┼──────
+3  │r2c3  ║c0  │r2c1  │r2c2  │
+───┤      ║    │      │      █
+4  │r3c3  ║c0  │r3c1  │r3c2  │
+───┤      ║    │      │      │
+5  │r4c3  ║c0  │r4c1  │r4c2  │
+───┤      ║    │      │      │
+    ──██████████████████─────
+
+aaabccccccbccccbccccccbccccccc
+bbbbdddddddddddbddddddbddddddc
+eeedffffffdffffdffffffdffffffd
+bbbbaaaaaadaaaadaaaaaadaaaaaae
+eeedgggggghgggghgggggghggggggd
+bbbbaaaaaadaaaadaaaaaadaaaaaad
+eeedffffffdffffdffffffdffffffd
+bbbbaaaaaadaaaadaaaaaadaaaaaad
+ffffddeeeeeeeeeeeeeeeeeedddddf
+
+a: fg Reset bg Reset
+b: fg #585B70 bg Reset
+c: fg #89B4FA bg Reset BOLD
+d: fg #45475A bg Reset
+e: fg #6C7086 bg Reset
+f: fg #CDD6F4 bg Reset
+g: fg #CDD6F4 bg #181825
+h: fg #45475A bg #181825
+
+--- mono
+   │col 3 │l 0 │col 1 │col 2
+───┼──────╥────┼──────┼──────
+3  │r2c3  ║c0  │r2c1  │r2c2  │
+───┤      ║    │      │      █
+4  │r3c3  ║c0  │r3c1  │r3c2  │
+───┤      ║    │      │      │
+5  │r4c3  ║c0  │r4c1  │r4c2  │
+───┤      ║    │      │      │
+    ──██████████████████─────
+
+aaabccccccbccccbccccccbccccccc
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbc
+bbbbaaaaaabaaaabaaaaaabaaaaaab
+bbbbaaaaaabaaaabaaaaaabaaaaaaa
+bbbbaaaaaabaaaabaaaaaabaaaaaab
+bbbbaaaaaabaaaabaaaaaabaaaaaab
+bbbbaaaaaabaaaabaaaaaabaaaaaab
+bbbbaaaaaabaaaabaaaaaabaaaaaab
+aaaabbaaaaaaaaaaaaaaaaaabbbbba
+
+a: fg Reset bg Reset
+b: fg Reset bg Reset DIM
+c: fg Reset bg Reset BOLD
+
+--- custom
+   │col 3 │l 0 │col 1 │col 2
+───┼──────╥────┼──────┼──────
+3  │r2c3  ║c0  │r2c1  │r2c2  │
+───┤      ║    │      │      █
+4  │r3c3  ║c0  │r3c1  │r3c2  │
+───┤      ║    │      │      │
+5  │r4c3  ║c0  │r4c1  │r4c2  │
+───┤      ║    │      │      │
+    ──██████████████████─────
+
+aaabccccccbccccbccccccbccccccc
+bbbbbbbbbbdbbbbbbbbbbbbbbbbbbc
+ccceaaaaaadaaaabaaaaaabaaaaaab
+bbbbaaaaaadaaaabaaaaaabaaaaaaf
+ccceaaaaaadaaaabaaaaaabaaaaaab
+bbbbaaaaaadaaaabaaaaaabaaaaaab
+ccceaaaaaadaaaabaaaaaabaaaaaab
+bbbbaaaaaadaaaabaaaaaabaaaaaab
+aaaabbffffffffffffffffffbbbbba
+
+a: fg Reset bg Reset
+b: fg DarkGray bg Reset
+c: fg Reset bg Reset BOLD
+d: fg Yellow bg Reset
+e: fg DarkGray bg Reset BOLD
+f: fg Gray bg Reset

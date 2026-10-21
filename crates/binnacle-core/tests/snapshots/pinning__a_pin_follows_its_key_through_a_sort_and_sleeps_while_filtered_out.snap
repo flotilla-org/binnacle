@@ -1,0 +1,60 @@
+---
+source: crates/binnacle-core/tests/pinning.rs
+expression: out
+---
+--- 1. record 4 pinned
+effect (gen 0): Locate { axis: Cols, key: Key(4) }
+  locate Cols Key(4): Found(4)
+effect (gen 0): PinsChanged { axis: Cols, edge: Leading, keys: [Key(4)] }
+window Rows 0..2
+window Cols 0..6
+gen 1 | damage layout selection positions
+Rows: count 2, extent 3, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1 1#1@2+1
+Cols: count 6, extent 24, header 4, anchor 0+0, thumb 0.0000/0.6250 | pinned 4#4@4+4 | scrolling from 9 | 0#0@9+4 1#1@14+4 2#2@19+4
+    4    0    1    2
+0   0.4  0.0  0.1  0.2
+1   1.4  1.0  1.1  1.2
+--- 2. the records sorted by field 0, descending: record 4 (9) is Position 3 now, still pinned
+effect (gen 1): ViewRequested unsorted cols 0v by Replace
+  view: applied unsorted cols 0v, notices [(Cols, Reordered)]
+effect (gen 1): Locate { axis: Cols, key: Key(4) }
+  locate Cols Key(4): Found(3)
+window Cols 0..6
+gen 2 | damage layout selection positions | sort unsorted cols 0v | total Rows 2 | total Cols 6
+Rows: (unchanged)
+Cols: count 6, extent 24, header 4, anchor 0+0, thumb 0.0000/0.6250 | pinned 3#4@4+4 | scrolling from 9 | 0#3@9+4 1#5@14+4 2#1@19+4
+    4    3    5    1
+0   0.4  0.3  0.5  0.1
+1   1.4  1.3  1.5  1.1
+--- 3. filter to field 0 over 10: record 4 has gone, its pin sleeps
+effect (gen 2): Locate { axis: Cols, key: Key(4) }
+  locate Cols Key(4): Gone { suggest: Some(3) }
+effect (gen 2): Locate { axis: Cols, key: Key(3) }
+  locate Cols Key(3): Found(0)
+effect (gen 2): Locate { axis: Cols, key: Key(5) }
+  locate Cols Key(5): Found(1)
+effect (gen 2): Locate { axis: Cols, key: Key(1) }
+  locate Cols Key(1): Found(2)
+window Cols 0..3
+gen 3 | damage layout positions | sort unsorted cols 0v | total Rows 2 | total Cols 6
+Rows: (unchanged)
+Cols: count 3, extent 24, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#3@4+4 1#5@9+4 2#1@14+4
+    3    5    1
+0   0.3  0.5  0.1
+1   1.3  1.5  1.1
+--- 4. the filter cleared: record 4 is back in its pinned Strip
+effect (gen 3): Locate { axis: Cols, key: Key(4) }
+  locate Cols Key(4): Found(3)
+effect (gen 3): Locate { axis: Cols, key: Key(3) }
+  locate Cols Key(3): Found(0)
+effect (gen 3): Locate { axis: Cols, key: Key(5) }
+  locate Cols Key(5): Found(1)
+effect (gen 3): Locate { axis: Cols, key: Key(1) }
+  locate Cols Key(1): Found(2)
+window Cols 0..6
+gen 4 | damage layout positions | sort unsorted cols 0v | total Rows 2 | total Cols 6
+Rows: (unchanged)
+Cols: count 6, extent 24, header 4, anchor 0+0, thumb 0.0000/0.6250 | pinned 3#4@4+4 | scrolling from 9 | 0#3@9+4 1#5@14+4 2#1@19+4
+    4    3    5    1
+0   0.4  0.3  0.5  0.1
+1   1.4  1.3  1.5  1.1

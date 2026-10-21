@@ -35,13 +35,18 @@ const KEYS: readonly { event: string; names: readonly string[] }[] = [
 const ACTIONS: readonly Action[] = [
   { type: "SelectAll" },
   { type: "SelectColumn" },
+  { type: "SelectRow" },
   { type: "Cancel" },
   { type: "Activate" },
   { type: "BeginEdit" },
   { type: "OpenColumnMenu" },
+  { type: "OpenRowMenu" },
   { type: "MoveFocus", axis: "rows", by: "page", forward: true, extend: true },
   { type: "MoveFocus", axis: "cols", by: "edge", forward: false, extend: false },
   { type: "ScrollBy", axis: "rows", items: -3 },
+  { type: "Hide", axis: "cols" },
+  { type: "ShowHidden", axis: "rows" },
+  { type: "OpenChooser", axis: "cols" },
 ];
 
 const platforms = gs.sampledFrom<Platform>(["mac", "other"]);
@@ -152,13 +157,50 @@ test.each<[Platform, KeyChord, Action]>([
   ["mac", { key: "a", ctrlKey: false, altKey: false, shiftKey: false, metaKey: true }, { type: "SelectAll" }],
   ["other", { key: "a", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }, { type: "SelectAll" }],
   ["mac", { key: " ", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }, { type: "SelectColumn" }],
+  ["other", { key: " ", ctrlKey: false, altKey: false, shiftKey: true, metaKey: false }, { type: "SelectRow" }],
+  ["mac", { key: "PageDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "MoveFocus", axis: "cols", by: "page", forward: true, extend: false }],
+  ["other", { key: "PageUp", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "MoveFocus", axis: "cols", by: "page", forward: false, extend: true }],
+  ["other", { key: "Home", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "MoveFocus", axis: "rows", by: "edge", forward: false, extend: false }],
   ["other", { key: "Escape", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "Cancel" }],
   ["other", { key: "Enter", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "Activate" }],
   ["mac", { key: "F2", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "BeginEdit" }],
   ["mac", { key: "ArrowDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenColumnMenu" }],
   ["other", { key: "ArrowDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenColumnMenu" }],
+  ["mac", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenRowMenu" }],
+  ["other", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenRowMenu" }],
+  ["mac", { key: "ArrowLeft", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "leading" }],
+  ["other", { key: "ArrowLeft", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "leading" }],
+  ["mac", { key: "Backspace", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Unpin", axis: "cols" }],
+  ["other", { key: "F10", ctrlKey: false, altKey: false, shiftKey: true, metaKey: false }, { type: "OpenColumnMenu" }],
+  ["mac", { key: "ContextMenu", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "OpenColumnMenu" }],
+  ["other", { key: "0", code: "Digit0", ctrlKey: true, altKey: true, shiftKey: false, metaKey: false }, { type: "Hide", axis: "cols" }],
+  ["other", { key: "9", code: "Digit9", ctrlKey: true, altKey: true, shiftKey: false, metaKey: false }, { type: "Hide", axis: "rows" }],
+  // macOS gives Option+0 the key "º", and Shift+0 ")": the physical key finds the binding.
+  ["mac", { key: "º", code: "Digit0", ctrlKey: false, altKey: true, shiftKey: false, metaKey: true }, { type: "Hide", axis: "cols" }],
+  ["mac", { key: "‚", code: "Digit0", ctrlKey: false, altKey: true, shiftKey: true, metaKey: true }, { type: "ShowHidden", axis: "cols" }],
+  ["other", { key: "(", code: "Digit9", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "ShowHidden", axis: "rows" }],
+  ["mac", { key: "ArrowRight", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "cols", edge: "trailing" }],
+  ["other", { key: "ArrowUp", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "rows", edge: "leading" }],
+  ["mac", { key: "ArrowDown", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Pin", axis: "rows", edge: "trailing" }],
+  ["mac", { key: "Backspace", ctrlKey: false, altKey: true, shiftKey: true, metaKey: true }, { type: "Unpin", axis: "rows" }],
+  ["other", { key: "Backspace", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "Unpin", axis: "rows" }],
+  ["mac", { key: "Home", ctrlKey: false, altKey: true, shiftKey: true, metaKey: false }, { type: "Freeze", axis: "cols" }],
+  ["other", { key: "Home", ctrlKey: true, altKey: true, shiftKey: true, metaKey: false }, { type: "Freeze", axis: "rows" }],
+  ["other", { key: "o", code: "KeyO", ctrlKey: true, altKey: true, shiftKey: false, metaKey: false }, { type: "OpenChooser", axis: "cols" }],
+  // macOS gives Option+O the key "ø", and Option+Shift+O "Ø".
+  ["mac", { key: "ø", code: "KeyO", ctrlKey: false, altKey: true, shiftKey: false, metaKey: true }, { type: "OpenChooser", axis: "cols" }],
+  ["mac", { key: "Ø", code: "KeyO", ctrlKey: false, altKey: true, shiftKey: true, metaKey: true }, { type: "OpenChooser", axis: "rows" }],
 ])("default on %s: %o is %o", (platform, event, action) => {
   expect(createKeymap({ platform }).lookup(event)).toEqual(action);
+});
+
+test("the physical key finds a binding only when the key itself names none", () => {
+  const keymap = createKeymap({ platform: "other", bindings: { "Alt+º": { type: "Cancel" }, "Alt+Q": null } });
+  const alt = { ctrlKey: false, altKey: true, shiftKey: false, metaKey: false };
+  expect(keymap.lookup({ ...alt, key: "º", code: "Digit0" })).toEqual({ type: "Cancel" });
+  expect(keymap.lookup({ ...alt, key: "œ", code: "KeyQ" })).toBeUndefined();
+  expect(keymap.lookup({ ...alt, key: "ArrowDown", code: "ArrowDown" })).toEqual({ type: "OpenColumnMenu" });
+  expect(keymap.lookup({ ...alt, key: "∂", code: "KeyD" })).toBeUndefined();
 });
 
 test("Ctrl+A is not select-all on macOS, where Ctrl+A moves to the line start", () => {

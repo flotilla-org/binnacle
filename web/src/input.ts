@@ -9,11 +9,11 @@
 // mouse: resizing and moving headers work by touch too.
 
 import { createClickCounter } from "./clicks";
-import { AXIS_CODE, FOCUS_STEP, POINTER, modifierBits } from "./codes";
+import { AXIS_CODE, FOCUS_STEP, POINTER, modifierBits, type AxisName, type PinEdge } from "./codes";
 import { createEditing, type EditHost, type Editing } from "./editing";
 import type { Effect } from "./effects";
 import type { Action, Keymap } from "./keymap";
-import type { Cursor, Rect, Snapshot } from "./snapshot";
+import { shownItems, type Cursor, type Rect, type Snapshot } from "./snapshot";
 import type { WebGrid } from "./wasm";
 
 export interface InputHost {
@@ -29,14 +29,26 @@ export interface InputHost {
   snapshot(): Snapshot | null;
   /** What the editor needs from the widget. */
   edits: Pick<EditHost, "editable" | "value" | "text" | "editor" | "commit" | "theme">;
-  /** Whether (x, y) is on a column menu button. */
+  /** Whether (x, y) is on a column or row menu button. */
   menuButtonAt(x: number, y: number): boolean;
-  /** A press at (x, y), before the Grid sees it: `true` if a column menu button took it. */
+  /** A press at (x, y), before the Grid sees it: `true` if a menu button took it. */
   menuPress(x: number, y: number): boolean;
   /** Opens the focused column's menu: `false` if there is none to open. */
   openColumnMenu(): boolean;
+  /** Opens the focused row's menu: `false` if there is none to open. */
+  openRowMenu(): boolean;
+  /** Pins the focused item of `axis` to `edge` or unpins it (see `pinFocused`); with no `edge`, only unpins it. */
+  pin(axis: AxisName, edge: PinEdge | null): void;
+  /** Freezes `axis` up to its focused item (see `freezeFocused`). */
+  freeze(axis: AxisName): void;
   /** Opens the find bar, or steps while find is open: `false` if there is no find bar or find is closed. */
   find(action: "open" | "next" | "previous"): boolean;
+  /** Hides the chosen items of `axis` (the picks, else the selection, else the focused item): `false` if the axis does not hide. */
+  hide(axis: AxisName): boolean;
+  /** Opens the focused item's menu at the hidden items of `axis`: `false` if there is no menu or the axis does not hide. */
+  showHidden(axis: AxisName): boolean;
+  /** Opens the chooser of `axis`: `false` if none is mounted or the axis does not hide. */
+  openChooser(axis: AxisName): boolean;
 }
 
 export interface Input {
@@ -88,6 +100,8 @@ export function perform(grid: WebGrid, action: Action): void {
       return grid.select_all();
     case "SelectColumn":
       return grid.select_column();
+    case "SelectRow":
+      return grid.select_row();
     case "Cancel":
       return grid.cancel();
     case "Activate":
@@ -101,7 +115,14 @@ export function perform(grid: WebGrid, action: Action): void {
     case "FindPrevious":
       return grid.find_previous();
     case "OpenColumnMenu":
+    case "OpenRowMenu":
     case "OpenFind":
+    case "Pin":
+    case "Unpin":
+    case "Hide":
+    case "ShowHidden":
+    case "Freeze":
+    case "OpenChooser":
       // The widget's, not the Grid's: see `createInput`.
       return;
   }
@@ -187,8 +208,26 @@ export function createInput(host: InputHost): Input {
     }
     const action = host.keymap.lookup(e);
     if (!action) return;
-    if (action.type === "OpenColumnMenu") {
-      if (host.openColumnMenu()) e.preventDefault();
+    if (action.type === "OpenColumnMenu" || action.type === "OpenRowMenu") {
+      if (action.type === "OpenColumnMenu" ? host.openColumnMenu() : host.openRowMenu()) e.preventDefault();
+      return;
+    }
+    if (action.type === "Pin" || action.type === "Unpin") {
+      e.preventDefault();
+      host.pin(action.axis, action.type === "Pin" ? action.edge : null);
+      return;
+    }
+    if (action.type === "OpenChooser") {
+      if (host.openChooser(action.axis)) e.preventDefault();
+      return;
+    }
+    if (action.type === "Hide" || action.type === "ShowHidden") {
+      if (action.type === "Hide" ? host.hide(action.axis) : host.showHidden(action.axis)) e.preventDefault();
+      return;
+    }
+    if (action.type === "Freeze") {
+      e.preventDefault();
+      host.freeze(action.axis);
       return;
     }
     if (action.type === "OpenFind" || action.type === "FindNext" || action.type === "FindPrevious") {
@@ -330,8 +369,7 @@ export function createInput(host: InputHost): Input {
   function focusFirstCell() {
     const s = host.snapshot();
     if (!s || s.rows.focus || s.cols.focus) return;
-    const first = (items: Snapshot["rows"]) =>
-      items.strip.find((i) => i.key !== null && i.offset + i.size > items.header && i.offset < items.extent)?.key;
+    const first = (items: Snapshot["rows"]) => shownItems(items).find((i) => i.key !== null)?.key;
     const row = first(s.rows);
     const col = first(s.cols);
     if (row != null && col != null) grid.set_focus(row, col);

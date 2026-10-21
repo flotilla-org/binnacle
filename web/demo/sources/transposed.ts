@@ -7,11 +7,17 @@
 // sorts the records by it (Shift adds a field), as a column header click
 // sorts the records upright, and a column header click selects the record.
 // The filter box keeps the records whose name or port contains its text, as
-// columns; find and editing work as in the records.
+// columns; the filter bar's quick filter and a field's row menu filter the
+// records by their values too, and a record's column menu filters the
+// fields. Find, editing, moves, pinning and hiding work as in the records,
+// a field row's header dragging the field and a record's column header the
+// record, so hiding a column hides a record, and the columns' chooser lists
+// the records (at most 100 of them hide).
 
 import {
   barRenderer,
   byRow,
+  createChooser,
   createColumnMenu,
   createFilterBar,
   createFindBar,
@@ -22,8 +28,9 @@ import {
   type CellRenderer,
 } from "../../src";
 import type { DemoSource } from "./demo-source";
+import { layoutControls } from "./layout";
 import { parse, portPicker, type Value } from "./records";
-import { matches, RECORDS, rows, type RecordRow } from "./records-data";
+import { matches, RECORD_HIDE_CAP, RECORDS, rows, sortedMoves, type RecordRow } from "./records-data";
 
 /** The renderers of the fields that do not draw as plain text. */
 const FIELD_RENDERERS: Partial<Record<keyof RecordRow, CellRenderer<Value>>> = {
@@ -36,14 +43,13 @@ export const transposed: DemoSource = {
   name: "transposed",
   description: `the ${RECORDS.toLocaleString("en")} records on their side, each record a column`,
   showIds: true,
+  filterBar: true,
   async mount(host, toolbar, look) {
-    const records = fromRows(rows, [
-      { key: "id", filterable: false },
-      { key: "name" },
-      { key: "weight" },
-      { key: "crew" },
-      { key: "port" },
-    ]);
+    const records = fromRows(
+      rows,
+      [{ key: "id", filterable: false }, { key: "name" }, { key: "weight" }, { key: "crew" }, { key: "port" }],
+      { ...sortedMoves(), hideCap: { rows: RECORD_HIDE_CAP } },
+    );
     const source = transpose(records);
     const box = document.createElement("input");
     box.type = "search";
@@ -81,8 +87,14 @@ export const transposed: DemoSource = {
       },
       editor: (field) => (field === "port" ? portPicker() : null),
     });
+    const layout = layoutControls(widget, "transposed");
     const columnMenu = createColumnMenu(widget);
-    const bar = createFilterBar(widget, { columnMenu });
+    const chooser = createChooser(widget);
+    const bar = createFilterBar(widget, {
+      columnMenu,
+      axis: "cols",
+      nouns: { rows: ["field", "fields"], cols: ["record", "records"] },
+    });
     const findBar = createFindBar(widget);
     frame.prepend(bar.element, findBar.element);
     const findButton = document.createElement("button");
@@ -105,9 +117,11 @@ export const transposed: DemoSource = {
       },
       destroy() {
         findBar.destroy();
+        layout.destroy();
         findButton.remove();
         bar.destroy();
         columnMenu.destroy();
+        chooser.destroy();
         widget.destroy();
         frame.remove();
         records.destroy();

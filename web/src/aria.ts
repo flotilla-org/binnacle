@@ -6,7 +6,7 @@
 import { AXES, type AxisName } from "./codes";
 import type { Content } from "./content";
 import { cellText, plainText, type RendererChoice } from "./renderer";
-import { cellState, type AxisSnapshot, type Snapshot, type StripItem } from "./snapshot";
+import { cellState, itemSpan, type AxisSnapshot, type Snapshot, type StripItem } from "./snapshot";
 
 export interface AriaOptions {
   /** The grid's accessible name. */
@@ -26,6 +26,8 @@ export interface Aria {
   frame(s: Snapshot, painted: boolean, content: () => Content): void;
   /** The Grid asked where `key` went on `axis` (a Locate Effect). */
   locate(axis: AxisName, key: bigint): void;
+  /** Reads `message` out in the live region, for news the table cannot show. */
+  say(message: string): void;
   destroy(): void;
 }
 
@@ -62,13 +64,18 @@ interface Row {
   cells: Map<string, Cell>;
 }
 
-/** The visible items of an axis with their places in the Strip. */
+/**
+ * The visible items of an axis with their places among the drawn items, in
+ * Position order: pinned items read where they belong, not where they are
+ * drawn. A scrolling item is hidden once it slides under a pinned Strip.
+ */
 function visible(axis: AxisSnapshot): { item: StripItem; index: number }[] {
   const out: { item: StripItem; index: number }[] = [];
   axis.strip.forEach((item, index) => {
-    if (item.offset + item.size > axis.header && item.offset < axis.extent) out.push({ item, index });
+    const span = itemSpan(axis, index);
+    if (item.offset + item.size > span.start && item.offset < span.end) out.push({ item, index });
   });
-  return out;
+  return out.sort((a, b) => a.item.position - b.item.position);
 }
 
 /** A visible item's name among its axis's elements: its Key, or its Position while the Key is unknown. */
@@ -141,6 +148,8 @@ export function createAria(options: AriaOptions): Aria {
     null;
   /** The focused Key per axis as of the last frame. */
   const focus: Record<AxisName, bigint | null> = { rows: null, cols: null };
+  /** The reason of the move refusal last seen, `null` while there is none. */
+  let refused: string | null = null;
   /** Per axis, the focused Key being located, until the Grid stops locating. */
   const locating: Record<AxisName, bigint | null> = { rows: null, cols: null };
 
@@ -152,7 +161,7 @@ export function createAria(options: AriaOptions): Aria {
   /**
    * Announces what the table itself cannot show: a sort applied, the rows
    * left once a filter change is applied and no other View Spec is pending,
-   * a focused item gone.
+   * a focused item gone, a move refused.
    */
   const watch = (s: Snapshot, content: () => Content) => {
     const messages: string[] = [];
@@ -168,6 +177,9 @@ export function createAria(options: AriaOptions): Aria {
       recount = false;
       messages.push(rowCount(s.rows.count, s.rows.total));
     }
+    const refusal = s.moveRefusal?.reason ?? null;
+    if (refusal !== null && refusal !== refused) messages.push(refusal);
+    refused = refusal;
     if (messages.length) announce(messages.join(". "));
     for (const axis of AXES) {
       const key = locating[axis];
@@ -289,6 +301,7 @@ export function createAria(options: AriaOptions): Aria {
       deferred = null;
       update(s, content());
     },
+    say: announce,
     locate(axis, key) {
       // Locates for other Keys (an edit's cell) say nothing about focus.
       if (focus[axis] === key) locating[axis] = key;

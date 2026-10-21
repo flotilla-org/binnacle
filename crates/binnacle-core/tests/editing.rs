@@ -213,8 +213,8 @@ fn edit_started_ends_a_gesture_in_progress() {
     );
     let range = snap.selection_range().unwrap();
     assert_eq!(
-        (range.rows, range.cols),
-        (0..3, 0..2),
+        (range.rows.clone(), range.cols.clone()),
+        (run(0..3), run(0..2)),
         "the drag stopped where it was"
     );
 }
@@ -334,8 +334,8 @@ fn set_focus_selects_like_a_focus_move_once_placed() {
     let snap = s.frame(V);
     let range = snap.selection_range().unwrap();
     assert_eq!(
-        (range.rows, range.cols),
-        (1..2, 0..3),
+        (range.rows.clone(), range.cols.clone()),
+        (run(1..2), run(0..3)),
         "the row, as a click would"
     );
     s.input(|g| g.set_focus(Key(700), Key(1)));
@@ -343,8 +343,8 @@ fn set_focus_selects_like_a_focus_move_once_placed() {
     assert_eq!(snap.focus(Axis::Rows).unwrap().position, 700);
     let range = snap.selection_range().unwrap();
     assert_eq!(
-        (range.rows, range.cols),
-        (700..701, 0..3),
+        (range.rows.clone(), range.cols.clone()),
+        (run(700..701), run(0..3)),
         "the located row once its Position is known"
     );
 }
@@ -447,8 +447,13 @@ fn a_drag_cancelled_after_its_pick_was_filtered_out_does_not_restore_the_pick() 
     let snap = s.frame(TALL);
     assert_eq!(snap.mode(), Mode::Idle);
     assert_eq!(
-        snap.picked(),
+        snap.picked(Axis::Rows),
         &[] as &[Key],
         "record 3 left while the drag was held"
     );
+}
+
+/// A range's span on one axis that is a single run.
+fn run(r: std::ops::Range<u64>) -> Vec<std::ops::Range<u64>> {
+    vec![r]
 }

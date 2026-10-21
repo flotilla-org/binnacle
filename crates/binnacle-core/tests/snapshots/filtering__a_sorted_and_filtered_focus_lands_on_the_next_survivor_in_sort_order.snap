@@ -14,9 +14,9 @@ Cols: count 3, extent 26, header 4, anchor 0+0, thumb 0.0000/1.0000 | 0#0@4+6 1#
 1   5.0    5.1    5.2
 2   *1.0   1.1    1.2
 3   7.0    7.1    7.2
---- 2. keep 1, 2, 7, 8, 9: value 3 is one from 2 and three from 7, so focus goes to 2 at row 1
+--- 2. keep 1, 2, 7, 8, 9: focus goes to the next survivor after value 3 in sort order, 7 at row 2
 effect (gen 2): Locate { axis: Rows, key: Key(1) }
-  locate Rows Key(1): Gone { suggest: Some(1) }
+  locate Rows Key(1): Gone { suggest: Some(2) }
 effect (gen 2): Locate { axis: Rows, key: Key(3) }
   locate Rows Key(3): Found(0)
 effect (gen 2): Locate { axis: Rows, key: Key(5) }
@@ -24,11 +24,11 @@ effect (gen 2): Locate { axis: Rows, key: Key(5) }
 effect (gen 2): Locate { axis: Rows, key: Key(7) }
   locate Rows Key(7): Gone { suggest: Some(2) }
 window Rows 0..5
-gen 3 | damage layout selection positions | focus 1#5,0#0 at 4,2 6x1
+gen 3 | damage layout selection positions | focus 2#6,0#0 at 4,3 6x1
 Rows: count 5, extent 5, header 1, anchor 0+0, thumb 0.0000/0.8000 | 0#3@1+1 1#5@2+1 2#6@3+1 3#2@4+1
 Cols: (unchanged)
     0      1      2
 0   3.0    3.1    3.2
-1   *5.0   5.1    5.2
-2   6.0    6.1    6.2
+1   5.0    5.1    5.2
+2   *6.0   6.1    6.2
 3   2.0    2.1    2.2

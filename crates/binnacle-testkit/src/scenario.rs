@@ -7,7 +7,9 @@ use binnacle_core::{
     FindQuery, Grid, Key, Located, Modifiers, PointerEvent, Position, Snapshot, Stamped, Support,
     ViewSpec, Viewport,
 };
-use binnacle_memory::{FindStep, IdentitySource, MemorySource, PumpSource, Transposed, Viewed};
+use binnacle_memory::{
+    FindStep, IdentitySource, MemorySource, MovePolicy, Moved, PumpSource, Transposed, Viewed,
+};
 
 use crate::render::{Rendered, view_text};
 
@@ -143,6 +145,12 @@ impl RecordTable {
         RecordTable { rows, source }
     }
 
+    /// This table with `policy` for moves on a sorted axis.
+    pub fn with_move_policy(mut self, policy: MovePolicy) -> Self {
+        self.source = self.source.with_move_policy(policy);
+        self
+    }
+
     /// Keeps only the records for which `keep` is true; the Grid needs the
     /// returned Change Notice.
     pub fn filter(&mut self, keep: impl Fn(&Record) -> bool + 'static) -> ChangeNotice {
@@ -150,15 +158,15 @@ impl RecordTable {
     }
 
     /// Appends `records` to the base data; the Grid needs the returned
-    /// Change Notice.
-    pub fn append(&mut self, records: Vec<Record>) -> ChangeNotice {
+    /// Change Notices.
+    pub fn append(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
         self.rows.extend(records);
         self.source.appended(&self.rows, &[])
     }
 
     /// Sets base row `row`'s value in column `col` as the user's edit (a
-    /// row in view stays even if the filter now drops it); the Grid needs
-    /// the returned Change Notices, if any.
+    /// row or column in view stays even if the filter now drops it); the
+    /// Grid needs the returned Change Notices.
     pub fn edit(
         &mut self,
         row: usize,
@@ -200,7 +208,11 @@ impl PumpSource for RecordTable {
         self.source.over(&self.rows).locate(axis, key)
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.source.over(&self.rows).movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.source.over(&self.rows).move_items(axis, keys, to)
     }
 
@@ -229,8 +241,8 @@ impl<S: ScenarioSource> ScenarioSource for Transposed<S> {
 /// A [`RecordTable`] on its side, as a pivoted or transposed host has it:
 /// each record is a column and each field a row, keyed by Logical Index on
 /// both axes. The columns sort by the sortable fields, filter and change as
-/// the records' rows do; the fields move. Change Notices from `filter` and
-/// `append` are for [`Axis::Cols`]; `edit` and `replace` name their axes.
+/// the records' rows do; the fields move. Change Notices from its methods
+/// name the axes of the table on its side.
 pub struct ColumnMajorTable {
     table: Transposed<RecordTable>,
 }
@@ -264,8 +276,8 @@ impl ColumnMajorTable {
     }
 
     /// Appends `records` as new columns.
-    pub fn append(&mut self, records: Vec<Record>) -> ChangeNotice {
-        self.table.0.append(records)
+    pub fn append(&mut self, records: Vec<Record>) -> Vec<(Axis, ChangeNotice)> {
+        turned(self.table.0.append(records))
     }
 
     /// Sets record `record`'s value in field `field` as the user's edit (a
@@ -315,7 +327,11 @@ impl PumpSource for ColumnMajorTable {
         self.table.locate(axis, key)
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.table.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.table.move_items(axis, keys, to)
     }
 
@@ -360,11 +376,22 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
         answer
     }
 
-    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Option<ChangeNotice> {
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        self.source.movable(axis)
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         let answer = self.source.move_items(axis, keys, to);
+        let said = match &answer {
+            Ok(Moved { notices, view }) => match view {
+                Some((spec, _)) => format!("notices {notices:?}, applied {}", view_text(spec)),
+                None => format!("notices {notices:?}"),
+            },
+            Err(reason) => format!("refused: {reason}"),
+        };
         let _ = writeln!(
             self.log.borrow_mut(),
-            "  move {axis:?} {keys:?} to {to}: {answer:?}"
+            "  move {axis:?} {keys:?} to {to}: {said}"
         );
         answer
     }
@@ -466,6 +493,12 @@ impl<S: ScenarioSource> Scenario<S> {
     /// the source, then take the Snapshot.
     pub fn frame(&mut self, viewport: Viewport) -> Snapshot<'_> {
         self.pump();
+        self.fill(viewport)
+    }
+
+    /// `begin_frame`, fill each requested Window from the source, then take
+    /// the Snapshot, leaving the Effects unanswered.
+    fn fill(&mut self, viewport: Viewport) -> Snapshot<'_> {
         for (axis, range) in self.grid.begin_frame(viewport) {
             let _ = writeln!(self.log, "window {axis:?} {range:?}");
             let keys = self.source.window(axis, range.clone());
@@ -487,6 +520,17 @@ impl<S: ScenarioSource> Scenario<S> {
         self.steps += 1;
         let header = format!("--- {}. {label}\n", self.steps);
         let rendered = Rendered::of(&self.frame(viewport));
+        let log = std::mem::take(&mut self.log);
+        format!("{header}{log}{}", self.show(rendered))
+    }
+
+    /// A [`Scenario::step`] whose frame leaves the Effects unanswered, as
+    /// a host waiting on a slow Table Source would; the next step answers
+    /// them.
+    pub fn step_waiting(&mut self, label: &str, viewport: Viewport) -> String {
+        self.steps += 1;
+        let header = format!("--- {}. {label}\n", self.steps);
+        let rendered = Rendered::of(&self.fill(viewport));
         let log = std::mem::take(&mut self.log);
         format!("{header}{log}{}", self.show(rendered))
     }

@@ -4,15 +4,15 @@
 //! does for rows it must do for columns here.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, FilterSpec, FindDirection, FindMatch, FindQuery, Grid,
-    HeaderClick, HeaderSort, Key, Modifiers, Searched, Snapshot, SortColumn, SortSpec, TextQuery,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Condition, FilterSpec, FindDirection, FindMatch,
+    FindQuery, Grid, HeaderClick, HeaderSort, Key, Modifiers, Searched, Snapshot, SortColumn,
+    SortSpec, TextQuery, Value, ViewSpec, Viewport,
 };
 use binnacle_testkit::{
     ColumnMajorTable, PumpSource, Record, RecordTable, Scenario, ScenarioSource,
 };
-use hegel::TestCase;
 use hegel::generators as gs;
+use hegel::{Generator, TestCase};
 
 const V: Viewport = Viewport {
     width: 40.0,
@@ -67,8 +67,9 @@ fn each_record_is_a_column_and_the_records_sort_filter_and_change_as_columns() {
 fn edits_appends_and_replacements_reach_the_columns() {
     let mut s = records();
     s.frame(V);
-    let notice = s.source.append(vec![vec![Some(1), Some(60), Some(7)]]);
-    s.input(|g| g.notify(Axis::Cols, notice));
+    let notices = s.source.append(vec![vec![Some(1), Some(60), Some(7)]]);
+    assert_eq!(notices.len(), 1);
+    s.input(|g| notices.into_iter().for_each(|(a, n)| g.notify(a, n)));
     let snap = s.frame(V);
     assert_eq!(snap.count(Axis::Cols), 7);
     assert_eq!(s.source.records()[6], vec![Some(1), Some(60), Some(7)]);
@@ -80,17 +81,21 @@ fn edits_appends_and_replacements_reach_the_columns() {
 }
 
 #[test]
-fn the_fields_move_as_the_records_columns_do() {
+fn fields_and_records_move_as_the_records_columns_and_rows_do() {
     let mut s = records();
     s.frame(V);
-    let moved = s.source.move_items(Axis::Rows, &[Key(0)], 3);
-    assert_eq!(moved, Some(ChangeNotice::Reordered));
+    let moved = s.source.move_items(Axis::Rows, &[Key(0)], 3).unwrap();
+    assert_eq!(moved.notices, vec![(Axis::Rows, ChangeNotice::Reordered)]);
     s.input(|g| g.notify(Axis::Rows, ChangeNotice::Reordered));
     let snap = s.frame(V);
     let fields: Vec<_> = snap.rows().iter().map(|r| r.key).collect();
     assert_eq!(fields, [Some(Key(1)), Some(Key(2)), Some(Key(0))]);
-    // The records are the source's rows, which it does not move.
-    assert_eq!(s.source.move_items(Axis::Cols, &[Key(0)], 3), None);
+    let moved = s.source.move_items(Axis::Cols, &[Key(0)], 2).unwrap();
+    assert_eq!(moved.notices, vec![(Axis::Cols, ChangeNotice::Reordered)]);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    let snap = s.frame(V);
+    let records: Vec<_> = snap.cols().iter().take(3).map(|c| c.key).collect();
+    assert_eq!(records, [Some(Key(1)), Some(Key(0)), Some(Key(2))]);
 }
 
 #[test]
@@ -289,4 +294,103 @@ fn row_header_clicks_sort_the_column_major_table_as_column_header_clicks_sort_it
         marks(rows.frame(screen), Axis::Cols),
         marks(cols.frame(screen), Axis::Rows)
     );
+}
+
+/// A filter on `axis` of a table `rows` by `cols`: maybe a quick filter,
+/// and conditions on items of the other axis, some past its end.
+#[hegel::composite]
+fn axis_filter(tc: &TestCase, axis: Axis, rows: usize, cols: usize) -> FilterSpec {
+    let across = match axis {
+        Axis::Rows => cols,
+        Axis::Cols => rows,
+    } as u64;
+    // Pieces of the records' values, a pattern, and one RegExp rejects.
+    let text = || gs::sampled_from(vec!["1", "-", "3", "2", "^-?[12]$", "^("]);
+    let quick = tc.draw(gs::optional(text())).map(|t| {
+        let query = TextQuery::new(t)
+            .regex(t.starts_with('^'))
+            .case_sensitive(tc.draw(gs::booleans()));
+        match tc.draw(gs::booleans()) {
+            true => query,
+            false => {
+                let keys = gs::vecs(gs::integers::<u64>().max_value(across)).max_size(2);
+                query.searching(Searched::Keys(tc.draw(keys).into_iter().map(Key).collect()))
+            }
+        }
+    });
+    let condition = || {
+        hegel::tuples!(
+            gs::integers::<u64>().max_value(across),
+            gs::booleans(),
+            text(),
+            gs::booleans(),
+            gs::booleans()
+        )
+        .map(|(key, one_of, t, not, case)| {
+            let condition = match one_of {
+                true => Condition::one_of(Key(key), vec![Value::Text(t.into()), Value::Blank]),
+                false => {
+                    let query = TextQuery::new(t).regex(t.starts_with('^'));
+                    Condition::text(Key(key), query.case_sensitive(case))
+                }
+            };
+            condition.not(not)
+        })
+    };
+    let conditions = tc.draw(gs::vecs(condition()).max_size(3));
+    FilterSpec::default()
+        .with_quick(quick)
+        .with_conditions(conditions.into())
+}
+
+/// Story 55: filtering the columns by their rows' values, natively in the
+/// In-Memory Table Source, shows what filtering the rows of the same table
+/// turned on its side shows, and the other way about: the Grid over the
+/// records and the Grid over their transpose turned back agree on both
+/// axes, their totals and the View Spec applied.
+#[hegel::test(test_cases = 200)]
+fn the_columns_filter_natively_as_the_turned_tables_rows_do(tc: TestCase) {
+    let (records, fields) = tc.draw(table());
+    let n = records.len();
+    let transpose: Vec<Record> = (0..fields)
+        .map(|f| records.iter().map(|r| r[f]).collect())
+        .collect();
+    let grid = || {
+        Grid::new(
+            AxisConfig::new(n as u64, 1.0),
+            AxisConfig::new(fields as u64, 1.0),
+        )
+    };
+    let mut native = Scenario::new(grid(), RecordTable::new(records, fields, 0..fields as u64));
+    let mut turned = Scenario::new(grid(), ColumnMajorTable::new(transpose, n, 0..n as u64));
+    let spec = ViewSpec::default()
+        .with_filter(Axis::Rows, tc.draw(axis_filter(Axis::Rows, n, fields)))
+        .with_filter(Axis::Cols, tc.draw(axis_filter(Axis::Cols, n, fields)));
+    tc.note(&format!("{spec:?}"));
+    let all = Viewport::new(1000.0, 1000.0);
+    let mut seen = Vec::new();
+    for s in [&mut native as &mut dyn Shows, &mut turned] {
+        seen.push(s.shows(spec.clone(), all));
+    }
+    assert_eq!(seen[0], seen[1]);
+}
+
+/// What a scenario shows on both axes once a View Spec is answered.
+type Shown = ([Vec<Option<Key>>; 2], [Option<u64>; 2], ViewSpec);
+
+trait Shows {
+    fn shows(&mut self, spec: ViewSpec, viewport: Viewport) -> Shown;
+}
+
+impl<S: ScenarioSource> Shows for Scenario<S> {
+    fn shows(&mut self, spec: ViewSpec, viewport: Viewport) -> Shown {
+        self.input(|g| g.request_view(spec));
+        let snap = self.frame(viewport);
+        let keys = |axis| snap.strip(axis).iter().map(|i| i.key).collect();
+        (
+            [keys(Axis::Rows), keys(Axis::Cols)],
+            [snap.total(Axis::Rows), snap.total(Axis::Cols)],
+            snap.applied_view().clone(),
+        )
+    }
 }

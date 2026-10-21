@@ -5,7 +5,8 @@ import type { Content } from "../content";
 import type { Flashes } from "../flash";
 import type { Measure } from "../measure";
 import type { RendererChoice } from "../renderer";
-import type { Snapshot } from "../snapshot";
+import type { AxisName } from "../codes";
+import { itemSpan, type Snapshot, type Span } from "../snapshot";
 import type { Theme } from "../theme";
 
 export interface PaintContext {
@@ -34,8 +35,8 @@ export interface PaintContext {
   now: number;
   /** Whether pending states animate; `false` under `prefers-reduced-motion`. */
   motion: boolean;
-  /** Whether a column menu is mounted, so filterable column headers draw its button. */
-  filterButtons: boolean;
+  /** Whether a column (and a row) menu is mounted, so filterable headers in that band draw its button. */
+  filterButtons: { cols: boolean; rows: boolean };
 }
 
 /** Horizontal text padding inside a cell or header, CSS px. */
@@ -45,4 +46,31 @@ export function clip(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   ctx.beginPath();
   ctx.rect(x, y, w, h);
   ctx.clip();
+}
+
+/**
+ * Where a selection rect from `start` to `end` along `axis` may draw: one
+ * over pinned items (the Grid clips those to their region, so it ends
+ * before the scrolling Strip starts or starts after it ends) in that pinned
+ * Strip's region, one over scrolling items within the scrolling Strip, so it
+ * slides under the pinned Strips.
+ */
+export function drawsIn(s: Snapshot, axis: AxisName, start: number, end: number): Span {
+  const { scrolling, regions } = s[axis];
+  if (end <= scrolling.start) return regions.leading;
+  return start >= scrolling.end ? regions.trailing : scrolling;
+}
+
+/** Clips to where a selection rect may draw (see {@link drawsIn}). */
+export function clipBody(p: PaintContext, x: number, y: number, width: number, height: number): void {
+  clipSpans(p, drawsIn(p.s, "cols", x, x + width), drawsIn(p.s, "rows", y, y + height));
+}
+
+/** Clips to where the cell of the `row`th row and `col`th column drawn items may draw. */
+export function clipCell(p: PaintContext, row: number, col: number): void {
+  clipSpans(p, itemSpan(p.s.cols, col), itemSpan(p.s.rows, row));
+}
+
+function clipSpans(p: PaintContext, cols: Span, rows: Span): void {
+  clip(p.ctx, cols.start, rows.start, cols.end - cols.start, rows.end - rows.start);
 }

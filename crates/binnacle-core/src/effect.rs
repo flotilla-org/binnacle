@@ -1,5 +1,5 @@
 use crate::find::{FindDirection, FindMatch, FindQuery};
-use crate::types::{Axis, Generation, Key, Position};
+use crate::types::{Axis, Edge, Generation, Key, Position};
 use crate::view::{ViewEdit, ViewSpec};
 
 /// A request the Grid emits for its host or Table Source to act on. Effects
@@ -41,6 +41,16 @@ pub enum Effect {
     /// Override). Hosts that persist layouts save it and restore it with
     /// [`crate::Grid::set_size`].
     SizeChanged { axis: Axis, key: Key, size: f32 },
+    /// The Keys pinned to `edge` of `axis` changed to `keys`, in pin order,
+    /// dormant pins included (see [`crate::Snapshot::pins`]): by a pin, an
+    /// unpin, a freeze or [`crate::Grid::set_pins`]. Hosts that persist
+    /// layouts save it and restore it with `set_pins`. At most one per edge
+    /// is queued: a later change replaces it.
+    PinsChanged {
+        axis: Axis,
+        edge: Edge,
+        keys: Vec<Key>,
+    },
     /// The user double-clicked the border after the item with `key` on
     /// `axis`. The Grid never measures: the host measures the content and
     /// answers with [`crate::Grid::set_size`].
@@ -106,6 +116,8 @@ pub enum Action {
     SelectAll,
     /// Selects every row of the range's columns, or of the focused column.
     SelectColumn,
+    /// Selects every column of the range's rows, or of the focused row.
+    SelectRow,
     /// Ends the gesture in progress and restores the state from before it:
     /// focus and selection, or the size of an item or band being resized.
     Cancel,

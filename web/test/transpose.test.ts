@@ -44,8 +44,8 @@ function shown(text: string): TextQuery<Field> {
 function sinks<RowId, ColId>(notices: { rows: ChangeNotice[]; cols: ChangeNotice[] }): TableSink<RowId, ColId> {
   const ignore = () => {};
   return {
-    rows: { notify: (n) => void notices.rows.push(n), supportChanged: ignore },
-    cols: { notify: (n) => void notices.cols.push(n), supportChanged: ignore },
+    rows: { notify: (n) => void notices.rows.push(n), supportChanged: ignore, movableChanged: ignore },
+    cols: { notify: (n) => void notices.cols.push(n), supportChanged: ignore, movableChanged: ignore },
     viewChanged: ignore,
     findCounted: ignore,
   };
@@ -69,9 +69,13 @@ describe("transpose", () => {
         // The shown fields, or some named ones: either way, items of the other axis, which turning leaves where they are.
         const searches: "shown" | Field[] = tc.draw(gs.booleans()) ? "shown" : tc.draw(gs.arrays(gs.sampledFrom(FIELDS), { maxSize: 2 }));
         const filter = { quick: quick === null ? null : { ...shown(quick), regex: tc.draw(gs.booleans()), searches }, conditions: [] };
-        const records = { filter, sort };
-        const asked: ViewSpec<number, Field> = { rows: records, cols: NONE };
-        const turnedAsk: ViewSpec<Field, number> = { rows: NONE, cols: records };
+        // Hidden records (some not there) and hidden fields, each on its own side.
+        const hiddenRecords = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: rows.length + 1 }), { maxSize: 3 }));
+        const hiddenFields = tc.draw(gs.arrays(gs.sampledFrom(FIELDS), { maxSize: 1 }));
+        const records = { filter, sort, hidden: hiddenRecords };
+        const fields = { ...NONE, hidden: hiddenFields };
+        const asked: ViewSpec<number, Field> = { rows: records, cols: fields };
+        const turnedAsk: ViewSpec<Field, number> = { rows: fields, cols: records };
         const applied = upright.view!(asked, signal()) as AppliedView<number, Field>;
         expect(turned.view!(turnedAsk, signal())).toEqual({
           rows: applied.cols,
@@ -81,10 +85,13 @@ describe("transpose", () => {
         expect(told.turned).toEqual({ rows: told.upright.cols, cols: told.upright.rows });
         const n = upright.rows.count() as number;
         expect(turned.cols.count()).toBe(n);
-        expect(turned.rows.count()).toBe(FIELDS.length);
+        const shownFields = FIELDS.filter((f) => !hiddenFields.includes(f));
+        expect(upright.cols.window(0, 2, signal())).toEqual(shownFields);
+        expect(turned.rows.count()).toBe(shownFields.length);
         const ids = upright.rows.window(0, n, signal()) as number[];
+        expect(ids.some((r) => hiddenRecords.includes(r))).toBe(false);
         expect(turned.cols.window(0, n, signal())).toEqual(ids);
-        expect(turned.rows.window(0, 2, signal())).toEqual(FIELDS);
+        expect(turned.rows.window(0, 2, signal())).toEqual(shownFields);
         const cells = upright.cells(ids, FIELDS, signal()) as unknown[][];
         expect(turned.cells(FIELDS, ids, signal())).toEqual(FIELDS.map((_, f) => ids.map((_, r) => cells[r]![f])));
       } finally {
@@ -92,6 +99,27 @@ describe("transpose", () => {
         inner.destroy();
       }
     }));
+
+  test("moving the turned rows moves the source's columns, and baking a sort reports it on its side", () => {
+    const records: Rec[] = [
+      { n: 2, s: "b" },
+      { n: 1, s: "a" },
+    ];
+    const turned = transpose(fromRows(records, COLUMNS));
+    const views: AppliedView<Field, number>[] = [];
+    const ignore = () => {};
+    const axis = { notify: ignore, supportChanged: ignore, movableChanged: ignore };
+    turned.attach!({ rows: axis, cols: axis, viewChanged: (v) => views.push(v), findCounted: ignore });
+    const bySecond: ViewSpec<Field, number> = { rows: { ...NONE, sort: [{ id: 1, direction: "descending" }], hidden: [] }, cols: { ...NONE, hidden: [] } };
+    turned.view!(bySecond, signal());
+    expect(turned.rows.window(0, 2, signal())).toEqual(["s", "n"]);
+    expect(turned.rows.movable!()).toBe(true);
+    expect(turned.rows.move!(["n"], 0)).toBe(true);
+    expect(turned.rows.window(0, 2, signal())).toEqual(["n", "s"]);
+    expect(views.map((v) => [v.rows.sort, v.cols.sort])).toEqual([[[], []]]);
+    expect(turned.cols.move!([1], 0)).toBe(true);
+    expect(turned.cols.window(0, 2, signal())).toEqual([1, 0]);
+  });
 
   test("find steps, marks and counts as on the source with rows and columns swapped", () =>
     hegel.test((tc) => {

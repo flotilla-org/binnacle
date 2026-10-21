@@ -3,7 +3,8 @@
 //! and `Cancel`, seen through Snapshots and drained Effects.
 
 use binnacle_core::{
-    Action, Axis, FocusStep, HeaderClick, Key, Mode, Modifiers, PointerEvent, SelectionUnit,
+    Action, Axis, DropTarget, FocusStep, HeaderClick, Key, Mode, Modifiers, PointerEvent,
+    SelectionUnit,
 };
 
 mod support;
@@ -131,7 +132,14 @@ fn a_header_press_dragged_past_the_threshold_is_not_a_click() {
     });
     let snap = s.frame(V);
     assert!(snap.capturing());
-    assert_eq!(snap.mode(), Mode::Idle);
+    // A header drag even on rows that can't move, since it may pin them.
+    assert!(matches!(
+        snap.mode(),
+        Mode::MovingHeaders {
+            target: DropTarget::Stay,
+            ..
+        }
+    ));
     s.input(|g| g.pointer(PointerEvent::up(1.0, 4.0)));
     let snap = s.frame(V);
     assert!(!snap.capturing());
