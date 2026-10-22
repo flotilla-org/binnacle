@@ -45,11 +45,16 @@ fn float() -> impl hegel::PrintableGenerator<f64> {
     )
 }
 
-/// A date: mostly midnights a few days apart, sometimes a time of day.
+/// A date: mostly midnights a few days apart, sometimes a time of day,
+/// sometimes any instant at all.
 fn date() -> impl hegel::PrintableGenerator<i64> {
     hegel::one_of!(
-        small().map(|d| d.clamp(-1000, 1000) * DAY),
+        gs::integers::<i64>()
+            .min_value(-2)
+            .max_value(2)
+            .map(|d| d * DAY),
         gs::integers::<i64>().min_value(-3 * DAY).max_value(3 * DAY),
+        gs::integers::<i64>(),
     )
 }
 
@@ -315,9 +320,8 @@ fn uniform_cell(rows: &[Row], r: u64, c: u64, dates: bool) -> Cell {
 }
 
 /// On a table whose columns all compare one kind, the columns shown are
-/// those whose value in each condition's row passes it, and the support for
-/// every row says that kind; on the mixed table no row supports comparing
-/// the columns, and every such condition is left out.
+/// those whose value in each condition's row passes it; on the mixed table
+/// every such condition is left out.
 #[hegel::test(test_cases = 1000)]
 fn the_columns_shown_are_those_every_applied_comparison_keeps(tc: TestCase) {
     let rows = tc.draw(gs::vecs(row()).max_size(MAX_ROWS));
@@ -332,9 +336,6 @@ fn the_columns_shown_are_those_every_applied_comparison_keeps(tc: TestCase) {
         }
         None => (source(rows.len()), COLS, None),
     };
-    for r in 0..n {
-        assert_eq!(source.support(Axis::Cols, Key(r)).compare, kind);
-    }
     source.view(&rows, &spec).unwrap();
     let conditions = applied(&wanted, n, |_| kind);
     let spec = FilterSpec::default().with_conditions(conditions.clone().into());
@@ -348,6 +349,19 @@ fn the_columns_shown_are_those_every_applied_comparison_keeps(tc: TestCase) {
         })
         .collect();
     assert_eq!(shown(&source, Axis::Cols), model);
+}
+
+/// Every row compares the kind its columns share: numbers on a table of
+/// numbers, dates on one of dates, and none on the mixed table.
+#[test]
+fn the_rows_compare_the_kind_every_column_shares() {
+    let mixed = source(2).support(Axis::Cols, Key(0)).compare;
+    let numbers = uniform(2, false).support(Axis::Cols, Key(1)).compare;
+    let dates = uniform(2, true).support(Axis::Cols, Key(1)).compare;
+    assert_eq!(
+        (mixed, numbers, dates),
+        (None, Some(Compared::Numbers), Some(Compared::Dates))
+    );
 }
 
 /// The rows declare comparisons on numbers for the integer and float

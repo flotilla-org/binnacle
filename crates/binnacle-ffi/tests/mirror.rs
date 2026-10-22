@@ -299,7 +299,11 @@ fn value(tc: &TestCase) -> Value {
 /// A number (NaN and -0 among them) or a date for a comparison.
 #[hegel::composite]
 fn scalar(tc: &TestCase) -> Scalar {
-    let number = gs::sampled_from(vec![1.5, -0.0, f64::NAN, f64::INFINITY]).map(Scalar::Number);
+    let number = hegel::one_of!(
+        gs::sampled_from(vec![1.5, -0.0, f64::NAN, f64::INFINITY]),
+        gs::floats::<f64>(),
+    )
+    .map(Scalar::Number);
     let date = gs::integers::<i64>().map(Scalar::Date);
     tc.draw(hegel::one_of!(number, date))
 }
@@ -1441,8 +1445,6 @@ unsafe fn text_from_c(t: BinnacleText) -> String {
     String::from_utf8(bytes.to_vec()).expect("UTF-8")
 }
 
-/// The values of a OneOf `condition` in C form, borrowing their texts; none
-/// for other kinds.
 fn scalar_from_c(s: BinnacleScalar) -> Scalar {
     match s.kind {
         BINNACLE_SCALAR_NUMBER => Scalar::Number(s.number),
@@ -1466,6 +1468,8 @@ fn scalar_to_c(s: Scalar) -> BinnacleScalar {
     }
 }
 
+/// The values of a OneOf `condition` in C form, borrowing their texts; none
+/// for other kinds.
 fn values_to_c(condition: &Condition) -> Vec<BinnacleValue> {
     let ConditionKind::OneOf(values) = &condition.kind else {
         return Vec::new();

@@ -37,10 +37,11 @@ const number = gs.oneOf(
   gs.floats({ allowNan: false }),
 );
 
-/** Mostly midnights a few days apart, sometimes a time of day. */
+/** Mostly midnights a few days apart, sometimes a time of day, sometimes any instant a `Date` holds. */
 const millis = gs.oneOf(
   gs.integers({ minValue: -2, maxValue: 2 }).map((d) => d * DAY),
   gs.integers({ minValue: -3 * DAY, maxValue: 3 * DAY }),
+  gs.integers({ minValue: -8.64e15, maxValue: 8.64e15 }),
 );
 
 const records = gs.arrays(
