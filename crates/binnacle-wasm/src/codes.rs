@@ -170,11 +170,12 @@ pub const SUPPORT_TEXT_REGEX: u8 = 4;
 pub const SUPPORT_ONE_OF: u8 = 8;
 pub const SUPPORT_COMPARE_NUMBERS: u8 = 16;
 pub const SUPPORT_COMPARE_DATES: u8 = 32;
+pub const SUPPORT_GROUP: u8 = 64;
 
 /// Support from its bits: [`SUPPORT_SORT`], [`SUPPORT_TEXT`] with
 /// [`SUPPORT_TEXT_REGEX`] if Text conditions take regexes (regex alone is no
-/// text support), [`SUPPORT_ONE_OF`], and [`SUPPORT_COMPARE_NUMBERS`] or
-/// [`SUPPORT_COMPARE_DATES`] (numbers, if both).
+/// text support), [`SUPPORT_ONE_OF`], [`SUPPORT_COMPARE_NUMBERS`] or
+/// [`SUPPORT_COMPARE_DATES`] (numbers, if both), and [`SUPPORT_GROUP`].
 pub fn support(bits: u8) -> Support {
     let text = (bits & SUPPORT_TEXT != 0).then(|| TextSupport::new(bits & SUPPORT_TEXT_REGEX != 0));
     let compare = match () {
@@ -187,6 +188,7 @@ pub fn support(bits: u8) -> Support {
         .with_text(text)
         .with_one_of(bits & SUPPORT_ONE_OF != 0)
         .with_compare(compare)
+        .with_group(bits & SUPPORT_GROUP != 0)
 }
 
 /// The bits of `support`, as [`support`] reads them.
@@ -200,6 +202,9 @@ pub fn support_bits(support: Support) -> u8 {
     }
     if support.one_of {
         bits |= SUPPORT_ONE_OF;
+    }
+    if support.group {
+        bits |= SUPPORT_GROUP;
     }
     bits | match support.compare {
         None => 0,

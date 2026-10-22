@@ -138,6 +138,7 @@ describe("a layout restored onto another grid over the same data reads back the 
         view: {
           rows: { sort: [{ id: "a", direction: "descending" }], filter: { quick: null, conditions: [] }, hidden: [] },
           cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: ["c"] },
+          grouping: null,
         },
         pins: { rows: { leading: [3], trailing: [] }, cols: { leading: ["b"], trailing: ["c"] } },
         sizes: { rows: [], cols: [["a", 150]] },
@@ -245,6 +246,7 @@ test("restored before data loads: the View Spec shows pending, pins, sizes and b
       view: {
         rows: { sort: [{ id: "c1", direction: "ascending" }], filter: { quick: null, conditions: [] }, hidden: ["r4"] },
         cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: [] },
+        grouping: null,
       },
       pins: { rows: { leading: [], trailing: [] }, cols: { leading: ["c2"], trailing: [] } },
       sizes: { rows: [], cols: [["c2", 77]] },
@@ -296,7 +298,7 @@ test("a missing item's pin or size keeps its ID through any number of Resets, un
     const none = { quick: null, conditions: [] };
     const layout: Layout<string, string> = {
       version: 1,
-      view: { rows: { sort: [], filter: none, hidden: [] }, cols: { sort: [], filter: none, hidden: [] } },
+      view: { rows: { sort: [], filter: none, hidden: [] }, cols: { sort: [], filter: none, hidden: [] }, grouping: null },
       pins: { rows: { leading: [], trailing: ["gone row"] }, cols: { leading: ["gone", "c1"], trailing: [] } },
       // Sized only, not pinned.
       sizes: { rows: [["sized row", 40]], cols: [["sized", 90]] },

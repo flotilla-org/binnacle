@@ -3,7 +3,7 @@
 // the typed object. The agreement tests check the decoder against Rust.
 
 import type { AxisName, PinEdge } from "./codes";
-import type { CompareOp, Comparison, Scalar } from "./source";
+import type { CompareOp, Comparison, Grouping, Level, Outline, Placement, Scalar } from "./source";
 
 export interface Rect {
   x: number;
@@ -18,7 +18,15 @@ export interface StripItem {
   key: bigint | null;
   offset: number;
   size: number;
+  /** Where the item sits in a grouped axis, as its Table Source sent it with its Window; `null` on a plain axis. */
+  outline: KeyedOutline | null;
 }
+
+/** An outline by Keys: ancestors by Keys of the axis, the group's field by a Key of the other axis. */
+export type KeyedOutline = Outline<bigint, bigint>;
+
+/** The grouping part of a View Spec by Keys: fields are Keys of the columns. */
+export type KeyedGrouping = Omit<Grouping<bigint, bigint, bigint>, "slicers"> & { slicers: KeyedCondition[] };
 
 export type SortDirection = "ascending" | "descending";
 
@@ -97,6 +105,8 @@ export interface FindMatch {
 export interface KeyedViewSpec {
   rows: KeyedAxisView;
   cols: KeyedAxisView;
+  /** `null` for a plain table. */
+  grouping: KeyedGrouping | null;
 }
 
 export interface HeaderPlacement {
@@ -112,7 +122,7 @@ export interface HeaderPlacement {
    */
   filter: { filtered: boolean; pending: boolean; notApplied: boolean };
   /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
-  support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean; compare: "numbers" | "dates" | null };
+  support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean; compare: "numbers" | "dates" | null; group: boolean };
   /** Whether this item's move is requested and not yet answered. */
   movePending: boolean;
 }
@@ -323,6 +333,10 @@ const COMPARE_DATES_BIT = 32;
 /** A comparison's code in the Snapshot, as `op`. */
 const COMPARE_OPS: readonly CompareOp[] = ["equal", "notEqual", "less", "atMost", "greater", "atLeast"];
 const BETWEEN = 6;
+const GROUP_BIT = 64;
+const PLACEMENTS: readonly Placement[] = ["before", "after", "off"];
+const KINDS: readonly KeyedOutline["kind"][] = ["leaf", "group", "subtotal", "grandTotal"];
+const OPEN_STATES: readonly KeyedOutline["open"][] = ["open", "closed", "cantOpen"];
 
 class Reader {
   private n = 0;
@@ -422,9 +436,52 @@ class Reader {
     return { filter: { quick, conditions }, sort, hidden: this.list(() => this.key()) };
   }
 
+  level(): Level<bigint> {
+    switch (this.num()) {
+      case 0:
+        return { field: this.key(), subtotal: PLACEMENTS[this.num()]! };
+      case 1:
+        return { values: true };
+      default:
+        throw new Error("binnacle: unknown grouping level in Snapshot");
+    }
+  }
+
+  groupedAxis(): KeyedGrouping["rowAxis"] {
+    const grandTotal = PLACEMENTS[this.num()]!;
+    const form = this.num() === 0 ? "outline" : "header";
+    const depth = this.opt(() => this.num()) ?? "all";
+    return { grandTotal, form, expand: { depth, except: this.list(() => this.key()) } };
+  }
+
+  grouping(): KeyedGrouping {
+    const rowLevels = this.list(() => this.level());
+    const colLevels = this.list(() => this.level());
+    const values = this.list(() => {
+      const field = this.optKey();
+      return { field, aggregate: this.text() };
+    });
+    const slicers = this.list(() => this.condition());
+    const rowAxis = this.groupedAxis();
+    return { rowLevels, colLevels, values, slicers, rowAxis, colAxis: this.groupedAxis() };
+  }
+
+  outline(): KeyedOutline {
+    const kind = KINDS[this.num()]!;
+    const depth = this.num();
+    const open = OPEN_STATES[this.num()]!;
+    const ancestors = this.list(() => this.key());
+    const group = this.opt(() => {
+      const field = this.key();
+      return { field, value: this.flag() ? this.text() : null };
+    });
+    return { kind, depth, open, ancestors, group };
+  }
+
   view(): KeyedViewSpec {
     const rows = this.axisView();
-    return { rows, cols: this.axisView() };
+    const cols = this.axisView();
+    return { rows, cols, grouping: this.opt(() => this.grouping()) };
   }
 
   done(): boolean {
@@ -441,7 +498,13 @@ function readAxis(r: Reader): AxisSnapshot {
   const thumb = { fraction: r.num(), size: r.num() };
   const focus = r.opt(() => ({ position: r.num(), key: r.optKey() }));
   const locating = r.flag();
-  const strip = r.list(() => ({ position: r.num(), key: r.optKey(), offset: r.num(), size: r.num() }));
+  const strip = r.list(() => ({
+    position: r.num(),
+    key: r.optKey(),
+    offset: r.num(),
+    size: r.num(),
+    outline: r.opt(() => r.outline()),
+  }));
   const pinned = r.num();
   const trailing = r.num();
   const scrolling = { start: r.num(), end: r.num() };
@@ -501,6 +564,7 @@ function supportOf(bits: number): HeaderPlacement["support"] {
     text: (bits & TEXT_BIT) !== 0 ? { regex: (bits & REGEX_BIT) !== 0 } : null,
     oneOf: (bits & ONE_OF_BIT) !== 0,
     compare: (bits & COMPARE_NUMBERS_BIT) !== 0 ? "numbers" : (bits & COMPARE_DATES_BIT) !== 0 ? "dates" : null,
+    group: (bits & GROUP_BIT) !== 0,
   };
 }
 

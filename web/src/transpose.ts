@@ -22,7 +22,11 @@ import type {
   ViewSpec,
 } from "./source";
 
-/** `spec` with its axes' parts swapped. */
+/**
+ * `spec` with its axes' parts swapped. A grouping names the source's base
+ * fields, its columns, which turning puts on the other side, so it is left
+ * out: a turned table is never grouped.
+ */
 export function transposeView<RowId, ColId>(spec: ViewSpec<RowId, ColId>): ViewSpec<ColId, RowId> {
   return { rows: spec.cols, cols: spec.rows };
 }

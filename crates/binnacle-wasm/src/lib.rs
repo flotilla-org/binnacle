@@ -4,11 +4,13 @@
 //!
 //! Keys cross as exact `u64` (`BigUint64Array` in bulk, `bigint` singly);
 //! counts and Positions as `f64`, capped at 2^53 - 1. The Snapshot crosses as
-//! two flat arrays ([`snapshot`]); Effects as tagged objects ([`effect`]).
+//! two flat arrays ([`snapshot`]); Effects as tagged objects ([`effect`]),
+//! and View Specs' grouping and Window items' outlines likewise ([`grouping`]).
 
 pub mod codes;
 pub mod effect;
 mod grid;
+pub mod grouping;
 mod memory;
 pub mod snapshot;
 pub mod testing;

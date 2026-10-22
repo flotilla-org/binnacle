@@ -1,7 +1,9 @@
 //! The Grid as a wasm-bindgen class. Each input is one typed method: a new
 //! Action or setting is a few lines here plus its call in `web/src`.
 
-use binnacle_core::{Action, AxisConfig, Grid, Key, PointerEvent, TextQuery, Totals, Viewport};
+use binnacle_core::{
+    Action, AxisConfig, Grid, Key, Outline, PointerEvent, TextQuery, Totals, Viewport,
+};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -9,6 +11,7 @@ use crate::codes::{self, axis, focus_step, position};
 use crate::effect::{
     WireCondition, WireFindMatch, WireFindQuery, WireStamped, WireTextQuery, WireViewSpec,
 };
+use crate::grouping::WireOutline;
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -86,6 +89,26 @@ impl WebGrid {
     pub fn set_window(&mut self, a: u8, start: f64, keys: &[u64]) {
         let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
         self.grid.set_window(axis(a), position(start), &keys);
+    }
+
+    /// The outlines of the items of axis `a` from Position `start`, after
+    /// their Window: an array of outline objects (see [`crate::grouping`]).
+    pub fn set_outlines(&mut self, a: u8, start: f64, outlines: JsValue) -> Result<(), JsError> {
+        let outlines: Vec<WireOutline> = serde_wasm_bindgen::from_value(outlines)
+            .map_err(|e| JsError::new(&format!("binnacle: bad outlines: {e}")))?;
+        let outlines: Vec<Outline> = outlines.into_iter().map(Outline::from).collect();
+        self.grid.set_outlines(axis(a), position(start), &outlines);
+        Ok(())
+    }
+
+    /// Groups axis `a` by the base field `field` as its innermost level.
+    pub fn group_by(&mut self, a: u8, field: u64) {
+        self.grid.group_by(axis(a), Key(field));
+    }
+
+    /// Removes every level of axis `a`.
+    pub fn ungroup(&mut self, a: u8) {
+        self.grid.ungroup(axis(a));
     }
 
     /// Lays out the frame and returns its numbers; [`WebGrid::snapshot_keys`]

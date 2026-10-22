@@ -2,8 +2,8 @@
 // and the corner where they meet.
 
 import type { AxisName } from "../codes";
-import { itemSpan, type HeaderPlacement, type Rect, type Snapshot, type SortDirection } from "../snapshot";
-import { PAD, clip, type PaintContext } from "./context";
+import { itemSpan, type HeaderPlacement, type KeyedOutline, type Rect, type Snapshot, type SortDirection } from "../snapshot";
+import { PAD, clip, summaryStyle, type PaintContext } from "./context";
 import { paintShimmer } from "./pending";
 
 /** The sort marker's triangle, CSS px. */
@@ -13,6 +13,9 @@ export const MARKED = MARKER + 14;
 /** The column menu's button at a header's right end (a row menu's at its left), CSS px square, and the funnel drawn in it. */
 const BUTTON = 18;
 const FUNNEL = 10;
+/** A grouped row band's indent per level, and the room its disclosure mark takes, CSS px. */
+const INDENT = 14;
+const DISCLOSURE = 14;
 
 /** Whether a header shows its menu's button: a menu is mounted for its band and its item can be filtered by. */
 export function hasFilterButton(filterButtons: boolean, h: HeaderPlacement): boolean {
@@ -181,7 +184,7 @@ export function paintColumnHeaders(p: PaintContext): void {
   ctx.fillRect(left, 0, p.width - left, top);
   ctx.font = theme.headerFont;
   for (const [i, h] of s.cols.headers.entries()) {
-    const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width };
+    const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width, outline: null };
     const loading = h.key === null;
     const text = loading ? "…" : p.content.label("cols", item);
     // A scrolling header slides under the pinned ones.
@@ -214,13 +217,15 @@ export function paintRowNumbers(p: PaintContext): void {
   ctx.font = theme.font;
   ctx.textAlign = "right";
   for (const [i, h] of s.rows.headers.entries()) {
-    const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height };
+    const outline = s.rows.strip[i]?.outline ?? null;
+    const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height, outline };
     const text = p.content.label("rows", item);
     const span = itemSpan(s.rows, i);
     ctx.save();
     clip(ctx, 0, span.start, left, span.end - span.start);
-    if (h.hovered) {
-      ctx.fillStyle = theme.headerHovered.background;
+    const role = summaryStyle(theme, outline);
+    if (h.hovered || role) {
+      ctx.fillStyle = h.hovered ? theme.headerHovered.background : role!.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
     if (h.sort.pending || h.movePending) paintShimmer(p, h.rect);
@@ -228,12 +233,40 @@ export function paintRowNumbers(p: PaintContext): void {
     // A row the columns sort by ends in its marker, as a column header does.
     const mark = marker(s, h, "cols");
     const room = left - 2 * PAD - (mark ? MARKED : 0) - inset;
-    ctx.fillStyle = h.hovered ? theme.headerHovered.color : theme.rowNumber.color;
-    ctx.fillText(measure.fit(text, theme.font, room), left - PAD - (mark ? MARKED : 0), h.rect.y + h.rect.height / 2);
+    const color = h.hovered ? theme.headerHovered.color : (role?.color ?? theme.rowNumber.color);
+    const y = h.rect.y + h.rect.height / 2;
+    if (outline) paintOutline(p, outline, text, color, y, room);
+    else {
+      ctx.fillStyle = color;
+      ctx.fillText(measure.fit(text, theme.font, room), left - PAD - (mark ? MARKED : 0), y);
+    }
     if (mark) paintMarker(p, h, mark, 0);
     ctx.restore();
   }
   ctx.restore();
+}
+
+/**
+ * A grouped row's band in outline form, left-aligned: an indent per level,
+ * then a Group Item's disclosure mark and its label in the header font, or
+ * a Leaf's label past the mark's room.
+ */
+function paintOutline(p: PaintContext, outline: KeyedOutline, text: string, color: string, y: number, room: number): void {
+  const { ctx, theme, measure } = p;
+  ctx.textAlign = "left";
+  let x = PAD + outline.depth * INDENT;
+  if (outline.kind === "group") {
+    ctx.fillStyle = theme.disclosure;
+    ctx.font = theme.headerFont;
+    ctx.fillText(outline.open === "closed" ? "▸" : "▾", x, y);
+  }
+  x += DISCLOSURE;
+  const font = outline.kind === "leaf" ? theme.font : theme.headerFont;
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.fillText(measure.fit(text, font, room - (x - PAD)), x, y);
+  ctx.textAlign = "right";
+  ctx.font = theme.font;
 }
 
 export function paintCorner(p: PaintContext): void {

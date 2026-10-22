@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 binnacle-core.workspace = true
+binnacle-group.workspace = true
 binnacle-memory.workspace = true
 console_error_panic_hook = "0.1.7"
 serde = { version = "1", features = ["derive"] }

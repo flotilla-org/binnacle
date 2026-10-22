@@ -5,9 +5,9 @@
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Compared, Comparison, Condition, ConditionState,
     Cursor, DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep,
-    Grid, HeaderPlacement, Key, Mode, Modifiers, PointerEvent, Rect, Scalar, Searched, Snapshot,
-    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    Grid, HeaderPlacement, Key, Mode, Modifiers, OpenState, Outline, PointerEvent, Rect, Scalar,
+    Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals,
+    Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -15,6 +15,7 @@ use crate::effect::{
     WireAxis, WireCondition, WireDirection, WireFindMatch, WireFindQuery, WireStamped,
     WireViewEdit, WireViewSpec,
 };
+use crate::grouping::WireOutline;
 use crate::snapshot::cell_bits;
 
 #[derive(Serialize)]
@@ -148,6 +149,7 @@ struct DumpSupport {
     #[serde(rename = "oneOf")]
     one_of: bool,
     compare: Option<&'static str>,
+    group: bool,
 }
 
 impl From<Support> for DumpSupport {
@@ -160,6 +162,7 @@ impl From<Support> for DumpSupport {
                 Compared::Numbers => "numbers",
                 Compared::Dates => "dates",
             }),
+            group: s.group,
         }
     }
 }
@@ -196,6 +199,7 @@ struct DumpItem {
     key: Option<u64>,
     offset: f32,
     size: f32,
+    outline: Option<WireOutline>,
 }
 
 #[derive(Serialize)]
@@ -431,6 +435,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 key: i.key.map(|k| k.0),
                 offset: i.offset,
                 size: i.size,
+                outline: s.outline(axis, i.position).map(WireOutline::from),
             })
             .collect(),
         pinned: s.pinned(axis, Edge::Leading).len() as f64,
@@ -728,6 +733,11 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             keys: vec![Key(3)],
         },
+        ViewEdit::Group {
+            axis: Axis::Rows,
+            field: col,
+        },
+        ViewEdit::Ungroup { axis: Axis::Cols },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -735,7 +745,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 22] = [
+pub const SCENARIOS: [&str; 23] = [
     "plain",
     "busy",
     "resizing",
@@ -758,6 +768,7 @@ pub const SCENARIOS: [&str; 22] = [
     "clipped",
     "restored",
     "endGap",
+    "grouped",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -1070,9 +1081,37 @@ pub fn scenario(name: &str) -> Grid {
             grid.show(Axis::Rows, &[key(5)]);
             grid.set_hide_support(Axis::Rows, false);
         }
+        "grouped" => {
+            // The rows grouped by column 1, as applied: every fifth row a
+            // Group Item heading the four after it, the second closed and
+            // the third's value blank.
+            grid.set_support(Axis::Rows, key(1), Support::default().with_group(true));
+            grid.group_by(Axis::Rows, key(1));
+            let applied = grid.snapshot().requested_view().cloned().unwrap();
+            grid.view_applied(applied, Totals::unknown());
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
+    if name == "grouped" {
+        let outlines: Vec<Outline> = (0..40)
+            .map(|p| match p % 5 {
+                0 => {
+                    let value = match p / 5 {
+                        2 => Value::Blank,
+                        n => Value::Text(format!("group {n}")),
+                    };
+                    let open = match p / 5 {
+                        1 => OpenState::Closed,
+                        _ => OpenState::Open,
+                    };
+                    Outline::group(vec![], open, key(1), value)
+                }
+                n => Outline::leaf(vec![key(p - n)]),
+            })
+            .collect();
+        grid.set_outlines(Axis::Rows, 0, &outlines);
+    }
     grid
 }
 
@@ -1248,6 +1287,14 @@ mod tests {
                     assert_eq!(s.hide_cap(Axis::Cols), 2);
                     assert!(s.view_pending());
                 }
+                "grouped" => {
+                    let key = |p: u64| Key(KEY_BASE + p);
+                    let grouping = s.applied_view().grouping.as_ref().unwrap();
+                    assert!(grouping.groups_by(Axis::Rows, key(1)));
+                    let group = s.outline(Axis::Rows, 5).unwrap();
+                    assert_eq!(group.open, OpenState::Closed);
+                    assert_eq!(s.outline(Axis::Rows, 6).unwrap().parent(), Some(key(5)));
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
@@ -1283,6 +1330,7 @@ mod tests {
                 "Idle",
                 "MovingHeaders",
                 "MovingHeaders",
+                "Idle",
                 "Idle",
                 "Idle",
                 "Idle"

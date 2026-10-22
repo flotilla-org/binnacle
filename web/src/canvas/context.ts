@@ -6,8 +6,8 @@ import type { Flashes } from "../flash";
 import type { Measure } from "../measure";
 import type { RendererChoice } from "../renderer";
 import type { AxisName } from "../codes";
-import { itemSpan, type Snapshot, type Span } from "../snapshot";
-import type { Theme } from "../theme";
+import { itemSpan, type KeyedOutline, type Snapshot, type Span } from "../snapshot";
+import type { Style, Theme } from "../theme";
 
 export interface PaintContext {
   ctx: CanvasRenderingContext2D;
@@ -41,6 +41,20 @@ export interface PaintContext {
 
 /** Horizontal text padding inside a cell or header, CSS px. */
 export const PAD = 6;
+
+/** The Theme role a Summary Item's row is drawn in; `null` for a Leaf or a plain row. */
+export function summaryStyle(theme: Theme, outline: KeyedOutline | null): Style | null {
+  switch (outline?.kind) {
+    case "group":
+      return theme.groupItem;
+    case "subtotal":
+      return theme.subtotal;
+    case "grandTotal":
+      return theme.grandTotal;
+    default:
+      return null;
+  }
+}
 
 export function clip(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
   ctx.beginPath();

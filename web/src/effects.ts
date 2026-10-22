@@ -26,6 +26,10 @@ export type KeyedViewEdit =
   | { type: "Hide"; axis: AxisName; keys: bigint[] }
   /** These hidden items of `axis` were shown again. */
   | { type: "Show"; axis: AxisName; keys: bigint[] }
+  /** `axis` was grouped by the base field `field` as its innermost level. */
+  | { type: "Group"; axis: AxisName; field: bigint }
+  /** Every level of `axis` was removed. */
+  | { type: "Ungroup"; axis: AxisName }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -135,6 +139,31 @@ function isKeys(v: unknown): v is bigint[] {
   return Array.isArray(v) && v.every((k) => typeof k === "bigint");
 }
 
+const PLACEMENT = ["before", "after", "off"];
+
+function isLevel(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return v.values === true || (typeof v.field === "bigint" && PLACEMENT.includes(v.subtotal as string));
+}
+
+function isGroupedAxis(v: unknown): boolean {
+  if (!isRecord(v) || !isRecord(v.expand)) return false;
+  const depth = v.expand.depth === "all" || typeof v.expand.depth === "number";
+  const form = v.form === "outline" || v.form === "header";
+  return PLACEMENT.includes(v.grandTotal as string) && form && depth && isKeys(v.expand.except);
+}
+
+function isGrouping(v: unknown): boolean {
+  if (v === null) return true;
+  if (!isRecord(v) || !Array.isArray(v.rowLevels) || !Array.isArray(v.colLevels)) return false;
+  const values =
+    Array.isArray(v.values) &&
+    v.values.every((a) => isRecord(a) && (a.field === null || typeof a.field === "bigint") && typeof a.aggregate === "string");
+  const slicers = Array.isArray(v.slicers) && v.slicers.every(isCondition);
+  const levels = v.rowLevels.every(isLevel) && v.colLevels.every(isLevel);
+  return levels && values && slicers && isGroupedAxis(v.rowAxis) && isGroupedAxis(v.colAxis);
+}
+
 function isEdit(v: unknown): v is KeyedViewEdit {
   if (!isRecord(v)) return false;
   switch (v.type) {
@@ -152,6 +181,10 @@ function isEdit(v: unknown): v is KeyedViewEdit {
     case "Hide":
     case "Show":
       return isAxis(v.axis) && isKeys(v.keys);
+    case "Group":
+      return isAxis(v.axis) && typeof v.field === "bigint";
+    case "Ungroup":
+      return isAxis(v.axis);
     case "Replace":
     case "Reapply":
     case "Other":
@@ -176,7 +209,7 @@ function fits(field: Field, v: unknown): boolean {
     case "keys":
       return isKeys(v);
     case "view":
-      return isRecord(v) && isAxisView(v.rows) && isAxisView(v.cols);
+      return isRecord(v) && isAxisView(v.rows) && isAxisView(v.cols) && isGrouping(v.grouping);
     case "edit":
       return isEdit(v);
     case "find":

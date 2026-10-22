@@ -66,6 +66,14 @@ export interface Theme {
    */
   shimmerBase: string;
   shimmerHighlight: string;
+  /** A Group Item's row, band and body; its label is drawn in `headerFont`. */
+  groupItem: Style;
+  /** A Subtotal's row. */
+  subtotal: Style;
+  /** The Grand Total's row. */
+  grandTotal: Style;
+  /** The disclosure mark (`▾` open, `▸` closed) before a Group Item's label. */
+  disclosure: string;
 }
 
 const SANS = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -98,6 +106,10 @@ export const light: Theme = {
   unmatched: "rgb(255 255 255 / 0.6)",
   shimmerBase: "#dbeafe",
   shimmerHighlight: "#ffffff",
+  groupItem: { color: "#0f172a", background: "#e8edf4" },
+  subtotal: { color: "#0e7490", background: "#f0f9fb" },
+  grandTotal: { color: "#0f172a", background: "#d5dde8" },
+  disclosure: "#d97706",
 };
 
 /** Catppuccin's Mocha flavour, with zebra stripes. */
@@ -146,6 +158,10 @@ export const catppuccinMocha: Theme = {
   unmatched: "rgb(30 30 46 / 0.6)",
   shimmerBase: mocha.surface0,
   shimmerHighlight: mocha.surface2,
+  groupItem: { color: mocha.text, background: mocha.surface0 },
+  subtotal: { color: mocha.sapphire, background: mocha.mantle },
+  grandTotal: { color: mocha.text, background: mocha.surface1 },
+  disclosure: mocha.peach,
 };
 
 /** Greys only, for printing and for pages that want no colour. */
@@ -177,6 +193,10 @@ export const mono: Theme = {
   unmatched: "rgb(255 255 255 / 0.6)",
   shimmerBase: "#d4d4d4",
   shimmerHighlight: "#f5f5f5",
+  groupItem: { color: "#000000", background: "#e3e3e3" },
+  subtotal: { color: "#000000", background: "#f2f2f2" },
+  grandTotal: { color: "#000000", background: "#cccccc" },
+  disclosure: "#000000",
 };
 
 /** Every preset, in the order a host cycles them. */

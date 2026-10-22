@@ -1,14 +1,24 @@
 //! The In-Memory Table Source for `fromRows` in `web/src/rows.ts`. The rows
 //! stay in JS: TypeScript extracts each sorted column's keys and stages them
 //! here, then sorts. Items are named by Logical Index (`u32`) both ways.
+//!
+//! Grouped rows go through the grouping layer, answered from the rows in
+//! view: TypeScript stages each level's values as text, sorts the rows by
+//! the levels' fields first, then groups ([`WebMemory::group`]).
 
 use std::borrow::Cow;
 
-use binnacle_core::{Key, Located};
+use binnacle_core::{Axis, Grouping, ItemKind, Key, Level, Located, Value, ViewSpec};
+use binnacle_group::{
+    AggregateBackend, Answer, Batch, Figure, GroupingLayer, MemoryAggregates, settle,
+};
 use binnacle_memory::{InMemoryTableSource, MovePolicy, SortKeys};
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, position};
+use crate::grid::to_js;
+use crate::grouping::{WireItemKind, WireOpenState};
 
 /// One sort column's keys, staged until [`WebMemory::sort`].
 enum Staged {
@@ -38,10 +48,64 @@ impl Staged {
     }
 }
 
+/// Strings staged as for [`WebMemory::stage_strings`], as Values.
+fn values(bytes: &[u8], ends: &[u32], nulls: &[u8]) -> Vec<Value> {
+    (ends.iter().enumerate())
+        .map(|(i, &end)| {
+            let start = if i == 0 { 0 } else { ends[i - 1] as usize };
+            let text = String::from_utf8_lossy(&bytes[start..end as usize]);
+            Value::of((nulls[i] == 0).then_some(&*text))
+        })
+        .collect()
+}
+
+/// The grouping layer's backend: the rows in view, grouped once per stamp.
+struct Backend<'a> {
+    table: &'a InMemoryTableSource,
+    levels: &'a [Vec<Value>],
+    aggregates: &'a mut Option<MemoryAggregates>,
+}
+
+impl AggregateBackend<Figure> for Backend<'_> {
+    fn answer(&mut self, batch: &Batch) -> Vec<Answer<Figure>> {
+        if self.aggregates.as_ref().map(|a| a.stamp()) != Some(batch.stamp) {
+            let keys = self.table.window(Axis::Rows, 0..self.table.count(Axis::Rows));
+            let levels = self.levels;
+            *self.aggregates = Some(MemoryAggregates::new(batch, &keys, |level, i| {
+                let item = keys[i].0 as usize;
+                levels[level].get(item).cloned().unwrap_or(Value::Blank)
+            }));
+        }
+        self.aggregates
+            .as_mut()
+            .map_or(Vec::new(), |a| a.answer(batch))
+    }
+}
+
+/// One item of a grouped Window: its layer Key, its Logical Index if a
+/// Leaf, its kind, open state and depth, the path of its group (a Leaf's
+/// parent's) as each level's column index and text (`null` for a blank),
+/// and a Group Item's count.
+#[derive(Serialize)]
+struct GroupedItem {
+    key: u64,
+    item: Option<u32>,
+    kind: WireItemKind,
+    open: WireOpenState,
+    depth: u32,
+    path: Vec<(u32, Option<String>)>,
+    count: Option<f64>,
+}
+
 #[wasm_bindgen]
 pub struct WebMemory {
     table: InMemoryTableSource,
     staged: Vec<Staged>,
+    layer: GroupingLayer<Figure>,
+    aggregates: Option<MemoryAggregates>,
+    /// Each level's value of every row, by Logical Index.
+    levels: Vec<Vec<Value>>,
+    staged_levels: Vec<Vec<Value>>,
 }
 
 #[wasm_bindgen]
@@ -51,11 +115,20 @@ impl WebMemory {
         WebMemory {
             table: InMemoryTableSource::new(rows as usize, cols as usize),
             staged: Vec::new(),
+            layer: GroupingLayer::new(),
+            aggregates: None,
+            levels: Vec::new(),
+            staged_levels: Vec::new(),
         }
     }
 
+    /// The items on axis `a`: Group Items included while the rows are
+    /// grouped.
     pub fn count(&self, a: u8) -> f64 {
-        self.table.count(axis(a)) as f64
+        match self.layer.count(axis(a)) {
+            Some(n) => n as f64,
+            None => self.table.count(axis(a)) as f64,
+        }
     }
 
     /// The Logical Indices at Positions `start..end`, clipped to the count.
@@ -70,10 +143,120 @@ impl WebMemory {
     /// Where Logical Index `item` sits: `[code, position]` as
     /// [`codes::located`] reads them.
     pub fn locate(&mut self, a: u8, item: u32) -> Vec<f64> {
-        match self.table.locate(axis(a), Key(item as u64)) {
+        let located = match self.layer.grouped(axis(a)) {
+            true => self.locate_grouped(Key(item as u64)),
+            false => self.table.locate(axis(a), Key(item as u64)),
+        };
+        match located {
             Located::Found(p) => vec![0.0, p as f64],
             Located::Gone { suggest } => vec![1.0, suggest.map_or(f64::NAN, |p| p as f64)],
         }
+    }
+
+    /// Where the Summary Item with the layer's Key `key` sits, as
+    /// [`WebMemory::locate`] answers.
+    pub fn locate_summary(&mut self, key: u64) -> Vec<f64> {
+        match self.locate_grouped(Key(key)) {
+            Located::Found(p) => vec![0.0, p as f64],
+            Located::Gone { .. } => vec![1.0, f64::NAN],
+        }
+    }
+
+    /// Stages the next level's values as UTF-8 strings, one per row, as
+    /// [`WebMemory::stage_strings`] takes them.
+    pub fn stage_level(&mut self, bytes: Vec<u8>, ends: Vec<u32>, nulls: Vec<u8>) {
+        self.staged_levels.push(values(&bytes, &ends, &nulls));
+    }
+
+    /// Groups the rows by the columns `fields` (indices), outermost first,
+    /// one staged level each, over the rows in view as they are sorted and
+    /// filtered now. Returns the new count for the `Refiltered`.
+    pub fn group(&mut self, fields: &[u32]) -> f64 {
+        self.levels = std::mem::take(&mut self.staged_levels);
+        let mut grouping = Grouping::default();
+        grouping.row_levels = (fields.iter())
+            .map(|&f| Level::field(Key(f as u64)))
+            .collect();
+        grouping.values = Grouping::rows_by(Key(0)).values;
+        self.layer
+            .request_view(ViewSpec::default().with_grouping(Some(grouping)));
+        self.settle();
+        self.count(0)
+    }
+
+    /// Ungroups the rows; returns the count for the `Refiltered`.
+    pub fn ungroup(&mut self) -> f64 {
+        self.levels.clear();
+        self.layer.request_view(ViewSpec::default());
+        self.settle();
+        self.count(0)
+    }
+
+    /// Groups the rows again after they were sorted, filtered or hidden;
+    /// returns the count for the `Refiltered`.
+    pub fn regroup(&mut self) -> f64 {
+        if self.layer.grouped(Axis::Rows) {
+            self.layer.refresh();
+            self.settle();
+        }
+        self.count(0)
+    }
+
+    /// Whether the rows are grouped.
+    pub fn grouped(&self) -> bool {
+        self.layer.grouped(Axis::Rows)
+    }
+
+    /// The grouped rows' items at Positions `start..end`, clipped to the
+    /// count: an array of objects, each Leaf by its Logical Index and every
+    /// item with its outline and its group's path.
+    pub fn grouped_window(&mut self, start: f64, end: f64) -> JsValue {
+        let range = position(start)..position(end);
+        let want = range.end.min(self.count(0) as u64).saturating_sub(range.start) as usize;
+        let mut items = self.layer.window(Axis::Rows, range.clone());
+        while items.len() < want {
+            self.settle();
+            let more = self.layer.window(Axis::Rows, range.clone());
+            if more.len() <= items.len() {
+                break;
+            }
+            items = more;
+        }
+        let path = |key: Key| {
+            let summary = self.layer.summary(key);
+            let path = summary.map_or(&[][..], |s| &s.path[..]);
+            (path.iter())
+                .map(|(field, value)| {
+                    let text = match value {
+                        Value::Text(t) => Some(t.clone()),
+                        Value::Blank => None,
+                    };
+                    (field.0 as u32, text)
+                })
+                .collect::<Vec<_>>()
+        };
+        let items: Vec<GroupedItem> = (items.into_iter())
+            .map(|(key, outline)| {
+                let leaf = outline.kind == ItemKind::Leaf;
+                let count = (self.layer.summary(key)).and_then(|s| match s.aggregates {
+                    [Figure::Count(n)] => Some(*n as f64),
+                    _ => None,
+                });
+                GroupedItem {
+                    key: key.0,
+                    item: leaf.then_some(key.0 as u32),
+                    kind: (&outline).into(),
+                    open: (&outline).into(),
+                    depth: outline.depth,
+                    path: match leaf {
+                        true => outline.parent().map_or_else(Vec::new, path),
+                        false => path(key),
+                    },
+                    count,
+                }
+            })
+            .collect();
+        to_js(&items)
     }
 
     /// Stages the next sort item's keys as numbers, one per base item of
@@ -198,6 +381,27 @@ impl WebMemory {
     }
 }
 
+impl WebMemory {
+    fn settle(&mut self) {
+        let mut backend = Backend {
+            table: &self.table,
+            levels: &self.levels,
+            aggregates: &mut self.aggregates,
+        };
+        settle(&mut self.layer, &mut backend);
+        while self.layer.poll_viewed().is_some() {}
+    }
+
+    fn locate_grouped(&mut self, key: Key) -> Located {
+        loop {
+            if let Some(located) = self.layer.locate(Axis::Rows, key) {
+                return located;
+            }
+            self.settle();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +499,27 @@ mod tests {
         assert_eq!(m.window(COLS, 0.0, 3.0), vec![2, 0, 1]);
         assert!(m.move_items(ROWS, &[0], 3.0));
         assert_eq!(order(&m), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn grouped_rows_count_their_group_items_and_leaves_keep_their_place() {
+        let mut m = WebMemory::new(5, 2);
+        // Column 1 is "b", "a", "b", null, "a", sorted by it first.
+        m.stage_strings(b"babab".to_vec(), vec![1, 2, 3, 3, 4], vec![0, 0, 0, 1, 0]);
+        m.sort(ROWS, &[1], &[0]);
+        assert_eq!(order(&m), vec![1, 4, 0, 2, 3]);
+        m.stage_level(b"babab".to_vec(), vec![1, 2, 3, 3, 4], vec![0, 0, 0, 1, 0]);
+        assert_eq!(m.group(&[1]), 8.0, "three groups and five Leaves");
+        assert!(m.grouped());
+        // a: 1, 4; b: 0, 2; blank: 3.
+        assert_eq!(m.locate(ROWS, 4), vec![0.0, 2.0]);
+        assert_eq!(m.locate(ROWS, 3), vec![0.0, 7.0]);
+        m.filter(ROWS, &[1, 1, 0, 1, 1]);
+        assert_eq!(m.regroup(), 7.0);
+        assert_eq!(m.locate(ROWS, 2)[0], 1.0, "filtered out");
+        assert_eq!(m.ungroup(), 4.0);
+        assert!(!m.grouped());
+        assert_eq!(m.locate(ROWS, 3), vec![0.0, 3.0]);
     }
 
     #[test]

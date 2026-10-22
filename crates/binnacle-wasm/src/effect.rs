@@ -9,6 +9,8 @@ use binnacle_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::grouping::WireGrouping;
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WireAxis {
@@ -275,11 +277,14 @@ pub struct WireAxisView {
 }
 
 /// A View Spec both ways across the boundary: out in `ViewRequested` and the
-/// Snapshot, back in `view_applied`.
+/// Snapshot, back in `view_applied`. A spec coming back without `grouping`
+/// is a plain table.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireViewSpec {
     pub rows: WireAxisView,
     pub cols: WireAxisView,
+    #[serde(default)]
+    pub grouping: Option<WireGrouping>,
 }
 
 impl From<&ViewSpec> for WireViewSpec {
@@ -297,6 +302,7 @@ impl From<&ViewSpec> for WireViewSpec {
         WireViewSpec {
             rows: axis(Axis::Rows),
             cols: axis(Axis::Cols),
+            grouping: spec.grouping.as_ref().map(WireGrouping::from),
         }
     }
 }
@@ -329,7 +335,7 @@ impl From<WireViewSpec> for ViewSpec {
                 .with_filter(axis, filter(part.filter))
                 .with_hidden(axis, hidden);
         }
-        view
+        view.with_grouping(spec.grouping.map(Into::into))
     }
 }
 
@@ -373,6 +379,13 @@ pub enum WireViewEdit {
         axis: WireAxis,
         keys: Vec<u64>,
     },
+    Group {
+        axis: WireAxis,
+        field: u64,
+    },
+    Ungroup {
+        axis: WireAxis,
+    },
     Other,
 }
 
@@ -412,6 +425,11 @@ impl From<ViewEdit> for WireViewEdit {
                 axis: axis.into(),
                 keys: keys.iter().map(|k| k.0).collect(),
             },
+            ViewEdit::Group { axis, field } => WireViewEdit::Group {
+                axis: axis.into(),
+                field: field.0,
+            },
+            ViewEdit::Ungroup { axis } => WireViewEdit::Ungroup { axis: axis.into() },
             _ => WireViewEdit::Other,
         }
     }
@@ -710,6 +728,7 @@ mod tests {
                     ], "hidden": [] },
                     "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
                         "hidden": [] },
+                    "grouping": null,
                 },
                 "edit": { "type": "CycleSort", "axis": "rows", "key": 2, "multi": true },
             })
@@ -739,6 +758,7 @@ mod tests {
                         "hidden": [] },
                     "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
                         "hidden": [] },
+                    "grouping": null,
                 },
                 "edit": { "type": "SetQuickFilter", "axis": "rows", "query": quick },
             })
@@ -766,6 +786,7 @@ mod tests {
                         "hidden": [] },
                     "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
                         "hidden": [] },
+                    "grouping": null,
                 },
                 "edit": { "type": "AddCondition", "axis": "rows", "condition": condition },
             })

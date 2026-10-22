@@ -10,7 +10,7 @@ import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
 import { filterButtonRect, hasFilterButton } from "./canvas/bands";
-import { createFeed, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
+import { createFeed, windowIds, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -788,7 +788,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const source = this.options.source[axis];
     const count = await source.count();
     const window = await source.window(0, Math.min(count, limit), new AbortController().signal);
-    const shown = window as ItemId<A, RowId, ColId>[];
+    const shown = windowIds<unknown>(window) as ItemId<A, RowId, ColId>[];
     const hidden = this.hidden(axis).filter((id) => !shown.includes(id));
     return { ids: [...shown, ...hidden], partial: count > limit };
   }
@@ -815,7 +815,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     if (c.type === "keys") return c.keys;
     const source = this.options.source[on];
     const windows = await Promise.all(c.runs.map((r) => source.window(r.start, r.end, new AbortController().signal)));
-    return Array.from(this.itemKeys(on, windows.flat()));
+    return Array.from(this.itemKeys(on, windows.flatMap((w) => windowIds<unknown>(w))));
   }
 
   private hideKeys(on: AxisName, keys: BigUint64Array | bigint[]): HideOutcome {
@@ -1005,7 +1005,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   async columns(limit = 1000): Promise<ColumnInfo<ColId>[]> {
     const cols = this.options.source.cols;
     const count = await cols.count();
-    const ids = await cols.window(0, Math.min(count, limit), new AbortController().signal);
+    const ids = windowIds(await cols.window(0, Math.min(count, limit), new AbortController().signal));
     return ids.map((id) => ({ id, label: this.columnLabel(id), support: this.feed.columnSupport(id) }));
   }
 
