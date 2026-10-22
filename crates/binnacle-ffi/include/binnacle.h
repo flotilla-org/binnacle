@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 2u
+#define BINNACLE_ABI_VERSION 3u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -203,10 +203,29 @@ uint32_t binnacle_abi_version(void);
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
  * matches the condition's text query. ONE_OF: the value is one of the
- * condition's values exactly (none keeps nothing). */
+ * condition's values exactly (none keeps nothing). COMPARE: the value, a
+ * number or a date, compares with the condition's scalars as its compare
+ * says; a blank, a NaN or a value of the other kind never does. */
 #define BINNACLE_CONDITION_OTHER 0
 #define BINNACLE_CONDITION_TEXT 1
 #define BINNACLE_CONDITION_ONE_OF 2
+#define BINNACLE_CONDITION_COMPARE 3
+
+/* BinnacleCondition.compare: the value is equal to, not equal to, less
+ * than, at most, greater than or at least scalar, or BETWEEN scalar and
+ * high, both ends included. */
+#define BINNACLE_COMPARE_EQUAL 0
+#define BINNACLE_COMPARE_NOT_EQUAL 1
+#define BINNACLE_COMPARE_LESS 2
+#define BINNACLE_COMPARE_AT_MOST 3
+#define BINNACLE_COMPARE_GREATER 4
+#define BINNACLE_COMPARE_AT_LEAST 5
+#define BINNACLE_COMPARE_BETWEEN 6
+
+/* BinnacleScalar.kind: a number, or a date in milliseconds since the Unix
+ * epoch (UTC; a date without a time of day is its midnight). */
+#define BINNACLE_SCALAR_NUMBER 0
+#define BINNACLE_SCALAR_DATE 1
 
 /* BinnacleListedCondition.state: applied and still requested, requested and
  * not yet applied, applied and no longer requested, or requested and left
@@ -231,11 +250,14 @@ uint32_t binnacle_abi_version(void);
  * may be sorted by the item. TEXT: it may be filtered by Text conditions on
  * the item, and with TEXT_REGEX they take regexes. REGEX needs TEXT. ONE_OF:
  * it may be filtered by OneOf conditions, the Table Source listing the
- * item's distinct values. */
+ * item's distinct values. COMPARE_NUMBERS or COMPARE_DATES (not both): it
+ * may be filtered by COMPARE conditions on numbers, or on dates. */
 #define BINNACLE_SUPPORT_SORT 1u
 #define BINNACLE_SUPPORT_TEXT 2u
 #define BINNACLE_SUPPORT_TEXT_REGEX 4u
 #define BINNACLE_SUPPORT_ONE_OF 8u
+#define BINNACLE_SUPPORT_COMPARE_NUMBERS 16u
+#define BINNACLE_SUPPORT_COMPARE_DATES 32u
 
 /* binnacle_grid_set_quick_filter_support bits and
  * BinnacleAxisSnapshot.quick_filter: the axis has a quick filter, and it
@@ -595,11 +617,22 @@ typedef struct {
   BinnacleText text;
 } BinnacleValue;
 
+/* A number or a date a COMPARE condition compares with: number when kind is
+ * BINNACLE_SCALAR_NUMBER, date when BINNACLE_SCALAR_DATE; the other is
+ * ignored. */
+typedef struct {
+  uint32_t kind;
+  double number;
+  int64_t date;
+} BinnacleScalar;
+
 /* One condition on the items of an axis, read in item key of the other axis
  * (a column, for the rows): the items whose value there matches are kept, or
  * with negated 1 those whose value does not. A TEXT condition matches text;
  * its query searches key alone (as input, searched and keys are ignored). A
- * ONE_OF condition lists values_len values; other kinds ignore them. */
+ * ONE_OF condition lists values_len values; other kinds ignore them. A
+ * COMPARE condition compares as compare says with scalar, and for BETWEEN
+ * high; other kinds ignore them. */
 typedef struct {
   uint64_t key;
   /* BINNACLE_CONDITION_*. */
@@ -608,6 +641,10 @@ typedef struct {
   BinnacleTextQuery text;
   const BinnacleValue *values;
   size_t values_len;
+  /* BINNACLE_COMPARE_*. */
+  uint32_t compare;
+  BinnacleScalar scalar;
+  BinnacleScalar high;
 } BinnacleCondition;
 
 struct BinnacleListedCondition {

@@ -6,11 +6,11 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    DropTarget, Edge, EditEnd, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep,
-    Grid, HeaderClick, Key, Located, Mode, Modifiers, PinZone, PointerEvent, PointerKind, Searched,
-    SelectionUnit, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport,
-    Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
+    ConditionState, DropTarget, Edge, EditEnd, Effect, FilterSpec, FindDirection, FindMatch,
+    FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode, Modifiers, PinZone, PointerEvent,
+    PointerKind, Scalar, Searched, SelectionUnit, Snapshot, SortColumn, SortDirection, SortSpec,
+    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -296,15 +296,38 @@ fn value(tc: &TestCase) -> Value {
     tc.draw(hegel::one_of!(gs::just(Value::Blank), text))
 }
 
-/// A Text or OneOf condition on `axis`, read in a Key of the other axis,
-/// maybe with `not`; sometimes with no text or no values.
+/// A number (NaN and -0 among them) or a date for a comparison.
+#[hegel::composite]
+fn scalar(tc: &TestCase) -> Scalar {
+    let number = gs::sampled_from(vec![1.5, -0.0, f64::NAN, f64::INFINITY]).map(Scalar::Number);
+    let date = gs::integers::<i64>().map(Scalar::Date);
+    tc.draw(hegel::one_of!(number, date))
+}
+
+/// Any comparison, between included.
+#[hegel::composite]
+fn comparison(tc: &TestCase) -> Comparison {
+    let s = tc.draw(scalar());
+    match tc.draw(gs::integers::<u8>().max_value(6)) {
+        0 => Comparison::Equal(s),
+        1 => Comparison::NotEqual(s),
+        2 => Comparison::Less(s),
+        3 => Comparison::AtMost(s),
+        4 => Comparison::Greater(s),
+        5 => Comparison::AtLeast(s),
+        _ => Comparison::Between(s, tc.draw(scalar())),
+    }
+}
+
+/// A Text, OneOf or comparison condition on `axis`, read in a Key of the
+/// other axis, maybe with `not`; sometimes with no text or no values.
 #[hegel::composite]
 fn condition(tc: &TestCase, axis: Axis) -> Condition {
     let key = tc.draw(key(axis.other()));
-    let condition = if tc.draw(gs::booleans()) {
-        Condition::text(key, tc.draw(text_query(axis)))
-    } else {
-        Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(3)))
+    let condition = match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => Condition::text(key, tc.draw(text_query(axis))),
+        1 => Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(3))),
+        _ => Condition::compare(key, tc.draw(comparison())),
     };
     condition.not(tc.draw(gs::booleans()))
 }
@@ -410,7 +433,11 @@ fn answer(tc: &TestCase) -> Op {
                 Support::default()
                     .with_sort(sort)
                     .with_text(text)
-                    .with_one_of(tc.draw(gs::booleans())),
+                    .with_one_of(tc.draw(gs::booleans()))
+                    .with_compare(tc.draw(gs::optional(gs::sampled_from(vec![
+                        Compared::Numbers,
+                        Compared::Dates,
+                    ])))),
             )
         }
         1 => {
@@ -574,7 +601,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(54))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(57))),
     }
 }
 
@@ -721,10 +748,10 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 binnacle_grid_view_applied(h, &spec, std::ptr::null())
             }
             22 => binnacle_grid_set_support(h, ROWS, 5000, 4),
-            23 => binnacle_grid_set_support(h, ROWS, 5000, 16),
+            23 => binnacle_grid_set_support(h, ROWS, 5000, 64),
             24 => {
                 let unknown = BinnacleCondition {
-                    kind: 3,
+                    kind: 4,
                     ..BinnacleCondition::default()
                 };
                 binnacle_grid_add_condition(h, ROWS, &unknown)
@@ -828,6 +855,32 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             }
             53 => binnacle_grid_set_end_gap(h, 2, 1.0),
             54 => binnacle_grid_edit_ended(h, 2),
+            55 => binnacle_grid_set_support(
+                h,
+                ROWS,
+                5000,
+                BINNACLE_SUPPORT_COMPARE_NUMBERS | BINNACLE_SUPPORT_COMPARE_DATES,
+            ),
+            56 => {
+                let compare = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_COMPARE,
+                    compare: 7,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &compare)
+            }
+            57 => {
+                let compare = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_COMPARE,
+                    compare: BINNACLE_COMPARE_BETWEEN,
+                    high: BinnacleScalar {
+                        kind: 2,
+                        ..BinnacleScalar::default()
+                    },
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &compare)
+            }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -1326,9 +1379,15 @@ fn support_bits(support: Support) -> u32 {
                 0
             }
     });
+    let compare = match support.compare {
+        None => 0,
+        Some(Compared::Numbers) => BINNACLE_SUPPORT_COMPARE_NUMBERS,
+        Some(Compared::Dates) => BINNACLE_SUPPORT_COMPARE_DATES,
+    };
     (u32::from(support.sort) * BINNACLE_SUPPORT_SORT)
         | text
         | (u32::from(support.one_of) * BINNACLE_SUPPORT_ONE_OF)
+        | compare
 }
 
 /// A condition read back from C, as a host would: its query searching the
@@ -1354,6 +1413,20 @@ unsafe fn condition_from_c(c: &BinnacleCondition) -> Condition {
                 .collect();
             Condition::one_of(Key(c.key), values)
         }
+        BINNACLE_CONDITION_COMPARE => {
+            let (s, high) = (scalar_from_c(c.scalar), scalar_from_c(c.high));
+            let comparison = match c.compare {
+                BINNACLE_COMPARE_EQUAL => Comparison::Equal(s),
+                BINNACLE_COMPARE_NOT_EQUAL => Comparison::NotEqual(s),
+                BINNACLE_COMPARE_LESS => Comparison::Less(s),
+                BINNACLE_COMPARE_AT_MOST => Comparison::AtMost(s),
+                BINNACLE_COMPARE_GREATER => Comparison::Greater(s),
+                BINNACLE_COMPARE_AT_LEAST => Comparison::AtLeast(s),
+                BINNACLE_COMPARE_BETWEEN => Comparison::Between(s, high),
+                op => panic!("comparison {op}"),
+            };
+            Condition::compare(Key(c.key), comparison)
+        }
         kind => panic!("condition kind {kind}"),
     };
     condition.not(c.negated != 0)
@@ -1370,6 +1443,29 @@ unsafe fn text_from_c(t: BinnacleText) -> String {
 
 /// The values of a OneOf `condition` in C form, borrowing their texts; none
 /// for other kinds.
+fn scalar_from_c(s: BinnacleScalar) -> Scalar {
+    match s.kind {
+        BINNACLE_SCALAR_NUMBER => Scalar::Number(s.number),
+        BINNACLE_SCALAR_DATE => Scalar::Date(s.date),
+        kind => panic!("scalar kind {kind}"),
+    }
+}
+
+fn scalar_to_c(s: Scalar) -> BinnacleScalar {
+    match s {
+        Scalar::Number(number) => BinnacleScalar {
+            kind: BINNACLE_SCALAR_NUMBER,
+            number,
+            date: 0,
+        },
+        Scalar::Date(date) => BinnacleScalar {
+            kind: BINNACLE_SCALAR_DATE,
+            number: 0.0,
+            date,
+        },
+    }
+}
+
 fn values_to_c(condition: &Condition) -> Vec<BinnacleValue> {
     let ConditionKind::OneOf(values) = &condition.kind else {
         return Vec::new();
@@ -1398,19 +1494,39 @@ fn condition_to_c(
     keys: &[u64],
     values: &[BinnacleValue],
 ) -> BinnacleCondition {
-    let (kind, text) = match &condition.kind {
-        ConditionKind::Text(query) => (BINNACLE_CONDITION_TEXT, query_to_c(query, keys)),
-        ConditionKind::OneOf(_) => (BINNACLE_CONDITION_ONE_OF, BinnacleTextQuery::default()),
-        _ => unreachable!("only Text and OneOf conditions are drawn"),
-    };
-    BinnacleCondition {
+    let mut c = BinnacleCondition {
         key: condition.key.0,
-        kind,
         negated: u32::from(condition.not),
-        text,
         values: values.as_ptr(),
         values_len: values.len(),
+        ..BinnacleCondition::default()
+    };
+    match &condition.kind {
+        ConditionKind::Text(query) => {
+            c.kind = BINNACLE_CONDITION_TEXT;
+            c.text = query_to_c(query, keys);
+        }
+        ConditionKind::OneOf(_) => c.kind = BINNACLE_CONDITION_ONE_OF,
+        ConditionKind::Compare(comparison) => {
+            c.kind = BINNACLE_CONDITION_COMPARE;
+            let (op, s, high) = match *comparison {
+                Comparison::Equal(s) => (BINNACLE_COMPARE_EQUAL, s, None),
+                Comparison::NotEqual(s) => (BINNACLE_COMPARE_NOT_EQUAL, s, None),
+                Comparison::Less(s) => (BINNACLE_COMPARE_LESS, s, None),
+                Comparison::AtMost(s) => (BINNACLE_COMPARE_AT_MOST, s, None),
+                Comparison::Greater(s) => (BINNACLE_COMPARE_GREATER, s, None),
+                Comparison::AtLeast(s) => (BINNACLE_COMPARE_AT_LEAST, s, None),
+                Comparison::Between(low, high) => (BINNACLE_COMPARE_BETWEEN, low, Some(high)),
+            };
+            c.compare = op;
+            c.scalar = scalar_to_c(s);
+            if let Some(high) = high {
+                c.high = scalar_to_c(high);
+            }
+        }
+        _ => unreachable!("only Text, OneOf and comparison conditions are drawn"),
     }
+    c
 }
 
 /// A Text Query in C form, borrowing `query`'s text and `keys`.
@@ -2291,4 +2407,42 @@ fn a_grid_is_made_only_from_valid_configs(tc: TestCase) {
     let h = binnacle_grid_new(rows, cols);
     assert_eq!(!h.is_null(), valid(&rows) && valid(&cols));
     unsafe { binnacle_grid_free(h) };
+}
+
+/// Support declared for items in view, comparisons included, reaches the
+/// C headers as it reaches the Rust Snapshot's. The main property's Keys
+/// rarely land in view, so this one declares support on the Keys shown.
+#[hegel::test(test_cases = 300)]
+fn support_on_items_in_view_through_the_c_api_mirrors_the_grid(tc: TestCase) {
+    let config = || AxisConfig::new(8, 3.0).header(2.0).gap(1.0);
+    let c = BinnacleAxisConfig {
+        count: 8,
+        default_size: 3.0,
+        header: 2.0,
+        gap: 1.0,
+    };
+    let h = binnacle_grid_new(c, c);
+    let mut grid = Grid::new(config(), config());
+    unsafe {
+        mirrored_frame(h, &mut grid);
+        for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(6)) {
+            let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+            let key = Key(tc.draw(gs::integers::<u64>().max_value(7)));
+            let support = Support::default()
+                .with_sort(tc.draw(gs::booleans()))
+                .with_text(tc.draw(gs::optional(gs::booleans().map(TextSupport::new))))
+                .with_one_of(tc.draw(gs::booleans()))
+                .with_compare(tc.draw(gs::optional(gs::sampled_from(vec![
+                    Compared::Numbers,
+                    Compared::Dates,
+                ]))));
+            grid.set_support(axis, key, support);
+            assert_eq!(
+                binnacle_grid_set_support(h, tag(axis), key.0, support_bits(support)),
+                1
+            );
+            mirrored_frame(h, &mut grid);
+        }
+        binnacle_grid_free(h);
+    }
 }

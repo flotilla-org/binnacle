@@ -9,16 +9,17 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    DropTarget, Edge, EditEnd, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd,
-    FocusStep, Grid, HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent,
-    PointerKind, Rect, Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem,
-    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
+    ConditionState, DropTarget, Edge, EditEnd, Effect, FilterSpec, FindDirection, FindMatch,
+    FindQuery, FocusEnd, FocusStep, Grid, HeaderClick, HeaderPlacement, Key, Located, Mode,
+    Modifiers, PointerEvent, PointerKind, Rect, Scalar, Searched, SelectionUnit, SortColumn,
+    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 2;
+pub const BINNACLE_ABI_VERSION: u32 = 3;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -101,6 +102,18 @@ pub const BINNACLE_VIEW_EDIT_SHOW: u32 = 10;
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
 pub const BINNACLE_CONDITION_ONE_OF: u32 = 2;
+pub const BINNACLE_CONDITION_COMPARE: u32 = 3;
+
+pub const BINNACLE_COMPARE_EQUAL: u32 = 0;
+pub const BINNACLE_COMPARE_NOT_EQUAL: u32 = 1;
+pub const BINNACLE_COMPARE_LESS: u32 = 2;
+pub const BINNACLE_COMPARE_AT_MOST: u32 = 3;
+pub const BINNACLE_COMPARE_GREATER: u32 = 4;
+pub const BINNACLE_COMPARE_AT_LEAST: u32 = 5;
+pub const BINNACLE_COMPARE_BETWEEN: u32 = 6;
+
+pub const BINNACLE_SCALAR_NUMBER: u32 = 0;
+pub const BINNACLE_SCALAR_DATE: u32 = 1;
 
 pub const BINNACLE_CONDITION_APPLIED: u32 = 0;
 pub const BINNACLE_CONDITION_ADDING: u32 = 1;
@@ -117,6 +130,8 @@ pub const BINNACLE_SUPPORT_SORT: u32 = 1;
 pub const BINNACLE_SUPPORT_TEXT: u32 = 2;
 pub const BINNACLE_SUPPORT_TEXT_REGEX: u32 = 4;
 pub const BINNACLE_SUPPORT_ONE_OF: u32 = 8;
+pub const BINNACLE_SUPPORT_COMPARE_NUMBERS: u32 = 16;
+pub const BINNACLE_SUPPORT_COMPARE_DATES: u32 = 32;
 
 pub const BINNACLE_QUICK_FILTER: u32 = 1;
 pub const BINNACLE_QUICK_FILTER_REGEX: u32 = 2;
@@ -225,6 +240,7 @@ impl CConditions {
             let (kind, query, listed) = match &c.kind {
                 ConditionKind::Text(q) => (BINNACLE_CONDITION_TEXT, Some(q), &[][..]),
                 ConditionKind::OneOf(vs) => (BINNACLE_CONDITION_ONE_OF, None, &vs[..]),
+                ConditionKind::Compare(_) => (BINNACLE_CONDITION_COMPARE, None, &[][..]),
                 _ => (BINNACLE_CONDITION_OTHER, None, &[][..]),
             };
             let text = self.texts.len();
@@ -275,6 +291,10 @@ impl CConditions {
                     q.keys_len = ks.len();
                 }
             }
+            let (compare, scalar, high) = match &c.kind {
+                ConditionKind::Compare(comparison) => comparison_to_c(comparison),
+                _ => Default::default(),
+            };
             self.items.push(BinnacleCondition {
                 key: c.key.0,
                 kind,
@@ -282,6 +302,9 @@ impl CConditions {
                 text: q,
                 values: self.values.as_ptr().wrapping_add(listed.start),
                 values_len: listed.len(),
+                compare,
+                scalar,
+                high,
             });
         }
     }
@@ -520,7 +543,41 @@ pub struct BinnacleFindMatch {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleScalar {
+    pub kind: u32,
+    pub number: f64,
+    pub date: i64,
+}
+
+impl BinnacleScalar {
+    fn from_core(s: Scalar) -> Self {
+        match s {
+            Scalar::Number(number) => BinnacleScalar {
+                kind: BINNACLE_SCALAR_NUMBER,
+                number,
+                date: 0,
+            },
+            Scalar::Date(date) => BinnacleScalar {
+                kind: BINNACLE_SCALAR_DATE,
+                number: 0.0,
+                date,
+            },
+        }
+    }
+
+    /// The scalar, or `None` for an unknown kind.
+    fn to_core(self) -> Option<Scalar> {
+        match self.kind {
+            BINNACLE_SCALAR_NUMBER => Some(Scalar::Number(self.number)),
+            BINNACLE_SCALAR_DATE => Some(Scalar::Date(self.date)),
+            _ => None,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BinnacleCondition {
     pub key: u64,
     pub kind: u32,
@@ -528,6 +585,9 @@ pub struct BinnacleCondition {
     pub text: BinnacleTextQuery,
     pub values: *const BinnacleValue,
     pub values_len: usize,
+    pub compare: u32,
+    pub scalar: BinnacleScalar,
+    pub high: BinnacleScalar,
 }
 
 impl Default for BinnacleCondition {
@@ -539,12 +599,15 @@ impl Default for BinnacleCondition {
             text: BinnacleTextQuery::default(),
             values: std::ptr::null(),
             values_len: 0,
+            compare: BINNACLE_COMPARE_EQUAL,
+            scalar: BinnacleScalar::default(),
+            high: BinnacleScalar::default(),
         }
     }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BinnacleListedCondition {
     pub state: u32,
     pub condition: BinnacleCondition,
@@ -811,9 +874,33 @@ impl From<Rect> for BinnacleRect {
     }
 }
 
+/// `BINNACLE_COMPARE_*`, the scalar and, for between, the high end.
+fn comparison_to_c(comparison: &Comparison) -> (u32, BinnacleScalar, BinnacleScalar) {
+    let one = |op, s| (op, BinnacleScalar::from_core(s), BinnacleScalar::default());
+    match *comparison {
+        Comparison::Equal(s) => one(BINNACLE_COMPARE_EQUAL, s),
+        Comparison::NotEqual(s) => one(BINNACLE_COMPARE_NOT_EQUAL, s),
+        Comparison::Less(s) => one(BINNACLE_COMPARE_LESS, s),
+        Comparison::AtMost(s) => one(BINNACLE_COMPARE_AT_MOST, s),
+        Comparison::Greater(s) => one(BINNACLE_COMPARE_GREATER, s),
+        Comparison::AtLeast(s) => one(BINNACLE_COMPARE_AT_LEAST, s),
+        Comparison::Between(low, high) => (
+            BINNACLE_COMPARE_BETWEEN,
+            BinnacleScalar::from_core(low),
+            BinnacleScalar::from_core(high),
+        ),
+    }
+}
+
 /// `BINNACLE_SUPPORT_*` bits for an item's support.
 fn support_bits(support: Support) -> u32 {
-    bit(support.sort, BINNACLE_SUPPORT_SORT)
+    let compare = match support.compare {
+        None => 0,
+        Some(Compared::Numbers) => BINNACLE_SUPPORT_COMPARE_NUMBERS,
+        Some(Compared::Dates) => BINNACLE_SUPPORT_COMPARE_DATES,
+    };
+    compare
+        | bit(support.sort, BINNACLE_SUPPORT_SORT)
         | bit(support.one_of, BINNACLE_SUPPORT_ONE_OF)
         | support.text.map_or(0, |t| {
             BINNACLE_SUPPORT_TEXT | bit(t.regex, BINNACLE_SUPPORT_TEXT_REGEX)
@@ -986,6 +1073,20 @@ impl BinnacleCondition {
                     .map(|v| unsafe { v.to_core() })
                     .collect::<Option<Vec<_>>>()?;
                 Some(Condition::one_of(Key(self.key), values).not(not))
+            }
+            BINNACLE_CONDITION_COMPARE => {
+                let s = self.scalar.to_core()?;
+                let comparison = match self.compare {
+                    BINNACLE_COMPARE_EQUAL => Comparison::Equal(s),
+                    BINNACLE_COMPARE_NOT_EQUAL => Comparison::NotEqual(s),
+                    BINNACLE_COMPARE_LESS => Comparison::Less(s),
+                    BINNACLE_COMPARE_AT_MOST => Comparison::AtMost(s),
+                    BINNACLE_COMPARE_GREATER => Comparison::Greater(s),
+                    BINNACLE_COMPARE_AT_LEAST => Comparison::AtLeast(s),
+                    BINNACLE_COMPARE_BETWEEN => Comparison::Between(s, self.high.to_core()?),
+                    _ => return None,
+                };
+                Some(Condition::compare(Key(self.key), comparison).not(not))
             }
             _ => None,
         }
@@ -2230,7 +2331,16 @@ pub unsafe extern "C" fn binnacle_grid_set_support(
     let known = BINNACLE_SUPPORT_SORT
         | BINNACLE_SUPPORT_TEXT
         | BINNACLE_SUPPORT_TEXT_REGEX
-        | BINNACLE_SUPPORT_ONE_OF;
+        | BINNACLE_SUPPORT_ONE_OF
+        | BINNACLE_SUPPORT_COMPARE_NUMBERS
+        | BINNACLE_SUPPORT_COMPARE_DATES;
+    let compare =
+        match support & (BINNACLE_SUPPORT_COMPARE_NUMBERS | BINNACLE_SUPPORT_COMPARE_DATES) {
+            0 => Some(None),
+            BINNACLE_SUPPORT_COMPARE_NUMBERS => Some(Some(Compared::Numbers)),
+            BINNACLE_SUPPORT_COMPARE_DATES => Some(Some(Compared::Dates)),
+            _ => None,
+        };
     let text = match support & (BINNACLE_SUPPORT_TEXT | BINNACLE_SUPPORT_TEXT_REGEX) {
         0 => Some(None),
         BINNACLE_SUPPORT_TEXT => Some(Some(TextSupport::new(false))),
@@ -2239,12 +2349,15 @@ pub unsafe extern "C" fn binnacle_grid_set_support(
         }
         _ => None,
     };
-    let support = text.filter(|_| support & !known == 0).map(|text| {
-        Support::default()
-            .with_sort(support & BINNACLE_SUPPORT_SORT != 0)
-            .with_text(text)
-            .with_one_of(support & BINNACLE_SUPPORT_ONE_OF != 0)
-    });
+    let support = (text.zip(compare))
+        .filter(|_| support & !known == 0)
+        .map(|(text, compare)| {
+            Support::default()
+                .with_sort(support & BINNACLE_SUPPORT_SORT != 0)
+                .with_text(text)
+                .with_one_of(support & BINNACLE_SUPPORT_ONE_OF != 0)
+                .with_compare(compare)
+        });
     // SAFETY: the caller's contract.
     unsafe {
         with_handle(grid, |h| {
