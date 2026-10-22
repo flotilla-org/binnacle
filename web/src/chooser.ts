@@ -4,7 +4,8 @@
 // once; "(Show all)" (or "(Show all matching …)" while searching) shows or
 // hides every item listed. It lists the items shown in the Table Source's
 // order (the first 1,000 of them), then the hidden ones, and keeps that
-// order while open so nothing jumps as it is ticked. A hide past the axis's
+// order while open so nothing jumps as it is ticked. The columns the rows
+// group by come last, tagged "grouped", with no tick: they left the body. A hide past the axis's
 // cap hides nothing and says to filter instead. Mod+Alt+O opens the columns'
 // (Mod+Alt+Shift+O the rows'), as do the column and row menus' "Choose…"
 // and `open`; Escape, a press outside, or Close shuts it. Drawn in the
@@ -153,6 +154,15 @@ export function createChooser<RowId, ColId, V>(widget: GridWidget<RowId, ColId, 
       for (const i of kept) {
         const tag = pinned.has(i.id) ? "pinned" : "";
         list.append(row(i.label, !hidden.has(i.id), tag, (on) => (on ? showIds([i.id]) : hide([i.id]))));
+      }
+      // The columns the rows group by have left the body: listed, but not to tick.
+      const text = search.value.toLowerCase();
+      for (const id of axis === "cols" ? widget.levels("rows") : []) {
+        if (id === null || items.some((i) => i.id === id) || !label(id as Id).toLowerCase().includes(text)) continue;
+        const line = row(label(id as Id), false, "grouped", () => {});
+        line.querySelector("input")!.disabled = true;
+        line.classList.add("binnacle-chooser-grouped");
+        list.append(line);
       }
       if (kept.length === 0) {
         const empty = el("div", "binnacle-chooser-empty", "padding: 4px 8px;");

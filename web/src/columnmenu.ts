@@ -48,6 +48,7 @@ import type { CompareOp, Comparison, Condition, Distinct, ListedValue, Scalar, T
 import type { FrameInfo, GridWidget, MenuAt } from "./widget";
 import { createPause } from "./pause";
 import { capHint, type HideOutcome } from "./choose";
+import { groupingItems } from "./groupmenu";
 
 export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   /** The popover while it is open, else `null`. */
@@ -66,6 +67,12 @@ export interface ColumnMenu<ColId = unknown, RowId = unknown> {
    * column takes no conditions.
    */
   openSlicer(colId: ColId, anchor: DOMRect): boolean;
+  /**
+   * Opens the grouping menu for `axis`'s level by `field` (`null` for the
+   * values pseudo-level), as a right press on its name in the corner does
+   * (see `GridWidget.openLevelMenu`); `false` if `axis` has no such level.
+   */
+  openLevel(axis: AxisName, field: ColId | null, anchor?: DOMRect): boolean;
   close(): void;
   /** Closes the menu and stops the headers drawing filter buttons. */
   destroy(): void;
@@ -219,15 +226,18 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const choose = lit(menuItem(`Choose ${noun}s…`, "binnacle-column-menu-choose"));
     if (!hides) hideButton.style.display = showOnly.style.display = showHidden.style.display = "none";
     if (!widget.canChoose(own)) choose.style.display = "none";
-    // Grouping the rows by this column, or back to the plain rows.
-    const groupButton = lit(menuItem("Group rows by this column", "binnacle-column-menu-group"));
+    // The grouping menu: a pivot's column names the column level it is a
+    // group of, a value's column the innermost field level. Then back to
+    // the plain rows.
+    const pivots = axis === "rows" && widget.levels("cols").length > 0;
+    const named = pivots ? widget.columnLevel(colId as ColId) : undefined;
+    const level = named === null ? (widget.levels("cols").filter((l): l is ColId => l !== null).at(-1) ?? null) : named;
+    const grouping =
+      axis !== "rows"
+        ? []
+        : groupingItems<RowId, ColId, V>(widget, pivots ? { axis: "cols", level } : { column: colId as ColId }, (t, c) => lit(menuItem(t, c)), () => close());
     const ungroupButton = lit(menuItem("Ungroup rows", "binnacle-column-menu-ungroup"));
     const grouped = () => axis === "rows" && widget.groupedBy().length > 0;
-    const groups = axis === "rows" && support.group === true;
-    groupButton.addEventListener("click", () => {
-      close();
-      widget.groupBy(colId as ColId);
-    });
     // The same editors, editing the slicers on this column.
     const sliceButton = lit(menuItem("Slice by this column", "binnacle-column-menu-slice"));
     const slices = () => axis === "rows" && filters && widget.groups();
@@ -255,7 +265,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       showOnly,
       showHidden,
       choose,
-      groupButton,
+      ...grouping,
       ungroupButton,
       sliceButton,
       capped,
@@ -693,7 +703,6 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       // over the `hidden` attribute.
       showItem(pinTrailing, !pinned());
       showItem(freeze, !pinning.pinned("trailing"));
-      showItem(groupButton, groups && !grouped());
       showItem(ungroupButton, grouped());
       showItem(sliceButton, slices());
       for (const c of [how, field, op, low, high, search, clearButton, closeButton]) {
@@ -779,12 +788,80 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     if (first === field) field.select();
   };
 
+  /**
+   * Opens the grouping menu for `axis`'s level by `field` (`null` for the
+   * values pseudo-level) under `anchor`: its grouping items, and Close.
+   */
+  const openLevel = (axis: AxisName, field: ColId | null, anchor: DOMRect) => {
+    menu?.close();
+    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const label = field === null ? "Values" : widget.columnLabel(field);
+    const heading = field === null ? "" : axis === "rows" ? "Row level " : "Column level ";
+    const element = el("div", "binnacle-level-menu", MENU_STYLE);
+    element.setAttribute("role", "dialog");
+    element.setAttribute("aria-label", heading + label);
+    const t = widget.theme;
+    element.style.font = t.font;
+    element.style.color = t.body.color;
+    element.style.background = t.body.background;
+    element.style.border = `1px solid ${t.border}`;
+    const title = el("div", "binnacle-column-menu-title", TITLE_STYLE);
+    title.style.color = t.rowNumber.color;
+    const name = el("b", "", "");
+    name.textContent = label;
+    name.style.color = t.body.color;
+    title.append(heading, name);
+    const actions = el("div", "binnacle-column-menu-actions", ACTIONS_STYLE);
+    actions.style.display = "flex";
+    const lit = (b: HTMLButtonElement) => {
+      const on = () => (b.style.background = widget.theme.border);
+      const off = () => (b.style.background = "transparent");
+      b.addEventListener("pointerenter", on);
+      b.addEventListener("pointerleave", () => b !== document.activeElement && off());
+      b.addEventListener("focus", on);
+      b.addEventListener("blur", off);
+      return b;
+    };
+    const close = () => {
+      if (menu?.element !== element) return;
+      menu = null;
+      document.removeEventListener("pointerdown", outside, true);
+      element.remove();
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
+    const outside = (e: PointerEvent) => {
+      if (!element.contains(e.target as Node)) close();
+    };
+    actions.append(...groupingItems(widget, { axis, level: field }, (text, className) => lit(menuItem(text, className)), close));
+    const foot = el("div", "", FOOT_STYLE);
+    const closeButton = action("Close");
+    closeButton.style.background = t.body.background;
+    closeButton.style.border = `1px solid ${t.border}`;
+    closeButton.addEventListener("click", close);
+    foot.append(closeButton);
+    element.append(title, actions, foot);
+    element.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    });
+    document.body.append(element);
+    const width = element.offsetWidth;
+    element.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - width - 8))}px`;
+    element.style.top = `${Math.max(8, Math.min(anchor.bottom + 4, innerHeight - element.offsetHeight - 8))}px`;
+    document.addEventListener("pointerdown", outside, true);
+    menu = { element, close };
+    (actions.querySelector("button") ?? closeButton).focus();
+  };
+
   let latest: FrameInfo<RowId, ColId> | null = null;
   const unsubscribe = widget.subscribe((f) => {
     latest = f;
   });
   const detach = widget.attachColumnMenu((colId, anchor, at) => open("rows", colId, anchor, at));
   const detachRow = widget.attachRowMenu((rowId, anchor, at) => open("cols", rowId, anchor, at));
+  const detachLevel = widget.attachLevelMenu(openLevel);
 
   return {
     get element() {
@@ -798,11 +875,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       open("rows", colId, anchor, "top", true);
       return true;
     },
+    openLevel: (axis, field, anchor) => widget.openLevelMenu(axis, field, anchor),
     close: () => menu?.close(),
     destroy() {
       menu?.close();
       detach();
       detachRow();
+      detachLevel();
       unsubscribe();
     },
   };

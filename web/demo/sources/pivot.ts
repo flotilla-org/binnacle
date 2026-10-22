@@ -8,9 +8,12 @@
 // right. A cell is the figure where its port and its quarter cross, blank
 // where no shipment does. Pivot columns don't move; sorting the columns by
 // the Grand Total row (its row menu, or a click on its header) orders the
-// quarters by their total weight.
+// quarters by their total weight. A pivot column's menu, or a right press on
+// a level's name in the corner, has the grouping menu: remove or move a
+// level, collapse to it or expand through it, remove or add a value, or
+// group by a column no level uses.
 
-import { fromRows, GridWidget, LAYOUT_VERSION, textRenderer, type Grouping, type RowsColId } from "../../src";
+import { createChooser, createColumnMenu, fromRows, GridWidget, LAYOUT_VERSION, textRenderer, type Grouping, type RowsColId } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { layoutControls } from "./layout";
 import { shipments } from "./shipments-data";
@@ -79,6 +82,8 @@ export const pivotDemo: DemoSource = {
       view: { rows: plain, cols: plain, grouping: PIVOT },
     });
     const layout = layoutControls(widget, "pivot");
+    const columnMenu = createColumnMenu(widget);
+    const chooser = createChooser(widget);
     return {
       get theme() {
         return widget.theme;
@@ -94,6 +99,8 @@ export const pivotDemo: DemoSource = {
       },
       destroy() {
         layout.destroy();
+        columnMenu.destroy();
+        chooser.destroy();
         widget.destroy();
         source.destroy();
       },

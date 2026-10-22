@@ -7,8 +7,13 @@
 // port columns leave the body while the rows group by them. Each group ends
 // in a Subtotal carrying the group's total weight, and the Grand Total sits
 // pinned at the bottom. A column's menu (its header's funnel, or
-// Alt+ArrowDown) has "Ungroup rows" while grouped, and on any column "Group
-// rows by this column" while not. Sorting by the grouped column orders the
+// Alt+ArrowDown) has the grouping menu: "Group rows by this column", "Add as
+// a column level" (which makes a pivot), "Add a value ▸", and "Ungroup rows"
+// while grouped. A right press on a level's name in the corner opens that
+// level's menu: "Move to columns" on the port level turns the table into a
+// pivot of ports across, and "Move to rows" back. The column chooser
+// (Mod+Alt+O, or the menu's "Choose columns…") lists the grouped columns as
+// "grouped". Sorting by the grouped column orders the
 // groups; any other column orders the shipments within their group. Focus
 // stays on its shipment through grouping and ungrouping. Sorting by weight
 // orders the groups at every level by their total weight. `&form=header`
@@ -44,7 +49,22 @@
 // and Leaves the grouping layer holds. Groups not yet answered, and Leaves,
 // draw pending (a "…" in the band and loading cells) until they arrive.
 
-import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, groupedSource, LAYOUT_VERSION, rowsBy, textRenderer, type Condition, type GroupedAxis, type TableSource } from "../../src";
+import {
+  createChooser,
+  createColumnMenu,
+  createFilterBar,
+  createFindBar,
+  fromRows,
+  GridWidget,
+  groupedSource,
+  LAYOUT_VERSION,
+  rowsBy,
+  textRenderer,
+  type Condition,
+  type GroupedAxis,
+  type RowsColId,
+  type TableSource,
+} from "../../src";
 import { AGGREGATE_PACES, slowBackend, type AggregatePace } from "./aggregates";
 import type { DemoSource } from "./demo-source";
 import { layoutControls } from "./layout";
@@ -56,7 +76,7 @@ const askedForm = () => new URL(location.href).searchParams.get("form");
 const initialForm = (): GroupedAxis["form"] => (askedForm() === "header" ? "header" : "outline");
 
 /** A select between outline form and header form for the grouped rows. */
-function formSelect(widget: GridWidget<number, keyof Shipment>): HTMLSelectElement {
+function formSelect(widget: GridWidget<number, RowsColId<Shipment>>): HTMLSelectElement {
   const select = document.createElement("select");
   select.setAttribute("aria-label", "Group form");
   for (const [value, text] of [
@@ -74,7 +94,7 @@ const WIDTHS = { id: 64, region: 96, port: 128, shipped: 112, weight: 96, crates
 const HEADER = 28;
 
 /** A drill-down's condition as the toolbar shows it. */
-function described({ id, kind, not }: Condition<keyof Shipment>): string {
+function described({ id, kind, not }: Condition<RowsColId<Shipment>>): string {
   const what =
     kind.type === "OneOf" ? `${not ? "not " : ""}${kind.values.map((v) => v ?? "(blank)").join(" or ")}` : `${not ? "not " : ""}${JSON.stringify(kind)}`;
   return `${id} ${what}`;
@@ -97,7 +117,7 @@ export const shipmentsDemo: DemoSource = {
       { key: "shipped", renderer: textRenderer({ format: (d: Date | null) => (d ? day(d) : "") }) },
       { key: "weight", renderer: weight },
       { key: "crates", renderer: number },
-    ]);
+    ], { pivots: true });
     // Joins the toolbar only once it has something to say, leaving the page's layout as it was until then.
     const received = document.createElement("output");
     received.id = "received";
@@ -113,7 +133,7 @@ export const shipmentsDemo: DemoSource = {
     const count = () => (counter.textContent = `${backend?.inFlight ?? 0} queries in flight · ${grouped?.held() ?? 0} held`);
     const backend = pace ? slowBackend(table, shipments, () => pace!, count) : undefined;
     const grouped = backend && groupedSource({ base: table, backend });
-    const source: TableSource<number, keyof Shipment, unknown> = grouped ?? table;
+    const source: TableSource<number, RowsColId<Shipment>, unknown> = grouped ?? table;
     const speed = document.createElement("select");
     if (pace) {
       speed.setAttribute("aria-label", "How late the aggregate backend answers");
@@ -142,7 +162,7 @@ export const shipmentsDemo: DemoSource = {
       source,
       columnWidth: 120,
       headerHeight: HEADER,
-      initialColumnWidth: (col) => WIDTHS[col],
+      initialColumnWidth: (col) => (typeof col === "string" ? WIDTHS[col] : 112),
       onActivate: ({ drillDown }) => {
         if (drillDown) note(`drill-down: ${drillDown.map(described).join(", ") || "every shipment"}`);
       },
@@ -209,6 +229,7 @@ export const shipmentsDemo: DemoSource = {
     if (form) toolbar.append(form);
     const layout = layoutControls(widget, "shipments");
     const columnMenu = createColumnMenu(widget);
+    const chooser = createChooser(widget);
     const bar = createFilterBar(widget, { columnMenu });
     const findBar = createFindBar(widget);
     frame.prepend(bar.element, findBar.element);
@@ -240,6 +261,7 @@ export const shipmentsDemo: DemoSource = {
         layout.destroy();
         bar.destroy();
         columnMenu.destroy();
+        chooser.destroy();
         widget.destroy();
         frame.remove();
         received.remove();

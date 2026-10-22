@@ -8,7 +8,7 @@
 // one sort rule, as fromRows does. A query a newer View Spec superseded is
 // never answered.
 
-import type { AggregateBackend, AggregateBatch, AggregateQuery, Figure, GroupPath, GroupRow, ListedValue, RowsSource } from "../../src";
+import type { AggregateBackend, AggregateBatch, AggregateQuery, Figure, GroupPath, GroupRow, ListedValue, RowsColId, RowsSource } from "../../src";
 
 /** How late the backend answers, ms: groups and totals, then Leaves. */
 export const AGGREGATE_PACES = {
@@ -33,8 +33,8 @@ export interface SlowBackend<R> extends AggregateBackend<keyof R & string> {
 }
 
 /** A backend over `table`'s rows (`rows[id]` its Leaf `id`), answering at `pace()`; `changed` hears every query asked or answered. */
-export function slowBackend<R extends object>(
-  table: RowsSource<R>,
+export function slowBackend<R extends object, C extends RowsColId<R>>(
+  table: RowsSource<R, C>,
   rows: readonly R[],
   pace: () => AggregatePace,
   changed: () => void,

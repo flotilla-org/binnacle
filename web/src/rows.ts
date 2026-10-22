@@ -1107,6 +1107,7 @@ export function fromRows<R extends object>(
       count: () => memory().count(COLS),
       window: (start, end) =>
         pivot ? groupedWindow(COLS, start, end) : Array.from(memory().window(COLS, start, end), (i) => columns[i]!.key),
+      fields: () => columns.map((c) => c.key),
       quickFilter: { regex: true },
       hide: true,
       ...(options.hideCap?.cols === undefined ? {} : { hideCap: options.hideCap.cols }),

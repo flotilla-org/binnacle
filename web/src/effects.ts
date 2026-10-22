@@ -3,7 +3,7 @@
 // `crates/binnacle-wasm/src/effect.rs`; the agreement tests keep them in step.
 
 import type { AxisName, PinEdge } from "./codes";
-import type { GroupedAxis } from "./source";
+import type { AggregateValue, GroupedAxis } from "./source";
 import type { FindMatch, KeyedCondition, KeyedFindQuery, KeyedTextQuery, KeyedViewSpec, SortColumn } from "./snapshot";
 
 type Stamped<T> = T & { generation: number };
@@ -52,6 +52,12 @@ export type KeyedViewEdit =
   | { type: "ReplaceSlicer"; from: KeyedCondition; to: KeyedCondition }
   /** `axis` was drawn in `form`: an outline column, or spanning headers. */
   | { type: "SetForm"; axis: AxisName; form: GroupedAxis["form"] }
+  /** The level of `axis` grouping by `field` was removed, or moved to the other axis; `null` is the values pseudo-level. */
+  | { type: "RemoveLevel"; axis: AxisName; field: bigint | null }
+  | { type: "MoveLevel"; axis: AxisName; field: bigint | null }
+  /** `value` joined the values, after the others, or left them. */
+  | { type: "AddValue"; value: AggregateValue<bigint> }
+  | { type: "RemoveValue"; value: AggregateValue<bigint> }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -195,18 +201,19 @@ function isGroupedAxis(v: unknown): boolean {
   return PLACEMENT.includes(v.grandTotal as string) && form && depth && isKeys(v.expand.except);
 }
 
+function isValue(a: unknown): boolean {
+  return (
+    isRecord(a) &&
+    (a.field === null || typeof a.field === "bigint") &&
+    typeof a.aggregate === "string" &&
+    (a.params === undefined || (Array.isArray(a.params) && a.params.every((p) => typeof p === "string")))
+  );
+}
+
 function isGrouping(v: unknown): boolean {
   if (v === null) return true;
   if (!isRecord(v) || !Array.isArray(v.rowLevels) || !Array.isArray(v.colLevels)) return false;
-  const values =
-    Array.isArray(v.values) &&
-    v.values.every(
-      (a) =>
-        isRecord(a) &&
-        (a.field === null || typeof a.field === "bigint") &&
-        typeof a.aggregate === "string" &&
-        (a.params === undefined || (Array.isArray(a.params) && a.params.every((p) => typeof p === "string"))),
-    );
+  const values = Array.isArray(v.values) && v.values.every(isValue);
   const slicers = Array.isArray(v.slicers) && v.slicers.every(isCondition);
   const levels = v.rowLevels.every(isLevel) && v.colLevels.every(isLevel);
   return levels && values && slicers && isGroupedAxis(v.rowAxis) && isGroupedAxis(v.colAxis);
@@ -246,6 +253,12 @@ function isEdit(v: unknown): v is KeyedViewEdit {
       return isCondition(v.from) && isCondition(v.to);
     case "SetForm":
       return isAxis(v.axis) && (v.form === "outline" || v.form === "header");
+    case "RemoveLevel":
+    case "MoveLevel":
+      return isAxis(v.axis) && (v.field === null || typeof v.field === "bigint");
+    case "AddValue":
+    case "RemoveValue":
+      return isValue(v.value);
     case "Replace":
     case "Reapply":
     case "Other":
