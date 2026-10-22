@@ -83,6 +83,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "binnacle-group"
+version = "0.1.0"
+dependencies = [
+ "binnacle-core",
+ "binnacle-memory",
+ "binnacle-testkit",
+ "hegeltest",
+ "insta",
+]
+
+[[package]]
 name = "binnacle-memory"
 version = "0.1.0"
 dependencies = [

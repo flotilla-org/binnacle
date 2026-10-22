@@ -421,8 +421,7 @@ impl PumpSource for GroupedTable {
                 && g.row_levels.len() == 1
                 && g.groups_by(Axis::Rows, self.field)
         });
-        let mut applied = ViewSpec::default();
-        applied.grouping = wanted.clone();
+        let applied = ViewSpec::default().with_grouping(wanted.clone());
         let changed = wanted.is_some() != self.grouping.is_some();
         self.grouping = wanted;
         let notices = if changed {

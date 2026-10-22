@@ -1273,6 +1273,11 @@ impl<R> MemorySource<R> {
         self.table.window(axis, range)
     }
 
+    /// See [`InMemoryTableSource::logical_window`].
+    pub fn logical_window(&self, axis: Axis, range: Range<Position>) -> Vec<usize> {
+        self.table.logical_window(axis, range)
+    }
+
     pub fn locate(&mut self, axis: Axis, key: Key) -> Located {
         self.table.locate(axis, key)
     }

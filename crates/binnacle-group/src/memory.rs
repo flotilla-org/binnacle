@@ -1,0 +1,469 @@
+//! The In-Memory Table Source under the grouping layer: an aggregate backend
+//! over rows held in memory, and [`GroupedMemory`], a `MemorySource` that
+//! groups.
+
+use std::collections::HashMap;
+use std::ops::Range;
+
+use binnacle_core::{
+    AggregateValue, Axis, ChangeNotice, Distinct, DistinctQuery, FindDirection, FindMatch,
+    FindQuery, Key, Located, Outline, Position, SortColumn, SortSpec, Support, TextSupport, Totals,
+    Value, ViewSpec,
+};
+use binnacle_memory::{FindStep, MemorySource, Moved, PumpSource, Viewed};
+
+use crate::layer::{GroupingLayer, Summary, settle};
+use crate::query::{AggregateBackend, Answer, Batch, Body, GroupRow, Path, Stamp, Want};
+
+/// An aggregate as the In-Memory Table Source computes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Figure {
+    Count(u64),
+    Number(f64),
+    /// An aggregate this source does not compute, or of no values.
+    Blank,
+}
+
+/// One group of rows, and the groups of the next level within it.
+#[derive(Default)]
+struct Bucket {
+    value: Option<Value>,
+    count: u64,
+    leaves: Vec<Key>,
+    kids: Vec<Bucket>,
+    index: HashMap<Value, usize>,
+}
+
+/// The aggregate backend over a table in memory: every group of the rows in
+/// view, worked out once, answering any request about them. Groups come in
+/// the order of their first row and Leaves in row order, so rows sorted by
+/// the levels' fields first give groups in ascending order.
+pub struct MemoryAggregates {
+    stamp: Stamp,
+    levels: usize,
+    values: Vec<AggregateValue>,
+    root: Bucket,
+    /// Where each Leaf is: its group's path and its index there.
+    places: HashMap<Key, (Path, u64)>,
+}
+
+impl MemoryAggregates {
+    /// The groups of `rows`, the Leaf Keys in view order, for `batch`'s
+    /// scope: `value(level, i)` is row `i`'s value in the field of level
+    /// `level`. The scope's filter, hidden Keys and sort are the caller's to
+    /// have applied to `rows`.
+    pub fn new(batch: &Batch, rows: &[Key], value: impl Fn(usize, usize) -> Value) -> Self {
+        let levels = batch.scope.levels.len();
+        let mut root = Bucket::default();
+        let mut places = HashMap::new();
+        for (i, &key) in rows.iter().enumerate() {
+            let mut bucket = &mut root;
+            let mut path = Vec::with_capacity(levels);
+            bucket.count += 1;
+            for level in 0..levels {
+                let v = value(level, i);
+                path.push((batch.scope.levels[level], v.clone()));
+                let at = match bucket.index.get(&v) {
+                    Some(&at) => at,
+                    None => {
+                        bucket.index.insert(v.clone(), bucket.kids.len());
+                        bucket.kids.push(Bucket {
+                            value: Some(v),
+                            ..Bucket::default()
+                        });
+                        bucket.kids.len() - 1
+                    }
+                };
+                bucket = &mut bucket.kids[at];
+                bucket.count += 1;
+            }
+            places.insert(key, (path, bucket.leaves.len() as u64));
+            bucket.leaves.push(key);
+        }
+        MemoryAggregates {
+            stamp: batch.stamp,
+            levels,
+            values: batch.scope.values.clone(),
+            root,
+            places,
+        }
+    }
+
+    /// The stamp of the batch these groups were worked out for.
+    pub fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
+    fn bucket(&self, path: &Path) -> Option<&Bucket> {
+        path.iter()
+            .try_fold(&self.root, |b, (_, v)| b.index.get(v).map(|&i| &b.kids[i]))
+    }
+
+    fn aggregate(&self, bucket: &Bucket, value: &AggregateValue) -> Figure {
+        match (value.aggregate.as_str(), value.field) {
+            ("count", None) => Figure::Count(bucket.count),
+            _ => Figure::Blank,
+        }
+    }
+
+    fn row(&self, bucket: &Bucket, depth: usize) -> GroupRow<Figure> {
+        GroupRow {
+            value: bucket.value.clone().unwrap_or(Value::Blank),
+            children: match depth < self.levels {
+                true => bucket.kids.len() as u64,
+                false => bucket.leaves.len() as u64,
+            },
+            aggregates: (self.values.iter())
+                .map(|v| self.aggregate(bucket, v))
+                .collect(),
+        }
+    }
+}
+
+/// The part of `items` in `range`.
+fn slice<'a, T>(items: &'a [T], range: &Range<u64>) -> &'a [T] {
+    let end = (range.end as usize).min(items.len());
+    let start = (range.start as usize).min(end);
+    &items[start..end]
+}
+
+impl AggregateBackend<Figure> for MemoryAggregates {
+    fn answer(&mut self, batch: &Batch) -> Vec<Answer<Figure>> {
+        let mut answers = Vec::new();
+        for request in &batch.requests {
+            let answer = |path: Path, start: u64, body: Body<Figure>| Answer {
+                stamp: batch.stamp,
+                id: Some(request.id),
+                path,
+                start,
+                body,
+            };
+            match request.want {
+                Want::Locate(key) => {
+                    let (path, start) = self.places.get(&key).cloned().unwrap_or_default();
+                    let found = self.places.contains_key(&key);
+                    answers.push(answer(path, start, Body::Located { key, found }));
+                }
+                want => {
+                    let Some(bucket) = self.bucket(&request.path) else {
+                        continue;
+                    };
+                    let body = match want {
+                        Want::Groups => Body::Groups {
+                            total: bucket.kids.len() as u64,
+                            groups: (slice(&bucket.kids, &request.range).iter())
+                                .map(|b| self.row(b, request.path.len() + 1))
+                                .collect(),
+                        },
+                        _ => Body::Leaves {
+                            keys: slice(&bucket.leaves, &request.range).to_vec(),
+                        },
+                    };
+                    answers.push(answer(request.path.clone(), request.range.start, body));
+                }
+            }
+        }
+        answers
+    }
+}
+
+/// The Keys of a Window, with their outlines where the axis is grouped.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Window {
+    pub keys: Vec<Key>,
+    pub outlines: Option<Vec<Outline>>,
+}
+
+/// A [`MemorySource`] that groups its rows under the grouping layer. While
+/// the rows are grouped, the base rows are sorted by the levels' fields
+/// first (in the direction the user sorts them, ascending otherwise) and
+/// then by the user's sort, and the levels' fields leave the columns.
+pub struct GroupedMemory<R> {
+    source: MemorySource<R>,
+    layer: GroupingLayer<Figure>,
+    aggregates: Option<MemoryAggregates>,
+    /// The fields hidden from the columns because the rows group by them.
+    lifted: Vec<Key>,
+}
+
+impl<R> GroupedMemory<R> {
+    pub fn new(source: MemorySource<R>) -> Self {
+        GroupedMemory {
+            source,
+            layer: GroupingLayer::new(),
+            aggregates: None,
+            lifted: Vec::new(),
+        }
+    }
+
+    pub fn source(&self) -> &MemorySource<R> {
+        &self.source
+    }
+
+    /// The source, to change data through. Changes to the rows while they
+    /// are grouped need [`GroupedMemory::refresh`] after.
+    pub fn source_mut(&mut self) -> &mut MemorySource<R> {
+        &mut self.source
+    }
+
+    /// Whether `axis` is grouped now.
+    pub fn grouped(&self, axis: Axis) -> bool {
+        self.layer.grouped(axis)
+    }
+
+    /// The rows may group by a column that sorts and has a text form.
+    pub fn support(&self, axis: Axis, key: Key) -> Support {
+        let support = self.source.support(axis, key);
+        let group = axis == Axis::Rows && support.sort && support.text.is_some();
+        support.with_group(group)
+    }
+
+    /// Presents the table as `spec` asks, grouping included; answers with
+    /// the spec applied, the totals (the rows' unknown while grouped) and
+    /// the Change Notices: the rows' `Refiltered` whenever their grouping
+    /// or the rows under it change.
+    pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Viewed {
+        let levels: Vec<Key> = (spec.grouping.iter())
+            .flat_map(|g| g.row_levels.iter().filter_map(|l| l.field_key()))
+            .collect();
+        let levels: Vec<Key> = match levels.iter().all(|&f| self.support(Axis::Rows, f).group) {
+            true => levels,
+            false => Vec::new(),
+        };
+        let mut base = spec.clone();
+        base.grouping = None;
+        self.lifted = (levels.iter())
+            .filter(|f| !spec.cols.hidden.contains(f))
+            .copied()
+            .collect();
+        base.cols.hidden.extend(&self.lifted);
+        let mut sort: Vec<SortColumn> = (levels.iter())
+            .map(|&f| match spec.rows.sort.find(f) {
+                Some((i, _)) => spec.rows.sort.columns()[i],
+                None => SortColumn::ascending(f),
+            })
+            .collect();
+        sort.extend((spec.rows.sort.columns().iter()).filter(|c| !levels.contains(&c.key)));
+        base.rows.sort = SortSpec::new(sort);
+
+        let was_grouped = self.layer.grouped(Axis::Rows);
+        let mut notices = self.source.view(rows, &base).unwrap_or_default();
+        let rows_changed = notices.iter().any(|(a, _)| *a == Axis::Rows);
+        let mut applied = self.source.view_spec();
+        let base_sort = applied.rows.sort.clone();
+        applied.rows.sort = SortSpec::new(
+            (spec.rows.sort.columns().iter())
+                .filter(|c| base_sort.find(c.key).is_some())
+                .copied()
+                .collect(),
+        );
+        applied.cols.hidden.retain(|k| !self.lifted.contains(k));
+        applied.grouping = match levels.is_empty() {
+            true => None,
+            false => spec.grouping.clone(),
+        };
+        let scope_before = self.layer.grouped(Axis::Rows);
+        self.layer.request_view(applied.clone());
+        if rows_changed && scope_before && self.layer.grouped(Axis::Rows) {
+            self.layer.refresh();
+        }
+        self.settle(rows);
+        let mut layered = Vec::new();
+        while let Some(viewed) = self.layer.poll_viewed() {
+            layered.extend(viewed.notices);
+        }
+        let grouped = self.layer.grouped(Axis::Rows);
+        if grouped || was_grouped {
+            notices.retain(|(a, _)| *a != Axis::Rows);
+        }
+        if grouped {
+            notices.extend(layered.into_iter().filter(|(a, _)| *a == Axis::Rows));
+        } else if was_grouped {
+            let count = self.source.count(Axis::Rows);
+            notices.push((Axis::Rows, ChangeNotice::Refiltered(count)));
+        }
+        notices.sort_by_key(|(a, _)| a.index());
+        let mut totals = self.source.totals();
+        if grouped {
+            totals.rows = None;
+        }
+        Viewed {
+            applied,
+            totals,
+            notices,
+        }
+    }
+
+    /// Starts the groups afresh from the rows, after a change to the data.
+    pub fn refresh(&mut self, rows: &[R]) {
+        self.layer.refresh();
+        self.settle(rows);
+        while self.layer.poll_viewed().is_some() {}
+    }
+
+    fn settle(&mut self, rows: &[R]) {
+        let mut backend = Backend {
+            source: &self.source,
+            rows,
+            aggregates: &mut self.aggregates,
+        };
+        settle(&mut self.layer, &mut backend);
+    }
+
+    pub fn count(&self, axis: Axis) -> u64 {
+        match self.layer.count(axis) {
+            Some(count) => count,
+            None => self.source.count(axis),
+        }
+    }
+
+    /// The Keys at `range` on `axis`, and their outlines if it is grouped.
+    pub fn window(&mut self, rows: &[R], axis: Axis, range: Range<Position>) -> Window {
+        if !self.layer.grouped(axis) {
+            return Window {
+                keys: self.source.window(axis, range),
+                outlines: None,
+            };
+        }
+        let want = range.end.min(self.count(axis)).saturating_sub(range.start) as usize;
+        let mut items = self.layer.window(axis, range.clone());
+        // Each pass asks for the first page it lacks.
+        while items.len() < want {
+            self.settle(rows);
+            let more = self.layer.window(axis, range.clone());
+            if more.len() <= items.len() {
+                break;
+            }
+            items = more;
+        }
+        let (keys, outlines) = items.into_iter().unzip();
+        Window {
+            keys,
+            outlines: Some(outlines),
+        }
+    }
+
+    pub fn locate(&mut self, rows: &[R], axis: Axis, key: Key) -> Located {
+        if !self.layer.grouped(axis) {
+            return self.source.locate(axis, key);
+        }
+        loop {
+            if let Some(located) = self.layer.locate(axis, key) {
+                return located;
+            }
+            self.settle(rows);
+        }
+    }
+
+    /// The Summary Item with `key`, for drawing.
+    pub fn summary(&self, key: Key) -> Option<Summary<'_, Figure>> {
+        self.layer.summary(key)
+    }
+
+    /// This source with the host's `rows`, as [`binnacle_memory::pump`]
+    /// needs it.
+    pub fn over<'a>(&'a mut self, rows: &'a [R]) -> impl PumpSource + 'a {
+        Over { source: self, rows }
+    }
+}
+
+/// The backend for one settle: the base rows in view, grouped once per
+/// stamp.
+struct Backend<'a, R> {
+    source: &'a MemorySource<R>,
+    rows: &'a [R],
+    aggregates: &'a mut Option<MemoryAggregates>,
+}
+
+impl<R> AggregateBackend<Figure> for Backend<'_, R> {
+    fn answer(&mut self, batch: &Batch) -> Vec<Answer<Figure>> {
+        if self.aggregates.as_ref().map(|a| a.stamp()) != Some(batch.stamp) {
+            let count = self.source.count(Axis::Rows);
+            let keys = self.source.window(Axis::Rows, 0..count);
+            let logical = self.source.logical_window(Axis::Rows, 0..count);
+            let levels = &batch.scope.levels;
+            *self.aggregates = Some(MemoryAggregates::new(batch, &keys, |level, i| {
+                self.source.value(levels[level], &self.rows[logical[i]])
+            }));
+        }
+        self.aggregates
+            .as_mut()
+            .map_or(Vec::new(), |a| a.answer(batch))
+    }
+}
+
+struct Over<'a, R> {
+    source: &'a mut GroupedMemory<R>,
+    rows: &'a [R],
+}
+
+impl<R> PumpSource for Over<'_, R> {
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        self.source.view(self.rows, spec)
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        self.source.support(axis, key)
+    }
+
+    fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {
+        self.source.source.quick_filter(axis)
+    }
+
+    fn hide_support(&mut self, axis: Axis) -> bool {
+        self.source.source.hide_support(axis)
+    }
+
+    fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        Some(self.source.source.distinct(self.rows, axis, key, query))
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        self.source.locate(self.rows, axis, key)
+    }
+
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        Some(!self.source.grouped(axis) && self.source.source.movable(axis))
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
+        if self.source.grouped(axis) {
+            return Err("Can't move while grouped".into());
+        }
+        let before = self.source.source.view_spec();
+        let Some(notice) = self.source.source.move_items(axis, keys, to) else {
+            return Err("Can't move while sorted: clear the sort first".into());
+        };
+        let after = self.source.source.view_spec();
+        Ok(Moved {
+            notices: vec![(axis, notice)],
+            view: (after != before).then(|| (after, self.source.source.totals())),
+        })
+    }
+
+    fn find_support(&mut self) -> Option<TextSupport> {
+        self.source.source.find_support()
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        self.source
+            .source
+            .find_next(self.rows, query, from, direction)
+    }
+}
+
+impl<R> GroupedMemory<R> {
+    /// The unfiltered count of each axis, as the last view gave it.
+    pub fn totals(&self) -> Totals {
+        let mut totals = self.source.totals();
+        if self.layer.grouped(Axis::Rows) {
+            totals.rows = None;
+        }
+        totals
+    }
+}
