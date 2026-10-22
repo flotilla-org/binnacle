@@ -142,6 +142,22 @@ _Avoid_: Group total, footer row
 The Summary Item holding the figures for a whole grouped axis, placed before or after it or left out; at depth 0 with no ancestors. Its Key is a fixed one (`GRAND_TOTAL`), so the Grid pins it to the trailing edge whenever the axis's placement turns to after, before any Window lists it; the user may unpin it, and it stays unpinned while the placement stays after. Not to be confused with Totals, the unfiltered count.
 _Avoid_: Total row, overall total
 
+**All Column**:
+A column Grand Total, labelled "All". Where the column axis splits the values (the values pseudo-level among its levels) each value has its own All column, a Summary Item at its own Key interned from the value's identity, at the top level with no ancestors, and the Grid pins each to the trailing edge on sight.
+_Avoid_: Total column, grand total column
+
+**Pivot**:
+A grouping with column levels, or with the values pseudo-level among its row levels: both axes are then the Grouping Layer's, each item a Summary Item and each cell the figure where a row's path and a column's path cross. The innermost groups don't open (there are no Leaves), the columns follow the column Sort Spec and can't be moved, and any change to them is answered with Refiltered (or Reset), never Removed. A row group above the values pseudo-level shows the first value's figure.
+_Avoid_: Cross-tab, matrix
+
+**Pivot Column**:
+A column a Pivot builds from the data: its Key is interned from its path (each column level's field and value, then the value's identity when the columns split the values), so state on it (a Size Override, a pin) survives re-sorting and data changes. In TypeScript, `fromRows` with `pivots: true` gives them negative IDs.
+_Avoid_: Dynamic column, generated column
+
+**Values Pseudo-Level**:
+The level of a grouping that spreads the values along an axis, one item per value, placeable at any depth of either axis. Its path step's field is `VALUES_FIELD` (`null` in TypeScript Outlines) and its value the value's identity: the aggregate over the field ID, "sum(3)", or the aggregate alone, "count()".
+_Avoid_: Measures level, data level
+
 **Summary Item**:
 Any item a grouped axis shows that the source computes rather than holds: a Group Item, a Subtotal or the Grand Total. Its Key is interned from its path (each level's field and value, outermost first), so state on it survives sorting, filtering and data changes.
 _Avoid_: Aggregate row, synthetic row, virtual row
