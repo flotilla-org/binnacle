@@ -1,13 +1,17 @@
 //! The binnacle grouping demo: 240 shipments behind the In-Memory Table
-//! Source under the grouping layer, grouped by region.
+//! Source under the grouping layer, grouped by region, then port, with the
+//! sum of their weight and their count.
 //!
-//! Each region's Group Item heads its shipments, with a disclosure mark and
-//! its count in the row Header Band, and the region column leaves the body
-//! while the rows group by it. Press `m` for the focused column's menu:
+//! Each region's Group Item heads its ports, and each port's its shipments,
+//! with a disclosure mark and the count in the row Header Band; the region
+//! and port columns leave the body while the rows group by them. A Subtotal
+//! follows each group with its weight, so an open Group Item stays blank
+//! apart from its label, and the Grand Total is pinned at the bottom (`r`
+//! on it opens the row menu, which unpins it). Press `m` for the focused column's menu:
 //! "Ungroup rows" brings back the plain table, and on the region, port or
-//! crew column "Group rows by this column" groups by it. Click a header to
-//! sort: sorting by the grouped column orders the groups, any other column
-//! orders the shipments within their group. Arrows move through Group Items
+//! crew column "Group rows by this column" adds a level. Click the weight
+//! header to sort: regions and ports order by their total weight, and
+//! shipments by theirs within their port. Arrows move through Summary Items
 //! and shipments alike, and focus stays on its shipment through grouping
 //! and ungrouping. `t` cycles the Theme presets, `q` quits.
 
@@ -16,7 +20,8 @@ use std::io;
 use std::time::Instant;
 
 use binnacle_core::{
-    Axis, AxisConfig, Grid, Grouping, ItemKind, Key, Outline, Value, ViewSpec, Viewport,
+    AggregateValue, Axis, AxisConfig, Grid, Grouping, ItemKind, Key, Level, Outline, Placement,
+    Value, ViewSpec, Viewport,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{MemorySource, PumpSource, pump};
@@ -32,6 +37,8 @@ use ratatui::crossterm::execute;
 const SHIPMENTS: usize = 240;
 const HEADERS: [&str; 5] = ["id", "region", "port", "weight", "crew"];
 const REGION: Key = Key(1);
+const PORT: Key = Key(2);
+const WEIGHT: Key = Key(3);
 
 const REGIONS: [&str; 4] = ["North", "South", "East", "West"];
 const PORTS: [&str; 6] = [
@@ -74,18 +81,50 @@ fn source() -> GroupedMemory<Shipment> {
     GroupedMemory::new(source)
 }
 
-/// What the table draws: shipments by their fields, Group Items by their
-/// region and count.
+/// Region, then port, each with a Subtotal after it; the sum of the
+/// weights and the count; the Grand Total after everything.
+fn grouping() -> Grouping {
+    let mut grouping = Grouping::rows_by(REGION);
+    grouping.row_levels = [REGION, PORT]
+        .map(|field| Level::Field {
+            field,
+            subtotal: Placement::After,
+        })
+        .to_vec();
+    grouping.values = vec![AggregateValue::of(WEIGHT, "sum"), AggregateValue::count()];
+    grouping.rows.grand_total = Placement::After;
+    grouping
+}
+
+/// What the table draws: shipments by their fields, Summary Items by their
+/// group, count and figures.
 struct Text<'a> {
     rows: &'a [Shipment],
     source: &'a GroupedMemory<Shipment>,
+    grouping: Option<&'a Grouping>,
+}
+
+impl Text<'_> {
+    /// The Summary Item `row`'s figure for the value `aggregate` over
+    /// `field`, if the grouping shows one.
+    fn figure(&self, row: Key, field: Option<Key>, aggregate: Option<&str>) -> Option<Figure> {
+        let values = &self.grouping?.values;
+        let i = values.iter().position(|v| {
+            v.field == field && aggregate.is_none_or(|a| a == v.aggregate)
+        })?;
+        self.source.summary(row)?.aggregates.get(i).copied()
+    }
 }
 
 impl Content for Text<'_> {
     fn cell(&self, row: Key, col: Key) -> String {
         let Some(s) = self.rows.get(row.0 as usize) else {
-            // An open Group Item stays blank apart from its label.
-            return String::new();
+            // A Summary Item shows its group's figure for the column.
+            return match self.figure(row, Some(col), None) {
+                Some(Figure::Number(n)) => format!("{n:.1}"),
+                Some(Figure::Count(n)) => n.to_string(),
+                _ => String::new(),
+            };
         };
         match col.0 {
             0 => s.id.to_string(),
@@ -107,14 +146,15 @@ impl Content for Text<'_> {
     fn group_label(&self, row: Key, outline: &Outline) -> String {
         let label = match outline.group.as_ref().map(|g| &g.value) {
             Some(Value::Text(t)) => t.clone(),
-            _ => "(no region)".into(),
+            _ => "(none)".into(),
         };
-        let count = self.source.summary(row).and_then(|s| match s.aggregates {
-            [Figure::Count(n)] => Some(*n),
-            _ => None,
-        });
-        match (outline.kind, count) {
-            (ItemKind::Group, Some(n)) => format!("{label} ({n})"),
+        let label = match outline.kind {
+            ItemKind::Subtotal => format!("{label} total"),
+            ItemKind::GrandTotal => "Grand total".into(),
+            _ => label,
+        };
+        match self.figure(row, None, Some("count")) {
+            Some(Figure::Count(n)) => format!("{label} ({n})"),
             _ => label,
         }
     }
@@ -150,11 +190,11 @@ fn main() -> io::Result<()> {
     let mut grid = Grid::new(
         AxisConfig::new(SHIPMENTS as u64, 1.0).header(1.0),
         AxisConfig::new(HEADERS.len() as u64, 10.0)
-            .header(16.0)
+            .header(24.0)
             .gap(1.0),
     );
     declare(&mut grid, &mut source, &rows);
-    grid.request_view(ViewSpec::default().with_grouping(Some(Grouping::rows_by(REGION))));
+    grid.request_view(ViewSpec::default().with_grouping(Some(grouping())));
     let keymap = Keymap::preset(Preset::Chords);
     let mut menu = HeaderMenu::new();
     let mut mouse = Mouse::default();
@@ -182,6 +222,7 @@ fn main() -> io::Result<()> {
                 let text = Text {
                     rows: &rows,
                     source: &source,
+                    grouping: snapshot.applied_view().grouping.as_ref(),
                 };
                 render_with(&snapshot, &text, &ctx, area, frame.buffer_mut());
                 menu.render(
@@ -201,7 +242,7 @@ fn main() -> io::Result<()> {
                     ..full
                 };
                 let status = format!(
-                    "m menu  t theme  q quit | {grouped} | {}",
+                    "m column menu  r row menu  t theme  q quit | {grouped} | {}",
                     themes[theme].name
                 );
                 frame.render_widget(ratatui::text::Line::from(status), line);
@@ -222,6 +263,9 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('t') => theme = (theme + 1) % themes.len(),
                         KeyCode::Char('m') => {
                             menu.open(&grid.snapshot(), Axis::Cols);
+                        }
+                        KeyCode::Char('r') => {
+                            menu.open(&grid.snapshot(), Axis::Rows);
                         }
                         _ => {
                             if let Some(action) = keymap.action(&key) {

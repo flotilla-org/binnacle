@@ -29,14 +29,24 @@ interface Generation<Id> {
 
 const generation = <Id>(): Generation<Id> => ({ keys: new Map(), ids: new Map() });
 
-export function createInterner<Id>(idKey?: (id: Id) => Primitive): KeyInterner<Id> {
+/**
+ * A Key Interner; `seated` names IDs that always take the Key given, such as
+ * a Grand Total's, which the Grid knows by its Key before it is ever seen.
+ * Issued Keys count up from 0, so they never meet a seated Key with its top
+ * bit set.
+ */
+export function createInterner<Id>(idKey?: (id: Id) => Primitive, seated: [Id, bigint][] = []): KeyInterner<Id> {
   const canonical = idKey ?? ((id: Id) => id as Primitive);
+  const seats = new Map(seated.map(([id, key]) => [canonical(id), key]));
+  const seatIds = new Map(seated.map(([id, key]) => [key, id]));
   let current = generation<Id>();
   let previous = generation<Id>();
   let next = 0n;
   return {
     key(id) {
       const c = canonical(id);
+      const seat = seats.get(c);
+      if (seat !== undefined) return seat;
       let key = current.keys.get(c);
       if (key !== undefined) return key;
       key = previous.keys.get(c) ?? next++;
@@ -44,7 +54,7 @@ export function createInterner<Id>(idKey?: (id: Id) => Primitive): KeyInterner<I
       current.ids.set(key, id);
       return key;
     },
-    id: (key) => current.ids.get(key) ?? previous.ids.get(key),
+    id: (key) => seatIds.get(key) ?? current.ids.get(key) ?? previous.ids.get(key),
     rebuild(keep = []) {
       const kept = generation<Id>();
       for (const key of keep) {

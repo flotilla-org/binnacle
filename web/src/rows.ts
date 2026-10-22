@@ -35,9 +35,17 @@
 // The rows group by any sortable column, through binnacle-group's grouping
 // layer in wasm: the rows are sorted by the level columns first (the user's
 // direction on one, else ascending), then by the user's sort, and grouped by
-// each level column's cell text. A Group Item's row ID is a negative number,
-// stable for the source's life; `group(id)` describes it. The level columns
-// leave the columns while grouped, and the rows don't move.
+// each level column's cell text, nested outermost first, with Subtotals and
+// a Grand Total where the grouping places them. Values are the standard
+// aggregates: `count`, `distinct count` (of cell texts), and `sum`,
+// `average`, `minimum` and `maximum` of numbers (dates count as their
+// milliseconds); others are blank. Groups order by the one sort rule:
+// sorted by a column a value aggregates, by that value; by a level column,
+// by their text; else ascending. A Summary Item's row ID is a negative
+// number, stable for the source's life (the Grand Total's is -1, its
+// `grandTotal`); `group(id)` describes it, and its cells hold its group's
+// figure for each column a value aggregates. The level columns leave the
+// columns while grouped, and the rows don't move.
 
 import { comparedBy, comparedOf, passes, type Compared } from "./compare";
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
@@ -60,6 +68,7 @@ import type {
   TextQuery,
   ViewSpec,
 } from "./source";
+import { summaryLabel } from "./source";
 import { bridge } from "./wasm";
 
 type WebMemory = InstanceType<ReturnType<typeof bridge>["WebMemory"]>;
@@ -102,7 +111,7 @@ export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[ke
   filter(keep: ((row: R) => boolean) | null): void;
   /** The row a Leaf's row ID names. */
   row(id: number): R;
-  /** The group a Group Item's row ID (a negative number) heads, while it is in view; `undefined` for a Leaf. */
+  /** The Summary Item a negative row ID names, while it is in view; `undefined` for a Leaf. */
   group(id: number): RowsGroup<RowsColumnId<R>> | undefined;
   /**
    * The user edited the row `id` names in place: shows its new values and
@@ -120,11 +129,18 @@ export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[ke
   destroy(): void;
 }
 
-/** A group of the rows: its level column, its cell text (`null` for blanks), and how many rows it holds. */
+/**
+ * A Summary Item of the grouped rows: its kind; its level column and cell
+ * text (`null` for blanks), or `null` for the Grand Total; how many rows it
+ * holds; and its aggregates, one per value of the grouping (`null` for a
+ * blank).
+ */
 export interface RowsGroup<ColId> {
-  field: ColId;
+  kind: "group" | "subtotal" | "grandTotal";
+  field: ColId | null;
   value: ListedValue;
   count: number;
+  aggregates: (number | null)[];
 }
 
 /** An item of a grouped Window as `WebMemory.grouped_window` gives it; a Summary Item's field is a column index. */
@@ -132,7 +148,8 @@ interface GroupedItem {
   key: bigint;
   item: number | null;
   outline: Outline<bigint, bigint>;
-  count: number | null;
+  aggregates: (number | null)[] | null;
+  children: number | null;
 }
 
 /** The top bit of a Summary Item's Key, which its negative row ID leaves out. */
@@ -349,7 +366,7 @@ export function fromRows<R extends object>(
   /** The columns the rows group by, outermost first, and the grouping in force. */
   let levels: ColId[] = [];
   let grouping: Grouping<ColId, number, ColId> | null = null;
-  /** The Group Items seen in grouped Windows since the rows last grouped, by row ID. */
+  /** The Summary Items seen in grouped Windows since the rows last grouped, by row ID. */
   const groups = new Map<number, RowsGroup<ColId>>();
   const groupable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.sortable !== false;
   const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
@@ -561,28 +578,67 @@ export function fromRows<R extends object>(
     return moved;
   };
 
-  /** Groups the rows in view by the level columns' cell texts again, or ungroups them if there are none. */
+  /**
+   * Groups the rows in view as the grouping in force says, again, or
+   * ungroups them if it has no levels: stages each column it reads, as cell
+   * texts and as numbers, and the user's sort orders the groups.
+   */
   const regroup = () => {
     const m = memory();
     groups.clear();
-    if (levels.length === 0) return void (m.grouped() && m.ungroup());
-    for (const id of levels) {
+    if (levels.length === 0 || !grouping) return void (m.grouped() && m.ungroup());
+    const read = new Set([...levels, ...grouping.values.flatMap((v) => (v.field === null ? [] : [v.field]))]);
+    for (const id of read) {
       const { bytes, ends, nulls } = encoded(rows.map((r) => text(r, id)));
-      m.stage_level(bytes, ends, nulls);
+      const numbers = rows.map((r) => numeric(r[id]));
+      m.stage_field(
+        index.get(id)!,
+        bytes,
+        ends,
+        nulls,
+        Float64Array.from(numbers, (n) => n ?? 0),
+        Uint8Array.from(numbers, (n) => (n === undefined ? 1 : 0)),
+      );
     }
-    m.group(Uint32Array.from(levels, (id) => index.get(id)!));
+    const column = (id: ColId) => BigInt(index.get(id)!);
+    const wire = {
+      ...grouping,
+      rowLevels: grouping.rowLevels.flatMap((l) => ("field" in l ? [{ ...l, field: column(l.field) }] : [])),
+      values: grouping.values.map((v) => ({ ...v, field: v.field === null ? null : column(v.field) })),
+      rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except: [] } },
+      colAxis: { ...grouping.colAxis, expand: { ...grouping.colAxis.expand, except: [] } },
+    };
+    m.group(
+      wire,
+      Uint32Array.from(applied, (c) => index.get(c.id)!),
+      Uint8Array.from(applied, (c) => DIRECTION[c.direction]),
+    );
   };
 
-  /** The grouped rows at Positions `start..end`, each Group Item by its negative row ID. */
+  /** The index of the value that counts the rows, if the grouping has one. */
+  const counted = () => grouping?.values.findIndex((v) => v.field === null && v.aggregate === "count") ?? -1;
+
+  /** The grouped rows at Positions `start..end`, each Summary Item by its negative row ID. */
   const groupedWindow = (start: number, end: number) => {
     const items = memory().grouped_window(start, end) as GroupedItem[];
     const id = (item: GroupedItem) => item.item ?? summaryId(item.key);
-    const outlines = items.map(({ outline: o, count }, i): Outline<number, ColId> => {
+    const outlines = items.map((item): Outline<number, ColId> => {
+      const o = item.outline;
       const group = o.group ? { field: columns[Number(o.group.field)]!.key, value: o.group.value } : null;
-      if (group && o.kind === "group") groups.set(id(items[i]!), { ...group, count: count ?? 0 });
+      if (o.kind !== "leaf" && item.aggregates) {
+        const count = item.aggregates[counted()] ?? item.children ?? 0;
+        const summary = { kind: o.kind, field: group?.field ?? null, value: group?.value ?? null };
+        groups.set(id(item), { ...summary, count, aggregates: item.aggregates });
+      }
       return { kind: o.kind, depth: o.depth, open: o.open, ancestors: o.ancestors.map(summaryId), group };
     });
     return { ids: items.map(id), outlines };
+  };
+
+  /** A Summary Item's figure in column `col`: that of the first value aggregating it. */
+  const figure = (id: number, col: ColId): number | null => {
+    const at = grouping?.values.findIndex((v) => v.field === col) ?? -1;
+    return at < 0 ? null : (groups.get(id)?.aggregates[at] ?? null);
   };
 
   /** Sorts the columns by the rows `spec` names, each row's values across the columns as its keys. */
@@ -690,10 +746,12 @@ export function fromRows<R extends object>(
         Array.from(memory().unmatched(ROWS, Uint32Array.from(ids, (id) => (id < 0 ? rows.length : id))), (u) => u === 1),
       move: (ids, to) => move(ROWS, ids, to),
       movable: () => levels.length === 0 && memory().movable(ROWS),
-      groupLabel: (id) => {
+      groupLabel: (id, outline) => {
         const group = groups.get(id);
-        return group ? `${group.value ?? "(blank)"} (${group.count})` : "";
+        if (!group) return "";
+        return counted() < 0 ? summaryLabel(outline) : `${summaryLabel(outline)} (${group.count})`;
       },
+      grandTotal: -1,
     },
     cols: {
       count: () => memory().count(COLS),
@@ -734,7 +792,7 @@ export function fromRows<R extends object>(
       hidden = { rows: pruned(asked.rows.hidden, isRow), cols: pruned(asked.cols.hidden, (id) => index.has(id)) };
       const m = memory();
       // The level columns leave the columns while the rows group by them.
-      const wasLevels = levels;
+      const wasGrouping = JSON.stringify(grouping);
       levels = [...new Set((asked.grouping?.rowLevels ?? []).flatMap((l) => ("field" in l && groupable(l.field) ? [l.field] : [])))];
       grouping =
         levels.length === 0
@@ -743,9 +801,10 @@ export function fromRows<R extends object>(
               ...asked.grouping!,
               rowLevels: levels.map((field) => asked.grouping!.rowLevels.find((l) => "field" in l && l.field === field)!),
               colLevels: [],
+              values: asked.grouping!.values.filter((v) => v.field === null || index.has(v.field)),
               slicers: [],
             };
-      const regrouping = !same(wasLevels, levels);
+      const regrouping = JSON.stringify(grouping) !== wasGrouping;
       const hid = {
         rows: m.hide(ROWS, Uint32Array.from(hidden.rows)),
         cols: m.hide(
@@ -775,7 +834,8 @@ export function fromRows<R extends object>(
       if (resorted || refilteredCols) tell({ type: refilteredCols ? "Refiltered" : "Reordered" }, "cols");
       return { ...current(), ...(error === undefined ? {} : { error }) };
     },
-    cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => (r < 0 ? (null as R[keyof R]) : rows[r]![c]))),
+    cells: (rowIds, colIds) =>
+      rowIds.map((r) => colIds.map((c) => (r < 0 ? (figure(r, c) as R[keyof R]) : rows[r]![c]))),
     find: {
       regex: true,
       marks(rowIds, colIds, query) {

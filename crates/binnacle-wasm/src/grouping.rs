@@ -87,7 +87,7 @@ impl WireLevel {
 pub struct WireAggregateValue {
     pub field: Option<u64>,
     pub aggregate: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<String>,
 }
 

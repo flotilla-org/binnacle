@@ -4,7 +4,7 @@
 // Locate, move, find steps), and find's marks and count. Every answer goes
 // through one `settle`.
 
-import { AXES, AXIS_CODE, EDGE_CODE, FIND, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, EDGE_CODE, FIND, GRAND_TOTAL, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -208,7 +208,9 @@ function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => str
   const position = source.identity === "position";
   return {
     source,
-    interner: position ? (positionInterner as unknown as KeyInterner<Id>) : createInterner(source.idKey),
+    interner: position
+      ? (positionInterner as unknown as KeyInterner<Id>)
+      : createInterner(source.idKey, source.grandTotal === undefined ? [] : [[source.grandTotal, GRAND_TOTAL]]),
     position,
     waiting: null,
     failed: null,
@@ -728,9 +730,8 @@ export function createFeed<RowId, ColId, V>(
   const groupingIds = (g: KeyedGrouping, lenient = false): Grouping<ColId, RowId, ColId> | undefined => {
     const levels = (all: Level<bigint>[]) => all.map(levelIds);
     const values = g.values.map((v) => {
-      if (v.field === null) return { field: null, aggregate: v.aggregate };
-      const field = cols.interner.id(v.field);
-      return field === undefined ? undefined : { field, aggregate: v.aggregate };
+      const field = v.field === null ? null : cols.interner.id(v.field);
+      return field === undefined ? undefined : { ...v, field };
     });
     const slicers = g.slicers.map((c) => conditionId(cols, c));
     const [rowLevels, colLevels] = [levels(g.rowLevels), levels(g.colLevels)];
@@ -757,7 +758,7 @@ export function createFeed<RowId, ColId, V>(
     return {
       rowLevels: g.rowLevels.map(level),
       colLevels: g.colLevels.map(level),
-      values: g.values.map((v) => ({ field: v.field === null ? null : cols.interner.key(v.field), aggregate: v.aggregate })),
+      values: g.values.map((v) => ({ ...v, field: v.field === null ? null : cols.interner.key(v.field) })),
       slicers: g.slicers.map((c) => conditionKey(cols, c)),
       rowAxis: axis(rows, g.rowAxis),
       colAxis: axis(cols, g.colAxis),

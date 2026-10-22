@@ -2,7 +2,7 @@
 // against Rust's own view of the same frame, never against constants.
 
 import { beforeAll, describe, expect, test } from "vitest";
-import { FIND, NOTICE_CODE, SUPPORT } from "../src/codes";
+import { FIND, GRAND_TOTAL, NOTICE_CODE, SUPPORT } from "../src/codes";
 import { decodeSnapshot, type KeyedViewSpec } from "../src/snapshot";
 import { isEffect } from "../src/effects";
 import type { Outline } from "../src/source";
@@ -394,7 +394,7 @@ describe("Grouping", () => {
     }
   });
 
-  test("binnacle-memory groups the rows in view, and a grouped Window gives each item's outline", () => {
+  test("binnacle-memory groups the rows in view, with Subtotals, a Grand Total and figures, ordered by the one sort rule", () => {
     const memory = new (bridge().WebMemory)(5, 2);
     try {
       const encode = (values: (string | null)[]) => {
@@ -406,28 +406,64 @@ describe("Grouping", () => {
         }
         return [Uint8Array.from(bytes), Uint32Array.from(ends), Uint8Array.from(values, (v) => (v === null ? 1 : 0))] as const;
       };
+      // Column 1 is the region, column 0 the weight.
       const region = encode(["b", "a", "b", null, "a"]);
+      const weights = [5, 1, 2, 10, 4];
+      const stage = () => {
+        memory.stage_field(1, ...region, new Float64Array(5), Uint8Array.from([1, 1, 1, 1, 1]));
+        memory.stage_field(0, ...encode(weights.map(String)), Float64Array.from(weights), new Uint8Array(5));
+      };
+      const grouping = {
+        rowLevels: [{ field: 1n, subtotal: "after" }],
+        colLevels: [],
+        values: [{ field: 0n, aggregate: "sum" }, { field: null, aggregate: "count" }],
+        slicers: [],
+        rowAxis: { grandTotal: "after", form: "outline", expand: { depth: "all", except: [] } },
+        colAxis: { grandTotal: "off", form: "header", expand: { depth: "all", except: [] } },
+      };
       memory.stage_strings(...region);
       memory.sort(0, BigUint64Array.from([1n]), Uint8Array.from([0]));
-      memory.stage_level(...region);
-      expect(memory.group(Uint32Array.from([1]))).toBe(8);
-      type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; count: number | null };
-      const items = memory.grouped_window(0, 8) as Item[];
-      const [a, b, blank] = [items[0]!.key, items[3]!.key, items[6]!.key];
+      stage();
+      expect(memory.group(grouping, new Uint32Array(), new Uint8Array())).toBe(12);
+      type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
+      const items = memory.grouped_window(0, 12) as Item[];
+      const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
+      const group = (value: string | null) => ({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value } });
+      const leaf = (parent: bigint) => ({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null });
+      const subtotal = (parent: bigint, value: string | null) => ({ ...leaf(parent), kind: "subtotal", group: { field: 1n, value } });
       expect(items.map((i) => [i.item, i.outline])).toEqual([
-        [null, { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "a" } }],
-        [1, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [a], group: null }],
-        [4, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [a], group: null }],
-        [null, { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "b" } }],
-        [0, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [b], group: null }],
-        [2, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [b], group: null }],
-        [null, { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: null } }],
-        [3, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [blank], group: null }],
+        [null, group("a")],
+        [1, leaf(a)],
+        [4, leaf(a)],
+        [null, subtotal(a, "a")],
+        [null, group("b")],
+        [0, leaf(b)],
+        [2, leaf(b)],
+        [null, subtotal(b, "b")],
+        [null, group(null)],
+        [3, leaf(blank)],
+        [null, subtotal(blank, null)],
+        [null, { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null }],
       ]);
-      expect(items.map((i) => i.count)).toEqual([2, null, null, 2, null, null, 1, null]);
-      expect(items[0]!.key >= 2n ** 63n).toBe(true);
-      expect(Array.from(memory.locate_summary(items[3]!.key))).toEqual([0, 3]);
-      expect(Array.from(memory.locate(0, 3))).toEqual([0, 7]);
+      expect(items.map((i) => i.aggregates)).toEqual([
+        [5, 2], null, null, [5, 2], [7, 2], null, null, [7, 2], [10, 1], null, [10, 1], [22, 5],
+      ]);
+      expect(items[11]!.key).toBe(bridge().grand_total_key());
+      expect(GRAND_TOTAL).toBe(bridge().grand_total_key());
+      expect(Array.from(memory.locate_summary(items[4]!.key))).toEqual([0, 4]);
+      expect(Array.from(memory.locate_summary(GRAND_TOTAL))).toEqual([0, 11]);
+      expect(Array.from(memory.locate(0, 3))).toEqual([0, 9]);
+
+      // Sorted by the weight, heaviest first: the groups by their sum.
+      memory.stage_strings(...region);
+      memory.stage_numbers(Float64Array.from(weights), new Uint8Array(5));
+      memory.sort(0, BigUint64Array.from([1n, 0n]), Uint8Array.from([0, 1]));
+      stage();
+      memory.group(grouping, Uint32Array.from([0]), Uint8Array.from([1]));
+      const sorted = memory.grouped_window(0, 12) as Item[];
+      expect(sorted.map((i) => i.item ?? `${i.outline.kind} ${i.outline.group?.value}`)).toEqual([
+        "group null", 3, "subtotal null", "group b", 0, 2, "subtotal b", "group a", 4, 1, "subtotal a", "grandTotal undefined",
+      ]);
       expect(memory.ungroup()).toBe(5);
     } finally {
       memory.free();

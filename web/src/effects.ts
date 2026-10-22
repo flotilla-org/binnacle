@@ -158,7 +158,13 @@ function isGrouping(v: unknown): boolean {
   if (!isRecord(v) || !Array.isArray(v.rowLevels) || !Array.isArray(v.colLevels)) return false;
   const values =
     Array.isArray(v.values) &&
-    v.values.every((a) => isRecord(a) && (a.field === null || typeof a.field === "bigint") && typeof a.aggregate === "string");
+    v.values.every(
+      (a) =>
+        isRecord(a) &&
+        (a.field === null || typeof a.field === "bigint") &&
+        typeof a.aggregate === "string" &&
+        (a.params === undefined || (Array.isArray(a.params) && a.params.every((p) => typeof p === "string"))),
+    );
   const slicers = Array.isArray(v.slicers) && v.slicers.every(isCondition);
   const levels = v.rowLevels.every(isLevel) && v.colLevels.every(isLevel);
   return levels && values && slicers && isGroupedAxis(v.rowAxis) && isGroupedAxis(v.colAxis);

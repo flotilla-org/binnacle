@@ -20,6 +20,13 @@ pub use memory::WebMemory;
 
 use wasm_bindgen::prelude::*;
 
+/// The Key of a grouped axis's Grand Total, which the widget names the
+/// source's Grand Total by.
+#[wasm_bindgen]
+pub fn grand_total_key() -> u64 {
+    binnacle_core::GRAND_TOTAL.0
+}
+
 /// Runs when the module loads: debug builds report panics to the console.
 #[wasm_bindgen(start)]
 pub fn start() {

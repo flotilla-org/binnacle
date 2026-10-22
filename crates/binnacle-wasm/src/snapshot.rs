@@ -300,8 +300,9 @@ impl Writer<'_> {
         }
     }
 
-    /// The row levels, the column levels, the values (each a flagged field
-    /// and its aggregate's name), the slicers, then each axis's layout.
+    /// The row levels, the column levels, the values (each a flagged field,
+    /// its aggregate's name and its parameters), the slicers, then each
+    /// axis's layout.
     fn grouping(&mut self, g: &Grouping) {
         for levels in [&g.row_levels, &g.col_levels] {
             self.len(levels.len());
@@ -316,6 +317,10 @@ impl Writer<'_> {
                 self.key(field);
             }
             self.text(&v.aggregate);
+            self.len(v.params.len());
+            for p in &v.params {
+                self.text(p);
+            }
         }
         self.len(g.slicers.len());
         for c in &g.slicers {

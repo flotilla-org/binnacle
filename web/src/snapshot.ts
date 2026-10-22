@@ -459,7 +459,9 @@ class Reader {
     const colLevels = this.list(() => this.level());
     const values = this.list(() => {
       const field = this.optKey();
-      return { field, aggregate: this.text() };
+      const aggregate = this.text();
+      const params = this.list(() => this.text());
+      return { field, aggregate, ...(params.length > 0 ? { params } : {}) };
     });
     const slicers = this.list(() => this.condition());
     const rowAxis = this.groupedAxis();

@@ -109,11 +109,13 @@ export type Level<FieldId> = { field: FieldId; subtotal: Placement } | { values:
  * One value a grouped table shows: an aggregate (an open name such as
  * `sum`, `count`, `average`, `minimum`, `maximum`, `distinct count`, or one
  * the Table Source declares) over a base field, or over nothing (`null`)
- * for a count of items.
+ * for a count of items, with the parameters a declared aggregate takes,
+ * passed to the source as they are (none if omitted).
  */
 export interface AggregateValue<FieldId> {
   field: FieldId | null;
   aggregate: string;
+  params?: string[];
 }
 
 /**
@@ -479,10 +481,15 @@ export interface AxisMethods<Id, CrossId> {
   label?(id: Id, position: number): string;
   /**
    * Header text for a Summary Item of a grouped axis, drawn after its
-   * indent and disclosure mark; defaults to its group's value, "(blank)"
-   * for a blank, and "Grand total".
+   * indent and disclosure mark; defaults to `summaryLabel`.
    */
   groupLabel?(id: Id, outline: Outline<Id, CrossId>): string;
+  /**
+   * The ID of this axis's Grand Total while it is grouped, if it has one:
+   * the widget names it by the Key the Grid pins a Grand Total placed after
+   * by, so it is pinned before it comes into a Window.
+   */
+  grandTotal?: Id;
   /** The axis's IDs are its Positions, so the widget keeps no Key Interner for it. */
   identity?: "position";
 }
@@ -521,9 +528,25 @@ export interface TableSource<RowId, ColId, V = unknown> {
   attach?(sink: TableSink<RowId, ColId>): () => void;
 }
 
-/** A Summary Item's header text when the source gives none: its group's value, "(blank)" for a blank, or "Grand total". */
+/**
+ * A Summary Item's header text when the source gives none: a Group Item's
+ * value ("(blank)" for a blank), the value and "total" on a Subtotal
+ * ("Bergen total"), or "Grand total".
+ */
 export function summaryLabel(outline: Outline<unknown, unknown>): string {
   if (outline.kind === "grandTotal") return "Grand total";
   const value = outline.group?.value;
-  return value === undefined ? "" : (value ?? "(blank)");
+  const label = value === undefined ? "" : (value ?? "(blank)");
+  return outline.kind === "subtotal" ? `${label} total` : label;
+}
+
+/**
+ * A value's name, as the caption a grouped table with one value shows:
+ * the aggregate over the field's name, with any parameters after it
+ * ("sum(weight)", "percentile(weight, 0.9)"), or the aggregate alone for a
+ * count of items.
+ */
+export function valueName<FieldId>(value: AggregateValue<FieldId>, fieldName: (field: FieldId) => string): string {
+  const args = [...(value.field === null ? [] : [fieldName(value.field)]), ...(value.params ?? [])];
+  return args.length === 0 ? value.aggregate : `${value.aggregate}(${args.join(", ")})`;
 }

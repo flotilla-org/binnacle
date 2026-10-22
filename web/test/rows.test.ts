@@ -1186,6 +1186,110 @@ describe("fromRows's grouping", () => {
       }
     }));
 
+  type Placement = "before" | "after" | "off";
+  type Shown = { kind: string; value: string | null; sum: number | null; count: number } | number;
+
+  /**
+   * The model of two levels with Subtotals and the Grand Total placed as
+   * asked, summing `b` and counting: the rows kept, sorted by the levels
+   * then the sort; groups in that order unless a sort column before a
+   * level's own orders them, which only `b` does (by the group's sum).
+   */
+  const nestedModel = (
+    rows: Rec[],
+    levels: [keyof Rec, Placement][],
+    total: Placement,
+    sort: SortSpec<keyof Rec>,
+    keep: (r: Rec, i: number) => boolean,
+  ): Shown[] => {
+    const by = levels.map(([id]) => ({ id, direction: sort.find((c) => c.id === id)?.direction ?? ("ascending" as const) }));
+    const kept = reference(rows, [...by, ...sort], () => true).filter((i) => keep(rows[i]!, i));
+    const text = (r: number, id: keyof Rec) => (rows[r]![id] === null ? null : String(rows[r]![id]));
+    const figures = (members: number[]) => {
+      const bs = members.map((r) => rows[r]!.b).filter((b): b is number => b !== null);
+      return { sum: bs.length ? bs.reduce((a, b) => a + b, 0) : null, count: members.length };
+    };
+    const walk = (members: number[], depth: number): Shown[] => {
+      const level = levels[depth];
+      if (!level) return members;
+      const [field, subtotal] = level;
+      const groups: [string | null, number[]][] = [];
+      for (const r of members) {
+        const found = groups.find(([v]) => v === text(r, field));
+        if (found) found[1].push(r);
+        else groups.push([text(r, field), [r]]);
+      }
+      const own = sort.findIndex((c) => c.id === field);
+      const sumBy = (own < 0 ? sort : sort.slice(0, own)).find((c) => c.id === "b");
+      if (sumBy && field !== "b") {
+        groups.sort(([, a], [, b]) => {
+          const [x, y] = [figures(a).sum, figures(b).sum];
+          if (x === y) return 0;
+          if (x === null) return 1;
+          if (y === null) return -1;
+          return sumBy.direction === "ascending" ? x - y : y - x;
+        });
+      }
+      return groups.flatMap(([value, group]) => {
+        const sub = { kind: "subtotal", value, ...figures(group) };
+        return [
+          { kind: "group", value, ...figures(group) },
+          ...(subtotal === "before" ? [sub] : []),
+          ...walk(group, depth + 1),
+          ...(subtotal === "after" ? [sub] : []),
+        ];
+      });
+    };
+    const grand = { kind: "grandTotal", value: null, ...figures(kept) };
+    return [...(total === "before" ? [grand] : []), ...walk(kept, 0), ...(total === "after" ? [grand] : [])];
+  };
+
+  test("two levels with Subtotals, a Grand Total, a sum and a count match the model, ordered by the one sort rule", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const placement = gs.sampledFrom<Placement>(["before", "after", "off"]);
+        const outer = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
+        const inner = tc.draw(gs.sampledFrom<keyof Rec>((["n", "s", "b"] as const).filter((f) => f !== outer)));
+        const levels: [keyof Rec, Placement][] = [
+          [outer, tc.draw(placement)],
+          [inner, tc.draw(placement)],
+        ];
+        const total = tc.draw(placement);
+        const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+        const hidden = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: Math.max(0, rows.length - 1) }), { maxSize: 4 }));
+        const grouping = {
+          ...rowsBy<keyof Rec>(outer),
+          rowLevels: levels.map(([field, subtotal]) => ({ field, subtotal })),
+          values: [
+            { field: "b" as const, aggregate: "sum" },
+            { field: null, aggregate: "count" },
+          ],
+          rowAxis: { ...rowsBy(outer).rowAxis, grandTotal: total },
+        };
+        const answer = source.view!({ ...groupedBy(outer, sort, hidden), grouping }, signal) as AppliedView<number, keyof Rec>;
+        expect(answer.grouping).toEqual(grouping);
+        const n = source.rows.count() as number;
+        const window = source.rows.window(0, n, signal) as OutlinedWindow<number, keyof Rec>;
+        const shown = window.ids.map((id, i): Shown => {
+          if (id >= 0) return id;
+          const group = source.group(id)!;
+          const outline = window.outlines[i]!;
+          expect(group.kind).toBe(outline.kind);
+          const [sum, count] = group.aggregates;
+          expect(source.cells([id], ["b", "n"], signal)).toEqual([[sum, null]]);
+          const label = { group: group.value ?? "(blank)", subtotal: `${group.value ?? "(blank)"} total`, grandTotal: "Grand total" };
+          expect(source.rows.groupLabel!(id, outline)).toBe(`${label[group.kind]} (${count})`);
+          if (group.kind === "grandTotal") expect(id).toBe(source.rows.grandTotal);
+          return { kind: group.kind, value: group.value, sum: sum ?? null, count: count! };
+        });
+        expect(shown).toEqual(nestedModel(rows, levels, total, sort, (_, i) => !hidden.includes(i)));
+      } finally {
+        source.destroy();
+      }
+    }));
+
   test("ungrouping brings back the plain rows, in the sort in force, and the level column", () =>
     hegel.test((tc) => {
       const rows = tc.draw(records);
