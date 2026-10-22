@@ -6,7 +6,7 @@
 // move at all. Cells are canvas pixels, so the status line's focus is the
 // probe, as in records.spec.ts.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { rows, type RecordRow } from "../demo/sources/records-data";
 import { column, FIRST } from "./records-columns";
 
@@ -88,15 +88,42 @@ function pixels(page: Page, x: number, y: number, width: number): Promise<string
   );
 }
 
-/** Whether the strip changes over a few hundred milliseconds. */
-async function moving(read: () => Promise<string>): Promise<boolean> {
+/** Whether the strip changes over a few hundred milliseconds of the page's stopped clock. */
+async function moving(page: Page, read: () => Promise<string>): Promise<boolean> {
   const first = await read();
   for (let i = 0; i < 4; i++) {
-    await new Promise((r) => setTimeout(r, 120));
+    await page.clock.runFor(120);
     if ((await read()) !== first) return true;
   }
   return false;
 }
+
+/**
+ * Polls `read`, jumping the page's stopped clock ahead before each read.
+ * A jump runs a frame once rather than every 16 ms, so a loaded browser
+ * keeps up.
+ */
+const clocked = <T,>(page: Page, read: () => Promise<T>) =>
+  expect.poll(
+    async () => {
+      await page.clock.fastForward(250);
+      return read();
+    },
+    { intervals: [0], timeout: 20_000 },
+  );
+
+const text = async (locator: Locator) => (await locator.textContent()) ?? "";
+
+/**
+ * Waits until the widget has run the frame for the input so far. A click
+ * hits what the last frame drew, and a pixel read sees what it painted.
+ */
+const settled = (page: Page) =>
+  page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+
+/** The ARIA table's cell for screen row 0's first column: its record's id. */
+const topId = (page: Page) =>
+  page.locator('.binnacle-aria [role="row"][aria-rowindex="2"] [role="gridcell"]').first();
 
 /**
  * Whether dragging a column header from x `from` to x `to` draws anything
@@ -112,7 +139,7 @@ async function dragDraws(page: Page, from: number, to: number): Promise<boolean>
   const resting = await band();
   let dragging = resting;
   await drag(page, from, HEADER / 2, to + 1, HEADER / 2, async () => {
-    await page.waitForTimeout(100);
+    await settled(page);
     dragging = await band();
   });
   return dragging !== resting;
@@ -128,6 +155,7 @@ test.describe("records", () => {
   test("dragging a row header moves its record", async ({ page }) => {
     await open(page);
     await dragRow(page, 4, 0);
+    await expect(topId(page)).toHaveText("4");
     await cell(page, 0);
     await expect(status(page)).toContainText(focus(0, 4));
     await cell(page, 1);
@@ -141,6 +169,7 @@ test.describe("records", () => {
     await expect(weight).toHaveAttribute("aria-sort", "ascending");
     const sorted = byWeight();
     await dragRow(page, 3, 0);
+    await expect(topId(page)).toHaveText(String(sorted[3]));
     await cell(page, 0);
     await expect(status(page)).toContainText(focus(0, sorted[3]!));
     await expect(weight).not.toHaveAttribute("aria-sort", "ascending");
@@ -154,6 +183,10 @@ test.describe("records", () => {
   test("with sortedMoves=refuse, sorted rows offer no move while columns still move", async ({ page }) => {
     await open(page, "&sortedMoves=refuse");
     await header(page, 2);
+    await expect(page.locator(".binnacle-aria").getByRole("columnheader", { name: "weight" })).toHaveAttribute(
+      "aria-sort",
+      "ascending",
+    );
     const sorted = byWeight();
     await cell(page, 0);
     await expect(status(page)).toContainText(focus(0, sorted[0]!));
@@ -163,6 +196,7 @@ test.describe("records", () => {
     await expect(announced(page)).not.toContainText("sorted");
     // The columns are not sorted, so the port column still moves first.
     await drag(page, column(4), HEADER / 2, FIRST, HEADER / 2);
+    await expect(page.locator('.binnacle-aria [role="columnheader"][aria-colindex="2"]')).toHaveText("port");
     await cell(page, 0, 0);
     await expect(status(page)).toContainText(focus(0, sorted[0]!, "port"));
   });
@@ -183,17 +217,21 @@ test.describe("slow", () => {
   }
 
   test("a moved row's header shimmers until the move lands, and the order holds meanwhile", async ({ page }) => {
+    await page.clock.install();
     await open(page, "&pace=glacial");
+    // The clock stands still unless the test runs it, so the move cannot
+    // land while the order is checked, however loaded the machine is.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 60_000);
     const rowHeader = () => pixels(page, 0, HEADER + 3 * ROW + 3, 40);
     await dragRow(page, 3, 0);
     await expect(requests(page)).toContainText("1 in flight");
-    expect(await moving(rowHeader)).toBe(true);
+    expect(await moving(page, rowHeader)).toBe(true);
     await cell(page, 0);
-    await expect(status(page)).toContainText(focus(0, 0));
-    await expect(requests(page)).toContainText("0 in flight", { timeout: 15_000 });
-    expect(await moving(rowHeader)).toBe(false);
+    await clocked(page, () => text(status(page))).toContain(focus(0, 0));
+    await clocked(page, () => text(requests(page))).toContain("0 in flight");
+    expect(await moving(page, rowHeader)).toBe(false);
     await cell(page, 0);
-    await expect(status(page)).toContainText(focus(0, 3));
+    await clocked(page, () => text(status(page))).toContain(focus(0, 3));
   });
 
   test("a move that reaches the source after a sort it refuses moves nothing and is announced", async ({ page }) => {
@@ -230,11 +268,12 @@ test("the transposed source moves a field by its row header and a record by its 
   const recordHeader = (record: number) => pixels(page, FIRST_RECORD + record * COLUMN + 30, 3, 50);
   const before = await portHeader();
   await drag(page, BAND, HEADER + 4 * ROW + ROW / 2, BAND, HEADER + 8, async () => {
-    await page.waitForTimeout(100);
+    await settled(page);
     expect(await portHeader()).not.toBe(before);
     expect(await recordHeader(4)).toBe(await recordHeader(3));
   });
   await drag(page, FIRST_RECORD + 3 * COLUMN, HEADER / 2, FIRST_RECORD + 30, HEADER / 2);
+  await settled(page);
   const b = await layer(page);
   await page.mouse.click(b.x + FIRST_RECORD, b.y + HEADER + ROW / 2);
   await expect(status(page)).toContainText(`focus row 1, column 1 (${fields[4]} / 3)`);

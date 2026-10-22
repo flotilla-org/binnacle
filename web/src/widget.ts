@@ -421,6 +421,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         drainEffects(this.parts);
         this.schedule();
       },
+      catchUp: () => this.catchUp(),
       focusChanged: () => {
         this.painter.focused = this.input.focused;
         this.invalidate();
@@ -1108,10 +1109,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * due, so it is up to date.
    */
   layout(): Layout<RowId, ColId> {
-    if (!this.framing && (this.raf || !this.last) && !this.destroyed) {
-      cancelAnimationFrame(this.raf);
-      this.frame();
-    }
+    this.catchUp();
     return readLayout(this.last!, this.layoutParts());
   }
 
@@ -1270,6 +1268,14 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private invalidate(): void {
     this.force = true;
     this.schedule();
+  }
+
+  /** Runs the frame now if one is due, so what follows sees the Grid as of the input so far. */
+  private catchUp(): void {
+    if (!this.framing && (this.raf || !this.last) && !this.destroyed) {
+      cancelAnimationFrame(this.raf);
+      this.frame();
+    }
   }
 
   private schedule(): void {

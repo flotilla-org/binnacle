@@ -23,6 +23,12 @@ export interface InputHost {
   keymap: Keymap;
   /** After each DOM input: drain Effects and schedule a frame. */
   changed(): void;
+  /**
+   * Before a key or typed text: runs the frame now if one is due. A Change
+   * Notice drops the Keys in view until the next frame fetches them, and a
+   * key that came first would find no focused cell to edit.
+   */
+  catchUp(): void;
   /** The widget gained or lost DOM focus. */
   focusChanged(): void;
   /** The last frame's Snapshot. */
@@ -202,6 +208,7 @@ export function createInput(host: InputHost): Input {
 
   on(textarea, "keydown", (e) => {
     if (e.isComposing) return;
+    host.catchUp();
     if (editing.open) {
       if (editing.key(e)) host.changed();
       return;
@@ -242,6 +249,7 @@ export function createInput(host: InputHost): Input {
   // Typing starts an edit with the typed text; read-only, the text goes nowhere.
   on(textarea, "input", (e) => {
     if (editing.open || (e as InputEvent).isComposing) return;
+    host.catchUp();
     if (textarea.value) editing.type();
     if (!editing.open) textarea.value = "";
   });

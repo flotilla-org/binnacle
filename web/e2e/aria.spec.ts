@@ -212,25 +212,34 @@ test.describe("on the huge table", () => {
   });
 
   test("a fast scroll updates the table only once it slows, then shows where it ended", async ({ page }) => {
-    const updates = await page.evaluate(async () => {
-      const el = document.querySelector<HTMLElement>(".binnacle-scroller")!;
+    // The page's clock runs only when told to, so the fling's frames come a
+    // steady 16 ms apart however loaded the machine is.
+    await page.clock.install();
+    await page.reload();
+    await expect(page.locator("#status")).toContainText("rows 1 to");
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await page.evaluate(() => {
       const body = document.querySelector('table[role="grid"] tbody')!;
-      let changed = 0;
-      let frames = 0;
-      const seen = new MutationObserver(() => changed++);
+      const seen = new MutationObserver(() => (window as unknown as { updates: number }).updates++);
+      (window as unknown as { updates: number }).updates = 0;
       seen.observe(body, { childList: true, subtree: true, attributes: true, characterData: true });
-      // Fast flinging: a big step every frame for 40 frames.
-      for (; frames < 40; frames++) {
-        el.scrollTop += 300;
-        await new Promise(requestAnimationFrame);
-        await new Promise((r) => setTimeout(r));
-      }
-      seen.takeRecords();
-      const result = changed;
-      seen.disconnect();
-      return result;
     });
-    expect(updates).toBeLessThan(10);
+    // Fast flinging: a big step every frame for 40 frames.
+    for (let frame = 0; frame < 40; frame++) {
+      await scroller(page).evaluate(
+        (el) =>
+          new Promise((scrolled) => {
+            el.addEventListener("scroll", scrolled, { once: true });
+            el.scrollTop += 300;
+          }),
+      );
+      await page.clock.runFor(16);
+    }
+    const updates = await page.evaluate(() => (window as unknown as { updates: number }).updates);
+    // 640 ms of flinging: the table waits for a pause, but no more than 500 ms.
+    expect(updates).toBeLessThanOrEqual(1);
+    // Once the fling stops, the table catches up.
+    await page.clock.runFor(200);
     const first = Number((await page.locator("#status").textContent())!.match(/rows ([\d,]+)/)![1]!.replaceAll(",", ""));
     await expect.poll(() => rowIndices(page).then((r) => Number(r[0]))).toBe(first + 1);
   });
