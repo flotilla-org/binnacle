@@ -71,6 +71,21 @@ export { rowsBy } from "./source";
 export { LAYOUT_VERSION, type Layout, type LayoutPins } from "./layout";
 export { fromRows, type RowsColumn, type RowsColumnId, type RowsGroup, type RowsOptions, type RowsSource } from "./rows";
 export {
+  groupedSource,
+  type AggregateAnswer,
+  type AggregateBackend,
+  type AggregateBatch,
+  type AggregateBody,
+  type AggregateQuery,
+  type AggregateScope,
+  type Figure,
+  type GroupedOptions,
+  type GroupedSource,
+  type GroupedSummary,
+  type GroupPath,
+  type GroupRow,
+} from "./grouped";
+export {
   catppuccinMocha,
   light,
   mono,

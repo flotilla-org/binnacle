@@ -221,11 +221,14 @@ export function paintRowNumbers(p: PaintContext): void {
   ctx.fillRect(0, top, left, p.height - top);
   ctx.font = theme.font;
   ctx.textAlign = "right";
+  // On a grouped axis an item has no label until the source says what it is.
+  const grouped = (s.appliedView.grouping?.rowLevels.length ?? 0) > 0;
   for (const [i, h] of s.rows.headers.entries()) {
     const outline = s.rows.strip[i]?.outline ?? null;
     const togglePending = s.rows.strip[i]?.togglePending ?? false;
     const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height, outline, togglePending };
-    const text = p.content.label("rows", item);
+    const loading = grouped && h.key === null;
+    const text = loading ? "…" : p.content.label("rows", item);
     const span = itemSpan(s.rows, i);
     ctx.save();
     clip(ctx, 0, span.start, left, span.end - span.start);
@@ -245,7 +248,7 @@ export function paintRowNumbers(p: PaintContext): void {
     // A row the columns sort by ends in its marker, as a column header does.
     const mark = marker(s, h, "cols");
     const room = left - 2 * PAD - (mark ? MARKED : 0) - inset;
-    const color = h.hovered ? theme.headerHovered.color : (role?.color ?? theme.rowNumber.color);
+    const color = loading ? theme.loading : h.hovered ? theme.headerHovered.color : (role?.color ?? theme.rowNumber.color);
     const y = h.rect.y + h.rect.height / 2;
     if (outline) paintOutline(p, outline, text, color, y, room, p.markPending(h.key));
     else {
