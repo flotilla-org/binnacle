@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 1u
+#define BINNACLE_ABI_VERSION 2u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -138,6 +138,26 @@ uint32_t binnacle_abi_version(void);
  * binnacle_grid_set_pins. A host that saves layouts keeps them and restores
  * them with binnacle_grid_set_pins. At most one per edge is queued. */
 #define BINNACLE_EFFECT_PINS_CHANGED 11
+/* The user activated the cell with row and col (Enter, or a double-click):
+ * open it, edit it or ignore it. */
+#define BINNACLE_EFFECT_ACTIVATED 12
+/* The user asked to edit the cell with row and col (F2): open an editor on
+ * it and call binnacle_grid_edit_started, or ignore it. */
+#define BINNACLE_EFFECT_EDIT_REQUESTED 13
+/* The Grid ended the edit of the cell with row and col itself (its Key left,
+ * the user cancelled, or a press elsewhere): drop the editor uncommitted. */
+#define BINNACLE_EFFECT_EDIT_CANCELLED 14
+/* A resize of the item with key on axis ended at size, its new Size
+ * Override. A host that saves layouts restores it with
+ * binnacle_grid_set_size. */
+#define BINNACLE_EFFECT_SIZE_CHANGED 15
+/* The border after the item with key on axis was double-clicked: measure
+ * its content and answer with binnacle_grid_set_size. */
+#define BINNACLE_EFFECT_AUTO_SIZE_REQUESTED 16
+
+/* binnacle_grid_edit_ended: the host kept the new value, or threw it away. */
+#define BINNACLE_EDIT_COMMIT 0
+#define BINNACLE_EDIT_CANCEL 1
 
 /* BinnacleEffect.direction for FIND_STEP_REQUESTED. */
 #define BINNACLE_FIND_NEXT 0
@@ -650,7 +670,8 @@ typedef struct {
   /* TEXT_TYPED: the text, valid until the next binnacle_grid_poll_effect or
    * binnacle_grid_free on the same Grid. */
   BinnacleText text;
-  /* FOCUS_CHANGED: the focused cell's row and column Keys. */
+  /* FOCUS_CHANGED, ACTIVATED, EDIT_REQUESTED and EDIT_CANCELLED: the
+   * cell's row and column Keys. */
   uint64_t row;
   uint64_t col;
   /* VIEW_REQUESTED: the whole requested View Spec, its arrays valid until
@@ -658,11 +679,13 @@ typedef struct {
    * Grid, and the edit that caused it. */
   BinnacleViewSpec view;
   BinnacleViewEdit edit;
-  /* LOCATE: the axis and the Key to find. BAND_SIZE_CHANGED and
+  /* LOCATE: the axis and the Key to find. SIZE_CHANGED and
+   * AUTO_SIZE_REQUESTED: the item's axis and Key. BAND_SIZE_CHANGED and
    * BAND_AUTO_SIZE_REQUESTED: the axis the band leads. */
   uint32_t axis;
   uint64_t key;
-  /* BAND_SIZE_CHANGED: the band's new thickness. */
+  /* SIZE_CHANGED: the item's new size. BAND_SIZE_CHANGED: the band's new
+   * thickness. */
   float size;
   /* FIND_REQUESTED and FIND_STEP_REQUESTED: the Find Query, its arrays valid
    * as view's are. */
@@ -943,6 +966,24 @@ int binnacle_grid_find_previous(BinnacleGrid *grid);
  * the reason the Table Source refused, len bytes of UTF-8, which the
  * Snapshot carries until the next press. 0 if it is not UTF-8. */
 int binnacle_grid_move_answered(BinnacleGrid *grid, const uint8_t *refusal, size_t len);
+
+/* The Activate Action (Enter): ACTIVATED for the focused cell. Nothing
+ * without one. */
+int binnacle_grid_activate(BinnacleGrid *grid);
+
+/* The Begin Edit Action (F2): EDIT_REQUESTED for the focused cell. Nothing
+ * without one. */
+int binnacle_grid_begin_edit(BinnacleGrid *grid);
+
+/* The host opened its editor on the cell with row and col (after
+ * EDIT_REQUESTED, ACTIVATED or TEXT_TYPED, say): the Grid follows those Keys
+ * and sends EDIT_CANCELLED if it ends the edit itself. A press ends it, so a
+ * host that commits on a click elsewhere calls binnacle_grid_edit_ended
+ * first. */
+int binnacle_grid_edit_started(BinnacleGrid *grid, uint64_t row, uint64_t col);
+
+/* The host closed its editor, with BINNACLE_EDIT_COMMIT or CANCEL. */
+int binnacle_grid_edit_ended(BinnacleGrid *grid, uint32_t end);
 
 /* Text the user typed; 0 if it is not UTF-8. */
 int binnacle_grid_type_text(BinnacleGrid *grid, const uint8_t *text, size_t len);

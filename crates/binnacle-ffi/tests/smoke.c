@@ -125,6 +125,13 @@ int main(void) {
   CHECK(drain(grid, &focus) == 1u << BINNACLE_EFFECT_FOCUS_CHANGED);
   CHECK(focus.generation == 1 && focus.row == 1000 && focus.col == 2000);
 
+  /* Enter activates the focused cell: the host opens what it shows. */
+  CHECK(binnacle_grid_activate(grid));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_ACTIVATED);
+  CHECK(effect.row == 1000 && effect.col == 2000);
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
+
   /* Click row 2, column 1, then Shift-click row 3, column 2. */
   click(grid, 15, 3.5f, 0);
   click(grid, 24, 4.5f, BINNACLE_MOD_SHIFT);
