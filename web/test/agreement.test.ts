@@ -46,6 +46,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "dropRefused",
     "headerForm",
     "corner",
+    "columnTiers",
   ];
 
   test("the scenario list matches Rust's", () => {

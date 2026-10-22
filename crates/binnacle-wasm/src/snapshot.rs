@@ -625,6 +625,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
                 w.opt_key(l.field);
             }
         }
+        w.flag(s.band_focused(axis));
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());
