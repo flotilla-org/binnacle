@@ -9,6 +9,7 @@ mod checklist;
 mod chooser;
 mod compare;
 mod context;
+mod copy;
 mod filter;
 mod find;
 mod keymap;
@@ -25,6 +26,7 @@ mod theme;
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
 pub use context::RenderContext;
+pub use copy::{CopiedRow, copy_text};
 pub use filter::{
     ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, count,
     keep_value, remove_conditions, render_conditions, row_count,

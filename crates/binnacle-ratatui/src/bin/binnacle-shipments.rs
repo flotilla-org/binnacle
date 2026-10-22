@@ -19,22 +19,27 @@
 //! header to sort: regions and ports order by their total weight, and
 //! shipments by theirs within their port. Arrows move through Summary Items
 //! and shipments alike, and focus stays on its shipment through grouping
-//! and ungrouping. `t` cycles the Theme presets, `q` quits.
+//! and ungrouping. A click on a Group Item's label selects its group, and
+//! Shift-click stretches by whole groups. Ctrl+C copies what is shown,
+//! labels first, to the terminal's clipboard (OSC 52), and Enter on a
+//! Summary Item's cell shows the drill-down it carries on the status line.
+//! `t` cycles the Theme presets, `q` quits.
 
 use std::borrow::Cow;
-use std::io;
+use std::io::{self, Write};
+use std::ops::Range;
 use std::time::Instant;
 
 use binnacle_core::{
-    AggregateValue, Axis, AxisConfig, Depth, Expand, Grid, Grouping, ItemKind, Key, Level, Outline,
-    Placement, Value, ViewSpec, Viewport,
+    AggregateValue, Axis, AxisConfig, Condition, ConditionKind, Depth, DrillDown, Effect, Expand,
+    Grid, Grouping, ItemKind, Key, Level, Outline, Placement, Position, Value, ViewSpec, Viewport,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    ColorSupport, ColumnFilter, Content, Control, Controls, HeaderMenu, Keymap, Layout, Mouse,
-    PendingMarks, Preset, RenderContext, Theme, begin_frame, disclosure_at, render_conditions,
-    render_with, wheel,
+    ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, HeaderMenu, Keymap, Layout,
+    Mouse, PendingMarks, Preset, RenderContext, Theme, begin_frame, copy_text, disclosure_at,
+    render_conditions, render_with, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -199,6 +204,94 @@ fn declare(grid: &mut Grid, source: &mut GroupedMemory<Shipment>, rows: &[Shipme
     }
 }
 
+/// What a copy names: the rows and columns at its runs of Positions.
+struct Copy {
+    rows: Vec<Range<Position>>,
+    cols: Vec<Range<Position>>,
+    labels: bool,
+}
+
+/// The text of `copy` as the table draws it.
+fn copied(
+    copy: &Copy,
+    source: &mut GroupedMemory<Shipment>,
+    rows: &[Shipment],
+    grouping: Option<&Grouping>,
+) -> (usize, String) {
+    let mut items = Vec::new();
+    for run in &copy.rows {
+        let window = source.window(rows, Axis::Rows, run.clone());
+        let mut outlines = window.outlines.map(Vec::into_iter);
+        for (key, position) in window.keys.into_iter().zip(run.clone()) {
+            let outline = outlines.as_mut().and_then(Iterator::next);
+            items.push(CopiedRow {
+                key,
+                position,
+                outline,
+            });
+        }
+    }
+    let cols: Vec<Key> = (copy.cols.iter())
+        .flat_map(|run| source.window(rows, Axis::Cols, run.clone()).keys)
+        .collect();
+    let text = Text {
+        rows,
+        source,
+        grouping,
+    };
+    (items.len(), copy_text(&text, &items, &cols, copy.labels))
+}
+
+/// Puts `text` on the terminal's clipboard with OSC 52.
+fn clipboard(text: &str) -> io::Result<()> {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in text.as_bytes().chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            match i <= chunk.len() {
+                true => out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char),
+                false => out.push('='),
+            }
+        }
+    }
+    let mut stdout = io::stdout();
+    write!(stdout, "\x1b]52;c;{out}\x07")?;
+    stdout.flush()
+}
+
+/// A drill-down as the status line shows it: each condition's column and values.
+fn described(drill_down: &DrillDown) -> String {
+    let condition = |c: &Condition| {
+        let values = match &c.kind {
+            ConditionKind::OneOf(values) => (values.iter())
+                .map(|v| match v {
+                    Value::Text(t) => t.clone(),
+                    Value::Blank => "(none)".into(),
+                })
+                .collect::<Vec<_>>()
+                .join(" or "),
+            other => format!("{other:?}"),
+        };
+        format!("{} {values}", HEADERS[c.key.0 as usize])
+    };
+    match drill_down.conditions.is_empty() {
+        true => "drill-down: every shipment".into(),
+        false => format!(
+            "drill-down: {}",
+            drill_down
+                .conditions
+                .iter()
+                .map(condition)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// The Group Item whose disclosure mark a left press in `m` lands on.
 fn mark_clicked(m: &MouseEvent, grid: &mut Grid, area: ratatui::layout::Rect) -> Option<Key> {
     if m.kind != MouseEventKind::Down(MouseButton::Left) {
@@ -228,6 +321,8 @@ fn main() -> io::Result<()> {
     let mut marks = PendingMarks::default();
     let start = Instant::now();
     let mut layout = Layout::default();
+    // The last copy or drill-down, for the status line.
+    let mut note = String::new();
     let themes = Theme::presets();
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let mut theme = if no_color { themes.len() - 1 } else { 0 };
@@ -241,8 +336,35 @@ fn main() -> io::Result<()> {
                 let mut area = full;
                 area.height = full.height.saturating_sub(2);
                 // Answers the requests in the queue; moves are refused while
-                // grouped, and nothing else is the demo's to act on.
-                pump(&mut grid, &mut source.over(&rows), |_, _| {});
+                // grouped. Copies and activations are the demo's.
+                let mut copy = None;
+                pump(&mut grid, &mut source.over(&rows), |_, stamped| match stamped.effect {
+                    Effect::CopyRequested {
+                        rows,
+                        cols,
+                        row_labels,
+                        ..
+                    } => {
+                        copy = Some(Copy {
+                            rows,
+                            cols,
+                            labels: row_labels,
+                        })
+                    }
+                    Effect::Activated {
+                        drill_down: Some(d),
+                        ..
+                    } => note = described(&d),
+                    _ => {}
+                });
+                if let Some(copy) = copy {
+                    let grouping = grid.snapshot().applied_view().grouping.clone();
+                    let (n, text) = copied(&copy, &mut source, &rows, grouping.as_ref());
+                    note = match clipboard(&text) {
+                        Ok(()) => format!("copied {n} rows"),
+                        Err(e) => format!("copy failed: {e}"),
+                    };
+                }
                 let now = start.elapsed();
                 let ctx = RenderContext::new(&themes[theme]).colors(colors).at(now);
                 layout = begin_frame(&mut grid, &ctx, area, |grid, v| {
@@ -290,7 +412,7 @@ fn main() -> io::Result<()> {
                     ..full
                 };
                 let status = format!(
-                    "m column menu  r row menu  t theme  q quit | {grouped} | {}",
+                    "m column menu  r row menu  C-c copy  t theme  q quit | {grouped} | {} | {note}",
                     themes[theme].name
                 );
                 frame.render_widget(ratatui::text::Line::from(status), line);
@@ -298,7 +420,7 @@ fn main() -> io::Result<()> {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let ctrl = key.modifiers == KeyModifiers::CONTROL;
-                    if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
+                    if ctrl && key.code == KeyCode::Char('q') {
                         return Ok(());
                     }
                     if popup.key(&key, &mut grid) {
