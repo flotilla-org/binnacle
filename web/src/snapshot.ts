@@ -216,6 +216,8 @@ export interface HeaderSpan {
   visible: Rect;
   cutBefore: boolean;
   cutAfter: boolean;
+  /** Whether a toggle of this group waits for its answer. */
+  togglePending: boolean;
 }
 
 export type Mode =
@@ -631,6 +633,7 @@ function readAxis(r: Reader): AxisSnapshot {
     visible: r.rect(),
     cutBefore: r.flag(),
     cutAfter: r.flag(),
+    togglePending: r.flag(),
   }));
   return {
     count,

@@ -2,7 +2,7 @@
 // for the visible items, by their place in the Snapshot's Strips.
 
 import type { AxisName } from "./codes";
-import type { StripItem } from "./snapshot";
+import type { HeaderSpan, StripItem } from "./snapshot";
 
 export interface Content {
   /** The value where the `row`th row item and `col`th column item cross; `undefined` while loading. */
@@ -11,6 +11,8 @@ export interface Content {
   failed(row: number, col: number): boolean;
   /** The header text for a visible item on `axis`. */
   label(axis: AxisName, item: StripItem): string;
+  /** The label of a group drawn in header form, at the top of its span. */
+  spanLabel(axis: AxisName, span: HeaderSpan): string;
   /** The Table Source's own ID for a visible item; `undefined` while its Key has not arrived. */
   id(axis: AxisName, item: StripItem): unknown;
   /** Whether the cell matches the Find Query in force, as the Table Source last said. */

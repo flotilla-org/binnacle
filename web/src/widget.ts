@@ -10,7 +10,8 @@ import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import { gatherCopy, writeClipboard, type Copied } from "./copy";
 import type { Effect, Run } from "./effects";
-import { disclosureRect, filterButtonRect, hasFilterButton } from "./canvas/bands";
+import { disclosureRect, filterButtonRect, hasFilterButton, rowFilterRoom } from "./canvas/bands";
+import { spanMarkRect } from "./canvas/spans";
 import { createFeed, windowIds, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
@@ -28,6 +29,7 @@ import {
   type HeaderPlacement,
   type KeyedCondition,
   type KeyedTextQuery,
+  type Rect,
   type Snapshot,
   type Span,
 } from "./snapshot";
@@ -40,6 +42,7 @@ import type {
   FindMatch,
   FindQuery,
   Level,
+  GroupedAxis,
   Located,
   TableSource,
   TextQuery,
@@ -301,6 +304,12 @@ export interface ColumnInfo<ColId = unknown> {
 
 const HEADER_HEIGHT = 28;
 
+/** The most level columns the widths given to the Grid cover; deeper ones share what is left of the band. */
+const MAX_TIERS = 16;
+
+/** How wide each level column of the row band is in header form until `setRowTiers` says, CSS px. */
+const TIER_WIDTH = 128;
+
 /** How far in from each end a dragged header pins into an empty pinned Strip, in CSS px. */
 const PIN_ZONE = { rows: 4, cols: 16 } as const;
 
@@ -329,6 +338,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly sizes: InitialSizes | null;
   /** Whether the row-number band has been fitted to the first rows' labels. */
   private bandFitted = false;
+  /** The widths of the row band's level columns in header form, outermost first; later ones are `TIER_WIDTH`. */
+  private tierWidths: number[] = [];
+  /** How many level columns the row band was last widened for; 0 out of header form. */
+  private fittedTiers = 0;
   private last: Snapshot | null = null;
   private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
@@ -405,6 +418,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       const click = options.headerClick?.[axis];
       if (click) this.grid.set_header_click(AXIS_CODE[axis], HEADER_CLICK[click]);
     }
+    this.setTiers();
     this.sizes = this.createSizes();
     this.selectionEvents = createSelectionEvents(this.feed, (change) => this.options.onSelectionChange?.(change));
     this.feed.connect(this.grid);
@@ -443,7 +457,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       onEffect: (e) => this.dispatch(e),
       settle: (s) => {
         const content = this.feed.content(s);
-        const band = this.fitBand(s, content);
+        const band = this.fitBand(s, content) || this.fitTiers(s, content);
         return (this.sizes?.settle(s, content) ?? false) || band;
       },
     };
@@ -1203,6 +1217,71 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.editView(() => this.grid.ungroup(AXIS_CODE.rows));
   }
 
+  /**
+   * Draws the grouped rows' groups as an outline column (`"outline"`, each
+   * group headed by its Group Item) or as spanning headers (`"header"`, each
+   * level a column of the row band and each group one cell spanning its
+   * rows): the Table Source answers as it does any View Spec. The row band
+   * widens to hold the level columns. Nothing happens while the rows are
+   * not grouped.
+   */
+  setRowForm(form: GroupedAxis["form"]): void {
+    this.editView(() => this.grid.set_form(AXIS_CODE.rows, form === "header" ? 1 : 0));
+  }
+
+  /** How the grouped rows' groups are drawn, as of the latest frame: `"outline"` while the rows are not grouped. */
+  rowForm(): GroupedAxis["form"] {
+    const s = this.last;
+    const grouping = s ? (s.requestedView ?? s.appliedView).grouping : null;
+    return grouping?.rowLevels.length ? grouping.rowAxis.form : "outline";
+  }
+
+  /**
+   * The widths of the row band's level columns in header form, outermost
+   * first, CSS px; columns past the list are 128 px wide.
+   */
+  setRowTiers(widths: number[]): void {
+    if (this.destroyed) return;
+    this.tierWidths = [...widths];
+    this.fittedTiers = 0;
+    this.setTiers();
+    this.schedule();
+  }
+
+  private setTiers(): void {
+    const widths = Array.from({ length: MAX_TIERS }, (_, i) => this.tierWidths[i] ?? TIER_WIDTH);
+    this.grid.set_tiers(AXIS_CODE.rows, Float32Array.from(widths));
+  }
+
+  /**
+   * Widens the row band to hold its level columns and the row labels past
+   * them, once each time the rows come to header form or its number of
+   * levels changes, when the rows in view have arrived; returns whether it
+   * did.
+   */
+  private fitTiers(s: Snapshot, content: Content): boolean {
+    const n = s.rows.tiers.length;
+    if (n === this.fittedTiers || s.rows.strip.some((row) => row.key === null)) return false;
+    this.fittedTiers = n;
+    if (n === 0) return false;
+    const tier = (i: number) => this.tierWidths[i] ?? TIER_WIDTH;
+    const { measure, theme } = this.painter;
+    // Each row's label starts past the level columns whose spans cover it.
+    let width = Array.from({ length: n }, (_, i) => tier(i)).reduce((a, b) => a + b, 0) + this.numberWidth();
+    for (const row of s.rows.strip) {
+      const covered = s.rows.spans.filter((span) => span.first <= row.position && row.position <= span.last);
+      const start = covered.reduce((at, span) => at + tier(span.tier), 0);
+      const font = row.outline && row.outline.kind !== "leaf" ? theme.headerFont : theme.font;
+      width = Math.max(width, start + measure.width(content.label("rows", row), font));
+    }
+    // Room for the row menu's button or a filter mark, at a label's left.
+    const filters = Math.max(0, ...s.rows.headers.map((h) => rowFilterRoom(this.painter.filterButtons.rows, h)));
+    width = Math.ceil(width + 2 * PAD + filters);
+    if (width <= s.cols.header) return false;
+    this.grid.set_header(AXIS_CODE.cols, width);
+    return true;
+  }
+
   /** The columns the rows group by, outermost first, as of the latest frame; empty when they are not grouped. */
   groupedBy(): ColId[] {
     const s = this.last;
@@ -1249,10 +1328,17 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId);
   }
 
-  /** A press on a Group Item's disclosure mark toggles its group. */
+  /** A press on a Group Item's or a span's disclosure mark toggles its group. */
   private markPress(x: number, y: number): boolean {
     const s = this.last;
     if (!s || x >= s.cols.header || y < s.rows.header) return false;
+    const inside = (r: Rect) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+    for (const span of s.rows.spans) {
+      if (inside(span.visible) && inside(spanMarkRect(s, span))) {
+        this.grid.toggle(AXIS_CODE.rows, span.key);
+        return true;
+      }
+    }
     for (const [i, h] of s.rows.headers.entries()) {
       const outline = s.rows.strip[i]?.outline;
       const r = outline && h.key !== null && this.inView("rows", h) ? disclosureRect(outline, h.rect) : null;

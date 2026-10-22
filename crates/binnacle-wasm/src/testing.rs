@@ -147,6 +147,7 @@ struct DumpHeaderSpan {
     visible: DumpRect,
     cut_before: bool,
     cut_after: bool,
+    toggle_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -587,6 +588,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 visible: h.visible.into(),
                 cut_before: h.cut_before,
                 cut_after: h.cut_after,
+                toggle_pending: s.toggle_pending(axis, h.key),
             })
             .collect(),
     }
@@ -1375,6 +1377,8 @@ pub fn scenario(name: &str) -> Grid {
         let y = 24.0 + 21.0 * 6.0 + 5.0;
         grid.pointer(PointerEvent::down(20.0, y));
         grid.pointer(PointerEvent::up(20.0, y));
+        // The first region closed by a request still due.
+        grid.toggle(Axis::Rows, region(0)).unwrap();
     }
     grid
 }
@@ -1588,6 +1592,7 @@ mod tests {
                     assert_eq!(pinned.count(), 2, "row 6's pin breaks both its spans");
                     assert!(s.outline_focused());
                     assert_eq!(s.focused_tier(), 1);
+                    assert!(s.toggle_pending(Axis::Rows, spans[0].key));
                 }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));

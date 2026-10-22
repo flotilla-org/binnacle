@@ -15,9 +15,9 @@ const PERIOD = 1600;
 export const MARK_DELAY = 150;
 
 /**
- * When each Group Item's disclosure mark went pending, by Key. Each frame
- * `seen` brings it up to date; `pending` says which have waited long
- * enough to draw so.
+ * When each group's disclosure mark (its Group Item's, or in header form
+ * its span's) went pending, by Key. Each frame `seen` brings it up to
+ * date; `pending` says which have waited long enough to draw so.
  */
 export interface PendingMarks {
   seen(s: Snapshot, now: number): void;
@@ -31,6 +31,7 @@ export function createPendingMarks(): PendingMarks {
   return {
     seen(s, now) {
       const keys = new Set(s.rows.strip.flatMap((i) => (i.togglePending && i.key !== null ? [i.key] : [])));
+      for (const span of s.rows.spans) if (span.togglePending) keys.add(span.key);
       for (const key of since.keys()) if (!keys.has(key)) since.delete(key);
       for (const key of keys) if (!since.has(key)) since.set(key, now);
     },

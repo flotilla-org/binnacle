@@ -1149,6 +1149,15 @@ export function createFeed<RowId, ColId, V>(
       if (label !== undefined) return label;
       return axis === "rows" || id === undefined ? String(item.position + 1) : String(id);
     },
+    spanLabel: (axis, span) => {
+      const id = axes[axis].interner.id(span.key);
+      const asked = id === undefined ? undefined : axes[axis].source.spanLabel?.(id, span.tier);
+      if (asked !== undefined) return asked;
+      // A Subtotal of the group in view names its value.
+      const total = shown?.[axis].strip.find((i) => i.outline?.kind === "subtotal" && i.outline.ancestors.at(-1) === span.key);
+      const value = total?.outline?.group?.value;
+      return value === undefined ? "" : (value ?? "(blank)");
+    },
     id: (axis, item) => (item.key === null ? undefined : axes[axis].interner.id(item.key)),
     marked: (i, j) => {
       const row = shown?.rows.strip[i]?.key;

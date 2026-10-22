@@ -37,7 +37,7 @@ export interface PaintContext {
   motion: boolean;
   /** Whether a column (and a row) menu is mounted, so filterable headers in that band draw its button. */
   filterButtons: { cols: boolean; rows: boolean };
-  /** Whether the disclosure mark of the Group Item `key` draws pending: toggled, unanswered for long enough. */
+  /** Whether the disclosure mark of the group `key` (its Group Item or span) draws pending: toggled, unanswered for long enough. */
   markPending(key: bigint | null): boolean;
 }
 

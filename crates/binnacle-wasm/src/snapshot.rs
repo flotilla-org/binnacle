@@ -593,7 +593,8 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
                 w.key(k);
             }
         }
-        // Header form: the tiers across the band, then the spans.
+        // Header form: the tiers across the band, then the spans, each with
+        // whether its toggle waits for an answer.
         let tiers = s.tiers(axis);
         w.len(tiers.len());
         for t in tiers {
@@ -604,6 +605,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.len(spans.len());
         for span in spans {
             w.span(span);
+            w.flag(s.toggle_pending(axis, span.key));
         }
     }
     w.opt_rect(s.focus_rect());
