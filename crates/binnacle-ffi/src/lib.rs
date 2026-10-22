@@ -10,11 +10,15 @@ use std::slice;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
-    Grid, HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent, PointerKind,
-    Rect, Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support,
-    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    DropTarget, Edge, EditEnd, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd,
+    FocusStep, Grid, HeaderClick, HeaderPlacement, Key, Located, Mode, Modifiers, PointerEvent,
+    PointerKind, Rect, Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem,
+    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
+
+/// The version of the ABI `binnacle.h` describes; see the header for when it
+/// changes.
+pub const BINNACLE_ABI_VERSION: u32 = 2;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -64,6 +68,14 @@ pub const BINNACLE_EFFECT_FIND_REQUESTED: u32 = 8;
 pub const BINNACLE_EFFECT_FIND_STEP_REQUESTED: u32 = 9;
 pub const BINNACLE_EFFECT_MOVE_REQUESTED: u32 = 10;
 pub const BINNACLE_EFFECT_PINS_CHANGED: u32 = 11;
+pub const BINNACLE_EFFECT_ACTIVATED: u32 = 12;
+pub const BINNACLE_EFFECT_EDIT_REQUESTED: u32 = 13;
+pub const BINNACLE_EFFECT_EDIT_CANCELLED: u32 = 14;
+pub const BINNACLE_EFFECT_SIZE_CHANGED: u32 = 15;
+pub const BINNACLE_EFFECT_AUTO_SIZE_REQUESTED: u32 = 16;
+
+pub const BINNACLE_EDIT_COMMIT: u32 = 0;
+pub const BINNACLE_EDIT_CANCEL: u32 = 1;
 
 pub const BINNACLE_FIND_NEXT: u32 = 0;
 pub const BINNACLE_FIND_PREVIOUS: u32 = 1;
@@ -1108,6 +1120,12 @@ impl BinnaclePointerEvent {
     }
 }
 
+/// The [`BINNACLE_ABI_VERSION`] this library was built with.
+#[unsafe(no_mangle)]
+pub extern "C" fn binnacle_abi_version() -> u32 {
+    BINNACLE_ABI_VERSION
+}
+
 /// A new Grid, or NULL if either config is invalid. Free it with
 /// [`binnacle_grid_free`].
 #[unsafe(no_mangle)]
@@ -1780,6 +1798,32 @@ impl BinnacleGrid {
                 effect.row = row.0;
                 effect.col = col.0;
             }
+            Effect::Activated { row, col } => {
+                effect.kind = BINNACLE_EFFECT_ACTIVATED;
+                effect.row = row.0;
+                effect.col = col.0;
+            }
+            Effect::EditRequested { row, col } => {
+                effect.kind = BINNACLE_EFFECT_EDIT_REQUESTED;
+                effect.row = row.0;
+                effect.col = col.0;
+            }
+            Effect::EditCancelled { row, col } => {
+                effect.kind = BINNACLE_EFFECT_EDIT_CANCELLED;
+                effect.row = row.0;
+                effect.col = col.0;
+            }
+            Effect::SizeChanged { axis, key, size } => {
+                effect.kind = BINNACLE_EFFECT_SIZE_CHANGED;
+                effect.axis = axis_tag(axis);
+                effect.key = key.0;
+                effect.size = size;
+            }
+            Effect::AutoSizeRequested { axis, key } => {
+                effect.kind = BINNACLE_EFFECT_AUTO_SIZE_REQUESTED;
+                effect.axis = axis_tag(axis);
+                effect.key = key.0;
+            }
             Effect::SelectionChanged => effect.kind = BINNACLE_EFFECT_SELECTION_CHANGED,
             Effect::ViewRequested { spec, edit } => {
                 effect.kind = BINNACLE_EFFECT_VIEW_REQUESTED;
@@ -2392,6 +2436,52 @@ pub unsafe extern "C" fn binnacle_grid_move_answered(
     };
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| refusal.map(|r| h.grid.move_answered(r))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_edit_started(
+    grid: *mut BinnacleGrid,
+    row: u64,
+    col: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.edit_started(Key(row), Key(col));
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_edit_ended(grid: *mut BinnacleGrid, end: u32) -> i32 {
+    let end = match end {
+        BINNACLE_EDIT_COMMIT => Some(EditEnd::Commit),
+        BINNACLE_EDIT_CANCEL => Some(EditEnd::Cancel),
+        _ => None,
+    };
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| end.map(|end| h.grid.edit_ended(end))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_activate(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { act(grid, Some(Action::Activate)) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_begin_edit(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { act(grid, Some(Action::BeginEdit)) }
 }
 
 /// # Safety
