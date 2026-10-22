@@ -674,6 +674,14 @@ export function fromRows<R extends object>(
     return { type: "Refiltered" };
   };
 
+  /**
+   * After a regroup, told after its Refiltered: the Summary Items keep their
+   * row IDs, but their figures may have changed with the rows under them.
+   * The range reaches past any count, so a pinned Grand Total at its old
+   * Position is in it too.
+   */
+  const refigured = () => tell({ type: "ContentChanged", start: 0, end: Number.MAX_SAFE_INTEGER });
+
   /** The index of the value that counts the rows, if the grouping has one. */
   const counted = () => grouping?.values.findIndex((v) => v.field === null && v.aggregate === "count") ?? -1;
 
@@ -778,6 +786,7 @@ export function fromRows<R extends object>(
     }
     if (moved) tell({ type: "Refiltered" });
     else if (applied.length) tell({ type: "Reordered" });
+    if (levels.length) refigured();
     if (colsApplied.some((c) => c.id === id)) {
       sortColumns(colsApplied);
       tell({ type: "Reordered" }, "cols");
@@ -906,6 +915,7 @@ export function fromRows<R extends object>(
       // An axis left in the same order is told nothing.
       if (refiltered || hid.rows || sorted || regrouped) {
         tell({ type: refiltered || hid.rows || regrouped ? "Refiltered" : "Reordered" });
+        if (regrouped && levels.length > 0) refigured();
       } else if (reopened) tell(reopened);
       const resorted = (byRows.length > 0 || colsApplied.length > 0) && sortColumns(byRows);
       const refilteredCols = forCols.changed || shownChanged.cols || hid.cols || m.has_unmatched(COLS);
@@ -975,6 +985,7 @@ export function fromRows<R extends object>(
       refilter();
       if (levels.length) regroup();
       tell({ type: "Refiltered" });
+      if (levels.length) refigured();
     },
     row: (id) => rows[id]!,
     group: (id) => summaryOf(id),

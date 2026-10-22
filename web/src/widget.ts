@@ -30,12 +30,14 @@ import {
   type Span,
 } from "./snapshot";
 import type {
+  AggregateValue,
   AppliedAxisView,
   Condition,
   Distinct,
   FailedRequest,
   FindMatch,
   FindQuery,
+  Level,
   Located,
   TableSource,
   TextQuery,
@@ -187,6 +189,8 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
    * being removed. Pending ones (`adding`, `removing`) are not applied yet.
    */
   conditions: { condition: Condition<ColId>; state: ConditionState }[];
+  /** The grouping as asked for, each part where it stands, listed as `conditions` is. */
+  grouping: GroupingInfo<ColId>;
   /** The column headers in view, by the Table Source's IDs: how each is filtered, and what it supports. */
   columns: ColumnHeader<ColId>[];
   /** Find: whether the Table Source finds, the Find Query in force, the current match, and what the source said of them. */
@@ -197,6 +201,19 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
    * instead"), until the next key or press; `null` otherwise.
    */
   hideCapped: { axis: AxisName; cap: number; hint: string } | null;
+}
+
+/**
+ * The grouping as `FrameInfo` gives it: the rows' levels, the values and the
+ * slicers, each the latest request's then the applied ones it drops. A part
+ * the Table Source left out (a level on a column it can't group by, a
+ * Subtotal it can't place, an aggregate it does not offer, a slicer it can't
+ * apply) is `notApplied`; restoring a layout never fails on one.
+ */
+export interface GroupingInfo<ColId = unknown> {
+  levels: { level: Level<ColId>; state: ConditionState }[];
+  values: { value: AggregateValue<ColId>; state: ConditionState }[];
+  slicers: { condition: Condition<ColId>; state: ConditionState }[];
 }
 
 /** One axis's filter as `FrameInfo` gives it, naming items of the other axis. */
@@ -723,6 +740,50 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         if (state !== "removing" && condition.key === key) this.grid.remove_condition(AXIS_CODE[on], condition);
       }
     });
+  }
+
+  /**
+   * Adds a slicer: a condition on column `condition.id`, shown or not, that
+   * filters the rows before they group and aggregate. A slicer outlives the
+   * levels: with slicers and no levels the table is plain, sliced. A Text
+   * condition with no text, or a Native one with none, asks for nothing.
+   */
+  addSlicer(condition: Condition<ColId>): void {
+    this.editView(() => this.grid.add_slicer(this.feed.conditionKey(condition)));
+  }
+
+  /** Removes the first slicer equal to `condition`; with no slicers and no levels left the table is plain again. */
+  removeSlicer(condition: Condition<ColId>): void {
+    this.editView(() => this.grid.remove_slicer(this.feed.conditionKey(condition)));
+  }
+
+  /** Puts `to` in place of the first slicer equal to `from`, as `replaceCondition` does a condition. */
+  replaceSlicer(from: Condition<ColId>, to: Condition<ColId>): void {
+    this.editView(() => this.grid.replace_slicer(this.feed.conditionKey(from), this.feed.conditionKey(to)));
+  }
+
+  /** Removes every slicer on column `id`. */
+  clearSlicers(id: ColId): void {
+    const listed = this.last?.slicers ?? [];
+    const key = this.feed.colKey(id);
+    this.editView(() => {
+      for (const { condition, state } of listed) {
+        if (state !== "removing" && condition.key === key) this.grid.remove_slicer(condition);
+      }
+    });
+  }
+
+  /**
+   * Whether the Table Source groups the rows at all, as of the latest frame:
+   * a column in view it groups them by, or a level or slicer asked for or
+   * applied. A source that groups nothing gets no grouping controls.
+   */
+  groups(): boolean {
+    const s = this.last;
+    if (!s) return false;
+    const asked = (s.requestedView ?? s.appliedView).grouping;
+    const listed = s.rows.levels.length > 0 || s.slicers.length > 0;
+    return asked !== null || listed || s.cols.headers.some((h) => h.support.group);
   }
 
   /** Whether the Table Source hides items of `axis`: it has `view` and the axis has `hide`. */
@@ -1384,6 +1445,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         const c = this.feed.conditionId(condition);
         return c ? [{ condition: c, state }] : [];
       }),
+      grouping: this.groupingInfo(snapshot),
       columns: visible(snapshot.cols).flatMap((item) => {
         const id = item.key === null ? undefined : this.feed.colId(item.key);
         const header = snapshot.cols.headers.find((h) => h.position === item.position);
@@ -1397,6 +1459,26 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         ...this.feed.findState(),
       },
       hideCapped: this.capped && { ...this.capped, hint: capHint(this.capped.axis, this.capped.cap) },
+    };
+  }
+
+  /** The grouping's listed parts by the Table Source's IDs, leaving out those naming a column not known. */
+  private groupingInfo(s: Snapshot): GroupingInfo<ColId> {
+    const col = (key: bigint | null) => (key === null ? null : this.feed.colId(key));
+    return {
+      levels: s.rows.levels.flatMap(({ level, state }): GroupingInfo<ColId>["levels"] => {
+        if ("values" in level) return [{ level, state }];
+        const field = col(level.field);
+        return field === undefined || field === null ? [] : [{ level: { field, subtotal: level.subtotal }, state }];
+      }),
+      values: s.values.flatMap(({ value, state }) => {
+        const field = col(value.field);
+        return field === undefined ? [] : [{ value: { ...value, field }, state }];
+      }),
+      slicers: s.slicers.flatMap(({ condition, state }) => {
+        const c = this.feed.conditionId(condition);
+        return c ? [{ condition: c, state }] : [];
+      }),
     };
   }
 

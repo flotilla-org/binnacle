@@ -1184,10 +1184,10 @@ describe("fromRows's grouping", () => {
             if (id >= 0) expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: p });
           }
           expect(source.cols.window(0, 3, signal)).toEqual(COLUMN_IDS.filter((c) => c !== field));
-          // The host's filter regroups.
+          // The host's filter regroups, and the groups' figures change with it.
           notices.length = 0;
           source.filter((r) => r.n !== null);
-          expect(notices).toEqual([{ type: "Refiltered" }]);
+          expect(notices).toEqual([{ type: "Refiltered" }, { type: "ContentChanged", start: 0, end: Number.MAX_SAFE_INTEGER }]);
           expect(shown(source, field)).toEqual(model(rows, field, sort, (r, i) => !hidden.includes(i) && r.n !== null));
         }
       } finally {
@@ -1242,12 +1242,14 @@ describe("fromRows's grouping", () => {
       }
       return groups.flatMap(([value, group]) => {
         if (!having(figures(group).sum)) return [];
-        const sub = { kind: "subtotal", value, ...figures(group) };
+        // A group whose groups were all left out has no Subtotal.
+        const under = walk(group, depth + 1);
+        const sub = under.length > 0 ? [{ kind: "subtotal", value, ...figures(group) }] : [];
         return [
           { kind: "group", value, ...figures(group) },
-          ...(subtotal === "before" ? [sub] : []),
-          ...walk(group, depth + 1),
-          ...(subtotal === "after" ? [sub] : []),
+          ...(subtotal === "before" ? sub : []),
+          ...under,
+          ...(subtotal === "after" ? sub : []),
         ];
       });
     };
@@ -1308,7 +1310,13 @@ describe("fromRows's grouping", () => {
 
   test("slicers filter the rows before they group, on any column, hidden or not, and a comparison on the summed column leaves out the groups whose sum fails it, under them too, while the figures above stay", () =>
     hegel.test((tc) => {
-      const rows = tc.draw(records);
+      // Few values per column, so groups share rows and a group may lose every group under it.
+      const few = {
+        n: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 })),
+        s: gs.sampledFrom([null, "a", "b"]),
+        b: fields.b,
+      };
+      const rows = tc.draw(gs.arrays(gs.record(few), { maxSize: 20 }));
       const source = fromRows(rows, COLUMNS);
       try {
         const placement = gs.sampledFrom<Placement>(["before", "after", "off"]);
@@ -1384,6 +1392,44 @@ describe("fromRows's grouping", () => {
       const plain = source.view!({ ...rowsSorted<keyof Rec>([]), grouping: { ...grouping, slicers: [native] } }, signal) as AppliedView<number, keyof Rec>;
       expect(plain.grouping).toBeNull();
       expect(source.rows.window(0, source.rows.count() as number, signal)).toEqual([0, 1, 2]);
+    } finally {
+      source.destroy();
+    }
+  });
+
+  test("a group whose groups all fail a comparison on the sum keeps its Group Item and figures, without a Subtotal", () => {
+    const rows: Rec[] = [
+      { n: 1, s: "a", b: 1 },
+      { n: 2, s: "a", b: 1 },
+      { n: 1, s: "b", b: 2 },
+      { n: 2, s: "b", b: 0 },
+    ];
+    const source = fromRows(rows, COLUMNS);
+    try {
+      const levels: [keyof Rec, Placement][] = [
+        ["s", "after"],
+        ["n", "after"],
+      ];
+      const over: Condition<keyof Rec> = { id: "b", kind: { type: "Compare", comparison: { op: "greater", value: { type: "number", value: 1 } } }, not: false };
+      const grouping = {
+        ...rowsBy<keyof Rec>("s"),
+        rowLevels: levels.map(([field, subtotal]) => ({ field, subtotal })),
+        values: [
+          { field: "b" as const, aggregate: "sum" },
+          { field: null, aggregate: "count" },
+        ],
+        rowAxis: { ...rowsBy("s").rowAxis, grandTotal: "after" as const },
+      };
+      source.view!({ ...rowsSorted<keyof Rec>([], null, [over]), grouping }, signal);
+      const n = source.rows.count() as number;
+      const window = source.rows.window(0, n, signal) as OutlinedWindow<number, keyof Rec>;
+      const shown = window.ids.map((id) => {
+        if (id >= 0) return id;
+        const group = source.group(id)!;
+        return `${group.kind} ${group.value} ${group.aggregates[0]}`;
+      });
+      // "a" sums 2 and stays, but each of its groups sums 1; of "b"'s, the first sums 2.
+      expect(shown).toEqual(["group a 2", "group b 2", "group 1 2", 2, "subtotal 1 2", "subtotal b 2", "grandTotal null 4"]);
     } finally {
       source.destroy();
     }

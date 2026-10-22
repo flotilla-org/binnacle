@@ -9,6 +9,7 @@ export {
   type FindInfo,
   type FrameInfo,
   type GridOptions,
+  type GroupingInfo,
   type HeaderClick,
   type MenuAt,
 } from "./widget";
@@ -31,6 +32,7 @@ export type {
   TableSink,
   AxisSource,
   AxisView,
+  Aggregate,
   AggregateValue,
   ChangeNotice,
   Condition,

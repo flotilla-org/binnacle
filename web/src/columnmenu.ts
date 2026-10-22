@@ -16,6 +16,12 @@
 // not apply shows red with its message under the field. Escape, a press
 // outside, or Close shuts the menu. Drawn in the widget's Theme.
 //
+// While the Table Source groups, a column's menu also has "Slice by this
+// column", and `openSlicer` opens the same editors in slicer mode, "Slice by"
+// a column, shown or not: each change edits the grouping's slicers on that
+// column instead of the rows' conditions, and the pin, hide and group items
+// are left out.
+//
 // It is the row menu too: a row header's button, Alt+ArrowRight or `openRow`
 // drops the same popover beside the row header, filtering the columns by
 // the row's values, with "Pin top" (or "Unpin"), "Pin bottom", "Freeze up
@@ -54,6 +60,12 @@ export interface ColumnMenu<ColId = unknown, RowId = unknown> {
    * the rows do not hide.
    */
   openRow(rowId: RowId, anchor?: DOMRect, at?: MenuAt): boolean;
+  /**
+   * Opens the menu in slicer mode for `colId`, shown, hidden or grouped by,
+   * at `anchor`: its editors edit the slicers on the column. `false` if the
+   * column takes no conditions.
+   */
+  openSlicer(colId: ColId, anchor: DOMRect): boolean;
   close(): void;
   /** Closes the menu and stops the headers drawing filter buttons. */
   destroy(): void;
@@ -112,10 +124,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
   /**
    * Opens the menu for item `colId` of the other axis, filtering `axis` by
    * it: a column filters the rows, a row the columns. It hides the item on
-   * its own axis.
+   * its own axis. With `slicing`, its editors edit the slicers on the column
+   * instead, and it has no other items.
    */
-  const open = (axis: AxisName, colId: Id, anchor: DOMRect, at: MenuAt) => {
+  const open = (axis: AxisName, colId: Id, anchor: DOMRect, at: MenuAt, slicing = false) => {
     menu?.close();
+    /** The conditions the editors edit, as the latest frame lists them. */
+    const edited = () => (slicing ? (latest?.grouping.slicers ?? []) : listed(axis));
     const support = axis === "rows" ? widget.columnSupport(colId as ColId) : widget.rowSupport(colId as RowId);
     const own: AxisName = axis === "rows" ? "cols" : "rows";
     const hides = widget.canHide(own);
@@ -124,7 +139,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // The item's conditions as this menu last asked for them, which each
     // change replaces: the latest frame may not have caught up yet.
-    const asked = listed(axis)
+    const asked = edited()
       .filter(({ state }) => state !== "removing")
       .map((c) => c.condition as Condition<Id>);
     let column: ColumnConditions<Id> = columnConditions(asked, colId);
@@ -132,7 +147,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     /** Asks the widget for `written` in place of the item's Text condition and OneOf, and its comparison. */
     const write = (written: Written<Id>) => {
       for (const [from, to] of writes(column, written)) {
-        if (from && to) {
+        if (slicing) {
+          const [a, b] = [from as Condition<ColId> | null, to as Condition<ColId> | null];
+          if (a && b) {
+            if (JSON.stringify(a) !== JSON.stringify(b)) widget.replaceSlicer(a, b);
+          } else if (a) widget.removeSlicer(a);
+          else if (b) widget.addSlicer(b);
+        } else if (from && to) {
           if (JSON.stringify(from) !== JSON.stringify(to)) widget.replaceCondition(from, to, axis);
         } else if (from) widget.removeCondition(from, axis);
         else if (to) widget.addCondition(to, axis);
@@ -144,7 +165,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const element = el("div", "binnacle-column-menu", MENU_STYLE);
     element.setAttribute("role", "dialog");
     const noun = own === "cols" ? "column" : "row";
-    const heading = !filters ? `${noun[0]!.toUpperCase()}${noun.slice(1)} ` : axis === "rows" ? "Filter " : "Filter columns by ";
+    const heading = slicing
+      ? "Slice by "
+      : !filters
+        ? `${noun[0]!.toUpperCase()}${noun.slice(1)} `
+        : axis === "rows"
+          ? "Filter "
+          : "Filter columns by ";
     element.setAttribute("aria-label", heading + label);
     const title = el("div", "binnacle-column-menu-title", TITLE_STYLE);
     const name = el("b", "", "");
@@ -154,7 +181,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     // Pin, Hide, and the hidden items to show again.
     const actions = el("div", "binnacle-column-menu-actions", ACTIONS_STYLE);
     // Inline styles would win over the `hidden` attribute.
-    actions.style.display = "flex";
+    actions.style.display = slicing ? "none" : "flex";
     /** A menu item, lit while hovered or focused. */
     const lit = (b: HTMLButtonElement) => {
       const on = () => (b.style.background = b.disabled ? "transparent" : widget.theme.border);
@@ -201,6 +228,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       close();
       widget.groupBy(colId as ColId);
     });
+    // The same editors, editing the slicers on this column.
+    const sliceButton = lit(menuItem("Slice by this column", "binnacle-column-menu-slice"));
+    const slices = () => axis === "rows" && filters && widget.groups();
+    sliceButton.addEventListener("click", () => {
+      close();
+      open("rows", colId, anchor, "top", true);
+    });
     ungroupButton.addEventListener("click", () => {
       close();
       widget.ungroup();
@@ -213,7 +247,20 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     showHidden.setAttribute("aria-expanded", "false");
     const actionsSeparator = el("div", "", SEPARATOR_STYLE);
     actionsSeparator.hidden = !filters;
-    actions.append(pinButton, pinTrailing, freeze, hideButton, showOnly, showHidden, choose, groupButton, ungroupButton, capped, actionsSeparator);
+    actions.append(
+      pinButton,
+      pinTrailing,
+      freeze,
+      hideButton,
+      showOnly,
+      showHidden,
+      choose,
+      groupButton,
+      ungroupButton,
+      sliceButton,
+      capped,
+      actionsSeparator,
+    );
     /** Runs a hide on the chosen items around this one: closes the menu, unless it passed the cap. */
     const hideWith = async (run: () => Promise<HideOutcome>) => {
       const outcome = await run();
@@ -493,7 +540,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       paint();
     });
     clearButton.addEventListener("click", () => {
-      widget.clearConditions(colId, axis);
+      if (slicing) widget.clearSlicers(colId as ColId);
+      else widget.clearConditions(colId, axis);
       column = columnConditions([], colId);
       showText();
       showCompare();
@@ -647,6 +695,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       showItem(freeze, !pinning.pinned("trailing"));
       showItem(groupButton, groups && !grouped());
       showItem(ungroupButton, grouped());
+      showItem(sliceButton, slices());
       for (const c of [how, field, op, low, high, search, clearButton, closeButton]) {
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;
@@ -669,7 +718,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       const rejected =
         !pause.waiting &&
         text !== null &&
-        listed(axis).some(
+        edited().some(
           ({ condition, state }) => state === "notApplied" && JSON.stringify(condition) === JSON.stringify(text),
         );
       field.style.borderColor = rejected ? t.error : t.focus.color;
@@ -682,7 +731,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       const refused =
         !comparePause.waiting &&
         compare !== null &&
-        listed(axis).some(
+        edited().some(
           ({ condition, state }) => state === "notApplied" && JSON.stringify(condition) === JSON.stringify(compare),
         );
       for (const f of [low, high]) {
@@ -743,6 +792,12 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     },
     open: (colId, anchor, at) => widget.openColumnMenu(colId, anchor, at),
     openRow: (rowId, anchor, at) => widget.openRowMenu(rowId, anchor, at),
+    openSlicer(colId, anchor) {
+      const support = widget.columnSupport(colId);
+      if (!support.text && !support.oneOf && !support.compare) return false;
+      open("rows", colId, anchor, "top", true);
+      return true;
+    },
     close: () => menu?.close(),
     destroy() {
       menu?.close();
