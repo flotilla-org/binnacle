@@ -65,6 +65,7 @@ test("scrolled to the end, the last quarter meets the All columns pinned at the 
 
 test("a pivot column's header drags nothing: the columns follow their sort", async ({ page }) => {
   await cell(page, 1, 0);
+  await expect(status(page)).toContainText("focus row 2, column 1");
   const before = await focus(page);
   expect(before).toMatch(/^row 2, column 1 \(-\d+ \/ -\d+\)$/);
   const b = (await page.locator(".binnacle-layer").boundingBox())!;
@@ -74,11 +75,12 @@ test("a pivot column's header drags nothing: the columns follow their sort", asy
   await page.mouse.move(b.x + ROWS_BAND + 3 * COLUMN, y, { steps: 8 });
   await page.mouse.up();
   await cell(page, 1, 0);
-  expect(await focus(page)).toBe(before);
+  await expect(status(page)).toContainText(`focus ${before}`);
 });
 
 test("focus moves along a row's quarters, each pivot column by its own ID", async ({ page }) => {
   await cell(page, 1, 0);
+  await expect(status(page)).toContainText("focus row 2, column 1");
   const first = await focus(page);
   await page.keyboard.press("ArrowRight");
   await expect(status(page)).toContainText("focus row 2, column 2");
