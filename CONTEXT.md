@@ -131,7 +131,7 @@ An item of a grouped axis that is the data itself (a row of the table), keeping 
 _Avoid_: Detail row, data row, child
 
 **Group Item**:
-The Summary Item heading one group of a level: drawn in outline form at its own Position, with an indent and a disclosure mark, opening onto its children.
+The Summary Item heading one group of a level: drawn in outline form at its own Position, with an indent and a disclosure mark, opening onto its children. In header form it has no Position (a group with no children to open keeps one) and is drawn as a Header Span instead.
 _Avoid_: Group row, group header, parent row
 
 **Subtotal**:
@@ -151,19 +151,31 @@ Where an item sits in a grouped axis, given with each Window item: its kind (Lea
 _Avoid_: Tree info, hierarchy, node
 
 **Collapsed / Expanded**:
-The Change Notices for a group closing or opening: `Collapsed { at, n }` hides the `n` items from Position `at`, under the Group Item at `at - 1`, and `Expanded { at, n }` shows `n` there. Position-precise like Removed and Inserted, but the hidden items stay alive: their Size Overrides and pins are kept (the pins dormant), focus and range corners inside pull to the Group Item, picks inside are dropped, and the Scroll Anchor moves to the Group Item. A change touching several groups comes as Refiltered.
+The Change Notices for a group closing or opening: `Collapsed { at, n }` hides the `n` items from Position `at`, under the Group Item at `at - 1`, and `Expanded { at, n }` shows `n` there. Position-precise like Removed and Inserted, but the hidden items stay alive: their Size Overrides and pins are kept (the pins dormant), focus and range corners inside pull to the Group Item, picks inside are dropped, and the Scroll Anchor moves to the Group Item. In header form, where no Group Item stands before them, they pull instead to the Subtotal of the deepest group beside the hidden run, and the Scroll Anchor goes there too. A change touching several groups comes as Refiltered.
 _Avoid_: Fold, hide (for a group), Removed (for a closed group's items)
 
 **Expand State**:
 Which groups of an axis are open, part of the grouping in the View Spec and so saved in layouts: a default depth (how many levels open; 0 shows only the top groups) and `except`, the Group Item Keys the other way, capped like the hidden Keys. Toggling a group adds or removes its Key; setting the depth clears `except`. A Key stays while its path fits the levels and is pruned when the levels change so that it cannot.
 _Avoid_: Collapse state, open set, tree state
 
+**Outline Form / Header Form**:
+The two ways a grouped axis draws its levels, chosen per axis in the grouping (`form`). Outline form gives each Group Item its own Position, indented in one column; header form gives each level a Tier of the Header Band and each group a Header Span over its items. In header form a closed group shows only its Subtotal, under its span, and an open group's own Subtotal sits after or before its span, labelled in band with the group's value ("Felixstowe total").
+_Avoid_: Tabular form, compact form, pivot layout
+
+**Tier**:
+One level's slice of a Header Band in header form, laid from the band's outer edge: its thickness the host sets per level (`set_tiers`), levels it gives none sharing what is left. Past the tiers an item's spans take, the band heads the item itself.
+_Avoid_: Header row, header level, band column
+
+**Header Span**:
+One group drawn in header form: a cell of its level's Tier over the run of neighbouring items under it in one Strip, merged by ancestor Key. A group whose items cross a pinned edge has a span in each Strip; a span clipped by the viewport, the Window or a pinned edge is cut on that side, and its label stays in the part drawn. `HeaderSpan` in code.
+_Avoid_: Merged cell, group cell, spanning header
+
 **Pending Toggle**:
 A Group Item whose open state a request still due changes: its disclosure mark draws pending (adapters wait about 150 ms first, so a fast source never flickers), and a second toggle before the answer takes the first back.
 _Avoid_: Loading group, spinner
 
 **Outline Column**:
-The row Header Band of rows grouped in outline form, as a column focus can enter (Left from the first column, or a click on a row header): there the arrows walk the tree (Right opens a closed group or steps to its first child, Left closes an open one or steps to the parent), Enter toggles, `*` opens everything under the focused group, a digit opens the rows to that depth, and Tab leaves for the body.
+The row Header Band of rows grouped in outline form, as a column focus can enter (Left from the first column, or a click on a row header): there the arrows walk the tree (Right opens a closed group or steps to its first child, Left closes an open one or steps to the parent), Enter toggles, `*` opens everything under the focused group, a digit opens the rows to that depth, and Tab leaves for the body. In header form focus sits on a row and a Tier: Right opens the closed span there or steps one Tier in (from the last, to the body), Left closes the open span or steps one Tier out, and Enter, `*` and digits act on the span's group; a click on a Tier focuses it.
 _Avoid_: Tree column, row header focus
 
 **Pending Item**:
