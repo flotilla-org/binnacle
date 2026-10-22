@@ -654,11 +654,24 @@ fn slicers_with_no_levels_slice_the_plain_rows() {
     assert_eq!(window.outlines, None, "not grouped");
 }
 
-/// The rows of `rows` (not `hidden`) in the group at `path`, by the values
-/// they hold now.
-fn members(rows: &[Record], asked: &Asked, path: &[Value], hidden: &[Key]) -> Vec<usize> {
+/// The rows (not `hidden`) in the group at `path` by the values they hold
+/// now, of those the slicer and the rows' filter admitted when the View
+/// Spec applied, by the values they held then (`viewed`).
+fn members(
+    rows: &[Record],
+    viewed: &[Record],
+    asked: &Asked,
+    path: &[Value],
+    hidden: &[Key],
+) -> Vec<usize> {
+    let number = |r: usize, c: Compare| viewed[r][c.column].map(|n| n as f64);
     (0..rows.len())
         .filter(|&r| !hidden.contains(&Key(r as u64)))
+        .filter(|&r| asked.slicer.is_none_or(|c| c.passes(number(r, c))))
+        .filter(|&r| match (asked.filter, asked.having()) {
+            (Some(c), None) => c.passes(number(r, c)),
+            _ => true,
+        })
         .filter(|&r| {
             path.iter()
                 .zip(&asked.levels)
@@ -695,6 +708,7 @@ fn an_edit_moves_nothing_and_every_figure_follows_it_at_once(tc: TestCase) {
 
     let row = tc.draw(gs::integers::<usize>().max_value(rows.len() - 1));
     let column = tc.draw(column());
+    let viewed = rows.clone();
     let was = rows[row];
     rows[row][column] = tc.draw(record())[column];
     let notices = source.edited(&rows, row, Key(column as u64));
@@ -712,7 +726,7 @@ fn an_edit_moves_nothing_and_every_figure_follows_it_at_once(tc: TestCase) {
     assert_eq!(keys(&after), keys(&before), "nothing moves");
     for (_, item) in &after {
         if let Item::Summary(_, path, figures) = item {
-            let kept = members(&rows, &asked, path, &hidden);
+            let kept = members(&rows, &viewed, &asked, path, &hidden);
             assert_eq!(*figures, self::figures(&rows, &kept, &asked), "{path:?}");
         }
     }
@@ -720,10 +734,18 @@ fn an_edit_moves_nothing_and_every_figure_follows_it_at_once(tc: TestCase) {
         .filter(|(_, i)| matches!(i, Item::Leaf(_)))
         .map(|(k, _)| *k)
         .collect();
+    // The edited Leaf is unmatched if it left its group or stopped passing
+    // the slicer or the rows' filter; it stays in view all the same.
     let unmatched = source.unmatched(&rows, Axis::Rows, &leaves);
+    let number = |c: Compare| rows[row][c.column].map(|n| n as f64);
+    let filtered = match (asked.filter, asked.having()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    };
+    let failed = (asked.slicer.iter().chain(&filtered)).any(|&c| !c.passes(number(c)));
     for (key, unmatched) in leaves.iter().zip(unmatched) {
         let regrouped = (asked.levels.iter()).any(|&(c, _)| rows[row][c] != was[c]);
-        let want = key.0 as usize == row && regrouped;
+        let want = key.0 as usize == row && (regrouped || failed);
         assert_eq!(unmatched, want, "Leaf {key:?}");
     }
 
@@ -762,6 +784,7 @@ fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
     // The model: every item open, a label then the shown columns in order.
     let searched: Vec<usize> = (0..COLS)
         .filter(|c| !asked.levels.iter().any(|l| l.0 == *c))
+        .filter(|&c| !spec.cols.hidden.contains(&Key(c as u64)))
         .collect();
     let mut want = Vec::new();
     for item in model(&rows, &asked, &spec.rows.sort, &hidden) {

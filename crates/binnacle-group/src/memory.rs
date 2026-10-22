@@ -8,9 +8,10 @@ use std::ops::Range;
 
 use binnacle_core::{
     Aggregate, AggregateValue, Axis, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
-    ConditionTree, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, GRAND_TOTAL,
-    Grouping, ItemKind, Key, Level, Located, MoveRefusal, Outline, Placement, Placements, Position,
-    Scalar, SortColumn, SortDirection, SortSpec, Support, TextSupport, Totals, Value, ViewSpec,
+    ConditionTree, Distinct, DistinctQuery, FilterSpec, FindDirection, FindMatch, FindQuery,
+    GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located, MoveRefusal, Outline, Placement,
+    Placements, Position, Scalar, SortColumn, SortDirection, SortSpec, Support, TextSupport,
+    Totals, Value, ViewSpec,
 };
 use binnacle_memory::{
     FindCount, FindStep, MemorySource, MovePolicy, Moved, PumpSource, TextMatcher, Viewed,
@@ -121,6 +122,9 @@ pub struct MemoryAggregates {
     root: Bucket,
     /// Where each Leaf is: its group's path and its index there.
     places: HashMap<Key, (Path, u64)>,
+    /// The rows grouped, the Leaves of groups left out included: the only
+    /// rows an edit refigures over.
+    grouped: HashSet<Key>,
 }
 
 impl MemoryAggregates {
@@ -146,6 +150,7 @@ impl MemoryAggregates {
             levels,
             root: Bucket::default(),
             places: HashMap::new(),
+            grouped: rows.iter().copied().collect(),
         };
         finish(&mut root, 0, scope, &value, &number);
         aggregates.root = root;
@@ -163,15 +168,29 @@ impl MemoryAggregates {
     /// [`MemoryAggregates::new`] takes them, after the user edited some,
     /// keeping the groups and their Leaves as they were: a group the rows
     /// no longer fill has the aggregates of no rows, and one they would
-    /// newly form is not shown until the next View Spec.
+    /// newly form is not shown until the next View Spec. Only the rows
+    /// grouped then count: one an edit brought past the filter waits for
+    /// the next View Spec too, and a group whose figures now fail a
+    /// comparison stays.
     pub fn refigure(
         &mut self,
         rows: &[Key],
         value: impl Fn(Key, usize) -> Value,
         number: impl Fn(Key, usize) -> Option<f64>,
     ) {
-        let mut fresh = bucket(rows, &self.scope, &value);
-        finish(&mut fresh, 0, &self.scope, &value, &number);
+        let kept: Vec<usize> = (0..rows.len())
+            .filter(|&i| self.grouped.contains(&rows[i]))
+            .collect();
+        let keys: Vec<Key> = kept.iter().map(|&i| rows[i]).collect();
+        let value = |field, j: usize| value(field, kept[j]);
+        let number = |field, j: usize| number(field, kept[j]);
+        // Every group shown keeps its place, so no figure leaves one out now.
+        let scope = Scope {
+            filter: FilterSpec::default(),
+            ..self.scope.clone()
+        };
+        let mut fresh = bucket(&keys, &scope, &value);
+        finish(&mut fresh, 0, &scope, &value, &number);
         let empty = self.empty();
         fn copy(old: &mut Bucket, new: Option<&Bucket>, empty: &[Figure]) {
             old.figures = new.map_or_else(|| empty.to_vec(), |b| b.figures.clone());
