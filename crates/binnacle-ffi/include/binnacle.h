@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 14u
+#define BINNACLE_ABI_VERSION 15u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -768,6 +768,11 @@ typedef struct {
   size_t corner_tiers_len;
   const BinnacleCornerLevel *corner_levels;
   size_t corner_levels_len;
+  /* Whether focus is in the Header Band heading this axis's items, where
+   * the tree keys act on its groups: ROWS the outline column (or a level
+   * column in header form) on the focused row, COLS a tier of the column
+   * band on the focused column. ROWS is the same as outline_focused. */
+  uint32_t band_focused;
 } BinnacleAxisSnapshot;
 
 /*
@@ -862,8 +867,8 @@ typedef struct {
   size_t slicers_len;
   const BinnacleListedValue *values;
   size_t values_len;
-  /* The tier of the row Header Band focus is in while outline_focused and
-   * the rows are in header form; 0 otherwise. */
+  /* The tier of the Header Band focus is in while it is in one (see each
+   * axis's band_focused) and that axis is in header form; 0 otherwise. */
   uint32_t focused_tier;
 } BinnacleSnapshot;
 

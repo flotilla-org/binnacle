@@ -1382,6 +1382,11 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             let want: Vec<u64> = rust.pins(axis, edge).map(|k| k.0).collect();
             assert_eq!(got, want, "{axis:?} {edge:?} pins");
         }
+        assert_eq!(
+            a.band_focused != 0,
+            rust.band_focused(axis),
+            "{axis:?} band focused"
+        );
         let tiers = unsafe { slice::from_raw_parts(a.tiers, a.tiers_len) };
         let got: Vec<_> = tiers.iter().map(|t| t.start..t.end).collect();
         assert_eq!(got, rust.tiers(axis), "{axis:?} tiers");
@@ -4382,4 +4387,97 @@ fn header_form_through_the_c_api_mirrors_the_grid() {
 #[test]
 fn the_values_pseudo_levels_field_is_the_cores() {
     assert_eq!(binnacle_ffi::BINNACLE_VALUES_FIELD, VALUES_FIELD.0);
+}
+
+/// Columns grouped in header form: focus entering their tiers, and Left
+/// there closing a column group, give the same band focus, tier and View
+/// Edit through the C API.
+#[test]
+fn the_column_tiers_through_the_c_api_mirror_the_grid() {
+    let (rows, cols) = (
+        AxisConfig::new(3, 1.0).header(2.0),
+        AxisConfig::new(3, 5.0).header(4.0),
+    );
+    let c_config = |a: AxisConfig| BinnacleAxisConfig {
+        count: a.count,
+        default_size: a.default_size,
+        header: a.header,
+        gap: a.gap,
+    };
+    let h = binnacle_grid_new(c_config(rows), c_config(cols));
+    let mut grid = Grid::new(rows, cols);
+    let (q1, q2) = (Key(200), Key(201));
+    let mut grouping = Grouping::default();
+    grouping.col_levels = vec![Level::field(Key(3))];
+    let spec = ViewSpec::default().with_grouping(Some(grouping));
+    let outlines = [
+        Outline::leaf(vec![q1]),
+        Outline::leaf(vec![q1]),
+        Outline::leaf(vec![q2]),
+    ];
+    let sizes = [1.0f32];
+    grid.view_applied(spec.clone(), Totals::unknown());
+    grid.set_tiers(Axis::Cols, &sizes);
+    unsafe {
+        with_c_view(&spec, |c| {
+            assert_eq!(
+                binnacle_grid_view_applied(h, c, &BinnacleTotals::default()),
+                1
+            )
+        });
+        assert_eq!(
+            binnacle_grid_set_tiers(h, COLS, sizes.as_ptr(), sizes.len()),
+            1
+        );
+    }
+    let frame = |h, grid: &mut Grid| {
+        let mut requests = BinnacleWindowRequests::default();
+        assert_eq!(
+            unsafe { binnacle_grid_begin_frame(h, 30.0, 8.0, &mut requests) },
+            1
+        );
+        for (axis, range) in grid.begin_frame(Viewport::new(30.0, 8.0)) {
+            let k: Vec<u64> = range.clone().collect();
+            unsafe { binnacle_grid_set_window(h, tag(axis), range.start, k.as_ptr(), k.len()) };
+            let keys: Vec<Key> = k.into_iter().map(Key).collect();
+            grid.set_window(axis, range.start, &keys);
+            if axis == Axis::Cols {
+                let part = &outlines[range.start as usize..range.end as usize];
+                grid.set_outlines(axis, range.start, part);
+                with_c_outlines(part, |c| unsafe {
+                    binnacle_grid_set_outlines(h, COLS, range.start, c.as_ptr(), c.len())
+                });
+            }
+        }
+        let mut snap = unsafe { std::mem::zeroed::<BinnacleSnapshot>() };
+        assert_eq!(unsafe { binnacle_grid_snapshot(h, &mut snap) }, 1);
+        let rust = grid.snapshot();
+        unsafe { check_snapshot(&snap, &rust) };
+        snap.axes[COLS as usize].band_focused
+    };
+    frame(h, &mut grid);
+    for e in [PointerEvent::down(11.5, 2.5), PointerEvent::up(11.5, 2.5)] {
+        grid.pointer(e);
+        assert_eq!(unsafe { binnacle_grid_pointer(h, pointer_event(e)) }, 1);
+    }
+    assert_eq!(frame(h, &mut grid), 0);
+    let up = Action::MoveFocus {
+        axis: Axis::Rows,
+        by: FocusStep::Item,
+        forward: false,
+        extend: false,
+    };
+    let left = Action::MoveFocus {
+        axis: Axis::Cols,
+        by: FocusStep::Item,
+        forward: false,
+        extend: false,
+    };
+    for action in [up, left] {
+        assert_eq!(unsafe { send(h, &action) }, 1);
+        grid.action(action);
+        assert_eq!(frame(h, &mut grid), 1, "in the column tiers");
+    }
+    unsafe { check_effects(h, &mut grid) };
+    unsafe { binnacle_grid_free(h) };
 }
