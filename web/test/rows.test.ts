@@ -9,6 +9,7 @@ import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
 import { textRenderer } from "../src/renderers/text";
 import { fromRows } from "../src/rows";
+import { rowsBy } from "../src/source";
 import type {
   AppliedView,
   AxisMethods,
@@ -16,6 +17,7 @@ import type {
   Condition,
   Distinct,
   FilterSpec,
+  OutlinedWindow,
   SortDirection,
   SortSpec,
   TableSink,
@@ -133,7 +135,7 @@ function answered<ColId = keyof Rec>(
   quick: TextQuery<ColId> | null = null,
   conditions: Condition<ColId>[] = [],
 ): AppliedView<number, ColId> {
-  return { ...rowsSorted(sort, quick, conditions), totals: { rows: n, cols: 3 } };
+  return { ...rowsSorted(sort, quick, conditions), totals: { rows: n, cols: 3 }, grouping: null };
 }
 
 /** Whether `text` matches `query` as the spec reads it; `undefined` for a pattern RegExp rejects. */
@@ -383,7 +385,7 @@ describe("fromRows", () => {
           expect(all()).toEqual(placed(shown, ids, to));
           expect(m.movable!()).toBe(true);
           const dropped = { ...spec, [axis]: { ...spec[axis], sort: [] } };
-          expect(views).toEqual(sorted ? [{ ...dropped, totals: { rows: rows.length, cols: 3 } }] : []);
+          expect(views).toEqual(sorted ? [{ ...dropped, totals: { rows: rows.length, cols: 3 }, grouping: null }] : []);
         };
         if (axis === "rows") check(source.rows);
         else check(source.cols as AxisMethods<keyof Rec, unknown>);
@@ -529,7 +531,7 @@ describe("fromRows", () => {
       { n: 3, s: "Cádiz", b: 0 },
     ];
     const source = fromRows(rows, [{ key: "n" }, { key: "s" }, { key: "b", filterable: false }]);
-    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false, oneOf: false, compare: null });
+    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false, oneOf: false, compare: null, group: true });
     const text = (text: string): TextMatch => ({ text, caseSensitive: false, regex: false });
     const notBergen: Condition<keyof Rec> = { id: "s", kind: { type: "Text", query: text("bergen") }, not: true };
     const onB: Condition<keyof Rec> = { id: "b", kind: { type: "Text", query: text("1") }, not: false };
@@ -579,6 +581,7 @@ describe("fromRows", () => {
         expect(source.view!(asked, new AbortController().signal)).toEqual({
           ...asked,
           totals: { rows: rows.length, cols: 3 },
+          grouping: null,
         });
         expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(columnReference(rows, spec));
         expect(order(source)).toEqual(reference(rows, sort, () => true));
@@ -598,6 +601,7 @@ describe("fromRows", () => {
       rows: { ...asked.rows, sort: [{ id: "n", direction: "descending" }] },
       cols: { ...asked.cols, sort: [{ id: 0, direction: "ascending" }] },
       totals: { rows: 1, cols: 3 },
+      grouping: null,
     });
     // Row 0 holds 2, a null and 1: ascending, nulls last.
     expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(["b", "n", "s"]);
@@ -656,8 +660,8 @@ describe("fromRows", () => {
 
   test("columns marked unsortable say so, and labels default to the property name", () => {
     const source = fromRows<Rec>([], [{ key: "n", label: "Number" }, { key: "s", sortable: false }]);
-    expect(source.rows.support?.("n")).toMatchObject({ sort: true, text: { regex: true }, oneOf: true });
-    expect(source.rows.support?.("s")).toMatchObject({ sort: false, text: { regex: true }, oneOf: true });
+    expect(source.rows.support?.("n")).toMatchObject({ sort: true, text: { regex: true }, oneOf: true, group: true });
+    expect(source.rows.support?.("s")).toMatchObject({ sort: false, text: { regex: true }, oneOf: true, group: false });
     expect(source.cols.label?.("n", 0)).toBe("Number");
     expect(source.cols.label?.("s", 1)).toBe("s");
     source.destroy();
@@ -868,7 +872,7 @@ describe("fromRows's columns", () => {
           const changed = JSON.stringify(next.cols) !== JSON.stringify(applied.cols);
           applied = next;
           const { error, ...rest } = answer;
-          expect(rest).toEqual({ ...filtered(applied.rows, applied.cols), totals: { rows: rows.length, cols: 3 } });
+          expect(rest).toEqual({ ...filtered(applied.rows, applied.cols), totals: { rows: rows.length, cols: 3 }, grouping: null });
           expect(error !== undefined).toBe(rejects(asked.rows) || rejects(asked.cols));
           expect(colsNotices).toEqual(changed ? [{ type: "Refiltered" }] : []);
           expect(shownColumns(source)).toEqual(columnsKept(rows, applied.cols));
@@ -1090,4 +1094,151 @@ describe("fromRows's hiding", () => {
         source.destroy();
       }
     }, { testCases: 300 }));
+});
+
+describe("fromRows's grouping", () => {
+  const signal = new AbortController().signal;
+
+  /** A View Spec grouping the rows by `field`, sorted by `sort`, with `hidden` rows hidden. */
+  const groupedBy = (field: keyof Rec, sort: SortSpec<keyof Rec> = [], hidden: number[] = []): ViewSpec<number, keyof Rec> => ({
+    ...rowsSorted(sort),
+    rows: { ...rowsSorted(sort).rows, hidden },
+    grouping: rowsBy(field),
+  });
+
+  /**
+   * What the model shows: the rows kept, sorted by `field` (the sort's
+   * direction on it, else ascending) then by the sort, grouped by `field`'s
+   * text; each group as its text and count, then its rows.
+   */
+  const model = (rows: Rec[], field: keyof Rec, sort: SortSpec<keyof Rec>, keep: (r: Rec, i: number) => boolean) => {
+    const direction = sort.find((c) => c.id === field)?.direction ?? "ascending";
+    const kept = reference(rows, [{ id: field, direction }, ...sort], () => true).filter((i) => keep(rows[i]!, i));
+    const out: ({ group: string | null; count: number } | number)[] = [];
+    let i = 0;
+    while (i < kept.length) {
+      const text = (r: number) => (rows[r]![field] === null ? null : String(rows[r]![field]));
+      const value = text(kept[i]!);
+      const run = kept.slice(i).filter((_, k, all) => all.slice(0, k + 1).every((r) => text(r) === value));
+      out.push({ group: value, count: run.length }, ...run);
+      i += run.length;
+    }
+    return out;
+  };
+
+  /** What the source shows: each Group Item as its group's text and count (checked against its label and outline), each Leaf by its row ID. */
+  const shown = (source: ReturnType<typeof fromRows<Rec>>, field: keyof Rec) => {
+    const n = source.rows.count() as number;
+    const window = source.rows.window(0, n, signal) as OutlinedWindow<number, keyof Rec>;
+    let parent: number | undefined;
+    return window.ids.map((id, i) => {
+      const outline = window.outlines[i]!;
+      if (outline.kind === "leaf") {
+        expect(id).toBeGreaterThanOrEqual(0);
+        expect(outline).toEqual({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null });
+        return id;
+      }
+      parent = id;
+      expect(id).toBeLessThan(0);
+      const group = source.group(id)!;
+      expect(outline).toEqual({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field, value: group.value } });
+      expect(group.field).toBe(field);
+      expect(source.rows.label!(id, i)).toBe(`${group.value ?? "(blank)"} (${group.count})`);
+      expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: i });
+      return { group: group.value, count: group.count };
+    });
+  };
+
+  test("whatever the sort, hidden rows and host filter, the grouped rows are the model's and the level column leaves the columns", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      const notices: ChangeNotice[] = [];
+      source.attach!(sinksTo(notices));
+      try {
+        const field = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
+        const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+        const hidden = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: Math.max(0, rows.length - 1) }), { maxSize: 4 }));
+        const filtered = tc.draw(gs.booleans());
+        if (filtered) source.filter((r) => r.b !== 1);
+        const answer = source.view!(groupedBy(field, sort, hidden), signal) as AppliedView<number, keyof Rec>;
+        expect(answer.grouping).toEqual(rowsBy(field));
+        expect(answer.rows.sort).toEqual(sort);
+        expect(answer.cols.hidden).toEqual([]);
+        expect(notices).toContainEqual({ type: "Refiltered" });
+        const keep = (r: Rec, i: number) => !hidden.includes(i) && (!filtered || r.b !== 1);
+        expect(shown(source, field)).toEqual(model(rows, field, sort, keep));
+        for (const [p, id] of (source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, keyof Rec>).ids.entries()) {
+          if (id >= 0) expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: p });
+        }
+        expect(source.cols.window(0, 3, signal)).toEqual(COLUMN_IDS.filter((c) => c !== field));
+        // The host's filter regroups.
+        notices.length = 0;
+        source.filter((r) => r.n !== null);
+        expect(notices).toEqual([{ type: "Refiltered" }]);
+        expect(shown(source, field)).toEqual(model(rows, field, sort, (r, i) => !hidden.includes(i) && r.n !== null));
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("ungrouping brings back the plain rows, in the sort in force, and the level column", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      const notices: ChangeNotice[] = [];
+      source.attach!(sinksTo(notices));
+      try {
+        const field = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
+        const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+        source.view!(groupedBy(field, sort), signal);
+        notices.length = 0;
+        const answer = source.view!(rowsSorted(sort), signal) as AppliedView<number, keyof Rec>;
+        expect(answer.grouping).toBeNull();
+        expect(notices).toContainEqual({ type: "Refiltered" });
+        expect(order(source)).toEqual(reference(rows, sort, () => true));
+        expect(source.cols.window(0, 3, signal)).toEqual([...COLUMN_IDS]);
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("the rows group by sortable columns only; a level on any other column is left out of the answer", () => {
+    const source = fromRows([{ n: 1, s: "a", b: null }], [{ key: "n" }, { key: "s", sortable: false }, { key: "b" }]);
+    try {
+      expect(source.rows.support!("n").group).toBe(true);
+      expect(source.rows.support!("s").group).toBe(false);
+      const answer = source.view!(groupedBy("s"), signal) as AppliedView<number, keyof Rec>;
+      expect(answer.grouping).toBeNull();
+      expect(source.rows.window(0, 1, signal)).toEqual([0]);
+    } finally {
+      source.destroy();
+    }
+  });
+
+  test("Group Items have no cells, keep their row IDs through a regroup, and grouped rows refuse to move", () => {
+    const rows: Rec[] = [
+      { n: 1, s: "x", b: 0 },
+      { n: 2, s: "y", b: 1 },
+      { n: 3, s: "x", b: 2 },
+    ];
+    const source = fromRows(rows, COLUMNS);
+    try {
+      source.view!(groupedBy("s"), signal);
+      const first = source.rows.window(0, 5, signal) as OutlinedWindow<number, keyof Rec>;
+      expect(first.ids.filter((id) => id >= 0)).toEqual([0, 2, 1]);
+      const [x, y] = first.ids.filter((id) => id < 0);
+      expect(source.cells(first.ids.slice(0, 2), ["n", "b"], signal)).toEqual([
+        [null, null],
+        [1, 0],
+      ]);
+      source.view!(groupedBy("s", [{ id: "s", direction: "descending" }]), signal);
+      const again = source.rows.window(0, 5, signal) as OutlinedWindow<number, keyof Rec>;
+      expect(again.ids).toEqual([y, 1, x, 0, 2]);
+      expect(source.rows.movable!()).toBe(false);
+      expect(source.rows.move!([0], 3)).toEqual({ refused: expect.stringContaining("ungroup") });
+    } finally {
+      source.destroy();
+    }
+  });
 });

@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { FIND, NOTICE_CODE, SUPPORT } from "../src/codes";
 import { decodeSnapshot, type KeyedViewSpec } from "../src/snapshot";
 import { isEffect } from "../src/effects";
+import type { Outline } from "../src/source";
 import { bridge } from "../src/wasm";
 import { loadForTests } from "./wasm";
 
@@ -393,7 +394,7 @@ describe("Grouping", () => {
     }
   });
 
-  test("binnacle-memory groups the rows in view, and a grouped Window names each item's group by its path", () => {
+  test("binnacle-memory groups the rows in view, and a grouped Window gives each item's outline", () => {
     const memory = new (bridge().WebMemory)(5, 2);
     try {
       const encode = (values: (string | null)[]) => {
@@ -410,18 +411,20 @@ describe("Grouping", () => {
       memory.sort(0, BigUint64Array.from([1n]), Uint8Array.from([0]));
       memory.stage_level(...region);
       expect(memory.group(Uint32Array.from([1]))).toBe(8);
-      const items = memory.grouped_window(0, 8) as { key: bigint; item: number | null; kind: string; path: unknown[] }[];
-      expect(items.map((i) => [i.kind, i.item, i.path])).toEqual([
-        ["group", null, [[1, "a"]]],
-        ["leaf", 1, [[1, "a"]]],
-        ["leaf", 4, [[1, "a"]]],
-        ["group", null, [[1, "b"]]],
-        ["leaf", 0, [[1, "b"]]],
-        ["leaf", 2, [[1, "b"]]],
-        ["group", null, [[1, null]]],
-        ["leaf", 3, [[1, null]]],
+      type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; count: number | null };
+      const items = memory.grouped_window(0, 8) as Item[];
+      const [a, b, blank] = [items[0]!.key, items[3]!.key, items[6]!.key];
+      expect(items.map((i) => [i.item, i.outline])).toEqual([
+        [null, { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "a" } }],
+        [1, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [a], group: null }],
+        [4, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [a], group: null }],
+        [null, { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "b" } }],
+        [0, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [b], group: null }],
+        [2, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [b], group: null }],
+        [null, { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: null } }],
+        [3, { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [blank], group: null }],
       ]);
-      expect(items.map((i) => (i as { count: number | null }).count)).toEqual([2, null, null, 2, null, null, 1, null]);
+      expect(items.map((i) => i.count)).toEqual([2, null, null, 2, null, null, 1, null]);
       expect(items[0]!.key >= 2n ** 63n).toBe(true);
       expect(Array.from(memory.locate_summary(items[3]!.key))).toEqual([0, 3]);
       expect(Array.from(memory.locate(0, 3))).toEqual([0, 7]);

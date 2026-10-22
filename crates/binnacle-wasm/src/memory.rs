@@ -18,7 +18,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, position};
 use crate::grid::to_js;
-use crate::grouping::{WireItemKind, WireOpenState};
+use crate::grouping::WireOutline;
 
 /// One sort column's keys, staged until [`WebMemory::sort`].
 enum Staged {
@@ -69,7 +69,9 @@ struct Backend<'a> {
 impl AggregateBackend<Figure> for Backend<'_> {
     fn answer(&mut self, batch: &Batch) -> Vec<Answer<Figure>> {
         if self.aggregates.as_ref().map(|a| a.stamp()) != Some(batch.stamp) {
-            let keys = self.table.window(Axis::Rows, 0..self.table.count(Axis::Rows));
+            let keys = self
+                .table
+                .window(Axis::Rows, 0..self.table.count(Axis::Rows));
             let levels = self.levels;
             *self.aggregates = Some(MemoryAggregates::new(batch, &keys, |level, i| {
                 let item = keys[i].0 as usize;
@@ -83,17 +85,13 @@ impl AggregateBackend<Figure> for Backend<'_> {
 }
 
 /// One item of a grouped Window: its layer Key, its Logical Index if a
-/// Leaf, its kind, open state and depth, the path of its group (a Leaf's
-/// parent's) as each level's column index and text (`null` for a blank),
-/// and a Group Item's count.
+/// Leaf, its outline (a Summary Item's field is its column index), and a
+/// Group Item's count.
 #[derive(Serialize)]
 struct GroupedItem {
     key: u64,
     item: Option<u32>,
-    kind: WireItemKind,
-    open: WireOpenState,
-    depth: u32,
-    path: Vec<(u32, Option<String>)>,
+    outline: WireOutline,
     count: Option<f64>,
 }
 
@@ -170,7 +168,8 @@ impl WebMemory {
 
     /// Groups the rows by the columns `fields` (indices), outermost first,
     /// one staged level each, over the rows in view as they are sorted and
-    /// filtered now. Returns the new count for the `Refiltered`.
+    /// filtered now, grouping them again if they were already. Returns the
+    /// new count for the `Refiltered`.
     pub fn group(&mut self, fields: &[u32]) -> f64 {
         self.levels = std::mem::take(&mut self.staged_levels);
         let mut grouping = Grouping::default();
@@ -180,6 +179,8 @@ impl WebMemory {
         grouping.values = Grouping::rows_by(Key(0)).values;
         self.layer
             .request_view(ViewSpec::default().with_grouping(Some(grouping)));
+        // The same levels over rows sorted or filtered anew.
+        self.layer.refresh();
         self.settle();
         self.count(0)
     }
@@ -209,10 +210,13 @@ impl WebMemory {
 
     /// The grouped rows' items at Positions `start..end`, clipped to the
     /// count: an array of objects, each Leaf by its Logical Index and every
-    /// item with its outline and its group's path.
+    /// item with its outline.
     pub fn grouped_window(&mut self, start: f64, end: f64) -> JsValue {
         let range = position(start)..position(end);
-        let want = range.end.min(self.count(0) as u64).saturating_sub(range.start) as usize;
+        let want = range
+            .end
+            .min(self.count(0) as u64)
+            .saturating_sub(range.start) as usize;
         let mut items = self.layer.window(Axis::Rows, range.clone());
         while items.len() < want {
             self.settle();
@@ -222,36 +226,16 @@ impl WebMemory {
             }
             items = more;
         }
-        let path = |key: Key| {
-            let summary = self.layer.summary(key);
-            let path = summary.map_or(&[][..], |s| &s.path[..]);
-            (path.iter())
-                .map(|(field, value)| {
-                    let text = match value {
-                        Value::Text(t) => Some(t.clone()),
-                        Value::Blank => None,
-                    };
-                    (field.0 as u32, text)
-                })
-                .collect::<Vec<_>>()
-        };
         let items: Vec<GroupedItem> = (items.into_iter())
             .map(|(key, outline)| {
-                let leaf = outline.kind == ItemKind::Leaf;
                 let count = (self.layer.summary(key)).and_then(|s| match s.aggregates {
                     [Figure::Count(n)] => Some(*n as f64),
                     _ => None,
                 });
                 GroupedItem {
                     key: key.0,
-                    item: leaf.then_some(key.0 as u32),
-                    kind: (&outline).into(),
-                    open: (&outline).into(),
-                    depth: outline.depth,
-                    path: match leaf {
-                        true => outline.parent().map_or_else(Vec::new, path),
-                        false => path(key),
-                    },
+                    item: (outline.kind == ItemKind::Leaf).then_some(key.0 as u32),
+                    outline: (&outline).into(),
                     count,
                 }
             })

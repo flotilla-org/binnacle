@@ -31,6 +31,7 @@ export type {
   TableSink,
   AxisSource,
   AxisView,
+  AggregateValue,
   ChangeNotice,
   Condition,
   Distinct,
@@ -43,8 +44,15 @@ export type {
   FindMethods,
   FindQuery,
   FindStep,
+  GroupedAxis,
+  Grouping,
+  ItemKind,
+  Level,
   Located,
   MaybePromise,
+  Outline,
+  OutlinedWindow,
+  Placement,
   Primitive,
   QuickFilterSupport,
   SortDirection,
@@ -56,8 +64,9 @@ export type {
   Totals,
   ViewSpec,
 } from "./source";
+export { rowsBy } from "./source";
 export { LAYOUT_VERSION, type Layout, type LayoutPins } from "./layout";
-export { fromRows, type RowsColumn, type RowsColumnId, type RowsOptions, type RowsSource } from "./rows";
+export { fromRows, type RowsColumn, type RowsColumnId, type RowsGroup, type RowsOptions, type RowsSource } from "./rows";
 export {
   catppuccinMocha,
   light,

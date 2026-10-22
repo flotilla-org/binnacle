@@ -1101,6 +1101,31 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
+   * Groups the rows by column `colId`, one level, each group headed by its
+   * Group Item: the Table Source answers as it does any View Spec, and the
+   * column leaves the body while the rows group by it. Nothing happens on a
+   * column the source cannot group the rows by (`columnSupport(colId).group`).
+   */
+  groupBy(colId: ColId): void {
+    this.editView(() => this.grid.group_by(AXIS_CODE.rows, this.feed.colKey(colId)));
+  }
+
+  /** Brings back the plain rows: no grouping. */
+  ungroup(): void {
+    this.editView(() => this.grid.ungroup(AXIS_CODE.rows));
+  }
+
+  /** The columns the rows group by, outermost first, as of the latest frame; empty when they are not grouped. */
+  groupedBy(): ColId[] {
+    const s = this.last;
+    const grouping = s ? (s.requestedView ?? s.appliedView).grouping : null;
+    return (grouping?.rowLevels ?? []).flatMap((level) => {
+      const id = "field" in level ? this.feed.colId(level.field) : undefined;
+      return id === undefined ? [] : [id];
+    });
+  }
+
+  /**
    * The grid's layout by the Table Source's IDs, to save and give to
    * `restoreLayout` later: the View Spec last asked for, the pinned items
    * (those the source no longer has included), every size set by hand,

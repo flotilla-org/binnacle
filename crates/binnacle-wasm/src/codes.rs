@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn support_bits_round_trip_and_regex_needs_text() {
-        for bits in [0, 1, 2, 3, 6, 7, 8, 15, 16, 32, 47] {
+        for bits in [0, 1, 2, 3, 6, 7, 8, 15, 16, 32, 47, 64, 79, 111] {
             assert_eq!(support_bits(support(bits)), bits);
         }
         assert_eq!(support(SUPPORT_TEXT_REGEX).text, None);

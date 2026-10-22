@@ -192,6 +192,19 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const choose = lit(menuItem(`Choose ${noun}s…`, "binnacle-column-menu-choose"));
     if (!hides) hideButton.style.display = showOnly.style.display = showHidden.style.display = "none";
     if (!widget.canChoose(own)) choose.style.display = "none";
+    // Grouping the rows by this column, or back to the plain rows.
+    const groupButton = lit(menuItem("Group rows by this column", "binnacle-column-menu-group"));
+    const ungroupButton = lit(menuItem("Ungroup rows", "binnacle-column-menu-ungroup"));
+    const grouped = () => axis === "rows" && widget.groupedBy().length > 0;
+    const groups = axis === "rows" && support.group === true;
+    groupButton.addEventListener("click", () => {
+      close();
+      widget.groupBy(colId as ColId);
+    });
+    ungroupButton.addEventListener("click", () => {
+      close();
+      widget.ungroup();
+    });
     // Why the last hide hid nothing: past the cap, a filter scales.
     const capped = el("div", "binnacle-column-menu-capped", ERROR_STYLE);
     capped.setAttribute("role", "status");
@@ -200,7 +213,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     showHidden.setAttribute("aria-expanded", "false");
     const actionsSeparator = el("div", "", SEPARATOR_STYLE);
     actionsSeparator.hidden = !filters;
-    actions.append(pinButton, pinTrailing, freeze, hideButton, showOnly, showHidden, choose, capped, actionsSeparator);
+    actions.append(pinButton, pinTrailing, freeze, hideButton, showOnly, showHidden, choose, groupButton, ungroupButton, capped, actionsSeparator);
     /** Runs a hide on the chosen items around this one: closes the menu, unless it passed the cap. */
     const hideWith = async (run: () => Promise<HideOutcome>) => {
       const outcome = await run();
@@ -632,6 +645,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       // over the `hidden` attribute.
       showItem(pinTrailing, !pinned());
       showItem(freeze, !pinning.pinned("trailing"));
+      showItem(groupButton, groups && !grouped());
+      showItem(ungroupButton, grouped());
       for (const c of [how, field, op, low, high, search, clearButton, closeButton]) {
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;

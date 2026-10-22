@@ -9,8 +9,8 @@
 // change to the field sets the widget's quick filter, typing once a pause
 // has passed (`typingPause`) and Enter, the toggles and × at once; the widget
 // announces the count to assistive technology once the filter is applied.
-// While a filter is pending the count reads "filtering…" and its chips fade;
-// a quick filter or condition the Table Source did not apply turns red with
+// Grouped rows show no count. While a filter is pending the count reads
+// "filtering…" and its chips fade; a quick filter or condition the Table Source did not apply turns red with
 // its message, the text kept. Drawn in the widget's Theme; hidden while the
 // axis takes no quick filter, neither axis has conditions and no column menu
 // is given.
@@ -390,8 +390,13 @@ export function createFilterBar<RowId, ColId, V>(
       );
     count.toggleAttribute("aria-busy", filtering);
     const [one, many] = nouns.rows;
+    // Grouped rows count their Group Items too, so they are not counted until
+    // the source says how many Leaves it shows.
+    const grouped = widget.groupedBy().length > 0;
     count.textContent = filtering
       ? "filtering…"
+      : grouped
+        ? ""
       : filtered("rows")
         ? `${f.rows.count.toLocaleString("en")} of ${f.rows.total!.toLocaleString("en")}`
         : options.nouns?.rows
