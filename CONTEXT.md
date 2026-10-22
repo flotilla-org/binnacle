@@ -196,7 +196,9 @@ _Avoid_: Loading group, spinner
 
 **Outline Column**:
 The row Header Band of rows grouped in outline form, as a column focus can enter (Left from the first column, or a click on a row header): there the arrows walk the tree (Right opens a closed group or steps to its first child, Left closes an open one or steps to the parent), Enter toggles, `*` opens everything under the focused group, a digit opens the rows to that depth, and Tab leaves for the body. In header form focus sits on a row and a Tier: Right opens the closed span there or steps one Tier in (from the last, to the body), Left closes the open span or steps one Tier out, and Enter, `*` and digits act on the span's group; a click on a Tier focuses it.
-_Avoid_: Tree column, row header focus
+
+Grouped columns, always in header form, have the same keys turned: Up from the first row enters the innermost Tier of the column Header Band over the focused column, where Right opens the closed span or steps one Tier in (from the last, to the body), Left closes the open span or steps one Tier out, Up steps one Tier out, Down leaves for the body, and Enter, `*` and digits act on the columns. A closed column span shows its total column under it. Either band holding focus is the axis's band focus (`band_focused(axis)` in a Snapshot).
+_Avoid_: Tree column, row header focus, column header focus
 
 **Pending Item**:
 An item of a grouped axis whose Key its Window has not had answered yet, the backend still due: the band draws it pending (a "…" in the loading colour) and its cells loading. The Window answers the items it holds and comes again for the rest.
