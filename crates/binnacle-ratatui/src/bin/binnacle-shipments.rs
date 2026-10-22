@@ -39,6 +39,11 @@
 //! the next port. It stays where it is, dimmed, while its groups' figures
 //! change at once, and the next sort or grouping puts it in its new port.
 //! Group rows and totals never edit or move.
+//!
+//! `v` pivots: ports by region down the rows and quarters across, each
+//! quarter spanning its total weight and count columns in the column Header
+//! Band, the All columns, one per value, pinned at the right and the Grand
+//! Total row at the bottom. `v` again goes back to the grouped rows.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -66,16 +71,18 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 
 const SHIPMENTS: usize = 240;
-const HEADERS: [&str; 5] = ["id", "region", "port", "weight", "crew"];
+const HEADERS: [&str; 6] = ["id", "region", "port", "weight", "crew", "quarter"];
 const REGION: Key = Key(1);
 const PORT: Key = Key(2);
 const WEIGHT: Key = Key(3);
 const CREW: Key = Key(4);
+const QUARTER: Key = Key(5);
 
 const REGIONS: [&str; 4] = ["North", "South", "East", "West"];
 const PORTS: [&str; 6] = [
     "Aberdeen", "Bergen", "Cádiz", "Dunedin", "Esbjerg", "Funchal",
 ];
+const QUARTERS: [&str; 4] = ["Q1", "Q2", "Q3", "Q4"];
 
 struct Shipment {
     id: i64,
@@ -84,6 +91,7 @@ struct Shipment {
     port: &'static str,
     weight: f64,
     crew: i64,
+    quarter: &'static str,
 }
 
 impl Shipment {
@@ -96,6 +104,7 @@ impl Shipment {
             port: PORTS[((h >> 3) % 6) as usize],
             weight: (h % 10_000) as f64 / 10.0,
             crew: (h % 13) as i64,
+            quarter: QUARTERS[((h >> 7) % 4) as usize],
         }
     }
 }
@@ -109,7 +118,9 @@ fn source() -> GroupedMemory<Shipment> {
         .text_column(Key(2), |s| Some(Cow::Borrowed(s.port)))
         .f64_column(Key(3), |s| Some(s.weight))
         .i64_column(Key(4), |s| Some(s.crew))
-        .text_column(Key(4), |s| Some(Cow::Owned(s.crew.to_string())));
+        .text_column(Key(4), |s| Some(Cow::Owned(s.crew.to_string())))
+        .bytes_column(QUARTER, |s| Some(Cow::Borrowed(s.quarter.as_bytes())))
+        .text_column(QUARTER, |s| Some(Cow::Borrowed(s.quarter)));
     GroupedMemory::new(source)
 }
 
@@ -127,6 +138,18 @@ fn grouping() -> Grouping {
     grouping.values = vec![AggregateValue::of(WEIGHT, "sum"), AggregateValue::count()];
     grouping.rows.grand_total = Placement::After;
     grouping.rows.expand = Expand::to(Depth::Levels(1));
+    grouping
+}
+
+/// Ports by region down the rows, quarters across, each by the sum of the
+/// weights and the count, with a Grand Total after each axis.
+fn pivot() -> Grouping {
+    let mut grouping = Grouping::rows_by(REGION);
+    grouping.row_levels = vec![Level::field(REGION), Level::field(PORT)];
+    grouping.col_levels = vec![Level::field(QUARTER), Level::Values];
+    grouping.values = vec![AggregateValue::of(WEIGHT, "sum"), AggregateValue::count()];
+    grouping.rows.grand_total = Placement::After;
+    grouping.cols.grand_total = Placement::After;
     grouping
 }
 
@@ -156,6 +179,14 @@ impl Text<'_> {
 
 impl Content for Text<'_> {
     fn cell(&self, row: Key, col: Key) -> String {
+        if self.grouping.is_some_and(Grouping::pivot) {
+            // Both axes are the layer's: the figure where they cross.
+            return match self.source.cell(row, col) {
+                Some(Figure::Number(n)) => format!("{n:.1}"),
+                Some(Figure::Count(n)) => n.to_string(),
+                _ => String::new(),
+            };
+        }
         let Some(s) = self.rows.get(row.0 as usize) else {
             // A Summary Item shows its group's figure for the column.
             return match self.figure(row, Some(col), None) {
@@ -169,7 +200,8 @@ impl Content for Text<'_> {
             1 => s.region.unwrap_or_default().to_string(),
             2 => s.port.to_string(),
             3 => format!("{:.1}", s.weight),
-            _ => s.crew.to_string(),
+            4 => s.crew.to_string(),
+            _ => s.quarter.to_string(),
         }
     }
 
@@ -569,6 +601,7 @@ fn main() -> io::Result<()> {
                 );
                 let applied = snapshot.applied_view().grouping.as_ref();
                 let grouped = match applied.map(|g| (g.row_levels.is_empty(), g.rows.form)) {
+                    _ if applied.is_some_and(Grouping::pivot) => "pivot",
                     Some((false, Form::Header)) => "grouped, header form",
                     Some((false, Form::Outline)) => "grouped, outline form",
                     _ => "plain",
@@ -589,7 +622,7 @@ fn main() -> io::Result<()> {
                 let line_text = match said.is_empty() {
                     false => said,
                     true => format!(
-                        "^F find  F2 edit  p reroute  m column menu  r row menu  f form  C-c copy  t theme  q quit | {grouped} | {} | {note}",
+                        "^F find  F2 edit  p reroute  m column menu  r row menu  f form  v pivot  C-c copy  t theme  q quit | {grouped} | {} | {note}",
                         themes[theme].name
                     ),
                 };
@@ -681,6 +714,25 @@ fn main() -> io::Result<()> {
                                 _ => Form::Header,
                             };
                             grid.set_form(Axis::Rows, form);
+                        }
+                        KeyCode::Char('v') => {
+                            let snapshot = grid.snapshot();
+                            let latest = snapshot.requested_view();
+                            let latest = latest.unwrap_or(snapshot.applied_view());
+                            let pivoted = latest.grouping.as_ref().is_some_and(Grouping::pivot);
+                            let mut view = latest.clone();
+                            if pivoted {
+                                view.grouping = Some(grouping());
+                                // The column band back to one line.
+                                grid.set_tiers(Axis::Cols, &[]);
+                                grid.set_header(Axis::Rows, 1.0);
+                            } else {
+                                view.grouping = Some(pivot());
+                                // The quarters' line, then the value columns' own.
+                                grid.set_tiers(Axis::Cols, &[1.0, 0.0]);
+                                grid.set_header(Axis::Rows, 2.0);
+                            }
+                            grid.request_view(view);
                         }
                         KeyCode::Char('m') => {
                             menu.open(&grid.snapshot(), Axis::Cols);
