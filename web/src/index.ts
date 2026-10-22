@@ -122,7 +122,7 @@ export { sparklineRenderer, type SparklineOptions } from "./renderers/sparkline"
 export { barRenderer, type BarOptions } from "./renderers/bar";
 export type { Content } from "./content";
 export type { Painter } from "./painter";
-export type { DropTarget, PinZone, Snapshot } from "./snapshot";
+export type { CornerLevel, CornerTier, DropTarget, PinZone, Snapshot } from "./snapshot";
 export { loadBinnacle } from "./wasm";
 export { COPY_LIMIT, type Copied, type CopiedRow } from "./copy";
 export { transpose } from "./transpose";

@@ -107,6 +107,13 @@ impl WebGrid {
         self.grid.group_by(axis(a), Key(field));
     }
 
+    /// Cycles axis `a`'s sort by `key`, an item of the other axis, as a
+    /// Sort header click on its header does: how a level name in the
+    /// corner sorts by its field.
+    pub fn cycle_sort(&mut self, a: u8, key: u64, multi: bool) {
+        self.grid.cycle_sort(axis(a), Key(key), multi);
+    }
+
     /// Removes every level of axis `a`.
     pub fn ungroup(&mut self, a: u8) {
         self.grid.ungroup(axis(a));
