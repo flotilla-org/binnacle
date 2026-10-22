@@ -10,17 +10,17 @@ use std::slice;
 
 use binnacle_core::{
     Action, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared, Comparison,
-    Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect, Expand,
-    FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Form, Grid, GroupOf,
-    Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located, Mode, Modifiers,
-    OpenState, Outline, Placement, PointerEvent, PointerKind, Rect, Scalar, Searched,
-    SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport,
-    Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
+    ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
+    Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located,
+    Mode, Modifiers, OpenState, Outline, Placement, PointerEvent, PointerKind, Rect, Scalar,
+    Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 5;
+pub const BINNACLE_ABI_VERSION: u32 = 6;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -101,6 +101,10 @@ pub const BINNACLE_VIEW_EDIT_HIDE: u32 = 9;
 pub const BINNACLE_VIEW_EDIT_SHOW: u32 = 10;
 pub const BINNACLE_VIEW_EDIT_GROUP: u32 = 11;
 pub const BINNACLE_VIEW_EDIT_UNGROUP: u32 = 12;
+pub const BINNACLE_VIEW_EDIT_EXPAND: u32 = 13;
+pub const BINNACLE_VIEW_EDIT_COLLAPSE: u32 = 14;
+pub const BINNACLE_VIEW_EDIT_EXPAND_ALL: u32 = 15;
+pub const BINNACLE_VIEW_EDIT_EXPAND_TO: u32 = 16;
 
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
@@ -172,6 +176,10 @@ pub const BINNACLE_NOTICE_INSERTED: u32 = 2;
 pub const BINNACLE_NOTICE_REMOVED: u32 = 3;
 pub const BINNACLE_NOTICE_CONTENT_CHANGED: u32 = 4;
 pub const BINNACLE_NOTICE_REFILTERED: u32 = 5;
+pub const BINNACLE_NOTICE_COLLAPSED: u32 = 6;
+pub const BINNACLE_NOTICE_EXPANDED: u32 = 7;
+pub const BINNACLE_EXCEPT_CAP: usize = binnacle_core::EXCEPT_CAP;
+pub const BINNACLE_EXCEPT_CAPPED: i32 = 2;
 
 pub const BINNACLE_FOCUS_ITEM: u32 = 0;
 pub const BINNACLE_FOCUS_PAGE: u32 = 1;
@@ -433,6 +441,7 @@ pub struct BinnacleStripItem {
     pub size: f32,
     pub has_outline: u32,
     pub outline: BinnacleOutline,
+    pub toggle_pending: u32,
 }
 
 #[repr(C)]
@@ -536,6 +545,7 @@ pub struct BinnacleSnapshot {
     pub find_match: BinnacleFindMatch,
     pub find_support: u32,
     pub view_pending: u32,
+    pub outline_focused: u32,
     pub has_pending_move: u32,
     pub pending_move_axis: u32,
     pub pending_move_keys: *const u64,
@@ -816,6 +826,8 @@ pub struct BinnacleViewEdit {
     pub multi: u32,
     pub keys: *const u64,
     pub keys_len: usize,
+    pub expand_all: u32,
+    pub expand_depth: u32,
 }
 
 impl Default for BinnacleViewEdit {
@@ -827,6 +839,8 @@ impl Default for BinnacleViewEdit {
             multi: 0,
             keys: std::ptr::null(),
             keys_len: 0,
+            expand_all: 0,
+            expand_depth: 0,
         }
     }
 }
@@ -1008,6 +1022,7 @@ impl From<&StripItem> for BinnacleStripItem {
             size: item.size,
             has_outline: 0,
             outline: BinnacleOutline::default(),
+            toggle_pending: 0,
         }
     }
 }
@@ -2083,8 +2098,10 @@ impl BinnacleGrid {
                 let Some((o, keys, text)) = outline else {
                     return BinnacleStripItem::from(item);
                 };
+                let pending = item.key.is_some_and(|k| snap.toggle_pending(axis, k));
                 BinnacleStripItem {
                     has_outline: 1,
+                    toggle_pending: flag(pending),
                     outline: outline_to_c(
                         o,
                         ancestors.as_ptr().wrapping_add(keys),
@@ -2295,6 +2312,7 @@ impl BinnacleGrid {
             find_match: find_match.map(BinnacleFindMatch::from).unwrap_or_default(),
             find_support: find_bits(snap.find_support()),
             view_pending: flag(snap.view_pending()),
+            outline_focused: flag(snap.outline_focused()),
             has_pending_move: flag(pending_move.is_some()),
             pending_move_axis: pending_move.map_or(0, |(axis, _)| axis_tag(axis)),
             pending_move_keys: self.pending_move.as_ptr(),
@@ -2331,10 +2349,7 @@ impl BinnacleGrid {
             let except = &mut self.excepts[axis.index()];
             except.clear();
             except.extend(g.expand.except.iter().map(|k| k.0));
-            let (expand_all, expand_depth) = match g.expand.depth {
-                Depth::All => (1, 0),
-                Depth::Levels(n) => (0, n),
-            };
+            let (expand_all, expand_depth) = depth_to_c(g.expand.depth);
             c.axes[axis.index()] = BinnacleGroupedAxis {
                 levels: levels.as_ptr(),
                 levels_len: levels.len(),
@@ -2550,6 +2565,26 @@ impl BinnacleGrid {
                         ..on(BINNACLE_VIEW_EDIT_GROUP, axis)
                     },
                     ViewEdit::Ungroup { axis } => on(BINNACLE_VIEW_EDIT_UNGROUP, axis),
+                    ViewEdit::Expand { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(BINNACLE_VIEW_EDIT_EXPAND, axis)
+                    },
+                    ViewEdit::Collapse { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(BINNACLE_VIEW_EDIT_COLLAPSE, axis)
+                    },
+                    ViewEdit::ExpandAll { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(BINNACLE_VIEW_EDIT_EXPAND_ALL, axis)
+                    },
+                    ViewEdit::ExpandTo { axis, depth } => {
+                        let (expand_all, expand_depth) = depth_to_c(depth);
+                        BinnacleViewEdit {
+                            expand_all,
+                            expand_depth,
+                            ..on(BINNACLE_VIEW_EDIT_EXPAND_TO, axis)
+                        }
+                    }
                     _ => BinnacleViewEdit::default(),
                 };
             }
@@ -2711,6 +2746,100 @@ pub unsafe extern "C" fn binnacle_grid_group_by(
 pub unsafe extern "C" fn binnacle_grid_ungroup(grid: *mut BinnacleGrid, axis_tag: u32) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| axis(axis_tag).map(|axis| h.grid.ungroup(axis))) }
+}
+
+/// `depth` as `BinnacleGroupedAxis` and `BinnacleViewEdit` carry it: whether
+/// every level, then how many.
+fn depth_to_c(depth: Depth) -> (u32, u32) {
+    match depth {
+        Depth::All => (1, 0),
+        Depth::Levels(n) => (0, n),
+    }
+}
+
+/// Runs a toggle on the group headed by `key`: 1, or
+/// [`BINNACLE_EXCEPT_CAPPED`] if refused at the cap.
+///
+/// # Safety
+/// `grid` is NULL or a live handle.
+unsafe fn toggled(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+    f: fn(&mut Grid, Axis, Key) -> Result<(), ExceptCapped>,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let Some(h) = (unsafe { grid.as_mut() }) else {
+        return 0;
+    };
+    match axis(axis_tag).map(|a| f(&mut h.grid, a, Key(key))) {
+        None => 0,
+        Some(Ok(())) => 1,
+        Some(Err(_)) => BINNACLE_EXCEPT_CAPPED,
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_expand(grid: *mut BinnacleGrid, axis: u32, key: u64) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { toggled(grid, axis, key, Grid::expand) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_collapse(
+    grid: *mut BinnacleGrid,
+    axis: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { toggled(grid, axis, key, Grid::collapse) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_toggle(grid: *mut BinnacleGrid, axis: u32, key: u64) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { toggled(grid, axis, key, Grid::toggle) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_expand_all(
+    grid: *mut BinnacleGrid,
+    axis: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { toggled(grid, axis, key, Grid::expand_all) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_expand_to(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    all: u32,
+    depth: u32,
+) -> i32 {
+    let depth = match all {
+        0 => Some(Depth::Levels(depth)),
+        1 => Some(Depth::All),
+        _ => None,
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.expand_to(axis(axis_tag)?, depth?);
+            Some(())
+        })
+    }
 }
 
 /// # Safety
@@ -3027,6 +3156,8 @@ pub unsafe extern "C" fn binnacle_grid_notify(
         BINNACLE_NOTICE_REMOVED => ChangeNotice::Removed { at, n },
         BINNACLE_NOTICE_CONTENT_CHANGED => ChangeNotice::ContentChanged(at..at.saturating_add(n)),
         BINNACLE_NOTICE_REFILTERED => ChangeNotice::Refiltered(n),
+        BINNACLE_NOTICE_COLLAPSED => ChangeNotice::Collapsed { at, n },
+        BINNACLE_NOTICE_EXPANDED => ChangeNotice::Expanded { at, n },
         _ => return 0,
     };
     // SAFETY: the caller's contract.
@@ -3284,6 +3415,14 @@ pub unsafe extern "C" fn binnacle_grid_set_find_support(
     };
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| support.map(|s| h.grid.set_find_support(s))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_leave_outline(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { act(grid, Some(Action::LeaveOutline)) }
 }
 
 /// # Safety

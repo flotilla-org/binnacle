@@ -40,6 +40,10 @@ enum Op {
     /// the Table Source groups by it if the flag is set.
     GroupBy(Axis, Key, bool),
     Ungroup(Axis),
+    /// Expand (0), collapse (1), toggle (2) or expand everything under (3)
+    /// the group headed by a Key.
+    Toggle(u8, Axis, Key),
+    ExpandTo(Axis, Depth),
     Pointer(PointerEvent),
     /// A primary press, then a move away (no release) or the release.
     Gesture([PointerEvent; 2]),
@@ -197,7 +201,8 @@ fn pointer(tc: &TestCase) -> PointerEvent {
 
 #[hegel::composite]
 fn action(tc: &TestCase) -> Action {
-    match tc.draw(gs::integers::<u8>().max_value(11)) {
+    match tc.draw(gs::integers::<u8>().max_value(12)) {
+        12 => Action::LeaveOutline,
         10 => Action::Activate,
         11 => Action::BeginEdit,
         8 => Action::FindNext,
@@ -570,7 +575,9 @@ fn answer(tc: &TestCase) -> Op {
         }
         _ => {
             let (at, n) = (tc.draw(position()), tc.draw(position()));
-            let notice = match tc.draw(gs::integers::<u8>().max_value(5)) {
+            let notice = match tc.draw(gs::integers::<u8>().max_value(7)) {
+                6 => ChangeNotice::Collapsed { at, n },
+                7 => ChangeNotice::Expanded { at, n },
                 0 => ChangeNotice::Reset(n),
                 5 => ChangeNotice::Refiltered(n),
                 1 => ChangeNotice::Reordered,
@@ -587,7 +594,19 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(33)) {
+    match tc.draw(gs::integers::<u8>().max_value(35)) {
+        33 => Op::Toggle(
+            tc.draw(gs::integers::<u8>().max_value(3)),
+            Axis::Rows,
+            tc.draw(key(Axis::Rows)),
+        ),
+        34 => Op::ExpandTo(
+            tc.draw(axes()),
+            match tc.draw(gs::integers::<u32>().max_value(3)) {
+                3 => Depth::All,
+                n => Depth::Levels(n),
+            },
+        ),
         31 => {
             let axis = tc.draw(axes());
             let outlines = tc.draw(gs::vecs(outline(axis)).max_size(12));
@@ -728,7 +747,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(75))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(80))),
     }
 }
 
@@ -786,6 +805,7 @@ unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
             Action::FindPrevious => binnacle_grid_find_previous(h),
             Action::Activate => binnacle_grid_activate(h),
             Action::BeginEdit => binnacle_grid_begin_edit(h),
+            Action::LeaveOutline => binnacle_grid_leave_outline(h),
             #[allow(unreachable_patterns)] // `action` draws only the Actions above.
             _ => unreachable!(),
         }
@@ -835,7 +855,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             }
             10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
             11 => binnacle_grid_located(h, 2, 1000, 0, 0),
-            12 => binnacle_grid_notify(h, ROWS, 6, 0, 0),
+            12 => binnacle_grid_notify(h, ROWS, 8, 0, 0),
             13 => binnacle_grid_set_header(h, 2, 1.0),
             14 => binnacle_grid_set_support(h, 2, 5000, 0),
             15 => binnacle_grid_notify(h, 2, 1, 0, 0),
@@ -1011,6 +1031,12 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             58 => binnacle_grid_group_by(h, 2, 5000),
             59 => binnacle_grid_ungroup(h, 2),
             60 => binnacle_grid_set_outlines(h, 2, 0, std::ptr::null(), 0),
+            75 => binnacle_grid_expand(h, 2, 0),
+            76 => binnacle_grid_collapse(h, 2, 0),
+            77 => binnacle_grid_toggle(h, 2, 0),
+            78 => binnacle_grid_expand_all(h, 2, 0),
+            79 => binnacle_grid_expand_to(h, 2, 0, 1),
+            80 => binnacle_grid_expand_to(h, ROWS, 2, 1),
             61..=64 => {
                 let mut bad = BinnacleOutline::default();
                 match which {
@@ -1132,6 +1158,13 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             assert!(same_f32(got.offset, want.offset));
             assert!(same_f32(got.size, want.size));
             assert!(got.has_outline <= 1);
+            let pending = want.key.is_some_and(|k| rust.toggle_pending(axis, k));
+            assert_eq!(
+                got.toggle_pending != 0,
+                pending && rust.outline(axis, want.position).is_some(),
+                "{axis:?} toggle pending at {}",
+                want.position
+            );
             let outline = (got.has_outline != 0).then(|| unsafe { outline_from_c(&got.outline) });
             assert_eq!(
                 outline.as_ref(),
@@ -1284,6 +1317,11 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     });
     assert_eq!(c.find_support, support, "find support");
     assert_eq!(c.view_pending != 0, rust.view_pending(), "view pending");
+    assert_eq!(
+        c.outline_focused != 0,
+        rust.outline_focused(),
+        "outline focused"
+    );
     let pending = (c.has_pending_move != 0).then(|| {
         let keys = unsafe { slice::from_raw_parts(c.pending_move_keys, c.pending_move_keys_len) };
         (
@@ -1440,6 +1478,26 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                         ..on(11, axis)
                     },
                     ViewEdit::Ungroup { axis } => on(12, axis),
+                    ViewEdit::Expand { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(13, axis)
+                    },
+                    ViewEdit::Collapse { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(14, axis)
+                    },
+                    ViewEdit::ExpandAll { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(15, axis)
+                    },
+                    ViewEdit::ExpandTo { axis, depth } => BinnacleViewEdit {
+                        expand_all: u32::from(depth == Depth::All),
+                        expand_depth: match depth {
+                            Depth::All => 0,
+                            Depth::Levels(n) => n,
+                        },
+                        ..on(16, axis)
+                    },
                     #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
                     _ => BinnacleViewEdit::default(),
                 };
@@ -2192,6 +2250,31 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.ungroup(axis);
                     binnacle_grid_ungroup(h, tag(axis))
                 }
+                Op::Toggle(which, axis, key) => {
+                    let (rust, c): (fn(&mut Grid, Axis, Key) -> _, _) = match which {
+                        0 => (
+                            Grid::expand,
+                            binnacle_grid_expand as unsafe extern "C" fn(_, _, _) -> _,
+                        ),
+                        1 => (Grid::collapse, binnacle_grid_collapse),
+                        2 => (Grid::toggle, binnacle_grid_toggle),
+                        _ => (Grid::expand_all, binnacle_grid_expand_all),
+                    };
+                    let want = match rust(&mut grid, axis, key) {
+                        Ok(()) => 1,
+                        Err(_) => BINNACLE_EXCEPT_CAPPED,
+                    };
+                    assert_eq!(c(h, tag(axis), key.0), want);
+                    want
+                }
+                Op::ExpandTo(axis, depth) => {
+                    grid.expand_to(axis, depth);
+                    let (all, n) = match depth {
+                        Depth::All => (1, 0),
+                        Depth::Levels(n) => (0, n),
+                    };
+                    binnacle_grid_expand_to(h, tag(axis), all, n)
+                }
                 Op::Gesture(events) => {
                     for e in events {
                         grid.pointer(e);
@@ -2489,6 +2572,8 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                         ChangeNotice::Removed { at, n } => (3, *at, *n),
                         ChangeNotice::ContentChanged(r) => (4, r.start, r.end - r.start),
                         ChangeNotice::Refiltered(count) => (5, 0, *count),
+                        ChangeNotice::Collapsed { at, n } => (6, *at, *n),
+                        ChangeNotice::Expanded { at, n } => (7, *at, *n),
                     };
                     grid.notify(axis, notice);
                     binnacle_grid_notify(h, tag(axis), kind, at, n)

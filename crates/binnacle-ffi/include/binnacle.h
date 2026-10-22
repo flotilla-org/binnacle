@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 5u
+#define BINNACLE_ABI_VERSION 6u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -204,6 +204,16 @@ uint32_t binnacle_abi_version(void);
  * removed (with none left on either axis, the table is plain again). */
 #define BINNACLE_VIEW_EDIT_GROUP 11
 #define BINNACLE_VIEW_EDIT_UNGROUP 12
+/* The group of axis headed by the Group Item key was opened or closed: the
+ * Key joins or leaves the axis's expand except list. */
+#define BINNACLE_VIEW_EDIT_EXPAND 13
+#define BINNACLE_VIEW_EDIT_COLLAPSE 14
+/* The group headed by key and every group under it the Grid knows of were
+ * opened. */
+#define BINNACLE_VIEW_EDIT_EXPAND_ALL 15
+/* axis was opened to expand_depth levels (every level when expand_all is
+ * 1) and its exceptions cleared. */
+#define BINNACLE_VIEW_EDIT_EXPAND_TO 16
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
@@ -330,6 +340,14 @@ uint32_t binnacle_abi_version(void);
 /* The same items, some left out or brought back and possibly reordered (a
  * filter changed); n is the new count. */
 #define BINNACLE_NOTICE_REFILTERED 5
+/* The group headed by the Group Item at at - 1 closed, hiding the n items
+ * from Position at: they stay alive (Size Overrides kept, pins dormant), and
+ * focus, a range corner or the Scroll Anchor on one moves to the Group
+ * Item. */
+#define BINNACLE_NOTICE_COLLAPSED 6
+/* The group headed by the Group Item at at - 1 opened, showing n items
+ * before the item at Position at. */
+#define BINNACLE_NOTICE_EXPANDED 7
 
 /* How far binnacle_grid_move_focus goes. */
 #define BINNACLE_FOCUS_ITEM 0
@@ -451,6 +469,9 @@ typedef struct {
   float size;
   uint32_t has_outline;
   BinnacleOutline outline;
+  /* 1 while a toggle of this Group Item waits for the Table Source: draw
+   * its disclosure mark pending once it has waited about 150 ms. */
+  uint32_t toggle_pending;
 } BinnacleStripItem;
 
 /* The header of one visible item, in its band; unclipped like the strip. */
@@ -649,6 +670,9 @@ typedef struct {
   /* Nonzero while a binnacle_grid_view_applied is due: requested parts are
    * pending; once zero, requested parts not applied are not applied. */
   uint32_t view_pending;
+  /* 1 while focus is in the outline column: on the focused row's band
+   * cell (focus_rect), where the tree keys act, not on a body cell. */
+  uint32_t outline_focused;
   /* The move requested and not yet answered: its axis and the Keys it
    * moves. */
   uint32_t has_pending_move;
@@ -798,7 +822,9 @@ typedef struct {
 } BinnacleViewSpec;
 
 /* The cause of a requested View Spec, a hint: the spec alone is the request.
- * keys is set for HIDE and SHOW, key for GROUP (the field). */
+ * keys is set for HIDE and SHOW, key for GROUP (the field) and for EXPAND,
+ * COLLAPSE and EXPAND_ALL (the Group Item), expand_all and expand_depth for
+ * EXPAND_TO. */
 typedef struct {
   uint32_t kind;
   uint32_t axis;
@@ -806,6 +832,8 @@ typedef struct {
   uint32_t multi;
   const uint64_t *keys;
   size_t keys_len;
+  uint32_t expand_all;
+  uint32_t expand_depth;
 } BinnacleViewEdit;
 
 /* Each axis's unfiltered count, where the Table Source knows it. */
@@ -1118,6 +1146,32 @@ int binnacle_grid_group_by(BinnacleGrid *grid, uint32_t axis, uint64_t field);
  * BINNACLE_VIEW_EDIT_UNGROUP. Nothing if axis is not grouped. */
 int binnacle_grid_ungroup(BinnacleGrid *grid, uint32_t axis);
 
+/* The most Keys an axis's expand except list takes. */
+#define BINNACLE_EXCEPT_CAP 1000
+
+/* What a toggle returns when the axis's exceptions would then number more
+ * than BINNACLE_EXCEPT_CAP: nothing is requested, and the host suggests
+ * setting a depth instead. */
+#define BINNACLE_EXCEPT_CAPPED 2
+
+/* Opens or closes the group of axis headed by the Group Item key, and
+ * requests the result with BINNACLE_VIEW_EDIT_EXPAND or COLLAPSE. Toggle
+ * does whichever the latest request does not, so a second toggle before the
+ * answer takes back the first. Nothing unless the Window holds the Group
+ * Item and it can open. BINNACLE_EXCEPT_CAPPED past the cap. */
+int binnacle_grid_expand(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_collapse(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_toggle(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Opens the group headed by key and every group under it whose Group Item
+ * the Window holds, and those later Windows bring, until another toggle
+ * (BINNACLE_VIEW_EDIT_EXPAND_ALL). */
+int binnacle_grid_expand_all(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Opens axis to depth levels (every level when all is 1) and clears its
+ * exceptions (BINNACLE_VIEW_EDIT_EXPAND_TO). */
+int binnacle_grid_expand_to(BinnacleGrid *grid, uint32_t axis, uint32_t all, uint32_t depth);
+
 /* Requests the whole of spec (NULL for the base view), say to restore a saved
  * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */
 int binnacle_grid_request_view(BinnacleGrid *grid, const BinnacleViewSpec *spec);
@@ -1178,6 +1232,14 @@ int binnacle_grid_select_row(BinnacleGrid *grid);
 
 /* Ends the gesture in progress, restoring focus and selection from before it. */
 int binnacle_grid_cancel(BinnacleGrid *grid);
+
+/* The Leave Outline Action (Tab): focus leaves the outline column for the
+ * body. In the outline column, binnacle_grid_move_focus one item along the
+ * columns walks the tree (forward opens or steps in, back closes or steps
+ * out), binnacle_grid_activate toggles the focused group, and typed "*" or
+ * a digit opens everything under it or the rows to that many levels. One
+ * item back from the first column enters it. */
+int binnacle_grid_leave_outline(BinnacleGrid *grid);
 
 /* Scrolling. */
 
