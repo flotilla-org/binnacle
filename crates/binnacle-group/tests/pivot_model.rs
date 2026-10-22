@@ -493,8 +493,16 @@ fn applied(mut g: Grouping) -> Grouping {
     g
 }
 
-#[hegel::test(test_cases = 300)]
-fn a_pivot_shows_what_a_whole_table_pivot_shows(tc: TestCase) {
+/// A pivot of drawn rows, settled: the rows, the grouping as applied, the
+/// layer, and the Change Notices its last View Spec came with.
+struct Settled {
+    rows: Vec<Row>,
+    grouping: Grouping,
+    layer: GroupingLayer<u64>,
+    notices: Vec<(Axis, ChangeNotice)>,
+}
+
+fn settle(tc: &TestCase) -> Settled {
     let rows = tc.draw(rows());
     let grouping = tc.draw(pivot());
     let mut fake = Fake {
@@ -503,48 +511,73 @@ fn a_pivot_shows_what_a_whole_table_pivot_shows(tc: TestCase) {
     };
     let mut layer = GroupingLayer::<u64>::new();
     layer.request_view(ViewSpec::default().with_grouping(Some(grouping.clone())));
-    drive(&tc, &mut layer, &mut fake);
+    drive(tc, &mut layer, &mut fake);
     let grouping = applied(grouping);
-
-    let mut viewed = Vec::new();
+    let mut last = None;
     while let Some(v) = layer.poll_viewed() {
-        viewed.push(v);
+        last = Some(v);
     }
-    let last = viewed.last().expect("the layer settles");
+    let last = last.expect("the layer settles");
     assert_eq!(last.applied.grouping.as_ref(), Some(&grouping));
-    let want = Axis::ALL.map(|axis| model(&rows, &grouping, axis));
-    assert_eq!(
-        last.notices,
-        vec![
-            (Axis::Rows, ChangeNotice::Refiltered(want[0].len() as u64)),
-            (Axis::Cols, ChangeNotice::Refiltered(want[1].len() as u64)),
-        ],
-        "both axes come from the data, each refiltered"
-    );
-    let mut items: [Vec<(Key, Item)>; 2] = [Vec::new(), Vec::new()];
-    for axis in Axis::ALL {
-        let n = want[axis.index()].len() as u64;
-        assert_eq!(layer.count(axis), Some(n));
-        let got = layer.window(axis, 0..n);
+    Settled {
+        rows,
+        grouping,
+        layer,
+        notices: last.notices,
+    }
+}
+
+/// Each axis's items as the model describes them, with their Keys.
+fn items(s: &mut Settled) -> [Vec<(Key, Described)>; 2] {
+    Axis::ALL.map(|axis| {
+        let n = s.layer.count(axis).unwrap();
+        let got = s.layer.window(axis, 0..n);
         assert_eq!(
             got.len() as u64,
             n,
             "a pivot's groups are all known once settled"
         );
-        let described: Vec<Described> = (got.iter())
-            .map(|(k, o)| describe(&layer, &grouping, *k, o))
-            .collect();
-        assert_eq!(described, want[axis.index()], "{axis:?}");
-        items[axis.index()] = (got.iter().zip(&described))
-            .map(|((k, _), d)| (*k, d.item.clone()))
-            .collect();
+        (got.iter())
+            .map(|(k, o)| (*k, describe(&s.layer, &s.grouping, *k, o)))
+            .collect()
+    })
+}
+
+#[hegel::test(test_cases = 300)]
+fn a_pivot_shows_the_items_a_whole_table_pivot_shows(tc: TestCase) {
+    let mut s = settle(&tc);
+    for (axis, got) in Axis::ALL.into_iter().zip(items(&mut s)) {
+        let got: Vec<Described> = got.into_iter().map(|(_, d)| d).collect();
+        assert_eq!(got, model(&s.rows, &s.grouping, axis), "{axis:?}");
     }
-    for (rk, ri) in &items[0] {
-        for (ck, ci) in &items[1] {
+}
+
+#[hegel::test(test_cases = 100)]
+fn a_pivot_refilters_both_axes(tc: TestCase) {
+    let s = settle(&tc);
+    let want = Axis::ALL.map(|axis| model(&s.rows, &s.grouping, axis).len() as u64);
+    assert_eq!(
+        s.notices,
+        vec![
+            (Axis::Rows, ChangeNotice::Refiltered(want[0])),
+            (Axis::Cols, ChangeNotice::Refiltered(want[1])),
+        ],
+        "both axes come from the data, each refiltered"
+    );
+}
+
+#[hegel::test(test_cases = 300)]
+fn each_cell_of_a_pivot_is_the_figure_where_its_row_and_column_cross(tc: TestCase) {
+    let mut s = settle(&tc);
+    let [rows, cols] = items(&mut s);
+    for (rk, r) in &rows {
+        for (ck, c) in &cols {
             assert_eq!(
-                layer.cell(*rk, *ck).copied(),
-                cell(&rows, &grouping, ri, ci),
-                "the cell of {ri:?} and {ci:?}"
+                s.layer.cell(*rk, *ck).copied(),
+                cell(&s.rows, &s.grouping, &r.item, &c.item),
+                "the cell of {:?} and {:?}",
+                r.item,
+                c.item
             );
         }
     }

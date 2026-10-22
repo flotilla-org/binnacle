@@ -40,8 +40,8 @@ const ships = gs.arrays(
   gs.record({
     region: gs.sampledFrom(REGIONS),
     quarter: gs.sampledFrom(QUARTERS),
-    // Whole numbers, so a sum is the same in any order.
-    weight: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 20 })),
+    // Whole numbers well inside 2^53, so a sum is exact in any order.
+    weight: gs.oneOf(gs.just(null), gs.integers({ minValue: -1_000_000_000, maxValue: 1_000_000_000 })),
   }),
   { maxSize: 25 },
 );

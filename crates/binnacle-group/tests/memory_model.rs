@@ -955,11 +955,15 @@ fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
     let rows = tc.draw(gs::vecs(record()).max_size(60));
     let cols = tc.draw(gs::permutations(vec![0usize, 1, 2]));
     let (r, c, summed) = (cols[0], cols[1], cols[2]);
-    // Columns unsorted, or by the Grand Total row's count either way.
-    let by_total = tc.draw(gs::optional(gs::sampled_from(vec![
-        SortDirection::Ascending,
-        SortDirection::Descending,
-    ])));
+    // Columns unsorted, or by the Grand Total row's count or by their own
+    // value, either way.
+    let direction = gs::sampled_from(vec![SortDirection::Ascending, SortDirection::Descending]);
+    let col_sort = tc.draw(gs::optional(hegel::tuples!(
+        gs::sampled_from(vec![binnacle_core::GRAND_TOTAL, Key(c as u64)]),
+        direction
+    )));
+    let placement = || gs::sampled_from(vec![Placement::Before, Placement::After, Placement::Off]);
+    let (row_total, col_total) = (tc.draw(placement()), tc.draw(placement()));
     let mut source = source(rows.len());
     source.view(&rows, &ViewSpec::default());
     let mut grouping = Grouping::rows_by(Key(r as u64));
@@ -968,13 +972,11 @@ fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
         AggregateValue::count(),
         AggregateValue::of(Key(summed as u64), "sum"),
     ];
-    grouping.cols.grand_total = Placement::After;
+    grouping.rows.grand_total = row_total;
+    grouping.cols.grand_total = col_total;
     let mut spec = ViewSpec::default().with_grouping(Some(grouping));
-    if let Some(d) = by_total {
-        spec.cols.sort = SortSpec::new(vec![SortColumn {
-            key: binnacle_core::GRAND_TOTAL,
-            direction: d,
-        }]);
+    if let Some((key, direction)) = col_sort {
+        spec.cols.sort = SortSpec::new(vec![SortColumn { key, direction }]);
     }
     let viewed = source.view(&rows, &spec);
     assert!(source.pivot());
@@ -988,14 +990,30 @@ fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
     };
     let count_of = |cv: &Option<i64>| rows.iter().filter(|x| x[c] == *cv).count();
     let mut col_values = distinct(c);
-    if let Some(d) = by_total {
-        col_values.sort_by(|a, b| order(Some(count_of(a)), Some(count_of(b)), d));
+    match col_sort {
+        Some((binnacle_core::GRAND_TOTAL, d)) => {
+            col_values.sort_by(|a, b| order(Some(count_of(a)), Some(count_of(b)), d));
+        }
+        Some((_, d)) => col_values.sort_by(|a, b| order(*a, *b, d)),
+        None => {}
     }
-    let row_values = distinct(r);
+    /// Where a Grand Total placed `at` goes among `items`.
+    fn placed<T>(items: Vec<T>, totals: Vec<T>, at: Placement) -> Vec<T> {
+        match at {
+            Placement::Before => totals.into_iter().chain(items).collect(),
+            Placement::After => items.into_iter().chain(totals).collect(),
+            Placement::Off => items,
+        }
+    }
+    // Each row's group value, `None` for the Grand Total.
+    let row_values = placed(
+        distinct(r).into_iter().map(Some).collect(),
+        vec![None],
+        row_total,
+    );
     let ids = ["count()".to_string(), format!("sum({summed})")];
 
     let ncols = source.count(Axis::Cols);
-    assert_eq!(ncols as usize, col_values.len() * 2 + 2);
     assert!(
         viewed
             .notices
@@ -1018,23 +1036,41 @@ fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
             (up, id.clone())
         })
         .collect();
-    let want: Vec<(Option<Value>, String)> = (col_values.iter())
-        .flat_map(|v| ids.iter().map(move |id| (Some(text(*v)), id.clone())))
-        .chain(ids.iter().map(|id| (None, id.clone())))
-        .collect();
-    assert_eq!(got, want);
+    let want: Vec<(Option<Value>, String)> = placed(
+        (col_values.iter())
+            .flat_map(|v| ids.iter().map(move |id| (Some(text(*v)), id.clone())))
+            .collect(),
+        ids.iter().map(|id| (None, id.clone())).collect(),
+        col_total,
+    );
+    assert_eq!(got, want, "columns sorted {col_sort:?}");
 
     let nrows = source.count(Axis::Rows);
     assert_eq!(
         nrows as usize,
         row_values.len(),
-        "one row per group, no Leaves"
+        "one row per group and the Grand Total where placed, no Leaves"
     );
-    let row_keys = source.window(&rows, Axis::Rows, 0..nrows).keys;
-    for (rk, rv) in row_keys.iter().zip(&row_values) {
+    let row_window = source.window(&rows, Axis::Rows, 0..nrows);
+    let row_kinds: Vec<ItemKind> = row_window
+        .outlines
+        .unwrap()
+        .iter()
+        .map(|o| o.kind)
+        .collect();
+    let want_kinds: Vec<ItemKind> = (row_values.iter())
+        .map(|v| match v {
+            Some(_) => ItemKind::Group,
+            None => ItemKind::GrandTotal,
+        })
+        .collect();
+    assert_eq!(row_kinds, want_kinds);
+    for (rk, rv) in row_window.keys.iter().zip(&row_values) {
         for ((ck, (cv, id)), _) in window.keys.iter().zip(&want).zip(&outlines) {
             let under: Vec<&Record> = (rows.iter())
-                .filter(|x| x[r] == *rv && cv.as_ref().is_none_or(|cv| text(x[c]) == *cv))
+                .filter(|x| {
+                    rv.is_none_or(|rv| x[r] == rv) && cv.as_ref().is_none_or(|cv| text(x[c]) == *cv)
+                })
                 .collect();
             let figure = match id.as_str() {
                 "count()" => Figure::Count(under.len() as u64),
@@ -1046,7 +1082,8 @@ fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
                     }
                 }
             };
-            let want = (!under.is_empty()).then_some(figure);
+            // Groups that share no rows have no figure; a Grand Total always does.
+            let want = (!under.is_empty() || rv.is_none() || cv.is_none()).then_some(figure);
             assert_eq!(
                 source.cell(*rk, *ck),
                 want,

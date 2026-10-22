@@ -389,8 +389,9 @@ fn by_value(
 
 /// Works out the column totals of `bucket` (at `depth` of the column
 /// levels) and all under it, and orders its groups by the column Sort Spec:
-/// a sort column on the level's field by value, one on the Grand Total row
-/// by the first value's figure; unsorted, or on a tie, by ascending value.
+/// a sort column on the level's field by value (blanks last either way),
+/// one on the Grand Total row by the first value's figure; unsorted, or on
+/// a tie, by ascending value.
 fn finish_columns(
     bucket: &mut Bucket,
     depth: usize,
@@ -409,8 +410,13 @@ fn finish_columns(
         return;
     };
     bucket.kids.sort_by(|a, b| {
+        let blank = |k: &Bucket| k.value == Some(Value::Blank);
         let sorted = (scope.col_sort.columns().iter()).filter_map(|c| {
             let order = match c.key {
+                // Blanks last either way.
+                k if k == field && (blank(a) || blank(b)) => {
+                    return Some(by_value(field, a, b, number));
+                }
                 k if k == field => by_value(field, a, b, number),
                 GRAND_TOTAL if !scope.values.is_empty() => {
                     return Some(by_figure(a.figures[0], b.figures[0], c.direction));
