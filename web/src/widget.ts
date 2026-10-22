@@ -11,6 +11,7 @@ import { PAD } from "./canvas/context";
 import { gatherCopy, writeClipboard, type Copied } from "./copy";
 import type { Effect, Run } from "./effects";
 import { disclosureRect, filterButtonRect, hasFilterButton, rowFilterRoom } from "./canvas/bands";
+import { cornerLevelAt, layOutCorner, type CornerText } from "./canvas/corner";
 import { spanMarkRect } from "./canvas/spans";
 import { createFeed, windowIds, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
@@ -486,6 +487,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       snapshot: () => this.last,
       menuButtonAt: (x, y) => this.menuButtonAt(x, y) !== undefined,
       markPress: (x, y) => this.markPress(x, y),
+      cornerPress: (x, y, button, shift) => this.cornerPress(x, y, button, shift),
       menuPress: (x, y) => {
         const at = this.menuButtonAt(x, y);
         if (!at) return false;
@@ -1329,6 +1331,30 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /** A press on a Group Item's or a span's disclosure mark toggles its group. */
+  /** The corner's level name at (x, y) in the last frame, if any. */
+  private cornerLevelAt(x: number, y: number): CornerText | undefined {
+    const s = this.last;
+    if (!s || x >= s.cols.header || y >= s.rows.header) return undefined;
+    return cornerLevelAt(layOutCorner(s, this.feed.content(s), this.painter.measure, this.painter.theme), x, y);
+  }
+
+  private cornerPress(x: number, y: number, button: number, shift: boolean): boolean {
+    const hit = this.cornerLevelAt(x, y);
+    const field = hit?.level?.field;
+    if (!hit || field == null) return false;
+    if (button === 0) {
+      this.grid.cycle_sort(AXIS_CODE[hit.axis], field, shift);
+      return true;
+    }
+    const anchor = this.clientRect(hit.rect);
+    if (hit.axis === "rows") {
+      const id = this.feed.colId(field);
+      return id !== undefined && this.openColumnMenu(id, anchor);
+    }
+    const id = this.feed.rowId(field);
+    return id !== undefined && this.openRowMenu(id, anchor);
+  }
+
   private markPress(x: number, y: number): boolean {
     const s = this.last;
     if (!s || x >= s.cols.header || y < s.rows.header) return false;

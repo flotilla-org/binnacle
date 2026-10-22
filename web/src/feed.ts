@@ -253,6 +253,9 @@ const GONE: Located = { type: "Gone", suggest: null };
 /** What a refused move says when the Table Source gives no reason, as the Rust `PumpSource` default does. */
 const CANNOT_MOVE = "These can't be moved";
 
+/** The values pseudo-level's name in the corner. */
+const VALUES_NAME = "Σ values";
+
 /** The most items an axis hides unless its Table Source declares fewer, as the Rust Grid's `HIDE_CAP`. */
 export const HIDE_CAP = 1000;
 
@@ -1171,15 +1174,19 @@ export function createFeed<RowId, ColId, V>(
     caption: () => {
       const grouping = shown?.appliedView.grouping;
       const [value, ...more] = grouping?.values ?? [];
-      if (!grouping?.rowLevels.length || !value || more.length > 0) return null;
-      const { source: cols, interner } = axes.cols;
-      const name = (key: bigint) => {
-        const id = interner.id(key);
-        return id === undefined ? String(key) : (cols.label?.(id, Number.NaN) ?? String(id));
-      };
-      return valueName(value, name);
+      const grouped = !!grouping && (grouping.rowLevels.length > 0 || grouping.colLevels.length > 0);
+      if (!grouped || !value || more.length > 0) return null;
+      return valueName(value, (key) => fieldName("rows", key));
     },
+    levelName: (axis, field) => (field === null ? VALUES_NAME : fieldName(axis, field)),
   };
+
+  /** The name of `key`, a field grouping `axis`: an item of the other axis, by its header label. */
+  function fieldName(axis: AxisName, key: bigint): string {
+    const { source, interner } = axes[other(axis)];
+    const id = interner.id(key);
+    return id === undefined ? String(key) : (source.label?.(id, Number.NaN) ?? String(id));
+  }
 
   return {
     counts: () => ({ rows: askCount("rows") ?? 0, cols: askCount("cols") ?? 0 }),

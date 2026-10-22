@@ -19,6 +19,8 @@ export interface Content {
   marked(row: number, col: number): boolean;
   /** Whether the visible item at index `i` of `axis`'s Strip is unmatched (kept after an edit though the filter drops it), as the Table Source last said. */
   unmatched(axis: AxisName, i: number): boolean;
-  /** The name of the one value grouped rows show, for the corner; `null` unless there is exactly one. */
+  /** The name of the one value a grouped table shows, the corner's caption; `null` unless there is exactly one. */
   caption(): string | null;
+  /** The name of a level of `axis` in the corner: its field's header (a column's for a row level), or the values pseudo-level's for `null`. */
+  levelName(axis: AxisName, field: bigint | null): string;
 }

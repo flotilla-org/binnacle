@@ -329,18 +329,3 @@ function paintSummary(p: PaintContext, h: HeaderPlacement, text: string, color: 
   ctx.restore();
 }
 
-/** The corner: blank, or the name of the one value grouped rows show. */
-export function paintCorner(p: PaintContext): void {
-  const { ctx, theme, measure, left, top } = p;
-  ctx.fillStyle = theme.header.background;
-  ctx.fillRect(0, 0, left, top);
-  const caption = p.content.caption();
-  if (caption === null || left <= 2 * PAD) return;
-  ctx.save();
-  clip(ctx, 0, 0, left, top);
-  ctx.font = theme.headerFont;
-  ctx.textAlign = "left";
-  ctx.fillStyle = theme.header.color;
-  ctx.fillText(measure.fit(caption, theme.headerFont, left - 2 * PAD), PAD, top / 2);
-  ctx.restore();
-}

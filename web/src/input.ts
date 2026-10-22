@@ -39,6 +39,11 @@ export interface InputHost {
   menuButtonAt(x: number, y: number): boolean;
   /** A press at (x, y), before the Grid sees it: `true` if a menu button took it. */
   menuPress(x: number, y: number): boolean;
+  /**
+   * A press at (x, y) with `button`, before the Grid sees it: `true` if a level name in the corner took it, a primary
+   * press sorting by its level (with `shift`, keeping the rest of the sort), a secondary one opening its menu.
+   */
+  cornerPress(x: number, y: number, button: number, shift: boolean): boolean;
   /** A press at (x, y), before the Grid sees it: `true` if a Group Item's disclosure mark took it, toggling its group. */
   markPress(x: number, y: number): boolean;
   /** Opens the focused column's menu: `false` if there is none to open. */
@@ -304,6 +309,12 @@ export function createInput(host: InputHost): Input {
       e.preventDefault();
       return;
     }
+    if ((e.button === 0 || e.button === 2) && host.cornerPress(x, y, e.button, e.shiftKey)) {
+      e.preventDefault();
+      takeFocus();
+      host.changed();
+      return;
+    }
     if (e.button === 0 && host.markPress(x, y)) {
       e.preventDefault();
       takeFocus();
@@ -323,6 +334,12 @@ export function createInput(host: InputHost): Input {
     }
     takeFocus();
     host.changed();
+  });
+  // A secondary press on a corner level name opens its menu, not the browser's.
+  on(layer, "contextmenu", (e) => {
+    const s = host.snapshot();
+    const { x, y } = at(e);
+    if (s && x < s.cols.header && y < s.rows.header) e.preventDefault();
   });
   on(layer, "pointermove", (e) => {
     if (editing.owns(e.target)) return;
