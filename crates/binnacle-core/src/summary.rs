@@ -93,7 +93,7 @@ impl Grid {
     /// A click selecting the header of the item at `position` on `axis`:
     /// on a Group Item it selects the whole group, from its Group Item
     /// through its last descendant, and with Shift stretches the range to
-    /// take in the whole group clicked. `cell` is the focus moved to the
+    /// take in the whole group clicked too. `cell` is the focus moved to the
     /// clicked item. Returns whether it was a Group Item.
     pub(crate) fn group_click(
         &mut self,
@@ -110,20 +110,19 @@ impl Grid {
         whole[axis.other().index()] = true;
         let (mut anchor, mut head) = (cell, cell);
         head[i] = FocusEnd::at(self.axis(axis), end);
-        // Shift grows the range away from its far corner, so the groups it
-        // held stay whole.
+        // Shift grows the range to take in the clicked group too, so the
+        // groups it held stay whole; its head lies on the clicked side.
         if let Some(span) = self.selection.span.filter(|_| modifiers.shift) {
-            let (a, h) = (span.anchor[i], span.head[i]);
-            let (low, high) = match a.position <= h.position {
-                true => (a, h),
-                false => (h, a),
+            let (a, h) = (span.anchor[i].position, span.head[i].position);
+            let low = a.min(h).min(position);
+            let high = a.max(h).max(end);
+            let st = self.axis(axis);
+            let (from, to) = match position >= a.min(h) {
+                true => (low, high),
+                false => (high, low),
             };
-            if position >= low.position {
-                anchor[i] = low;
-            } else {
-                anchor[i] = high;
-                head[i] = cell[i];
-            }
+            anchor[i] = FocusEnd::at(st, from);
+            head[i] = FocusEnd::at(st, to);
         }
         self.set_focus_cell(cell);
         self.set_selection(Selection {

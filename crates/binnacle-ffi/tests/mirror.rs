@@ -3332,7 +3332,7 @@ fn summary_items_through_the_c_api_mirror_the_grid(tc: TestCase) {
                     binnacle_grid_pointer(h, pointer_event(e));
                 }
             };
-            match tc.draw(gs::integers::<u8>().max_value(3)) {
+            match tc.draw(gs::integers::<u8>().max_value(4)) {
                 // A click on a cell, a double-click activating it.
                 0 => {
                     let clicks = tc.draw(gs::integers::<u32>().min_value(1).max_value(2));
@@ -3344,7 +3344,12 @@ fn summary_items_through_the_c_api_mirror_the_grid(tc: TestCase) {
                     let down = PointerEvent::down(1.0, y).modifiers(tc.draw(modifiers()));
                     press(down, PointerEvent::up(1.0, y));
                 }
+                // A click on a column header, which may select a group.
                 2 => {
+                    let down = PointerEvent::down(x, 1.0).modifiers(tc.draw(modifiers()));
+                    press(down, PointerEvent::up(x, 1.0));
+                }
+                3 => {
                     grid.action(Action::Activate);
                     binnacle_grid_activate(h);
                 }

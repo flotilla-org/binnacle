@@ -7,7 +7,7 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Condition, DrillDown, Edge, Effect, Expand, FocusStep, Grid,
-    Grouping, ItemKind, Key, Level, Modifiers, Snapshot, ViewSpec, Viewport,
+    Grouping, ItemKind, Key, Level, Modifiers, Snapshot, Value, ViewSpec, Viewport,
 };
 use binnacle_testkit::{Group, Scenario, TreeTable};
 use hegel::TestCase;
@@ -51,7 +51,8 @@ const ALL: Viewport = Viewport {
     height: 70.0,
 };
 
-/// The tree grouped, opened to a drawn depth with a few groups toggled.
+/// The tree grouped, opened to a drawn depth with a few groups toggled,
+/// under a few slicers.
 fn scenario(tc: &TestCase) -> Scenario<TreeTable> {
     let (tree, groups) = tree(tc);
     let grid = Grid::new(
@@ -67,6 +68,13 @@ fn scenario(tc: &TestCase) -> Scenario<TreeTable> {
         depth: binnacle_core::Depth::Levels(depth),
         except,
     };
+    let slicer = gs::tuples2(
+        gs::integers::<u64>().max_value(2),
+        gs::sampled_from(REGIONS.to_vec()),
+    );
+    grouping.slicers = (tc.draw(gs::vecs(slicer).max_size(2)).into_iter())
+        .map(|(col, v)| Condition::one_of(Key(col), vec![Value::Text(v.into())]))
+        .collect();
     s.frame(ALL);
     s.input(|g| g.request_view(ViewSpec::default().with_grouping(Some(grouping))));
     s.frame(ALL);
@@ -164,6 +172,36 @@ fn a_group_items_header_selects_exactly_its_group(tc: TestCase) {
     assert_eq!(range.cols, vec![0..3]);
 }
 
+/// A click on one Group Item's header and a Shift-click on another's
+/// select both groups whole and every row drawn between them.
+#[hegel::test(test_cases = 200)]
+fn shift_clicking_group_items_selects_whole_groups(tc: TestCase) {
+    let mut s = scenario(&tc);
+    let shown = s.source.shown().to_vec();
+    let groups: Vec<usize> = (0..shown.len())
+        .filter(|&i| shown[i].1.kind == ItemKind::Group)
+        .collect();
+    let first = tc.draw(gs::sampled_from(groups.clone()));
+    let second = tc.draw(gs::sampled_from(groups));
+    // The last Position of the group whose Group Item is at `i`.
+    let end = |i: usize| {
+        let key = shown[i].0;
+        (i..shown.len())
+            .take_while(|&p| p == i || shown[p].1.ancestors.contains(&key))
+            .last()
+            .unwrap() as u64
+    };
+    s.click(1.0, 1.5 + first as f32, Modifiers::NONE);
+    s.click(1.0, 1.5 + second as f32, Modifiers::SHIFT);
+    let snap = s.frame(ALL);
+    let range = snap.selection_range().expect("a range").clone();
+    let got: Vec<u64> = range.rows.iter().flat_map(|r| r.clone()).collect();
+    let low = first.min(second) as u64;
+    let high = end(first).max(end(second));
+    assert_eq!(got, (low..=high).collect::<Vec<_>>());
+    assert_eq!(range.cols, vec![0..3]);
+}
+
 /// Copying everything lists every drawn row once, in drawn order, pins
 /// where they are drawn, and every column.
 #[hegel::test(test_cases = 200)]
@@ -190,11 +228,19 @@ fn copy_lists_the_drawn_rows_in_drawn_order(tc: TestCase) {
     assert_eq!(cols, &vec![0..3]);
 }
 
-/// Activating any Summary Item's cell names its groups from the outermost,
-/// each by its own value; a Leaf's names nothing.
+/// Activating any Summary Item's cell names the slicers, then its groups
+/// from the outermost, each by its own value; a Leaf's names nothing.
 #[hegel::test(test_cases = 200)]
 fn activation_names_the_path_of_a_summary_item(tc: TestCase) {
     let mut s = scenario(&tc);
+    let slicers = s
+        .frame(ALL)
+        .applied_view()
+        .grouping
+        .as_ref()
+        .unwrap()
+        .slicers
+        .clone();
     let shown = s.source.shown().to_vec();
     let (key, outline) = tc.draw(gs::sampled_from(shown.clone()));
     s.input(|g| g.set_focus(key, Key(2)));
@@ -212,7 +258,7 @@ fn activation_names_the_path_of_a_summary_item(tc: TestCase) {
             let group = o.group.as_ref().expect("a Group Item's group");
             Condition::one_of(group.field, vec![group.value.clone()])
         });
-        DrillDown::new(named.collect())
+        DrillDown::new(slicers.iter().cloned().chain(named).collect())
     });
     assert_eq!(drill_down, Some(want));
 }
