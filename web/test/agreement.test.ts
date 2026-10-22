@@ -44,6 +44,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "grouped",
     "sliced",
     "dropRefused",
+    "headerForm",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -180,6 +181,7 @@ describe("View Specs", () => {
         "AddSlicer",
         "RemoveSlicer",
         "ReplaceSlicer",
+        "SetForm",
       ]),
     );
     const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };

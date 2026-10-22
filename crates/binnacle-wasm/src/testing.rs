@@ -5,10 +5,10 @@
 use binnacle_core::{
     Action, Aggregate, AggregateValue, Axis, AxisConfig, ChangeNotice, Compared, Comparison,
     Condition, ConditionState, Cursor, Depth, DrillDown, DropTarget, Edge, Effect, FilterSpec,
-    FindDirection, FindMatch, FindQuery, FocusStep, Grid, GroupOf, Grouping, HeaderPlacement, Key,
-    Level, Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements, PointerEvent,
-    Rect, Scalar, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery,
-    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping, HeaderPlacement,
+    Key, Level, Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements,
+    PointerEvent, Rect, Scalar, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support,
+    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -43,6 +43,7 @@ pub struct Dump {
     requested_view: Option<WireViewSpec>,
     view_pending: bool,
     outline_focused: bool,
+    focused_tier: u32,
     pending_move: Option<DumpPendingMove>,
     move_refusal: Option<DumpRefusal>,
     find: Option<WireFindQuery>,
@@ -128,6 +129,24 @@ struct DumpAxis {
     hide_support: bool,
     hide_cap: f64,
     pins: DumpPins,
+    tiers: Vec<DumpSpan>,
+    spans: Vec<DumpHeaderSpan>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DumpHeaderSpan {
+    axis: WireAxis,
+    tier: u32,
+    key: u64,
+    field: Option<u64>,
+    open: &'static str,
+    first: f64,
+    last: f64,
+    rect: DumpRect,
+    visible: DumpRect,
+    cut_before: bool,
+    cut_after: bool,
 }
 
 #[derive(Serialize)]
@@ -546,6 +565,30 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             leading: s.pins(axis, Edge::Leading).map(|k| k.0).collect(),
             trailing: s.pins(axis, Edge::Trailing).map(|k| k.0).collect(),
         },
+        tiers: (s.tiers(axis).iter())
+            .map(|t| DumpSpan {
+                start: t.start.into(),
+                end: t.end.into(),
+            })
+            .collect(),
+        spans: (s.spans(axis).iter())
+            .map(|h| DumpHeaderSpan {
+                axis: h.axis.into(),
+                tier: h.tier,
+                key: h.key.0,
+                field: h.field.map(|k| k.0),
+                open: match h.open {
+                    OpenState::Open => "open",
+                    _ => "closed",
+                },
+                first: h.first as f64,
+                last: h.last as f64,
+                rect: h.rect.into(),
+                visible: h.visible.into(),
+                cut_before: h.cut_before,
+                cut_after: h.cut_after,
+            })
+            .collect(),
     }
 }
 
@@ -625,6 +668,7 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         requested_view: s.requested_view().map(WireViewSpec::from),
         view_pending: s.view_pending(),
         outline_focused: s.outline_focused(),
+        focused_tier: s.focused_tier(),
         pending_move: s.pending_move().map(|(axis, ks)| DumpPendingMove {
             axis: axis.into(),
             keys: keys(ks),
@@ -857,6 +901,10 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             from: Condition::native(Key(7), "a"),
             to: Condition::native(Key(7), "b").not(true),
         },
+        ViewEdit::SetForm {
+            axis: Axis::Rows,
+            form: Form::Header,
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -864,7 +912,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 25] = [
+pub const SCENARIOS: [&str; 26] = [
     "plain",
     "busy",
     "resizing",
@@ -890,6 +938,7 @@ pub const SCENARIOS: [&str; 25] = [
     "grouped",
     "sliced",
     "dropRefused",
+    "headerForm",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -1251,6 +1300,22 @@ pub fn scenario(name: &str) -> Grid {
             let applied = ViewSpec::default().with_grouping(Some(applied));
             grid.view_applied(applied, Totals::unknown());
         }
+        "headerForm" => {
+            // The rows grouped by columns 1 then 2 in header form, tiers 16
+            // and 12 wide, row 6 pinned leading and the rest scrolled so
+            // the spans are cut and broken at the pin.
+            for p in [1, 2] {
+                grid.set_support(Axis::Rows, key(p), Support::default().with_group(true));
+                grid.group_by(Axis::Rows, key(p));
+            }
+            grid.set_form(Axis::Rows, Form::Header);
+            let applied = grid.snapshot().requested_view().cloned().unwrap();
+            grid.view_applied(applied, Totals::unknown());
+            grid.set_tiers(Axis::Rows, &[16.0, 12.0]);
+            grid.pin(Axis::Rows, Edge::Leading, key(6));
+            frame(&mut grid);
+            grid.action(Action::Scroll { dx: 0.0, dy: 60.0 });
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -1297,6 +1362,19 @@ pub fn scenario(name: &str) -> Grid {
             extend: false,
         });
         grid.toggle(Axis::Rows, key(0)).unwrap();
+    }
+    if name == "headerForm" {
+        // Regions of ten rows, ports of five, every row a Leaf.
+        let region = |p: u64| Key(KEY_BASE + 1000 + p / 10);
+        let port = |p: u64| Key(KEY_BASE + 2000 + p / 5);
+        let outlines: Vec<Outline> = (0..40)
+            .map(|p| Outline::leaf(vec![region(p), port(p)]))
+            .collect();
+        grid.set_outlines(Axis::Rows, 0, &outlines);
+        // A click in the port column focuses tier 1.
+        let y = 24.0 + 21.0 * 6.0 + 5.0;
+        grid.pointer(PointerEvent::down(20.0, y));
+        grid.pointer(PointerEvent::up(20.0, y));
     }
     grid
 }
@@ -1502,6 +1580,15 @@ mod tests {
                     assert!(s.support(Axis::Rows, key(3)).native);
                     assert_eq!(s.aggregates(Axis::Rows, key(3)).len(), 2);
                 }
+                "headerForm" => {
+                    assert_eq!(s.tiers(Axis::Rows), [0.0..16.0, 16.0..28.0]);
+                    let spans = s.spans(Axis::Rows);
+                    assert!(spans.iter().any(|h| h.cut_before && h.tier == 0));
+                    let pinned = spans.iter().filter(|h| h.first == 6 && h.last == 6);
+                    assert_eq!(pinned.count(), 2, "row 6's pin breaks both its spans");
+                    assert!(s.outline_focused());
+                    assert_eq!(s.focused_tier(), 1);
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
@@ -1542,7 +1629,8 @@ mod tests {
                 "Idle",
                 "Idle",
                 "Idle",
-                "MovingHeaders"
+                "MovingHeaders",
+                "Idle"
             ]
         );
     }

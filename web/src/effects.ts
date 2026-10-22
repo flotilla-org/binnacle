@@ -3,6 +3,7 @@
 // `crates/binnacle-wasm/src/effect.rs`; the agreement tests keep them in step.
 
 import type { AxisName, PinEdge } from "./codes";
+import type { GroupedAxis } from "./source";
 import type { FindMatch, KeyedCondition, KeyedFindQuery, KeyedTextQuery, KeyedViewSpec, SortColumn } from "./snapshot";
 
 type Stamped<T> = T & { generation: number };
@@ -49,6 +50,8 @@ export type KeyedViewEdit =
   | { type: "RemoveSlicer"; condition: KeyedCondition }
   /** The first slicer equal to `from` became `to`, in place. */
   | { type: "ReplaceSlicer"; from: KeyedCondition; to: KeyedCondition }
+  /** `axis` was drawn in `form`: an outline column, or spanning headers. */
+  | { type: "SetForm"; axis: AxisName; form: GroupedAxis["form"] }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -241,6 +244,8 @@ function isEdit(v: unknown): v is KeyedViewEdit {
       return isCondition(v.condition);
     case "ReplaceSlicer":
       return isCondition(v.from) && isCondition(v.to);
+    case "SetForm":
+      return isAxis(v.axis) && (v.form === "outline" || v.form === "header");
     case "Replace":
     case "Reapply":
     case "Other":

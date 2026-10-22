@@ -126,6 +126,15 @@ pub enum WireForm {
     Header,
 }
 
+impl From<Form> for WireForm {
+    fn from(form: Form) -> Self {
+        match form {
+            Form::Outline => WireForm::Outline,
+            Form::Header => WireForm::Header,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WireAll {
@@ -167,10 +176,7 @@ impl From<&GroupedAxis> for WireGroupedAxis {
     fn from(a: &GroupedAxis) -> Self {
         WireGroupedAxis {
             grand_total: a.grand_total.into(),
-            form: match a.form {
-                Form::Outline => WireForm::Outline,
-                Form::Header => WireForm::Header,
-            },
+            form: a.form.into(),
             expand: WireExpand {
                 depth: a.expand.depth.into(),
                 except: a.expand.except.iter().map(|k| k.0).collect(),

@@ -8,9 +8,9 @@
 
 use binnacle_core::{
     AggregateValue, Axis, CellState, Comparison, Condition, ConditionKind, ConditionState, Cursor,
-    Depth, DropTarget, Edge, Form, GroupOf, GroupedAxis, Grouping, HeaderPlacement, ItemKind, Key,
-    Level, Mode, MoveRefusal, OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot,
-    SortDirection, SortSpec, TextQuery, Value, ViewSpec,
+    Depth, DropTarget, Edge, Form, GroupOf, GroupedAxis, Grouping, HeaderPlacement, HeaderSpan,
+    ItemKind, Key, Level, Mode, MoveRefusal, OpenState, Outline, Placement, Rect, Scalar, Searched,
+    Snapshot, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -137,6 +137,25 @@ impl Writer<'_> {
                 });
             }
         }
+    }
+
+    /// A header span: axis, tier, Key, field, open code (0 open, 1
+    /// closed), first and last, rect, visible rect and the cut flags.
+    fn span(&mut self, span: &HeaderSpan) {
+        self.num(axis_code(span.axis));
+        self.num(span.tier);
+        self.key(span.key);
+        self.opt_key(span.field);
+        self.num(match span.open {
+            OpenState::Open => 0,
+            _ => 1,
+        });
+        self.position(span.first);
+        self.position(span.last);
+        self.rect(span.rect);
+        self.rect(span.visible);
+        self.flag(span.cut_before);
+        self.flag(span.cut_after);
     }
 
     fn opt_key(&mut self, key: Option<Key>) {
@@ -574,6 +593,18 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
                 w.key(k);
             }
         }
+        // Header form: the tiers across the band, then the spans.
+        let tiers = s.tiers(axis);
+        w.len(tiers.len());
+        for t in tiers {
+            w.num(t.start);
+            w.num(t.end);
+        }
+        let spans = s.spans(axis);
+        w.len(spans.len());
+        for span in spans {
+            w.span(span);
+        }
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());
@@ -641,6 +672,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
     }
     w.flag(s.view_pending());
     w.flag(s.outline_focused());
+    w.num(s.focused_tier());
     // The move waiting for its answer, then the last refusal.
     let pending = s.pending_move();
     w.flag(pending.is_some());
