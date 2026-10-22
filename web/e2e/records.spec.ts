@@ -12,6 +12,16 @@ const HEADER = 28;
 const ROW = 24;
 
 const status = (page: Page) => page.locator("#status");
+const announced = (page: Page) => page.locator(".binnacle-aria").getByRole("status");
+const columnHeader = (page: Page, name: string) =>
+  page.locator(".binnacle-aria").getByRole("columnheader", { name, exact: true });
+
+/**
+ * Waits until a frame has applied the sort by `name`. A click hits what the
+ * last frame drew, so one before then would pick the record shown unsorted.
+ */
+const sortedBy = (page: Page, name: string, direction: "ascending" | "descending" = "ascending") =>
+  expect(columnHeader(page, name)).toHaveAttribute("aria-sort", direction);
 
 async function layer(page: Page) {
   const box = await page.locator(".binnacle-layer").boundingBox();
@@ -79,6 +89,7 @@ test("onSelectionChange fires once per change, and its IDs survive a re-sort", a
 
 test("a header click sorts, and focus follows its record through a re-sort", async ({ page }) => {
   await header(page, 2);
+  await sortedBy(page, "weight");
   const ascending = sorted([["weight", "asc"]]);
   await cell(page, 0);
   await expect(status(page)).toContainText(focus(0, ascending[0]!, "id"));
@@ -98,7 +109,9 @@ test("a header click sorts, and focus follows its record through a re-sort", asy
 
 test("Shift-click sorts by a second column", async ({ page }) => {
   await header(page, 3);
+  await sortedBy(page, "crew");
   await header(page, 2, ["Shift"]);
+  await expect(announced(page)).toContainText("Sorted by crew, ascending, then weight, ascending");
   await cell(page, 0);
   await expect(status(page)).toContainText(focus(0, sorted([["crew", "asc"], ["weight", "asc"]])[0]!, "id"));
   await cell(page, 5);
@@ -107,6 +120,7 @@ test("Shift-click sorts by a second column", async ({ page }) => {
 
 test("the filter box keeps the matching records, in the sort in force", async ({ page }) => {
   await header(page, 1);
+  await sortedBy(page, "name");
   await page.getByRole("searchbox", { name: "Filter records" }).fill("bergen");
   const kept = sorted([["name", "asc"]], (r) => matches(r, "bergen"));
   await expect(status(page)).toContainText(`of ${kept.length.toLocaleString("en")}`);
@@ -141,6 +155,8 @@ test("dragging a header moves its column", async ({ page }) => {
   await page.mouse.move(b.x + column(2), b.y + HEADER / 2, { steps: 5 });
   await page.mouse.move(b.x + FIRST, b.y + HEADER / 2, { steps: 5 });
   await page.mouse.up();
+  // The first column, once a frame has drawn the move.
+  await expect(page.locator('.binnacle-aria [role="columnheader"][aria-colindex="2"]')).toHaveText("port");
   await cell(page, 0, 0);
   await expect(status(page)).toContainText(focus(0, 0, "port"));
   // The port column now starts wider than its old place: step right by key.
