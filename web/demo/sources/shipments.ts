@@ -58,9 +58,13 @@ export const shipmentsDemo: DemoSource = {
       { key: "weight", renderer: weight },
       { key: "crates", renderer: number },
     ]);
+    // Joins the toolbar only once it has something to say, leaving the page's layout as it was until then.
     const received = document.createElement("output");
     received.id = "received";
-    toolbar.append(received);
+    const note = (text: string) => {
+      received.textContent = text;
+      if (!received.isConnected) toolbar.append(received);
+    };
     const frame = document.createElement("div");
     frame.className = "with-filter-bar";
     const gridBox = document.createElement("div");
@@ -73,10 +77,10 @@ export const shipmentsDemo: DemoSource = {
       headerHeight: HEADER,
       initialColumnWidth: (col) => WIDTHS[col],
       onActivate: ({ drillDown }) => {
-        if (drillDown) received.textContent = `drill-down: ${drillDown.map(described).join(", ") || "every shipment"}`;
+        if (drillDown) note(`drill-down: ${drillDown.map(described).join(", ") || "every shipment"}`);
       },
       onCopy: ({ rows }) => {
-        received.textContent = `copied ${rows.length} ${rows.length === 1 ? "row" : "rows"}`;
+        note(`copied ${rows.length} ${rows.length === 1 ? "row" : "rows"}`);
       },
       ...look,
     });
