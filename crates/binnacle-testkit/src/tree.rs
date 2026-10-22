@@ -181,16 +181,20 @@ impl TreeTable {
         out: &mut Vec<(Key, Outline)>,
     ) {
         let level = up.len();
-        for g in groups {
+        // A Subtotal after each group's children counts among them.
+        let placed = u64::from(self.subtotals);
+        let parent = u64::from(level > 0) * placed;
+        for (i, g) in groups.iter().enumerate() {
             let default = match expand.depth {
                 Depth::All => true,
                 Depth::Levels(n) => (level as u32) < n,
             };
             let open = default != expand.except.contains(&g.key);
-            let empty = match &g.under {
-                Under::Groups(kids) => kids.is_empty(),
-                Under::Leaves(keys) => keys.is_empty(),
-            };
+            let kids = match &g.under {
+                Under::Groups(kids) => kids.len(),
+                Under::Leaves(keys) => keys.len(),
+            } as u64;
+            let empty = kids == 0;
             let state = match (empty, open) {
                 (true, _) => OpenState::CantOpen,
                 (false, true) => OpenState::Open,
@@ -200,8 +204,9 @@ impl TreeTable {
             let header = form == Form::Header && state != OpenState::CantOpen;
             let at = out.len();
             if !header {
-                let outline =
-                    Outline::group(up.clone(), state, field, value.clone()).with_path(path.clone());
+                let outline = Outline::group(up.clone(), state, field, value.clone())
+                    .with_path(path.clone())
+                    .with_set(i as u64, groups.len() as u64 + parent);
                 out.push((g.key, outline));
             }
             if state == OpenState::CantOpen {
@@ -215,16 +220,20 @@ impl TreeTable {
             if state == OpenState::Open {
                 match &g.under {
                     Under::Groups(kids) => self.walk(kids, up, path, expand, form, out),
-                    Under::Leaves(keys) => {
-                        let leaf = || Outline::leaf(up.clone()).with_path(path.clone());
-                        out.extend(keys.iter().map(|&k| (k, leaf())));
-                    }
+                    Under::Leaves(keys) => out.extend(keys.iter().enumerate().map(|(j, &k)| {
+                        let leaf = Outline::leaf(up.clone()).with_path(path.clone());
+                        (k, leaf.with_set(j as u64, kids + placed))
+                    })),
                 }
             }
             if (state == OpenState::Open && self.subtotals)
                 || (state == OpenState::Closed && header)
             {
-                let outline = Outline::subtotal(up.clone(), field, value).with_path(path.clone());
+                let mut outline =
+                    Outline::subtotal(up.clone(), field, value).with_path(path.clone());
+                if self.subtotals {
+                    outline = outline.with_set(kids, kids + 1);
+                }
                 out.push((TreeTable::subtotal(g.key), outline));
             }
             up.pop();

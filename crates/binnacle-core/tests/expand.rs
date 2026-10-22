@@ -381,3 +381,77 @@ fn clicking_a_row_header_in_outline_form_focuses_the_outline_column() {
     s.click(5.0, 5.5, Modifiers::NONE);
     assert!(!s.frame(V).outline_focused(), "a cell click leaves it");
 }
+
+#[test]
+fn each_outline_places_its_item_among_its_siblings_open_or_closed() {
+    let mut s = grouped(Expand::default(), Key(3));
+    let places = |s: &mut Scenario<TreeTable>| {
+        let snap = s.frame(V);
+        (snap.rows().iter())
+            .map(|i| {
+                let set = snap.outline(Axis::Rows, i.position).and_then(|o| o.set);
+                (i.key.unwrap().0, set.map(|p| (p.index, p.size)))
+            })
+            .collect::<Vec<_>>()
+    };
+    let at = |i, n| Some((i, n));
+    assert_eq!(
+        places(&mut s),
+        vec![
+            (NORTH.0, at(0, 2)),
+            (ABERDEEN.0, at(0, 2)),
+            (0, at(0, 2)),
+            (3, at(1, 2)),
+            (BERGEN.0, at(1, 2)),
+            (4, at(0, 1)),
+            (SOUTH.0, at(1, 2)),
+            (CADIZ.0, at(0, 2)),
+            (1, at(0, 3)),
+            (2, at(1, 3)),
+            (5, at(2, 3)),
+            (EMPTY.0, at(1, 2)),
+        ]
+    );
+    s.input(|g| g.collapse(Axis::Rows, NORTH).unwrap());
+    s.frame(V);
+    let closed = places(&mut s);
+    assert_eq!(
+        &closed[..3],
+        &[
+            (NORTH.0, at(0, 2)),
+            (SOUTH.0, at(1, 2)),
+            (CADIZ.0, at(0, 2))
+        ]
+    );
+}
+
+#[test]
+fn a_subtotal_counts_last_among_its_groups_children() {
+    let grid = Grid::new(
+        AxisConfig::new(6, 1.0).header(1.0),
+        AxisConfig::new(3, 5.0).header(3.0),
+    );
+    let table = TreeTable::new(vec![REGION, PORT], 3, tree()).subtotals_after();
+    let mut s = Scenario::new(grid, table);
+    let tall = Viewport {
+        width: 20.0,
+        height: 30.0,
+    };
+    s.frame(tall);
+    s.input(|g| g.request_view(spec(Expand::default())));
+    let snap = s.frame(tall);
+    let place = |key: Key| {
+        let item = snap.rows().iter().find(|i| i.key == Some(key)).unwrap();
+        let set = snap
+            .outline(Axis::Rows, item.position)
+            .unwrap()
+            .set
+            .unwrap();
+        (set.index, set.size)
+    };
+    assert_eq!(place(ABERDEEN), (0, 3), "North's ports and its Subtotal");
+    assert_eq!(place(Key(3)), (1, 3), "Aberdeen's Leaves and its Subtotal");
+    assert_eq!(place(TreeTable::subtotal(ABERDEEN)), (2, 3));
+    assert_eq!(place(TreeTable::subtotal(NORTH)), (2, 3));
+    assert_eq!(place(NORTH), (0, 2), "the top has no Grand Total");
+}

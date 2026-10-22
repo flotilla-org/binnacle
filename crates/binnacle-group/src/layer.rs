@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use binnacle_core::{
     Axis, ChangeNotice, Expand, Form, GRAND_TOTAL, GroupOf, ItemKind, Key, Level, Located,
-    OpenState, Outline, Placement, Position, Totals, Value, ViewSpec,
+    OpenState, Outline, Placement, Position, SetPosition, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{KeyInterner, Viewed};
 
@@ -322,6 +322,14 @@ impl<A> Node<A> {
 
     fn children(&self) -> u64 {
         self.row.as_ref().map_or(0, |r| r.children)
+    }
+
+    /// How many children this node has, the root's top groups included.
+    fn kids(&self) -> u64 {
+        match (&self.row, &self.kids) {
+            (None, Kids::Groups(g)) => g.total.unwrap_or(0),
+            _ => self.children(),
+        }
     }
 
     /// How many items are shown under this node, once laid out.
@@ -1195,7 +1203,9 @@ impl<A> GroupingLayer<A> {
             };
             if total {
                 if !missed {
-                    items.push((GRAND_TOTAL, Outline::grand_total()));
+                    let size = self.root.kids() + 1;
+                    let index = (self.shape.grand_total == Placement::After) as u64 * (size - 1);
+                    items.push((GRAND_TOTAL, Outline::grand_total().with_set(index, size)));
                 }
                 continue;
             }
@@ -1403,6 +1413,30 @@ fn groups(path: &Path) -> Vec<GroupOf> {
         .collect()
 }
 
+/// Where the children of `node` start among its set, past a Subtotal (or at
+/// the top a Grand Total) placed before, and how many the set holds.
+fn set<A>(node: &Node<A>, shape: &Shape) -> (u64, u64) {
+    let placed = match node.path.len() {
+        0 => shape.grand_total,
+        n => shape.subtotal(n - 1),
+    };
+    let first = u64::from(placed == Placement::Before);
+    (first, node.kids() + u64::from(placed != Placement::Off))
+}
+
+/// The place of `group`'s Subtotal among its set, where its level places one.
+fn subtotal_set<A>(group: &Node<A>, shape: &Shape) -> Option<SetPosition> {
+    let (_, size) = set(group, shape);
+    match shape.subtotal(group.path.len() - 1) {
+        Placement::Before => Some(SetPosition { index: 0, size }),
+        Placement::After => Some(SetPosition {
+            index: size - 1,
+            size,
+        }),
+        Placement::Off => None,
+    }
+}
+
 /// The item at `position` among those shown under `node`, marked read in
 /// `frame`, or what to ask for to know it. `node` is laid out.
 fn item_at<A>(
@@ -1434,8 +1468,9 @@ fn item_at<A>(
             // open one no Group Item.
             let stands_in = shape.header && span.is_none() && child.children() > 0;
             if stands_in {
-                let outline = Outline::subtotal(ancestors(keys, &child.path), field, value)
+                let mut outline = Outline::subtotal(ancestors(keys, &child.path), field, value)
                     .with_path(groups(&child.path));
+                outline.set = subtotal_set(child, shape);
                 let key = summary_key(keys, SummaryId::Subtotal(child.path.clone()));
                 return Ok((key, outline));
             }
@@ -1449,9 +1484,11 @@ fn item_at<A>(
                     Some(span) => span.len - 1,
                     None => 0,
                 };
+                let (first, size) = set(node, shape);
                 let outline = Outline::group(ancestors(keys, &node.path), state, field, value)
                     .with_span(span)
-                    .with_path(groups(&node.path));
+                    .with_path(groups(&node.path))
+                    .with_set(first + index, size);
                 return Ok((child.key, outline));
             }
             let span = span.expect("a group shows items past its own only when open");
@@ -1461,8 +1498,9 @@ fn item_at<A>(
                 Placement::Off => false,
             };
             if subtotal {
-                let outline = Outline::subtotal(ancestors(keys, &child.path), field, value)
+                let mut outline = Outline::subtotal(ancestors(keys, &child.path), field, value)
                     .with_path(groups(&child.path));
+                outline.set = subtotal_set(child, shape);
                 let key = summary_key(keys, SummaryId::Subtotal(child.path.clone()));
                 return Ok((key, outline));
             }
@@ -1470,8 +1508,14 @@ fn item_at<A>(
         }
         Kids::Leaves(_) => match node.leaf(position, Some(frame)) {
             Some(key) => {
+                let (first, size) = set(node, shape);
                 let outline = Outline::leaf(ancestors(keys, &node.path));
-                Ok((key, outline.with_path(groups(&node.path))))
+                Ok((
+                    key,
+                    outline
+                        .with_path(groups(&node.path))
+                        .with_set(first + position, size),
+                ))
             }
             None => {
                 let page = position / PAGE * PAGE;
