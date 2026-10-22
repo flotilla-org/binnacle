@@ -1,12 +1,12 @@
 //! The grouping layer: a sans-IO state machine that is a Table Source for a
 //! grouped axis, built from the answers to its aggregate queries.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, GRAND_TOTAL, ItemKind, Key, Level, Located, OpenState, Outline, Placement,
-    Position, Totals, Value, ViewSpec,
+    Axis, ChangeNotice, Expand, GRAND_TOTAL, ItemKind, Key, Level, Located, OpenState, Outline,
+    Placement, Position, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{KeyInterner, Viewed};
 
@@ -97,9 +97,60 @@ impl Shape {
     }
 }
 
+/// Which groups of the rows are open, as an `expand` says.
+#[derive(Clone, Debug, Default)]
+struct Open {
+    expand: Expand,
+    except: HashSet<Key>,
+}
+
+impl Open {
+    fn of(spec: &ViewSpec) -> Open {
+        let expand =
+            (spec.grouping.as_ref()).map_or_else(Expand::default, |g| g.rows.expand.clone());
+        let except = expand.except.iter().copied().collect();
+        Open { expand, except }
+    }
+
+    fn same(&self, other: &Open) -> bool {
+        self.expand.depth == other.expand.depth && self.except == other.except
+    }
+
+    /// Whether the group at `node` shows what is under it: it is open and
+    /// has something to show.
+    fn shows<A>(&self, node: &Node<A>) -> bool {
+        let Some(level) = node.path.len().checked_sub(1) else {
+            return true;
+        };
+        node.children() > 0
+            && self.expand.opens_level(level as u32) != self.except.contains(&node.key)
+    }
+}
+
+/// Leaves out of `expand.except` the Group Item Keys whose paths do not fit
+/// `levels`. Keys the layer never issued, and Leaf Keys, stay.
+fn prune(keys: &KeyInterner<SummaryId>, levels: &[Key], expand: &mut Expand) {
+    expand.except.retain(|k| {
+        if k.0 & SUMMARY_KEY_BIT == 0 {
+            return true;
+        }
+        match keys.identity(Key(k.0 & !SUMMARY_KEY_BIT)) {
+            None => true,
+            Some(SummaryId::Group(path)) => {
+                !path.is_empty()
+                    && path.len() <= levels.len()
+                    && path.iter().zip(levels).all(|((f, _), l)| f == l)
+            }
+            Some(_) => false,
+        }
+    });
+}
+
 /// A group (or the whole axis, at the root) and what is known under it.
 struct Node<A> {
     path: Path,
+    /// Its Group Item's Key.
+    key: Key,
     row: Option<GroupRow<A>>,
     kids: Kids<A>,
 }
@@ -120,10 +171,10 @@ struct Groups<A> {
     starts: Option<(Vec<u64>, u64)>,
 }
 
-impl<A> Node<A> {
-    /// A node at `path` over `levels` levels in all.
-    fn new(path: Path, row: Option<GroupRow<A>>, levels: usize) -> Self {
-        let kids = match path.len() < levels {
+impl<A> Kids<A> {
+    /// Nothing known under a group at `depth` of `levels` levels.
+    fn unknown(depth: usize, levels: usize) -> Self {
+        match depth < levels {
             true => Kids::Groups(Groups {
                 total: None,
                 nodes: Vec::new(),
@@ -131,8 +182,20 @@ impl<A> Node<A> {
                 starts: None,
             }),
             false => Kids::Leaves(BTreeMap::new()),
-        };
-        Node { path, row, kids }
+        }
+    }
+}
+
+impl<A> Node<A> {
+    /// A node at `path` over `levels` levels in all.
+    fn new(path: Path, key: Key, row: Option<GroupRow<A>>, levels: usize) -> Self {
+        let kids = Kids::unknown(path.len(), levels);
+        Node {
+            path,
+            key,
+            row,
+            kids,
+        }
     }
 
     fn children(&self) -> u64 {
@@ -148,8 +211,9 @@ impl<A> Node<A> {
     }
 
     /// Works out where the items under this node sit, as far as the groups
-    /// known allow; returns how many are shown, if known.
-    fn finish(&mut self, shape: &Shape) -> Option<u64> {
+    /// known allow; returns how many are shown, if known. A closed group
+    /// shows its Group Item alone.
+    fn finish(&mut self, shape: &Shape, open: &Open) -> Option<u64> {
         let own = shape.own(self.path.len());
         let Kids::Groups(g) = &mut self.kids else {
             return self.shown();
@@ -163,8 +227,12 @@ impl<A> Node<A> {
         let mut done = true;
         for node in &mut g.nodes {
             starts.push(at);
-            match node.as_mut().and_then(|n| n.finish(shape)) {
-                Some(n) => at += own + n,
+            match node {
+                Some(n) if !open.shows(n) => at += 1,
+                Some(n) => match n.finish(shape, open) {
+                    Some(n) => at += own + n,
+                    None => done = false,
+                },
                 None => done = false,
             }
         }
@@ -206,9 +274,9 @@ impl<A> Node<A> {
         g.nodes[*g.by_value.get(value)?].as_mut()
     }
 
-    /// What is still to ask for so that every group under this node is
-    /// known.
-    fn needs(&self, asks: &mut Vec<Ask>) {
+    /// What is still to ask for so that every group under this node that
+    /// `open` shows is known.
+    fn needs(&self, open: &Open, asks: &mut Vec<Ask>) {
         let Kids::Groups(g) = &self.kids else {
             return;
         };
@@ -233,8 +301,38 @@ impl<A> Node<A> {
                 });
             }
         }
-        for node in g.nodes.iter().flatten() {
-            node.needs(asks);
+        for node in g.nodes.iter().flatten().filter(|n| open.shows(n)) {
+            node.needs(open, asks);
+        }
+    }
+
+    /// Forgets what is under the groups `open` closes, so memory grows only
+    /// with the open groups.
+    fn fold(&mut self, open: &Open, levels: usize) {
+        let Kids::Groups(g) = &mut self.kids else {
+            return;
+        };
+        for node in g.nodes.iter_mut().flatten() {
+            match open.shows(node) {
+                true => node.fold(open, levels),
+                false => node.kids = Kids::unknown(node.path.len(), levels),
+            }
+        }
+    }
+
+    /// How many groups and Leaves are held under this node.
+    fn held(&self) -> u64 {
+        match &self.kids {
+            Kids::Groups(g) => g.nodes.iter().flatten().map(|n| 1 + n.held()).sum(),
+            Kids::Leaves(runs) => {
+                let (mut held, mut end) = (0, 0);
+                for (&start, keys) in runs {
+                    let stop = start + keys.len() as u64;
+                    held += stop.saturating_sub(start.max(end));
+                    end = end.max(stop);
+                }
+                held
+            }
         }
     }
 }
@@ -256,6 +354,10 @@ pub struct GroupingLayer<A> {
     /// The rows' scope while they are grouped.
     scope: Option<Scope>,
     shape: Shape,
+    /// The groups open in the layout given, and those the latest spec
+    /// opens, which differ while what they show is asked for.
+    open: Open,
+    want: Open,
     root: Node<A>,
     /// The Grand Total's aggregates, once answered.
     total: Option<Vec<A>>,
@@ -264,8 +366,10 @@ pub struct GroupingLayer<A> {
     in_flight: Vec<(RequestId, Ask)>,
     /// What Windows and Locates found missing since the last batch.
     misses: Vec<Ask>,
-    /// Whether the applied spec has been given for the current stamp.
+    /// Whether the applied spec has been given for the latest request.
     settled: bool,
+    /// Whether the layout under `open` is worked out and given.
+    laid_out: bool,
     news: VecDeque<Viewed>,
     /// Answers to Locates: the path and index of each Leaf asked about, or
     /// `None` for one gone from the view.
@@ -311,13 +415,16 @@ impl<A> GroupingLayer<A> {
             spec: ViewSpec::default(),
             scope: None,
             shape: Shape::default(),
-            root: Node::new(Vec::new(), None, 0),
+            open: Open::default(),
+            want: Open::default(),
+            root: Node::new(Vec::new(), GRAND_TOTAL, None, 0),
             total: None,
             keys,
             next_id: 0,
             in_flight: Vec::new(),
             misses: Vec::new(),
             settled: true,
+            laid_out: false,
             news: VecDeque::new(),
             located: HashMap::new(),
         }
@@ -327,27 +434,32 @@ impl<A> GroupingLayer<A> {
     /// differently (other levels, values, slicers, filter, hidden Leaves or
     /// sort) starts the rows afresh, and the old batches' answers are
     /// dropped; one that only places Subtotals or the Grand Total
-    /// elsewhere lays out what is known again; otherwise the spec is
-    /// applied as it stands.
-    pub fn request_view(&mut self, spec: ViewSpec) {
+    /// elsewhere lays out what is known again; one that opens or closes
+    /// groups is applied once what they show is known, with `Expanded` or
+    /// `Collapsed` for one group the user sees and `Refiltered` for more;
+    /// otherwise the spec is applied as it stands. The rows' `expand.except`
+    /// loses the Group Item Keys whose paths no longer fit the levels.
+    pub fn request_view(&mut self, mut spec: ViewSpec) {
         let scope = scope_of(&spec);
         let shape = Shape::of(&spec);
+        if let Some(grouping) = spec.grouping.as_mut() {
+            let levels = scope.as_ref().map_or(&[][..], |s| &s.levels);
+            prune(&self.keys, levels, &mut grouping.rows.expand);
+        }
+        self.want = Open::of(&spec);
         self.spec = spec;
         if scope != self.scope {
             self.shape = shape;
             self.reset(scope);
-        } else if shape != self.shape {
+            return;
+        }
+        if shape != self.shape {
             self.shape = shape;
             self.root.unfinish();
-            self.settled = false;
-            self.settle();
-        } else if self.settled {
-            self.news.push_back(Viewed {
-                applied: self.spec.clone(),
-                totals: Totals::unknown(),
-                notices: Vec::new(),
-            });
+            self.laid_out = false;
         }
+        self.settled = false;
+        self.settle();
     }
 
     /// Starts the grouped axes afresh under the same View Spec, say because
@@ -359,13 +471,14 @@ impl<A> GroupingLayer<A> {
     fn reset(&mut self, scope: Option<Scope>) {
         self.stamp.0 += 1;
         let levels = scope.as_ref().map_or(0, |s| s.levels.len());
-        self.root = Node::new(Vec::new(), None, levels);
+        self.root = Node::new(Vec::new(), GRAND_TOTAL, None, levels);
         self.total = None;
         self.scope = scope;
         self.in_flight.clear();
         self.misses.clear();
         self.located.clear();
         self.settled = false;
+        self.laid_out = false;
         self.settle();
     }
 
@@ -386,7 +499,7 @@ impl<A> GroupingLayer<A> {
                 range: 0..0,
             });
         }
-        self.root.needs(&mut asks);
+        self.root.needs(&self.want, &mut asks);
         asks.append(&mut self.misses);
         let mut requests = Vec::new();
         for ask in asks {
@@ -437,35 +550,118 @@ impl<A> GroupingLayer<A> {
                 }
             }
             body => {
-                if let Some(node) = node_mut(&mut self.root, &answer.path) {
-                    place(node, answer.start, body, levels, &self.scope);
+                let (open, want) = (&self.open, &self.want);
+                let shown = |n: &Node<A>| open.shows(n) || want.shows(n);
+                if let Some(node) = node_mut(&mut self.root, &answer.path, shown) {
+                    place(
+                        node,
+                        answer.start,
+                        body,
+                        levels,
+                        &self.scope,
+                        &mut self.keys,
+                    );
                 }
             }
         }
         self.settle();
     }
 
-    /// Gives the applied spec once every group the axis shows is known.
+    /// Gives the applied spec once every group the axis shows under it is
+    /// known.
     fn settle(&mut self) {
         if self.settled {
             return;
         }
         let notices = match &self.scope {
-            Some(_) => match self.root.finish(&self.shape) {
-                Some(count) => {
-                    let count = count + u64::from(self.shape.grand_total != Placement::Off);
-                    vec![(Axis::Rows, ChangeNotice::Refiltered(count))]
+            Some(_) => {
+                let mut asks = Vec::new();
+                self.root.needs(&self.want, &mut asks);
+                if !asks.is_empty() {
+                    return;
                 }
-                None => return,
-            },
+                let notice = match self.laid_out {
+                    true => self.unfold(),
+                    false => {
+                        self.open = self.want.clone();
+                        self.root.finish(&self.shape, &self.open);
+                        self.laid_out = true;
+                        self.count(Axis::Rows).map(ChangeNotice::Refiltered)
+                    }
+                };
+                let levels = self.scope.as_ref().map_or(0, |s| s.levels.len());
+                self.root.fold(&self.open, levels);
+                notice.map(|n| (Axis::Rows, n)).into_iter().collect()
+            }
             None => Vec::new(),
         };
         self.settled = true;
+        self.laid_out = true;
         self.news.push_back(Viewed {
             applied: self.spec.clone(),
             totals: Totals::unknown(),
             notices,
         });
+    }
+
+    /// Lays the groups out as the latest spec opens them, all known, and
+    /// says how: `Collapsed` or `Expanded` when one group the user sees
+    /// opened or closed, nothing when no group the user sees did, and
+    /// `Refiltered` for more.
+    fn unfold(&mut self) -> Option<ChangeNotice> {
+        if self.want.same(&self.open) {
+            return None;
+        }
+        let single = match self.want.expand.depth == self.open.expand.depth {
+            true => {
+                let mut changed = self.want.except.symmetric_difference(&self.open.except);
+                match (changed.next(), changed.next()) {
+                    (Some(&key), None) => Some(key),
+                    _ => None,
+                }
+            }
+            false => None,
+        };
+        let path = single.and_then(
+            |key| match self.keys.identity(Key(key.0 & !SUMMARY_KEY_BIT)) {
+                Some(SummaryId::Group(path)) if key.0 & SUMMARY_KEY_BIT != 0 => Some(path.clone()),
+                _ => None,
+            },
+        );
+        let under = |root: &Node<A>, shape: &Shape, open: &Open, path: &Path| {
+            let node = node_at(root, path)?;
+            let level = path.len() - 1;
+            Some(match open.shows(node) {
+                true => shape.own(level) - 1 + node.shown()?,
+                false => 0,
+            })
+        };
+        let before = path.as_ref().and_then(|path| {
+            let at = group_position(&self.root, &self.shape, &self.open, path)?;
+            Some((at, under(&self.root, &self.shape, &self.open, path)?))
+        });
+        self.open = self.want.clone();
+        self.root.unfinish();
+        self.root.finish(&self.shape, &self.open);
+        if single.is_some() && before.is_none() {
+            return None;
+        }
+        let (Some((at, was)), Some(path)) = (before, &path) else {
+            return self.count(Axis::Rows).map(ChangeNotice::Refiltered);
+        };
+        let now = under(&self.root, &self.shape, &self.open, path)?;
+        let at = at + self.shape.top() + 1;
+        match now.cmp(&was) {
+            std::cmp::Ordering::Greater => Some(ChangeNotice::Expanded { at, n: now - was }),
+            std::cmp::Ordering::Less => Some(ChangeNotice::Collapsed { at, n: was - now }),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+
+    /// How many groups and Leaves the layer holds: those under open groups,
+    /// never more than it shows once the latest spec is applied.
+    pub fn held(&self) -> u64 {
+        self.root.held()
     }
 
     /// The View Spec applied since the last call, with the Change Notices
@@ -478,7 +674,7 @@ impl<A> GroupingLayer<A> {
     /// How many items `axis` shows, once the layer knows; `None` for an
     /// axis it does not group, or while the first answers are due.
     pub fn count(&self, axis: Axis) -> Option<u64> {
-        if !self.grouped(axis) || !self.settled {
+        if !self.grouped(axis) || !self.laid_out {
             return None;
         }
         let total = u64::from(self.shape.grand_total != Placement::Off);
@@ -504,7 +700,8 @@ impl<A> GroupingLayer<A> {
                 items.push((GRAND_TOTAL, Outline::grand_total()));
                 continue;
             }
-            match item_at(&self.root, &self.shape, &mut self.keys, position - top) {
+            let (root, shape, open) = (&self.root, &self.shape, &self.open);
+            match item_at(root, shape, open, &mut self.keys, position - top) {
                 Ok(item) => items.push(item),
                 Err(ask) => {
                     self.misses.push(ask);
@@ -523,12 +720,14 @@ impl<A> GroupingLayer<A> {
             return Some(gone);
         }
         let top = self.shape.top();
+        let (root, shape, open) = (&self.root, &self.shape, &self.open);
         if key.0 & SUMMARY_KEY_BIT != 0 {
-            let (root, shape) = (&self.root, &self.shape);
             let found = match self.keys.identity(Key(key.0 & !SUMMARY_KEY_BIT)) {
-                Some(SummaryId::Group(path)) => group_position(root, shape, path).map(|p| p + top),
+                Some(SummaryId::Group(path)) => {
+                    group_position(root, shape, open, path).map(|p| p + top)
+                }
                 Some(SummaryId::Subtotal(path)) => {
-                    subtotal_position(root, shape, path).map(|p| p + top)
+                    subtotal_position(root, shape, open, path).map(|p| p + top)
                 }
                 Some(SummaryId::GrandTotal) => match shape.grand_total {
                     Placement::Before => Some(0),
@@ -539,14 +738,16 @@ impl<A> GroupingLayer<A> {
             };
             return Some(found.map_or(gone, Located::Found));
         }
-        if let Some(found) = leaf_position(&self.root, &self.shape, key, top) {
+        if let Some(found) = leaf_position(root, shape, open, key, top) {
             return Some(Located::Found(found));
         }
         match self.located.get(&key) {
             Some(Some((path, index))) => {
-                let lead = self.shape.lead(path.len().saturating_sub(1));
-                let at =
-                    group_position(&self.root, &self.shape, path).map(|g| g + top + lead + index);
+                let lead = shape.lead(path.len().saturating_sub(1));
+                let shown = node_at(root, path).is_some_and(|n| open.shows(n));
+                let at = (group_position(root, shape, open, path))
+                    .filter(|_| shown)
+                    .map(|g| g + top + lead + index);
                 Some(at.map_or(gone, Located::Found))
             }
             Some(None) => Some(gone),
@@ -593,7 +794,14 @@ impl<A> GroupingLayer<A> {
 }
 
 /// Puts `body`, which starts at `start` under `node`, in place.
-fn place<A>(node: &mut Node<A>, start: u64, body: Body<A>, levels: usize, scope: &Option<Scope>) {
+fn place<A>(
+    node: &mut Node<A>,
+    start: u64,
+    body: Body<A>,
+    levels: usize,
+    scope: &Option<Scope>,
+    keys: &mut KeyInterner<SummaryId>,
+) {
     match (body, &mut node.kids) {
         (Body::Groups { total, groups }, Kids::Groups(g)) => {
             if g.total != Some(total) {
@@ -616,7 +824,8 @@ fn place<A>(node: &mut Node<A>, start: u64, body: Body<A>, levels: usize, scope:
                 let mut path = node.path.clone();
                 path.push((*field, row.value.clone()));
                 g.by_value.insert(row.value.clone(), i as usize);
-                *slot = Some(Node::new(path, Some(row), levels));
+                let key = summary_key(keys, SummaryId::Group(path.clone()));
+                *slot = Some(Node::new(path, key, Some(row), levels));
                 g.starts = None;
             }
         }
@@ -632,10 +841,18 @@ fn node_at<'n, A>(root: &'n Node<A>, path: &Path) -> Option<&'n Node<A>> {
         .try_fold(root, |node, (_, value)| node.child(value))
 }
 
-fn node_mut<'n, A>(root: &'n mut Node<A>, path: &Path) -> Option<&'n mut Node<A>> {
+/// The node at `path`, if every group on the way is `shown`.
+fn node_mut<'n, A>(
+    root: &'n mut Node<A>,
+    path: &Path,
+    shown: impl Fn(&Node<A>) -> bool,
+) -> Option<&'n mut Node<A>> {
     let mut node = root;
     for (_, value) in path {
         node = node.child_mut(value)?;
+        if !shown(node) {
+            return None;
+        }
     }
     Some(node)
 }
@@ -656,6 +873,7 @@ fn ancestors(keys: &mut KeyInterner<SummaryId>, path: &Path) -> Vec<Key> {
 fn item_at<A>(
     node: &Node<A>,
     shape: &Shape,
+    open: &Open,
     keys: &mut KeyInterner<SummaryId>,
     position: Position,
 ) -> Result<(Key, Outline), Ask> {
@@ -675,12 +893,13 @@ fn item_at<A>(
                 Placement::Off => false,
             };
             if at == 0 {
-                let outline =
-                    Outline::group(ancestors(keys, &node.path), OpenState::Open, field, value);
-                Ok((
-                    summary_key(keys, SummaryId::Group(child.path.clone())),
-                    outline,
-                ))
+                let state = match (child.children(), open.shows(child)) {
+                    (0, _) => OpenState::CantOpen,
+                    (_, true) => OpenState::Open,
+                    (_, false) => OpenState::Closed,
+                };
+                let outline = Outline::group(ancestors(keys, &node.path), state, field, value);
+                Ok((child.key, outline))
             } else if subtotal {
                 let outline = Outline::subtotal(ancestors(keys, &child.path), field, value);
                 Ok((
@@ -688,7 +907,7 @@ fn item_at<A>(
                     outline,
                 ))
             } else {
-                item_at(child, shape, keys, at - shape.lead(level))
+                item_at(child, shape, open, keys, at - shape.lead(level))
             }
         }
         Kids::Leaves(_) => match node.leaf(position) {
@@ -706,8 +925,8 @@ fn item_at<A>(
 }
 
 /// Where the Group Item at `path` sits among the items under the root, if
-/// known.
-fn group_position<A>(root: &Node<A>, shape: &Shape, path: &Path) -> Option<Position> {
+/// known and shown.
+fn group_position<A>(root: &Node<A>, shape: &Shape, open: &Open, path: &Path) -> Option<Position> {
     let mut node = root;
     let mut at = 0;
     for (depth, (_, value)) in path.iter().enumerate() {
@@ -720,32 +939,45 @@ fn group_position<A>(root: &Node<A>, shape: &Shape, path: &Path) -> Option<Posit
             return Some(at);
         }
         at += shape.lead(depth);
-        node = g.nodes[i].as_ref()?;
+        node = g.nodes[i].as_ref().filter(|n| open.shows(n))?;
     }
     None
 }
 
 /// Where the Subtotal of the group at `path` sits among the items under
 /// the root, if known and placed.
-fn subtotal_position<A>(root: &Node<A>, shape: &Shape, path: &Path) -> Option<Position> {
+fn subtotal_position<A>(
+    root: &Node<A>,
+    shape: &Shape,
+    open: &Open,
+    path: &Path,
+) -> Option<Position> {
     let level = path.len().checked_sub(1)?;
-    let at = group_position(root, shape, path)?;
+    let at = group_position(root, shape, open, path)?;
+    let node = node_at(root, path).filter(|n| open.shows(n))?;
     match shape.subtotal(level) {
         Placement::Before => Some(at + 1),
-        Placement::After => Some(at + 1 + node_at(root, path)?.shown()?),
+        Placement::After => Some(at + 1 + node.shown()?),
         Placement::Off => None,
     }
 }
 
 /// Where the Leaf with `key` sits among the items shown under `node` (from
 /// `base`), if it is among the Leaves fetched.
-fn leaf_position<A>(node: &Node<A>, shape: &Shape, key: Key, base: Position) -> Option<Position> {
+fn leaf_position<A>(
+    node: &Node<A>,
+    shape: &Shape,
+    open: &Open,
+    key: Key,
+    base: Position,
+) -> Option<Position> {
     match &node.kids {
         Kids::Groups(g) => {
             let (starts, _) = g.starts.as_ref()?;
             let lead = shape.lead(node.path.len());
             g.nodes.iter().zip(starts).find_map(|(child, &start)| {
-                leaf_position(child.as_ref()?, shape, key, base + start + lead)
+                let child = child.as_ref().filter(|n| open.shows(n))?;
+                leaf_position(child, shape, open, key, base + start + lead)
             })
         }
         Kids::Leaves(runs) => runs.iter().find_map(|(start, keys)| {

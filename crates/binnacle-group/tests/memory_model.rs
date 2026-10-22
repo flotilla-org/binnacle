@@ -10,8 +10,8 @@
 use std::cmp::Ordering;
 
 use binnacle_core::{
-    AggregateValue, Axis, ChangeNotice, Grouping, ItemKind, Key, Level, Placement, SortColumn,
-    SortDirection, SortSpec, Value, ViewSpec,
+    AggregateValue, Axis, ChangeNotice, Expand, Grouping, ItemKind, Key, Level, OpenState,
+    Placement, SortColumn, SortDirection, SortSpec, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::MemorySource;
@@ -408,4 +408,49 @@ fn a_leaf_keeps_its_key_and_summary_items_carry_the_summary_bit() {
     assert_eq!(&window.keys[1..3], &[Key(0), Key(2)]);
     assert_eq!(window.keys[4], Key(1));
     assert!(window.keys[0].0 >= binnacle_group::SUMMARY_KEY_BIT);
+}
+
+#[test]
+fn closing_a_group_hides_its_leaves_with_collapsed_and_regrouping_prunes_it() {
+    let rows: Vec<Record> = vec![
+        [Some(1), Some(5), None],
+        [Some(2), Some(6), None],
+        [Some(1), Some(5), None],
+    ];
+    let mut source = source(rows.len());
+    let mut grouping = Grouping::rows_by(Key(0));
+    source.view(
+        &rows,
+        &ViewSpec::default().with_grouping(Some(grouping.clone())),
+    );
+    let first = source.window(&rows, Axis::Rows, 0..1).keys[0];
+    grouping.rows.expand = Expand::default().with(0, first, false);
+    let viewed = source.view(
+        &rows,
+        &ViewSpec::default().with_grouping(Some(grouping.clone())),
+    );
+    assert_eq!(
+        viewed.notices,
+        vec![(Axis::Rows, ChangeNotice::Collapsed { at: 1, n: 2 })]
+    );
+    let window = source.window(&rows, Axis::Rows, 0..3);
+    let states: Vec<OpenState> = window.outlines.unwrap().iter().map(|o| o.open).collect();
+    assert_eq!(
+        states,
+        [OpenState::Closed, OpenState::Open, OpenState::CantOpen]
+    );
+    let summary = source.summary(first).unwrap();
+    assert_eq!(
+        summary.aggregates,
+        [Figure::Count(2)],
+        "a closed group's count"
+    );
+
+    // Grouping by another column drops the Key, whose path no longer fits.
+    grouping.row_levels = vec![Level::field(Key(1))];
+    let viewed = source.view(&rows, &ViewSpec::default().with_grouping(Some(grouping)));
+    assert_eq!(
+        viewed.applied.grouping.unwrap().rows.expand,
+        Expand::default()
+    );
 }

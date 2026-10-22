@@ -353,7 +353,8 @@ impl<R> GroupedMemory<R> {
     /// Presents the table as `spec` asks, grouping included; answers with
     /// the spec applied, the totals (the rows' unknown while grouped) and
     /// the Change Notices: the rows' `Refiltered` whenever their grouping
-    /// or the rows under it change.
+    /// or the rows under it change, and `Collapsed` or `Expanded` when one
+    /// group opens or closes.
     pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Viewed {
         let levels: Vec<Key> = (spec.grouping.iter())
             .flat_map(|g| g.row_levels.iter().filter_map(|l| l.field_key()))
@@ -403,6 +404,10 @@ impl<R> GroupedMemory<R> {
         let mut layered = Vec::new();
         while let Some(viewed) = self.layer.poll_viewed() {
             layered.extend(viewed.notices);
+            // The layer prunes `expand` as the levels change.
+            if applied.grouping.is_some() {
+                applied.grouping = viewed.applied.grouping;
+            }
         }
         let grouped = self.layer.grouped(Axis::Rows);
         if grouped || was_grouped {

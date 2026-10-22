@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use binnacle_core::{
-    AggregateValue, Axis, ChangeNotice, GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located,
-    OpenState, Outline, Placement, Value, ViewSpec,
+    AggregateValue, Axis, ChangeNotice, Depth, Expand, GRAND_TOTAL, Grouping, ItemKind, Key, Level,
+    Located, OpenState, Outline, Placement, SortColumn, SortSpec, Value, ViewSpec,
 };
 use binnacle_group::{Answer, Batch, Body, GroupRow, GroupingLayer, Path, SUMMARY_KEY_BIT, Want};
 use hegel::generators as gs;
@@ -82,6 +82,10 @@ fn values() -> Vec<AggregateValue> {
 }
 
 fn spec(levels: usize, shape: &Shape) -> ViewSpec {
+    opening(levels, shape, Expand::default())
+}
+
+fn opening(levels: usize, shape: &Shape, expand: Expand) -> ViewSpec {
     let mut grouping = Grouping::rows_by(FIELDS[0]);
     grouping.row_levels = (0..levels)
         .map(|d| Level::Field {
@@ -91,6 +95,7 @@ fn spec(levels: usize, shape: &Shape) -> ViewSpec {
         .collect();
     grouping.values = values();
     grouping.rows.grand_total = shape.grand_total;
+    grouping.rows.expand = expand;
     ViewSpec::default().with_grouping(Some(grouping))
 }
 
@@ -134,11 +139,38 @@ fn prefixes(path: &Path) -> Vec<Path> {
     (1..=path.len()).map(|d| path[..d].to_vec()).collect()
 }
 
-/// The naive model: every group in order of its first row, each Group
-/// Item followed by what is under it, with its Subtotal before or after
-/// that, everything open, and the Grand Total before or after it all.
-fn model(rows: &[Row], levels: usize, shape: &Shape) -> Vec<Described> {
-    fn walk(rows: &[&Row], path: Path, levels: usize, shape: &Shape, out: &mut Vec<Described>) {
+/// Which groups are open: those `depth` opens, except the groups at the
+/// paths in `except`, which are the other way.
+#[derive(Clone, Debug, Default)]
+struct Opened {
+    depth: Depth,
+    except: Vec<Path>,
+}
+
+impl Opened {
+    fn opens(&self, path: &Path) -> bool {
+        let level = path.len() as u32 - 1;
+        let default = match self.depth {
+            Depth::All => true,
+            Depth::Levels(n) => level < n,
+        };
+        default != self.except.contains(path)
+    }
+}
+
+/// The naive model: every group in order of its first row, each open
+/// Group Item followed by what is under it, with its Subtotal before or
+/// after that, a closed one alone, and the Grand Total before or after it
+/// all.
+fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Described> {
+    fn walk(
+        rows: &[&Row],
+        path: Path,
+        levels: usize,
+        shape: &Shape,
+        opened: &Opened,
+        out: &mut Vec<Described>,
+    ) {
         let depth = path.len();
         if depth == levels {
             for row in rows {
@@ -168,15 +200,22 @@ fn model(rows: &[Row], levels: usize, shape: &Shape) -> Vec<Described> {
                 .filter(|r| r.1[depth] == value)
                 .copied()
                 .collect();
+            let open = opened.opens(&child);
             out.push(Described {
                 item: Item::Group(child.clone()),
                 aggregates: Some(aggregates(&under)),
                 kind: ItemKind::Group,
                 depth: depth as u32,
-                open: OpenState::Open,
+                open: match open {
+                    true => OpenState::Open,
+                    false => OpenState::Closed,
+                },
                 ancestors: prefixes(&path),
                 group: Some((FIELDS[depth], value.clone())),
             });
+            if !open {
+                continue;
+            }
             let subtotal = Described {
                 item: Item::Subtotal(child.clone()),
                 aggregates: Some(aggregates(&under)),
@@ -189,7 +228,7 @@ fn model(rows: &[Row], levels: usize, shape: &Shape) -> Vec<Described> {
             if shape.subtotals[depth] == Placement::Before {
                 out.push(subtotal.clone());
             }
-            walk(&under, child, levels, shape, out);
+            walk(&under, child, levels, shape, opened, out);
             if shape.subtotals[depth] == Placement::After {
                 out.push(subtotal);
             }
@@ -209,7 +248,7 @@ fn model(rows: &[Row], levels: usize, shape: &Shape) -> Vec<Described> {
     if shape.grand_total == Placement::Before {
         out.push(total.clone());
     }
-    walk(&all, Vec::new(), levels, shape, &mut out);
+    walk(&all, Vec::new(), levels, shape, opened, &mut out);
     if shape.grand_total == Placement::After {
         out.push(total);
     }
@@ -222,9 +261,19 @@ struct Fake {
     rows: Vec<Row>,
     /// Answers held back, delivered at a later batch.
     late: Vec<Answer<u64>>,
+    /// The groups whose groups or Leaves the layer asked for.
+    asked: Vec<Path>,
 }
 
 impl Fake {
+    fn new(rows: Vec<Row>) -> Self {
+        Fake {
+            rows,
+            late: Vec::new(),
+            asked: Vec::new(),
+        }
+    }
+
     fn under(&self, path: &Path) -> Vec<&Row> {
         (self.rows.iter())
             .filter(|r| path.iter().enumerate().all(|(d, (_, v))| r.1[d] == *v))
@@ -269,6 +318,9 @@ impl Fake {
         let levels = batch.scope.levels.len();
         let mut answers = Vec::new();
         for request in &batch.requests {
+            if matches!(request.want, Want::Groups | Want::Leaves) {
+                self.asked.push(request.path.clone());
+            }
             let range = request.range.start as usize..request.range.end as usize;
             let parts: Vec<(u64, Body<u64>)> = match request.want {
                 Want::Groups => {
@@ -464,10 +516,7 @@ fn the_layer_shows_what_a_whole_table_grouping_shows(tc: TestCase) {
     let rows = tc.draw(rows());
     let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
     let shape = tc.draw(shape());
-    let mut fake = Fake {
-        rows: rows.clone(),
-        late: Vec::new(),
-    };
+    let mut fake = Fake::new(rows.clone());
     let mut layer = GroupingLayer::<u64>::new();
 
     // A spec the backend answers late, superseded before it settles.
@@ -480,7 +529,7 @@ fn the_layer_shows_what_a_whole_table_grouping_shows(tc: TestCase) {
     layer.request_view(spec(levels, &shape));
     drive(&tc, &mut layer, &mut fake);
 
-    let want = model(&rows, levels, &shape);
+    let want = model(&rows, levels, &shape, &Opened::default());
     let mut viewed = Vec::new();
     while let Some(v) = layer.poll_viewed() {
         viewed.push(v);
@@ -534,14 +583,11 @@ fn the_layer_shows_what_a_whole_table_grouping_shows(tc: TestCase) {
 #[hegel::test(test_cases = 200)]
 fn a_leaf_is_located_before_its_page_is_fetched(tc: TestCase) {
     let rows = tc.draw(rows().filter(|r: &Vec<Row>| !r.is_empty()));
-    let mut fake = Fake {
-        rows: rows.clone(),
-        late: Vec::new(),
-    };
+    let mut fake = Fake::new(rows.clone());
     let mut layer = GroupingLayer::<u64>::new();
     layer.request_view(spec(1, &Shape::default()));
     drive(&tc, &mut layer, &mut fake);
-    let want = model(&rows, 1, &Shape::default());
+    let want = model(&rows, 1, &Shape::default(), &Opened::default());
     let i = tc.draw(gs::integers::<usize>().max_value(rows.len() - 1));
     let key = rows[i].0;
     let at = want.iter().position(|d| d.item == Item::Leaf(key)).unwrap();
@@ -554,16 +600,14 @@ fn a_leaf_is_located_before_its_page_is_fetched(tc: TestCase) {
 #[hegel::test(test_cases = 100)]
 fn summary_keys_stay_the_same_across_a_refresh_and_a_new_spec(tc: TestCase) {
     let rows = tc.draw(rows());
-    let mut fake = Fake {
-        rows,
-        late: Vec::new(),
-    };
+    let mut fake = Fake::new(rows);
     let mut layer = GroupingLayer::<u64>::new();
     let keys = |layer: &mut GroupingLayer<u64>, fake: &mut Fake| {
         drive(&tc, layer, fake);
         let count = layer.count(Axis::Rows).unwrap();
         let mut got = layer.window(Axis::Rows, 0..count);
-        for _ in 0..20 {
+        // Each Window fetches one group's Leaves more.
+        for _ in 0..1000 {
             if got.len() as u64 == count {
                 break;
             }
@@ -604,16 +648,13 @@ fn placing_subtotals_elsewhere_lays_out_what_is_known_again(tc: TestCase) {
     let rows = tc.draw(rows());
     let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
     let (first, then) = (tc.draw(shape()), tc.draw(shape()));
-    let mut fake = Fake {
-        rows: rows.clone(),
-        late: Vec::new(),
-    };
+    let mut fake = Fake::new(rows.clone());
     let mut layer = GroupingLayer::<u64>::new();
     layer.request_view(spec(levels, &first));
     drive(&tc, &mut layer, &mut fake);
     while layer.poll_viewed().is_some() {}
     layer.request_view(spec(levels, &then));
-    let want = model(&rows, levels, &then);
+    let want = model(&rows, levels, &then, &Opened::default());
     let viewed = layer
         .poll_viewed()
         .expect("laid out at once, the groups known");
@@ -627,4 +668,251 @@ fn placing_subtotals_elsewhere_lays_out_what_is_known_again(tc: TestCase) {
     if let Some(batch) = layer.poll_batch() {
         assert!(batch.requests.iter().all(|r| r.want == Want::Total));
     }
+}
+
+/// Every item the layer shows, fetched a Window at a time, described and
+/// with the Group Items' Keys added to `known`.
+fn everything(
+    tc: &TestCase,
+    layer: &mut GroupingLayer<u64>,
+    fake: &mut Fake,
+    known: &mut Vec<(Key, Path)>,
+) -> Vec<Described> {
+    let count = layer.count(Axis::Rows).expect("a settled layer counts");
+    let mut got: Vec<(Key, Outline)> = Vec::new();
+    for _ in 0..1000 {
+        if got.len() as u64 >= count {
+            break;
+        }
+        let start = got.len() as u64;
+        let items = layer.window(Axis::Rows, start..count);
+        if items.is_empty() {
+            drive(tc, layer, fake);
+        }
+        got.extend(items);
+    }
+    assert_eq!(got.len() as u64, count, "every item is fetched");
+    let described: Vec<Described> = got.iter().map(|(k, o)| describe(layer, *k, o)).collect();
+    for ((key, _), d) in got.iter().zip(&described) {
+        if let Item::Group(path) = &d.item
+            && !known.iter().any(|(k, _)| k == key)
+        {
+            known.push((*key, path.clone()));
+        }
+    }
+    described
+}
+
+/// The Change Notices since the last call, and the `expand` last applied.
+fn news(layer: &mut GroupingLayer<u64>) -> (Vec<ChangeNotice>, Option<Expand>) {
+    let mut notices = Vec::new();
+    let mut expand = None;
+    while let Some(viewed) = layer.poll_viewed() {
+        notices.extend(viewed.notices.into_iter().map(|(_, n)| n));
+        expand = viewed.applied.grouping.map(|g| g.rows.expand);
+    }
+    (notices, expand)
+}
+
+fn depth(tc: &TestCase, levels: usize) -> Depth {
+    match tc.draw(gs::integers::<u32>().max_value(levels as u32 + 1)) {
+        n if n > levels as u32 => Depth::All,
+        n => Depth::Levels(n),
+    }
+}
+
+/// Opening and closing groups one at a time, or setting the depth: the
+/// layer shows what the model shows, says how with `Collapsed` or
+/// `Expanded` when one group the user sees changes (anything else may be
+/// `Refiltered`), asks only for what open groups need and holds no more
+/// groups and Leaves than it shows.
+#[hegel::test(test_cases = 300)]
+fn opening_and_closing_groups_shows_what_the_model_shows(tc: TestCase) {
+    let rows = tc.draw(rows());
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
+    let first = depth(&tc, levels);
+    let mut opened = Opened {
+        depth: first,
+        except: Vec::new(),
+    };
+    let mut expand = Expand::to(first);
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::new();
+    layer.request_view(opening(levels, &shape, expand.clone()));
+    drive(&tc, &mut layer, &mut fake);
+    news(&mut layer);
+    let mut known = Vec::new();
+    let mut shown = everything(&tc, &mut layer, &mut fake, &mut known);
+    assert_eq!(shown, model(&rows, levels, &shape, &opened));
+
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    for _ in 0..steps {
+        let mut toggled = None;
+        match tc.draw(gs::integers::<u8>().max_value(3)) {
+            3 => {
+                let to = depth(&tc, levels);
+                expand = Expand::to(to);
+                opened = Opened {
+                    depth: to,
+                    except: Vec::new(),
+                };
+            }
+            _ if !known.is_empty() => {
+                let (key, path) = tc.draw(gs::sampled_from(known.clone()));
+                let level = path.len() as u32 - 1;
+                let open = expand.opens(level, key);
+                expand = expand.with(level, key, !open);
+                match opened.except.iter().position(|p| *p == path) {
+                    Some(i) => drop(opened.except.remove(i)),
+                    None => opened.except.push(path.clone()),
+                }
+                toggled = Some(path);
+            }
+            _ => continue,
+        }
+        fake.asked.clear();
+        layer.request_view(opening(levels, &shape, expand.clone()));
+        drive(&tc, &mut layer, &mut fake);
+        let (notices, applied) = news(&mut layer);
+        assert_eq!(applied, Some(expand.clone()), "the spec is applied");
+        let after = everything(&tc, &mut layer, &mut fake, &mut known);
+        assert_eq!(after, model(&rows, levels, &shape, &opened));
+
+        let items = |ds: &[Described]| ds.iter().map(|d| d.item.clone()).collect::<Vec<_>>();
+        let (was, now) = (items(&shown), items(&after));
+        let seen = toggled.is_some_and(|p| was.contains(&Item::Group(p)));
+        match notices.as_slice() {
+            [] => assert_eq!(was, now, "no notice, nothing moved"),
+            [ChangeNotice::Collapsed { at, n }] => {
+                let mut was = was.clone();
+                was.drain(*at as usize..(at + n) as usize);
+                assert_eq!(was, now);
+            }
+            [ChangeNotice::Expanded { at, n }] => {
+                let mut now = now.clone();
+                now.drain(*at as usize..(at + n) as usize);
+                assert_eq!(was, now);
+            }
+            [ChangeNotice::Refiltered(n)] if !seen => assert_eq!(*n, now.len() as u64),
+            other => panic!("unexpected notices {other:?}"),
+        }
+        if seen && was != now {
+            assert!(!notices.is_empty(), "a group the user sees changes");
+        }
+
+        for path in &fake.asked {
+            assert!(
+                prefixes(path).iter().all(|p| opened.opens(p)),
+                "{path:?} asked for under a closed group"
+            );
+        }
+        let leaves_and_groups = (after.iter())
+            .filter(|d| matches!(d.item, Item::Group(_) | Item::Leaf(_)))
+            .count();
+        assert!(
+            layer.held() <= leaves_and_groups as u64,
+            "holds only what it shows"
+        );
+        shown = after;
+    }
+}
+
+/// Groups opened and closed keep their state when the data changes under
+/// them, a group that leaves and comes back included, and new groups
+/// follow the depth.
+#[hegel::test(test_cases = 200)]
+fn open_and_closed_groups_survive_a_change_of_data(tc: TestCase) {
+    let rows = tc.draw(rows());
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
+    let first = depth(&tc, levels);
+    let mut opened = Opened {
+        depth: first,
+        except: Vec::new(),
+    };
+    let mut expand = Expand::to(first);
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::new();
+    layer.request_view(opening(levels, &shape, expand.clone()));
+    drive(&tc, &mut layer, &mut fake);
+    let mut known = Vec::new();
+    everything(&tc, &mut layer, &mut fake, &mut known);
+    if !known.is_empty() {
+        let toggles = tc.draw(gs::vecs(gs::sampled_from(known.clone())).max_size(4));
+        for (key, path) in toggles {
+            let level = path.len() as u32 - 1;
+            if !opened.except.contains(&path) {
+                let open = expand.opens(level, key);
+                expand = expand.with(level, key, !open);
+                opened.except.push(path);
+            }
+        }
+    }
+    layer.request_view(opening(levels, &shape, expand.clone()));
+    drive(&tc, &mut layer, &mut fake);
+
+    let changed = tc.draw(self::rows());
+    fake.rows = changed.clone();
+    layer.refresh();
+    drive(&tc, &mut layer, &mut fake);
+    assert_eq!(
+        everything(&tc, &mut layer, &mut fake, &mut Vec::new()),
+        model(&changed, levels, &shape, &opened),
+        "under the new data"
+    );
+    fake.rows = rows.clone();
+    layer.refresh();
+    drive(&tc, &mut layer, &mut fake);
+    assert_eq!(
+        everything(&tc, &mut layer, &mut fake, &mut Vec::new()),
+        model(&rows, levels, &shape, &opened),
+        "the data back as it was"
+    );
+}
+
+/// A Group Item Key in `expand.except` is kept while its path fits the
+/// levels, through re-sorts and filters, and pruned when the levels change
+/// so that it no longer can; a Key the layer never issued is kept.
+#[hegel::test(test_cases = 100)]
+fn changing_the_levels_prunes_the_exceptions_that_no_longer_fit(tc: TestCase) {
+    let rows = tc.draw(rows().filter(|r: &Vec<Row>| !r.is_empty()));
+    let shape = Shape::default();
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::new();
+    layer.request_view(opening(2, &shape, Expand::default()));
+    drive(&tc, &mut layer, &mut fake);
+    let mut known = Vec::new();
+    everything(&tc, &mut layer, &mut fake, &mut known);
+    let stranger = Key(SUMMARY_KEY_BIT | 77_777);
+    let mut except: Vec<Key> = tc
+        .draw(gs::vecs(gs::sampled_from(known.clone())).unique(true))
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    except.push(stranger);
+    let expand = Expand {
+        depth: Depth::All,
+        except: except.clone(),
+    };
+    let top = |k: &Key| known.iter().any(|(g, p)| g == k && p.len() == 1) || *k == stranger;
+
+    let mut sorted = opening(2, &shape, expand.clone());
+    sorted.rows.sort = SortSpec::new(vec![SortColumn::descending(FIELDS[1])]);
+    layer.request_view(sorted);
+    drive(&tc, &mut layer, &mut fake);
+    assert_eq!(
+        news(&mut layer).1,
+        Some(expand.clone()),
+        "a re-sort keeps them"
+    );
+
+    layer.request_view(opening(1, &shape, expand.clone()));
+    drive(&tc, &mut layer, &mut fake);
+    let pruned: Vec<Key> = except.iter().copied().filter(top).collect();
+    assert_eq!(
+        news(&mut layer).1.map(|e| e.except),
+        Some(pruned.clone()),
+        "one level keeps the top groups"
+    );
 }
