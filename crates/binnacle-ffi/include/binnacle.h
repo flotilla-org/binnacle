@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 10u
+#define BINNACLE_ABI_VERSION 11u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -244,6 +244,8 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_VIEW_EDIT_ADD_SLICER 17
 #define BINNACLE_VIEW_EDIT_REMOVE_SLICER 18
 #define BINNACLE_VIEW_EDIT_REPLACE_SLICER 19
+/* axis is drawn in form (BINNACLE_FORM_*). */
+#define BINNACLE_VIEW_EDIT_SET_FORM 20
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
@@ -462,6 +464,35 @@ typedef struct {
   float width;
   float height;
 } BinnacleRect;
+
+/* Where a tier lies across its Header Band, from the band's outer edge. */
+typedef struct {
+  float start;
+  float end;
+} BinnacleExtent;
+
+/* One spanning cell of a tier in header form: the group of axis keyed key
+ * (its Group Item Key), at level tier (0 outermost), whose level groups by
+ * field (has_field 0 for the values pseudo-level), open or closed
+ * (BINNACLE_OPEN_STATE_*), over the drawn items from Position first to
+ * last that one Strip draws side by side. rect is unclipped in the Header
+ * Band; visible is the part its Strip draws, where its label goes so it
+ * stays in view. cut_before and cut_after are 1 where the group goes on
+ * past the viewport, the Window or a pinned edge. */
+typedef struct {
+  uint32_t axis;
+  uint32_t tier;
+  uint64_t key;
+  uint32_t has_field;
+  uint64_t field;
+  uint32_t open;
+  uint64_t first;
+  uint64_t last;
+  BinnacleRect rect;
+  BinnacleRect visible;
+  uint32_t cut_before;
+  uint32_t cut_after;
+} BinnacleHeaderSpan;
 
 /* UTF-8 text, length-delimited and not NUL-terminated. */
 typedef struct {
@@ -687,6 +718,14 @@ typedef struct {
   size_t leading_pins_len;
   const uint64_t *trailing_pins;
   size_t trailing_pins_len;
+  /* While the axis is grouped in header form: where each level's tier lies
+   * across the Header Band heading its items, outermost first, and the
+   * spans, each tier's in drawn order, Strip by Strip. Empty otherwise. An
+   * item's own header (in headers) starts past the tiers its spans take. */
+  const BinnacleExtent *tiers;
+  size_t tiers_len;
+  const BinnacleHeaderSpan *spans;
+  size_t spans_len;
 } BinnacleAxisSnapshot;
 
 /*
@@ -781,6 +820,9 @@ typedef struct {
   size_t slicers_len;
   const BinnacleListedValue *values;
   size_t values_len;
+  /* The tier of the row Header Band focus is in while outline_focused and
+   * the rows are in header form; 0 otherwise. */
+  uint32_t focused_tier;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -917,7 +959,7 @@ typedef struct {
 /* The cause of a requested View Spec, a hint: the spec alone is the request.
  * keys is set for HIDE and SHOW, key for GROUP (the field) and for EXPAND,
  * COLLAPSE and EXPAND_ALL (the Group Item), expand_all and expand_depth for
- * EXPAND_TO. */
+ * EXPAND_TO, form (BINNACLE_FORM_*) for SET_FORM. */
 typedef struct {
   uint32_t kind;
   uint32_t axis;
@@ -927,6 +969,7 @@ typedef struct {
   size_t keys_len;
   uint32_t expand_all;
   uint32_t expand_depth;
+  uint32_t form;
 } BinnacleViewEdit;
 
 /* Each axis's unfiltered count, where the Table Source knows it. */
@@ -1082,6 +1125,18 @@ int binnacle_grid_set_edge_gap(BinnacleGrid *grid, uint32_t axis, float gap);
  * quarter of the axis's default size. Values that are not finite and
  * non-negative are ignored. */
 int binnacle_grid_set_pin_zone(BinnacleGrid *grid, uint32_t axis, float size);
+
+/* The sizes of the tiers of the Header Band heading axis's items while axis
+ * is grouped in header form (ROWS: the row band's level columns), one per
+ * level from the band's outer edge. Levels past sizes share what the band
+ * has left; what the tiers leave heads the items themselves. Sizes that are
+ * not finite and non-negative are taken as 0. */
+int binnacle_grid_set_tiers(BinnacleGrid *grid, uint32_t axis, const float *sizes, size_t len);
+
+/* Draws the grouped axis in form (BINNACLE_FORM_*) and requests the result
+ * (BINNACLE_VIEW_EDIT_SET_FORM). Nothing happens if the axis is not grouped
+ * or the latest request draws it so already. */
+int binnacle_grid_set_form(BinnacleGrid *grid, uint32_t axis, uint32_t form);
 
 /* The least length along axis the pinned Strips leave to the scrolling Strip
  * (0 at first): pinned Strips longer than the rest are clipped at their inside

@@ -595,6 +595,12 @@ int main(void) {
   CHECK(effect.axis == BINNACLE_COLS);
   CHECK(binnacle_grid_set_header(grid, BINNACLE_COLS, 0));
   CHECK(!binnacle_grid_set_header(grid, 2, 3));
+  /* Tiers and forms only show while the rows are grouped in header form. */
+  const float tiers[] = {4.0f, 6.0f};
+  CHECK(binnacle_grid_set_tiers(grid, BINNACLE_ROWS, tiers, 2));
+  CHECK(!binnacle_grid_set_tiers(grid, 2, tiers, 2));
+  CHECK(binnacle_grid_set_form(grid, BINNACLE_ROWS, BINNACLE_FORM_HEADER));
+  CHECK(!binnacle_grid_set_form(grid, BINNACLE_ROWS, 2));
   frame(grid, &snap);
   CHECK(snap.mode == BINNACLE_MODE_IDLE);
   CHECK(c->header == 0 && c->strip[0].offset == 0);
