@@ -186,8 +186,9 @@ impl From<WireComparison> for Comparison {
 }
 
 /// What a condition asks of its item's values, tagged like the Effects.
-/// A OneOf's values are text, or `null` for a blank. `Other` is a kind this
-/// bridge does not carry yet; it never comes back.
+/// A OneOf's values are text, or `null` for a blank; a Native condition's
+/// text is in the Table Source's own language, passed on as written. `Other`
+/// is a kind this bridge does not carry yet; it never comes back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum WireConditionKind {
@@ -199,6 +200,9 @@ pub enum WireConditionKind {
     },
     Compare {
         comparison: WireComparison,
+    },
+    Native {
+        text: String,
     },
     #[serde(skip_deserializing)]
     Other,
@@ -229,6 +233,7 @@ impl From<&Condition> for WireCondition {
                 ConditionKind::Compare(c) => WireConditionKind::Compare {
                     comparison: (*c).into(),
                 },
+                ConditionKind::Native(text) => WireConditionKind::Native { text: text.clone() },
                 _ => WireConditionKind::Other,
             },
             not: c.not,
@@ -249,6 +254,9 @@ impl WireCondition {
             }
             WireConditionKind::Compare { comparison } => {
                 Some(Condition::compare(Key(self.key), comparison.into()).not(self.not))
+            }
+            WireConditionKind::Native { text } => {
+                Some(Condition::native(Key(self.key), text).not(self.not))
             }
             WireConditionKind::Other => None,
         }
@@ -402,6 +410,16 @@ pub enum WireViewEdit {
         axis: WireAxis,
         depth: WireDepth,
     },
+    AddSlicer {
+        condition: WireCondition,
+    },
+    RemoveSlicer {
+        condition: WireCondition,
+    },
+    ReplaceSlicer {
+        from: WireCondition,
+        to: WireCondition,
+    },
     Other,
 }
 
@@ -461,6 +479,16 @@ impl From<ViewEdit> for WireViewEdit {
             ViewEdit::ExpandTo { axis, depth } => WireViewEdit::ExpandTo {
                 axis: axis.into(),
                 depth: depth.into(),
+            },
+            ViewEdit::AddSlicer { condition } => WireViewEdit::AddSlicer {
+                condition: (&condition).into(),
+            },
+            ViewEdit::RemoveSlicer { condition } => WireViewEdit::RemoveSlicer {
+                condition: (&condition).into(),
+            },
+            ViewEdit::ReplaceSlicer { from, to } => WireViewEdit::ReplaceSlicer {
+                from: (&from).into(),
+                to: (&to).into(),
             },
             _ => WireViewEdit::Other,
         }

@@ -6,7 +6,8 @@ use std::fmt;
 
 use binnacle_core::{
     Axis, Button, ChangeNotice, Compared, Edge, EditEnd, FocusStep, HeaderClick, Key, Located,
-    Modifiers, PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
+    Modifiers, Placements, PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support,
+    TextSupport,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -173,19 +174,25 @@ pub fn located(code: u8, position: f64) -> Located {
     }
 }
 
-pub const SUPPORT_SORT: u8 = 1;
-pub const SUPPORT_TEXT: u8 = 2;
-pub const SUPPORT_TEXT_REGEX: u8 = 4;
-pub const SUPPORT_ONE_OF: u8 = 8;
-pub const SUPPORT_COMPARE_NUMBERS: u8 = 16;
-pub const SUPPORT_COMPARE_DATES: u8 = 32;
-pub const SUPPORT_GROUP: u8 = 64;
+pub const SUPPORT_SORT: u32 = 1;
+pub const SUPPORT_TEXT: u32 = 2;
+pub const SUPPORT_TEXT_REGEX: u32 = 4;
+pub const SUPPORT_ONE_OF: u32 = 8;
+pub const SUPPORT_COMPARE_NUMBERS: u32 = 16;
+pub const SUPPORT_COMPARE_DATES: u32 = 32;
+pub const SUPPORT_GROUP: u32 = 64;
+pub const SUPPORT_NATIVE: u32 = 128;
+pub const SUPPORT_PIVOT: u32 = 256;
+pub const SUPPORT_SUBTOTAL_BEFORE: u32 = 512;
+pub const SUPPORT_SUBTOTAL_AFTER: u32 = 1024;
 
 /// Support from its bits: [`SUPPORT_SORT`], [`SUPPORT_TEXT`] with
 /// [`SUPPORT_TEXT_REGEX`] if Text conditions take regexes (regex alone is no
 /// text support), [`SUPPORT_ONE_OF`], [`SUPPORT_COMPARE_NUMBERS`] or
-/// [`SUPPORT_COMPARE_DATES`] (numbers, if both), and [`SUPPORT_GROUP`].
-pub fn support(bits: u8) -> Support {
+/// [`SUPPORT_COMPARE_DATES`] (numbers, if both), [`SUPPORT_GROUP`] (a row
+/// level), [`SUPPORT_NATIVE`], [`SUPPORT_PIVOT`] (a column level), and
+/// [`SUPPORT_SUBTOTAL_BEFORE`] and [`SUPPORT_SUBTOTAL_AFTER`].
+pub fn support(bits: u32) -> Support {
     let text = (bits & SUPPORT_TEXT != 0).then(|| TextSupport::new(bits & SUPPORT_TEXT_REGEX != 0));
     let compare = match () {
         _ if bits & SUPPORT_COMPARE_NUMBERS != 0 => Some(Compared::Numbers),
@@ -198,10 +205,16 @@ pub fn support(bits: u8) -> Support {
         .with_one_of(bits & SUPPORT_ONE_OF != 0)
         .with_compare(compare)
         .with_group(bits & SUPPORT_GROUP != 0)
+        .with_native(bits & SUPPORT_NATIVE != 0)
+        .with_pivot(bits & SUPPORT_PIVOT != 0)
+        .with_subtotals(Placements {
+            before: bits & SUPPORT_SUBTOTAL_BEFORE != 0,
+            after: bits & SUPPORT_SUBTOTAL_AFTER != 0,
+        })
 }
 
 /// The bits of `support`, as [`support`] reads them.
-pub fn support_bits(support: Support) -> u8 {
+pub fn support_bits(support: Support) -> u32 {
     let mut bits = if support.sort { SUPPORT_SORT } else { 0 };
     if let Some(t) = support.text {
         bits |= SUPPORT_TEXT;
@@ -212,8 +225,17 @@ pub fn support_bits(support: Support) -> u8 {
     if support.one_of {
         bits |= SUPPORT_ONE_OF;
     }
-    if support.group {
-        bits |= SUPPORT_GROUP;
+    let flags = [
+        (support.group, SUPPORT_GROUP),
+        (support.native, SUPPORT_NATIVE),
+        (support.pivot, SUPPORT_PIVOT),
+        (support.subtotals.before, SUPPORT_SUBTOTAL_BEFORE),
+        (support.subtotals.after, SUPPORT_SUBTOTAL_AFTER),
+    ];
+    for (on, bit) in flags {
+        if on {
+            bits |= bit;
+        }
     }
     bits | match support.compare {
         None => 0,
@@ -360,7 +382,9 @@ mod tests {
 
     #[test]
     fn support_bits_round_trip_and_regex_needs_text() {
-        for bits in [0, 1, 2, 3, 6, 7, 8, 15, 16, 32, 47, 64, 79, 111] {
+        for bits in [
+            0, 1, 2, 3, 6, 7, 8, 15, 16, 32, 47, 64, 79, 111, 128, 256, 512, 1024, 2031,
+        ] {
             assert_eq!(support_bits(support(bits)), bits);
         }
         assert_eq!(support(SUPPORT_TEXT_REGEX).text, None);

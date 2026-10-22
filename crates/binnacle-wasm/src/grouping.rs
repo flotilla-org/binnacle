@@ -3,8 +3,8 @@
 //! names with IDs: Keys as `u64` (a `bigint` in JS), names as strings.
 
 use binnacle_core::{
-    AggregateValue, Depth, Expand, Form, GroupedAxis, Grouping, ItemKind, Key, Level, OpenState,
-    Outline, Placement, Value,
+    Aggregate, AggregateValue, Depth, Expand, Form, GroupedAxis, Grouping, ItemKind, Key, Level,
+    OpenState, Outline, Placement, Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +89,34 @@ pub struct WireAggregateValue {
     pub aggregate: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<String>,
+}
+
+impl From<&AggregateValue> for WireAggregateValue {
+    fn from(v: &AggregateValue) -> Self {
+        WireAggregateValue {
+            field: v.field.map(|k| k.0),
+            aggregate: v.aggregate.clone(),
+            params: v.params.clone(),
+        }
+    }
+}
+
+/// An aggregate the Table Source offers over a field: its name and the
+/// names of the parameters it takes (none if omitted).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WireAggregate {
+    pub name: String,
+    #[serde(default)]
+    pub params: Vec<String>,
+}
+
+impl From<&Aggregate> for WireAggregate {
+    fn from(a: &Aggregate) -> Self {
+        WireAggregate {
+            name: a.name.clone(),
+            params: a.params.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -187,13 +215,7 @@ impl From<&Grouping> for WireGrouping {
         WireGrouping {
             row_levels: levels(&g.row_levels),
             col_levels: levels(&g.col_levels),
-            values: (g.values.iter())
-                .map(|v| WireAggregateValue {
-                    field: v.field.map(|k| k.0),
-                    aggregate: v.aggregate.clone(),
-                    params: v.params.clone(),
-                })
-                .collect(),
+            values: g.values.iter().map(WireAggregateValue::from).collect(),
             slicers: g.slicers.iter().map(WireCondition::from).collect(),
             row_axis: (&g.rows).into(),
             col_axis: (&g.cols).into(),

@@ -7,9 +7,9 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Comparison, Condition, ConditionKind, ConditionState, Cursor, Depth,
-    DropTarget, Edge, Form, GroupedAxis, Grouping, HeaderPlacement, ItemKind, Key, Level, Mode,
-    OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot, SortDirection, SortSpec,
+    AggregateValue, Axis, CellState, Comparison, Condition, ConditionKind, ConditionState, Cursor,
+    Depth, DropTarget, Edge, Form, GroupedAxis, Grouping, HeaderPlacement, ItemKind, Key, Level,
+    Mode, OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot, SortDirection, SortSpec,
     TextQuery, Value, ViewSpec,
 };
 
@@ -167,11 +167,12 @@ impl Writer<'_> {
     }
 
     /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
-    /// this bridge does not carry 1, OneOf 2, Compare 3) and a Text
-    /// condition's query, a OneOf's values, each a blank flag then text if
-    /// not blank, or a comparison's code (equal 0, not equal 1, less 2, at
+    /// this bridge does not carry 1, OneOf 2, Compare 3, Native 4) and a
+    /// Text condition's query, a OneOf's values, each a blank flag then text
+    /// if not blank, a comparison's code (equal 0, not equal 1, less 2, at
     /// most 3, greater 4, at least 5, between 6) and its scalars, each a
-    /// date flag then the number or milliseconds.
+    /// date flag then the number or milliseconds, or a Native condition's
+    /// text.
     fn condition(&mut self, c: &Condition) {
         self.key(c.key);
         self.flag(c.not);
@@ -214,6 +215,10 @@ impl Writer<'_> {
                         }
                     }
                 }
+            }
+            ConditionKind::Native(text) => {
+                self.num(4);
+                self.text(text);
             }
             _ => self.num(1),
         }
@@ -278,6 +283,30 @@ impl Writer<'_> {
         }
     }
 
+    /// A value: its flagged field, its aggregate's name and its parameters.
+    fn value(&mut self, v: &AggregateValue) {
+        self.flag(v.field.is_some());
+        if let Some(field) = v.field {
+            self.key(field);
+        }
+        self.text(&v.aggregate);
+        self.len(v.params.len());
+        for p in &v.params {
+            self.text(p);
+        }
+    }
+
+    /// Where a listed part stands: applied 0, adding 1, removing 2, not
+    /// applied 3.
+    fn state(&mut self, state: ConditionState) {
+        self.num(match state {
+            ConditionState::Applied => 0,
+            ConditionState::Adding => 1,
+            ConditionState::Removing => 2,
+            ConditionState::NotApplied => 3,
+        });
+    }
+
     /// A grouped axis: its Grand Total's placement, its form (0 outline,
     /// 1 header), its default depth (flagged unless every level is open),
     /// then its exceptions.
@@ -312,15 +341,7 @@ impl Writer<'_> {
         }
         self.len(g.values.len());
         for v in &g.values {
-            self.flag(v.field.is_some());
-            if let Some(field) = v.field {
-                self.key(field);
-            }
-            self.text(&v.aggregate);
-            self.len(v.params.len());
-            for p in &v.params {
-                self.text(p);
-            }
+            self.value(v);
         }
         self.len(g.slicers.len());
         for c in &g.slicers {
@@ -487,17 +508,29 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
                 .map_or(0, |k| support_bits(s.support(axis.other(), k)));
             w.header(h);
             w.num(support);
+            // The aggregates offered over the item: each its name and its
+            // parameters' names.
+            let offered = h.key.map_or(&[][..], |k| s.aggregates(axis.other(), k));
+            w.len(offered.len());
+            for a in offered {
+                w.text(&a.name);
+                w.len(a.params.len());
+                for p in &a.params {
+                    w.text(p);
+                }
+            }
         }
         let conditions = s.conditions(axis);
         w.len(conditions.len());
         for (c, state) in &conditions {
-            w.num(match state {
-                ConditionState::Applied => 0,
-                ConditionState::Adding => 1,
-                ConditionState::Removing => 2,
-                ConditionState::NotApplied => 3,
-            });
+            w.state(*state);
             w.condition(c);
+        }
+        let levels = s.levels(axis);
+        w.len(levels.len());
+        for (level, state) in &levels {
+            w.state(*state);
+            w.level(level);
         }
         let total = s.total(axis);
         w.flag(total.is_some());
@@ -617,6 +650,19 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.key(m.col);
     }
     w.num(find_bits(s.find_support()));
+    // The grouping's slicers and values as listed, each its state first.
+    let slicers = s.slicers();
+    w.len(slicers.len());
+    for (c, state) in &slicers {
+        w.state(*state);
+        w.condition(c);
+    }
+    let values = s.values();
+    w.len(values.len());
+    for (v, state) in &values {
+        w.state(*state);
+        w.value(v);
+    }
     // Cell states, row-major over the drawn items, as bit flags.
     for row in s.drawn(Axis::Rows) {
         for col in s.drawn(Axis::Cols) {

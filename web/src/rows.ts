@@ -45,12 +45,23 @@
 // number, stable for the source's life (the Grand Total's is -1, its
 // `grandTotal`); `group(id)` describes it, and its cells hold its group's
 // figure for each column a value aggregates. The level columns leave the
-// columns while grouped, and the rows don't move.
+// columns while grouped, and the rows don't move. Each column offers the
+// aggregates it can take (`count` and `distinct count` of any, the rest of
+// numeric ones); a value asking for another is left out, listed as not
+// applied.
+//
+// Slicers filter the rows before they group, on any column, shown or not,
+// grouped or not; with slicers and no levels the table is plain, sliced.
+// While grouped, a comparison on a column a value aggregates leaves out the
+// groups whose figure (the first such value's) fails it, with everything
+// under them, rather than the rows; the other conditions filter the rows.
 
 import { NOTICE_CODE } from "./codes";
 import { comparedBy, comparedOf, passes, type Compared } from "./compare";
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
 import type {
+  Aggregate,
+  AggregateValue,
   AppliedView,
   ChangeNotice,
   Condition,
@@ -198,6 +209,10 @@ function encoded(texts: (string | null)[]): SortKeys & { type: "strings" } {
 
 const DIRECTION = { ascending: 0, descending: 1 } as const;
 
+/** The aggregates any column takes, and those a column of numbers (or dates) takes too. */
+const COUNTS: readonly Aggregate[] = [{ name: "count" }, { name: "distinct count" }];
+const NUMBERS: readonly Aggregate[] = [...COUNTS, ...["sum", "average", "minimum", "maximum"].map((name) => ({ name }))];
+
 /** Why `RegExp` rejects `query`'s pattern, without its preamble; `undefined` if it takes it. */
 function invalid(query: TextMatch): string | undefined {
   if (!query.regex) return undefined;
@@ -225,8 +240,13 @@ function matcher(query: TextMatch): ((text: string) => boolean) | undefined {
   return (text) => text.toLowerCase().includes(lower);
 }
 
-/** How a condition tests a cell's text (`null` for no value) or value, before `not`; `undefined` if its pattern is not a valid `RegExp`. */
+/**
+ * How a condition tests a cell's text (`null` for no value) or value, before
+ * `not`; `undefined` if its pattern is not a valid `RegExp`, or it is a
+ * Native condition, which no query language here reads.
+ */
 function tester(kind: Condition<unknown>["kind"]): Test | undefined {
+  if (kind.type === "Native") return undefined;
   if (kind.type === "OneOf") {
     const listed = new Set(kind.values);
     return (text) => listed.has(text);
@@ -367,6 +387,8 @@ export function fromRows<R extends object>(
   /** The columns the rows group by, outermost first, and the grouping in force. */
   let levels: ColId[] = [];
   let grouping: Grouping<ColId, number, ColId> | null = null;
+  /** The slicers in force, each with its test. */
+  let slicers: Filter<ColId>["conditions"] = [];
   /** The Summary Items seen in grouped Windows since the rows last grouped, by row ID. */
   const groups = new Map<number, RowsGroup<ColId>>();
   const groupable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.sortable !== false;
@@ -381,6 +403,19 @@ export function fromRows<R extends object>(
   const comparedAcross = (id: number): Compared | null =>
     isRow(id) ? comparedOf(columns.filter((c) => c.filterable !== false).map((c) => rows[id]![c.key])) : null;
   const takesColumn: Takes<ColId> = Object.assign((id: ColId) => filterable(id), { compared });
+  /** The aggregates column `id` takes: every one of a column of numbers or dates. */
+  const aggregatesOf = (id: ColId): readonly Aggregate[] => {
+    if (!index.has(id)) return [];
+    return rows.every((r) => r[id] == null || numeric(r[id]) !== undefined) ? NUMBERS : COUNTS;
+  };
+  /** Whether a condition of the rows acts on the groups, after aggregating: a comparison on a column a value aggregates, while grouped. */
+  const later = (c: Condition<ColId>) =>
+    levels.length > 0 && c.kind.type === "Compare" && (grouping?.values.some((v) => v.field === c.id) ?? false);
+  /** The filter the rows themselves pass: the rows' conditions but those acting later, then the slicers. */
+  const leafFilter = (): Filter<ColId> => ({
+    ...filters.rows,
+    conditions: [...filters.rows.conditions.filter((k) => !later(k.condition)), ...slicers],
+  });
   const isRow = (id: number) => Number.isInteger(id) && id >= 0 && id < rows.length;
   const takesRow: Takes<number> = Object.assign((id: number) => isRow(id), { compared: comparedAcross });
   // Created on first use, once the widget has loaded the wasm module.
@@ -482,8 +517,9 @@ export function fromRows<R extends object>(
   /** Hands binnacle-memory the rows the rows' filter and `keep` keep. */
   const refilter = () => {
     const m = memory();
-    if (!keep && !filtering(filters.rows)) return void m.clear_filter(ROWS);
-    const keeps = rowKeeper(filters.rows);
+    const filter = leafFilter();
+    if (!keep && !filtering(filter)) return void m.clear_filter(ROWS);
+    const keeps = rowKeeper(filter);
     m.filter(ROWS, Uint8Array.from(rows, (r) => (keeps(r) ? 1 : 0)));
   };
 
@@ -500,7 +536,8 @@ export function fromRows<R extends object>(
    * (ties by text), up to `limit`; blanks counted unless searching.
    */
   const distinct = (id: ColId, search: string, limit: number, narrow: FilterSpec<ColId>): Distinct => {
-    const keeps = rowKeeper(narrowing(narrow, takesColumn));
+    const narrowed = narrowing(narrow, takesColumn);
+    const keeps = rowKeeper({ ...narrowed, conditions: [...narrowed.conditions, ...slicers] });
     const found = search ? matcher({ text: search, caseSensitive: false, regex: false })! : undefined;
     const values = rows.map((r) => r[id]);
     const numbers = values.every((v) => v == null || numeric(v) !== undefined);
@@ -609,10 +646,14 @@ export function fromRows<R extends object>(
       rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except: groupKeys(grouping) } },
       colAxis: { ...grouping.colAxis, expand: { ...grouping.colAxis.expand, except: [] } },
     };
+    const having = filters.rows.conditions
+      .filter((k) => later(k.condition))
+      .map(({ condition: c }) => ({ key: column(c.id), kind: c.kind, not: c.not }));
     m.group(
-      wire,
+      { ...wire, slicers: [] },
       Uint32Array.from(applied, (c) => index.get(c.id)!),
       Uint8Array.from(applied, (c) => DIRECTION[c.direction]),
+      having,
     );
     // The Group Items whose paths no longer fit the levels are pruned.
     const except = Array.from(m.except(), summaryId);
@@ -726,8 +767,8 @@ export function fromRows<R extends object>(
     rowKeys.delete(id);
     hits = undefined;
     let moved = false;
-    if (keep || filtering(filters.rows)) {
-      const kept = rowKeeper(filters.rows)(rows[id]!) ? 1 : 0;
+    if (keep || filtering(leafFilter())) {
+      const kept = rowKeeper(leafFilter())(rows[id]!) ? 1 : 0;
       moved = defer ? m.defer(ROWS, id, kept) : m.refilter(ROWS, id, kept);
     }
     if (applied.length || levels.length) sort(applied);
@@ -765,6 +806,8 @@ export function fromRows<R extends object>(
           oneOf: filterable,
           compare: column ? compared(by) : null,
           group: column !== undefined && column.sortable !== false,
+          subtotals: { before: true, after: true },
+          aggregates: [...aggregatesOf(by)],
         };
       },
       distinct: (by, { search, limit, narrow }) => distinct(by, search, limit, narrow),
@@ -811,6 +854,7 @@ export function fromRows<R extends object>(
         throw new Error(`binnacle: fromRows cannot sort by ${by.map((c) => c.id).join(", ")}`);
       }
       const byRows = asked.cols.sort.filter((c) => isRow(c.id));
+      const leavesBefore = JSON.stringify(spec(leafFilter()));
       const forRows = take(filters.rows, asked.rows.filter, takesColumn);
       const forCols = take(filters.cols, asked.cols.filter, takesRow);
       filters = { rows: forRows.filter, cols: forCols.filter };
@@ -821,15 +865,18 @@ export function fromRows<R extends object>(
       // The level columns leave the columns while the rows group by them.
       const before = grouping;
       levels = [...new Set((asked.grouping?.rowLevels ?? []).flatMap((l) => ("field" in l && groupable(l.field) ? [l.field] : [])))];
+      slicers = testable(asked.grouping?.slicers ?? [], takesColumn);
+      const offered = (v: AggregateValue<ColId>) =>
+        v.field === null ? v.aggregate === "count" : aggregatesOf(v.field).some((a) => a.name === v.aggregate);
       grouping =
-        levels.length === 0
+        levels.length === 0 && slicers.length === 0
           ? null
           : {
               ...asked.grouping!,
               rowLevels: levels.map((field) => asked.grouping!.rowLevels.find((l) => "field" in l && l.field === field)!),
               colLevels: [],
-              values: asked.grouping!.values.filter((v) => v.field === null || index.has(v.field)),
-              slicers: [],
+              values: asked.grouping!.values.filter(offered),
+              slicers: slicers.map((k) => k.condition),
             };
       // Opening and closing groups regroups nothing.
       const shape = (g: typeof grouping) => JSON.stringify(g && { ...g, rowAxis: { ...g.rowAxis, expand: null } });
@@ -850,7 +897,8 @@ export function fromRows<R extends object>(
       };
       const sorted = sort(by);
       // Any View Spec, even the one in force, filters the unmatched items.
-      const refiltered = forRows.changed || shownChanged.rows || m.has_unmatched(ROWS);
+      const leavesChanged = JSON.stringify(spec(leafFilter())) !== leavesBefore;
+      const refiltered = forRows.changed || leavesChanged || shownChanged.rows || m.has_unmatched(ROWS);
       if (refiltered) refilter();
       const regrouped = regrouping || (levels.length > 0 && (refiltered || hid.rows || sorted));
       if (regrouped) regroup();

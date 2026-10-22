@@ -47,7 +47,19 @@ export const HEADER_CLICK = { sort: 0, select: 1, none: 2 } as const;
 export const GRAND_TOTAL = 1n << 63n;
 
 /** The support bits the wasm `set_support` input takes; `textRegex` needs `text`. */
-export const SUPPORT = { sort: 1, text: 2, textRegex: 4, oneOf: 8, compareNumbers: 16, compareDates: 32, group: 64 } as const;
+export const SUPPORT = {
+  sort: 1,
+  text: 2,
+  textRegex: 4,
+  oneOf: 8,
+  compareNumbers: 16,
+  compareDates: 32,
+  group: 64,
+  native: 128,
+  pivot: 256,
+  subtotalBefore: 512,
+  subtotalAfter: 1024,
+} as const;
 
 /** The quick filter bits the wasm `set_quick_filter_support` input takes. */
 export const QUICK_FILTER = { on: 1, regex: 2 } as const;

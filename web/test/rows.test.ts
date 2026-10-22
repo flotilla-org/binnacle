@@ -169,7 +169,7 @@ function satisfies(condition: Condition<keyof Rec>, row: Rec): boolean {
 /** Whether `condition` keeps an item whose value in the item it names is `value`. */
 function holds(condition: Condition<unknown>, value: Rec[keyof Rec]): boolean {
   const kind = condition.kind;
-  if (kind.type === "Compare") throw new Error("only Text and OneOf conditions are drawn");
+  if (kind.type === "Compare" || kind.type === "Native") throw new Error("only Text and OneOf conditions are drawn");
   const matched =
     kind.type === "OneOf"
       ? kind.values.includes(value === null ? null : String(value))
@@ -531,7 +531,16 @@ describe("fromRows", () => {
       { n: 3, s: "Cádiz", b: 0 },
     ];
     const source = fromRows(rows, [{ key: "n" }, { key: "s" }, { key: "b", filterable: false }]);
-    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false, oneOf: false, compare: null, group: true });
+    expect(source.rows.support?.("b")).toEqual({
+      sort: true,
+      text: false,
+      oneOf: false,
+      compare: null,
+      group: true,
+      subtotals: { before: true, after: true },
+      aggregates: ["count", "distinct count", "sum", "average", "minimum", "maximum"].map((name) => ({ name })),
+    });
+    expect(source.rows.support?.("s")?.aggregates).toEqual([{ name: "count" }, { name: "distinct count" }]);
     const text = (text: string): TextMatch => ({ text, caseSensitive: false, regex: false });
     const notBergen: Condition<keyof Rec> = { id: "s", kind: { type: "Text", query: text("bergen") }, not: true };
     const onB: Condition<keyof Rec> = { id: "b", kind: { type: "Text", query: text("1") }, not: false };
@@ -1201,6 +1210,7 @@ describe("fromRows's grouping", () => {
     total: Placement,
     sort: SortSpec<keyof Rec>,
     keep: (r: Rec, i: number) => boolean,
+    having: (sum: number | null) => boolean = () => true,
   ): Shown[] => {
     const by = levels.map(([id]) => ({ id, direction: sort.find((c) => c.id === id)?.direction ?? ("ascending" as const) }));
     const kept = reference(rows, [...by, ...sort], () => true).filter((i) => keep(rows[i]!, i));
@@ -1231,6 +1241,7 @@ describe("fromRows's grouping", () => {
         });
       }
       return groups.flatMap(([value, group]) => {
+        if (!having(figures(group).sum)) return [];
         const sub = { kind: "subtotal", value, ...figures(group) };
         return [
           { kind: "group", value, ...figures(group) },
@@ -1294,6 +1305,105 @@ describe("fromRows's grouping", () => {
         source.destroy();
       }
     }));
+
+  test("slicers filter the rows before they group, on any column, hidden or not, and a comparison on the summed column leaves out the groups whose sum fails it, under them too, while the figures above stay", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const placement = gs.sampledFrom<Placement>(["before", "after", "off"]);
+        const levels: [keyof Rec, Placement][] = [
+          ["s", tc.draw(placement)],
+          ...(tc.draw(gs.booleans()) ? [["n", tc.draw(placement)] as [keyof Rec, Placement]] : []),
+        ];
+        const total = tc.draw(placement);
+        const greater = (id: keyof Rec, at: number, not: boolean): Condition<keyof Rec> => ({
+          id,
+          kind: { type: "Compare", comparison: { op: "greater", value: { type: "number", value: at } } },
+          not,
+        });
+        // A slicer on n, maybe hidden from the columns, and a comparison on the sum of b.
+        const sliceAt = tc.draw(gs.integers({ minValue: -5, maxValue: 5 }));
+        const slicer = greater("n", sliceAt, tc.draw(gs.booleans()));
+        const hideN = tc.draw(gs.booleans());
+        const havingAt = tc.draw(gs.integers({ minValue: -1, maxValue: 4 }));
+        const condition = greater("b", havingAt, tc.draw(gs.booleans()));
+        const grouping = {
+          ...rowsBy<keyof Rec>("s"),
+          rowLevels: levels.map(([field, subtotal]) => ({ field, subtotal })),
+          values: [
+            { field: "b" as const, aggregate: "sum" },
+            { field: null, aggregate: "count" },
+          ],
+          slicers: [slicer],
+          rowAxis: { ...rowsBy("s").rowAxis, grandTotal: total },
+        };
+        const spec = rowsSorted<keyof Rec>([], null, [condition]);
+        const asked = { ...spec, cols: { ...spec.cols, hidden: hideN ? (["n"] as (keyof Rec)[]) : [] }, grouping };
+        const answer = source.view!(asked, signal) as AppliedView<number, keyof Rec>;
+        // A comparison on a column of no values is left out.
+        const sliced = rows.some((r) => r.n !== null);
+        const filtered = rows.some((r) => r.b !== null);
+        expect(answer.grouping?.slicers).toEqual(sliced ? [slicer] : []);
+        expect(answer.rows.filter?.conditions).toEqual(filtered ? [condition] : []);
+        const n = source.rows.count() as number;
+        const window = source.rows.window(0, n, signal) as OutlinedWindow<number, keyof Rec>;
+        const shown = window.ids.map((id): Shown => {
+          if (id >= 0) return id;
+          const group = source.group(id)!;
+          const [sum, count] = group.aggregates;
+          return { kind: group.kind, value: group.value, sum: sum ?? null, count: count! };
+        });
+        const passes = (c: Condition<keyof Rec>, v: number | null) =>
+          (v !== null && c.kind.type === "Compare" && c.kind.comparison.op === "greater" && v > (c.kind.comparison.value.value as number)) !== c.not;
+        const keep = (r: Rec) => !sliced || passes(slicer, r.n);
+        const having = (sum: number | null) => !filtered || passes(condition, sum);
+        expect(shown).toEqual(nestedModel(rows, levels, total, [], keep, having));
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("with slicers and no levels the rows are plain and sliced, and a comparison on a summed column filters the rows again", () => {
+    const rows: Rec[] = [
+      { n: 1, s: "a", b: 2 },
+      { n: 5, s: "a", b: 0 },
+      { n: 3, s: "b", b: 1 },
+    ];
+    const source = fromRows(rows, COLUMNS);
+    try {
+      const big: Condition<keyof Rec> = { id: "n", kind: { type: "Compare", comparison: { op: "greater", value: { type: "number", value: 2 } } }, not: false };
+      const some: Condition<keyof Rec> = { id: "b", kind: { type: "Compare", comparison: { op: "greater", value: { type: "number", value: 0 } } }, not: false };
+      const grouping = { ...rowsBy<keyof Rec>("s"), rowLevels: [], values: [{ field: "b" as const, aggregate: "sum" }], slicers: [big] };
+      const answer = source.view!({ ...rowsSorted<keyof Rec>([], null, [some]), grouping }, signal) as AppliedView<number, keyof Rec>;
+      expect(answer.grouping).toEqual(grouping);
+      expect(source.rows.window(0, source.rows.count() as number, signal)).toEqual([2]);
+      expect(source.cols.window(0, 3, signal)).toEqual(["n", "s", "b"]);
+      // A Native slicer, which fromRows can't read, is left out; with nothing left the table is plain.
+      const native: Condition<keyof Rec> = { id: "s", kind: { type: "Native", text: "s = 'a'" }, not: false };
+      const plain = source.view!({ ...rowsSorted<keyof Rec>([]), grouping: { ...grouping, slicers: [native] } }, signal) as AppliedView<number, keyof Rec>;
+      expect(plain.grouping).toBeNull();
+      expect(source.rows.window(0, source.rows.count() as number, signal)).toEqual([0, 1, 2]);
+    } finally {
+      source.destroy();
+    }
+  });
+
+  test("a value asking for an aggregate its column does not offer is left out of the answer", () => {
+    const source = fromRows([{ n: 1, s: "a", b: 2 }] as Rec[], COLUMNS);
+    try {
+      const values = [
+        { field: "b" as const, aggregate: "sum" },
+        { field: "s" as const, aggregate: "sum" },
+        { field: "b" as const, aggregate: "median" },
+        { field: "s" as const, aggregate: "distinct count" },
+      ];
+      const answer = source.view!({ ...rowsSorted<keyof Rec>([]), grouping: { ...rowsBy<keyof Rec>("n"), values } }, signal) as AppliedView<number, keyof Rec>;
+      expect(answer.grouping?.values).toEqual([values[0], values[3]]);
+    } finally {
+      source.destroy();
+    }
+  });
 
   test("a Grand Total pinned out of view has its figures and label before any Window lists it", () =>
     hegel.test((tc) => {

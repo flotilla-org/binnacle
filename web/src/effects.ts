@@ -37,6 +37,12 @@ export type KeyedViewEdit =
   | { type: "ExpandAll"; axis: AxisName; key: bigint }
   /** Every group of `axis` was opened to `depth` levels, its exceptions cleared. */
   | { type: "ExpandTo"; axis: AxisName; depth: number | "all" }
+  /** `condition` was added to the grouping's slicers, which filter the base rows before aggregating. */
+  | { type: "AddSlicer"; condition: KeyedCondition }
+  /** The first slicer equal to `condition` was removed. */
+  | { type: "RemoveSlicer"; condition: KeyedCondition }
+  /** The first slicer equal to `from` became `to`, in place. */
+  | { type: "ReplaceSlicer"; from: KeyedCondition; to: KeyedCondition }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -130,6 +136,7 @@ function isCondition(v: unknown): v is KeyedCondition {
     (v.kind.type === "Text" && isTextQuery(v.kind.query)) ||
     (v.kind.type === "OneOf" && listed(v.kind.values)) ||
     (v.kind.type === "Compare" && isComparison(v.kind.comparison)) ||
+    (v.kind.type === "Native" && typeof v.kind.text === "string") ||
     v.kind.type === "Other"
   );
 }
@@ -204,6 +211,11 @@ function isEdit(v: unknown): v is KeyedViewEdit {
       return isAxis(v.axis) && typeof v.key === "bigint";
     case "ExpandTo":
       return isAxis(v.axis) && (v.depth === "all" || (typeof v.depth === "number" && Number.isInteger(v.depth) && v.depth >= 0));
+    case "AddSlicer":
+    case "RemoveSlicer":
+      return isCondition(v.condition);
+    case "ReplaceSlicer":
+      return isCondition(v.from) && isCondition(v.to);
     case "Replace":
     case "Reapply":
     case "Other":

@@ -11,8 +11,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Depth, Expand, Grouping, ItemKind, Key, Located, SortColumn, SortSpec,
-    Value, ViewSpec,
+    Axis, ChangeNotice, Depth, Expand, FilterSpec, Grouping, ItemKind, Key, Located, SortColumn,
+    SortSpec, Value, ViewSpec,
 };
 use binnacle_group::{
     AggregateBackend, Answer, Batch, Figure, GroupingLayer, MemoryAggregates, settle,
@@ -22,6 +22,7 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::codes::{self, axis, position};
+use crate::effect::WireCondition;
 use crate::grid::to_js;
 use crate::grouping::{WireGrouping, WireOutline};
 
@@ -217,24 +218,31 @@ impl WebMemory {
 
     /// Groups the rows as `grouping` says (a `Grouping` naming columns by
     /// index), with the fields it reads staged, over the rows in view as
-    /// they are sorted and filtered now, grouping them again if they were
-    /// already. `sort` and `directions` are the user's sort columns
-    /// (indices) and directions (0 ascending), which order the groups.
-    /// Returns the new count for the `Refiltered`.
+    /// they are sorted and filtered now (its slicers among the filters),
+    /// grouping them again if they were already. `sort` and `directions` are
+    /// the user's sort columns (indices) and directions (0 ascending), which
+    /// order the groups. `having` lists the rows' comparisons on a field a
+    /// value aggregates (conditions naming columns by index): they leave out
+    /// the groups whose figure fails them, not the rows. Returns the new
+    /// count for the `Refiltered`.
     pub fn group(
         &mut self,
         grouping: JsValue,
         sort: &[u32],
         directions: &[u8],
+        having: JsValue,
     ) -> Result<f64, JsValue> {
         let grouping: WireGrouping = serde_wasm_bindgen::from_value(grouping)?;
+        let having: Vec<WireCondition> = serde_wasm_bindgen::from_value(having)?;
+        let having = having.into_iter().filter_map(WireCondition::into_core);
         let sort = (sort.iter().zip(directions))
             .map(|(&c, &d)| match d {
                 0 => SortColumn::ascending(Key(c as u64)),
                 _ => SortColumn::descending(Key(c as u64)),
             })
             .collect();
-        Ok(self.group_by(grouping.into(), SortSpec::new(sort)))
+        let filter = FilterSpec::default().with_conditions(having.collect::<Vec<_>>().into());
+        Ok(self.group_by(grouping.into(), SortSpec::new(sort), filter))
     }
 
     /// Ungroups the rows; returns the count for the `Refiltered`.
@@ -449,10 +457,11 @@ impl WebMemory {
 }
 
 impl WebMemory {
-    fn group_by(&mut self, grouping: Grouping, sort: SortSpec) -> f64 {
+    fn group_by(&mut self, grouping: Grouping, sort: SortSpec, having: FilterSpec) -> f64 {
         self.fields = std::mem::take(&mut self.staged_fields);
         let spec = ViewSpec::default()
             .with_sort(Axis::Rows, sort)
+            .with_filter(Axis::Rows, having)
             .with_grouping(Some(grouping));
         self.spec = spec.clone();
         self.layer.request_view(spec);
@@ -492,7 +501,7 @@ impl WebMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binnacle_core::{GRAND_TOTAL, Placement};
+    use binnacle_core::{AggregateValue, Comparison, Condition, GRAND_TOTAL, Placement, Scalar};
 
     const ROWS: u8 = 0;
     const COLS: u8 = 1;
@@ -605,7 +614,11 @@ mod tests {
         let mut grouping = Grouping::rows_by(Key(1));
         grouping.rows.grand_total = Placement::After;
         assert_eq!(
-            m.group_by(grouping.clone(), SortSpec::unsorted()),
+            m.group_by(
+                grouping.clone(),
+                SortSpec::unsorted(),
+                FilterSpec::default()
+            ),
             9.0,
             "three groups, five Leaves and the Grand Total"
         );
@@ -613,7 +626,7 @@ mod tests {
         stage(&mut m);
         grouping.rows.grand_total = Placement::Off;
         assert_eq!(
-            m.group_by(grouping, SortSpec::unsorted()),
+            m.group_by(grouping, SortSpec::unsorted(), FilterSpec::default()),
             8.0,
             "three groups and five Leaves"
         );
@@ -627,6 +640,26 @@ mod tests {
         assert_eq!(m.ungroup(), 4.0);
         assert!(!m.grouped());
         assert_eq!(m.locate(ROWS, 3), vec![0.0, 3.0]);
+    }
+
+    #[test]
+    fn a_comparison_on_a_summed_field_leaves_out_the_groups_whose_sum_fails_it() {
+        let mut m = WebMemory::new(4, 2);
+        // Column 0 groups: "a", "a", "b", "b"; column 1 sums: 1, 2, 10, 20.
+        let (bytes, ends, nulls) = (b"aabb".to_vec(), vec![1, 2, 3, 4], vec![0; 4]);
+        m.stage_field(0, bytes, ends, nulls, vec![0.0; 4], vec![1; 4]);
+        let (bytes, ends) = (b"1210".to_vec(), vec![1, 2, 4, 4]);
+        let numbers = vec![1.0, 2.0, 10.0, 20.0];
+        m.stage_field(1, bytes, ends, vec![0; 4], numbers, vec![0; 4]);
+        let mut grouping = Grouping::rows_by(Key(0));
+        grouping.values = vec![AggregateValue::of(Key(1), "sum")];
+        grouping.rows.grand_total = Placement::After;
+        let big = Condition::compare(Key(1), Comparison::Greater(Scalar::Number(5.0)));
+        let having = FilterSpec::default().with_conditions(vec![big].into());
+        // Group "b" (sum 30) and its two Leaves, and the Grand Total.
+        assert_eq!(m.group_by(grouping, SortSpec::unsorted(), having), 4.0);
+        assert_eq!(m.locate(ROWS, 0)[0], 1.0, "under a group left out");
+        assert_eq!(m.locate(ROWS, 2), vec![0.0, 1.0]);
     }
 
     #[test]

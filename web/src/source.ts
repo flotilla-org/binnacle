@@ -58,7 +58,8 @@ export type Comparison = { op: CompareOp; value: Scalar } | { op: "between"; low
 export type ConditionKind =
   | { type: "Text"; query: TextMatch }
   | { type: "OneOf"; values: ListedValue[] }
-  | { type: "Compare"; comparison: Comparison };
+  | { type: "Compare"; comparison: Comparison }
+  | { type: "Native"; text: string };
 
 /**
  * One condition on the items of an axis, read in one item of the other axis
@@ -68,7 +69,10 @@ export type ConditionKind =
  * keeps blanks. A `OneOf` kind keeps the values it lists exactly, and blanks
  * only if it lists `null`; listing none keeps nothing. A `Compare` kind keeps
  * the numbers or dates that compare so; a blank, a NaN or a value of the
- * other kind never does, so `not` keeps them.
+ * other kind never does, so `not` keeps them. A `Native` kind is text in the
+ * Table Source's own query language (a SQL `WHERE` fragment, say), passed to
+ * it as written for it to apply; the widget never reads it. An empty one asks
+ * for nothing.
  */
 export interface Condition<CrossId> {
   id: CrossId;
@@ -325,6 +329,28 @@ export interface Support {
    * sends outlines with its Windows.
    */
   group?: boolean;
+  /** Whether the columns may be grouped (pivoted) by the item, a base field; `false` by default. */
+  pivot?: boolean;
+  /**
+   * Where the Subtotals of a level on the item may go; neither by default.
+   * A level asking for one elsewhere is applied without it, its Subtotal
+   * listed as not applied.
+   */
+  subtotals?: { before?: boolean; after?: boolean };
+  /** Whether the axis may be filtered, or sliced, by `Native` conditions on the item; `false` by default. */
+  native?: boolean;
+  /**
+   * The aggregates the Table Source computes over the item while grouping,
+   * each with the names of the parameters it takes; none by default. A
+   * count of items needs no field and is always offered.
+   */
+  aggregates?: Aggregate[];
+}
+
+/** An aggregate a Table Source offers over a field: its name, and the names of the parameters it takes. */
+export interface Aggregate {
+  name: string;
+  params?: string[];
 }
 
 /**

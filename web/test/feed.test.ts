@@ -1066,20 +1066,20 @@ describe("column conditions", () => {
       [
         new Recorder(4, 3, { view }),
         [
-          { sort: true, text: { regex: false }, oneOf: false, compare: null, group: false },
-          { sort: true, text: { regex: false }, oneOf: false, compare: null, group: false },
-          { sort: true, text: { regex: false }, oneOf: false, compare: null, group: false },
+          { sort: true, text: { regex: false }, oneOf: false, compare: null, group: false, native: false, pivot: false, subtotals: { before: false, after: false } },
+          { sort: true, text: { regex: false }, oneOf: false, compare: null, group: false, native: false, pivot: false, subtotals: { before: false, after: false } },
+          { sort: true, text: { regex: false }, oneOf: false, compare: null, group: false, native: false, pivot: false, subtotals: { before: false, after: false } },
         ],
       ],
       [
         new Recorder(4, 3, { view, support }),
         [
-          { sort: true, text: null, oneOf: false, compare: null, group: false },
-          { sort: true, text: { regex: true }, oneOf: false, compare: null, group: false },
-          { sort: true, text: { regex: false }, oneOf: false, compare: "dates", group: false },
+          { sort: true, text: null, oneOf: false, compare: null, group: false, native: false, pivot: false, subtotals: { before: false, after: false } },
+          { sort: true, text: { regex: true }, oneOf: false, compare: null, group: false, native: false, pivot: false, subtotals: { before: false, after: false } },
+          { sort: true, text: { regex: false }, oneOf: false, compare: "dates", group: false, native: false, pivot: false, subtotals: { before: false, after: false } },
         ],
       ],
-      [new Recorder(4, 3, { support }), Array(3).fill({ sort: false, text: null, oneOf: false, compare: null, group: false })],
+      [new Recorder(4, 3, { support }), Array(3).fill({ sort: false, text: null, oneOf: false, compare: null, group: false, native: false, pivot: false, subtotals: { before: false, after: false } })],
     ];
     for (const [rec, want] of cases) {
       const h = new Harness(rec.source);
@@ -1228,12 +1228,12 @@ describe("distinct values", () => {
   test("the columns take no conditions by a row unless the source gives cols.support; given, the defaults fill in as for the rows", () => {
     const view = (spec: Spec) => spec;
     const distinct = () => answer;
-    const none = { sort: false, text: null, oneOf: false, compare: null, group: false };
+    const none = { sort: false, text: null, oneOf: false, compare: null, group: false, native: false, pivot: false, subtotals: { before: false, after: false } };
     const cases: [Recorder, unknown][] = [
       [new Recorder(3, 2, { view, distinct }, { distinct }), none],
       [
         new Recorder(3, 2, { view }, { support: () => ({ sort: false, compare: "numbers" as const }), distinct }),
-        { sort: false, text: { regex: false }, oneOf: true, compare: "numbers", group: false },
+        { sort: false, text: { regex: false }, oneOf: true, compare: "numbers", group: false, native: false, pivot: false, subtotals: { before: false, after: false } },
       ],
       [new Recorder(3, 2, {}, { support: () => ({ text: { regex: true } }), distinct }), none],
     ];
@@ -1242,7 +1242,7 @@ describe("distinct values", () => {
       try {
         h.frame();
         expect(h.frame().rows.headers.map((x) => x.support)).toEqual(Array(3).fill(want));
-        expect(h.feed.rowSupport("r1")).toEqual(want);
+        expect(h.feed.rowSupport("r1")).toEqual({ ...(want as object), aggregates: [] });
         expect(h.feed.distinct("r1", "", 10, () => {}, "cols") !== null).toBe((want as { oneOf: boolean }).oneOf);
       } finally {
         h.destroy();
