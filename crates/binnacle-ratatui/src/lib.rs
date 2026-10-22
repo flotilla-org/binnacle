@@ -13,6 +13,7 @@ mod filter;
 mod find;
 mod keymap;
 mod layout;
+mod marks;
 mod menu;
 mod mouse;
 mod pin;
@@ -31,6 +32,7 @@ pub use filter::{
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
 pub use layout::{LAYOUT_VERSION, SavedLayout, restore_layout, save_layout};
+pub use marks::{MARK_DELAY, PendingMarks, disclosure_at};
 pub use menu::{Chosen, HeaderMenu, Hid, cap_hint, hide_chosen, hide_focused, show_only_chosen};
 pub use mouse::Mouse;
 pub use pin::{freeze_focused, toggle_pin, unpin_focused};
@@ -162,15 +164,20 @@ pub trait Content {
 /// Whether anything [`render_with`] draws from `snapshot` moves with time:
 /// the Shimmer on a visible header whose requested sort is not applied yet
 /// or whose move is unanswered, or on the visible focused cell while its
-/// Locate is pending. A host redraws on a timer only while this is true (or
-/// its own data ticks).
+/// Locate is pending, and a toggled group's disclosure mark until its
+/// answer (see [`PendingMarks`]). A host redraws on a timer only while
+/// this is true (or its own data ticks).
 pub fn animating(snapshot: &Snapshot) -> bool {
     let sorting = Axis::ALL.into_iter().any(|axis| {
         snapshot
             .headers(axis)
             .any(|h| h.sort.pending || h.move_pending)
     });
-    sorting || locating(snapshot) && snapshot.focus_rect().is_some()
+    let toggling = (snapshot.drawn(Axis::Rows)).any(|r| {
+        r.key
+            .is_some_and(|k| snapshot.toggle_pending(Axis::Rows, k))
+    });
+    sorting || toggling || locating(snapshot) && snapshot.focus_rect().is_some()
 }
 
 /// Whether the focused cell is waiting for a Locate on either axis.
@@ -320,12 +327,16 @@ pub fn render_with(
                 _ => content.row_header(k, r.position),
             },
         );
-        // Outline form: an indent per level, then the disclosure mark, or
-        // its room on a Leaf or Subtotal; the Grand Total sits flush.
+        // Outline form: an indent per level, then the disclosure mark (`⋯`
+        // once a toggle has waited a while for its answer), or its room on
+        // a Leaf, a Subtotal or a group that can't open; the Grand Total
+        // sits flush.
+        let pending = (r.key.zip(ctx.marks)).is_some_and(|(k, m)| m.pending(k, ctx.now));
         let (indent, mark) = match outline {
             Some(o) => (
                 "  ".repeat(o.depth as usize),
                 match (o.kind, o.open) {
+                    (ItemKind::Group, OpenState::Open | OpenState::Closed) if pending => "⋯ ",
                     (ItemKind::Group, OpenState::Open) => "▾ ",
                     (ItemKind::Group, OpenState::Closed) => "▸ ",
                     (ItemKind::GrandTotal, _) => "",
@@ -334,6 +345,11 @@ pub fn render_with(
             ),
             None => (String::new(), ""),
         };
+        // In the outline column focus is on the focused row's band cell.
+        let band_focused = snapshot.outline_focused()
+            && snapshot
+                .focus(Axis::Rows)
+                .is_some_and(|f| f.position == r.position);
         // An open Group Item whose Subtotal carries its figures draws blank
         // apart from its label.
         let figureless = outline.is_some_and(|o| grouped.is_some_and(|g| g.blank(Axis::Rows, o)));
@@ -362,6 +378,9 @@ pub fn render_with(
         let mut style = band(theme.row_number, &h);
         if let Some(role) = role {
             style = style.patch(role);
+        }
+        if band_focused {
+            style = style.patch(theme.focus);
         }
         let clip = (0.0, left, span_y.start, span_y.end);
         put(

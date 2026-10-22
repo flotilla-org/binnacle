@@ -20,17 +20,18 @@ use std::io;
 use std::time::Instant;
 
 use binnacle_core::{
-    AggregateValue, Axis, AxisConfig, Grid, Grouping, ItemKind, Key, Level, Outline, Placement,
-    Value, ViewSpec, Viewport,
+    AggregateValue, Axis, AxisConfig, Depth, Expand, Grid, Grouping, ItemKind, Key, Level, Outline,
+    Placement, Value, ViewSpec, Viewport,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    ColorSupport, Content, HeaderMenu, Keymap, Layout, Mouse, Preset, RenderContext, Theme,
-    begin_frame, render_with, wheel,
+    ColorSupport, Content, HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext,
+    Theme, begin_frame, disclosure_at, render_with, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 
@@ -82,7 +83,8 @@ fn source() -> GroupedMemory<Shipment> {
 }
 
 /// Region, then port, each with a Subtotal after it; the sum of the
-/// weights and the count; the Grand Total after everything.
+/// weights and the count; the Grand Total after everything. The regions
+/// start open and the ports closed, so both show.
 fn grouping() -> Grouping {
     let mut grouping = Grouping::rows_by(REGION);
     grouping.row_levels = [REGION, PORT]
@@ -93,6 +95,7 @@ fn grouping() -> Grouping {
         .to_vec();
     grouping.values = vec![AggregateValue::of(WEIGHT, "sum"), AggregateValue::count()];
     grouping.rows.grand_total = Placement::After;
+    grouping.rows.expand = Expand::to(Depth::Levels(1));
     grouping
 }
 
@@ -184,6 +187,16 @@ fn declare(grid: &mut Grid, source: &mut GroupedMemory<Shipment>, rows: &[Shipme
     }
 }
 
+/// The Group Item whose disclosure mark a left press in `m` lands on.
+fn mark_clicked(m: &MouseEvent, grid: &mut Grid, area: ratatui::layout::Rect) -> Option<Key> {
+    if m.kind != MouseEventKind::Down(MouseButton::Left) {
+        return None;
+    }
+    let x = m.column.checked_sub(area.x)?;
+    let y = m.row.checked_sub(area.y)?;
+    disclosure_at(&grid.snapshot(), x, y)
+}
+
 fn main() -> io::Result<()> {
     let rows: Vec<Shipment> = (0..SHIPMENTS).map(Shipment::generate).collect();
     let mut source = source();
@@ -198,6 +211,8 @@ fn main() -> io::Result<()> {
     let keymap = Keymap::preset(Preset::Chords);
     let mut menu = HeaderMenu::new();
     let mut mouse = Mouse::default();
+    let mut marks = PendingMarks::default();
+    let start = Instant::now();
     let mut layout = Layout::default();
     let themes = Theme::presets();
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
@@ -214,11 +229,14 @@ fn main() -> io::Result<()> {
                 // Answers the requests in the queue; moves are refused while
                 // grouped, and nothing else is the demo's to act on.
                 pump(&mut grid, &mut source.over(&rows), |_, _| {});
-                let ctx = RenderContext::new(&themes[theme]).colors(colors);
+                let now = start.elapsed();
+                let ctx = RenderContext::new(&themes[theme]).colors(colors).at(now);
                 layout = begin_frame(&mut grid, &ctx, area, |grid, v| {
                     fill(grid, &mut source, &rows, v)
                 });
                 let snapshot = grid.snapshot();
+                marks.seen(&snapshot, now);
+                let ctx = ctx.marks(&marks);
                 let text = Text {
                     rows: &rows,
                     source: &source,
@@ -277,6 +295,8 @@ fn main() -> io::Result<()> {
                 Event::Mouse(m) => {
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
+                    } else if let Some(key) = mark_clicked(&m, &mut grid, layout.grid) {
+                        let _ = grid.toggle(Axis::Rows, key);
                     } else if let Some(pointer) = mouse.event(&m, layout.grid, Instant::now()) {
                         grid.pointer(pointer);
                     }
