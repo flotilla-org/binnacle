@@ -7,6 +7,12 @@ import type { FindMatch, KeyedCondition, KeyedFindQuery, KeyedTextQuery, KeyedVi
 
 type Stamped<T> = T & { generation: number };
 
+/** Positions `start..end`. */
+export interface Run {
+  start: number;
+  end: number;
+}
+
 /** The cause of a requested View Spec, a hint: the spec alone is the request. `Other` is one this build does not know. */
 export type KeyedViewEdit =
   | { type: "CycleSort"; axis: AxisName; key: bigint; multi: boolean }
@@ -47,7 +53,10 @@ export type KeyedViewEdit =
 
 export type Effect = Stamped<
   | { type: "TextTyped"; text: string }
-  | { type: "Activated"; row: bigint; col: bigint }
+  /** On a Summary Item's cell, `drillDown` lists the conditions picking out the base rows under it: the slicers, then a OneOf per group on its path. */
+  | { type: "Activated"; row: bigint; col: bigint; drillDown: KeyedCondition[] | null }
+  /** Copy the cells where the items at `rows` cross those at `cols` (runs of Positions in drawn order); a grouped axis's labels lead with `rowLabels` or `colLabels`. */
+  | { type: "CopyRequested"; rows: Run[]; cols: Run[]; rowLabels: boolean; colLabels: boolean }
   | { type: "EditRequested"; row: bigint; col: bigint }
   | { type: "EditCancelled"; row: bigint; col: bigint }
   | { type: "FocusChanged"; row: bigint; col: bigint }
@@ -69,11 +78,27 @@ export type Effect = Stamped<
 
 export type EffectType = Effect["type"];
 
-type Field = "string" | "number" | "key" | "axis" | "edge" | "keys" | "view" | "edit" | "find" | "find?" | "from" | "direction";
+type Field =
+  | "string"
+  | "number"
+  | "boolean"
+  | "key"
+  | "axis"
+  | "edge"
+  | "keys"
+  | "view"
+  | "edit"
+  | "find"
+  | "find?"
+  | "from"
+  | "direction"
+  | "conditions?"
+  | "runs";
 
 const FIELDS: { [T in EffectType]: Record<string, Field> } = {
   TextTyped: { text: "string" },
-  Activated: { row: "key", col: "key" },
+  Activated: { row: "key", col: "key", drillDown: "conditions?" },
+  CopyRequested: { rows: "runs", cols: "runs", rowLabels: "boolean", colLabels: "boolean" },
   EditRequested: { row: "key", col: "key" },
   EditCancelled: { row: "key", col: "key" },
   FocusChanged: { row: "key", col: "key" },
@@ -231,6 +256,12 @@ function fits(field: Field, v: unknown): boolean {
       return typeof v === "string";
     case "number":
       return typeof v === "number";
+    case "boolean":
+      return typeof v === "boolean";
+    case "conditions?":
+      return v === null || (Array.isArray(v) && v.every(isCondition));
+    case "runs":
+      return Array.isArray(v) && v.every((r) => isRecord(r) && typeof r.start === "number" && typeof r.end === "number");
     case "key":
       return typeof v === "bigint";
     case "axis":

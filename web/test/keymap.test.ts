@@ -34,6 +34,7 @@ const KEYS: readonly { event: string; names: readonly string[] }[] = [
 
 const ACTIONS: readonly Action[] = [
   { type: "SelectAll" },
+  { type: "Copy" },
   { type: "SelectColumn" },
   { type: "SelectRow" },
   { type: "Cancel" },
@@ -174,6 +175,8 @@ test.each<[Platform, KeyChord, Action]>([
   ["mac", { key: "End", ctrlKey: false, altKey: false, shiftKey: true, metaKey: false }, { type: "MoveFocus", axis: "rows", by: "edge", forward: true, extend: true }],
   ["mac", { key: "a", ctrlKey: false, altKey: false, shiftKey: false, metaKey: true }, { type: "SelectAll" }],
   ["other", { key: "a", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }, { type: "SelectAll" }],
+  ["mac", { key: "c", ctrlKey: false, altKey: false, shiftKey: false, metaKey: true }, { type: "Copy" }],
+  ["other", { key: "c", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }, { type: "Copy" }],
   ["mac", { key: " ", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }, { type: "SelectColumn" }],
   ["other", { key: " ", ctrlKey: false, altKey: false, shiftKey: true, metaKey: false }, { type: "SelectRow" }],
   ["mac", { key: "PageDown", ctrlKey: false, altKey: true, shiftKey: false, metaKey: false }, { type: "MoveFocus", axis: "cols", by: "page", forward: true, extend: false }],

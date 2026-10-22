@@ -116,6 +116,8 @@ export function perform(grid: WebGrid, action: Action): void {
       return grid.activate();
     case "BeginEdit":
       return grid.begin_edit();
+    case "Copy":
+      return grid.copy();
     case "ScrollBy":
       return grid.scroll_by(AXIS_CODE[action.axis], action.items);
     case "FindNext":

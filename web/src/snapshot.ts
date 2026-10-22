@@ -514,11 +514,14 @@ class Reader {
     const depth = this.num();
     const open = OPEN_STATES[this.num()]!;
     const ancestors = this.list(() => this.key());
-    const group = this.opt(() => {
+    const groupOf = () => {
       const field = this.key();
       return { field, value: this.flag() ? this.text() : null };
-    });
-    return { kind, depth, open, ancestors, group };
+    };
+    const group = this.opt(groupOf);
+    const span = this.num();
+    const path = this.list(groupOf);
+    return { kind, depth, open, ancestors, group, span, path };
   }
 
   view(): KeyedViewSpec {

@@ -8,7 +8,8 @@ import { borderGaps, headersBorder, type BorderStyle } from "./border";
 import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
-import type { Effect } from "./effects";
+import { gatherCopy, writeClipboard, type Copied } from "./copy";
+import type { Effect, Run } from "./effects";
 import { disclosureRect, filterButtonRect, hasFilterButton } from "./canvas/bands";
 import { createFeed, windowIds, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
@@ -25,6 +26,7 @@ import {
   type AxisSnapshot,
   type ConditionState,
   type HeaderPlacement,
+  type KeyedCondition,
   type KeyedTextQuery,
   type Snapshot,
   type Span,
@@ -43,6 +45,7 @@ import type {
   TextQuery,
   ViewSpec,
 } from "./source";
+import { summaryLabel } from "./source";
 import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
 import { readLayout, restoreLayout, type Layout, type LayoutParts } from "./layout";
 import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
@@ -118,6 +121,21 @@ export interface GridOptions<RowId, ColId, V = unknown> {
   /** Called after every frame the widget runs. */
   onFrame?(frame: FrameInfo<NoInfer<RowId>, NoInfer<ColId>>): void;
   /**
+   * Called when the user activates a cell (Enter, or a double-click). On a
+   * Summary Item's cell `drillDown` holds the conditions that pick out the
+   * base rows under it (the slicers, then one OneOf per group on its path),
+   * for the app to open, show beside the grid or ignore; such a cell never
+   * starts an edit. Returning `true` keeps any other cell from starting one.
+   */
+  onActivate?(activation: Activation<NoInfer<RowId>, NoInfer<ColId>>): boolean | void;
+  /**
+   * Called when the user copies (Mod+C), with the cells gathered as the grid
+   * shows them and their text. Return other text to copy that instead (only
+   * Leaves, say, or the path as columns), or `false` to copy nothing; by
+   * default the text goes on the clipboard.
+   */
+  onCopy?(copied: Copied<NoInfer<RowId>, NoInfer<ColId>>): string | false | void;
+  /**
    * How long the fields that write a Text Query (the filter bar's quick
    * filter, the find bar, the column menu's contains field) wait after the
    * last key typed before asking the Table Source, in ms; 150 by default.
@@ -138,6 +156,14 @@ export interface GridOptions<RowId, ColId, V = unknown> {
    * select by default; a column-major table swaps them.
    */
   headerClick?: { rows?: HeaderClick; cols?: HeaderClick };
+}
+
+/** An activated cell, as `GridOptions.onActivate` gets it. */
+export interface Activation<RowId, ColId> {
+  rowId: RowId;
+  colId: ColId;
+  /** On a Summary Item's cell, the conditions on the base fields that pick out the rows under it; `null` elsewhere. */
+  drillDown: Condition<ColId>[] | null;
 }
 
 /** What a click on a header does: see `GridOptions.headerClick`. */
@@ -1581,10 +1607,53 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private dispatch(effect: Effect): void {
     if (effect.type === "Locate") this.aria.locate(effect.axis, effect.key);
+    if (effect.type === "CopyRequested") return this.copy(effect.rows, effect.cols, effect.rowLabels);
+    if (effect.type === "Activated" && this.activated(effect.row, effect.col, effect.drillDown)) return;
     const s = this.last;
     if (this.input.answer(effect)) return;
     if (answerAutoSize(effect, s, s && this.feed.content(s), this.sizing())) return;
     this.feed.answer(effect);
+  }
+
+  /** Tells the app of an activation; whether that was all it does (no edit starts). */
+  private activated(row: bigint, col: bigint, drillDown: KeyedCondition[] | null): boolean {
+    const ids = this.ids(row, col);
+    if (!ids) return drillDown !== null;
+    const conditions = drillDown?.flatMap((c) => {
+      const condition = this.feed.conditionId(c);
+      return condition ? [condition] : [];
+    });
+    const handled = this.options.onActivate?.({ rowId: ids.row, colId: ids.col, drillDown: conditions ?? null });
+    return drillDown !== null || handled === true;
+  }
+
+  /** Gathers what a copy names and puts it on the clipboard, at once if the source answers at once. */
+  private copy(rows: Run[], cols: Run[], rowLabels: boolean): void {
+    const source = this.options.source;
+    const levels = this.last?.appliedView.grouping?.rowLevels ?? [];
+    const controller = new AbortController();
+    const gathered = gatherCopy(rows, cols, rowLabels, {
+      source,
+      renderer: this.painter.renderer as RendererChoice<RowId, ColId, V>,
+      signal: controller.signal,
+      label: ({ id, position, outline }) => {
+        if (outline && outline.kind !== "leaf") return source.rows.groupLabel?.(id, outline) ?? summaryLabel(outline);
+        return source.rows.label?.(id, position) ?? "";
+      },
+      figureless: (outline) => {
+        if (outline?.kind !== "group" || outline.open !== "open") return false;
+        const level = levels[outline.depth];
+        return level !== undefined && "field" in level && level.subtotal !== "off";
+      },
+    });
+    const write = (copied: Copied<RowId, ColId> | null) => {
+      if (!copied || this.destroyed) return;
+      const text = this.options.onCopy?.(copied);
+      if (text === false) return;
+      writeClipboard(typeof text === "string" ? text : copied.text).catch((e: unknown) => console.warn(e));
+    };
+    if (gathered instanceof Promise) gathered.then(write, (e: unknown) => console.warn(e));
+    else write(gathered);
   }
 
   private focusIds(s: Snapshot): FrameInfo<RowId, ColId>["focusIds"] {

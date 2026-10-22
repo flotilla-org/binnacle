@@ -691,13 +691,15 @@ export function fromRows<R extends object>(
     const id = (item: GroupedItem) => item.item ?? summaryId(item.key);
     const outlines = items.map((item): Outline<number, ColId> => {
       const o = item.outline;
-      const group = o.group ? { field: columns[Number(o.group.field)]!.key, value: o.group.value } : null;
+      const field = (g: { field: bigint; value: ListedValue }) => ({ field: columns[Number(g.field)]!.key, value: g.value });
+      const group = o.group ? field(o.group) : null;
       if (o.kind !== "leaf" && item.aggregates) {
         const count = item.aggregates[counted()] ?? item.children ?? 0;
         const summary = { kind: o.kind, field: group?.field ?? null, value: group?.value ?? null };
         groups.set(id(item), { ...summary, count, aggregates: item.aggregates });
       }
-      return { kind: o.kind, depth: o.depth, open: o.open, ancestors: o.ancestors.map(summaryId), group };
+      const path = (o.path ?? []).map(field);
+      return { kind: o.kind, depth: o.depth, open: o.open, ancestors: o.ancestors.map(summaryId), group, span: o.span ?? 0, path };
     });
     return { ids: items.map(id), outlines };
   };

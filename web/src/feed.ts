@@ -808,6 +808,8 @@ export function createFeed<RowId, ColId, V>(
     open: o.open,
     ancestors: o.ancestors.map((id) => own.interner.key(id)),
     group: o.group ? { field: by.interner.key(o.group.field), value: o.group.value } : null,
+    span: o.span ?? 0,
+    path: (o.path ?? []).map((g) => ({ field: by.interner.key(g.field), value: g.value })),
   });
 
   /** An outline by IDs, as `outlineKeys` took it; Keys the interners no longer know are left out. */
@@ -822,6 +824,11 @@ export function createFeed<RowId, ColId, V>(
         return id === undefined ? [] : [id];
       }),
       group: o.group && field !== undefined ? { field, value: o.group.value } : null,
+      span: o.span ?? 0,
+      path: (o.path ?? []).flatMap((g) => {
+        const id = by.interner.id(g.field);
+        return id === undefined ? [] : [{ field: id, value: g.value }];
+      }),
     };
   };
 
