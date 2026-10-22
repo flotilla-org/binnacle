@@ -373,19 +373,27 @@ impl Grid {
     }
 
     /// Where what stands for a group whose `n` items from `at` close will
-    /// be: its Group Item just before them, or in header form the
-    /// Subtotal just after them when its group holds the first of them.
+    /// be: its Group Item just before them, or in header form its Subtotal
+    /// on either side, the one of the deepest group over the first of
+    /// them.
     fn collapsed_group(&self, axis: Axis, at: Position, n: u64) -> Option<Position> {
-        let after = (self.header_levels(axis) > 0)
-            .then(|| Some((self.outline_at(axis, at)?, self.outline_at(axis, at + n)?)))
-            .flatten()
-            .is_some_and(|(first, next)| {
-                next.kind == ItemKind::Subtotal
-                    && next.parent().is_some_and(|g| first.ancestors.contains(&g))
-            });
-        match after {
-            true => Some(at),
-            false => at.checked_sub(1),
+        let before = at.checked_sub(1);
+        if self.header_levels(axis) == 0 {
+            return before;
+        }
+        let Some(first) = self.outline_at(axis, at) else {
+            return before;
+        };
+        // How deep the group whose Subtotal is at `p` lies over `first`.
+        let depth = |p: Position| {
+            let o = self.outline_at(axis, p)?;
+            let group = o.parent().filter(|_| o.kind == ItemKind::Subtotal)?;
+            first.ancestors.iter().position(|&a| a == group)
+        };
+        match (before.and_then(depth), depth(at + n)) {
+            (Some(b), Some(a)) if a > b => Some(at),
+            (None, Some(_)) => Some(at),
+            _ => before,
         }
     }
 

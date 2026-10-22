@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use binnacle_core::{
-    AggregateValue, Axis, ChangeNotice, Comparison, Condition, Depth, Expand, FilterSpec,
+    AggregateValue, Axis, ChangeNotice, Comparison, Condition, Depth, Expand, FilterSpec, Form,
     GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located, OpenState, Outline, Placement, Scalar,
     SortColumn, SortSpec, Value, ViewSpec,
 };
@@ -50,11 +50,13 @@ fn rows(tc: &TestCase) -> Vec<Row> {
         .collect()
 }
 
-/// Where each level's Subtotals and the Grand Total go.
+/// Where each level's Subtotals and the Grand Total go, and whether the
+/// rows are in header form.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Shape {
     subtotals: [Placement; 2],
     grand_total: Placement,
+    header: bool,
 }
 
 #[hegel::composite]
@@ -71,6 +73,7 @@ fn shape(tc: &TestCase) -> Shape {
     Shape {
         subtotals: [tc.draw(placement()), tc.draw(placement())],
         grand_total: tc.draw(placement()),
+        header: tc.draw(gs::booleans()),
     }
 }
 
@@ -100,6 +103,9 @@ fn opening(levels: usize, shape: &Shape, expand: Expand) -> ViewSpec {
     grouping.values = values();
     grouping.rows.grand_total = shape.grand_total;
     grouping.rows.expand = expand;
+    if shape.header {
+        grouping.rows.form = Form::Header;
+    }
     ViewSpec::default().with_grouping(Some(grouping))
 }
 
@@ -169,7 +175,8 @@ impl Opened {
 /// The naive model: every group in order of its first row, each open
 /// Group Item followed by what is under it, with its Subtotal before or
 /// after that, a closed one alone, and the Grand Total before or after it
-/// all.
+/// all. In header form a group has no Group Item, and a closed one shows
+/// its Subtotal alone.
 fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Described> {
     fn walk(
         rows: &[&Row],
@@ -211,24 +218,6 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                 .copied()
                 .collect();
             let open = opened.opens(&child);
-            out.push(Described {
-                item: Item::Group(child.clone()),
-                aggregates: Some(aggregates(&under)),
-                kind: ItemKind::Group,
-                depth: depth as u32,
-                open: match open {
-                    true => OpenState::Open,
-                    false => OpenState::Closed,
-                },
-                ancestors: prefixes(&path),
-                group: Some((FIELDS[depth], value.clone())),
-                span: 0,
-                path: path.clone(),
-            });
-            if !open {
-                continue;
-            }
-            let at = out.len() - 1;
             let subtotal = Described {
                 item: Item::Subtotal(child.clone()),
                 aggregates: Some(aggregates(&under)),
@@ -240,6 +229,30 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                 span: 0,
                 path: child.clone(),
             };
+            if shape.header && !open {
+                out.push(subtotal);
+                continue;
+            }
+            let at = out.len();
+            if !shape.header {
+                out.push(Described {
+                    item: Item::Group(child.clone()),
+                    aggregates: Some(aggregates(&under)),
+                    kind: ItemKind::Group,
+                    depth: depth as u32,
+                    open: match open {
+                        true => OpenState::Open,
+                        false => OpenState::Closed,
+                    },
+                    ancestors: prefixes(&path),
+                    group: Some((FIELDS[depth], value.clone())),
+                    span: 0,
+                    path: path.clone(),
+                });
+            }
+            if !open {
+                continue;
+            }
             if shape.subtotals[depth] == Placement::Before {
                 out.push(subtotal.clone());
             }
@@ -247,7 +260,9 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
             if shape.subtotals[depth] == Placement::After {
                 out.push(subtotal);
             }
-            out[at].span = (out.len() - at - 1) as u64;
+            if !shape.header {
+                out[at].span = (out.len() - at - 1) as u64;
+            }
         }
     }
     let all: Vec<&Row> = rows.iter().collect();
@@ -769,7 +784,7 @@ fn everything(
 ) -> Vec<Described> {
     let count = layer.count(Axis::Rows).expect("a settled layer counts");
     // Each Window described as it comes, while its pages are cached.
-    let mut got: Vec<(Key, Described)> = Vec::new();
+    let mut got: Vec<(Key, Outline, Described)> = Vec::new();
     for _ in 0..1000 {
         if got.len() as u64 >= count {
             break;
@@ -779,17 +794,25 @@ fn everything(
         if items.is_empty() {
             drive(tc, layer, fake);
         }
-        got.extend(items.iter().map(|(k, o)| (*k, describe(layer, *k, o))));
+        got.extend((items.iter()).map(|(k, o)| (*k, o.clone(), describe(layer, *k, o))));
     }
     assert_eq!(got.len() as u64, count, "every item is fetched");
-    for (key, d) in &got {
-        if let Item::Group(path) = &d.item
-            && !known.iter().any(|(k, _)| k == key)
-        {
-            known.push((*key, path.clone()));
+    // The groups shown: Group Items, and in header form the groups whose
+    // spans hold the items.
+    for (key, outline, d) in &got {
+        let groups = (outline.ancestors.iter().zip(&d.ancestors))
+            .map(|(k, p)| (*k, p.clone()))
+            .chain(match &d.item {
+                Item::Group(path) => Some((*key, path.clone())),
+                _ => None,
+            });
+        for (key, path) in groups {
+            if !known.iter().any(|(k, _)| *k == key) {
+                known.push((key, path));
+            }
         }
     }
-    got.into_iter().map(|(_, d)| d).collect()
+    got.into_iter().map(|(.., d)| d).collect()
 }
 
 /// The Change Notices since the last call, and the `expand` last applied.
@@ -825,6 +848,7 @@ struct Step {
     opened: Opened,
     asked: Vec<Path>,
     held: u64,
+    shape: Shape,
 }
 
 /// Groups opened and closed one at a time, or the depth set, over any
@@ -891,6 +915,7 @@ fn toggling(tc: &TestCase, mut check: impl FnMut(&Step)) {
             opened: opened.clone(),
             asked: std::mem::take(&mut fake.asked),
             held: layer.held(),
+            shape: shape.clone(),
         };
         check(&step);
         shown = step.after;
@@ -920,7 +945,15 @@ fn opening_or_closing_one_group_says_where_with_collapsed_or_expanded(tc: TestCa
     toggling(&tc, |step| {
         let items = |ds: &[Described]| ds.iter().map(|d| d.item.clone()).collect::<Vec<_>>();
         let (was, now) = (items(&step.before), items(&step.after));
-        let seen = (step.toggled.clone()).is_some_and(|p| was.contains(&Item::Group(p)));
+        // The user sees the group toggled: its Group Item, or in header form
+        // an item under its span, where a placed Subtotal stays.
+        let seen = (step.toggled.clone()).is_some_and(|p| match step.shape.header {
+            false => was.contains(&Item::Group(p)),
+            true => {
+                step.shape.subtotals[p.len() - 1] != Placement::Off
+                    && step.before.iter().any(|d| d.ancestors.contains(&p))
+            }
+        });
         match step.notices.as_slice() {
             [] => assert_eq!(was, now, "no notice, nothing moved"),
             [ChangeNotice::Collapsed { at, n }] => {
@@ -957,9 +990,21 @@ fn the_layer_asks_only_under_open_groups(tc: TestCase) {
 #[hegel::test(test_cases = 200)]
 fn the_layer_holds_no_more_than_it_shows(tc: TestCase) {
     toggling(&tc, |step| {
-        let shown = (step.after.iter())
-            .filter(|d| matches!(d.item, Item::Group(_) | Item::Leaf(_)))
+        // The Leaves and the groups shown, as Group Items or as spans.
+        let mut groups: Vec<&Path> = (step.after.iter())
+            .flat_map(|d| {
+                d.ancestors.iter().chain(match &d.item {
+                    Item::Group(path) => Some(path),
+                    _ => None,
+                })
+            })
+            .collect();
+        groups.sort();
+        groups.dedup();
+        let leaves = (step.after.iter())
+            .filter(|d| matches!(d.item, Item::Leaf(_)))
             .count();
+        let shown = leaves + groups.len();
         assert!(
             step.held <= shown as u64,
             "holds {} for {shown} shown",
@@ -1162,20 +1207,25 @@ fn closed_groups_lay_out_before_they_are_fetched(tc: TestCase) {
 /// A page: whether of Group Items, its parent's path and its first index.
 type Page = (bool, Vec<Path>, u64);
 
-fn pages(items: &[Described]) -> Vec<Option<(Page, u64)>> {
+fn pages(items: &[Described], stands_in: impl Fn(&Path) -> bool) -> Vec<Option<(Page, u64)>> {
     let mut index: HashMap<(bool, Vec<Path>), u64> = HashMap::new();
     let mut at = Vec::new();
     for d in items {
-        let group = match d.item {
-            Item::Group(_) => true,
-            Item::Leaf(_) => false,
+        let (group, parent) = match &d.item {
+            Item::Group(_) => (true, d.ancestors.clone()),
+            Item::Leaf(_) => (false, d.ancestors.clone()),
+            // In header form a closed group's Subtotal is read in its
+            // group's page.
+            Item::Subtotal(path) if stands_in(path) => {
+                (true, d.ancestors[..d.ancestors.len() - 1].to_vec())
+            }
             _ => {
                 at.push(None);
                 continue;
             }
         };
-        let i = index.entry((group, d.ancestors.clone())).or_default();
-        at.push(Some((group, d.ancestors.clone(), *i)));
+        let i = index.entry((group, parent.clone())).or_default();
+        at.push(Some((group, parent, *i)));
         *i += 1;
     }
     at.into_iter()
@@ -1223,10 +1273,19 @@ fn the_layer_holds_open_groups_and_a_bounded_cache_whatever_the_rows(tc: TestCas
     let want = model(&rows, levels, &shape, &opened);
     // The groups the layout needs whatever is shown: those at a level
     // the depth opens.
-    let needed = (want.iter())
-        .filter(|d| matches!(&d.item, Item::Group(p) if opened.opens(p)))
-        .count() as u64;
-    let pages = pages(&want);
+    // In header form an open group has no Group Item, but heads the items
+    // under it.
+    let mut open: Vec<&Path> = (want.iter())
+        .flat_map(|d| match &d.item {
+            Item::Group(p) => vec![p],
+            _ => d.ancestors.iter().collect(),
+        })
+        .filter(|p| opened.opens(p))
+        .collect();
+    open.sort();
+    open.dedup();
+    let needed = open.len() as u64;
+    let pages = pages(&want, |p| shape.header && !opened.opens(p));
     let read = |range: Range<u64>| {
         let mut seen: Vec<&Page> = Vec::new();
         let mut n = 0;

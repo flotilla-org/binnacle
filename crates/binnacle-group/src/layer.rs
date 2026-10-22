@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Expand, GRAND_TOTAL, GroupOf, ItemKind, Key, Level, Located, OpenState,
-    Outline, Placement, Position, Totals, Value, ViewSpec,
+    Axis, ChangeNotice, Expand, Form, GRAND_TOTAL, GroupOf, ItemKind, Key, Level, Located,
+    OpenState, Outline, Placement, Position, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{KeyInterner, Viewed};
 
@@ -52,12 +52,15 @@ struct Ask {
     range: Range<u64>,
 }
 
-/// Where the Subtotals of each level and the Grand Total go.
+/// Where the Subtotals of each level and the Grand Total go, and whether
+/// the rows are in header form, where a group has no Group Item: a closed
+/// one shows its Subtotal alone.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Shape {
     /// One per level of the scope, outermost first.
     subtotals: Vec<Placement>,
     pub(crate) grand_total: Placement,
+    header: bool,
 }
 
 impl Shape {
@@ -73,6 +76,7 @@ impl Shape {
                 })
                 .collect(),
             grand_total: grouping.rows.grand_total,
+            header: grouping.rows.form == Form::Header,
         }
     }
 
@@ -80,16 +84,26 @@ impl Shape {
         self.subtotals.get(level).copied().unwrap_or_default()
     }
 
-    /// How many items a group of `level` shows besides those under it:
-    /// its Group Item and any Subtotal.
+    /// How many items an open group of `level` shows besides those under
+    /// it: its Group Item (in outline form) and any Subtotal.
     fn own(&self, level: usize) -> u64 {
-        1 + u64::from(self.subtotal(level) != Placement::Off)
+        u64::from(!self.header) + u64::from(self.subtotal(level) != Placement::Off)
     }
 
     /// Where the items under a group of `level` start, past its Group Item
-    /// and a Subtotal placed before.
+    /// (in outline form) and a Subtotal placed before.
     fn lead(&self, level: usize) -> u64 {
-        1 + u64::from(self.subtotal(level) == Placement::Before)
+        u64::from(!self.header) + u64::from(self.subtotal(level) == Placement::Before)
+    }
+
+    /// Where the items a group of `level` hides when it closes start, past
+    /// what stays: its Group Item in outline form, its Subtotal placed
+    /// before in header form.
+    fn kept(&self, level: usize) -> u64 {
+        match self.header {
+            true => self.lead(level),
+            false => 1,
+        }
     }
 
     /// Where the top groups start: past a Grand Total placed before.
@@ -871,7 +885,9 @@ impl<A> GroupingLayer<A> {
             },
             true => Vec::new(),
             false => [
-                group_position(root, shape, path),
+                group_position(root, shape, path).filter(|_| {
+                    !shape.header || node_at(root, path).is_some_and(|n| n.children() == 0)
+                }),
                 subtotal_position(root, shape, path),
             ]
             .into_iter()
@@ -1098,10 +1114,24 @@ impl<A> GroupingLayer<A> {
                 _ => None,
             },
         );
+        // What the group shows past what stays when it closes.
         let under = |root: &Node<A>, shape: &Shape, path: &Path| {
             let (at, span) = find_group(root, shape, path).ok()??;
-            Some((at, span.map_or(0, |s| s.len - 1)))
+            let own = match shape.header {
+                true => shape.own(path.len() - 1),
+                false => 1,
+            };
+            Some((at, span.map_or(0, |s| s.len - own)))
         };
+        // In header form a closed group's Subtotal takes the place of what
+        // it hid, unless one stood there already.
+        let level = path.as_ref().map_or(0, |p| p.len().saturating_sub(1));
+        if self.shape.header && self.shape.subtotal(level) == Placement::Off {
+            self.open = self.want.clone();
+            self.root.unfinish();
+            self.root.finish(&self.shape, &self.open);
+            return self.count(Axis::Rows).map(ChangeNotice::Refiltered);
+        }
         let before = path
             .as_ref()
             .and_then(|p| under(&self.root, &self.shape, p));
@@ -1115,7 +1145,7 @@ impl<A> GroupingLayer<A> {
             return self.count(Axis::Rows).map(ChangeNotice::Refiltered);
         };
         let (_, now) = under(&self.root, &self.shape, path)?;
-        let at = at + self.shape.top() + 1;
+        let at = at + self.shape.top() + self.shape.kept(path.len() - 1);
         match now.cmp(&was) {
             std::cmp::Ordering::Greater => Some(ChangeNotice::Expanded { at, n: now - was }),
             std::cmp::Ordering::Less => Some(ChangeNotice::Collapsed { at, n: was - now }),
@@ -1205,18 +1235,17 @@ impl<A> GroupingLayer<A> {
         let (root, shape) = (&self.root, &self.shape);
         let found = if key.0 & SUMMARY_KEY_BIT != 0 {
             match self.keys.identity(Key(key.0 & !SUMMARY_KEY_BIT)) {
-                Some(SummaryId::Group(path)) => {
+                // In header form only a group with nothing under it has a
+                // Group Item.
+                Some(SummaryId::Group(path))
+                    if !shape.header || node_at(root, path).is_some_and(|n| n.children() == 0) =>
+                {
                     find_group(root, shape, path).map(|f| f.map(|f| f.0))
                 }
-                Some(SummaryId::Subtotal(path)) => find_group(root, shape, path).map(|f| {
-                    let level = path.len().checked_sub(1)?;
-                    let (at, span) = f?;
-                    match shape.subtotal(level) {
-                        Placement::Before => span.map(|_| at + 1),
-                        Placement::After => span.map(|s| at + s.len - 1),
-                        Placement::Off => None,
-                    }
-                }),
+                Some(SummaryId::Group(_)) => Ok(None),
+                Some(SummaryId::Subtotal(path)) => {
+                    find_group(root, shape, path).map(|f| subtotal_at(root, shape, path, f?))
+                }
                 Some(SummaryId::GrandTotal) => {
                     let at = match shape.grand_total {
                         Placement::Before => Some(0),
@@ -1400,7 +1429,17 @@ fn item_at<A>(
             child.used.set(frame);
             let span = layout.span(index);
             let (field, value) = child.path.last().cloned().expect("a group has a path");
-            if at == 0 {
+            let lead = shape.lead(level);
+            // In header form a closed group shows its Subtotal alone, and an
+            // open one no Group Item.
+            let stands_in = shape.header && span.is_none() && child.children() > 0;
+            if stands_in {
+                let outline = Outline::subtotal(ancestors(keys, &child.path), field, value)
+                    .with_path(groups(&child.path));
+                let key = summary_key(keys, SummaryId::Subtotal(child.path.clone()));
+                return Ok((key, outline));
+            }
+            if at == 0 && !(shape.header && span.is_some()) {
                 let state = match (child.children(), span) {
                     (0, _) => OpenState::CantOpen,
                     (_, Some(_)) => OpenState::Open,
@@ -1417,7 +1456,7 @@ fn item_at<A>(
             }
             let span = span.expect("a group shows items past its own only when open");
             let subtotal = match shape.subtotal(level) {
-                Placement::Before => at == 1,
+                Placement::Before => at + 1 == lead,
                 Placement::After => at + 1 == span.len,
                 Placement::Off => false,
             };
@@ -1427,7 +1466,7 @@ fn item_at<A>(
                 let key = summary_key(keys, SummaryId::Subtotal(child.path.clone()));
                 return Ok((key, outline));
             }
-            item_at(child, shape, keys, at - shape.lead(level), frame)
+            item_at(child, shape, keys, at - lead, frame)
         }
         Kids::Leaves(_) => match node.leaf(position, Some(frame)) {
             Some(key) => {
@@ -1504,11 +1543,26 @@ fn group_position<A>(root: &Node<A>, shape: &Shape, path: &Path) -> Option<Posit
 /// Where the Subtotal of the group at `path` sits among the items under
 /// the root, if known and placed.
 fn subtotal_position<A>(root: &Node<A>, shape: &Shape, path: &Path) -> Option<Position> {
+    let found = find_group(root, shape, path).ok().flatten()?;
+    subtotal_at(root, shape, path, found)
+}
+
+/// Where the Subtotal of the group at `path` sits, given where the group
+/// is found and its span if open: a closed group's stands in for it in
+/// header form.
+fn subtotal_at<A>(
+    root: &Node<A>,
+    shape: &Shape,
+    path: &Path,
+    (at, span): (Position, Option<Span>),
+) -> Option<Position> {
     let level = path.len().checked_sub(1)?;
-    let (at, span) = find_group(root, shape, path).ok().flatten()?;
-    let span = span?;
+    let Some(span) = span else {
+        let filled = node_at(root, path).is_some_and(|n| n.children() > 0);
+        return (shape.header && filled).then_some(at);
+    };
     match shape.subtotal(level) {
-        Placement::Before => Some(at + 1),
+        Placement::Before => Some(at + shape.lead(level) - 1),
         Placement::After => Some(at + span.len - 1),
         Placement::Off => None,
     }
