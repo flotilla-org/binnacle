@@ -6,13 +6,13 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared, Comparison,
-    Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect, FilterSpec,
-    FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping, HeaderClick,
-    ItemKind, Key, Level, Located, Mode, Modifiers, OpenState, Outline, PinZone, Placement,
-    PointerEvent, PointerKind, Scalar, Searched, SelectionUnit, Snapshot, SortColumn,
-    SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
-    Viewport,
+    Action, Aggregate, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared,
+    Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
+    FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping,
+    HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, OpenState, Outline, PinZone,
+    Placement, Placements, PointerEvent, PointerKind, Scalar, Searched, SelectionUnit, Snapshot,
+    SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -91,6 +91,10 @@ enum Op {
     AddCondition(Axis, Condition),
     RemoveCondition(Axis, Condition),
     ReplaceCondition(Axis, Condition, Condition),
+    AddSlicer(Condition),
+    RemoveSlicer(Condition),
+    ReplaceSlicer(Condition, Condition),
+    SetAggregates(Axis, Key, Vec<Aggregate>),
     HideSupport(Axis, bool),
     Hide(Axis, Vec<Key>),
     HideCap(Axis, usize),
@@ -338,15 +342,16 @@ fn comparison(tc: &TestCase) -> Comparison {
     }
 }
 
-/// A Text, OneOf or comparison condition on `axis`, read in a Key of the
-/// other axis, maybe with `not`; sometimes with no text or no values.
+/// A Text, OneOf, comparison or Native condition on `axis`, read in a Key
+/// of the other axis, maybe with `not`; sometimes with no text or no values.
 #[hegel::composite]
 fn condition(tc: &TestCase, axis: Axis) -> Condition {
     let key = tc.draw(key(axis.other()));
-    let condition = match tc.draw(gs::integers::<u8>().max_value(2)) {
+    let condition = match tc.draw(gs::integers::<u8>().max_value(3)) {
         0 => Condition::text(key, tc.draw(text_query(axis))),
         1 => Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(3))),
-        _ => Condition::compare(key, tc.draw(comparison())),
+        2 => Condition::compare(key, tc.draw(comparison())),
+        _ => Condition::native(key, tc.draw(gs::text().max_size(8))),
     };
     condition.not(tc.draw(gs::booleans()))
 }
@@ -497,7 +502,26 @@ fn totals(tc: &TestCase) -> Totals {
 #[hegel::composite]
 fn answer(tc: &TestCase) -> Op {
     let axis = tc.draw(axes());
-    match tc.draw(gs::integers::<u8>().max_value(19)) {
+    match tc.draw(gs::integers::<u8>().max_value(23)) {
+        20 => Op::AddSlicer(tc.draw(condition(Axis::Rows))),
+        // Often one the latest request has, so it goes.
+        21 => Op::RemoveSlicer(tc.draw(condition(Axis::Rows))),
+        22 => Op::ReplaceSlicer(
+            tc.draw(condition(Axis::Rows)),
+            tc.draw(condition(Axis::Rows)),
+        ),
+        23 => {
+            let aggregate = hegel::tuples!(
+                gs::text().max_size(6),
+                gs::vecs(gs::text().max_size(4)).max_size(2)
+            )
+            .map(|(name, params)| Aggregate::new(name).with_params(params));
+            Op::SetAggregates(
+                axis,
+                tc.draw(key(axis.other())),
+                tc.draw(gs::vecs(aggregate).max_size(3)),
+            )
+        }
         // Mostly small, so some hides pass it; past HIDE_CAP it clamps.
         19 => Op::HideCap(
             axis,
@@ -557,7 +581,13 @@ fn answer(tc: &TestCase) -> Op {
                         Compared::Numbers,
                         Compared::Dates,
                     ]))))
-                    .with_group(tc.draw(gs::booleans())),
+                    .with_group(tc.draw(gs::booleans()))
+                    .with_native(tc.draw(gs::booleans()))
+                    .with_pivot(tc.draw(gs::booleans()))
+                    .with_subtotals(Placements {
+                        before: tc.draw(gs::booleans()),
+                        after: tc.draw(gs::booleans()),
+                    }),
             )
         }
         1 => {
@@ -747,7 +777,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(80))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(86))),
     }
 }
 
@@ -895,10 +925,10 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 binnacle_grid_view_applied(h, &spec, std::ptr::null())
             }
             22 => binnacle_grid_set_support(h, ROWS, 5000, 4),
-            23 => binnacle_grid_set_support(h, ROWS, 5000, 128),
+            23 => binnacle_grid_set_support(h, ROWS, 5000, 2048),
             24 => {
                 let unknown = BinnacleCondition {
-                    kind: 4,
+                    kind: 5,
                     ..BinnacleCondition::default()
                 };
                 binnacle_grid_add_condition(h, ROWS, &unknown)
@@ -1081,7 +1111,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 };
                 let slicer = BinnacleCondition {
                     kind: if which == 73 {
-                        4
+                        5
                     } else {
                         BINNACLE_CONDITION_ONE_OF
                     },
@@ -1108,6 +1138,31 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 (g.slicers, g.slicers_len) = (&slicer, 1);
                 binnacle_grid_request_view(h, &spec)
             }
+            81 => {
+                let unknown = BinnacleCondition {
+                    kind: 5,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_slicer(h, &unknown)
+            }
+            82 => binnacle_grid_replace_slicer(h, std::ptr::null(), std::ptr::null()),
+            83 | 84 => {
+                let bad = [b'a', 0xff];
+                let param = BinnacleText {
+                    data: bad.as_ptr(),
+                    len: bad.len(),
+                };
+                let aggregate = BinnacleAggregate {
+                    name: BinnacleText {
+                        data: bad.as_ptr(),
+                        len: if which == 83 { bad.len() } else { 1 },
+                    },
+                    params: &param,
+                    params_len: 1,
+                };
+                binnacle_grid_set_aggregates(h, ROWS, 0, &aggregate, 1)
+            }
+            85 => binnacle_grid_set_aggregates(h, 2, 0, std::ptr::null(), 0),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -1203,6 +1258,14 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 .key
                 .map_or(0, |k| support_bits(rust.support(axis.other(), k)));
             assert_eq!(got.support, support, "{want:?} support");
+            let offered = want
+                .key
+                .map_or(&[][..], |k| rust.aggregates(axis.other(), k));
+            assert_eq!(
+                unsafe { aggregates_from_c(got) },
+                offered,
+                "{want:?} aggregates"
+            );
         }
         assert_eq!(c.has_focus != 0, rust.focus(axis).is_some());
         if let Some(f) = rust.focus(axis) {
@@ -1242,6 +1305,12 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             })
             .collect();
         assert_eq!(got, rust.conditions(axis), "{axis:?} conditions");
+        let listed = unsafe { c_slice(a.levels, a.levels_len) };
+        let got: Vec<(Level, ConditionState)> = listed
+            .iter()
+            .map(|l| (level_from_c(&l.level), state_from_c(l.state)))
+            .collect();
+        assert_eq!(got, rust.levels(axis), "{axis:?} levels");
         let picked = unsafe { slice::from_raw_parts(a.picked, a.picked_len) };
         let keys: Vec<u64> = rust.picked(axis).iter().map(|k| k.0).collect();
         assert_eq!(picked, keys, "{axis:?} picks");
@@ -1276,6 +1345,26 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         assert!(rect(&c.focus_rect, &r));
     }
     assert_eq!(c.has_selection_range != 0, range.is_some());
+    let got: Vec<(Condition, ConditionState)> = unsafe { c_slice(c.slicers, c.slicers_len) }
+        .iter()
+        .map(|l| {
+            (
+                unsafe { condition_from_c(&l.condition) },
+                state_from_c(l.state),
+            )
+        })
+        .collect();
+    assert_eq!(got, rust.slicers(), "slicers");
+    let got: Vec<(AggregateValue, ConditionState)> = unsafe { c_slice(c.values, c.values_len) }
+        .iter()
+        .map(|l| {
+            (
+                unsafe { aggregate_value_from_c(&l.value) },
+                state_from_c(l.state),
+            )
+        })
+        .collect();
+    assert_eq!(got, rust.values(), "values");
 
     let rects = unsafe { slice::from_raw_parts(c.selection_rects, c.selection_rects_len) };
     assert_eq!(rects.len(), rust.selection_rects().len());
@@ -1498,6 +1587,20 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                         },
                         ..on(16, axis)
                     },
+                    // A slicer is on no axis: the edit names its Key, the
+                    // axis left as its zero.
+                    ViewEdit::AddSlicer { ref condition } => BinnacleViewEdit {
+                        key: condition.key.0,
+                        ..on(17, Axis::Rows)
+                    },
+                    ViewEdit::RemoveSlicer { ref condition } => BinnacleViewEdit {
+                        key: condition.key.0,
+                        ..on(18, Axis::Rows)
+                    },
+                    ViewEdit::ReplaceSlicer { ref to, .. } => BinnacleViewEdit {
+                        key: to.key.0,
+                        ..on(19, Axis::Rows)
+                    },
                     #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
                     _ => BinnacleViewEdit::default(),
                 };
@@ -1651,14 +1754,7 @@ unsafe fn grouping_from_c(g: &BinnacleGrouping) -> Grouping {
         let a = &g.axes[tag(axis) as usize];
         *grouping.levels_mut(axis) = unsafe { c_slice(a.levels, a.levels_len) }
             .iter()
-            .map(|l| match l.kind {
-                BINNACLE_LEVEL_FIELD => Level::Field {
-                    field: Key(l.field),
-                    subtotal: placement_from_c(l.subtotal),
-                },
-                BINNACLE_LEVEL_VALUES => Level::Values,
-                k => panic!("level kind {k}"),
-            })
+            .map(level_from_c)
             .collect();
         let got = grouping.axis_mut(axis);
         got.grand_total = placement_from_c(a.grand_total);
@@ -1679,18 +1775,7 @@ unsafe fn grouping_from_c(g: &BinnacleGrouping) -> Grouping {
     }
     grouping.values = unsafe { c_slice(g.values, g.values_len) }
         .iter()
-        .map(|v| {
-            let field = match v.has_field {
-                0 => None,
-                1 => Some(Key(v.field)),
-                f => panic!("has_field {f}"),
-            };
-            let params = unsafe { c_slice(v.params, v.params_len) }
-                .iter()
-                .map(|&p| unsafe { text_from_c(p) })
-                .collect();
-            AggregateValue::new(field, unsafe { text_from_c(v.aggregate) }).with_params(params)
-        })
+        .map(|v| unsafe { aggregate_value_from_c(v) })
         .collect();
     grouping.slicers = unsafe { c_slice(g.slicers, g.slicers_len) }
         .iter()
@@ -1807,6 +1892,77 @@ fn support_bits(support: Support) -> u32 {
         | (u32::from(support.one_of) * BINNACLE_SUPPORT_ONE_OF)
         | compare
         | (u32::from(support.group) * BINNACLE_SUPPORT_GROUP)
+        | (u32::from(support.native) * BINNACLE_SUPPORT_NATIVE)
+        | (u32::from(support.pivot) * BINNACLE_SUPPORT_PIVOT)
+        | (u32::from(support.subtotals.before) * BINNACLE_SUPPORT_SUBTOTAL_BEFORE)
+        | (u32::from(support.subtotals.after) * BINNACLE_SUPPORT_SUBTOTAL_AFTER)
+}
+
+/// Where a listed part stands, read back from C.
+fn state_from_c(state: u32) -> ConditionState {
+    match state {
+        0 => ConditionState::Applied,
+        1 => ConditionState::Adding,
+        2 => ConditionState::Removing,
+        3 => ConditionState::NotApplied,
+        s => panic!("state {s}"),
+    }
+}
+
+/// A level read back from C, as a host would.
+fn level_from_c(l: &BinnacleLevel) -> Level {
+    match l.kind {
+        BINNACLE_LEVEL_FIELD => Level::Field {
+            field: Key(l.field),
+            subtotal: placement_from_c(l.subtotal),
+        },
+        BINNACLE_LEVEL_VALUES => Level::Values,
+        k => panic!("level kind {k}"),
+    }
+}
+
+/// A value read back from C, as a host would.
+unsafe fn aggregate_value_from_c(v: &BinnacleAggregateValue) -> AggregateValue {
+    let field = match v.has_field {
+        0 => None,
+        1 => Some(Key(v.field)),
+        f => panic!("has_field {f}"),
+    };
+    let params = unsafe { c_slice(v.params, v.params_len) }
+        .iter()
+        .map(|&p| unsafe { text_from_c(p) })
+        .collect();
+    AggregateValue::new(field, unsafe { text_from_c(v.aggregate) }).with_params(params)
+}
+
+/// The aggregates a header offers, read back from C, as a host would.
+unsafe fn aggregates_from_c(h: &BinnacleHeader) -> Vec<Aggregate> {
+    unsafe { c_slice(h.aggregates, h.aggregates_len) }
+        .iter()
+        .map(|a| {
+            let params = unsafe { c_slice(a.params, a.params_len) }
+                .iter()
+                .map(|&p| unsafe { text_from_c(p) })
+                .collect();
+            Aggregate::new(unsafe { text_from_c(a.name) }).with_params(params)
+        })
+        .collect()
+}
+
+/// `text` in C form, borrowed.
+fn text_to_c(text: &str) -> BinnacleText {
+    BinnacleText {
+        data: text.as_ptr(),
+        len: text.len(),
+    }
+}
+
+/// The Keys a Text condition's query names, if any.
+fn condition_keys(condition: &Condition) -> Vec<u64> {
+    match &condition.kind {
+        ConditionKind::Text(query) => query_keys(query),
+        _ => Vec::new(),
+    }
 }
 
 /// A condition read back from C, as a host would: its query searching the
@@ -1841,6 +1997,9 @@ unsafe fn condition_from_c(c: &BinnacleCondition) -> Condition {
                 op => panic!("comparison {op}"),
             };
             Condition::compare(Key(c.key), comparison)
+        }
+        BINNACLE_CONDITION_NATIVE => {
+            Condition::native(Key(c.key), unsafe { text_from_c(c.text.text) })
         }
         kind => panic!("condition kind {kind}"),
     };
@@ -1934,6 +2093,10 @@ fn condition_to_c(
             c.text = query_to_c(query, keys);
         }
         ConditionKind::OneOf(_) => c.kind = BINNACLE_CONDITION_ONE_OF,
+        ConditionKind::Native(text) => {
+            c.kind = BINNACLE_CONDITION_NATIVE;
+            c.text.text = text_to_c(text);
+        }
         ConditionKind::Compare(comparison) => {
             c.kind = BINNACLE_CONDITION_COMPARE;
             let (op, s, high) = match *comparison {
@@ -1951,7 +2114,7 @@ fn condition_to_c(
                 c.high = scalar_to_c(high);
             }
         }
-        _ => unreachable!("only Text, OneOf and comparison conditions are drawn"),
+        _ => unreachable!("only Text, OneOf, comparison and Native conditions are drawn"),
     }
     c
 }
@@ -2519,6 +2682,41 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     let c_to = condition_to_c(&to, &[], &to_values);
                     grid.replace_condition(axis, &from, to.clone());
                     binnacle_grid_replace_condition(h, tag(axis), &c_from, &c_to)
+                }
+                Op::AddSlicer(condition) => {
+                    let (keys, values) = (condition_keys(&condition), values_to_c(&condition));
+                    let c = condition_to_c(&condition, &keys, &values);
+                    let ok = binnacle_grid_add_slicer(h, &c);
+                    grid.add_slicer(condition);
+                    ok
+                }
+                Op::RemoveSlicer(condition) => {
+                    let (keys, values) = (condition_keys(&condition), values_to_c(&condition));
+                    let c = condition_to_c(&condition, &keys, &values);
+                    grid.remove_slicer(&condition);
+                    binnacle_grid_remove_slicer(h, &c)
+                }
+                Op::ReplaceSlicer(from, to) => {
+                    let (from_keys, to_keys) = (condition_keys(&from), condition_keys(&to));
+                    let (from_values, to_values) = (values_to_c(&from), values_to_c(&to));
+                    let c_from = condition_to_c(&from, &from_keys, &from_values);
+                    let c_to = condition_to_c(&to, &to_keys, &to_values);
+                    grid.replace_slicer(&from, to.clone());
+                    binnacle_grid_replace_slicer(h, &c_from, &c_to)
+                }
+                Op::SetAggregates(axis, key, aggregates) => {
+                    let params: Vec<Vec<BinnacleText>> = (aggregates.iter())
+                        .map(|a| a.params.iter().map(|p| text_to_c(p)).collect())
+                        .collect();
+                    let c: Vec<BinnacleAggregate> = (aggregates.iter().zip(&params))
+                        .map(|(a, ps)| BinnacleAggregate {
+                            name: text_to_c(&a.name),
+                            params: ps.as_ptr(),
+                            params_len: ps.len(),
+                        })
+                        .collect();
+                    grid.set_aggregates(axis, key, aggregates);
+                    binnacle_grid_set_aggregates(h, tag(axis), key.0, c.as_ptr(), c.len())
                 }
                 Op::SetFind(query) => {
                     let keys = query

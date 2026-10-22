@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 6u
+#define BINNACLE_ABI_VERSION 7u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -201,7 +201,8 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_VIEW_EDIT_SHOW 10
 /* axis was grouped by key, a base field, as its innermost level (a plain
  * table becomes grouped, counting each group), or every level of axis was
- * removed (with none left on either axis, the table is plain again). */
+ * removed (with none left on either axis and no slicers, the table is plain
+ * again). */
 #define BINNACLE_VIEW_EDIT_GROUP 11
 #define BINNACLE_VIEW_EDIT_UNGROUP 12
 /* The group of axis headed by the Group Item key was opened or closed: the
@@ -214,17 +215,27 @@ uint32_t binnacle_abi_version(void);
 /* axis was opened to expand_depth levels (every level when expand_all is
  * 1) and its exceptions cleared. */
 #define BINNACLE_VIEW_EDIT_EXPAND_TO 16
+/* A slicer, read in base field key, was added, removed (the first equal
+ * one; with no slicers and no levels left the table is plain again), or put
+ * in place of another (key is the new one's). Adding one to a plain table
+ * makes a grouping with no levels, counting. */
+#define BINNACLE_VIEW_EDIT_ADD_SLICER 17
+#define BINNACLE_VIEW_EDIT_REMOVE_SLICER 18
+#define BINNACLE_VIEW_EDIT_REPLACE_SLICER 19
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
  * matches the condition's text query. ONE_OF: the value is one of the
  * condition's values exactly (none keeps nothing). COMPARE: the value, a
  * number or a date, compares with the condition's scalars as its compare
- * says; a blank, a NaN or a value of the other kind never does. */
+ * says; a blank, a NaN or a value of the other kind never does. NATIVE: an
+ * opaque condition in the Table Source's own syntax (a SQL fragment, say),
+ * the text of the condition's text query; binnacle never reads it. */
 #define BINNACLE_CONDITION_OTHER 0
 #define BINNACLE_CONDITION_TEXT 1
 #define BINNACLE_CONDITION_ONE_OF 2
 #define BINNACLE_CONDITION_COMPARE 3
+#define BINNACLE_CONDITION_NATIVE 4
 
 /* BinnacleCondition.compare: the value is equal to, not equal to, less
  * than, at most, greater than or at least scalar, or BETWEEN scalar and
@@ -242,10 +253,10 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_SCALAR_NUMBER 0
 #define BINNACLE_SCALAR_DATE 1
 
-/* BinnacleListedCondition.state: applied and still requested, requested and
- * not yet applied, applied and no longer requested, or requested and left
- * out of the applied View Spec with no answer due (rejected, failed, or no
- * longer supported). */
+/* BinnacleListedCondition.state, and that of a listed level or value:
+ * applied and still requested, requested and not yet applied, applied and
+ * no longer requested, or requested and left out of the applied View Spec
+ * with no answer due (rejected, failed, no longer or never supported). */
 #define BINNACLE_CONDITION_APPLIED 0
 #define BINNACLE_CONDITION_ADDING 1
 #define BINNACLE_CONDITION_REMOVING 2
@@ -266,8 +277,12 @@ uint32_t binnacle_abi_version(void);
  * the item, and with TEXT_REGEX they take regexes. REGEX needs TEXT. ONE_OF:
  * it may be filtered by OneOf conditions, the Table Source listing the
  * item's distinct values. COMPARE_NUMBERS or COMPARE_DATES (not both): it
- * may be filtered by COMPARE conditions on numbers, or on dates. GROUP: it
- * may be grouped by the item, a base field. */
+ * may be filtered by COMPARE conditions on numbers, or on dates. NATIVE: by
+ * NATIVE conditions. GROUP: it may be grouped by the item, a base field (a
+ * level of the axis). PIVOT: the other axis may be grouped by the item's
+ * values (a level of the other axis). SUBTOTAL_BEFORE and SUBTOTAL_AFTER:
+ * where a level grouping by the item may place its Subtotals, beyond off.
+ * Slicers on the item take the condition kinds the axis's filter does. */
 #define BINNACLE_SUPPORT_SORT 1u
 #define BINNACLE_SUPPORT_TEXT 2u
 #define BINNACLE_SUPPORT_TEXT_REGEX 4u
@@ -275,6 +290,10 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_SUPPORT_COMPARE_NUMBERS 16u
 #define BINNACLE_SUPPORT_COMPARE_DATES 32u
 #define BINNACLE_SUPPORT_GROUP 64u
+#define BINNACLE_SUPPORT_NATIVE 128u
+#define BINNACLE_SUPPORT_PIVOT 256u
+#define BINNACLE_SUPPORT_SUBTOTAL_BEFORE 512u
+#define BINNACLE_SUPPORT_SUBTOTAL_AFTER 1024u
 
 /* binnacle_grid_set_quick_filter_support bits and
  * BinnacleAxisSnapshot.quick_filter: the axis has a quick filter, and it
@@ -474,6 +493,15 @@ typedef struct {
   uint32_t toggle_pending;
 } BinnacleStripItem;
 
+/* An aggregate the Table Source offers over a base field (see
+ * binnacle_grid_set_aggregates): its name, and the names of the
+ * parameters_len parameters a value with it takes, in order. */
+typedef struct {
+  BinnacleText name;
+  const BinnacleText *params;
+  size_t params_len;
+} BinnacleAggregate;
+
 /* The header of one visible item, in its band; unclipped like the strip. */
 typedef struct {
   uint64_t position;
@@ -486,6 +514,10 @@ typedef struct {
   /* BINNACLE_SUPPORT_* bits: what the Table Source supports when viewing the
    * other axis by this item. Adapters offer only these controls. */
   uint32_t support;
+  /* The aggregates the Table Source offers over this item, a base field,
+   * when grouping the other axis. */
+  const BinnacleAggregate *aggregates;
+  size_t aggregates_len;
 } BinnacleHeader;
 
 /* The item at the viewport's leading edge and how far into it the view is. */
@@ -534,8 +566,11 @@ typedef struct {
   uint64_t col;
 } BinnacleFindMatch;
 
-/* Defined with BinnacleCondition, below. */
+/* Defined with BinnacleCondition, BinnacleLevel and BinnacleAggregateValue,
+ * below. */
 typedef struct BinnacleListedCondition BinnacleListedCondition;
+typedef struct BinnacleListedLevel BinnacleListedLevel;
+typedef struct BinnacleListedValue BinnacleListedValue;
 
 typedef struct {
   uint64_t count;
@@ -571,6 +606,10 @@ typedef struct {
    * request's, then the applied ones it drops. */
   const BinnacleListedCondition *conditions;
   size_t conditions_len;
+  /* The axis's levels, listed as conditions are: a level the Table Source
+   * could not apply (or not with its Subtotal) is NOT_APPLIED. */
+  const BinnacleListedLevel *levels;
+  size_t levels_len;
   /* The axis's picked Keys, in Key order. */
   const uint64_t *picked;
   size_t picked_len;
@@ -700,6 +739,11 @@ typedef struct {
   /* The lit pin zones while headers are dragged: the first pin_zones_len. */
   BinnacleZone pin_zones[2];
   size_t pin_zones_len;
+  /* The slicers and the values of the grouping, listed as conditions are. */
+  const BinnacleListedCondition *slicers;
+  size_t slicers_len;
+  const BinnacleListedValue *values;
+  size_t values_len;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -782,6 +826,18 @@ typedef struct {
   const BinnacleText *params;
   size_t params_len;
 } BinnacleAggregateValue;
+
+struct BinnacleListedLevel {
+  /* BINNACLE_CONDITION_APPLIED, ADDING, REMOVING or NOT_APPLIED. */
+  uint32_t state;
+  BinnacleLevel level;
+};
+
+struct BinnacleListedValue {
+  /* BINNACLE_CONDITION_APPLIED, ADDING, REMOVING or NOT_APPLIED. */
+  uint32_t state;
+  BinnacleAggregateValue value;
+};
 
 /* How one axis is grouped: its levels, outermost first (none: the axis is
  * not grouped); where its Grand Total goes (BINNACLE_PLACEMENT_*); its form
@@ -1062,6 +1118,13 @@ int binnacle_grid_set_hide_support(BinnacleGrid *grid, uint32_t axis, uint32_t h
 int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
                               uint32_t support);
 
+/* The aggregates the Table Source offers when grouping axis with a value
+ * over key, a base field (an item of the other axis): len of them, the
+ * whole declaration (none until set). A value with no field, a count, needs
+ * no declaring. 0 for text that is not UTF-8. */
+int binnacle_grid_set_aggregates(BinnacleGrid *grid, uint32_t axis, uint64_t key,
+                                 const BinnacleAggregate *aggregates, size_t len);
+
 /* The outlines of the len items at Positions start... of a grouped axis
  * (outlines has len entries), sent after binnacle_grid_set_window, which
  * drops them; Positions outside the Window are ignored. 0 for an unknown
@@ -1115,6 +1178,21 @@ int binnacle_grid_remove_condition(BinnacleGrid *grid, uint32_t axis,
 int binnacle_grid_replace_condition(BinnacleGrid *grid, uint32_t axis,
                                     const BinnacleCondition *from,
                                     const BinnacleCondition *to);
+
+/* Adds condition to the slicers, which filter the base fields before
+ * aggregating (WHERE), shown or not, and requests the result with
+ * BINNACLE_VIEW_EDIT_ADD_SLICER; a TEXT or NATIVE condition with no text
+ * asks for nothing. 0 as for binnacle_grid_add_condition. */
+int binnacle_grid_add_slicer(BinnacleGrid *grid, const BinnacleCondition *condition);
+
+/* Removes the first slicer equal to condition, if the latest request has
+ * one, and requests the result with BINNACLE_VIEW_EDIT_REMOVE_SLICER. */
+int binnacle_grid_remove_slicer(BinnacleGrid *grid, const BinnacleCondition *condition);
+
+/* Puts to in place of the first slicer equal to from and requests the
+ * result: adds to if there is none, removes from if to asks for nothing. */
+int binnacle_grid_replace_slicer(BinnacleGrid *grid, const BinnacleCondition *from,
+                                 const BinnacleCondition *to);
 
 /* The most hidden Keys the Table Source takes on axis, at most (and by
  * default) BINNACLE_HIDE_CAP. */
