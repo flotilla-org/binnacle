@@ -533,7 +533,7 @@ impl Host {
                 self.grid.set_header(axis, fit);
             }
             // The host usually opens its editor when asked.
-            Effect::EditRequested { row, col } | Effect::Activated { row, col }
+            Effect::EditRequested { row, col } | Effect::Activated { row, col, .. }
                 if tc.draw(gs::weighted_booleans(0.7)) =>
             {
                 tc.note(&format!("edit_started({row:?}, {col:?})"));

@@ -248,7 +248,7 @@ impl Grid {
                             FocusEnd { key: Some(col), .. },
                         ] = cell
                     {
-                        self.push(Effect::Activated { row, col });
+                        self.activate(row, col);
                     }
                     Press::Cell
                 }
@@ -608,6 +608,7 @@ impl Grid {
         if modifiers.toggle() {
             self.toggle_pick(axis, cell);
             self.set_focus_cell(cell);
+        } else if self.group_click(axis, position, cell, modifiers) {
         } else if modifiers.shift {
             self.extend_with(self.focus, cell, whole);
         } else {

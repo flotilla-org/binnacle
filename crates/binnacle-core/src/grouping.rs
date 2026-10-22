@@ -368,6 +368,22 @@ pub struct GroupOf {
     pub value: Value,
 }
 
+/// The base rows under an activated cell of a Summary Item, as conditions
+/// on the base fields: the grouping's slicers, then a OneOf per group on the
+/// row's path and the column's, outermost first. Applied as slicers they
+/// pick out the rows the cell aggregates.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct DrillDown {
+    pub conditions: Vec<Condition>,
+}
+
+impl DrillDown {
+    pub fn new(conditions: Vec<Condition>) -> Self {
+        DrillDown { conditions }
+    }
+}
+
 /// Where an item sits in a grouped axis, as the Table Source sends it with
 /// a Window ([`crate::Grid::set_outlines`]) and the Snapshot passes it on.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -383,6 +399,14 @@ pub struct Outline {
     pub ancestors: Vec<Key>,
     /// On Group Items and Subtotals: the group's field and value.
     pub group: Option<GroupOf>,
+    /// On a Group Item, how many items are shown under it: everything from
+    /// the item after it to its last descendant, its Subtotal included. 0
+    /// while it is closed, and on every other kind.
+    pub span: u64,
+    /// The group of each of `ancestors`, outermost first: with `group`, the
+    /// item's whole path, from which the Grid builds a drill-down. A source
+    /// that sends no path gets drill-downs naming its own group alone.
+    pub path: Vec<GroupOf>,
 }
 
 impl Outline {
@@ -394,6 +418,8 @@ impl Outline {
             open: OpenState::CantOpen,
             ancestors,
             group: None,
+            span: 0,
+            path: Vec::new(),
         }
     }
 
@@ -406,6 +432,8 @@ impl Outline {
             open,
             ancestors,
             group: Some(GroupOf { field, value }),
+            span: 0,
+            path: Vec::new(),
         }
     }
 
@@ -419,6 +447,8 @@ impl Outline {
             open: OpenState::CantOpen,
             ancestors,
             group: Some(GroupOf { field, value }),
+            span: 0,
+            path: Vec::new(),
         }
     }
 
@@ -430,7 +460,28 @@ impl Outline {
             open: OpenState::CantOpen,
             ancestors: Vec::new(),
             group: None,
+            span: 0,
+            path: Vec::new(),
         }
+    }
+
+    /// The same outline with `span` items shown under it (a Group Item).
+    pub fn with_span(mut self, span: u64) -> Self {
+        self.span = span;
+        self
+    }
+
+    /// The same outline with the groups of its ancestors, outermost first.
+    pub fn with_path(mut self, path: Vec<GroupOf>) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// The groups the item belongs to, outermost first: its ancestors' and
+    /// its own (a Subtotal's own is its last ancestor's).
+    pub fn groups(&self) -> impl Iterator<Item = &GroupOf> {
+        let own = (self.group.as_ref()).filter(|g| self.path.last() != Some(*g));
+        self.path.iter().chain(own)
     }
 
     /// The parent Group Item's Key; `None` at the top.

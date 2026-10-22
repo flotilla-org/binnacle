@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Expand, GRAND_TOTAL, ItemKind, Key, Level, Located, OpenState, Outline,
-    Placement, Position, Totals, Value, ViewSpec,
+    Axis, ChangeNotice, Expand, GRAND_TOTAL, GroupOf, ItemKind, Key, Level, Located, OpenState,
+    Outline, Placement, Position, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{KeyInterner, Viewed};
 
@@ -868,6 +868,16 @@ fn ancestors(keys: &mut KeyInterner<SummaryId>, path: &Path) -> Vec<Key> {
         .collect()
 }
 
+/// The groups on `path`, outermost first.
+fn groups(path: &Path) -> Vec<GroupOf> {
+    (path.iter())
+        .map(|(field, value)| GroupOf {
+            field: *field,
+            value: value.clone(),
+        })
+        .collect()
+}
+
 /// The item at `position` among those shown under `node`, or what to ask
 /// for to know it. `node`'s groups are all known.
 fn item_at<A>(
@@ -898,10 +908,17 @@ fn item_at<A>(
                     (_, true) => OpenState::Open,
                     (_, false) => OpenState::Closed,
                 };
-                let outline = Outline::group(ancestors(keys, &node.path), state, field, value);
+                let span = match state {
+                    OpenState::Open => shape.own(level) - 1 + child.shown().unwrap_or(0),
+                    _ => 0,
+                };
+                let outline = Outline::group(ancestors(keys, &node.path), state, field, value)
+                    .with_span(span)
+                    .with_path(groups(&node.path));
                 Ok((child.key, outline))
             } else if subtotal {
-                let outline = Outline::subtotal(ancestors(keys, &child.path), field, value);
+                let outline = Outline::subtotal(ancestors(keys, &child.path), field, value)
+                    .with_path(groups(&child.path));
                 Ok((
                     summary_key(keys, SummaryId::Subtotal(child.path.clone())),
                     outline,
@@ -911,7 +928,10 @@ fn item_at<A>(
             }
         }
         Kids::Leaves(_) => match node.leaf(position) {
-            Some(key) => Ok((key, Outline::leaf(ancestors(keys, &node.path)))),
+            Some(key) => {
+                let outline = Outline::leaf(ancestors(keys, &node.path));
+                Ok((key, outline.with_path(groups(&node.path))))
+            }
             None => {
                 let page = position / PAGE * PAGE;
                 Err(Ask {
