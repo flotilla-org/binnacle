@@ -1185,16 +1185,15 @@ export function createFeed<RowId, ColId, V>(
       const [value, ...more] = grouping?.values ?? [];
       const grouped = !!grouping && (grouping.rowLevels.length > 0 || grouping.colLevels.length > 0);
       if (!grouped || !value || more.length > 0) return null;
-      return valueName(value, (key) => fieldName("rows", key));
+      return valueName(value, fieldName);
     },
-    levelName: (axis, field) => (field === null ? VALUES_NAME : fieldName(axis, field)),
+    levelName: (_axis, field) => (field === null ? VALUES_NAME : fieldName(field)),
   };
 
-  /** The name of `key`, a field grouping `axis`: an item of the other axis, by its header label. */
-  function fieldName(axis: AxisName, key: bigint): string {
-    const { source, interner } = axes[other(axis)];
-    const id = interner.id(key);
-    return id === undefined ? String(key) : (source.label?.(id, Number.NaN) ?? String(id));
+  /** The name of `key`, a field grouping either axis: a column (a base field is a column ID), by its header label. */
+  function fieldName(key: bigint): string {
+    const id = cols.interner.id(key);
+    return id === undefined ? String(key) : (source.cols.label?.(id, Number.NaN) ?? String(id));
   }
 
   return {

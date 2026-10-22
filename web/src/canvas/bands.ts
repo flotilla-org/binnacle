@@ -189,23 +189,27 @@ export function paintColumnHeaders(p: PaintContext): void {
   ctx.fillRect(left, 0, p.width - left, top);
   ctx.font = theme.headerFont;
   for (const [i, h] of s.cols.headers.entries()) {
-    const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width, outline: null, togglePending: false };
+    const outline = s.cols.strip[i]?.outline ?? null;
+    const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width, outline, togglePending: false };
     const loading = h.key === null;
     const text = loading ? "…" : p.content.label("cols", item);
     // A scrolling header slides under the pinned ones.
     const span = itemSpan(s.cols, i);
     ctx.save();
     clip(ctx, span.start, 0, span.end - span.start, top);
-    if (h.hovered) {
-      ctx.fillStyle = theme.headerHovered.background;
+    const role = summaryStyle(theme, outline);
+    if (h.hovered || role) {
+      ctx.fillStyle = h.hovered ? theme.headerHovered.background : role!.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
     if (h.sort.pending || h.movePending) paintShimmer(p, h.rect);
     const mark = marker(s, h, "rows");
     const inset = paintFilter(p, "cols", h);
     const room = h.rect.width - 2 * PAD - (mark ? MARKED : 0) - inset;
-    ctx.fillStyle = loading ? theme.loading : h.hovered ? theme.headerHovered.color : theme.header.color;
-    ctx.fillText(measure.fit(text, theme.headerFont, room), h.rect.x + PAD, top / 2);
+    const color = h.hovered ? theme.headerHovered.color : (role?.color ?? theme.header.color);
+    ctx.fillStyle = loading ? theme.loading : color;
+    // In header form a header starts past the tiers its spans take.
+    ctx.fillText(measure.fit(text, theme.headerFont, room), h.rect.x + PAD, h.rect.y + h.rect.height / 2);
     if (mark) paintMarker(p, h, mark, inset);
     ctx.restore();
   }

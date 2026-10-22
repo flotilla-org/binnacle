@@ -70,7 +70,15 @@ export type {
 } from "./source";
 export { rowsBy } from "./source";
 export { LAYOUT_VERSION, type Layout, type LayoutPins } from "./layout";
-export { fromRows, type RowsColumn, type RowsColumnId, type RowsGroup, type RowsOptions, type RowsSource } from "./rows";
+export {
+  fromRows,
+  type RowsColId,
+  type RowsColumn,
+  type RowsColumnId,
+  type RowsGroup,
+  type RowsOptions,
+  type RowsSource,
+} from "./rows";
 export {
   groupedSource,
   type AggregateAnswer,

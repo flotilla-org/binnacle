@@ -74,6 +74,7 @@
 import { GRAND_TOTAL, NOTICE_CODE, VALUES_FIELD } from "./codes";
 import { comparedBy, comparedOf, passes, type Compared } from "./compare";
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
+import { textRenderer } from "./renderers/text";
 import type {
   Aggregate,
   AggregateValue,
@@ -237,6 +238,9 @@ type SortKeys =
 
 const ROWS = 0;
 const COLS = 1;
+
+/** A count's cells in a pivot: a number, at the end. */
+const COUNTED = textRenderer<number | null>({ align: "end" });
 
 /** The number a value sorts by, or `undefined` if it sorts as a string. */
 function numeric(v: unknown): number | undefined {
@@ -1038,10 +1042,12 @@ export function fromRows<R extends object>(
     });
   };
 
-  /** The column a pivot column's cells draw with: that of the field its value aggregates, plain for a count. */
+  /** How a pivot column's cells draw: as the field its value aggregates does, or a count as a number. */
   const pivotRenderer = (id: number) => {
-    const field = grouping?.values[columnValues.get(id) ?? 0]?.field;
-    return field == null || field === undefined ? undefined : field;
+    const value = grouping?.values[columnValues.get(id) ?? 0];
+    if (!value) return undefined;
+    if (value.field === null) return COUNTED as CellRenderer<R[keyof R]>;
+    return columns[index.get(value.field)!]!.renderer as CellRenderer<R[keyof R]> | undefined;
   };
 
   const source: RowsSource<R, RowsColId<R>> = {
@@ -1280,10 +1286,11 @@ export function fromRows<R extends object>(
         return { total };
       },
     },
-    renderer: byColumn((id: Col) => {
-      const column = isBase(id) ? id : typeof id === "number" ? pivotRenderer(id) : undefined;
-      return column === undefined ? undefined : (columns[index.get(column)!]!.renderer as CellRenderer<R[keyof R]> | undefined);
-    }),
+    renderer: byColumn((id: Col) =>
+      typeof id === "number"
+        ? pivotRenderer(id)
+        : (columns[index.get(id) ?? -1]?.renderer as CellRenderer<R[keyof R]> | undefined),
+    ),
     attach(sink) {
       sinks.add(sink);
       return () => sinks.delete(sink);

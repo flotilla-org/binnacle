@@ -4,6 +4,7 @@
 import { gaps } from "./gaps";
 import { huge } from "./huge";
 import { live } from "./live";
+import { pivotDemo } from "./pivot";
 import { records } from "./records";
 import { shipmentsDemo } from "./shipments";
 import { slow } from "./slow";
@@ -13,4 +14,4 @@ import type { DemoSource } from "./demo-source";
 
 export type { DemoSource, Mounted } from "./demo-source";
 
-export const SOURCES: readonly DemoSource[] = [records, shipmentsDemo, slow, huge, live, gaps, transposed];
+export const SOURCES: readonly DemoSource[] = [records, shipmentsDemo, pivotDemo, slow, huge, live, gaps, transposed];
