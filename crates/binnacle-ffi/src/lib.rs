@@ -24,7 +24,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 15;
+pub const BINNACLE_ABI_VERSION: u32 = 16;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -119,6 +119,10 @@ pub const BINNACLE_VIEW_EDIT_ADD_SLICER: u32 = 17;
 pub const BINNACLE_VIEW_EDIT_REMOVE_SLICER: u32 = 18;
 pub const BINNACLE_VIEW_EDIT_REPLACE_SLICER: u32 = 19;
 pub const BINNACLE_VIEW_EDIT_SET_FORM: u32 = 20;
+pub const BINNACLE_VIEW_EDIT_REMOVE_LEVEL: u32 = 21;
+pub const BINNACLE_VIEW_EDIT_MOVE_LEVEL: u32 = 22;
+pub const BINNACLE_VIEW_EDIT_ADD_VALUE: u32 = 23;
+pub const BINNACLE_VIEW_EDIT_REMOVE_VALUE: u32 = 24;
 
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
@@ -253,6 +257,8 @@ pub struct BinnacleGrid {
     copy_runs: [Vec<BinnacleRange>; 2],
     /// The last polled Effect's View Edit Keys.
     edit_keys: Vec<u64>,
+    /// The last polled Effect's View Edit value, with its texts.
+    edit_value: CValues,
     /// The last Snapshot's hidden Keys per axis.
     hidden_listed: [Vec<u64>; 2],
     /// The last Snapshot's conditions per axis, with their states.
@@ -1226,6 +1232,8 @@ pub struct BinnacleViewEdit {
     pub expand_all: u32,
     pub expand_depth: u32,
     pub form: u32,
+    pub level: BinnacleLevel,
+    pub value: BinnacleAggregateValue,
 }
 
 impl Default for BinnacleViewEdit {
@@ -1240,6 +1248,8 @@ impl Default for BinnacleViewEdit {
             expand_all: 0,
             expand_depth: 0,
             form: BINNACLE_FORM_OUTLINE,
+            level: BinnacleLevel::default(),
+            value: BinnacleAggregateValue::default(),
         }
     }
 }
@@ -2115,6 +2125,7 @@ pub extern "C" fn binnacle_grid_new(
         drill_down: Default::default(),
         copy_runs: Default::default(),
         edit_keys: Vec::new(),
+        edit_value: Default::default(),
         hidden_listed: Default::default(),
         listed: Default::default(),
         listed_states: Default::default(),
@@ -3167,6 +3178,30 @@ impl BinnacleGrid {
                         form: form_tag(form),
                         ..on(BINNACLE_VIEW_EDIT_SET_FORM, axis)
                     },
+                    ViewEdit::RemoveLevel { axis, field } => BinnacleViewEdit {
+                        level: level_named(field),
+                        ..on(BINNACLE_VIEW_EDIT_REMOVE_LEVEL, axis)
+                    },
+                    ViewEdit::MoveLevel { axis, field } => BinnacleViewEdit {
+                        level: level_named(field),
+                        ..on(BINNACLE_VIEW_EDIT_MOVE_LEVEL, axis)
+                    },
+                    ViewEdit::AddValue { value } => {
+                        self.edit_value.fill([&value]);
+                        BinnacleViewEdit {
+                            kind: BINNACLE_VIEW_EDIT_ADD_VALUE,
+                            value: self.edit_value.items[0],
+                            ..BinnacleViewEdit::default()
+                        }
+                    }
+                    ViewEdit::RemoveValue { value } => {
+                        self.edit_value.fill([&value]);
+                        BinnacleViewEdit {
+                            kind: BINNACLE_VIEW_EDIT_REMOVE_VALUE,
+                            value: self.edit_value.items[0],
+                            ..BinnacleViewEdit::default()
+                        }
+                    }
                     _ => BinnacleViewEdit::default(),
                 };
             }
@@ -3350,6 +3385,115 @@ pub unsafe extern "C" fn binnacle_grid_cycle_sort(
 pub unsafe extern "C" fn binnacle_grid_ungroup(grid: *mut BinnacleGrid, axis_tag: u32) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| axis(axis_tag).map(|axis| h.grid.ungroup(axis))) }
+}
+
+/// The level grouping by `field`, or the values pseudo-level for `None`, as
+/// a View Edit names it.
+fn level_named(field: Option<Key>) -> BinnacleLevel {
+    match field {
+        Some(f) => BinnacleLevel::from(&Level::field(f)),
+        None => BinnacleLevel::from(&Level::Values),
+    }
+}
+
+/// The field a level from C groups by (`Some(None)` for the values
+/// pseudo-level), or `None` if NULL or of an unknown kind; its Subtotal is
+/// ignored.
+///
+/// # Safety
+/// `level` is NULL or valid for a read.
+unsafe fn level_field(level: *const BinnacleLevel) -> Option<Option<Key>> {
+    // SAFETY: the caller's contract.
+    let level = unsafe { level.as_ref() }?;
+    match level.kind {
+        BINNACLE_LEVEL_FIELD => Some(Some(Key(level.field))),
+        BINNACLE_LEVEL_VALUES => Some(None),
+        _ => None,
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `level` is NULL or valid for a read.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_remove_level(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    level: *const BinnacleLevel,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let field = unsafe { level_field(level) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.remove_level(axis(axis_tag)?, field?);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `level` is NULL or valid for a read.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_move_level(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    level: *const BinnacleLevel,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let field = unsafe { level_field(level) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.move_level(axis(axis_tag)?, field?);
+            Some(())
+        })
+    }
+}
+
+/// A value from C, or `None` if NULL or invalid.
+///
+/// # Safety
+/// `value` is NULL or valid for a read, and as
+/// [`BinnacleAggregateValue::to_core`] requires.
+unsafe fn aggregate_value(value: *const BinnacleAggregateValue) -> Option<AggregateValue> {
+    // SAFETY: the caller's contract.
+    unsafe { value.as_ref()?.to_core() }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `value` as for [`aggregate_value`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_add_value(
+    grid: *mut BinnacleGrid,
+    value: *const BinnacleAggregateValue,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let value = unsafe { aggregate_value(value) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.add_value(value?);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `value` as for [`aggregate_value`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_remove_value(
+    grid: *mut BinnacleGrid,
+    value: *const BinnacleAggregateValue,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let value = unsafe { aggregate_value(value) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.remove_value(&value?);
+            Some(())
+        })
+    }
 }
 
 /// `depth` as `BinnacleGroupedAxis` and `BinnacleViewEdit` carry it: whether
