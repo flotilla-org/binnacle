@@ -4,8 +4,7 @@
 //! `expand` says, a closed one showing its total column alone.
 
 use binnacle_core::{
-    Axis, AxisConfig, Depth, Edge, Expand, Grid, Grouping, Key, Level, Snapshot, ViewSpec,
-    Viewport,
+    Axis, AxisConfig, Depth, Edge, Expand, Grid, Grouping, Key, Level, Snapshot, ViewSpec, Viewport,
 };
 use binnacle_testkit::{Group, Scenario, TreeTable};
 use hegel::TestCase;
@@ -92,7 +91,11 @@ fn drawn(snap: &Snapshot) -> Vec<(u64, Option<Key>)> {
 }
 
 fn shown(s: &Scenario<TreeTable>) -> Vec<Key> {
-    s.source.shown_on(Axis::Cols).iter().map(|(k, _)| *k).collect()
+    s.source
+        .shown_on(Axis::Cols)
+        .iter()
+        .map(|(k, _)| *k)
+        .collect()
 }
 
 /// Through any sequence of toggles, depths and pins, the Strips draw each

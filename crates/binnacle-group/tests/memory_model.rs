@@ -1092,3 +1092,51 @@ fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
         }
     }
 }
+
+#[test]
+fn closing_a_pivot_column_group_shows_its_total_column_with_collapsed() {
+    let rows: Vec<Record> = vec![
+        [Some(1), Some(5), Some(10)],
+        [Some(2), Some(6), Some(20)],
+        [Some(1), Some(5), Some(30)],
+    ];
+    let mut source = source(rows.len());
+    let mut grouping = Grouping::rows_by(Key(0));
+    grouping.col_levels = vec![
+        Level::Field {
+            field: Key(1),
+            subtotal: Placement::After,
+        },
+        Level::Values,
+    ];
+    grouping.values = vec![AggregateValue::count(), AggregateValue::of(Key(2), "sum")];
+    let spec = |g: &Grouping| ViewSpec::default().with_grouping(Some(g.clone()));
+    source.view(&rows, &spec(&grouping));
+    let cols = |source: &mut GroupedMemory<Record>| {
+        let n = source.count(Axis::Cols);
+        source.window(&rows, Axis::Cols, 0..n)
+    };
+    let before = cols(&mut source);
+    assert_eq!(before.keys.len(), 6, "each port's count, sum and total");
+    let five = before.outlines.as_ref().unwrap()[0].ancestors[0];
+
+    grouping.cols.expand = Expand::default().with(0, five, false);
+    let viewed = source.view(&rows, &spec(&grouping));
+    assert_eq!(
+        viewed.notices,
+        vec![(Axis::Cols, ChangeNotice::Collapsed { at: 0, n: 2 })]
+    );
+    let after = cols(&mut source);
+    assert_eq!(after.keys[..], before.keys[2..], "5's total column stays");
+    let outline = &after.outlines.unwrap()[0];
+    assert_eq!(
+        (outline.kind, outline.ancestors.as_slice()),
+        (ItemKind::Subtotal, [five].as_slice())
+    );
+    let one = source.window(&rows, Axis::Rows, 0..1).keys[0];
+    assert_eq!(
+        source.cell(one, after.keys[0]),
+        Some(Figure::Count(2)),
+        "the closed group's first value over its rows"
+    );
+}

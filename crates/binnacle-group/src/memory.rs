@@ -858,7 +858,9 @@ impl<R> GroupedMemory<R> {
     /// group opens or closes.
     ///
     /// On a pivot the columns come from the data too: the base columns
-    /// leave, any change to the pivot columns comes as `Refiltered`, and
+    /// leave, a column group opening or closing comes as `Collapsed` or
+    /// `Expanded` on the columns and any other change to them as
+    /// `Refiltered`, and
     /// the column axis's Sort Spec orders them by a column level's field or
     /// by the Grand Total row; other column sorts, filters and hidden Keys
     /// are not applied.
