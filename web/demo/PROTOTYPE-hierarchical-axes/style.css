@@ -1,0 +1,126 @@
+/* PROTOTYPE (#186): throwaway styles for a grouped and a pivoted table. */
+
+html, body { margin: 0; height: 100%; }
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100vh;
+  font: var(--font);
+  color: var(--body-fg);
+  background: var(--body-bg);
+}
+
+/* The harness: prototype-only switches, styled apart from the design. */
+#harness {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 12px;
+  background: repeating-linear-gradient(-45deg, #1f2937, #1f2937 10px, #24303f 10px, #24303f 20px);
+  color: #e5e7eb; font: 12px ui-monospace, Menlo, monospace;
+}
+#harness b { color: #fbbf24; letter-spacing: 0.05em; }
+#harness .grp { display: inline-flex; align-items: center; gap: 2px; }
+#harness button, #harness select {
+  font: inherit; color: #e5e7eb; background: #111827; border: 1px solid #4b5563; border-radius: 4px; padding: 2px 6px; cursor: pointer;
+}
+#harness button.on { background: #fbbf24; color: #111827; border-color: #fbbf24; }
+#harness button:disabled { opacity: 0.4; cursor: default; }
+
+#middle { display: grid; grid-template-columns: minmax(0, 1fr) 330px; min-height: 0; }
+
+#state {
+  margin: 0; padding: 8px 10px; overflow: auto; border-left: 1px dashed #4b5563;
+  background: #111827; color: #d1d5db; font: 11px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap;
+}
+
+#status {
+  padding: 5px 12px; border-top: 1px solid var(--border); background: var(--rn-bg); color: var(--rn-fg);
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 16px;
+}
+
+/* The fake grid: one CSS grid, every cell placed by line, pinned parts sticky. */
+#viewport { position: relative; overflow: auto; outline: none; background: var(--body-bg); }
+.grid { display: grid; width: max-content; min-width: 100%; }
+
+.c {
+  box-sizing: border-box; white-space: nowrap; overflow: clip; padding: 0 8px; display: flex; align-items: center;
+  background: var(--body-bg); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; min-width: 0;
+}
+.c.num { justify-content: flex-end; }
+.c .lbl { overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; }
+
+/* Header Bands and the corner. */
+.h {
+  position: sticky; z-index: 6; font: var(--hfont); color: var(--hdr-fg); background: var(--hdr-bg);
+  border-right: 1px solid var(--handle); user-select: none; gap: 4px;
+}
+.h:hover { background: var(--hdr-hover); }
+.h.span { justify-content: flex-start; border-bottom-color: var(--handle); }
+.h.span > .lbl { position: sticky; left: var(--label-left, 0px); }
+.h.num { justify-content: flex-end; }
+.h .hbtn {
+  border: 0; background: transparent; color: var(--rn-fg); cursor: pointer; border-radius: 4px; padding: 0 3px;
+  font: 12px system-ui; visibility: hidden; line-height: 18px; flex-shrink: 0;
+}
+.h:hover .hbtn { visibility: visible; }
+.h.pinned { z-index: 8; }
+.corner { position: sticky; z-index: 9; left: 0; background: var(--hdr-bg); color: var(--rn-fg); font: 500 11px system-ui; gap: 6px; }
+.corner.right { justify-content: flex-end; }
+.corner .lvl { cursor: pointer; border-radius: 4px; padding: 1px 4px; color: var(--hdr-fg); }
+.corner .lvl:hover { background: var(--hdr-hover); }
+.corner .lvl.values { color: var(--sort); }
+.corner .cap { color: var(--rn-fg); font-style: italic; }
+.corner .sep { color: var(--handle); }
+.corner .spacer { flex: 1; }
+.corner.empty { border-right-color: transparent; }
+
+/* The row Header Band: the outline column, or one column per row level. */
+.b { position: sticky; z-index: 4; background: var(--rn-bg); color: var(--body-fg); }
+.b.vspan { align-items: flex-start; padding-top: 0; }
+.b.vspan > .lbl { position: sticky; top: var(--label-top, 0px); line-height: var(--row-h); }
+.mark {
+  display: inline-block; width: 14px; flex-shrink: 0; color: var(--disclosure); cursor: pointer; text-align: center;
+  user-select: none; font-size: 11px;
+}
+.mark.none { cursor: default; }
+.mark.pending { color: var(--loading); animation: pulse 0.6s ease-in-out infinite alternate; }
+@keyframes pulse { from { opacity: 0.25; } to { opacity: 1; } }
+.count { color: var(--rn-fg); margin-left: 6px; font-size: 11px; }
+
+/* Summary Items through the prototype's Theme roles. */
+.k-group { background: var(--group-bg) !important; color: var(--group-fg); font-weight: 600; }
+.k-sub { background: var(--sub-bg) !important; color: var(--sub-fg); font-weight: 500; }
+.k-grand { background: var(--grand-bg) !important; color: var(--grand-fg); font-weight: 700; border-top: 1px solid var(--grand-rule); }
+.col-sub { background: var(--sub-bg); }
+.col-grand { background: var(--grand-bg); font-weight: 600; }
+.h.col-grand, .h.col-sub { color: var(--grand-fg); }
+.k-grand.col-grand { background: var(--grand-cross) !important; }
+
+/* Pinned parts. */
+.pin-lead { position: sticky; z-index: 3; }
+.pin-trail { position: sticky; z-index: 3; }
+.pin-edge-lead { box-shadow: inset -2px 0 0 var(--pinned-edge); }
+.pin-edge-trail { box-shadow: inset 2px 0 0 var(--pinned-edge); }
+.pin-bottom { position: sticky; bottom: 0; z-index: 5; }
+.pin-bottom.b { z-index: 7; }
+.pin-bottom.pin-lead, .pin-bottom.pin-trail { z-index: 6; }
+
+.focus { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+/* The grouping menu. */
+#overlay { position: fixed; inset: 0; pointer-events: none; z-index: 50; }
+.menu {
+  position: absolute; pointer-events: auto; min-width: 220px; padding: 4px; border-radius: 8px;
+  background: var(--body-bg); color: var(--body-fg); border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); font: 13px system-ui;
+}
+.menu .title { padding: 4px 8px 6px; color: var(--rn-fg); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.menu button {
+  display: flex; width: 100%; text-align: left; border: 0; background: transparent; color: inherit; font: inherit;
+  padding: 5px 8px; border-radius: 4px; cursor: pointer; gap: 8px;
+}
+.menu button:hover, .menu button.hot { background: var(--hdr-hover); }
+.menu button:disabled { opacity: 0.45; cursor: default; }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.menu .sub { color: var(--rn-fg); margin-left: auto; }
