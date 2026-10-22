@@ -100,6 +100,10 @@ _Avoid_: Column filter, criterion, rule
 A Condition comparing the value with a number or a date: equal, not equal, less, at most, greater, at least, or between two (both ends included). A date is an instant in milliseconds since the Unix epoch, UTC; a date without a time is its midnight. An item compares numbers or dates, as its Table Source declares; a blank, a NaN or a value of the other kind never passes, so `not` keeps it, and a comparison of the other kind is left out.
 _Avoid_: Range filter, numeric filter, predicate
 
+**Native Condition**:
+A Condition holding text in the Table Source's own query language, passed to it unchanged (an SQL source might take `port LIKE 'A%'`). Only a field whose Table Source declares `native` takes one; an adapter shows its text as typed, in `‹ ›`. A Native Condition with no text asks for nothing.
+_Avoid_: Raw filter, SQL condition, custom condition
+
 **Distinct Values**:
 The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more.
 _Avoid_: Unique values, facets
@@ -175,8 +179,12 @@ The name of the one value a grouped axis shows, drawn in the corner so the figur
 _Avoid_: Measure label, value header
 
 **Slicer**:
-A Condition in the grouping part of a View Spec on a base field, applied before aggregating (`WHERE`), even on a field not shown.
+A Condition in the grouping part of a View Spec on a base field, applied before aggregating (`WHERE`), even on a field not shown, hidden or grouped by. Slicers outlive the levels: a grouping with Slicers and no levels is a plain table, sliced. Adding, replacing and removing one are View Edits. The rows' own Conditions differ: a comparison there on a field a value aggregates acts on the groups by that value's figure (`HAVING`), leaving out a group whose figure fails it and everything under it while the figures above stay; any other Condition acts on the Leaves. A group whose child groups all fail keeps its Group Item and figures but draws no Subtotal.
 _Avoid_: Pre-filter, where clause
+
+**Grouping Support**:
+What a Table Source declares per field for grouping: whether the rows group by it, whether the columns pivot by it, where its Subtotals may go (before, after, both or neither; off is always allowed), whether it takes Native Conditions, and separately the aggregates it offers over it, each named with its parameters. A count of items needs no field and is always offered. A source declaring no field that groups shows no grouping or Slicer controls. A level, value or Slicer beyond what it supports is left out of the applied View Spec and listed as not applied, so restoring a layout asking for one never fails.
+_Avoid_: Pivot capabilities, aggregation support
 
 **Corner Grid**:
 Where the two Header Bands' tiers cross on a table grouped in header form: each cell by column tier and row tier, showing level names and the values caption.
