@@ -2,10 +2,11 @@
 //! groups the whole table in memory, with Subtotals and the Grand Total
 //! placed before, after or nowhere. A fake aggregate backend answers each
 //! batch out of order, in parts, short (the rest asked for again), with
-//! more than asked, some answers late, and some after a newer View Spec has
-//! superseded them.
+//! more than asked, jointly (several requests as one answer), some answers
+//! late, and some after a newer View Spec has superseded them.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use binnacle_core::{
     AggregateValue, Axis, ChangeNotice, Comparison, Condition, Depth, Expand, FilterSpec,
@@ -13,7 +14,7 @@ use binnacle_core::{
     SortColumn, SortSpec, Value, ViewSpec,
 };
 use binnacle_group::{
-    Answer, Batch, Body, GroupRow, GroupingLayer, Path, SUMMARY_KEY_BIT, Want, having,
+    Answer, Batch, Body, GroupRow, GroupingLayer, Path, Request, SUMMARY_KEY_BIT, Want, having,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -299,21 +300,27 @@ impl Fake {
 
     fn groups(&self, path: &Path, levels: usize) -> Vec<GroupRow<u64>> {
         let depth = path.len();
-        let under = self.under(path);
-        let mut order: Vec<Value> = Vec::new();
-        for row in &under {
-            if !order.contains(&row.1[depth]) {
-                order.push(row.1[depth].clone());
-            }
+        // One pass over the group's rows: each value's rows in order of
+        // their first.
+        let mut order: Vec<(Value, Vec<&Row>)> = Vec::new();
+        let mut at: HashMap<&Value, usize> = HashMap::new();
+        for row in self.under(path) {
+            let i = *at.entry(&row.1[depth]).or_insert_with(|| {
+                order.push((row.1[depth].clone(), Vec::new()));
+                order.len() - 1
+            });
+            order[i].1.push(row);
         }
         order
             .into_iter()
-            .map(|value| {
-                let mut child = path.clone();
-                child.push((FIELDS[depth], value.clone()));
-                let rows = self.under(&child);
+            .map(|(value, rows)| {
                 let children = match depth + 1 < levels {
-                    true => self.groups(&child, levels).len(),
+                    true => {
+                        let mut next: Vec<&Value> = rows.iter().map(|r| &r.1[depth + 1]).collect();
+                        next.sort_by_key(|v| format!("{v:?}"));
+                        next.dedup();
+                        next.len()
+                    }
                     false => rows.len(),
                 };
                 GroupRow {
@@ -334,7 +341,23 @@ impl Fake {
         );
         let levels = batch.scope.levels.len();
         let mut answers = Vec::new();
+        // Jointly: the requests for one group's groups or Leaves answered
+        // as one, from the first's start to the last's end, naming only the
+        // first; the others are never named.
+        let mut requests: Vec<Request> = Vec::new();
         for request in &batch.requests {
+            let joint = requests.iter_mut().find(|r| {
+                r.path == request.path && r.want == request.want && r.want != Want::Total
+            });
+            match joint {
+                Some(r) if tc.draw(gs::weighted_booleans(0.3)) => {
+                    r.range =
+                        r.range.start.min(request.range.start)..r.range.end.max(request.range.end);
+                }
+                _ => requests.push(request.clone()),
+            }
+        }
+        for request in &requests {
             if matches!(request.want, Want::Groups | Want::Leaves) {
                 self.asked.push(request.path.clone());
             }
@@ -1038,4 +1061,201 @@ fn changing_the_levels_prunes_the_exceptions_that_no_longer_fit(tc: TestCase) {
         Some(pruned.clone()),
         "one level keeps the top groups"
     );
+}
+
+/// How many groups or Leaves the layer asks for at once, as its requests
+/// show.
+const PAGE: u64 = 64;
+
+/// Rows of `groups` distinct values in the first field, `per` rows each,
+/// and any values in the second.
+fn many(groups: usize, per: usize) -> Vec<Row> {
+    (0..groups * per)
+        .map(|i| {
+            let first = Value::Text(format!("g{:04}", i % groups));
+            let second = Value::Text(format!("h{}", i % 3));
+            (Key(i as u64 * 5 + 1), [first, second])
+        })
+        .collect()
+}
+
+/// Closed groups past the first page are laid out before they are
+/// fetched: the rows count at once, a Window stops at the first group not
+/// yet answered (which the Grid draws pending), and asking again fills it
+/// in as the model has it.
+#[hegel::test(test_cases = 50)]
+fn closed_groups_lay_out_before_they_are_fetched(tc: TestCase) {
+    let groups = tc.draw(
+        gs::integers::<usize>()
+            .min_value(PAGE as usize + 1)
+            .max_value(300),
+    );
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
+    let rows = many(groups, 2);
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::new();
+    let closed = Expand::to(Depth::Levels(0));
+    layer.request_view(opening(levels, &shape, closed));
+    let batch = layer.poll_batch().expect("the top groups are asked for");
+    for request in &batch.requests {
+        assert!(request.range.end - request.range.start <= PAGE);
+    }
+    // Answered exactly as asked, once.
+    for request in &batch.requests {
+        let body = match request.want {
+            Want::Total => Body::Total {
+                aggregates: aggregates(&fake.under(&request.path)),
+            },
+            _ => {
+                let all = fake.groups(&request.path, levels);
+                let end = (request.range.end as usize).min(all.len());
+                Body::Groups {
+                    total: all.len() as u64,
+                    groups: all[request.range.start as usize..end].to_vec(),
+                }
+            }
+        };
+        layer.answer(Answer {
+            stamp: batch.stamp,
+            id: Some(request.id),
+            path: request.path.clone(),
+            start: request.range.start,
+            body,
+        });
+    }
+    let want = model(
+        &rows,
+        levels,
+        &shape,
+        &Opened {
+            depth: Depth::Levels(0),
+            except: vec![],
+        },
+    );
+    let viewed = layer
+        .poll_viewed()
+        .expect("laid out with one page of groups");
+    assert_eq!(
+        viewed.notices,
+        vec![(Axis::Rows, ChangeNotice::Refiltered(want.len() as u64))]
+    );
+    let count = want.len() as u64;
+    let top = u64::from(shape.grand_total == Placement::Before);
+    let shown = layer.window(Axis::Rows, 0..count);
+    assert_eq!(
+        shown.len() as u64,
+        top + PAGE,
+        "a Window stops at the first group not fetched"
+    );
+    let got = everything(&tc, &mut layer, &mut fake, &mut Vec::new());
+    assert_eq!(got, want);
+}
+
+/// The pages each item of `items` is fetched in, by its index: whether it
+/// is a Group Item or a Leaf, its parent's path and the page's first
+/// index, with the page's size.
+fn pages(items: &[Described]) -> Vec<Option<((bool, Vec<Path>, u64), u64)>> {
+    let mut index: HashMap<(bool, Vec<Path>), u64> = HashMap::new();
+    let mut at = Vec::new();
+    for d in items {
+        let group = match d.item {
+            Item::Group(_) => true,
+            Item::Leaf(_) => false,
+            _ => {
+                at.push(None);
+                continue;
+            }
+        };
+        let i = index.entry((group, d.ancestors.clone())).or_default();
+        at.push(Some((group, d.ancestors.clone(), *i)));
+        *i += 1;
+    }
+    at.into_iter()
+        .map(|a| {
+            let (group, parent, i) = a?;
+            let siblings = index[&(group, parent.clone())];
+            let start = i / PAGE * PAGE;
+            Some(((group, parent, start), (siblings - start).min(PAGE)))
+        })
+        .collect()
+}
+
+/// However many rows the table has, the layer holds its open groups (with
+/// the closed ones a level opened by default shows) and a bounded cache of
+/// pages: those the latest two Windows read, and up to `cache` more.
+#[hegel::test(test_cases = 60)]
+fn the_layer_holds_open_groups_and_a_bounded_cache_whatever_the_rows(tc: TestCase) {
+    let groups = tc.draw(gs::integers::<usize>().min_value(1).max_value(200));
+    let per = tc.draw(
+        gs::integers::<usize>()
+            .min_value(1)
+            .max_value(3000 / groups),
+    );
+    let mut rows = many(groups, per);
+    // Some rows of their own group in the second field, so the inner
+    // groups can be many too.
+    for (i, row) in rows.iter_mut().enumerate() {
+        if tc.draw(gs::weighted_booleans(0.3)) {
+            row.1[1] = Value::Text(format!("u{i}"));
+        }
+    }
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
+    let first = depth(&tc, levels);
+    let cache = tc.draw(gs::integers::<u64>().max_value(300));
+    let chunk = tc.draw(gs::integers::<u64>().min_value(1).max_value(50));
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::with_cache(cache);
+    layer.request_view(opening(levels, &shape, Expand::to(first)));
+    drive(&tc, &mut layer, &mut fake);
+    let opened = Opened {
+        depth: first,
+        except: vec![],
+    };
+    let want = model(&rows, levels, &shape, &opened);
+    // The groups the layout needs whatever is shown: those at a level
+    // the depth opens.
+    let needed = (want.iter())
+        .filter(|d| matches!(&d.item, Item::Group(p) if opened.opens(p)))
+        .count() as u64;
+    let pages = pages(&want);
+    let read = |range: Range<u64>| {
+        let mut seen: Vec<&(bool, Vec<Path>, u64)> = Vec::new();
+        let mut n = 0;
+        for (page, size) in pages[range.start as usize..range.end as usize]
+            .iter()
+            .flatten()
+        {
+            if !seen.contains(&page) {
+                seen.push(page);
+                n += size;
+            }
+        }
+        n
+    };
+    let count = want.len() as u64;
+    let mut before = 0..0;
+    let mut start = 0;
+    while start < count {
+        let range = start..(start + chunk).min(count);
+        let mut items = layer.window(Axis::Rows, range.clone());
+        for _ in 0..20 {
+            if items.len() as u64 == range.end - range.start {
+                break;
+            }
+            drive(&tc, &mut layer, &mut fake);
+            items = layer.window(Axis::Rows, range.clone());
+        }
+        assert!(!items.is_empty());
+        let lately = read(before.clone()) + read(range.clone());
+        assert!(
+            layer.held() <= needed + cache + lately,
+            "holds {} for {needed} open, a cache of {cache} and {lately} read lately, over {} rows",
+            layer.held(),
+            rows.len()
+        );
+        before = range;
+        start += items.len() as u64;
+    }
 }
