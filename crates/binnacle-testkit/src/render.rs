@@ -3,8 +3,7 @@ use std::fmt::Write;
 use binnacle_core::{
     Axis, Comparison, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Grouping,
     ItemKind, Key, Level, Mode, OpenState, Outline, Placement, Searched, Snapshot, SortDirection,
-    SortSpec,
-    StripItem, TextQuery, Value, ViewSpec,
+    SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.

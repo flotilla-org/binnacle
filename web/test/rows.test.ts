@@ -1262,10 +1262,15 @@ describe("fromRows's grouping", () => {
         const grouping = {
           ...rowsBy<keyof Rec>(outer),
           rowLevels: levels.map(([field, subtotal]) => ({ field, subtotal })),
-          values: [
-            { field: "b" as const, aggregate: "sum" },
-            { field: null, aggregate: "count" },
-          ],
+          values: tc.draw(gs.booleans())
+            ? [
+                { field: "b" as const, aggregate: "sum" },
+                { field: null, aggregate: "count" },
+              ]
+            : [
+                { field: null, aggregate: "count" },
+                { field: "b" as const, aggregate: "sum" },
+              ],
           rowAxis: { ...rowsBy(outer).rowAxis, grandTotal: total },
         };
         const answer = source.view!({ ...groupedBy(outer, sort, hidden), grouping }, signal) as AppliedView<number, keyof Rec>;
@@ -1277,7 +1282,7 @@ describe("fromRows's grouping", () => {
           const group = source.group(id)!;
           const outline = window.outlines[i]!;
           expect(group.kind).toBe(outline.kind);
-          const [sum, count] = group.aggregates;
+          const [sum, count] = grouping.values[0]!.field === "b" ? group.aggregates : [...group.aggregates].reverse();
           expect(source.cells([id], ["b", "n"], signal)).toEqual([[sum, null]]);
           const label = { group: group.value ?? "(blank)", subtotal: `${group.value ?? "(blank)"} total`, grandTotal: "Grand total" };
           expect(source.rows.groupLabel!(id, outline)).toBe(`${label[group.kind]} (${count})`);

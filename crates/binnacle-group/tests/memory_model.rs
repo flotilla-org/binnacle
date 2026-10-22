@@ -29,7 +29,9 @@ fn record(tc: &TestCase) -> Record {
     let value = || {
         gs::optional(hegel::one_of!(
             gs::integers::<i64>().min_value(-3).max_value(12),
-            gs::integers::<i64>().min_value(-(1 << 40)).max_value(1 << 40)
+            gs::integers::<i64>()
+                .min_value(-(1 << 40))
+                .max_value(1 << 40)
         ))
     };
     [tc.draw(value()), tc.draw(value()), tc.draw(value())]
@@ -107,7 +109,10 @@ enum Item {
 /// The count, the sum and the distinct count of `rows`.
 fn figures(rows: &[Record], kept: &[usize], asked: &Asked) -> Vec<Figure> {
     let sums: Vec<i64> = kept.iter().filter_map(|&r| rows[r][asked.sum]).collect();
-    let mut distinct: Vec<i64> = kept.iter().filter_map(|&r| rows[r][asked.distinct]).collect();
+    let mut distinct: Vec<i64> = kept
+        .iter()
+        .filter_map(|&r| rows[r][asked.distinct])
+        .collect();
     distinct.sort();
     distinct.dedup();
     vec![
@@ -160,7 +165,9 @@ fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec
                 None => groups.push((rows[r][field], vec![r])),
             }
         }
-        let label = sort.find(Key(field as u64)).map_or(SortDirection::Ascending, |(_, d)| d);
+        let label = sort
+            .find(Key(field as u64))
+            .map_or(SortDirection::Ascending, |(_, d)| d);
         groups.sort_by(|a, b| {
             let mut o = Ordering::Equal;
             for c in sort.columns() {
@@ -184,7 +191,11 @@ fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec
             let mut path = path.clone();
             path.push(text(value));
             let figures = figures(rows, &members, asked);
-            out.push(Item::Summary(ItemKind::Group, path.clone(), figures.clone()));
+            out.push(Item::Summary(
+                ItemKind::Group,
+                path.clone(),
+                figures.clone(),
+            ));
             let sub = Item::Summary(ItemKind::Subtotal, path.clone(), figures);
             if subtotal == Placement::Before {
                 out.push(sub.clone());
@@ -196,7 +207,11 @@ fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec
         }
     }
     let _ = levels;
-    let total = Item::Summary(ItemKind::GrandTotal, Vec::new(), figures(rows, &kept, asked));
+    let total = Item::Summary(
+        ItemKind::GrandTotal,
+        Vec::new(),
+        figures(rows, &kept, asked),
+    );
     let mut out = Vec::new();
     if asked.grand_total == Placement::Before {
         out.push(total.clone());

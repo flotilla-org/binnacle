@@ -91,7 +91,9 @@ impl AggregateBackend<Figure> for Backend<'_> {
                 &keys,
                 |field, i| {
                     let values = fields.get(&field).map(|f| &f.values);
-                    values.and_then(|v| v.get(item(i)).cloned()).unwrap_or(Value::Blank)
+                    values
+                        .and_then(|v| v.get(item(i)).cloned())
+                        .unwrap_or(Value::Blank)
                 },
                 |field, i| {
                     let numbers = fields.get(&field).map(|f| &f.numbers);
@@ -210,7 +212,12 @@ impl WebMemory {
     /// already. `sort` and `directions` are the user's sort columns
     /// (indices) and directions (0 ascending), which order the groups.
     /// Returns the new count for the `Refiltered`.
-    pub fn group(&mut self, grouping: JsValue, sort: &[u32], directions: &[u8]) -> Result<f64, JsValue> {
+    pub fn group(
+        &mut self,
+        grouping: JsValue,
+        sort: &[u32],
+        directions: &[u8],
+    ) -> Result<f64, JsValue> {
         let grouping: WireGrouping = serde_wasm_bindgen::from_value(grouping)?;
         let sort = (sort.iter().zip(directions))
             .map(|(&c, &d)| match d {
@@ -555,7 +562,11 @@ mod tests {
         assert_eq!(m.locate_summary(GRAND_TOTAL.0), vec![0.0, 8.0]);
         stage(&mut m);
         grouping.rows.grand_total = Placement::Off;
-        assert_eq!(m.group_by(grouping, SortSpec::unsorted()), 8.0, "three groups and five Leaves");
+        assert_eq!(
+            m.group_by(grouping, SortSpec::unsorted()),
+            8.0,
+            "three groups and five Leaves"
+        );
         assert!(m.grouped());
         // a: 1, 4; b: 0, 2; blank: 3.
         assert_eq!(m.locate(ROWS, 4), vec![0.0, 2.0]);

@@ -261,7 +261,11 @@ impl Fake {
 
     /// The whole answer to each request, split in parts as `tc` draws.
     fn answer(&mut self, tc: &TestCase, batch: &Batch) -> Vec<Answer<u64>> {
-        assert_eq!(batch.scope.values, values(), "values reach the backend as asked");
+        assert_eq!(
+            batch.scope.values,
+            values(),
+            "values reach the backend as asked"
+        );
         let levels = batch.scope.levels.len();
         let mut answers = Vec::new();
         for request in &batch.requests {
@@ -610,7 +614,9 @@ fn placing_subtotals_elsewhere_lays_out_what_is_known_again(tc: TestCase) {
     while layer.poll_viewed().is_some() {}
     layer.request_view(spec(levels, &then));
     let want = model(&rows, levels, &then);
-    let viewed = layer.poll_viewed().expect("laid out at once, the groups known");
+    let viewed = layer
+        .poll_viewed()
+        .expect("laid out at once, the groups known");
     let notices = match spec(levels, &first) == spec(levels, &then) {
         true => vec![],
         false => vec![(Axis::Rows, ChangeNotice::Refiltered(want.len() as u64))],

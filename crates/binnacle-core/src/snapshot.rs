@@ -249,8 +249,8 @@ impl<'a> Snapshot<'a> {
         static GRAND: Outline = Outline::grand_total();
         let st = self.grid.axis(axis);
         let key = st.key_at(position)?;
-        let grouped = (self.applied_view().grouping.as_ref())
-            .is_some_and(|g| !g.levels(axis).is_empty());
+        let grouped =
+            (self.applied_view().grouping.as_ref()).is_some_and(|g| !g.levels(axis).is_empty());
         match st.outlines.get(&key) {
             None if key == GRAND_TOTAL && grouped => Some(&GRAND),
             found => found,

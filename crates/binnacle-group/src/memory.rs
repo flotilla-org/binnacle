@@ -63,7 +63,11 @@ fn figure(
         };
     };
     let numbers = || rows.iter().filter_map(|&i| number(field, i));
-    let present = || rows.iter().map(|&i| value(field, i)).filter(|v| *v != Value::Blank);
+    let present = || {
+        rows.iter()
+            .map(|&i| value(field, i))
+            .filter(|v| *v != Value::Blank)
+    };
     let fold = |f: fn(f64, f64) -> f64| numbers().reduce(f).map_or(Figure::Blank, Figure::Number);
     match aggregate.aggregate.as_str() {
         "count" => Figure::Count(present().count() as u64),
@@ -128,7 +132,7 @@ impl MemoryAggregates {
         let scope = &batch.scope;
         let levels = scope.levels.len();
         let mut root = Bucket::default();
-        for i in 0..rows.len() {
+        for (i, &row) in rows.iter().enumerate() {
             let mut bucket = &mut root;
             bucket.rows.push(i);
             for &field in &scope.levels {
@@ -147,7 +151,7 @@ impl MemoryAggregates {
                 bucket = &mut bucket.kids[at];
                 bucket.rows.push(i);
             }
-            bucket.leaves.push(rows[i]);
+            bucket.leaves.push(row);
         }
         let mut aggregates = MemoryAggregates {
             stamp: batch.stamp,
@@ -158,7 +162,12 @@ impl MemoryAggregates {
         finish(&mut root, 0, scope, &value, &number);
         aggregates.root = root;
         let mut path = Vec::new();
-        place(&aggregates.root, &scope.levels, &mut path, &mut aggregates.places);
+        place(
+            &aggregates.root,
+            &scope.levels,
+            &mut path,
+            &mut aggregates.places,
+        );
         aggregates
     }
 

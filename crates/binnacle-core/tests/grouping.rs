@@ -151,19 +151,32 @@ const PORT: Key = Key(2);
 /// The six shipments by region, then port, each level with a Subtotal
 /// after its group, and the Grand Total after everything: 19 items, more
 /// than the viewport shows.
+/// A port's Key, name and shipments.
+type Port = (Key, &'static str, &'static [u64]);
+
 fn nested() -> Scenario<GroupedTable> {
     let text = |name: &str| Value::Text(name.into());
     let mut items = Vec::new();
-    let regions: [(Key, &str, &[(Key, &str, &[u64])]); 2] = [
-        (NORTH, "North", &[(Key(110), "Aberdeen", &[0, 3]), (Key(111), "Bergen", &[4])]),
+    let regions: [(Key, &str, &[Port]); 2] = [
+        (
+            NORTH,
+            "North",
+            &[(Key(110), "Aberdeen", &[0, 3]), (Key(111), "Bergen", &[4])],
+        ),
         (SOUTH, "South", &[(Key(120), "Cadiz", &[1, 2, 5])]),
     ];
     let mut subtotal = 200;
     for (region, name, ports) in regions {
-        items.push((region, Outline::group(vec![], OpenState::Open, REGION, text(name))));
+        items.push((
+            region,
+            Outline::group(vec![], OpenState::Open, REGION, text(name)),
+        ));
         for &(port, port_name, leaves) in ports {
             let up = vec![region];
-            items.push((port, Outline::group(up, OpenState::Open, PORT, text(port_name))));
+            items.push((
+                port,
+                Outline::group(up, OpenState::Open, PORT, text(port_name)),
+            ));
             for &leaf in leaves {
                 items.push((Key(leaf), Outline::leaf(vec![region, port])));
             }
@@ -242,11 +255,19 @@ fn an_unpinned_grand_total_stays_unpinned_until_placed_after_again() {
         *subtotal = Placement::Before;
     }
     s.input(|g| g.request_view(other));
-    assert_eq!(trailing_pins(&mut s), vec![], "another spec, still placed after");
+    assert_eq!(
+        trailing_pins(&mut s),
+        vec![],
+        "another spec, still placed after"
+    );
     s.input(|g| g.request_view(by_region_and_port(Placement::Before)));
     assert_eq!(trailing_pins(&mut s), vec![], "placed before");
     s.input(|g| g.request_view(by_region_and_port(Placement::After)));
-    assert_eq!(trailing_pins(&mut s), vec![GRAND_TOTAL], "placed after again");
+    assert_eq!(
+        trailing_pins(&mut s),
+        vec![GRAND_TOTAL],
+        "placed after again"
+    );
     s.input(|g| g.request_view(by_region_and_port(Placement::Off)));
     assert_eq!(trailing_pins(&mut s), vec![], "off: the default pin goes");
     s.input(|g| g.request_view(by_region_and_port(Placement::After)));

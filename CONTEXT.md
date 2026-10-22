@@ -131,11 +131,11 @@ The Summary Item heading one group of a level: drawn in outline form at its own 
 _Avoid_: Group row, group header, parent row
 
 **Subtotal**:
-The Summary Item holding a group's figures, placed before or after the group's items or left out; it does not open.
+The Summary Item holding a group's figures, placed before or after the group's items or left out, per level; it does not open. Its Outline sits one level below its Group Item, which is its parent. While a group is open and its Subtotal placed, the Group Item draws only its label and count, the figures being the Subtotal's; a closed Group Item carries them itself.
 _Avoid_: Group total, footer row
 
 **Grand Total**:
-The Summary Item holding the figures for a whole grouped axis, placed before or after it or left out. Not to be confused with Totals, the unfiltered count.
+The Summary Item holding the figures for a whole grouped axis, placed before or after it or left out; at depth 0 with no ancestors. Its Key is a fixed one (`GRAND_TOTAL`), so the Grid pins it to the trailing edge whenever the axis's placement turns to after, before any Window lists it; the user may unpin it, and it stays unpinned while the placement stays after. Not to be confused with Totals, the unfiltered count.
 _Avoid_: Total row, overall total
 
 **Summary Item**:
@@ -153,6 +153,10 @@ _Avoid_: Group engine, tree builder, pivot engine
 **Aggregate Query**:
 One request the Grouping Layer sends its backend, in a batch carrying an id: the groups (values, counts and figures) under one path of a level, or the Leaves of one group, over a range. A backend may answer by id in any order, in parts, jointly or with more than asked.
 _Avoid_: Group query, rollup request
+
+**Value Caption**:
+The name of the one value a grouped axis shows, drawn in the corner so the figures need no column label: its aggregate over its field's name, with any parameters after it ("sum(weight)", "quantile(weight, 0.9)"), or the aggregate alone for a count of items. With several values there is none.
+_Avoid_: Measure label, value header
 
 **Slicer**:
 A Condition in the grouping part of a View Spec on a base field, applied before aggregating (`WHERE`), even on a field not shown.

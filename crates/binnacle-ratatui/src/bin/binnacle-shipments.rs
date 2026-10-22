@@ -109,9 +109,9 @@ impl Text<'_> {
     /// `field`, if the grouping shows one.
     fn figure(&self, row: Key, field: Option<Key>, aggregate: Option<&str>) -> Option<Figure> {
         let values = &self.grouping?.values;
-        let i = values.iter().position(|v| {
-            v.field == field && aggregate.is_none_or(|a| a == v.aggregate)
-        })?;
+        let i = values
+            .iter()
+            .position(|v| v.field == field && aggregate.is_none_or(|a| a == v.aggregate))?;
         self.source.summary(row)?.aggregates.get(i).copied()
     }
 }

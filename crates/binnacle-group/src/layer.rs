@@ -545,7 +545,8 @@ impl<A> GroupingLayer<A> {
         match self.located.get(&key) {
             Some(Some((path, index))) => {
                 let lead = self.shape.lead(path.len().saturating_sub(1));
-                let at = group_position(&self.root, &self.shape, path).map(|g| g + top + lead + index);
+                let at =
+                    group_position(&self.root, &self.shape, path).map(|g| g + top + lead + index);
                 Some(at.map_or(gone, Located::Found))
             }
             Some(None) => Some(gone),

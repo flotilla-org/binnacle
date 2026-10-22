@@ -1420,7 +1420,10 @@ impl BinnacleAggregateValue {
         };
         // SAFETY: the caller's contract.
         let params = unsafe { borrowed(self.params, self.params_len) };
-        let params = params.iter().map(|&p| text(p)).collect::<Option<Vec<_>>>()?;
+        let params = params
+            .iter()
+            .map(|&p| text(p))
+            .collect::<Option<Vec<_>>>()?;
         Some(AggregateValue::new(field, text(self.aggregate)?).with_params(params))
     }
 }

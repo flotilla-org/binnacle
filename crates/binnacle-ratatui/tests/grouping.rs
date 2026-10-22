@@ -267,6 +267,9 @@ const PORT: Key = Key(2);
 /// with Subtotals placed as `subtotals` says per level and the Grand Total
 /// after: North holds Aberdeen (0, 3) and Bergen (4); South's one port,
 /// Cadiz, is closed.
+/// A port's name, whether it is open, and its shipments.
+type Port = (&'static str, OpenState, &'static [u64]);
+
 fn nested(subtotals: [Placement; 2]) -> Scenario<GroupedTable> {
     let text = |name: &str| Value::Text(name.into());
     let mut items = Vec::new();
@@ -275,7 +278,7 @@ fn nested(subtotals: [Placement; 2]) -> Scenario<GroupedTable> {
         next += 1;
         Key(next)
     };
-    let regions: [(&str, &[(&str, OpenState, &[u64])]); 2] = [
+    let regions: [(&str, &[Port]); 2] = [
         (
             "North",
             &[
@@ -287,7 +290,10 @@ fn nested(subtotals: [Placement; 2]) -> Scenario<GroupedTable> {
     ];
     for (name, ports) in regions {
         let region = key();
-        items.push((region, Outline::group(vec![], OpenState::Open, REGION, text(name))));
+        items.push((
+            region,
+            Outline::group(vec![], OpenState::Open, REGION, text(name)),
+        ));
         let sub = (key(), Outline::subtotal(vec![region], REGION, text(name)));
         if subtotals[0] == Placement::Before {
             items.push(sub.clone());
@@ -296,7 +302,10 @@ fn nested(subtotals: [Placement; 2]) -> Scenario<GroupedTable> {
             let port = key();
             let group = Outline::group(vec![region], open, PORT, text(port_name));
             items.push((port, group));
-            let port_sub = (key(), Outline::subtotal(vec![region, port], PORT, text(port_name)));
+            let port_sub = (
+                key(),
+                Outline::subtotal(vec![region, port], PORT, text(port_name)),
+            );
             if subtotals[1] == Placement::Before && open == OpenState::Open {
                 items.push(port_sub.clone());
             }
@@ -369,7 +378,13 @@ fn draw_figures(s: &mut Scenario<GroupedTable>, height: u16) -> String {
     let mut buf = Buffer::empty(area);
     let snapshot = s.grid.snapshot();
     let theme = Theme::classic();
-    render_with(&snapshot, &Figures, &RenderContext::new(&theme), area, &mut buf);
+    render_with(
+        &snapshot,
+        &Figures,
+        &RenderContext::new(&theme),
+        area,
+        &mut buf,
+    );
     text(&buf)
 }
 
@@ -382,9 +397,15 @@ fn nested_levels_draw_their_subtotals_where_placed_and_the_grand_total_pinned() 
         [Placement::Off, Placement::Off],
     ] {
         let mut s = nested(subtotals);
-        let pins: Vec<Key> = s.frame(V).pins(Axis::Rows, binnacle_core::Edge::Trailing).collect();
+        let pins: Vec<Key> = s
+            .frame(V)
+            .pins(Axis::Rows, binnacle_core::Edge::Trailing)
+            .collect();
         assert_eq!(pins, vec![GRAND_TOTAL], "{subtotals:?}");
-        out += &format!("--- Subtotals {subtotals:?}\n{}\n", draw_figures(&mut s, 14));
+        out += &format!(
+            "--- Subtotals {subtotals:?}\n{}\n",
+            draw_figures(&mut s, 14)
+        );
     }
     insta::assert_snapshot!(out);
 }
@@ -410,5 +431,8 @@ fn a_single_value_names_itself_in_the_corner_with_its_parameters() {
     };
     assert_eq!(label(ItemKind::Subtotal, "Bergen"), "Bergen total");
     assert_eq!(label(ItemKind::Group, "Bergen"), "Bergen");
-    assert_eq!(Named.group_label(GRAND_TOTAL, &Outline::grand_total()), "Grand total");
+    assert_eq!(
+        Named.group_label(GRAND_TOTAL, &Outline::grand_total()),
+        "Grand total"
+    );
 }
