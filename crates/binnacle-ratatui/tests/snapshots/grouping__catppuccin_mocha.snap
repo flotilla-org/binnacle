@@ -2,7 +2,7 @@
 source: crates/binnacle-ratatui/tests/grouping.rs
 expression: styled(&buf)
 ---
-            id     │kg     │
+count       id     │kg     │
 ▾ North (3)                      █
     #0      s0c0    s0c2         █
     #3      s3c0    s3c2         █
@@ -13,19 +13,19 @@ expression: styled(&buf)
     #5      s5c0    s5c2         █
                                  █
 
-aaaaaaaaaaaabbbbbbbcbbbbbbbcaaaaab
+aaaaabbbbbbbaaaaaaacaaaaaaacbbbbba
 deeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef
 ffffffffffffgggggggggggggggggggggf
-ffffffffffffhhhhhhhahhhhhhhaaaaaaf
+ffffffffffffhhhhhhhbhhhhhhhbbbbbbf
 ffffffffffffgggggggggggggggggggggf
 deeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef
 ffffffffffffgggggggggggggggggggggf
-ffffffffffffhhhhhhhahhhhhhhaaaaaaf
+ffffffffffffhhhhhhhbhhhhhhhbbbbbbf
 ffffffffffffgggggggggggggggggggggf
-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbf
 
-a: fg Reset bg Reset
-b: fg #89B4FA bg Reset BOLD
+a: fg #89B4FA bg Reset BOLD
+b: fg Reset bg Reset
 c: fg #585B70 bg Reset
 d: fg #FAB387 bg #313244 BOLD
 e: fg #CDD6F4 bg #313244 BOLD

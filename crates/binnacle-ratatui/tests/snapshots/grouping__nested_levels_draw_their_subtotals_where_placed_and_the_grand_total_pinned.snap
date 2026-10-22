@@ -1,0 +1,49 @@
+---
+source: crates/binnacle-ratatui/tests/grouping.rs
+expression: out
+---
+--- Subtotals [After, After]
+                id     │kg     │
+▾ North                          █
+  ▾ Aberdeen                     █
+      #0        s0c0    s0c2     █
+      #3        s3c0    s3c2     █
+      Aberdeen …        Σ4       █
+  ▾ Bergen                       █
+      #4        s4c0    s4c2     █
+      Bergen to…        Σ6       █
+    North total         Σ2       █
+▾ South                          █
+  ▸ Cadiz               Σ9       █
+    South total         Σ8       █
+Grand total             Σ0       █
+--- Subtotals [Before, Off]
+                id     │kg     │
+▾ North                          █
+    North total         Σ2       █
+  ▾ Aberdeen            Σ3       █
+      #0        s0c0    s0c2     █
+      #3        s3c0    s3c2     █
+  ▾ Bergen              Σ5       █
+      #4        s4c0    s4c2     █
+▾ South                          █
+    South total         Σ8       █
+  ▸ Cadiz               Σ9       █
+                                 █
+                                 █
+Grand total             Σ0       █
+--- Subtotals [Off, Off]
+                id     │kg     │
+▾ North                 Σ1       █
+  ▾ Aberdeen            Σ3       █
+      #0        s0c0    s0c2     █
+      #3        s3c0    s3c2     █
+  ▾ Bergen              Σ5       █
+      #4        s4c0    s4c2     █
+▾ South                 Σ7       █
+  ▸ Cadiz               Σ9       █
+                                 █
+                                 █
+                                 █
+                                 █
+Grand total             Σ0       █

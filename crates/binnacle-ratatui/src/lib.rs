@@ -44,8 +44,8 @@ pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
-    Action, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, ItemKind, Key, Mode,
-    OpenState, Outline, Snapshot, SortDirection, StripItem, Value,
+    Action, AggregateValue, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, ItemKind,
+    Key, Mode, OpenState, Outline, Snapshot, SortDirection, StripItem, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -85,17 +85,36 @@ pub trait Content {
     }
 
     /// The label of a Summary Item row in a grouped table, drawn in the row
-    /// Header Band after its indent and disclosure mark: the group's value
-    /// unless overridden. A host adds the count it gets from its Table
-    /// Source (`GroupedMemory::summary`, say).
+    /// Header Band after its indent and disclosure mark: unless overridden,
+    /// the group's value on a Group Item, the value and "total" on a
+    /// Subtotal ("Bergen total"), and "Grand total". A host adds the count
+    /// it gets from its Table Source (`GroupedMemory::summary`, say).
     fn group_label(&self, row: Key, outline: &Outline) -> String {
         let _ = row;
-        let value = outline.group.as_ref().map(|g| &g.value);
-        match (outline.kind, value) {
-            (ItemKind::GrandTotal, _) => "Grand total".into(),
-            (_, Some(Value::Text(t))) => t.clone(),
-            (_, Some(Value::Blank)) => "(blank)".into(),
-            (_, None) => String::new(),
+        let value = match outline.group.as_ref().map(|g| &g.value) {
+            Some(Value::Text(t)) => t.clone(),
+            Some(Value::Blank) => "(blank)".into(),
+            None => String::new(),
+        };
+        match outline.kind {
+            ItemKind::GrandTotal => "Grand total".into(),
+            ItemKind::Subtotal => format!("{value} total"),
+            _ => value,
+        }
+    }
+
+    /// The name of a value of a grouped table, drawn as its caption in the
+    /// corner where the Header Bands meet when it is the only one: unless
+    /// overridden, the aggregate over the field's column header, with any
+    /// parameters after it ("sum(weight)", "percentile(weight, 0.9)"), or
+    /// the aggregate alone for a count of items.
+    fn value_name(&self, value: &AggregateValue) -> String {
+        let args: Vec<String> = (value.field.map(|f| self.column_header(f)).into_iter())
+            .chain(value.params.iter().cloned())
+            .collect();
+        match args.is_empty() {
+            true => value.aggregate.clone(),
+            false => format!("{}({})", value.aggregate, args.join(", ")),
         }
     }
 
@@ -267,6 +286,15 @@ pub fn render_with(
             shimmer(buf, area, (x0..x1, 0), &sweep, 0);
         }
     }
+    let grouping = snapshot.applied_view().grouping.as_ref();
+    let grouped = grouping.filter(|g| !g.levels(Axis::Rows).is_empty());
+    // The only value's name, as a caption in the corner.
+    if let Some(value) = grouped.and_then(|g| g.caption()) {
+        let name = content.value_name(value);
+        let caption = fit(&name, u32::try_from(cell(left)).unwrap_or(0));
+        let clip = (0.0, left, 0.0, top);
+        put(buf, area, (0.0, 0.0), clip, &caption, theme.header);
+    }
     let locating = locating(snapshot);
     let picked = Axis::ALL.map(|a| snapshot.picked(a));
     let hovered_col = match snapshot.hovered_header() {
@@ -293,18 +321,22 @@ pub fn render_with(
             },
         );
         // Outline form: an indent per level, then the disclosure mark, or
-        // its room on a Leaf.
+        // its room on a Leaf or Subtotal; the Grand Total sits flush.
         let (indent, mark) = match outline {
             Some(o) => (
                 "  ".repeat(o.depth as usize),
                 match (o.kind, o.open) {
                     (ItemKind::Group, OpenState::Open) => "▾ ",
                     (ItemKind::Group, OpenState::Closed) => "▸ ",
+                    (ItemKind::GrandTotal, _) => "",
                     _ => "  ",
                 },
             ),
             None => (String::new(), ""),
         };
+        // An open Group Item whose Subtotal carries its figures draws blank
+        // apart from its label.
+        let figureless = outline.is_some_and(|o| grouped.is_some_and(|g| g.blank(Axis::Rows, o)));
         let role = outline.and_then(|o| match o.kind {
             ItemKind::Leaf => None,
             ItemKind::Group => Some(theme.group_item),
@@ -423,7 +455,9 @@ pub fn render_with(
             }
             match (r.key, c.key) {
                 (Some(row), Some(col)) => {
-                    content.renderer(row, col).draw(row, col, &mut canvas);
+                    if !figureless {
+                        content.renderer(row, col).draw(row, col, &mut canvas);
+                    }
                     if let Some(role) = role {
                         canvas.patch(role);
                     }
