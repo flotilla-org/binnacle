@@ -51,6 +51,9 @@ const records = gs.arrays(
 
 const signal = new AbortController().signal;
 
+/** Cache sizes: none, a little, and the default (`NaN`). */
+const caches = gs.oneOf(gs.integers({ minValue: 0, maxValue: 200 }), gs.just(Number.NaN));
+
 /** Groups' values in order: ascending, the blank last. */
 const ordered = (values: ListedValue[]) =>
   [...new Set(values)].sort((a, b) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1));
@@ -138,7 +141,7 @@ function hostile(tc: hegel.TestCase, rows: Rec[]) {
     let done = false;
     let value!: T;
     void Promise.resolve(p).then((v) => ((done = true), (value = v)));
-    for (let idle = 0; ; ) {
+    for (let idle = 0, sent = 0; ; ) {
       for (let i = 0; i < 8; i++) await Promise.resolve();
       if (done) return value;
       if (pool.length === 0) {
@@ -146,6 +149,8 @@ function hostile(tc: hegel.TestCase, rows: Rec[]) {
         continue;
       }
       idle = 0;
+      // Answers that never let it settle: the layer keeps asking for what it was given.
+      if (++sent > 500) throw new Error("no progress: 500 answers and nothing settled");
       const i = tc.draw(gs.integers({ minValue: 0, maxValue: pool.length - 1 }));
       pool.splice(i, 1)[0]!.send();
     }
@@ -217,7 +222,7 @@ test("rows grouped over a backend answering in any order and shape match groupin
   hegel.testAsync(async (tc) => {
     const rows = tc.draw(records);
     const { backend, settle } = hostile(tc, rows);
-    const source = groupedSource({ base: fromRows(rows, COLUMNS), backend, cache: tc.draw(gs.sampledFrom([0, 5, NaN])) });
+    const source = groupedSource({ base: fromRows(rows, COLUMNS), backend, cache: tc.draw(caches) });
     try {
       const hidden = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: Math.max(0, rows.length - 1) }), { maxSize: 3 }));
       const view = viewOf(tc.draw(groupings), hidden);
@@ -236,7 +241,7 @@ test("answers to a View Spec a newer one superseded are dropped, however late th
   hegel.testAsync(async (tc) => {
     const rows = tc.draw(records);
     const { backend, settle, pool } = hostile(tc, rows);
-    const source = groupedSource({ base: fromRows(rows, COLUMNS), backend });
+    const source = groupedSource({ base: fromRows(rows, COLUMNS), backend, cache: tc.draw(caches) });
     try {
       const first = viewOf(tc.draw(groupings), []);
       const old = new AbortController();
@@ -260,7 +265,7 @@ test("a Leaf is located where grouping at once places it, and a hidden one is go
   hegel.testAsync(async (tc) => {
     const rows = tc.draw(records);
     const { backend, settle } = hostile(tc, rows);
-    const source = groupedSource({ base: fromRows(rows, COLUMNS), backend, cache: 0 });
+    const source = groupedSource({ base: fromRows(rows, COLUMNS), backend, cache: tc.draw(caches) });
     const model = fromRows(rows, COLUMNS);
     try {
       const hidden = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: Math.max(0, rows.length - 1) }), { maxSize: 3 }));
