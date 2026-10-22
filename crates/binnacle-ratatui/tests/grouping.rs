@@ -2,15 +2,16 @@
 //! indent, the disclosure mark, a Group Item's label and count) in each
 //! preset's grouping roles; nested levels with Subtotals before, after or
 //! off, the Grand Total pinned, figures on Summary Items and the caption;
-//! the header menu's Group rows by and Ungroup rows; and a grouping kept
-//! in a saved layout.
+//! the header menu's Group rows by and Ungroup rows; a grouping kept in a
+//! saved layout; a drop between groups refused; and a Group Item's label
+//! drawn as the current match.
 
 use binnacle_core::{
     AggregateValue, Axis, AxisConfig, GRAND_TOTAL, Grid, Grouping, ItemKind, Key, Level, OpenState,
     Outline, Placement, Support, Value, ViewSpec, Viewport,
 };
 use binnacle_ratatui::{
-    Content, HeaderMenu, RenderContext, Theme, render_with, restore_layout, save_layout,
+    Content, HeaderMenu, RenderContext, Theme, render_with, restore_layout, save_layout, status,
 };
 use binnacle_testkit::{GroupedTable, Scenario};
 use ratatui::buffer::Buffer;
@@ -435,4 +436,65 @@ fn a_single_value_names_itself_in_the_corner_with_its_parameters() {
         Named.group_label(GRAND_TOTAL, &Outline::grand_total()),
         "Grand total"
     );
+}
+
+#[test]
+fn a_drop_between_groups_says_why_and_draws_its_line_as_an_error() {
+    use binnacle_core::PointerEvent as P;
+    let theme = Theme::classic();
+    let mut s = grouped();
+    s.input(|g| g.set_movable(Axis::Rows, true));
+    // #0 (line 2, under North) dragged within North, then down into South.
+    s.input(|g| {
+        g.pointer(P::down(1.0, 2.5));
+        g.pointer(P::moved(1.0, 3.8));
+    });
+    draw(&mut s, &theme, None);
+    assert_eq!(status(&s.grid.snapshot()), "moving row 0 to 3");
+    s.input(|g| g.pointer(P::moved(1.0, 6.8)));
+    let buf = draw(&mut s, &theme, None);
+    assert_eq!(status(&s.grid.snapshot()), "can't move between groups");
+    // Rows without a Gap: the line underlines the row above the drop, up to
+    // the scrollbar.
+    let error = theme.error.fg.unwrap();
+    let underlined = |y: u16| (0..AREA.width - 1).all(|x| buf[(x, y)].underline_color == error);
+    assert_eq!(
+        (1..9).filter(|&y| underlined(y)).collect::<Vec<_>>(),
+        [6],
+        "{}",
+        styled(&buf)
+    );
+    // A Group Item is never moved.
+    s.input(|g| {
+        g.pointer(P::up(1.0, 6.8));
+        g.pointer(P::down(1.0, 1.5));
+        g.pointer(P::moved(1.0, 3.8));
+    });
+    draw(&mut s, &theme, None);
+    assert_eq!(
+        status(&s.grid.snapshot()),
+        "group rows and totals can't move"
+    );
+}
+
+#[test]
+fn a_group_label_that_is_the_current_match_draws_in_the_find_style() {
+    let theme = Theme::classic();
+    let mut s = grouped();
+    s.input(|g| {
+        g.set_find_support(Some(binnacle_core::TextSupport::new(false)));
+        g.set_find(Some(binnacle_core::FindQuery::new(
+            binnacle_core::TextQuery::new("south"),
+        )));
+        g.action(binnacle_core::Action::FindNext);
+        while g.poll_effect().is_some() {}
+        g.find_stepped(Some(binnacle_core::FindMatch::new(SOUTH, REGION)));
+    });
+    let buf = draw(&mut s, &theme, None);
+    let found = theme.find_current.bg.unwrap();
+    // South's band cell on line 5, and nothing else.
+    let lit: Vec<u16> = (0..AREA.height)
+        .filter(|&y| buf[(0, y)].bg == found)
+        .collect();
+    assert_eq!(lit, [5], "{}", styled(&buf));
 }

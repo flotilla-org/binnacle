@@ -45,10 +45,17 @@
 // number, stable for the source's life (the Grand Total's is -1, its
 // `grandTotal`); `group(id)` describes it, and its cells hold its group's
 // figure for each column a value aggregates. The level columns leave the
-// columns while grouped, and the rows don't move. Each column offers the
-// aggregates it can take (`count` and `distinct count` of any, the rest of
-// numeric ones); a value asking for another is left out, listed as not
-// applied.
+// columns while grouped. Leaves move within their group only (on a sorted
+// axis the order shown is kept and the sort on the Leaves dropped, unless
+// `sortedMoves` refuses it); a drop between groups is refused. Find walks
+// the grouped rows as if every group were open, a Group Item's label (its
+// level column's text) before its cells, and counts the matches closed
+// groups hide; a step into one carries the groups to open. The user's edit
+// leaves every row where it is, its group's figures worked out again at
+// once, and a Leaf whose level value changed unmatched until the next View
+// Spec groups the rows again. Each column offers the aggregates it can take
+// (`count` and `distinct count` of any, the rest of numeric ones); a value
+// asking for another is left out, listed as not applied.
 //
 // Slicers filter the rows before they group, on any column, shown or not,
 // grouped or not; with slicers and no levels the table is plain, sliced.
@@ -162,6 +169,25 @@ interface GroupedItem {
   outline: Outline<bigint, bigint>;
   aggregates: (number | null)[] | null;
   children: number | null;
+}
+
+/** An item of the grouped rows as `WebMemory.grouped_items` gives it, every group open. */
+interface FoundItem {
+  key: bigint;
+  item: number | null;
+  hidden: boolean;
+  ancestors: bigint[];
+  field: bigint | null;
+  label: string | null;
+}
+
+/** A match of grouped find: its place in the query's order, its cell, whether a closed group hides it, and the groups above it. */
+interface GroupedMatch<ColId> {
+  place: number;
+  row: number;
+  col: ColId;
+  hidden: boolean;
+  ancestors: number[];
 }
 
 /** The top bit of a Summary Item's Key, which its negative row ID leaves out. */
@@ -391,6 +417,8 @@ export function fromRows<R extends object>(
   let slicers: Filter<ColId>["conditions"] = [];
   /** The Summary Items seen in grouped Windows since the rows last grouped, by row ID. */
   const groups = new Map<number, RowsGroup<ColId>>();
+  /** Whether the user edited a row since the rows last grouped: the next View Spec groups them again. */
+  let stale = false;
   const groupable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.sortable !== false;
   const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
   const compared = (id: ColId): Compared | null => {
@@ -514,6 +542,40 @@ export function fromRows<R extends object>(
     return { rowsAt: Array.from(m.window(ROWS, 0, m.count(ROWS))), colsAt: Array.from(m.window(COLS, 0, columns.length)) };
   };
 
+  /**
+   * Every match in the grouped rows, in the query's order as if every
+   * group were open (by rows, each item's label before its cells; by
+   * columns, the labels first), and the place of the cell `from`.
+   */
+  const groupedMatches = (query: FindQuery<ColId>, from: { row: number; col: ColId } | null) => {
+    const cells = hitsFor(query);
+    const match = matcher(query.query);
+    const n = columns.length;
+    const items = memory().grouped_items() as FoundItem[];
+    const { colsAt } = shown();
+    const slots = colsAt.length + 1;
+    const place = (i: number, slot: number) => (query.by === "rows" ? i * slots + slot : slot * items.length + i);
+    const found: GroupedMatch<ColId>[] = [];
+    items.forEach((item, i) => {
+      const at = { hidden: item.hidden, ancestors: item.ancestors.map(summaryId) };
+      if (item.field !== null && item.label !== null && match?.(item.label)) {
+        found.push({ place: place(i, 0), row: summaryId(item.key), col: columns[Number(item.field)]!.key, ...at });
+      }
+      if (item.item === null) return;
+      colsAt.forEach((c, j) => {
+        if (cells[item.item! * n + c] === 1) found.push({ place: place(i, j + 1), row: item.item!, col: columns[c]!.key, ...at });
+      });
+    });
+    found.sort((a, b) => a.place - b.place);
+    let start: number | null = null;
+    if (from) {
+      const key = from.row < 0 ? summaryKey(from.row) : BigInt(from.row);
+      const i = items.findIndex((item) => item.key === key);
+      if (i >= 0) start = place(i, colsAt.indexOf(index.get(from.col) ?? -1) + 1);
+    }
+    return { found, start };
+  };
+
   /** Hands binnacle-memory the rows the rows' filter and `keep` keep. */
   const refilter = () => {
     const m = memory();
@@ -624,20 +686,9 @@ export function fromRows<R extends object>(
   const regroup = () => {
     const m = memory();
     groups.clear();
+    stale = false;
     if (levels.length === 0 || !grouping) return void (m.grouped() && m.ungroup());
-    const read = new Set([...levels, ...grouping.values.flatMap((v) => (v.field === null ? [] : [v.field]))]);
-    for (const id of read) {
-      const { bytes, ends, nulls } = encoded(rows.map((r) => text(r, id)));
-      const numbers = rows.map((r) => numeric(r[id]));
-      m.stage_field(
-        index.get(id)!,
-        bytes,
-        ends,
-        nulls,
-        Float64Array.from(numbers, (n) => n ?? 0),
-        Uint8Array.from(numbers, (n) => (n === undefined ? 1 : 0)),
-      );
-    }
+    stage(grouping);
     const column = (id: ColId) => BigInt(index.get(id)!);
     const wire = {
       ...grouping,
@@ -658,6 +709,24 @@ export function fromRows<R extends object>(
     // The Group Items whose paths no longer fit the levels are pruned.
     const except = Array.from(m.except(), summaryId);
     grouping = { ...grouping, rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except } } };
+  };
+
+  /** Stages each column `g` reads, as cell texts and as numbers. */
+  const stage = (g: Grouping<ColId, number, ColId>) => {
+    const m = memory();
+    const read = new Set([...levels, ...g.values.flatMap((v) => (v.field === null ? [] : [v.field]))]);
+    for (const id of read) {
+      const { bytes, ends, nulls } = encoded(rows.map((r) => text(r, id)));
+      const numbers = rows.map((r) => numeric(r[id]));
+      m.stage_field(
+        index.get(id)!,
+        bytes,
+        ends,
+        nulls,
+        Float64Array.from(numbers, (n) => n ?? 0),
+        Uint8Array.from(numbers, (n) => (n === undefined ? 1 : 0)),
+      );
+    }
   };
 
   /** The Keys of the Group Items in the rows' `expand.except`. */
@@ -751,7 +820,7 @@ export function fromRows<R extends object>(
    */
   const move = (axis: typeof ROWS | typeof COLS, items: number[], to: number): boolean | { refused: string } => {
     const sorted = (axis === ROWS ? applied : colsApplied).length > 0;
-    if (axis === ROWS && levels.length > 0) return { refused: "Can't move grouped rows: ungroup them first" };
+    if (axis === ROWS && levels.length > 0) return moveGrouped(items, to);
     if (!memory().move_items(axis, Uint32Array.from(items), to)) {
       return { refused: "Can't move while sorted: clear the sort first" };
     }
@@ -763,12 +832,59 @@ export function fromRows<R extends object>(
     return true;
   };
 
+  /** The user's sort on the Leaves: its columns the rows don't group by. */
+  const leafSort = () => applied.filter((c) => !levels.includes(c.id));
+
+  /**
+   * Moves grouped Leaves within their group. On Leaves sorted by a column
+   * the rows don't group by, the order shown is kept and that sort dropped,
+   * which the sinks hear before the widget gets the answer.
+   */
+  const moveGrouped = (ids: number[], to: number): boolean | { refused: string } => {
+    const sorted = leafSort().length > 0;
+    const keys = BigUint64Array.from(ids, (id) => (id < 0 ? summaryKey(id) : BigInt(id)));
+    if (sorted && options.sortedMoves === "refuse" && !ids.some((id) => id < 0)) {
+      return { refused: "Can't move while sorted: clear the sort first" };
+    }
+    const code = memory().move_grouped(keys, to);
+    if (code === 1) return { refused: "Can't move between groups" };
+    if (code === 2) return { refused: "Group rows and totals can't be moved" };
+    if (!sorted) return true;
+    applied = applied.filter((c) => levels.includes(c.id));
+    regroup();
+    const view = current();
+    for (const s of sinks) s.viewChanged(view);
+    return true;
+  };
+
+  /**
+   * The user edited row `id` while the rows are grouped: every row stays
+   * where it is, the groups' figures are worked out again at once, and the
+   * next View Spec groups the rows again.
+   */
+  const editGrouped = (id: number) => {
+    const m = memory();
+    const at = located(m.locate(ROWS, id));
+    if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
+    keys.clear();
+    kinds.clear();
+    rowKeys.delete(id);
+    hits = undefined;
+    if (keep || filtering(filters.rows)) m.defer(ROWS, id, rowKeeper(filters.rows)(rows[id]!) ? 1 : 0);
+    stage(grouping!);
+    const changed = m.refigure();
+    groups.clear();
+    for (let i = 0; i < changed.length; i += 2) tell({ type: "ContentChanged", start: changed[i]!, end: changed[i + 1]! });
+    stale = true;
+  };
+
   /**
    * The row `id` changed in place: told at its old Position, re-sorted, and
    * filtered again with the columns, at once or (with `defer`, for the
    * user's edit) only those out of view.
    */
   const update = (id: number, defer: boolean) => {
+    if (defer && levels.length > 0) return editGrouped(id);
     const m = memory();
     const at = located(m.locate(ROWS, id));
     if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
@@ -826,7 +942,8 @@ export function fromRows<R extends object>(
       unmatched: (ids) =>
         Array.from(memory().unmatched(ROWS, Uint32Array.from(ids, (id) => (id < 0 ? rows.length : id))), (u) => u === 1),
       move: (ids, to) => move(ROWS, ids, to),
-      movable: () => levels.length === 0 && memory().movable(ROWS),
+      movable: () =>
+        levels.length === 0 ? memory().movable(ROWS) : options.sortedMoves !== "refuse" || leafSort().length === 0,
       groupLabel: (id, outline) => {
         const group = summaryOf(id);
         if (!group) return "";
@@ -911,7 +1028,7 @@ export function fromRows<R extends object>(
       const leavesChanged = JSON.stringify(spec(leafFilter())) !== leavesBefore;
       const refiltered = forRows.changed || leavesChanged || shownChanged.rows || m.has_unmatched(ROWS);
       if (refiltered) refilter();
-      const regrouped = regrouping || (levels.length > 0 && (refiltered || hid.rows || sorted));
+      const regrouped = regrouping || (levels.length > 0 && (refiltered || hid.rows || sorted || stale));
       if (regrouped) regroup();
       const reopened = !regrouped && reopening && levels.length > 0 ? reopen() : null;
       // An axis left in the same order is told nothing.
@@ -936,6 +1053,18 @@ export function fromRows<R extends object>(
         return rowIds.map((r) => colIds.map((c) => index.has(c) && cells[r * n + index.get(c)!] === 1));
       },
       next(from, direction, query) {
+        if (levels.length > 0) {
+          const { found, start } = groupedMatches(query, from);
+          if (found.length === 0) return null;
+          const forward = direction === "next";
+          // The next match past `start` either way, if one is.
+          const past = (f: GroupedMatch<ColId>) => start !== null && (forward ? f.place > start : f.place < start);
+          let i = forward ? found.findIndex(past) : found.map(past).lastIndexOf(true);
+          const wrapped = start !== null && i < 0;
+          if (i < 0) i = forward ? 0 : found.length - 1;
+          const f = found[i]!;
+          return { row: f.row, col: f.col, index: i, wrapped, ancestors: { rows: f.ancestors } };
+        }
         const cells = hitsFor(query);
         const n = columns.length;
         const { rowsAt, colsAt } = shown();
@@ -969,6 +1098,10 @@ export function fromRows<R extends object>(
         return null;
       },
       count(query) {
+        if (levels.length > 0) {
+          const { found } = groupedMatches(query, null);
+          return { total: found.length, hidden: found.filter((f) => f.hidden).length };
+        }
         const cells = hitsFor(query);
         const n = columns.length;
         const { rowsAt, colsAt } = shown();

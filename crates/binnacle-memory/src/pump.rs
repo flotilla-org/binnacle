@@ -34,11 +34,12 @@ pub struct FindStep {
 }
 
 /// How many cells match a Find Query: `total`, or at least `total` while
-/// `partial`.
+/// `partial`, of which `hidden` lie in collapsed groups.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FindCount {
     pub total: u64,
     pub partial: bool,
+    pub hidden: u64,
 }
 
 /// What [`pump`] asks of a Table Source.
@@ -107,6 +108,15 @@ pub trait PumpSource {
         None
     }
 
+    /// The Group Item Keys above the item with `key` on `axis`, outermost
+    /// first, whether its groups are open or not; empty on an axis that is
+    /// not grouped (the default). [`pump`] hands them to
+    /// [`Grid::find_stepped_within`] with each find step, so that a match in
+    /// collapsed groups opens them.
+    fn ancestors(&mut self, _axis: Axis, _key: Key) -> Vec<Key> {
+        Vec::new()
+    }
+
     /// Whether the items of `axis` can move now, which [`pump`] declares
     /// with [`Grid::set_movable`] before it drains and after each answer
     /// (so a source can withdraw moves while sorted, say). The default,
@@ -159,7 +169,8 @@ pub fn answer_move(
 /// Table Source handles: `ViewRequested` with `view_applied` and the axes'
 /// Change Notices (or `view_applied` of the previous spec to reject it), and
 /// `Locate` with `located`, `MoveRequested` as [`answer_move`] does, and
-/// `FindStepRequested` with `find_stepped`. Answers can queue more Effects,
+/// `FindStepRequested` with `find_stepped` (`find_stepped_within` where
+/// the match has ancestors). Answers can queue more Effects,
 /// which the same loop drains. Movability is declared from
 /// [`PumpSource::movable`] before draining and after each answer. `seen`
 /// gets every Effect drained, in order, after the pump has answered it.
@@ -187,10 +198,17 @@ pub fn pump(
                 query,
                 from,
                 direction,
-            } => {
-                let step = source.find_next(query, *from, *direction);
-                grid.find_stepped(step.map(|s| s.at));
-            }
+            } => match source.find_next(query, *from, *direction) {
+                Some(step) => {
+                    let rows = source.ancestors(Axis::Rows, step.at.row);
+                    let cols = source.ancestors(Axis::Cols, step.at.col);
+                    match rows.is_empty() && cols.is_empty() {
+                        true => grid.find_stepped(Some(step.at)),
+                        false => grid.find_stepped_within(step.at, [&rows, &cols]),
+                    }
+                }
+                None => grid.find_stepped(None),
+            },
             _ => {}
         }
         if matches!(

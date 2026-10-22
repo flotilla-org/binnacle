@@ -125,7 +125,9 @@ impl Host {
             DropTarget::Unpin { .. } | DropTarget::Move { unpin: true, .. } => {
                 pins.iter_mut().for_each(|p| p.retain(|&p| p != key.0));
             }
-            DropTarget::Move { unpin: false, .. } | DropTarget::Stay => {}
+            DropTarget::Move { unpin: false, .. }
+            | DropTarget::Refused { .. }
+            | DropTarget::Stay => {}
         }
     }
 

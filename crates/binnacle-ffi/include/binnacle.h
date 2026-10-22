@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 8u
+#define BINNACLE_ABI_VERSION 9u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -98,10 +98,21 @@ uint32_t binnacle_abi_version(void);
  * item, which returns to its own Position, drop_position (the axis can't
  * move). PIN: pin the dragged items to drop_edge, drawn before the pinned
  * drop_before if has_drop_before, else after the last pin there; drop_reorder
- * when they are pinned there already. */
+ * when they are pinned there already. REFUSED: releasing does nothing, as the
+ * Grid will not ask to move the dragged items to before drop_position, for
+ * the reason drop_refusal (BINNACLE_MOVE_REFUSAL_*): show it as a caption. */
 #define BINNACLE_DROP_MOVE 0
 #define BINNACLE_DROP_UNPIN 1
 #define BINNACLE_DROP_PIN 2
+#define BINNACLE_DROP_REFUSED 3
+
+/* BinnacleSnapshot.drop_refusal, for BINNACLE_DROP_REFUSED: BETWEEN_GROUPS,
+ * the drop lies outside the Leaves' group ("Can't move between groups");
+ * SUMMARY, a Group Item, Subtotal or Grand Total is dragged. OTHER for
+ * reasons added after this header. */
+#define BINNACLE_MOVE_REFUSAL_OTHER 0
+#define BINNACLE_MOVE_REFUSAL_BETWEEN_GROUPS 1
+#define BINNACLE_MOVE_REFUSAL_SUMMARY 2
 
 /* BinnacleEffect.kind. Effects the Grid gained after this header arrive as
  * BINNACLE_EFFECT_OTHER: skip them. */
@@ -125,7 +136,7 @@ uint32_t binnacle_abi_version(void);
 /* Step from the cell from (none when has_from is 0: from the start) to the
  * next or previous match of find, in direction (BINNACLE_FIND_NEXT or
  * PREVIOUS), wrapping. Answer each with binnacle_grid_find_stepped, in
- * order. */
+ * order, or binnacle_grid_find_stepped_within for a match inside groups. */
 #define BINNACLE_EFFECT_FIND_STEP_REQUESTED 9
 /* The user dropped the headers of the items with keys on axis before the
  * item at Position to (the count for the end), Positions as they were before
@@ -761,6 +772,7 @@ typedef struct {
   uint32_t has_drop_before;
   uint64_t drop_before;
   uint32_t drop_reorder;
+  uint32_t drop_refusal;
   /* The lit pin zones while headers are dragged: the first pin_zones_len. */
   BinnacleZone pin_zones[2];
   size_t pin_zones_len;
@@ -1178,6 +1190,16 @@ int binnacle_grid_located(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint3
  * nothing matches. The match takes focus and is scrolled into view; the
  * selection is left as it is. */
 int binnacle_grid_find_stepped(BinnacleGrid *grid, const BinnacleFindMatch *found);
+
+/* The answer to FIND_STEP_REQUESTED on a grouped axis: the match found
+ * (not NULL) and the Keys of the Group Items it lies under on each axis,
+ * outermost first (a group label's own group is not among them). The Grid
+ * expands each closed one with VIEW_REQUESTED and focuses the match once
+ * the View Spec is applied; a label match focuses the outline column. 0
+ * for a NULL found. */
+int binnacle_grid_find_stepped_within(BinnacleGrid *grid, const BinnacleFindMatch *found,
+                                      const uint64_t *row_ancestors, size_t row_ancestors_len,
+                                      const uint64_t *col_ancestors, size_t col_ancestors_len);
 
 /* Whether the Table Source finds, and takes regexes: BINNACLE_FIND* bits. */
 int binnacle_grid_set_find_support(BinnacleGrid *grid, uint32_t support);

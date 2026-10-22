@@ -98,7 +98,10 @@ export function paintGuides(p: PaintContext): void {
   if (s.resizeGuide) across(s.resizeGuide.axis, s.resizeGuide.offset, theme.guide);
   const drop = s.dropIndicator;
   // Dashed where an unpinned item returns to its own place.
-  if (drop) across(drop.axis, drop.offset, theme.dropIndicator, drop.target.type === "Unpin");
+  if (drop) {
+    const line = drop.target.type === "Refused" ? { ...theme.dropIndicator, color: theme.error } : theme.dropIndicator;
+    across(drop.axis, drop.offset, line, drop.target.type === "Unpin");
+  }
 }
 
 function snap(v: number, pixel: number): number {

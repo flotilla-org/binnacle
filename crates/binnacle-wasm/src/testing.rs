@@ -6,9 +6,9 @@ use binnacle_core::{
     Action, Aggregate, AggregateValue, Axis, AxisConfig, ChangeNotice, Compared, Comparison,
     Condition, ConditionState, Cursor, Depth, DrillDown, DropTarget, Edge, Effect, FilterSpec,
     FindDirection, FindMatch, FindQuery, FocusStep, Grid, GroupOf, Grouping, HeaderPlacement, Key,
-    Level, Mode, Modifiers, OpenState, Outline, Placement, Placements, PointerEvent, Rect, Scalar,
-    Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals,
-    Value, ViewEdit, ViewSpec, Viewport,
+    Level, Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements, PointerEvent,
+    Rect, Scalar, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -400,6 +400,10 @@ enum DumpTarget {
         reorder: bool,
     },
     Stay,
+    Refused {
+        to: f64,
+        why: &'static str,
+    },
 }
 
 fn edge_name(edge: Edge) -> &'static str {
@@ -427,6 +431,15 @@ impl From<DropTarget> for DumpTarget {
                 reorder,
             },
             DropTarget::Stay => DumpTarget::Stay,
+            DropTarget::Refused { to, why } => DumpTarget::Refused {
+                to: to as f64,
+                #[allow(unreachable_patterns)]
+                why: match why {
+                    MoveRefusal::BetweenGroups => "betweenGroups",
+                    MoveRefusal::Summary => "summary",
+                    _ => "other",
+                },
+            },
         }
     }
 }
@@ -851,7 +864,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 24] = [
+pub const SCENARIOS: [&str; 25] = [
     "plain",
     "busy",
     "resizing",
@@ -876,6 +889,7 @@ pub const SCENARIOS: [&str; 24] = [
     "endGap",
     "grouped",
     "sliced",
+    "dropRefused",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -1188,7 +1202,7 @@ pub fn scenario(name: &str) -> Grid {
             grid.show(Axis::Rows, &[key(5)]);
             grid.set_hide_support(Axis::Rows, false);
         }
-        "grouped" => {
+        "grouped" | "dropRefused" => {
             // The rows grouped by column 1, as applied: every fifth row a
             // Group Item heading the four after it, the second closed and
             // the third's value blank.
@@ -1240,7 +1254,7 @@ pub fn scenario(name: &str) -> Grid {
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
-    if name == "grouped" {
+    if name == "grouped" || name == "dropRefused" {
         let outlines: Vec<Outline> = (0..40)
             .map(|p| match p % 5 {
                 0 => {
@@ -1264,6 +1278,15 @@ pub fn scenario(name: &str) -> Grid {
             })
             .collect();
         grid.set_outlines(Axis::Rows, 0, &outlines);
+    }
+    if name == "dropRefused" {
+        // Row 1's header, a Leaf of the first group, dragged over row 7 in
+        // the second.
+        grid.set_movable(Axis::Rows, true);
+        grid.pointer(PointerEvent::down(20.0, 24.0 + 21.0 + 10.0));
+        grid.pointer(PointerEvent::moved(20.0, 24.0 + 21.0 * 7.0 + 5.0));
+    }
+    if name == "grouped" {
         // Focus in the outline column, and the first group closed by a
         // request still due.
         grid.set_focus(key(0), key(0));
@@ -1332,6 +1355,11 @@ mod tests {
                 }
                 "movePending" => assert!(s.headers(Axis::Rows).any(|h| h.move_pending)),
                 "moveRefused" => assert!(s.move_refusal().is_some() && s.pending_move().is_none()),
+                "dropRefused" => assert!(s.drop_indicator().is_some_and(|d| d.target
+                    == DropTarget::Refused {
+                        to: 7,
+                        why: MoveRefusal::BetweenGroups
+                    })),
                 "editing" => assert!(s.editor_rect().is_some()),
                 "locating" => {
                     assert!(s.locating(Axis::Rows));
@@ -1513,7 +1541,8 @@ mod tests {
                 "Idle",
                 "Idle",
                 "Idle",
-                "Idle"
+                "Idle",
+                "MovingHeaders"
             ]
         );
     }

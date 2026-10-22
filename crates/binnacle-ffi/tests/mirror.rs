@@ -9,10 +9,10 @@ use binnacle_core::{
     Action, Aggregate, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared,
     Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
     FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping,
-    HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, OpenState, Outline, PinZone,
-    Placement, Placements, PointerEvent, PointerKind, Scalar, Searched, SelectionUnit, Snapshot,
-    SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline,
+    PinZone, Placement, Placements, PointerEvent, PointerKind, Scalar, Searched, SelectionUnit,
+    Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value,
+    ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -102,8 +102,9 @@ enum Op {
     SetFind(Option<FindQuery>),
     FindSupport(Option<TextSupport>),
     /// The answer to a find step: this match, or with `Some((r, c))` the
-    /// cell of the last frame's strips at those indices (wrapped).
-    FindStepped(Option<FindMatch>, Option<(usize, usize)>),
+    /// cell of the last frame's strips at those indices (wrapped), within
+    /// these groups on each axis if any.
+    FindStepped(Option<FindMatch>, Option<(usize, usize)>, [Vec<Key>; 2]),
     /// A `located` answer about this Key, or (`None`) about the Key of the
     /// last `Locate` drained, if any.
     Located(Option<(Axis, Key)>, Located),
@@ -554,7 +555,13 @@ fn answer(tc: &TestCase) -> Op {
                 .draw(gs::optional(cell))
                 .map(|(r, c)| FindMatch::new(r, c));
             let shown = hegel::tuples!(gs::integers::<usize>(), gs::integers::<usize>());
-            Op::FindStepped(found, tc.draw(gs::optional(shown)))
+            // Half the time within groups, by Keys outlines may name.
+            let within = |axis| match tc.draw(gs::booleans()) {
+                true => tc.draw(gs::vecs(key(axis)).max_size(2)),
+                false => Vec::new(),
+            };
+            let within = [within(Axis::Rows), within(Axis::Cols)];
+            Op::FindStepped(found, tc.draw(gs::optional(shown)), within)
         }
         0 => Op::ViewApplied(tc.draw(view_spec()), tc.draw(totals())),
         14 => Op::ViewChanged(tc.draw(view_spec()), tc.draw(totals())),
@@ -1455,6 +1462,14 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
                 edge: edge_of(c.drop_edge),
                 before: (c.has_drop_before != 0).then_some(Key(c.drop_before)),
                 reorder: c.drop_reorder != 0,
+            },
+            BINNACLE_DROP_REFUSED => DropTarget::Refused {
+                to: c.drop_position,
+                why: match c.drop_refusal {
+                    BINNACLE_MOVE_REFUSAL_BETWEEN_GROUPS => MoveRefusal::BetweenGroups,
+                    BINNACLE_MOVE_REFUSAL_SUMMARY => MoveRefusal::Summary,
+                    t => panic!("move refusal tag {t}"),
+                },
             },
             t => panic!("drop target tag {t}"),
         };
@@ -2798,7 +2813,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     let bits = support.map_or(0, |s| BINNACLE_FIND | u32::from(s.regex) << 1);
                     binnacle_grid_set_find_support(h, bits)
                 }
-                Op::FindStepped(found, at) => {
+                Op::FindStepped(found, at, within) => {
                     let found = match at {
                         Some((r, c)) if found.is_some() && shown.iter().all(|s| !s.is_empty()) => {
                             let [rows, cols] = &shown;
@@ -2810,8 +2825,29 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                         row: m.row.0,
                         col: m.col.0,
                     });
-                    grid.find_stepped(found);
-                    binnacle_grid_find_stepped(h, c.as_ref().map_or(std::ptr::null(), |c| c))
+                    match (found, &c, within.iter().all(Vec::is_empty)) {
+                        (Some(found), Some(c), false) => {
+                            grid.find_stepped_within(found, [&within[0], &within[1]]);
+                            let [rows, cols] = within.map(|k| k.iter().map(|k| k.0).collect());
+                            let rows: Vec<u64> = rows;
+                            let cols: Vec<u64> = cols;
+                            binnacle_grid_find_stepped_within(
+                                h,
+                                c,
+                                rows.as_ptr(),
+                                rows.len(),
+                                cols.as_ptr(),
+                                cols.len(),
+                            )
+                        }
+                        _ => {
+                            grid.find_stepped(found);
+                            binnacle_grid_find_stepped(
+                                h,
+                                c.as_ref().map_or(std::ptr::null(), |c| c),
+                            )
+                        }
+                    }
                 }
                 Op::Located(about, answer) => {
                     let Some((axis, key)) = about.or(asked) else {
@@ -2980,11 +3016,18 @@ enum MoveOp {
     Answered(Option<String>),
     /// A click on a cell, which clears a refusal.
     Click,
+    /// Outlines for the axis's Window from its start, so drags meet groups
+    /// and Summary Items.
+    Outlines(Axis, Vec<Outline>),
 }
 
 #[hegel::composite]
 fn move_op(tc: &TestCase) -> MoveOp {
-    match tc.draw(gs::integers::<u8>().max_value(6)) {
+    match tc.draw(gs::integers::<u8>().max_value(7)) {
+        7 => {
+            let axis = tc.draw(axes());
+            MoveOp::Outlines(axis, tc.draw(gs::vecs(move_outline()).max_size(8)))
+        }
         0 | 1 => MoveOp::Frame,
         2 | 3 => MoveOp::Drag {
             axis: tc.draw(axes()),
@@ -2999,6 +3042,22 @@ fn move_op(tc: &TestCase) -> MoveOp {
         ),
         _ => MoveOp::Click,
     }
+}
+
+/// An outline for a move: a Leaf or a Summary Item under one of two
+/// groups, so neighbours often share a parent.
+#[hegel::composite]
+fn move_outline(tc: &TestCase) -> Outline {
+    let parent = tc.draw(gs::sampled_from(vec![Key(90), Key(91)]));
+    let mut outline = Outline::leaf(vec![parent]);
+    outline.kind = tc.draw(gs::sampled_from(vec![
+        ItemKind::Leaf,
+        ItemKind::Leaf,
+        ItemKind::Group,
+        ItemKind::Subtotal,
+        ItemKind::GrandTotal,
+    ]));
+    outline
 }
 
 /// Moves through the C API: header drags on either axis, movability, the
@@ -3064,6 +3123,12 @@ fn moves_through_the_c_api_mirror_the_grid(tc: TestCase) {
                         assert_eq!(binnacle_grid_pointer(h, pointer_event(e)), 1);
                     }
                     1
+                }
+                MoveOp::Outlines(axis, outlines) => {
+                    grid.set_outlines(axis, 0, &outlines);
+                    with_c_outlines(&outlines, |c| {
+                        binnacle_grid_set_outlines(h, tag(axis), 0, c.as_ptr(), c.len())
+                    })
                 }
             };
             assert_eq!(ok, 1);
@@ -3360,6 +3425,105 @@ fn summary_items_through_the_c_api_mirror_the_grid(tc: TestCase) {
             }
             check_effects(h, &mut grid);
         }
+        binnacle_grid_free(h);
+    }
+}
+
+/// A find step answered within groups through the C API: the Grid asks to
+/// open each closed group and focuses the match once the View Spec is
+/// applied, as the Rust Grid does.
+#[hegel::test(test_cases = 300)]
+fn find_steps_within_groups_through_the_c_api_mirror_the_grid(tc: TestCase) {
+    let config = || AxisConfig::new(8, 3.0).header(2.0).gap(1.0);
+    let c = BinnacleAxisConfig {
+        count: 8,
+        default_size: 3.0,
+        header: 2.0,
+        gap: 1.0,
+    };
+    let h = binnacle_grid_new(c, c);
+    let mut grid = Grid::new(config(), config());
+    let apply = |h: *mut BinnacleGrid, grid: &mut Grid, spec: ViewSpec| {
+        let totals = BinnacleTotals::default();
+        let ok = with_c_view(&spec, |c| unsafe {
+            binnacle_grid_view_applied(h, c, &totals)
+        });
+        assert_eq!(ok, 1);
+        grid.view_applied(spec, Totals::default());
+    };
+    unsafe {
+        mirrored_frame(h, &mut grid);
+        let mut grouping = Grouping::rows_by(Key(100));
+        grouping.row_levels.push(Level::Field {
+            field: Key(101),
+            subtotal: Placement::Off,
+        });
+        grouping.rows.expand =
+            binnacle_core::Expand::to(Depth::Levels(tc.draw(gs::integers::<u32>().max_value(2))));
+        if tc.draw(gs::booleans()) {
+            grouping.rows.expand = grouping.rows.expand.clone().with(0, Key(7), true);
+        }
+        apply(
+            h,
+            &mut grid,
+            ViewSpec::default().with_grouping(Some(grouping)),
+        );
+        let query = FindQuery::new(TextQuery::new("a"));
+        let keys = query_keys(&query.query);
+        let c = BinnacleFindQuery {
+            query: query_to_c(&query.query, &keys),
+            by: tag(query.by),
+        };
+        assert_eq!(binnacle_grid_set_find(h, &c), 1);
+        grid.set_find(Some(query));
+        check_effects(h, &mut grid);
+        for _ in 0..tc.draw(gs::integers::<u32>().min_value(1).max_value(3)) {
+            grid.action(Action::FindNext);
+            assert_eq!(binnacle_grid_find_next(h), 1);
+            check_effects(h, &mut grid);
+            let found = FindMatch::new(
+                Key(tc.draw(gs::integers::<u64>().max_value(7))),
+                Key(tc.draw(gs::sampled_from(vec![0, 3, 101]))),
+            );
+            let rows =
+                tc.draw(gs::vecs(gs::sampled_from(vec![Key(6), Key(7), Key(8)])).max_size(2));
+            let cols = tc.draw(gs::vecs(gs::sampled_from(vec![Key(6), Key(7)])).max_size(1));
+            grid.find_stepped_within(found, [&rows, &cols]);
+            let [r, k]: [Vec<u64>; 2] = [&rows, &cols].map(|k| k.iter().map(|k| k.0).collect());
+            let c = BinnacleFindMatch {
+                row: found.row.0,
+                col: found.col.0,
+            };
+            let ok =
+                binnacle_grid_find_stepped_within(h, &c, r.as_ptr(), r.len(), k.as_ptr(), k.len());
+            assert_eq!(ok, 1);
+            check_effects(h, &mut grid);
+            // Answer the expands asked, sometimes. Both take a Snapshot, as
+            // reading one clears its damage.
+            let mut snap = std::mem::zeroed::<BinnacleSnapshot>();
+            assert_eq!(binnacle_grid_snapshot(h, &mut snap), 1);
+            let rust = grid.snapshot();
+            check_snapshot(&snap, &rust);
+            let requested = rust.requested_view().cloned();
+            if tc.draw(gs::booleans())
+                && let Some(spec) = requested
+            {
+                apply(h, &mut grid, spec);
+                check_effects(h, &mut grid);
+            }
+            mirrored_frame(h, &mut grid);
+        }
+        assert_eq!(
+            binnacle_grid_find_stepped_within(
+                h,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0
+            ),
+            0
+        );
         binnacle_grid_free(h);
     }
 }

@@ -121,7 +121,7 @@ Each axis's count before any filter, as the Table Source gives it with the View 
 _Avoid_: Unfiltered count, base count
 
 **Unmatched Row**:
-A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead.
+A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead. In grouped rows the same rule holds for an edit to a grouping field: the Leaf stays in its old group, dimmed, while every figure follows the edit at once (`ContentChanged`), and the next View Spec groups it anew.
 _Avoid_: Stale row, held row, edited row (as a term)
 
 ### Grouping
@@ -193,6 +193,14 @@ _Avoid_: Top-left corner, pivot corner
 **Drill-Down Spec**:
 What activating a Summary Item's cell hands the app with the `Activated` Effect (`DrillDown`): the Slicers in force plus a OneOf for each field and value on the row's and column's paths, picking the Leaves behind the cell. Only a cell whose row or column is a Summary Item carries one; a Leaf's cell carries none and may begin an edit. binnacle builds no drill-down view.
 _Avoid_: Detail query, drill-through
+
+**Hidden Match**:
+A find match inside a closed group: counted with the others and named apart ("3 of 12, 5 in collapsed groups"), and stepped to as if every group were open. The source answers the step with the match's closed ancestors, and the Grid opens each with an Expand (the Keys staying as ordinary `except` entries) before focusing it. Find matches a Group Item's label, at its level's field, and never the figures, unless the source says it searches them.
+_Avoid_: Collapsed match, buried match
+
+**Refused Drop**:
+A drop target the source turns down as the user drags, with why: between groups (a Leaf moves only within its own group) or a Summary Item (Group Items and totals never move). The adapters draw the drop line in the error colour with a caption, and nothing moves on release. Editing a Summary Item's figures is refused the same way, the edit cancelled.
+_Avoid_: Invalid drop, blocked move
 
 ### Inside an In-Memory Table Source
 

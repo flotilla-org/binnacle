@@ -11,8 +11,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Depth, Expand, FilterSpec, Grouping, ItemKind, Key, Located, SortColumn,
-    SortSpec, Value, ViewSpec,
+    Axis, ChangeNotice, Depth, Expand, FilterSpec, Grouping, ItemKind, Key, Located, MoveRefusal,
+    SortColumn, SortSpec, Value, ViewSpec,
 };
 use binnacle_group::{
     AggregateBackend, Answer, Batch, Figure, GroupingLayer, MemoryAggregates, settle,
@@ -122,6 +122,20 @@ struct GroupedItem {
     children: Option<f64>,
 }
 
+/// An item of the grouped rows as find walks them, every group open: its
+/// layer Key, its Logical Index if a Leaf, whether a closed group hides it
+/// and the Group Item Keys above it; a Group Item's level column index and
+/// label (`null` for a blank).
+#[derive(Serialize)]
+struct FoundItem {
+    key: u64,
+    item: Option<u32>,
+    hidden: bool,
+    ancestors: Vec<u64>,
+    field: Option<u64>,
+    label: Option<String>,
+}
+
 #[wasm_bindgen]
 pub struct WebMemory {
     table: InMemoryTableSource,
@@ -136,6 +150,7 @@ pub struct WebMemory {
     spec: ViewSpec,
     notices: Vec<ChangeNotice>,
     applied: Expand,
+    policy: MovePolicy,
 }
 
 #[wasm_bindgen]
@@ -152,6 +167,7 @@ impl WebMemory {
             spec: ViewSpec::default(),
             notices: Vec::new(),
             applied: Expand::default(),
+            policy: MovePolicy::Bake,
         }
     }
 
@@ -334,6 +350,106 @@ impl WebMemory {
         to_js(&items)
     }
 
+    /// Every item of the grouped rows in order as if every group were
+    /// open, Summary Items included, for find to walk: an array of objects.
+    pub fn grouped_items(&mut self) -> JsValue {
+        self.settle();
+        let Some(aggregates) = self.aggregates.as_ref() else {
+            return to_js(&Vec::<FoundItem>::new());
+        };
+        let items: Vec<FoundItem> = (aggregates.items(&mut self.layer).into_iter())
+            .map(|i| FoundItem {
+                key: i.key.0,
+                item: (i.kind == ItemKind::Leaf).then_some(i.key.0 as u32),
+                hidden: i.hidden,
+                ancestors: i.ancestors.iter().map(|k| k.0).collect(),
+                field: (i.kind == ItemKind::Group)
+                    .then_some(i.group.map(|(f, _)| f.0))
+                    .flatten(),
+                label: match (i.kind, i.group) {
+                    (ItemKind::Group, Some((_, Value::Text(t)))) => Some(t.clone()),
+                    _ => None,
+                },
+            })
+            .collect();
+        to_js(&items)
+    }
+
+    /// The fields the grouping reads were staged again after the user
+    /// edited rows: works out every group's aggregates again, keeping the
+    /// groups and their Leaves where they are until the rows group again.
+    /// Returns the `ContentChanged` ranges the rows need, as start and end
+    /// pairs.
+    pub fn refigure(&mut self) -> Vec<f64> {
+        if !self.layer.grouped(Axis::Rows) {
+            return Vec::new();
+        }
+        self.fields = std::mem::take(&mut self.staged_fields);
+        if let Some(aggregates) = self.aggregates.as_mut() {
+            let keys = (self.table).window(Axis::Rows, 0..self.table.count(Axis::Rows));
+            let fields = &self.fields;
+            let item = |i: usize| keys[i].0 as usize;
+            aggregates.refigure(
+                &keys,
+                |field, i| {
+                    let values = fields.get(&field).map(|f| &f.values);
+                    values
+                        .and_then(|v| v.get(item(i)).cloned())
+                        .unwrap_or(Value::Blank)
+                },
+                |field, i| {
+                    let numbers = fields.get(&field).map(|f| &f.numbers);
+                    numbers.and_then(|n| n.get(item(i)).copied().flatten())
+                },
+            );
+        }
+        self.layer.refigure();
+        self.settle();
+        let mut out = Vec::new();
+        while let Some((_, change)) = self.layer.poll_change() {
+            if let ChangeNotice::ContentChanged(range) = change {
+                out.extend([range.start as f64, range.end as f64]);
+            }
+        }
+        out
+    }
+
+    /// Moves the grouped Leaves with these Logical Indices to before
+    /// Position `to`, within their group: the order shown is kept and the
+    /// rows group again. Returns 0 if they moved, else why not: 1 the drop
+    /// lies outside their group, 2 a Summary Item (by its layer Key) is
+    /// among them.
+    pub fn move_grouped(&mut self, keys: &[u64], to: f64) -> u8 {
+        let keys: Vec<Key> = keys.iter().copied().map(Key).collect();
+        let Some(aggregates) = self.aggregates.as_ref() else {
+            return 1;
+        };
+        let table = &mut self.table;
+        let placed =
+            aggregates.place_move(
+                &self.layer,
+                Axis::Rows,
+                &keys,
+                position(to),
+                |k| match table.locate(Axis::Rows, k) {
+                    Located::Found(p) => Some(p),
+                    Located::Gone { .. } => None,
+                },
+            );
+        let to = match placed {
+            Ok(to) => to,
+            Err(MoveRefusal::Summary) => return 2,
+            Err(_) => return 1,
+        };
+        // The rows are sorted by the levels: the order shown is baked.
+        self.table.set_move_policy(MovePolicy::Bake);
+        self.table.move_items(Axis::Rows, &keys, to);
+        self.table.set_move_policy(self.policy);
+        self.layer.refresh();
+        self.settle();
+        0
+    }
+
     /// Stages the next sort item's keys as numbers, one per base item of
     /// the axis to sort; `nulls[i] != 0` makes item `i` null.
     pub fn stage_numbers(&mut self, values: &[f64], nulls: &[u8]) {
@@ -409,8 +525,20 @@ impl WebMemory {
     /// unmatched: in view though the filter drops it.
     pub fn unmatched(&mut self, a: u8, items: &[u32]) -> Vec<u8> {
         let keys: Vec<Key> = items.iter().map(|&i| Key(i as u64)).collect();
-        (self.table.unmatched(axis(a), &keys).into_iter())
-            .map(u8::from)
+        let flags = self.table.unmatched(axis(a), &keys);
+        let grouped = axis(a) == Axis::Rows && self.layer.grouped(Axis::Rows);
+        let aggregates = self.aggregates.as_ref().filter(|_| grouped);
+        let regrouped = |key: Key| {
+            aggregates.is_some_and(|aggregates| {
+                aggregates.regrouped(key, |field| {
+                    let values = self.fields.get(&field).map(|f| &f.values);
+                    let value = values.and_then(|v| v.get(key.0 as usize));
+                    value.cloned().unwrap_or(Value::Blank)
+                })
+            })
+        };
+        (flags.into_iter().zip(keys))
+            .map(|(flag, key)| u8::from(flag || regrouped(key)))
             .collect()
     }
 
@@ -447,12 +575,12 @@ impl WebMemory {
 
     /// Whether moves on a sorted axis are refused rather than baked.
     pub fn refuse_sorted_moves(&mut self, refuse: bool) {
-        let policy = if refuse {
+        self.policy = if refuse {
             MovePolicy::Refuse
         } else {
             MovePolicy::Bake
         };
-        self.table.set_move_policy(policy);
+        self.table.set_move_policy(self.policy);
     }
 }
 
@@ -660,6 +788,47 @@ mod tests {
         assert_eq!(m.group_by(grouping, SortSpec::unsorted(), having), 4.0);
         assert_eq!(m.locate(ROWS, 0)[0], 1.0, "under a group left out");
         assert_eq!(m.locate(ROWS, 2), vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn an_edit_in_grouped_rows_refigures_in_place_and_leaves_move_within_their_group() {
+        let mut m = WebMemory::new(5, 2);
+        // Column 1 is "b", "a", "b", null, "a", sorted by it first.
+        m.stage_strings(b"babab".to_vec(), vec![1, 2, 3, 3, 4], vec![0, 0, 0, 1, 0]);
+        m.sort(ROWS, &[1], &[0]);
+        let stage = |m: &mut WebMemory, bytes: &[u8]| {
+            let (numbers, nulls) = (vec![0.0; 5], vec![1; 5]);
+            let ends = vec![1, 2, 3, 3, 4];
+            m.stage_field(1, bytes.to_vec(), ends, vec![0, 0, 0, 1, 0], numbers, nulls);
+        };
+        stage(&mut m, b"babab");
+        m.group_by(
+            Grouping::rows_by(Key(1)),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+        );
+        // a: 1, 4; b: 0, 2; blank: 3.
+        assert_eq!(m.locate(ROWS, 0), vec![0.0, 4.0]);
+
+        // Row 0 now reads "a": it stays in b, unmatched, and the groups'
+        // figures change in place.
+        stage(&mut m, b"aabab");
+        let changed = m.refigure();
+        assert!(!changed.is_empty());
+        assert!(
+            changed
+                .chunks(2)
+                .all(|r| r[0] < r[1] && r[1] <= m.count(ROWS))
+        );
+        assert_eq!(m.locate(ROWS, 0), vec![0.0, 4.0]);
+        assert_eq!(m.unmatched(ROWS, &[0, 1, 2]), vec![1, 0, 0]);
+
+        assert_eq!(m.move_grouped(&[4], 1.0), 0);
+        assert_eq!(m.locate(ROWS, 4), vec![0.0, 1.0]);
+        assert_eq!(m.locate(ROWS, 1), vec![0.0, 2.0]);
+        assert_eq!(m.move_grouped(&[4], 5.0), 1, "into b");
+        assert_eq!(m.move_grouped(&[GRAND_TOTAL.0], 1.0), 2);
+        assert_eq!(m.locate(ROWS, 4), vec![0.0, 1.0]);
     }
 
     #[test]

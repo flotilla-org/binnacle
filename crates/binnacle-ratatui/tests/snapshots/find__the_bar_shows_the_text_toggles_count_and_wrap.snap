@@ -7,5 +7,6 @@ expression: "out.join(\"\\n\")"
  Find  bergen▏                  Aa .* rows  120+ matches  Enter next  S-Enter/^P prev  Esc
  Find  bergen▏                  Aa .* rows  No matches  Enter next  S-Enter/^P prev  Esc t
  Find  bergen▏                  Aa .* rows  1,204 of 1,204  wrapped to the end  Enter next
+ Find  bergen▏                  Aa .* rows  3 of 12, 5 in collapsed groups  wrapped to the
  Find  bergen                   Aa .* rows  1 match  F3/^N next  S-F3/^P prev  ^F edit
 closed: []

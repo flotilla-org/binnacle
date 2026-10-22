@@ -1580,7 +1580,146 @@ describe("fromRows's grouping", () => {
       }
     }));
 
-  test("Group Items have no cells, keep their row IDs through a regroup, and grouped rows refuse to move", () => {
+  /** Rows of small integers and a few texts, so groups fill up and cells render as plain digits. */
+  const plain = gs.arrays(
+    gs.record({
+      n: gs.oneOf(gs.just(null), gs.integers({ minValue: -3, maxValue: 12 })),
+      s: gs.sampledFrom<string | null>(["x", "y", "x1", null]),
+      b: gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 })),
+    }),
+    { maxSize: 30 },
+  );
+
+  /** Grouping by `s` with a sum of `b` and a count, groups open to `depth`. */
+  const summing = (depth: number | "all") => ({
+    ...rowsBy<keyof Rec>("s"),
+    values: [
+      { field: "b" as const, aggregate: "sum" },
+      { field: null, aggregate: "count" },
+    ],
+    rowAxis: { ...rowsBy("s").rowAxis, expand: { depth, except: [] } },
+  });
+
+  const ids = (source: ReturnType<typeof fromRows<Rec>>) =>
+    (source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, keyof Rec>).ids;
+
+  test("an edit to grouped rows moves nothing, refigures every group at once, dims a Leaf whose level value changed, and the next View Spec groups them again", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(plain.filter((r) => r.length > 0));
+      const source = fromRows(rows, COLUMNS);
+      const notices: ChangeNotice[] = [];
+      source.attach!(sinksTo(notices));
+      try {
+        const spec = { ...groupedBy("s"), grouping: summing("all") };
+        source.view!(spec, signal);
+        const before = ids(source);
+        const r = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+        const was = rows[r]!.s;
+        rows[r] = { ...rows[r]!, ...tc.draw(gs.record({ s: gs.sampledFrom<string | null>(["x", "y", "z", null]), b: gs.integers({ minValue: 0, maxValue: 9 }) })) };
+        notices.length = 0;
+        source.edited(r);
+        for (const n of notices) {
+          expect(n.type).toBe("ContentChanged");
+          if (n.type === "ContentChanged") expect(n.end).toBeLessThanOrEqual(source.rows.count() as number);
+        }
+        expect(ids(source)).toEqual(before);
+        for (const id of before.filter((id) => id < 0)) {
+          // Each group's figures are those of the rows that read its value now.
+          const group = source.group(id)!;
+          const members = rows.filter((row) => row.s === group.value);
+          const bs = members.map((row) => row.b).filter((b): b is number => b !== null);
+          expect(group.aggregates).toEqual([bs.length ? bs.reduce((a, b) => a + b, 0) : null, members.length]);
+        }
+        const leaves = before.filter((id) => id >= 0);
+        expect(source.rows.unmatched!(leaves, signal)).toEqual(leaves.map((id) => id === r && rows[r]!.s !== was));
+        notices.length = 0;
+        source.view!(spec, signal);
+        expect(notices).toContainEqual({ type: "Refiltered" });
+        expect(shown(source, "s")).toEqual(model(rows, "s", [], () => true));
+        expect(source.rows.unmatched!([r], signal)).toEqual([false]);
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("find in grouped rows walks them as if every group were open, a label before its Leaves' cells, and counts the matches closed groups hide", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(plain);
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const depth = tc.draw(gs.sampledFrom<number | "all">([0, "all"]));
+        source.view!({ ...groupedBy("s"), grouping: summing(depth) }, signal);
+        const text = tc.draw(gs.sampledFrom(["x", "1", "X1", "2", "y"]));
+        const query = { query: { text, caseSensitive: false, regex: false, searches: "shown" as const }, by: "rows" as const };
+        const groupIds = new Map(ids(source).filter((id) => id < 0).map((id) => [source.group(id)!.value, id]));
+        // The model: every group open, its label then each Leaf's n and b.
+        const has = (t: string | null) => t !== null && t.toLowerCase().includes(text.toLowerCase());
+        const want: { row: number; col: keyof Rec; hidden: boolean; ancestors: number[] }[] = [];
+        let group = 0;
+        for (const item of model(rows, "s", [], () => true)) {
+          if (typeof item === "number") {
+            for (const col of ["n", "b"] as const) {
+              const v = rows[item]![col];
+              if (has(v === null ? null : String(v))) want.push({ row: item, col, hidden: depth === 0, ancestors: [group] });
+            }
+          } else {
+            group = groupIds.get(item.group)!;
+            if (has(item.group)) want.push({ row: group, col: "s", hidden: false, ancestors: [] });
+          }
+        }
+        const count = source.find!.count!(query, signal);
+        expect(count).toEqual({ total: want.length, hidden: want.filter((w) => w.hidden).length });
+        let from: { row: number; col: keyof Rec } | null = null;
+        for (const [i, w] of want.entries()) {
+          const step = source.find!.next(from, "next", query, signal);
+          expect(step).toEqual({ row: w.row, col: w.col, index: i, wrapped: false, ancestors: { rows: w.ancestors } });
+          from = { row: w.row, col: w.col };
+        }
+        const last = source.find!.next(from, "next", query, signal);
+        if (want.length === 0) expect(last).toBeNull();
+        else expect(last).toMatchObject({ row: want[0]!.row, col: want[0]!.col, index: 0, wrapped: true });
+        if (want.length > 0) {
+          const back = source.find!.next(null, "previous", query, signal);
+          expect(back).toMatchObject({ row: want.at(-1)!.row, col: want.at(-1)!.col, index: want.length - 1 });
+        }
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("a grouped Leaf moves within its group; a drop between groups, or of a Group Item, is refused", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(plain.filter((r) => r.length > 0));
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const sort: SortSpec<keyof Rec> = tc.draw(gs.sampledFrom([[], [{ id: "n" as const, direction: "descending" as const }]]));
+        source.view!({ ...groupedBy("s", sort), grouping: summing("all") }, signal);
+        expect(source.rows.movable!()).toBe(true);
+        const before = ids(source);
+        const leaves = before.flatMap((id, p) => (id >= 0 ? [p] : []));
+        const from = leaves[tc.draw(gs.integers({ minValue: 0, maxValue: leaves.length - 1 }))]!;
+        let [start, end] = [from, from + 1];
+        while (start > 0 && before[start - 1]! >= 0) start--;
+        while (end < before.length && before[end]! >= 0) end++;
+        const to = tc.draw(gs.integers({ minValue: 0, maxValue: before.length }));
+        const moved = source.rows.move!([before[from]!], to);
+        if (to < start || to > end) {
+          expect(moved).toEqual({ refused: "Can't move between groups" });
+          expect(ids(source)).toEqual(before);
+        } else {
+          expect(moved).toBe(true);
+          const want = [...before];
+          const [id] = want.splice(from, 1);
+          want.splice(to > from ? to - 1 : to, 0, id!);
+          expect(ids(source)).toEqual(want);
+        }
+        expect(source.rows.move!([before[0]!], 1)).toEqual({ refused: "Group rows and totals can't be moved" });
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("Group Items have no cells, keep their row IDs through a regroup, and grouped rows move within their group only", () => {
     const rows: Rec[] = [
       { n: 1, s: "x", b: 0 },
       { n: 2, s: "y", b: 1 },
@@ -1599,8 +1738,10 @@ describe("fromRows's grouping", () => {
       source.view!(groupedBy("s", [{ id: "s", direction: "descending" }]), signal);
       const again = source.rows.window(0, 5, signal) as OutlinedWindow<number, keyof Rec>;
       expect(again.ids).toEqual([y, 1, x, 0, 2]);
-      expect(source.rows.movable!()).toBe(false);
-      expect(source.rows.move!([0], 3)).toEqual({ refused: expect.stringContaining("ungroup") });
+      expect(source.rows.movable!()).toBe(true);
+      expect(source.rows.move!([0], 1)).toEqual({ refused: "Can't move between groups" });
+      expect(source.rows.move!([2], 3)).toBe(true);
+      expect(ids(source)).toEqual([y, 1, x, 2, 0]);
     } finally {
       source.destroy();
     }

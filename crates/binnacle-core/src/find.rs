@@ -7,7 +7,7 @@ use crate::grid::Grid;
 use crate::notice::placement;
 use crate::sort::Located;
 use crate::types::{Axis, Key};
-use crate::view::{TextQuery, TextSupport};
+use crate::view::{TextQuery, TextSupport, ViewEdit};
 
 /// What find looks for: a Text Query, matched against each cell of the items
 /// it searches, and the order it steps through the matches in.
@@ -81,6 +81,12 @@ pub(crate) struct FindState {
     stale: u32,
     /// Per axis, `Locate` answers still to come about the current match's Key.
     locating: [u32; 2],
+    /// Whether the current match is a Group Item's label, drawn in the row
+    /// Header Band rather than in a column.
+    pub label: bool,
+    /// The match waiting for the groups it lies in to open before it takes
+    /// focus.
+    revealing: Option<FindMatch>,
 }
 
 impl Grid {
@@ -142,30 +148,115 @@ impl Grid {
     /// in order. The match becomes the current match and takes focus (found
     /// with `Locate` if outside the Window) and is scrolled into view; the
     /// selection is left as it is. An answer for a query since replaced, or
-    /// with find closed, is ignored.
+    /// with find closed, is ignored. On grouped rows, a match is under no
+    /// group, as [`Grid::find_stepped_within`] with no ancestors takes it: a
+    /// top level Group Item's label is focused in the outline column.
     pub fn find_stepped(&mut self, found: Option<FindMatch>) {
+        match found {
+            Some(found) => self.find_stepped_within(found, [&[], &[]]),
+            None if self.find_answered() => self.step_held(),
+            None => {}
+        }
+    }
+
+    /// The answer to a `FindStepRequested` on a grouped table, as
+    /// [`Grid::find_stepped`] takes it, with the Group Item Keys above the
+    /// match's row and column (`ancestors`, rows first), outermost first as
+    /// in an Outline, shown or not. A match in collapsed groups is counted
+    /// all the same: each group the latest request leaves closed is opened,
+    /// one [`ViewEdit::Expand`] each, so they stay open as ordinary
+    /// exceptions, and the match takes focus once the Table Source has
+    /// answered. A match in the column of the row's own level field is a
+    /// Group Item's label, which focus takes in the outline column.
+    pub fn find_stepped_within(&mut self, found: FindMatch, ancestors: [&[Key]; 2]) {
+        if !self.find_answered() {
+            return;
+        }
+        self.find.current = Some(found);
+        let field = (self.view.applied.grouping.as_ref())
+            .and_then(|g| {
+                g.levels(Axis::Rows)
+                    .get(ancestors[Axis::Rows.index()].len())
+            })
+            .and_then(|l| l.field_key());
+        self.find.label = field == Some(found.col);
+        let mut asked = false;
+        for axis in Axis::ALL {
+            for (level, &key) in ancestors[axis.index()].iter().enumerate() {
+                let Some(g) = self.latest_view().grouping.as_ref() else {
+                    break;
+                };
+                let expand = &g.axis(axis).expand;
+                if expand.opens(level as u32, key) {
+                    continue;
+                }
+                let expand = expand.clone().with(level as u32, key, true);
+                let edit = ViewEdit::Expand { axis, key };
+                asked |= self.request_expand(axis, expand, edit) == Ok(true);
+            }
+        }
+        match asked {
+            true => self.find.revealing = Some(found),
+            false => self.land(found),
+        }
+        self.step_held();
+    }
+
+    /// Counts in a step's answer: whether it is for the query in force,
+    /// which then has an answer and drops the current match.
+    fn find_answered(&mut self) -> bool {
         if self.find.stale > 0 {
             self.find.stale -= 1;
-            return;
+            return false;
         }
         self.find.due = self.find.due.saturating_sub(1);
         if self.find.query.is_none() {
-            return;
+            return false;
         }
         self.find.answered = true;
         self.drop_match();
-        if let Some(found) = found {
-            self.find.current = Some(found);
+        true
+    }
+
+    /// The current match takes focus, found with `Locate` where it is
+    /// outside the Window: in the outline column for a label.
+    fn land(&mut self, found: FindMatch) {
+        if !self.find.label {
+            self.outline_focus = false;
             self.place_focus(found.row, found.col, false);
-            for axis in Axis::ALL {
-                let key = found.key(axis);
-                if self.axis(axis).measure.position_of(key).is_none() {
-                    self.find_locate(axis);
-                }
+        } else {
+            let col = (self.focus.and_then(|f| f[Axis::Cols.index()].key)).or_else(|| {
+                self.axis(Axis::Cols)
+                    .key_at(self.axis(Axis::Cols).anchor.position)
+            });
+            if let Some(col) = col {
+                self.place_focus(found.row, col, false);
+                self.outline_focus = true;
             }
         }
+        for axis in Axis::ALL {
+            let key = found.key(axis);
+            if self.axis(axis).measure.position_of(key).is_none() {
+                self.find_locate(axis);
+            }
+        }
+    }
+
+    /// Sends the step asked for while one was unanswered.
+    fn step_held(&mut self) {
         if let Some(direction) = self.find.held.take() {
             self.find_step(direction);
+        }
+    }
+
+    /// Every View Spec request is answered: a match waiting for its groups
+    /// to open takes focus, if it is still the current match.
+    pub(crate) fn find_revealed(&mut self) {
+        let Some(found) = self.find.revealing.take() else {
+            return;
+        };
+        if self.find.current == Some(found) {
+            self.land(found);
         }
     }
 
@@ -174,6 +265,8 @@ impl Grid {
             self.pending_damage.selection = true;
         }
         self.find.locating = [0; 2];
+        self.find.label = false;
+        self.find.revealing = None;
     }
 
     /// Asks where the current match's Key on `axis` is, to drop the match if
@@ -182,6 +275,10 @@ impl Grid {
         let Some(found) = self.find.current else {
             return;
         };
+        // A label's column is the level field, which no column shows.
+        if axis == Axis::Cols && self.find.label {
+            return;
+        }
         let due = self.find.locating[axis.index()];
         self.find.locating[axis.index()] = self.request_locate(axis, found.key(axis), due);
     }

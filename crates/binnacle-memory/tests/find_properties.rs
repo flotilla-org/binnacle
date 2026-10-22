@@ -239,7 +239,8 @@ fn the_marks_and_the_count_agree_with_the_model(tc: TestCase) {
         source.find_count(&rows, &query),
         FindCount {
             total: matches.len() as u64,
-            partial: false
+            partial: false,
+            hidden: 0,
         }
     );
     let (row_keys, col_keys) = shown(&source);

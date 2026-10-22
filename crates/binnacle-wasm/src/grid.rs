@@ -451,6 +451,23 @@ impl WebGrid {
         Ok(())
     }
 
+    /// The answer to `FindStepRequested` with a match inside groups: `{ row,
+    /// col }` and the Keys of the Group Items it lies under on each axis,
+    /// outermost first. The Grid opens each closed one and focuses the
+    /// match once the View Spec is applied.
+    pub fn find_stepped_within(
+        &mut self,
+        found: JsValue,
+        rows: Vec<u64>,
+        cols: Vec<u64>,
+    ) -> Result<(), JsError> {
+        let found: WireFindMatch =
+            serde_wasm_bindgen::from_value(found).map_err(|e| JsError::new(&e.to_string()))?;
+        let [rows, cols] = [rows, cols].map(|k| k.into_iter().map(Key).collect::<Vec<_>>());
+        self.grid.find_stepped_within(found.into(), [&rows, &cols]);
+        Ok(())
+    }
+
     /// The answer to `Locate`; see [`codes::located`].
     pub fn located(&mut self, a: u8, key: u64, code: u8, position: f64) {
         self.grid

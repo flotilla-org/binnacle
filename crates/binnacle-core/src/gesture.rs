@@ -4,10 +4,11 @@
 use crate::effect::Effect;
 use crate::focus::FocusEnd;
 use crate::grid::Grid;
+use crate::grouping::{ItemKind, Outline};
 use crate::measure::ItemAt;
 use crate::pointer::{Button, Hit, Modifiers, PointerEvent, PointerKind};
 use crate::selection::{Cell, HeaderClick, Selection};
-use crate::snapshot::DropTarget;
+use crate::snapshot::{DropTarget, MoveRefusal};
 use crate::types::{Axis, Edge, Key, Position};
 
 /// The single interaction the Grid is in the middle of.
@@ -294,8 +295,14 @@ impl Grid {
                     _ => {}
                 }
             }
-            &mut Gesture::MovingHeaders { axis, key, .. } => {
-                let target = self.drop_target(axis, key, along(axis, x, y));
+            Gesture::MovingHeaders {
+                axis, key, keys, ..
+            } => {
+                let (axis, key, keys) = (*axis, *key, std::mem::take(keys));
+                let target = self.drop_target(axis, key, &keys, along(axis, x, y));
+                if let Gesture::MovingHeaders { keys: k, .. } = &mut self.gesture {
+                    *k = keys;
+                }
                 if let Gesture::MovingHeaders { target: old, .. } = &mut self.gesture
                     && *old != target
                 {
@@ -444,22 +451,25 @@ impl Grid {
                 Some((keys?, r.collect()))
             })
             .unwrap_or_else(|| (vec![key], vec![position]));
+        let target = self.drop_target(axis, key, &keys, along(axis, x, y));
         self.gesture = Gesture::MovingHeaders {
             axis,
             key,
             keys,
             positions,
-            target: self.drop_target(axis, key, along(axis, x, y)),
+            target,
         };
         self.pending_damage.selection = true;
     }
 
-    /// What releasing the headers dragged by the header of `key` at `v`
-    /// along `axis` would do: in a pinned Strip, or an empty pin zone, pin
-    /// them there; elsewhere move them where the axis can, unpinning a
+    /// What releasing the headers `keys` dragged by the header of `key` at
+    /// `v` along `axis` would do: in a pinned Strip, or an empty pin zone,
+    /// pin them there; elsewhere move them where the axis can, unpinning a
     /// pinned item first; where it can't, a pinned item is unpinned back to
-    /// its own Position and an unpinned one stays.
-    fn drop_target(&self, axis: Axis, key: Key, v: f32) -> DropTarget {
+    /// its own Position and an unpinned one stays. On a grouped axis a move
+    /// is refused for Summary Items (a pinned one returns to its place) and
+    /// for Leaves dropped outside their group.
+    fn drop_target(&self, axis: Axis, key: Key, keys: &[Key], v: f32) -> DropTarget {
         let st = self.axis(axis);
         let from = Edge::ALL
             .into_iter()
@@ -472,18 +482,51 @@ impl Grid {
             };
         }
         let movable = self.moves.movable[axis.index()];
-        match from {
-            _ if movable => DropTarget::Move {
-                to: self.drop_position(axis, v),
+        let to = movable.then(|| self.drop_position(axis, v));
+        let refusal = to.and_then(|to| self.move_refusal(axis, keys, to));
+        let home = |edge| {
+            let at = st.drawn_pins(edge).find(|&(k, _)| k == key);
+            DropTarget::Unpin {
+                at: at.map_or(0, |(_, p)| p),
+            }
+        };
+        match (to, refusal, from) {
+            (Some(to), None, _) => DropTarget::Move {
+                to,
                 unpin: from.is_some(),
             },
-            Some(edge) => {
-                let at = st.drawn_pins(edge).find(|&(k, _)| k == key);
-                DropTarget::Unpin {
-                    at: at.map_or(0, |(_, p)| p),
-                }
-            }
-            None => DropTarget::Stay,
+            (_, Some(MoveRefusal::Summary), Some(edge)) | (None, _, Some(edge)) => home(edge),
+            (Some(to), Some(why), _) => DropTarget::Refused { to, why },
+            (None, _, None) => DropTarget::Stay,
+        }
+    }
+
+    /// Why moving the items `keys` of a grouped `axis` to before Position
+    /// `to` is refused, as their outlines and those of the items either side
+    /// of `to` say: Summary Items never move, and Leaves move only within
+    /// their group. `None` where the Window lacks an outline it needs: the
+    /// Table Source decides.
+    fn move_refusal(&self, axis: Axis, keys: &[Key], to: Position) -> Option<MoveRefusal> {
+        let st = self.axis(axis);
+        let outlines: Vec<&Outline> = keys.iter().filter_map(|k| st.outlines.get(k)).collect();
+        if outlines.iter().any(|o| o.kind.is_summary()) {
+            return Some(MoveRefusal::Summary);
+        }
+        let parent = outlines.first()?.parent();
+        if outlines.iter().any(|o| o.parent() != parent) {
+            return Some(MoveRefusal::BetweenGroups);
+        }
+        let beside = [to.checked_sub(1), Some(to)].map(|p| {
+            let key = st.key_at(p?)?;
+            st.outlines.get(&key)
+        });
+        if beside.iter().all(Option::is_none) {
+            return None;
+        }
+        let within = |o: &&Outline| o.kind == ItemKind::Leaf && o.parent() == parent;
+        match beside.iter().flatten().any(within) {
+            true => None,
+            false => Some(MoveRefusal::BetweenGroups),
         }
     }
 
@@ -575,7 +618,7 @@ impl Grid {
                         self.push(Effect::MoveRequested { axis, keys, to });
                     }
                 }
-                DropTarget::Stay => {}
+                DropTarget::Refused { .. } | DropTarget::Stay => {}
             },
             _ => {}
         }

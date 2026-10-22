@@ -208,13 +208,20 @@ export type Mode =
  * `unpin`); `Unpin` unpins it back to its own Position `at`, the axis being
  * unmovable; `Pin` pins them to `edge` before the pinned `before` (`null`:
  * after the last), `reorder` when only the pins' order changes; `Stay`
- * drops nothing.
+ * drops nothing; `Refused` drops nothing either, as a move to before `to`
+ * would be refused: `why` it is (between groups, or a Summary Item dragged).
  */
 export type DropTarget =
   | { type: "Move"; to: number; unpin: boolean }
   | { type: "Unpin"; at: number }
   | { type: "Pin"; edge: PinEdge; before: bigint | null; reorder: boolean }
-  | { type: "Stay" };
+  | { type: "Stay" }
+  | { type: "Refused"; to: number; why: MoveRefusal };
+
+/** Why a drop would be refused: `other` for reasons added later. */
+export type MoveRefusal = "betweenGroups" | "summary" | "other";
+
+const REFUSALS: readonly MoveRefusal[] = ["betweenGroups", "summary", "other"];
 
 /** A lit pin zone while a header is dragged: an empty pinned Strip's edge, `size` long from `offset`; `hot` where a drop would pin. */
 export interface PinZone {
@@ -636,6 +643,8 @@ function readTarget(r: Reader): DropTarget {
       return { type: "Pin", edge: EDGES[r.num()]!, before: r.optKey(), reorder: r.flag() };
     case 3:
       return { type: "Stay" };
+    case 4:
+      return { type: "Refused", to: r.num(), why: REFUSALS[r.num()] ?? "other" };
     default:
       throw new Error("binnacle: unknown drop target in Snapshot");
   }

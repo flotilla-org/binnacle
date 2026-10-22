@@ -1,4 +1,4 @@
-// Grouping end to end (#200, #201, #202): the shipments demo opens grouped
+// Grouping end to end (#200, #201, #202, #206): the shipments demo opens grouped
 // by region then port, the regions open and the ports closed, each Group
 // Item drawn in outline form in the row header in every preset, each open
 // group ending in its Subtotal and the Grand Total pinned at the bottom; a
@@ -8,7 +8,8 @@
 // the grouping. A click on a Group Item's label selects its group and
 // Shift-click stretches by whole groups (#205); Ctrl/Cmd-C copies the rows
 // as shown, and Enter on a Summary Item's cell hands the demo its
-// drill-down.
+// drill-down. Find counts the matches in closed groups and opens one to
+// step to it, and a rerouted shipment stays where it was.
 
 import { expect, test, type Page } from "@playwright/test";
 import { REGIONS, shipments } from "../demo/sources/shipments-data";
@@ -225,4 +226,28 @@ test("a saved layout keeps the grouping", async ({ page }) => {
   await page.getByRole("button", { name: "Save layout" }).click();
   await page.reload();
   await expect(status(page)).toContainText(`of ${en(shipments.length + groupsBy("crates"))}  ·  columns 1 to 5 of 5`);
+});
+
+test("find counts the matches in closed ports, and stepping to one opens its port and focuses it", async ({ page }) => {
+  const found = shipments.find((s) => s.id === 1999)!;
+  await page.getByRole("button", { name: "Find" }).click();
+  const bar = page.getByRole("search", { name: "Find" });
+  await bar.getByRole("textbox", { name: "Find" }).fill("1999");
+  await expect(bar.locator(".binnacle-find-count")).toHaveText("1 match, 1 in collapsed groups");
+  await page.keyboard.press("Enter");
+  await expect(bar.locator(".binnacle-find-count")).toHaveText("1 of 1");
+  await expect(status(page)).toContainText(`of ${en(closed() + shipped(found.region, found.port) + 1)}`);
+  await expect(status(page)).toContainText("(1999 / id)");
+});
+
+test("a rerouted shipment stays where it was, the rows unchanged", async ({ page }) => {
+  await openAll(page);
+  await click(page, 2, 0);
+  const focus = /focus row (\d+), column 1 \((\d+) \/ id\)/;
+  await expect(status(page)).toContainText(focus);
+  const [, row, id] = (await status(page).textContent())!.match(focus)!;
+  await page.getByRole("button", { name: "Reroute" }).click();
+  await expect(page.locator("#committed")).toContainText(`port of ${id} = `);
+  await expect(status(page)).toContainText(`focus row ${row}, column 1 (${id} / id)`);
+  await expect(status(page)).toContainText(`of ${en(nested())}`);
 });

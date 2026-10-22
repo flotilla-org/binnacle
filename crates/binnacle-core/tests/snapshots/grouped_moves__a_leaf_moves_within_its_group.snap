@@ -1,0 +1,60 @@
+---
+source: crates/binnacle-core/tests/grouped_moves.rs
+expression: out
+---
+--- 1. everything open
+effect (gen 0): ViewRequested unsorted group 10,11 values count(-) by Replace
+  view: applied unsorted group 10,11 values count(-), notices [(Rows, Refiltered(11))]
+window Rows 0..11
+window Cols 0..3
+gen 3 | damage none
+Rows: count 11, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 10="North"] 1#110@2+1[G1+ ^100 11="Aberdeen"] 2#0@3+1[L2 ^100 ^110] 3#3@4+1[L2 ^100 ^110] 4#111@5+1[G1+ ^100 11="Bergen"] 5#4@6+1[L2 ^100 ^111] 6#101@7+1[G0+ 10="South"] 7#120@8+1[G1+ ^101 11="Cadiz"] 8#1@9+1[L2 ^101 ^120] 9#2@10+1[L2 ^101 ^120] 10#5@11+1[L2 ^101 ^120]
+Cols: count 3, extent 20, header 3, anchor 0+0, thumb 0.0000/1.0000 | 0#0@3+5 1#1@8+5 2#2@13+5
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  0.0  0.1  0.2
+3  3.0  3.1  3.2
+4  111.0111.1111.2
+5  4.0  4.1  4.2
+6  101.0101.1101.2
+7  120.0120.1120.2
+8  1.0  1.1  1.2
+9  2.0  2.1  2.2
+10 5.0  5.1  5.2
+
+gen 4 | damage none | mode MovingHeaders { axis: Rows, key: Key(3), target: Move { to: 2, unpin: false } } | capturing | hover Rows 2 | cursor Move | moving 3 to Rows 2 at 3
+Rows: (unchanged)
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+---0.0  0.1  0.2
+3  3.0  3.1  3.2
+4  111.0111.1111.2
+5  4.0  4.1  4.2
+6  101.0101.1101.2
+7  120.0120.1120.2
+8  1.0  1.1  1.2
+9  2.0  2.1  2.2
+10 5.0  5.1  5.2
+
+--- 2. release: shipment 3 moves before shipment 0, in Aberdeen
+effect (gen 4): MoveRequested { axis: Rows, keys: [Key(3)], to: 2 }
+  move Rows [Key(3)] to 2: notices [(Rows, Reordered)]
+window Rows 0..11
+gen 5 | damage layout selection positions | hover Rows 2
+Rows: count 11, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 10="North"] 1#110@2+1[G1+ ^100 11="Aberdeen"] 2#3@3+1[L2 ^100 ^110] 3#0@4+1[L2 ^100 ^110] 4#111@5+1[G1+ ^100 11="Bergen"] 5#4@6+1[L2 ^100 ^111] 6#101@7+1[G0+ 10="South"] 7#120@8+1[G1+ ^101 11="Cadiz"] 8#1@9+1[L2 ^101 ^120] 9#2@10+1[L2 ^101 ^120] 10#5@11+1[L2 ^101 ^120]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  3.0  3.1  3.2
+3  0.0  0.1  0.2
+4  111.0111.1111.2
+5  4.0  4.1  4.2
+6  101.0101.1101.2
+7  120.0120.1120.2
+8  1.0  1.1  1.2
+9  2.0  2.1  2.2
+10 5.0  5.1  5.2

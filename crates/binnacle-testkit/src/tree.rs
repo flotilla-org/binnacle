@@ -4,10 +4,10 @@
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Depth, Expand, GroupOf, Grouping, Key, Located, OpenState, Outline,
-    Position, Support, Value, ViewSpec,
+    Axis, ChangeNotice, Depth, Expand, FindDirection, FindMatch, FindQuery, GroupOf, Grouping, Key,
+    Located, OpenState, Outline, Position, Support, Value, ViewSpec,
 };
-use binnacle_memory::{PumpSource, Viewed};
+use binnacle_memory::{FindCount, FindStep, Moved, PumpSource, Viewed};
 
 use crate::scenario::ScenarioSource;
 
@@ -50,6 +50,12 @@ impl Group {
 /// that opens or closes one run of items with `Expanded` or `Collapsed`,
 /// and any other change with `Refiltered`. Columns are keyed by Position;
 /// the level fields stay among them.
+///
+/// Find matches, ignoring case, a Leaf's cell text `r{row}c{col}` (Keys)
+/// and a Group Item's label, its value, at the column of its level's field;
+/// it steps by rows through every item as if all were open, a label before
+/// the row's cells. Leaves move within their group while grouped; a move
+/// across groups, or of a Group Item, is refused.
 pub struct TreeTable {
     plain: Vec<Key>,
     levels: Vec<Key>,
@@ -58,6 +64,9 @@ pub struct TreeTable {
     grouping: Option<Grouping>,
     shown: Vec<(Key, Outline)>,
 }
+
+/// A row of [`TreeTable::every`]: its Key, its ancestors and its label.
+type Row = (Key, Vec<Key>, Option<(Key, &'static str)>);
 
 impl TreeTable {
     pub fn new(levels: Vec<Key>, cols: u64, tree: Vec<Group>) -> Self {
@@ -154,6 +163,74 @@ impl TreeTable {
         }
     }
 
+    /// Every row as if every group were open, with its ancestors and, for a
+    /// Group Item, its label's column and text.
+    fn every(&self) -> Vec<Row> {
+        fn walk(levels: &[Key], groups: &[Group], up: &mut Vec<Key>, out: &mut Vec<Row>) {
+            for g in groups {
+                out.push((g.key, up.clone(), Some((levels[up.len()], g.value))));
+                up.push(g.key);
+                match &g.under {
+                    Under::Groups(kids) => walk(levels, kids, up, out),
+                    Under::Leaves(keys) => out.extend(keys.iter().map(|&k| (k, up.clone(), None))),
+                }
+                up.pop();
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.levels, &self.tree, &mut Vec::new(), &mut out);
+        out
+    }
+
+    /// The cells find visits, in its order, and whether each matches `text`.
+    fn find_order(&self, text: &str) -> Vec<(FindMatch, bool, Vec<Key>)> {
+        let text = text.to_lowercase();
+        let mut cells = Vec::new();
+        for (row, up, label) in self.every() {
+            match label {
+                Some((field, value)) => {
+                    let hit = value.to_lowercase().contains(&text);
+                    cells.push((FindMatch::new(row, field), hit, up));
+                }
+                None => {
+                    for c in 0..self.cols {
+                        let hit = format!("r{}c{c}", row.0).contains(&text);
+                        cells.push((FindMatch::new(row, Key(c)), hit, up.clone()));
+                    }
+                }
+            }
+        }
+        cells
+    }
+
+    /// How many cells match `query`, and how many of those lie in groups
+    /// the grouping in force closes.
+    pub fn find_count(&self, query: &FindQuery) -> FindCount {
+        let shown: Vec<Key> = self.rows();
+        let hits: Vec<_> = (self.find_order(&query.query.text).into_iter())
+            .filter(|(_, hit, _)| *hit)
+            .collect();
+        FindCount {
+            total: hits.len() as u64,
+            partial: false,
+            hidden: hits
+                .iter()
+                .filter(|(m, ..)| !shown.contains(&m.row))
+                .count() as u64,
+        }
+    }
+
+    /// The group whose Leaves include `key`, as its run of Leaves.
+    fn leaves_of(&mut self, key: Key) -> Option<&mut Vec<Key>> {
+        fn find(groups: &mut [Group], key: Key) -> Option<&mut Vec<Key>> {
+            groups.iter_mut().find_map(|g| match &mut g.under {
+                Under::Groups(kids) => find(kids, key),
+                Under::Leaves(keys) => keys.contains(&key).then_some(keys),
+            })
+        }
+        find(&mut self.tree, key)
+    }
+
     fn apply(&mut self, spec: &ViewSpec) -> Viewed {
         let wanted = spec.grouping.clone().filter(|g| {
             g.col_levels.is_empty()
@@ -230,6 +307,78 @@ impl ScenarioSource for TreeTable {
 impl PumpSource for TreeTable {
     fn view(&mut self, spec: &ViewSpec) -> Viewed {
         self.apply(spec)
+    }
+
+    fn find_next(
+        &mut self,
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        let cells = self.find_order(&query.query.text);
+        let n = cells.len();
+        let at = from.and_then(|f| cells.iter().position(|(m, ..)| *m == f));
+        let order: Vec<usize> = match (direction, at) {
+            (FindDirection::Next, Some(i)) => (i + 1..n).chain(0..=i).collect(),
+            (FindDirection::Next, None) => (0..n).collect(),
+            (FindDirection::Previous, Some(i)) => (0..i).rev().chain((i..n).rev()).collect(),
+            (FindDirection::Previous, None) => (0..n).rev().collect(),
+        };
+        let i = order.into_iter().find(|&i| cells[i].1)?;
+        let index = cells[..i].iter().filter(|(_, hit, _)| *hit).count() as u64;
+        let wrapped = at.is_some_and(|a| match direction {
+            FindDirection::Next => i <= a,
+            FindDirection::Previous => i >= a,
+        });
+        Some(FindStep {
+            at: cells[i].0,
+            index: Some(index),
+            wrapped,
+        })
+    }
+
+    fn ancestors(&mut self, axis: Axis, key: Key) -> Vec<Key> {
+        if axis == Axis::Cols || self.grouping.is_none() {
+            return Vec::new();
+        }
+        (self.every().into_iter())
+            .find(|(k, ..)| *k == key)
+            .map_or(Vec::new(), |(_, up, _)| up)
+    }
+
+    fn movable(&mut self, axis: Axis) -> Option<bool> {
+        Some(axis == Axis::Rows && self.grouping.is_some())
+    }
+
+    fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
+        let refused = || Err("Can't move between groups".to_string());
+        let (Some(&first), Axis::Rows) = (keys.first(), axis) else {
+            return refused();
+        };
+        let shown: Vec<Key> = self.rows();
+        let Some(run) = self.leaves_of(first) else {
+            return Err("Group rows and totals can't be moved".into());
+        };
+        if !keys.iter().all(|k| run.contains(k)) {
+            return refused();
+        }
+        // The run's place among the rows shown, and where `to` falls in it.
+        let start = shown.iter().position(|k| *k == run[0]).unwrap_or(0) as u64;
+        let index = match to.checked_sub(start) {
+            Some(i) if i <= run.len() as u64 => i as usize,
+            _ => return refused(),
+        };
+        let before = run.get(index).copied();
+        run.retain(|k| !keys.contains(k));
+        let at = before.and_then(|b| run.iter().position(|k| *k == b));
+        let at = at.unwrap_or(run.len());
+        run.splice(at..at, keys.iter().copied());
+        let expand = self.grouping.as_ref().map(|g| g.rows.expand.clone());
+        self.shown = self.lay_out(&expand.unwrap_or_default());
+        Ok(Moved {
+            notices: vec![(Axis::Rows, ChangeNotice::Reordered)],
+            view: None,
+        })
     }
 
     fn support(&mut self, axis: Axis, key: Key) -> Support {

@@ -240,15 +240,22 @@ export function createFindBar<RowId, ColId, V>(
   };
 }
 
-/** "3 of 120" once a step has landed, else "120 matches"; "No matches"; a partial count with "+". */
+/**
+ * "3 of 120" once a step has landed, else "120 matches"; "No matches"; a
+ * partial count with "+"; with ", 5 in collapsed groups" for matches a
+ * closed group hides.
+ */
 function countText(find: FindInfo): string {
   const c = find.count;
   if (c?.total === 0 && !c.partial) return "No matches";
   const total = c && `${c.total.toLocaleString("en")}${c.partial ? "+" : ""}`;
+  const hidden = c?.hidden ? `, ${c.hidden.toLocaleString("en")} in collapsed groups` : "";
   const index = find.step?.index;
-  if (index != null && find.current) return total ? `${(index + 1).toLocaleString("en")} of ${total}` : `Match ${index + 1}`;
+  if (index != null && find.current) {
+    return total ? `${(index + 1).toLocaleString("en")} of ${total}${hidden}` : `Match ${index + 1}`;
+  }
   if (!c) return "";
-  return `${total} ${c.total === 1 && !c.partial ? "match" : "matches"}`;
+  return `${total} ${c.total === 1 && !c.partial ? "match" : "matches"}${hidden}`;
 }
 
 function toggle(text: string, label: string): HTMLButtonElement {

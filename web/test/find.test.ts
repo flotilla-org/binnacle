@@ -256,6 +256,46 @@ describe("find in fromRows", () => {
     }
   });
 
+  test("in the Grid, a step into a collapsed group opens it, then focuses the match; the count says how many lie in collapsed groups", () => {
+    const rows: Rec[] = [
+      { n: 1, s: "Bergen", b: null },
+      { n: 7, s: "Oslo", b: 1 },
+      { n: 2, s: "Oslo", b: 2 },
+    ];
+    const source = fromRows(rows, COLUMNS);
+    const h = new Harness(source);
+    const settle = () => {
+      for (let i = 0; i < 4; i++) {
+        h.drain();
+        h.frame();
+      }
+    };
+    try {
+      settle();
+      h.grid.group_by(0, h.feed.colKey("s"));
+      settle();
+      h.grid.expand_to(0, 0);
+      settle();
+      const shown = () => h.frame().rows.strip.map((i) => i.key);
+      expect(shown()).not.toContain(h.feed.rowKey(1));
+      h.grid.set_find(h.feed.findKeys({ query: { text: "7", caseSensitive: false, regex: false, searches: "shown" }, by: "rows" }));
+      settle();
+      expect(h.feed.findState().count).toEqual({ total: 1, hidden: 1 });
+      h.grid.find_next();
+      settle();
+      const s = h.frame();
+      expect(shown()).toContain(h.feed.rowKey(1));
+      expect(s.findMatch).toEqual({ row: h.feed.rowKey(1), col: h.feed.colKey("n") });
+      expect(s.rows.focus?.key).toBe(h.feed.rowKey(1));
+      // Oslo stays open, as an exception to depth 0.
+      expect(s.appliedView.grouping?.rowAxis.expand).toMatchObject({ depth: 0, except: [expect.any(BigInt)] });
+      expect(h.feed.findState().count).toEqual({ total: 1, hidden: 0 });
+    } finally {
+      h.destroy();
+      source.destroy();
+    }
+  });
+
   test("a changed row is matched again", () => {
     const rows: Rec[] = [
       { n: 1, s: "Bergen", b: null },

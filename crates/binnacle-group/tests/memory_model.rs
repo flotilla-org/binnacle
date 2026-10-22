@@ -15,8 +15,8 @@ use std::cmp::Ordering;
 
 use binnacle_core::{
     Aggregate, AggregateValue, Axis, ChangeNotice, Comparison, Condition, Expand, FilterSpec,
-    Grouping, ItemKind, Key, Level, OpenState, Placement, Placements, Scalar, SortColumn,
-    SortDirection, SortSpec, Value, ViewSpec,
+    FindDirection, FindQuery, Grouping, ItemKind, Key, Level, OpenState, Placement, Placements,
+    Scalar, SortColumn, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::MemorySource;
@@ -652,4 +652,294 @@ fn slicers_with_no_levels_slice_the_plain_rows() {
     let window = source.window(&rows, Axis::Rows, 0..3);
     assert_eq!(window.keys, vec![Key(0), Key(2)]);
     assert_eq!(window.outlines, None, "not grouped");
+}
+
+/// The rows (not `hidden`) in the group at `path` by the values they hold
+/// now, of those the slicer and the rows' filter admitted when the View
+/// Spec applied, by the values they held then (`viewed`).
+fn members(
+    rows: &[Record],
+    viewed: &[Record],
+    asked: &Asked,
+    path: &[Value],
+    hidden: &[Key],
+) -> Vec<usize> {
+    let number = |r: usize, c: Compare| viewed[r][c.column].map(|n| n as f64);
+    (0..rows.len())
+        .filter(|&r| !hidden.contains(&Key(r as u64)))
+        .filter(|&r| asked.slicer.is_none_or(|c| c.passes(number(r, c))))
+        .filter(|&r| match (asked.filter, asked.having()) {
+            (Some(c), None) => c.passes(number(r, c)),
+            _ => true,
+        })
+        .filter(|&r| {
+            path.iter()
+                .zip(&asked.levels)
+                .all(|(v, &(c, _))| text(rows[r][c]) == *v)
+        })
+        .collect()
+}
+
+/// Every item shown, as the model describes it.
+fn shown(source: &mut GroupedMemory<Record>, rows: &[Record]) -> Vec<(Key, Item)> {
+    let count = source.count(Axis::Rows);
+    let window = source.window(rows, Axis::Rows, 0..count);
+    let outlines = window.outlines.expect("grouped rows have outlines");
+    (window.keys.iter().zip(&outlines))
+        .map(|(&key, outline)| match outline.kind {
+            ItemKind::Leaf => (key, Item::Leaf(key)),
+            kind => {
+                let summary = source.summary(key).expect("a known Summary Item");
+                let path = summary.path.iter().map(|(_, v)| v.clone()).collect();
+                (key, Item::Summary(kind, path, summary.aggregates.to_vec()))
+            }
+        })
+        .collect()
+}
+
+#[hegel::test(test_cases = 200)]
+fn an_edit_moves_nothing_and_every_figure_follows_it_at_once(tc: TestCase) {
+    let mut rows = tc.draw(gs::vecs(record()).min_size(1).max_size(60));
+    let mut source = source(rows.len());
+    let (asked, spec) = tc.draw(spec(rows.len()));
+    source.view(&rows, &spec);
+    let hidden: Vec<Key> = spec.rows.hidden.clone();
+    let before = shown(&mut source, &rows);
+
+    let row = tc.draw(gs::integers::<usize>().max_value(rows.len() - 1));
+    let column = tc.draw(column());
+    let viewed = rows.clone();
+    let was = rows[row];
+    rows[row][column] = tc.draw(record())[column];
+    let notices = source.edited(&rows, row, Key(column as u64));
+    let count = source.count(Axis::Rows);
+    for (axis, notice) in &notices {
+        assert_eq!(*axis, Axis::Rows);
+        let ChangeNotice::ContentChanged(range) = notice else {
+            panic!("only figures change: {notice:?}");
+        };
+        assert!(range.end <= count);
+    }
+
+    let after = shown(&mut source, &rows);
+    let keys = |items: &[(Key, Item)]| items.iter().map(|(k, _)| *k).collect::<Vec<_>>();
+    assert_eq!(keys(&after), keys(&before), "nothing moves");
+    for (_, item) in &after {
+        if let Item::Summary(_, path, figures) = item {
+            let kept = members(&rows, &viewed, &asked, path, &hidden);
+            assert_eq!(*figures, self::figures(&rows, &kept, &asked), "{path:?}");
+        }
+    }
+    let leaves: Vec<Key> = (after.iter())
+        .filter(|(_, i)| matches!(i, Item::Leaf(_)))
+        .map(|(k, _)| *k)
+        .collect();
+    // The edited Leaf is unmatched if it left its group or stopped passing
+    // the slicer or the rows' filter; it stays in view all the same.
+    let unmatched = source.unmatched(&rows, Axis::Rows, &leaves);
+    let number = |c: Compare| rows[row][c.column].map(|n| n as f64);
+    let filtered = match (asked.filter, asked.having()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    };
+    let failed = (asked.slicer.iter().chain(&filtered)).any(|&c| !c.passes(number(c)));
+    for (key, unmatched) in leaves.iter().zip(unmatched) {
+        let regrouped = (asked.levels.iter()).any(|&(c, _)| rows[row][c] != was[c]);
+        let want = key.0 as usize == row && (regrouped || failed);
+        assert_eq!(unmatched, want, "Leaf {key:?}");
+    }
+
+    // The next View Spec, even the same one, groups the rows again.
+    source.view(&rows, &spec);
+    let regrouped: Vec<Item> = shown(&mut source, &rows)
+        .into_iter()
+        .map(|(_, i)| i)
+        .collect();
+    assert_eq!(regrouped, model(&rows, &asked, &spec.rows.sort, &hidden));
+}
+
+/// A match as the model describes it: a Group Item's label by its path, or
+/// a Leaf's cell.
+#[derive(Clone, Debug, PartialEq)]
+enum Found {
+    Label(Vec<Value>),
+    Cell(Key, Key),
+}
+
+#[hegel::test(test_cases = 200)]
+fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).max_size(50));
+    let mut source = source(rows.len());
+    let (asked, mut spec) = tc.draw(spec(rows.len()));
+    let depth = tc.draw(gs::integers::<u32>().max_value(2));
+    let mut grouping = spec.grouping.clone().unwrap();
+    grouping.rows.expand = Expand::to(binnacle_core::Depth::Levels(depth));
+    spec.grouping = Some(grouping);
+    source.view(&rows, &spec);
+    let hidden: Vec<Key> = spec.rows.hidden.clone();
+    // One or two digits, so a query may match a cell, a label, or nothing.
+    let digits = tc.draw(gs::integers::<u8>().max_value(99)).to_string();
+    let query = FindQuery::new(TextQuery::new(digits.clone()));
+
+    // The model: every item open, a label then the shown columns in order.
+    let searched: Vec<usize> = (0..COLS)
+        .filter(|c| !asked.levels.iter().any(|l| l.0 == *c))
+        .filter(|&c| !spec.cols.hidden.contains(&Key(c as u64)))
+        .collect();
+    let mut want = Vec::new();
+    for item in model(&rows, &asked, &spec.rows.sort, &hidden) {
+        let has = |v: &Value| matches!(v, Value::Text(t) if t.contains(&digits));
+        match item {
+            Item::Summary(ItemKind::Group, path, _) => {
+                if has(path.last().unwrap()) {
+                    // A group at level L hides from depth L on.
+                    want.push((Found::Label(path.clone()), path.len() as u32 > depth + 1));
+                }
+            }
+            Item::Leaf(key) => {
+                for &c in &searched {
+                    if has(&text(rows[key.0 as usize][c])) {
+                        let hid = asked.levels.len() as u32 > depth;
+                        want.push((Found::Cell(key, Key(c as u64)), hid));
+                    }
+                }
+            }
+            Item::Summary(..) => {}
+        }
+    }
+    let count = source.find_count(&rows, &query);
+    assert_eq!(count.total, want.len() as u64);
+    assert_eq!(count.hidden, want.iter().filter(|(_, h)| *h).count() as u64);
+
+    let mut from = None;
+    for (i, (found, _)) in want.iter().enumerate() {
+        let step = source
+            .find_next(&rows, &query, from, FindDirection::Next)
+            .expect("a match");
+        assert_eq!(step.index, Some(i as u64));
+        assert!(!step.wrapped);
+        let got = match step.at.row.0 & binnacle_group::SUMMARY_KEY_BIT {
+            0 => Found::Cell(step.at.row, step.at.col),
+            _ => {
+                let path = source.path(step.at.row).expect("an interned group");
+                assert_eq!(
+                    step.at.col,
+                    path.last().unwrap().0,
+                    "a label's column is its field"
+                );
+                Found::Label(path.iter().map(|(_, v)| v.clone()).collect())
+            }
+        };
+        assert_eq!(got, *found);
+        // Its ancestors are the groups on its path.
+        let ancestors = source.ancestors(Axis::Rows, step.at.row);
+        let depth_of = match &got {
+            Found::Label(path) => path.len() - 1,
+            Found::Cell(..) => asked.levels.len(),
+        };
+        assert_eq!(ancestors.len(), depth_of);
+        from = Some(step.at);
+    }
+    if !want.is_empty() {
+        let step = source
+            .find_next(&rows, &query, from, FindDirection::Next)
+            .unwrap();
+        assert!(step.wrapped, "past the last it wraps");
+        assert_eq!(step.index, Some(0));
+    } else {
+        assert_eq!(
+            source.find_next(&rows, &query, None, FindDirection::Next),
+            None
+        );
+    }
+}
+
+/// The Leaves of each group shown, in order, by the group's path.
+fn runs(source: &mut GroupedMemory<Record>, items: &[(Key, Item)]) -> Vec<(String, Vec<Key>)> {
+    let mut runs: Vec<(String, Vec<Key>)> = Vec::new();
+    for (key, item) in items {
+        if let Item::Leaf(_) = item {
+            let path = format!("{:?}", source.ancestors(Axis::Rows, *key));
+            match runs.iter_mut().find(|(p, _)| *p == path) {
+                Some((_, leaves)) => leaves.push(*key),
+                None => runs.push((path, vec![*key])),
+            }
+        }
+    }
+    runs
+}
+
+#[hegel::test(test_cases = 200)]
+fn a_leaf_moves_within_its_group_and_nowhere_else(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).min_size(1).max_size(50));
+    let mut source = source(rows.len());
+    let (asked, mut spec) = tc.draw(spec(rows.len()));
+    let mut grouping = spec.grouping.clone().unwrap();
+    grouping.rows.expand = Expand::default();
+    spec.grouping = Some(grouping);
+    source.view(&rows, &spec);
+    let before = shown(&mut source, &rows);
+    let leaves: Vec<usize> = (0..before.len())
+        .filter(|&i| matches!(before[i].1, Item::Leaf(_)))
+        .collect();
+    if leaves.is_empty() {
+        return;
+    }
+    let from = leaves[tc.draw(gs::integers::<usize>().max_value(leaves.len() - 1))];
+    let key = before[from].0;
+    // The run of Leaves around it: its group's.
+    let (mut start, mut end) = (from, from + 1);
+    while start > 0 && matches!(before[start - 1].1, Item::Leaf(_)) {
+        start -= 1;
+    }
+    while end < before.len() && matches!(before[end].1, Item::Leaf(_)) {
+        end += 1;
+    }
+    let to = tc.draw(gs::integers::<usize>().max_value(before.len()));
+    let moved = source.move_items(&rows, Axis::Rows, &[key], to as u64);
+    if !(start..=end).contains(&to) {
+        assert_eq!(
+            moved.map(|_| ()),
+            Err("Can't move between groups".to_string())
+        );
+        let keys: Vec<Key> = shown(&mut source, &rows).iter().map(|(k, _)| *k).collect();
+        assert_eq!(keys, before.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+        return;
+    }
+    let moved = moved.expect("a move within the group");
+    assert_eq!(moved.notices, vec![(Axis::Rows, ChangeNotice::Reordered)]);
+    // Every group keeps its Leaves in order but the one moved; with a sort
+    // on the Leaves dropped, the groups may take their unsorted order.
+    let mut want = runs(&mut source, &before);
+    let run = (want.iter_mut())
+        .find(|(_, leaves)| leaves.contains(&key))
+        .unwrap();
+    let item = run.1.remove(from - start);
+    run.1
+        .insert(if to > from { to - 1 } else { to } - start, item);
+    want.sort();
+    let after = shown(&mut source, &rows);
+    let mut got = runs(&mut source, &after);
+    got.sort();
+    assert_eq!(got, want);
+    let sorts_leaves = (spec.rows.sort.columns().iter())
+        .any(|c| !asked.levels.iter().any(|l| l.0 as u64 == c.key.0));
+    assert_eq!(
+        moved.view.is_some(),
+        sorts_leaves,
+        "a sort on the Leaves is dropped"
+    );
+
+    // A Summary Item never moves.
+    let summary = before
+        .iter()
+        .find(|(_, i)| matches!(i, Item::Summary(..)))
+        .unwrap()
+        .0;
+    assert_eq!(
+        source
+            .move_items(&rows, Axis::Rows, &[summary], 0)
+            .map(|_| ()),
+        Err("Group rows and totals can't be moved".to_string())
+    );
 }

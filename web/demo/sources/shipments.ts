@@ -24,10 +24,21 @@
 // labels first, and the toolbar says how many rows went. Enter or a double
 // click on a Summary Item's cell activates it, and the toolbar shows the
 // drill-down it carries: the conditions that pick out its shipments.
+//
+// Ctrl/Cmd-F in the grid (or Find in the toolbar) opens the find bar: it
+// matches the ports' and regions' labels and the shipments' cells, counts
+// the matches the closed ports hide ("3 of 12, 5 in collapsed groups"), and
+// a step to one opens its port. A shipment's row header drags within its
+// port; a drop in another port is refused, the drop line saying so. Weight
+// and crates edit in place, and "Reroute" sends the focused shipment to the
+// next port: it stays where it is, dimmed, its groups' figures change at
+// once, and the next sort, filter or grouping puts it in its new port.
+// Group rows and totals never edit or move.
 
-import { createColumnMenu, createFilterBar, fromRows, GridWidget, LAYOUT_VERSION, rowsBy, textRenderer, type Condition } from "../../src";
+import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, LAYOUT_VERSION, rowsBy, textRenderer, type Condition } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { layoutControls } from "./layout";
+import { PORTS } from "./records-data";
 import { day, SHIPMENTS, shipments, type Shipment } from "./shipments-data";
 
 const WIDTHS = { id: 64, region: 96, port: 128, shipped: 112, weight: 96, crates: 80 } as const;
@@ -71,6 +82,8 @@ export const shipmentsDemo: DemoSource = {
     gridBox.className = "grid-box";
     frame.append(gridBox);
     host.append(frame);
+    const committed = document.createElement("output");
+    committed.id = "committed";
     const widget = await GridWidget.create(gridBox, {
       source,
       columnWidth: 120,
@@ -83,6 +96,32 @@ export const shipmentsDemo: DemoSource = {
         note(`copied ${rows.length} ${rows.length === 1 ? "row" : "rows"}`);
       },
       ...look,
+      onCommit(id, col, value) {
+        const n = typeof value === "string" ? Number(value.trim()) : Number(value);
+        const fits = (col === "weight" && Number.isFinite(n)) || (col === "crates" && Number.isInteger(n));
+        if (!fits) {
+          committed.textContent = `${col} of ${id} kept`;
+          return false;
+        }
+        source.row(id)[col as "weight" | "crates"] = n;
+        committed.textContent = `${col} of ${id} = ${n}`;
+        source.edited(id);
+        return true;
+      },
+    });
+    let focused: number | null = null;
+    const unsubscribe = widget.subscribe((frame) => {
+      focused = frame.focusIds && frame.focusIds.row >= 0 ? frame.focusIds.row : null;
+    });
+    const reroute = document.createElement("button");
+    reroute.textContent = "Reroute";
+    reroute.title = "Send the focused shipment to the next port";
+    reroute.addEventListener("click", () => {
+      if (focused === null) return;
+      const shipment = source.row(focused);
+      shipment.port = PORTS[(PORTS.indexOf(shipment.port) + 1) % PORTS.length]!;
+      committed.textContent = `port of ${focused} = ${shipment.port}`;
+      source.edited(focused);
     });
     // As a saved layout would come back, with a row band wide enough for
     // the Subtotals' labels: the column menu's "Group rows by" waits until
@@ -114,7 +153,13 @@ export const shipmentsDemo: DemoSource = {
     const layout = layoutControls(widget, "shipments");
     const columnMenu = createColumnMenu(widget);
     const bar = createFilterBar(widget, { columnMenu });
-    frame.prepend(bar.element);
+    const findBar = createFindBar(widget);
+    frame.prepend(bar.element, findBar.element);
+    const findButton = document.createElement("button");
+    findButton.textContent = "Find";
+    findButton.title = "Find in the table (Ctrl/Cmd-F in the grid)";
+    findButton.addEventListener("click", () => findBar.open());
+    toolbar.append(findButton, reroute, committed);
     return {
       get theme() {
         return widget.theme;
@@ -129,6 +174,11 @@ export const shipmentsDemo: DemoSource = {
         widget.border = style;
       },
       destroy() {
+        unsubscribe();
+        findBar.destroy();
+        findButton.remove();
+        reroute.remove();
+        committed.remove();
         layout.destroy();
         bar.destroy();
         columnMenu.destroy();

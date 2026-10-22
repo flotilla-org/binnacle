@@ -468,7 +468,9 @@ impl Grid {
             }
             Action::Copy => self.copy(),
             Action::BeginEdit => {
-                if let Some((row, col)) = self.focused_keys() {
+                if let Some((row, col)) = self.focused_keys()
+                    && !self.summary_cell(row, col)
+                {
                     self.push(Effect::EditRequested { row, col });
                 }
             }
