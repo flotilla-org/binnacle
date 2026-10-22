@@ -268,6 +268,8 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
   /** `check()` once it gives an answer, asking the backend meanwhile; `undefined` if `signal` aborts first. */
   const until = <T>(check: () => T | undefined, signal?: AbortSignal): T | Promise<T | undefined> => {
     const now = check();
+    // What `check` read may have asked for more.
+    pump();
     if (now !== undefined) return now;
     return new Promise<T | undefined>((resolve) => {
       const w = () => {
@@ -282,7 +284,6 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
         waiters.delete(w);
         resolve(undefined);
       });
-      pump();
     });
   };
 
@@ -403,16 +404,28 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
     return s ? { kind: s.kind, path: pathIds(s.path), children: s.children, figures: s.aggregates } : undefined;
   };
 
-  /** The rows at `start..end` once the layer has them all, asking the backend meanwhile. */
+  /**
+   * The rows from `start` the layer holds, asking the backend for the rest:
+   * all of them, or once it holds more than the last answer for the same
+   * range gave. A short answer comes late, as any answer the widget waited
+   * for, so the Grid asks again for the rest; the items still due draw
+   * pending meanwhile.
+   */
+  let shown = { start: -1, end: -1, n: 0 };
   const window = (start: number, end: number, signal: AbortSignal) => {
+    const before = shown.start === start && shown.end === end ? shown.n : 0;
+    let short = false;
     const read = (): OutlinedWindow<number, ColId> | undefined => {
       const count = wasm().count();
       const want = Math.max(0, Math.min(end, Number.isNaN(count) ? 0 : count) - start);
       const items = wasm().window(start, end) as { key: bigint; outline: KeyedOutline }[];
-      if (items.length < want) return undefined;
+      if (items.length < want && items.length <= before) return undefined;
+      shown = { start, end, n: items.length };
+      short = items.length < want;
       return { ids: items.map((i) => rowId(i.key)), outlines: items.map((i) => outlineIds(i.outline)) };
     };
-    return until(read, signal) as OutlinedWindow<number, ColId> | Promise<OutlinedWindow<number, ColId>>;
+    const got = until(read, signal) as OutlinedWindow<number, ColId> | Promise<OutlinedWindow<number, ColId>>;
+    return short ? Promise.resolve(got) : got;
   };
 
   const notice = ([code, a, b]: [number, number, number]): ChangeNotice => {

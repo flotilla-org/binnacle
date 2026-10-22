@@ -201,7 +201,9 @@ function expected(rows: Rec[], view: ViewSpec<number, Field>): Shown[] {
 /** What `source` shows from `start`, its Summary Items by their figures. */
 async function shown(source: GroupedSource<Field, unknown>, settle: <T>(p: T | Promise<T>) => Promise<T>): Promise<Shown[]> {
   const n = source.rows.count() as number;
-  const got = (await settle(source.rows.window(0, n, signal))) as OutlinedWindow<number, Field>;
+  // As the Grid does, ask again while the answer stops short.
+  let got: OutlinedWindow<number, Field> = { ids: [], outlines: [] };
+  while (got.ids.length < n) got = (await settle(source.rows.window(0, n, signal))) as OutlinedWindow<number, Field>;
   // A Summary Item's figures may land after it does: its cells wait for them.
   await settle(source.cells(got.ids, ["n"], signal));
   return got.ids.map((id) => {
@@ -316,6 +318,8 @@ test("rows a grouped axis has not had answered draw pending in the band, then th
     const pending = band();
     expect(h.snapshot.rows.headers.length).toBeGreaterThan(0);
     expect(pending).toEqual(h.snapshot.rows.headers.map(() => ({ text: "…", fill: light.loading })));
+    // A Window answers what the layer holds, here the first group alone, and comes again for the rest.
+    expect((await source.rows.window(0, 3, signal)) as OutlinedWindow<number, Field>).toMatchObject({ ids: [-2] });
     leaves.splice(0).forEach((send) => send());
     await settle();
     const drawn = band();
