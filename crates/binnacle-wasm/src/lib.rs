@@ -11,11 +11,13 @@ pub mod codes;
 pub mod effect;
 mod grid;
 pub mod grouping;
+mod layer;
 mod memory;
 pub mod snapshot;
 pub mod testing;
 
 pub use grid::{WebAxis, WebGrid, debug_every_effect, debug_notice, debug_scenarios};
+pub use layer::WebGroupingLayer;
 pub use memory::WebMemory;
 
 use wasm_bindgen::prelude::*;

@@ -13,7 +13,7 @@ use binnacle_core::{
 use binnacle_ratatui::{
     Content, HeaderMenu, RenderContext, Theme, render_with, restore_layout, save_layout, status,
 };
-use binnacle_testkit::{GroupedTable, Scenario};
+use binnacle_testkit::{GroupedTable, Scenario, ScenarioSource};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -497,4 +497,38 @@ fn a_group_label_that_is_the_current_match_draws_in_the_find_style() {
         .filter(|&y| buf[(0, y)].bg == found)
         .collect();
     assert_eq!(lit, [5], "{}", styled(&buf));
+}
+
+/// Items of a grouped axis the Table Source has not answered yet (a slow
+/// grouping layer's groups or Leaves) draw pending, the loading mark in
+/// the row Header Band as in their cells, not a row number.
+#[test]
+fn items_not_yet_answered_on_a_grouped_axis_draw_pending() {
+    let mut s = shipments();
+    s.input(|g| g.group_by(Axis::Rows, REGION));
+    s.pump();
+    // A preset whose loading role shows.
+    let theme = Theme::mono();
+    for (axis, range) in s.grid.begin_frame(V) {
+        let keys = s.source.window(axis, range.clone());
+        // Only the first group's Group Item and one Leaf have come.
+        let keys = match axis {
+            Axis::Rows => keys[..2].to_vec(),
+            Axis::Cols => keys,
+        };
+        s.grid.set_window(axis, range.start, &keys);
+        if let Some(outlines) = s.source.outlines(axis, &keys) {
+            s.grid.set_outlines(axis, range.start, &outlines);
+        }
+    }
+    let mut buf = Buffer::empty(AREA);
+    let snapshot = s.grid.snapshot();
+    render_with(
+        &snapshot,
+        &Shipments,
+        &RenderContext::new(&theme),
+        AREA,
+        &mut buf,
+    );
+    insta::assert_snapshot!(styled(&buf));
 }

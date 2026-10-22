@@ -34,8 +34,15 @@
 // next port: it stays where it is, dimmed, its groups' figures change at
 // once, and the next sort, filter or grouping puts it in its new port.
 // Group rows and totals never edit or move.
+//
+// With `?pace=brisk`, `slow` or `glacial` the rows group through
+// groupedSource over a slow aggregate backend instead of at once: the
+// toolbar picks the pace and counts the queries in flight and the groups
+// and Leaves the grouping layer holds. Groups not yet answered, and Leaves,
+// draw pending (a "…" in the band and loading cells) until they arrive.
 
-import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, LAYOUT_VERSION, rowsBy, textRenderer, type Condition } from "../../src";
+import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, groupedSource, LAYOUT_VERSION, rowsBy, textRenderer, type Condition, type TableSource } from "../../src";
+import { AGGREGATE_PACES, slowBackend, type AggregatePace } from "./aggregates";
 import type { DemoSource } from "./demo-source";
 import { layoutControls } from "./layout";
 import { PORTS } from "./records-data";
@@ -60,7 +67,7 @@ export const shipmentsDemo: DemoSource = {
     const number = textRenderer<Shipment[keyof Shipment]>({ align: "end" });
     // A total weight to one decimal place, as each shipment's is.
     const weight = textRenderer({ align: "end", format: (w: number | null) => (w === null ? "" : String(Math.round(w * 10) / 10)) });
-    const source = fromRows(shipments, [
+    const table = fromRows(shipments, [
       { key: "id", filterable: false, renderer: number },
       { key: "region" },
       { key: "port" },
@@ -76,6 +83,31 @@ export const shipmentsDemo: DemoSource = {
       received.textContent = text;
       if (!received.isConnected) toolbar.append(received);
     };
+    const asked = new URL(location.href).searchParams.get("pace");
+    let pace: AggregatePace | null = asked && asked in AGGREGATE_PACES ? (asked as AggregatePace) : null;
+    const counter = document.createElement("span");
+    counter.className = "requests";
+    counter.setAttribute("aria-live", "off");
+    const count = () => (counter.textContent = `${backend?.inFlight ?? 0} queries in flight · ${grouped?.held() ?? 0} held`);
+    const backend = pace ? slowBackend(table, shipments, () => pace!, count) : undefined;
+    const grouped = backend && groupedSource({ base: table, backend });
+    const source: TableSource<number, keyof Shipment, unknown> = grouped ?? table;
+    const speed = document.createElement("select");
+    if (pace) {
+      speed.setAttribute("aria-label", "How late the aggregate backend answers");
+      for (const [name, { groups, leaves }] of Object.entries(AGGREGATE_PACES)) {
+        speed.add(new Option(`${name}: groups ${groups / 1000} s, leaves ${leaves / 1000} s`, name));
+      }
+      speed.value = pace;
+      speed.addEventListener("change", () => {
+        pace = speed.value as AggregatePace;
+        const next = new URL(location.href);
+        next.searchParams.set("pace", pace);
+        history.replaceState(null, "", next);
+      });
+      toolbar.append(speed, counter);
+      count();
+    }
     const frame = document.createElement("div");
     frame.className = "with-filter-bar";
     const gridBox = document.createElement("div");
@@ -103,9 +135,9 @@ export const shipmentsDemo: DemoSource = {
           committed.textContent = `${col} of ${id} kept`;
           return false;
         }
-        source.row(id)[col as "weight" | "crates"] = n;
+        table.row(id)[col as "weight" | "crates"] = n;
         committed.textContent = `${col} of ${id} = ${n}`;
-        source.edited(id);
+        table.edited(id);
         return true;
       },
     });
@@ -118,10 +150,10 @@ export const shipmentsDemo: DemoSource = {
     reroute.title = "Send the focused shipment to the next port";
     reroute.addEventListener("click", () => {
       if (focused === null) return;
-      const shipment = source.row(focused);
+      const shipment = table.row(focused);
       shipment.port = PORTS[(PORTS.indexOf(shipment.port) + 1) % PORTS.length]!;
       committed.textContent = `port of ${focused} = ${shipment.port}`;
-      source.edited(focused);
+      table.edited(focused);
     });
     // As a saved layout would come back, with a row band wide enough for
     // the Subtotals' labels: the column menu's "Group rows by" waits until
@@ -185,7 +217,10 @@ export const shipmentsDemo: DemoSource = {
         widget.destroy();
         frame.remove();
         received.remove();
-        source.destroy();
+        grouped?.destroy();
+        table.destroy();
+        speed.remove();
+        counter.remove();
       },
     };
   },

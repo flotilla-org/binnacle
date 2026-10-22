@@ -8,8 +8,11 @@
 
 use std::slice;
 
+mod layer;
+pub use layer::*;
+
 use binnacle_core::{
-    Action, Aggregate, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared,
+    Action, Aggregate, AggregateValue, Axis, AxisConfig, AxisView, Button, ChangeNotice, Compared,
     Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
     ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
     Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located,
@@ -20,7 +23,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 9;
+pub const BINNACLE_ABI_VERSION: u32 = 10;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -238,19 +241,8 @@ pub struct BinnacleGrid {
     cells: Vec<u8>,
     /// The last polled Effect's text.
     text: String,
-    /// The last polled Effect's View Spec: each axis's sort, and its quick
-    /// filter's text and Keys.
-    sorts: [Vec<BinnacleSortColumn>; 2],
-    quick_texts: [String; 2],
-    quick_keys: [Vec<u64>; 2],
-    conditions: [CConditions; 2],
-    hidden: [Vec<u64>; 2],
-    /// The last polled Effect's grouping: each axis's levels and except
-    /// Keys, the values with their aggregates' texts, and the slicers.
-    levels: [Vec<BinnacleLevel>; 2],
-    excepts: [Vec<u64>; 2],
-    aggregates: CValues,
-    slicers: CConditions,
+    /// The last polled Effect's View Spec.
+    view: CView,
     /// The last polled Effect's drill-down, and the runs a copy lists per
     /// axis.
     drill_down: CConditions,
@@ -500,6 +492,121 @@ impl CConditions {
                 high,
             });
         }
+    }
+}
+
+/// A View Spec in C form, with the sorts, texts, Keys, conditions and
+/// grouping it points into.
+#[derive(Default)]
+struct CView {
+    /// Each axis's sort, and its quick filter's text and Keys.
+    sorts: [Vec<BinnacleSortColumn>; 2],
+    quick_texts: [String; 2],
+    quick_keys: [Vec<u64>; 2],
+    conditions: [CConditions; 2],
+    hidden: [Vec<u64>; 2],
+    /// The grouping: each axis's levels and except Keys, the values with
+    /// their aggregates' texts, and the slicers.
+    levels: [Vec<BinnacleLevel>; 2],
+    excepts: [Vec<u64>; 2],
+    aggregates: CValues,
+    slicers: CConditions,
+}
+
+impl CView {
+    /// Replaces the contents with `spec`, returning it in C form.
+    fn fill(&mut self, spec: &ViewSpec) -> BinnacleViewSpec {
+        let mut c = BinnacleViewSpec::default();
+        for axis in Axis::ALL {
+            c.axes[axis.index()] = self.axis_to_c(axis, spec.axis(axis));
+        }
+        if let Some(grouping) = &spec.grouping {
+            c.has_grouping = 1;
+            c.grouping = self.grouping_to_c(grouping);
+        }
+        c
+    }
+
+    /// `view` in C form, copied into `axis`'s buffers.
+    fn axis_to_c(&mut self, axis: Axis, view: &AxisView) -> BinnacleAxisView {
+        let sort = &mut self.sorts[axis.index()];
+        sort.clear();
+        sort.extend(view.sort.columns().iter().map(BinnacleSortColumn::from));
+        let quick = view.filter.quick.as_ref();
+        let text = &mut self.quick_texts[axis.index()];
+        let keys = &mut self.quick_keys[axis.index()];
+        text.clear();
+        keys.clear();
+        let mut query = BinnacleTextQuery::default();
+        if let Some(q) = quick {
+            text.push_str(&q.text);
+            query.flags = bit(q.case_sensitive, BINNACLE_TEXT_CASE_SENSITIVE)
+                | bit(q.regex, BINNACLE_TEXT_REGEX);
+            if let Searched::Keys(ks) = &q.searches {
+                query.searched = BINNACLE_SEARCHED_KEYS;
+                keys.extend(ks.iter().map(|k| k.0));
+            }
+            query.text = BinnacleText {
+                data: text.as_ptr(),
+                len: text.len(),
+            };
+            query.keys = keys.as_ptr();
+            query.keys_len = keys.len();
+        }
+        let conditions = &mut self.conditions[axis.index()];
+        conditions.fill(view.filter.conditions.conditions());
+        let hidden = &mut self.hidden[axis.index()];
+        hidden.clear();
+        hidden.extend(view.hidden.iter().map(|k| k.0));
+        BinnacleAxisView {
+            sort: sort.as_ptr(),
+            sort_len: sort.len(),
+            has_quick: flag(quick.is_some()),
+            quick: query,
+            conditions: conditions.items.as_ptr(),
+            conditions_len: conditions.items.len(),
+            hidden: hidden.as_ptr(),
+            hidden_len: hidden.len(),
+        }
+    }
+
+    /// `grouping` in C form, copied into the grouping buffers.
+    fn grouping_to_c(&mut self, grouping: &Grouping) -> BinnacleGrouping {
+        let mut c = BinnacleGrouping::default();
+        for axis in Axis::ALL {
+            let levels = &mut self.levels[axis.index()];
+            levels.clear();
+            levels.extend(grouping.levels(axis).iter().map(BinnacleLevel::from));
+            let g = grouping.axis(axis);
+            let except = &mut self.excepts[axis.index()];
+            except.clear();
+            except.extend(g.expand.except.iter().map(|k| k.0));
+            let (expand_all, expand_depth) = depth_to_c(g.expand.depth);
+            c.axes[axis.index()] = BinnacleGroupedAxis {
+                levels: levels.as_ptr(),
+                levels_len: levels.len(),
+                grand_total: placement_tag(g.grand_total),
+                form: match g.form {
+                    Form::Outline => BINNACLE_FORM_OUTLINE,
+                    Form::Header => BINNACLE_FORM_HEADER,
+                },
+                expand_all,
+                expand_depth,
+                except: except.as_ptr(),
+                except_len: except.len(),
+            };
+        }
+        (c.values, c.values_len) = self.values_to_c(&grouping.values);
+        self.slicers.fill(&grouping.slicers);
+        c.slicers = self.slicers.items.as_ptr();
+        c.slicers_len = self.slicers.items.len();
+        c
+    }
+
+    /// `of` in C form, copied into the aggregates' buffers.
+    fn values_to_c(&mut self, of: &[AggregateValue]) -> (*const BinnacleAggregateValue, usize) {
+        self.aggregates.fill(of);
+        (self.aggregates.items.as_ptr(), self.aggregates.items.len())
     }
 }
 
@@ -1906,15 +2013,7 @@ pub extern "C" fn binnacle_grid_new(
         rects: Vec::new(),
         cells: Vec::new(),
         text: String::new(),
-        sorts: [Vec::new(), Vec::new()],
-        quick_texts: [String::new(), String::new()],
-        quick_keys: [Vec::new(), Vec::new()],
-        conditions: Default::default(),
-        hidden: Default::default(),
-        levels: Default::default(),
-        excepts: Default::default(),
-        aggregates: Default::default(),
-        slicers: Default::default(),
+        view: CView::default(),
         drill_down: Default::default(),
         copy_runs: Default::default(),
         edit_keys: Vec::new(),
@@ -2689,42 +2788,6 @@ impl BinnacleGrid {
         }
     }
 
-    /// `grouping` in C form, copied into the handle's grouping buffers.
-    fn grouping_to_c(&mut self, grouping: &Grouping) -> BinnacleGrouping {
-        let mut c = BinnacleGrouping::default();
-        for axis in Axis::ALL {
-            let levels = &mut self.levels[axis.index()];
-            levels.clear();
-            levels.extend(grouping.levels(axis).iter().map(BinnacleLevel::from));
-            let g = grouping.axis(axis);
-            let except = &mut self.excepts[axis.index()];
-            except.clear();
-            except.extend(g.expand.except.iter().map(|k| k.0));
-            let (expand_all, expand_depth) = depth_to_c(g.expand.depth);
-            c.axes[axis.index()] = BinnacleGroupedAxis {
-                levels: levels.as_ptr(),
-                levels_len: levels.len(),
-                grand_total: placement_tag(g.grand_total),
-                form: match g.form {
-                    Form::Outline => BINNACLE_FORM_OUTLINE,
-                    Form::Header => BINNACLE_FORM_HEADER,
-                },
-                expand_all,
-                expand_depth,
-                except: except.as_ptr(),
-                except_len: except.len(),
-            };
-        }
-        self.aggregates.fill(&grouping.values);
-        let values = &self.aggregates.items;
-        self.slicers.fill(&grouping.slicers);
-        c.values = values.as_ptr();
-        c.values_len = values.len();
-        c.slicers = self.slicers.items.as_ptr();
-        c.slicers_len = self.slicers.items.len();
-        c
-    }
-
     /// Takes the oldest Effect, keeping its text in the handle.
     fn poll_effect(&mut self) -> Option<BinnacleEffect> {
         let stamped = self.grid.poll_effect()?;
@@ -2805,57 +2868,7 @@ impl BinnacleGrid {
             Effect::SelectionChanged => effect.kind = BINNACLE_EFFECT_SELECTION_CHANGED,
             Effect::ViewRequested { spec, edit } => {
                 effect.kind = BINNACLE_EFFECT_VIEW_REQUESTED;
-                for axis in Axis::ALL {
-                    let sort = &mut self.sorts[axis.index()];
-                    sort.clear();
-                    sort.extend(
-                        spec.axis(axis)
-                            .sort
-                            .columns()
-                            .iter()
-                            .map(BinnacleSortColumn::from),
-                    );
-                    let quick = spec.axis(axis).filter.quick.as_ref();
-                    let text = &mut self.quick_texts[axis.index()];
-                    let keys = &mut self.quick_keys[axis.index()];
-                    text.clear();
-                    keys.clear();
-                    let mut query = BinnacleTextQuery::default();
-                    if let Some(q) = quick {
-                        text.push_str(&q.text);
-                        query.flags = bit(q.case_sensitive, BINNACLE_TEXT_CASE_SENSITIVE)
-                            | bit(q.regex, BINNACLE_TEXT_REGEX);
-                        if let Searched::Keys(ks) = &q.searches {
-                            query.searched = BINNACLE_SEARCHED_KEYS;
-                            keys.extend(ks.iter().map(|k| k.0));
-                        }
-                        query.text = BinnacleText {
-                            data: text.as_ptr(),
-                            len: text.len(),
-                        };
-                        query.keys = keys.as_ptr();
-                        query.keys_len = keys.len();
-                    }
-                    let conditions = &mut self.conditions[axis.index()];
-                    conditions.fill(spec.axis(axis).filter.conditions.conditions());
-                    let hidden = &mut self.hidden[axis.index()];
-                    hidden.clear();
-                    hidden.extend(spec.axis(axis).hidden.iter().map(|k| k.0));
-                    effect.view.axes[axis.index()] = BinnacleAxisView {
-                        sort: sort.as_ptr(),
-                        sort_len: sort.len(),
-                        has_quick: flag(quick.is_some()),
-                        quick: query,
-                        conditions: conditions.items.as_ptr(),
-                        conditions_len: conditions.items.len(),
-                        hidden: hidden.as_ptr(),
-                        hidden_len: hidden.len(),
-                    };
-                }
-                if let Some(grouping) = &spec.grouping {
-                    effect.view.has_grouping = 1;
-                    effect.view.grouping = self.grouping_to_c(grouping);
-                }
+                effect.view = self.view.fill(&spec);
                 let on = |kind, axis| BinnacleViewEdit {
                     kind,
                     axis: axis_tag(axis),

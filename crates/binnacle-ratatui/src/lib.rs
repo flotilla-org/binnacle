@@ -322,8 +322,14 @@ pub fn render_with(
         // The lines of the row it may draw on.
         let ys = cell(r.offset.max(span_y.start))..cell(r.end().min(span_y.end));
         let outline = snapshot.outline(Axis::Rows, r.position);
+        // An item a grouped axis's source has not answered yet draws
+        // pending, as its cells do, rather than a row number.
+        let unanswered = r.key.is_none() && grouped.is_some();
         let number = r.key.map_or_else(
-            || r.position.saturating_add(1).to_string(),
+            || match unanswered {
+                true => LOADING.to_string(),
+                false => r.position.saturating_add(1).to_string(),
+            },
             |k| match outline {
                 Some(o) if o.kind.is_summary() => content.group_label(k, o),
                 _ => content.row_header(k, r.position),
@@ -380,6 +386,9 @@ pub fn render_with(
         let mut style = band(theme.row_number, &h);
         if let Some(role) = role {
             style = style.patch(role);
+        }
+        if unanswered {
+            style = style.patch(theme.loading);
         }
         // A Group Item's label that is the current match, as a cell would
         // be.

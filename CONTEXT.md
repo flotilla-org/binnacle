@@ -166,12 +166,16 @@ _Avoid_: Loading group, spinner
 The row Header Band of rows grouped in outline form, as a column focus can enter (Left from the first column, or a click on a row header): there the arrows walk the tree (Right opens a closed group or steps to its first child, Left closes an open one or steps to the parent), Enter toggles, `*` opens everything under the focused group, a digit opens the rows to that depth, and Tab leaves for the body.
 _Avoid_: Tree column, row header focus
 
+**Pending Item**:
+An item of a grouped axis whose Key its Window has not had answered yet, the backend still due: the band draws it pending (a "…" in the loading colour) and its cells loading. The Window answers the items it holds and comes again for the rest.
+_Avoid_: Loading row, placeholder row
+
 **Grouping Layer**:
-The optional sans-IO module (`binnacle-group`) that answers a grouped View Spec as a Table Source over a backend that only answers Aggregate Queries: it owns the structure, interns Summary Item Keys and holds only what open groups need.
+The optional sans-IO module (`binnacle-group`) that answers a grouped View Spec as a Table Source over a backend that only answers Aggregate Queries: it owns the structure, interns Summary Item Keys and holds the open groups and a bounded cache of pages (closed groups and runs of Leaves, least recently read let go first, never those the latest two Windows read), so its memory grows with what the user opens, never with the rows. A closed group takes one Position whether fetched or not, so the axis's length is known before its pages are. Hosts reach it from Rust, from TypeScript through wasm (`groupedSource`) and from C (`binnacle_group_layer_*`).
 _Avoid_: Group engine, tree builder, pivot engine
 
 **Aggregate Query**:
-One request the Grouping Layer sends its backend, in a batch carrying an id: the groups (values, counts and figures) under one path of a level, or the Leaves of one group, over a range. A backend may answer by id in any order, in parts, jointly or with more than asked.
+One request the Grouping Layer sends its backend, in a batch carrying an id: the groups (values, counts and figures) under one path of a level, or the Leaves of one group, over a range; the figures of a whole group; or where one Leaf is. A Window asks for everything it lacks in one batch. A backend may answer by id in any order, in parts, jointly or with more than asked; a query is done once an answer names it or what was answered covers it, and answers for a batch a newer View Spec superseded are dropped.
 _Avoid_: Group query, rollup request
 
 **Value Caption**:

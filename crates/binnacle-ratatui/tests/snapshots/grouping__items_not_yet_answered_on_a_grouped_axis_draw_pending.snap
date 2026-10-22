@@ -1,0 +1,30 @@
+---
+source: crates/binnacle-ratatui/tests/grouping.rs
+assertion_line: 465
+expression: styled(&buf)
+---
+count       id     │kg     │
+    #0      s0c0    s0c2         █
+…           …       …            █
+…           …       …            █
+…           …       …            █
+…           …       …            █
+…           …       …            █
+…           …       …            █
+                                 █
+                                 █
+
+aaaaabbbbbbbaaaaaaacaaaaaaacbbbbba
+ccccccccccccbbbbbbbbbbbbbbbbbbbbbb
+cccccccccccccbbbbbbbcbbbbbbbbbbbbb
+cccccccccccccbbbbbbbcbbbbbbbbbbbbb
+cccccccccccccbbbbbbbcbbbbbbbbbbbbb
+cccccccccccccbbbbbbbcbbbbbbbbbbbbb
+cccccccccccccbbbbbbbcbbbbbbbbbbbbb
+cccccccccccccbbbbbbbcbbbbbbbbbbbbb
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+a: fg Reset bg Reset BOLD
+b: fg Reset bg Reset
+c: fg Reset bg Reset DIM
