@@ -20,7 +20,13 @@ type Record = [Option<i64>; COLS];
 
 #[hegel::composite]
 fn record(tc: &TestCase) -> Record {
-    let value = || gs::optional(gs::integers::<i64>().min_value(-3).max_value(12));
+    // Mostly a few values, so groups fill up; any i64 now and then.
+    let value = || {
+        gs::optional(hegel::one_of!(
+            gs::integers::<i64>().min_value(-3).max_value(12),
+            gs::integers::<i64>()
+        ))
+    };
     [tc.draw(value()), tc.draw(value()), tc.draw(value())]
 }
 

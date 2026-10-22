@@ -1149,34 +1149,38 @@ describe("fromRows's grouping", () => {
     });
   };
 
-  test("whatever the sort, hidden rows and host filter, the grouped rows are the model's and the level column leaves the columns", () =>
+  test("whatever the sort, hidden rows and host filter, View Spec after View Spec, the grouped rows are the model's and the level column leaves the columns", () =>
     hegel.test((tc) => {
       const rows = tc.draw(records);
       const source = fromRows(rows, COLUMNS);
       const notices: ChangeNotice[] = [];
       source.attach!(sinksTo(notices));
       try {
-        const field = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
-        const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
-        const hidden = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: Math.max(0, rows.length - 1) }), { maxSize: 4 }));
-        const filtered = tc.draw(gs.booleans());
-        if (filtered) source.filter((r) => r.b !== 1);
-        const answer = source.view!(groupedBy(field, sort, hidden), signal) as AppliedView<number, keyof Rec>;
-        expect(answer.grouping).toEqual(rowsBy(field));
-        expect(answer.rows.sort).toEqual(sort);
-        expect(answer.cols.hidden).toEqual([]);
-        expect(notices).toContainEqual({ type: "Refiltered" });
-        const keep = (r: Rec, i: number) => !hidden.includes(i) && (!filtered || r.b !== 1);
-        expect(shown(source, field)).toEqual(model(rows, field, sort, keep));
-        for (const [p, id] of (source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, keyof Rec>).ids.entries()) {
-          if (id >= 0) expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: p });
+        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 3 }));
+        for (let step = 0; step < steps; step++) {
+          notices.length = 0;
+          const field = tc.draw(gs.sampledFrom<keyof Rec>(["n", "s", "b"]));
+          const sort: SortSpec<keyof Rec> = tc.draw(specs).map(([id, direction]) => ({ id, direction }));
+          const hidden = tc.draw(gs.arrays(gs.integers({ minValue: 0, maxValue: Math.max(0, rows.length - 1) }), { maxSize: 4 }));
+          const filtered = tc.draw(gs.booleans());
+          source.filter(filtered ? (r) => r.b !== 1 : null);
+          const answer = source.view!(groupedBy(field, sort, hidden), signal) as AppliedView<number, keyof Rec>;
+          expect(answer.grouping).toEqual(rowsBy(field));
+          expect(answer.rows.sort).toEqual(sort);
+          expect(answer.cols.hidden).toEqual([]);
+          expect(notices).toContainEqual({ type: "Refiltered" });
+          const keep = (r: Rec, i: number) => !hidden.includes(i) && (!filtered || r.b !== 1);
+          expect(shown(source, field)).toEqual(model(rows, field, sort, keep));
+          for (const [p, id] of (source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, keyof Rec>).ids.entries()) {
+            if (id >= 0) expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: p });
+          }
+          expect(source.cols.window(0, 3, signal)).toEqual(COLUMN_IDS.filter((c) => c !== field));
+          // The host's filter regroups.
+          notices.length = 0;
+          source.filter((r) => r.n !== null);
+          expect(notices).toEqual([{ type: "Refiltered" }]);
+          expect(shown(source, field)).toEqual(model(rows, field, sort, (r, i) => !hidden.includes(i) && r.n !== null));
         }
-        expect(source.cols.window(0, 3, signal)).toEqual(COLUMN_IDS.filter((c) => c !== field));
-        // The host's filter regroups.
-        notices.length = 0;
-        source.filter((r) => r.n !== null);
-        expect(notices).toEqual([{ type: "Refiltered" }]);
-        expect(shown(source, field)).toEqual(model(rows, field, sort, (r, i) => !hidden.includes(i) && r.n !== null));
       } finally {
         source.destroy();
       }

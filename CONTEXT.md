@@ -77,7 +77,7 @@ The band of headers leading an axis, whose thickness the host sets and the user 
 _Avoid_: Header row, header column, gutter
 
 **View Spec**:
-The declared view a Table Source should present for a whole table, one part per axis, each with a filter and a sort (grouping and pivot may join later); the Grid holds the one the source last applied and the latest one requested.
+The declared view a Table Source should present for a whole table, one part per axis, each with a filter and a sort, and a whole-table grouping part (row levels, column levels, values and Slicers, all naming the source's base fields; absent for a plain table); the Grid holds the one the source last applied and the latest one requested.
 _Avoid_: View state, query, view model
 
 **View Edit**:
@@ -119,6 +119,52 @@ _Avoid_: Unfiltered count, base count
 **Unmatched Row**:
 A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead.
 _Avoid_: Stale row, held row, edited row (as a term)
+
+### Grouping
+
+**Leaf**:
+An item of a grouped axis that is the data itself (a row of the table), keeping the Key it has when the axis is not grouped.
+_Avoid_: Detail row, data row, child
+
+**Group Item**:
+The Summary Item heading one group of a level: drawn in outline form at its own Position, with an indent and a disclosure mark, opening onto its children.
+_Avoid_: Group row, group header, parent row
+
+**Subtotal**:
+The Summary Item holding a group's figures, placed before or after the group's items or left out; it does not open.
+_Avoid_: Group total, footer row
+
+**Grand Total**:
+The Summary Item holding the figures for a whole grouped axis, placed before or after it or left out. Not to be confused with Totals, the unfiltered count.
+_Avoid_: Total row, overall total
+
+**Summary Item**:
+Any item a grouped axis shows that the source computes rather than holds: a Group Item, a Subtotal or the Grand Total. Its Key is interned from its path (each level's field and value, outermost first), so state on it survives sorting, filtering and data changes.
+_Avoid_: Aggregate row, synthetic row, virtual row
+
+**Outline**:
+Where an item sits in a grouped axis, given with each Window item: its kind (Leaf or which Summary Item), its depth, its ancestors' Keys from the outermost Group Item down to its parent, whether it is open, and on a Group Item or Subtotal its level's field and value.
+_Avoid_: Tree info, hierarchy, node
+
+**Grouping Layer**:
+The optional sans-IO module (`binnacle-group`) that answers a grouped View Spec as a Table Source over a backend that only answers Aggregate Queries: it owns the structure, interns Summary Item Keys and holds only what open groups need.
+_Avoid_: Group engine, tree builder, pivot engine
+
+**Aggregate Query**:
+One request the Grouping Layer sends its backend, in a batch carrying an id: the groups (values, counts and figures) under one path of a level, or the Leaves of one group, over a range. A backend may answer by id in any order, in parts, jointly or with more than asked.
+_Avoid_: Group query, rollup request
+
+**Slicer**:
+A Condition in the grouping part of a View Spec on a base field, applied before aggregating (`WHERE`), even on a field not shown.
+_Avoid_: Pre-filter, where clause
+
+**Corner Grid**:
+Where the two Header Bands' tiers cross on a table grouped in header form: each cell by column tier and row tier, showing level names and the values caption.
+_Avoid_: Top-left corner, pivot corner
+
+**Drill-Down Spec**:
+What activating a Summary Item's cell hands the app with the `Activated` Effect: the Slicers in force plus a OneOf for each field and value on the row's and column's paths, picking the Leaves behind the cell. binnacle builds no drill-down view.
+_Avoid_: Detail query, drill-through
 
 ### Inside an In-Memory Table Source
 

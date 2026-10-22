@@ -22,10 +22,14 @@ type Row = (Key, [Value; 2]);
 
 #[hegel::composite]
 fn value(tc: &TestCase) -> Value {
-    let text = tc.draw(gs::sampled_from(vec!["a", "b", "c", ""]));
-    match text {
+    // Mostly a few values, so groups fill up; any text now and then.
+    let text = tc.draw(hegel::one_of!(
+        gs::sampled_from(vec!["a", "b", "c", ""]).map(String::from),
+        gs::text().max_size(8)
+    ));
+    match text.as_str() {
         "" => Value::Blank,
-        t => Value::Text(t.to_string()),
+        _ => Value::Text(text),
     }
 }
 
