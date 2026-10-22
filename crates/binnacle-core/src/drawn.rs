@@ -92,6 +92,38 @@ impl AxisState {
         }
     }
 
+    /// The first item drawn at `indices` (the last if not `forward`) whose
+    /// Position is outside `gone`, as it is before `gone` is removed.
+    pub fn drawn_survivor(
+        &self,
+        indices: Range<u64>,
+        gone: Range<Position>,
+        forward: bool,
+    ) -> Option<FocusEnd> {
+        let mut index = if forward {
+            indices.start
+        } else {
+            indices.end.checked_sub(1)?
+        };
+        while indices.contains(&index) {
+            let slot = self.slot_at(index);
+            let end = self.end_at(slot);
+            if !gone.contains(&end.position) {
+                return Some(end);
+            }
+            // Gone scrolling items are drawn together: step over them all.
+            index = match slot {
+                Slot::Scrolling(_) if forward => self.drawn_index(Slot::Scrolling(gone.end)),
+                Slot::Scrolling(_) => self
+                    .drawn_index(Slot::Scrolling(gone.start))
+                    .checked_sub(1)?,
+                Slot::Pinned(..) if forward => index + 1,
+                Slot::Pinned(..) => index.checked_sub(1)?,
+            };
+        }
+        None
+    }
+
     /// The scrolling item nearest `p` that is not pinned: `p` itself, else
     /// the next one towards the end if `forward` (the previous otherwise),
     /// else the nearest the other way.

@@ -8,7 +8,6 @@ use crate::effect::Effect;
 use crate::focus::{FocusEnd, Move};
 use crate::gesture::{Before, Gesture, Mode, Press};
 use crate::grid::Grid;
-use crate::measure::AxisMeasure;
 use crate::selection::Span;
 use crate::snapshot::ScrollAnchor;
 use crate::sort::Located;
@@ -222,6 +221,8 @@ impl Grid {
                 }
             }
         }
+        let span =
+            (self.selection.span).and_then(|span| shift_span(span, axis, shift, self.axis(axis)));
         let gone = match shift {
             Shift::Inserted { at, n } => {
                 self.axis_mut(axis).measure.insert(at, n);
@@ -235,13 +236,11 @@ impl Grid {
         }
         let count = self.axis(axis).measure.count();
         let mut selection = self.selection.clone();
+        selection.span = span;
         for &key in &gone {
             self.axis_mut(axis).measure.clear_size(key);
         }
         selection.picks[i].retain(|k| !gone.contains(k));
-        selection.span = selection
-            .span
-            .and_then(|span| shift_span(span, axis, shift, &self.axis(axis).measure));
         if count == 0 {
             selection.span = None;
         }
@@ -643,34 +642,53 @@ impl Shift {
     }
 }
 
-/// The range after `shift` on `axis`. A corner whose item was removed moves
-/// to the nearest survivor inside the range; a range whose items on `axis`
-/// were all removed is dropped, unless it spans the whole axis.
-fn shift_span(mut span: Span, axis: Axis, shift: Shift, measure: &AxisMeasure) -> Option<Span> {
+/// The range after `shift` on `axis`, given the axis as it was before. A
+/// corner whose item was removed pulls in to the nearest surviving item
+/// drawn inside the range; a range with no item left on `axis` is dropped,
+/// unless it spans the whole axis.
+fn shift_span(mut span: Span, axis: Axis, shift: Shift, st: &AxisState) -> Option<Span> {
     let i = axis.index();
-    let (a, h) = (span.anchor[i].position, span.head[i].position);
-    let (lo, hi) = (a.min(h), a.max(h));
-    if shift.map(lo).is_none() && shift.map(hi).is_none() && !span.whole[i] {
-        return None;
-    }
-    let last = measure.count().saturating_sub(1);
-    for corner in [&mut span.anchor, &mut span.head] {
-        let end = &mut corner[i];
-        match shift.map(end.position) {
-            Some(p) => end.position = p,
-            None => {
-                let low = end.position == lo;
-                let p = if low {
-                    shift.at()
-                } else {
-                    shift.at().saturating_sub(1)
-                };
-                *end = FocusEnd {
-                    position: p.min(last),
-                    key: measure.key_at(p.min(last)),
-                };
-            }
+    let Shift::Removed { at, n } = shift else {
+        for corner in [&mut span.anchor, &mut span.head] {
+            corner[i].position = shift.map(corner[i].position).expect("nothing removed");
         }
+        return Some(span);
+    };
+    let drawn = [span.anchor[i], span.head[i]].map(|e| st.drawn_index(st.slot_of(e)));
+    let (lo, hi) = (drawn[0].min(drawn[1]), drawn[0].max(drawn[1]));
+    let inside = lo..hi + 1;
+    let ends = st
+        .drawn_survivor(inside.clone(), at..at + n, true)
+        .zip(st.drawn_survivor(inside, at..at + n, false));
+    for (corner, d) in [&mut span.anchor, &mut span.head].into_iter().zip(drawn) {
+        let end = &mut corner[i];
+        *end = match (shift.map(end.position), ends) {
+            (Some(p), _) => FocusEnd {
+                position: p,
+                ..*end
+            },
+            (None, Some((low, high))) => {
+                let end = if d == lo { low } else { high };
+                FocusEnd {
+                    position: shift.map(end.position).expect("it survived"),
+                    ..end
+                }
+            }
+            // A whole axis keeps its corners on the item that took their
+            // place, or the last.
+            (None, None) if span.whole[i] => {
+                let p = if at + n < st.measure.count() {
+                    at + n
+                } else {
+                    at.saturating_sub(1)
+                };
+                FocusEnd {
+                    position: shift.map(p).unwrap_or(0),
+                    key: st.key_at(p),
+                }
+            }
+            (None, None) => return None,
+        };
     }
     Some(span)
 }

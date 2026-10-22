@@ -3,7 +3,7 @@
 //! Scroll Anchor and the active Mode follow the rules.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Effect, FocusEnd, FocusStep, Grid, Key, Mode,
+    Action, Axis, AxisConfig, ChangeNotice, Edge, Effect, FocusEnd, FocusStep, Grid, Key, Mode,
     Modifiers, PointerEvent, Viewport,
 };
 use binnacle_testkit::{KeyedTable, Scenario};
@@ -133,6 +133,58 @@ fn the_range_shifts_and_shrinks_with_its_rows_and_goes_when_they_all_go() {
     out += &s.step("remove rows 0..2, its head: it shrinks to 0..2", V);
     remove(&mut s, Axis::Rows, 0, 2);
     out += &s.step("remove rows 0..2, all of it: no range", V);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_removed_corner_pulls_in_to_the_next_row_drawn_inside_the_range_not_a_pinned_one() {
+    let mut s = table();
+    s.input(|g| g.pin(Axis::Rows, Edge::Leading, Key(1)));
+    s.frame(V);
+    s.click(5.0, 2.5, Modifiers::NONE);
+    s.click(5.0, 4.5, Modifiers::SHIFT);
+    let mut out = s.step(
+        "pin row 1 on top, select rows 0, 2 and 3 as drawn: row 1 is outside",
+        V,
+    );
+    remove(&mut s, Axis::Rows, 0, 1);
+    out += &s.step(
+        "remove row 0, the low corner: the range pulls in to row 2 (now 1), the pinned row stays out",
+        V,
+    );
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn a_range_keeps_a_row_drawn_between_its_corners_when_both_corners_go() {
+    let mut s = Scenario::new(
+        Grid::new(
+            AxisConfig::new(6, 1.0).header(1.0),
+            AxisConfig::new(3, 6.0).header(4.0).gap(1.0),
+        ),
+        KeyedTable::new(6, 3),
+    );
+    let v = Viewport::new(26.0, 8.0);
+    s.input(|g| g.pin(Axis::Rows, Edge::Trailing, Key(1)));
+    s.frame(v);
+    s.click(5.0, 4.5, Modifiers::NONE);
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: FocusStep::Edge,
+            forward: true,
+            extend: true,
+        })
+    });
+    let mut out = s.step(
+        "pin row 1 at the bottom, select from row 4 to it: rows 4, 5 and 1 as drawn",
+        v,
+    );
+    remove(&mut s, Axis::Rows, 1, 4);
+    out += &s.step(
+        "remove rows 1..5, both corners: row 5 (now 1) was drawn between them and stays",
+        v,
+    );
     insta::assert_snapshot!(out);
 }
 

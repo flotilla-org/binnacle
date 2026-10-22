@@ -4,7 +4,7 @@
 //! focus moves, scrolls), driven through the frame loop and the shared pump.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, FocusEnd, FocusStep, Grid, Key, Mode, Modifiers,
+    Action, Axis, AxisConfig, ChangeNotice, Edge, FocusEnd, FocusStep, Grid, Key, Mode, Modifiers,
     PointerEvent, ScrollAnchor, Viewport,
 };
 use binnacle_memory::IdentitySource;
@@ -351,12 +351,49 @@ fn picks_hold_only_keys_the_source_still_has_when_their_rows_were_seen_leaving(t
     }
 }
 
-/// A range is positional: it keeps the rows between its ends, and rows
-/// inserted strictly inside it join it. Modelled as a membership flag per
-/// row, moved by each notice.
+/// The Keys of `axis` in drawn order: the leading pins, the rest by
+/// Position, then the trailing pins. A pin whose item has gone is not drawn.
+fn drawn_keys(host: &Host, axis: Axis) -> Vec<Key> {
+    let keys = &host.s.source.axes[axis.index()];
+    let pins = |edge| -> Vec<Key> {
+        let pins = host.s.grid.pins(axis, edge);
+        pins.filter(|k| keys.contains(k)).collect()
+    };
+    let (leading, trailing) = (pins(Edge::Leading), pins(Edge::Trailing));
+    let scrolling = keys
+        .iter()
+        .filter(|k| !leading.contains(k) && !trailing.contains(k));
+    leading
+        .iter()
+        .chain(scrolling)
+        .chain(&trailing)
+        .copied()
+        .collect()
+}
+
+/// A range keeps the items drawn between its ends on either axis, and items
+/// inserted strictly inside it join it. Modelled as the set of member Keys,
+/// moved by each notice.
 #[hegel::test(test_cases = 1000)]
-fn a_range_keeps_the_rows_between_its_ends_through_inserts_and_removals(tc: TestCase) {
+fn a_range_keeps_the_items_between_its_ends_through_inserts_and_removals(tc: TestCase) {
     let mut host = Host::new(&tc);
+    let axis = tc.draw(axis());
+    let (i, other) = (axis.index(), axis.other());
+    // Pinned items are drawn apart from their Positions, so a range's
+    // corners can sit either side of one.
+    let pins = tc.draw(gs::vecs(hegel::tuples!(fraction(), gs::booleans())).max_size(3));
+    for (f, leading) in pins {
+        let keys = &host.s.source.axes[i];
+        if let Some(&key) = keys.get((f * keys.len() as f32) as usize) {
+            let edge = if leading {
+                Edge::Leading
+            } else {
+                Edge::Trailing
+            };
+            host.s.input(|g| g.pin(axis, edge, key));
+        }
+    }
+    host.frame();
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
     for _ in 0..steps {
         // Select something: any inputs, then a shift-click.
@@ -372,50 +409,64 @@ fn a_range_keeps_the_rows_between_its_ends_through_inserts_and_removals(tc: Test
         let Some(before) = host.s.grid.snapshot().selection_range().cloned() else {
             continue;
         };
-        // A range over every row may be whole on the rows (it then grows
+        // A range over every item may be whole on the axis (it then grows
         // with inserts at the end and survives emptying) or not: the View
         // cannot tell which. Scenarios cover both.
-        let all = 0..host.count(Axis::Rows);
-        if before.rows == [all] {
+        let all = 0..host.count(axis);
+        if before.span(axis) == [all] {
             continue;
         }
-        let mut member: Vec<bool> = (0..host.count(Axis::Rows))
-            .map(|p| before.covers(Axis::Rows, p))
+        let keys = host.s.source.axes[i].clone();
+        let mut members: Vec<Key> = (0..keys.len())
+            .filter(|&p| before.covers(axis, p as u64))
+            .map(|p| keys[p])
             .collect();
         let changes = tc.draw(gs::vecs(fraction()).min_size(1).max_size(3));
         for f in changes {
             let n = tc.draw(gs::integers::<u64>().min_value(1).max_value(3));
             let input = if tc.draw(gs::booleans()) {
-                Input::Insert(Axis::Rows, f, n)
+                Input::Insert(axis, f, n)
             } else {
-                Input::Remove(Axis::Rows, f, n)
+                Input::Remove(axis, f, n)
             };
+            let old = host.s.source.axes[i].clone();
             match host.input(input) {
-                Some((_, ChangeNotice::Inserted { at, n })) => {
-                    let at = at as usize;
-                    let first = member.iter().position(|&m| m);
-                    let last = member.iter().rposition(|&m| m);
-                    let inside = first.zip(last).is_some_and(|(f, l)| f < at && at <= l);
-                    member.splice(at..at, (0..n).map(|_| inside));
+                Some((_, ChangeNotice::Inserted { .. })) => {
+                    let drawn = drawn_keys(&host, axis);
+                    let index = |k: &Key| drawn.iter().position(|d| d == k);
+                    let ends = members.iter().filter_map(index);
+                    let (first, last) = (ends.clone().min(), ends.max());
+                    let fresh = drawn.iter().enumerate().filter(|(_, k)| !old.contains(k));
+                    let inside = fresh
+                        .filter(|&(d, _)| first.zip(last).is_some_and(|(f, l)| f < d && d < l));
+                    let joined: Vec<Key> = inside.map(|(_, &k)| k).collect();
+                    members.extend(joined);
                 }
-                Some((_, ChangeNotice::Removed { at, n })) => {
-                    member.drain(at as usize..(at + n) as usize);
+                Some((_, ChangeNotice::Removed { .. })) => {
+                    members.retain(|k| host.s.source.axes[i].contains(k));
                 }
                 other => panic!("{other:?}"),
             }
         }
         host.frame();
         let after = host.s.grid.snapshot().selection_range().cloned();
-        let first = member.iter().position(|&m| m);
-        let last = member.iter().rposition(|&m| m);
-        match first.zip(last) {
-            None => assert_eq!(after, None),
-            Some((first, last)) => {
-                let after = after.expect("some of the range is left");
-                let kept = first as u64..last as u64 + 1;
-                assert_eq!(after.rows, [kept]);
-                assert_eq!(after.cols, before.cols);
-            }
+        let keys = &host.s.source.axes[i];
+        let mut kept: Vec<u64> = members
+            .iter()
+            .map(|k| {
+                keys.iter()
+                    .position(|r| r == k)
+                    .expect("a member is an item") as u64
+            })
+            .collect();
+        kept.sort();
+        if kept.is_empty() {
+            assert_eq!(after, None);
+        } else {
+            let after = after.expect("some of the range is left");
+            let covered: Vec<u64> = after.span(axis).iter().cloned().flatten().collect();
+            assert_eq!(covered, kept);
+            assert_eq!(after.span(other), before.span(other));
         }
     }
 }
