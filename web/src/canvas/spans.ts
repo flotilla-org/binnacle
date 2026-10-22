@@ -71,9 +71,17 @@ function paintTint(p: PaintContext, span: HeaderSpan): void {
   const start = span.cutBefore ? v.y + FADE : v.y;
   const end = span.cutAfter ? v.y + v.height - FADE : v.y + v.height;
   if (end > start) ctx.fillRect(v.x, start, v.width, end - start);
-  // One-pixel steps, so the fade needs no colour with alpha in it.
+  // One-pixel steps, so the fade needs no colour with alpha in it: the
+  // tint fades in from the cut edge, under a shade of the band's text
+  // colour that fades out from it.
   for (let i = 0; i < FADE; i++) {
     ctx.globalAlpha = (i + 1) / (FADE + 1);
+    if (span.cutBefore) ctx.fillRect(v.x, v.y + i, v.width, 1);
+    if (span.cutAfter) ctx.fillRect(v.x, v.y + v.height - 1 - i, v.width, 1);
+  }
+  ctx.fillStyle = theme.rowNumber.color;
+  for (let i = 0; i < FADE; i++) {
+    ctx.globalAlpha = 0.3 * (1 - i / FADE) ** 2;
     if (span.cutBefore) ctx.fillRect(v.x, v.y + i, v.width, 1);
     if (span.cutAfter) ctx.fillRect(v.x, v.y + v.height - 1 - i, v.width, 1);
   }

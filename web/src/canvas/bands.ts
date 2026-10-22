@@ -253,7 +253,10 @@ export function paintRowNumbers(p: PaintContext): void {
     const y = h.rect.y + h.rect.height / 2;
     // In header form the spans stand for the groups: a Summary Item's label
     // starts where its header does, past them.
-    if (header && outline && outline.kind !== "leaf") paintSummary(p, h, text, color, y);
+    if (header && outline && outline.kind !== "leaf") {
+      // A closed group's Subtotal sits under its span, which names it.
+      if (!underOwnSpan(s, h.position, outline)) paintSummary(p, h, text, color, y);
+    }
     else if (outline && !header) paintOutline(p, outline, text, color, y, room, p.markPending(h.key));
     else {
       ctx.fillStyle = color;
@@ -303,6 +306,14 @@ function paintOutline(
   ctx.fillText(measure.fit(text, font, room - (x - PAD)), x, y);
   ctx.textAlign = "right";
   ctx.font = theme.font;
+}
+
+/** Whether a Subtotal in header form stands under its own group's span: the group is closed. */
+function underOwnSpan(s: Snapshot, position: number, outline: KeyedOutline): boolean {
+  const group = outline.ancestors.at(-1);
+  if (outline.kind !== "subtotal" || group === undefined) return false;
+  const tier = outline.ancestors.length - 1;
+  return s.rows.spans.some((sp) => sp.key === group && sp.tier === tier && sp.first <= position && position <= sp.last);
 }
 
 /** A Summary Item's label in header form, left-aligned in its header in the header font, clear of its filter button. */
