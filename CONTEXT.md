@@ -93,8 +93,12 @@ The filter part of one axis of a View Spec: which of its items the Table Source 
 _Avoid_: Filter state, predicate
 
 **Condition**:
-One test in a Filter Spec on the value an item has in one item of the other axis (a column, for the rows), such as a Text Query searching that column alone or OneOf (the value is exactly one of those listed, blank among them or not), kept or with `not` inverted. Conditions AND with each other and with the quick filter, and one column may hold several.
+One test in a Filter Spec on the value an item has in one item of the other axis (a column, for the rows), such as a Text Query searching that column alone, OneOf (the value is exactly one of those listed, blank among them or not) or a comparison, kept or with `not` inverted. Conditions AND with each other and with the quick filter, and one column may hold several. A Table Source declares per item which kinds it takes, and leaves out of the applied View Spec any it does not.
 _Avoid_: Column filter, criterion, rule
+
+**Comparison**:
+A Condition comparing the value with a number or a date: equal, not equal, less, at most, greater, at least, or between two (both ends included). A date is an instant in milliseconds since the Unix epoch, UTC; a date without a time is its midnight. An item compares numbers or dates, as its Table Source declares; a blank, a NaN or a value of the other kind never passes, so `not` keeps it, and a comparison of the other kind is left out.
+_Avoid_: Range filter, numeric filter, predicate
 
 **Distinct Values**:
 The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more.
