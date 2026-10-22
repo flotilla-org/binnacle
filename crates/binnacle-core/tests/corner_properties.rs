@@ -16,10 +16,14 @@ const V: Viewport = Viewport {
 };
 
 fn sizes(tc: &TestCase) -> Vec<f32> {
-    (tc.draw(gs::vecs(gs::integers::<u32>().max_value(8)).max_size(4)))
-        .into_iter()
-        .map(|n| n as f32)
-        .collect()
+    // Any lengths a host may pass, those the Grid takes as 0 included.
+    tc.draw(
+        gs::vecs(hegel::one_of!(
+            gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
+            gs::floats::<f32>().min_value(0.0).max_value(64.0),
+        ))
+        .max_size(4),
+    )
 }
 
 /// The rows grouped by region then port and, if drawn, the columns by
@@ -37,7 +41,7 @@ fn scene(tc: &TestCase) -> (Scenario<TreeTable>, Grouping, [f32; 2]) {
     ];
     let col_levels = vec![Level::field(QUARTER), Level::Values];
     let table = TreeTable::new(vec![REGION, PORT], 3, rows).cols_by(col_levels.clone(), quarters);
-    let band = |tc: &TestCase| tc.draw(gs::integers::<u32>().max_value(16)) as f32;
+    let band = |tc: &TestCase| tc.draw(gs::floats::<f32>().min_value(0.0).max_value(64.0));
     let (left, top) = (band(tc), band(tc));
     let grid = Grid::new(
         AxisConfig::new(2, 1.0).header(top),
@@ -67,45 +71,64 @@ fn scene(tc: &TestCase) -> (Scenario<TreeTable>, Grouping, [f32; 2]) {
     (s, grouping, [left, top])
 }
 
-/// Each band's corner tiers run edge to edge without gaps or overlaps; in
-/// header form they are the band's tiers then its items' own, each tier
-/// naming its level, and in outline form one tier names every level; and
-/// each cell is where its two tiers cross.
+/// Each band's corner tiers run from its outer edge to its inner one with
+/// no gap or overlap.
 #[hegel::test(test_cases = 300)]
-fn the_corner_tiers_tile_each_band_and_name_every_level_once(tc: TestCase) {
-    let (mut s, grouping, [left, top]) = scene(&tc);
+fn the_corner_tiers_tile_each_band(tc: TestCase) {
+    let (mut s, _, [left, top]) = scene(&tc);
     let snap = s.frame(V);
-    let corner = snap.corner();
     for (axis, thickness) in [(Axis::Rows, left), (Axis::Cols, top)] {
-        let tiers = corner.tiers(axis);
+        let tiers = snap.corner().tiers(axis);
         assert!(!tiers.is_empty());
         assert_eq!(tiers[0].across.start, 0.0);
         assert_eq!(tiers[tiers.len() - 1].across.end, thickness);
         for pair in tiers.windows(2) {
             assert_eq!(pair[0].across.end, pair[1].across.start);
         }
+    }
+}
+
+/// In header form a band's corner tiers are its own tiers, each naming its
+/// level, then its items' own naming none; in outline form one tier names
+/// every level, outermost first.
+#[hegel::test(test_cases = 300)]
+fn each_corner_tier_names_its_levels_as_the_form_says(tc: TestCase) {
+    let (mut s, grouping, _) = scene(&tc);
+    let snap = s.frame(V);
+    for axis in Axis::ALL {
+        let tiers = snap.corner().tiers(axis);
         let levels = grouping.levels(axis);
-        let named: Vec<(u32, Option<Key>)> = (tiers.iter())
-            .flat_map(|t| t.levels.iter().map(|l| (l.index, l.field)))
-            .collect();
-        let want: Vec<(u32, Option<Key>)> = (levels.iter().enumerate())
-            .map(|(i, l)| (i as u32, l.field_key()))
-            .collect();
-        assert_eq!(named, want, "{axis:?} names each level once, in order");
-        let header = !levels.is_empty() && grouping.axis(axis).form == Form::Header;
-        match header {
-            true => {
-                let laid: Vec<_> = tiers[..tiers.len() - 1]
-                    .iter()
-                    .map(|t| t.across.clone())
-                    .collect();
-                assert_eq!(laid, snap.tiers(axis), "{axis:?}: the band's own tiers");
-                assert!(tiers.iter().take(levels.len()).all(|t| t.levels.len() == 1));
-                assert!(tiers[tiers.len() - 1].levels.is_empty());
+        let want = |i: usize| (i as u32, levels[i].field_key());
+        let named = |t: &binnacle_core::CornerTier| -> Vec<(u32, Option<Key>)> {
+            t.levels.iter().map(|l| (l.index, l.field)).collect()
+        };
+        if !levels.is_empty() && grouping.axis(axis).form == Form::Header {
+            let laid: Vec<_> = (tiers.iter().take(levels.len()))
+                .map(|t| t.across.clone())
+                .collect();
+            assert_eq!(laid, snap.tiers(axis), "{axis:?}: the band's own tiers");
+            assert_eq!(tiers.len(), levels.len() + 1);
+            for (i, t) in tiers.iter().take(levels.len()).enumerate() {
+                assert_eq!(named(t), vec![want(i)]);
             }
-            false => assert_eq!(tiers.len(), 1, "{axis:?} in outline form is one tier"),
+            assert!(tiers[levels.len()].levels.is_empty());
+        } else {
+            assert_eq!(tiers.len(), 1, "{axis:?} in outline form is one tier");
+            assert_eq!(
+                named(&tiers[0]),
+                (0..levels.len()).map(want).collect::<Vec<_>>()
+            );
         }
     }
+}
+
+/// Each corner cell is where its column tier crosses its row tier, and
+/// there is none past either band's tiers.
+#[hegel::test(test_cases = 300)]
+fn each_corner_cell_is_where_its_tiers_cross(tc: TestCase) {
+    let (mut s, _, _) = scene(&tc);
+    let snap = s.frame(V);
+    let corner = snap.corner();
     let (rows, cols) = (corner.tiers(Axis::Rows), corner.tiers(Axis::Cols));
     for (j, c) in cols.iter().enumerate() {
         for (i, r) in rows.iter().enumerate() {
