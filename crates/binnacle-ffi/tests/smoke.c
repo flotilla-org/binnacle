@@ -67,6 +67,8 @@ static void frame(BinnacleGrid *grid, BinnacleSnapshot *snap) {
 }
 
 int main(void) {
+  CHECK(binnacle_abi_version() == BINNACLE_ABI_VERSION);
+
   BinnacleAxisConfig bad = {.count = 1, .default_size = 0, .header = 0, .gap = 0};
   BinnacleAxisConfig rows = {.count = 100, .default_size = 1, .header = 1, .gap = 0};
   BinnacleAxisConfig cols = {.count = 10, .default_size = 8, .header = 4, .gap = 1};

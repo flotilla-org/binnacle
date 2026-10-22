@@ -16,6 +16,10 @@ use binnacle_core::{
     TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
+/// The version of the ABI `binnacle.h` describes; see the header for when it
+/// changes.
+pub const BINNACLE_ABI_VERSION: u32 = 1;
+
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
 pub const BINNACLE_ROWS: u32 = 0;
@@ -1106,6 +1110,12 @@ impl BinnaclePointerEvent {
             clicks: self.clicks,
         })
     }
+}
+
+/// The [`BINNACLE_ABI_VERSION`] this library was built with.
+#[unsafe(no_mangle)]
+pub extern "C" fn binnacle_abi_version() -> u32 {
+    BINNACLE_ABI_VERSION
 }
 
 /// A new Grid, or NULL if either config is invalid. Free it with

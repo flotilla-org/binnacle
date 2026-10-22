@@ -1,7 +1,8 @@
 /*
  * binnacle's internal C API, for wheelhouse. It mirrors the Rust Grid only as
  * far as wheelhouse needs and makes no stability promise: the header and
- * library change together. The Rust docs on binnacle-core describe each
+ * library change together, and BINNACLE_ABI_VERSION says which header a
+ * library was built with. The Rust docs on binnacle-core describe each
  * behaviour in full.
  *
  * Calls on one Grid are serialised by the host. Input arrays are borrowed for
@@ -22,6 +23,17 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* The version of the ABI this header describes. A host checks at startup
+ * that binnacle_abi_version() returns it, and refuses a library that
+ * doesn't. Any change to this header outside its comments bumps it by one:
+ * a struct's fields or layout, a constant's value, a function's signature,
+ * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
+ * the version is bumped and the new header pinned. */
+#define BINNACLE_ABI_VERSION 1u
+
+/* The BINNACLE_ABI_VERSION of the header the library was built with. */
+uint32_t binnacle_abi_version(void);
 
 /* An axis, also the index into per-axis arrays. */
 #define BINNACLE_ROWS 0
