@@ -721,17 +721,30 @@ fn depth(tc: &TestCase, levels: usize) -> Depth {
     }
 }
 
-/// Opening and closing groups one at a time, or setting the depth: the
-/// layer shows what the model shows, says how with `Collapsed` or
-/// `Expanded` when one group the user sees changes (anything else may be
-/// `Refiltered`), asks only for what open groups need and holds no more
-/// groups and Leaves than it shows.
-#[hegel::test(test_cases = 300)]
-fn opening_and_closing_groups_shows_what_the_model_shows(tc: TestCase) {
+/// What one step of [`toggling`] saw: the items before and after (as the
+/// layer describes them and as the model has them), which group was
+/// toggled if one was, the notices, the `expand` asked for and applied,
+/// the groups the layer asked about and how much it held.
+struct Step {
+    before: Vec<Described>,
+    after: Vec<Described>,
+    want: Vec<Described>,
+    toggled: Option<Path>,
+    notices: Vec<ChangeNotice>,
+    expand: Expand,
+    applied: Option<Expand>,
+    opened: Opened,
+    asked: Vec<Path>,
+    held: u64,
+}
+
+/// Groups opened and closed one at a time, or the depth set, over any
+/// rows, levels and shape, each step settled and seen whole by `check`.
+fn toggling(tc: &TestCase, mut check: impl FnMut(&Step)) {
     let rows = tc.draw(rows());
     let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
     let shape = tc.draw(shape());
-    let first = depth(&tc, levels);
+    let first = depth(tc, levels);
     let mut opened = Opened {
         depth: first,
         except: Vec::new(),
@@ -740,10 +753,10 @@ fn opening_and_closing_groups_shows_what_the_model_shows(tc: TestCase) {
     let mut fake = Fake::new(rows.clone());
     let mut layer = GroupingLayer::<u64>::new();
     layer.request_view(opening(levels, &shape, expand.clone()));
-    drive(&tc, &mut layer, &mut fake);
+    drive(tc, &mut layer, &mut fake);
     news(&mut layer);
     let mut known = Vec::new();
-    let mut shown = everything(&tc, &mut layer, &mut fake, &mut known);
+    let mut shown = everything(tc, &mut layer, &mut fake, &mut known);
     assert_eq!(shown, model(&rows, levels, &shape, &opened));
 
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
@@ -751,7 +764,7 @@ fn opening_and_closing_groups_shows_what_the_model_shows(tc: TestCase) {
         let mut toggled = None;
         match tc.draw(gs::integers::<u8>().max_value(3)) {
             3 => {
-                let to = depth(&tc, levels);
+                let to = depth(tc, levels);
                 expand = Expand::to(to);
                 opened = Opened {
                     depth: to,
@@ -773,16 +786,51 @@ fn opening_and_closing_groups_shows_what_the_model_shows(tc: TestCase) {
         }
         fake.asked.clear();
         layer.request_view(opening(levels, &shape, expand.clone()));
-        drive(&tc, &mut layer, &mut fake);
+        drive(tc, &mut layer, &mut fake);
         let (notices, applied) = news(&mut layer);
-        assert_eq!(applied, Some(expand.clone()), "the spec is applied");
-        let after = everything(&tc, &mut layer, &mut fake, &mut known);
-        assert_eq!(after, model(&rows, levels, &shape, &opened));
+        let after = everything(tc, &mut layer, &mut fake, &mut known);
+        let step = Step {
+            before: shown,
+            want: model(&rows, levels, &shape, &opened),
+            after,
+            toggled,
+            notices,
+            expand: expand.clone(),
+            applied,
+            opened: opened.clone(),
+            asked: std::mem::take(&mut fake.asked),
+            held: layer.held(),
+        };
+        check(&step);
+        shown = step.after;
+    }
+}
 
+/// Opening and closing groups shows what the model shows, with the spec
+/// applied as asked.
+#[hegel::test(test_cases = 300)]
+fn opening_and_closing_groups_shows_what_the_model_shows(tc: TestCase) {
+    toggling(&tc, |step| {
+        assert_eq!(
+            step.applied.as_ref(),
+            Some(&step.expand),
+            "the spec is applied"
+        );
+        assert_eq!(step.after, step.want);
+    });
+}
+
+/// The notices take the items shown before to those shown after:
+/// `Collapsed` or `Expanded` when one group the user sees opens or
+/// closes, nothing when nothing moved, `Refiltered` (with the count) only
+/// for other changes.
+#[hegel::test(test_cases = 300)]
+fn opening_or_closing_one_group_says_where_with_collapsed_or_expanded(tc: TestCase) {
+    toggling(&tc, |step| {
         let items = |ds: &[Described]| ds.iter().map(|d| d.item.clone()).collect::<Vec<_>>();
-        let (was, now) = (items(&shown), items(&after));
-        let seen = toggled.is_some_and(|p| was.contains(&Item::Group(p)));
-        match notices.as_slice() {
+        let (was, now) = (items(&step.before), items(&step.after));
+        let seen = (step.toggled.clone()).is_some_and(|p| was.contains(&Item::Group(p)));
+        match step.notices.as_slice() {
             [] => assert_eq!(was, now, "no notice, nothing moved"),
             [ChangeNotice::Collapsed { at, n }] => {
                 let mut was = was.clone();
@@ -797,25 +845,36 @@ fn opening_and_closing_groups_shows_what_the_model_shows(tc: TestCase) {
             [ChangeNotice::Refiltered(n)] if !seen => assert_eq!(*n, now.len() as u64),
             other => panic!("unexpected notices {other:?}"),
         }
-        if seen && was != now {
-            assert!(!notices.is_empty(), "a group the user sees changes");
-        }
+    });
+}
 
-        for path in &fake.asked {
+/// The layer asks only for the groups and Leaves of open groups.
+#[hegel::test(test_cases = 200)]
+fn the_layer_asks_only_under_open_groups(tc: TestCase) {
+    toggling(&tc, |step| {
+        for path in &step.asked {
             assert!(
-                prefixes(path).iter().all(|p| opened.opens(p)),
+                prefixes(path).iter().all(|p| step.opened.opens(p)),
                 "{path:?} asked for under a closed group"
             );
         }
-        let leaves_and_groups = (after.iter())
+    });
+}
+
+/// Once settled, the layer holds no more groups and Leaves than it shows:
+/// its memory grows with the open groups, never with the rows.
+#[hegel::test(test_cases = 200)]
+fn the_layer_holds_no_more_than_it_shows(tc: TestCase) {
+    toggling(&tc, |step| {
+        let shown = (step.after.iter())
             .filter(|d| matches!(d.item, Item::Group(_) | Item::Leaf(_)))
             .count();
         assert!(
-            layer.held() <= leaves_and_groups as u64,
-            "holds only what it shows"
+            step.held <= shown as u64,
+            "holds {} for {shown} shown",
+            step.held
         );
-        shown = after;
-    }
+    });
 }
 
 /// Groups opened and closed keep their state when the data changes under
