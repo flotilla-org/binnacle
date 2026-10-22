@@ -11,7 +11,16 @@ export const AXES: readonly AxisName[] = ["rows", "cols"];
 export const other = (axis: AxisName): AxisName => (axis === "rows" ? "cols" : "rows");
 
 /** Change Notice types, as the wasm `notify` input takes them. */
-export const NOTICE_CODE = { Reordered: 0, Reset: 1, Inserted: 2, Removed: 3, ContentChanged: 4, Refiltered: 5 } as const;
+export const NOTICE_CODE = {
+  Reordered: 0,
+  Reset: 1,
+  Inserted: 2,
+  Removed: 3,
+  ContentChanged: 4,
+  Refiltered: 5,
+  Collapsed: 6,
+  Expanded: 7,
+} as const;
 
 /** Pinned edges, as the wasm `pin` input takes them: `leading` is the left of the columns, the top of the rows. */
 export const EDGE_CODE = { leading: 0, trailing: 1 } as const;

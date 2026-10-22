@@ -2,7 +2,7 @@
 //! Action or setting is a few lines here plus its call in `web/src`.
 
 use binnacle_core::{
-    Action, AxisConfig, Grid, Key, Outline, PointerEvent, TextQuery, Totals, Viewport,
+    Action, AxisConfig, Depth, Grid, Key, Outline, PointerEvent, TextQuery, Totals, Viewport,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -109,6 +109,51 @@ impl WebGrid {
     /// Removes every level of axis `a`.
     pub fn ungroup(&mut self, a: u8) {
         self.grid.ungroup(axis(a));
+    }
+
+    /// Opens the group of axis `a` headed by the Group Item `key`. Returns
+    /// `false` if its exceptions would pass the cap, so nothing was asked.
+    pub fn expand(&mut self, a: u8, key: u64) -> bool {
+        self.grid.expand(axis(a), Key(key)).is_ok()
+    }
+
+    /// Closes the group headed by `key`, as [`WebGrid::expand`] opens one.
+    pub fn collapse(&mut self, a: u8, key: u64) -> bool {
+        self.grid.collapse(axis(a), Key(key)).is_ok()
+    }
+
+    /// Opens the group headed by `key` if the latest request closes it, and
+    /// closes it otherwise (a click on its disclosure mark).
+    pub fn toggle(&mut self, a: u8, key: u64) -> bool {
+        self.grid.toggle(axis(a), Key(key)).is_ok()
+    }
+
+    /// Opens the group headed by `key` and every group under it the Grid
+    /// knows.
+    pub fn expand_all(&mut self, a: u8, key: u64) -> bool {
+        self.grid.expand_all(axis(a), Key(key)).is_ok()
+    }
+
+    /// Opens every group of axis `a` to `depth` levels (negative for all)
+    /// and closes those below.
+    pub fn expand_to(&mut self, a: u8, depth: f64) {
+        let depth = match depth < 0.0 {
+            true => Depth::All,
+            false => Depth::Levels(depth as u32),
+        };
+        self.grid.expand_to(axis(a), depth);
+    }
+
+    /// Focus leaves the outline column for the body (Tab).
+    pub fn leave_outline(&mut self) {
+        self.grid.action(Action::LeaveOutline);
+    }
+
+    /// Text the user typed: in the outline column `*` opens everything
+    /// under the focused group and a digit opens the rows to that many
+    /// levels; elsewhere the Grid passes it on as `TextTyped`.
+    pub fn type_text(&mut self, text: &str) {
+        self.grid.action(Action::TypeText(text.into()));
     }
 
     /// Lays out the frame and returns its numbers; [`WebGrid::snapshot_keys`]

@@ -1354,6 +1354,73 @@ describe("fromRows's grouping", () => {
     }
   });
 
+  test("opening and closing groups shows the model's rows and tells Collapsed or Expanded for one group, without regrouping", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      const notices: ChangeNotice[] = [];
+      source.attach!(sinksTo(notices));
+      try {
+        const spec = (depth: number | "all", except: number[]): ViewSpec<number, keyof Rec> => {
+          const grouping = rowsBy<keyof Rec>("s");
+          return { ...groupedBy("s"), grouping: { ...grouping, rowAxis: { ...grouping.rowAxis, expand: { depth, except } } } };
+        };
+        const list = () => {
+          const n = source.rows.count() as number;
+          return (source.rows.window(0, n, signal) as OutlinedWindow<number, keyof Rec>).ids;
+        };
+        let depth: number | "all" = tc.draw(gs.sampledFrom([0, 1, "all"] as const));
+        let except: number[] = [];
+        source.view!(spec(depth, except), signal);
+        const all = model(rows, "s", [], () => true);
+        // The model's rows with each group (by its text) open or closed.
+        const want = (open: (value: string | null) => boolean) => {
+          let shut = false;
+          return all.filter((item) => {
+            if (typeof item === "number") return !shut;
+            shut = !open(item.group);
+            return true;
+          });
+        };
+        const ids = new Map<number, string | null>();
+        let before = list();
+        for (const id of before) if (id < 0) ids.set(id, source.group(id)!.value);
+        const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 6 }));
+        for (let step = 0; step < steps && ids.size > 0; step++) {
+          const toggle = tc.draw(gs.booleans());
+          const id = tc.draw(gs.sampledFrom([...ids.keys()]));
+          if (toggle) except = except.includes(id) ? except.filter((e) => e !== id) : [...except, id];
+          else {
+            depth = tc.draw(gs.sampledFrom([0, 1, "all"] as const));
+            except = [];
+          }
+          notices.length = 0;
+          const answer = source.view!(spec(depth, except), signal) as AppliedView<number, keyof Rec>;
+          expect(answer.grouping?.rowAxis.expand).toEqual({ depth, except });
+          const after = list();
+          const open = (value: string | null) => {
+            const group = [...ids].find(([, v]) => v === value)?.[0];
+            return (depth !== 0) !== (group !== undefined && except.includes(group));
+          };
+          const described = after.map((r) => (r < 0 ? { group: source.group(r)!.value, count: source.group(r)!.count } : r));
+          expect(described).toEqual(want(open));
+          const notice = notices[0];
+          if (notice?.type === "Collapsed") {
+            expect(notices).toHaveLength(1);
+            expect(after).toEqual([...before.slice(0, notice.at), ...before.slice(notice.at + notice.n)]);
+          } else if (notice?.type === "Expanded") {
+            expect(notices).toHaveLength(1);
+            expect(before).toEqual([...after.slice(0, notice.at), ...after.slice(notice.at + notice.n)]);
+          } else if (notice) expect(notices).toEqual([{ type: "Refiltered" }]);
+          else expect(after).toEqual(before);
+          if (toggle && before.includes(id)) expect(notice?.type).toMatch(/Collapsed|Expanded/);
+          before = after;
+        }
+      } finally {
+        source.destroy();
+      }
+    }));
+
   test("Group Items have no cells, keep their row IDs through a regroup, and grouped rows refuse to move", () => {
     const rows: Rec[] = [
       { n: 1, s: "x", b: 0 },

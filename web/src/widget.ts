@@ -9,7 +9,7 @@ import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
-import { filterButtonRect, hasFilterButton } from "./canvas/bands";
+import { disclosureRect, filterButtonRect, hasFilterButton } from "./canvas/bands";
 import { createFeed, windowIds, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
@@ -428,6 +428,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       },
       snapshot: () => this.last,
       menuButtonAt: (x, y) => this.menuButtonAt(x, y) !== undefined,
+      markPress: (x, y) => this.markPress(x, y),
       menuPress: (x, y) => {
         const at = this.menuButtonAt(x, y);
         if (!at) return false;
@@ -1159,6 +1160,21 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private keyOf(axis: AxisName, id: RowId | ColId): bigint {
     return axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId);
+  }
+
+  /** A press on a Group Item's disclosure mark toggles its group. */
+  private markPress(x: number, y: number): boolean {
+    const s = this.last;
+    if (!s || x >= s.cols.header || y < s.rows.header) return false;
+    for (const [i, h] of s.rows.headers.entries()) {
+      const outline = s.rows.strip[i]?.outline;
+      const r = outline && h.key !== null && this.inView("rows", h) ? disclosureRect(outline, h.rect) : null;
+      if (r && x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
+        this.grid.toggle(AXIS_CODE.rows, h.key!);
+        return true;
+      }
+    }
+    return false;
   }
 
   /** The column or row whose menu button is at (x, y), if its menu is mounted and there is one. */

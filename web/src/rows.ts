@@ -47,6 +47,7 @@
 // figure for each column a value aggregates. The level columns leave the
 // columns while grouped, and the rows don't move.
 
+import { NOTICE_CODE } from "./codes";
 import { comparedBy, comparedOf, passes, type Compared } from "./compare";
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
 import type {
@@ -605,7 +606,7 @@ export function fromRows<R extends object>(
       ...grouping,
       rowLevels: grouping.rowLevels.flatMap((l) => ("field" in l ? [{ ...l, field: column(l.field) }] : [])),
       values: grouping.values.map((v) => ({ ...v, field: v.field === null ? null : column(v.field) })),
-      rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except: [] } },
+      rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except: groupKeys(grouping) } },
       colAxis: { ...grouping.colAxis, expand: { ...grouping.colAxis.expand, except: [] } },
     };
     m.group(
@@ -613,6 +614,23 @@ export function fromRows<R extends object>(
       Uint32Array.from(applied, (c) => index.get(c.id)!),
       Uint8Array.from(applied, (c) => DIRECTION[c.direction]),
     );
+    // The Group Items whose paths no longer fit the levels are pruned.
+    const except = Array.from(m.except(), summaryId);
+    grouping = { ...grouping, rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except } } };
+  };
+
+  /** The Keys of the Group Items in the rows' `expand.except`. */
+  const groupKeys = (g: Grouping<ColId, number, ColId>) =>
+    g.rowAxis.expand.except.flatMap((id) => (id < 0 ? [summaryKey(id)] : []));
+
+  /** Opens and closes the groups as the grouping in force says, over the rows as they are grouped. */
+  const reopen = (): ChangeNotice | null => {
+    const { depth } = grouping!.rowAxis.expand;
+    const [code, at, n] = memory().expand(depth === "all" ? -1 : depth, BigUint64Array.from(groupKeys(grouping!)));
+    if (code === undefined) return null;
+    if (code === NOTICE_CODE.Collapsed) return { type: "Collapsed", at: at!, n: n! };
+    if (code === NOTICE_CODE.Expanded) return { type: "Expanded", at: at!, n: n! };
+    return { type: "Refiltered" };
   };
 
   /** The index of the value that counts the rows, if the grouping has one. */
@@ -801,7 +819,7 @@ export function fromRows<R extends object>(
       hidden = { rows: pruned(asked.rows.hidden, isRow), cols: pruned(asked.cols.hidden, (id) => index.has(id)) };
       const m = memory();
       // The level columns leave the columns while the rows group by them.
-      const wasGrouping = JSON.stringify(grouping);
+      const before = grouping;
       levels = [...new Set((asked.grouping?.rowLevels ?? []).flatMap((l) => ("field" in l && groupable(l.field) ? [l.field] : [])))];
       grouping =
         levels.length === 0
@@ -813,7 +831,10 @@ export function fromRows<R extends object>(
               values: asked.grouping!.values.filter((v) => v.field === null || index.has(v.field)),
               slicers: [],
             };
-      const regrouping = JSON.stringify(grouping) !== wasGrouping;
+      // Opening and closing groups regroups nothing.
+      const shape = (g: typeof grouping) => JSON.stringify(g && { ...g, rowAxis: { ...g.rowAxis, expand: null } });
+      const regrouping = shape(grouping) !== shape(before);
+      const reopening = JSON.stringify(grouping?.rowAxis.expand) !== JSON.stringify(before?.rowAxis.expand);
       const hid = {
         rows: m.hide(ROWS, Uint32Array.from(hidden.rows)),
         cols: m.hide(
@@ -833,10 +854,11 @@ export function fromRows<R extends object>(
       if (refiltered) refilter();
       const regrouped = regrouping || (levels.length > 0 && (refiltered || hid.rows || sorted));
       if (regrouped) regroup();
+      const reopened = !regrouped && reopening && levels.length > 0 ? reopen() : null;
       // An axis left in the same order is told nothing.
       if (refiltered || hid.rows || sorted || regrouped) {
         tell({ type: refiltered || hid.rows || regrouped ? "Refiltered" : "Reordered" });
-      }
+      } else if (reopened) tell(reopened);
       const resorted = (byRows.length > 0 || colsApplied.length > 0) && sortColumns(byRows);
       const refilteredCols = forCols.changed || shownChanged.cols || hid.cols || m.has_unmatched(COLS);
       if (refilteredCols) refilterColumns();

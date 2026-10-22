@@ -11,7 +11,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use binnacle_core::{
-    Axis, Grouping, ItemKind, Key, Located, SortColumn, SortSpec, Value, ViewSpec,
+    Axis, ChangeNotice, Depth, Expand, Grouping, ItemKind, Key, Located, SortColumn, SortSpec,
+    Value, ViewSpec,
 };
 use binnacle_group::{
     AggregateBackend, Answer, Batch, Figure, GroupingLayer, MemoryAggregates, settle,
@@ -129,6 +130,11 @@ pub struct WebMemory {
     /// The values of each field the grouping reads, by column index.
     fields: HashMap<Key, Field>,
     staged_fields: HashMap<Key, Field>,
+    /// The spec the layer was last asked for, and the rows' Change Notices
+    /// and `expand` as it applied them.
+    spec: ViewSpec,
+    notices: Vec<ChangeNotice>,
+    applied: Expand,
 }
 
 #[wasm_bindgen]
@@ -142,6 +148,9 @@ impl WebMemory {
             aggregates: None,
             fields: HashMap::new(),
             staged_fields: HashMap::new(),
+            spec: ViewSpec::default(),
+            notices: Vec::new(),
+            applied: Expand::default(),
         }
     }
 
@@ -244,6 +253,39 @@ impl WebMemory {
             self.settle();
         }
         self.count(0)
+    }
+
+    /// Opens the grouped rows' groups as `depth` (negative for all) and
+    /// `except` (Group Item Keys, the other way) say, over the rows as they
+    /// are grouped. Returns the Change Notice the rows need as its code and
+    /// two Positions, as [`codes::notice`] reads them: `Collapsed` or
+    /// `Expanded` for one group, `Refiltered` for more, none (empty) if no
+    /// group shown changed.
+    pub fn expand(&mut self, depth: f64, except: &[u64]) -> Vec<f64> {
+        let Some(grouping) = self.spec.grouping.as_mut() else {
+            return Vec::new();
+        };
+        grouping.rows.expand = Expand {
+            depth: match depth < 0.0 {
+                true => Depth::All,
+                false => Depth::Levels(depth as u32),
+            },
+            except: except.iter().copied().map(Key).collect(),
+        };
+        self.layer.request_view(self.spec.clone());
+        self.settle();
+        match std::mem::take(&mut self.notices).as_slice() {
+            [] => Vec::new(),
+            [ChangeNotice::Collapsed { at, n }] => vec![6.0, *at as f64, *n as f64],
+            [ChangeNotice::Expanded { at, n }] => vec![7.0, *at as f64, *n as f64],
+            _ => vec![5.0, self.count(0), f64::NAN],
+        }
+    }
+
+    /// The Group Item Keys of the rows' `expand.except` as last applied:
+    /// those whose paths no longer fit the levels are pruned.
+    pub fn except(&self) -> Vec<u64> {
+        self.applied.except.iter().map(|k| k.0).collect()
     }
 
     /// Whether the rows are grouped.
@@ -412,6 +454,7 @@ impl WebMemory {
         let spec = ViewSpec::default()
             .with_sort(Axis::Rows, sort)
             .with_grouping(Some(grouping));
+        self.spec = spec.clone();
         self.layer.request_view(spec);
         // The same levels over rows sorted or filtered anew.
         self.layer.refresh();
@@ -426,7 +469,14 @@ impl WebMemory {
             aggregates: &mut self.aggregates,
         };
         settle(&mut self.layer, &mut backend);
-        while self.layer.poll_viewed().is_some() {}
+        self.notices.clear();
+        while let Some(viewed) = self.layer.poll_viewed() {
+            self.notices
+                .extend(viewed.notices.into_iter().map(|(_, n)| n));
+            if let Some(g) = viewed.applied.grouping {
+                self.applied = g.rows.expand;
+            }
+        }
     }
 
     fn locate_grouped(&mut self, key: Key) -> Located {

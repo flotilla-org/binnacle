@@ -9,7 +9,7 @@ use binnacle_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::grouping::WireGrouping;
+use crate::grouping::{WireDepth, WireGrouping};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -386,6 +386,22 @@ pub enum WireViewEdit {
     Ungroup {
         axis: WireAxis,
     },
+    Expand {
+        axis: WireAxis,
+        key: u64,
+    },
+    Collapse {
+        axis: WireAxis,
+        key: u64,
+    },
+    ExpandAll {
+        axis: WireAxis,
+        key: u64,
+    },
+    ExpandTo {
+        axis: WireAxis,
+        depth: WireDepth,
+    },
     Other,
 }
 
@@ -430,6 +446,22 @@ impl From<ViewEdit> for WireViewEdit {
                 field: field.0,
             },
             ViewEdit::Ungroup { axis } => WireViewEdit::Ungroup { axis: axis.into() },
+            ViewEdit::Expand { axis, key } => WireViewEdit::Expand {
+                axis: axis.into(),
+                key: key.0,
+            },
+            ViewEdit::Collapse { axis, key } => WireViewEdit::Collapse {
+                axis: axis.into(),
+                key: key.0,
+            },
+            ViewEdit::ExpandAll { axis, key } => WireViewEdit::ExpandAll {
+                axis: axis.into(),
+                key: key.0,
+            },
+            ViewEdit::ExpandTo { axis, depth } => WireViewEdit::ExpandTo {
+                axis: axis.into(),
+                depth: depth.into(),
+            },
             _ => WireViewEdit::Other,
         }
     }

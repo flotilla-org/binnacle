@@ -36,7 +36,13 @@ export type Action =
   /** Opens the focused item's menu at the list of hidden items of `axis`, if a menu is mounted and the axis hides; the key is the page's otherwise. */
   | { type: "ShowHidden"; axis: AxisName }
   /** Pins every item of `axis` from the start up to the focused one, as far as fits. */
-  | { type: "Freeze"; axis: AxisName };
+  | { type: "Freeze"; axis: AxisName }
+  /** In the outline column: focus leaves it for the body. Elsewhere the key is the page's (Tab moves on). */
+  | { type: "LeaveOutline" }
+  /** In the outline column: opens everything under the focused group. Elsewhere the key types. */
+  | { type: "ExpandAll" }
+  /** In the outline column: opens the rows to `depth` levels, 0 showing only the top groups. Elsewhere the key types. */
+  | { type: "ExpandTo"; depth: number };
 
 export type Platform = "mac" | "other";
 
@@ -141,6 +147,10 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
  * Mod+Alt+9 the rows (as Google Sheets has them), with Shift to list the
  * hidden ones, and Mod+Alt+O for the columns' chooser (with Shift the
  * rows'). Pinning avoids Alt with a letter, which types a symbol on macOS.
+ * In the outline column (the row header band of rows grouped in outline
+ * form) the arrows walk the tree, Enter toggles the focused group, `*` opens
+ * everything under it, a digit opens the rows to that many levels (`0` only
+ * the top groups) and Tab leaves for the body.
  */
 export function defaultBindings(): KeyBindings {
   const bindings: KeyBindings = {};
@@ -191,6 +201,10 @@ export function defaultBindings(): KeyBindings {
   bindings["Mod+Alt+Shift+Home"] = { type: "Freeze", axis: "rows" };
   bindings["Mod+Alt+O"] = { type: "OpenChooser", axis: "cols" };
   bindings["Mod+Alt+Shift+O"] = { type: "OpenChooser", axis: "rows" };
+  bindings["Tab"] = { type: "LeaveOutline" };
+  bindings["*"] = { type: "ExpandAll" };
+  bindings["Shift+*"] = { type: "ExpandAll" };
+  for (let depth = 0; depth <= 9; depth++) bindings[String(depth)] = { type: "ExpandTo", depth };
   return bindings;
 }
 

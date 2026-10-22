@@ -4,7 +4,7 @@
 import type { AxisName } from "../codes";
 import { itemSpan, type HeaderPlacement, type KeyedOutline, type Rect, type Snapshot, type SortDirection } from "../snapshot";
 import { PAD, clip, summaryStyle, type PaintContext } from "./context";
-import { paintShimmer } from "./pending";
+import { markBeat, paintShimmer } from "./pending";
 
 /** The sort marker's triangle, CSS px. */
 const MARKER = 7;
@@ -189,7 +189,7 @@ export function paintColumnHeaders(p: PaintContext): void {
   ctx.fillRect(left, 0, p.width - left, top);
   ctx.font = theme.headerFont;
   for (const [i, h] of s.cols.headers.entries()) {
-    const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width, outline: null };
+    const item = { position: h.position, key: h.key, offset: h.rect.x, size: h.rect.width, outline: null, togglePending: false };
     const loading = h.key === null;
     const text = loading ? "…" : p.content.label("cols", item);
     // A scrolling header slides under the pinned ones.
@@ -223,7 +223,8 @@ export function paintRowNumbers(p: PaintContext): void {
   ctx.textAlign = "right";
   for (const [i, h] of s.rows.headers.entries()) {
     const outline = s.rows.strip[i]?.outline ?? null;
-    const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height, outline };
+    const togglePending = s.rows.strip[i]?.togglePending ?? false;
+    const item = { position: h.position, key: h.key, offset: h.rect.y, size: h.rect.height, outline, togglePending };
     const text = p.content.label("rows", item);
     const span = itemSpan(s.rows, i);
     ctx.save();
@@ -240,7 +241,7 @@ export function paintRowNumbers(p: PaintContext): void {
     const room = left - 2 * PAD - (mark ? MARKED : 0) - inset;
     const color = h.hovered ? theme.headerHovered.color : (role?.color ?? theme.rowNumber.color);
     const y = h.rect.y + h.rect.height / 2;
-    if (outline) paintOutline(p, outline, text, color, y, room);
+    if (outline) paintOutline(p, outline, text, color, y, room, p.markPending(h.key));
     else {
       ctx.fillStyle = color;
       ctx.fillText(measure.fit(text, theme.font, room), left - PAD - (mark ? MARKED : 0), y);
@@ -251,18 +252,36 @@ export function paintRowNumbers(p: PaintContext): void {
   ctx.restore();
 }
 
+/** Where a Group Item's disclosure mark sits in its band cell, which a click toggles; `null` for one that can't open. */
+export function disclosureRect(outline: KeyedOutline, rect: Rect): Rect | null {
+  if (outline.kind !== "group" || outline.open === "cantOpen") return null;
+  return { x: PAD + outline.depth * INDENT - 3, y: rect.y, width: DISCLOSURE, height: rect.height };
+}
+
 /**
  * A grouped row's band in outline form, left-aligned: an indent per level,
- * then a Group Item's disclosure mark and its label in the header font, or
- * a Leaf's label past the mark's room. The Grand Total sits flush.
+ * then a Group Item's disclosure mark (none if it can't open; pulsing while
+ * a toggle waits for its answer) and its label in the header font, or a
+ * Leaf's label past the mark's room. The Grand Total sits flush.
  */
-function paintOutline(p: PaintContext, outline: KeyedOutline, text: string, color: string, y: number, room: number): void {
+function paintOutline(
+  p: PaintContext,
+  outline: KeyedOutline,
+  text: string,
+  color: string,
+  y: number,
+  room: number,
+  pending: boolean,
+): void {
   const { ctx, theme, measure } = p;
   ctx.textAlign = "left";
-  if (outline.kind === "group") {
+  if (outline.kind === "group" && outline.open !== "cantOpen") {
+    ctx.save();
     ctx.fillStyle = theme.disclosure;
     ctx.font = theme.headerFont;
+    if (pending) ctx.globalAlpha = markBeat(p);
     ctx.fillText(outline.open === "closed" ? "▸" : "▾", PAD + outline.depth * INDENT, y);
+    ctx.restore();
   }
   const x = PAD + outlineInset(outline);
   const font = outline.kind === "leaf" ? theme.font : theme.headerFont;

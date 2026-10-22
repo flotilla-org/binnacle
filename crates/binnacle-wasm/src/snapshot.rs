@@ -468,6 +468,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.num(item.offset);
             w.num(item.size);
             w.outline(s.outline(axis, item.position));
+            w.flag(item.key.is_some_and(|k| s.toggle_pending(axis, k)));
         }
         w.len(s.pinned(axis, Edge::Leading).len());
         w.len(s.pinned(axis, Edge::Trailing).len());
@@ -584,6 +585,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.view(spec);
     }
     w.flag(s.view_pending());
+    w.flag(s.outline_focused());
     // The move waiting for its answer, then the last refusal.
     let pending = s.pending_move();
     w.flag(pending.is_some());

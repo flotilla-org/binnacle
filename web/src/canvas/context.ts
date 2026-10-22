@@ -37,6 +37,8 @@ export interface PaintContext {
   motion: boolean;
   /** Whether a column (and a row) menu is mounted, so filterable headers in that band draw its button. */
   filterButtons: { cols: boolean; rows: boolean };
+  /** Whether the disclosure mark of the Group Item `key` draws pending: toggled, unanswered for long enough. */
+  markPending(key: bigint | null): boolean;
 }
 
 /** Horizontal text padding inside a cell or header, CSS px. */

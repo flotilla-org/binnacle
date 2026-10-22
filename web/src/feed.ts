@@ -398,7 +398,10 @@ export function createFeed<RowId, ColId, V>(
         }
     }
     const [a, b] =
-      notice.type === "Inserted" || notice.type === "Removed"
+      notice.type === "Inserted" ||
+      notice.type === "Removed" ||
+      notice.type === "Collapsed" ||
+      notice.type === "Expanded"
         ? [notice.at, notice.n]
         : notice.type === "ContentChanged"
           ? [notice.start, notice.end]

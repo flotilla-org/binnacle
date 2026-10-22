@@ -4,10 +4,10 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ChangeNotice, Compared, Comparison, Condition, ConditionState,
-    Cursor, DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep,
-    Grid, HeaderPlacement, Key, Mode, Modifiers, OpenState, Outline, PointerEvent, Rect, Scalar,
-    Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals,
-    Value, ViewEdit, ViewSpec, Viewport,
+    Cursor, Depth, DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery,
+    FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers, OpenState, Outline, PointerEvent, Rect,
+    Scalar, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport,
+    Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -41,6 +41,7 @@ pub struct Dump {
     applied_view: WireViewSpec,
     requested_view: Option<WireViewSpec>,
     view_pending: bool,
+    outline_focused: bool,
     pending_move: Option<DumpPendingMove>,
     move_refusal: Option<DumpRefusal>,
     find: Option<WireFindQuery>,
@@ -194,12 +195,14 @@ struct DumpFocus {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DumpItem {
     position: f64,
     key: Option<u64>,
     offset: f32,
     size: f32,
     outline: Option<WireOutline>,
+    toggle_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -436,6 +439,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 offset: i.offset,
                 size: i.size,
                 outline: s.outline(axis, i.position).map(WireOutline::from),
+                toggle_pending: i.key.is_some_and(|k| s.toggle_pending(axis, k)),
             })
             .collect(),
         pinned: s.pinned(axis, Edge::Leading).len() as f64,
@@ -560,6 +564,7 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         applied_view: s.applied_view().into(),
         requested_view: s.requested_view().map(WireViewSpec::from),
         view_pending: s.view_pending(),
+        outline_focused: s.outline_focused(),
         pending_move: s.pending_move().map(|(axis, ks)| DumpPendingMove {
             axis: axis.into(),
             keys: keys(ks),
@@ -738,6 +743,26 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             field: col,
         },
         ViewEdit::Ungroup { axis: Axis::Cols },
+        ViewEdit::Expand {
+            axis: Axis::Rows,
+            key: Key(1 << 63),
+        },
+        ViewEdit::Collapse {
+            axis: Axis::Rows,
+            key: Key((1 << 63) | 2),
+        },
+        ViewEdit::ExpandAll {
+            axis: Axis::Rows,
+            key: Key((1 << 63) | 3),
+        },
+        ViewEdit::ExpandTo {
+            axis: Axis::Rows,
+            depth: Depth::Levels(2),
+        },
+        ViewEdit::ExpandTo {
+            axis: Axis::Rows,
+            depth: Depth::All,
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -1111,6 +1136,16 @@ pub fn scenario(name: &str) -> Grid {
             })
             .collect();
         grid.set_outlines(Axis::Rows, 0, &outlines);
+        // Focus in the outline column, and the first group closed by a
+        // request still due.
+        grid.set_focus(key(0), key(0));
+        grid.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Item,
+            forward: false,
+            extend: false,
+        });
+        grid.toggle(Axis::Rows, key(0)).unwrap();
     }
     grid
 }
@@ -1294,6 +1329,9 @@ mod tests {
                     let group = s.outline(Axis::Rows, 5).unwrap();
                     assert_eq!(group.open, OpenState::Closed);
                     assert_eq!(s.outline(Axis::Rows, 6).unwrap().parent(), Some(key(5)));
+                    assert!(s.outline_focused());
+                    assert!(s.toggle_pending(Axis::Rows, key(0)));
+                    assert!(!s.toggle_pending(Axis::Rows, key(5)));
                 }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));

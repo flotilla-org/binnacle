@@ -137,15 +137,33 @@ test("the defaults leave other chords as they were", () =>
     expect(extended.lookup(press(key.event, held))).toEqual(plain.lookup(press(key.event, held)));
   }));
 
-test("by default, characters typed alone or with Shift and Tab are not the grid's", () =>
+// The tree keys are bound, but act only in the outline column: elsewhere
+// the widget leaves them to the page and the editor (see `input.ts`).
+const TREE_KEYS = new Set(["Tab", "*", ..."0123456789"]);
+
+test("by default, characters typed alone or with Shift and Tab are not the grid's, but for the tree keys", () =>
   hegel.test((tc) => {
     const platform = tc.draw(platforms);
     const shift = tc.draw(gs.booleans());
     const key = tc.draw(gs.oneOf(gs.characters({ codec: "utf-8" }), gs.just("Tab")));
     tc.assume(key !== " ");
     const keymap = createKeymap({ platform });
-    expect(keymap.lookup(press(key, new Set<Modifier>(shift ? ["shift"] : [])))).toBeUndefined();
+    const action = keymap.lookup(press(key, new Set<Modifier>(shift ? ["shift"] : [])));
+    const tree = action?.type === "LeaveOutline" || action?.type === "ExpandAll" || action?.type === "ExpandTo";
+    expect(tree ? TREE_KEYS.has(key) : action).toBe(tree ? true : undefined);
   }));
+
+test("the tree keys: Tab leaves the outline column, * opens everything under the focused group, a digit opens to that depth", () => {
+  const keymap = createKeymap({ platform: "other" });
+  const plain = { ctrlKey: false, altKey: false, shiftKey: false, metaKey: false };
+  expect(keymap.lookup({ key: "Tab", ...plain })).toEqual({ type: "LeaveOutline" });
+  expect(keymap.lookup({ key: "*", ...plain })).toEqual({ type: "ExpandAll" });
+  expect(keymap.lookup({ key: "*", ...plain, shiftKey: true })).toEqual({ type: "ExpandAll" });
+  for (let depth = 0; depth <= 9; depth++) {
+    expect(keymap.lookup({ key: String(depth), ...plain })).toEqual({ type: "ExpandTo", depth });
+  }
+  expect(keymap.lookup({ key: "Tab", ...plain, shiftKey: true })).toBeUndefined();
+});
 
 test.each<[Platform, KeyChord, Action]>([
   ["mac", { key: "ArrowDown", ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }, { type: "MoveFocus", axis: "rows", by: "item", forward: true, extend: false }],

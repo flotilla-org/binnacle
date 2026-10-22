@@ -30,6 +30,13 @@ export type KeyedViewEdit =
   | { type: "Group"; axis: AxisName; field: bigint }
   /** Every level of `axis` was removed. */
   | { type: "Ungroup"; axis: AxisName }
+  /** The group of `axis` headed by the Group Item `key` was opened, or closed. */
+  | { type: "Expand"; axis: AxisName; key: bigint }
+  | { type: "Collapse"; axis: AxisName; key: bigint }
+  /** The group headed by `key` was opened with every group under it the Grid knows. */
+  | { type: "ExpandAll"; axis: AxisName; key: bigint }
+  /** Every group of `axis` was opened to `depth` levels, its exceptions cleared. */
+  | { type: "ExpandTo"; axis: AxisName; depth: number | "all" }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -191,6 +198,12 @@ function isEdit(v: unknown): v is KeyedViewEdit {
       return isAxis(v.axis) && typeof v.field === "bigint";
     case "Ungroup":
       return isAxis(v.axis);
+    case "Expand":
+    case "Collapse":
+    case "ExpandAll":
+      return isAxis(v.axis) && typeof v.key === "bigint";
+    case "ExpandTo":
+      return isAxis(v.axis) && (v.depth === "all" || (typeof v.depth === "number" && Number.isInteger(v.depth) && v.depth >= 0));
     case "Replace":
     case "Reapply":
     case "Other":

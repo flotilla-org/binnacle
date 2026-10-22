@@ -20,6 +20,11 @@ export interface StripItem {
   size: number;
   /** Where the item sits in a grouped axis, as its Table Source sent it with its Window; `null` on a plain axis. */
   outline: KeyedOutline | null;
+  /**
+   * A Group Item whose disclosure mark is pending: a request still due opens
+   * or closes it. Adapters draw the mark pending only after about 150 ms.
+   */
+  togglePending: boolean;
 }
 
 /** An outline by Keys: ancestors by Keys of the axis, the group's field by a Key of the other axis. */
@@ -234,6 +239,8 @@ export interface Snapshot {
   requestedView: KeyedViewSpec | null;
   /** Whether an answer to a View Spec request is due. */
   viewPending: boolean;
+  /** Focus is in the outline column (the row Header Band of rows grouped in outline form), on the focused row's band cell. */
+  outlineFocused: boolean;
   /** The move requested and not yet answered: its axis and Keys. No other move starts until it is answered. */
   pendingMove: { axis: AxisName; keys: bigint[] } | null;
   /** The last move the Table Source refused and why, until the next press. */
@@ -506,6 +513,7 @@ function readAxis(r: Reader): AxisSnapshot {
     offset: r.num(),
     size: r.num(),
     outline: r.opt(() => r.outline()),
+    togglePending: r.flag(),
   }));
   const pinned = r.num();
   const trailing = r.num();
@@ -636,6 +644,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const appliedView = r.view();
   const requestedView = r.opt(() => r.view());
   const viewPending = r.flag();
+  const outlineFocused = r.flag();
   const pendingMove = r.opt(() => ({ axis: r.axis(), keys: r.list(() => r.key()) }));
   const moveRefusal = r.opt(() => ({ axis: r.axis(), reason: r.text() }));
   const find = r.opt(() => {
@@ -669,6 +678,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     appliedView,
     requestedView,
     viewPending,
+    outlineFocused,
     pendingMove,
     moveRefusal,
     find,

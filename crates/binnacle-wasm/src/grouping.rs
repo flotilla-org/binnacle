@@ -112,6 +112,15 @@ pub enum WireDepth {
     All(WireAll),
 }
 
+impl From<Depth> for WireDepth {
+    fn from(depth: Depth) -> Self {
+        match depth {
+            Depth::Levels(n) => WireDepth::Levels(n),
+            Depth::All => WireDepth::All(WireAll::All),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireExpand {
     pub depth: WireDepth,
@@ -135,10 +144,7 @@ impl From<&GroupedAxis> for WireGroupedAxis {
                 Form::Header => WireForm::Header,
             },
             expand: WireExpand {
-                depth: match a.expand.depth {
-                    Depth::Levels(n) => WireDepth::Levels(n),
-                    Depth::All => WireDepth::All(WireAll::All),
-                },
+                depth: a.expand.depth.into(),
                 except: a.expand.except.iter().map(|k| k.0).collect(),
             },
         }

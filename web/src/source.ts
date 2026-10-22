@@ -377,6 +377,14 @@ export type ChangeNotice =
   | { type: "Inserted"; at: number; n: number }
   /** The `n` items from Position `at` removed. */
   | { type: "Removed"; at: number; n: number }
+  /**
+   * The group whose Group Item sits at `at - 1` closed, hiding the `n` items
+   * from `at`. Unlike a Removal they stay alive: their row heights and pins
+   * are kept (the pins dormant), focus inside moves to the Group Item.
+   */
+  | { type: "Collapsed"; at: number; n: number }
+  /** The group whose Group Item sits at `at - 1` opened, showing `n` items from `at`. */
+  | { type: "Expanded"; at: number; n: number }
   /** The values of the items at Positions `start..end` changed; their IDs and order did not. */
   | { type: "ContentChanged"; start: number; end: number };
 

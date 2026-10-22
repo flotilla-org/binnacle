@@ -68,7 +68,11 @@ export function paintFocus(p: PaintContext): void {
   if (!p.focused || !r) return;
   const line = theme.focus.width;
   ctx.save();
-  clipCell(p, focusIndex(s.rows), focusIndex(s.cols));
+  // In the outline column focus rings the row's band cell.
+  if (s.outlineFocused) {
+    const rows = itemSpan(s.rows, focusIndex(s.rows));
+    clip(ctx, 0, rows.start, p.left, rows.end - rows.start);
+  } else clipCell(p, focusIndex(s.rows), focusIndex(s.cols));
   ctx.strokeStyle = theme.focus.color;
   ctx.lineWidth = line;
   const x = snap(r.x, pixel) + line / 2;

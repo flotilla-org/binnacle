@@ -171,6 +171,10 @@ describe("View Specs", () => {
         "Show",
         "Group",
         "Ungroup",
+        "Expand",
+        "Collapse",
+        "ExpandAll",
+        "ExpandTo",
       ]),
     );
     const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
