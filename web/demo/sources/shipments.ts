@@ -34,7 +34,8 @@ export const shipmentsDemo: DemoSource = {
       { key: "id", filterable: false, renderer: number },
       { key: "region" },
       { key: "port" },
-      { key: "shipped", renderer: textRenderer({ format: (d: Date) => day(d) }) },
+      // A Group Item's cells hold nothing.
+      { key: "shipped", renderer: textRenderer({ format: (d: Date | null) => (d ? day(d) : "") }) },
       { key: "weight", renderer: number },
       { key: "crates", renderer: number },
     ]);

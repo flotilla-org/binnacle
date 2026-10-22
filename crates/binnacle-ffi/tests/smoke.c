@@ -357,7 +357,7 @@ int main(void) {
    * request has that one level, counting each group. */
   CHECK(binnacle_grid_group_by(grid, BINNACLE_ROWS, 2002));
   CHECK(!binnacle_grid_poll_effect(grid, &effect));
-  CHECK(!binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002, 32));
+  CHECK(!binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002, 128));
   CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002,
                                   BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_GROUP));
   CHECK(!binnacle_grid_group_by(grid, 2, 2002));

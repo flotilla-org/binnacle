@@ -14,13 +14,13 @@ use binnacle_core::{
     FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Form, Grid, GroupOf,
     Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located, Mode, Modifiers,
     OpenState, Outline, Placement, PointerEvent, PointerKind, Rect, Scalar, Searched,
-    SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
-    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport,
+    Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 3;
+pub const BINNACLE_ABI_VERSION: u32 = 4;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;

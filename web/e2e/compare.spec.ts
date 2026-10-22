@@ -1,7 +1,7 @@
-// Comparison conditions end to end, in the shipments demo: the weight
-// column's menu keeps the shipments over a weight, the shipped column's the
-// shipments between two dates (both days included), each a chip; a column
-// of text offers no comparison, and Clear removes one.
+// Comparison conditions end to end, in the shipments demo with its rows
+// ungrouped: the weight column's menu keeps the shipments over a weight, the
+// shipped column's the shipments between two dates (both days included),
+// each a chip; a column of text offers no comparison, and Clear removes one.
 
 import { expect, test, type Page } from "@playwright/test";
 import { day, shipments } from "../demo/sources/shipments-data";
@@ -21,6 +21,9 @@ async function openMenu(page: Page, column: string) {
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto("/?source=shipments&theme=light");
+  // The demo opens grouped by region; these tests filter the plain rows.
+  await openMenu(page, "port");
+  await menu(page, "port").getByRole("button", { name: "Ungroup rows" }).click();
   await expect(shown(page)).toHaveText(`${en(shipments.length)} rows`);
 });
 
