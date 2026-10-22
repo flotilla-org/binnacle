@@ -8,6 +8,7 @@ use crate::effect::Effect;
 use crate::focus::{FocusEnd, Move};
 use crate::gesture::{Before, Gesture, Mode, Press};
 use crate::grid::Grid;
+use crate::grouping::ItemKind;
 use crate::selection::Span;
 use crate::snapshot::ScrollAnchor;
 use crate::sort::Located;
@@ -179,7 +180,11 @@ impl Grid {
                 if n > 0 {
                     let shift = match folding {
                         false => Shift::Removed { at, n },
-                        true => Shift::Collapsed { at, n },
+                        true => Shift::Collapsed {
+                            at,
+                            n,
+                            group: self.collapsed_group(axis, at, n),
+                        },
                     };
                     self.inserted_or_removed(axis, shift);
                     if folding {
@@ -256,7 +261,7 @@ impl Grid {
                 self.axis_mut(axis).measure.insert(at, n);
                 Vec::new()
             }
-            Shift::Removed { at, n } | Shift::Collapsed { at, n } => {
+            Shift::Removed { at, n } | Shift::Collapsed { at, n, .. } => {
                 self.axis_mut(axis).measure.remove(at, n)
             }
         };
@@ -364,6 +369,23 @@ impl Grid {
                 self.pending_damage.selection = true;
                 self.announce_focus();
             }
+        }
+    }
+
+    /// Where what stands for a group whose `n` items from `at` close will
+    /// be: its Group Item just before them, or in header form the
+    /// Subtotal just after them when its group holds the first of them.
+    fn collapsed_group(&self, axis: Axis, at: Position, n: u64) -> Option<Position> {
+        let after = (self.header_levels(axis) > 0)
+            .then(|| Some((self.outline_at(axis, at)?, self.outline_at(axis, at + n)?)))
+            .flatten()
+            .is_some_and(|(first, next)| {
+                next.kind == ItemKind::Subtotal
+                    && next.parent().is_some_and(|g| first.ancestors.contains(&g))
+            });
+        match after {
+            true => Some(at),
+            false => at.checked_sub(1),
         }
     }
 
@@ -667,9 +689,22 @@ impl Grid {
 /// map of old Positions to new.
 #[derive(Clone, Copy, Debug)]
 enum Shift {
-    Inserted { at: Position, n: u64 },
-    Removed { at: Position, n: u64 },
-    Collapsed { at: Position, n: u64 },
+    Inserted {
+        at: Position,
+        n: u64,
+    },
+    Removed {
+        at: Position,
+        n: u64,
+    },
+    /// `group` is where what stands for the closed group is after the
+    /// shift, if anything does: its Group Item, or in header form its
+    /// Subtotal.
+    Collapsed {
+        at: Position,
+        n: u64,
+        group: Option<Position>,
+    },
 }
 
 impl Shift {
@@ -686,7 +721,7 @@ impl Shift {
     /// Group Item.
     fn landing(self) -> Position {
         match self {
-            Shift::Collapsed { at, .. } => at.saturating_sub(1),
+            Shift::Collapsed { at, group, .. } => group.unwrap_or(at.saturating_sub(1)),
             _ => self.at(),
         }
     }
@@ -695,7 +730,7 @@ impl Shift {
     fn map(self, p: Position) -> Option<Position> {
         match self {
             Shift::Inserted { at, n } if p >= at => Some(p.saturating_add(n)),
-            Shift::Removed { at, n } | Shift::Collapsed { at, n } if p >= at + n => Some(p - n),
+            Shift::Removed { at, n } | Shift::Collapsed { at, n, .. } if p >= at + n => Some(p - n),
             Shift::Removed { at, .. } | Shift::Collapsed { at, .. } if p >= at => None,
             _ => Some(p),
         }
@@ -716,10 +751,16 @@ fn shift_span(mut span: Span, axis: Axis, shift: Shift, st: &AxisState) -> Optio
             return Some(span);
         }
         // A corner on a hidden item pulls to the closed group's Group Item.
-        Shift::Collapsed { at, .. } if at > 0 => {
+        Shift::Collapsed {
+            at,
+            n,
+            group: Some(group),
+        } => {
+            // The item standing for the group, as it was before the shift.
+            let was = if group < at { group } else { group + n };
             let group = FocusEnd {
-                position: at - 1,
-                key: st.key_at(at - 1),
+                position: group,
+                key: st.key_at(was),
             };
             for corner in [&mut span.anchor, &mut span.head] {
                 corner[i] = match shift.map(corner[i].position) {
@@ -732,7 +773,7 @@ fn shift_span(mut span: Span, axis: Axis, shift: Shift, st: &AxisState) -> Optio
             }
             return Some(span);
         }
-        Shift::Removed { at, n } | Shift::Collapsed { at, n } => (at, n),
+        Shift::Removed { at, n } | Shift::Collapsed { at, n, .. } => (at, n),
     };
     let drawn = [span.anchor[i], span.head[i]].map(|e| st.drawn_index(st.slot_of(e)));
     let (lo, hi) = (drawn[0].min(drawn[1]), drawn[0].max(drawn[1]));

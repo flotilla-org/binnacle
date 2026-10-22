@@ -1,0 +1,31 @@
+---
+source: crates/binnacle-core/tests/header_form.rs
+assertion_line: 180
+expression: out
+---
+--- 1. scrolled to shipment 3: North and Aberdeen go on above
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): ViewRequested unsorted group 1,2 values count(-) Rows Header form by Replace
+  view: applied unsorted group 1,2 values count(-) Rows Header form, notices [(Rows, Refiltered(11))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(1)
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(3)
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(6)
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(7)
+effect (gen 1): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Found(8)
+window Rows 0..11
+effect (gen 2): FocusChanged { row: Key(0), col: Key(1) }
+gen 5 | damage layout | focus 0#0,1#1 not drawn
+Rows: count 11, extent 4, header 1, anchor 1+0, thumb 0.1250/0.2727 | 1#3@1+1[L2 ^100 ^110] 2#1000110@2+1[S2 ^100 ^110 2="Aberdeen"] 3#4@3+1[L2 ^100 ^111] | tiers 0..4 4..10 | spans t0#100+ 1-3@1+3<> t1#110+ 1-1@1+1< t1#111+ 3-3@3+1
+Cols: count 3, extent 30, header 12, anchor 0+0, thumb 0.0000/1.0000 | 0#0@12+5 1#1@17+5 2#2@22+5
+            0    1    2
+1           3.0  3.1  3.2
+2           100011000110001
+3           4.0  4.1  4.2

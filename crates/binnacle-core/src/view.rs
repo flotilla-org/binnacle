@@ -5,7 +5,9 @@ use std::hash::{Hash, Hasher};
 
 use crate::effect::Effect;
 use crate::grid::Grid;
-use crate::grouping::{Aggregate, AggregateValue, Depth, GRAND_TOTAL, Grouping, Level, Placement};
+use crate::grouping::{
+    Aggregate, AggregateValue, Depth, Form, GRAND_TOTAL, Grouping, Level, Placement,
+};
 use crate::pointer::Modifiers;
 use crate::sort::{HeaderSort, SortSpec};
 use crate::types::{Axis, Edge, Key, Position};
@@ -504,6 +506,8 @@ pub enum ViewEdit {
     ExpandAll { axis: Axis, key: Key },
     /// `axis` was opened to `depth` levels and its exceptions cleared.
     ExpandTo { axis: Axis, depth: Depth },
+    /// `axis` is drawn in `form`: outline form or header form.
+    SetForm { axis: Axis, form: Form },
 }
 
 /// How a Table Source matches a Text Query: `regex` if it takes patterns as
@@ -1204,6 +1208,16 @@ impl Grid {
         }
     }
 
+    /// Draws the grouped `axis` in `form` and requests the result
+    /// ([`ViewEdit::SetForm`]). Nothing happens if the axis is not grouped
+    /// or the latest request draws it so already.
+    pub fn set_form(&mut self, axis: Axis, form: Form) {
+        let grouping = self.latest_view().grouping.as_ref();
+        if grouping.is_some_and(|g| !g.levels(axis).is_empty() && g.axis(axis).form != form) {
+            self.edit_view(ViewEdit::SetForm { axis, form });
+        }
+    }
+
     /// The View Spec the latest request asks for, else the applied one.
     pub(crate) fn latest_view(&self) -> &ViewSpec {
         self.view.requested.as_ref().unwrap_or(&self.view.applied)
@@ -1291,6 +1305,11 @@ impl Grid {
             | ViewEdit::Collapse { .. }
             | ViewEdit::ExpandAll { .. }
             | ViewEdit::ExpandTo { .. } => {}
+            ViewEdit::SetForm { axis, form } => {
+                if let Some(grouping) = &mut spec.grouping {
+                    grouping.axis_mut(*axis).form = *form;
+                }
+            }
         }
         self.request(spec, edit);
     }

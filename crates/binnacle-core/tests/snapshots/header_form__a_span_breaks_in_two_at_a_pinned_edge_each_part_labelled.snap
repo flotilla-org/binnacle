@@ -1,0 +1,40 @@
+---
+source: crates/binnacle-core/tests/header_form.rs
+assertion_line: 193
+expression: out
+---
+--- 1. shipment 0 pinned: Aberdeen and North break in two
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): ViewRequested unsorted group 1,2 values count(-) Rows Header form by Replace
+  view: applied unsorted group 1,2 values count(-) Rows Header form, notices [(Rows, Refiltered(11))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(0)
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(1)
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(3)
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(6)
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(7)
+effect (gen 1): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Found(8)
+window Rows 0..11
+effect (gen 2): FocusChanged { row: Key(0), col: Key(1) }
+effect (gen 3): PinsChanged { axis: Rows, edge: Leading, keys: [Key(0)] }
+gen 4 | damage layout | focus 0#0,1#1 at 17,1 5x1
+Rows: count 11, extent 13, header 1, anchor 1+0, thumb 0.0000/1.0000 | pinned 0#0@1+1[L2 ^100 ^110] | scrolling from 2 | 1#3@2+1[L2 ^100 ^110] 2#1000110@3+1[S2 ^100 ^110 2="Aberdeen"] 3#4@4+1[L2 ^100 ^111] 4#1000111@5+1[S2 ^100 ^111 2="Bergen"] 5#1000100@6+1[S1 ^100 1="North"] 6#1@7+1[L2 ^101 ^120] 7#2@8+1[L2 ^101 ^120] 8#5@9+1[L2 ^101 ^120] 9#1000120@10+1[S2 ^101 ^120 2="Cadiz"] 10#1000101@11+1[S1 ^101 1="South"] | tiers 0..4 4..10 | spans t0#100+ 0-0@1+1> t1#110+ 0-0@1+1> t0#100+ 1-4@2+4< t0#101+ 6-9@7+4 t1#110+ 1-1@2+1< t1#111+ 3-3@4+1 t1#120+ 6-8@7+3
+Cols: count 3, extent 30, header 12, anchor 0+0, thumb 0.0000/1.0000 | 0#0@12+5 1#1@17+5 2#2@22+5
+            0    1    2
+0           0.0  *0.1 0.2
+1           3.0  3.1  3.2
+2           100011000110001
+3           4.0  4.1  4.2
+4           100011000110001
+5           100011000110001
+6           1.0  1.1  1.2
+7           2.0  2.1  2.2
+8           5.0  5.1  5.2
+9           100011000110001
+10          100011000110001

@@ -5,6 +5,7 @@ use crate::grid::Grid;
 use crate::grouping::{Aggregate, AggregateValue, Level, Outline};
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
+use crate::span::{HeaderSpan, band_rect};
 use std::ops::Range;
 
 use crate::types::{Axis, Edge, Generation, Key, Position};
@@ -261,8 +262,21 @@ impl<'a> Snapshot<'a> {
     /// `axis`, if the axis is grouped and the item is in the Window. A
     /// pinned Grand Total has its outline wherever it is.
     pub fn outline(&self, axis: Axis, position: Position) -> Option<&'a Outline> {
-        let key = self.grid.axis(axis).key_at(position)?;
-        self.grid.outline_by_key(axis, key)
+        self.grid.outline_at(axis, position)
+    }
+
+    /// Where the tiers of the Header Band heading `axis`'s items lie across
+    /// it, from its outer edge, while `axis` is grouped in header form: one
+    /// per level, outermost first (see [`crate::Grid::set_tiers`]). Empty
+    /// otherwise.
+    pub fn tiers(&self, axis: Axis) -> &'a [Range<f32>] {
+        &self.grid.tiers[axis.index()]
+    }
+
+    /// The spanning cells of `axis` in header form, each tier's in drawn
+    /// order, Strip by Strip: a span never straddles a pinned edge.
+    pub fn spans(&self, axis: Axis) -> &'a [HeaderSpan] {
+        &self.grid.spans[axis.index()]
     }
 
     /// The scrolling Strip of `axis`: the visible items that follow the
@@ -370,17 +384,46 @@ impl<'a> Snapshot<'a> {
         self.grid.toggle_pending(axis, key)
     }
 
+    /// The tier of the row Header Band focus is in while it is in the
+    /// band ([`Snapshot::outline_focused`]) and the rows are in header
+    /// form: 0 for the outermost level's column. 0 in outline form.
+    pub fn focused_tier(&self) -> u32 {
+        self.grid.band_tier
+    }
+
+    /// The focused band cell around `row`: the whole band in outline form;
+    /// in header form the span the focused tier holds the row in, else the
+    /// row's own header.
+    fn band_focus_rect(&self, row: &StripItem) -> Rect {
+        let thickness = self.header(Axis::Cols);
+        let tiers = self.tiers(Axis::Rows);
+        let whole = Rect {
+            x: 0.0,
+            y: row.offset,
+            width: thickness,
+            height: row.size,
+        };
+        if tiers.is_empty() {
+            return whole;
+        }
+        let tier = self.focused_tier();
+        let inside = |s: &&HeaderSpan| {
+            s.tier == tier && s.rect.y <= row.offset && row.end() <= s.rect.y + s.rect.height
+        };
+        if let Some(span) = self.spans(Axis::Rows).iter().find(inside) {
+            return span.rect;
+        }
+        (self.headers(Axis::Rows))
+            .find(|h| h.position == row.position && h.key == row.key)
+            .map_or(whole, |h| h.rect)
+    }
+
     /// The focused cell's rectangle, unclipped, if it is visible and its Keys
     /// are known: in the outline column, the focused row's band cell.
     pub fn focus_rect(&self) -> Option<Rect> {
         let row = self.focused_item(Axis::Rows)?;
         if self.outline_focused() {
-            return Some(Rect {
-                x: 0.0,
-                y: row.offset,
-                width: self.header(Axis::Cols),
-                height: row.size,
-            });
+            return Some(self.band_focus_rect(row));
         }
         let col = self.focused_item(Axis::Cols)?;
         Some(Rect {
@@ -583,11 +626,22 @@ impl<'a> Snapshot<'a> {
         let all = self.count(across);
         let whole = range.filter(|r| matches!(r.span(across), [run] if *run == (0..all)));
         let hovered = grid.hovered;
+        let tiers = self.tiers(axis);
         self.drawn(axis).map(move |item| {
-            let (x, y, width, height) = match axis {
-                Axis::Rows => (0.0, item.offset, thickness, item.size),
-                Axis::Cols => (item.offset, 0.0, item.size, thickness),
+            // In header form an item's own header starts past the spans
+            // over it.
+            let from = match tiers {
+                [] => 0.0,
+                _ => (tiers.get(grid.spanned_tiers(axis, item.position)))
+                    .map_or(tiers[tiers.len() - 1].end, |t| t.start),
             };
+            let along = item.offset..item.end();
+            let Rect {
+                x,
+                y,
+                width,
+                height,
+            } = band_rect(axis, along, from..thickness.max(from));
             let picked = item.key.is_some_and(|k| grid.selection.picked(axis, k));
             HeaderPlacement {
                 axis,

@@ -583,6 +583,7 @@ impl Grid {
         }
         match gesture {
             Gesture::Pressed {
+                x,
                 press:
                     Press::Header {
                         axis,
@@ -594,7 +595,7 @@ impl Grid {
             } => {
                 self.header_click(axis, position, modifiers);
                 if axis == Axis::Rows {
-                    self.row_header_clicked();
+                    self.row_header_clicked(x);
                 }
             }
             Gesture::MovingHeaders {

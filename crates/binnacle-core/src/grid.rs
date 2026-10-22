@@ -14,6 +14,7 @@ use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
 use crate::selection::{Cell, CellRange, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
+use crate::span::HeaderSpan;
 use crate::types::{Axis, Edge, Generation, Key, Position, Viewport};
 use crate::view::ViewState;
 
@@ -118,6 +119,8 @@ pub struct Grid {
     /// Focus is in the outline column, on the focused row's band cell; the
     /// column end is where it goes back to.
     pub(crate) outline_focus: bool,
+    /// The tier of the row Header Band focus is in, in header form.
+    pub(crate) band_tier: u32,
     /// `*` asked to open everything under this Group Item: closed groups
     /// under it are opened as Windows bring them, until another toggle.
     pub(crate) expanding_all: Option<(Axis, Key)>,
@@ -148,6 +151,10 @@ pub struct Grid {
     pub(crate) range: Option<CellRange>,
     /// Selection fill rects for the last Snapshot.
     pub(crate) fills: Vec<Rect>,
+    /// Each axis's header-form tiers across its Header Band, and its spans,
+    /// for the last Snapshot.
+    pub(crate) tiers: [Vec<Range<f32>>; 2],
+    pub(crate) spans: [Vec<HeaderSpan>; 2],
     pub(crate) view: ViewState,
     pub(crate) find: FindState,
     pub(crate) moves: MoveState,
@@ -179,6 +186,7 @@ impl Grid {
             damage: Damage::NONE,
             focus: None,
             outline_focus: false,
+            band_tier: 0,
             expanding_all: None,
             heard: None,
             reveal: false,
@@ -196,6 +204,8 @@ impl Grid {
             hovered_border: None,
             range: None,
             fills: Vec::new(),
+            tiers: [Vec::new(), Vec::new()],
+            spans: [Vec::new(), Vec::new()],
             view: ViewState::default(),
             find: FindState::default(),
             moves: MoveState::default(),
@@ -383,6 +393,23 @@ impl Grid {
         let st = self.axis_mut(axis);
         if st.header != thickness {
             st.header = thickness;
+            self.pending_damage.layout = true;
+        }
+    }
+
+    /// Sets the sizes of the tiers of the Header Band that heads `axis`'s
+    /// items while `axis` is grouped in header form (on [`Axis::Rows`] the
+    /// row Header Band's level columns), one per level from the band's
+    /// outer edge. Levels past `sizes` share what the band has left; what
+    /// the tiers leave heads the items themselves. Sizes that are not
+    /// finite and non-negative are taken as 0.
+    pub fn set_tiers(&mut self, axis: Axis, sizes: &[f32]) {
+        let sizes: Vec<f32> = (sizes.iter())
+            .map(|&s| if s.is_finite() && s >= 0.0 { s } else { 0.0 })
+            .collect();
+        let st = self.axis_mut(axis);
+        if st.tier_sizes != sizes {
+            st.tier_sizes = sizes;
             self.pending_damage.layout = true;
         }
     }
@@ -1052,6 +1079,7 @@ impl Grid {
             .filter(|_| !self.refiltering.locating_corners())
             .map(|s| s.range(&self.axes));
         self.fill_selection();
+        self.lay_out_spans();
         self.damage = std::mem::replace(&mut self.pending_damage, Damage::NONE);
         Snapshot { grid: self }
     }
