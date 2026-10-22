@@ -20,7 +20,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 4;
+pub const BINNACLE_ABI_VERSION: u32 = 5;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -156,6 +156,8 @@ pub const BINNACLE_ITEM_GROUP: u32 = 1;
 pub const BINNACLE_ITEM_SUBTOTAL: u32 = 2;
 pub const BINNACLE_ITEM_GRAND_TOTAL: u32 = 3;
 
+pub const BINNACLE_GRAND_TOTAL_KEY: u64 = binnacle_core::GRAND_TOTAL.0;
+
 pub const BINNACLE_OPEN_STATE_OPEN: u32 = 0;
 pub const BINNACLE_OPEN_STATE_CLOSED: u32 = 1;
 pub const BINNACLE_OPEN_STATE_CANT_OPEN: u32 = 2;
@@ -223,7 +225,7 @@ pub struct BinnacleGrid {
     /// Keys, the values with their aggregates' texts, and the slicers.
     levels: [Vec<BinnacleLevel>; 2],
     excepts: [Vec<u64>; 2],
-    aggregates: (String, Vec<BinnacleAggregateValue>),
+    aggregates: (String, Vec<BinnacleText>, Vec<BinnacleAggregateValue>),
     slicers: CConditions,
     /// The last polled Effect's View Edit Keys.
     edit_keys: Vec<u64>,
@@ -726,11 +728,25 @@ pub struct BinnacleLevel {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleAggregateValue {
     pub has_field: u32,
     pub field: u64,
     pub aggregate: BinnacleText,
+    pub params: *const BinnacleText,
+    pub params_len: usize,
+}
+
+impl Default for BinnacleAggregateValue {
+    fn default() -> Self {
+        BinnacleAggregateValue {
+            has_field: 0,
+            field: 0,
+            aggregate: BinnacleText::default(),
+            params: std::ptr::null(),
+            params_len: 0,
+        }
+    }
 }
 
 #[repr(C)]
@@ -1384,20 +1400,28 @@ impl BinnacleLevel {
 }
 
 impl BinnacleAggregateValue {
-    /// The value, or `None` if `has_field` is not 0 or 1 or the aggregate is
-    /// not UTF-8.
+    /// The value, or `None` if `has_field` is not 0 or 1 or the aggregate or
+    /// a parameter is not UTF-8.
     ///
     /// # Safety
-    /// A non-NULL `aggregate.data` is valid for `aggregate.len` reads.
+    /// A non-NULL `aggregate.data` is valid for `aggregate.len` reads, a
+    /// non-NULL `params` for `params_len`, and each parameter's `data` as
+    /// `aggregate.data` is.
     unsafe fn to_core(self) -> Option<AggregateValue> {
         let field = match self.has_field {
             0 => None,
             1 => Some(Key(self.field)),
             _ => return None,
         };
+        let text = |t: BinnacleText| {
+            // SAFETY: the caller's contract.
+            let bytes = unsafe { borrowed(t.data, t.len) };
+            std::str::from_utf8(bytes).ok().map(str::to_owned)
+        };
         // SAFETY: the caller's contract.
-        let bytes = unsafe { borrowed(self.aggregate.data, self.aggregate.len) };
-        Some(AggregateValue::new(field, std::str::from_utf8(bytes).ok()?))
+        let params = unsafe { borrowed(self.params, self.params_len) };
+        let params = params.iter().map(|&p| text(p)).collect::<Option<Vec<_>>>()?;
+        Some(AggregateValue::new(field, text(self.aggregate)?).with_params(params))
     }
 }
 
@@ -2322,25 +2346,37 @@ impl BinnacleGrid {
                 except_len: except.len(),
             };
         }
-        // Texts first, then the values, so the pointers taken after stay
-        // valid.
-        let (texts, values) = &mut self.aggregates;
+        // Texts first, then the parameters, then the values, so the
+        // pointers taken after stay valid.
+        let (texts, params, values) = &mut self.aggregates;
         texts.clear();
+        params.clear();
         values.clear();
         for v in &grouping.values {
             texts.push_str(&v.aggregate);
+            v.params.iter().for_each(|p| texts.push_str(p));
         }
         let mut at = 0;
-        values.extend(grouping.values.iter().map(|v| {
+        let mut text = |t: &str| {
             let data = texts.as_ptr().wrapping_add(at);
-            at += v.aggregate.len();
+            at += t.len();
+            BinnacleText { data, len: t.len() }
+        };
+        let mut names = Vec::with_capacity(grouping.values.len());
+        for v in &grouping.values {
+            names.push(text(&v.aggregate));
+            params.extend(v.params.iter().map(|p| text(p)));
+        }
+        let mut first = 0;
+        values.extend(grouping.values.iter().zip(names).map(|(v, aggregate)| {
+            let ps = params.as_ptr().wrapping_add(first);
+            first += v.params.len();
             BinnacleAggregateValue {
                 has_field: flag(v.field.is_some()),
                 field: v.field.map_or(0, |k| k.0),
-                aggregate: BinnacleText {
-                    data,
-                    len: v.aggregate.len(),
-                },
+                aggregate,
+                params: ps,
+                params_len: v.params.len(),
             }
         }));
         self.slicers.fill(&grouping.slicers);

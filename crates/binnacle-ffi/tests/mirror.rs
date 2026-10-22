@@ -398,10 +398,18 @@ fn grouping(tc: &TestCase) -> Grouping {
         g.expand.except = tc.draw(gs::vecs(key(axis)).max_size(3));
     }
     let aggregate = gs::sampled_from(vec!["count", "sum", "Ø mean", ""]);
+    let params = gs::vecs(gs::text().max_size(6)).max_size(2);
     grouping.values = tc
-        .draw(gs::vecs(hegel::tuples!(gs::optional(key(Axis::Cols)), aggregate)).max_size(3))
+        .draw(
+            gs::vecs(hegel::tuples!(
+                gs::optional(key(Axis::Cols)),
+                aggregate,
+                params
+            ))
+            .max_size(3),
+        )
         .into_iter()
-        .map(|(field, aggregate)| AggregateValue::new(field, aggregate))
+        .map(|(field, aggregate, params)| AggregateValue::new(field, aggregate).with_params(params))
         .collect();
     grouping.slicers = tc.draw(gs::vecs(condition(Axis::Rows)).max_size(2));
     grouping
@@ -720,7 +728,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(74))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(75))),
     }
 }
 
@@ -1016,7 +1024,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 }
                 binnacle_grid_set_outlines(h, ROWS, 0, &bad, 1)
             }
-            65..=73 => {
+            65..=74 => {
                 let levels = [BinnacleLevel {
                     kind: if which == 66 {
                         BINNACLE_LEVEL_OTHER
@@ -1031,6 +1039,10 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                     },
                 }];
                 let bad = [b'a', 0xff];
+                let param = BinnacleText {
+                    data: bad.as_ptr(),
+                    len: if which == 74 { bad.len() } else { 1 },
+                };
                 let value = BinnacleAggregateValue {
                     has_field: if which == 71 { 2 } else { 0 },
                     field: 5000,
@@ -1038,6 +1050,8 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                         data: bad.as_ptr(),
                         len: if which == 72 { bad.len() } else { 1 },
                     },
+                    params: &param,
+                    params_len: 1,
                 };
                 let slicer = BinnacleCondition {
                     kind: if which == 73 {
@@ -1613,7 +1627,11 @@ unsafe fn grouping_from_c(g: &BinnacleGrouping) -> Grouping {
                 1 => Some(Key(v.field)),
                 f => panic!("has_field {f}"),
             };
-            AggregateValue::new(field, unsafe { text_from_c(v.aggregate) })
+            let params = unsafe { c_slice(v.params, v.params_len) }
+                .iter()
+                .map(|&p| unsafe { text_from_c(p) })
+                .collect();
+            AggregateValue::new(field, unsafe { text_from_c(v.aggregate) }).with_params(params)
         })
         .collect();
     grouping.slicers = unsafe { c_slice(g.slicers, g.slicers_len) }
@@ -1963,15 +1981,21 @@ fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T 
             g.axis(axis).expand.except.iter().map(|k| k.0).collect()
         })
     });
-    let aggregates: Vec<BinnacleAggregateValue> = (grouping.map_or(&[][..], |g| &g.values[..]))
-        .iter()
-        .map(|v| BinnacleAggregateValue {
+    let text = |t: &String| BinnacleText {
+        data: t.as_ptr(),
+        len: t.len(),
+    };
+    let values = grouping.map_or(&[][..], |g| &g.values[..]);
+    let params: Vec<Vec<BinnacleText>> = (values.iter())
+        .map(|v| v.params.iter().map(text).collect())
+        .collect();
+    let aggregates: Vec<BinnacleAggregateValue> = (values.iter().zip(&params))
+        .map(|(v, params)| BinnacleAggregateValue {
             has_field: u32::from(v.field.is_some()),
             field: v.field.map_or(0, |k| k.0),
-            aggregate: BinnacleText {
-                data: v.aggregate.as_ptr(),
-                len: v.aggregate.len(),
-            },
+            aggregate: text(&v.aggregate),
+            params: params.as_ptr(),
+            params_len: params.len(),
         })
         .collect();
     let slicers = grouping.map_or(&[][..], |g| &g.slicers[..]);

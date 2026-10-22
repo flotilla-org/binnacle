@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 4u
+#define BINNACLE_ABI_VERSION 5u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -298,6 +298,11 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_ITEM_GROUP 1
 #define BINNACLE_ITEM_SUBTOTAL 2
 #define BINNACLE_ITEM_GRAND_TOTAL 3
+
+/* The Key of an axis's Grand Total, whoever groups it: a grouped Table
+ * Source names its Grand Total so, and the Grid pins one placed after at
+ * the trailing edge by default, before it is in a Window. */
+#define BINNACLE_GRAND_TOTAL_KEY 0x8000000000000000ull
 
 /* BinnacleOutline.open: whether a Group Item is open. Other items, and Group
  * Items with nothing under them to show, can't open. */
@@ -744,11 +749,14 @@ typedef struct {
 /* One value a grouped table shows: an aggregate, an open name such as "sum",
  * "count", "average", "minimum", "maximum", "distinct count" or one the
  * Table Source declares, over the base field field, or with has_field 0 a
- * count of items. */
+ * count of items, with the parameters a declared aggregate takes, passed to
+ * the Table Source as they are. */
 typedef struct {
   uint32_t has_field;
   uint64_t field;
   BinnacleText aggregate;
+  const BinnacleText *params;
+  size_t params_len;
 } BinnacleAggregateValue;
 
 /* How one axis is grouped: its levels, outermost first (none: the axis is

@@ -389,11 +389,32 @@ int main(void) {
   CHECK(r->strip[0].outline.value.text.len == 1 && r->strip[0].outline.ancestors_len == 0);
   CHECK(memcmp(r->strip[0].outline.value.text.data, "b", 1) == 0);
   CHECK(!r->strip[1].has_outline);
-  /* Ungrouping makes the table plain again. */
+  /* The source now places a Grand Total after, and shows a declared
+   * aggregate with a parameter: the Grid locates the Grand Total by its
+   * Key and pins it at the trailing edge. */
+  BinnacleViewSpec totalled = effect.view;
+  BinnacleText param = {(const uint8_t *)"0.9", 3};
+  BinnacleAggregateValue percentile = {.has_field = 1, .field = 2002,
+                                       .aggregate = {(const uint8_t *)"percentile", 10},
+                                       .params = &param, .params_len = 1};
+  totalled.grouping.values = &percentile;
+  totalled.grouping.values_len = 1;
+  totalled.grouping.axes[BINNACLE_ROWS].grand_total = BINNACLE_PLACEMENT_AFTER;
+  CHECK(binnacle_grid_view_changed(grid, &totalled, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == BINNACLE_GRAND_TOTAL_KEY);
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.edge == BINNACLE_EDGE_TRAILING);
+  CHECK(effect.keys_len == 1 && effect.keys[0] == BINNACLE_GRAND_TOTAL_KEY);
+  CHECK(binnacle_grid_located(grid, BINNACLE_ROWS, BINNACLE_GRAND_TOTAL_KEY,
+                              BINNACLE_LOCATED_GONE, 0));
+  /* Ungrouping makes the table plain again, and unpins the Grand Total. */
   CHECK(binnacle_grid_ungroup(grid, BINNACLE_ROWS));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_UNGROUP && !effect.view.has_grouping);
   CHECK(binnacle_grid_view_applied(grid, &effect.view, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.keys_len == 0);
 
   /* Find: the host declares it, sets a query, steps, and answers the step;
    * the match takes focus, and closing find drops it. */

@@ -81,11 +81,14 @@ impl WireLevel {
     }
 }
 
-/// A value: an aggregate over a field, or over nothing (`null`) for a count.
+/// A value: an aggregate over a field, or over nothing (`null`) for a count,
+/// with the parameters a declared aggregate takes (none if omitted).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireAggregateValue {
     pub field: Option<u64>,
     pub aggregate: String,
+    #[serde(default)]
+    pub params: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -182,6 +185,7 @@ impl From<&Grouping> for WireGrouping {
                 .map(|v| WireAggregateValue {
                     field: v.field.map(|k| k.0),
                     aggregate: v.aggregate.clone(),
+                    params: v.params.clone(),
                 })
                 .collect(),
             slicers: g.slicers.iter().map(WireCondition::from).collect(),
@@ -202,7 +206,7 @@ impl From<WireGrouping> for Grouping {
         g.row_levels = levels(w.row_levels);
         g.col_levels = levels(w.col_levels);
         g.values = (w.values.into_iter())
-            .map(|v| AggregateValue::new(v.field.map(Key), v.aggregate))
+            .map(|v| AggregateValue::new(v.field.map(Key), v.aggregate).with_params(v.params))
             .collect();
         g.slicers = (w.slicers.into_iter())
             .filter_map(WireCondition::into_core)
@@ -326,6 +330,8 @@ mod tests {
         });
         g.col_levels.push(Level::Values);
         g.values.push(AggregateValue::new(Some(Key(4)), "sum"));
+        g.values
+            .push(AggregateValue::of(Key(5), "percentile").with_params(vec!["0.9".into()]));
         g.slicers
             .push(Condition::text(Key(2), TextQuery::new("x")).not(true));
         g.axis_mut(Axis::Rows).grand_total = Placement::Before;
@@ -339,6 +345,7 @@ mod tests {
         assert_eq!(json["rowAxis"]["expand"]["depth"], "all");
         assert_eq!(json["colAxis"]["expand"]["depth"], 2);
         assert_eq!(json["colAxis"]["form"], "header");
+        assert_eq!(json["values"][2]["params"][0], "0.9");
         let back: WireGrouping = serde_json::from_value(json).unwrap();
         assert_eq!(Grouping::from(back), g);
     }
@@ -354,6 +361,8 @@ mod tests {
                 Key(7),
                 Value::Text("Ø".into()),
             ),
+            Outline::subtotal(vec![Key(9), Key(10)], Key(7), Value::Text("a".into())),
+            Outline::grand_total(),
         ];
         for o in outlines {
             let json = serde_json::to_value(WireOutline::from(&o)).unwrap();
