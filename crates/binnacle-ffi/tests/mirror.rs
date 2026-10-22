@@ -685,7 +685,12 @@ fn op(tc: &TestCase) -> Op {
     match tc.draw(gs::integers::<u8>().max_value(40)) {
         38 => {
             let axis = tc.draw(axes());
-            let field = tc.draw(gs::optional(field()));
+            // Mostly a field the groupings use, sometimes any column.
+            let field = tc.draw(gs::optional(hegel::one_of!(
+                field(),
+                field(),
+                key(Axis::Cols)
+            )));
             match tc.draw(gs::booleans()) {
                 true => Op::RemoveLevel(axis, field),
                 false => Op::MoveLevel(axis, field),

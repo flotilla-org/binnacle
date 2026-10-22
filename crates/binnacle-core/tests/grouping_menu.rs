@@ -299,11 +299,13 @@ enum Pick {
 }
 
 /// What the menu leaves the levels and values as, kept the plain way: the
-/// field levels of each axis in order, and the values.
+/// field levels of each axis in order, and the values; and the fields each
+/// axis may be grouped by, as the source declares them.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Model {
     fields: [Vec<Key>; 2],
     values: Vec<AggregateValue>,
+    groups: [Vec<Key>; 2],
 }
 
 impl Model {
@@ -315,14 +317,31 @@ impl Model {
         Model {
             fields: [keys(Axis::Rows), keys(Axis::Cols)],
             values: g.values.clone(),
+            groups: Default::default(),
         }
     }
 
     fn apply(&mut self, pick: &Pick) {
         let used = |m: &Model, f| m.fields.iter().flatten().any(|&k| k == f);
         let grouped = self.fields.iter().any(|f| !f.is_empty());
+        let groups = |axis: Axis, f: &Key| self.groups[axis.index()].contains(f);
+        // A count of items, or an aggregate the source declares over WEIGHT.
+        let offered = |v: &AggregateValue| {
+            *v == AggregateValue::count()
+                || (v.field == Some(WEIGHT)
+                    && v.params.is_empty()
+                    && [
+                        "count",
+                        "distinct count",
+                        "sum",
+                        "average",
+                        "minimum",
+                        "maximum",
+                    ]
+                    .contains(&v.aggregate.as_str()))
+        };
         match pick {
-            Pick::Group(axis, f) if !used(self, *f) => {
+            Pick::Group(axis, f) if !used(self, *f) && groups(*axis, f) => {
                 if !grouped {
                     self.values = vec![AggregateValue::count()];
                 }
@@ -334,11 +353,15 @@ impl Model {
                     self.values.clear();
                 }
             }
-            Pick::Move(axis, Some(f)) if self.fields[axis.index()].contains(f) => {
+            Pick::Move(axis, Some(f))
+                if self.fields[axis.index()].contains(f) && groups(axis.other(), f) =>
+            {
                 self.fields[axis.index()].retain(|k| k != f);
                 self.fields[axis.other().index()].push(*f);
             }
-            Pick::AddValue(v) if grouped && !self.values.contains(v) => self.values.push(v.clone()),
+            Pick::AddValue(v) if grouped && offered(v) && !self.values.contains(v) => {
+                self.values.push(v.clone())
+            }
             Pick::RemoveValue(v) if self.values.len() > 1 => self.values.retain(|x| x != v),
             _ => {}
         }
@@ -348,17 +371,24 @@ impl Model {
 #[hegel::composite]
 fn pick(tc: &TestCase) -> Pick {
     let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
-    let field = tc.draw(gs::sampled_from(vec![REGION, PORT, QUARTER]));
+    let field = tc.draw(gs::sampled_from(vec![REGION, PORT, QUARTER, WEIGHT]));
     let level = tc.draw(gs::sampled_from(vec![
         Some(REGION),
         Some(PORT),
         Some(QUARTER),
+        Some(WEIGHT),
         None,
     ]));
+    // Offered values, and some the source doesn't offer: over a field it
+    // declares no aggregates for, with parameters it doesn't take, or an
+    // aggregate it doesn't name.
     let value = tc.draw(gs::sampled_from(vec![
         AggregateValue::count(),
         sum(),
         AggregateValue::of(WEIGHT, "average"),
+        AggregateValue::of(REGION, "sum"),
+        sum().with_params(vec!["0.9".into()]),
+        AggregateValue::of(WEIGHT, "median"),
     ]));
     match tc.draw(gs::integers::<u8>().max_value(4)) {
         0 => Pick::Group(axis, field),
@@ -378,6 +408,20 @@ fn pick(tc: &TestCase) -> Pick {
 fn menu_picks_change_levels_and_values_as_the_model_says(tc: TestCase) {
     let mut grid = grid(ViewSpec::default());
     let mut model = Model::default();
+    // What each field may group, drawn: the rows by it, the columns by it.
+    for f in [REGION, PORT, QUARTER, WEIGHT] {
+        let (group, pivot) = (tc.draw(gs::booleans()), tc.draw(gs::booleans()));
+        grid.set_support(
+            Axis::Rows,
+            f,
+            Support::default().with_group(group).with_pivot(pivot),
+        );
+        for (on, axis) in [(group, Axis::Rows), (pivot, Axis::Cols)] {
+            if on {
+                model.groups[axis.index()].push(f);
+            }
+        }
+    }
     let picks = tc.draw(gs::vecs(pick()).min_size(1).max_size(16));
     for p in &picks {
         let asked = asked(&mut grid, |g| match p {
@@ -392,7 +436,12 @@ fn menu_picks_change_levels_and_values_as_the_model_says(tc: TestCase) {
             grid.view_applied(spec, Totals::unknown());
         }
         let applied = grid.snapshot().applied_view().clone();
-        assert_eq!(Model::of(&applied), model, "after {p:?}");
+        let seen = Model::of(&applied);
+        assert_eq!(
+            (&seen.fields, &seen.values),
+            (&model.fields, &model.values),
+            "after {p:?}"
+        );
         let Some(g) = applied.grouping else {
             continue;
         };
