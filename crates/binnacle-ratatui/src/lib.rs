@@ -7,6 +7,7 @@
 mod border;
 mod checklist;
 mod chooser;
+mod compare;
 mod context;
 mod filter;
 mod find;
