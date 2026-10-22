@@ -26,7 +26,9 @@
 //! `f` switches the rows between outline and header form: in header form
 //! the region and port are columns of the row Header Band, each group one
 //! span over its rows with its mark and label, and Left and Right step
-//! between those columns. `t` cycles the Theme presets, `q` quits.
+//! between those columns. The corner names each level: click a name to
+//! sort by its field, right-click it to filter by it. `t` cycles the Theme
+//! presets, `q` quits.
 //!
 //! Ctrl+F opens the find bar: it matches the regions' and ports' labels and
 //! the shipments' cells, counts the matches the closed ports hide ("3 of 12,
@@ -54,7 +56,8 @@ use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
     ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar, FindStatus,
     HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, Theme, begin_frame,
-    copy_text, disclosure_at, render_conditions, render_editor, render_with, status, wheel,
+    copy_text, corner_level_at, disclosure_at, render_conditions, render_editor, render_with,
+    status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -373,6 +376,35 @@ fn mark_clicked(m: &MouseEvent, grid: &mut Grid, area: ratatui::layout::Rect) ->
     disclosure_at(&grid.snapshot(), x, y)
 }
 
+/// A press in `m` on a level name in the corner: a left press sorts by its
+/// field (Shift keeps the rest of the sort), a right press opens the filter
+/// popup on it. Whether it landed on one.
+fn corner_clicked(
+    m: &MouseEvent,
+    grid: &mut Grid,
+    text: &Text,
+    popup: &mut ColumnFilter,
+    area: ratatui::layout::Rect,
+) -> bool {
+    let (Some(x), Some(y)) = (m.column.checked_sub(area.x), m.row.checked_sub(area.y)) else {
+        return false;
+    };
+    let Some((axis, field)) = corner_level_at(&grid.snapshot(), text, x, y)
+        .and_then(|(axis, level)| level.field.map(|f| (axis, f)))
+    else {
+        return false;
+    };
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+            grid.cycle_sort(axis, field, shift);
+            true
+        }
+        MouseEventKind::Down(MouseButton::Right) => popup.open_on(&grid.snapshot(), axis, field),
+        _ => false,
+    }
+}
+
 fn main() -> io::Result<()> {
     let mut rows: Vec<Shipment> = (0..SHIPMENTS).map(Shipment::generate).collect();
     let mut source = source();
@@ -412,6 +444,7 @@ fn main() -> io::Result<()> {
                 let full = frame.area();
                 let mut area = full;
                 area.height = full.height.saturating_sub(2 + u16::from(find.is_open()));
+                popup.tick(&mut grid, Instant::now());
                 // Answers the requests in the queue, then acts on what the
                 // demo owns: its editor, the step's place among the matches,
                 // copies and drill-downs.
@@ -663,8 +696,16 @@ fn main() -> io::Result<()> {
                     }
                 }
                 Event::Mouse(m) => {
+                    let text = Text {
+                        rows: &rows,
+                        source: &source,
+                        grouping: None,
+                        marked: &HashSet::new(),
+                        unmatched: &HashSet::new(),
+                    };
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
+                    } else if corner_clicked(&m, &mut grid, &text, &mut popup, layout.grid) {
                     } else if let Some(key) = mark_clicked(&m, &mut grid, layout.grid) {
                         let _ = grid.toggle(Axis::Rows, key);
                     } else if let Some(pointer) = mouse.event(&m, layout.grid, Instant::now()) {

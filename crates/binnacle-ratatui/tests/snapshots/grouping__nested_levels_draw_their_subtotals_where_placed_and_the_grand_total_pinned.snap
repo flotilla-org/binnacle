@@ -3,7 +3,7 @@ source: crates/binnacle-ratatui/tests/grouping.rs
 expression: out
 ---
 --- Subtotals [After, After]
-                id     │kg     │
+region › kg     id     │kg     │
 ▾ North                          █
   ▾ Aberdeen                     █
       #0        s0c0    s0c2     █
@@ -18,7 +18,7 @@ expression: out
     South total         Σ8       █
 Grand total             Σ0       █
 --- Subtotals [Before, Off]
-                id     │kg     │
+region › kg     id     │kg     │
 ▾ North                          █
     North total         Σ2       █
   ▾ Aberdeen            Σ3       █
@@ -33,7 +33,7 @@ Grand total             Σ0       █
                                  █
 Grand total             Σ0       █
 --- Subtotals [Off, Off]
-                id     │kg     │
+region › kg     id     │kg     │
 ▾ North                 Σ1       █
   ▾ Aberdeen            Σ3       █
       #0        s0c0    s0c2     █

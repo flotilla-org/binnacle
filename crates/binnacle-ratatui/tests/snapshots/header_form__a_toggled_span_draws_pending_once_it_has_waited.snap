@@ -1,9 +1,8 @@
 ---
 source: crates/binnacle-ratatui/tests/header_form.rs
-assertion_line: 203
 expression: late
 ---
-count                   id   │crew │weig
+crew    weight    count id   │crew │weig
  ⋯ North ▾ Aberdeen #0  s0c0  s0c1  s0c2
  │       │          #3  s3c0  s3c1  s3c2
  │      Aberdeen total  sum   sum   sum

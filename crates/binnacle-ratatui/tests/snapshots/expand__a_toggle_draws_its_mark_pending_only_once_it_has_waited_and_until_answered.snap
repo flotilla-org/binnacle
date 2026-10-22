@@ -1,10 +1,9 @@
 ---
 source: crates/binnacle-ratatui/tests/expand.rs
-assertion_line: 145
 expression: out
 ---
 --- North closed, the empty port with no mark
-count       id    regionport
+region › porid    regionport
 ▸ North                      █
 ▾ South                      █
   ▾ Cadiz                    █
@@ -17,7 +16,7 @@ count       id    regionport
                              █
                              █
 --- South toggled: no pending mark yet
-count       id    regionport
+region › porid    regionport
 ▸ North                      █
 ▾ South                      █
   ▾ Cadiz                    █
@@ -30,7 +29,7 @@ count       id    regionport
                              █
                              █
 --- 150 ms on, still unanswered: pending
-count       id    regionport
+region › porid    regionport
 ▸ North                      █
 ⋯ South                      █
   ▾ Cadiz                    █
@@ -43,7 +42,7 @@ count       id    regionport
                              █
                              █
 --- answered: closed
-count       id    regionport
+region › porid    regionport
 ▸ North                      █
 ▸ South                      █
                              █
