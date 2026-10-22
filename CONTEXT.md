@@ -203,7 +203,7 @@ What a Table Source declares per field for grouping: whether the rows group by i
 _Avoid_: Pivot capabilities, aggregation support
 
 **Corner Grid**:
-Where the two Header Bands' tiers cross on a table grouped in header form: each cell by column tier and row tier, showing level names and the values caption.
+Where the two Header Bands meet, as a grid: one row per Tier of the column Header Band, one column per Tier of the row Header Band, each band's own headers taking the last (an axis in outline form, or not grouped, has one, naming every level of the axis). Each Tier names its level's field, the values pseudo-level marked as having none. Adapters draw it in the Tiers layout: the values caption and the values pseudo-level's name on the top row, each column level's name right-aligned in its Tier with an arrow, and the row levels' names along the bottom row, one per level column in header form or joined with `›` in outline form. A click on a level name sorts the axis by its field (`cycle_sort`), as a click on that field's header would; a right-click opens its menu. `CornerGrid` in code.
 _Avoid_: Top-left corner, pivot corner
 
 **Drill-Down Spec**:
