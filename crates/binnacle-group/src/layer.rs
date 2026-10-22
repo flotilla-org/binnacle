@@ -277,15 +277,19 @@ impl<A> Kids<A> {
     }
 }
 
-/// The pages of `range` (clipped to `total`) for which `known` lacks an
-/// index.
-fn missing(range: Range<u64>, total: u64, known: impl Fn(Range<u64>) -> u64) -> Vec<Range<u64>> {
+/// What of `range` (clipped to `total`) `has` lacks, a page at a time:
+/// from the first index lacking in each page to its end, so that a backend
+/// that answers a request in part makes progress.
+fn missing(range: Range<u64>, total: u64, has: impl Fn(u64) -> bool) -> Vec<Range<u64>> {
     let end = range.end.min(total);
     let first = range.start / PAGE * PAGE;
     (first..end)
         .step_by(PAGE as usize)
-        .map(|page| page..(page + PAGE).min(total))
-        .filter(|page| known(page.clone()) < page.end - page.start)
+        .filter_map(|page| {
+            let stop = (page + PAGE).min(end);
+            let lacking = (page.max(range.start)..stop).find(|&i| !has(i))?;
+            Some(lacking..stop)
+        })
         .collect()
 }
 
@@ -408,7 +412,7 @@ impl<A> Node<A> {
             return;
         };
         if open.needs_all(self) {
-            let known = |r: Range<u64>| g.nodes.range(r).count() as u64;
+            let known = |i| g.nodes.contains_key(&i);
             for range in missing(0..total, total, known) {
                 asks.push(Ask {
                     path: self.path.clone(),
@@ -503,7 +507,8 @@ enum Spot {
 }
 
 /// Puts `keys`, the Leaves from `start`, in `runs` in runs of at most a
-/// page, over any held there; a run's `used` is `fresh` where it says.
+/// page, over any held there; a run's `used` is `fresh` where it says, or
+/// that of what it replaces if later.
 fn insert_leaves(
     runs: &mut BTreeMap<u64, Run>,
     start: u64,
@@ -515,9 +520,12 @@ fn insert_leaves(
         .filter(|(s, r)| *s + r.keys.len() as u64 > start)
         .map(|(s, _)| *s)
         .collect();
+    // What it replaces stays as fresh as it was.
+    let mut was: Vec<(Range<u64>, u64)> = Vec::new();
     for s in over {
         let run = runs.remove(&s).expect("listed");
         let e = s + run.keys.len() as u64;
+        was.push((s.max(start)..e.min(end), run.used.get()));
         if s < start {
             let keys = run.keys[..(start - s) as usize].to_vec();
             let used = run.used.clone();
@@ -539,7 +547,10 @@ fn insert_leaves(
     while !rest.is_empty() {
         let len = ((at / PAGE + 1) * PAGE - at).min(rest.len() as u64);
         let (run, next) = rest.split_at(len as usize);
-        let used = Cell::new(fresh(at..at + len));
+        let replaced = (was.iter())
+            .filter(|(r, _)| r.start < at + len && at < r.end)
+            .map(|(_, used)| *used);
+        let used = Cell::new(replaced.fold(fresh(at..at + len), u64::max));
         runs.insert(
             at,
             Run {
@@ -590,7 +601,8 @@ pub struct GroupingLayer<A> {
     in_flight: Vec<(RequestId, Ask)>,
     /// What Windows and Locates found missing since the last batch.
     misses: Vec<Ask>,
-    /// What Windows found missing and the answers have not covered yet.
+    /// What Windows and Locates found missing and the answers have not
+    /// covered yet: answered, it stays cached through the next Window.
     read: Vec<Ask>,
     /// Whether the applied spec has been given for the latest request.
     settled: bool,
@@ -962,7 +974,7 @@ impl<A> GroupingLayer<A> {
             Want::Locate(key) => self.located.contains_key(&key),
             Want::Groups => node_at(&self.root, &ask.path).is_some_and(|n| match &n.kids {
                 Kids::Groups(g) => g.total.is_some_and(|total| {
-                    let known = |r: Range<u64>| g.nodes.range(r).count() as u64;
+                    let known = |i| g.nodes.contains_key(&i);
                     missing(ask.range.clone(), total, known).is_empty()
                 }),
                 Kids::Leaves(_) => false,
@@ -975,8 +987,8 @@ impl<A> GroupingLayer<A> {
     }
 
     /// Lets the cache go of the closed groups and Leaves read longest ago,
-    /// sparing the pages the latest two Windows read or asked for, until it
-    /// holds no more than its size.
+    /// sparing the pages the latest two Windows read or asked for and what
+    /// a request still due covers, until it holds no more than its size.
     fn trim(&mut self) {
         if self.cached <= self.cache {
             return;
@@ -988,15 +1000,29 @@ impl<A> GroupingLayer<A> {
             if cached <= self.cache || (used > 0 && used + 1 >= self.frame) {
                 break;
             }
+            // What a request still due covers stays until it is done.
+            let in_flight = &self.in_flight;
+            let due = |want: Want, range: Range<u64>| {
+                in_flight.iter().any(|(_, a)| {
+                    a.path == path
+                        && a.want == want
+                        && a.range.start < range.end
+                        && range.start < a.range.end
+                })
+            };
             let Some(node) = node_mut(&mut self.root, &path, |_| true) else {
                 continue;
             };
             match (spot, &mut node.kids) {
                 (Spot::Leaves(start), Kids::Leaves(runs)) => {
-                    let run = runs.remove(&start).map_or(0, |r| r.keys.len());
-                    cached -= run as u64;
+                    let len = runs.get(&start).map_or(0, |r| r.keys.len() as u64);
+                    if due(Want::Leaves, start..start + len) {
+                        continue;
+                    }
+                    runs.remove(&start);
+                    cached -= len;
                 }
-                (Spot::Group(index), Kids::Groups(g)) => {
+                (Spot::Group(index), Kids::Groups(g)) if !due(Want::Groups, index..index + 1) => {
                     if let Some(gone) = g.nodes.remove(&index) {
                         let value = &gone.path.last().expect("a group has a path").1;
                         g.by_value.remove(value);
@@ -1209,7 +1235,12 @@ impl<A> GroupingLayer<A> {
         match found {
             Ok(found) => Some(found.map_or(gone, |p| Located::Found(p + top))),
             Err(asks) => {
-                self.misses.extend(asks);
+                for ask in asks {
+                    if !self.read.contains(&ask) {
+                        self.read.push(ask.clone());
+                    }
+                    self.misses.push(ask);
+                }
                 None
             }
         }
@@ -1351,7 +1382,7 @@ fn item_at<A>(
                 return Err(Ask {
                     path: node.path.clone(),
                     want: Want::Groups,
-                    range: page..(page + PAGE).min(total),
+                    range: index..(page + PAGE).min(total),
                 });
             };
             child.used.set(frame);
@@ -1396,7 +1427,7 @@ fn item_at<A>(
                 Err(Ask {
                     path: node.path.clone(),
                     want: Want::Leaves,
-                    range: page..(page + PAGE).min(node.children()),
+                    range: position..(page + PAGE).min(node.children()),
                 })
             }
         },
@@ -1423,7 +1454,7 @@ fn find_group<A>(
         };
         let Some(&index) = g.by_value.get(value) else {
             let total = g.total.unwrap_or(0);
-            let known = |r: Range<u64>| g.nodes.range(r).count() as u64;
+            let known = |i| g.nodes.contains_key(&i);
             let pages = missing(0..total, total, known);
             let asks = pages.into_iter().map(|range| Ask {
                 path: node.path.clone(),

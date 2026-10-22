@@ -342,22 +342,24 @@ impl Fake {
         let levels = batch.scope.levels.len();
         let mut answers = Vec::new();
         // Jointly: the requests for one group's groups or Leaves answered
-        // as one, from the first's start to the last's end, naming only the
-        // first; the others are never named.
-        let mut requests: Vec<Request> = Vec::new();
+        // as one, whole, from the first's start to the last's end, naming
+        // only the first; the others are never named, the answer covering
+        // them.
+        let mut requests: Vec<(Request, bool)> = Vec::new();
         for request in &batch.requests {
-            let joint = requests.iter_mut().find(|r| {
+            let joint = requests.iter_mut().find(|(r, _)| {
                 r.path == request.path && r.want == request.want && r.want != Want::Total
             });
             match joint {
-                Some(r) if tc.draw(gs::weighted_booleans(0.3)) => {
+                Some((r, joint)) if tc.draw(gs::weighted_booleans(0.3)) => {
                     r.range =
                         r.range.start.min(request.range.start)..r.range.end.max(request.range.end);
+                    *joint = true;
                 }
-                _ => requests.push(request.clone()),
+                _ => requests.push((request.clone(), false)),
             }
         }
-        for request in &requests {
+        for (request, joint) in &requests {
             if matches!(request.want, Want::Groups | Want::Leaves) {
                 self.asked.push(request.path.clone());
             }
@@ -417,7 +419,7 @@ impl Fake {
             let mut parts = parts;
             // A short answer: the first part alone, naming the request, so
             // the layer must ask again for the rest.
-            if parts.len() > 1 && tc.draw(gs::weighted_booleans(0.3)) {
+            if !joint && parts.len() > 1 && tc.draw(gs::weighted_booleans(0.3)) {
                 parts.truncate(1);
             }
             let last = parts.len().saturating_sub(1);
@@ -766,7 +768,8 @@ fn everything(
     known: &mut Vec<(Key, Path)>,
 ) -> Vec<Described> {
     let count = layer.count(Axis::Rows).expect("a settled layer counts");
-    let mut got: Vec<(Key, Outline)> = Vec::new();
+    // Each Window described as it comes, while its pages are cached.
+    let mut got: Vec<(Key, Described)> = Vec::new();
     for _ in 0..1000 {
         if got.len() as u64 >= count {
             break;
@@ -776,18 +779,17 @@ fn everything(
         if items.is_empty() {
             drive(tc, layer, fake);
         }
-        got.extend(items);
+        got.extend(items.iter().map(|(k, o)| (*k, describe(layer, *k, o))));
     }
     assert_eq!(got.len() as u64, count, "every item is fetched");
-    let described: Vec<Described> = got.iter().map(|(k, o)| describe(layer, *k, o)).collect();
-    for ((key, _), d) in got.iter().zip(&described) {
+    for (key, d) in &got {
         if let Item::Group(path) = &d.item
             && !known.iter().any(|(k, _)| k == key)
         {
             known.push((*key, path.clone()));
         }
     }
-    described
+    got.into_iter().map(|(_, d)| d).collect()
 }
 
 /// The Change Notices since the last call, and the `expand` last applied.
@@ -838,7 +840,9 @@ fn toggling(tc: &TestCase, mut check: impl FnMut(&Step)) {
     };
     let mut expand = Expand::to(first);
     let mut fake = Fake::new(rows.clone());
-    let mut layer = GroupingLayer::<u64>::new();
+    // A cache small enough to let pages go now and then.
+    let cache = tc.draw(gs::sampled_from(vec![0, 5, 40, binnacle_group::CACHE]));
+    let mut layer = GroupingLayer::<u64>::with_cache(cache);
     layer.request_view(opening(levels, &shape, expand.clone()));
     drive(tc, &mut layer, &mut fake);
     news(&mut layer);
@@ -1257,5 +1261,51 @@ fn the_layer_holds_open_groups_and_a_bounded_cache_whatever_the_rows(tc: TestCas
         );
         before = range;
         start += items.len() as u64;
+    }
+}
+
+/// With a small cache, the pages a Key was read in are let go of, yet the
+/// layer still locates every item where a Window put it, asking for the
+/// pages it needs again.
+#[hegel::test(test_cases = 60)]
+fn items_are_located_after_their_pages_are_let_go(tc: TestCase) {
+    let groups = tc.draw(gs::integers::<usize>().min_value(1).max_value(150));
+    let per = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    let rows = many(groups, per);
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
+    let first = depth(&tc, levels);
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::with_cache(tc.draw(gs::integers::<u64>().max_value(20)));
+    layer.request_view(opening(levels, &shape, Expand::to(first)));
+    drive(&tc, &mut layer, &mut fake);
+    let got = everything(&tc, &mut layer, &mut fake, &mut Vec::new());
+    let want = model(
+        &rows,
+        levels,
+        &shape,
+        &Opened {
+            depth: first,
+            except: vec![],
+        },
+    );
+    assert_eq!(got, want);
+    let keys: Vec<Key> = (0..want.len() as u64)
+        .map(|i| {
+            let mut item = layer.window(Axis::Rows, i..i + 1);
+            for _ in 0..20 {
+                if !item.is_empty() {
+                    break;
+                }
+                drive(&tc, &mut layer, &mut fake);
+                item = layer.window(Axis::Rows, i..i + 1);
+            }
+            item[0].0
+        })
+        .collect();
+    let order = tc.draw(gs::permutations((0..keys.len()).collect::<Vec<_>>()));
+    for i in order {
+        let located = locate(&tc, &mut layer, &mut fake, keys[i]);
+        assert_eq!(located, Located::Found(i as u64), "{:?}", want[i].item);
     }
 }
