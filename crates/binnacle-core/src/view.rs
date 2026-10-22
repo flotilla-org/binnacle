@@ -1,4 +1,7 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use crate::effect::Effect;
 use crate::grid::Grid;
@@ -75,6 +78,132 @@ impl Value {
     }
 }
 
+/// A number or a date a comparison condition compares values with. A date
+/// is an instant, in milliseconds since the Unix epoch (UTC); a date
+/// without a time of day is its midnight, UTC.
+#[derive(Clone, Copy, Debug)]
+pub enum Scalar {
+    Number(f64),
+    Date(i64),
+}
+
+impl Scalar {
+    /// How this compares with `other`: `None` for a NaN, or a number and a
+    /// date.
+    pub fn order(&self, other: &Scalar) -> Option<Ordering> {
+        match (self, other) {
+            (Scalar::Number(a), Scalar::Number(b)) => a.partial_cmp(b),
+            (Scalar::Date(a), Scalar::Date(b)) => Some(a.cmp(b)),
+            _ => None,
+        }
+    }
+
+    /// Midnight, UTC, on day `day` of month `month` (1 to 12) of `year`.
+    pub fn date(year: i64, month: u32, day: u32) -> Self {
+        // Days from civil, after Howard Hinnant's algorithm.
+        let y = if month <= 2 { year - 1 } else { year };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let mp = (i64::from(month) + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        Scalar::Date((era * 146_097 + doe - 719_468) * 86_400_000)
+    }
+}
+
+/// Two scalars are the same if they have the same kind and bits, so a
+/// condition holding NaN still equals itself.
+impl PartialEq for Scalar {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Scalar::Number(a), Scalar::Number(b)) => a.to_bits() == b.to_bits(),
+            (Scalar::Date(a), Scalar::Date(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Scalar {}
+
+impl Hash for Scalar {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Scalar::Number(n) => (0u8, n.to_bits()).hash(state),
+            Scalar::Date(ms) => (1u8, ms).hash(state),
+        }
+    }
+}
+
+/// A number as Rust writes it; a date as `YYYY-MM-DD`, with `THH:MM` (and
+/// seconds and milliseconds, where not zero) and `Z` past midnight UTC.
+impl fmt::Display for Scalar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ms = match self {
+            Scalar::Number(n) => return write!(f, "{n}"),
+            Scalar::Date(ms) => *ms,
+        };
+        // Civil from days, after Howard Hinnant's algorithm.
+        let (days, time) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        write!(f, "{year:04}-{month:02}-{day:02}")?;
+        if time != 0 {
+            let (h, m) = (time / 3_600_000, time / 60_000 % 60);
+            let (s, milli) = (time / 1000 % 60, time % 1000);
+            write!(f, "T{h:02}:{m:02}")?;
+            match (s, milli) {
+                (0, 0) => {}
+                (s, 0) => write!(f, ":{s:02}")?,
+                (s, milli) => write!(f, ":{s:02}.{milli:03}")?,
+            }
+            write!(f, "Z")?;
+        }
+        Ok(())
+    }
+}
+
+/// How a comparison condition compares a value with its scalars. Between
+/// takes both ends; a low end past the high one keeps nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Comparison {
+    Equal(Scalar),
+    NotEqual(Scalar),
+    Less(Scalar),
+    AtMost(Scalar),
+    Greater(Scalar),
+    AtLeast(Scalar),
+    Between(Scalar, Scalar),
+}
+
+impl Comparison {
+    /// Whether an item whose value is `value` passes: never a blank, a NaN,
+    /// or a value of another kind than the scalars.
+    pub fn passes(&self, value: Option<Scalar>) -> bool {
+        use Ordering::*;
+        let Some(value) = value else { return false };
+        let with =
+            |s: &Scalar, wanted: &[Ordering]| value.order(s).is_some_and(|o| wanted.contains(&o));
+        match self {
+            Comparison::Equal(s) => with(s, &[Equal]),
+            Comparison::NotEqual(s) => with(s, &[Less, Greater]),
+            Comparison::Less(s) => with(s, &[Less]),
+            Comparison::AtMost(s) => with(s, &[Less, Equal]),
+            Comparison::Greater(s) => with(s, &[Greater]),
+            Comparison::AtLeast(s) => with(s, &[Greater, Equal]),
+            Comparison::Between(low, high) => {
+                with(low, &[Greater, Equal]) && with(high, &[Less, Equal])
+            }
+        }
+    }
+}
+
 /// What a condition asks of the values in its item.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -84,6 +213,9 @@ pub enum ConditionKind {
     /// The value is one of these, exactly (a blank only if they list
     /// [`Value::Blank`]). None listed keeps nothing.
     OneOf(Vec<Value>),
+    /// The value, a number or a date, compares so. A blank, a NaN, or a
+    /// value of the other kind never passes, so `not` keeps it.
+    Compare(Comparison),
 }
 
 /// One condition on the items of an axis, read in one item of the other
@@ -117,18 +249,27 @@ impl Condition {
         }
     }
 
+    /// Keeps the items whose value in `key` passes `comparison`.
+    pub fn compare(key: Key, comparison: Comparison) -> Self {
+        Condition {
+            key,
+            kind: ConditionKind::Compare(comparison),
+            not: false,
+        }
+    }
+
     /// This condition, or with `not` its opposite.
     pub fn not(mut self, not: bool) -> Self {
         self.not = not;
         self
     }
 
-    /// A Text condition with no text, which asks for nothing. A OneOf
-    /// condition always asks for something, even with no values.
+    /// A Text condition with no text, which asks for nothing. Other kinds
+    /// always ask for something, even OneOf with no values.
     fn is_empty(&self) -> bool {
         match &self.kind {
             ConditionKind::Text(query) => query.text.is_empty(),
-            ConditionKind::OneOf(_) => false,
+            ConditionKind::OneOf(_) | ConditionKind::Compare(_) => false,
         }
     }
 }
@@ -375,6 +516,17 @@ pub struct Support {
     /// The axis may be filtered by OneOf conditions on the item, the Table
     /// Source listing its distinct values. Not by default.
     pub one_of: bool,
+    /// The axis may be filtered by comparison conditions on the item, and
+    /// on which kind of value; `None` (the default) if not.
+    pub compare: Option<Compared>,
+}
+
+/// The kind of value comparison conditions on an item compare: its values
+/// and the scalars both numbers, or both dates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Compared {
+    Numbers,
+    Dates,
 }
 
 impl Default for Support {
@@ -383,6 +535,7 @@ impl Default for Support {
             sort: true,
             text: Some(TextSupport::default()),
             one_of: false,
+            compare: None,
         }
     }
 }
@@ -400,6 +553,11 @@ impl Support {
 
     pub fn with_one_of(mut self, one_of: bool) -> Self {
         self.one_of = one_of;
+        self
+    }
+
+    pub fn with_compare(mut self, compare: Option<Compared>) -> Self {
+        self.compare = compare;
         self
     }
 }

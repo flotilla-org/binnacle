@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Key, Mode, Searched,
-    Snapshot, SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    Axis, Comparison, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Key, Mode,
+    Searched, Snapshot, SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -371,6 +371,7 @@ fn filters_text(spec: &ViewSpec) -> String {
                         .collect();
                     text += &format!("one of [{}]", values.join(", "));
                 }
+                ConditionKind::Compare(comparison) => text += &comparison_text(comparison),
                 _ => text += "?",
             }
             parts.push(text);
@@ -538,4 +539,17 @@ fn picture(snap: &Snapshot) -> String {
         out.push('\n');
     }
     out
+}
+
+/// A comparison as `< 5`, `>= 2024-03-01` or `5..=9`.
+fn comparison_text(comparison: &Comparison) -> String {
+    match comparison {
+        Comparison::Equal(s) => format!("= {s}"),
+        Comparison::NotEqual(s) => format!("!= {s}"),
+        Comparison::Less(s) => format!("< {s}"),
+        Comparison::AtMost(s) => format!("<= {s}"),
+        Comparison::Greater(s) => format!("> {s}"),
+        Comparison::AtLeast(s) => format!(">= {s}"),
+        Comparison::Between(low, high) => format!("{low}..={high}"),
+    }
 }

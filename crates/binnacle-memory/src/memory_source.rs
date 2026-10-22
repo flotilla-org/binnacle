@@ -5,9 +5,10 @@ use std::fmt;
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, Blanks, ChangeNotice, Condition, ConditionKind, Distinct, DistinctQuery, DistinctValue,
-    FilterSpec, FindDirection, FindMatch, FindQuery, Grid, Key, Located, Position, Searched,
-    SortDirection, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewSpec,
+    Axis, Blanks, ChangeNotice, Compared, Comparison, Condition, ConditionKind, Distinct,
+    DistinctQuery, DistinctValue, FilterSpec, FindDirection, FindMatch, FindQuery, Grid, Key,
+    Located, Position, Scalar, Searched, SortDirection, SortSpec, Stamped, Support, TextQuery,
+    TextSupport, Totals, Value, ViewSpec,
 };
 use regex::{Regex, RegexBuilder};
 
@@ -38,15 +39,37 @@ type ExtractText<R> = Box<dyn for<'r> Fn(&'r R) -> Option<Cow<'r, str>>>;
 enum Column<R> {
     I64(Extract<R, i64>),
     F64(Extract<R, f64>),
+    /// Milliseconds since the Unix epoch, sorting as integers.
+    Date(Extract<R, i64>),
     Bytes(ExtractBytes<R>),
 }
 
 impl<R> Column<R> {
     fn extract<'r>(&self, rows: &'r [R]) -> SortKeys<'r> {
         match self {
-            Column::I64(f) => SortKeys::I64(rows.iter().map(f).collect()),
+            Column::I64(f) | Column::Date(f) => SortKeys::I64(rows.iter().map(f).collect()),
             Column::F64(f) => SortKeys::F64(rows.iter().map(f).collect()),
             Column::Bytes(f) => SortKeys::Bytes(rows.iter().map(f).collect()),
+        }
+    }
+
+    /// The value of `row` comparison conditions compare: `None` for a blank
+    /// or a byte string.
+    fn scalar(&self, row: &R) -> Option<Scalar> {
+        match self {
+            Column::I64(f) => f(row).map(|v| Scalar::Number(v as f64)),
+            Column::F64(f) => f(row).map(Scalar::Number),
+            Column::Date(f) => f(row).map(Scalar::Date),
+            Column::Bytes(_) => None,
+        }
+    }
+
+    /// The kind of value comparison conditions on the column compare.
+    fn compared(&self) -> Option<Compared> {
+        match self {
+            Column::I64(_) | Column::F64(_) => Some(Compared::Numbers),
+            Column::Date(_) => Some(Compared::Dates),
+            Column::Bytes(_) => None,
         }
     }
 
@@ -55,6 +78,7 @@ impl<R> Column<R> {
         match self {
             Column::I64(f) => f(row).map(|v| v.to_string().into()),
             Column::F64(f) => f(row).map(|v| v.to_string().into()),
+            Column::Date(f) => f(row).map(|v| Scalar::Date(v).to_string().into()),
             Column::Bytes(f) => f(row).map(|v| match v {
                 Cow::Borrowed(b) => String::from_utf8_lossy(b),
                 Cow::Owned(b) => String::from_utf8_lossy(&b).into_owned().into(),
@@ -110,6 +134,24 @@ impl Matcher {
     }
 }
 
+/// The kind of value `comparison` compares with: that of its scalars, or
+/// none for a between mixing numbers and dates.
+fn compared(comparison: &Comparison) -> Option<Compared> {
+    let kind = |s: &Scalar| match s {
+        Scalar::Number(_) => Compared::Numbers,
+        Scalar::Date(_) => Compared::Dates,
+    };
+    match comparison {
+        Comparison::Between(low, high) => (kind(low) == kind(high)).then(|| kind(low)),
+        Comparison::Equal(s)
+        | Comparison::NotEqual(s)
+        | Comparison::Less(s)
+        | Comparison::AtMost(s)
+        | Comparison::Greater(s)
+        | Comparison::AtLeast(s) => Some(kind(s)),
+    }
+}
+
 /// A quick filter in force: its query and its matcher.
 struct Quick {
     query: TextQuery,
@@ -121,6 +163,7 @@ enum Test {
     Text(Matcher),
     /// The texts listed, and whether blanks are.
     OneOf(HashSet<String>, bool),
+    Compare(Comparison),
 }
 
 /// A condition in force and its test.
@@ -143,6 +186,7 @@ impl Kept {
                     .collect();
                 Test::OneOf(texts, values.contains(&Value::Blank))
             }
+            ConditionKind::Compare(comparison) => Test::Compare(*comparison),
             _ => return None,
         };
         Some(Kept {
@@ -151,14 +195,32 @@ impl Kept {
         })
     }
 
-    /// Whether the condition keeps an item whose text where it meets the
-    /// condition's Key is `text`.
-    fn keeps(&self, text: Option<&str>) -> bool {
+    /// Whether the condition keeps an item whose cell where it meets the
+    /// condition's Key is `cell`.
+    fn keeps<R>(&self, cell: Cell<'_, R>) -> bool {
         let matched = match &self.test {
-            Test::Text(matcher) => text.is_some_and(|t| matcher.is_match(t)),
-            Test::OneOf(texts, blanks) => text.map_or(*blanks, |t| texts.contains(t)),
+            Test::Text(matcher) => cell.text().is_some_and(|t| matcher.is_match(&t)),
+            Test::OneOf(texts, blanks) => cell.text().map_or(*blanks, |t| texts.contains(&*t)),
+            Test::Compare(comparison) => comparison.passes(cell.scalar()),
         };
         matched != self.condition.not
+    }
+}
+
+/// Where an item meets a condition's item: a column of a row, or no row.
+struct Cell<'a, R> {
+    source: &'a MemorySource<R>,
+    column: Key,
+    row: Option<&'a R>,
+}
+
+impl<'a, R> Cell<'a, R> {
+    fn text(&self) -> Option<Cow<'a, str>> {
+        self.source.text(self.column, self.row?)
+    }
+
+    fn scalar(&self) -> Option<Scalar> {
+        self.source.columns.get(&self.column)?.scalar(self.row?)
     }
 }
 
@@ -318,6 +380,15 @@ impl<R> MemorySource<R> {
         self
     }
 
+    /// Makes the column with Key `column` a date, in milliseconds since the
+    /// Unix epoch (UTC), sorting by it and compared as a date; `None` is
+    /// null. Without a text closure its text form is the date as
+    /// [`Scalar`] writes it.
+    pub fn date_column(mut self, column: Key, f: impl Fn(&R) -> Option<i64> + 'static) -> Self {
+        self.columns.insert(column, Column::Date(Box::new(f)));
+        self
+    }
+
     /// Makes the column with Key `column` sort by a byte string, borrowed from
     /// the row or computed; `None` is null.
     pub fn bytes_column(
@@ -362,10 +433,20 @@ impl<R> MemorySource<R> {
 
     /// `axis`'s `filter` less its conditions on items of the other axis the
     /// table does not have, which it leaves out of its answer.
+    /// Comparisons with scalars of another kind than the item's values are
+    /// left out too.
     fn present_filter(&mut self, axis: Axis, filter: &FilterSpec) -> FilterSpec {
         let conditions: Vec<Condition> = (filter.conditions.conditions().iter())
             .filter(|c| self.table.logical_index(axis.other(), c.key).is_some())
             .cloned()
+            .collect();
+        let conditions: Vec<Condition> = (conditions.into_iter())
+            .filter(|c| match &c.kind {
+                ConditionKind::Compare(comparison) => {
+                    (self.compared(axis, c.key)).is_some_and(|k| compared(comparison) == Some(k))
+                }
+                _ => true,
+            })
             .collect();
         filter.clone().with_conditions(conditions.into())
     }
@@ -481,16 +562,16 @@ impl<R> MemorySource<R> {
             .map(|c| self.columns.get(&self.table.base_key(Axis::Cols, c)))
             .collect();
         let mut present = columns.iter().flatten();
-        if present.clone().all(|c| matches!(c, Column::I64(_))) {
+        if (present.clone()).all(|c| matches!(c, Column::I64(_) | Column::Date(_))) {
             let key = |c: &Option<&Column<R>>| match c {
-                Some(Column::I64(f)) => f(row),
+                Some(Column::I64(f) | Column::Date(f)) => f(row),
                 _ => None,
             };
             return SortKeys::I64(columns.iter().map(key).collect());
         }
         if present.all(|c| !matches!(c, Column::Bytes(_))) {
             let key = |c: &Option<&Column<R>>| match c {
-                Some(Column::I64(f)) => f(row).map(|v| v as f64),
+                Some(Column::I64(f) | Column::Date(f)) => f(row).map(|v| v as f64),
                 Some(Column::F64(f)) => f(row),
                 _ => None,
             };
@@ -559,8 +640,13 @@ impl<R> MemorySource<R> {
     fn passes(&self, filter: &Filter, searched: &[Key], row: &R) -> bool {
         filter.quick.as_ref().is_none_or(|q| {
             (searched.iter()).any(|&c| self.text(c, row).is_some_and(|t| q.matcher.is_match(&t)))
-        }) && (filter.conditions.iter())
-            .all(|k| k.keeps(self.text(k.condition.key, row).as_deref()))
+        }) && (filter.conditions.iter()).all(|k| {
+            k.keeps(Cell {
+                source: self,
+                column: k.condition.key,
+                row: Some(row),
+            })
+        })
     }
 
     /// Whether the columns' `filter`, reading `read` of `rows`, keeps
@@ -569,8 +655,13 @@ impl<R> MemorySource<R> {
         let text = |row: Option<usize>| row.and_then(|r| self.text(column, &rows[r]));
         filter.quick.as_ref().is_none_or(|q| {
             (read.searched.iter()).any(|&r| text(Some(r)).is_some_and(|t| q.matcher.is_match(&t)))
-        }) && (filter.conditions.iter().zip(&read.reads))
-            .all(|(k, &row)| k.keeps(text(row).as_deref()))
+        }) && (filter.conditions.iter().zip(&read.reads)).all(|(k, &row)| {
+            k.keeps(Cell {
+                source: self,
+                column,
+                row: row.map(|r| &rows[r]),
+            })
+        })
     }
 
     /// The keep flag of every base column: whether the columns' filter in
@@ -957,7 +1048,10 @@ impl<R> MemorySource<R> {
     /// a text form. The columns sort by any row while some column has a
     /// closure, comparing each column's sort key in that row (see
     /// [`MemorySource::view`]), and filter by Text and OneOf conditions on
-    /// any row, reading the text forms.
+    /// any row, reading the text forms. The rows compare numbers on integer
+    /// and float columns and dates on date columns; the columns compare a
+    /// row's values when every column with a closure is numeric, or every
+    /// one a date.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
         let text = axis == Axis::Cols || self.has_text(key);
         let sort = match axis {
@@ -968,6 +1062,21 @@ impl<R> MemorySource<R> {
             .with_sort(sort)
             .with_text(text.then_some(TextSupport::new(true)))
             .with_one_of(text)
+            .with_compare(self.compared(axis, key))
+    }
+
+    /// The kind of value comparison conditions on `key`, an item of the
+    /// other axis, compare on `axis`: a column's, for the rows; for the
+    /// columns, the kind every column with a closure shares, if any.
+    fn compared(&self, axis: Axis, key: Key) -> Option<Compared> {
+        match axis {
+            Axis::Rows => self.columns.get(&key)?.compared(),
+            Axis::Cols => {
+                let mut kinds = self.columns.values().map(Column::compared);
+                let first = kinds.next()?;
+                kinds.all(|k| k == first).then_some(first)?
+            }
+        }
     }
 
     /// Both axes hide.
