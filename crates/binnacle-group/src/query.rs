@@ -19,13 +19,18 @@ pub struct Stamp(pub u64);
 pub struct RequestId(pub u64);
 
 /// What every request of a batch shares, from the View Spec: the fields of
-/// the levels (outermost first), the values to aggregate, the slicers, and
-/// the axis's filter, hidden Leaf Keys and Sort Spec. The backend filters
+/// the row levels (outermost first), the values to aggregate, the slicers,
+/// and the rows' filter, hidden Leaf Keys and Sort Spec. The backend filters
 /// the Leaves by the slicers (`WHERE`), the filter and the hidden Keys
 /// before it groups and aggregates them, and orders siblings by the Sort
 /// Spec. A comparison in the filter on a field a value aggregates acts after
 /// aggregating instead (`HAVING`, see [`having`]): on the groups by that
 /// value's figure, never on the Leaves.
+///
+/// On a pivot, `columns` holds the fields of the column levels, which group
+/// the same Leaves across, and `col_sort` orders the column groups. The
+/// values pseudo-level is in neither list: where it goes is the layer's
+/// concern, and the backend aggregates every value for every group.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Scope {
     pub levels: Vec<Key>,
@@ -34,6 +39,12 @@ pub struct Scope {
     pub filter: FilterSpec,
     pub hidden: Vec<Key>,
     pub sort: SortSpec,
+    pub columns: Vec<Key>,
+    /// The column axis's Sort Spec: a sort column on a column level's field
+    /// orders its groups by their value, one on the rows' Grand Total
+    /// (`GRAND_TOTAL`) by their first value's aggregate. Unsorted, column
+    /// groups come in ascending value.
+    pub col_sort: SortSpec,
 }
 
 /// The value whose figure `condition`, in a grouped axis's filter, reads
@@ -63,6 +74,11 @@ pub enum Want {
     /// The aggregates of the whole group at the path: at the empty path,
     /// the Grand Total's. The range is empty.
     Total,
+    /// On a pivot, the distinct values of the next column level under the
+    /// path, a column path: `range` of the column groups there, in the
+    /// column Sort Spec's order, each with its value, its child count and
+    /// its aggregates over all the rows, and how many there are.
+    Columns,
 }
 
 /// One aggregate query.
@@ -91,6 +107,22 @@ pub struct GroupRow<A> {
     pub value: Value,
     pub children: u64,
     pub aggregates: Vec<A>,
+    /// On a pivot, a row group's aggregates under each column group, by
+    /// the column group's path, for every column group at every column
+    /// level, each one per value of the scope; empty otherwise.
+    pub cells: Vec<(Path, Vec<A>)>,
+}
+
+impl<A> GroupRow<A> {
+    /// A group with no cells, as off a pivot.
+    pub fn new(value: Value, children: u64, aggregates: Vec<A>) -> Self {
+        GroupRow {
+            value,
+            children,
+            aggregates,
+            cells: Vec::new(),
+        }
+    }
 }
 
 /// What an answer holds.
@@ -110,6 +142,12 @@ pub enum Body<A> {
     /// The aggregates of the whole group at the answer's path, one per
     /// value of the scope, in order.
     Total { aggregates: Vec<A> },
+    /// Column groups under the answer's path, a column path, from its
+    /// `start`, and how many there are under it in all.
+    Columns {
+        total: u64,
+        groups: Vec<GroupRow<A>>,
+    },
 }
 
 /// A backend's answer, self-describing so that it can come in any order,

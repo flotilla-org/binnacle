@@ -48,10 +48,35 @@ struct Bucket {
     value: Option<Value>,
     /// The rows in the group, as indices into the rows in view.
     rows: Vec<usize>,
+    /// The first of them.
+    first: usize,
     leaves: Vec<Key>,
     kids: Vec<Bucket>,
     index: HashMap<Value, usize>,
     figures: Vec<Figure>,
+    /// On a pivot, the rows of a row group under each column group, by its
+    /// path, until their figures are worked out into `cells`.
+    crossed: HashMap<Path, Vec<usize>>,
+    cells: Vec<(Path, Vec<Figure>)>,
+}
+
+impl Bucket {
+    /// The group of `value` among this one's kids, made if new.
+    fn kid(&mut self, value: Value, row: usize) -> &mut Bucket {
+        let at = match self.index.get(&value) {
+            Some(&at) => at,
+            None => {
+                self.index.insert(value.clone(), self.kids.len());
+                self.kids.push(Bucket {
+                    value: Some(value),
+                    first: row,
+                    ..Bucket::default()
+                });
+                self.kids.len() - 1
+            }
+        };
+        &mut self.kids[at]
+    }
 }
 
 /// The standard aggregate `value` of the rows `rows`: `value(field, i)` is
@@ -120,6 +145,8 @@ pub struct MemoryAggregates {
     scope: Scope,
     levels: usize,
     root: Bucket,
+    /// On a pivot, the column groups, by the column levels.
+    cols: Bucket,
     /// Where each Leaf is: its group's path and its index there.
     places: HashMap<Key, (Path, u64)>,
     /// The rows grouped, the Leaves of groups left out included: the only
@@ -143,17 +170,20 @@ impl MemoryAggregates {
     ) -> Self {
         let scope = &batch.scope;
         let levels = scope.levels.len();
-        let mut root = bucket(rows, scope, &value);
+        let (mut root, mut cols) = bucket(rows, scope, &value);
         let mut aggregates = MemoryAggregates {
             stamp: batch.stamp,
             scope: scope.clone(),
             levels,
             root: Bucket::default(),
+            cols: Bucket::default(),
             places: HashMap::new(),
             grouped: rows.iter().copied().collect(),
         };
         finish(&mut root, 0, scope, &value, &number);
+        finish_columns(&mut cols, 0, scope, &value, &number);
         aggregates.root = root;
+        aggregates.cols = cols;
         let mut path = Vec::new();
         place(
             &aggregates.root,
@@ -189,7 +219,7 @@ impl MemoryAggregates {
             filter: FilterSpec::default(),
             ..self.scope.clone()
         };
-        let mut fresh = bucket(&keys, &scope, &value);
+        let (mut fresh, _) = bucket(&keys, &scope, &value);
         finish(&mut fresh, 0, &scope, &value, &number);
         let empty = self.empty();
         fn copy(old: &mut Bucket, new: Option<&Bucket>, empty: &[Figure]) {
@@ -226,7 +256,7 @@ impl MemoryAggregates {
         let path = match layer.identity(key) {
             Some(SummaryId::Group(path)) => &path[..path.len().saturating_sub(1)],
             Some(SummaryId::Subtotal(path)) => &path[..],
-            Some(SummaryId::GrandTotal) => return Vec::new(),
+            Some(SummaryId::GrandTotal | SummaryId::ValueTotal(_)) => return Vec::new(),
             None => match self.path_of(key) {
                 Some(path) => &path[..],
                 None => return Vec::new(),
@@ -282,8 +312,7 @@ impl MemoryAggregates {
     }
 
     fn bucket(&self, path: &Path) -> Option<&Bucket> {
-        path.iter()
-            .try_fold(&self.root, |b, (_, v)| b.index.get(v).map(|&i| &b.kids[i]))
+        walk(&self.root, path)
     }
 
     fn row(&self, bucket: &Bucket, depth: usize) -> GroupRow<Figure> {
@@ -294,36 +323,112 @@ impl MemoryAggregates {
                 false => bucket.leaves.len() as u64,
             },
             aggregates: bucket.figures.clone(),
+            cells: bucket.cells.clone(),
         }
     }
 }
 
 /// The groups of `rows` by the scope's levels, every group holding its
-/// rows' indices and Leaf Keys in order.
-fn bucket(rows: &[Key], scope: &Scope, value: &impl Fn(Key, usize) -> Value) -> Bucket {
+/// rows' indices and Leaf Keys in order, and on a pivot the column groups
+/// by the column levels, each row group holding the rows it shares with
+/// each column group.
+fn bucket(rows: &[Key], scope: &Scope, value: &impl Fn(Key, usize) -> Value) -> (Bucket, Bucket) {
     let mut root = Bucket::default();
+    let mut cols = Bucket::default();
     for (i, &row) in rows.iter().enumerate() {
+        // On a pivot: each column group the row is in, outermost first.
+        let mut across: Vec<Path> = Vec::new();
+        let mut col = &mut cols;
+        col.rows.push(i);
+        for &field in &scope.columns {
+            let v = value(field, i);
+            let mut path = across.last().cloned().unwrap_or_default();
+            path.push((field, v.clone()));
+            across.push(path);
+            col = col.kid(v, i);
+            col.rows.push(i);
+        }
         let mut bucket = &mut root;
         bucket.rows.push(i);
         for &field in &scope.levels {
-            let v = value(field, i);
-            let at = match bucket.index.get(&v) {
-                Some(&at) => at,
-                None => {
-                    bucket.index.insert(v.clone(), bucket.kids.len());
-                    bucket.kids.push(Bucket {
-                        value: Some(v),
-                        ..Bucket::default()
-                    });
-                    bucket.kids.len() - 1
-                }
-            };
-            bucket = &mut bucket.kids[at];
+            bucket = bucket.kid(value(field, i), i);
             bucket.rows.push(i);
+            for path in &across {
+                bucket.crossed.entry(path.clone()).or_default().push(i);
+            }
         }
         bucket.leaves.push(row);
     }
-    root
+    (root, cols)
+}
+
+fn walk<'b>(root: &'b Bucket, path: &Path) -> Option<&'b Bucket> {
+    path.iter()
+        .try_fold(root, |b, (_, v)| b.index.get(v).map(|&i| &b.kids[i]))
+}
+
+/// Orders two groups' values as ascending typed values do: by the number
+/// `number` gives their first rows where both have one, else by text, with
+/// blanks last.
+fn by_value(
+    field: Key,
+    a: &Bucket,
+    b: &Bucket,
+    number: &impl Fn(Key, usize) -> Option<f64>,
+) -> Ordering {
+    match (number(field, a.first), number(field, b.first)) {
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        _ => match (&a.value, &b.value) {
+            (Some(Value::Blank), Some(Value::Blank)) => Ordering::Equal,
+            (Some(Value::Blank), _) => Ordering::Greater,
+            (_, Some(Value::Blank)) => Ordering::Less,
+            (x, y) => x.cmp(y),
+        },
+    }
+}
+
+/// Works out the column totals of `bucket` (at `depth` of the column
+/// levels) and all under it, and orders its groups by the column Sort Spec:
+/// a sort column on the level's field by value, one on the Grand Total row
+/// by the first value's figure; unsorted, or on a tie, by ascending value.
+fn finish_columns(
+    bucket: &mut Bucket,
+    depth: usize,
+    scope: &Scope,
+    value: &impl Fn(Key, usize) -> Value,
+    number: &impl Fn(Key, usize) -> Option<f64>,
+) {
+    bucket.figures = (scope.values.iter())
+        .map(|v| figure(v, &bucket.rows, value, number))
+        .collect();
+    bucket.rows = Vec::new();
+    for kid in &mut bucket.kids {
+        finish_columns(kid, depth + 1, scope, value, number);
+    }
+    let Some(&field) = scope.columns.get(depth) else {
+        return;
+    };
+    bucket.kids.sort_by(|a, b| {
+        let sorted = (scope.col_sort.columns().iter()).filter_map(|c| {
+            let order = match c.key {
+                k if k == field => by_value(field, a, b, number),
+                GRAND_TOTAL if !scope.values.is_empty() => {
+                    return Some(by_figure(a.figures[0], b.figures[0], c.direction));
+                }
+                _ => return None,
+            };
+            Some(match c.direction {
+                SortDirection::Ascending => order,
+                SortDirection::Descending => order.reverse(),
+            })
+        });
+        (sorted.chain([by_value(field, a, b, number)]))
+            .find(|o| o.is_ne())
+            .unwrap_or(Ordering::Equal)
+    });
+    bucket.index = (bucket.kids.iter().enumerate())
+        .map(|(i, k)| (k.value.clone().unwrap_or(Value::Blank), i))
+        .collect();
 }
 
 /// Works out the aggregates of `bucket` (at `depth`) and all under it, and
@@ -339,6 +444,12 @@ fn finish(
         .map(|v| figure(v, &bucket.rows, value, number))
         .collect();
     bucket.rows = Vec::new();
+    bucket.cells = (std::mem::take(&mut bucket.crossed).into_iter())
+        .map(|(path, rows)| {
+            let figures = (scope.values.iter()).map(|v| figure(v, &rows, value, number));
+            (path, figures.collect())
+        })
+        .collect();
     for kid in &mut bucket.kids {
         finish(kid, depth + 1, scope, value, number);
     }
@@ -557,6 +668,26 @@ impl AggregateBackend<Figure> for MemoryAggregates {
                         aggregates: self.empty(),
                     };
                     answers.push(answer(request.path.clone(), 0, body));
+                }
+                Want::Columns => {
+                    let Some(bucket) = walk(&self.cols, &request.path) else {
+                        continue;
+                    };
+                    let depth = request.path.len() + 1;
+                    let body = Body::Columns {
+                        total: bucket.kids.len() as u64,
+                        groups: (slice(&bucket.kids, &request.range).iter())
+                            .map(|b| GroupRow {
+                                cells: Vec::new(),
+                                children: match depth < batch.scope.columns.len() {
+                                    true => b.kids.len() as u64,
+                                    false => 0,
+                                },
+                                ..self.row(b, depth)
+                            })
+                            .collect(),
+                    };
+                    answers.push(answer(request.path.clone(), request.range.start, body));
                 }
                 want => {
                     let Some(bucket) = self.bucket(&request.path) else {
