@@ -8,10 +8,13 @@
 use std::collections::HashMap;
 
 use binnacle_core::{
-    AggregateValue, Axis, ChangeNotice, Depth, Expand, GRAND_TOTAL, Grouping, ItemKind, Key, Level,
-    Located, OpenState, Outline, Placement, SortColumn, SortSpec, Value, ViewSpec,
+    AggregateValue, Axis, ChangeNotice, Comparison, Condition, Depth, Expand, FilterSpec,
+    GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located, OpenState, Outline, Placement, Scalar,
+    SortColumn, SortSpec, Value, ViewSpec,
 };
-use binnacle_group::{Answer, Batch, Body, GroupRow, GroupingLayer, Path, SUMMARY_KEY_BIT, Want};
+use binnacle_group::{
+    Answer, Batch, Body, GroupRow, GroupingLayer, Path, SUMMARY_KEY_BIT, Want, having,
+};
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
 
@@ -628,6 +631,40 @@ fn summary_keys_stay_the_same_across_a_refresh_and_a_new_spec(tc: TestCase) {
         first,
         "after grouping by two levels and back"
     );
+}
+
+#[hegel::test(test_cases = 100)]
+fn slicers_and_the_filter_reach_the_backend_as_they_are(tc: TestCase) {
+    let native = tc.draw(gs::text());
+    let mut spec = spec(1, &Shape::default());
+    let slicers = vec![
+        Condition::native(FIELDS[1], native.clone()),
+        Condition::compare(FIELDS[0], Comparison::AtLeast(Scalar::Number(2.0))).not(true),
+    ];
+    spec.grouping.as_mut().unwrap().slicers = slicers.clone();
+    let filter = FilterSpec::default()
+        .with_conditions(vec![Condition::native(FIELDS[0], native.clone() + " or not")].into());
+    spec.rows.filter = filter.clone();
+    let mut layer = GroupingLayer::<u64>::new();
+    layer.request_view(spec);
+    let batch = layer.poll_batch().expect("a batch for the groups");
+    assert_eq!(batch.scope.slicers, slicers);
+    assert_eq!(batch.scope.filter, filter);
+}
+
+#[test]
+fn only_comparisons_on_a_values_field_act_after_aggregating() {
+    let values = values();
+    let at_least = |key| Condition::compare(key, Comparison::AtLeast(Scalar::Number(2.0)));
+    assert_eq!(having(&at_least(FIELDS[1]), &values), Some(1));
+    assert_eq!(having(&at_least(FIELDS[0]), &values), Some(2));
+    assert_eq!(
+        having(&at_least(Key(99)), &values),
+        None,
+        "no value's field"
+    );
+    let text = Condition::one_of(FIELDS[1], vec![Value::Blank]);
+    assert_eq!(having(&text, &values), None, "on the Leaves");
 }
 
 #[test]

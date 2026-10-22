@@ -2,7 +2,7 @@ use crate::find::{FindMatch, FindQuery};
 use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
-use crate::grouping::{GRAND_TOTAL, Outline};
+use crate::grouping::{Aggregate, AggregateValue, GRAND_TOTAL, Level, Outline};
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
 use std::ops::Range;
@@ -526,6 +526,32 @@ impl<'a> Snapshot<'a> {
     /// removed.
     pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
         self.grid.view.conditions(axis)
+    }
+
+    /// The slicers, as their chips list them: the latest request's, each
+    /// applied, being added or not applied, then the applied ones being
+    /// removed.
+    pub fn slicers(&self) -> Vec<(Condition, ConditionState)> {
+        self.grid.view.slicers()
+    }
+
+    /// The levels of `axis`, listed as [`Snapshot::slicers`] are: a level
+    /// the Table Source could not apply (or not with its Subtotal) shows
+    /// not applied.
+    pub fn levels(&self, axis: Axis) -> Vec<(Level, ConditionState)> {
+        self.grid.view.levels(axis)
+    }
+
+    /// The values of the grouping, listed as [`Snapshot::slicers`] are.
+    pub fn values(&self) -> Vec<(AggregateValue, ConditionState)> {
+        self.grid.view.values()
+    }
+
+    /// The aggregates the Table Source offers when grouping `axis` with a
+    /// value over `key`, an item of the other axis: adapters offer only
+    /// these.
+    pub fn aggregates(&self, axis: Axis, key: Key) -> &'a [Aggregate] {
+        self.grid.view.aggregates(axis, key)
     }
 
     /// How the header of column `key` shows the rows' conditions on it.

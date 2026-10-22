@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use binnacle_core::{AggregateValue, Condition, FilterSpec, Key, SortSpec, Value};
+use binnacle_core::{AggregateValue, Condition, ConditionKind, FilterSpec, Key, SortSpec, Value};
 
 /// A group's place in the tree: its level's field and its value there, for
 /// each level from the outermost. The empty path is the whole axis.
@@ -21,8 +21,11 @@ pub struct RequestId(pub u64);
 /// What every request of a batch shares, from the View Spec: the fields of
 /// the levels (outermost first), the values to aggregate, the slicers, and
 /// the axis's filter, hidden Leaf Keys and Sort Spec. The backend filters
-/// the Leaves by the slicers, the filter and the hidden Keys before it
-/// groups and aggregates them, and orders siblings by the Sort Spec.
+/// the Leaves by the slicers (`WHERE`), the filter and the hidden Keys
+/// before it groups and aggregates them, and orders siblings by the Sort
+/// Spec. A comparison in the filter on a field a value aggregates acts after
+/// aggregating instead (`HAVING`, see [`having`]): on the groups by that
+/// value's figure, never on the Leaves.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Scope {
     pub levels: Vec<Key>,
@@ -31,6 +34,19 @@ pub struct Scope {
     pub filter: FilterSpec,
     pub hidden: Vec<Key>,
     pub sort: SortSpec,
+}
+
+/// The value whose figure `condition`, in a grouped axis's filter, reads
+/// once aggregated (`HAVING`): a comparison on a field one of `values`
+/// aggregates reads the first such value's figure, and a group whose figure
+/// fails it is left out with everything under it. Its Subtotal goes with
+/// it; the figures of the groups above it and the Grand Total stay as they
+/// are. Other conditions act on the Leaves, before aggregating.
+pub fn having(condition: &Condition, values: &[AggregateValue]) -> Option<usize> {
+    match condition.kind {
+        ConditionKind::Compare(_) => values.iter().position(|v| v.field == Some(condition.key)),
+        _ => None,
+    }
 }
 
 /// What a request asks for under its path.
