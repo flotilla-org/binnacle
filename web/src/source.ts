@@ -39,16 +39,40 @@ export type TextMatch = Omit<TextQuery<never>, "searches">;
 export type ListedValue = string | null;
 
 /**
+ * A number, or a date as milliseconds since the Unix epoch (UTC; a date
+ * without a time of day is its midnight, as `Date.UTC` gives it), that a
+ * comparison compares values with.
+ */
+export type Scalar = { type: "number"; value: number } | { type: "date"; value: number };
+
+/** The comparisons with one scalar. */
+export type CompareOp = "equal" | "notEqual" | "less" | "atMost" | "greater" | "atLeast";
+
+/**
+ * How a `Compare` condition compares a value: with one scalar, or between
+ * `low` and `high`, both included (a `low` past `high` keeps nothing).
+ */
+export type Comparison = { op: CompareOp; value: Scalar } | { op: "between"; low: Scalar; high: Scalar };
+
+/** What a condition asks of the values in its item. */
+export type ConditionKind =
+  | { type: "Text"; query: TextMatch }
+  | { type: "OneOf"; values: ListedValue[] }
+  | { type: "Compare"; comparison: Comparison };
+
+/**
  * One condition on the items of an axis, read in one item of the other axis
  * (a column, for the rows): an item is kept if its value in column `id`
  * satisfies `kind`, or with `not` if it does not. A `Text` kind matches as a
  * Text Query does, in that column alone; a blank never matches, so `not`
  * keeps blanks. A `OneOf` kind keeps the values it lists exactly, and blanks
- * only if it lists `null`; listing none keeps nothing.
+ * only if it lists `null`; listing none keeps nothing. A `Compare` kind keeps
+ * the numbers or dates that compare so; a blank, a NaN or a value of the
+ * other kind never does, so `not` keeps them.
  */
 export interface Condition<CrossId> {
   id: CrossId;
-  kind: { type: "Text"; query: TextMatch } | { type: "OneOf"; values: ListedValue[] };
+  kind: ConditionKind;
   not: boolean;
 }
 
@@ -192,6 +216,11 @@ export interface Support {
    * `view` and the axis has `distinct`, and never without them.
    */
   oneOf?: boolean;
+  /**
+   * Whether the axis may be filtered by Compare conditions on the item, and
+   * on which kind of value; none by default.
+   */
+  compare?: "numbers" | "dates" | null;
 }
 
 /**

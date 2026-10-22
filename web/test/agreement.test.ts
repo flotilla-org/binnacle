@@ -253,7 +253,7 @@ describe("Hiding", () => {
 describe("Support", () => {
   test("each support code names the same support in Rust's Snapshot", () => {
     const { WebAxis, WebGrid } = bridge();
-    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(5, 80));
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(7, 50));
     try {
       const declared = [
         0,
@@ -261,20 +261,24 @@ describe("Support", () => {
         SUPPORT.text,
         SUPPORT.sort | SUPPORT.text | SUPPORT.textRegex,
         SUPPORT.oneOf,
+        SUPPORT.compareNumbers,
+        SUPPORT.sort | SUPPORT.compareDates,
       ];
       grid.begin_frame(400, 200);
-      grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n, 14n]));
+      grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n, 14n, 15n, 16n]));
       declared.forEach((bits, i) => grid.set_support(0, BigInt(10 + i), bits));
       grid.begin_frame(400, 200);
       const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
       const dump = (grid.debug_frame() as DebugFrame).dump as { cols: { headers: { support: unknown }[] } };
       expect(s.cols.headers.map((h) => h.support)).toEqual(dump.cols.headers.map((h) => h.support));
       expect(s.cols.headers.map((h) => h.support)).toEqual([
-        { sort: false, text: null, oneOf: false },
-        { sort: true, text: null, oneOf: false },
-        { sort: false, text: { regex: false }, oneOf: false },
-        { sort: true, text: { regex: true }, oneOf: false },
-        { sort: false, text: null, oneOf: true },
+        { sort: false, text: null, oneOf: false, compare: null },
+        { sort: true, text: null, oneOf: false, compare: null },
+        { sort: false, text: { regex: false }, oneOf: false, compare: null },
+        { sort: true, text: { regex: true }, oneOf: false, compare: null },
+        { sort: false, text: null, oneOf: true, compare: null },
+        { sort: false, text: null, oneOf: false, compare: "numbers" },
+        { sort: true, text: null, oneOf: false, compare: "dates" },
       ]);
     } finally {
       grid.free();

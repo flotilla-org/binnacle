@@ -136,12 +136,14 @@ export type ItemId<A extends AxisName, RowId, ColId> = A extends "cols" ? ColId 
 /**
  * How the rows may be viewed by one column (or the columns by one row),
  * every kind decided: sorting, Text conditions (with regexes or not, or
- * `null` for none), and OneOf conditions from a checklist of its values.
+ * `null` for none), OneOf conditions from a checklist of its values, and
+ * Compare conditions on numbers or dates (`null` for none).
  */
 export interface ColumnSupport {
   sort: boolean;
   text: { regex: boolean } | null;
   oneOf: boolean;
+  compare: "numbers" | "dates" | null;
 }
 
 export interface FeedHooks<RowId = unknown, ColId = unknown> {
@@ -208,7 +210,7 @@ interface Block {
 
 const known = <T>(v: T | undefined): v is T => v !== undefined;
 
-const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false };
+const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false, compare: null };
 
 const GONE: Located = { type: "Gone", suggest: null };
 /** What a refused move says when the Table Source gives no reason, as the Rust `PumpSource` default does. */
@@ -424,6 +426,7 @@ export function createFeed<RowId, ColId, V>(
       sort: support.sort ?? true,
       text: text ? { regex: text.regex ?? false } : null,
       oneOf: listed && (support.oneOf ?? true),
+      compare: support.compare ?? null,
     };
   };
   const columnSupport = (id: ColId) => supportOf("rows", id);
@@ -437,7 +440,8 @@ export function createFeed<RowId, ColId, V>(
       const support = id === undefined ? NO_SUPPORT : supportOf(axis, id);
       const text = support.text ? SUPPORT.text | (support.text.regex ? SUPPORT.textRegex : 0) : 0;
       const oneOf = support.oneOf ? SUPPORT.oneOf : 0;
-      grid?.set_support(AXIS_CODE[axis], key, (support.sort ? SUPPORT.sort : 0) | text | oneOf);
+      const compare = support.compare === null ? 0 : support.compare === "numbers" ? SUPPORT.compareNumbers : SUPPORT.compareDates;
+      grid?.set_support(AXIS_CODE[axis], key, (support.sort ? SUPPORT.sort : 0) | text | oneOf | compare);
     }
   };
 
@@ -642,6 +646,8 @@ export function createFeed<RowId, ColId, V>(
       }
       case "OneOf":
         return { id, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
+      case "Compare":
+        return { id, kind: { type: "Compare", comparison: { ...c.kind.comparison } }, not: c.not };
       default:
         return undefined;
     }
@@ -650,6 +656,7 @@ export function createFeed<RowId, ColId, V>(
   const conditionKey = <Id>(by: Axis<Id>, c: Condition<Id>): KeyedCondition => {
     const key = by.interner.key(c.id);
     if (c.kind.type === "OneOf") return { key, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
+    if (c.kind.type === "Compare") return { key, kind: { type: "Compare", comparison: { ...c.kind.comparison } }, not: c.not };
     const { text, caseSensitive, regex } = c.kind.query;
     return { key, kind: { type: "Text", query: { text, caseSensitive, regex, searches: [key] } }, not: c.not };
   };

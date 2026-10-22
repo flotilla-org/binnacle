@@ -167,6 +167,7 @@ function satisfies(condition: Condition<keyof Rec>, row: Rec): boolean {
 /** Whether `condition` keeps an item whose value in the item it names is `value`. */
 function holds(condition: Condition<unknown>, value: Rec[keyof Rec]): boolean {
   const kind = condition.kind;
+  if (kind.type === "Compare") throw new Error("only Text and OneOf conditions are drawn");
   const matched =
     kind.type === "OneOf"
       ? kind.values.includes(value === null ? null : String(value))
@@ -176,7 +177,8 @@ function holds(condition: Condition<unknown>, value: Rec[keyof Rec]): boolean {
 
 /** Whether fromRows can apply `condition`: a OneOf, or Text with a pattern RegExp takes. */
 function applicable(condition: Condition<unknown>): boolean {
-  return condition.kind.type === "OneOf" || matches(condition.kind.query, "") !== undefined;
+  const kind = condition.kind;
+  return kind.type === "OneOf" || (kind.type === "Text" && matches(kind.query, "") !== undefined);
 }
 
 const letters = ["a", "A", "é", "É", "ﬀ", "i", "İ", "1", "-", " "];
@@ -527,7 +529,7 @@ describe("fromRows", () => {
       { n: 3, s: "Cádiz", b: 0 },
     ];
     const source = fromRows(rows, [{ key: "n" }, { key: "s" }, { key: "b", filterable: false }]);
-    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false, oneOf: false });
+    expect(source.rows.support?.("b")).toEqual({ sort: true, text: false, oneOf: false, compare: null });
     const text = (text: string): TextMatch => ({ text, caseSensitive: false, regex: false });
     const notBergen: Condition<keyof Rec> = { id: "s", kind: { type: "Text", query: text("bergen") }, not: true };
     const onB: Condition<keyof Rec> = { id: "b", kind: { type: "Text", query: text("1") }, not: false };
@@ -654,8 +656,8 @@ describe("fromRows", () => {
 
   test("columns marked unsortable say so, and labels default to the property name", () => {
     const source = fromRows<Rec>([], [{ key: "n", label: "Number" }, { key: "s", sortable: false }]);
-    expect(source.rows.support?.("n")).toEqual({ sort: true, text: { regex: true }, oneOf: true });
-    expect(source.rows.support?.("s")).toEqual({ sort: false, text: { regex: true }, oneOf: true });
+    expect(source.rows.support?.("n")).toMatchObject({ sort: true, text: { regex: true }, oneOf: true });
+    expect(source.rows.support?.("s")).toMatchObject({ sort: false, text: { regex: true }, oneOf: true });
     expect(source.cols.label?.("n", 0)).toBe("Number");
     expect(source.cols.label?.("s", 1)).toBe("s");
     source.destroy();
@@ -836,7 +838,7 @@ describe("fromRows's columns", () => {
       let applied: { rows: FilterSpec<keyof Rec>; cols: FilterSpec<number> } = { rows: NONE, cols: NONE };
       try {
         expect(source.cols.quickFilter).toEqual({ regex: true });
-        expect(source.cols.support!(0)).toEqual({ sort: true, text: { regex: true }, oneOf: true });
+        expect(source.cols.support!(0)).toMatchObject({ sort: true, text: { regex: true }, oneOf: true });
         const steps = tc.draw(gs.integers({ minValue: 1, maxValue: 5 }));
         for (let i = 0; i < steps; i++) {
           colsNotices.length = 0;

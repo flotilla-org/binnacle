@@ -55,9 +55,15 @@ function textMatches(query: TextMatch, value: ListedValue): boolean | undefined 
   }
 }
 
-/** Whether `condition` keeps an item whose value is `value` (`null` for a blank); one with an invalid pattern, which no source applies, keeps everything. */
+/**
+ * Whether `condition` keeps an item whose value is `value` (`null` for a
+ * blank); one with an invalid pattern, which no source applies, keeps
+ * everything, as does a comparison, which a listed value's text can't
+ * answer.
+ */
 export function keeps<ColId>(condition: Condition<ColId>, value: ListedValue): boolean {
   const kind = condition.kind;
+  if (kind.type === "Compare") return true;
   const matched = kind.type === "OneOf" ? kind.values.includes(value) : textMatches(kind.query, value);
   return matched === undefined || matched !== condition.not;
 }

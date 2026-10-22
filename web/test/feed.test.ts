@@ -1058,27 +1058,28 @@ describe("column conditions", () => {
     }
   });
 
-  test("support declares contains on every column by default, a source narrows it, and without view there is none", () => {
+  test("support declares contains on every column by default, a source narrows it or adds comparisons, and without view there is none", () => {
     const view = (spec: Spec) => spec;
-    const support = (col: string) => (col === "c0" ? { text: false as const } : col === "c1" ? { text: { regex: true } } : {});
+    const support = (col: string) =>
+      col === "c0" ? { text: false as const } : col === "c1" ? { text: { regex: true } } : { compare: "dates" as const };
     const cases: [Recorder, unknown[]][] = [
       [
         new Recorder(4, 3, { view }),
         [
-          { sort: true, text: { regex: false }, oneOf: false },
-          { sort: true, text: { regex: false }, oneOf: false },
-          { sort: true, text: { regex: false }, oneOf: false },
+          { sort: true, text: { regex: false }, oneOf: false, compare: null },
+          { sort: true, text: { regex: false }, oneOf: false, compare: null },
+          { sort: true, text: { regex: false }, oneOf: false, compare: null },
         ],
       ],
       [
         new Recorder(4, 3, { view, support }),
         [
-          { sort: true, text: null, oneOf: false },
-          { sort: true, text: { regex: true }, oneOf: false },
-          { sort: true, text: { regex: false }, oneOf: false },
+          { sort: true, text: null, oneOf: false, compare: null },
+          { sort: true, text: { regex: true }, oneOf: false, compare: null },
+          { sort: true, text: { regex: false }, oneOf: false, compare: "dates" },
         ],
       ],
-      [new Recorder(4, 3, { support }), Array(3).fill({ sort: false, text: null, oneOf: false })],
+      [new Recorder(4, 3, { support }), Array(3).fill({ sort: false, text: null, oneOf: false, compare: null })],
     ];
     for (const [rec, want] of cases) {
       const h = new Harness(rec.source);
@@ -1227,10 +1228,13 @@ describe("distinct values", () => {
   test("the columns take no conditions by a row unless the source gives cols.support; given, the defaults fill in as for the rows", () => {
     const view = (spec: Spec) => spec;
     const distinct = () => answer;
-    const none = { sort: false, text: null, oneOf: false };
+    const none = { sort: false, text: null, oneOf: false, compare: null };
     const cases: [Recorder, unknown][] = [
       [new Recorder(3, 2, { view, distinct }, { distinct }), none],
-      [new Recorder(3, 2, { view }, { support: () => ({ sort: false }), distinct }), { sort: false, text: { regex: false }, oneOf: true }],
+      [
+        new Recorder(3, 2, { view }, { support: () => ({ sort: false, compare: "numbers" as const }), distinct }),
+        { sort: false, text: { regex: false }, oneOf: true, compare: "numbers" },
+      ],
       [new Recorder(3, 2, {}, { support: () => ({ text: { regex: true } }), distinct }), none],
     ];
     for (const [rec, want] of cases) {

@@ -99,6 +99,18 @@ function isFindMatch(v: unknown): v is FindMatch {
   return isRecord(v) && typeof v.row === "bigint" && typeof v.col === "bigint";
 }
 
+const COMPARE_OPS = new Set(["equal", "notEqual", "less", "atMost", "greater", "atLeast"]);
+
+function isScalar(v: unknown): boolean {
+  return isRecord(v) && (v.type === "number" || v.type === "date") && typeof v.value === "number";
+}
+
+function isComparison(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  if (v.op === "between") return isScalar(v.low) && isScalar(v.high);
+  return COMPARE_OPS.has(v.op as string) && isScalar(v.value);
+}
+
 function isCondition(v: unknown): v is KeyedCondition {
   if (!isRecord(v) || typeof v.key !== "bigint" || typeof v.not !== "boolean" || !isRecord(v.kind)) return false;
   const listed = (values: unknown) =>
@@ -106,6 +118,7 @@ function isCondition(v: unknown): v is KeyedCondition {
   return (
     (v.kind.type === "Text" && isTextQuery(v.kind.query)) ||
     (v.kind.type === "OneOf" && listed(v.kind.values)) ||
+    (v.kind.type === "Compare" && isComparison(v.kind.comparison)) ||
     v.kind.type === "Other"
   );
 }

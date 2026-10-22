@@ -7,9 +7,9 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, DropTarget, Edge,
-    HeaderPlacement, Key, Mode, Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery,
-    Value, ViewSpec,
+    Axis, CellState, Comparison, Condition, ConditionKind, ConditionState, Cursor, DropTarget,
+    Edge, HeaderPlacement, Key, Mode, Rect, Scalar, Searched, Snapshot, SortDirection, SortSpec,
+    TextQuery, Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -166,8 +166,11 @@ impl Writer<'_> {
     }
 
     /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
-    /// this bridge does not carry 1, OneOf 2) and a Text condition's query
-    /// or a OneOf's values, each a blank flag then text if not blank.
+    /// this bridge does not carry 1, OneOf 2, Compare 3) and a Text
+    /// condition's query, a OneOf's values, each a blank flag then text if
+    /// not blank, or a comparison's code (equal 0, not equal 1, less 2, at
+    /// most 3, greater 4, at least 5, between 6) and its scalars, each a
+    /// date flag then the number or milliseconds.
     fn condition(&mut self, c: &Condition) {
         self.key(c.key);
         self.flag(c.not);
@@ -183,6 +186,31 @@ impl Writer<'_> {
                     self.flag(*v == Value::Blank);
                     if let Value::Text(t) = v {
                         self.text(t);
+                    }
+                }
+            }
+            ConditionKind::Compare(comparison) => {
+                self.num(3);
+                let (code, scalars) = match *comparison {
+                    Comparison::Equal(s) => (0, [Some(s), None]),
+                    Comparison::NotEqual(s) => (1, [Some(s), None]),
+                    Comparison::Less(s) => (2, [Some(s), None]),
+                    Comparison::AtMost(s) => (3, [Some(s), None]),
+                    Comparison::Greater(s) => (4, [Some(s), None]),
+                    Comparison::AtLeast(s) => (5, [Some(s), None]),
+                    Comparison::Between(low, high) => (6, [Some(low), Some(high)]),
+                };
+                self.num(code);
+                for s in scalars.into_iter().flatten() {
+                    match s {
+                        Scalar::Number(n) => {
+                            self.flag(false);
+                            self.num(n);
+                        }
+                        Scalar::Date(ms) => {
+                            self.flag(true);
+                            self.num(ms as f64);
+                        }
                     }
                 }
             }

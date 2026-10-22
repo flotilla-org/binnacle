@@ -3,10 +3,11 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, DropTarget, Edge,
-    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key,
-    Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped,
-    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Compared, Comparison, Condition, ConditionState,
+    Cursor, DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep,
+    Grid, HeaderPlacement, Key, Mode, Modifiers, PointerEvent, Rect, Scalar, Searched, Snapshot,
+    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -146,6 +147,7 @@ struct DumpSupport {
     text: Option<DumpTextSupport>,
     #[serde(rename = "oneOf")]
     one_of: bool,
+    compare: Option<&'static str>,
 }
 
 impl From<Support> for DumpSupport {
@@ -154,6 +156,10 @@ impl From<Support> for DumpSupport {
             sort: s.sort,
             text: s.text.map(|t| DumpTextSupport { regex: t.regex }),
             one_of: s.one_of,
+            compare: s.compare.map(|c| match c {
+                Compared::Numbers => "numbers",
+                Compared::Dates => "dates",
+            }),
         }
     }
 }
@@ -702,6 +708,18 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             condition: listed,
         },
+        ViewEdit::AddCondition {
+            axis: Axis::Cols,
+            condition: Condition::compare(
+                Key(4),
+                Comparison::Between(Scalar::Date(-86_400_000), Scalar::date(2024, 3, 1)),
+            ),
+        },
+        ViewEdit::ReplaceCondition {
+            axis: Axis::Rows,
+            from: Condition::compare(col, Comparison::NotEqual(Scalar::Number(0.5))),
+            to: Condition::compare(col, Comparison::Less(Scalar::Number(-3.0))).not(true),
+        },
         ViewEdit::Hide {
             axis: Axis::Cols,
             keys: vec![col, Key(u64::MAX)],
@@ -966,6 +984,10 @@ pub fn scenario(name: &str) -> Grid {
             let regex = Some(TextSupport::new(true));
             grid.set_support(Axis::Rows, key(1), Support::default().with_text(regex));
             grid.set_support(Axis::Rows, key(2), Support::default().with_one_of(true));
+            let dates = Support::default().with_compare(Some(Compared::Dates));
+            grid.set_support(Axis::Rows, key(3), dates);
+            let numbers = Support::default().with_compare(Some(Compared::Numbers));
+            grid.set_support(Axis::Rows, key(4), numbers);
             let applied = TextQuery::new("ber").searching(Searched::Keys(vec![key(0), key(2)]));
             let kept = Condition::text(key(1), TextQuery::new("Ø"));
             let dropped = Condition::text(key(2), TextQuery::new("x")).not(true);
@@ -985,6 +1007,12 @@ pub fn scenario(name: &str) -> Grid {
             grid.remove_condition(Axis::Rows, &dropped);
             let values = vec![Value::Text("Bé🚢".into()), Value::Blank];
             grid.add_condition(Axis::Rows, Condition::one_of(key(2), values).not(true));
+            // Column 3 between two dates, one past midnight; column 4 at
+            // least a fraction.
+            let range = Comparison::Between(Scalar::date(2024, 3, 1), Scalar::Date(-1_500));
+            grid.add_condition(Axis::Rows, Condition::compare(key(3), range));
+            let at_least = Comparison::AtLeast(Scalar::Number(-2.5));
+            grid.add_condition(Axis::Rows, Condition::compare(key(4), at_least).not(true));
         }
         "found" => {
             // Find "Bé🚢" by columns, regexes supported, stepped to row 3,

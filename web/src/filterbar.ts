@@ -17,6 +17,7 @@
 
 import { rowCount } from "./aria";
 import { AXES, type AxisName } from "./codes";
+import { comparisonText } from "./compare";
 import type { ColumnMenu } from "./columnmenu";
 import type { Condition } from "./source";
 import type { ConditionState } from "./snapshot";
@@ -422,6 +423,7 @@ export function createFilterBar<RowId, ColId, V>(
 function chipText<ColId>(label: string, c: Condition<ColId>): string {
   const not = c.not ? "not " : "";
   if (c.kind.type === "OneOf") return `${label}: ${not}${listedText(c.kind.values)}`;
+  if (c.kind.type === "Compare") return `${label}: ${not}${comparisonText(c.kind.comparison)}`;
   const q = c.kind.query;
   const text = q.regex ? `/${q.text}/` : q.text;
   return `${label}: ${not}${text}${q.caseSensitive ? " (Aa)" : ""}`;

@@ -3,6 +3,7 @@
 // the typed object. The agreement tests check the decoder against Rust.
 
 import type { AxisName, PinEdge } from "./codes";
+import type { CompareOp, Comparison, Scalar } from "./source";
 
 export interface Rect {
   x: number;
@@ -41,12 +42,17 @@ export interface KeyedTextQuery {
  * A condition as the Grid holds it: keeps the items whose value in the item
  * `key` names (of the other axis) satisfies `kind`, or with `not` those
  * whose value does not. A Text condition's query searches `key` alone; a
- * OneOf condition lists values, `null` for a blank. `Other` is a kind this
- * build does not know.
+ * OneOf condition lists values, `null` for a blank; a Compare condition
+ * compares as `Condition` in `source.ts` says. `Other` is a kind this build
+ * does not know.
  */
 export interface KeyedCondition {
   key: bigint;
-  kind: { type: "Text"; query: KeyedTextQuery } | { type: "OneOf"; values: (string | null)[] } | { type: "Other" };
+  kind:
+    | { type: "Text"; query: KeyedTextQuery }
+    | { type: "OneOf"; values: (string | null)[] }
+    | { type: "Compare"; comparison: Comparison }
+    | { type: "Other" };
   not: boolean;
 }
 
@@ -106,7 +112,7 @@ export interface HeaderPlacement {
    */
   filter: { filtered: boolean; pending: boolean; notApplied: boolean };
   /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
-  support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean };
+  support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean; compare: "numbers" | "dates" | null };
   /** Whether this item's move is requested and not yet answered. */
   movePending: boolean;
 }
@@ -312,6 +318,11 @@ const FIND_REGEX_BIT = 2;
 const TEXT_BIT = 2;
 const REGEX_BIT = 4;
 const ONE_OF_BIT = 8;
+const COMPARE_NUMBERS_BIT = 16;
+const COMPARE_DATES_BIT = 32;
+/** A comparison's code in the Snapshot, as `op`. */
+const COMPARE_OPS: readonly CompareOp[] = ["equal", "notEqual", "less", "atMost", "greater", "atLeast"];
+const BETWEEN = 6;
 
 class Reader {
   private n = 0;
@@ -387,8 +398,21 @@ class Reader {
         ? { type: "Text", query: this.textQuery() }
         : code === 2
           ? { type: "OneOf", values: this.list(() => (this.flag() ? null : this.text())) }
-          : { type: "Other" };
+          : code === 3
+            ? { type: "Compare", comparison: this.comparison() }
+            : { type: "Other" };
     return { key, kind, not };
+  }
+
+  comparison(): Comparison {
+    const op = this.num();
+    if (op === BETWEEN) return { op: "between", low: this.scalar(), high: this.scalar() };
+    return { op: COMPARE_OPS[op]!, value: this.scalar() };
+  }
+
+  scalar(): Scalar {
+    const date = this.flag();
+    return { type: date ? "date" : "number", value: this.num() };
   }
 
   axisView(): KeyedAxisView {
@@ -476,6 +500,7 @@ function supportOf(bits: number): HeaderPlacement["support"] {
     sort: (bits & SORT_BIT) !== 0,
     text: (bits & TEXT_BIT) !== 0 ? { regex: (bits & REGEX_BIT) !== 0 } : null,
     oneOf: (bits & ONE_OF_BIT) !== 0,
+    compare: (bits & COMPARE_NUMBERS_BIT) !== 0 ? "numbers" : (bits & COMPARE_DATES_BIT) !== 0 ? "dates" : null,
   };
 }
 

@@ -32,6 +32,7 @@
 // force. A move on a sorted axis keeps the order shown and drops the sort,
 // unless `sortedMoves` refuses it.
 
+import { comparedBy, comparedOf, passes, type Compared } from "./compare";
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
 import type {
   AppliedView,
@@ -167,11 +168,15 @@ function matcher(query: TextMatch): ((text: string) => boolean) | undefined {
   return (text) => text.toLowerCase().includes(lower);
 }
 
-/** How a condition tests a cell's text (`null` for no value), before `not`; `undefined` if its pattern is not a valid `RegExp`. */
+/** How a condition tests a cell's text (`null` for no value) or value, before `not`; `undefined` if its pattern is not a valid `RegExp`. */
 function tester(kind: Condition<unknown>["kind"]): Test | undefined {
   if (kind.type === "OneOf") {
     const listed = new Set(kind.values);
     return (text) => listed.has(text);
+  }
+  if (kind.type === "Compare") {
+    const { comparison } = kind;
+    return (_, value) => passes(comparison, value);
   }
   // A blank never matches, so `not` keeps it.
   const match = matcher(kind.query);
@@ -209,7 +214,7 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 type Match = (text: string) => boolean;
-type Test = (text: string | null) => boolean;
+type Test = (text: string | null, value: unknown) => boolean;
 
 /** One axis's filter in force: its quick filter with its matcher, and its conditions each with its test. */
 interface Filter<CrossId> {
@@ -220,22 +225,42 @@ interface Filter<CrossId> {
 
 const NO_FILTER = { quick: null, match: undefined, conditions: [] };
 
-/** Whether a filter keeps an item whose text in item `id` of the other axis is `text(id)`; the quick filter searches `searched`. */
-function keeps<CrossId>({ match, conditions }: Filter<CrossId>, searched: CrossId[], text: (id: CrossId) => string | null) {
+/**
+ * Whether a filter keeps an item whose text in item `id` of the other axis
+ * is `text(id)`, and value `value(id)`; the quick filter searches `searched`.
+ */
+function keeps<CrossId>(
+  { match, conditions }: Filter<CrossId>,
+  searched: CrossId[],
+  text: (id: CrossId) => string | null,
+  value: (id: CrossId) => unknown,
+) {
   return (
     (!match ||
       searched.some((id) => {
         const t = text(id);
         return t !== null && match(t);
       })) &&
-    conditions.every(({ condition, test }) => test(text(condition.id)) !== condition.not)
+    conditions.every(({ condition, test }) => test(text(condition.id), value(condition.id)) !== condition.not)
   );
 }
 
-/** The conditions of `asked` a filter applies, each with its test: those on items that take them, with a valid pattern. */
-function testable<CrossId>(asked: Condition<CrossId>[], takes: (id: CrossId) => boolean) {
+/** What an axis's filter may test by an item of the other axis: whether it takes conditions, and what it compares. */
+interface Takes<CrossId> {
+  (id: CrossId): boolean;
+  compared(id: CrossId): Compared | null;
+}
+
+/**
+ * The conditions of `asked` a filter applies, each with its test: those on
+ * items that take them, with a valid pattern, comparing the kind of value
+ * the item holds.
+ */
+function testable<CrossId>(asked: Condition<CrossId>[], takes: Takes<CrossId>) {
   return asked.flatMap((condition) => {
-    const test = takes(condition.id) ? tester(condition.kind) : undefined;
+    const { kind, id } = condition;
+    const compares = kind.type !== "Compare" || comparedBy(kind.comparison) === (takes.compared(id) ?? "none");
+    const test = takes(id) && compares ? tester(kind) : undefined;
     return test ? [{ condition, test }] : [];
   });
 }
@@ -246,7 +271,7 @@ function testable<CrossId>(asked: Condition<CrossId>[], takes: (id: CrossId) => 
  * kept. Also whether that changed it, and why RegExp rejected the first
  * pattern it did, if any.
  */
-function take<CrossId>(filter: Filter<CrossId>, asked: FilterSpec<CrossId> | undefined, takes: (id: CrossId) => boolean) {
+function take<CrossId>(filter: Filter<CrossId>, asked: FilterSpec<CrossId> | undefined, takes: Takes<CrossId>) {
   const quick = asked?.quick ?? null;
   const match = quick && matcher(quick);
   let next = filter;
@@ -280,8 +305,21 @@ export function fromRows<R extends object>(
   let filters: { rows: Filter<ColId>; cols: Filter<number> } = { rows: NO_FILTER, cols: NO_FILTER };
   let hidden: { rows: number[]; cols: ColId[] } = { rows: [], cols: [] };
   let keep: ((row: R) => boolean) | null = null;
+  /** Each column's kind of value to compare, worked out on first use and again after a change. */
+  const kinds = new Map<ColId, Compared | null>();
   const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
+  const compared = (id: ColId): Compared | null => {
+    if (!filterable(id)) return null;
+    let kind = kinds.get(id);
+    if (kind === undefined) kinds.set(id, (kind = comparedOf(rows.map((r) => r[id]))));
+    return kind;
+  };
+  /** What the columns compare by row `id`: the kind its values in the filterable columns share. */
+  const comparedAcross = (id: number): Compared | null =>
+    isRow(id) ? comparedOf(columns.filter((c) => c.filterable !== false).map((c) => rows[id]![c.key])) : null;
+  const takesColumn: Takes<ColId> = Object.assign((id: ColId) => filterable(id), { compared });
   const isRow = (id: number) => Number.isInteger(id) && id >= 0 && id < rows.length;
+  const takesRow: Takes<number> = Object.assign((id: number) => isRow(id), { compared: comparedAcross });
   // Created on first use, once the widget has loaded the wasm module.
   const memory = () => {
     if (wasm) return wasm;
@@ -312,7 +350,13 @@ export function fromRows<R extends object>(
     const searched = (quick?.searches === "shown" ? shownColumns() : (quick?.searches ?? [])).filter((id) =>
       index.has(id),
     );
-    return (row: R) => keeps(filter, searched, (id) => text(row, id)) && (keep?.(row) ?? true);
+    return (row: R) =>
+      keeps(
+        filter,
+        searched,
+        (id) => text(row, id),
+        (id) => row[id],
+      ) && (keep?.(row) ?? true);
   };
 
   /** Whether the column at index `c` passes `filter`. */
@@ -323,11 +367,18 @@ export function fromRows<R extends object>(
       return rows.map((_, i) => i).filter((i) => !out.has(i));
     };
     const searched = (quick?.searches === "shown" ? shownRows() : (quick?.searches ?? [])).filter(isRow);
-    return (c: number) => keeps(filter, searched, (r) => text(rows[r]!, columns[c]!.key));
+    const key = (c: number) => columns[c]!.key;
+    return (c: number) =>
+      keeps(
+        filter,
+        searched,
+        (r) => text(rows[r]!, key(c)),
+        (r) => rows[r]?.[key(c)],
+      );
   };
 
   /** A filter for `narrow`, as a checklist asks: its quick filter if valid, its testable conditions. */
-  const narrowing = <C,>(narrow: FilterSpec<C>, takes: (id: C) => boolean): Filter<C> => {
+  const narrowing = <C,>(narrow: FilterSpec<C>, takes: Takes<C>): Filter<C> => {
     const match = (narrow.quick && matcher(narrow.quick)) ?? undefined;
     return { quick: match ? narrow.quick : null, match, conditions: testable(narrow.conditions, takes) };
   };
@@ -386,7 +437,7 @@ export function fromRows<R extends object>(
    * (ties by text), up to `limit`; blanks counted unless searching.
    */
   const distinct = (id: ColId, search: string, limit: number, narrow: FilterSpec<ColId>): Distinct => {
-    const keeps = rowKeeper(narrowing(narrow, filterable));
+    const keeps = rowKeeper(narrowing(narrow, takesColumn));
     const found = search ? matcher({ text: search, caseSensitive: false, regex: false })! : undefined;
     const values = rows.map((r) => r[id]);
     const numbers = values.every((v) => v == null || numeric(v) !== undefined);
@@ -424,7 +475,7 @@ export function fromRows<R extends object>(
    * `limit`; blanks counted unless searching.
    */
   const distinctAcross = (id: number, search: string, limit: number, narrow: FilterSpec<number>): Distinct => {
-    const keeps = columnKeeper(narrowing(narrow, isRow));
+    const keeps = columnKeeper(narrowing(narrow, takesRow));
     const found = search ? matcher({ text: search, caseSensitive: false, regex: false })! : undefined;
     const seen = new Map<string, number>();
     let blanks = 0;
@@ -512,6 +563,7 @@ export function fromRows<R extends object>(
     const at = located(m.locate(ROWS, id));
     if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
     keys.clear();
+    kinds.clear();
     rowKeys.delete(id);
     hits = undefined;
     let moved = false;
@@ -544,7 +596,12 @@ export function fromRows<R extends object>(
       support: (by) => {
         const column = columns[index.get(by) ?? -1];
         const filterable = column?.filterable !== false;
-        return { sort: column?.sortable !== false, text: filterable && { regex: true }, oneOf: filterable };
+        return {
+          sort: column?.sortable !== false,
+          text: filterable && { regex: true },
+          oneOf: filterable,
+          compare: column ? compared(by) : null,
+        };
       },
       distinct: (by, { search, limit, narrow }) => distinct(by, search, limit, narrow),
       locate: (id) => located(memory().locate(ROWS, id)),
@@ -558,7 +615,7 @@ export function fromRows<R extends object>(
       quickFilter: { regex: true },
       hide: true,
       ...(options.hideCap?.cols === undefined ? {} : { hideCap: options.hideCap.cols }),
-      support: () => ({ sort: true, text: { regex: true }, oneOf: true }),
+      support: (by) => ({ sort: true, text: { regex: true }, oneOf: true, compare: comparedAcross(by) }),
       distinct: (by, { search, limit, narrow }) => distinctAcross(by, search, limit, narrow),
       locate: (id) => located(memory().locate(COLS, index.get(id) ?? columns.length)),
       unmatched: (ids) =>
@@ -583,8 +640,8 @@ export function fromRows<R extends object>(
         throw new Error(`binnacle: fromRows cannot sort by ${by.map((c) => c.id).join(", ")}`);
       }
       const byRows = asked.cols.sort.filter((c) => isRow(c.id));
-      const forRows = take(filters.rows, asked.rows.filter, filterable);
-      const forCols = take(filters.cols, asked.cols.filter, isRow);
+      const forRows = take(filters.rows, asked.rows.filter, takesColumn);
+      const forCols = take(filters.cols, asked.cols.filter, takesRow);
       filters = { rows: forRows.filter, cols: forCols.filter };
       const error = forRows.error ?? forCols.error;
       const was = hidden;

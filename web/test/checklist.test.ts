@@ -31,6 +31,7 @@ function after(conditions: Condition<string>[], written: Written<string>): Condi
 /** Whether `condition` keeps an item whose value is `value`: Text as a contains ignoring case, which never keeps a blank; OneOf exactly. */
 function modelKeeps(condition: Condition<string>, value: ListedValue): boolean {
   const kind = condition.kind;
+  if (kind.type === "Compare") throw new Error("only Text and OneOf conditions are drawn");
   const matched =
     kind.type === "OneOf"
       ? kind.values.includes(value)
