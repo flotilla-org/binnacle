@@ -5,8 +5,8 @@
 use std::fmt;
 
 use binnacle_core::{
-    Axis, Button, ChangeNotice, Edge, EditEnd, FocusStep, HeaderClick, Key, Located, Modifiers,
-    PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
+    Axis, Button, ChangeNotice, Compared, Edge, EditEnd, FocusStep, HeaderClick, Key, Located,
+    Modifiers, PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support, TextSupport,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -134,7 +134,8 @@ pub fn position(n: f64) -> Position {
 
 /// A Change Notice from its code and up to two Positions (`NaN` where the
 /// notice takes fewer): Reordered 0, Reset 1 (count), Inserted 2 (at, n),
-/// Removed 3 (at, n), ContentChanged 4 (start, end), Refiltered 5 (count).
+/// Removed 3 (at, n), ContentChanged 4 (start, end), Refiltered 5 (count),
+/// Collapsed 6 (at, n), Expanded 7 (at, n).
 pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
     match code {
         0 => ChangeNotice::Reordered,
@@ -148,6 +149,14 @@ pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
             n: position(b),
         },
         5 => ChangeNotice::Refiltered(position(a)),
+        6 => ChangeNotice::Collapsed {
+            at: position(a),
+            n: position(b),
+        },
+        7 => ChangeNotice::Expanded {
+            at: position(a),
+            n: position(b),
+        },
         _ => ChangeNotice::ContentChanged(position(a)..position(b)),
     }
 }
@@ -168,16 +177,27 @@ pub const SUPPORT_SORT: u8 = 1;
 pub const SUPPORT_TEXT: u8 = 2;
 pub const SUPPORT_TEXT_REGEX: u8 = 4;
 pub const SUPPORT_ONE_OF: u8 = 8;
+pub const SUPPORT_COMPARE_NUMBERS: u8 = 16;
+pub const SUPPORT_COMPARE_DATES: u8 = 32;
+pub const SUPPORT_GROUP: u8 = 64;
 
 /// Support from its bits: [`SUPPORT_SORT`], [`SUPPORT_TEXT`] with
 /// [`SUPPORT_TEXT_REGEX`] if Text conditions take regexes (regex alone is no
-/// text support), and [`SUPPORT_ONE_OF`].
+/// text support), [`SUPPORT_ONE_OF`], [`SUPPORT_COMPARE_NUMBERS`] or
+/// [`SUPPORT_COMPARE_DATES`] (numbers, if both), and [`SUPPORT_GROUP`].
 pub fn support(bits: u8) -> Support {
     let text = (bits & SUPPORT_TEXT != 0).then(|| TextSupport::new(bits & SUPPORT_TEXT_REGEX != 0));
+    let compare = match () {
+        _ if bits & SUPPORT_COMPARE_NUMBERS != 0 => Some(Compared::Numbers),
+        _ if bits & SUPPORT_COMPARE_DATES != 0 => Some(Compared::Dates),
+        _ => None,
+    };
     Support::default()
         .with_sort(bits & SUPPORT_SORT != 0)
         .with_text(text)
         .with_one_of(bits & SUPPORT_ONE_OF != 0)
+        .with_compare(compare)
+        .with_group(bits & SUPPORT_GROUP != 0)
 }
 
 /// The bits of `support`, as [`support`] reads them.
@@ -192,7 +212,14 @@ pub fn support_bits(support: Support) -> u8 {
     if support.one_of {
         bits |= SUPPORT_ONE_OF;
     }
-    bits
+    if support.group {
+        bits |= SUPPORT_GROUP;
+    }
+    bits | match support.compare {
+        None => 0,
+        Some(Compared::Numbers) => SUPPORT_COMPARE_NUMBERS,
+        Some(Compared::Dates) => SUPPORT_COMPARE_DATES,
+    }
 }
 
 /// A Sort Spec from parallel lists of column Keys and directions
@@ -250,6 +277,8 @@ mod tests {
         assert_eq!(notice(3, 3.0, 4.0), ChangeNotice::Removed { at: 3, n: 4 });
         assert_eq!(notice(4, 3.0, 7.0), ChangeNotice::ContentChanged(3..7));
         assert_eq!(notice(5, 6.0, f64::NAN), ChangeNotice::Refiltered(6));
+        assert_eq!(notice(6, 3.0, 4.0), ChangeNotice::Collapsed { at: 3, n: 4 });
+        assert_eq!(notice(7, 3.0, 4.0), ChangeNotice::Expanded { at: 3, n: 4 });
     }
 
     #[test]
@@ -331,11 +360,16 @@ mod tests {
 
     #[test]
     fn support_bits_round_trip_and_regex_needs_text() {
-        for bits in [0, 1, 2, 3, 6, 7, 8, 15] {
+        for bits in [0, 1, 2, 3, 6, 7, 8, 15, 16, 32, 47, 64, 79, 111] {
             assert_eq!(support_bits(support(bits)), bits);
         }
         assert_eq!(support(SUPPORT_TEXT_REGEX).text, None);
         assert_eq!(support(SUPPORT_TEXT).text, Some(TextSupport::new(false)));
+        assert_eq!(
+            support(SUPPORT_COMPARE_DATES).compare,
+            Some(Compared::Dates)
+        );
+        assert_eq!(support(48).compare, Some(Compared::Numbers));
     }
 
     #[test]

@@ -4,7 +4,9 @@
 // the header: "Pin left" (or "Unpin" on a pinned column), "Pin right",
 // "Freeze up to here", "Hide column" and "Show hidden columns ▸" where the
 // columns hide, then for a column that takes conditions, "Contains" or "Does not contain", a text field with case and
-// regex toggles (regex only where the column supports it), then the
+// regex toggles (regex only where the column supports it), then for a column
+// that compares numbers or dates a comparison ("Equal to" to "Between")
+// with a number or date field (two for between), then the
 // checklist of the column's values (where it takes OneOf conditions) with a
 // search, counts, "(Blanks)" and a note on whether the list is capped and
 // narrowed, and Clear. A column that takes only OneOf shows just the
@@ -32,9 +34,11 @@ import {
   type ColumnConditions,
   type Shown,
   type Written,
+  writes,
 } from "./checklist";
 import type { AxisName, PinEdge } from "./codes";
-import type { Condition, Distinct, ListedValue, TextMatch } from "./source";
+import { OP_NAMES, scalarText } from "./compare";
+import type { CompareOp, Comparison, Condition, Distinct, ListedValue, Scalar, TextMatch } from "./source";
 import type { FrameInfo, GridWidget, MenuAt } from "./widget";
 import { createPause } from "./pause";
 import { capHint, type HideOutcome } from "./choose";
@@ -54,6 +58,9 @@ export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   /** Closes the menu and stops the headers drawing filter buttons. */
   destroy(): void;
 }
+
+/** The comparisons the menu offers, in order. */
+const COMPARE_OPS: (CompareOp | "between")[] = ["equal", "notEqual", "less", "atMost", "greater", "atLeast", "between"];
 
 /** How many values the checklist asks for; it says so when there are more. */
 const LIMIT = 1000;
@@ -112,7 +119,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const support = axis === "rows" ? widget.columnSupport(colId as ColId) : widget.rowSupport(colId as RowId);
     const own: AxisName = axis === "rows" ? "cols" : "rows";
     const hides = widget.canHide(own);
-    const filters = !!support.text || support.oneOf;
+    const filters = !!support.text || support.oneOf || !!support.compare;
     const regexAllowed = support.text?.regex ?? false;
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // The item's conditions as this menu last asked for them, which each
@@ -122,13 +129,9 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       .map((c) => c.condition as Condition<Id>);
     let column: ColumnConditions<Id> = columnConditions(asked, colId);
 
-    /** Asks the widget for `written` in place of the item's Text condition and OneOf. */
+    /** Asks the widget for `written` in place of the item's Text condition and OneOf, and its comparison. */
     const write = (written: Written<Id>) => {
-      const pairs = [
-        [column.text, written.text],
-        [column.oneOf, written.oneOf],
-      ] as const;
-      for (const [from, to] of pairs) {
+      for (const [from, to] of writes(column, written)) {
         if (from && to) {
           if (JSON.stringify(from) !== JSON.stringify(to)) widget.replaceCondition(from, to, axis);
         } else if (from) widget.removeCondition(from, axis);
@@ -189,6 +192,19 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const choose = lit(menuItem(`Choose ${noun}s…`, "binnacle-column-menu-choose"));
     if (!hides) hideButton.style.display = showOnly.style.display = showHidden.style.display = "none";
     if (!widget.canChoose(own)) choose.style.display = "none";
+    // Grouping the rows by this column, or back to the plain rows.
+    const groupButton = lit(menuItem("Group rows by this column", "binnacle-column-menu-group"));
+    const ungroupButton = lit(menuItem("Ungroup rows", "binnacle-column-menu-ungroup"));
+    const grouped = () => axis === "rows" && widget.groupedBy().length > 0;
+    const groups = axis === "rows" && support.group === true;
+    groupButton.addEventListener("click", () => {
+      close();
+      widget.groupBy(colId as ColId);
+    });
+    ungroupButton.addEventListener("click", () => {
+      close();
+      widget.ungroup();
+    });
     // Why the last hide hid nothing: past the cap, a filter scales.
     const capped = el("div", "binnacle-column-menu-capped", ERROR_STYLE);
     capped.setAttribute("role", "status");
@@ -197,7 +213,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     showHidden.setAttribute("aria-expanded", "false");
     const actionsSeparator = el("div", "", SEPARATOR_STYLE);
     actionsSeparator.hidden = !filters;
-    actions.append(pinButton, pinTrailing, freeze, hideButton, showOnly, showHidden, choose, capped, actionsSeparator);
+    actions.append(pinButton, pinTrailing, freeze, hideButton, showOnly, showHidden, choose, groupButton, ungroupButton, capped, actionsSeparator);
     /** Runs a hide on the chosen items around this one: closes the menu, unless it passed the cap. */
     const hideWith = async (run: () => Promise<HideOutcome>) => {
       const outcome = await run();
@@ -346,6 +362,28 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     error.setAttribute("role", "status");
     error.hidden = true;
 
+    // The comparison: an operator, then a number or date, or two for between.
+    const compareRow = el("div", "binnacle-column-menu-compare", ROW_STYLE + " flex-wrap: wrap; row-gap: 6px;");
+    if (!support.compare) compareRow.style.display = "none";
+    if (support.text) compareRow.style.marginTop = "6px";
+    const op = el("select", "", SELECT_STYLE);
+    op.setAttribute("aria-label", "Comparison");
+    op.append(new Option("Any value", ""), ...COMPARE_OPS.map((o) => new Option(OP_NAMES[o], o)));
+    const scalarField = (name: string) => {
+      const f = el("input", "", FIELD_STYLE);
+      f.type = support.compare === "dates" ? "date" : "number";
+      if (f.type === "number") f.step = "any";
+      f.setAttribute("aria-label", name);
+      return f;
+    };
+    const low = scalarField(`${label} value`);
+    const andText = el("span", "binnacle-column-menu-and", "flex: 0 0 auto; padding: 0 4px 0 6px;");
+    andText.textContent = "and";
+    const high = scalarField(`${label} up to`);
+    const highRow = el("div", "", ROW_STYLE + " flex: 1 0 100%;");
+    highRow.append(andText, high);
+    compareRow.append(op, low, highRow);
+
     const values = el("div", "binnacle-column-menu-values", "");
     values.hidden = !support.oneOf;
     const separator = el("div", "", SEPARATOR_STYLE);
@@ -367,7 +405,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     const spacer = el("span", "", "flex: 1;");
     const closeButton = action("Close");
     foot.append(clearButton, spacer, closeButton);
-    element.append(title, actions, textRow, error, values, foot);
+    element.append(title, actions, textRow, compareRow, error, values, foot);
 
     const pressed = (b: HTMLButtonElement) => b.getAttribute("aria-pressed") === "true";
     /** Shows the column's Text condition in the text row. */
@@ -380,6 +418,52 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       regexToggle.setAttribute("aria-pressed", String((q?.regex ?? false) && regexAllowed));
     };
     showText();
+
+    /** The scalar field `f` holds, if it holds one. */
+    const scalarIn = (f: HTMLInputElement): Scalar | null => {
+      const value = f.valueAsNumber;
+      if (Number.isNaN(value)) return null;
+      return { type: support.compare === "dates" ? "date" : "number", value };
+    };
+    const fieldText = (s: Scalar) => (s.type === "date" ? scalarText(s).slice(0, 10) : String(s.value));
+    /** Shows the column's comparison in the compare row. */
+    const showCompare = () => {
+      const kind = column.compare?.kind;
+      const c = kind?.type === "Compare" ? kind.comparison : null;
+      op.value = c?.op ?? "";
+      low.value = !c ? "" : fieldText(c.op === "between" ? c.low : c.value);
+      high.value = c?.op === "between" ? fieldText(c.high) : "";
+      markBetween();
+    };
+    const markBetween = () => {
+      highRow.style.display = op.value === "between" ? "flex" : "none";
+      low.style.display = op.value === "" ? "none" : "block";
+      low.setAttribute("aria-label", op.value === "between" ? `${label} from` : `${label} value`);
+    };
+    /** Writes the comparison the row holds, or none while it is incomplete. */
+    const sendCompare = () => {
+      const which = op.value as CompareOp | "between" | "";
+      const [a, b] = [scalarIn(low), scalarIn(high)];
+      let comparison: Comparison | null = null;
+      if (which === "between") comparison = a && b ? { op: which, low: a, high: b } : null;
+      else if (which !== "") comparison = a && { op: which, value: a };
+      const not = column.compare?.not ?? false;
+      const to: Condition<Id> | null = comparison && { id: colId, kind: { type: "Compare", comparison }, not };
+      write({ text: column.text, oneOf: column.oneOf, compare: to });
+      showValues();
+      paint();
+    };
+    const comparePause = createPause(() => widget.typingPause, sendCompare);
+    showCompare();
+    op.addEventListener("change", () => {
+      markBetween();
+      comparePause.now();
+      if (op.value !== "") low.focus();
+    });
+    for (const f of [low, high]) {
+      f.addEventListener("input", () => comparePause.typed());
+      f.addEventListener("change", () => comparePause.now());
+    }
 
     const pause = createPause(
       () => widget.typingPause,
@@ -412,6 +496,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       widget.clearConditions(colId, axis);
       column = columnConditions([], colId);
       showText();
+      showCompare();
       showValues();
       (support.text ? field : search).focus();
     });
@@ -524,6 +609,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       menu = null;
       asking?.abort();
       if (pause.waiting) sendText();
+      if (comparePause.waiting) comparePause.now();
       unwatch();
       document.removeEventListener("pointerdown", outside, true);
       element.remove();
@@ -534,7 +620,8 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     };
     closeButton.addEventListener("click", close);
     element.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" || (e.key === "Enter" && (e.target === field || e.target === search))) {
+      const typed = [field, search, low, high];
+      if (e.key === "Escape" || (e.key === "Enter" && typed.includes(e.target as HTMLInputElement))) {
         e.preventDefault();
         e.stopPropagation();
         close();
@@ -558,7 +645,9 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       // over the `hidden` attribute.
       showItem(pinTrailing, !pinned());
       showItem(freeze, !pinning.pinned("trailing"));
-      for (const c of [how, field, search, clearButton, closeButton]) {
+      showItem(groupButton, groups && !grouped());
+      showItem(ungroupButton, grouped());
+      for (const c of [how, field, op, low, high, search, clearButton, closeButton]) {
         c.style.background = t.body.background;
         c.style.border = `1px solid ${t.border}`;
       }
@@ -588,8 +677,20 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       field.toggleAttribute("aria-invalid", rejected);
       if (rejected) field.setAttribute("aria-describedby", error.id);
       else field.removeAttribute("aria-describedby");
-      error.hidden = !rejected;
-      error.textContent = rejected ? (latest?.viewError ?? "Not applied") : "";
+      // Likewise its comparison.
+      const compare = column.compare;
+      const refused =
+        !comparePause.waiting &&
+        compare !== null &&
+        listed(axis).some(
+          ({ condition, state }) => state === "notApplied" && JSON.stringify(condition) === JSON.stringify(compare),
+        );
+      for (const f of [low, high]) {
+        f.style.borderColor = refused ? t.error : t.border;
+        f.toggleAttribute("aria-invalid", refused);
+      }
+      error.hidden = !rejected && !refused;
+      error.textContent = rejected || refused ? (latest?.viewError ?? "Not applied") : "";
       error.style.color = t.error;
       list.style.border = `1px solid ${t.border}`;
       separator.style.background = t.border;
@@ -611,8 +712,9 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     // Under a column header; beside a row header.
     const [left, top] = axis === "rows" ? [anchor.left, anchor.bottom + 4] : [anchor.right + 4, anchor.top];
     element.style.left = `${Math.max(8, Math.min(left, innerWidth - width - 8))}px`;
-    // Room for the checklist once its values land.
-    let height = Math.max(element.offsetHeight, support.oneOf ? 380 : 0);
+    // Room for the checklist once its values land, and for a between's second field.
+    const between = support.compare && op.value !== "between" ? 36 : 0;
+    let height = Math.max(element.offsetHeight + between, support.oneOf ? 380 + compareRow.offsetHeight + between : 0);
     // Short of room below its header, the list gives way before the menu covers the header.
     const cut = Math.min(height - (innerHeight - top - 8), LIST_HEIGHT - LIST_MIN_HEIGHT);
     if (support.oneOf && cut > 0) {
@@ -623,7 +725,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     document.addEventListener("pointerdown", outside, true);
     menu = { element, close };
     if (at === "hidden" && hides) return openFlyout();
-    const first = support.text ? field : support.oneOf ? search : pinButton;
+    const first = support.text ? field : support.compare ? op : support.oneOf ? search : pinButton;
     first.focus();
     if (first === field) field.select();
   };

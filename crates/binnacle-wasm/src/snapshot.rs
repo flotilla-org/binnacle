@@ -7,9 +7,10 @@
 //! the decoder against [`crate::testing`]'s dump of the same frame.
 
 use binnacle_core::{
-    Axis, CellState, Condition, ConditionKind, ConditionState, Cursor, DropTarget, Edge,
-    HeaderPlacement, Key, Mode, Rect, Searched, Snapshot, SortDirection, SortSpec, TextQuery,
-    Value, ViewSpec,
+    Axis, CellState, Comparison, Condition, ConditionKind, ConditionState, Cursor, Depth,
+    DropTarget, Edge, Form, GroupedAxis, Grouping, HeaderPlacement, ItemKind, Key, Level, Mode,
+    OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot, SortDirection, SortSpec,
+    TextQuery, Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -166,8 +167,11 @@ impl Writer<'_> {
     }
 
     /// A condition: its Key, `not`, then its kind's code (Text 0, a kind
-    /// this bridge does not carry 1, OneOf 2) and a Text condition's query
-    /// or a OneOf's values, each a blank flag then text if not blank.
+    /// this bridge does not carry 1, OneOf 2, Compare 3) and a Text
+    /// condition's query, a OneOf's values, each a blank flag then text if
+    /// not blank, or a comparison's code (equal 0, not equal 1, less 2, at
+    /// most 3, greater 4, at least 5, between 6) and its scalars, each a
+    /// date flag then the number or milliseconds.
     fn condition(&mut self, c: &Condition) {
         self.key(c.key);
         self.flag(c.not);
@@ -183,6 +187,31 @@ impl Writer<'_> {
                     self.flag(*v == Value::Blank);
                     if let Value::Text(t) = v {
                         self.text(t);
+                    }
+                }
+            }
+            ConditionKind::Compare(comparison) => {
+                self.num(3);
+                let (code, scalars) = match *comparison {
+                    Comparison::Equal(s) => (0, [Some(s), None]),
+                    Comparison::NotEqual(s) => (1, [Some(s), None]),
+                    Comparison::Less(s) => (2, [Some(s), None]),
+                    Comparison::AtMost(s) => (3, [Some(s), None]),
+                    Comparison::Greater(s) => (4, [Some(s), None]),
+                    Comparison::AtLeast(s) => (5, [Some(s), None]),
+                    Comparison::Between(low, high) => (6, [Some(low), Some(high)]),
+                };
+                self.num(code);
+                for s in scalars.into_iter().flatten() {
+                    match s {
+                        Scalar::Number(n) => {
+                            self.flag(false);
+                            self.num(n);
+                        }
+                        Scalar::Date(ms) => {
+                            self.flag(true);
+                            self.num(ms as f64);
+                        }
                     }
                 }
             }
@@ -227,8 +256,121 @@ impl Writer<'_> {
         }
     }
 
+    fn placement(&mut self, p: Placement) {
+        self.num(match p {
+            Placement::Before => 0,
+            Placement::After => 1,
+            Placement::Off => 2,
+        });
+    }
+
+    /// A level: 0 and its field and Subtotal placement, 1 for the values
+    /// pseudo-level, 2 for one this bridge does not carry.
+    fn level(&mut self, level: &Level) {
+        match level {
+            Level::Field { field, subtotal } => {
+                self.num(0);
+                self.key(*field);
+                self.placement(*subtotal);
+            }
+            Level::Values => self.num(1),
+            _ => self.num(2),
+        }
+    }
+
+    /// A grouped axis: its Grand Total's placement, its form (0 outline,
+    /// 1 header), its default depth (flagged unless every level is open),
+    /// then its exceptions.
+    fn grouped_axis(&mut self, a: &GroupedAxis) {
+        self.placement(a.grand_total);
+        self.num(match a.form {
+            Form::Outline => 0,
+            Form::Header => 1,
+        });
+        match a.expand.depth {
+            Depth::Levels(n) => {
+                self.flag(true);
+                self.num(n);
+            }
+            Depth::All => self.flag(false),
+        }
+        self.len(a.expand.except.len());
+        for &k in &a.expand.except {
+            self.key(k);
+        }
+    }
+
+    /// The row levels, the column levels, the values (each a flagged field,
+    /// its aggregate's name and its parameters), the slicers, then each
+    /// axis's layout.
+    fn grouping(&mut self, g: &Grouping) {
+        for levels in [&g.row_levels, &g.col_levels] {
+            self.len(levels.len());
+            for level in levels {
+                self.level(level);
+            }
+        }
+        self.len(g.values.len());
+        for v in &g.values {
+            self.flag(v.field.is_some());
+            if let Some(field) = v.field {
+                self.key(field);
+            }
+            self.text(&v.aggregate);
+            self.len(v.params.len());
+            for p in &v.params {
+                self.text(p);
+            }
+        }
+        self.len(g.slicers.len());
+        for c in &g.slicers {
+            self.condition(c);
+        }
+        self.grouped_axis(&g.rows);
+        self.grouped_axis(&g.cols);
+    }
+
+    /// An item's outline, flagged: its kind (0 Leaf, 1 Group Item, 2
+    /// Subtotal, 3 Grand Total), depth, open state (0 open, 1 closed, 2
+    /// can't open), ancestor Keys, then its group, flagged: the field's Key
+    /// and the value, flagged unless blank.
+    fn outline(&mut self, outline: Option<&Outline>) {
+        self.flag(outline.is_some());
+        let Some(o) = outline else {
+            return;
+        };
+        self.num(match o.kind {
+            ItemKind::Leaf => 0,
+            ItemKind::Group => 1,
+            ItemKind::Subtotal => 2,
+            ItemKind::GrandTotal => 3,
+        });
+        self.num(o.depth);
+        self.num(match o.open {
+            OpenState::Open => 0,
+            OpenState::Closed => 1,
+            OpenState::CantOpen => 2,
+        });
+        self.len(o.ancestors.len());
+        for &k in &o.ancestors {
+            self.key(k);
+        }
+        self.flag(o.group.is_some());
+        if let Some(g) = &o.group {
+            self.key(g.field);
+            match &g.value {
+                Value::Text(t) => {
+                    self.flag(true);
+                    self.text(t);
+                }
+                Value::Blank => self.flag(false),
+            }
+        }
+    }
+
     /// Each axis's part, rows first: its filter (the quick filter, then the
-    /// conditions), its sort, then its hidden Keys.
+    /// conditions), its sort, then its hidden Keys; then the grouping,
+    /// flagged.
     fn view(&mut self, spec: &ViewSpec) {
         for axis in Axis::ALL {
             let part = spec.axis(axis);
@@ -246,6 +388,10 @@ impl Writer<'_> {
             for &k in &part.hidden {
                 self.key(k);
             }
+        }
+        self.flag(spec.grouping.is_some());
+        if let Some(g) = &spec.grouping {
+            self.grouping(g);
         }
     }
 
@@ -321,6 +467,8 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.opt_key(item.key);
             w.num(item.offset);
             w.num(item.size);
+            w.outline(s.outline(axis, item.position));
+            w.flag(item.key.is_some_and(|k| s.toggle_pending(axis, k)));
         }
         w.len(s.pinned(axis, Edge::Leading).len());
         w.len(s.pinned(axis, Edge::Trailing).len());
@@ -437,6 +585,7 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
         w.view(spec);
     }
     w.flag(s.view_pending());
+    w.flag(s.outline_focused());
     // The move waiting for its answer, then the last refusal.
     let pending = s.pending_move();
     w.flag(pending.is_some());

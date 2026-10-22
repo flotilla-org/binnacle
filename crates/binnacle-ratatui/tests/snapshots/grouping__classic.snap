@@ -1,0 +1,32 @@
+---
+source: crates/binnacle-ratatui/tests/grouping.rs
+expression: styled(&buf)
+---
+count       id     │kg     │
+▾ North (3)                      █
+    #0      s0c0    s0c2         █
+    #3      s3c0    s3c2         █
+    #4      s4c0    s4c2         █
+▾ South (3)                      █
+    #1      s1c0    s1c2         █
+    #2      s2c0    s2c2         █
+    #5      s5c0    s5c2         █
+                                 █
+
+aaaaabbbbbbbaaaaaaacaaaaaaacbbbbba
+deeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef
+aaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbf
+aaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbf
+aaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbf
+deeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef
+aaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbf
+aaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbf
+aaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbf
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbf
+
+a: fg Reset bg Reset BOLD
+b: fg Reset bg Reset
+c: fg DarkGray bg Reset
+d: fg Yellow bg #263040 BOLD
+e: fg White bg #263040 BOLD
+f: fg Gray bg Reset

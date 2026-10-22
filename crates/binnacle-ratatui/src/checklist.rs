@@ -6,7 +6,8 @@
 //! ticks are read back from the conditions against the values shown.
 //!
 //! The checklist owns a column's first Text condition and its first OneOf;
-//! any others stay as they are. A value a Text condition rejects can't be
+//! the popup's comparison row owns its first comparison; any others stay as
+//! they are. A value a Text condition rejects can't be
 //! ticked: the popup shows it dimmed.
 
 use binnacle_core::{Axis, Condition, ConditionKind, Grid, Key, TextQuery, Value};
@@ -23,6 +24,8 @@ pub(crate) struct Column {
     pub text: Option<Condition>,
     /// Its first OneOf.
     pub one_of: Option<Condition>,
+    /// Its first comparison.
+    pub compare: Option<Condition>,
     /// Every condition on the column, those two included, in order.
     pub all: Vec<Condition>,
 }
@@ -46,16 +49,13 @@ impl Column {
             .filter(|c| c.key == key)
             .cloned()
             .collect();
-        let first = |one_of: bool| {
-            (all.iter())
-                .find(|c| matches!(c.kind, ConditionKind::OneOf(_)) == one_of)
-                .cloned()
-        };
+        let first = |kind: fn(&ConditionKind) -> bool| all.iter().find(|c| kind(&c.kind)).cloned();
         Column {
             axis,
             key,
-            text: first(false),
-            one_of: first(true),
+            text: first(|k| matches!(k, ConditionKind::Text(_))),
+            one_of: first(|k| matches!(k, ConditionKind::OneOf(_))),
+            compare: first(|k| matches!(k, ConditionKind::Compare(_))),
             all,
         }
     }
@@ -79,8 +79,23 @@ impl Column {
         text: Option<Condition>,
         one_of: Option<Condition>,
     ) -> Column {
+        self.swap(grid, [(&self.text, text), (&self.one_of, one_of)])
+    }
+
+    /// The column with `compare` in place of its comparison (added at the
+    /// end if new), and the edit that asks the Grid for it.
+    pub fn write_compare(&self, grid: &mut Grid, compare: Option<Condition>) -> Column {
+        self.swap(grid, [(&self.compare, compare)])
+    }
+
+    /// The column with each `to` in place of its `from`, and the edits.
+    fn swap<const N: usize>(
+        &self,
+        grid: &mut Grid,
+        swaps: [(&Option<Condition>, Option<Condition>); N],
+    ) -> Column {
         let mut all = self.all.clone();
-        for (from, to) in [(&self.text, text), (&self.one_of, one_of)] {
+        for (from, to) in swaps {
             let at = from.as_ref().and_then(|f| all.iter().position(|c| c == f));
             match (from, at, to) {
                 (Some(f), Some(i), Some(t)) => {

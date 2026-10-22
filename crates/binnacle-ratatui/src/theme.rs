@@ -62,6 +62,14 @@ pub struct Theme {
     /// Patched over a control whose request the Table Source rejected or
     /// failed: a quick filter, condition or find text it did not apply.
     pub error: Style,
+    /// Patched over a Group Item's row, band and body.
+    pub group_item: Style,
+    /// Patched over a Subtotal's row.
+    pub subtotal: Style,
+    /// Patched over a Grand Total's row.
+    pub grand_total: Style,
+    /// The disclosure mark (`▾` open, `▸` closed) before a Group Item's label.
+    pub disclosure: Style,
     pub shimmer_base: Color,
     pub shimmer_highlight: Color,
     /// Draws headers and row numbers reversed, so the bands stand out.
@@ -108,6 +116,16 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             unmatched: none.fg(Color::DarkGray),
             error: none.fg(Color::LightRed).add_modifier(Modifier::BOLD),
+            group_item: none
+                .fg(Color::White)
+                .bg(Color::Rgb(38, 48, 64))
+                .add_modifier(Modifier::BOLD),
+            subtotal: none.fg(Color::Cyan).bg(Color::Rgb(24, 32, 42)),
+            grand_total: none
+                .fg(Color::White)
+                .bg(Color::Rgb(60, 72, 96))
+                .add_modifier(Modifier::BOLD),
+            disclosure: none.fg(Color::Yellow),
             shimmer_base: Color::Rgb(140, 130, 40),
             shimmer_highlight: Color::Rgb(255, 240, 120),
             invert_headers: false,
@@ -147,6 +165,16 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             unmatched: none.fg(mocha::OVERLAY0),
             error: none.fg(mocha::RED).add_modifier(Modifier::BOLD),
+            group_item: none
+                .fg(mocha::TEXT)
+                .bg(mocha::SURFACE0)
+                .add_modifier(Modifier::BOLD),
+            subtotal: none.fg(mocha::SAPPHIRE).bg(mocha::MANTLE),
+            grand_total: none
+                .fg(mocha::TEXT)
+                .bg(mocha::SURFACE1)
+                .add_modifier(Modifier::BOLD),
+            disclosure: none.fg(mocha::PEACH),
             shimmer_base: mocha::PEACH,
             shimmer_highlight: mocha::YELLOW,
             invert_headers: false,
@@ -183,6 +211,15 @@ impl Theme {
             find_current: none.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             unmatched: none.add_modifier(Modifier::DIM),
             error: none.add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            // Undimmed, so a summary's label in the dim row band reads as bold.
+            group_item: none
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM),
+            subtotal: none.add_modifier(Modifier::ITALIC),
+            grand_total: none
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                .remove_modifier(Modifier::DIM),
+            disclosure: none.add_modifier(Modifier::BOLD),
             shimmer_base: Color::Reset,
             shimmer_highlight: Color::Reset,
             invert_headers: false,
@@ -231,6 +268,10 @@ impl Theme {
             find_current: s(self.find_current),
             unmatched: s(self.unmatched),
             error: s(self.error),
+            group_item: s(self.group_item),
+            subtotal: s(self.subtotal),
+            grand_total: s(self.grand_total),
+            disclosure: s(self.disclosure),
             shimmer_base: nearest_ansi(self.shimmer_base),
             shimmer_highlight: nearest_ansi(self.shimmer_highlight),
             ..self.clone()
@@ -300,6 +341,7 @@ mod mocha {
 
     pub const CRUST: Color = Color::Rgb(17, 17, 27);
     pub const MANTLE: Color = Color::Rgb(24, 24, 37);
+    pub const SURFACE0: Color = Color::Rgb(49, 50, 68);
     pub const SURFACE1: Color = Color::Rgb(69, 71, 90);
     pub const SURFACE2: Color = Color::Rgb(88, 91, 112);
     pub const OVERLAY0: Color = Color::Rgb(108, 112, 134);

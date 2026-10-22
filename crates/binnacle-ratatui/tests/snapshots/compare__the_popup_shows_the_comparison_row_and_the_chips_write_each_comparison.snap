@@ -1,0 +1,49 @@
+---
+source: crates/binnacle-ratatui/tests/compare.rs
+expression: "out.join(\"\\n\\n\")"
+---
+    port          │weight        │shipped       │
+1   r0c0           ┌─ Filter weight ──────────────────────────┐█
+2   r1c0           │ ‹Any value›                              │█
+3   r2c0           │ Left, Right comparison  Tab move         │█
+4   r3c0           │ Enter keep  Esc undo  Ctrl+U clear       │█
+5   r4c0           └──────────────────────────────────────────┘█
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+
+    port          │weight      ▿~│shipped       │
+1   r0c0           ┌─ Filter weight ──────────────────────────┐█
+2   r1c0           │ ‹Greater than› 100▏                      │█
+3   r2c0           │ Left, Right comparison  Tab move         │█
+4   r3c0           │ Enter keep  Esc undo  Ctrl+U clear       │█
+5   r4c0           └──────────────────────────────────────────┘█
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+
+    port          │weight      ▿~│shipped       │
+1   r0c0           r┌─ Filter shipped ─────────────────────────┐
+2   r1c0           r│ ‹Between› ▏            and YYYY-MM-DD    │
+3   r2c0           r│ Left, Right comparison  Tab move         │
+4   r3c0           r│ Enter keep  Esc undo  Ctrl+U clear       │
+5   r4c0           r└──────────────────────────────────────────┘
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+
+    port          │weight      ▿~│shipped       │
+1   r0c0           r┌─ Filter shipped ─────────────────────────┐
+2   r1c0           r│ ‹Between› 2024-04-01   and ▏             │
+3   r2c0           r│ Left, Right comparison  Tab move         │
+4   r3c0           r│ Enter keep  Esc undo  Ctrl+U clear       │
+5   r4c0           r└──────────────────────────────────────────┘
+                                                               █
+                                                               █
+                                                               █
+                                                               █
+
+ Where   weight: > 100~   shipped: between 2024-04-01 and 2024-06-30~

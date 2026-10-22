@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { AXIS_CODE, EDGE_CODE } from "../src/codes";
 import { readLayout, restoreLayout, LAYOUT_VERSION, type Layout } from "../src/layout";
 import { fromRows } from "../src/rows";
-import type { AppliedView, TableSink, TableSource, ViewSpec } from "../src/source";
+import type { AppliedView, Comparison, Condition, Scalar, TableSink, TableSource, ViewSpec } from "../src/source";
 import { Harness } from "./harness";
 import { loadForTests } from "./wasm";
 
@@ -70,7 +70,10 @@ function scramble(tc: hegel.TestCase, h: Harness<number, Field, unknown>): void 
       sort: [...new Map(sorted).entries()].map(([id, direction]) => ({ id, direction })),
       filter: {
         quick: tc.draw(gs.booleans()) ? { text: tc.draw(gs.sampledFrom(["x", "1", ""])), caseSensitive: false, regex: false, searches: "shown" } : null,
-        conditions: tc.draw(gs.booleans()) ? [{ id: "b", kind: { type: "OneOf", values: ["x", null] }, not: false }] : [],
+        conditions: [
+          ...(tc.draw(gs.booleans()) ? [{ id: "b" as Field, kind: { type: "OneOf" as const, values: ["x", null] }, not: false }] : []),
+          ...tc.draw(gs.arrays(compared, { maxSize: 2 })),
+        ],
       },
       hidden: tc.draw(gs.arrays(row, { maxSize: 3 })),
     },
@@ -80,6 +83,17 @@ function scramble(tc: hegel.TestCase, h: Harness<number, Field, unknown>): void 
   h.drain();
   h.settled();
 }
+
+/** A comparison on a number or a date, between included, maybe with `not`. */
+const compared = gs.composite((tc): Condition<Field> => {
+  const scalar = (): Scalar =>
+    tc.draw(gs.booleans())
+      ? { type: "number", value: tc.draw(gs.floats({ allowNan: false, allowInfinity: false })) }
+      : { type: "date", value: tc.draw(gs.integers({ minValue: -8.64e15, maxValue: 8.64e15 })) };
+  const op = tc.draw(gs.sampledFrom(["equal", "notEqual", "less", "atMost", "greater", "atLeast", "between"] as const));
+  const comparison: Comparison = op === "between" ? { op, low: scalar(), high: scalar() } : { op, value: scalar() };
+  return { id: tc.draw(gs.sampledFrom(["a", "b", "c"] as Field[])), kind: { type: "Compare", comparison }, not: tc.draw(gs.booleans()) };
+});
 
 describe("a layout restored onto another grid over the same data reads back the same", () => {
   test("property: View Spec, pins, sizes and band thickness, whatever the other grid held", () =>
@@ -124,6 +138,7 @@ describe("a layout restored onto another grid over the same data reads back the 
         view: {
           rows: { sort: [{ id: "a", direction: "descending" }], filter: { quick: null, conditions: [] }, hidden: [] },
           cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: ["c"] },
+          grouping: null,
         },
         pins: { rows: { leading: [3], trailing: [] }, cols: { leading: ["b"], trailing: ["c"] } },
         sizes: { rows: [], cols: [["a", 150]] },
@@ -231,6 +246,7 @@ test("restored before data loads: the View Spec shows pending, pins, sizes and b
       view: {
         rows: { sort: [{ id: "c1", direction: "ascending" }], filter: { quick: null, conditions: [] }, hidden: ["r4"] },
         cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: [] },
+        grouping: null,
       },
       pins: { rows: { leading: [], trailing: [] }, cols: { leading: ["c2"], trailing: [] } },
       sizes: { rows: [], cols: [["c2", 77]] },
@@ -282,7 +298,7 @@ test("a missing item's pin or size keeps its ID through any number of Resets, un
     const none = { quick: null, conditions: [] };
     const layout: Layout<string, string> = {
       version: 1,
-      view: { rows: { sort: [], filter: none, hidden: [] }, cols: { sort: [], filter: none, hidden: [] } },
+      view: { rows: { sort: [], filter: none, hidden: [] }, cols: { sort: [], filter: none, hidden: [] }, grouping: null },
       pins: { rows: { leading: [], trailing: ["gone row"] }, cols: { leading: ["gone", "c1"], trailing: [] } },
       // Sized only, not pinned.
       sizes: { rows: [["sized row", 40]], cols: [["sized", 90]] },

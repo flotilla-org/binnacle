@@ -13,10 +13,12 @@ mod distinct;
 mod drawn;
 mod edit;
 mod effect;
+mod expand;
 mod find;
 mod focus;
 mod gesture;
 mod grid;
+mod grouping;
 mod measure;
 mod moves;
 mod notice;
@@ -36,6 +38,10 @@ pub use find::{FindDirection, FindMatch, FindQuery};
 pub use focus::FocusEnd;
 pub use gesture::Mode;
 pub use grid::{AxisConfig, DEFAULT_DRAG_THRESHOLD, Grid, WindowRequests};
+pub use grouping::{
+    AggregateValue, Depth, EXCEPT_CAP, ExceptCapped, Expand, Form, GRAND_TOTAL, GroupOf,
+    GroupedAxis, Grouping, ItemKind, Level, OpenState, Outline, Placement,
+};
 pub use measure::{AxisMeasure, ItemAt, WindowChange};
 pub use notice::ChangeNotice;
 pub use pointer::{Button, Modifiers, PointerEvent, PointerKind};
@@ -47,7 +53,7 @@ pub use snapshot::{
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
 pub use types::{Axis, Edge, Generation, Key, Position, Viewport};
 pub use view::{
-    AxisView, Condition, ConditionKind, ConditionState, ConditionTree, FilterSpec, HIDE_CAP,
-    HeaderFilter, HideCapped, Searched, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec,
+    AxisView, Compared, Comparison, Condition, ConditionKind, ConditionState, ConditionTree,
+    FilterSpec, HIDE_CAP, HeaderFilter, HideCapped, Scalar, Searched, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec,
 };

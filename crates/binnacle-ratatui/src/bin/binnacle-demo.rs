@@ -68,8 +68,14 @@
 //! other filters: Tab moves to its search and then the list, Space ticks the
 //! value under the cursor, and Ctrl+A ticks "(Select all)" or, while
 //! searching, "(Select all matching …)". The port column has blanks, every
-//! eleventh record. Ctrl+U clears the field, Enter keeps the conditions and
-//! Esc puts back the column's conditions from before.
+//! eleventh record. On the weight and crew (numbers) and the shipped date,
+//! a comparison row sits under the text: Tab to it, Left and Right step
+//! from "Any value" through "Equal to" to "At least" and "Between", and the
+//! value is typed as a number or a `YYYY-MM-DD` date (Tab again for a
+//! Between's high end, both ends included). Try weight "Greater than" 500,
+//! or shipped "Between" 2024-04-01 and 2024-06-30. A record with no value
+//! never passes a comparison. Ctrl+U clears the field, Enter keeps the
+//! conditions and Esc puts back the column's conditions from before.
 //! Conditions on several columns AND together and with the quick filter; a
 //! filtered column's header shows `▿` (with `~` while the change is
 //! pending, `!` while not applied), and a line above the table lists each
@@ -183,7 +189,7 @@ use std::collections::HashSet;
 
 use binnacle_core::{
     Action, Axis, AxisConfig, ConditionKind, Distinct, DistinctQuery, Edge, EditEnd, Effect,
-    FindDirection, FindMatch, FindQuery, Grid, HeaderClick, Key, Located, Mode, Position,
+    FindDirection, FindMatch, FindQuery, Grid, HeaderClick, Key, Located, Mode, Position, Scalar,
     SelectionUnit, Snapshot, Stamped, Support, TextSupport, Totals, Value, ViewSpec, Viewport,
 };
 use binnacle_memory::{
@@ -258,6 +264,9 @@ struct Record {
     crew: i64,
     /// Missing for every eleventh record, to show blanks in its checklist.
     port: Option<&'static str>,
+    /// When it shipped, a day in 2024 in milliseconds since the Unix epoch;
+    /// missing for every thirteenth record.
+    shipped: Option<i64>,
 }
 
 impl Record {
@@ -270,6 +279,12 @@ impl Record {
             weight: (!i.is_multiple_of(7)).then(|| (h % 10_000) as f64 / 10.0),
             crew: (h % 13) as i64,
             port: (!i.is_multiple_of(11)).then(|| PORTS[((h >> 4) % 9) as usize]),
+            shipped: (!i.is_multiple_of(13)).then(|| {
+                let Scalar::Date(start) = Scalar::date(2024, 1, 1) else {
+                    unreachable!("a date")
+                };
+                start + ((h >> 8) % 366) as i64 * 86_400_000
+            }),
         }
     }
 }
@@ -277,7 +292,7 @@ impl Record {
 /// The minimum crew each Ctrl+R filter keeps, in turn; `None` keeps all.
 const CREW_FILTERS: [Option<i64>; 3] = [None, Some(6), Some(13)];
 
-const HEADERS: [&str; 5] = ["id", "name", "weight", "crew", "port"];
+const HEADERS: [&str; 6] = ["id", "name", "weight", "crew", "port", "shipped"];
 
 const TICKERS: usize = 200;
 /// The live table lists a new ticker every this many ticks, up to [`LISTED`].
@@ -917,7 +932,11 @@ impl Content for Text<'_> {
                     1 => r.name.clone(),
                     2 => r.weight.map_or_else(|| "-".into(), |w| format!("{w:.1}")),
                     3 => r.crew.to_string(),
-                    _ => r.port.unwrap_or_default().to_string(),
+                    4 => r.port.unwrap_or_default().to_string(),
+                    _ => r
+                        .shipped
+                        .map(|d| Scalar::Date(d).to_string())
+                        .unwrap_or_default(),
                 }
             }
             Text::Huge => format!("r{}c{}", row.0, col.0),
@@ -1252,6 +1271,7 @@ fn records_source(rows: &[Record]) -> MemorySource<Record> {
         .f64_column(Key(2), |r| r.weight)
         .i64_column(Key(3), |r| Some(r.crew))
         .bytes_column(Key(4), |r| r.port.map(|p| Cow::Borrowed(p.as_bytes())))
+        .date_column(Key(5), |r| r.shipped)
         // The quick filter searches the weight as drawn.
         .text_column(Key(2), |r| {
             Some(r.weight.map_or("-".into(), |w| format!("{w:.1}").into()))
@@ -1355,7 +1375,8 @@ fn main() -> io::Result<()> {
         // The ids take no conditions, as on the web.
         let id = (source.support(Axis::Rows, Key(0)))
             .with_text(None)
-            .with_one_of(false);
+            .with_one_of(false)
+            .with_compare(None);
         grid.set_support(Axis::Rows, Key(0), id);
         let source = Box::new(source);
         let slow = std::env::args().any(|a| a == "--slow");

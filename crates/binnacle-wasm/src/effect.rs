@@ -3,11 +3,13 @@
 //! directions as strings. `web/src/effects.ts` holds the matching union.
 
 use binnacle_core::{
-    Axis, Condition, ConditionKind, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery,
-    Key, Searched, SortColumn, SortDirection, SortSpec, Stamped, TextQuery, Value, ViewEdit,
-    ViewSpec,
+    Axis, Comparison, Condition, ConditionKind, Edge, Effect, FilterSpec, FindDirection, FindMatch,
+    FindQuery, Key, Scalar, Searched, SortColumn, SortDirection, SortSpec, Stamped, TextQuery,
+    Value, ViewEdit, ViewSpec,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::grouping::{WireDepth, WireGrouping};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -112,6 +114,77 @@ impl From<WireTextQuery> for TextQuery {
     }
 }
 
+/// A number, or a date in milliseconds since the Unix epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum WireScalar {
+    Number { value: f64 },
+    Date { value: f64 },
+}
+
+impl From<Scalar> for WireScalar {
+    fn from(s: Scalar) -> Self {
+        match s {
+            Scalar::Number(value) => WireScalar::Number { value },
+            Scalar::Date(ms) => WireScalar::Date { value: ms as f64 },
+        }
+    }
+}
+
+impl From<WireScalar> for Scalar {
+    /// A date's milliseconds are truncated to a whole number.
+    fn from(s: WireScalar) -> Self {
+        match s {
+            WireScalar::Number { value } => Scalar::Number(value),
+            WireScalar::Date { value } => Scalar::Date(value as i64),
+        }
+    }
+}
+
+/// A comparison, tagged by its `op`; between has `low` and `high`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum WireComparison {
+    Equal { value: WireScalar },
+    NotEqual { value: WireScalar },
+    Less { value: WireScalar },
+    AtMost { value: WireScalar },
+    Greater { value: WireScalar },
+    AtLeast { value: WireScalar },
+    Between { low: WireScalar, high: WireScalar },
+}
+
+impl From<Comparison> for WireComparison {
+    fn from(c: Comparison) -> Self {
+        match c {
+            Comparison::Equal(s) => WireComparison::Equal { value: s.into() },
+            Comparison::NotEqual(s) => WireComparison::NotEqual { value: s.into() },
+            Comparison::Less(s) => WireComparison::Less { value: s.into() },
+            Comparison::AtMost(s) => WireComparison::AtMost { value: s.into() },
+            Comparison::Greater(s) => WireComparison::Greater { value: s.into() },
+            Comparison::AtLeast(s) => WireComparison::AtLeast { value: s.into() },
+            Comparison::Between(low, high) => WireComparison::Between {
+                low: low.into(),
+                high: high.into(),
+            },
+        }
+    }
+}
+
+impl From<WireComparison> for Comparison {
+    fn from(c: WireComparison) -> Self {
+        match c {
+            WireComparison::Equal { value } => Comparison::Equal(value.into()),
+            WireComparison::NotEqual { value } => Comparison::NotEqual(value.into()),
+            WireComparison::Less { value } => Comparison::Less(value.into()),
+            WireComparison::AtMost { value } => Comparison::AtMost(value.into()),
+            WireComparison::Greater { value } => Comparison::Greater(value.into()),
+            WireComparison::AtLeast { value } => Comparison::AtLeast(value.into()),
+            WireComparison::Between { low, high } => Comparison::Between(low.into(), high.into()),
+        }
+    }
+}
+
 /// What a condition asks of its item's values, tagged like the Effects.
 /// A OneOf's values are text, or `null` for a blank. `Other` is a kind this
 /// bridge does not carry yet; it never comes back.
@@ -123,6 +196,9 @@ pub enum WireConditionKind {
     },
     OneOf {
         values: Vec<Option<String>>,
+    },
+    Compare {
+        comparison: WireComparison,
     },
     #[serde(skip_deserializing)]
     Other,
@@ -150,6 +226,9 @@ impl From<&Condition> for WireCondition {
                         })
                         .collect(),
                 },
+                ConditionKind::Compare(c) => WireConditionKind::Compare {
+                    comparison: (*c).into(),
+                },
                 _ => WireConditionKind::Other,
             },
             not: c.not,
@@ -167,6 +246,9 @@ impl WireCondition {
             WireConditionKind::OneOf { values } => {
                 let values = values.iter().map(|v| Value::of(v.as_deref())).collect();
                 Some(Condition::one_of(Key(self.key), values).not(self.not))
+            }
+            WireConditionKind::Compare { comparison } => {
+                Some(Condition::compare(Key(self.key), comparison.into()).not(self.not))
             }
             WireConditionKind::Other => None,
         }
@@ -195,11 +277,14 @@ pub struct WireAxisView {
 }
 
 /// A View Spec both ways across the boundary: out in `ViewRequested` and the
-/// Snapshot, back in `view_applied`.
+/// Snapshot, back in `view_applied`. A spec coming back without `grouping`
+/// is a plain table.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WireViewSpec {
     pub rows: WireAxisView,
     pub cols: WireAxisView,
+    #[serde(default)]
+    pub grouping: Option<WireGrouping>,
 }
 
 impl From<&ViewSpec> for WireViewSpec {
@@ -217,6 +302,7 @@ impl From<&ViewSpec> for WireViewSpec {
         WireViewSpec {
             rows: axis(Axis::Rows),
             cols: axis(Axis::Cols),
+            grouping: spec.grouping.as_ref().map(WireGrouping::from),
         }
     }
 }
@@ -249,7 +335,7 @@ impl From<WireViewSpec> for ViewSpec {
                 .with_filter(axis, filter(part.filter))
                 .with_hidden(axis, hidden);
         }
-        view
+        view.with_grouping(spec.grouping.map(Into::into))
     }
 }
 
@@ -293,6 +379,29 @@ pub enum WireViewEdit {
         axis: WireAxis,
         keys: Vec<u64>,
     },
+    Group {
+        axis: WireAxis,
+        field: u64,
+    },
+    Ungroup {
+        axis: WireAxis,
+    },
+    Expand {
+        axis: WireAxis,
+        key: u64,
+    },
+    Collapse {
+        axis: WireAxis,
+        key: u64,
+    },
+    ExpandAll {
+        axis: WireAxis,
+        key: u64,
+    },
+    ExpandTo {
+        axis: WireAxis,
+        depth: WireDepth,
+    },
     Other,
 }
 
@@ -331,6 +440,27 @@ impl From<ViewEdit> for WireViewEdit {
             ViewEdit::Show { axis, keys } => WireViewEdit::Show {
                 axis: axis.into(),
                 keys: keys.iter().map(|k| k.0).collect(),
+            },
+            ViewEdit::Group { axis, field } => WireViewEdit::Group {
+                axis: axis.into(),
+                field: field.0,
+            },
+            ViewEdit::Ungroup { axis } => WireViewEdit::Ungroup { axis: axis.into() },
+            ViewEdit::Expand { axis, key } => WireViewEdit::Expand {
+                axis: axis.into(),
+                key: key.0,
+            },
+            ViewEdit::Collapse { axis, key } => WireViewEdit::Collapse {
+                axis: axis.into(),
+                key: key.0,
+            },
+            ViewEdit::ExpandAll { axis, key } => WireViewEdit::ExpandAll {
+                axis: axis.into(),
+                key: key.0,
+            },
+            ViewEdit::ExpandTo { axis, depth } => WireViewEdit::ExpandTo {
+                axis: axis.into(),
+                depth: depth.into(),
             },
             _ => WireViewEdit::Other,
         }
@@ -630,6 +760,7 @@ mod tests {
                     ], "hidden": [] },
                     "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
                         "hidden": [] },
+                    "grouping": null,
                 },
                 "edit": { "type": "CycleSort", "axis": "rows", "key": 2, "multi": true },
             })
@@ -659,6 +790,7 @@ mod tests {
                         "hidden": [] },
                     "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
                         "hidden": [] },
+                    "grouping": null,
                 },
                 "edit": { "type": "SetQuickFilter", "axis": "rows", "query": quick },
             })
@@ -686,6 +818,7 @@ mod tests {
                         "hidden": [] },
                     "cols": { "filter": { "quick": null, "conditions": [] }, "sort": [],
                         "hidden": [] },
+                    "grouping": null,
                 },
                 "edit": { "type": "AddCondition", "axis": "rows", "condition": condition },
             })

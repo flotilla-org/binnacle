@@ -4,8 +4,8 @@ use std::ops::Range;
 
 use binnacle_core::{
     Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, Effect, FindDirection, FindMatch,
-    FindQuery, Grid, Key, Located, Modifiers, PointerEvent, Position, Snapshot, Stamped, Support,
-    ViewSpec, Viewport,
+    FindQuery, Grid, Grouping, Key, Located, Modifiers, Outline, PointerEvent, Position, Snapshot,
+    Stamped, Support, ViewSpec, Viewport,
 };
 use binnacle_memory::{
     FindStep, IdentitySource, MemorySource, MovePolicy, Moved, PumpSource, Transposed, Viewed,
@@ -21,6 +21,12 @@ pub trait ScenarioSource: PumpSource {
     /// Content sizes for the Keys just fetched on `axis`, with the smallest
     /// content size the axis can have. `None` (the default) sends Keys only.
     fn sizes(&mut self, _axis: Axis, _keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        None
+    }
+
+    /// The outlines of the Keys just fetched on `axis`, if it is grouped.
+    /// `None` (the default) sends none.
+    fn outlines(&mut self, _axis: Axis, _keys: &[Key]) -> Option<Vec<Outline>> {
         None
     }
 }
@@ -345,6 +351,116 @@ impl PumpSource for ColumnMajorTable {
     }
 }
 
+/// A table whose rows can be grouped by one column, serving outlines made
+/// by hand: the plain rows, and the grouped items in the order the test
+/// gives them, whatever the grouping asked for, so long as its outermost
+/// level is the column. Grouping by the column (and nothing else) is supported,
+/// and the column leaves the columns while the rows are grouped. Columns
+/// are keyed by Position.
+pub struct GroupedTable {
+    plain: Vec<Key>,
+    grouped: Vec<(Key, Outline)>,
+    cols: u64,
+    field: Key,
+    grouping: Option<Grouping>,
+}
+
+impl GroupedTable {
+    /// `plain` rows over `cols` columns, grouped by column `field` as
+    /// `grouped` says.
+    pub fn new(plain: Vec<Key>, cols: u64, field: Key, grouped: Vec<(Key, Outline)>) -> Self {
+        GroupedTable {
+            plain,
+            grouped,
+            cols,
+            field,
+            grouping: None,
+        }
+    }
+
+    fn rows(&self) -> Vec<Key> {
+        match self.grouping {
+            Some(_) => self.grouped.iter().map(|(k, _)| *k).collect(),
+            None => self.plain.clone(),
+        }
+    }
+
+    fn cols(&self) -> Vec<Key> {
+        (0..self.cols)
+            .map(Key)
+            .filter(|&k| self.grouping.is_none() || k != self.field)
+            .collect()
+    }
+}
+
+impl ScenarioSource for GroupedTable {
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
+        let keys = match axis {
+            Axis::Rows => self.rows(),
+            Axis::Cols => self.cols(),
+        };
+        let end = (range.end as usize).min(keys.len());
+        keys.get(range.start as usize..end)
+            .map_or(Vec::new(), <[Key]>::to_vec)
+    }
+
+    fn outlines(&mut self, axis: Axis, keys: &[Key]) -> Option<Vec<Outline>> {
+        self.grouping.as_ref()?;
+        (axis == Axis::Rows).then(|| {
+            keys.iter()
+                .filter_map(|k| self.grouped.iter().find(|(g, _)| g == k))
+                .map(|(_, o)| o.clone())
+                .collect()
+        })
+    }
+}
+
+impl PumpSource for GroupedTable {
+    fn view(&mut self, spec: &ViewSpec) -> Viewed {
+        let wanted = spec.grouping.clone().filter(|g| {
+            g.col_levels.is_empty()
+                && g.row_levels.first().and_then(|l| l.field_key()) == Some(self.field)
+        });
+        let applied = ViewSpec::default().with_grouping(wanted.clone());
+        let changed = wanted != self.grouping;
+        self.grouping = wanted;
+        let notices = if changed {
+            vec![
+                (
+                    Axis::Rows,
+                    ChangeNotice::Refiltered(self.rows().len() as u64),
+                ),
+                (
+                    Axis::Cols,
+                    ChangeNotice::Refiltered(self.cols().len() as u64),
+                ),
+            ]
+        } else {
+            Vec::new()
+        };
+        Viewed {
+            applied,
+            totals: Default::default(),
+            notices,
+        }
+    }
+
+    fn support(&mut self, axis: Axis, key: Key) -> Support {
+        Support::default().with_group(axis == Axis::Rows && key == self.field)
+    }
+
+    fn locate(&mut self, axis: Axis, key: Key) -> Located {
+        let keys = match axis {
+            Axis::Rows => self.rows(),
+            Axis::Cols => self.cols(),
+        };
+        match keys.iter().position(|&k| k == key) {
+            Some(p) => Located::Found(p as u64),
+            None => Located::Gone { suggest: None },
+        }
+    }
+}
+
 /// A scenario's source seen by the shared pump, logging each answer.
 struct Answering<'a, S> {
     source: &'a mut S,
@@ -508,6 +624,9 @@ impl<S: ScenarioSource> Scenario<S> {
                         .set_window_sized(axis, range.start, &keys, &sizes, min_size)
                 }
                 None => self.grid.set_window(axis, range.start, &keys),
+            }
+            if let Some(outlines) = self.source.outlines(axis, &keys) {
+                self.grid.set_outlines(axis, range.start, &outlines);
             }
         }
         self.grid.snapshot()

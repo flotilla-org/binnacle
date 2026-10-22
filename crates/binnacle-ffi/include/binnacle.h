@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 2u
+#define BINNACLE_ABI_VERSION 6u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -199,14 +199,48 @@ uint32_t binnacle_abi_version(void);
  * hidden already, or shown again. */
 #define BINNACLE_VIEW_EDIT_HIDE 9
 #define BINNACLE_VIEW_EDIT_SHOW 10
+/* axis was grouped by key, a base field, as its innermost level (a plain
+ * table becomes grouped, counting each group), or every level of axis was
+ * removed (with none left on either axis, the table is plain again). */
+#define BINNACLE_VIEW_EDIT_GROUP 11
+#define BINNACLE_VIEW_EDIT_UNGROUP 12
+/* The group of axis headed by the Group Item key was opened or closed: the
+ * Key joins or leaves the axis's expand except list. */
+#define BINNACLE_VIEW_EDIT_EXPAND 13
+#define BINNACLE_VIEW_EDIT_COLLAPSE 14
+/* The group headed by key and every group under it the Grid knows of were
+ * opened. */
+#define BINNACLE_VIEW_EDIT_EXPAND_ALL 15
+/* axis was opened to expand_depth levels (every level when expand_all is
+ * 1) and its exceptions cleared. */
+#define BINNACLE_VIEW_EDIT_EXPAND_TO 16
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
  * matches the condition's text query. ONE_OF: the value is one of the
- * condition's values exactly (none keeps nothing). */
+ * condition's values exactly (none keeps nothing). COMPARE: the value, a
+ * number or a date, compares with the condition's scalars as its compare
+ * says; a blank, a NaN or a value of the other kind never does. */
 #define BINNACLE_CONDITION_OTHER 0
 #define BINNACLE_CONDITION_TEXT 1
 #define BINNACLE_CONDITION_ONE_OF 2
+#define BINNACLE_CONDITION_COMPARE 3
+
+/* BinnacleCondition.compare: the value is equal to, not equal to, less
+ * than, at most, greater than or at least scalar, or BETWEEN scalar and
+ * high, both ends included. */
+#define BINNACLE_COMPARE_EQUAL 0
+#define BINNACLE_COMPARE_NOT_EQUAL 1
+#define BINNACLE_COMPARE_LESS 2
+#define BINNACLE_COMPARE_AT_MOST 3
+#define BINNACLE_COMPARE_GREATER 4
+#define BINNACLE_COMPARE_AT_LEAST 5
+#define BINNACLE_COMPARE_BETWEEN 6
+
+/* BinnacleScalar.kind: a number, or a date in milliseconds since the Unix
+ * epoch (UTC; a date without a time of day is its midnight). */
+#define BINNACLE_SCALAR_NUMBER 0
+#define BINNACLE_SCALAR_DATE 1
 
 /* BinnacleListedCondition.state: applied and still requested, requested and
  * not yet applied, applied and no longer requested, or requested and left
@@ -231,17 +265,60 @@ uint32_t binnacle_abi_version(void);
  * may be sorted by the item. TEXT: it may be filtered by Text conditions on
  * the item, and with TEXT_REGEX they take regexes. REGEX needs TEXT. ONE_OF:
  * it may be filtered by OneOf conditions, the Table Source listing the
- * item's distinct values. */
+ * item's distinct values. COMPARE_NUMBERS or COMPARE_DATES (not both): it
+ * may be filtered by COMPARE conditions on numbers, or on dates. GROUP: it
+ * may be grouped by the item, a base field. */
 #define BINNACLE_SUPPORT_SORT 1u
 #define BINNACLE_SUPPORT_TEXT 2u
 #define BINNACLE_SUPPORT_TEXT_REGEX 4u
 #define BINNACLE_SUPPORT_ONE_OF 8u
+#define BINNACLE_SUPPORT_COMPARE_NUMBERS 16u
+#define BINNACLE_SUPPORT_COMPARE_DATES 32u
+#define BINNACLE_SUPPORT_GROUP 64u
 
 /* binnacle_grid_set_quick_filter_support bits and
  * BinnacleAxisSnapshot.quick_filter: the axis has a quick filter, and it
  * takes regexes. 0 is none, the default. REGEX needs QUICK_FILTER. */
 #define BINNACLE_QUICK_FILTER 1u
 #define BINNACLE_QUICK_FILTER_REGEX 2u
+
+/* Where a Subtotal or a Grand Total goes: nowhere, before its group (or the
+ * axis), or after it. */
+#define BINNACLE_PLACEMENT_OFF 0
+#define BINNACLE_PLACEMENT_BEFORE 1
+#define BINNACLE_PLACEMENT_AFTER 2
+
+/* BinnacleLevel.kind. FIELD: groups the axis by the values of a base field.
+ * VALUES: the values pseudo-level, one item per value where several values
+ * are shown. Levels the Grid gained after this header read as
+ * BINNACLE_LEVEL_OTHER, and are refused as input. */
+#define BINNACLE_LEVEL_FIELD 0
+#define BINNACLE_LEVEL_VALUES 1
+#define BINNACLE_LEVEL_OTHER 2
+
+/* How a grouped axis is drawn: each group a Group Item at its own Position,
+ * or each level a tier of the cross Header Band. */
+#define BINNACLE_FORM_OUTLINE 0
+#define BINNACLE_FORM_HEADER 1
+
+/* BinnacleOutline.kind: a Leaf from the data, or a Summary Item: a Group
+ * Item heading a group, a Subtotal aggregating one group, or the Grand
+ * Total aggregating the axis. */
+#define BINNACLE_ITEM_LEAF 0
+#define BINNACLE_ITEM_GROUP 1
+#define BINNACLE_ITEM_SUBTOTAL 2
+#define BINNACLE_ITEM_GRAND_TOTAL 3
+
+/* The Key of an axis's Grand Total, whoever groups it: a grouped Table
+ * Source names its Grand Total so, and the Grid pins one placed after at
+ * the trailing edge by default, before it is in a Window. */
+#define BINNACLE_GRAND_TOTAL_KEY 0x8000000000000000ull
+
+/* BinnacleOutline.open: whether a Group Item is open. Other items, and Group
+ * Items with nothing under them to show, can't open. */
+#define BINNACLE_OPEN_STATE_OPEN 0
+#define BINNACLE_OPEN_STATE_CLOSED 1
+#define BINNACLE_OPEN_STATE_CANT_OPEN 2
 
 /* binnacle_grid_located's answer: the Key is at position, has left the axis,
  * or has left and position is where focus should go instead. */
@@ -263,6 +340,14 @@ uint32_t binnacle_abi_version(void);
 /* The same items, some left out or brought back and possibly reordered (a
  * filter changed); n is the new count. */
 #define BINNACLE_NOTICE_REFILTERED 5
+/* The group headed by the Group Item at at - 1 closed, hiding the n items
+ * from Position at: they stay alive (Size Overrides kept, pins dormant), and
+ * focus, a range corner or the Scroll Anchor on one moves to the Group
+ * Item. */
+#define BINNACLE_NOTICE_COLLAPSED 6
+/* The group headed by the Group Item at at - 1 opened, showing n items
+ * before the item at Position at. */
+#define BINNACLE_NOTICE_EXPANDED 7
 
 /* How far binnacle_grid_move_focus goes. */
 #define BINNACLE_FOCUS_ITEM 0
@@ -337,10 +422,44 @@ typedef struct {
   float height;
 } BinnacleRect;
 
+/* UTF-8 text, length-delimited and not NUL-terminated. */
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+} BinnacleText;
+
+/* A value as a ONE_OF condition lists it, or a group has it: text in the
+ * Table Source's own text form, or with blank 1 a blank (no value at all,
+ * not empty text), its text ignored. */
+typedef struct {
+  uint32_t blank;
+  BinnacleText text;
+} BinnacleValue;
+
+/* Where an item sits in a grouped axis, as the Table Source sends it with a
+ * Window (binnacle_grid_set_outlines). kind is BINNACLE_ITEM_*, open
+ * BINNACLE_OPEN_STATE_*. depth is 0 for the top groups and a Grand Total; a
+ * Leaf of a group at depth d is at d + 1. ancestors are the Group Item Keys
+ * from the outermost level down to the parent, so the parent is the last
+ * (there are depth of them). Group Items and Subtotals have has_group 1, with
+ * their level's field and the group's value there. */
+typedef struct {
+  uint32_t kind;
+  uint32_t depth;
+  uint32_t open;
+  const uint64_t *ancestors;
+  size_t ancestors_len;
+  uint32_t has_group;
+  uint64_t field;
+  BinnacleValue value;
+} BinnacleOutline;
+
 /*
  * One visible item on an axis. offset is from the viewport's leading edge,
  * header band included. has_key is 0 while the Table Source has not filled
- * the Position: draw it as loading.
+ * the Position: draw it as loading. has_outline is 1 when the Table Source
+ * sent an outline for the item with the Window (a grouped axis); its arrays
+ * are valid as the strip's are.
  */
 typedef struct {
   uint64_t position;
@@ -348,6 +467,11 @@ typedef struct {
   uint64_t key;
   float offset;
   float size;
+  uint32_t has_outline;
+  BinnacleOutline outline;
+  /* 1 while a toggle of this Group Item waits for the Table Source: draw
+   * its disclosure mark pending once it has waited about 150 ms. */
+  uint32_t toggle_pending;
 } BinnacleStripItem;
 
 /* The header of one visible item, in its band; unclipped like the strip. */
@@ -383,12 +507,6 @@ typedef struct {
   uint32_t has_key;
   uint64_t key;
 } BinnacleFocusEnd;
-
-/* UTF-8 text, length-delimited and not NUL-terminated. */
-typedef struct {
-  const uint8_t *data;
-  size_t len;
-} BinnacleText;
 
 /* Text to look for in the cells of items of the other axis, as the Table
  * Source writes their values: anywhere in a value, as BINNACLE_TEXT_* flags
@@ -552,6 +670,9 @@ typedef struct {
   /* Nonzero while a binnacle_grid_view_applied is due: requested parts are
    * pending; once zero, requested parts not applied are not applied. */
   uint32_t view_pending;
+  /* 1 while focus is in the outline column: on the focused row's band
+   * cell (focus_rect), where the tree keys act, not on a body cell. */
+  uint32_t outline_focused;
   /* The move requested and not yet answered: its axis and the Keys it
    * moves. */
   uint32_t has_pending_move;
@@ -587,19 +708,22 @@ typedef struct {
   uint32_t direction;
 } BinnacleSortColumn;
 
-/* A value as a ONE_OF condition lists it: text in the Table Source's own
- * text form, or with blank 1 a blank (no value at all, not empty text), its
- * text ignored. */
+/* A number or a date a COMPARE condition compares with: number when kind is
+ * BINNACLE_SCALAR_NUMBER, date when BINNACLE_SCALAR_DATE; the other is
+ * ignored. */
 typedef struct {
-  uint32_t blank;
-  BinnacleText text;
-} BinnacleValue;
+  uint32_t kind;
+  double number;
+  int64_t date;
+} BinnacleScalar;
 
 /* One condition on the items of an axis, read in item key of the other axis
  * (a column, for the rows): the items whose value there matches are kept, or
  * with negated 1 those whose value does not. A TEXT condition matches text;
  * its query searches key alone (as input, searched and keys are ignored). A
- * ONE_OF condition lists values_len values; other kinds ignore them. */
+ * ONE_OF condition lists values_len values; other kinds ignore them. A
+ * COMPARE condition compares as compare says with scalar, and for BETWEEN
+ * high; other kinds ignore them. */
 typedef struct {
   uint64_t key;
   /* BINNACLE_CONDITION_*. */
@@ -608,6 +732,10 @@ typedef struct {
   BinnacleTextQuery text;
   const BinnacleValue *values;
   size_t values_len;
+  /* BINNACLE_COMPARE_*. */
+  uint32_t compare;
+  BinnacleScalar scalar;
+  BinnacleScalar high;
 } BinnacleCondition;
 
 struct BinnacleListedCondition {
@@ -633,14 +761,70 @@ typedef struct {
   size_t hidden_len;
 } BinnacleAxisView;
 
+/* One level of an axis's grouping: BINNACLE_LEVEL_*. A FIELD level groups by
+ * field, a base field of the Table Source, each group with a Subtotal placed
+ * as subtotal (BINNACLE_PLACEMENT_*) says; VALUES ignores both. */
+typedef struct {
+  uint32_t kind;
+  uint64_t field;
+  uint32_t subtotal;
+} BinnacleLevel;
+
+/* One value a grouped table shows: an aggregate, an open name such as "sum",
+ * "count", "average", "minimum", "maximum", "distinct count" or one the
+ * Table Source declares, over the base field field, or with has_field 0 a
+ * count of items, with the parameters a declared aggregate takes, passed to
+ * the Table Source as they are. */
+typedef struct {
+  uint32_t has_field;
+  uint64_t field;
+  BinnacleText aggregate;
+  const BinnacleText *params;
+  size_t params_len;
+} BinnacleAggregateValue;
+
+/* How one axis is grouped: its levels, outermost first (none: the axis is
+ * not grouped); where its Grand Total goes (BINNACLE_PLACEMENT_*); its form
+ * (BINNACLE_FORM_*); and which groups are open: with expand_all 1 every
+ * level (expand_depth ignored), else the first expand_depth levels (0 shows
+ * only the top groups), except the Group Items keyed in except, which are
+ * the other way. */
+typedef struct {
+  const BinnacleLevel *levels;
+  size_t levels_len;
+  uint32_t grand_total;
+  uint32_t form;
+  uint32_t expand_all;
+  uint32_t expand_depth;
+  const uint64_t *except;
+  size_t except_len;
+} BinnacleGroupedAxis;
+
+/* The whole-table grouping part of a View Spec: each axis's levels and
+ * layout, axes[BINNACLE_ROWS] and axes[BINNACLE_COLS] (no column levels: no
+ * pivot, and the Leaves stay), the values shown, and the slicers, conditions
+ * on base fields applied before aggregating. */
+typedef struct {
+  BinnacleGroupedAxis axes[2];
+  const BinnacleAggregateValue *values;
+  size_t values_len;
+  const BinnacleCondition *slicers;
+  size_t slicers_len;
+} BinnacleGrouping;
+
 /* The view the Table Source should present: axes[BINNACLE_ROWS] and
- * axes[BINNACLE_COLS]. */
+ * axes[BINNACLE_COLS], and with has_grouping 1 how the table is grouped
+ * (has_grouping 0: a plain table, grouping ignored). */
 typedef struct {
   BinnacleAxisView axes[2];
+  uint32_t has_grouping;
+  BinnacleGrouping grouping;
 } BinnacleViewSpec;
 
 /* The cause of a requested View Spec, a hint: the spec alone is the request.
- * keys is set for HIDE and SHOW. */
+ * keys is set for HIDE and SHOW, key for GROUP (the field) and for EXPAND,
+ * COLLAPSE and EXPAND_ALL (the Group Item), expand_all and expand_depth for
+ * EXPAND_TO. */
 typedef struct {
   uint32_t kind;
   uint32_t axis;
@@ -648,6 +832,8 @@ typedef struct {
   uint32_t multi;
   const uint64_t *keys;
   size_t keys_len;
+  uint32_t expand_all;
+  uint32_t expand_depth;
 } BinnacleViewEdit;
 
 /* Each axis's unfiltered count, where the Table Source knows it. */
@@ -849,7 +1035,7 @@ int binnacle_grid_poll_effect(BinnacleGrid *grid, BinnacleEffect *out);
  * Spec now applied, which may be part of the request, or the previous one if
  * the request was rejected, with each axis's unfiltered count where known.
  * NULL spec is the base view, NULL totals knows neither. 0 for an unknown
- * direction, tag or flag, or text that is not UTF-8. */
+ * direction, tag or flag, or text that is not UTF-8, in the grouping too. */
 int binnacle_grid_view_applied(BinnacleGrid *grid, const BinnacleViewSpec *spec,
                                const BinnacleTotals *totals);
 
@@ -871,10 +1057,17 @@ int binnacle_grid_set_hide_support(BinnacleGrid *grid, uint32_t axis, uint32_t h
 
 /* What the Table Source supports when viewing axis by key, an item of the
  * other axis: BINNACLE_SUPPORT_* bits, the whole declaration. Every item
- * supports SORT | TEXT (not ONE_OF) until set otherwise. 0 for unknown bits,
+ * supports SORT | TEXT (not ONE_OF or GROUP) until set otherwise. 0 for unknown bits,
  * or REGEX without TEXT. */
 int binnacle_grid_set_support(BinnacleGrid *grid, uint32_t axis, uint64_t key,
                               uint32_t support);
+
+/* The outlines of the len items at Positions start... of a grouped axis
+ * (outlines has len entries), sent after binnacle_grid_set_window, which
+ * drops them; Positions outside the Window are ignored. 0 for an unknown
+ * tag or flag, or text that is not UTF-8. */
+int binnacle_grid_set_outlines(BinnacleGrid *grid, uint32_t axis, uint64_t start,
+                               const BinnacleOutline *outlines, size_t len);
 
 /* The answer to LOCATE for key on axis: BINNACLE_LOCATED_*, with position
  * for FOUND and GONE_SUGGEST (ignored for GONE). A GONE_SUGGEST position is
@@ -943,6 +1136,42 @@ int binnacle_grid_hide(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, 
  * with BINNACLE_VIEW_EDIT_SHOW; Keys not hidden are skipped. */
 int binnacle_grid_show(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, size_t len);
 
+/* Groups axis by field, a base field, as its innermost level, and requests
+ * the result with BINNACLE_VIEW_EDIT_GROUP. Nothing if axis is grouped by it
+ * already or the Table Source can't group axis by it (BINNACLE_SUPPORT_GROUP
+ * for field). */
+int binnacle_grid_group_by(BinnacleGrid *grid, uint32_t axis, uint64_t field);
+
+/* Removes every level of axis and requests the result with
+ * BINNACLE_VIEW_EDIT_UNGROUP. Nothing if axis is not grouped. */
+int binnacle_grid_ungroup(BinnacleGrid *grid, uint32_t axis);
+
+/* The most Keys an axis's expand except list takes. */
+#define BINNACLE_EXCEPT_CAP 1000
+
+/* What a toggle returns when the axis's exceptions would then number more
+ * than BINNACLE_EXCEPT_CAP: nothing is requested, and the host suggests
+ * setting a depth instead. */
+#define BINNACLE_EXCEPT_CAPPED 2
+
+/* Opens or closes the group of axis headed by the Group Item key, and
+ * requests the result with BINNACLE_VIEW_EDIT_EXPAND or COLLAPSE. Toggle
+ * does whichever the latest request does not, so a second toggle before the
+ * answer takes back the first. Nothing unless the Window holds the Group
+ * Item and it can open. BINNACLE_EXCEPT_CAPPED past the cap. */
+int binnacle_grid_expand(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_collapse(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_toggle(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Opens the group headed by key and every group under it whose Group Item
+ * the Window holds, and those later Windows bring, until another toggle
+ * (BINNACLE_VIEW_EDIT_EXPAND_ALL). */
+int binnacle_grid_expand_all(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Opens axis to depth levels (every level when all is 1) and clears its
+ * exceptions (BINNACLE_VIEW_EDIT_EXPAND_TO). */
+int binnacle_grid_expand_to(BinnacleGrid *grid, uint32_t axis, uint32_t all, uint32_t depth);
+
 /* Requests the whole of spec (NULL for the base view), say to restore a saved
  * view, with BINNACLE_VIEW_EDIT_REPLACE. 0 as binnacle_grid_view_applied. */
 int binnacle_grid_request_view(BinnacleGrid *grid, const BinnacleViewSpec *spec);
@@ -1003,6 +1232,14 @@ int binnacle_grid_select_row(BinnacleGrid *grid);
 
 /* Ends the gesture in progress, restoring focus and selection from before it. */
 int binnacle_grid_cancel(BinnacleGrid *grid);
+
+/* The Leave Outline Action (Tab): focus leaves the outline column for the
+ * body. In the outline column, binnacle_grid_move_focus one item along the
+ * columns walks the tree (forward opens or steps in, back closes or steps
+ * out), binnacle_grid_activate toggles the focused group, and typed "*" or
+ * a digit opens everything under it or the rows to that many levels. One
+ * item back from the first column enters it. */
+int binnacle_grid_leave_outline(BinnacleGrid *grid);
 
 /* Scrolling. */
 

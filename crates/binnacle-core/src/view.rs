@@ -1,10 +1,14 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fmt;
+use std::hash::{Hash, Hasher};
 
 use crate::effect::Effect;
 use crate::grid::Grid;
+use crate::grouping::{AggregateValue, Depth, GRAND_TOTAL, Grouping, Level};
 use crate::pointer::Modifiers;
 use crate::sort::{HeaderSort, SortSpec};
-use crate::types::{Axis, Key, Position};
+use crate::types::{Axis, Edge, Key, Position};
 
 /// The items of the other axis a Text Query searches.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -75,6 +79,132 @@ impl Value {
     }
 }
 
+/// A number or a date a comparison condition compares values with. A date
+/// is an instant, in milliseconds since the Unix epoch (UTC); a date
+/// without a time of day is its midnight, UTC.
+#[derive(Clone, Copy, Debug)]
+pub enum Scalar {
+    Number(f64),
+    Date(i64),
+}
+
+impl Scalar {
+    /// How this compares with `other`: `None` for a NaN, or a number and a
+    /// date.
+    pub fn order(&self, other: &Scalar) -> Option<Ordering> {
+        match (self, other) {
+            (Scalar::Number(a), Scalar::Number(b)) => a.partial_cmp(b),
+            (Scalar::Date(a), Scalar::Date(b)) => Some(a.cmp(b)),
+            _ => None,
+        }
+    }
+
+    /// Midnight, UTC, on day `day` of month `month` (1 to 12) of `year`.
+    pub fn date(year: i64, month: u32, day: u32) -> Self {
+        // Days from civil, after Howard Hinnant's algorithm.
+        let y = if month <= 2 { year - 1 } else { year };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let mp = (i64::from(month) + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        Scalar::Date((era * 146_097 + doe - 719_468) * 86_400_000)
+    }
+}
+
+/// Two scalars are the same if they have the same kind and bits, so a
+/// condition holding NaN still equals itself.
+impl PartialEq for Scalar {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Scalar::Number(a), Scalar::Number(b)) => a.to_bits() == b.to_bits(),
+            (Scalar::Date(a), Scalar::Date(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Scalar {}
+
+impl Hash for Scalar {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Scalar::Number(n) => (0u8, n.to_bits()).hash(state),
+            Scalar::Date(ms) => (1u8, ms).hash(state),
+        }
+    }
+}
+
+/// A number as Rust writes it; a date as `YYYY-MM-DD`, with `THH:MM` (and
+/// seconds and milliseconds, where not zero) and `Z` past midnight UTC.
+impl fmt::Display for Scalar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ms = match self {
+            Scalar::Number(n) => return write!(f, "{n}"),
+            Scalar::Date(ms) => *ms,
+        };
+        // Civil from days, after Howard Hinnant's algorithm.
+        let (days, time) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        write!(f, "{year:04}-{month:02}-{day:02}")?;
+        if time != 0 {
+            let (h, m) = (time / 3_600_000, time / 60_000 % 60);
+            let (s, milli) = (time / 1000 % 60, time % 1000);
+            write!(f, "T{h:02}:{m:02}")?;
+            match (s, milli) {
+                (0, 0) => {}
+                (s, 0) => write!(f, ":{s:02}")?,
+                (s, milli) => write!(f, ":{s:02}.{milli:03}")?,
+            }
+            write!(f, "Z")?;
+        }
+        Ok(())
+    }
+}
+
+/// How a comparison condition compares a value with its scalars. Between
+/// takes both ends; a low end past the high one keeps nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Comparison {
+    Equal(Scalar),
+    NotEqual(Scalar),
+    Less(Scalar),
+    AtMost(Scalar),
+    Greater(Scalar),
+    AtLeast(Scalar),
+    Between(Scalar, Scalar),
+}
+
+impl Comparison {
+    /// Whether an item whose value is `value` passes: never a blank, a NaN,
+    /// or a value of another kind than the scalars.
+    pub fn passes(&self, value: Option<Scalar>) -> bool {
+        use Ordering::*;
+        let Some(value) = value else { return false };
+        let with =
+            |s: &Scalar, wanted: &[Ordering]| value.order(s).is_some_and(|o| wanted.contains(&o));
+        match self {
+            Comparison::Equal(s) => with(s, &[Equal]),
+            Comparison::NotEqual(s) => with(s, &[Less, Greater]),
+            Comparison::Less(s) => with(s, &[Less]),
+            Comparison::AtMost(s) => with(s, &[Less, Equal]),
+            Comparison::Greater(s) => with(s, &[Greater]),
+            Comparison::AtLeast(s) => with(s, &[Greater, Equal]),
+            Comparison::Between(low, high) => {
+                with(low, &[Greater, Equal]) && with(high, &[Less, Equal])
+            }
+        }
+    }
+}
+
 /// What a condition asks of the values in its item.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -84,6 +214,9 @@ pub enum ConditionKind {
     /// The value is one of these, exactly (a blank only if they list
     /// [`Value::Blank`]). None listed keeps nothing.
     OneOf(Vec<Value>),
+    /// The value, a number or a date, compares so. A blank, a NaN, or a
+    /// value of the other kind never passes, so `not` keeps it.
+    Compare(Comparison),
 }
 
 /// One condition on the items of an axis, read in one item of the other
@@ -117,18 +250,27 @@ impl Condition {
         }
     }
 
+    /// Keeps the items whose value in `key` passes `comparison`.
+    pub fn compare(key: Key, comparison: Comparison) -> Self {
+        Condition {
+            key,
+            kind: ConditionKind::Compare(comparison),
+            not: false,
+        }
+    }
+
     /// This condition, or with `not` its opposite.
     pub fn not(mut self, not: bool) -> Self {
         self.not = not;
         self
     }
 
-    /// A Text condition with no text, which asks for nothing. A OneOf
-    /// condition always asks for something, even with no values.
+    /// A Text condition with no text, which asks for nothing. Other kinds
+    /// always ask for something, even OneOf with no values.
     fn is_empty(&self) -> bool {
         match &self.kind {
             ConditionKind::Text(query) => query.text.is_empty(),
-            ConditionKind::OneOf(_) => false,
+            ConditionKind::OneOf(_) | ConditionKind::Compare(_) => false,
         }
     }
 }
@@ -231,12 +373,14 @@ impl AxisView {
 }
 
 /// The declared view a Table Source should present for the whole table, one
-/// part per axis. The default is the Table Source's base view: nothing
-/// filtered, unsorted.
+/// part per axis and the whole-table grouping. The default is the Table
+/// Source's base view: nothing filtered, unsorted, ungrouped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ViewSpec {
     pub rows: AxisView,
     pub cols: AxisView,
+    /// How the table is grouped; `None` for a plain table.
+    pub grouping: Option<Grouping>,
 }
 
 impl ViewSpec {
@@ -272,8 +416,14 @@ impl ViewSpec {
         self
     }
 
+    /// This spec grouped by `grouping`, or plain with `None`.
+    pub fn with_grouping(mut self, grouping: Option<Grouping>) -> Self {
+        self.grouping = grouping;
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty() && self.cols.is_empty()
+        self.rows.is_empty() && self.cols.is_empty() && self.grouping.is_none()
     }
 }
 
@@ -316,6 +466,22 @@ pub enum ViewEdit {
     Hide { axis: Axis, keys: Vec<Key> },
     /// The hidden items of `axis` with `keys` were shown again.
     Show { axis: Axis, keys: Vec<Key> },
+    /// `axis` was grouped by `field`, a base field, as its innermost level.
+    /// A plain table becomes grouped with one value, the count.
+    Group { axis: Axis, field: Key },
+    /// Every level of `axis` was removed; with none left on either axis the
+    /// table is plain again.
+    Ungroup { axis: Axis },
+    /// The group of `axis` headed by the Group Item `key` was opened: the
+    /// Key joins or leaves `expand.except`.
+    Expand { axis: Axis, key: Key },
+    /// The group of `axis` headed by the Group Item `key` was closed.
+    Collapse { axis: Axis, key: Key },
+    /// The group headed by `key` and every group under it the Grid knows of
+    /// were opened.
+    ExpandAll { axis: Axis, key: Key },
+    /// `axis` was opened to `depth` levels and its exceptions cleared.
+    ExpandTo { axis: Axis, depth: Depth },
 }
 
 /// How a Table Source matches a Text Query: `regex` if it takes patterns as
@@ -375,6 +541,19 @@ pub struct Support {
     /// The axis may be filtered by OneOf conditions on the item, the Table
     /// Source listing its distinct values. Not by default.
     pub one_of: bool,
+    /// The axis may be filtered by comparison conditions on the item, and
+    /// on which kind of value; `None` (the default) if not.
+    pub compare: Option<Compared>,
+    /// The axis may be grouped by the item, a base field. Not by default.
+    pub group: bool,
+}
+
+/// The kind of value comparison conditions on an item compare: its values
+/// and the scalars both numbers, or both dates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Compared {
+    Numbers,
+    Dates,
 }
 
 impl Default for Support {
@@ -383,6 +562,8 @@ impl Default for Support {
             sort: true,
             text: Some(TextSupport::default()),
             one_of: false,
+            compare: None,
+            group: false,
         }
     }
 }
@@ -400,6 +581,16 @@ impl Support {
 
     pub fn with_one_of(mut self, one_of: bool) -> Self {
         self.one_of = one_of;
+        self
+    }
+
+    pub fn with_compare(mut self, compare: Option<Compared>) -> Self {
+        self.compare = compare;
+        self
+    }
+
+    pub fn with_group(mut self, group: bool) -> Self {
+        self.group = group;
         self
     }
 }
@@ -619,6 +810,18 @@ impl Grid {
     /// new spec leaves out stays, shown as not applied.
     pub fn view_changed(&mut self, spec: ViewSpec, totals: Totals) {
         let wanted = self.latest_view().clone();
+        let after = |spec: &ViewSpec, axis| {
+            (spec.grouping.as_ref()).is_some_and(|g| g.grand_total_after(axis))
+        };
+        for axis in Axis::ALL {
+            // A Grand Total placed after is pinned when it comes, and the
+            // pin goes with it; unpinned, it stays so while it stays after.
+            match (after(&self.view.applied, axis), after(&spec, axis)) {
+                (false, true) => self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None),
+                (true, false) => self.unpin(axis, GRAND_TOTAL),
+                _ => {}
+            }
+        }
         self.view.applied = spec;
         self.view.totals = totals;
         if self.view.due == 0 {
@@ -746,6 +949,34 @@ impl Grid {
         }
     }
 
+    /// Groups `axis` by `field`, a base field, as its innermost level, and
+    /// requests the result. Nothing happens if the axis is grouped by it
+    /// already or the Table Source can't group the axis by it.
+    pub fn group_by(&mut self, axis: Axis, field: Key) {
+        let grouped = self
+            .latest_view()
+            .grouping
+            .as_ref()
+            .is_some_and(|g| g.groups_by(axis, field));
+        if grouped || !self.view.support(axis, field).group {
+            return;
+        }
+        self.edit_view(ViewEdit::Group { axis, field });
+    }
+
+    /// Removes every level of `axis` and requests the result. Nothing
+    /// happens if the axis is not grouped.
+    pub fn ungroup(&mut self, axis: Axis) {
+        let grouped = self
+            .latest_view()
+            .grouping
+            .as_ref()
+            .is_some_and(|g| !g.levels(axis).is_empty());
+        if grouped {
+            self.edit_view(ViewEdit::Ungroup { axis });
+        }
+    }
+
     /// The View Spec the latest request asks for, else the applied one.
     pub(crate) fn latest_view(&self) -> &ViewSpec {
         self.view.requested.as_ref().unwrap_or(&self.view.applied)
@@ -797,12 +1028,33 @@ impl Grid {
             ViewEdit::Show { axis, keys } => {
                 spec.axis_mut(*axis).hidden.retain(|k| !keys.contains(k));
             }
-            ViewEdit::Replace | ViewEdit::ShownChanged { .. } | ViewEdit::Reapply => {}
+            ViewEdit::Group { axis, field } => {
+                let grouping = spec.grouping.get_or_insert_with(|| Grouping {
+                    values: vec![AggregateValue::count()],
+                    ..Grouping::default()
+                });
+                grouping.levels_mut(*axis).push(Level::field(*field));
+            }
+            ViewEdit::Ungroup { axis } => {
+                if let Some(grouping) = &mut spec.grouping {
+                    grouping.levels_mut(*axis).clear();
+                    if grouping.row_levels.is_empty() && grouping.col_levels.is_empty() {
+                        spec.grouping = None;
+                    }
+                }
+            }
+            ViewEdit::Replace
+            | ViewEdit::ShownChanged { .. }
+            | ViewEdit::Reapply
+            | ViewEdit::Expand { .. }
+            | ViewEdit::Collapse { .. }
+            | ViewEdit::ExpandAll { .. }
+            | ViewEdit::ExpandTo { .. } => {}
         }
         self.request(spec, edit);
     }
 
-    fn request(&mut self, spec: ViewSpec, edit: ViewEdit) {
+    pub(crate) fn request(&mut self, spec: ViewSpec, edit: ViewEdit) {
         self.view.requested = Some(spec.clone());
         self.view.due += 1;
         self.pending_damage.selection = true;

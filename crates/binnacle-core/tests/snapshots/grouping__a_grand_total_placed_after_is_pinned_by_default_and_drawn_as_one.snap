@@ -1,0 +1,60 @@
+---
+source: crates/binnacle-core/tests/grouping.rs
+expression: out
+---
+--- 1. region, then port, Subtotals after: the Grand Total is pinned at the bottom, outside the Window
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): ViewRequested unsorted group 1/after,2/after values count(-) total Rows after by Replace
+  view: applied unsorted group 1/after,2/after values count(-) total Rows after, notices [(Rows, Refiltered(17)), (Cols, Refiltered(2))]
+effect (gen 1): Locate { axis: Rows, key: Key(9223372036854775808) }
+  locate Rows Key(9223372036854775808): Found(16)
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Found(2)
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Found(11)
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Found(12)
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Found(3)
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(6)
+effect (gen 1): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Found(13)
+effect (gen 1): Locate { axis: Cols, key: Key(0) }
+  locate Cols Key(0): Found(0)
+effect (gen 1): Locate { axis: Cols, key: Key(1) }
+  locate Cols Key(1): Gone { suggest: None }
+effect (gen 1): Locate { axis: Cols, key: Key(2) }
+  locate Cols Key(2): Found(1)
+effect (gen 1): PinsChanged { axis: Rows, edge: Trailing, keys: [Key(9223372036854775808)] }
+window Rows 0..13
+window Cols 0..2
+gen 2 | damage layout selection positions
+Rows: count 17, extent 10, header 1, anchor 2+0, thumb 0.2500/0.5000 | 2#0@1+1[L2 ^100 ^110] 3#3@2+1[L2 ^100 ^110] 4#201@3+1[S2 ^100 ^110 2="Aberdeen"] 5#111@4+1[G1+ ^100 2="Bergen"] 6#4@5+1[L2 ^100 ^111] 7#202@6+1[S2 ^100 ^111 2="Bergen"] 8#203@7+1[S1 ^100 1="North"] 9#101@8+1[G0+ 1="South"] | scrolling to 9 | trailing 16#9223372036854775808@9+1[T0]
+Cols: count 2, extent 20, header 3, anchor 0+0, thumb 0.0000/1.0000 | 0#0@3+5 1#2@8+5
+   0    2
+2  0.0  0.2
+3  3.0  3.2
+4  201.0201.2
+5  111.0111.2
+6  4.0  4.2
+7  202.0202.2
+8  203.0203.2
+9  101.0101.2
+16 9223392233
+--- 2. unpinned: it scrolls with the rest
+effect (gen 3): PinsChanged { axis: Rows, edge: Trailing, keys: [] }
+gen 4 | damage layout
+Rows: count 17, extent 10, header 1, anchor 2+0, thumb 0.2500/0.5294 | 2#0@1+1[L2 ^100 ^110] 3#3@2+1[L2 ^100 ^110] 4#201@3+1[S2 ^100 ^110 2="Aberdeen"] 5#111@4+1[G1+ ^100 2="Bergen"] 6#4@5+1[L2 ^100 ^111] 7#202@6+1[S2 ^100 ^111 2="Bergen"] 8#203@7+1[S1 ^100 1="North"] 9#101@8+1[G0+ 1="South"] 10#120@9+1[G1+ ^101 2="Cadiz"]
+Cols: (unchanged)
+   0    2
+2  0.0  0.2
+3  3.0  3.2
+4  201.0201.2
+5  111.0111.2
+6  4.0  4.2
+7  202.0202.2
+8  203.0203.2
+9  101.0101.2
+10 120.0120.2

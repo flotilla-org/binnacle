@@ -6,11 +6,13 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionKind, ConditionState,
-    DropTarget, Edge, EditEnd, Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep,
-    Grid, HeaderClick, Key, Located, Mode, Modifiers, PinZone, PointerEvent, PointerKind, Searched,
-    SelectionUnit, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport,
-    Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared, Comparison,
+    Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect, FilterSpec,
+    FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping, HeaderClick,
+    ItemKind, Key, Level, Located, Mode, Modifiers, OpenState, Outline, PinZone, Placement,
+    PointerEvent, PointerKind, Scalar, Searched, SelectionUnit, Snapshot, SortColumn,
+    SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
+    Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -29,7 +31,19 @@ fn tag(axis: Axis) -> u32 {
 
 #[derive(Clone, Debug)]
 enum Op {
-    Frame(f32, f32),
+    /// A frame of this viewport, each Window answered with these outlines
+    /// from its start if there are any.
+    Frame(f32, f32, [Vec<Outline>; 2]),
+    /// Outlines from this far into the last Window set on the axis.
+    SetOutlines(Axis, u64, Vec<Outline>),
+    /// Grouping the axis by a Key of the other axis, first declaring that
+    /// the Table Source groups by it if the flag is set.
+    GroupBy(Axis, Key, bool),
+    Ungroup(Axis),
+    /// Expand (0), collapse (1), toggle (2) or expand everything under (3)
+    /// the group headed by a Key.
+    Toggle(u8, Axis, Key),
+    ExpandTo(Axis, Depth),
     Pointer(PointerEvent),
     /// A primary press, then a move away (no release) or the release.
     Gesture([PointerEvent; 2]),
@@ -187,7 +201,8 @@ fn pointer(tc: &TestCase) -> PointerEvent {
 
 #[hegel::composite]
 fn action(tc: &TestCase) -> Action {
-    match tc.draw(gs::integers::<u8>().max_value(11)) {
+    match tc.draw(gs::integers::<u8>().max_value(12)) {
+        12 => Action::LeaveOutline,
         10 => Action::Activate,
         11 => Action::BeginEdit,
         8 => Action::FindNext,
@@ -296,15 +311,42 @@ fn value(tc: &TestCase) -> Value {
     tc.draw(hegel::one_of!(gs::just(Value::Blank), text))
 }
 
-/// A Text or OneOf condition on `axis`, read in a Key of the other axis,
-/// maybe with `not`; sometimes with no text or no values.
+/// A number (NaN and -0 among them) or a date for a comparison.
+#[hegel::composite]
+fn scalar(tc: &TestCase) -> Scalar {
+    let number = hegel::one_of!(
+        gs::sampled_from(vec![1.5, -0.0, f64::NAN, f64::INFINITY]),
+        gs::floats::<f64>(),
+    )
+    .map(Scalar::Number);
+    let date = gs::integers::<i64>().map(Scalar::Date);
+    tc.draw(hegel::one_of!(number, date))
+}
+
+/// Any comparison, between included.
+#[hegel::composite]
+fn comparison(tc: &TestCase) -> Comparison {
+    let s = tc.draw(scalar());
+    match tc.draw(gs::integers::<u8>().max_value(6)) {
+        0 => Comparison::Equal(s),
+        1 => Comparison::NotEqual(s),
+        2 => Comparison::Less(s),
+        3 => Comparison::AtMost(s),
+        4 => Comparison::Greater(s),
+        5 => Comparison::AtLeast(s),
+        _ => Comparison::Between(s, tc.draw(scalar())),
+    }
+}
+
+/// A Text, OneOf or comparison condition on `axis`, read in a Key of the
+/// other axis, maybe with `not`; sometimes with no text or no values.
 #[hegel::composite]
 fn condition(tc: &TestCase, axis: Axis) -> Condition {
     let key = tc.draw(key(axis.other()));
-    let condition = if tc.draw(gs::booleans()) {
-        Condition::text(key, tc.draw(text_query(axis)))
-    } else {
-        Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(3)))
+    let condition = match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => Condition::text(key, tc.draw(text_query(axis))),
+        1 => Condition::one_of(key, tc.draw(gs::vecs(value()).max_size(3))),
+        _ => Condition::compare(key, tc.draw(comparison())),
     };
     condition.not(tc.draw(gs::booleans()))
 }
@@ -319,7 +361,104 @@ fn find_query(tc: &TestCase) -> FindQuery {
     FindQuery::new(query).by(tc.draw(axes()))
 }
 
-/// A View Spec: usually sorting and filtering only the rows.
+#[hegel::composite]
+fn placement(tc: &TestCase) -> Placement {
+    tc.draw(gs::sampled_from(vec![
+        Placement::Before,
+        Placement::After,
+        Placement::Off,
+    ]))
+}
+
+/// A level grouping by a column Key, or now and then the values
+/// pseudo-level.
+#[hegel::composite]
+fn level(tc: &TestCase) -> Level {
+    match tc.draw(gs::weighted_booleans(0.2)) {
+        true => Level::Values,
+        false => Level::Field {
+            field: tc.draw(key(Axis::Cols)),
+            subtotal: tc.draw(placement()),
+        },
+    }
+}
+
+/// A View Spec's grouping: levels on either axis or none, values counting
+/// or over a column, slicers, and each axis's layout.
+#[hegel::composite]
+fn grouping(tc: &TestCase) -> Grouping {
+    let mut grouping = Grouping::default();
+    for axis in Axis::ALL {
+        *grouping.levels_mut(axis) = tc.draw(gs::vecs(level()).max_size(3));
+        let g = grouping.axis_mut(axis);
+        g.grand_total = tc.draw(placement());
+        g.form = tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header]));
+        g.expand.depth = match tc.draw(gs::booleans()) {
+            true => Depth::All,
+            false => Depth::Levels(tc.draw(hegel::one_of!(
+                gs::integers::<u32>().max_value(3),
+                gs::integers::<u32>()
+            ))),
+        };
+        g.expand.except = tc.draw(gs::vecs(key(axis)).max_size(3));
+    }
+    let aggregate = gs::sampled_from(vec!["count", "sum", "Ø mean", ""]);
+    let params = gs::vecs(gs::text().max_size(6)).max_size(2);
+    grouping.values = tc
+        .draw(
+            gs::vecs(hegel::tuples!(
+                gs::optional(key(Axis::Cols)),
+                aggregate,
+                params
+            ))
+            .max_size(3),
+        )
+        .into_iter()
+        .map(|(field, aggregate, params)| AggregateValue::new(field, aggregate).with_params(params))
+        .collect();
+    grouping.slicers = tc.draw(gs::vecs(condition(Axis::Rows)).max_size(2));
+    grouping
+}
+
+/// An outline a grouped Table Source might send for an item of `axis`: any
+/// kind and open state, ancestors among the axis's Keys, now and then a
+/// depth that is not their count, and sometimes a group.
+#[hegel::composite]
+fn outline(tc: &TestCase, axis: Axis) -> Outline {
+    let mut outline = Outline::leaf(tc.draw(gs::vecs(key(axis)).max_size(3)));
+    outline.kind = tc.draw(gs::sampled_from(vec![
+        ItemKind::Leaf,
+        ItemKind::Group,
+        ItemKind::Subtotal,
+        ItemKind::GrandTotal,
+    ]));
+    if tc.draw(gs::weighted_booleans(0.2)) {
+        outline.depth = tc.draw(gs::integers::<u32>());
+    }
+    outline.open = tc.draw(gs::sampled_from(vec![
+        OpenState::Open,
+        OpenState::Closed,
+        OpenState::CantOpen,
+    ]));
+    outline.group = tc.draw(gs::booleans()).then(|| GroupOf {
+        field: tc.draw(key(axis.other())),
+        value: tc.draw(value()),
+    });
+    outline
+}
+
+/// Outlines to send with each axis's Window in a frame: none most of the
+/// time.
+#[hegel::composite]
+fn frame_outlines(tc: &TestCase) -> [Vec<Outline>; 2] {
+    Axis::ALL.map(|axis| match tc.draw(gs::weighted_booleans(0.3)) {
+        true => tc.draw(gs::vecs(outline(axis)).min_size(1).max_size(12)),
+        false => Vec::new(),
+    })
+}
+
+/// A View Spec: usually sorting and filtering only the rows, now and then
+/// grouped.
 #[hegel::composite]
 fn view_spec(tc: &TestCase) -> ViewSpec {
     let mut spec = ViewSpec::default();
@@ -336,6 +475,9 @@ fn view_spec(tc: &TestCase) -> ViewSpec {
         if tc.draw(gs::weighted_booleans(0.25)) {
             spec = spec.with_hidden(axis, tc.draw(gs::vecs(key(axis)).max_size(3)));
         }
+    }
+    if tc.draw(gs::weighted_booleans(0.3)) {
+        spec = spec.with_grouping(Some(tc.draw(grouping())));
     }
     spec
 }
@@ -410,7 +552,12 @@ fn answer(tc: &TestCase) -> Op {
                 Support::default()
                     .with_sort(sort)
                     .with_text(text)
-                    .with_one_of(tc.draw(gs::booleans())),
+                    .with_one_of(tc.draw(gs::booleans()))
+                    .with_compare(tc.draw(gs::optional(gs::sampled_from(vec![
+                        Compared::Numbers,
+                        Compared::Dates,
+                    ]))))
+                    .with_group(tc.draw(gs::booleans())),
             )
         }
         1 => {
@@ -428,7 +575,9 @@ fn answer(tc: &TestCase) -> Op {
         }
         _ => {
             let (at, n) = (tc.draw(position()), tc.draw(position()));
-            let notice = match tc.draw(gs::integers::<u8>().max_value(5)) {
+            let notice = match tc.draw(gs::integers::<u8>().max_value(7)) {
+                6 => ChangeNotice::Collapsed { at, n },
+                7 => ChangeNotice::Expanded { at, n },
                 0 => ChangeNotice::Reset(n),
                 5 => ChangeNotice::Refiltered(n),
                 1 => ChangeNotice::Reordered,
@@ -445,7 +594,31 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(31)) {
+    match tc.draw(gs::integers::<u8>().max_value(35)) {
+        33 => Op::Toggle(
+            tc.draw(gs::integers::<u8>().max_value(3)),
+            Axis::Rows,
+            tc.draw(key(Axis::Rows)),
+        ),
+        34 => Op::ExpandTo(
+            tc.draw(axes()),
+            match tc.draw(gs::integers::<u32>().max_value(3)) {
+                3 => Depth::All,
+                n => Depth::Levels(n),
+            },
+        ),
+        31 => {
+            let axis = tc.draw(axes());
+            let outlines = tc.draw(gs::vecs(outline(axis)).max_size(12));
+            Op::SetOutlines(axis, tc.draw(position()), outlines)
+        }
+        32 => match tc.draw(gs::weighted_booleans(0.7)) {
+            true => {
+                let axis = tc.draw(axes());
+                Op::GroupBy(axis, tc.draw(key(axis.other())), tc.draw(gs::booleans()))
+            }
+            false => Op::Ungroup(tc.draw(axes())),
+        },
         29 => Op::BorderDrag {
             axis: tc.draw(axes()),
             index: tc.draw(gs::integers::<usize>().max_value(20)),
@@ -527,7 +700,7 @@ fn op(tc: &TestCase) -> Op {
             travel: tc.draw(gs::floats::<f32>().min_value(-6.0).max_value(6.0)),
         },
         10 | 14 | 15 => tc.draw(answer()),
-        0 | 1 | 11 => Op::Frame(tc.draw(len()), tc.draw(len())),
+        0 | 1 | 11 => Op::Frame(tc.draw(len()), tc.draw(len()), tc.draw(frame_outlines())),
         2 => Op::Pointer(tc.draw(pointer())),
         3 | 12 | 13 => {
             let held = tc.draw(hegel::one_of!(gs::just(Modifiers::NONE), modifiers()));
@@ -574,7 +747,7 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(54))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(80))),
     }
 }
 
@@ -632,6 +805,7 @@ unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
             Action::FindPrevious => binnacle_grid_find_previous(h),
             Action::Activate => binnacle_grid_activate(h),
             Action::BeginEdit => binnacle_grid_begin_edit(h),
+            Action::LeaveOutline => binnacle_grid_leave_outline(h),
             #[allow(unreachable_patterns)] // `action` draws only the Actions above.
             _ => unreachable!(),
         }
@@ -681,7 +855,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             }
             10 => binnacle_grid_located(h, ROWS, 1000, 3, 0),
             11 => binnacle_grid_located(h, 2, 1000, 0, 0),
-            12 => binnacle_grid_notify(h, ROWS, 6, 0, 0),
+            12 => binnacle_grid_notify(h, ROWS, 8, 0, 0),
             13 => binnacle_grid_set_header(h, 2, 1.0),
             14 => binnacle_grid_set_support(h, 2, 5000, 0),
             15 => binnacle_grid_notify(h, 2, 1, 0, 0),
@@ -721,10 +895,10 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 binnacle_grid_view_applied(h, &spec, std::ptr::null())
             }
             22 => binnacle_grid_set_support(h, ROWS, 5000, 4),
-            23 => binnacle_grid_set_support(h, ROWS, 5000, 16),
+            23 => binnacle_grid_set_support(h, ROWS, 5000, 128),
             24 => {
                 let unknown = BinnacleCondition {
-                    kind: 3,
+                    kind: 4,
                     ..BinnacleCondition::default()
                 };
                 binnacle_grid_add_condition(h, ROWS, &unknown)
@@ -828,6 +1002,112 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             }
             53 => binnacle_grid_set_end_gap(h, 2, 1.0),
             54 => binnacle_grid_edit_ended(h, 2),
+            55 => binnacle_grid_set_support(
+                h,
+                ROWS,
+                5000,
+                BINNACLE_SUPPORT_COMPARE_NUMBERS | BINNACLE_SUPPORT_COMPARE_DATES,
+            ),
+            56 => {
+                let compare = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_COMPARE,
+                    compare: 7,
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &compare)
+            }
+            57 => {
+                let compare = BinnacleCondition {
+                    kind: BINNACLE_CONDITION_COMPARE,
+                    compare: BINNACLE_COMPARE_BETWEEN,
+                    high: BinnacleScalar {
+                        kind: 2,
+                        ..BinnacleScalar::default()
+                    },
+                    ..BinnacleCondition::default()
+                };
+                binnacle_grid_add_condition(h, ROWS, &compare)
+            }
+            58 => binnacle_grid_group_by(h, 2, 5000),
+            59 => binnacle_grid_ungroup(h, 2),
+            60 => binnacle_grid_set_outlines(h, 2, 0, std::ptr::null(), 0),
+            75 => binnacle_grid_expand(h, 2, 0),
+            76 => binnacle_grid_collapse(h, 2, 0),
+            77 => binnacle_grid_toggle(h, 2, 0),
+            78 => binnacle_grid_expand_all(h, 2, 0),
+            79 => binnacle_grid_expand_to(h, 2, 0, 1),
+            80 => binnacle_grid_expand_to(h, ROWS, 2, 1),
+            61..=64 => {
+                let mut bad = BinnacleOutline::default();
+                match which {
+                    61 => bad.kind = 4,
+                    62 => bad.open = 3,
+                    63 => bad.has_group = 2,
+                    _ => {
+                        bad.has_group = 1;
+                        bad.value.blank = 2;
+                    }
+                }
+                binnacle_grid_set_outlines(h, ROWS, 0, &bad, 1)
+            }
+            65..=74 => {
+                let levels = [BinnacleLevel {
+                    kind: if which == 66 {
+                        BINNACLE_LEVEL_OTHER
+                    } else {
+                        BINNACLE_LEVEL_FIELD
+                    },
+                    field: 5000,
+                    subtotal: if which == 67 {
+                        3
+                    } else {
+                        BINNACLE_PLACEMENT_OFF
+                    },
+                }];
+                let bad = [b'a', 0xff];
+                let param = BinnacleText {
+                    data: bad.as_ptr(),
+                    len: if which == 74 { bad.len() } else { 1 },
+                };
+                let value = BinnacleAggregateValue {
+                    has_field: if which == 71 { 2 } else { 0 },
+                    field: 5000,
+                    aggregate: BinnacleText {
+                        data: bad.as_ptr(),
+                        len: if which == 72 { bad.len() } else { 1 },
+                    },
+                    params: &param,
+                    params_len: 1,
+                };
+                let slicer = BinnacleCondition {
+                    kind: if which == 73 {
+                        4
+                    } else {
+                        BINNACLE_CONDITION_ONE_OF
+                    },
+                    ..BinnacleCondition::default()
+                };
+                let mut spec = BinnacleViewSpec {
+                    has_grouping: if which == 65 { 2 } else { 1 },
+                    ..BinnacleViewSpec::default()
+                };
+                let g = &mut spec.grouping;
+                g.axes[ROWS as usize].levels = levels.as_ptr();
+                g.axes[ROWS as usize].levels_len = levels.len();
+                g.axes[COLS as usize] = BinnacleGroupedAxis {
+                    grand_total: if which == 68 {
+                        3
+                    } else {
+                        BINNACLE_PLACEMENT_OFF
+                    },
+                    form: if which == 69 { 2 } else { BINNACLE_FORM_HEADER },
+                    expand_all: if which == 70 { 2 } else { 1 },
+                    ..BinnacleGroupedAxis::default()
+                };
+                (g.values, g.values_len) = (&value, 1);
+                (g.slicers, g.slicers_len) = (&slicer, 1);
+                binnacle_grid_request_view(h, &spec)
+            }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -877,6 +1157,21 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             }
             assert!(same_f32(got.offset, want.offset));
             assert!(same_f32(got.size, want.size));
+            assert!(got.has_outline <= 1);
+            let pending = want.key.is_some_and(|k| rust.toggle_pending(axis, k));
+            assert_eq!(
+                got.toggle_pending != 0,
+                pending && rust.outline(axis, want.position).is_some(),
+                "{axis:?} toggle pending at {}",
+                want.position
+            );
+            let outline = (got.has_outline != 0).then(|| unsafe { outline_from_c(&got.outline) });
+            assert_eq!(
+                outline.as_ref(),
+                rust.outline(axis, want.position),
+                "{axis:?} outline at {}",
+                want.position
+            );
         }
         let headers = unsafe { slice::from_raw_parts(a.headers, a.headers_len) };
         let expected: Vec<_> = rust.headers(axis).collect();
@@ -1022,6 +1317,11 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     });
     assert_eq!(c.find_support, support, "find support");
     assert_eq!(c.view_pending != 0, rust.view_pending(), "view pending");
+    assert_eq!(
+        c.outline_focused != 0,
+        rust.outline_focused(),
+        "outline focused"
+    );
     let pending = (c.has_pending_move != 0).then(|| {
         let keys = unsafe { slice::from_raw_parts(c.pending_move_keys, c.pending_move_keys_len) };
         (
@@ -1173,6 +1473,31 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                         key: to.key.0,
                         ..on(7, axis)
                     },
+                    ViewEdit::Group { axis, field } => BinnacleViewEdit {
+                        key: field.0,
+                        ..on(11, axis)
+                    },
+                    ViewEdit::Ungroup { axis } => on(12, axis),
+                    ViewEdit::Expand { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(13, axis)
+                    },
+                    ViewEdit::Collapse { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(14, axis)
+                    },
+                    ViewEdit::ExpandAll { axis, key } => BinnacleViewEdit {
+                        key: key.0,
+                        ..on(15, axis)
+                    },
+                    ViewEdit::ExpandTo { axis, depth } => BinnacleViewEdit {
+                        expand_all: u32::from(depth == Depth::All),
+                        expand_depth: match depth {
+                            Depth::All => 0,
+                            Depth::Levels(n) => n,
+                        },
+                        ..on(16, axis)
+                    },
                     #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
                     _ => BinnacleViewEdit::default(),
                 };
@@ -1286,7 +1611,153 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             let want: Vec<u64> = view.axis(axis).hidden.iter().map(|k| k.0).collect();
             assert_eq!(hidden, want, "{axis:?} hidden");
         }
+        assert!(c.view.has_grouping <= 1);
+        let grouping =
+            (c.view.has_grouping != 0).then(|| unsafe { grouping_from_c(&c.view.grouping) });
+        assert_eq!(grouping, view.grouping, "grouping for {want:?}");
     }
+}
+
+/// A C array as a slice, as a host would read it: NULL only when empty.
+unsafe fn c_slice<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
+    assert!(!ptr.is_null() || len == 0, "NULL with length {len}");
+    match len {
+        0 => &[],
+        n => unsafe { slice::from_raw_parts(ptr, n) },
+    }
+}
+
+fn placement_from_c(tag: u32) -> Placement {
+    match tag {
+        BINNACLE_PLACEMENT_OFF => Placement::Off,
+        BINNACLE_PLACEMENT_BEFORE => Placement::Before,
+        BINNACLE_PLACEMENT_AFTER => Placement::After,
+        t => panic!("placement tag {t}"),
+    }
+}
+
+fn placement_to_c(placement: Placement) -> u32 {
+    match placement {
+        Placement::Off => BINNACLE_PLACEMENT_OFF,
+        Placement::Before => BINNACLE_PLACEMENT_BEFORE,
+        Placement::After => BINNACLE_PLACEMENT_AFTER,
+    }
+}
+
+/// A grouping read back from C, as a host would.
+unsafe fn grouping_from_c(g: &BinnacleGrouping) -> Grouping {
+    let mut grouping = Grouping::default();
+    for axis in Axis::ALL {
+        let a = &g.axes[tag(axis) as usize];
+        *grouping.levels_mut(axis) = unsafe { c_slice(a.levels, a.levels_len) }
+            .iter()
+            .map(|l| match l.kind {
+                BINNACLE_LEVEL_FIELD => Level::Field {
+                    field: Key(l.field),
+                    subtotal: placement_from_c(l.subtotal),
+                },
+                BINNACLE_LEVEL_VALUES => Level::Values,
+                k => panic!("level kind {k}"),
+            })
+            .collect();
+        let got = grouping.axis_mut(axis);
+        got.grand_total = placement_from_c(a.grand_total);
+        got.form = match a.form {
+            BINNACLE_FORM_OUTLINE => Form::Outline,
+            BINNACLE_FORM_HEADER => Form::Header,
+            f => panic!("form {f}"),
+        };
+        got.expand.depth = match a.expand_all {
+            0 => Depth::Levels(a.expand_depth),
+            1 => Depth::All,
+            e => panic!("expand_all {e}"),
+        };
+        got.expand.except = unsafe { c_slice(a.except, a.except_len) }
+            .iter()
+            .map(|&k| Key(k))
+            .collect();
+    }
+    grouping.values = unsafe { c_slice(g.values, g.values_len) }
+        .iter()
+        .map(|v| {
+            let field = match v.has_field {
+                0 => None,
+                1 => Some(Key(v.field)),
+                f => panic!("has_field {f}"),
+            };
+            let params = unsafe { c_slice(v.params, v.params_len) }
+                .iter()
+                .map(|&p| unsafe { text_from_c(p) })
+                .collect();
+            AggregateValue::new(field, unsafe { text_from_c(v.aggregate) }).with_params(params)
+        })
+        .collect();
+    grouping.slicers = unsafe { c_slice(g.slicers, g.slicers_len) }
+        .iter()
+        .map(|c| unsafe { condition_from_c(c) })
+        .collect();
+    grouping
+}
+
+/// An outline read back from C, as a host would.
+unsafe fn outline_from_c(o: &BinnacleOutline) -> Outline {
+    let ancestors = unsafe { c_slice(o.ancestors, o.ancestors_len) };
+    let mut outline = Outline::leaf(ancestors.iter().map(|&k| Key(k)).collect());
+    outline.kind = match o.kind {
+        BINNACLE_ITEM_LEAF => ItemKind::Leaf,
+        BINNACLE_ITEM_GROUP => ItemKind::Group,
+        BINNACLE_ITEM_SUBTOTAL => ItemKind::Subtotal,
+        BINNACLE_ITEM_GRAND_TOTAL => ItemKind::GrandTotal,
+        k => panic!("item kind {k}"),
+    };
+    outline.depth = o.depth;
+    outline.open = match o.open {
+        BINNACLE_OPEN_STATE_OPEN => OpenState::Open,
+        BINNACLE_OPEN_STATE_CLOSED => OpenState::Closed,
+        BINNACLE_OPEN_STATE_CANT_OPEN => OpenState::CantOpen,
+        s => panic!("open state {s}"),
+    };
+    outline.group = match o.has_group {
+        0 => None,
+        1 => Some(GroupOf {
+            field: Key(o.field),
+            value: unsafe { value_from_c(&o.value) },
+        }),
+        g => panic!("has_group {g}"),
+    };
+    outline
+}
+
+/// Runs `f` with `outlines` in C form, their arrays alive for the call.
+fn with_c_outlines<T>(outlines: &[Outline], f: impl FnOnce(&[BinnacleOutline]) -> T) -> T {
+    let ancestors: Vec<Vec<u64>> = (outlines.iter())
+        .map(|o| o.ancestors.iter().map(|k| k.0).collect())
+        .collect();
+    let c: Vec<BinnacleOutline> = (outlines.iter().zip(&ancestors))
+        .map(|(o, ancestors)| BinnacleOutline {
+            kind: match o.kind {
+                ItemKind::Leaf => BINNACLE_ITEM_LEAF,
+                ItemKind::Group => BINNACLE_ITEM_GROUP,
+                ItemKind::Subtotal => BINNACLE_ITEM_SUBTOTAL,
+                ItemKind::GrandTotal => BINNACLE_ITEM_GRAND_TOTAL,
+            },
+            depth: o.depth,
+            open: match o.open {
+                OpenState::Open => BINNACLE_OPEN_STATE_OPEN,
+                OpenState::Closed => BINNACLE_OPEN_STATE_CLOSED,
+                OpenState::CantOpen => BINNACLE_OPEN_STATE_CANT_OPEN,
+            },
+            ancestors: ancestors.as_ptr(),
+            ancestors_len: ancestors.len(),
+            has_group: u32::from(o.group.is_some()),
+            field: o.group.as_ref().map_or(0, |g| g.field.0),
+            value: o
+                .group
+                .as_ref()
+                .map_or_else(BinnacleValue::default, |g| value_to_c(&g.value)),
+        })
+        .collect();
+    f(&c)
 }
 
 /// A Text Query read back from C, as a host would.
@@ -1326,9 +1797,16 @@ fn support_bits(support: Support) -> u32 {
                 0
             }
     });
+    let compare = match support.compare {
+        None => 0,
+        Some(Compared::Numbers) => BINNACLE_SUPPORT_COMPARE_NUMBERS,
+        Some(Compared::Dates) => BINNACLE_SUPPORT_COMPARE_DATES,
+    };
     (u32::from(support.sort) * BINNACLE_SUPPORT_SORT)
         | text
         | (u32::from(support.one_of) * BINNACLE_SUPPORT_ONE_OF)
+        | compare
+        | (u32::from(support.group) * BINNACLE_SUPPORT_GROUP)
 }
 
 /// A condition read back from C, as a host would: its query searching the
@@ -1346,17 +1824,36 @@ unsafe fn condition_from_c(c: &BinnacleCondition) -> Condition {
                 n => unsafe { slice::from_raw_parts(c.values, n) },
             };
             let values = (values.iter())
-                .map(|v| match v.blank {
-                    0 => Value::Text(unsafe { text_from_c(v.text) }),
-                    1 => Value::Blank,
-                    b => panic!("blank is {b}"),
-                })
+                .map(|v| unsafe { value_from_c(v) })
                 .collect();
             Condition::one_of(Key(c.key), values)
+        }
+        BINNACLE_CONDITION_COMPARE => {
+            let (s, high) = (scalar_from_c(c.scalar), scalar_from_c(c.high));
+            let comparison = match c.compare {
+                BINNACLE_COMPARE_EQUAL => Comparison::Equal(s),
+                BINNACLE_COMPARE_NOT_EQUAL => Comparison::NotEqual(s),
+                BINNACLE_COMPARE_LESS => Comparison::Less(s),
+                BINNACLE_COMPARE_AT_MOST => Comparison::AtMost(s),
+                BINNACLE_COMPARE_GREATER => Comparison::Greater(s),
+                BINNACLE_COMPARE_AT_LEAST => Comparison::AtLeast(s),
+                BINNACLE_COMPARE_BETWEEN => Comparison::Between(s, high),
+                op => panic!("comparison {op}"),
+            };
+            Condition::compare(Key(c.key), comparison)
         }
         kind => panic!("condition kind {kind}"),
     };
     condition.not(c.negated != 0)
+}
+
+/// A value read back from C, as a host would.
+unsafe fn value_from_c(v: &BinnacleValue) -> Value {
+    match v.blank {
+        0 => Value::Text(unsafe { text_from_c(v.text) }),
+        1 => Value::Blank,
+        b => panic!("blank is {b}"),
+    }
 }
 
 /// The text `t` points at, as a host would read it.
@@ -1368,27 +1865,53 @@ unsafe fn text_from_c(t: BinnacleText) -> String {
     String::from_utf8(bytes.to_vec()).expect("UTF-8")
 }
 
+fn scalar_from_c(s: BinnacleScalar) -> Scalar {
+    match s.kind {
+        BINNACLE_SCALAR_NUMBER => Scalar::Number(s.number),
+        BINNACLE_SCALAR_DATE => Scalar::Date(s.date),
+        kind => panic!("scalar kind {kind}"),
+    }
+}
+
+fn scalar_to_c(s: Scalar) -> BinnacleScalar {
+    match s {
+        Scalar::Number(number) => BinnacleScalar {
+            kind: BINNACLE_SCALAR_NUMBER,
+            number,
+            date: 0,
+        },
+        Scalar::Date(date) => BinnacleScalar {
+            kind: BINNACLE_SCALAR_DATE,
+            number: 0.0,
+            date,
+        },
+    }
+}
+
 /// The values of a OneOf `condition` in C form, borrowing their texts; none
 /// for other kinds.
 fn values_to_c(condition: &Condition) -> Vec<BinnacleValue> {
     let ConditionKind::OneOf(values) = &condition.kind else {
         return Vec::new();
     };
-    (values.iter())
-        .map(|v| match v {
-            Value::Text(t) => BinnacleValue {
-                blank: 0,
-                text: BinnacleText {
-                    data: t.as_ptr(),
-                    len: t.len(),
-                },
+    values.iter().map(value_to_c).collect()
+}
+
+/// `value` in C form, borrowing its text.
+fn value_to_c(value: &Value) -> BinnacleValue {
+    match value {
+        Value::Text(t) => BinnacleValue {
+            blank: 0,
+            text: BinnacleText {
+                data: t.as_ptr(),
+                len: t.len(),
             },
-            Value::Blank => BinnacleValue {
-                blank: 1,
-                text: BinnacleText::default(),
-            },
-        })
-        .collect()
+        },
+        Value::Blank => BinnacleValue {
+            blank: 1,
+            text: BinnacleText::default(),
+        },
+    }
 }
 
 /// `condition` in C form, borrowing its text, `keys` and `values` (from
@@ -1398,19 +1921,39 @@ fn condition_to_c(
     keys: &[u64],
     values: &[BinnacleValue],
 ) -> BinnacleCondition {
-    let (kind, text) = match &condition.kind {
-        ConditionKind::Text(query) => (BINNACLE_CONDITION_TEXT, query_to_c(query, keys)),
-        ConditionKind::OneOf(_) => (BINNACLE_CONDITION_ONE_OF, BinnacleTextQuery::default()),
-        _ => unreachable!("only Text and OneOf conditions are drawn"),
-    };
-    BinnacleCondition {
+    let mut c = BinnacleCondition {
         key: condition.key.0,
-        kind,
         negated: u32::from(condition.not),
-        text,
         values: values.as_ptr(),
         values_len: values.len(),
+        ..BinnacleCondition::default()
+    };
+    match &condition.kind {
+        ConditionKind::Text(query) => {
+            c.kind = BINNACLE_CONDITION_TEXT;
+            c.text = query_to_c(query, keys);
+        }
+        ConditionKind::OneOf(_) => c.kind = BINNACLE_CONDITION_ONE_OF,
+        ConditionKind::Compare(comparison) => {
+            c.kind = BINNACLE_CONDITION_COMPARE;
+            let (op, s, high) = match *comparison {
+                Comparison::Equal(s) => (BINNACLE_COMPARE_EQUAL, s, None),
+                Comparison::NotEqual(s) => (BINNACLE_COMPARE_NOT_EQUAL, s, None),
+                Comparison::Less(s) => (BINNACLE_COMPARE_LESS, s, None),
+                Comparison::AtMost(s) => (BINNACLE_COMPARE_AT_MOST, s, None),
+                Comparison::Greater(s) => (BINNACLE_COMPARE_GREATER, s, None),
+                Comparison::AtLeast(s) => (BINNACLE_COMPARE_AT_LEAST, s, None),
+                Comparison::Between(low, high) => (BINNACLE_COMPARE_BETWEEN, low, Some(high)),
+            };
+            c.compare = op;
+            c.scalar = scalar_to_c(s);
+            if let Some(high) = high {
+                c.high = scalar_to_c(high);
+            }
+        }
+        _ => unreachable!("only Text, OneOf and comparison conditions are drawn"),
     }
+    c
 }
 
 /// A Text Query in C form, borrowing `query`'s text and `keys`.
@@ -1472,7 +2015,81 @@ fn with_c_view<T>(spec: &ViewSpec, f: impl FnOnce(&BinnacleViewSpec) -> T) -> T 
             .map(|k| k.0)
             .collect::<Vec<u64>>()
     });
+    let grouping = spec.grouping.as_ref();
+    // A VALUES level's field and subtotal are ignored: send junk in them.
+    let levels = Axis::ALL.map(|axis| {
+        (grouping.map_or(&[][..], |g| g.levels(axis)).iter())
+            .map(|l| match l {
+                Level::Field { field, subtotal } => BinnacleLevel {
+                    kind: BINNACLE_LEVEL_FIELD,
+                    field: field.0,
+                    subtotal: placement_to_c(*subtotal),
+                },
+                Level::Values => BinnacleLevel {
+                    kind: BINNACLE_LEVEL_VALUES,
+                    field: 1,
+                    subtotal: 99,
+                },
+                _ => unreachable!("only Field and Values levels are drawn"),
+            })
+            .collect::<Vec<_>>()
+    });
+    let excepts = Axis::ALL.map(|axis| {
+        grouping.map_or_else(Vec::new, |g| {
+            g.axis(axis).expand.except.iter().map(|k| k.0).collect()
+        })
+    });
+    let text = |t: &String| BinnacleText {
+        data: t.as_ptr(),
+        len: t.len(),
+    };
+    let values = grouping.map_or(&[][..], |g| &g.values[..]);
+    let params: Vec<Vec<BinnacleText>> = (values.iter())
+        .map(|v| v.params.iter().map(text).collect())
+        .collect();
+    let aggregates: Vec<BinnacleAggregateValue> = (values.iter().zip(&params))
+        .map(|(v, params)| BinnacleAggregateValue {
+            has_field: u32::from(v.field.is_some()),
+            field: v.field.map_or(0, |k| k.0),
+            aggregate: text(&v.aggregate),
+            params: params.as_ptr(),
+            params_len: params.len(),
+        })
+        .collect();
+    let slicers = grouping.map_or(&[][..], |g| &g.slicers[..]);
+    let slicer_values: Vec<_> = slicers.iter().map(values_to_c).collect();
+    let slicers: Vec<_> = (slicers.iter().zip(&slicer_values))
+        .map(|(c, v)| condition_to_c(c, &[], v))
+        .collect();
     let mut c = BinnacleViewSpec::default();
+    if let Some(g) = grouping {
+        c.has_grouping = 1;
+        for axis in Axis::ALL {
+            let (levels, except) = (&levels[axis.index()], &excepts[axis.index()]);
+            let a = g.axis(axis);
+            let (expand_all, expand_depth) = match a.expand.depth {
+                Depth::All => (1, 7),
+                Depth::Levels(n) => (0, n),
+            };
+            c.grouping.axes[tag(axis) as usize] = BinnacleGroupedAxis {
+                levels: levels.as_ptr(),
+                levels_len: levels.len(),
+                grand_total: placement_to_c(a.grand_total),
+                form: match a.form {
+                    Form::Outline => BINNACLE_FORM_OUTLINE,
+                    Form::Header => BINNACLE_FORM_HEADER,
+                },
+                expand_all,
+                expand_depth,
+                except: except.as_ptr(),
+                except_len: except.len(),
+            };
+        }
+        c.grouping.values = aggregates.as_ptr();
+        c.grouping.values_len = aggregates.len();
+        c.grouping.slicers = slicers.as_ptr();
+        c.grouping.slicers_len = slicers.len();
+    }
     for axis in Axis::ALL {
         let sort = &sorts[axis.index()];
         let hidden = &hidden[axis.index()];
@@ -1514,8 +2131,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
     assert!(!h.is_null());
     let mut grid = Grid::new(configs[0], configs[1]);
     // Start with a frame so pointer input can hit the laid-out Grid.
-    let first = Op::Frame(tc.draw(len()), tc.draw(len()));
+    let first = Op::Frame(tc.draw(len()), tc.draw(len()), tc.draw(frame_outlines()));
     let mut asked = None;
+    // The start of the last Window set on each axis.
+    let mut windows = [0u64; 2];
     // Each band's thickness and each strip's Keys as of the last frame.
     let mut bands = [0.0f32; 2];
     let mut shown: [Vec<Key>; 2] = Default::default();
@@ -1541,7 +2160,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
     for op in ops {
         unsafe {
             let ok = match op {
-                Op::Frame(width, height) => {
+                Op::Frame(width, height, outlines) => {
                     let mut requests = BinnacleWindowRequests::default();
                     assert_eq!(
                         binnacle_grid_begin_frame(h, width, height, &mut requests),
@@ -1568,6 +2187,22 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                             );
                             let k: Vec<Key> = k.into_iter().map(Key).collect();
                             grid.set_window(axis, range.start, &k);
+                            windows[axis.index()] = range.start;
+                            let outlines = &outlines[axis.index()];
+                            if !outlines.is_empty() {
+                                let start = range.start;
+                                let ok = with_c_outlines(outlines, |c| {
+                                    binnacle_grid_set_outlines(
+                                        h,
+                                        tag(axis),
+                                        start,
+                                        c.as_ptr(),
+                                        c.len(),
+                                    )
+                                });
+                                assert_eq!(ok, 1);
+                                grid.set_outlines(axis, start, outlines);
+                            }
                         }
                     }
                     let mut snap = std::mem::zeroed::<BinnacleSnapshot>();
@@ -1593,6 +2228,52 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 Op::Pointer(e) => {
                     grid.pointer(e);
                     binnacle_grid_pointer(h, pointer_event(e))
+                }
+                Op::SetOutlines(axis, offset, outlines) => {
+                    let start = windows[axis.index()].saturating_add(offset);
+                    grid.set_outlines(axis, start, &outlines);
+                    with_c_outlines(&outlines, |c| {
+                        binnacle_grid_set_outlines(h, tag(axis), start, c.as_ptr(), c.len())
+                    })
+                }
+                Op::GroupBy(axis, field, declare) => {
+                    if declare {
+                        let support = Support::default().with_group(true);
+                        grid.set_support(axis, field, support);
+                        let bits = support_bits(support);
+                        assert_eq!(binnacle_grid_set_support(h, tag(axis), field.0, bits), 1);
+                    }
+                    grid.group_by(axis, field);
+                    binnacle_grid_group_by(h, tag(axis), field.0)
+                }
+                Op::Ungroup(axis) => {
+                    grid.ungroup(axis);
+                    binnacle_grid_ungroup(h, tag(axis))
+                }
+                Op::Toggle(which, axis, key) => {
+                    let (rust, c): (fn(&mut Grid, Axis, Key) -> _, _) = match which {
+                        0 => (
+                            Grid::expand,
+                            binnacle_grid_expand as unsafe extern "C" fn(_, _, _) -> _,
+                        ),
+                        1 => (Grid::collapse, binnacle_grid_collapse),
+                        2 => (Grid::toggle, binnacle_grid_toggle),
+                        _ => (Grid::expand_all, binnacle_grid_expand_all),
+                    };
+                    let want = match rust(&mut grid, axis, key) {
+                        Ok(()) => 1,
+                        Err(_) => BINNACLE_EXCEPT_CAPPED,
+                    };
+                    assert_eq!(c(h, tag(axis), key.0), want);
+                    want
+                }
+                Op::ExpandTo(axis, depth) => {
+                    grid.expand_to(axis, depth);
+                    let (all, n) = match depth {
+                        Depth::All => (1, 0),
+                        Depth::Levels(n) => (0, n),
+                    };
+                    binnacle_grid_expand_to(h, tag(axis), all, n)
                 }
                 Op::Gesture(events) => {
                     for e in events {
@@ -1891,6 +2572,8 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                         ChangeNotice::Removed { at, n } => (3, *at, *n),
                         ChangeNotice::ContentChanged(r) => (4, r.start, r.end - r.start),
                         ChangeNotice::Refiltered(count) => (5, 0, *count),
+                        ChangeNotice::Collapsed { at, n } => (6, *at, *n),
+                        ChangeNotice::Expanded { at, n } => (7, *at, *n),
                     };
                     grid.notify(axis, notice);
                     binnacle_grid_notify(h, tag(axis), kind, at, n)
@@ -2291,4 +2974,42 @@ fn a_grid_is_made_only_from_valid_configs(tc: TestCase) {
     let h = binnacle_grid_new(rows, cols);
     assert_eq!(!h.is_null(), valid(&rows) && valid(&cols));
     unsafe { binnacle_grid_free(h) };
+}
+
+/// Support declared for items in view, comparisons included, reaches the
+/// C headers as it reaches the Rust Snapshot's. The main property's Keys
+/// rarely land in view, so this one declares support on the Keys shown.
+#[hegel::test(test_cases = 300)]
+fn support_on_items_in_view_through_the_c_api_mirrors_the_grid(tc: TestCase) {
+    let config = || AxisConfig::new(8, 3.0).header(2.0).gap(1.0);
+    let c = BinnacleAxisConfig {
+        count: 8,
+        default_size: 3.0,
+        header: 2.0,
+        gap: 1.0,
+    };
+    let h = binnacle_grid_new(c, c);
+    let mut grid = Grid::new(config(), config());
+    unsafe {
+        mirrored_frame(h, &mut grid);
+        for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(6)) {
+            let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
+            let key = Key(tc.draw(gs::integers::<u64>().max_value(7)));
+            let support = Support::default()
+                .with_sort(tc.draw(gs::booleans()))
+                .with_text(tc.draw(gs::optional(gs::booleans().map(TextSupport::new))))
+                .with_one_of(tc.draw(gs::booleans()))
+                .with_compare(tc.draw(gs::optional(gs::sampled_from(vec![
+                    Compared::Numbers,
+                    Compared::Dates,
+                ]))));
+            grid.set_support(axis, key, support);
+            assert_eq!(
+                binnacle_grid_set_support(h, tag(axis), key.0, support_bits(support)),
+                1
+            );
+            mirrored_frame(h, &mut grid);
+        }
+        binnacle_grid_free(h);
+    }
 }

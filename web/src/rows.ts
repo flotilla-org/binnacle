@@ -31,7 +31,24 @@
 // Rows and columns both move, read in the order shown with the filter in
 // force. A move on a sorted axis keeps the order shown and drops the sort,
 // unless `sortedMoves` refuses it.
+//
+// The rows group by any sortable column, through binnacle-group's grouping
+// layer in wasm: the rows are sorted by the level columns first (the user's
+// direction on one, else ascending), then by the user's sort, and grouped by
+// each level column's cell text, nested outermost first, with Subtotals and
+// a Grand Total where the grouping places them. Values are the standard
+// aggregates: `count`, `distinct count` (of cell texts), and `sum`,
+// `average`, `minimum` and `maximum` of numbers (dates count as their
+// milliseconds); others are blank. Groups order by the one sort rule:
+// sorted by a column a value aggregates, by that value; by a level column,
+// by their text; else ascending. A Summary Item's row ID is a negative
+// number, stable for the source's life (the Grand Total's is -1, its
+// `grandTotal`); `group(id)` describes it, and its cells hold its group's
+// figure for each column a value aggregates. The level columns leave the
+// columns while grouped, and the rows don't move.
 
+import { NOTICE_CODE } from "./codes";
+import { comparedBy, comparedOf, passes, type Compared } from "./compare";
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
 import type {
   AppliedView,
@@ -41,7 +58,10 @@ import type {
   FilterSpec,
   FindMethods,
   FindQuery,
+  Grouping,
+  ListedValue,
   Located,
+  Outline,
   SortSpec,
   TableSink,
   TableSource,
@@ -49,6 +69,7 @@ import type {
   TextQuery,
   ViewSpec,
 } from "./source";
+import { summaryLabel } from "./source";
 import { bridge } from "./wasm";
 
 type WebMemory = InstanceType<ReturnType<typeof bridge>["WebMemory"]>;
@@ -89,8 +110,10 @@ export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[ke
    * sort in force; `null` shows every row the quick filter keeps.
    */
   filter(keep: ((row: R) => boolean) | null): void;
-  /** The row a row ID names. */
+  /** The row a Leaf's row ID names. */
   row(id: number): R;
+  /** The Summary Item a negative row ID names, while it is in view; `undefined` for a Leaf. */
+  group(id: number): RowsGroup<RowsColumnId<R>> | undefined;
   /**
    * The user edited the row `id` names in place: shows its new values and
    * re-sorts by the sort in force. If it no longer matches the filter it
@@ -106,6 +129,34 @@ export interface RowsSource<R> extends TableSource<number, RowsColumnId<R>, R[ke
   /** Frees the wasm side. */
   destroy(): void;
 }
+
+/**
+ * A Summary Item of the grouped rows: its kind; its level column and cell
+ * text (`null` for blanks), or `null` for the Grand Total; how many rows it
+ * holds; and its aggregates, one per value of the grouping (`null` for a
+ * blank).
+ */
+export interface RowsGroup<ColId> {
+  kind: "group" | "subtotal" | "grandTotal";
+  field: ColId | null;
+  value: ListedValue;
+  count: number;
+  aggregates: (number | null)[];
+}
+
+/** An item of a grouped Window as `WebMemory.grouped_window` gives it; a Summary Item's field is a column index. */
+interface GroupedItem {
+  key: bigint;
+  item: number | null;
+  outline: Outline<bigint, bigint>;
+  aggregates: (number | null)[] | null;
+  children: number | null;
+}
+
+/** The top bit of a Summary Item's Key, which its negative row ID leaves out. */
+const SUMMARY = 1n << 63n;
+const summaryId = (key: bigint) => -Number(key & (SUMMARY - 1n)) - 1;
+const summaryKey = (id: number) => SUMMARY | BigInt(-id - 1);
 
 type SortKeys =
   | { type: "numbers"; values: Float64Array; nulls: Uint8Array }
@@ -128,8 +179,15 @@ function extract(values: unknown[]): SortKeys {
   if (values.every((v) => v == null || numeric(v) !== undefined)) {
     return { type: "numbers", values: Float64Array.from(values, (v) => (v == null ? 0 : numeric(v)!)), nulls };
   }
+  return encoded(values.map((v) => (v == null ? null : String(v))));
+}
+
+/** Strings UTF-8 encoded end to end, as binnacle-memory takes them; `null` for none. */
+function encoded(texts: (string | null)[]): SortKeys & { type: "strings" } {
+  const nulls = Uint8Array.from(texts, (t) => (t === null ? 1 : 0));
+  const values = texts.map((t) => t ?? "");
   const encoder = new TextEncoder();
-  const parts = values.map((v) => encoder.encode(v == null ? "" : String(v)));
+  const parts = values.map((v) => encoder.encode(v));
   const ends = new Uint32Array(parts.length);
   let end = 0;
   parts.forEach((p, i) => (ends[i] = end += p.length));
@@ -167,11 +225,15 @@ function matcher(query: TextMatch): ((text: string) => boolean) | undefined {
   return (text) => text.toLowerCase().includes(lower);
 }
 
-/** How a condition tests a cell's text (`null` for no value), before `not`; `undefined` if its pattern is not a valid `RegExp`. */
+/** How a condition tests a cell's text (`null` for no value) or value, before `not`; `undefined` if its pattern is not a valid `RegExp`. */
 function tester(kind: Condition<unknown>["kind"]): Test | undefined {
   if (kind.type === "OneOf") {
     const listed = new Set(kind.values);
     return (text) => listed.has(text);
+  }
+  if (kind.type === "Compare") {
+    const { comparison } = kind;
+    return (_, value) => passes(comparison, value);
   }
   // A blank never matches, so `not` keeps it.
   const match = matcher(kind.query);
@@ -209,7 +271,7 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 type Match = (text: string) => boolean;
-type Test = (text: string | null) => boolean;
+type Test = (text: string | null, value: unknown) => boolean;
 
 /** One axis's filter in force: its quick filter with its matcher, and its conditions each with its test. */
 interface Filter<CrossId> {
@@ -220,22 +282,42 @@ interface Filter<CrossId> {
 
 const NO_FILTER = { quick: null, match: undefined, conditions: [] };
 
-/** Whether a filter keeps an item whose text in item `id` of the other axis is `text(id)`; the quick filter searches `searched`. */
-function keeps<CrossId>({ match, conditions }: Filter<CrossId>, searched: CrossId[], text: (id: CrossId) => string | null) {
+/**
+ * Whether a filter keeps an item whose text in item `id` of the other axis
+ * is `text(id)`, and value `value(id)`; the quick filter searches `searched`.
+ */
+function keeps<CrossId>(
+  { match, conditions }: Filter<CrossId>,
+  searched: CrossId[],
+  text: (id: CrossId) => string | null,
+  value: (id: CrossId) => unknown,
+) {
   return (
     (!match ||
       searched.some((id) => {
         const t = text(id);
         return t !== null && match(t);
       })) &&
-    conditions.every(({ condition, test }) => test(text(condition.id)) !== condition.not)
+    conditions.every(({ condition, test }) => test(text(condition.id), value(condition.id)) !== condition.not)
   );
 }
 
-/** The conditions of `asked` a filter applies, each with its test: those on items that take them, with a valid pattern. */
-function testable<CrossId>(asked: Condition<CrossId>[], takes: (id: CrossId) => boolean) {
+/** What an axis's filter may test by an item of the other axis: whether it takes conditions, and what it compares. */
+interface Takes<CrossId> {
+  (id: CrossId): boolean;
+  compared(id: CrossId): Compared | null;
+}
+
+/**
+ * The conditions of `asked` a filter applies, each with its test: those on
+ * items that take them, with a valid pattern, comparing the kind of value
+ * the item holds.
+ */
+function testable<CrossId>(asked: Condition<CrossId>[], takes: Takes<CrossId>) {
   return asked.flatMap((condition) => {
-    const test = takes(condition.id) ? tester(condition.kind) : undefined;
+    const { kind, id } = condition;
+    const compares = kind.type !== "Compare" || comparedBy(kind.comparison) === (takes.compared(id) ?? "none");
+    const test = takes(id) && compares ? tester(kind) : undefined;
     return test ? [{ condition, test }] : [];
   });
 }
@@ -246,7 +328,7 @@ function testable<CrossId>(asked: Condition<CrossId>[], takes: (id: CrossId) => 
  * kept. Also whether that changed it, and why RegExp rejected the first
  * pattern it did, if any.
  */
-function take<CrossId>(filter: Filter<CrossId>, asked: FilterSpec<CrossId> | undefined, takes: (id: CrossId) => boolean) {
+function take<CrossId>(filter: Filter<CrossId>, asked: FilterSpec<CrossId> | undefined, takes: Takes<CrossId>) {
   const quick = asked?.quick ?? null;
   const match = quick && matcher(quick);
   let next = filter;
@@ -280,8 +362,27 @@ export function fromRows<R extends object>(
   let filters: { rows: Filter<ColId>; cols: Filter<number> } = { rows: NO_FILTER, cols: NO_FILTER };
   let hidden: { rows: number[]; cols: ColId[] } = { rows: [], cols: [] };
   let keep: ((row: R) => boolean) | null = null;
+  /** Each column's kind of value to compare, worked out on first use and again after a change. */
+  const kinds = new Map<ColId, Compared | null>();
+  /** The columns the rows group by, outermost first, and the grouping in force. */
+  let levels: ColId[] = [];
+  let grouping: Grouping<ColId, number, ColId> | null = null;
+  /** The Summary Items seen in grouped Windows since the rows last grouped, by row ID. */
+  const groups = new Map<number, RowsGroup<ColId>>();
+  const groupable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.sortable !== false;
   const filterable = (id: ColId) => index.has(id) && columns[index.get(id)!]!.filterable !== false;
+  const compared = (id: ColId): Compared | null => {
+    if (!filterable(id)) return null;
+    let kind = kinds.get(id);
+    if (kind === undefined) kinds.set(id, (kind = comparedOf(rows.map((r) => r[id]))));
+    return kind;
+  };
+  /** What the columns compare by row `id`: the kind its values in the filterable columns share. */
+  const comparedAcross = (id: number): Compared | null =>
+    isRow(id) ? comparedOf(columns.filter((c) => c.filterable !== false).map((c) => rows[id]![c.key])) : null;
+  const takesColumn: Takes<ColId> = Object.assign((id: ColId) => filterable(id), { compared });
   const isRow = (id: number) => Number.isInteger(id) && id >= 0 && id < rows.length;
+  const takesRow: Takes<number> = Object.assign((id: number) => isRow(id), { compared: comparedAcross });
   // Created on first use, once the widget has loaded the wasm module.
   const memory = () => {
     if (wasm) return wasm;
@@ -312,7 +413,13 @@ export function fromRows<R extends object>(
     const searched = (quick?.searches === "shown" ? shownColumns() : (quick?.searches ?? [])).filter((id) =>
       index.has(id),
     );
-    return (row: R) => keeps(filter, searched, (id) => text(row, id)) && (keep?.(row) ?? true);
+    return (row: R) =>
+      keeps(
+        filter,
+        searched,
+        (id) => text(row, id),
+        (id) => row[id],
+      ) && (keep?.(row) ?? true);
   };
 
   /** Whether the column at index `c` passes `filter`. */
@@ -323,11 +430,18 @@ export function fromRows<R extends object>(
       return rows.map((_, i) => i).filter((i) => !out.has(i));
     };
     const searched = (quick?.searches === "shown" ? shownRows() : (quick?.searches ?? [])).filter(isRow);
-    return (c: number) => keeps(filter, searched, (r) => text(rows[r]!, columns[c]!.key));
+    const key = (c: number) => columns[c]!.key;
+    return (c: number) =>
+      keeps(
+        filter,
+        searched,
+        (r) => text(rows[r]!, key(c)),
+        (r) => rows[r]?.[key(c)],
+      );
   };
 
   /** A filter for `narrow`, as a checklist asks: its quick filter if valid, its testable conditions. */
-  const narrowing = <C,>(narrow: FilterSpec<C>, takes: (id: C) => boolean): Filter<C> => {
+  const narrowing = <C,>(narrow: FilterSpec<C>, takes: Takes<C>): Filter<C> => {
     const match = (narrow.quick && matcher(narrow.quick)) ?? undefined;
     return { quick: match ? narrow.quick : null, match, conditions: testable(narrow.conditions, takes) };
   };
@@ -386,7 +500,7 @@ export function fromRows<R extends object>(
    * (ties by text), up to `limit`; blanks counted unless searching.
    */
   const distinct = (id: ColId, search: string, limit: number, narrow: FilterSpec<ColId>): Distinct => {
-    const keeps = rowKeeper(narrowing(narrow, filterable));
+    const keeps = rowKeeper(narrowing(narrow, takesColumn));
     const found = search ? matcher({ text: search, caseSensitive: false, regex: false })! : undefined;
     const values = rows.map((r) => r[id]);
     const numbers = values.every((v) => v == null || numeric(v) !== undefined);
@@ -424,7 +538,7 @@ export function fromRows<R extends object>(
    * `limit`; blanks counted unless searching.
    */
   const distinctAcross = (id: number, search: string, limit: number, narrow: FilterSpec<number>): Distinct => {
-    const keeps = columnKeeper(narrowing(narrow, isRow));
+    const keeps = columnKeeper(narrowing(narrow, takesRow));
     const found = search ? matcher({ text: search, caseSensitive: false, regex: false })! : undefined;
     const seen = new Map<string, number>();
     let blanks = 0;
@@ -443,9 +557,14 @@ export function fromRows<R extends object>(
     };
   };
 
+  /** Sorts the rows by the level columns first, then by `spec`, which becomes the sort in force. */
   const sort = (spec: SortSpec<ColId>) => {
     const m = memory();
-    for (const { id } of spec) {
+    const by: SortSpec<ColId> = [
+      ...levels.map((id) => ({ id, direction: spec.find((c) => c.id === id)?.direction ?? ("ascending" as const) })),
+      ...spec,
+    ];
+    for (const { id } of by) {
       let k = keys.get(id);
       if (!k) keys.set(id, (k = extract(rows.map((r) => r[id]))));
       if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
@@ -453,11 +572,100 @@ export function fromRows<R extends object>(
     }
     const moved = m.sort(
       ROWS,
-      BigUint64Array.from(spec, (c) => BigInt(index.get(c.id)!)),
-      Uint8Array.from(spec, (c) => DIRECTION[c.direction]),
+      BigUint64Array.from(by, (c) => BigInt(index.get(c.id)!)),
+      Uint8Array.from(by, (c) => DIRECTION[c.direction]),
     );
     applied = spec;
     return moved;
+  };
+
+  /**
+   * Groups the rows in view as the grouping in force says, again, or
+   * ungroups them if it has no levels: stages each column it reads, as cell
+   * texts and as numbers, and the user's sort orders the groups.
+   */
+  const regroup = () => {
+    const m = memory();
+    groups.clear();
+    if (levels.length === 0 || !grouping) return void (m.grouped() && m.ungroup());
+    const read = new Set([...levels, ...grouping.values.flatMap((v) => (v.field === null ? [] : [v.field]))]);
+    for (const id of read) {
+      const { bytes, ends, nulls } = encoded(rows.map((r) => text(r, id)));
+      const numbers = rows.map((r) => numeric(r[id]));
+      m.stage_field(
+        index.get(id)!,
+        bytes,
+        ends,
+        nulls,
+        Float64Array.from(numbers, (n) => n ?? 0),
+        Uint8Array.from(numbers, (n) => (n === undefined ? 1 : 0)),
+      );
+    }
+    const column = (id: ColId) => BigInt(index.get(id)!);
+    const wire = {
+      ...grouping,
+      rowLevels: grouping.rowLevels.flatMap((l) => ("field" in l ? [{ ...l, field: column(l.field) }] : [])),
+      values: grouping.values.map((v) => ({ ...v, field: v.field === null ? null : column(v.field) })),
+      rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except: groupKeys(grouping) } },
+      colAxis: { ...grouping.colAxis, expand: { ...grouping.colAxis.expand, except: [] } },
+    };
+    m.group(
+      wire,
+      Uint32Array.from(applied, (c) => index.get(c.id)!),
+      Uint8Array.from(applied, (c) => DIRECTION[c.direction]),
+    );
+    // The Group Items whose paths no longer fit the levels are pruned.
+    const except = Array.from(m.except(), summaryId);
+    grouping = { ...grouping, rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except } } };
+  };
+
+  /** The Keys of the Group Items in the rows' `expand.except`. */
+  const groupKeys = (g: Grouping<ColId, number, ColId>) =>
+    g.rowAxis.expand.except.flatMap((id) => (id < 0 ? [summaryKey(id)] : []));
+
+  /** Opens and closes the groups as the grouping in force says, over the rows as they are grouped. */
+  const reopen = (): ChangeNotice | null => {
+    const { depth } = grouping!.rowAxis.expand;
+    const [code, at, n] = memory().expand(depth === "all" ? -1 : depth, BigUint64Array.from(groupKeys(grouping!)));
+    if (code === undefined) return null;
+    if (code === NOTICE_CODE.Collapsed) return { type: "Collapsed", at: at!, n: n! };
+    if (code === NOTICE_CODE.Expanded) return { type: "Expanded", at: at!, n: n! };
+    return { type: "Refiltered" };
+  };
+
+  /** The index of the value that counts the rows, if the grouping has one. */
+  const counted = () => grouping?.values.findIndex((v) => v.field === null && v.aggregate === "count") ?? -1;
+
+  /** The grouped rows at Positions `start..end`, each Summary Item by its negative row ID. */
+  const groupedWindow = (start: number, end: number) => {
+    const items = memory().grouped_window(start, end) as GroupedItem[];
+    const id = (item: GroupedItem) => item.item ?? summaryId(item.key);
+    const outlines = items.map((item): Outline<number, ColId> => {
+      const o = item.outline;
+      const group = o.group ? { field: columns[Number(o.group.field)]!.key, value: o.group.value } : null;
+      if (o.kind !== "leaf" && item.aggregates) {
+        const count = item.aggregates[counted()] ?? item.children ?? 0;
+        const summary = { kind: o.kind, field: group?.field ?? null, value: group?.value ?? null };
+        groups.set(id(item), { ...summary, count, aggregates: item.aggregates });
+      }
+      return { kind: o.kind, depth: o.depth, open: o.open, ancestors: o.ancestors.map(summaryId), group };
+    });
+    return { ids: items.map(id), outlines };
+  };
+
+  /** A Summary Item as last listed, else read where it sits now (a pinned Grand Total out of view). */
+  const summaryOf = (id: number): RowsGroup<ColId> | undefined => {
+    if (!groups.has(id) && memory().grouped()) {
+      const [code, position] = memory().locate_summary(summaryKey(id));
+      if (code === 0) groupedWindow(position!, position! + 1);
+    }
+    return groups.get(id);
+  };
+
+  /** A Summary Item's figure in column `col`: that of the first value aggregating it. */
+  const figure = (id: number, col: ColId): number | null => {
+    const at = grouping?.values.findIndex((v) => v.field === col) ?? -1;
+    return at < 0 ? null : (summaryOf(id)?.aggregates[at] ?? null);
   };
 
   /** Sorts the columns by the rows `spec` names, each row's values across the columns as its keys. */
@@ -483,6 +691,7 @@ export function fromRows<R extends object>(
     rows: { filter: spec(filters.rows), sort: applied, hidden: hidden.rows },
     cols: { filter: spec(filters.cols), sort: colsApplied, hidden: hidden.cols },
     totals: { rows: rows.length, cols: columns.length },
+    grouping,
   });
 
   /**
@@ -491,6 +700,7 @@ export function fromRows<R extends object>(
    */
   const move = (axis: typeof ROWS | typeof COLS, items: number[], to: number): boolean | { refused: string } => {
     const sorted = (axis === ROWS ? applied : colsApplied).length > 0;
+    if (axis === ROWS && levels.length > 0) return { refused: "Can't move grouped rows: ungroup them first" };
     if (!memory().move_items(axis, Uint32Array.from(items), to)) {
       return { refused: "Can't move while sorted: clear the sort first" };
     }
@@ -512,6 +722,7 @@ export function fromRows<R extends object>(
     const at = located(m.locate(ROWS, id));
     if (at.type === "Found") tell({ type: "ContentChanged", start: at.position, end: at.position + 1 });
     keys.clear();
+    kinds.clear();
     rowKeys.delete(id);
     hits = undefined;
     let moved = false;
@@ -519,7 +730,11 @@ export function fromRows<R extends object>(
       const kept = rowKeeper(filters.rows)(rows[id]!) ? 1 : 0;
       moved = defer ? m.defer(ROWS, id, kept) : m.refilter(ROWS, id, kept);
     }
-    if (applied.length) sort(applied);
+    if (applied.length || levels.length) sort(applied);
+    if (levels.length) {
+      regroup();
+      moved = true;
+    }
     if (moved) tell({ type: "Refiltered" });
     else if (applied.length) tell({ type: "Reordered" });
     if (colsApplied.some((c) => c.id === id)) {
@@ -537,20 +752,33 @@ export function fromRows<R extends object>(
   return {
     rows: {
       count: () => memory().count(ROWS),
-      window: (start, end) => Array.from(memory().window(ROWS, start, end)),
+      window: (start, end) => (levels.length ? groupedWindow(start, end) : Array.from(memory().window(ROWS, start, end))),
       quickFilter: { regex: true },
       hide: true,
       ...(options.hideCap?.rows === undefined ? {} : { hideCap: options.hideCap.rows }),
       support: (by) => {
         const column = columns[index.get(by) ?? -1];
         const filterable = column?.filterable !== false;
-        return { sort: column?.sortable !== false, text: filterable && { regex: true }, oneOf: filterable };
+        return {
+          sort: column?.sortable !== false,
+          text: filterable && { regex: true },
+          oneOf: filterable,
+          compare: column ? compared(by) : null,
+          group: column !== undefined && column.sortable !== false,
+        };
       },
       distinct: (by, { search, limit, narrow }) => distinct(by, search, limit, narrow),
-      locate: (id) => located(memory().locate(ROWS, id)),
-      unmatched: (ids) => Array.from(memory().unmatched(ROWS, Uint32Array.from(ids)), (u) => u === 1),
+      locate: (id) => located(id < 0 ? memory().locate_summary(summaryKey(id)) : memory().locate(ROWS, id)),
+      unmatched: (ids) =>
+        Array.from(memory().unmatched(ROWS, Uint32Array.from(ids, (id) => (id < 0 ? rows.length : id))), (u) => u === 1),
       move: (ids, to) => move(ROWS, ids, to),
-      movable: () => memory().movable(ROWS),
+      movable: () => levels.length === 0 && memory().movable(ROWS),
+      groupLabel: (id, outline) => {
+        const group = summaryOf(id);
+        if (!group) return "";
+        return counted() < 0 ? summaryLabel(outline) : `${summaryLabel(outline)} (${group.count})`;
+      },
+      grandTotal: -1,
     },
     cols: {
       count: () => memory().count(COLS),
@@ -558,7 +786,7 @@ export function fromRows<R extends object>(
       quickFilter: { regex: true },
       hide: true,
       ...(options.hideCap?.cols === undefined ? {} : { hideCap: options.hideCap.cols }),
-      support: () => ({ sort: true, text: { regex: true }, oneOf: true }),
+      support: (by) => ({ sort: true, text: { regex: true }, oneOf: true, compare: comparedAcross(by) }),
       distinct: (by, { search, limit, narrow }) => distinctAcross(by, search, limit, narrow),
       locate: (id) => located(memory().locate(COLS, index.get(id) ?? columns.length)),
       unmatched: (ids) =>
@@ -583,16 +811,36 @@ export function fromRows<R extends object>(
         throw new Error(`binnacle: fromRows cannot sort by ${by.map((c) => c.id).join(", ")}`);
       }
       const byRows = asked.cols.sort.filter((c) => isRow(c.id));
-      const forRows = take(filters.rows, asked.rows.filter, filterable);
-      const forCols = take(filters.cols, asked.cols.filter, isRow);
+      const forRows = take(filters.rows, asked.rows.filter, takesColumn);
+      const forCols = take(filters.cols, asked.cols.filter, takesRow);
       filters = { rows: forRows.filter, cols: forCols.filter };
       const error = forRows.error ?? forCols.error;
       const was = hidden;
       hidden = { rows: pruned(asked.rows.hidden, isRow), cols: pruned(asked.cols.hidden, (id) => index.has(id)) };
       const m = memory();
+      // The level columns leave the columns while the rows group by them.
+      const before = grouping;
+      levels = [...new Set((asked.grouping?.rowLevels ?? []).flatMap((l) => ("field" in l && groupable(l.field) ? [l.field] : [])))];
+      grouping =
+        levels.length === 0
+          ? null
+          : {
+              ...asked.grouping!,
+              rowLevels: levels.map((field) => asked.grouping!.rowLevels.find((l) => "field" in l && l.field === field)!),
+              colLevels: [],
+              values: asked.grouping!.values.filter((v) => v.field === null || index.has(v.field)),
+              slicers: [],
+            };
+      // Opening and closing groups regroups nothing.
+      const shape = (g: typeof grouping) => JSON.stringify(g && { ...g, rowAxis: { ...g.rowAxis, expand: null } });
+      const regrouping = shape(grouping) !== shape(before);
+      const reopening = JSON.stringify(grouping?.rowAxis.expand) !== JSON.stringify(before?.rowAxis.expand);
       const hid = {
         rows: m.hide(ROWS, Uint32Array.from(hidden.rows)),
-        cols: m.hide(COLS, Uint32Array.from(hidden.cols, (id) => index.get(id)!)),
+        cols: m.hide(
+          COLS,
+          Uint32Array.from([...new Set([...hidden.cols, ...levels])], (id) => index.get(id)!),
+        ),
       };
       // A quick filter searching the shown items of the other axis asks again when they change.
       const searchesShown = (filter: Filter<unknown>) => filter.quick?.searches === "shown";
@@ -604,15 +852,21 @@ export function fromRows<R extends object>(
       // Any View Spec, even the one in force, filters the unmatched items.
       const refiltered = forRows.changed || shownChanged.rows || m.has_unmatched(ROWS);
       if (refiltered) refilter();
+      const regrouped = regrouping || (levels.length > 0 && (refiltered || hid.rows || sorted));
+      if (regrouped) regroup();
+      const reopened = !regrouped && reopening && levels.length > 0 ? reopen() : null;
       // An axis left in the same order is told nothing.
-      if (refiltered || hid.rows || sorted) tell({ type: refiltered || hid.rows ? "Refiltered" : "Reordered" });
+      if (refiltered || hid.rows || sorted || regrouped) {
+        tell({ type: refiltered || hid.rows || regrouped ? "Refiltered" : "Reordered" });
+      } else if (reopened) tell(reopened);
       const resorted = (byRows.length > 0 || colsApplied.length > 0) && sortColumns(byRows);
       const refilteredCols = forCols.changed || shownChanged.cols || hid.cols || m.has_unmatched(COLS);
       if (refilteredCols) refilterColumns();
       if (resorted || refilteredCols) tell({ type: refilteredCols ? "Refiltered" : "Reordered" }, "cols");
       return { ...current(), ...(error === undefined ? {} : { error }) };
     },
-    cells: (rowIds, colIds) => rowIds.map((r) => colIds.map((c) => rows[r]![c])),
+    cells: (rowIds, colIds) =>
+      rowIds.map((r) => colIds.map((c) => (r < 0 ? (figure(r, c) as R[keyof R]) : rows[r]![c]))),
     find: {
       regex: true,
       marks(rowIds, colIds, query) {
@@ -671,9 +925,11 @@ export function fromRows<R extends object>(
     filter(next) {
       keep = next;
       refilter();
+      if (levels.length) regroup();
       tell({ type: "Refiltered" });
     },
     row: (id) => rows[id]!,
+    group: (id) => summaryOf(id),
     edited: (id) => update(id, true),
     changed: (id) => update(id, false),
     destroy() {

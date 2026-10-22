@@ -4,8 +4,8 @@
 use std::time::{Duration, Instant};
 
 use binnacle_core::{
-    Axis, Blanks, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery, Edge,
-    FilterSpec, Grid, Key, Snapshot, TextQuery, TextSupport, Value,
+    Axis, Blanks, Compared, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery,
+    Edge, FilterSpec, Grid, Key, Snapshot, TextQuery, TextSupport, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -13,6 +13,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::checklist::{Column, Shown};
+use crate::compare::{self, BETWEEN, STEPS};
 use crate::renderer::{char_count, fit};
 use crate::{Content, Theme};
 
@@ -805,7 +806,10 @@ impl Query {
 /// A column's filter popup, dropped under the column header. Where the
 /// column takes Text conditions, its Text condition: "Contains" or "Does not
 /// contain", with its text and the case (`Aa`) and regex (`.*`, where the
-/// column takes regexes) toggles. Where it takes OneOf conditions, the
+/// column takes regexes) toggles. Where it compares numbers or dates, its
+/// comparison: "Any value", "Equal to" to "At least", or "Between", with
+/// the value (or both ends) typed as a number or a `YYYY-MM-DD` date, and
+/// asked for once each field holds one. Where it takes OneOf conditions, the
 /// checklist of its values: a search, "(Select all)" (or "(Select all
 /// matching …)" while searching), each value with its count, "(Blanks)"
 /// first, and notes on whether the list is capped and narrowed. Each change
@@ -817,16 +821,19 @@ impl Query {
 /// columns by that row's values, dropped beside the row header.
 ///
 /// While open it takes every key. Tab and Shift+Tab move between the text,
-/// the search and the list. In the text or the search, characters and
-/// Backspace edit and Ctrl+U clears; in the list, Up, Down, PageUp,
+/// the comparison's fields, the search and the list. In a field or the
+/// search, characters and Backspace edit and Ctrl+U clears; in the
+/// comparison's fields, Left and Right step the comparison; in the list,
+/// Up, Down, PageUp,
 /// PageDown, Home and End move, Space ticks, and characters search. Ctrl+A
 /// ticks the head of the list; Alt+N toggles not, Alt+C case, Alt+R regex.
 /// Enter keeps the conditions and Esc puts back the ones from before; both
-/// close it. Typing in the text sets the condition once a pause has passed
-/// (see [`ColumnFilter::tick`]); every other change, at once.
+/// close it. Typing in the text or the comparison sets the condition once a
+/// pause has passed (see [`ColumnFilter::tick`]); every other change, at
+/// once.
 ///
 /// A Text condition the Table Source did not apply (an invalid regex, say)
-/// turns the text red, with the message the host gives
+/// turns the text red, as one does a comparison's fields, with the message the host gives
 /// [`ColumnFilter::set_error`] under it.
 ///
 /// Made a [`ColumnFilter::drawer`], it is drawn down the table's right
@@ -851,6 +858,10 @@ pub struct ColumnFilter {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Zone {
     Text,
+    /// The comparison's value, or the low end of a Between.
+    Compare,
+    /// A Between's high end.
+    High,
     Search,
     List,
 }
@@ -865,8 +876,14 @@ struct Open {
     text: Option<TextSupport>,
     /// Whether the column takes OneOf conditions.
     one_of: bool,
+    /// What the column compares, if it does.
+    compared: Option<Compared>,
     query: Query,
     not: bool,
+    /// The comparison row's step in [`STEPS`] and its fields.
+    step: usize,
+    low: String,
+    high: String,
     /// The column's conditions as last asked for, which the next change replaces.
     column: Column,
     /// The column's conditions when the popup opened, for Esc.
@@ -941,7 +958,7 @@ impl ColumnFilter {
         if self.pause.due(now)
             && let Some(o) = &mut self.open
         {
-            o.apply_text(grid);
+            o.apply_typed(grid);
         }
     }
 
@@ -1031,15 +1048,15 @@ impl ColumnFilter {
         was
     }
 
-    /// Opens on column `key` if it takes Text or OneOf conditions; returns
-    /// whether it did.
+    /// Opens on column `key` if it takes Text, OneOf or comparison
+    /// conditions; returns whether it did.
     pub fn open_column(&mut self, snapshot: &Snapshot, key: Key) -> bool {
         self.open_on(snapshot, Axis::Rows, key)
     }
 
     /// Opens on `key`, an item of `axis`'s other axis, to filter `axis` by
-    /// it, if `axis` takes Text or OneOf conditions on it; returns whether
-    /// it did.
+    /// it, if `axis` takes Text, OneOf or comparison conditions on it;
+    /// returns whether it did.
     pub fn open_on(&mut self, snapshot: &Snapshot, axis: Axis, key: Key) -> bool {
         let opened = self.show(snapshot, axis, key);
         if self.drawer {
@@ -1053,7 +1070,7 @@ impl ColumnFilter {
     /// returns whether it takes any.
     fn show(&mut self, snapshot: &Snapshot, axis: Axis, key: Key) -> bool {
         let support = snapshot.support(axis, key);
-        if support.text.is_none() && !support.one_of {
+        if support.text.is_none() && !support.one_of && support.compare.is_none() {
             if self.drawer {
                 self.open = None;
             }
@@ -1065,14 +1082,18 @@ impl ColumnFilter {
             key,
             text: support.text,
             one_of: support.one_of,
+            compared: support.compare,
             query: Query::default(),
             not: false,
+            step: 0,
+            low: String::new(),
+            high: String::new(),
             before: column.clone(),
             column,
-            zone: if support.text.is_some() {
-                Zone::Text
-            } else {
-                Zone::Search
+            zone: match (support.text, support.compare) {
+                (Some(_), _) => Zone::Text,
+                (None, Some(_)) => Zone::Compare,
+                (None, None) => Zone::Search,
             },
             search: String::new(),
             cursor: 0,
@@ -1081,6 +1102,7 @@ impl ColumnFilter {
             listed: None,
         };
         open.show_text();
+        open.show_compare();
         self.open = Some(open);
         true
     }
@@ -1175,16 +1197,16 @@ impl ColumnFilter {
             return true;
         }
         let pause = &mut self.pause;
-        // Anything but typing in the text sends what waits first; Alt+N, C
-        // and R send it with their own change, and Esc drops it.
+        // Anything but typing in a field sends what waits first; Alt+N, C
+        // and R send typed text with their own change, and Esc drops it.
         let alt_key = event.modifiers == KeyModifiers::ALT;
-        let typing = o.zone == Zone::Text
+        let typing = matches!(o.zone, Zone::Text | Zone::Compare | Zone::High)
             && matches!(event.code, KeyCode::Char(_) | KeyCode::Backspace)
             && !alt_key;
-        if alt_key || (event.code == KeyCode::Esc && !self.drawer) {
+        if (event.code == KeyCode::Esc && !self.drawer) || (alt_key && o.zone == Zone::Text) {
             pause.flush();
         } else if !typing && pause.flush() {
-            o.apply_text(grid);
+            o.apply_typed(grid);
         }
         let alt = event.modifiers == KeyModifiers::ALT;
         let ctrl = event.modifiers == KeyModifiers::CONTROL;
@@ -1195,7 +1217,8 @@ impl ColumnFilter {
             KeyCode::Enter => self.open = None,
             KeyCode::Esc => {
                 let (text, one_of) = (o.before.text.clone(), o.before.one_of.clone());
-                o.column.write(grid, text, one_of);
+                let column = o.column.write(grid, text, one_of);
+                column.write_compare(grid, o.before.compare.clone());
                 self.open = None;
             }
             KeyCode::Tab => o.zone = o.next_zone(true),
@@ -1219,6 +1242,15 @@ impl ColumnFilter {
             KeyCode::Backspace => o.edit(grid, pause, |t| {
                 t.pop();
             }),
+            KeyCode::Left | KeyCode::Right if matches!(o.zone, Zone::Compare | Zone::High) => {
+                let n = STEPS.len();
+                o.step = match event.code {
+                    KeyCode::Right => (o.step + 1) % n,
+                    _ => (o.step + n - 1) % n,
+                };
+                o.zone = Zone::Compare;
+                o.apply_compare(grid);
+            }
             KeyCode::Down if o.zone == Zone::Search => o.zone = Zone::List,
             KeyCode::Up if o.zone == Zone::List && o.cursor == 0 => o.zone = Zone::Search,
             KeyCode::Up
@@ -1289,6 +1321,11 @@ impl ColumnFilter {
             }
             hints.push(keys);
         }
+        match (o.compared, o.one_of) {
+            (Some(_), true) => hints.push("Left, Right comparison".to_string()),
+            (Some(_), false) => hints.push("Left, Right comparison  Tab move".to_string()),
+            _ => {}
+        }
         if o.one_of {
             hints.push("Tab move  Space tick  Ctrl+A all".to_string());
         }
@@ -1299,18 +1336,26 @@ impl ColumnFilter {
         if !focused {
             hints = vec![format!("Follows the focused {}", noun(o.axis))];
         }
-        // The column's Text condition as listed, if it is.
-        let state = (o.column.text.as_ref()).and_then(|c| {
-            (snapshot.conditions(o.axis).into_iter())
+        // The column's Text condition and comparison as listed, if they are.
+        let listed = snapshot.conditions(o.axis);
+        let state_of = |c: &Option<Condition>| {
+            let c = c.as_ref()?;
+            (listed.iter())
                 .find(|(listed, _)| listed == c)
-                .map(|(_, state)| state)
-        });
+                .map(|(_, state)| *state)
+        };
+        let state = state_of(&o.column.text);
+        let compare_state = state_of(&o.column.compare);
         let rejected = state == Some(ConditionState::NotApplied) && self.pause.typed.is_none();
-        // Borders, the text row and any error under it, the search, rule and
-        // note rows, the hints.
+        let compare_rejected =
+            compare_state == Some(ConditionState::NotApplied) && self.pause.typed.is_none();
+        // Borders, the text row and any error under it, the comparison row
+        // and any error under it, the search, rule and note rows, the hints.
         let fixed = 2
             + u16::from(o.text.is_some())
             + u16::from(rejected)
+            + u16::from(o.compared.is_some())
+            + u16::from(compare_rejected)
             + 3 * u16::from(o.one_of)
             + hints.len() as u16;
         let top = (top.ceil() as u16).min(area.height);
@@ -1392,6 +1437,73 @@ impl ColumnFilter {
             put(row, &mut x, "│", border);
             row += 1;
             if rejected {
+                let message = self.error.as_deref().unwrap_or("not applied");
+                let message = fit(
+                    &format!("✗ {message}"),
+                    u32::try_from(inner - 1).unwrap_or(0),
+                )
+                .into_owned();
+                let pad = (inner - 1).saturating_sub(char_count(&message) as usize);
+                let mut x = popup.x;
+                put(row, &mut x, "│ ", border);
+                put(row, &mut x, &message, theme.body.patch(theme.error));
+                put(row, &mut x, &" ".repeat(pad), theme.body);
+                put(row, &mut x, "│", border);
+                row += 1;
+            }
+        }
+
+        if let Some(compared) = o.compared {
+            let step = format!("‹{}› ", STEPS[o.step]);
+            let underlined = theme.body.add_modifier(Modifier::UNDERLINED);
+            let underlined = match compare_state {
+                _ if compare_rejected => underlined.patch(theme.error),
+                Some(ConditionState::Adding) => underlined.add_modifier(Modifier::DIM),
+                _ => underlined,
+            };
+            let placeholder = match compared {
+                Compared::Numbers => "number",
+                Compared::Dates => "YYYY-MM-DD",
+            };
+            let room = inner.saturating_sub(char_count(&step) as usize + 2);
+            let mut x = popup.x;
+            put(row, &mut x, "│ ", border);
+            let on = focused && matches!(o.zone, Zone::Compare | Zone::High);
+            let step_style = match on && o.zone == Zone::Compare {
+                true => theme.body.add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                false => theme.body.add_modifier(Modifier::BOLD),
+            };
+            put(row, &mut x, &step, step_style);
+            // A field's text and its style: the placeholder, dimmed, while
+            // empty and not typed in.
+            let field = |text: &str, room: usize, zone: Zone| {
+                let typing = focused && o.zone == zone;
+                if text.is_empty() && !typing {
+                    let shown = format!("{placeholder:<room$}");
+                    let shown = fit(&shown, u32::try_from(room).unwrap_or(0)).into_owned();
+                    (shown, underlined.patch(theme.loading))
+                } else {
+                    (field_text(text, room, typing), underlined)
+                }
+            };
+            let parts = match o.step {
+                0 => vec![(" ".repeat(room), theme.body)],
+                BETWEEN => {
+                    let half = room.saturating_sub(5) / 2;
+                    vec![
+                        field(&o.low, half, Zone::Compare),
+                        (" and ".to_string(), theme.body),
+                        field(&o.high, room.saturating_sub(5 + half), Zone::High),
+                    ]
+                }
+                _ => vec![field(&o.low, room, Zone::Compare)],
+            };
+            for (text, style) in parts {
+                put(row, &mut x, &text, style);
+            }
+            put(row, &mut x, " │", border);
+            row += 1;
+            if compare_rejected {
                 let message = self.error.as_deref().unwrap_or("not applied");
                 let message = fit(
                     &format!("✗ {message}"),
@@ -1726,6 +1838,12 @@ impl Open {
         if self.text.is_some() {
             zones.push(Zone::Text);
         }
+        if self.compared.is_some() {
+            zones.push(Zone::Compare);
+            if self.step == BETWEEN {
+                zones.push(Zone::High);
+            }
+        }
         if self.one_of {
             zones.extend([Zone::Search, Zone::List]);
         }
@@ -1738,19 +1856,56 @@ impl Open {
         }]
     }
 
-    /// Edits the text (sent once `pause` allows) or, elsewhere, the search
-    /// with `f`.
+    /// Edits the text or a comparison field (sent once `pause` allows) or,
+    /// elsewhere, the search with `f`.
     fn edit(&mut self, grid: &mut Grid, pause: &mut Pause, f: impl FnOnce(&mut String)) {
-        if self.zone == Zone::Text {
-            f(&mut self.query.text);
+        let field = match self.zone {
+            Zone::Text => Some(&mut self.query.text),
+            Zone::Compare if self.step > 0 => Some(&mut self.low),
+            Zone::High => Some(&mut self.high),
+            _ => None,
+        };
+        if let Some(field) = field {
+            f(field);
             if pause.typed() {
-                self.apply_text(grid);
+                self.apply_typed(grid);
             }
         } else if self.one_of {
             f(&mut self.search);
             self.cursor = 0;
             self.scroll = 0;
         }
+    }
+
+    /// Asks for the condition the field being typed in shows.
+    fn apply_typed(&mut self, grid: &mut Grid) {
+        match self.zone {
+            Zone::Compare | Zone::High => self.apply_compare(grid),
+            _ => self.apply_text(grid),
+        }
+    }
+
+    /// Asks for the comparison the comparison row shows, keeping its not,
+    /// or none while a field holds no value.
+    fn apply_compare(&mut self, grid: &mut Grid) {
+        let Some(compared) = self.compared else {
+            return;
+        };
+        let not = self.column.compare.as_ref().is_some_and(|c| c.not);
+        let to = compare::comparison(self.step, compared, &self.low, &self.high)
+            .map(|c| Condition::compare(self.key, c).not(not));
+        if to != self.column.compare {
+            self.column = self.column.write_compare(grid, to);
+        }
+    }
+
+    /// Shows the column's comparison in the comparison row.
+    fn show_compare(&mut self) {
+        let shown = match self.column.compare.as_ref().map(|c| &c.kind) {
+            Some(ConditionKind::Compare(c)) => compare::fields(c),
+            _ => (0, String::new(), String::new()),
+        };
+        (self.step, self.low, self.high) = shown;
     }
 
     /// Asks for the Text condition the text row shows, or none for no text.
@@ -1913,6 +2068,7 @@ fn chip_text(label: &str, c: &Condition) -> String {
             format!("{label}: {not}{text}{case}")
         }
         ConditionKind::OneOf(values) => format!("{label}: {not}{}", listed_text(values)),
+        ConditionKind::Compare(c) => format!("{label}: {not}{}", compare::text(c)),
         _ => format!("{label}: …"),
     }
 }

@@ -2,9 +2,10 @@
 // against Rust's own view of the same frame, never against constants.
 
 import { beforeAll, describe, expect, test } from "vitest";
-import { FIND, NOTICE_CODE, SUPPORT } from "../src/codes";
+import { FIND, GRAND_TOTAL, NOTICE_CODE, SUPPORT } from "../src/codes";
 import { decodeSnapshot, type KeyedViewSpec } from "../src/snapshot";
 import { isEffect } from "../src/effects";
+import type { Outline } from "../src/source";
 import { bridge } from "../src/wasm";
 import { loadForTests } from "./wasm";
 
@@ -40,6 +41,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "clipped",
     "restored",
     "endGap",
+    "grouped",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -76,9 +78,32 @@ describe("Effects", () => {
     expect(isEffect({ ...pins, keys: [3] })).toBe(false);
     expect(isEffect(null)).toBe(false);
     const edit = { type: "CycleSort", axis: "rows", key: 1n, multi: false };
-    const view = (spec: unknown, e: unknown = edit) => ({ type: "ViewRequested", generation: 1, spec, edit: e });
+    const view = (spec: object, e: unknown = edit) => ({
+      type: "ViewRequested",
+      generation: 1,
+      spec: { grouping: null, ...spec },
+      edit: e,
+    });
     const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
     expect(isEffect(view({ rows: unsorted, cols: unsorted }))).toBe(true);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted, grouping: undefined }))).toBe(false);
+    const laidOut = { grandTotal: "off", form: "outline", expand: { depth: "all", except: [] } };
+    const grouping = {
+      rowLevels: [{ field: 1n, subtotal: "after" }, { values: true }],
+      colLevels: [],
+      values: [{ field: null, aggregate: "count" }],
+      slicers: [],
+      rowAxis: laidOut,
+      colAxis: { ...laidOut, form: "header", expand: { depth: 2, except: [5n] } },
+    };
+    expect(isEffect(view({ rows: unsorted, cols: unsorted, grouping }))).toBe(true);
+    const regrouped = (part: object) => view({ rows: unsorted, cols: unsorted, grouping: { ...grouping, ...part } });
+    expect(isEffect(regrouped({ rowLevels: [{ field: 1, subtotal: "off" }] }))).toBe(false);
+    expect(isEffect(regrouped({ rowLevels: [{ field: 1n, subtotal: "under" }] }))).toBe(false);
+    expect(isEffect(regrouped({ values: [{ field: 1, aggregate: "sum" }] }))).toBe(false);
+    expect(isEffect(regrouped({ rowAxis: { ...laidOut, form: "tree" } }))).toBe(false);
+    expect(isEffect(regrouped({ rowAxis: { ...laidOut, expand: { depth: "some", except: [] } } }))).toBe(false);
+    expect(isEffect(view({ rows: unsorted, cols: unsorted }, { type: "Group", axis: "rows", field: 1 }))).toBe(false);
     expect(isEffect(view({ rows: { filter: { quick: null }, sort: [] }, cols: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: unsorted }))).toBe(false);
     expect(isEffect(view({ rows: { sort: [] }, cols: unsorted }))).toBe(false);
@@ -144,11 +169,18 @@ describe("View Specs", () => {
         "Reapply",
         "Hide",
         "Show",
+        "Group",
+        "Ungroup",
+        "Expand",
+        "Collapse",
+        "ExpandAll",
+        "ExpandTo",
       ]),
     );
     const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
     for (const edit of edits) {
-      const effect = { type: "ViewRequested", generation: 1, spec: { rows: unsorted, cols: unsorted }, edit };
+      const spec = { rows: unsorted, cols: unsorted, grouping: null };
+      const effect = { type: "ViewRequested", generation: 1, spec, edit };
       expect(isEffect(effect), edit.type).toBe(true);
     }
   });
@@ -177,6 +209,17 @@ describe("View Specs", () => {
           filter: { quick: { text: "x", caseSensitive: false, regex: true, searches: null }, conditions: [] },
           sort: [],
           hidden: [],
+        },
+        grouping: {
+          rowLevels: [{ field: 2n ** 63n + 1n, subtotal: "before" }, { values: true }],
+          colLevels: [{ field: 0n, subtotal: "off" }],
+          values: [
+            { field: null, aggregate: "count" },
+            { field: 2n, aggregate: "sum" },
+          ],
+          slicers: [{ key: 2n, not: false, kind: { type: "OneOf", values: [null, "Ø"] } }],
+          rowAxis: { grandTotal: "after", form: "outline", expand: { depth: "all", except: [2n ** 63n] } },
+          colAxis: { grandTotal: "off", form: "header", expand: { depth: 0, except: [] } },
         },
       };
       grid.request_view(spec);
@@ -253,28 +296,32 @@ describe("Hiding", () => {
 describe("Support", () => {
   test("each support code names the same support in Rust's Snapshot", () => {
     const { WebAxis, WebGrid } = bridge();
-    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(5, 80));
+    const grid = new WebGrid(new WebAxis(5, 20), new WebAxis(7, 50));
     try {
       const declared = [
         0,
         SUPPORT.sort,
         SUPPORT.text,
         SUPPORT.sort | SUPPORT.text | SUPPORT.textRegex,
-        SUPPORT.oneOf,
+        SUPPORT.oneOf | SUPPORT.group,
+        SUPPORT.compareNumbers,
+        SUPPORT.sort | SUPPORT.compareDates,
       ];
       grid.begin_frame(400, 200);
-      grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n, 14n]));
+      grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n, 14n, 15n, 16n]));
       declared.forEach((bits, i) => grid.set_support(0, BigInt(10 + i), bits));
       grid.begin_frame(400, 200);
       const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
       const dump = (grid.debug_frame() as DebugFrame).dump as { cols: { headers: { support: unknown }[] } };
       expect(s.cols.headers.map((h) => h.support)).toEqual(dump.cols.headers.map((h) => h.support));
       expect(s.cols.headers.map((h) => h.support)).toEqual([
-        { sort: false, text: null, oneOf: false },
-        { sort: true, text: null, oneOf: false },
-        { sort: false, text: { regex: false }, oneOf: false },
-        { sort: true, text: { regex: true }, oneOf: false },
-        { sort: false, text: null, oneOf: true },
+        { sort: false, text: null, oneOf: false, compare: null, group: false },
+        { sort: true, text: null, oneOf: false, compare: null, group: false },
+        { sort: false, text: { regex: false }, oneOf: false, compare: null, group: false },
+        { sort: true, text: { regex: true }, oneOf: false, compare: null, group: false },
+        { sort: false, text: null, oneOf: true, compare: null, group: true },
+        { sort: false, text: null, oneOf: false, compare: "numbers", group: false },
+        { sort: true, text: null, oneOf: false, compare: "dates", group: false },
       ]);
     } finally {
       grid.free();
@@ -311,6 +358,119 @@ describe("Find", () => {
       expect([closed.find, closed.findMatch, closed.findSupport]).toEqual([null, null, null]);
     } finally {
       grid.free();
+    }
+  });
+});
+
+describe("Grouping", () => {
+  test("outlines a host sends with a Window reach the Snapshot, and Group rows by comes back as a Group request", () => {
+    const { WebAxis, WebGrid } = bridge();
+    const grid = new WebGrid(new WebAxis(4, 20), new WebAxis(2, 80));
+    try {
+      grid.begin_frame(400, 200);
+      const north = 2n ** 63n;
+      grid.set_window(0, 0, BigUint64Array.from([north, 7n, 2n ** 60n, 9n]));
+      const outlines = [
+        { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "North" } },
+        { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [north], group: null },
+        { kind: "group", depth: 0, open: "closed", ancestors: [], group: { field: 1n, value: null } },
+        { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null },
+      ];
+      grid.set_outlines(0, 0, outlines);
+      grid.begin_frame(400, 200);
+      const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+      expect(s.rows.strip.map((i) => i.outline)).toEqual(outlines);
+      expect(s.cols.strip.map((i) => i.outline)).toEqual([null, null]);
+      expect(() => grid.set_outlines(0, 0, [{ kind: "branch" }])).toThrow(/outlines/);
+
+      grid.set_window(1, 0, BigUint64Array.from([0n, 1n]));
+      grid.group_by(0, 1n);
+      expect(grid.poll_effects()).toEqual([]);
+      grid.set_support(0, 1n, SUPPORT.group | SUPPORT.sort);
+      grid.group_by(0, 1n);
+      const [effect] = grid.poll_effects() as { type: string; spec: { grouping: unknown }; edit: unknown }[];
+      expect(effect?.edit).toEqual({ type: "Group", axis: "rows", field: 1n });
+      expect(effect?.spec.grouping).toMatchObject({ rowLevels: [{ field: 1n, subtotal: "off" }], values: [{ field: null, aggregate: "count" }] });
+      grid.begin_frame(400, 200);
+      expect(decodeSnapshot(grid.snapshot(), grid.snapshot_keys()).cols.headers[1]?.support.group).toBe(true);
+    } finally {
+      grid.free();
+    }
+  });
+
+  test("binnacle-memory groups the rows in view, with Subtotals, a Grand Total and figures, ordered by the one sort rule", () => {
+    const memory = new (bridge().WebMemory)(5, 2);
+    try {
+      const encode = (values: (string | null)[]) => {
+        const bytes: number[] = [];
+        const ends: number[] = [];
+        for (const v of values) {
+          bytes.push(...new TextEncoder().encode(v ?? ""));
+          ends.push(bytes.length);
+        }
+        return [Uint8Array.from(bytes), Uint32Array.from(ends), Uint8Array.from(values, (v) => (v === null ? 1 : 0))] as const;
+      };
+      // Column 1 is the region, column 0 the weight.
+      const region = encode(["b", "a", "b", null, "a"]);
+      const weights = [5, 1, 2, 10, 4];
+      const stage = () => {
+        memory.stage_field(1, ...region, new Float64Array(5), Uint8Array.from([1, 1, 1, 1, 1]));
+        memory.stage_field(0, ...encode(weights.map(String)), Float64Array.from(weights), new Uint8Array(5));
+      };
+      const grouping = {
+        rowLevels: [{ field: 1n, subtotal: "after" }],
+        colLevels: [],
+        values: [{ field: 0n, aggregate: "sum" }, { field: null, aggregate: "count" }],
+        slicers: [],
+        rowAxis: { grandTotal: "after", form: "outline", expand: { depth: "all", except: [] } },
+        colAxis: { grandTotal: "off", form: "header", expand: { depth: "all", except: [] } },
+      };
+      memory.stage_strings(...region);
+      memory.sort(0, BigUint64Array.from([1n]), Uint8Array.from([0]));
+      stage();
+      expect(memory.group(grouping, new Uint32Array(), new Uint8Array())).toBe(12);
+      type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
+      const items = memory.grouped_window(0, 12) as Item[];
+      const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
+      const group = (value: string | null) => ({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value } });
+      const leaf = (parent: bigint) => ({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null });
+      const subtotal = (parent: bigint, value: string | null) => ({ ...leaf(parent), kind: "subtotal", group: { field: 1n, value } });
+      expect(items.map((i) => [i.item, i.outline])).toEqual([
+        [null, group("a")],
+        [1, leaf(a)],
+        [4, leaf(a)],
+        [null, subtotal(a, "a")],
+        [null, group("b")],
+        [0, leaf(b)],
+        [2, leaf(b)],
+        [null, subtotal(b, "b")],
+        [null, group(null)],
+        [3, leaf(blank)],
+        [null, subtotal(blank, null)],
+        [null, { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null }],
+      ]);
+      expect(items.map((i) => i.aggregates)).toEqual([
+        [5, 2], null, null, [5, 2], [7, 2], null, null, [7, 2], [10, 1], null, [10, 1], [22, 5],
+      ]);
+      expect(items[11]!.key).toBe(bridge().grand_total_key());
+      expect(GRAND_TOTAL).toBe(bridge().grand_total_key());
+      expect(Array.from(memory.locate_summary(items[4]!.key))).toEqual([0, 4]);
+      expect(Array.from(memory.locate_summary(GRAND_TOTAL))).toEqual([0, 11]);
+      expect(Array.from(memory.locate(0, 3))).toEqual([0, 9]);
+
+      // Sorted by the weight, heaviest first: the groups by their sum.
+      memory.stage_strings(...region);
+      memory.stage_numbers(Float64Array.from(weights), new Uint8Array(5));
+      memory.sort(0, BigUint64Array.from([1n, 0n]), Uint8Array.from([0, 1]));
+      stage();
+      memory.group(grouping, Uint32Array.from([0]), Uint8Array.from([1]));
+      const sorted = memory.grouped_window(0, 12) as Item[];
+      expect(sorted.map((i) => i.item ?? `${i.outline.kind} ${i.outline.group?.value}`)).toEqual([
+        "group null", 3, "subtotal null", "group b", 0, 2, "subtotal b", "group a", 4, 1, "subtotal a", "grandTotal undefined",
+      ]);
+      expect(memory.ungroup()).toBe(5);
+    } finally {
+      memory.free();
     }
   });
 });

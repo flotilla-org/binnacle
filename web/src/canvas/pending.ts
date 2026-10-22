@@ -11,6 +11,41 @@ import { clipCell, PAD, type PaintContext } from "./context";
 /** How long the shimmer takes to sweep a header, and the pulse to beat once, ms. */
 const PERIOD = 1600;
 
+/** How long a toggled group's disclosure mark waits before it draws pending, so a fast source never flickers, ms. */
+export const MARK_DELAY = 150;
+
+/**
+ * When each Group Item's disclosure mark went pending, by Key. Each frame
+ * `seen` brings it up to date; `pending` says which have waited long
+ * enough to draw so.
+ */
+export interface PendingMarks {
+  seen(s: Snapshot, now: number): void;
+  pending(key: bigint | null, now: number): boolean;
+  /** Whether any mark is pending: another frame is wanted to draw it, or to pulse it. */
+  readonly waiting: boolean;
+}
+
+export function createPendingMarks(): PendingMarks {
+  const since = new Map<bigint, number>();
+  return {
+    seen(s, now) {
+      const keys = new Set(s.rows.strip.flatMap((i) => (i.togglePending && i.key !== null ? [i.key] : [])));
+      for (const key of since.keys()) if (!keys.has(key)) since.delete(key);
+      for (const key of keys) if (!since.has(key)) since.set(key, now);
+    },
+    pending: (key, now) => key !== null && now - (since.get(key) ?? Infinity) >= MARK_DELAY,
+    get waiting() {
+      return since.size > 0;
+    },
+  };
+}
+
+/** How opaque a pending disclosure mark draws now: pulsing, or still at half with motion reduced. */
+export function markBeat(p: PaintContext): number {
+  return p.motion ? 0.3 + 0.5 * (0.5 - 0.5 * Math.cos((2 * Math.PI * (p.now % PERIOD)) / PERIOD)) : 0.5;
+}
+
 /** Fills a pending sort's or move's header in the shimmer, under its label. */
 export function paintShimmer(p: PaintContext, rect: Rect): void {
   const { ctx, theme } = p;

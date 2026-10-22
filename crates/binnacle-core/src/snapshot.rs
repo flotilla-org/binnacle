@@ -2,6 +2,7 @@ use crate::find::{FindMatch, FindQuery};
 use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
+use crate::grouping::{GRAND_TOTAL, Outline};
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
 use std::ops::Range;
@@ -241,6 +242,21 @@ impl<'a> Snapshot<'a> {
         self.grid.axis(axis).measure.gap()
     }
 
+    /// The outline the Table Source sent for the item at `position` on
+    /// `axis`, if the axis is grouped and the item is in the Window. A
+    /// pinned Grand Total has its outline wherever it is.
+    pub fn outline(&self, axis: Axis, position: Position) -> Option<&'a Outline> {
+        static GRAND: Outline = Outline::grand_total();
+        let st = self.grid.axis(axis);
+        let key = st.key_at(position)?;
+        let grouped =
+            (self.applied_view().grouping.as_ref()).is_some_and(|g| !g.levels(axis).is_empty());
+        match st.outlines.get(&key) {
+            None if key == GRAND_TOTAL && grouped => Some(&GRAND),
+            found => found,
+        }
+    }
+
     /// The scrolling Strip of `axis`: the visible items that follow the
     /// Scroll Anchor, pinned items left out. Its items are drawn clipped to
     /// [`Snapshot::scrolling`].
@@ -331,10 +347,33 @@ impl<'a> Snapshot<'a> {
         (item.key == end.key).then_some(item)
     }
 
+    /// Whether focus is in the outline column: on the focused row's cell
+    /// of the row Header Band, where the tree keys act, rather than on the
+    /// focused column's body cell.
+    pub fn outline_focused(&self) -> bool {
+        self.grid.in_outline()
+    }
+
+    /// Whether the disclosure mark of the Group Item `key` on `axis` is
+    /// pending: the user opened or closed it and the Table Source has not
+    /// answered yet. Adapters draw it so only once it has been pending a
+    /// moment (about 150 ms), so a fast source doesn't flicker.
+    pub fn toggle_pending(&self, axis: Axis, key: Key) -> bool {
+        self.grid.toggle_pending(axis, key)
+    }
+
     /// The focused cell's rectangle, unclipped, if it is visible and its Keys
-    /// are known.
+    /// are known: in the outline column, the focused row's band cell.
     pub fn focus_rect(&self) -> Option<Rect> {
         let row = self.focused_item(Axis::Rows)?;
+        if self.outline_focused() {
+            return Some(Rect {
+                x: 0.0,
+                y: row.offset,
+                width: self.header(Axis::Cols),
+                height: row.size,
+            });
+        }
         let col = self.focused_item(Axis::Cols)?;
         Some(Rect {
             x: col.offset,
@@ -385,7 +424,7 @@ impl<'a> Snapshot<'a> {
             .current
             .is_some_and(|m| (row.key, col.key) == (Some(m.row), Some(m.col)));
         CellState {
-            focused: on(Axis::Rows, row) && on(Axis::Cols, col),
+            focused: on(Axis::Rows, row) && on(Axis::Cols, col) && !self.outline_focused(),
             selected: in_range || picked,
             editing,
             current_match,

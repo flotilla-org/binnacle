@@ -39,16 +39,40 @@ export type TextMatch = Omit<TextQuery<never>, "searches">;
 export type ListedValue = string | null;
 
 /**
+ * A number, or a date as milliseconds since the Unix epoch (UTC; a date
+ * without a time of day is its midnight, as `Date.UTC` gives it), that a
+ * comparison compares values with.
+ */
+export type Scalar = { type: "number"; value: number } | { type: "date"; value: number };
+
+/** The comparisons with one scalar. */
+export type CompareOp = "equal" | "notEqual" | "less" | "atMost" | "greater" | "atLeast";
+
+/**
+ * How a `Compare` condition compares a value: with one scalar, or between
+ * `low` and `high`, both included (a `low` past `high` keeps nothing).
+ */
+export type Comparison = { op: CompareOp; value: Scalar } | { op: "between"; low: Scalar; high: Scalar };
+
+/** What a condition asks of the values in its item. */
+export type ConditionKind =
+  | { type: "Text"; query: TextMatch }
+  | { type: "OneOf"; values: ListedValue[] }
+  | { type: "Compare"; comparison: Comparison };
+
+/**
  * One condition on the items of an axis, read in one item of the other axis
  * (a column, for the rows): an item is kept if its value in column `id`
  * satisfies `kind`, or with `not` if it does not. A `Text` kind matches as a
  * Text Query does, in that column alone; a blank never matches, so `not`
  * keeps blanks. A `OneOf` kind keeps the values it lists exactly, and blanks
- * only if it lists `null`; listing none keeps nothing.
+ * only if it lists `null`; listing none keeps nothing. A `Compare` kind keeps
+ * the numbers or dates that compare so; a blank, a NaN or a value of the
+ * other kind never does, so `not` keeps them.
  */
 export interface Condition<CrossId> {
   id: CrossId;
-  kind: { type: "Text"; query: TextMatch } | { type: "OneOf"; values: ListedValue[] };
+  kind: ConditionKind;
   not: boolean;
 }
 
@@ -71,10 +95,106 @@ export interface AxisView<CrossId, Id = unknown> {
   hidden: Id[];
 }
 
-/** The view the Table Source should present for the whole table, one part per axis. */
+/** Where a Subtotal or a Grand Total goes: before its group (or the axis), after it, or nowhere. */
+export type Placement = "before" | "after" | "off";
+
+/**
+ * One level of an axis's grouping, outermost first: the values of a base
+ * field, each group with a Subtotal placed as `subtotal` says, or the values
+ * pseudo-level (one item per value, where several are shown).
+ */
+export type Level<FieldId> = { field: FieldId; subtotal: Placement } | { values: true };
+
+/**
+ * One value a grouped table shows: an aggregate (an open name such as
+ * `sum`, `count`, `average`, `minimum`, `maximum`, `distinct count`, or one
+ * the Table Source declares) over a base field, or over nothing (`null`)
+ * for a count of items, with the parameters a declared aggregate takes,
+ * passed to the source as they are (none if omitted).
+ */
+export interface AggregateValue<FieldId> {
+  field: FieldId | null;
+  aggregate: string;
+  params?: string[];
+}
+
+/**
+ * How one grouped axis is laid out: its Grand Total's place, outline form
+ * (each group a Group Item at its own Position) or header form (each level a
+ * tier of the cross Header Band), and which groups are open: the first
+ * `depth` levels, except the Group Items `except` names, which are the
+ * other way.
+ */
+export interface GroupedAxis<ItemId = unknown> {
+  grandTotal: Placement;
+  form: "outline" | "header";
+  expand: { depth: number | "all"; except: ItemId[] };
+}
+
+/**
+ * The whole-table grouping part of a View Spec, naming the Table Source's
+ * base fields (its items before any pivot; for a plain records table, the
+ * column IDs). No column levels: no pivot, and the Leaves stay.
+ */
+export interface Grouping<FieldId, RowId = unknown, ColId = unknown> {
+  rowLevels: Level<FieldId>[];
+  colLevels: Level<FieldId>[];
+  values: AggregateValue<FieldId>[];
+  /** Conditions on the base fields, applied before aggregating. */
+  slicers: Condition<FieldId>[];
+  rowAxis: GroupedAxis<RowId>;
+  colAxis: GroupedAxis<ColId>;
+}
+
+/** A grouping of the rows by `field`, counting each group, laid out as by default. */
+export function rowsBy<FieldId>(field: FieldId): Grouping<FieldId, never, never> {
+  return {
+    rowLevels: [{ field, subtotal: "off" }],
+    colLevels: [],
+    values: [{ field: null, aggregate: "count" }],
+    slicers: [],
+    rowAxis: { grandTotal: "off", form: "outline", expand: { depth: "all", except: [] } },
+    colAxis: { grandTotal: "off", form: "header", expand: { depth: "all", except: [] } },
+  };
+}
+
+/**
+ * The view the Table Source should present for the whole table, one part per
+ * axis, and its `grouping`: `null` (or absent) for a plain table. A grouped
+ * table's base fields are the column IDs.
+ */
 export interface ViewSpec<RowId, ColId> {
   rows: AxisView<ColId, RowId>;
   cols: AxisView<RowId, ColId>;
+  grouping?: Grouping<ColId, RowId, ColId> | null;
+}
+
+/**
+ * What an item of a grouped axis is: a Leaf from the data, or a Summary
+ * Item (a Group Item heading a group, a Subtotal, or the Grand Total).
+ */
+export type ItemKind = "leaf" | "group" | "subtotal" | "grandTotal";
+
+/**
+ * Where an item sits in a grouped axis, one per item of a Window: its kind,
+ * its depth (0 for the top groups; a Leaf of a group at depth `d` is at
+ * `d + 1`), whether it is open (Leaves, Subtotals and the Grand Total
+ * can't), the IDs of its ancestor Group Items from the outermost down to its
+ * parent (`depth` of them), and on Group Items and Subtotals their level's
+ * field and the group's value.
+ */
+export interface Outline<Id, FieldId> {
+  kind: ItemKind;
+  depth: number;
+  open: "open" | "closed" | "cantOpen";
+  ancestors: Id[];
+  group?: { field: FieldId; value: ListedValue } | null;
+}
+
+/** A Window of a grouped axis: its IDs, and each one's outline. */
+export interface OutlinedWindow<Id, CrossId> {
+  ids: Id[];
+  outlines: Outline<Id, CrossId>[];
 }
 
 /**
@@ -163,6 +283,8 @@ export type AppliedAxisView<CrossId, Id = unknown> = Omit<AxisView<CrossId, Id>,
 export interface AppliedView<RowId, ColId> {
   rows: AppliedAxisView<ColId, RowId>;
   cols: AppliedAxisView<RowId, ColId>;
+  /** The grouping applied; none if omitted. */
+  grouping?: Grouping<ColId, RowId, ColId> | null;
   totals?: Totals;
   error?: string;
 }
@@ -192,6 +314,17 @@ export interface Support {
    * `view` and the axis has `distinct`, and never without them.
    */
   oneOf?: boolean;
+  /**
+   * Whether the axis may be filtered by Compare conditions on the item, and
+   * on which kind of value; none by default.
+   */
+  compare?: "numbers" | "dates" | null;
+  /**
+   * Whether the axis may be grouped by the item, a base field; `false` by
+   * default. A source that groups answers a View Spec's `grouping` and
+   * sends outlines with its Windows.
+   */
+  group?: boolean;
 }
 
 /**
@@ -244,6 +377,14 @@ export type ChangeNotice =
   | { type: "Inserted"; at: number; n: number }
   /** The `n` items from Position `at` removed. */
   | { type: "Removed"; at: number; n: number }
+  /**
+   * The group whose Group Item sits at `at - 1` closed, hiding the `n` items
+   * from `at`. Unlike a Removal they stay alive: their row heights and pins
+   * are kept (the pins dormant), focus inside moves to the Group Item.
+   */
+  | { type: "Collapsed"; at: number; n: number }
+  /** The group whose Group Item sits at `at - 1` opened, showing `n` items from `at`. */
+  | { type: "Expanded"; at: number; n: number }
   /** The values of the items at Positions `start..end` changed; their IDs and order did not. */
   | { type: "ContentChanged"; start: number; end: number };
 
@@ -296,8 +437,11 @@ export interface TableSink<RowId, ColId> {
 
 export interface AxisMethods<Id, CrossId> {
   count(): MaybePromise<number>;
-  /** The IDs at Positions `start..end` (fewer past the end). */
-  window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[]>;
+  /**
+   * The IDs at Positions `start..end` (fewer past the end), with their
+   * outlines while the axis is grouped.
+   */
+  window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[] | OutlinedWindow<Id, CrossId>>;
   /** How this axis may be viewed by `by`; asked as `by` comes into view. */
   support?(by: CrossId): Support;
   /** Set if this axis takes a quick filter (the source must also have `view`). */
@@ -343,6 +487,17 @@ export interface AxisMethods<Id, CrossId> {
   movable?(): boolean;
   /** Header text for an item; defaults to `String(id)` for columns and Position + 1 for rows. */
   label?(id: Id, position: number): string;
+  /**
+   * Header text for a Summary Item of a grouped axis, drawn after its
+   * indent and disclosure mark; defaults to `summaryLabel`.
+   */
+  groupLabel?(id: Id, outline: Outline<Id, CrossId>): string;
+  /**
+   * The ID of this axis's Grand Total while it is grouped, if it has one:
+   * the widget names it by the Key the Grid pins a Grand Total placed after
+   * by, so it is pinned before it comes into a Window.
+   */
+  grandTotal?: Id;
   /** The axis's IDs are its Positions, so the widget keeps no Key Interner for it. */
   identity?: "position";
 }
@@ -379,4 +534,27 @@ export interface TableSource<RowId, ColId, V = unknown> {
   find?: FindMethods<RowId, ColId>;
   /** Hands the source its sinks for Change Notices and news; returns how to detach. */
   attach?(sink: TableSink<RowId, ColId>): () => void;
+}
+
+/**
+ * A Summary Item's header text when the source gives none: a Group Item's
+ * value ("(blank)" for a blank), the value and "total" on a Subtotal
+ * ("Bergen total"), or "Grand total".
+ */
+export function summaryLabel(outline: Outline<unknown, unknown>): string {
+  if (outline.kind === "grandTotal") return "Grand total";
+  const value = outline.group?.value;
+  const label = value === undefined ? "" : (value ?? "(blank)");
+  return outline.kind === "subtotal" ? `${label} total` : label;
+}
+
+/**
+ * A value's name, as the caption a grouped table with one value shows:
+ * the aggregate over the field's name, with any parameters after it
+ * ("sum(weight)", "percentile(weight, 0.9)"), or the aggregate alone for a
+ * count of items.
+ */
+export function valueName<FieldId>(value: AggregateValue<FieldId>, fieldName: (field: FieldId) => string): string {
+  const args = [...(value.field === null ? [] : [fieldName(value.field)]), ...(value.params ?? [])];
+  return args.length === 0 ? value.aggregate : `${value.aggregate}(${args.join(", ")})`;
 }

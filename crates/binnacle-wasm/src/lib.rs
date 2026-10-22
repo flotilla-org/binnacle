@@ -4,11 +4,13 @@
 //!
 //! Keys cross as exact `u64` (`BigUint64Array` in bulk, `bigint` singly);
 //! counts and Positions as `f64`, capped at 2^53 - 1. The Snapshot crosses as
-//! two flat arrays ([`snapshot`]); Effects as tagged objects ([`effect`]).
+//! two flat arrays ([`snapshot`]); Effects as tagged objects ([`effect`]),
+//! and View Specs' grouping and Window items' outlines likewise ([`grouping`]).
 
 pub mod codes;
 pub mod effect;
 mod grid;
+pub mod grouping;
 mod memory;
 pub mod snapshot;
 pub mod testing;
@@ -17,6 +19,13 @@ pub use grid::{WebAxis, WebGrid, debug_every_effect, debug_notice, debug_scenari
 pub use memory::WebMemory;
 
 use wasm_bindgen::prelude::*;
+
+/// The Key of a grouped axis's Grand Total, which the widget names the
+/// source's Grand Total by.
+#[wasm_bindgen]
+pub fn grand_total_key() -> u64 {
+    binnacle_core::GRAND_TOTAL.0
+}
 
 /// Runs when the module loads: debug builds report panics to the console.
 #[wasm_bindgen(start)]

@@ -35,7 +35,7 @@ The Grid's per-frame, read-only description of what to draw (cell and header pla
 _Avoid_: Frame, render list, view model
 
 **Change Notice**:
-A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys.
+A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed, and on a grouped axis collapsed and expanded). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys.
 _Avoid_: Invalidation, update event, data changed
 
 ### Axes and identity
@@ -77,7 +77,7 @@ The band of headers leading an axis, whose thickness the host sets and the user 
 _Avoid_: Header row, header column, gutter
 
 **View Spec**:
-The declared view a Table Source should present for a whole table, one part per axis, each with a filter and a sort (grouping and pivot may join later); the Grid holds the one the source last applied and the latest one requested.
+The declared view a Table Source should present for a whole table, one part per axis, each with a filter and a sort, and a whole-table grouping part (row levels, column levels, values and Slicers, all naming the source's base fields; absent for a plain table); the Grid holds the one the source last applied and the latest one requested.
 _Avoid_: View state, query, view model
 
 **View Edit**:
@@ -93,8 +93,12 @@ The filter part of one axis of a View Spec: which of its items the Table Source 
 _Avoid_: Filter state, predicate
 
 **Condition**:
-One test in a Filter Spec on the value an item has in one item of the other axis (a column, for the rows), such as a Text Query searching that column alone or OneOf (the value is exactly one of those listed, blank among them or not), kept or with `not` inverted. Conditions AND with each other and with the quick filter, and one column may hold several.
+One test in a Filter Spec on the value an item has in one item of the other axis (a column, for the rows), such as a Text Query searching that column alone, OneOf (the value is exactly one of those listed, blank among them or not) or a comparison, kept or with `not` inverted. Conditions AND with each other and with the quick filter, and one column may hold several. A Table Source declares per item which kinds it takes, and leaves out of the applied View Spec any it does not.
 _Avoid_: Column filter, criterion, rule
+
+**Comparison**:
+A Condition comparing the value with a number or a date: equal, not equal, less, at most, greater, at least, or between two (both ends included). A date is an instant in milliseconds since the Unix epoch, UTC; a date without a time is its midnight. An item compares numbers or dates, as its Table Source declares; a blank, a NaN or a value of the other kind never passes, so `not` keeps it, and a comparison of the other kind is left out.
+_Avoid_: Range filter, numeric filter, predicate
 
 **Distinct Values**:
 The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more.
@@ -115,6 +119,72 @@ _Avoid_: Unfiltered count, base count
 **Unmatched Row**:
 A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead.
 _Avoid_: Stale row, held row, edited row (as a term)
+
+### Grouping
+
+**Leaf**:
+An item of a grouped axis that is the data itself (a row of the table), keeping the Key it has when the axis is not grouped.
+_Avoid_: Detail row, data row, child
+
+**Group Item**:
+The Summary Item heading one group of a level: drawn in outline form at its own Position, with an indent and a disclosure mark, opening onto its children.
+_Avoid_: Group row, group header, parent row
+
+**Subtotal**:
+The Summary Item holding a group's figures, placed before or after the group's items or left out, per level; it does not open. Its Outline sits one level below its Group Item, which is its parent. While a group is open and its Subtotal placed, the Group Item draws only its label and count, the figures being the Subtotal's; a closed Group Item carries them itself.
+_Avoid_: Group total, footer row
+
+**Grand Total**:
+The Summary Item holding the figures for a whole grouped axis, placed before or after it or left out; at depth 0 with no ancestors. Its Key is a fixed one (`GRAND_TOTAL`), so the Grid pins it to the trailing edge whenever the axis's placement turns to after, before any Window lists it; the user may unpin it, and it stays unpinned while the placement stays after. Not to be confused with Totals, the unfiltered count.
+_Avoid_: Total row, overall total
+
+**Summary Item**:
+Any item a grouped axis shows that the source computes rather than holds: a Group Item, a Subtotal or the Grand Total. Its Key is interned from its path (each level's field and value, outermost first), so state on it survives sorting, filtering and data changes.
+_Avoid_: Aggregate row, synthetic row, virtual row
+
+**Outline**:
+Where an item sits in a grouped axis, given with each Window item: its kind (Leaf or which Summary Item), its depth, its ancestors' Keys from the outermost Group Item down to its parent, whether it is open, and on a Group Item or Subtotal its level's field and value.
+_Avoid_: Tree info, hierarchy, node
+
+**Collapsed / Expanded**:
+The Change Notices for a group closing or opening: `Collapsed { at, n }` hides the `n` items from Position `at`, under the Group Item at `at - 1`, and `Expanded { at, n }` shows `n` there. Position-precise like Removed and Inserted, but the hidden items stay alive: their Size Overrides and pins are kept (the pins dormant), focus and range corners inside pull to the Group Item, picks inside are dropped, and the Scroll Anchor moves to the Group Item. A change touching several groups comes as Refiltered.
+_Avoid_: Fold, hide (for a group), Removed (for a closed group's items)
+
+**Expand State**:
+Which groups of an axis are open, part of the grouping in the View Spec and so saved in layouts: a default depth (how many levels open; 0 shows only the top groups) and `except`, the Group Item Keys the other way, capped like the hidden Keys. Toggling a group adds or removes its Key; setting the depth clears `except`. A Key stays while its path fits the levels and is pruned when the levels change so that it cannot.
+_Avoid_: Collapse state, open set, tree state
+
+**Pending Toggle**:
+A Group Item whose open state a request still due changes: its disclosure mark draws pending (adapters wait about 150 ms first, so a fast source never flickers), and a second toggle before the answer takes the first back.
+_Avoid_: Loading group, spinner
+
+**Outline Column**:
+The row Header Band of rows grouped in outline form, as a column focus can enter (Left from the first column, or a click on a row header): there the arrows walk the tree (Right opens a closed group or steps to its first child, Left closes an open one or steps to the parent), Enter toggles, `*` opens everything under the focused group, a digit opens the rows to that depth, and Tab leaves for the body.
+_Avoid_: Tree column, row header focus
+
+**Grouping Layer**:
+The optional sans-IO module (`binnacle-group`) that answers a grouped View Spec as a Table Source over a backend that only answers Aggregate Queries: it owns the structure, interns Summary Item Keys and holds only what open groups need.
+_Avoid_: Group engine, tree builder, pivot engine
+
+**Aggregate Query**:
+One request the Grouping Layer sends its backend, in a batch carrying an id: the groups (values, counts and figures) under one path of a level, or the Leaves of one group, over a range. A backend may answer by id in any order, in parts, jointly or with more than asked.
+_Avoid_: Group query, rollup request
+
+**Value Caption**:
+The name of the one value a grouped axis shows, drawn in the corner so the figures need no column label: its aggregate over its field's name, with any parameters after it ("sum(weight)", "quantile(weight, 0.9)"), or the aggregate alone for a count of items. With several values there is none.
+_Avoid_: Measure label, value header
+
+**Slicer**:
+A Condition in the grouping part of a View Spec on a base field, applied before aggregating (`WHERE`), even on a field not shown.
+_Avoid_: Pre-filter, where clause
+
+**Corner Grid**:
+Where the two Header Bands' tiers cross on a table grouped in header form: each cell by column tier and row tier, showing level names and the values caption.
+_Avoid_: Top-left corner, pivot corner
+
+**Drill-Down Spec**:
+What activating a Summary Item's cell hands the app with the `Activated` Effect: the Slicers in force plus a OneOf for each field and value on the row's and column's paths, picking the Leaves behind the cell. binnacle builds no drill-down view.
+_Avoid_: Detail query, drill-through
 
 ### Inside an In-Memory Table Source
 

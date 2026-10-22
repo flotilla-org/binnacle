@@ -2,11 +2,12 @@
 // Renderer over its find mark (the current match ringed), translated to the cell's corner and clipped to it, or the
 // loading marker while its Key or value has not arrived, or the error marker
 // once the Table Source failed the request for it. Cells of an unmatched row
-// or column are dimmed under a wash.
+// or column are dimmed under a wash. An open Group Item whose Subtotal is
+// placed draws no figures: they are the Subtotal's.
 
 import type { Align, CellCanvas, CellStatus } from "../renderer";
 import { cellState, itemSpan } from "../snapshot";
-import { PAD, clip, clipCell, type PaintContext } from "./context";
+import { PAD, clip, clipCell, summaryStyle, type PaintContext } from "./context";
 
 /** Paints the body; returns whether a renderer asked for another frame. */
 export function paintBody(p: PaintContext): boolean {
@@ -19,11 +20,16 @@ export function paintBody(p: PaintContext): boolean {
   const pickedRows = new Set(s.picked.rows);
   const pickedCols = new Set(s.picked.cols);
   const cols = s.cols.strip;
+  const levels = s.appliedView.grouping?.rowLevels ?? [];
   s.rows.strip.forEach((row, i) => {
-    if (theme.zebra && row.position % 2 === 1) {
+    const level = row.outline?.kind === "group" && row.outline.open === "open" ? levels[row.outline.depth] : undefined;
+    const figureless = level !== undefined && "field" in level && level.subtotal !== "off";
+    const role = summaryStyle(theme, row.outline);
+    const fill = role?.background ?? (row.position % 2 === 1 ? theme.zebra : null);
+    if (fill) {
       const span = itemSpan(s.rows, i);
       const y = Math.max(row.offset, span.start);
-      ctx.fillStyle = theme.zebra;
+      ctx.fillStyle = fill;
       ctx.fillRect(left, y, right - left, Math.min(row.offset + row.size, span.end) - y);
     }
     const rowId = p.content.id("rows", row);
@@ -37,7 +43,7 @@ export function paintBody(p: PaintContext): boolean {
         selected: state.selected,
         picked: (row.key !== null && pickedRows.has(row.key)) || (col.key !== null && pickedCols.has(col.key)),
         editing: state.editing,
-        loading: value === undefined && !failed,
+        loading: value === undefined && !failed && !figureless,
         flashing: row.key === null || col.key === null ? 0 : p.flashes.amount(row.key, col.key, p.now),
       };
       ctx.save();
@@ -63,7 +69,7 @@ export function paintBody(p: PaintContext): boolean {
       }
       if (failed) cell.marker("⚠", theme.error);
       else if (status.loading) cell.marker("…", theme.loading);
-      else p.renderer(rowId, p.content.id("cols", col)).draw(cell, value);
+      else if (!figureless) p.renderer(rowId, p.content.id("cols", col)).draw(cell, value);
       if (rowUnmatched || p.content.unmatched("cols", j)) {
         ctx.fillStyle = theme.unmatched;
         ctx.fillRect(0, 0, col.size, row.size);

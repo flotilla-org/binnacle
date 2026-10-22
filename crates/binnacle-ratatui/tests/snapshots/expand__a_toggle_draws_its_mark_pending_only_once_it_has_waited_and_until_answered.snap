@@ -1,0 +1,57 @@
+---
+source: crates/binnacle-ratatui/tests/expand.rs
+assertion_line: 145
+expression: out
+---
+--- North closed, the empty port with no mark
+count       id    regionport
+▸ North                      █
+▾ South                      █
+  ▾ Cadiz                    █
+      4     s1c0  s1c1  s1c2 █
+      5     s2c0  s2c1  s2c2 █
+      6     s5c0  s5c1  s5c2 █
+    Empty                    █
+                             █
+                             █
+                             █
+                             █
+--- South toggled: no pending mark yet
+count       id    regionport
+▸ North                      █
+▾ South                      █
+  ▾ Cadiz                    █
+      4     s1c0  s1c1  s1c2 █
+      5     s2c0  s2c1  s2c2 █
+      6     s5c0  s5c1  s5c2 █
+    Empty                    █
+                             █
+                             █
+                             █
+                             █
+--- 150 ms on, still unanswered: pending
+count       id    regionport
+▸ North                      █
+⋯ South                      █
+  ▾ Cadiz                    █
+      4     s1c0  s1c1  s1c2 █
+      5     s2c0  s2c1  s2c2 █
+      6     s5c0  s5c1  s5c2 █
+    Empty                    █
+                             █
+                             █
+                             █
+                             █
+--- answered: closed
+count       id    regionport
+▸ North                      █
+▸ South                      █
+                             █
+                             █
+                             █
+                             █
+                             █
+                             █
+                             █
+                             █
+                             █

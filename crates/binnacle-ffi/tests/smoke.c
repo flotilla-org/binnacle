@@ -353,6 +353,69 @@ int main(void) {
   CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_REAPPLY);
   CHECK(binnacle_grid_view_applied(grid, NULL, NULL));
 
+  /* Grouping the rows by column 2002, once the source says it can: the
+   * request has that one level, counting each group. */
+  CHECK(binnacle_grid_group_by(grid, BINNACLE_ROWS, 2002));
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
+  CHECK(!binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002, 128));
+  CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002,
+                                  BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_GROUP));
+  CHECK(!binnacle_grid_group_by(grid, 2, 2002));
+  CHECK(binnacle_grid_group_by(grid, BINNACLE_ROWS, 2002));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED && effect.view.has_grouping == 1);
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_GROUP && effect.edit.axis == BINNACLE_ROWS);
+  CHECK(effect.edit.key == 2002);
+  const BinnacleGrouping *grouping = &effect.view.grouping;
+  const BinnacleGroupedAxis *grouped = &grouping->axes[BINNACLE_ROWS];
+  CHECK(grouped->levels_len == 1 && grouped->levels[0].kind == BINNACLE_LEVEL_FIELD);
+  CHECK(grouped->levels[0].field == 2002 && grouped->expand_all == 1);
+  CHECK(grouping->axes[BINNACLE_COLS].levels_len == 0);
+  CHECK(grouping->values_len == 1 && !grouping->values[0].has_field);
+  CHECK(memcmp(grouping->values[0].aggregate.data, "count", 5) == 0);
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, NULL));
+  /* The source sends the top row's outline: a closed Group Item for "b". */
+  frame(grid, &snap);
+  BinnacleOutline group = {.kind = BINNACLE_ITEM_GROUP, .open = BINNACLE_OPEN_STATE_CLOSED,
+                           .has_group = 1, .field = 2002,
+                           .value = {.text = {(const uint8_t *)"b", 1}}};
+  CHECK(!binnacle_grid_set_outlines(grid, BINNACLE_ROWS, r->strip[0].position,
+                                    &(BinnacleOutline){.kind = 4}, 1));
+  CHECK(binnacle_grid_set_outlines(grid, BINNACLE_ROWS, r->strip[0].position, &group, 1));
+  CHECK(binnacle_grid_snapshot(grid, &snap));
+  CHECK(r->strip[0].has_outline && r->strip[0].outline.kind == BINNACLE_ITEM_GROUP);
+  CHECK(r->strip[0].outline.open == BINNACLE_OPEN_STATE_CLOSED);
+  CHECK(r->strip[0].outline.has_group && r->strip[0].outline.field == 2002);
+  CHECK(r->strip[0].outline.value.text.len == 1 && r->strip[0].outline.ancestors_len == 0);
+  CHECK(memcmp(r->strip[0].outline.value.text.data, "b", 1) == 0);
+  CHECK(!r->strip[1].has_outline);
+  /* The source now places a Grand Total after, and shows a declared
+   * aggregate with a parameter: the Grid locates the Grand Total by its
+   * Key and pins it at the trailing edge. */
+  BinnacleViewSpec totalled = effect.view;
+  BinnacleText param = {(const uint8_t *)"0.9", 3};
+  BinnacleAggregateValue percentile = {.has_field = 1, .field = 2002,
+                                       .aggregate = {(const uint8_t *)"percentile", 10},
+                                       .params = &param, .params_len = 1};
+  totalled.grouping.values = &percentile;
+  totalled.grouping.values_len = 1;
+  totalled.grouping.axes[BINNACLE_ROWS].grand_total = BINNACLE_PLACEMENT_AFTER;
+  CHECK(binnacle_grid_view_changed(grid, &totalled, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == BINNACLE_GRAND_TOTAL_KEY);
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.edge == BINNACLE_EDGE_TRAILING);
+  CHECK(effect.keys_len == 1 && effect.keys[0] == BINNACLE_GRAND_TOTAL_KEY);
+  CHECK(binnacle_grid_located(grid, BINNACLE_ROWS, BINNACLE_GRAND_TOTAL_KEY,
+                              BINNACLE_LOCATED_GONE, 0));
+  /* Ungrouping makes the table plain again, and unpins the Grand Total. */
+  CHECK(binnacle_grid_ungroup(grid, BINNACLE_ROWS));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_UNGROUP && !effect.view.has_grouping);
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, NULL));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.keys_len == 0);
+
   /* Find: the host declares it, sets a query, steps, and answers the step;
    * the match takes focus, and closing find drops it. */
   CHECK(!binnacle_grid_set_find_support(grid, BINNACLE_FIND_REGEX));

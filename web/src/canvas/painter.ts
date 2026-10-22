@@ -14,7 +14,7 @@ import { paintBody, paintEmpty } from "./body";
 import { paintBorders, paintPinnedEdges, type BorderLayer } from "./borders";
 import type { PaintContext } from "./context";
 import { paintDropCaption, paintPinZones } from "./drop";
-import { paintPulse, paintRefusal, shimmering } from "./pending";
+import { createPendingMarks, paintPulse, paintRefusal, shimmering } from "./pending";
 import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
 
 export interface CanvasPainter extends Painter {
@@ -48,6 +48,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
   const layer: BorderLayer = { canvas: null };
   /** The last drop line drawn, where a refused move's reason shows. */
   let drop: Snapshot["dropIndicator"] = null;
+  const marks = createPendingMarks();
 
   const painter: CanvasPainter = {
     element: canvas,
@@ -74,6 +75,8 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       // Set once per paint: a baseline set inside save/restore reverts.
       ctx.textBaseline = "middle";
       ctx.textAlign = "left";
+      const now = performance.now();
+      marks.seen(s, now);
       const lastRow = s.rows.strip.at(-1);
       const lastCol = s.cols.strip.at(-1);
       const p: PaintContext = {
@@ -92,9 +95,10 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         focused: painter.focused,
         renderer: painter.renderer,
         flashes: painter.flashes,
-        now: performance.now(),
+        now,
         motion: painter.motion,
         filterButtons: { ...painter.filterButtons },
+        markPending: (key) => marks.pending(key, now),
       };
       const animating = paintBody(p);
       const pulsing = paintPulse(p);
@@ -113,7 +117,8 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       drop = s.dropIndicator ?? drop;
       paintRefusal(p, drop);
       const pending = painter.motion && (pulsing || shimmering(s));
-      return animating || painter.flashes.sweep(p.now) || pending;
+      // A toggled mark needs frames until it draws pending, then to pulse.
+      return animating || painter.flashes.sweep(p.now) || pending || marks.waiting;
     },
   };
   return painter;

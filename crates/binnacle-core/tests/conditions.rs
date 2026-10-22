@@ -4,8 +4,9 @@
 //! applied and which are pending.
 
 use binnacle_core::{
-    Axis, AxisConfig, Condition, ConditionState, Effect, FilterSpec, Grid, HeaderFilter, Key,
-    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Axis, AxisConfig, Compared, Comparison, Condition, ConditionState, Effect, FilterSpec, Grid,
+    HeaderFilter, Key, Scalar, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
+    Viewport,
 };
 use binnacle_testkit::{RecordTable, Scenario};
 
@@ -312,4 +313,97 @@ fn one_of_is_unsupported_by_default_and_declared_with_distinct_values() {
     let snap = s.frame(V);
     assert!(snap.support(Axis::Rows, Key(0)).one_of);
     assert!(!snap.support(Axis::Rows, Key(1)).one_of);
+}
+
+fn number(n: f64) -> Scalar {
+    Scalar::Number(n)
+}
+
+/// The eight records, with column 2 holding numbers too: blanks, all eight.
+fn numeric_records() -> Scenario<RecordTable> {
+    let col0 = [5, 13, 8, 31, 9, 23, 7, 3];
+    let rows = (0..8)
+        .map(|i| vec![Some(col0[i]), Some(i as i64 * 10), None])
+        .collect();
+    let grid = Grid::new(
+        AxisConfig::new(8, 1.0).header(1.0),
+        AxisConfig::new(3, 6.0).header(4.0).gap(1.0),
+    );
+    Scenario::new(grid, RecordTable::new(rows, 3, [0, 1, 2]))
+}
+
+#[test]
+fn comparison_conditions_keep_the_numbers_that_compare_and_never_a_blank() {
+    let mut s = numeric_records();
+    let mut out = s.step("eight records", V);
+    let over = Condition::compare(Key(0), Comparison::Greater(number(9.0)));
+    s.input(|g| g.add_condition(Axis::Rows, over.clone()));
+    out += &s.step("column 0 greater than 9: 13, 31 and 23", V);
+    let between = Condition::compare(Key(0), Comparison::Between(number(5.0), number(9.0)));
+    s.input(|g| g.replace_condition(Axis::Rows, &over, between.clone()));
+    out += &s.step("column 0 between 5 and 9, both ends kept: 5, 8, 9 and 7", V);
+    let at_most = Condition::compare(Key(1), Comparison::AtMost(number(30.0))).not(true);
+    s.input(|g| g.add_condition(Axis::Rows, at_most.clone()));
+    out += &s.step("and column 1 not at most 30: 9 and 7 (rows 4 and 6)", V);
+    s.input(|g| g.remove_condition(Axis::Rows, &at_most));
+    s.input(|g| g.remove_condition(Axis::Rows, &between));
+    let blank = Condition::compare(Key(2), Comparison::NotEqual(number(1.0)));
+    s.input(|g| g.add_condition(Axis::Rows, blank.clone()));
+    out += &s.step(
+        "column 2 not equal to 1: none, as a blank never compares",
+        V,
+    );
+    s.input(|g| g.replace_condition(Axis::Rows, &blank, blank.clone().not(true)));
+    out += &s.step("with not: all eight", V);
+    let date = Condition::compare(Key(0), Comparison::Less(Scalar::date(2024, 3, 1)));
+    s.input(|g| g.replace_condition(Axis::Rows, &blank.clone().not(true), date));
+    out += &s.step(
+        "column 0 less than a date: numbers never compare with dates, so it is not applied",
+        V,
+    );
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn comparison_is_unsupported_by_default_and_declared_on_numbers_or_dates() {
+    let mut s = records();
+    let snap = s.frame(V);
+    assert_eq!(Support::default().compare, None);
+    assert_eq!(snap.support(Axis::Rows, Key(0)).compare, None);
+    s.input(|g| {
+        g.set_support(
+            Axis::Rows,
+            Key(0),
+            Support::default().with_compare(Some(Compared::Numbers)),
+        );
+        g.set_support(
+            Axis::Rows,
+            Key(1),
+            Support::default().with_compare(Some(Compared::Dates)),
+        );
+    });
+    let snap = s.frame(V);
+    assert_eq!(
+        snap.support(Axis::Rows, Key(0)).compare,
+        Some(Compared::Numbers)
+    );
+    assert_eq!(
+        snap.support(Axis::Rows, Key(1)).compare,
+        Some(Compared::Dates)
+    );
+    assert_eq!(snap.support(Axis::Rows, Key(2)).compare, None);
+}
+
+#[test]
+fn dates_write_as_their_day_and_any_time_past_midnight_utc() {
+    assert_eq!(Scalar::date(1970, 1, 1), Scalar::Date(0));
+    assert_eq!(Scalar::date(2024, 3, 1), Scalar::Date(1_709_251_200_000));
+    assert_eq!(Scalar::date(2024, 3, 1).to_string(), "2024-03-01");
+    assert_eq!(Scalar::date(1969, 12, 31).to_string(), "1969-12-31");
+    assert_eq!(
+        Scalar::Date(1_709_251_200_000 + 13 * 3_600_000 + 5 * 60_000).to_string(),
+        "2024-03-01T13:05Z"
+    );
+    assert_eq!(Scalar::Date(1_500).to_string(), "1970-01-01T00:00:01.500Z");
+    assert_eq!(Scalar::Number(2.5).to_string(), "2.5");
 }

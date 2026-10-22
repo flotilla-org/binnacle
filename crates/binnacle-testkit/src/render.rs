@@ -1,8 +1,9 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Key, Mode, Searched,
-    Snapshot, SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    Axis, Comparison, ConditionKind, Cursor, Depth, DropTarget, Edge, Expand, FilterSpec, FocusEnd,
+    Grouping, ItemKind, Key, Level, Mode, OpenState, Outline, Placement, Searched, Snapshot,
+    SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -11,7 +12,8 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// Renders a Snapshot as text: a summary line, each Strip as
 /// `position#key@offset+size` after its Scroll Anchor (`position+offset`) and
 /// thumb (`fraction/size`) (key `?` while unfilled), with `clipped at` where
-/// a pinned Strip clips, then a character
+/// a pinned Strip clips (an item of a grouped axis adds its outline as
+/// `[kind depth open ^ancestors field=value]`), then a character
 /// picture treating one unit as one character, each item starting at the first
 /// whole character it reaches. Column headers show the column
 /// Key, row headers the row Position, cells `rowkey.colkey`. A placed focus
@@ -110,6 +112,9 @@ fn summary(snap: &Snapshot) -> String {
                 let _ = write!(out, " at {},{} {}x{}", r.x, r.y, r.width, r.height);
             }
             None => out.push_str(" not drawn"),
+        }
+        if snap.outline_focused() {
+            out.push_str(" in outline");
         }
         for axis in Axis::ALL {
             if snap.locating(axis) {
@@ -250,14 +255,7 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
     if !pinned.is_empty() {
         out.push_str(" pinned");
         for item in pinned {
-            let _ = write!(
-                out,
-                " {}#{}@{}+{}",
-                item.position,
-                key_text(item),
-                item.offset,
-                item.size
-            );
+            out.push_str(&item_text(snap, axis, item));
         }
         let region = snap.pinned_region(axis, Edge::Leading);
         if pinned.last().is_some_and(|it| it.end() > region.end) {
@@ -266,14 +264,7 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
         let _ = write!(out, " | scrolling from {} |", snap.scrolling(axis).start);
     }
     for item in snap.strip(axis) {
-        let _ = write!(
-            out,
-            " {}#{}@{}+{}",
-            item.position,
-            key_text(item),
-            item.offset,
-            item.size
-        );
+        out.push_str(&item_text(snap, axis, item));
     }
     let trailing = snap.pinned(axis, Edge::Trailing);
     if !trailing.is_empty() {
@@ -287,14 +278,7 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
             let _ = write!(out, " clipped at {}", region.start);
         }
         for item in trailing {
-            let _ = write!(
-                out,
-                " {}#{}@{}+{}",
-                item.position,
-                key_text(item),
-                item.offset,
-                item.size
-            );
+            out.push_str(&item_text(snap, axis, item));
         }
     }
     out
@@ -320,6 +304,121 @@ pub(crate) fn view_text(spec: &ViewSpec) -> String {
         text += &format!(" hide {}", keys(&spec.rows.hidden));
         if !spec.cols.hidden.is_empty() {
             text += &format!(" cols {}", keys(&spec.cols.hidden));
+        }
+    }
+    if let Some(grouping) = &spec.grouping {
+        text += &grouping_text(grouping);
+    }
+    text
+}
+
+/// A Strip item as ` position#key@offset+size`, then its outline if it has
+/// one.
+fn item_text(snap: &Snapshot, axis: Axis, item: &StripItem) -> String {
+    let mut text = format!(
+        " {}#{}@{}+{}",
+        item.position,
+        key_text(item),
+        item.offset,
+        item.size
+    );
+    if let Some(outline) = snap.outline(axis, item.position) {
+        let pending = item.key.is_some_and(|k| snap.toggle_pending(axis, k));
+        text.push_str(&outline_text(outline, pending));
+    }
+    text
+}
+
+/// An item's outline as `[kind depth open]`, kind `L` (Leaf), `G` (Group
+/// Item), `S` (Subtotal) or `T` (Grand Total), open `+` (open), `-`
+/// (closed) or nothing (can't open), `~` while a toggle of it is pending,
+/// then `^key` for each ancestor and `field=value` for a group.
+fn outline_text(outline: &Outline, pending: bool) -> String {
+    let kind = match outline.kind {
+        ItemKind::Leaf => "L",
+        ItemKind::Group => "G",
+        ItemKind::Subtotal => "S",
+        ItemKind::GrandTotal => "T",
+    };
+    let open = match outline.open {
+        OpenState::Open => "+",
+        OpenState::Closed => "-",
+        OpenState::CantOpen => "",
+    };
+    let pending = if pending { "~" } else { "" };
+    let mut text = format!("[{kind}{}{open}{pending}", outline.depth);
+    for key in &outline.ancestors {
+        let _ = write!(text, " ^{}", key.0);
+    }
+    if let Some(group) = &outline.group {
+        let value = match &group.value {
+            Value::Text(t) => format!("{t:?}"),
+            Value::Blank => "blank".to_string(),
+        };
+        let _ = write!(text, " {}={value}", group.field.0);
+    }
+    text.push(']');
+    text
+}
+
+/// A grouping as `group`, the row levels' fields (each with `/before` or
+/// `/after` where it places a Subtotal), `cols` and the column levels' if
+/// any, then `values` and each as `aggregate(field)` (`-` for none, then
+/// `;` and each parameter), then each axis's Grand Total placed, as `total
+/// rows after`.
+fn grouping_text(grouping: &Grouping) -> String {
+    let placement = |p: Placement| match p {
+        Placement::Before => "before",
+        Placement::After => "after",
+        Placement::Off => "off",
+    };
+    let levels = |levels: &[Level]| {
+        let names: Vec<String> = levels
+            .iter()
+            .map(|l| match l {
+                Level::Field { field, subtotal } => match subtotal {
+                    Placement::Off => field.0.to_string(),
+                    p => format!("{}/{}", field.0, placement(*p)),
+                },
+                _ => "values".to_string(),
+            })
+            .collect();
+        names.join(",")
+    };
+    let mut text = format!(" group {}", levels(&grouping.row_levels));
+    if !grouping.col_levels.is_empty() {
+        let _ = write!(text, " cols {}", levels(&grouping.col_levels));
+    }
+    let values: Vec<String> = grouping
+        .values
+        .iter()
+        .map(|v| {
+            let mut field = v.field.map_or("-".to_string(), |k| k.0.to_string());
+            for p in &v.params {
+                let _ = write!(field, ";{p}");
+            }
+            format!("{}({field})", v.aggregate)
+        })
+        .collect();
+    let _ = write!(text, " values {}", values.join(","));
+    for axis in Axis::ALL {
+        let p = grouping.axis(axis).grand_total;
+        if p != Placement::Off {
+            let _ = write!(text, " total {axis:?} {}", placement(p));
+        }
+    }
+    for axis in Axis::ALL {
+        let expand = &grouping.axis(axis).expand;
+        if *expand != Expand::default() {
+            let depth = match expand.depth {
+                Depth::All => "all".to_string(),
+                Depth::Levels(n) => n.to_string(),
+            };
+            let _ = write!(text, " expand {axis:?} {depth}");
+            if !expand.except.is_empty() {
+                let except: Vec<String> = expand.except.iter().map(|k| k.0.to_string()).collect();
+                let _ = write!(text, " except {}", except.join(","));
+            }
         }
     }
     text
@@ -371,6 +470,7 @@ fn filters_text(spec: &ViewSpec) -> String {
                         .collect();
                     text += &format!("one of [{}]", values.join(", "));
                 }
+                ConditionKind::Compare(comparison) => text += &comparison_text(comparison),
                 _ => text += "?",
             }
             parts.push(text);
@@ -538,4 +638,17 @@ fn picture(snap: &Snapshot) -> String {
         out.push('\n');
     }
     out
+}
+
+/// A comparison as `< 5`, `>= 2024-03-01` or `5..=9`.
+fn comparison_text(comparison: &Comparison) -> String {
+    match comparison {
+        Comparison::Equal(s) => format!("= {s}"),
+        Comparison::NotEqual(s) => format!("!= {s}"),
+        Comparison::Less(s) => format!("< {s}"),
+        Comparison::AtMost(s) => format!("<= {s}"),
+        Comparison::Greater(s) => format!("> {s}"),
+        Comparison::AtLeast(s) => format!(">= {s}"),
+        Comparison::Between(low, high) => format!("{low}..={high}"),
+    }
 }

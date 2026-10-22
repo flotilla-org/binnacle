@@ -11,7 +11,16 @@ export const AXES: readonly AxisName[] = ["rows", "cols"];
 export const other = (axis: AxisName): AxisName => (axis === "rows" ? "cols" : "rows");
 
 /** Change Notice types, as the wasm `notify` input takes them. */
-export const NOTICE_CODE = { Reordered: 0, Reset: 1, Inserted: 2, Removed: 3, ContentChanged: 4, Refiltered: 5 } as const;
+export const NOTICE_CODE = {
+  Reordered: 0,
+  Reset: 1,
+  Inserted: 2,
+  Removed: 3,
+  ContentChanged: 4,
+  Refiltered: 5,
+  Collapsed: 6,
+  Expanded: 7,
+} as const;
 
 /** Pinned edges, as the wasm `pin` input takes them: `leading` is the left of the columns, the top of the rows. */
 export const EDGE_CODE = { leading: 0, trailing: 1 } as const;
@@ -34,8 +43,11 @@ export const SELECTION_UNIT = { cells: 0, rows: 1, cols: 2 } as const;
 /** What a header click does, as the wasm `set_header_click` input takes it. */
 export const HEADER_CLICK = { sort: 0, select: 1, none: 2 } as const;
 
+/** The Key of a grouped axis's Grand Total, as the wasm `grand_total_key` gives it: the Grid pins one placed after by it. */
+export const GRAND_TOTAL = 1n << 63n;
+
 /** The support bits the wasm `set_support` input takes; `textRegex` needs `text`. */
-export const SUPPORT = { sort: 1, text: 2, textRegex: 4, oneOf: 8 } as const;
+export const SUPPORT = { sort: 1, text: 2, textRegex: 4, oneOf: 8, compareNumbers: 16, compareDates: 32, group: 64 } as const;
 
 /** The quick filter bits the wasm `set_quick_filter_support` input takes. */
 export const QUICK_FILTER = { on: 1, regex: 2 } as const;

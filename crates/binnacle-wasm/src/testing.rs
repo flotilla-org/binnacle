@@ -3,10 +3,11 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Condition, ConditionState, Cursor, DropTarget, Edge,
-    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Grid, HeaderPlacement, Key,
-    Mode, Modifiers, PointerEvent, Rect, Searched, Snapshot, SortColumn, SortSpec, Stamped,
-    Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Compared, Comparison, Condition, ConditionState,
+    Cursor, Depth, DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery,
+    FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers, OpenState, Outline, PointerEvent, Rect,
+    Scalar, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport,
+    Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -14,6 +15,7 @@ use crate::effect::{
     WireAxis, WireCondition, WireDirection, WireFindMatch, WireFindQuery, WireStamped,
     WireViewEdit, WireViewSpec,
 };
+use crate::grouping::WireOutline;
 use crate::snapshot::cell_bits;
 
 #[derive(Serialize)]
@@ -39,6 +41,7 @@ pub struct Dump {
     applied_view: WireViewSpec,
     requested_view: Option<WireViewSpec>,
     view_pending: bool,
+    outline_focused: bool,
     pending_move: Option<DumpPendingMove>,
     move_refusal: Option<DumpRefusal>,
     find: Option<WireFindQuery>,
@@ -146,6 +149,8 @@ struct DumpSupport {
     text: Option<DumpTextSupport>,
     #[serde(rename = "oneOf")]
     one_of: bool,
+    compare: Option<&'static str>,
+    group: bool,
 }
 
 impl From<Support> for DumpSupport {
@@ -154,6 +159,11 @@ impl From<Support> for DumpSupport {
             sort: s.sort,
             text: s.text.map(|t| DumpTextSupport { regex: t.regex }),
             one_of: s.one_of,
+            compare: s.compare.map(|c| match c {
+                Compared::Numbers => "numbers",
+                Compared::Dates => "dates",
+            }),
+            group: s.group,
         }
     }
 }
@@ -185,11 +195,14 @@ struct DumpFocus {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DumpItem {
     position: f64,
     key: Option<u64>,
     offset: f32,
     size: f32,
+    outline: Option<WireOutline>,
+    toggle_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -425,6 +438,8 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 key: i.key.map(|k| k.0),
                 offset: i.offset,
                 size: i.size,
+                outline: s.outline(axis, i.position).map(WireOutline::from),
+                toggle_pending: i.key.is_some_and(|k| s.toggle_pending(axis, k)),
             })
             .collect(),
         pinned: s.pinned(axis, Edge::Leading).len() as f64,
@@ -549,6 +564,7 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         applied_view: s.applied_view().into(),
         requested_view: s.requested_view().map(WireViewSpec::from),
         view_pending: s.view_pending(),
+        outline_focused: s.outline_focused(),
         pending_move: s.pending_move().map(|(axis, ks)| DumpPendingMove {
             axis: axis.into(),
             keys: keys(ks),
@@ -702,6 +718,18 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             condition: listed,
         },
+        ViewEdit::AddCondition {
+            axis: Axis::Cols,
+            condition: Condition::compare(
+                Key(4),
+                Comparison::Between(Scalar::Date(-86_400_000), Scalar::date(2024, 3, 1)),
+            ),
+        },
+        ViewEdit::ReplaceCondition {
+            axis: Axis::Rows,
+            from: Condition::compare(col, Comparison::NotEqual(Scalar::Number(0.5))),
+            to: Condition::compare(col, Comparison::Less(Scalar::Number(-3.0))).not(true),
+        },
         ViewEdit::Hide {
             axis: Axis::Cols,
             keys: vec![col, Key(u64::MAX)],
@@ -710,6 +738,31 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             keys: vec![Key(3)],
         },
+        ViewEdit::Group {
+            axis: Axis::Rows,
+            field: col,
+        },
+        ViewEdit::Ungroup { axis: Axis::Cols },
+        ViewEdit::Expand {
+            axis: Axis::Rows,
+            key: Key(1 << 63),
+        },
+        ViewEdit::Collapse {
+            axis: Axis::Rows,
+            key: Key((1 << 63) | 2),
+        },
+        ViewEdit::ExpandAll {
+            axis: Axis::Rows,
+            key: Key((1 << 63) | 3),
+        },
+        ViewEdit::ExpandTo {
+            axis: Axis::Rows,
+            depth: Depth::Levels(2),
+        },
+        ViewEdit::ExpandTo {
+            axis: Axis::Rows,
+            depth: Depth::All,
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -717,7 +770,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 22] = [
+pub const SCENARIOS: [&str; 23] = [
     "plain",
     "busy",
     "resizing",
@@ -740,6 +793,7 @@ pub const SCENARIOS: [&str; 22] = [
     "clipped",
     "restored",
     "endGap",
+    "grouped",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -966,6 +1020,10 @@ pub fn scenario(name: &str) -> Grid {
             let regex = Some(TextSupport::new(true));
             grid.set_support(Axis::Rows, key(1), Support::default().with_text(regex));
             grid.set_support(Axis::Rows, key(2), Support::default().with_one_of(true));
+            let dates = Support::default().with_compare(Some(Compared::Dates));
+            grid.set_support(Axis::Rows, key(3), dates);
+            let numbers = Support::default().with_compare(Some(Compared::Numbers));
+            grid.set_support(Axis::Rows, key(4), numbers);
             let applied = TextQuery::new("ber").searching(Searched::Keys(vec![key(0), key(2)]));
             let kept = Condition::text(key(1), TextQuery::new("Ø"));
             let dropped = Condition::text(key(2), TextQuery::new("x")).not(true);
@@ -985,6 +1043,12 @@ pub fn scenario(name: &str) -> Grid {
             grid.remove_condition(Axis::Rows, &dropped);
             let values = vec![Value::Text("Bé🚢".into()), Value::Blank];
             grid.add_condition(Axis::Rows, Condition::one_of(key(2), values).not(true));
+            // Column 3 between two dates, one past midnight; column 4 at
+            // least a fraction.
+            let range = Comparison::Between(Scalar::date(2024, 3, 1), Scalar::Date(-1_500));
+            grid.add_condition(Axis::Rows, Condition::compare(key(3), range));
+            let at_least = Comparison::AtLeast(Scalar::Number(-2.5));
+            grid.add_condition(Axis::Rows, Condition::compare(key(4), at_least).not(true));
         }
         "found" => {
             // Find "Bé🚢" by columns, regexes supported, stepped to row 3,
@@ -1042,9 +1106,47 @@ pub fn scenario(name: &str) -> Grid {
             grid.show(Axis::Rows, &[key(5)]);
             grid.set_hide_support(Axis::Rows, false);
         }
+        "grouped" => {
+            // The rows grouped by column 1, as applied: every fifth row a
+            // Group Item heading the four after it, the second closed and
+            // the third's value blank.
+            grid.set_support(Axis::Rows, key(1), Support::default().with_group(true));
+            grid.group_by(Axis::Rows, key(1));
+            let applied = grid.snapshot().requested_view().cloned().unwrap();
+            grid.view_applied(applied, Totals::unknown());
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
+    if name == "grouped" {
+        let outlines: Vec<Outline> = (0..40)
+            .map(|p| match p % 5 {
+                0 => {
+                    let value = match p / 5 {
+                        2 => Value::Blank,
+                        n => Value::Text(format!("group {n}")),
+                    };
+                    let open = match p / 5 {
+                        1 => OpenState::Closed,
+                        _ => OpenState::Open,
+                    };
+                    Outline::group(vec![], open, key(1), value)
+                }
+                n => Outline::leaf(vec![key(p - n)]),
+            })
+            .collect();
+        grid.set_outlines(Axis::Rows, 0, &outlines);
+        // Focus in the outline column, and the first group closed by a
+        // request still due.
+        grid.set_focus(key(0), key(0));
+        grid.action(Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Item,
+            forward: false,
+            extend: false,
+        });
+        grid.toggle(Axis::Rows, key(0)).unwrap();
+    }
     grid
 }
 
@@ -1154,6 +1256,9 @@ mod tests {
                             ConditionState::Applied,
                             ConditionState::Adding,
                             ConditionState::Adding,
+                            // The between of dates and the not at least.
+                            ConditionState::Adding,
+                            ConditionState::Adding,
                             ConditionState::Removing
                         ]
                     );
@@ -1217,6 +1322,17 @@ mod tests {
                     assert_eq!(s.hide_cap(Axis::Cols), 2);
                     assert!(s.view_pending());
                 }
+                "grouped" => {
+                    let key = |p: u64| Key(KEY_BASE + p);
+                    let grouping = s.applied_view().grouping.as_ref().unwrap();
+                    assert!(grouping.groups_by(Axis::Rows, key(1)));
+                    let group = s.outline(Axis::Rows, 5).unwrap();
+                    assert_eq!(group.open, OpenState::Closed);
+                    assert_eq!(s.outline(Axis::Rows, 6).unwrap().parent(), Some(key(5)));
+                    assert!(s.outline_focused());
+                    assert!(s.toggle_pending(Axis::Rows, key(0)));
+                    assert!(!s.toggle_pending(Axis::Rows, key(5)));
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
@@ -1252,6 +1368,7 @@ mod tests {
                 "Idle",
                 "MovingHeaders",
                 "MovingHeaders",
+                "Idle",
                 "Idle",
                 "Idle",
                 "Idle"

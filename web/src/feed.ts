@@ -4,7 +4,7 @@
 // Locate, move, find steps), and find's marks and count. Every answer goes
 // through one `settle`.
 
-import { AXES, AXIS_CODE, EDGE_CODE, FIND, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, EDGE_CODE, FIND, GRAND_TOTAL, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -15,6 +15,8 @@ import type {
   KeyedAxisView,
   KeyedCondition,
   KeyedFindQuery,
+  KeyedGrouping,
+  KeyedOutline,
   KeyedTextQuery,
   KeyedViewSpec,
   Snapshot,
@@ -33,13 +35,19 @@ import type {
   FilterSpec,
   FindCount,
   FindQuery,
+  GroupedAxis,
+  Grouping,
+  Level,
   Located,
+  Outline,
+  OutlinedWindow,
   SortSpec,
   TableSource,
   TextQuery,
   Totals,
   ViewSpec,
 } from "./source";
+import { summaryLabel, valueName } from "./source";
 import type { WebGrid } from "./wasm";
 
 export interface Feed<RowId = unknown, ColId = unknown> {
@@ -136,12 +144,16 @@ export type ItemId<A extends AxisName, RowId, ColId> = A extends "cols" ? ColId 
 /**
  * How the rows may be viewed by one column (or the columns by one row),
  * every kind decided: sorting, Text conditions (with regexes or not, or
- * `null` for none), and OneOf conditions from a checklist of its values.
+ * `null` for none), OneOf conditions from a checklist of its values, and
+ * Compare conditions on numbers or dates (`null` for none).
  */
 export interface ColumnSupport {
   sort: boolean;
   text: { regex: boolean } | null;
   oneOf: boolean;
+  compare: "numbers" | "dates" | null;
+  /** Whether the axis may be grouped by the item. */
+  group: boolean;
 }
 
 export interface FeedHooks<RowId = unknown, ColId = unknown> {
@@ -162,7 +174,13 @@ const NOTICE: Record<ChangeNotice["type"], number> = NOTICE_CODE;
 const BASE_VIEW: KeyedViewSpec = {
   rows: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
   cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
+  grouping: null,
 };
+
+/** The IDs of a Window answer, with or without outlines. */
+export function windowIds<Id>(window: Id[] | OutlinedWindow<Id, unknown>): Id[] {
+  return Array.isArray(window) ? window : window.ids;
+}
 
 interface Axis<Id> {
   source: AxisMethods<Id, unknown>;
@@ -190,7 +208,9 @@ function axisOf<Id>(source: AxisMethods<Id, unknown> & { idKey?: (id: Id) => str
   const position = source.identity === "position";
   return {
     source,
-    interner: position ? (positionInterner as unknown as KeyInterner<Id>) : createInterner(source.idKey),
+    interner: position
+      ? (positionInterner as unknown as KeyInterner<Id>)
+      : createInterner(source.idKey, source.grandTotal === undefined ? [] : [[source.grandTotal, GRAND_TOTAL]]),
     position,
     waiting: null,
     failed: null,
@@ -208,7 +228,7 @@ interface Block {
 
 const known = <T>(v: T | undefined): v is T => v !== undefined;
 
-const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false };
+const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false, compare: null, group: false };
 
 const GONE: Located = { type: "Gone", suggest: null };
 /** What a refused move says when the Table Source gives no reason, as the Rust `PumpSource` default does. */
@@ -378,7 +398,10 @@ export function createFeed<RowId, ColId, V>(
         }
     }
     const [a, b] =
-      notice.type === "Inserted" || notice.type === "Removed"
+      notice.type === "Inserted" ||
+      notice.type === "Removed" ||
+      notice.type === "Collapsed" ||
+      notice.type === "Expanded"
         ? [notice.at, notice.n]
         : notice.type === "ContentChanged"
           ? [notice.start, notice.end]
@@ -424,6 +447,8 @@ export function createFeed<RowId, ColId, V>(
       sort: support.sort ?? true,
       text: text ? { regex: text.regex ?? false } : null,
       oneOf: listed && (support.oneOf ?? true),
+      compare: support.compare ?? null,
+      group: support.group ?? false,
     };
   };
   const columnSupport = (id: ColId) => supportOf("rows", id);
@@ -437,7 +462,9 @@ export function createFeed<RowId, ColId, V>(
       const support = id === undefined ? NO_SUPPORT : supportOf(axis, id);
       const text = support.text ? SUPPORT.text | (support.text.regex ? SUPPORT.textRegex : 0) : 0;
       const oneOf = support.oneOf ? SUPPORT.oneOf : 0;
-      grid?.set_support(AXIS_CODE[axis], key, (support.sort ? SUPPORT.sort : 0) | text | oneOf);
+      const compare = support.compare === null ? 0 : support.compare === "numbers" ? SUPPORT.compareNumbers : SUPPORT.compareDates;
+      const group = support.group ? SUPPORT.group : 0;
+      grid?.set_support(AXIS_CODE[axis], key, (support.sort ? SUPPORT.sort : 0) | text | oneOf | compare | group);
     }
   };
 
@@ -642,6 +669,8 @@ export function createFeed<RowId, ColId, V>(
       }
       case "OneOf":
         return { id, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
+      case "Compare":
+        return { id, kind: { type: "Compare", comparison: { ...c.kind.comparison } }, not: c.not };
       default:
         return undefined;
     }
@@ -650,6 +679,7 @@ export function createFeed<RowId, ColId, V>(
   const conditionKey = <Id>(by: Axis<Id>, c: Condition<Id>): KeyedCondition => {
     const key = by.interner.key(c.id);
     if (c.kind.type === "OneOf") return { key, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
+    if (c.kind.type === "Compare") return { key, kind: { type: "Compare", comparison: { ...c.kind.comparison } }, not: c.not };
     const { text, caseSensitive, regex } = c.kind.query;
     return { key, kind: { type: "Text", query: { text, caseSensitive, regex, searches: [key] } }, not: c.not };
   };
@@ -684,14 +714,94 @@ export function createFeed<RowId, ColId, V>(
     return { filter: { quick, conditions }, sort, hidden };
   };
 
+  const levelIds = (level: Level<bigint>): Level<ColId> | undefined => {
+    if ("values" in level) return level;
+    const field = cols.interner.id(level.field);
+    return field === undefined ? undefined : { field, subtotal: level.subtotal };
+  };
+
+  const groupedAxisIds = <Id>(own: Axis<Id>, a: GroupedAxis<bigint>): GroupedAxis<Id> => ({
+    grandTotal: a.grandTotal,
+    form: a.form,
+    expand: { depth: a.expand.depth, except: a.expand.except.map((k) => own.interner.id(k)).filter(known) },
+  });
+
+  /**
+   * The grouping by IDs, or `undefined` if a level, value or slicer names a
+   * column not known; with `lenient`, leaving out each part that does.
+   */
+  const groupingIds = (g: KeyedGrouping, lenient = false): Grouping<ColId, RowId, ColId> | undefined => {
+    const levels = (all: Level<bigint>[]) => all.map(levelIds);
+    const values = g.values.map((v) => {
+      const field = v.field === null ? null : cols.interner.id(v.field);
+      return field === undefined ? undefined : { ...v, field };
+    });
+    const slicers = g.slicers.map((c) => conditionId(cols, c));
+    const [rowLevels, colLevels] = [levels(g.rowLevels), levels(g.colLevels)];
+    const parts = [rowLevels, colLevels, values, slicers];
+    if (!lenient && !parts.every((p) => p.every(known))) return undefined;
+    return {
+      rowLevels: rowLevels.filter(known),
+      colLevels: colLevels.filter(known),
+      values: values.filter(known),
+      slicers: slicers.filter(known),
+      rowAxis: groupedAxisIds(rows, g.rowAxis),
+      colAxis: groupedAxisIds(cols, g.colAxis),
+    };
+  };
+
+  const groupingKeys = (g: Grouping<ColId, RowId, ColId>): KeyedGrouping => {
+    const level = (l: Level<ColId>): Level<bigint> =>
+      "values" in l ? l : { field: cols.interner.key(l.field), subtotal: l.subtotal };
+    const axis = <Id>(own: Axis<Id>, a: GroupedAxis<Id>): GroupedAxis<bigint> => ({
+      grandTotal: a.grandTotal,
+      form: a.form,
+      expand: { depth: a.expand.depth, except: a.expand.except.map((id) => own.interner.key(id)) },
+    });
+    return {
+      rowLevels: g.rowLevels.map(level),
+      colLevels: g.colLevels.map(level),
+      values: g.values.map((v) => ({ ...v, field: v.field === null ? null : cols.interner.key(v.field) })),
+      slicers: g.slicers.map((c) => conditionKey(cols, c)),
+      rowAxis: axis(rows, g.rowAxis),
+      colAxis: axis(cols, g.colAxis),
+    };
+  };
+
+  /** An outline by Keys: its ancestors interned on `own`, its group's field on the other axis. */
+  const outlineKeys = <Id>(own: Axis<Id>, by: Axis<unknown>, o: Outline<Id, unknown>): KeyedOutline => ({
+    kind: o.kind,
+    depth: o.depth,
+    open: o.open,
+    ancestors: o.ancestors.map((id) => own.interner.key(id)),
+    group: o.group ? { field: by.interner.key(o.group.field), value: o.group.value } : null,
+  });
+
+  /** An outline by IDs, as `outlineKeys` took it; Keys the interners no longer know are left out. */
+  const outlineIds = <Id>(own: Axis<Id>, by: Axis<unknown>, o: KeyedOutline): Outline<Id, unknown> => {
+    const field = o.group ? by.interner.id(o.group.field) : undefined;
+    return {
+      kind: o.kind,
+      depth: o.depth,
+      open: o.open,
+      ancestors: o.ancestors.flatMap((key) => {
+        const id = own.interner.id(key);
+        return id === undefined ? [] : [id];
+      }),
+      group: o.group && field !== undefined ? { field, value: o.group.value } : null,
+    };
+  };
+
   const viewIds = (spec: KeyedViewSpec): ViewSpec<RowId, ColId> => ({
     rows: partKnownIds(cols, rows, spec.rows),
     cols: partKnownIds(rows, cols, spec.cols),
+    grouping: spec.grouping ? (groupingIds(spec.grouping, true) ?? null) : null,
   });
 
   const viewKeys = (view: AppliedView<RowId, ColId>): KeyedViewSpec => ({
     rows: partKeys(cols, rows, view.rows),
     cols: partKeys(rows, cols, view.cols),
+    grouping: view.grouping ? groupingKeys(view.grouping) : null,
   });
 
   /** The applied filter of `axis` by IDs less the conditions on item `key`, leaving out parts naming unknown items. */
@@ -723,9 +833,10 @@ export function createFeed<RowId, ColId, V>(
     const view = source.view;
     if (!view) return viewApplied(BASE_VIEW);
     const [rowPart, colPart] = [partIds(cols, rows, requested.rows), partIds(rows, cols, requested.cols)];
-    if (!rowPart || !colPart) return viewApplied(applied, totals);
+    const grouping = requested.grouping && groupingIds(requested.grouping);
+    if (!rowPart || !colPart || grouping === undefined) return viewApplied(applied, totals);
     const failed = report({ type: "view" });
-    const spec: ViewSpec<RowId, ColId> = { rows: rowPart, cols: colPart };
+    const spec: ViewSpec<RowId, ColId> = { rows: rowPart, cols: colPart, grouping };
     const previous = { applied, totals };
     // The Grid still counts the superseded request's answer: aborting it
     // answers with the spec in force.
@@ -983,6 +1094,11 @@ export function createFeed<RowId, ColId, V>(
     label: (axis, item) => {
       const { source: s, interner } = axes[axis];
       const id = item.key === null ? undefined : interner.id(item.key);
+      const outline = item.outline;
+      if (outline && outline.kind !== "leaf") {
+        const asked = id === undefined ? undefined : s.groupLabel?.(id, outlineIds(axes[axis], cross(axis), outline));
+        return asked ?? summaryLabel(outline);
+      }
       const label = id === undefined ? undefined : s.label?.(id, item.position);
       if (label !== undefined) return label;
       return axis === "rows" || id === undefined ? String(item.position + 1) : String(id);
@@ -996,6 +1112,17 @@ export function createFeed<RowId, ColId, V>(
     unmatched: (axis, i) => {
       const key = shown?.[axis].strip[i]?.key;
       return key != null && unmatched(axis, key);
+    },
+    caption: () => {
+      const grouping = shown?.appliedView.grouping;
+      const [value, ...more] = grouping?.values ?? [];
+      if (!grouping?.rowLevels.length || !value || more.length > 0) return null;
+      const { source: cols, interner } = axes.cols;
+      const name = (key: bigint) => {
+        const id = interner.id(key);
+        return id === undefined ? String(key) : (cols.label?.(id, Number.NaN) ?? String(id));
+      };
+      return valueName(value, name);
     },
   };
 
@@ -1024,11 +1151,16 @@ export function createFeed<RowId, ColId, V>(
         axis.waiting?.request.abort();
         const request = settle(
           (signal) => axis.source.window(start, end, signal),
-          (ids) => {
+          (window) => {
             axis.waiting = null;
             axis.failed = null;
-            const keys = keysOf(axis, ids);
+            const keys = keysOf(axis, windowIds(window));
             (grid ?? g).set_window(i, start, keys);
+            if (!Array.isArray(window)) {
+              const by = cross(name) as Axis<unknown>;
+              const outlines = window.outlines.map((o) => outlineKeys(axis, by, o));
+              (grid ?? g).set_outlines(i, start, outlines);
+            }
             markSupport(other(name), keys);
             hooks.windowed?.(name, keys);
           },

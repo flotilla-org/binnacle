@@ -39,6 +39,8 @@ export interface InputHost {
   menuButtonAt(x: number, y: number): boolean;
   /** A press at (x, y), before the Grid sees it: `true` if a menu button took it. */
   menuPress(x: number, y: number): boolean;
+  /** A press at (x, y), before the Grid sees it: `true` if a Group Item's disclosure mark took it, toggling its group. */
+  markPress(x: number, y: number): boolean;
   /** Opens the focused column's menu: `false` if there is none to open. */
   openColumnMenu(): boolean;
   /** Opens the focused row's menu: `false` if there is none to open. */
@@ -120,6 +122,12 @@ export function perform(grid: WebGrid, action: Action): void {
       return grid.find_next();
     case "FindPrevious":
       return grid.find_previous();
+    case "LeaveOutline":
+      return grid.leave_outline();
+    case "ExpandAll":
+      return grid.type_text("*");
+    case "ExpandTo":
+      return grid.type_text(String(action.depth));
     case "OpenColumnMenu":
     case "OpenRowMenu":
     case "OpenFind":
@@ -215,6 +223,9 @@ export function createInput(host: InputHost): Input {
     }
     const action = host.keymap.lookup(e);
     if (!action) return;
+    // The tree keys are the outline column's; elsewhere Tab moves on and the rest type.
+    const tree = action.type === "LeaveOutline" || action.type === "ExpandAll" || action.type === "ExpandTo";
+    if (tree && !host.snapshot()?.outlineFocused) return;
     if (action.type === "OpenColumnMenu" || action.type === "OpenRowMenu") {
       if (action.type === "OpenColumnMenu" ? host.openColumnMenu() : host.openRowMenu()) e.preventDefault();
       return;
@@ -289,6 +300,12 @@ export function createInput(host: InputHost): Input {
     const finger = e.pointerType === "touch" && e.target !== bands.top && e.target !== bands.left;
     if (e.button === 0 && host.menuPress(x, y)) {
       e.preventDefault();
+      return;
+    }
+    if (e.button === 0 && host.markPress(x, y)) {
+      e.preventDefault();
+      takeFocus();
+      host.changed();
       return;
     }
     if (finger) {

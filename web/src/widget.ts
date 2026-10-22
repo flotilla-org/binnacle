@@ -9,8 +9,8 @@ import type { Editor } from "./editing";
 import { createCanvasPainter, type CanvasPainter } from "./canvas/painter";
 import { PAD } from "./canvas/context";
 import type { Effect } from "./effects";
-import { filterButtonRect, hasFilterButton } from "./canvas/bands";
-import { createFeed, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
+import { disclosureRect, filterButtonRect, hasFilterButton } from "./canvas/bands";
+import { createFeed, windowIds, type ColumnSupport, type CrossId, type Feed, type FindState, type ItemId } from "./feed";
 import { drainEffects, runFrame, type FrameParts } from "./frame";
 import { createInput, type Input } from "./input";
 import { createKeymap, type KeyBindings, type Platform } from "./keymap";
@@ -428,6 +428,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       },
       snapshot: () => this.last,
       menuButtonAt: (x, y) => this.menuButtonAt(x, y) !== undefined,
+      markPress: (x, y) => this.markPress(x, y),
       menuPress: (x, y) => {
         const at = this.menuButtonAt(x, y);
         if (!at) return false;
@@ -788,7 +789,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const source = this.options.source[axis];
     const count = await source.count();
     const window = await source.window(0, Math.min(count, limit), new AbortController().signal);
-    const shown = window as ItemId<A, RowId, ColId>[];
+    const shown = windowIds<unknown>(window) as ItemId<A, RowId, ColId>[];
     const hidden = this.hidden(axis).filter((id) => !shown.includes(id));
     return { ids: [...shown, ...hidden], partial: count > limit };
   }
@@ -815,7 +816,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     if (c.type === "keys") return c.keys;
     const source = this.options.source[on];
     const windows = await Promise.all(c.runs.map((r) => source.window(r.start, r.end, new AbortController().signal)));
-    return Array.from(this.itemKeys(on, windows.flat()));
+    return Array.from(this.itemKeys(on, windows.flatMap((w) => windowIds<unknown>(w))));
   }
 
   private hideKeys(on: AxisName, keys: BigUint64Array | bigint[]): HideOutcome {
@@ -935,7 +936,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   openRowMenu(rowId: RowId, anchor?: DOMRect, at: MenuAt = "top"): boolean {
     const open = this.rowMenu;
     const support = this.feed.rowSupport(rowId);
-    if (!open || this.destroyed || (!support.text && !support.oneOf && !this.canHide("rows"))) return false;
+    if (!open || this.destroyed || (!support.text && !support.oneOf && !support.compare && !this.canHide("rows"))) return false;
     const key = this.feed.rowKey(rowId);
     const header = this.last?.rows.headers.find((h) => h.key === key && this.inView("rows", h));
     open(rowId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })), at);
@@ -1005,7 +1006,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   async columns(limit = 1000): Promise<ColumnInfo<ColId>[]> {
     const cols = this.options.source.cols;
     const count = await cols.count();
-    const ids = await cols.window(0, Math.min(count, limit), new AbortController().signal);
+    const ids = windowIds(await cols.window(0, Math.min(count, limit), new AbortController().signal));
     return ids.map((id) => ({ id, label: this.columnLabel(id), support: this.feed.columnSupport(id) }));
   }
 
@@ -1101,6 +1102,31 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
+   * Groups the rows by column `colId`, one level, each group headed by its
+   * Group Item: the Table Source answers as it does any View Spec, and the
+   * column leaves the body while the rows group by it. Nothing happens on a
+   * column the source cannot group the rows by (`columnSupport(colId).group`).
+   */
+  groupBy(colId: ColId): void {
+    this.editView(() => this.grid.group_by(AXIS_CODE.rows, this.feed.colKey(colId)));
+  }
+
+  /** Brings back the plain rows: no grouping. */
+  ungroup(): void {
+    this.editView(() => this.grid.ungroup(AXIS_CODE.rows));
+  }
+
+  /** The columns the rows group by, outermost first, as of the latest frame; empty when they are not grouped. */
+  groupedBy(): ColId[] {
+    const s = this.last;
+    const grouping = s ? (s.requestedView ?? s.appliedView).grouping : null;
+    return (grouping?.rowLevels ?? []).flatMap((level) => {
+      const id = "field" in level ? this.feed.colId(level.field) : undefined;
+      return id === undefined ? [] : [id];
+    });
+  }
+
+  /**
    * The grid's layout by the Table Source's IDs, to save and give to
    * `restoreLayout` later: the View Spec last asked for, the pinned items
    * (those the source no longer has included), every size set by hand,
@@ -1134,6 +1160,21 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private keyOf(axis: AxisName, id: RowId | ColId): bigint {
     return axis === "rows" ? this.feed.rowKey(id as RowId) : this.feed.colKey(id as ColId);
+  }
+
+  /** A press on a Group Item's disclosure mark toggles its group. */
+  private markPress(x: number, y: number): boolean {
+    const s = this.last;
+    if (!s || x >= s.cols.header || y < s.rows.header) return false;
+    for (const [i, h] of s.rows.headers.entries()) {
+      const outline = s.rows.strip[i]?.outline;
+      const r = outline && h.key !== null && this.inView("rows", h) ? disclosureRect(outline, h.rect) : null;
+      if (r && x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
+        this.grid.toggle(AXIS_CODE.rows, h.key!);
+        return true;
+      }
+    }
+    return false;
   }
 
   /** The column or row whose menu button is at (x, y), if its menu is mounted and there is one. */

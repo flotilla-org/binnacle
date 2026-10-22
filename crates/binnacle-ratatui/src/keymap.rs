@@ -15,7 +15,11 @@ use crate::Preset;
 /// any of these extends the selection. Ctrl+A selects all, Ctrl+Space selects
 /// the whole column and Shift+Space the whole row, Esc cancels. Enter
 /// activates, F2 begins an edit, and any other character typed without Ctrl
-/// or Alt is sent as `TypeText` (see [`Keymap::set_typing`]). A character
+/// or Alt is sent as `TypeText` (see [`Keymap::set_typing`]). In the outline
+/// column (the row band of rows grouped in outline form) the arrows walk the
+/// tree, Enter toggles the focused group, `*` and the digits (bound to
+/// `TypeText` whatever the typing) open everything under it or the rows to
+/// that depth, and Tab leaves for the body. A character
 /// typed with Shift and bound only without it takes that binding, since its
 /// case carries Shift.
 #[derive(Clone, Debug)]
@@ -160,6 +164,14 @@ impl Default for Keymap {
         keymap.bind(KeyCode::Esc, KeyModifiers::NONE, Action::Cancel);
         keymap.bind(KeyCode::Enter, KeyModifiers::NONE, Action::Activate);
         keymap.bind(KeyCode::F(2), KeyModifiers::NONE, Action::BeginEdit);
+        keymap.bind(KeyCode::Tab, KeyModifiers::NONE, Action::LeaveOutline);
+        for c in "*0123456789".chars() {
+            keymap.bind(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+                Action::TypeText(c.into()),
+            );
+        }
         keymap.set_typing(true);
         keymap
     }

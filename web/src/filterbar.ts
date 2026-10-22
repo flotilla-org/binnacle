@@ -9,14 +9,15 @@
 // change to the field sets the widget's quick filter, typing once a pause
 // has passed (`typingPause`) and Enter, the toggles and × at once; the widget
 // announces the count to assistive technology once the filter is applied.
-// While a filter is pending the count reads "filtering…" and its chips fade;
-// a quick filter or condition the Table Source did not apply turns red with
+// Grouped rows show no count. While a filter is pending the count reads
+// "filtering…" and its chips fade; a quick filter or condition the Table Source did not apply turns red with
 // its message, the text kept. Drawn in the widget's Theme; hidden while the
 // axis takes no quick filter, neither axis has conditions and no column menu
 // is given.
 
 import { rowCount } from "./aria";
 import { AXES, type AxisName } from "./codes";
+import { comparisonText } from "./compare";
 import type { ColumnMenu } from "./columnmenu";
 import type { Condition } from "./source";
 import type { ConditionState } from "./snapshot";
@@ -137,7 +138,7 @@ export function createFilterBar<RowId, ColId, V>(
   };
   /** Lists the columns that take conditions; picking one opens its menu. */
   const openPicker = async () => {
-    const columns = (await widget.columns()).filter((c) => c.support.text || c.support.oneOf);
+    const columns = (await widget.columns()).filter((c) => c.support.text || c.support.oneOf || c.support.compare);
     closePicker();
     const t = widget.theme;
     const list = el("div", "binnacle-filter-picker", PICKER_STYLE);
@@ -389,8 +390,13 @@ export function createFilterBar<RowId, ColId, V>(
       );
     count.toggleAttribute("aria-busy", filtering);
     const [one, many] = nouns.rows;
+    // Grouped rows count their Group Items too, so they are not counted until
+    // the source says how many Leaves it shows.
+    const grouped = widget.groupedBy().length > 0;
     count.textContent = filtering
       ? "filtering…"
+      : grouped
+        ? ""
       : filtered("rows")
         ? `${f.rows.count.toLocaleString("en")} of ${f.rows.total!.toLocaleString("en")}`
         : options.nouns?.rows
@@ -422,6 +428,7 @@ export function createFilterBar<RowId, ColId, V>(
 function chipText<ColId>(label: string, c: Condition<ColId>): string {
   const not = c.not ? "not " : "";
   if (c.kind.type === "OneOf") return `${label}: ${not}${listedText(c.kind.values)}`;
+  if (c.kind.type === "Compare") return `${label}: ${not}${comparisonText(c.kind.comparison)}`;
   const q = c.kind.query;
   const text = q.regex ? `/${q.text}/` : q.text;
   return `${label}: ${not}${text}${q.caseSensitive ? " (Aa)" : ""}`;

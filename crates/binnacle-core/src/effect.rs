@@ -97,15 +97,23 @@ pub struct Stamped {
 /// by the host's keymap.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
-    /// Text the user typed; the Grid passes it on as `TextTyped`.
+    /// Text the user typed; the Grid passes it on as `TextTyped`. In the
+    /// outline column `*` opens everything under the focused group and a
+    /// digit `n` opens the rows to `n` levels instead.
     TypeText(String),
-    /// Activates the focused cell (Enter): emits `Activated`.
+    /// Activates the focused cell (Enter): emits `Activated`. In the outline
+    /// column it toggles the focused group instead.
     Activate,
     /// Asks to edit the focused cell (F2): emits `EditRequested`.
     BeginEdit,
     /// Moves focus along `axis` by one item, a page or to the edge, towards the
     /// end if `forward`, and scrolls to show the focused cell. `extend` asks
     /// for the move to stretch the selection range instead of replacing it.
+    /// On rows grouped in outline form, one item back along the columns from
+    /// the first column enters the outline column, where one item along the
+    /// columns walks the tree: forward opens a closed group or steps in to
+    /// its first child (else into the body), back closes an open group or
+    /// steps out to its parent.
     MoveFocus {
         axis: Axis,
         by: FocusStep,
@@ -129,6 +137,8 @@ pub enum Action {
     ScrollTo { axis: Axis, fraction: f64 },
     /// Scrolls `axis` by whole items, landing on an item start.
     ScrollBy { axis: Axis, items: i64 },
+    /// Focus leaves the outline column for the body (Tab).
+    LeaveOutline,
     /// Steps to the next match of the Find Query: emits `FindStepRequested`.
     FindNext,
     /// Steps to the previous match of the Find Query.

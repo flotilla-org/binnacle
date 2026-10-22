@@ -26,6 +26,17 @@ export type KeyedViewEdit =
   | { type: "Hide"; axis: AxisName; keys: bigint[] }
   /** These hidden items of `axis` were shown again. */
   | { type: "Show"; axis: AxisName; keys: bigint[] }
+  /** `axis` was grouped by the base field `field` as its innermost level. */
+  | { type: "Group"; axis: AxisName; field: bigint }
+  /** Every level of `axis` was removed. */
+  | { type: "Ungroup"; axis: AxisName }
+  /** The group of `axis` headed by the Group Item `key` was opened, or closed. */
+  | { type: "Expand"; axis: AxisName; key: bigint }
+  | { type: "Collapse"; axis: AxisName; key: bigint }
+  /** The group headed by `key` was opened with every group under it the Grid knows. */
+  | { type: "ExpandAll"; axis: AxisName; key: bigint }
+  /** Every group of `axis` was opened to `depth` levels, its exceptions cleared. */
+  | { type: "ExpandTo"; axis: AxisName; depth: number | "all" }
   | { type: "Other" };
 
 export type Effect = Stamped<
@@ -99,6 +110,18 @@ function isFindMatch(v: unknown): v is FindMatch {
   return isRecord(v) && typeof v.row === "bigint" && typeof v.col === "bigint";
 }
 
+const COMPARE_OPS = new Set(["equal", "notEqual", "less", "atMost", "greater", "atLeast"]);
+
+function isScalar(v: unknown): boolean {
+  return isRecord(v) && (v.type === "number" || v.type === "date") && typeof v.value === "number";
+}
+
+function isComparison(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  if (v.op === "between") return isScalar(v.low) && isScalar(v.high);
+  return COMPARE_OPS.has(v.op as string) && isScalar(v.value);
+}
+
 function isCondition(v: unknown): v is KeyedCondition {
   if (!isRecord(v) || typeof v.key !== "bigint" || typeof v.not !== "boolean" || !isRecord(v.kind)) return false;
   const listed = (values: unknown) =>
@@ -106,6 +129,7 @@ function isCondition(v: unknown): v is KeyedCondition {
   return (
     (v.kind.type === "Text" && isTextQuery(v.kind.query)) ||
     (v.kind.type === "OneOf" && listed(v.kind.values)) ||
+    (v.kind.type === "Compare" && isComparison(v.kind.comparison)) ||
     v.kind.type === "Other"
   );
 }
@@ -120,6 +144,37 @@ function isAxisView(v: unknown): boolean {
 
 function isKeys(v: unknown): v is bigint[] {
   return Array.isArray(v) && v.every((k) => typeof k === "bigint");
+}
+
+const PLACEMENT = ["before", "after", "off"];
+
+function isLevel(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return v.values === true || (typeof v.field === "bigint" && PLACEMENT.includes(v.subtotal as string));
+}
+
+function isGroupedAxis(v: unknown): boolean {
+  if (!isRecord(v) || !isRecord(v.expand)) return false;
+  const depth = v.expand.depth === "all" || typeof v.expand.depth === "number";
+  const form = v.form === "outline" || v.form === "header";
+  return PLACEMENT.includes(v.grandTotal as string) && form && depth && isKeys(v.expand.except);
+}
+
+function isGrouping(v: unknown): boolean {
+  if (v === null) return true;
+  if (!isRecord(v) || !Array.isArray(v.rowLevels) || !Array.isArray(v.colLevels)) return false;
+  const values =
+    Array.isArray(v.values) &&
+    v.values.every(
+      (a) =>
+        isRecord(a) &&
+        (a.field === null || typeof a.field === "bigint") &&
+        typeof a.aggregate === "string" &&
+        (a.params === undefined || (Array.isArray(a.params) && a.params.every((p) => typeof p === "string"))),
+    );
+  const slicers = Array.isArray(v.slicers) && v.slicers.every(isCondition);
+  const levels = v.rowLevels.every(isLevel) && v.colLevels.every(isLevel);
+  return levels && values && slicers && isGroupedAxis(v.rowAxis) && isGroupedAxis(v.colAxis);
 }
 
 function isEdit(v: unknown): v is KeyedViewEdit {
@@ -139,6 +194,16 @@ function isEdit(v: unknown): v is KeyedViewEdit {
     case "Hide":
     case "Show":
       return isAxis(v.axis) && isKeys(v.keys);
+    case "Group":
+      return isAxis(v.axis) && typeof v.field === "bigint";
+    case "Ungroup":
+      return isAxis(v.axis);
+    case "Expand":
+    case "Collapse":
+    case "ExpandAll":
+      return isAxis(v.axis) && typeof v.key === "bigint";
+    case "ExpandTo":
+      return isAxis(v.axis) && (v.depth === "all" || (typeof v.depth === "number" && Number.isInteger(v.depth) && v.depth >= 0));
     case "Replace":
     case "Reapply":
     case "Other":
@@ -163,7 +228,7 @@ function fits(field: Field, v: unknown): boolean {
     case "keys":
       return isKeys(v);
     case "view":
-      return isRecord(v) && isAxisView(v.rows) && isAxisView(v.cols);
+      return isRecord(v) && isAxisView(v.rows) && isAxisView(v.cols) && isGrouping(v.grouping);
     case "edit":
       return isEdit(v);
     case "find":

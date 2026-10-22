@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use crate::{BorderStyle, ColorSupport, Theme};
+use crate::{BorderStyle, ColorSupport, PendingMarks, Theme};
 
 /// How [`render_with`](crate::render_with) draws: the Theme, the Border
 /// Style, the current time, the terminal's colour capability, whether to draw
@@ -20,6 +20,9 @@ pub struct RenderContext<'a> {
     pub scrollbars: bool,
     /// Centred in the body when an axis has no items: "No rows" unless set.
     pub empty: &'a str,
+    /// When toggled groups' disclosure marks went pending; without it none
+    /// draws pending.
+    pub marks: Option<&'a PendingMarks>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -33,6 +36,7 @@ impl<'a> RenderContext<'a> {
             colors: ColorSupport::TrueColor,
             scrollbars: true,
             empty: "No rows",
+            marks: None,
         }
     }
 
@@ -54,5 +58,12 @@ impl<'a> RenderContext<'a> {
 
     pub fn empty(self, empty: &'a str) -> Self {
         RenderContext { empty, ..self }
+    }
+
+    pub fn marks(self, marks: &'a PendingMarks) -> Self {
+        RenderContext {
+            marks: Some(marks),
+            ..self
+        }
     }
 }

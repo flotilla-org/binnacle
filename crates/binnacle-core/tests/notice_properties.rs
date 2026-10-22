@@ -221,7 +221,10 @@ impl Host {
 /// apart: it ends only if its Keys left.)
 fn expected_mode(before: Mode, axis: Axis, notice: &ChangeNotice) -> Mode {
     let moves = match notice {
-        ChangeNotice::Inserted { n, .. } | ChangeNotice::Removed { n, .. } => *n > 0,
+        ChangeNotice::Inserted { n, .. }
+        | ChangeNotice::Removed { n, .. }
+        | ChangeNotice::Collapsed { n, .. }
+        | ChangeNotice::Expanded { n, .. } => *n > 0,
         ChangeNotice::Reordered | ChangeNotice::Reset(_) | ChangeNotice::Refiltered(_) => true,
         ChangeNotice::ContentChanged(_) => false,
     };

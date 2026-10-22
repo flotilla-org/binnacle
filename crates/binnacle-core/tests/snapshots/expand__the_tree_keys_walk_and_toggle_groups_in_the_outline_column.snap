@@ -1,0 +1,269 @@
+---
+source: crates/binnacle-core/tests/expand.rs
+assertion_line: 356
+expression: out
+---
+--- 1. depth 1, in the outline column on North
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): ViewRequested unsorted group 1,2 values count(-) expand Rows 1 by Replace
+  view: applied unsorted group 1,2 values count(-) expand Rows 1, notices [(Rows, Refiltered(6))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Gone { suggest: None }
+window Rows 0..6
+effect (gen 2): FocusChanged { row: Key(100), col: Key(1) }
+effect (gen 3): FocusChanged { row: Key(100), col: Key(0) }
+gen 6 | damage none | focus 0#100,0#0 at 0,1 3x1 in outline
+Rows: count 6, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 1="North"] 1#110@2+1[G1- ^100 2="Aberdeen"] 2#111@3+1[G1- ^100 2="Bergen"] 3#101@4+1[G0+ 1="South"] 4#120@5+1[G1- ^101 2="Cadiz"] 5#130@6+1[G1 ^101 2="Empty"]
+Cols: count 3, extent 20, header 3, anchor 0+0, thumb 0.0000/1.0000 | 0#0@3+5 1#1@8+5 2#2@13+5
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  111.0111.1111.2
+3  101.0101.1101.2
+4  120.0120.1120.2
+5  130.0130.1130.2
+
+
+
+
+
+
+--- 2. Right on an open group steps to its first child
+effect (gen 6): FocusChanged { row: Key(110), col: Key(0) }
+gen 8 | damage none | focus 1#110,0#0 at 0,2 3x1 in outline
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 3. Right on a closed group opens it
+effect (gen 8): ViewRequested unsorted group 1,2 values count(-) expand Rows 1 except 110 by Expand { axis: Rows, key: Key(110) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 1 except 110, notices [(Rows, Expanded { at: 2, n: 2 })]
+window Rows 0..8
+gen 10 | damage none | focus 1#110,0#0 at 0,2 3x1 in outline
+Rows: count 8, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 1="North"] 1#110@2+1[G1+ ^100 2="Aberdeen"] 2#0@3+1[L2 ^100 ^110] 3#3@4+1[L2 ^100 ^110] 4#111@5+1[G1- ^100 2="Bergen"] 5#101@6+1[G0+ 1="South"] 6#120@7+1[G1- ^101 2="Cadiz"] 7#130@8+1[G1 ^101 2="Empty"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  0.0  0.1  0.2
+3  3.0  3.1  3.2
+4  111.0111.1111.2
+5  101.0101.1101.2
+6  120.0120.1120.2
+7  130.0130.1130.2
+
+
+
+
+--- 4. Left on an open group closes it
+effect (gen 10): ViewRequested unsorted group 1,2 values count(-) expand Rows 1 by Collapse { axis: Rows, key: Key(110) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 1, notices [(Rows, Collapsed { at: 2, n: 2 })]
+window Rows 0..6
+gen 12 | damage none | focus 1#110,0#0 at 0,2 3x1 in outline
+Rows: count 6, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 1="North"] 1#110@2+1[G1- ^100 2="Aberdeen"] 2#111@3+1[G1- ^100 2="Bergen"] 3#101@4+1[G0+ 1="South"] 4#120@5+1[G1- ^101 2="Cadiz"] 5#130@6+1[G1 ^101 2="Empty"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  111.0111.1111.2
+3  101.0101.1101.2
+4  120.0120.1120.2
+5  130.0130.1130.2
+
+
+
+
+
+
+--- 5. Left on a closed one steps out to its parent
+effect (gen 12): FocusChanged { row: Key(100), col: Key(0) }
+gen 14 | damage none | focus 0#100,0#0 at 0,1 3x1 in outline
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 6. Enter toggles: North closes
+effect (gen 14): ViewRequested unsorted group 1,2 values count(-) expand Rows 1 except 100 by Collapse { axis: Rows, key: Key(100) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 1 except 100, notices [(Rows, Collapsed { at: 1, n: 2 })]
+window Rows 0..4
+gen 16 | damage none | focus 0#100,0#0 at 0,1 3x1 in outline
+Rows: count 4, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0- 1="North"] 1#101@2+1[G0+ 1="South"] 2#120@3+1[G1- ^101 2="Cadiz"] 3#130@4+1[G1 ^101 2="Empty"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  101.0101.1101.2
+2  120.0120.1120.2
+3  130.0130.1130.2
+
+
+
+
+
+
+
+
+--- 7. * opens North, then the groups under it as they come into view
+effect (gen 16): ViewRequested unsorted group 1,2 values count(-) expand Rows 1 by ExpandAll { axis: Rows, key: Key(100) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 1, notices [(Rows, Expanded { at: 1, n: 2 })]
+window Rows 0..6
+effect (gen 17): ViewRequested unsorted group 1,2 values count(-) expand Rows 1 except 110,111 by ExpandAll { axis: Rows, key: Key(100) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 1 except 110,111, notices [(Rows, Refiltered(9))]
+effect (gen 17): Locate { axis: Rows, key: Key(100) }
+  locate Rows Key(100): Found(0)
+effect (gen 17): Locate { axis: Rows, key: Key(110) }
+  locate Rows Key(110): Found(1)
+effect (gen 17): Locate { axis: Rows, key: Key(111) }
+  locate Rows Key(111): Found(4)
+effect (gen 17): Locate { axis: Rows, key: Key(101) }
+  locate Rows Key(101): Found(6)
+effect (gen 17): Locate { axis: Rows, key: Key(120) }
+  locate Rows Key(120): Found(7)
+effect (gen 17): Locate { axis: Rows, key: Key(130) }
+  locate Rows Key(130): Found(8)
+window Rows 0..9
+gen 18 | damage layout selection positions | focus 0#100,0#0 at 0,1 3x1 in outline
+Rows: count 9, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 1="North"] 1#110@2+1[G1+ ^100 2="Aberdeen"] 2#0@3+1[L2 ^100 ^110] 3#3@4+1[L2 ^100 ^110] 4#111@5+1[G1+ ^100 2="Bergen"] 5#4@6+1[L2 ^100 ^111] 6#101@7+1[G0+ 1="South"] 7#120@8+1[G1- ^101 2="Cadiz"] 8#130@9+1[G1 ^101 2="Empty"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  0.0  0.1  0.2
+3  3.0  3.1  3.2
+4  111.0111.1111.2
+5  4.0  4.1  4.2
+6  101.0101.1101.2
+7  120.0120.1120.2
+8  130.0130.1130.2
+
+
+
+--- 8. 0 collapses everything
+effect (gen 18): ViewRequested unsorted group 1,2 values count(-) expand Rows 0 by ExpandTo { axis: Rows, depth: Levels(0) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 0, notices [(Rows, Refiltered(2))]
+effect (gen 18): Locate { axis: Rows, key: Key(100) }
+  locate Rows Key(100): Found(0)
+effect (gen 18): Locate { axis: Rows, key: Key(110) }
+  locate Rows Key(110): Gone { suggest: None }
+effect (gen 18): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: None }
+effect (gen 18): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: None }
+effect (gen 18): Locate { axis: Rows, key: Key(111) }
+  locate Rows Key(111): Gone { suggest: None }
+effect (gen 18): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Gone { suggest: None }
+effect (gen 18): Locate { axis: Rows, key: Key(101) }
+  locate Rows Key(101): Found(1)
+effect (gen 18): Locate { axis: Rows, key: Key(120) }
+  locate Rows Key(120): Gone { suggest: None }
+effect (gen 18): Locate { axis: Rows, key: Key(130) }
+  locate Rows Key(130): Gone { suggest: None }
+window Rows 0..2
+gen 20 | damage none | focus 0#100,0#0 at 0,1 3x1 in outline
+Rows: count 2, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0- 1="North"] 1#101@2+1[G0- 1="South"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  101.0101.1101.2
+
+
+
+
+
+
+
+
+
+
+--- 9. 2 opens two levels
+effect (gen 20): ViewRequested unsorted group 1,2 values count(-) expand Rows 2 by ExpandTo { axis: Rows, depth: Levels(2) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 2, notices [(Rows, Refiltered(12))]
+effect (gen 20): Locate { axis: Rows, key: Key(100) }
+  locate Rows Key(100): Found(0)
+effect (gen 20): Locate { axis: Rows, key: Key(101) }
+  locate Rows Key(101): Found(6)
+window Rows 0..12
+gen 22 | damage none | focus 0#100,0#0 at 0,1 3x1 in outline
+Rows: count 12, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 1="North"] 1#110@2+1[G1+ ^100 2="Aberdeen"] 2#0@3+1[L2 ^100 ^110] 3#3@4+1[L2 ^100 ^110] 4#111@5+1[G1+ ^100 2="Bergen"] 5#4@6+1[L2 ^100 ^111] 6#101@7+1[G0+ 1="South"] 7#120@8+1[G1+ ^101 2="Cadiz"] 8#1@9+1[L2 ^101 ^120] 9#2@10+1[L2 ^101 ^120] 10#5@11+1[L2 ^101 ^120] 11#130@12+1[G1 ^101 2="Empty"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  0.0  0.1  0.2
+3  3.0  3.1  3.2
+4  111.0111.1111.2
+5  4.0  4.1  4.2
+6  101.0101.1101.2
+7  120.0120.1120.2
+8  1.0  1.1  1.2
+9  2.0  2.1  2.2
+10 5.0  5.1  5.2
+11 130.0130.1130.2
+--- 10. Left closes North, Left again at the top stays
+effect (gen 22): ViewRequested unsorted group 1,2 values count(-) expand Rows 2 except 100 by Collapse { axis: Rows, key: Key(100) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 2 except 100, notices [(Rows, Collapsed { at: 1, n: 5 })]
+window Rows 0..7
+gen 25 | damage none | focus 0#100,0#0 at 0,1 3x1 in outline
+Rows: count 7, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0- 1="North"] 1#101@2+1[G0+ 1="South"] 2#120@3+1[G1+ ^101 2="Cadiz"] 3#1@4+1[L2 ^101 ^120] 4#2@5+1[L2 ^101 ^120] 5#5@6+1[L2 ^101 ^120] 6#130@7+1[G1 ^101 2="Empty"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  101.0101.1101.2
+2  120.0120.1120.2
+3  1.0  1.1  1.2
+4  2.0  2.1  2.2
+5  5.0  5.1  5.2
+6  130.0130.1130.2
+
+
+
+
+
+--- 11. Right opens North, steps to Aberdeen, then to shipment 0
+effect (gen 25): ViewRequested unsorted group 1,2 values count(-) expand Rows 2 by Expand { axis: Rows, key: Key(100) }
+  view: applied unsorted group 1,2 values count(-) expand Rows 2, notices [(Rows, Expanded { at: 1, n: 5 })]
+window Rows 0..12
+effect (gen 26): FocusChanged { row: Key(110), col: Key(0) }
+effect (gen 27): FocusChanged { row: Key(0), col: Key(0) }
+gen 29 | damage none | focus 2#0,0#0 at 0,3 3x1 in outline
+Rows: count 12, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 1="North"] 1#110@2+1[G1+ ^100 2="Aberdeen"] 2#0@3+1[L2 ^100 ^110] 3#3@4+1[L2 ^100 ^110] 4#111@5+1[G1+ ^100 2="Bergen"] 5#4@6+1[L2 ^100 ^111] 6#101@7+1[G0+ 1="South"] 7#120@8+1[G1+ ^101 2="Cadiz"] 8#1@9+1[L2 ^101 ^120] 9#2@10+1[L2 ^101 ^120] 10#5@11+1[L2 ^101 ^120] 11#130@12+1[G1 ^101 2="Empty"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  0.0  0.1  0.2
+3  3.0  3.1  3.2
+4  111.0111.1111.2
+5  4.0  4.1  4.2
+6  101.0101.1101.2
+7  120.0120.1120.2
+8  1.0  1.1  1.2
+9  2.0  2.1  2.2
+10 5.0  5.1  5.2
+11 130.0130.1130.2
+--- 12. Right on a Leaf leaves the outline column for the body
+gen 31 | damage none | focus 2#0,0#0 at 3,3 5x1
+Rows: (unchanged)
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  *0.0 0.1  0.2
+3  3.0  3.1  3.2
+4  111.0111.1111.2
+5  4.0  4.1  4.2
+6  101.0101.1101.2
+7  120.0120.1120.2
+8  1.0  1.1  1.2
+9  2.0  2.1  2.2
+10 5.0  5.1  5.2
+11 130.0130.1130.2
