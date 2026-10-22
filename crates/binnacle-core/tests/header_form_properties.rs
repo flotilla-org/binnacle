@@ -117,22 +117,24 @@ fn strip_spans(
     out
 }
 
-/// Through any toggles, depths, pins and scrolls, every span covers
-/// exactly the neighbouring items of one Strip under its group, so it
-/// never straddles a pinned edge; every item drawn under a group is in its
-/// span; cut sides are where the group goes on; and each row header starts
-/// past the tiers its spans take.
-#[hegel::test(test_cases = 300)]
-fn every_span_covers_exactly_the_items_under_its_group_within_one_strip(tc: TestCase) {
-    let (tree, groups) = tree(&tc);
+/// A grouped Grid in header form, with tiers and band of any sizes, put
+/// through any toggles, depths, pins and scrolls; returns it with the
+/// applied Expand State and its viewport.
+fn scene(tc: &TestCase) -> (Scenario<TreeTable>, Expand, Viewport) {
+    let (tree, groups) = tree(tc);
     let mut table = TreeTable::new(vec![REGION, PORT], 3, tree);
     if tc.draw(gs::booleans()) {
         table = table.subtotals_after();
     }
+    let band = tc.draw(gs::integers::<u32>().max_value(20)) as f32;
     let grid = Grid::new(
         AxisConfig::new(0, 1.0).header(1.0),
-        AxisConfig::new(3, 5.0).header(12.0),
+        AxisConfig::new(3, 5.0).header(band),
     );
+    let tiers: Vec<f32> = (tc.draw(gs::vecs(gs::integers::<u32>().max_value(10)).max_size(3)))
+        .into_iter()
+        .map(|n| n as f32)
+        .collect();
     let height = tc.draw(gs::integers::<u32>().min_value(3).max_value(30));
     let v = Viewport {
         width: 30.0,
@@ -140,9 +142,9 @@ fn every_span_covers_exactly_the_items_under_its_group_within_one_strip(tc: Test
     };
     let mut s = Scenario::new(grid, table);
     s.frame(v);
-    let mut expand = Expand::to(depth(&tc));
+    let mut expand = Expand::to(depth(tc));
     s.input(|g| {
-        g.set_tiers(Axis::Rows, &[4.0, 6.0]);
+        g.set_tiers(Axis::Rows, &tiers);
         g.request_view(spec(expand.clone()));
     });
     s.frame(v);
@@ -156,7 +158,7 @@ fn every_span_covers_exactly_the_items_under_its_group_within_one_strip(tc: Test
                 });
             }
             1 => {
-                let d = depth(&tc);
+                let d = depth(tc);
                 s.input(|g| g.expand_to(Axis::Rows, d));
             }
             2 => {
@@ -180,6 +182,16 @@ fn every_span_covers_exactly_the_items_under_its_group_within_one_strip(tc: Test
     {
         expand = applied;
     }
+    (s, expand, v)
+}
+
+/// Through any toggles, depths, pins and scrolls, every span covers
+/// exactly the neighbouring items of one Strip under its group, so it
+/// never straddles a pinned edge; every item drawn under a group is in its
+/// span; and cut sides are where the group goes on.
+#[hegel::test(test_cases = 300)]
+fn every_span_covers_exactly_the_items_under_its_group_within_one_strip(tc: TestCase) {
+    let (mut s, expand, v) = scene(&tc);
     let snap = s.frame(v);
     let regions = [
         (
@@ -215,7 +227,14 @@ fn every_span_covers_exactly_the_items_under_its_group_within_one_strip(tc: Test
         );
         assert!(span.rect.y <= top && bottom <= span.rect.y + span.rect.height);
     }
+}
 
+/// Each row header starts past the tiers its spans take, or past every
+/// tier when spans take them all.
+#[hegel::test(test_cases = 300)]
+fn each_row_header_starts_past_the_tiers_its_spans_take(tc: TestCase) {
+    let (mut s, expand, v) = scene(&tc);
+    let snap = s.frame(v);
     let tiers = snap.tiers(Axis::Rows);
     for h in snap.headers(Axis::Rows) {
         let spanned = (0..2)
