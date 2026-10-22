@@ -35,7 +35,7 @@ The Grid's per-frame, read-only description of what to draw (cell and header pla
 _Avoid_: Frame, render list, view model
 
 **Change Notice**:
-A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys.
+A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed, and on a grouped axis collapsed and expanded). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys.
 _Avoid_: Invalidation, update event, data changed
 
 ### Axes and identity
@@ -145,6 +145,22 @@ _Avoid_: Aggregate row, synthetic row, virtual row
 **Outline**:
 Where an item sits in a grouped axis, given with each Window item: its kind (Leaf or which Summary Item), its depth, its ancestors' Keys from the outermost Group Item down to its parent, whether it is open, and on a Group Item or Subtotal its level's field and value.
 _Avoid_: Tree info, hierarchy, node
+
+**Collapsed / Expanded**:
+The Change Notices for a group closing or opening: `Collapsed { at, n }` hides the `n` items from Position `at`, under the Group Item at `at - 1`, and `Expanded { at, n }` shows `n` there. Position-precise like Removed and Inserted, but the hidden items stay alive: their Size Overrides and pins are kept (the pins dormant), focus and range corners inside pull to the Group Item, picks inside are dropped, and the Scroll Anchor moves to the Group Item. A change touching several groups comes as Refiltered.
+_Avoid_: Fold, hide (for a group), Removed (for a closed group's items)
+
+**Expand State**:
+Which groups of an axis are open, part of the grouping in the View Spec and so saved in layouts: a default depth (how many levels open; 0 shows only the top groups) and `except`, the Group Item Keys the other way, capped like the hidden Keys. Toggling a group adds or removes its Key; setting the depth clears `except`. A Key stays while its path fits the levels and is pruned when the levels change so that it cannot.
+_Avoid_: Collapse state, open set, tree state
+
+**Pending Toggle**:
+A Group Item whose open state a request still due changes: its disclosure mark draws pending (adapters wait about 150 ms first, so a fast source never flickers), and a second toggle before the answer takes the first back.
+_Avoid_: Loading group, spinner
+
+**Outline Column**:
+The row Header Band of rows grouped in outline form, as a column focus can enter (Left from the first column, or a click on a row header): there the arrows walk the tree (Right opens a closed group or steps to its first child, Left closes an open one or steps to the parent), Enter toggles, `*` opens everything under the focused group, a digit opens the rows to that depth, and Tab leaves for the body.
+_Avoid_: Tree column, row header focus
 
 **Grouping Layer**:
 The optional sans-IO module (`binnacle-group`) that answers a grouped View Spec as a Table Source over a backend that only answers Aggregate Queries: it owns the structure, interns Summary Item Keys and holds only what open groups need.

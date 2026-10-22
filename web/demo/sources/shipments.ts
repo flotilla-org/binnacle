@@ -80,7 +80,8 @@ export const shipmentsDemo: DemoSource = {
             { field: "port", subtotal: "after" },
           ],
           values: [{ field: "weight", aggregate: "sum" }, ...byRegion.values],
-          rowAxis: { ...byRegion.rowAxis, grandTotal: "after" },
+          // The regions open and the ports closed, so both show.
+          rowAxis: { ...byRegion.rowAxis, grandTotal: "after", expand: { depth: 1, except: [] } },
         },
       },
     });
