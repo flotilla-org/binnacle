@@ -472,6 +472,32 @@ fn the_rows_group_by_columns_that_sort_and_have_text() {
 }
 
 #[test]
+fn the_columns_pivot_by_what_the_rows_group_by_and_values_take_the_standard_aggregates() {
+    let source = GroupedMemory::new(
+        MemorySource::<Record>::new(1, COLS)
+            .i64_column(Key(0), |r: &Record| r[0])
+            .text_column(Key(2), |r: &Record| r[2].map(|n| n.to_string().into())),
+    );
+    assert!(source.support(Axis::Rows, Key(0)).pivot);
+    assert!(!source.support(Axis::Rows, Key(1)).pivot, "no closure");
+    let names = |key| -> Vec<String> {
+        let aggregates = source.aggregates(Axis::Rows, Key(key));
+        aggregates.into_iter().map(|a| a.name).collect()
+    };
+    let numbers = [
+        "count",
+        "distinct count",
+        "sum",
+        "average",
+        "minimum",
+        "maximum",
+    ];
+    assert_eq!(names(0), numbers);
+    assert_eq!(names(2), ["count", "distinct count"]);
+    assert_eq!(names(1), Vec::<String>::new(), "no closure");
+}
+
+#[test]
 fn a_leaf_keeps_its_key_and_summary_items_carry_the_summary_bit() {
     let rows: Vec<Record> = vec![
         [Some(1), None, None],

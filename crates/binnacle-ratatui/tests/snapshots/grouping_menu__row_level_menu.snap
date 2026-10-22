@@ -1,0 +1,20 @@
+---
+source: crates/binnacle-ratatui/tests/grouping_menu.rs
+expression: t.draw()
+---
+|region › quartweight   │                                    |
+|                       │                                    |
+|┌─ Row level quarter ──────────────────┐                   █|
+|│▸x Remove level                       │                   █|
+|│ m Move to columns                    │                   █|
+|│ - Collapse to quarter                │                   █|
+|│ + Expand through quarter             │                   █|
+|│ v Add a value ▸                      │                   █|
+|│ n Group by another column ▸          │                   █|
+|│ ↑↓ Enter  Esc close                  │                   █|
+|└──────────────────────────────────────┘                   █|
+|      10                                                   █|
+|                                                           █|
+|                                                           █|
+|                                                           █|
+|                                                           █|

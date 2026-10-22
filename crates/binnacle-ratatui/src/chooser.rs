@@ -1,6 +1,8 @@
 //! The chooser: the find and filter checklist over an axis's own items, with
 //! a search, a tick for each item shown and none for each hidden. A tick
-//! shows the item, an untick hides it, at once.
+//! shows the item, an untick hides it, at once. The columns the rows group
+//! by have left the body: the columns' chooser lists them last, tagged
+//! "grouped", with no tick.
 
 use std::ops::Range;
 
@@ -51,6 +53,20 @@ struct Open {
     cursor: usize,
     /// Why the last untick hid nothing.
     hint: Option<String>,
+}
+
+/// The fields the rows group by, which the columns' chooser lists as
+/// grouped: none on the rows' chooser.
+fn grouped_by(snapshot: &Snapshot, axis: Axis) -> Vec<Key> {
+    let view = snapshot.requested_view().unwrap_or(snapshot.applied_view());
+    match (axis, &view.grouping) {
+        (Axis::Cols, Some(g)) => g
+            .levels(Axis::Rows)
+            .iter()
+            .filter_map(|l| l.field_key())
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 impl Open {
@@ -128,7 +144,7 @@ impl Chooser {
             let shown = keys_at(axis, 0..count.min(LIMIT));
             shown.into_iter().map(|k| (k, named(k))).collect()
         });
-        for &key in snapshot.hidden(axis) {
+        for key in (snapshot.hidden(axis).iter().copied()).chain(grouped_by(snapshot, axis)) {
             if !items.iter().any(|(k, _)| *k == key) {
                 items.push((key, named(key)));
             }
@@ -145,8 +161,13 @@ impl Chooser {
         }
         let snapshot = grid.snapshot();
         let hidden: Vec<Key> = snapshot.hidden(o.axis).to_vec();
-        let matching: Vec<Key> = o.matching().into_iter().map(|(k, _)| k).collect();
-        let last = matching.len();
+        let grouped = grouped_by(&snapshot, o.axis);
+        let listed: Vec<Key> = o.matching().into_iter().map(|(k, _)| k).collect();
+        let last = listed.len();
+        // The head ticks every item listed but the grouped ones.
+        let matching: Vec<Key> = (listed.iter().copied())
+            .filter(|k| !grouped.contains(k))
+            .collect();
         let plain = KeyModifiers::SHIFT.contains(event.modifiers);
         let ctrl = event.modifiers == KeyModifiers::CONTROL;
         let page = LIST_ROWS.saturating_sub(1);
@@ -167,7 +188,7 @@ impl Chooser {
                 }
             }
             KeyCode::Char(' ') if plain => {
-                if let Some(&key) = matching.get(o.cursor - 1) {
+                if let Some(&key) = listed.get(o.cursor - 1).filter(|k| !grouped.contains(k)) {
                     if hidden.contains(&key) {
                         grid.show(o.axis, &[key]);
                         o.hint = None;
@@ -210,6 +231,7 @@ impl Chooser {
         let pinned: Vec<Key> = (snapshot.pinned(o.axis, Edge::Leading).iter())
             .filter_map(|i| i.key)
             .collect();
+        let grouped_by = grouped_by(snapshot, o.axis);
         let matching = o.matching();
         // Borders, the search, the rule, the shown count, any hint, the keys.
         let fixed = 2 + 1 + 1 + 1 + u16::from(o.hint.is_some()) + 1;
@@ -284,8 +306,9 @@ impl Chooser {
         let start = (o.cursor + 1).saturating_sub(list);
         for i in start..start + list {
             let (mark, text, tag, style) = if i == 0 {
-                let all = matching.iter().all(|(k, _)| !hidden.contains(k));
-                let some = matching.iter().any(|(k, _)| !hidden.contains(k));
+                let ticks = || matching.iter().filter(|(k, _)| !grouped_by.contains(k));
+                let all = ticks().all(|(k, _)| !hidden.contains(k));
+                let some = ticks().any(|(k, _)| !hidden.contains(k));
                 let mark = match (all, some) {
                     (true, _) => "[x]",
                     (false, true) => "[-]",
@@ -297,12 +320,20 @@ impl Chooser {
                 };
                 (mark, text, "", theme.body.add_modifier(Modifier::BOLD))
             } else if let Some(&(key, text)) = matching.get(i - 1) {
-                let mark = if hidden.contains(&key) { "[ ]" } else { "[x]" };
+                let mark = match (grouped_by.contains(&key), hidden.contains(&key)) {
+                    (true, _) => "   ",
+                    (false, true) => "[ ]",
+                    (false, false) => "[x]",
+                };
                 let named = match o.axis {
                     Axis::Cols => text.to_string(),
                     Axis::Rows => format!("{noun} {text}"),
                 };
-                let tag = if pinned.contains(&key) { "pinned" } else { "" };
+                let tag = match () {
+                    _ if grouped_by.contains(&key) => "grouped",
+                    _ if pinned.contains(&key) => "pinned",
+                    _ => "",
+                };
                 (mark, named, tag, theme.body)
             } else if i == 1 && o.items.is_some() {
                 let none = format!("No {nouns} match");
