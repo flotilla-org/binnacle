@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::effect::Effect;
 use crate::grid::Grid;
-use crate::grouping::{AggregateValue, GRAND_TOTAL, Grouping, Level};
+use crate::grouping::{AggregateValue, Depth, GRAND_TOTAL, Grouping, Level};
 use crate::pointer::Modifiers;
 use crate::sort::{HeaderSort, SortSpec};
 use crate::types::{Axis, Edge, Key, Position};
@@ -472,6 +472,16 @@ pub enum ViewEdit {
     /// Every level of `axis` was removed; with none left on either axis the
     /// table is plain again.
     Ungroup { axis: Axis },
+    /// The group of `axis` headed by the Group Item `key` was opened: the
+    /// Key joins or leaves `expand.except`.
+    Expand { axis: Axis, key: Key },
+    /// The group of `axis` headed by the Group Item `key` was closed.
+    Collapse { axis: Axis, key: Key },
+    /// The group headed by `key` and every group under it the Grid knows of
+    /// were opened.
+    ExpandAll { axis: Axis, key: Key },
+    /// `axis` was opened to `depth` levels and its exceptions cleared.
+    ExpandTo { axis: Axis, depth: Depth },
 }
 
 /// How a Table Source matches a Text Query: `regex` if it takes patterns as
@@ -1033,12 +1043,18 @@ impl Grid {
                     }
                 }
             }
-            ViewEdit::Replace | ViewEdit::ShownChanged { .. } | ViewEdit::Reapply => {}
+            ViewEdit::Replace
+            | ViewEdit::ShownChanged { .. }
+            | ViewEdit::Reapply
+            | ViewEdit::Expand { .. }
+            | ViewEdit::Collapse { .. }
+            | ViewEdit::ExpandAll { .. }
+            | ViewEdit::ExpandTo { .. } => {}
         }
         self.request(spec, edit);
     }
 
-    fn request(&mut self, spec: ViewSpec, edit: ViewEdit) {
+    pub(crate) fn request(&mut self, spec: ViewSpec, edit: ViewEdit) {
         self.view.requested = Some(spec.clone());
         self.view.due += 1;
         self.pending_damage.selection = true;

@@ -115,6 +115,12 @@ pub struct Grid {
     pub(crate) damage: Damage,
     /// The focused cell, one end per axis; `None` while unplaced.
     pub(crate) focus: Option<[FocusEnd; 2]>,
+    /// Focus is in the outline column, on the focused row's band cell; the
+    /// column end is where it goes back to.
+    pub(crate) outline_focus: bool,
+    /// `*` asked to open everything under this Group Item: closed groups
+    /// under it are opened as Windows bring them, until another toggle.
+    pub(crate) expanding_all: Option<(Axis, Key)>,
     /// The Keys named by the last `FocusChanged` the host drained.
     heard: Option<(Key, Key)>,
     /// A focus move asked for the focused cell to be shown and no scroll has
@@ -172,6 +178,8 @@ impl Grid {
             pending_damage: Damage::ALL,
             damage: Damage::NONE,
             focus: None,
+            outline_focus: false,
+            expanding_all: None,
             heard: None,
             reveal: false,
             locating: Locating::default(),
@@ -310,6 +318,7 @@ impl Grid {
             }
         }
         self.pending_damage.positions = true;
+        self.keep_expanding(axis);
     }
 
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {
@@ -446,7 +455,12 @@ impl Grid {
 
     pub fn action(&mut self, action: Action) {
         match action {
-            Action::TypeText(text) => self.push(Effect::TextTyped { text }),
+            Action::TypeText(text) => {
+                if !self.tree_typed(&text) {
+                    self.push(Effect::TextTyped { text })
+                }
+            }
+            Action::Activate if self.tree_activate() => {}
             Action::Activate => {
                 if let Some((row, col)) = self.focused_keys() {
                     self.push(Effect::Activated { row, col });
@@ -463,6 +477,9 @@ impl Grid {
                 forward,
                 extend,
             } => {
+                if axis == Axis::Cols && self.tree_move(by, forward) {
+                    return;
+                }
                 let m = Move {
                     axis,
                     by,
@@ -514,6 +531,7 @@ impl Grid {
                 self.refilter_scrolled(axis);
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_items(items);
             }
+            Action::LeaveOutline => self.leave_outline(),
             Action::FindNext => self.find_step(FindDirection::Next),
             Action::FindPrevious => self.find_step(FindDirection::Previous),
         }

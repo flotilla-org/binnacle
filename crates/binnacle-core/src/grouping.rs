@@ -113,6 +113,50 @@ pub struct Expand {
     pub except: Vec<Key>,
 }
 
+/// The most Group Item Keys an axis's `expand.except` takes: past it, a
+/// toggle is refused and setting a depth is the tool that scales.
+pub const EXCEPT_CAP: usize = 1000;
+
+/// A toggle refused because the axis's `expand.except` would hold more
+/// than [`EXCEPT_CAP`] Keys: nothing was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExceptCapped {
+    pub cap: usize,
+}
+
+impl Expand {
+    /// Everything open to `depth`, with no exceptions.
+    pub fn to(depth: Depth) -> Self {
+        Expand {
+            depth,
+            except: Vec::new(),
+        }
+    }
+
+    /// Whether `depth` opens the groups at `level` (0 for the top groups)
+    /// by default.
+    pub fn opens_level(&self, level: u32) -> bool {
+        match self.depth {
+            Depth::All => true,
+            Depth::Levels(n) => level < n,
+        }
+    }
+
+    /// Whether the group whose Group Item is `key`, at `level`, is open.
+    pub fn opens(&self, level: u32, key: Key) -> bool {
+        self.opens_level(level) != self.except.contains(&key)
+    }
+
+    /// This state with the group `key`, at `level`, open or closed.
+    pub fn with(mut self, level: u32, key: Key, open: bool) -> Self {
+        self.except.retain(|&k| k != key);
+        if self.opens_level(level) != open {
+            self.except.push(key);
+        }
+        self
+    }
+}
+
 /// How one grouped axis is laid out.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]

@@ -347,10 +347,33 @@ impl<'a> Snapshot<'a> {
         (item.key == end.key).then_some(item)
     }
 
+    /// Whether focus is in the outline column: on the focused row's cell
+    /// of the row Header Band, where the tree keys act, rather than on the
+    /// focused column's body cell.
+    pub fn outline_focused(&self) -> bool {
+        self.grid.in_outline()
+    }
+
+    /// Whether the disclosure mark of the Group Item `key` on `axis` is
+    /// pending: the user opened or closed it and the Table Source has not
+    /// answered yet. Adapters draw it so only once it has been pending a
+    /// moment (about 150 ms), so a fast source doesn't flicker.
+    pub fn toggle_pending(&self, axis: Axis, key: Key) -> bool {
+        self.grid.toggle_pending(axis, key)
+    }
+
     /// The focused cell's rectangle, unclipped, if it is visible and its Keys
-    /// are known.
+    /// are known: in the outline column, the focused row's band cell.
     pub fn focus_rect(&self) -> Option<Rect> {
         let row = self.focused_item(Axis::Rows)?;
+        if self.outline_focused() {
+            return Some(Rect {
+                x: 0.0,
+                y: row.offset,
+                width: self.header(Axis::Cols),
+                height: row.size,
+            });
+        }
         let col = self.focused_item(Axis::Cols)?;
         Some(Rect {
             x: col.offset,
@@ -401,7 +424,7 @@ impl<'a> Snapshot<'a> {
             .current
             .is_some_and(|m| (row.key, col.key) == (Some(m.row), Some(m.col)));
         CellState {
-            focused: on(Axis::Rows, row) && on(Axis::Cols, col),
+            focused: on(Axis::Rows, row) && on(Axis::Cols, col) && !self.outline_focused(),
             selected: in_range || picked,
             editing,
             current_match,

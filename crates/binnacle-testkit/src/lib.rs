@@ -6,6 +6,7 @@
 
 mod render;
 mod scenario;
+mod tree;
 
 pub use binnacle_memory::{PumpSource, Transposed};
 pub use render::render;
@@ -13,3 +14,4 @@ pub use scenario::{
     ColumnMajorTable, GroupedTable, IdentityTable, KeyedTable, Record, RecordTable, Scenario,
     ScenarioSource,
 };
+pub use tree::{Group, TreeTable, Under};

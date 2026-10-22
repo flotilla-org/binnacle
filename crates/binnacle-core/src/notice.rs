@@ -51,6 +51,17 @@ pub enum ChangeNotice {
     /// The content of the items at these Positions changed; their Keys and
     /// order did not. Their Keys and content sizes are fetched again.
     ContentChanged(Range<Position>),
+    /// The group headed by the Group Item at `at - 1` closed, hiding the `n`
+    /// items from Position `at`; those after them move `n` earlier. The
+    /// hidden items stay alive: their Size Overrides are kept and pins on
+    /// them go dormant until they show again. Focus, a range corner or the
+    /// Scroll Anchor on a hidden item moves to the Group Item; picks of
+    /// hidden items the Grid can see are dropped.
+    Collapsed { at: Position, n: u64 },
+    /// The group headed by the Group Item at `at - 1` opened, showing `n`
+    /// items before the item at Position `at`. Everything from `at` on moves
+    /// `n` later, as for `Inserted`, and dormant pins are asked about again.
+    Expanded { at: Position, n: u64 },
 }
 
 /// Where a focused Key went after a Change Notice, as far as the Grid knows.
@@ -128,9 +139,16 @@ impl Grid {
             ChangeNotice::Reordered | ChangeNotice::ContentChanged(_)
         );
         // Keys may have left.
+        let folding = matches!(
+            notice,
+            ChangeNotice::Collapsed { .. } | ChangeNotice::Expanded { .. }
+        );
         let left = matches!(
             notice,
-            ChangeNotice::Reset(_) | ChangeNotice::Refiltered(_) | ChangeNotice::Removed { .. }
+            ChangeNotice::Reset(_)
+                | ChangeNotice::Refiltered(_)
+                | ChangeNotice::Removed { .. }
+                | ChangeNotice::Collapsed { .. }
         );
         match notice {
             ChangeNotice::Reordered => {
@@ -142,21 +160,31 @@ impl Grid {
                 self.refilter_forget(axis);
             }
             ChangeNotice::Refiltered(count) => self.refiltered(axis, count),
-            ChangeNotice::Inserted { at, n } => {
+            ChangeNotice::Inserted { at, n } | ChangeNotice::Expanded { at, n } => {
                 let count = self.axis(axis).measure.count();
                 let at = at.min(count);
                 let n = n.min(u64::MAX - count);
                 if n > 0 {
                     self.inserted_or_removed(axis, Shift::Inserted { at, n });
+                    if folding {
+                        self.refetch(axis);
+                    }
                     self.refilter_reask(axis);
                 }
             }
-            ChangeNotice::Removed { at, n } => {
+            ChangeNotice::Removed { at, n } | ChangeNotice::Collapsed { at, n } => {
                 let count = self.axis(axis).measure.count();
                 let at = at.min(count);
                 let n = n.min(count - at);
                 if n > 0 {
-                    self.inserted_or_removed(axis, Shift::Removed { at, n });
+                    let shift = match folding {
+                        false => Shift::Removed { at, n },
+                        true => Shift::Collapsed { at, n },
+                    };
+                    self.inserted_or_removed(axis, shift);
+                    if folding {
+                        self.refetch(axis);
+                    }
                     self.refilter_reask(axis);
                 }
             }
@@ -228,7 +256,9 @@ impl Grid {
                 self.axis_mut(axis).measure.insert(at, n);
                 Vec::new()
             }
-            Shift::Removed { at, n } => self.axis_mut(axis).measure.remove(at, n),
+            Shift::Removed { at, n } | Shift::Collapsed { at, n } => {
+                self.axis_mut(axis).measure.remove(at, n)
+            }
         };
         self.shift_pins(axis, |p| shift.map(p));
         if matches!(shift, Shift::Inserted { .. }) {
@@ -237,8 +267,10 @@ impl Grid {
         let count = self.axis(axis).measure.count();
         let mut selection = self.selection.clone();
         selection.span = span;
-        for &key in &gone {
-            self.axis_mut(axis).measure.clear_size(key);
+        if let Shift::Removed { .. } = shift {
+            for &key in &gone {
+                self.axis_mut(axis).measure.clear_size(key);
+            }
         }
         selection.picks[i].retain(|k| !gone.contains(k));
         if count == 0 {
@@ -258,7 +290,7 @@ impl Grid {
                 None => {}
             }
         }
-        if let Shift::Removed { .. } = shift {
+        if !matches!(shift, Shift::Inserted { .. }) {
             self.edit_removed(axis, &gone);
         }
         self.shift_focus(axis, shift, count);
@@ -271,7 +303,7 @@ impl Grid {
                 ..st.anchor
             },
             None => ScrollAnchor {
-                position: shift.at(),
+                position: shift.landing(),
                 offset: 0.0,
             },
         };
@@ -305,12 +337,12 @@ impl Grid {
         if count == 0 {
             return self.clamp_positions(axis, 0);
         }
-        let fallback = fallback_end(self.axis(axis), shift.at(), None);
+        let fallback = fallback_end(self.axis(axis), shift.landing(), None);
         let Some(f) = &mut self.focus else { return };
         let end = f[i];
         let moved = shift.map(end.position);
         if self.locating.waiting[i] {
-            f[i].position = moved.unwrap_or(shift.at()).min(count - 1);
+            f[i].position = moved.unwrap_or(shift.landing()).min(count - 1);
             if let Some(key) = end.key {
                 self.locate(axis, key);
             }
@@ -318,6 +350,11 @@ impl Grid {
         }
         match (moved, end.key) {
             (Some(p), _) => f[i].position = p,
+            (None, _) if matches!(shift, Shift::Collapsed { .. }) => {
+                f[i] = fallback.expect("the axis is not empty");
+                self.pending_damage.selection = true;
+                self.announce_focus();
+            }
             (None, Some(key)) => {
                 self.pending_damage.selection = true;
                 self.key_departed(axis, key, true, Some(shift.at()));
@@ -328,6 +365,15 @@ impl Grid {
                 self.announce_focus();
             }
         }
+    }
+
+    /// The outlines of `axis` changed with a group opening or closing: the
+    /// Window is fetched again.
+    fn refetch(&mut self, axis: Axis) {
+        self.axis_mut(axis).measure.set_keys(0, &[]);
+        self.axis_mut(axis).outlines.clear();
+        self.axis_mut(axis).sync_pins();
+        self.pending_damage.positions = true;
     }
 
     /// The content of the items at `range` on `axis` changed: any of them in
@@ -617,26 +663,40 @@ impl Grid {
     }
 }
 
-/// Items inserted or removed on an axis, as a map of old Positions to new.
+/// Items inserted, removed or hidden under a closed group on an axis, as a
+/// map of old Positions to new.
 #[derive(Clone, Copy, Debug)]
 enum Shift {
     Inserted { at: Position, n: u64 },
     Removed { at: Position, n: u64 },
+    Collapsed { at: Position, n: u64 },
 }
 
 impl Shift {
     fn at(self) -> Position {
         match self {
-            Shift::Inserted { at, .. } | Shift::Removed { at, .. } => at,
+            Shift::Inserted { at, .. }
+            | Shift::Removed { at, .. }
+            | Shift::Collapsed { at, .. } => at,
         }
     }
 
-    /// Where the item at `p` is now, or `None` if it was removed.
+    /// Where what stood on an item that went now stands, as a Position
+    /// after the shift: the item that took its place, or a closed group's
+    /// Group Item.
+    fn landing(self) -> Position {
+        match self {
+            Shift::Collapsed { at, .. } => at.saturating_sub(1),
+            _ => self.at(),
+        }
+    }
+
+    /// Where the item at `p` is now, or `None` if it was removed or hidden.
     fn map(self, p: Position) -> Option<Position> {
         match self {
             Shift::Inserted { at, n } if p >= at => Some(p.saturating_add(n)),
-            Shift::Removed { at, n } if p >= at + n => Some(p - n),
-            Shift::Removed { at, .. } if p >= at => None,
+            Shift::Removed { at, n } | Shift::Collapsed { at, n } if p >= at + n => Some(p - n),
+            Shift::Removed { at, .. } | Shift::Collapsed { at, .. } if p >= at => None,
             _ => Some(p),
         }
     }
@@ -648,11 +708,31 @@ impl Shift {
 /// unless it spans the whole axis.
 fn shift_span(mut span: Span, axis: Axis, shift: Shift, st: &AxisState) -> Option<Span> {
     let i = axis.index();
-    let Shift::Removed { at, n } = shift else {
-        for corner in [&mut span.anchor, &mut span.head] {
-            corner[i].position = shift.map(corner[i].position).expect("nothing removed");
+    let (at, n) = match shift {
+        Shift::Inserted { .. } => {
+            for corner in [&mut span.anchor, &mut span.head] {
+                corner[i].position = shift.map(corner[i].position).expect("nothing removed");
+            }
+            return Some(span);
         }
-        return Some(span);
+        // A corner on a hidden item pulls to the closed group's Group Item.
+        Shift::Collapsed { at, .. } if at > 0 => {
+            let group = FocusEnd {
+                position: at - 1,
+                key: st.key_at(at - 1),
+            };
+            for corner in [&mut span.anchor, &mut span.head] {
+                corner[i] = match shift.map(corner[i].position) {
+                    Some(p) => FocusEnd {
+                        position: p,
+                        ..corner[i]
+                    },
+                    None => group,
+                };
+            }
+            return Some(span);
+        }
+        Shift::Removed { at, n } | Shift::Collapsed { at, n } => (at, n),
     };
     let drawn = [span.anchor[i], span.head[i]].map(|e| st.drawn_index(st.slot_of(e)));
     let (lo, hi) = (drawn[0].min(drawn[1]), drawn[0].max(drawn[1]));

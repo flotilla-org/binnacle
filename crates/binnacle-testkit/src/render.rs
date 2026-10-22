@@ -1,9 +1,9 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, Comparison, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Grouping,
-    ItemKind, Key, Level, Mode, OpenState, Outline, Placement, Searched, Snapshot, SortDirection,
-    SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    Axis, Comparison, ConditionKind, Cursor, Depth, DropTarget, Edge, Expand, FilterSpec, FocusEnd,
+    Grouping, ItemKind, Key, Level, Mode, OpenState, Outline, Placement, Searched, Snapshot,
+    SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -112,6 +112,9 @@ fn summary(snap: &Snapshot) -> String {
                 let _ = write!(out, " at {},{} {}x{}", r.x, r.y, r.width, r.height);
             }
             None => out.push_str(" not drawn"),
+        }
+        if snap.outline_focused() {
+            out.push_str(" in outline");
         }
         for axis in Axis::ALL {
             if snap.locating(axis) {
@@ -320,16 +323,17 @@ fn item_text(snap: &Snapshot, axis: Axis, item: &StripItem) -> String {
         item.size
     );
     if let Some(outline) = snap.outline(axis, item.position) {
-        text.push_str(&outline_text(outline));
+        let pending = item.key.is_some_and(|k| snap.toggle_pending(axis, k));
+        text.push_str(&outline_text(outline, pending));
     }
     text
 }
 
 /// An item's outline as `[kind depth open]`, kind `L` (Leaf), `G` (Group
 /// Item), `S` (Subtotal) or `T` (Grand Total), open `+` (open), `-`
-/// (closed) or nothing (can't open), then `^key` for each ancestor and
-/// `field=value` for a group.
-fn outline_text(outline: &Outline) -> String {
+/// (closed) or nothing (can't open), `~` while a toggle of it is pending,
+/// then `^key` for each ancestor and `field=value` for a group.
+fn outline_text(outline: &Outline, pending: bool) -> String {
     let kind = match outline.kind {
         ItemKind::Leaf => "L",
         ItemKind::Group => "G",
@@ -341,7 +345,8 @@ fn outline_text(outline: &Outline) -> String {
         OpenState::Closed => "-",
         OpenState::CantOpen => "",
     };
-    let mut text = format!("[{kind}{}{open}", outline.depth);
+    let pending = if pending { "~" } else { "" };
+    let mut text = format!("[{kind}{}{open}{pending}", outline.depth);
     for key in &outline.ancestors {
         let _ = write!(text, " ^{}", key.0);
     }
@@ -400,6 +405,20 @@ fn grouping_text(grouping: &Grouping) -> String {
         let p = grouping.axis(axis).grand_total;
         if p != Placement::Off {
             let _ = write!(text, " total {axis:?} {}", placement(p));
+        }
+    }
+    for axis in Axis::ALL {
+        let expand = &grouping.axis(axis).expand;
+        if *expand != Expand::default() {
+            let depth = match expand.depth {
+                Depth::All => "all".to_string(),
+                Depth::Levels(n) => n.to_string(),
+            };
+            let _ = write!(text, " expand {axis:?} {depth}");
+            if !expand.except.is_empty() {
+                let except: Vec<String> = expand.except.iter().map(|k| k.0.to_string()).collect();
+                let _ = write!(text, " except {}", except.join(","));
+            }
         }
     }
     text

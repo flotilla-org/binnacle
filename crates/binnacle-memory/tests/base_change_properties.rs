@@ -283,7 +283,11 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
                 assert!(matches!(op, Op::Filter(_) | Op::Edit { .. }), "{op:?}");
                 assert_eq!(*count, after.len() as u64);
             }
-            Some(ChangeNotice::Removed { .. }) => panic!("{op:?}"),
+            Some(
+                ChangeNotice::Removed { .. }
+                | ChangeNotice::Collapsed { .. }
+                | ChangeNotice::Expanded { .. },
+            ) => panic!("{op:?}"),
             None => {
                 assert_eq!(after, before, "{op:?}");
                 match op {
