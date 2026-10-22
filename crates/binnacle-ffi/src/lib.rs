@@ -8,6 +8,9 @@
 
 use std::slice;
 
+mod layer;
+pub use layer::*;
+
 use binnacle_core::{
     Action, Aggregate, AggregateValue, Axis, AxisConfig, AxisView, Button, ChangeNotice, Compared,
     Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
@@ -20,7 +23,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 9;
+pub const BINNACLE_ABI_VERSION: u32 = 10;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;

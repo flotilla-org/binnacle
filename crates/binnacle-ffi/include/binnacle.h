@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 9u
+#define BINNACLE_ABI_VERSION 10u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -1390,6 +1390,223 @@ int binnacle_grid_scroll_to(BinnacleGrid *grid, uint32_t axis, double fraction);
 
 /* By whole items, landing on an item start. */
 int binnacle_grid_scroll_by(BinnacleGrid *grid, uint32_t axis, int64_t items);
+
+/*
+ * The grouping layer (binnacle-group) for a host whose aggregate backend
+ * answers when it likes: a remote service, a worker, a database. The layer
+ * turns a View Spec's grouping into Aggregate Queries, one batch a frame,
+ * and the backend's answers into the grouped axis's items, Summary Item
+ * Keys, Subtotals and Grand Total, as a Table Source shows them to the
+ * Grid. It holds the open groups and a bounded cache of pages: memory grows
+ * with what the user opens, never with the rows.
+ *
+ * The host gives it each View Spec (binnacle_group_layer_request_view),
+ * sends each polled batch to the backend, and hands back the backend's
+ * answers as they come: in any order, in parts, jointly (one answer for
+ * several queries), with more than asked, or unasked. Answers for a batch a
+ * newer View Spec superseded are dropped. A query is done once an answer
+ * names it, or once what was answered covers it. Each call's output arrays
+ * stay valid until the next call of the same function on the same layer,
+ * or binnacle_group_layer_free.
+ */
+typedef struct BinnacleGroupLayer BinnacleGroupLayer;
+
+/* BinnacleGroupRequest.want: the groups of the next level under the path,
+ * start to end of them, each with its value, figures and child count; the
+ * group's Leaf Keys, start to end of them; where the Leaf with key is (its
+ * group's path and its place among that group's Leaves; the path and range
+ * are empty); or the figures of the whole group at the path (at the empty
+ * path, the Grand Total's; the range is empty). */
+#define BINNACLE_WANT_GROUPS 0
+#define BINNACLE_WANT_LEAVES 1
+#define BINNACLE_WANT_LOCATE 2
+#define BINNACLE_WANT_TOTAL 3
+
+/* BinnacleGroupAnswer.body: which of its parts the answer fills. */
+#define BINNACLE_BODY_GROUPS 0
+#define BINNACLE_BODY_LEAVES 1
+#define BINNACLE_BODY_LOCATED 2
+#define BINNACLE_BODY_TOTAL 3
+
+/* BinnacleFigure.kind. */
+#define BINNACLE_FIGURE_BLANK 0
+#define BINNACLE_FIGURE_NUMBER 1
+#define BINNACLE_FIGURE_TEXT 2
+
+/* A figure a backend computes, one per value of the grouping: a number,
+ * text, or a blank. */
+typedef struct {
+  uint32_t kind;
+  double number;
+  BinnacleText text;
+} BinnacleFigure;
+
+/* One level's field and the group's value there. A path is the steps from
+ * the outermost level; the empty path is the whole axis. */
+typedef struct {
+  uint64_t field;
+  BinnacleValue value;
+} BinnacleGroupStep;
+
+typedef struct {
+  uint64_t id;
+  const BinnacleGroupStep *path;
+  size_t path_len;
+  uint32_t want;
+  /* LOCATE: the Leaf's Key. */
+  uint64_t key;
+  uint64_t start;
+  uint64_t end;
+} BinnacleGroupRequest;
+
+/* What every query of a batch shares: the level fields (outermost first),
+ * the values to aggregate and the slicers, as in BinnacleGrouping, and the
+ * grouped axis's sort, filter and hidden Leaf Keys. The backend filters the
+ * Leaves by the slicers, the filter and the hidden Keys before it groups
+ * and aggregates them, and orders siblings by the sort. */
+typedef struct {
+  const uint64_t *levels;
+  size_t levels_len;
+  const BinnacleAggregateValue *values;
+  size_t values_len;
+  const BinnacleCondition *slicers;
+  size_t slicers_len;
+  BinnacleAxisView rows;
+} BinnacleGroupScope;
+
+/* One frame's queries, for the View Spec stamp names. */
+typedef struct {
+  uint64_t stamp;
+  BinnacleGroupScope scope;
+  const BinnacleGroupRequest *requests;
+  size_t requests_len;
+} BinnacleGroupBatch;
+
+/* One group: its value at its level, how many children it has (groups of
+ * the next level, or Leaves at the innermost), and its figures. */
+typedef struct {
+  BinnacleValue value;
+  uint64_t children;
+  const BinnacleFigure *figures;
+  size_t figures_len;
+} BinnacleGroupRow;
+
+/*
+ * A backend's answer, self-describing so it can come in any order, in
+ * parts or unasked: the batch's stamp, the request it answers (has_id 0
+ * for data not asked for), and where its body belongs. Fields its body does
+ * not use are ignored.
+ */
+typedef struct {
+  uint64_t stamp;
+  uint32_t has_id;
+  uint64_t id;
+  const BinnacleGroupStep *path;
+  size_t path_len;
+  uint64_t start;
+  uint32_t body;
+  /* GROUPS: how many groups there are under the path in all, and those
+   * from start. */
+  uint64_t total;
+  const BinnacleGroupRow *groups;
+  size_t groups_len;
+  /* LEAVES: the group's Leaf Keys from start. */
+  const uint64_t *keys;
+  size_t keys_len;
+  /* LOCATED: the Leaf's Key, and whether it is under path at start (1) or
+   * left out (0). */
+  uint64_t key;
+  uint32_t found;
+  /* TOTAL: the figures of the whole group at the path. */
+  const BinnacleFigure *figures;
+  size_t figures_len;
+} BinnacleGroupAnswer;
+
+/* A Change Notice for the Grid (binnacle_grid_notify's arguments). */
+typedef struct {
+  uint32_t axis;
+  uint32_t notice;
+  uint64_t at;
+  uint64_t n;
+} BinnacleGroupNotice;
+
+/* A View Spec the layer applied, for binnacle_grid_view_applied, and the
+ * Change Notices it brings. */
+typedef struct {
+  BinnacleViewSpec applied;
+  BinnacleTotals totals;
+  const BinnacleGroupNotice *notices;
+  size_t notices_len;
+} BinnacleGroupViewed;
+
+/* An item of a grouped axis, for binnacle_grid_set_window and
+ * binnacle_grid_set_outlines. */
+typedef struct {
+  uint64_t key;
+  BinnacleOutline outline;
+} BinnacleGroupItem;
+
+/* A Summary Item: its kind (BINNACLE_ITEM_*), its group's path, how many
+ * children it has, and its figures. */
+typedef struct {
+  uint32_t kind;
+  const BinnacleGroupStep *path;
+  size_t path_len;
+  uint64_t children;
+  const BinnacleFigure *figures;
+  size_t figures_len;
+} BinnacleGroupSummary;
+
+/* A new layer caching up to cache closed groups and Leaves besides those
+ * the latest Windows read, or the default if has_cache is 0. NULL for a
+ * flag that is not 0 or 1. Free it with binnacle_group_layer_free. */
+BinnacleGroupLayer *binnacle_group_layer_new(uint32_t has_cache, uint64_t cache);
+
+void binnacle_group_layer_free(BinnacleGroupLayer *layer);
+
+/* Takes the View Spec asked for; NULL is the base view. 0 as for
+ * binnacle_grid_view_applied. */
+int binnacle_group_layer_request_view(BinnacleGroupLayer *layer, const BinnacleViewSpec *spec);
+
+/* Starts the grouped axes afresh under the same View Spec, after the data
+ * changed. */
+int binnacle_group_layer_refresh(BinnacleGroupLayer *layer);
+
+/* 1 if axis is grouped, and so the layer's; else 0. */
+int binnacle_group_layer_grouped(BinnacleGroupLayer *layer, uint32_t axis);
+
+/* Takes the next batch for the backend into out: 1 if there was one. */
+int binnacle_group_layer_poll_batch(BinnacleGroupLayer *layer, BinnacleGroupBatch *out);
+
+/* Takes one of the backend's answers. 0 for an unknown tag or flag, or text
+ * that is not UTF-8. */
+int binnacle_group_layer_answer(BinnacleGroupLayer *layer, const BinnacleGroupAnswer *answer);
+
+/* Takes the next applied View Spec into out: 1 if there was one. */
+int binnacle_group_layer_poll_viewed(BinnacleGroupLayer *layer, BinnacleGroupViewed *out);
+
+/* How many items axis shows, into out: 1 if known, else 0. */
+int binnacle_group_layer_count(BinnacleGroupLayer *layer, uint32_t axis, uint64_t *out);
+
+/* The items of axis at positions start to end, up to the first one not
+ * yet answered, into *items and *len; the next batch asks for the rest,
+ * and the host asks again once answers land. */
+int binnacle_group_layer_window(BinnacleGroupLayer *layer, uint32_t axis, uint64_t start,
+                                uint64_t end, const BinnacleGroupItem **items, size_t *len);
+
+/* Where the item with key is on axis, as binnacle_grid_located takes it:
+ * 1 with *answer (BINNACLE_LOCATED_*) and *position, or 0 while the backend
+ * is asked. */
+int binnacle_group_layer_locate(BinnacleGroupLayer *layer, uint32_t axis, uint64_t key,
+                                uint32_t *answer, uint64_t *position);
+
+/* The Summary Item with key into out: 1 if the layer holds it and its
+ * figures, else 0. */
+int binnacle_group_layer_summary(BinnacleGroupLayer *layer, uint64_t key,
+                                 BinnacleGroupSummary *out);
+
+/* How many groups and Leaves the layer holds; 0 for NULL. */
+uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
 
 #ifdef __cplusplus
 }

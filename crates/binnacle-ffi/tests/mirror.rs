@@ -3527,3 +3527,618 @@ fn find_steps_within_groups_through_the_c_api_mirror_the_grid(tc: TestCase) {
         binnacle_grid_free(h);
     }
 }
+
+/// An axis's view read back from C, as a host would.
+unsafe fn axis_view_from_c(v: &BinnacleAxisView) -> (SortSpec, FilterSpec, Vec<Key>) {
+    let sort = unsafe { c_slice(v.sort, v.sort_len) }
+        .iter()
+        .map(|s| SortColumn {
+            key: Key(s.key),
+            direction: match s.direction {
+                0 => SortDirection::Ascending,
+                1 => SortDirection::Descending,
+                d => panic!("direction {d}"),
+            },
+        })
+        .collect();
+    let quick = match v.has_quick {
+        0 => None,
+        1 => Some(unsafe { query_from_c(&v.quick) }),
+        q => panic!("has_quick {q}"),
+    };
+    let conditions: Vec<Condition> = unsafe { c_slice(v.conditions, v.conditions_len) }
+        .iter()
+        .map(|c| unsafe { condition_from_c(c) })
+        .collect();
+    let filter = FilterSpec::default()
+        .with_quick(quick)
+        .with_conditions(conditions.into());
+    let hidden = unsafe { c_slice(v.hidden, v.hidden_len) }
+        .iter()
+        .map(|&k| Key(k))
+        .collect();
+    (SortSpec::new(sort), filter, hidden)
+}
+
+/// A View Spec read back from C, as a host would.
+unsafe fn view_from_c(v: &BinnacleViewSpec) -> ViewSpec {
+    let mut spec = ViewSpec::default();
+    for axis in Axis::ALL {
+        let (sort, filter, hidden) = unsafe { axis_view_from_c(&v.axes[tag(axis) as usize]) };
+        spec = (spec.with_sort(axis, sort))
+            .with_filter(axis, filter)
+            .with_hidden(axis, hidden);
+    }
+    let grouping = match v.has_grouping {
+        0 => None,
+        1 => Some(unsafe { grouping_from_c(&v.grouping) }),
+        g => panic!("has_grouping {g}"),
+    };
+    spec.with_grouping(grouping)
+}
+
+type LayerFigure = Option<binnacle_ffi::Figure>;
+
+/// A path read back from C, as a host would.
+unsafe fn path_from_c(steps: *const BinnacleGroupStep, len: usize) -> binnacle_group::Path {
+    unsafe { c_slice(steps, len) }
+        .iter()
+        .map(|s| (Key(s.field), unsafe { value_from_c(&s.value) }))
+        .collect()
+}
+
+/// Figures read back from C, as a host would.
+unsafe fn figures_from_c(figures: *const BinnacleFigure, len: usize) -> Vec<LayerFigure> {
+    unsafe { c_slice(figures, len) }
+        .iter()
+        .map(|f| match f.kind {
+            BINNACLE_FIGURE_BLANK => None,
+            BINNACLE_FIGURE_NUMBER => Some(binnacle_ffi::Figure::Number(f.number)),
+            BINNACLE_FIGURE_TEXT => {
+                Some(binnacle_ffi::Figure::Text(unsafe { text_from_c(f.text) }))
+            }
+            k => panic!("figure kind {k}"),
+        })
+        .collect()
+}
+
+/// A batch read back from C, as a host would.
+unsafe fn batch_from_c(b: &BinnacleGroupBatch) -> binnacle_group::Batch {
+    use binnacle_group::{Batch, Request, RequestId, Scope, Stamp, Want};
+    let s = &b.scope;
+    let (sort, filter, hidden) = unsafe { axis_view_from_c(&s.rows) };
+    // Read the values back through a grouping, as grouping_from_c does.
+    let values = unsafe {
+        grouping_from_c(&BinnacleGrouping {
+            values: s.values,
+            values_len: s.values_len,
+            ..BinnacleGrouping::default()
+        })
+    }
+    .values;
+    let scope = Scope {
+        levels: unsafe { c_slice(s.levels, s.levels_len) }
+            .iter()
+            .map(|&k| Key(k))
+            .collect(),
+        values,
+        slicers: unsafe { c_slice(s.slicers, s.slicers_len) }
+            .iter()
+            .map(|c| unsafe { condition_from_c(c) })
+            .collect(),
+        filter,
+        hidden,
+        sort,
+    };
+    let requests = unsafe { c_slice(b.requests, b.requests_len) }
+        .iter()
+        .map(|r| Request {
+            id: RequestId(r.id),
+            path: unsafe { path_from_c(r.path, r.path_len) },
+            want: match r.want {
+                BINNACLE_WANT_GROUPS => Want::Groups,
+                BINNACLE_WANT_LEAVES => Want::Leaves,
+                BINNACLE_WANT_LOCATE => Want::Locate(Key(r.key)),
+                BINNACLE_WANT_TOTAL => Want::Total,
+                w => panic!("want {w}"),
+            },
+            range: r.start..r.end,
+        })
+        .collect();
+    Batch {
+        stamp: Stamp(b.stamp),
+        scope,
+        requests,
+    }
+}
+
+/// Runs `f` with `answer` in C form, its arrays alive for the call.
+fn with_c_answer<T>(
+    answer: &binnacle_group::Answer<LayerFigure>,
+    f: impl FnOnce(&BinnacleGroupAnswer) -> T,
+) -> T {
+    use binnacle_group::Body;
+    let figures = |fs: &[LayerFigure]| -> Vec<BinnacleFigure> {
+        fs.iter()
+            .map(|f| match f {
+                None => BinnacleFigure::default(),
+                Some(binnacle_ffi::Figure::Number(number)) => BinnacleFigure {
+                    kind: BINNACLE_FIGURE_NUMBER,
+                    number: *number,
+                    ..BinnacleFigure::default()
+                },
+                Some(binnacle_ffi::Figure::Text(t)) => BinnacleFigure {
+                    kind: BINNACLE_FIGURE_TEXT,
+                    text: BinnacleText {
+                        data: t.as_ptr(),
+                        len: t.len(),
+                    },
+                    ..BinnacleFigure::default()
+                },
+            })
+            .collect()
+    };
+    let path: Vec<BinnacleGroupStep> = (answer.path.iter())
+        .map(|(field, value)| BinnacleGroupStep {
+            field: field.0,
+            value: value_to_c(value),
+        })
+        .collect();
+    let mut c = BinnacleGroupAnswer {
+        stamp: answer.stamp.0,
+        has_id: u32::from(answer.id.is_some()),
+        id: answer.id.map_or(0, |id| id.0),
+        path: path.as_ptr(),
+        path_len: path.len(),
+        start: answer.start,
+        body: BINNACLE_BODY_GROUPS,
+        total: 0,
+        groups: std::ptr::null(),
+        groups_len: 0,
+        keys: std::ptr::null(),
+        keys_len: 0,
+        key: 0,
+        found: 0,
+        figures: std::ptr::null(),
+        figures_len: 0,
+    };
+    let (row_figures, rows, keys, total): (Vec<_>, Vec<_>, Vec<u64>, Vec<_>);
+    match &answer.body {
+        Body::Groups { total: n, groups } => {
+            row_figures = groups.iter().map(|g| figures(&g.aggregates)).collect();
+            rows = (groups.iter().zip(&row_figures))
+                .map(|(g, fs)| BinnacleGroupRow {
+                    value: value_to_c(&g.value),
+                    children: g.children,
+                    figures: fs.as_ptr(),
+                    figures_len: fs.len(),
+                })
+                .collect();
+            c.total = *n;
+            c.groups = rows.as_ptr();
+            c.groups_len = rows.len();
+        }
+        Body::Leaves { keys: ks } => {
+            keys = ks.iter().map(|k| k.0).collect();
+            c.body = BINNACLE_BODY_LEAVES;
+            c.keys = keys.as_ptr();
+            c.keys_len = keys.len();
+        }
+        Body::Located { key, found } => {
+            c.body = BINNACLE_BODY_LOCATED;
+            c.key = key.0;
+            c.found = u32::from(*found);
+        }
+        Body::Total { aggregates } => {
+            total = figures(aggregates);
+            c.body = BINNACLE_BODY_TOTAL;
+            c.figures = total.as_ptr();
+            c.figures_len = total.len();
+        }
+    }
+    f(&c)
+}
+
+/// The backend both layers answer from: 30 Leaves, Keys 1000 to 1029 (the
+/// rows' Keys), each with a value in every field, blank now and then.
+struct LayerFake;
+
+impl LayerFake {
+    fn value(row: u64, field: Key) -> Value {
+        match (row + field.0) % 5 {
+            0 => Value::Blank,
+            v => Value::Text(format!("{}", v % 3)),
+        }
+    }
+
+    fn under(scope: &binnacle_group::Scope, path: &binnacle_group::Path) -> Vec<u64> {
+        (0..30)
+            .filter(|row| !scope.hidden.contains(&Key(1000 + row)))
+            .filter(|&row| path.iter().all(|(f, v)| Self::value(row, *f) == *v))
+            .collect()
+    }
+
+    fn figures(scope: &binnacle_group::Scope, rows: &[u64]) -> Vec<LayerFigure> {
+        (scope.values.iter().enumerate())
+            .map(|(i, _)| match i % 3 {
+                0 => Some(binnacle_ffi::Figure::Number(rows.len() as f64)),
+                1 => Some(binnacle_ffi::Figure::Text(format!("{} rows", rows.len()))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The whole answer to `request`, `more` past its end when that is
+    /// asked for.
+    fn answer(
+        batch: &binnacle_group::Batch,
+        request: &binnacle_group::Request,
+        more: u64,
+    ) -> binnacle_group::Answer<LayerFigure> {
+        use binnacle_group::{Answer, Body, GroupRow, Want};
+        let scope = &batch.scope;
+        let mut answer = Answer {
+            stamp: batch.stamp,
+            id: Some(request.id),
+            path: request.path.clone(),
+            start: request.range.start,
+            body: Body::Leaves { keys: Vec::new() },
+        };
+        let end = |n: u64| request.range.end.saturating_add(more).min(n);
+        let rows = Self::under(scope, &request.path);
+        answer.body = match request.want {
+            Want::Groups => {
+                let Some(&field) = scope.levels.get(request.path.len()) else {
+                    return answer;
+                };
+                let mut values: Vec<Value> = Vec::new();
+                for &row in &rows {
+                    let v = Self::value(row, field);
+                    if !values.contains(&v) {
+                        values.push(v);
+                    }
+                }
+                let total = values.len() as u64;
+                let groups = (values.iter())
+                    .skip(request.range.start as usize)
+                    .take(end(total).saturating_sub(request.range.start) as usize)
+                    .map(|v| {
+                        let mut path = request.path.clone();
+                        path.push((field, v.clone()));
+                        let inner = Self::under(scope, &path);
+                        let children = match scope.levels.get(path.len()) {
+                            Some(&next) => {
+                                let mut seen: Vec<Value> = Vec::new();
+                                for &row in &inner {
+                                    let v = Self::value(row, next);
+                                    if !seen.contains(&v) {
+                                        seen.push(v);
+                                    }
+                                }
+                                seen.len() as u64
+                            }
+                            None => inner.len() as u64,
+                        };
+                        GroupRow {
+                            value: v.clone(),
+                            children,
+                            aggregates: Self::figures(scope, &inner),
+                        }
+                    })
+                    .collect();
+                Body::Groups { total, groups }
+            }
+            Want::Leaves => Body::Leaves {
+                keys: (rows.iter())
+                    .skip(request.range.start as usize)
+                    .take(end(rows.len() as u64).saturating_sub(request.range.start) as usize)
+                    .map(|&row| Key(1000 + row))
+                    .collect(),
+            },
+            Want::Total => Body::Total {
+                aggregates: Self::figures(scope, &rows),
+            },
+            Want::Locate(key) => {
+                let row = key.0.wrapping_sub(1000);
+                let found = row < 30 && !scope.hidden.contains(&key);
+                if found {
+                    answer.path = (scope.levels.iter())
+                        .map(|&f| (f, Self::value(row, f)))
+                        .collect();
+                    let under = Self::under(scope, &answer.path);
+                    answer.start = under.iter().position(|&r| r == row).unwrap_or(0) as u64;
+                } else {
+                    answer.path = Vec::new();
+                    answer.start = 0;
+                }
+                Body::Located { key, found }
+            }
+        };
+        answer
+    }
+}
+
+#[derive(Clone, Debug)]
+enum LayerOp {
+    View(Box<ViewSpec>),
+    Refresh,
+    /// Polls a batch from both and answers each request still due, in
+    /// order or reversed, with shapes taken in turn: `more` past its end,
+    /// unnamed, or left for later.
+    Pump(bool, Vec<(u64, bool, bool)>),
+    Window(Axis, u64, u64),
+    Locate(Axis, Key),
+    /// The Summary Item at this index of the last Window.
+    Summary(usize),
+    /// The spec in force again, the group at this index of the last Window
+    /// toggled through the rows' except Keys: it opens or closes.
+    Toggle(usize),
+    /// An answer whose body tag is unknown: refused, nothing changes.
+    BadAnswer,
+}
+
+/// A View Spec for the layer: usually the rows grouped by one or two of
+/// the fields the fake backend knows, otherwise any spec.
+#[hegel::composite]
+fn layer_spec(tc: &TestCase) -> ViewSpec {
+    let spec = tc.draw(view_spec());
+    if tc.draw(gs::weighted_booleans(0.2)) {
+        return spec;
+    }
+    let mut grouping = tc.draw(grouping());
+    let fields = tc.draw(
+        gs::vecs(gs::integers::<u64>().max_value(3))
+            .min_size(1)
+            .max_size(2),
+    );
+    *grouping.levels_mut(Axis::Rows) = (fields.into_iter())
+        .map(|f| Level::Field {
+            field: Key(5000 + f),
+            subtotal: tc.draw(placement()),
+        })
+        .collect();
+    if tc.draw(gs::weighted_booleans(0.8)) {
+        grouping.levels_mut(Axis::Cols).clear();
+    }
+    spec.with_grouping(Some(grouping))
+}
+
+#[hegel::composite]
+fn layer_op(tc: &TestCase) -> LayerOp {
+    match tc.draw(gs::integers::<u8>().max_value(13)) {
+        0 => LayerOp::View(Box::new(tc.draw(layer_spec()))),
+        1 => LayerOp::Refresh,
+        2..=5 => LayerOp::Pump(
+            tc.draw(gs::booleans()),
+            tc.draw(
+                gs::vecs(hegel::tuples!(
+                    gs::sampled_from(vec![0, 0, 3, 100]),
+                    gs::weighted_booleans(0.2),
+                    gs::weighted_booleans(0.2)
+                ))
+                .max_size(5),
+            ),
+        ),
+        6..=8 => {
+            // Mostly near the top, where a few groups are.
+            let start = match tc.draw(gs::weighted_booleans(0.7)) {
+                true => tc.draw(gs::integers::<u64>().max_value(3)),
+                false => tc.draw(gs::integers::<u64>().max_value(40)),
+            };
+            let len = tc.draw(gs::integers::<u64>().max_value(12));
+            let axis = match tc.draw(gs::weighted_booleans(0.8)) {
+                true => Axis::Rows,
+                false => Axis::Cols,
+            };
+            LayerOp::Window(axis, start, start + len)
+        }
+        9 => LayerOp::Locate(
+            tc.draw(axes()),
+            Key(1000 + tc.draw(gs::integers::<u64>().max_value(32))),
+        ),
+        10 => LayerOp::Summary(tc.draw(gs::integers::<usize>().max_value(10))),
+        11 | 12 => LayerOp::Toggle(tc.draw(gs::integers::<usize>().max_value(10))),
+        _ => LayerOp::BadAnswer,
+    }
+}
+
+/// The grouping layer through the C API mirrors the Rust layer: given the
+/// same View Specs and answers, it polls the same batches, applies the same
+/// specs with the same Change Notices, and shows the same counts, Windows,
+/// Locates, Summary Items and holdings.
+#[hegel::test(test_cases = 1000)]
+fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
+    use binnacle_group::GroupingLayer;
+    assert!(binnacle_group_layer_new(2, 0).is_null());
+    let cache = tc.draw(gs::optional(gs::integers::<u64>().max_value(80)));
+    let h = binnacle_group_layer_new(u32::from(cache.is_some()), cache.unwrap_or(0));
+    assert!(!h.is_null());
+    let mut layer: GroupingLayer<LayerFigure> = match cache {
+        Some(n) => GroupingLayer::with_cache(n),
+        None => GroupingLayer::new(),
+    };
+    let mut shown: Vec<Key> = Vec::new();
+    let mut due: Vec<(binnacle_group::Batch, binnacle_group::Request)> = Vec::new();
+    let mut current = ViewSpec::default();
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(40));
+    for step in 0..steps {
+        // A spec first, so most cases group.
+        let op = match step {
+            0 => LayerOp::View(Box::new(tc.draw(layer_spec()))),
+            _ => tc.draw(layer_op()),
+        };
+        match &op {
+            LayerOp::View(spec) => {
+                with_c_view(spec, |c| {
+                    assert_eq!(unsafe { binnacle_group_layer_request_view(h, c) }, 1);
+                    layer.request_view((**spec).clone());
+                });
+                current = (**spec).clone();
+            }
+            LayerOp::Toggle(i) => {
+                let (Some(&key), Some(grouping)) = (shown.get(*i), current.grouping.as_mut())
+                else {
+                    continue;
+                };
+                let except = &mut grouping.axis_mut(Axis::Rows).expand.except;
+                match except.iter().position(|&k| k == key) {
+                    Some(at) => _ = except.remove(at),
+                    None => except.push(key),
+                }
+                with_c_view(&current, |c| {
+                    assert_eq!(unsafe { binnacle_group_layer_request_view(h, c) }, 1);
+                    layer.request_view(current.clone());
+                });
+            }
+            LayerOp::Refresh => {
+                assert_eq!(unsafe { binnacle_group_layer_refresh(h) }, 1);
+                layer.refresh();
+            }
+            LayerOp::Pump(reverse, shapes) => {
+                let mut c = BinnacleGroupBatch::default();
+                let polled = unsafe { binnacle_group_layer_poll_batch(h, &mut c) };
+                let want = layer.poll_batch();
+                assert_eq!(polled, i32::from(want.is_some()));
+                if let Some(want) = want {
+                    assert_eq!(unsafe { batch_from_c(&c) }, want);
+                    for r in &want.requests {
+                        due.push((want.clone(), r.clone()));
+                    }
+                }
+                // Every request still due, some left for a later pump and
+                // so answered late, perhaps after a newer spec.
+                if *reverse {
+                    due.reverse();
+                }
+                let mut kept = Vec::new();
+                for (i, (batch, request)) in std::mem::take(&mut due).into_iter().enumerate() {
+                    let (more, unnamed, later) = match shapes.len() {
+                        0 => (0, false, false),
+                        n => shapes[i % n],
+                    };
+                    if later {
+                        kept.push((batch, request));
+                        continue;
+                    }
+                    let mut answer = LayerFake::answer(&batch, &request, more);
+                    if unnamed {
+                        answer.id = None;
+                    }
+                    with_c_answer(&answer, |c| {
+                        assert_eq!(unsafe { binnacle_group_layer_answer(h, c) }, 1);
+                    });
+                    layer.answer(answer);
+                }
+                due = kept;
+            }
+            LayerOp::Window(axis, start, end) => {
+                let mut items: *const BinnacleGroupItem = std::ptr::null();
+                let mut len = 0;
+                let ok = unsafe {
+                    binnacle_group_layer_window(h, tag(*axis), *start, *end, &mut items, &mut len)
+                };
+                assert_eq!(ok, 1);
+                let got: Vec<(Key, Outline)> = unsafe { c_slice(items, len) }
+                    .iter()
+                    .map(|i| (Key(i.key), unsafe { outline_from_c(&i.outline) }))
+                    .collect();
+                let want = layer.window(*axis, *start..*end);
+                assert_eq!(got, want, "Window {start}..{end} of {axis:?}");
+                shown = want.into_iter().map(|(k, _)| k).collect();
+            }
+            LayerOp::Locate(axis, key) => {
+                let (mut answer, mut position) = (99, 99);
+                let got = unsafe {
+                    binnacle_group_layer_locate(h, tag(*axis), key.0, &mut answer, &mut position)
+                };
+                let got = (got == 1).then(|| match answer {
+                    BINNACLE_LOCATED_FOUND => Located::Found(position),
+                    BINNACLE_LOCATED_GONE => Located::Gone { suggest: None },
+                    BINNACLE_LOCATED_GONE_SUGGEST => Located::Gone {
+                        suggest: Some(position),
+                    },
+                    a => panic!("located {a}"),
+                });
+                assert_eq!(got, layer.locate(*axis, *key), "locate {key:?}");
+            }
+            LayerOp::Summary(i) => {
+                let key = shown.get(*i).copied().unwrap_or(Key(1 << 63));
+                let mut c = BinnacleGroupSummary::default();
+                let got = unsafe { binnacle_group_layer_summary(h, key.0, &mut c) };
+                let want = layer.summary(key);
+                assert_eq!(got, i32::from(want.is_some()));
+                if let Some(want) = want {
+                    let kind = match want.kind {
+                        ItemKind::Leaf => BINNACLE_ITEM_LEAF,
+                        ItemKind::Group => BINNACLE_ITEM_GROUP,
+                        ItemKind::Subtotal => BINNACLE_ITEM_SUBTOTAL,
+                        ItemKind::GrandTotal => BINNACLE_ITEM_GRAND_TOTAL,
+                    };
+                    assert_eq!((c.kind, c.children), (kind, want.children));
+                    assert_eq!(unsafe { path_from_c(c.path, c.path_len) }, *want.path);
+                    assert_eq!(
+                        unsafe { figures_from_c(c.figures, c.figures_len) },
+                        want.aggregates
+                    );
+                }
+            }
+            LayerOp::BadAnswer => {
+                let answer = BinnacleGroupAnswer {
+                    body: 9,
+                    ..unsafe { std::mem::zeroed() }
+                };
+                assert_eq!(unsafe { binnacle_group_layer_answer(h, &answer) }, 0);
+            }
+        }
+        // What every op leaves to compare: the applied specs and their
+        // notices, the counts and the holdings.
+        loop {
+            let mut c = BinnacleGroupViewed::default();
+            let polled = unsafe { binnacle_group_layer_poll_viewed(h, &mut c) };
+            let want = layer.poll_viewed();
+            assert_eq!(polled, i32::from(want.is_some()), "viewed after {op:?}");
+            let Some(want) = want else { break };
+            assert_eq!(unsafe { view_from_c(&c.applied) }, want.applied);
+            let total = |t: BinnacleTotal| (t.known != 0).then_some(t.count);
+            assert_eq!(
+                (total(c.totals.axes[0]), total(c.totals.axes[1])),
+                (want.totals.rows, want.totals.cols)
+            );
+            let notices: Vec<(Axis, ChangeNotice)> = unsafe { c_slice(c.notices, c.notices_len) }
+                .iter()
+                .map(|n| {
+                    let axis = if n.axis == ROWS {
+                        Axis::Rows
+                    } else {
+                        Axis::Cols
+                    };
+                    let (at, count) = (n.at, n.n);
+                    let notice = match n.notice {
+                        BINNACLE_NOTICE_RESET => ChangeNotice::Reset(count),
+                        BINNACLE_NOTICE_REORDERED => ChangeNotice::Reordered,
+                        BINNACLE_NOTICE_INSERTED => ChangeNotice::Inserted { at, n: count },
+                        BINNACLE_NOTICE_REMOVED => ChangeNotice::Removed { at, n: count },
+                        BINNACLE_NOTICE_CONTENT_CHANGED => {
+                            ChangeNotice::ContentChanged(at..at + count)
+                        }
+                        BINNACLE_NOTICE_REFILTERED => ChangeNotice::Refiltered(count),
+                        BINNACLE_NOTICE_COLLAPSED => ChangeNotice::Collapsed { at, n: count },
+                        BINNACLE_NOTICE_EXPANDED => ChangeNotice::Expanded { at, n: count },
+                        k => panic!("notice {k}"),
+                    };
+                    (axis, notice)
+                })
+                .collect();
+            assert_eq!(notices, want.notices);
+        }
+        for axis in Axis::ALL {
+            let mut n = 99;
+            let got = unsafe { binnacle_group_layer_count(h, tag(axis), &mut n) };
+            assert_eq!((got == 1).then_some(n), layer.count(axis), "{axis:?} count");
+            let grouped = unsafe { binnacle_group_layer_grouped(h, tag(axis)) };
+            assert_eq!(grouped, i32::from(layer.grouped(axis)));
+        }
+        assert_eq!(unsafe { binnacle_group_layer_held(h) }, layer.held());
+    }
+    unsafe { binnacle_group_layer_free(h) };
+}

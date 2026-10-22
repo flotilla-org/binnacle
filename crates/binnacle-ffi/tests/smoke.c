@@ -66,6 +66,74 @@ static void frame(BinnacleGrid *grid, BinnacleSnapshot *snap) {
   CHECK(binnacle_grid_snapshot(grid, snap));
 }
 
+/* The grouping layer over a backend the host answers: rows grouped by
+ * field 2002 into "a" (3 Leaves) and "b" (2), closed. */
+static void group_layer(void) {
+  CHECK(binnacle_group_layer_new(2, 0) == NULL);
+  BinnacleGroupLayer *layer = binnacle_group_layer_new(0, 0);
+  CHECK(layer != NULL);
+  BinnacleLevel level = {.kind = BINNACLE_LEVEL_FIELD, .field = 2002,
+                         .subtotal = BINNACLE_PLACEMENT_OFF};
+  BinnacleAggregateValue count = {.aggregate = {(const uint8_t *)"count", 5}};
+  BinnacleViewSpec spec = {.has_grouping = 1};
+  spec.grouping.axes[BINNACLE_ROWS].levels = &level;
+  spec.grouping.axes[BINNACLE_ROWS].levels_len = 1;
+  spec.grouping.values = &count;
+  spec.grouping.values_len = 1;
+  CHECK(binnacle_group_layer_request_view(layer, &spec));
+  CHECK(binnacle_group_layer_grouped(layer, BINNACLE_ROWS));
+  CHECK(!binnacle_group_layer_grouped(layer, BINNACLE_COLS));
+
+  /* The first batch asks for the top groups. */
+  BinnacleGroupBatch batch;
+  CHECK(binnacle_group_layer_poll_batch(layer, &batch));
+  CHECK(batch.scope.levels_len == 1 && batch.scope.levels[0] == 2002);
+  CHECK(batch.scope.values_len == 1 && !batch.scope.values[0].has_field);
+  CHECK(batch.requests_len >= 1);
+  BinnacleFigure three = {.kind = BINNACLE_FIGURE_NUMBER, .number = 3};
+  BinnacleFigure two = {.kind = BINNACLE_FIGURE_NUMBER, .number = 2};
+  BinnacleGroupRow rows[2] = {
+      {.value = {.text = {(const uint8_t *)"a", 1}}, .children = 3, .figures = &three,
+       .figures_len = 1},
+      {.value = {.text = {(const uint8_t *)"b", 1}}, .children = 2, .figures = &two,
+       .figures_len = 1},
+  };
+  for (size_t i = 0; i < batch.requests_len; i++) {
+    const BinnacleGroupRequest *q = &batch.requests[i];
+    CHECK(q->want == BINNACLE_WANT_GROUPS && q->path_len == 0);
+    BinnacleGroupAnswer answer = {.stamp = batch.stamp, .has_id = 1, .id = q->id,
+                                  .body = BINNACLE_BODY_GROUPS, .total = 2, .groups = rows,
+                                  .groups_len = 2};
+    CHECK(binnacle_group_layer_answer(layer, &answer));
+    answer.body = 9;
+    CHECK(!binnacle_group_layer_answer(layer, &answer));
+  }
+
+  /* The spec is applied, and the two closed groups are the rows. */
+  BinnacleGroupViewed viewed;
+  CHECK(binnacle_group_layer_poll_viewed(layer, &viewed));
+  CHECK(viewed.applied.has_grouping && viewed.applied.grouping.axes[BINNACLE_ROWS].levels_len == 1);
+  uint64_t n = 0;
+  CHECK(binnacle_group_layer_count(layer, BINNACLE_ROWS, &n) && n == 2);
+  const BinnacleGroupItem *items;
+  size_t len;
+  CHECK(binnacle_group_layer_window(layer, BINNACLE_ROWS, 0, 2, &items, &len) && len == 2);
+  CHECK(items[0].outline.kind == BINNACLE_ITEM_GROUP);
+  CHECK(items[0].outline.open == BINNACLE_OPEN_STATE_CLOSED);
+  CHECK(items[1].outline.value.text.len == 1 && memcmp(items[1].outline.value.text.data, "b", 1) == 0);
+  BinnacleGroupSummary summary;
+  CHECK(binnacle_group_layer_summary(layer, items[0].key, &summary));
+  CHECK(summary.kind == BINNACLE_ITEM_GROUP && summary.children == 3);
+  CHECK(summary.path_len == 1 && summary.path[0].field == 2002);
+  CHECK(summary.figures_len == 1 && summary.figures[0].kind == BINNACLE_FIGURE_NUMBER);
+  CHECK(summary.figures[0].number == 3);
+  CHECK(binnacle_group_layer_held(layer) == 2);
+
+  binnacle_group_layer_free(layer);
+  binnacle_group_layer_free(NULL);
+  CHECK(binnacle_group_layer_held(NULL) == 0);
+}
+
 int main(void) {
   CHECK(binnacle_abi_version() == BINNACLE_ABI_VERSION);
 
@@ -580,6 +648,7 @@ int main(void) {
 
   binnacle_grid_free(grid);
   binnacle_grid_free(NULL);
+  group_layer();
   printf("ok\n");
   return 0;
 }
