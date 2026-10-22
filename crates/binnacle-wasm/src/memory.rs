@@ -162,11 +162,12 @@ pub struct WebMemory {
     /// The values of each field the grouping reads, by column index.
     fields: HashMap<Key, Field>,
     staged_fields: HashMap<Key, Field>,
-    /// The spec the layer was last asked for, and the rows' Change Notices
-    /// and `expand` as it applied them.
+    /// The spec the layer was last asked for, and each axis's Change
+    /// Notices and `expand` as it applied them (the rows, then the
+    /// columns).
     spec: ViewSpec,
-    notices: Vec<ChangeNotice>,
-    applied: Expand,
+    notices: [Vec<ChangeNotice>; 2],
+    applied: [Expand; 2],
     policy: MovePolicy,
 }
 
@@ -182,8 +183,8 @@ impl WebMemory {
             fields: HashMap::new(),
             staged_fields: HashMap::new(),
             spec: ViewSpec::default(),
-            notices: Vec::new(),
-            applied: Expand::default(),
+            notices: Default::default(),
+            applied: Default::default(),
             policy: MovePolicy::Bake,
         }
     }
@@ -312,10 +313,17 @@ impl WebMemory {
     /// `Expanded` for one group, `Refiltered` for more, none (empty) if no
     /// group shown changed.
     pub fn expand(&mut self, depth: f64, except: &[u64]) -> Vec<f64> {
+        self.expand_on(0, depth, except)
+    }
+
+    /// [`WebMemory::expand`] on axis `a`: a pivot's columns open and close
+    /// the same way.
+    pub fn expand_on(&mut self, a: u8, depth: f64, except: &[u64]) -> Vec<f64> {
+        let axis = axis(a);
         let Some(grouping) = self.spec.grouping.as_mut() else {
             return Vec::new();
         };
-        grouping.rows.expand = Expand {
+        grouping.axis_mut(axis).expand = Expand {
             depth: match depth < 0.0 {
                 true => Depth::All,
                 false => Depth::Levels(depth as u32),
@@ -324,18 +332,25 @@ impl WebMemory {
         };
         self.layer.request_view(self.spec.clone());
         self.settle();
-        match std::mem::take(&mut self.notices).as_slice() {
+        let notices = std::mem::take(&mut self.notices[axis.index()]);
+        match notices.as_slice() {
             [] => Vec::new(),
             [ChangeNotice::Collapsed { at, n }] => vec![6.0, *at as f64, *n as f64],
             [ChangeNotice::Expanded { at, n }] => vec![7.0, *at as f64, *n as f64],
-            _ => vec![5.0, self.count(0), f64::NAN],
+            _ => vec![5.0, self.count(a), f64::NAN],
         }
     }
 
     /// The Group Item Keys of the rows' `expand.except` as last applied:
     /// those whose paths no longer fit the levels are pruned.
     pub fn except(&self) -> Vec<u64> {
-        self.applied.except.iter().map(|k| k.0).collect()
+        self.except_on(0)
+    }
+
+    /// [`WebMemory::except`] on axis `a`.
+    pub fn except_on(&self, a: u8) -> Vec<u64> {
+        let applied = &self.applied[axis(a).index()];
+        applied.except.iter().map(|k| k.0).collect()
     }
 
     /// Whether the rows are grouped.
@@ -702,13 +717,13 @@ impl WebMemory {
             aggregates: &mut self.aggregates,
         };
         settle(&mut self.layer, &mut backend);
-        self.notices.clear();
+        self.notices = Default::default();
         while let Some(viewed) = self.layer.poll_viewed() {
-            // A pivot's columns are told apart, with a `Refiltered`.
-            let rows = (viewed.notices.into_iter()).filter(|(a, _)| *a == Axis::Rows);
-            self.notices.extend(rows.map(|(_, n)| n));
+            for (a, n) in viewed.notices {
+                self.notices[a.index()].push(n);
+            }
             if let Some(g) = viewed.applied.grouping {
-                self.applied = g.rows.expand;
+                self.applied = Axis::ALL.map(|a| g.axis(a).expand.clone());
             }
         }
     }

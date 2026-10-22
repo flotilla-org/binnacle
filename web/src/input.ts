@@ -230,9 +230,10 @@ export function createInput(host: InputHost): Input {
     }
     const action = host.keymap.lookup(e);
     if (!action) return;
-    // The tree keys are the outline column's; elsewhere Tab moves on and the rest type.
+    // The tree keys are the Header Bands' (the outline column, the column tiers); elsewhere Tab moves on and the rest type.
     const tree = action.type === "LeaveOutline" || action.type === "ExpandAll" || action.type === "ExpandTo";
-    if (tree && !host.snapshot()?.outlineFocused) return;
+    const s = host.snapshot();
+    if (tree && !(s?.rows.bandFocused || s?.cols.bandFocused)) return;
     if (action.type === "OpenColumnMenu" || action.type === "OpenRowMenu") {
       if (action.type === "OpenColumnMenu" ? host.openColumnMenu() : host.openRowMenu()) e.preventDefault();
       return;

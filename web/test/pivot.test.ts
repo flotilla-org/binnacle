@@ -213,6 +213,43 @@ describe("fromRows's pivot", () => {
     }
   });
 
+  test("a quarter closed shows its total column, told as a Collapsed, and opened again as an Expanded", () => {
+    const rows: Ship[] = [
+      { region: "North", quarter: "Q1", weight: 1 },
+      { region: "South", quarter: "Q1", weight: 4 },
+      { region: "North", quarter: "Q2", weight: 2 },
+    ];
+    const source = pivotSource(rows);
+    const notices: ChangeNotice[] = [];
+    source.attach!(sinksTo(notices));
+    try {
+      const g = pivot(true, [SUM, COUNT], "off", "off");
+      g.colLevels = [{ field: "quarter", subtotal: "after" }, { values: true }];
+      source.view!(viewOf(g), signal);
+      const columns = () => source.cols.window(0, source.cols.count() as number, signal) as OutlinedWindow<Col, Col>;
+      const open = columns();
+      expect(open.outlines.map((o) => o.kind)).toEqual(["group", "group", "subtotal", "group", "group", "subtotal"]);
+      const q1 = open.outlines[0]!.ancestors[0]!;
+      notices.length = 0;
+      const closing = { ...g, colAxis: { ...g.colAxis, expand: { depth: "all" as const, except: [q1] } } };
+      const answer = source.view!(viewOf(closing), signal) as AppliedView<number, Col>;
+      expect(answer.grouping?.colAxis.expand.except).toEqual([q1]);
+      expect(notices).toEqual([{ type: "Collapsed", at: 0, n: 2 }]);
+      const closed = columns();
+      expect(closed.ids).toEqual(open.ids.slice(2));
+      expect(closed.outlines[0]!.kind).toBe("subtotal");
+      expect(source.cols.groupLabel!(closed.ids[0]!, closed.outlines[0]!)).toBe("Q1 total");
+      const regions = (source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, Col>).ids;
+      // A closed quarter's total shows its first value, as a group over the values does.
+      expect(source.cells(regions, [closed.ids[0]!], signal)).toEqual([[1], [4]]);
+      source.view!(viewOf(g), signal);
+      expect(notices.at(-1)).toEqual({ type: "Expanded", at: 0, n: 2 });
+      expect(columns().ids).toEqual(open.ids);
+    } finally {
+      source.destroy();
+    }
+  });
+
   test("sorted by the Grand Total row, most first, the quarters follow their totals", () => {
     const rows: Ship[] = [
       { region: "North", quarter: "Q1", weight: 1 },

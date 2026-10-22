@@ -31,7 +31,7 @@ export function createPendingMarks(): PendingMarks {
   return {
     seen(s, now) {
       const keys = new Set(s.rows.strip.flatMap((i) => (i.togglePending && i.key !== null ? [i.key] : [])));
-      for (const span of s.rows.spans) if (span.togglePending) keys.add(span.key);
+      for (const span of [...s.rows.spans, ...s.cols.spans]) if (span.togglePending) keys.add(span.key);
       for (const key of since.keys()) if (!keys.has(key)) since.delete(key);
       for (const key of keys) if (!since.has(key)) since.set(key, now);
     },

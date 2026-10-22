@@ -71,7 +71,7 @@
 // columns are told every change as `Refiltered`, don't move, and order by
 // value ascending, or by the Grand Total row as the columns' sort asks.
 
-import { GRAND_TOTAL, NOTICE_CODE, VALUES_FIELD } from "./codes";
+import { AXIS_CODE, GRAND_TOTAL, NOTICE_CODE, VALUES_FIELD, type AxisName } from "./codes";
 import { comparedBy, comparedOf, passes, type Compared } from "./compare";
 import { byColumn, cellText, plainText, type CellRenderer } from "./renderer";
 import { textRenderer } from "./renderers/text";
@@ -85,6 +85,7 @@ import type {
   FilterSpec,
   FindMethods,
   FindQuery,
+  GroupedAxis,
   Grouping,
   Level,
   ListedValue,
@@ -187,6 +188,10 @@ export interface RowsGroup<ColId> {
   count: number;
   aggregates: (number | null)[];
 }
+
+/** The part of `g` laying out `axis`. */
+const axisOf = <F, R, C>(g: Grouping<F, R, C>, axis: AxisName): GroupedAxis<R | C> =>
+  axis === "rows" ? g.rowAxis : g.colAxis;
 
 /** An item of a grouped Window as `WebMemory.grouped_window` gives it; a Summary Item's field is a column index. */
 interface GroupedItem {
@@ -763,8 +768,8 @@ export function fromRows<R extends object>(
       rowLevels: grouping.rowLevels.map(level),
       colLevels: grouping.colLevels.map(level),
       values: grouping.values.map((v) => ({ ...v, field: v.field === null ? null : column(v.field) })),
-      rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except: groupKeys(grouping) } },
-      colAxis: { ...grouping.colAxis, expand: { ...grouping.colAxis.expand, except: [] } },
+      rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except: groupKeys(grouping, "rows") } },
+      colAxis: { ...grouping.colAxis, expand: { ...grouping.colAxis.expand, except: groupKeys(grouping, "cols") } },
     };
     const having = filters.rows.conditions
       .filter((k) => later(k.condition))
@@ -778,8 +783,11 @@ export function fromRows<R extends object>(
       Uint8Array.from(pivotSort, (c) => DIRECTION[c.direction]),
     );
     // The Group Items whose paths no longer fit the levels are pruned.
-    const except = Array.from(m.except(), summaryId);
-    grouping = { ...grouping, rowAxis: { ...grouping.rowAxis, expand: { ...grouping.rowAxis.expand, except } } };
+    const pruned = <Id,>(axis: AxisName, ax: GroupedAxis<Id>): GroupedAxis<Id> => ({
+      ...ax,
+      expand: { ...ax.expand, except: Array.from(m.except_on(AXIS_CODE[axis]), summaryId) as Id[] },
+    });
+    grouping = { ...grouping, rowAxis: pruned("rows", grouping.rowAxis), colAxis: pruned("cols", grouping.colAxis) };
   };
 
   /** Stages each column `g` reads, as cell texts and as numbers. */
@@ -804,14 +812,15 @@ export function fromRows<R extends object>(
     }
   };
 
-  /** The Keys of the Group Items in the rows' `expand.except`. */
-  const groupKeys = (g: Grouping<ColId, number, Col>) =>
-    g.rowAxis.expand.except.flatMap((id) => (id < 0 ? [summaryKey(id)] : []));
+  /** The Keys of the Group Items in the `expand.except` of `axis`. */
+  const groupKeys = (g: Grouping<ColId, number, Col>, axis: AxisName) =>
+    axisOf(g, axis).expand.except.flatMap((id) => (typeof id === "number" && id < 0 ? [summaryKey(id)] : []));
 
-  /** Opens and closes the groups as the grouping in force says, over the rows as they are grouped. */
-  const reopen = (): ChangeNotice | null => {
-    const { depth } = grouping!.rowAxis.expand;
-    const [code, at, n] = memory().expand(depth === "all" ? -1 : depth, BigUint64Array.from(groupKeys(grouping!)));
+  /** Opens and closes the groups of `axis` as the grouping in force says, over the items as they are grouped. */
+  const reopen = (axis: AxisName): ChangeNotice | null => {
+    const { depth } = axisOf(grouping!, axis).expand;
+    const keys = BigUint64Array.from(groupKeys(grouping!, axis));
+    const [code, at, n] = memory().expand_on(AXIS_CODE[axis], depth === "all" ? -1 : depth, keys);
     if (code === undefined) return null;
     if (code === NOTICE_CODE.Collapsed) return { type: "Collapsed", at: at!, n: n! };
     if (code === NOTICE_CODE.Expanded) return { type: "Expanded", at: at!, n: n! };
@@ -1173,9 +1182,12 @@ export function fromRows<R extends object>(
               slicers: slicers.map((k) => k.condition as Condition<ColId>),
             };
       // Opening and closing groups regroups nothing.
-      const shape = (g: typeof grouping) => JSON.stringify(g && { ...g, rowAxis: { ...g.rowAxis, expand: null } });
+      const shape = (g: typeof grouping) =>
+        JSON.stringify(g && { ...g, rowAxis: { ...g.rowAxis, expand: null }, colAxis: { ...g.colAxis, expand: null } });
       const regrouping = shape(grouping) !== shape(before) || !same(pivotSort, sortedBefore);
-      const reopening = JSON.stringify(grouping?.rowAxis.expand) !== JSON.stringify(before?.rowAxis.expand);
+      const reopening = (axis: AxisName) =>
+        JSON.stringify(grouping && axisOf(grouping, axis).expand) !==
+        JSON.stringify(before && axisOf(before, axis).expand);
       const hid = {
         rows: m.hide(ROWS, Uint32Array.from(hidden.rows)),
         cols: m.hide(
@@ -1196,7 +1208,7 @@ export function fromRows<R extends object>(
       if (refiltered) refilter();
       const regrouped = regrouping || (grouped() && (refiltered || hid.rows || sorted || stale));
       if (regrouped) regroup();
-      const reopened = !regrouped && reopening && grouped() ? reopen() : null;
+      const reopened = !regrouped && reopening("rows") && grouped() ? reopen("rows") : null;
       // An axis left in the same order is told nothing.
       if (refiltered || hid.rows || sorted || regrouped) {
         tell({ type: refiltered || hid.rows || regrouped ? "Refiltered" : "Reordered" });
@@ -1208,6 +1220,10 @@ export function fromRows<R extends object>(
       // A pivot's columns change only as a whole: never moved or removed one by one.
       if (pivot || wasPivot) {
         if (pivot !== wasPivot || (pivot && regrouped)) tell({ type: "Refiltered" }, "cols");
+        else if (pivot && reopening("cols")) {
+          const reopenedCols = reopen("cols");
+          if (reopenedCols) tell(reopenedCols, "cols");
+        }
       } else if (resorted || refilteredCols) tell({ type: refilteredCols ? "Refiltered" : "Reordered" }, "cols");
       return { ...current(), ...(error === undefined ? {} : { error }) };
     },
