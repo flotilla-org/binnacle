@@ -24,7 +24,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 13;
+pub const BINNACLE_ABI_VERSION: u32 = 14;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -180,6 +180,8 @@ pub const BINNACLE_ITEM_SUBTOTAL: u32 = 2;
 pub const BINNACLE_ITEM_GRAND_TOTAL: u32 = 3;
 
 pub const BINNACLE_GRAND_TOTAL_KEY: u64 = binnacle_core::GRAND_TOTAL.0;
+
+pub const BINNACLE_VALUES_FIELD: u64 = binnacle_core::VALUES_FIELD.0;
 
 pub const BINNACLE_OPEN_STATE_OPEN: u32 = 0;
 pub const BINNACLE_OPEN_STATE_CLOSED: u32 = 1;
