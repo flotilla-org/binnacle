@@ -1,7 +1,7 @@
 // Answers to the Grid's auto-size Effects, measured from the visible cells
 // through their Cell Renderers: the Grid never measures, the widget does.
 
-import { MARKED, rowFilterRoom } from "./canvas/bands";
+import { MARKED, outlineInset, rowFilterRoom } from "./canvas/bands";
 import { PAD } from "./canvas/context";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -70,7 +70,9 @@ export function bandWidth(
   let width = label;
   for (const row of s.rows.strip) {
     if (row.key === null && complete) return null;
-    width = Math.max(width, measure.width(content.label("rows", row), theme.font));
+    const { outline } = row;
+    const font = outline && outline.kind !== "leaf" ? theme.headerFont : theme.font;
+    width = Math.max(width, measure.width(content.label("rows", row), font) + (outline ? outlineInset(outline) : 0));
   }
   // Room for a sort marker while a row shown sorts the columns, or will.
   const marked = sorts || s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);

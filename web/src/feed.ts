@@ -47,7 +47,7 @@ import type {
   Totals,
   ViewSpec,
 } from "./source";
-import { summaryLabel } from "./source";
+import { summaryLabel, valueName } from "./source";
 import type { WebGrid } from "./wasm";
 
 export interface Feed<RowId = unknown, ColId = unknown> {
@@ -1109,6 +1109,17 @@ export function createFeed<RowId, ColId, V>(
     unmatched: (axis, i) => {
       const key = shown?.[axis].strip[i]?.key;
       return key != null && unmatched(axis, key);
+    },
+    caption: () => {
+      const grouping = shown?.appliedView.grouping;
+      const [value, ...more] = grouping?.values ?? [];
+      if (!grouping?.rowLevels.length || !value || more.length > 0) return null;
+      const { source: cols, interner } = axes.cols;
+      const name = (key: bigint) => {
+        const id = interner.id(key);
+        return id === undefined ? String(key) : (cols.label?.(id, Number.NaN) ?? String(id));
+      };
+      return valueName(value, name);
     },
   };
 

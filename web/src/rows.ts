@@ -635,10 +635,19 @@ export function fromRows<R extends object>(
     return { ids: items.map(id), outlines };
   };
 
+  /** A Summary Item as last listed, else read where it sits now (a pinned Grand Total out of view). */
+  const summaryOf = (id: number): RowsGroup<ColId> | undefined => {
+    if (!groups.has(id) && memory().grouped()) {
+      const [code, position] = memory().locate_summary(summaryKey(id));
+      if (code === 0) groupedWindow(position!, position! + 1);
+    }
+    return groups.get(id);
+  };
+
   /** A Summary Item's figure in column `col`: that of the first value aggregating it. */
   const figure = (id: number, col: ColId): number | null => {
     const at = grouping?.values.findIndex((v) => v.field === col) ?? -1;
-    return at < 0 ? null : (groups.get(id)?.aggregates[at] ?? null);
+    return at < 0 ? null : (summaryOf(id)?.aggregates[at] ?? null);
   };
 
   /** Sorts the columns by the rows `spec` names, each row's values across the columns as its keys. */
@@ -747,7 +756,7 @@ export function fromRows<R extends object>(
       move: (ids, to) => move(ROWS, ids, to),
       movable: () => levels.length === 0 && memory().movable(ROWS),
       groupLabel: (id, outline) => {
-        const group = groups.get(id);
+        const group = summaryOf(id);
         if (!group) return "";
         return counted() < 0 ? summaryLabel(outline) : `${summaryLabel(outline)} (${group.count})`;
       },
@@ -898,7 +907,7 @@ export function fromRows<R extends object>(
       tell({ type: "Refiltered" });
     },
     row: (id) => rows[id]!,
-    group: (id) => groups.get(id),
+    group: (id) => summaryOf(id),
     edited: (id) => update(id, true),
     changed: (id) => update(id, false),
     destroy() {

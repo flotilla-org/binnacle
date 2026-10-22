@@ -17,6 +17,11 @@ const FUNNEL = 10;
 const INDENT = 14;
 const DISCLOSURE = 14;
 
+/** How far an outlined row's label starts past the band's padding: its indent and any disclosure mark's room. */
+export function outlineInset(outline: KeyedOutline): number {
+  return outline.depth * INDENT + (outline.kind === "grandTotal" ? 0 : DISCLOSURE);
+}
+
 /** Whether a header shows its menu's button: a menu is mounted for its band and its item can be filtered by. */
 export function hasFilterButton(filterButtons: boolean, h: HeaderPlacement): boolean {
   return filterButtons && h.key !== null && (h.support.text !== null || h.support.compare !== null);
@@ -249,18 +254,17 @@ export function paintRowNumbers(p: PaintContext): void {
 /**
  * A grouped row's band in outline form, left-aligned: an indent per level,
  * then a Group Item's disclosure mark and its label in the header font, or
- * a Leaf's label past the mark's room.
+ * a Leaf's label past the mark's room. The Grand Total sits flush.
  */
 function paintOutline(p: PaintContext, outline: KeyedOutline, text: string, color: string, y: number, room: number): void {
   const { ctx, theme, measure } = p;
   ctx.textAlign = "left";
-  let x = PAD + outline.depth * INDENT;
   if (outline.kind === "group") {
     ctx.fillStyle = theme.disclosure;
     ctx.font = theme.headerFont;
-    ctx.fillText(outline.open === "closed" ? "▸" : "▾", x, y);
+    ctx.fillText(outline.open === "closed" ? "▸" : "▾", PAD + outline.depth * INDENT, y);
   }
-  x += DISCLOSURE;
+  const x = PAD + outlineInset(outline);
   const font = outline.kind === "leaf" ? theme.font : theme.headerFont;
   ctx.font = font;
   ctx.fillStyle = color;
@@ -269,8 +273,18 @@ function paintOutline(p: PaintContext, outline: KeyedOutline, text: string, colo
   ctx.font = theme.font;
 }
 
+/** The corner: blank, or the name of the one value grouped rows show. */
 export function paintCorner(p: PaintContext): void {
-  const { ctx, theme, left, top } = p;
+  const { ctx, theme, measure, left, top } = p;
   ctx.fillStyle = theme.header.background;
   ctx.fillRect(0, 0, left, top);
+  const caption = p.content.caption();
+  if (caption === null || left <= 2 * PAD) return;
+  ctx.save();
+  clip(ctx, 0, 0, left, top);
+  ctx.font = theme.headerFont;
+  ctx.textAlign = "left";
+  ctx.fillStyle = theme.header.color;
+  ctx.fillText(measure.fit(caption, theme.headerFont, left - 2 * PAD), PAD, top / 2);
+  ctx.restore();
 }

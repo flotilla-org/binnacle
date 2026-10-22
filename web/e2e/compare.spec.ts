@@ -21,9 +21,9 @@ async function openMenu(page: Page, column: string) {
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto("/?source=shipments&theme=light");
-  // The demo opens grouped by region; these tests filter the plain rows.
-  await openMenu(page, "port");
-  await menu(page, "port").getByRole("button", { name: "Ungroup rows" }).click();
+  // The demo opens grouped by region then port; these tests filter the plain rows.
+  await openMenu(page, "crates");
+  await menu(page, "crates").getByRole("button", { name: "Ungroup rows" }).click();
   await expect(shown(page)).toHaveText(`${en(shipments.length)} rows`);
 });
 
@@ -51,7 +51,7 @@ test("a weight over 100 and a quarter's dates filter the shipments as chips, and
   await expect(chips(page)).toHaveText(["weight: > 100×"]);
   await expect(shown(page)).toHaveText(`${en(heavy.length)} of ${en(shipments.length)}`);
   await page.keyboard.press("Escape");
-  await openMenu(page, "port");
+  await openMenu(page, "crates");
   await expect(menu(page, "port").getByRole("combobox", { name: "Comparison" })).toBeHidden();
 });
 

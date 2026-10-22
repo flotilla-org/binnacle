@@ -17,4 +17,6 @@ export interface Content {
   marked(row: number, col: number): boolean;
   /** Whether the visible item at index `i` of `axis`'s Strip is unmatched (kept after an edit though the filter drops it), as the Table Source last said. */
   unmatched(axis: AxisName, i: number): boolean;
+  /** The name of the one value grouped rows show, for the corner; `null` unless there is exactly one. */
+  caption(): string | null;
 }

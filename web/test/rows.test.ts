@@ -1290,6 +1290,31 @@ describe("fromRows's grouping", () => {
       }
     }));
 
+  test("a Grand Total pinned out of view has its figures and label before any Window lists it", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(records);
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const grouping = {
+          ...rowsBy<keyof Rec>("s"),
+          values: [
+            { field: "b" as const, aggregate: "sum" },
+            { field: null, aggregate: "count" },
+          ],
+          rowAxis: { ...rowsBy("s").rowAxis, grandTotal: "after" as const },
+        };
+        source.view!({ ...groupedBy("s", [], []), grouping }, signal);
+        const id = source.rows.grandTotal!;
+        const bs = rows.map((r) => r.b).filter((b): b is number => b !== null);
+        const sum = bs.length ? bs.reduce((a, b) => a + b, 0) : null;
+        expect(source.cells([id], ["b"], signal)).toEqual([[sum]]);
+        const outline = { kind: "grandTotal" as const, depth: 0, open: "cantOpen" as const, ancestors: [], group: null };
+        expect(source.rows.groupLabel!(id, outline)).toBe(`Grand total (${rows.length})`);
+      } finally {
+        source.destroy();
+      }
+    }));
+
   test("ungrouping brings back the plain rows, in the sort in force, and the level column", () =>
     hegel.test((tc) => {
       const rows = tc.draw(records);

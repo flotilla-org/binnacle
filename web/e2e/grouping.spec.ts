@@ -1,7 +1,9 @@
-// Grouping end to end (#200): the shipments demo opens grouped by region,
-// each Group Item drawn in outline form in the row header in every preset;
-// the column menu ungroups the rows and groups them by another column, focus
-// staying on its shipment; and a saved layout keeps the grouping.
+// Grouping end to end (#200, #201): the shipments demo opens grouped by
+// region then port, each Group Item drawn in outline form in the row header
+// in every preset, each group ending in its Subtotal and the Grand Total
+// pinned at the bottom; the column menu ungroups the rows and groups them by
+// another column, focus staying on its shipment; and a saved layout keeps
+// the grouping.
 
 import { expect, test, type Page } from "@playwright/test";
 import { REGIONS, shipments } from "../demo/sources/shipments-data";
@@ -14,6 +16,9 @@ const en = (n: number) => n.toLocaleString("en");
 
 /** The groups a column makes of the shipments. */
 const groupsBy = (field: "region" | "crates") => new Set(shipments.map((s) => s[field])).size;
+
+/** The rows grouped by region then port: each group's Group Item and Subtotal, and the Grand Total. */
+const nested = () => shipments.length + 2 * (groupsBy("region") + new Set(shipments.map((s) => `${s.region}/${s.port}`)).size) + 1;
 
 /** Clicks the id cell at screen row `row` (0 first), then steps right `right` columns. */
 async function click(page: Page, row: number, right: number) {
@@ -29,38 +34,38 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/?source=shipments&theme=light");
   await page.evaluate(() => localStorage.clear());
   await page.reload();
-  await expect(status(page)).toContainText(`of ${en(shipments.length + groupsBy("region"))}`);
+  await expect(status(page)).toContainText(`of ${en(nested())}`);
 });
 
-test("the rows open grouped by region, the region column gone from the body", async ({ page }) => {
+test("the rows open grouped by region then port, both columns gone from the body", async ({ page }) => {
   expect(groupsBy("region")).toBe(REGIONS.length + 1);
-  await expect(status(page)).toContainText("columns 1 to 5 of 5");
+  await expect(status(page)).toContainText("columns 1 to 4 of 4");
 });
 
 for (const theme of ["light", "catppuccin mocha", "mono"]) {
-  test(`Group Items draw in outline form in ${theme}`, async ({ page, browserName }) => {
+  test(`Group Items draw in outline form, the Grand Total pinned below, in ${theme}`, async ({ page, browserName }) => {
     test.skip(browserName !== "chromium", "screenshots are taken in Chromium only");
     await page.goto(`/?source=shipments&theme=${encodeURIComponent(theme)}`);
-    await expect(status(page)).toContainText(`of ${en(shipments.length + groupsBy("region"))}`);
+    await expect(status(page)).toContainText(`of ${en(nested())}`);
     await expect(page.locator(".grid-box")).toHaveScreenshot(`grouped-${theme.replace(" ", "-")}.png`, { scale: "device" });
   });
 }
 
 test("the column menu ungroups the rows and groups them by its column, focus staying on its shipment", async ({ page }) => {
   await click(page, 2, 1);
-  const focus = /focus row \d+, column 2 \((\d+) \/ port\)/;
+  const focus = /focus row \d+, column 2 \((\d+) \/ shipped\)/;
   await expect(status(page)).toContainText(focus);
   const id = (await status(page).textContent())!.match(focus)![1];
   await page.keyboard.press("Alt+ArrowDown");
-  const menu = page.getByRole("dialog", { name: "Filter port" });
+  const menu = page.getByRole("dialog", { name: "Filter shipped" });
   await expect(menu.getByRole("button", { name: "Group rows by this column" })).toBeHidden();
   await menu.getByRole("button", { name: "Ungroup rows" }).click();
   await expect(menu).toBeHidden();
   await expect(status(page)).toContainText(`of ${en(shipments.length)}  ·  columns 1 to 6 of 6`);
-  await expect(status(page)).toContainText(new RegExp(`\\(${id} / port\\)`));
+  await expect(status(page)).toContainText(new RegExp(`\\(${id} / shipped\\)`));
 
-  // The crates column, three along.
-  for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
+  // The crates column, two along.
+  for (let i = 0; i < 2; i++) await page.keyboard.press("ArrowRight");
   await expect(status(page)).toContainText(`(${id} / crates)`);
   await page.keyboard.press("Alt+ArrowDown");
   const crates = page.getByRole("dialog", { name: "Filter crates" });
@@ -72,7 +77,7 @@ test("the column menu ungroups the rows and groups them by its column, focus sta
 test("a saved layout keeps the grouping", async ({ page }) => {
   await click(page, 2, 1);
   await page.keyboard.press("Alt+ArrowDown");
-  await page.getByRole("dialog", { name: "Filter port" }).getByRole("button", { name: "Ungroup rows" }).click();
+  await page.getByRole("dialog", { name: "Filter shipped" }).getByRole("button", { name: "Ungroup rows" }).click();
   await expect(status(page)).toContainText(`of ${en(shipments.length)}  ·`);
   await page.getByRole("button", { name: "Save layout" }).click();
   await page.reload();
