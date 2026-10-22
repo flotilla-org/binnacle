@@ -151,16 +151,22 @@ fn collapsing_then_expanding_a_column_group_restores_focus_sizes_and_pins(tc: Te
         gs::sampled_from(shown.clone()),
         gs::floats::<f32>().min_value(1.0).max_value(3.0)
     )));
-    let pinned: Vec<Key> = match leaves.is_empty() {
+    let pinned: Vec<(Key, Edge)> = match leaves.is_empty() {
         true => Vec::new(),
-        false => tc.draw(gs::vecs(gs::sampled_from(leaves.clone())).max_size(3)),
+        false => tc.draw(
+            gs::vecs(hegel::tuples!(
+                gs::sampled_from(leaves.clone()),
+                gs::sampled_from(vec![Edge::Leading, Edge::Trailing])
+            ))
+            .max_size(3),
+        ),
     };
     s.input(|g| {
         for &(key, size) in &sized {
             g.set_size(Axis::Cols, key, size);
         }
-        for &key in &pinned {
-            g.pin(Axis::Cols, Edge::Leading, key);
+        for &(key, edge) in &pinned {
+            g.pin(Axis::Cols, edge, key);
         }
     });
     s.frame(ALL);
@@ -177,11 +183,19 @@ fn collapsing_then_expanding_a_column_group_restores_focus_sizes_and_pins(tc: Te
             .collect()
     };
     let before_sizes = sizes(&s);
-    let before_pins: Vec<Key> = s.grid.pins(Axis::Cols, Edge::Leading).collect();
-    let before_drawn: Vec<Option<Key>> = (s.frame(ALL).pinned(Axis::Cols, Edge::Leading))
-        .iter()
-        .map(|i| i.key)
-        .collect();
+    let pins = |s: &mut Scenario<TreeTable>| {
+        let edges = [Edge::Leading, Edge::Trailing];
+        let snap = s.frame(ALL);
+        let drawn = edges.map(|edge| -> Vec<Option<Key>> {
+            (snap.pinned(Axis::Cols, edge).iter())
+                .map(|i| i.key)
+                .collect()
+        });
+        drop(snap);
+        let kept = edges.map(|edge| s.grid.pins(Axis::Cols, edge).collect::<Vec<Key>>());
+        (kept, drawn)
+    };
+    let before_pins = pins(&mut s);
 
     s.input(|g| g.collapse(Axis::Cols, group).unwrap());
     s.frame(ALL);
@@ -191,14 +205,6 @@ fn collapsing_then_expanding_a_column_group_restores_focus_sizes_and_pins(tc: Te
     let col = snap.focus(Axis::Cols).and_then(|f| f.key);
     let total = TreeTable::subtotal(group);
     assert_eq!(col, Some(if inside { total } else { focus }));
-    let after_drawn: Vec<Option<Key>> = (snap.pinned(Axis::Cols, Edge::Leading))
-        .iter()
-        .map(|i| i.key)
-        .collect();
-    assert_eq!(after_drawn, before_drawn);
     assert_eq!(sizes(&s), before_sizes);
-    assert_eq!(
-        s.grid.pins(Axis::Cols, Edge::Leading).collect::<Vec<_>>(),
-        before_pins
-    );
+    assert_eq!(pins(&mut s), before_pins);
 }

@@ -663,16 +663,17 @@ fn opening_and_closing_column_groups_says_where_with_collapsed_or_expanded(tc: T
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
     for _ in 0..steps {
         let known = column_groups(&mut s.layer);
-        let before: Vec<Item> = items(&mut s)[1]
-            .iter()
-            .map(|(_, d)| d.item.clone())
-            .collect();
+        let [rows_before, cols_before] = items(&mut s);
+        let before: Vec<Item> = cols_before.iter().map(|(_, d)| d.item.clone()).collect();
         let expand = &mut s.grouping.cols.expand;
         let mut toggled = None;
         match known.is_empty() || tc.draw(gs::weighted_booleans(0.25)) {
             true => {
-                let n = tc.draw(gs::integers::<u32>().max_value(levels));
-                *expand = Expand::to(Depth::Levels(n));
+                let n = tc.draw(gs::integers::<u32>().max_value(levels + 1));
+                *expand = Expand::to(match n > levels {
+                    true => Depth::All,
+                    false => Depth::Levels(n),
+                });
                 except.clear();
             }
             false => {
@@ -695,6 +696,7 @@ fn opening_and_closing_column_groups_says_where_with_collapsed_or_expanded(tc: T
             notices.extend(v.notices);
         }
         let got = items(&mut s);
+        assert_eq!(got[0], rows_before, "the rows stay as they are");
         let after: Vec<Item> = got[1].iter().map(|(_, d)| d.item.clone()).collect();
         let want = model(&s.rows, &s.grouping, Axis::Cols, &except);
         let described: Vec<Described> = got[1].iter().map(|(_, d)| d.clone()).collect();
