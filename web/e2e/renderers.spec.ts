@@ -36,14 +36,22 @@ test.describe("screenshots", () => {
 });
 
 test("a flash keeps the widget painting until it fades, then it idles", async ({ page }) => {
+  // The page's clock runs only when told to, so frames come at its pace,
+  // not the machine's.
+  await page.clock.install();
   await open(page, "light");
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
   const paints = async () => Number(await page.locator("#grid").getAttribute("data-paints"));
-  const before = await paints();
   await flash(page, 2, 1);
-  await expect.poll(paints).toBeGreaterThan(before + 10);
-  // The flash lasts 800 ms; well after it, painting has stopped.
-  await page.waitForTimeout(1200);
+  // The flash lasts 800 ms: every stretch of it paints.
+  for (let t = 0; t < 800; t += 100) {
+    const before = await paints();
+    await page.clock.runFor(100);
+    expect(await paints()).toBeGreaterThan(before);
+  }
+  // Once it has faded, painting stops.
+  await page.clock.runFor(100);
   const settled = await paints();
-  await page.waitForTimeout(300);
+  await page.clock.runFor(1000);
   expect(await paints()).toBe(settled);
 });
