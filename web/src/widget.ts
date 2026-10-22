@@ -1244,13 +1244,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     const counts = this.feed.counts();
     const o = this.options;
     const rowHeight = o.rowHeight ?? 24;
-    const theme = this.painter.theme;
     const gaps = borderGaps(this.painter.border);
-    // The row-number band fits the widest default label: as many digits as
-    // the row count, each as wide as the widest digit.
-    const digits = String(counts.rows).length;
-    const digit = Math.max(...Array.from("0123456789", (d) => this.painter.measure.width(d, theme.font)));
-    const band = Math.ceil(digit * digits) + 2 * PAD;
+    const band = Math.ceil(this.numberWidth()) + 2 * PAD;
     const rows = new b.WebAxis(counts.rows, rowHeight).header(o.headerHeight ?? HEADER_HEIGHT).gap(gaps.rows).min_size(rowHeight);
     const cols = new b.WebAxis(counts.cols, o.columnWidth ?? 120).header(Math.max(40, band)).gap(gaps.cols).min_size(24);
     const grid = new b.WebGrid(rows, cols);
@@ -1424,13 +1419,25 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
+   * The widest default row label: as many digits as the row count, each as
+   * wide as the widest digit.
+   */
+  private numberWidth(): number {
+    const digits = String(this.feed.counts().rows).length;
+    const font = this.painter.theme.font;
+    return digits * Math.max(...Array.from("0123456789", (d) => this.painter.measure.width(d, font)));
+  }
+
+  /**
    * Widens the row-number band once, when the first rows arrive, to fit their
-   * labels (a column-major table's field names, say) and, where a row header
-   * click sorts, a sort marker; returns whether it did.
+   * labels (a column-major table's field names, say, or the widest row
+   * number) beside a row menu's button or a filter mark and, where a row
+   * header click sorts, a sort marker; returns whether it did.
    */
   private fitBand(s: Snapshot, content: Content): boolean {
     if (this.bandFitted || s.rows.strip.length === 0) return false;
-    const width = bandWidth(s, content, this.sizing(), true, this.options.headerClick?.rows === "sort");
+    const numbers = this.options.source.rows.label ? 0 : this.numberWidth();
+    const width = bandWidth(s, content, this.sizing(), true, this.options.headerClick?.rows === "sort", numbers);
     if (width === null) return false;
     this.bandFitted = true;
     if (Math.ceil(width) <= s.cols.header) return false;
@@ -1444,6 +1451,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       measure: this.painter.measure,
       theme: this.painter.theme,
       headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
+      rowMenu: this.painter.filterButtons.rows,
       renderer: this.painter.renderer,
     };
   }

@@ -2,8 +2,8 @@
 
 import { WIDTHS } from "../demo/sources/records-data";
 
-/** Inside the first column whatever the row-number band's width (40 to 60 px). */
-export const FIRST = 62;
+/** Inside the first column whatever the row-number band's width (40 to 85 px). */
+export const FIRST = 90;
 
 const GAP = 1;
 const lefts: number[] = [0];

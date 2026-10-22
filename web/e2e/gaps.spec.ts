@@ -8,7 +8,7 @@ import { features, keeps } from "../demo/sources/gaps-data";
 const HEADER = 28;
 const ROW = 24;
 /** Inside the first column whatever the row-number band's width. */
-const FIRST = 62;
+const FIRST = 90;
 
 /** The grid's column count: Feature, Kind, Category, the statuses, Demand, Fit, Products. */
 const COLUMNS = 7;
