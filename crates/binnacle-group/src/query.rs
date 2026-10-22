@@ -44,6 +44,9 @@ pub enum Want {
     /// Where the Leaf with this Key is: its group's path and its place
     /// among that group's Leaves. The request's path and range are empty.
     Locate(Key),
+    /// The aggregates of the whole group at the path: at the empty path,
+    /// the Grand Total's. The range is empty.
+    Total,
 }
 
 /// One aggregate query.
@@ -88,6 +91,9 @@ pub enum Body<A> {
     /// Where the Leaf `key` is: under the answer's path at `start`, or gone
     /// from the view (`found` false).
     Located { key: Key, found: bool },
+    /// The aggregates of the whole group at the answer's path, one per
+    /// value of the scope, in order.
+    Total { aggregates: Vec<A> },
 }
 
 /// A backend's answer, self-describing so that it can come in any order,

@@ -1,5 +1,6 @@
 //! The grouping layer driven directly, sans-IO, against a naive model that
-//! groups the whole table in memory. A fake aggregate backend answers each
+//! groups the whole table in memory, with Subtotals and the Grand Total
+//! placed before, after or nowhere. A fake aggregate backend answers each
 //! batch out of order, in parts, short (the rest asked for again), with
 //! more than asked, some answers late, and some after a newer View Spec has
 //! superseded them.
@@ -7,8 +8,8 @@
 use std::collections::HashMap;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Grouping, ItemKind, Key, Level, Located, OpenState, Outline, Value,
-    ViewSpec,
+    AggregateValue, Axis, ChangeNotice, GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located,
+    OpenState, Outline, Placement, Value, ViewSpec,
 };
 use binnacle_group::{Answer, Batch, Body, GroupRow, GroupingLayer, Path, SUMMARY_KEY_BIT, Want};
 use hegel::generators as gs;
@@ -45,19 +46,79 @@ fn rows(tc: &TestCase) -> Vec<Row> {
         .collect()
 }
 
-fn spec(levels: usize) -> ViewSpec {
-    let mut grouping = Grouping::rows_by(FIELDS[0]);
-    if levels == 2 {
-        grouping.row_levels.push(Level::field(FIELDS[1]));
+/// Where each level's Subtotals and the Grand Total go.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Shape {
+    subtotals: [Placement; 2],
+    grand_total: Placement,
+}
+
+#[hegel::composite]
+fn placement(tc: &TestCase) -> Placement {
+    tc.draw(gs::sampled_from(vec![
+        Placement::Before,
+        Placement::After,
+        Placement::Off,
+    ]))
+}
+
+#[hegel::composite]
+fn shape(tc: &TestCase) -> Shape {
+    Shape {
+        subtotals: [tc.draw(placement()), tc.draw(placement())],
+        grand_total: tc.draw(placement()),
     }
+}
+
+/// The values every spec asks for: a count, a distinct count of the second
+/// field (which no sum of the groups' gives), and an aggregate the backend
+/// declares, with parameters it must get as they are.
+fn values() -> Vec<AggregateValue> {
+    vec![
+        AggregateValue::count(),
+        AggregateValue::of(FIELDS[1], "distinct count"),
+        AggregateValue::of(FIELDS[0], "percentile").with_params(vec!["0.9".into(), "x; y".into()]),
+    ]
+}
+
+fn spec(levels: usize, shape: &Shape) -> ViewSpec {
+    let mut grouping = Grouping::rows_by(FIELDS[0]);
+    grouping.row_levels = (0..levels)
+        .map(|d| Level::Field {
+            field: FIELDS[d],
+            subtotal: shape.subtotals[d],
+        })
+        .collect();
+    grouping.values = values();
+    grouping.rows.grand_total = shape.grand_total;
     ViewSpec::default().with_grouping(Some(grouping))
 }
 
-/// An item as the model and the test describe it: Group Items by path,
-/// Leaves by Key, with the outline's ancestors as paths.
+/// What the fake backend aggregates `rows` to: their count, the number of
+/// distinct values in the second field, and the percentile it declares,
+/// which it computes as 7.
+fn aggregates(rows: &[&Row]) -> Vec<u64> {
+    let mut distinct: Vec<&Value> = rows.iter().map(|r| &r.1[1]).collect();
+    distinct.sort_by_key(|v| format!("{v:?}"));
+    distinct.dedup();
+    vec![rows.len() as u64, distinct.len() as u64, 7]
+}
+
+/// An item as the model and the test describe it.
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    Group(Path),
+    Subtotal(Path),
+    GrandTotal,
+    Leaf(Key),
+}
+
+/// An item with its outline, the ancestors as paths, and the aggregates
+/// it carries, if a Summary Item.
 #[derive(Clone, Debug, PartialEq)]
 struct Described {
-    item: Result<Path, Key>,
+    item: Item,
+    aggregates: Option<Vec<u64>>,
     kind: ItemKind,
     depth: u32,
     open: OpenState,
@@ -74,14 +135,16 @@ fn prefixes(path: &Path) -> Vec<Path> {
 }
 
 /// The naive model: every group in order of its first row, each Group
-/// Item followed by what is under it, everything open.
-fn model(rows: &[Row], levels: usize) -> Vec<Described> {
-    fn walk(rows: &[&Row], path: Path, levels: usize, out: &mut Vec<Described>) {
+/// Item followed by what is under it, with its Subtotal before or after
+/// that, everything open, and the Grand Total before or after it all.
+fn model(rows: &[Row], levels: usize, shape: &Shape) -> Vec<Described> {
+    fn walk(rows: &[&Row], path: Path, levels: usize, shape: &Shape, out: &mut Vec<Described>) {
         let depth = path.len();
         if depth == levels {
             for row in rows {
                 out.push(Described {
-                    item: Err(row.0),
+                    item: Item::Leaf(row.0),
+                    aggregates: None,
                     kind: ItemKind::Leaf,
                     depth: depth as u32,
                     open: OpenState::CantOpen,
@@ -100,29 +163,56 @@ fn model(rows: &[Row], levels: usize) -> Vec<Described> {
         for value in order {
             let mut child = path.clone();
             child.push((FIELDS[depth], value.clone()));
+            let under: Vec<&Row> = rows
+                .iter()
+                .filter(|r| r.1[depth] == value)
+                .copied()
+                .collect();
             out.push(Described {
-                item: Ok(child.clone()),
+                item: Item::Group(child.clone()),
+                aggregates: Some(aggregates(&under)),
                 kind: ItemKind::Group,
                 depth: depth as u32,
                 open: OpenState::Open,
                 ancestors: prefixes(&path),
                 group: Some((FIELDS[depth], value.clone())),
             });
-            let under: Vec<&Row> = rows
-                .iter()
-                .filter(|r| r.1[depth] == value)
-                .copied()
-                .collect();
-            walk(&under, child, levels, out);
+            let subtotal = Described {
+                item: Item::Subtotal(child.clone()),
+                aggregates: Some(aggregates(&under)),
+                kind: ItemKind::Subtotal,
+                depth: depth as u32 + 1,
+                open: OpenState::CantOpen,
+                ancestors: prefixes(&child),
+                group: Some((FIELDS[depth], value.clone())),
+            };
+            if shape.subtotals[depth] == Placement::Before {
+                out.push(subtotal.clone());
+            }
+            walk(&under, child, levels, shape, out);
+            if shape.subtotals[depth] == Placement::After {
+                out.push(subtotal);
+            }
         }
     }
+    let all: Vec<&Row> = rows.iter().collect();
+    let total = Described {
+        item: Item::GrandTotal,
+        aggregates: Some(aggregates(&all)),
+        kind: ItemKind::GrandTotal,
+        depth: 0,
+        open: OpenState::CantOpen,
+        ancestors: Vec::new(),
+        group: None,
+    };
     let mut out = Vec::new();
-    walk(
-        &rows.iter().collect::<Vec<_>>(),
-        Vec::new(),
-        levels,
-        &mut out,
-    );
+    if shape.grand_total == Placement::Before {
+        out.push(total.clone());
+    }
+    walk(&all, Vec::new(), levels, shape, &mut out);
+    if shape.grand_total == Placement::After {
+        out.push(total);
+    }
     out
 }
 
@@ -163,7 +253,7 @@ impl Fake {
                 GroupRow {
                     value,
                     children: children as u64,
-                    aggregates: vec![rows.len() as u64],
+                    aggregates: aggregates(&rows),
                 }
             })
             .collect()
@@ -171,6 +261,7 @@ impl Fake {
 
     /// The whole answer to each request, split in parts as `tc` draws.
     fn answer(&mut self, tc: &TestCase, batch: &Batch) -> Vec<Answer<u64>> {
+        assert_eq!(batch.scope.values, values(), "values reach the backend as asked");
         let levels = batch.scope.levels.len();
         let mut answers = Vec::new();
         for request in &batch.requests {
@@ -194,6 +285,17 @@ impl Fake {
                         .into_iter()
                         .map(|(at, keys)| (at, Body::Leaves { keys }))
                         .collect()
+                }
+                Want::Total => {
+                    let aggregates = aggregates(&self.under(&request.path));
+                    answers.push(Answer {
+                        stamp: batch.stamp,
+                        id: Some(request.id),
+                        path: request.path.clone(),
+                        start: 0,
+                        body: Body::Total { aggregates },
+                    });
+                    continue;
                 }
                 Want::Locate(key) => {
                     let row = self.rows.iter().find(|r| r.0 == key);
@@ -328,12 +430,19 @@ fn locate(tc: &TestCase, layer: &mut GroupingLayer<u64>, fake: &mut Fake, key: K
 /// The layer's item at a Key and outline, described as the model does.
 fn describe(layer: &GroupingLayer<u64>, key: Key, outline: &Outline) -> Described {
     let path = |k: Key| layer.summary(k).map(|s| s.path.clone());
-    let item = match key.0 & SUMMARY_KEY_BIT {
-        0 => Err(key),
-        _ => Ok(path(key).expect("a Group Item the layer knows")),
+    let summary = layer.summary(key);
+    if let Some(s) = summary {
+        assert_eq!(s.kind, outline.kind, "the summary's kind is the outline's");
+    }
+    let item = match outline.kind {
+        ItemKind::Leaf => Item::Leaf(key),
+        ItemKind::Group => Item::Group(path(key).expect("a Group Item the layer knows")),
+        ItemKind::Subtotal => Item::Subtotal(path(key).expect("a Subtotal the layer knows")),
+        ItemKind::GrandTotal => Item::GrandTotal,
     };
     Described {
         item,
+        aggregates: summary.map(|s| s.aggregates.to_vec()),
         kind: outline.kind,
         depth: outline.depth,
         open: outline.open,
@@ -350,6 +459,7 @@ fn describe(layer: &GroupingLayer<u64>, key: Key, outline: &Outline) -> Describe
 fn the_layer_shows_what_a_whole_table_grouping_shows(tc: TestCase) {
     let rows = tc.draw(rows());
     let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
     let mut fake = Fake {
         rows: rows.clone(),
         late: Vec::new(),
@@ -358,21 +468,21 @@ fn the_layer_shows_what_a_whole_table_grouping_shows(tc: TestCase) {
 
     // A spec the backend answers late, superseded before it settles.
     if tc.draw(gs::booleans()) {
-        layer.request_view(spec(3 - levels));
+        layer.request_view(spec(3 - levels, &shape));
         let stale = layer.poll_batch().unwrap();
         let answers = fake.answer(&tc, &stale);
         fake.late.extend(answers);
     }
-    layer.request_view(spec(levels));
+    layer.request_view(spec(levels, &shape));
     drive(&tc, &mut layer, &mut fake);
 
-    let want = model(&rows, levels);
+    let want = model(&rows, levels, &shape);
     let mut viewed = Vec::new();
     while let Some(v) = layer.poll_viewed() {
         viewed.push(v);
     }
     let last = viewed.last().expect("the layer settles");
-    assert_eq!(last.applied, spec(levels));
+    assert_eq!(last.applied, spec(levels, &shape));
     assert_eq!(
         last.notices,
         vec![(Axis::Rows, ChangeNotice::Refiltered(want.len() as u64))]
@@ -400,11 +510,13 @@ fn the_layer_shows_what_a_whole_table_grouping_shows(tc: TestCase) {
     let described: Vec<Described> = got.iter().map(|(k, o)| describe(&layer, *k, o)).collect();
     assert_eq!(described, want);
 
-    // Keys are unique, and Summary Item Keys carry the summary bit.
+    // Keys are unique, Summary Item Keys carry the summary bit, and the
+    // Grand Total's is the one the Grid pins.
     let mut seen = HashMap::new();
     for (i, (key, outline)) in got.iter().enumerate() {
         assert_eq!(seen.insert(*key, i), None, "Key {key:?} twice");
         assert_eq!(key.0 & SUMMARY_KEY_BIT != 0, outline.kind.is_summary());
+        assert_eq!(*key == GRAND_TOTAL, outline.kind == ItemKind::GrandTotal);
         assert_eq!(outline.parent(), outline.ancestors.last().copied());
     }
 
@@ -423,12 +535,12 @@ fn a_leaf_is_located_before_its_page_is_fetched(tc: TestCase) {
         late: Vec::new(),
     };
     let mut layer = GroupingLayer::<u64>::new();
-    layer.request_view(spec(1));
+    layer.request_view(spec(1, &Shape::default()));
     drive(&tc, &mut layer, &mut fake);
-    let want = model(&rows, 1);
+    let want = model(&rows, 1, &Shape::default());
     let i = tc.draw(gs::integers::<usize>().max_value(rows.len() - 1));
     let key = rows[i].0;
-    let at = want.iter().position(|d| d.item == Err(key)).unwrap();
+    let at = want.iter().position(|d| d.item == Item::Leaf(key)).unwrap();
     let located = locate(&tc, &mut layer, &mut fake, key);
     assert_eq!(located, Located::Found(at as u64));
     let gone = locate(&tc, &mut layer, &mut fake, Key(1));
@@ -456,13 +568,13 @@ fn summary_keys_stay_the_same_across_a_refresh_and_a_new_spec(tc: TestCase) {
         }
         got.into_iter().map(|(k, _)| k).collect::<Vec<_>>()
     };
-    layer.request_view(spec(1));
+    layer.request_view(spec(1, &Shape::default()));
     let first = keys(&mut layer, &mut fake);
     layer.refresh();
     assert_eq!(keys(&mut layer, &mut fake), first, "after a refresh");
-    layer.request_view(spec(2));
+    layer.request_view(spec(2, &Shape::default()));
     keys(&mut layer, &mut fake);
-    layer.request_view(spec(1));
+    layer.request_view(spec(1, &Shape::default()));
     assert_eq!(
         keys(&mut layer, &mut fake),
         first,
@@ -481,4 +593,32 @@ fn a_plain_table_is_not_the_layers() {
     let viewed = layer.poll_viewed().unwrap();
     assert_eq!(viewed.applied, ViewSpec::default());
     assert_eq!(viewed.notices, vec![]);
+}
+
+#[hegel::test(test_cases = 100)]
+fn placing_subtotals_elsewhere_lays_out_what_is_known_again(tc: TestCase) {
+    let rows = tc.draw(rows());
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let (first, then) = (tc.draw(shape()), tc.draw(shape()));
+    let mut fake = Fake {
+        rows: rows.clone(),
+        late: Vec::new(),
+    };
+    let mut layer = GroupingLayer::<u64>::new();
+    layer.request_view(spec(levels, &first));
+    drive(&tc, &mut layer, &mut fake);
+    while layer.poll_viewed().is_some() {}
+    layer.request_view(spec(levels, &then));
+    let want = model(&rows, levels, &then);
+    let viewed = layer.poll_viewed().expect("laid out at once, the groups known");
+    let notices = match spec(levels, &first) == spec(levels, &then) {
+        true => vec![],
+        false => vec![(Axis::Rows, ChangeNotice::Refiltered(want.len() as u64))],
+    };
+    assert_eq!(viewed.notices, notices);
+    assert_eq!(layer.count(Axis::Rows), Some(want.len() as u64));
+    // Only a Grand Total newly placed is asked for.
+    if let Some(batch) = layer.poll_batch() {
+        assert!(batch.requests.iter().all(|r| r.want == Want::Total));
+    }
 }
