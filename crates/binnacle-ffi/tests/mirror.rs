@@ -205,7 +205,8 @@ fn pointer(tc: &TestCase) -> PointerEvent {
 
 #[hegel::composite]
 fn action(tc: &TestCase) -> Action {
-    match tc.draw(gs::integers::<u8>().max_value(12)) {
+    match tc.draw(gs::integers::<u8>().max_value(13)) {
+        13 => Action::Copy,
         12 => Action::LeaveOutline,
         10 => Action::Activate,
         11 => Action::BeginEdit,
@@ -449,7 +450,13 @@ fn outline(tc: &TestCase, axis: Axis) -> Outline {
         field: tc.draw(key(axis.other())),
         value: tc.draw(value()),
     });
+    let path = tc.draw(gs::vecs(hegel::tuples!(key(axis.other()), value())).max_size(3));
+    let path = path
+        .into_iter()
+        .map(|(field, value)| GroupOf { field, value });
     outline
+        .with_span(tc.draw(gs::integers::<u64>().max_value(20)))
+        .with_path(path.collect())
 }
 
 /// Outlines to send with each axis's Window in a frame: none most of the
@@ -836,6 +843,7 @@ unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
             Action::Activate => binnacle_grid_activate(h),
             Action::BeginEdit => binnacle_grid_begin_edit(h),
             Action::LeaveOutline => binnacle_grid_leave_outline(h),
+            Action::Copy => binnacle_grid_copy(h),
             #[allow(unreachable_patterns)] // `action` draws only the Actions above.
             _ => unreachable!(),
         }
@@ -1501,6 +1509,8 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         let mut direction = BINNACLE_FIND_NEXT;
         let mut moved: (Vec<u64>, u64) = (Vec::new(), 0);
         let mut edge = BINNACLE_EDGE_LEADING;
+        let mut drill_down = None;
+        let mut copied = ([Vec::new(), Vec::new()], [0, 0]);
         let (kind, row, col, axis, key) = match &want.effect {
             Effect::TextTyped { text } => {
                 let got = unsafe { slice::from_raw_parts(c.text.data, c.text.len) };
@@ -1508,7 +1518,26 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                 (1, 0, 0, 0, 0)
             }
             Effect::FocusChanged { row, col } => (2, row.0, col.0, 0, 0),
-            Effect::Activated { row, col } => (12, row.0, col.0, 0, 0),
+            Effect::Activated {
+                row,
+                col,
+                drill_down: d,
+            } => {
+                drill_down = d.as_ref().map(|d| d.conditions.clone());
+                (12, row.0, col.0, 0, 0)
+            }
+            Effect::CopyRequested {
+                rows,
+                cols,
+                row_labels,
+                col_labels,
+            } => {
+                copied = (
+                    [rows.clone(), cols.clone()],
+                    [u32::from(*row_labels), u32::from(*col_labels)],
+                );
+                (17, 0, 0, 0, 0)
+            }
             Effect::EditRequested { row, col } => (13, row.0, col.0, 0, 0),
             Effect::EditCancelled { row, col } => (14, row.0, col.0, 0, 0),
             Effect::SizeChanged { axis, key, size: s } => {
@@ -1655,6 +1684,20 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         };
         assert_eq!((keys.to_vec(), c.to), moved, "move for {want:?}");
         assert_eq!(c.edge, edge, "edge for {want:?}");
+        let got_drill_down = (c.has_drill_down == 1).then(|| {
+            let conditions = unsafe { c_slice(c.drill_down, c.drill_down_len) };
+            (conditions.iter())
+                .map(|c| unsafe { condition_from_c(c) })
+                .collect::<Vec<_>>()
+        });
+        assert!(c.has_drill_down <= 1);
+        assert_eq!(got_drill_down, drill_down, "drill-down for {want:?}");
+        let runs = [0, 1].map(|i| {
+            (unsafe { c_slice(c.copy_runs[i], c.copy_runs_len[i]) }.iter())
+                .map(|r| r.start..r.end)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!((runs, c.copy_labels), copied, "copy for {want:?}");
         assert_eq!(
             (c.kind, c.row, c.col, c.axis, c.key),
             (kind, row, col, axis, key)
@@ -1787,7 +1830,14 @@ unsafe fn grouping_from_c(g: &BinnacleGrouping) -> Grouping {
 /// An outline read back from C, as a host would.
 unsafe fn outline_from_c(o: &BinnacleOutline) -> Outline {
     let ancestors = unsafe { c_slice(o.ancestors, o.ancestors_len) };
-    let mut outline = Outline::leaf(ancestors.iter().map(|&k| Key(k)).collect());
+    let path = unsafe { c_slice(o.path, o.path_len) };
+    let path = (path.iter()).map(|g| GroupOf {
+        field: Key(g.field),
+        value: unsafe { value_from_c(&g.value) },
+    });
+    let mut outline = Outline::leaf(ancestors.iter().map(|&k| Key(k)).collect())
+        .with_span(o.span)
+        .with_path(path.collect());
     outline.kind = match o.kind {
         BINNACLE_ITEM_LEAF => ItemKind::Leaf,
         BINNACLE_ITEM_GROUP => ItemKind::Group,
@@ -1818,8 +1868,18 @@ fn with_c_outlines<T>(outlines: &[Outline], f: impl FnOnce(&[BinnacleOutline]) -
     let ancestors: Vec<Vec<u64>> = (outlines.iter())
         .map(|o| o.ancestors.iter().map(|k| k.0).collect())
         .collect();
-    let c: Vec<BinnacleOutline> = (outlines.iter().zip(&ancestors))
-        .map(|(o, ancestors)| BinnacleOutline {
+    let paths: Vec<Vec<BinnacleGroupOf>> = (outlines.iter())
+        .map(|o| {
+            (o.path.iter())
+                .map(|g| BinnacleGroupOf {
+                    field: g.field.0,
+                    value: value_to_c(&g.value),
+                })
+                .collect()
+        })
+        .collect();
+    let c: Vec<BinnacleOutline> = (outlines.iter().zip(&ancestors).zip(&paths))
+        .map(|((o, ancestors), path)| BinnacleOutline {
             kind: match o.kind {
                 ItemKind::Leaf => BINNACLE_ITEM_LEAF,
                 ItemKind::Group => BINNACLE_ITEM_GROUP,
@@ -1840,6 +1900,9 @@ fn with_c_outlines<T>(outlines: &[Outline], f: impl FnOnce(&[BinnacleOutline]) -
                 .group
                 .as_ref()
                 .map_or_else(BinnacleValue::default, |g| value_to_c(&g.value)),
+            span: o.span,
+            path: path.as_ptr(),
+            path_len: path.len(),
         })
         .collect();
     f(&c)
@@ -3207,6 +3270,90 @@ fn support_on_items_in_view_through_the_c_api_mirrors_the_grid(tc: TestCase) {
                 1
             );
             mirrored_frame(h, &mut grid);
+        }
+        binnacle_grid_free(h);
+    }
+}
+
+/// Activating and copying on a grouped table, where drill-downs and copy
+/// labels arise, with outlines on both axes: the C API mirrors the Grid.
+#[hegel::test(test_cases = 200)]
+fn summary_items_through_the_c_api_mirror_the_grid(tc: TestCase) {
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(8));
+    let config = AxisConfig::new(count, 2.0).header(2.0);
+    let c_config = BinnacleAxisConfig {
+        count,
+        default_size: 2.0,
+        header: 2.0,
+        gap: 0.0,
+    };
+    let h = binnacle_grid_new(c_config, c_config);
+    let mut grid = Grid::new(config, config);
+    let mut spec = ViewSpec::default();
+    let mut grouping = tc.draw(grouping());
+    for axis in Axis::ALL {
+        if grouping.levels(axis).is_empty() && tc.draw(gs::weighted_booleans(0.8)) {
+            grouping
+                .levels_mut(axis)
+                .push(Level::field(tc.draw(key(axis.other()))));
+        }
+    }
+    spec.grouping = Some(grouping);
+    unsafe {
+        let ok = with_c_view(&spec, |c| {
+            binnacle_grid_view_applied(h, c, &BinnacleTotals::default())
+        });
+        assert_eq!(ok, 1);
+        grid.view_applied(spec, Totals::default());
+        let mut requests = BinnacleWindowRequests::default();
+        binnacle_grid_begin_frame(h, 40.0, 30.0, &mut requests);
+        for (axis, range) in grid.begin_frame(Viewport::new(40.0, 30.0)) {
+            let k: Vec<u64> = range.clone().collect();
+            binnacle_grid_set_window(h, tag(axis), range.start, k.as_ptr(), k.len());
+            let k: Vec<Key> = k.into_iter().map(Key).collect();
+            grid.set_window(axis, range.start, &k);
+            let outlines = tc.draw(gs::vecs(outline(axis)).max_size(count as usize));
+            let ok = with_c_outlines(&outlines, |c| {
+                binnacle_grid_set_outlines(h, tag(axis), range.start, c.as_ptr(), c.len())
+            });
+            assert_eq!(ok, 1);
+            grid.set_outlines(axis, range.start, &outlines);
+        }
+        check_effects(h, &mut grid);
+        for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(6)) {
+            let (r, c) = (
+                tc.draw(gs::integers::<u64>().max_value(count - 1)),
+                tc.draw(gs::integers::<u64>().max_value(count - 1)),
+            );
+            let (y, x) = (3.0 + 2.0 * r as f32, 3.0 + 2.0 * c as f32);
+            let mut press = |down: PointerEvent, up: PointerEvent| {
+                for e in [down, up] {
+                    grid.pointer(e);
+                    binnacle_grid_pointer(h, pointer_event(e));
+                }
+            };
+            match tc.draw(gs::integers::<u8>().max_value(3)) {
+                // A click on a cell, a double-click activating it.
+                0 => {
+                    let clicks = tc.draw(gs::integers::<u32>().min_value(1).max_value(2));
+                    let down = PointerEvent::down(x, y).modifiers(tc.draw(modifiers()));
+                    press(down.clicks(clicks), PointerEvent::up(x, y));
+                }
+                // A click on a row header, which may select a group.
+                1 => {
+                    let down = PointerEvent::down(1.0, y).modifiers(tc.draw(modifiers()));
+                    press(down, PointerEvent::up(1.0, y));
+                }
+                2 => {
+                    grid.action(Action::Activate);
+                    binnacle_grid_activate(h);
+                }
+                _ => {
+                    grid.action(Action::Copy);
+                    binnacle_grid_copy(h);
+                }
+            }
+            check_effects(h, &mut grid);
         }
         binnacle_grid_free(h);
     }

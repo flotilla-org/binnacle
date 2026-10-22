@@ -20,7 +20,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 7;
+pub const BINNACLE_ABI_VERSION: u32 = 8;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -75,6 +75,7 @@ pub const BINNACLE_EFFECT_EDIT_REQUESTED: u32 = 13;
 pub const BINNACLE_EFFECT_EDIT_CANCELLED: u32 = 14;
 pub const BINNACLE_EFFECT_SIZE_CHANGED: u32 = 15;
 pub const BINNACLE_EFFECT_AUTO_SIZE_REQUESTED: u32 = 16;
+pub const BINNACLE_EFFECT_COPY_REQUESTED: u32 = 17;
 
 pub const BINNACLE_EDIT_COMMIT: u32 = 0;
 pub const BINNACLE_EDIT_CANCEL: u32 = 1;
@@ -219,9 +220,11 @@ pub const BINNACLE_HEADER_CLICK_NONE: u32 = 2;
 pub struct BinnacleGrid {
     grid: Grid,
     strips: [Vec<BinnacleStripItem>; 2],
-    /// The last Snapshot's outline ancestors and group value texts per axis.
+    /// The last Snapshot's outline ancestors, group value texts and paths
+    /// per axis.
     ancestors: [Vec<u64>; 2],
     outline_texts: [String; 2],
+    paths: [Vec<BinnacleGroupOf>; 2],
     headers: [Vec<BinnacleHeader>; 2],
     picked: [Vec<u64>; 2],
     /// The last Snapshot's selection range, as runs of Positions per axis.
@@ -243,6 +246,10 @@ pub struct BinnacleGrid {
     excepts: [Vec<u64>; 2],
     aggregates: CValues,
     slicers: CConditions,
+    /// The last polled Effect's drill-down, and the runs a copy lists per
+    /// axis.
+    drill_down: CConditions,
+    copy_runs: [Vec<BinnacleRange>; 2],
     /// The last polled Effect's View Edit Keys.
     edit_keys: Vec<u64>,
     /// The last Snapshot's hidden Keys per axis.
@@ -543,6 +550,13 @@ pub struct BinnacleRect {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleGroupOf {
+    pub field: u64,
+    pub value: BinnacleValue,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleOutline {
     pub kind: u32,
     pub depth: u32,
@@ -552,6 +566,9 @@ pub struct BinnacleOutline {
     pub has_group: u32,
     pub field: u64,
     pub value: BinnacleValue,
+    pub span: u64,
+    pub path: *const BinnacleGroupOf,
+    pub path_len: usize,
 }
 
 impl Default for BinnacleOutline {
@@ -565,6 +582,9 @@ impl Default for BinnacleOutline {
             has_group: 0,
             field: 0,
             value: BinnacleValue::default(),
+            span: 0,
+            path: std::ptr::null(),
+            path_len: 0,
         }
     }
 }
@@ -1079,6 +1099,12 @@ pub struct BinnacleEffect {
     pub keys_len: usize,
     pub to: u64,
     pub edge: u32,
+    pub has_drill_down: u32,
+    pub drill_down: *const BinnacleCondition,
+    pub drill_down_len: usize,
+    pub copy_runs: [*const BinnacleRange; 2],
+    pub copy_runs_len: [usize; 2],
+    pub copy_labels: [u32; 2],
 }
 
 /// Every Size Override on an axis, in Key order: `keys[i]` has `sizes[i]`.
@@ -1112,6 +1138,12 @@ impl Default for BinnacleEffect {
             keys_len: 0,
             to: 0,
             edge: 0,
+            has_drill_down: 0,
+            drill_down: std::ptr::null(),
+            drill_down_len: 0,
+            copy_runs: [std::ptr::null(); 2],
+            copy_runs_len: [0; 2],
+            copy_labels: [0; 2],
         }
     }
 }
@@ -1223,9 +1255,14 @@ impl From<&StripItem> for BinnacleStripItem {
     }
 }
 
-/// `outline` in C form, its ancestors already copied to `ancestors` and its
-/// group value's text to `text`.
-fn outline_to_c(outline: &Outline, ancestors: *const u64, text: *const u8) -> BinnacleOutline {
+/// `outline` in C form, its ancestors already copied to `ancestors`, its
+/// group value's text to `text` and its path to `path`.
+fn outline_to_c(
+    outline: &Outline,
+    ancestors: *const u64,
+    text: *const u8,
+    path: *const BinnacleGroupOf,
+) -> BinnacleOutline {
     let (has_group, field, value) = match &outline.group {
         Some(GroupOf { field, value }) => (1, field.0, value_to_c(value, text)),
         None => (0, 0, BinnacleValue::default()),
@@ -1248,6 +1285,9 @@ fn outline_to_c(outline: &Outline, ancestors: *const u64, text: *const u8) -> Bi
         has_group,
         field,
         value,
+        span: outline.span,
+        path,
+        path_len: outline.path.len(),
     }
 }
 
@@ -1273,8 +1313,9 @@ impl BinnacleOutline {
     /// value's text is not UTF-8.
     ///
     /// # Safety
-    /// A non-NULL `ancestors` is valid for `ancestors_len` reads, and the
-    /// value's text as [`BinnacleValue::to_core`] requires.
+    /// A non-NULL `ancestors` is valid for `ancestors_len` reads, a non-NULL
+    /// `path` for `path_len`, and each value's text as
+    /// [`BinnacleValue::to_core`] requires.
     unsafe fn to_core(self) -> Option<Outline> {
         let kind = match self.kind {
             BINNACLE_ITEM_LEAF => ItemKind::Leaf,
@@ -1300,7 +1341,20 @@ impl BinnacleOutline {
         };
         // SAFETY: the caller's contract.
         let ancestors = unsafe { borrowed(self.ancestors, self.ancestors_len) };
-        let mut outline = Outline::leaf(ancestors.iter().map(|&k| Key(k)).collect());
+        // SAFETY: the caller's contract.
+        let path = unsafe { borrowed(self.path, self.path_len) };
+        let path = (path.iter())
+            .map(|g| {
+                Some(GroupOf {
+                    field: Key(g.field),
+                    // SAFETY: the caller's contract.
+                    value: unsafe { g.value.to_core() }?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let mut outline = Outline::leaf(ancestors.iter().map(|&k| Key(k)).collect())
+            .with_span(self.span)
+            .with_path(path);
         outline.kind = kind;
         outline.depth = self.depth;
         outline.open = open;
@@ -1839,6 +1893,7 @@ pub extern "C" fn binnacle_grid_new(
         strips: Default::default(),
         ancestors: Default::default(),
         outline_texts: Default::default(),
+        paths: Default::default(),
         headers: Default::default(),
         picked: Default::default(),
         runs: Default::default(),
@@ -1854,6 +1909,8 @@ pub extern "C" fn binnacle_grid_new(
         excepts: Default::default(),
         aggregates: Default::default(),
         slicers: Default::default(),
+        drill_down: Default::default(),
+        copy_runs: Default::default(),
         edit_keys: Vec::new(),
         hidden_listed: Default::default(),
         listed: Default::default(),
@@ -2283,12 +2340,15 @@ impl BinnacleGrid {
             let strip = &mut self.strips[axis.index()];
             let ancestors = &mut self.ancestors[axis.index()];
             let texts = &mut self.outline_texts[axis.index()];
+            let paths = &mut self.paths[axis.index()];
             strip.clear();
             ancestors.clear();
             texts.clear();
-            // Ancestors and texts first, then the items, so the pointers
-            // taken after stay valid.
+            paths.clear();
+            // Ancestors and texts first, then the paths, then the items, so
+            // the pointers taken after stay valid.
             let mut spans = Vec::new();
+            let mut path_texts = Vec::new();
             for item in snap.drawn(axis) {
                 let outline = snap.outline(axis, item.position).map(|o| {
                     let (keys, text) = (ancestors.len(), texts.len());
@@ -2300,14 +2360,33 @@ impl BinnacleGrid {
                     {
                         texts.push_str(t);
                     }
+                    for g in &o.path {
+                        path_texts.push(texts.len());
+                        if let Value::Text(t) = &g.value {
+                            texts.push_str(t);
+                        }
+                    }
                     (o, keys, text)
                 });
                 spans.push((item, outline));
             }
+            let mut at = path_texts.into_iter();
+            for (_, outline) in &spans {
+                for g in outline.iter().flat_map(|(o, ..)| &o.path) {
+                    let text = texts.as_ptr().wrapping_add(at.next().unwrap_or(0));
+                    paths.push(BinnacleGroupOf {
+                        field: g.field.0,
+                        value: value_to_c(&g.value, text),
+                    });
+                }
+            }
+            let mut path = 0;
             strip.extend(spans.into_iter().map(|(item, outline)| {
                 let Some((o, keys, text)) = outline else {
                     return BinnacleStripItem::from(item);
                 };
+                let first = path;
+                path += o.path.len();
                 let pending = item.key.is_some_and(|k| snap.toggle_pending(axis, k));
                 BinnacleStripItem {
                     has_outline: 1,
@@ -2316,6 +2395,7 @@ impl BinnacleGrid {
                         o,
                         ancestors.as_ptr().wrapping_add(keys),
                         texts.as_ptr().wrapping_add(text),
+                        paths.as_ptr().wrapping_add(first),
                     ),
                     ..BinnacleStripItem::from(item)
                 }
@@ -2649,10 +2729,39 @@ impl BinnacleGrid {
                 effect.row = row.0;
                 effect.col = col.0;
             }
-            Effect::Activated { row, col } => {
+            Effect::Activated {
+                row,
+                col,
+                drill_down,
+            } => {
                 effect.kind = BINNACLE_EFFECT_ACTIVATED;
                 effect.row = row.0;
                 effect.col = col.0;
+                if let Some(d) = drill_down {
+                    self.drill_down.fill(&d.conditions);
+                    effect.has_drill_down = 1;
+                    effect.drill_down = self.drill_down.items.as_ptr();
+                    effect.drill_down_len = self.drill_down.items.len();
+                }
+            }
+            Effect::CopyRequested {
+                rows,
+                cols,
+                row_labels,
+                col_labels,
+            } => {
+                effect.kind = BINNACLE_EFFECT_COPY_REQUESTED;
+                for (i, runs) in [rows, cols].into_iter().enumerate() {
+                    let buf = &mut self.copy_runs[i];
+                    buf.clear();
+                    buf.extend(runs.into_iter().map(|r| BinnacleRange {
+                        start: r.start,
+                        end: r.end,
+                    }));
+                    effect.copy_runs[i] = buf.as_ptr();
+                    effect.copy_runs_len[i] = buf.len();
+                }
+                effect.copy_labels = [flag(row_labels), flag(col_labels)];
             }
             Effect::EditRequested { row, col } => {
                 effect.kind = BINNACLE_EFFECT_EDIT_REQUESTED;
@@ -3604,6 +3713,14 @@ pub unsafe extern "C" fn binnacle_grid_edit_ended(grid: *mut BinnacleGrid, end: 
 pub unsafe extern "C" fn binnacle_grid_activate(grid: *mut BinnacleGrid) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { act(grid, Some(Action::Activate)) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_copy(grid: *mut BinnacleGrid) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { act(grid, Some(Action::Copy)) }
 }
 
 /// # Safety
