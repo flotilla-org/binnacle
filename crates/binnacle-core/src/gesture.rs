@@ -230,7 +230,7 @@ impl Grid {
         };
         let press = match self.hit(x, y) {
             Hit::Cell([r, c]) if !(r.in_gap || c.in_gap) => {
-                self.leave_outline();
+                self.leave_band();
                 // Clicks never scroll, even to a focus move made just before.
                 self.reveal = false;
                 let cell = self.cell_at(r.position, c.position);
@@ -584,6 +584,7 @@ impl Grid {
         match gesture {
             Gesture::Pressed {
                 x,
+                y,
                 press:
                     Press::Header {
                         axis,
@@ -594,8 +595,9 @@ impl Grid {
                 ..
             } => {
                 self.header_click(axis, position, modifiers);
-                if axis == Axis::Rows {
-                    self.row_header_clicked(x);
+                match axis {
+                    Axis::Rows => self.row_header_clicked(x),
+                    Axis::Cols => self.column_header_clicked(y),
                 }
             }
             Gesture::MovingHeaders {
