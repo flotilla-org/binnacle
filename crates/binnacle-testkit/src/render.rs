@@ -1,8 +1,9 @@
 use std::fmt::Write;
 
 use binnacle_core::{
-    Axis, Comparison, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Key, Mode,
-    Searched, Snapshot, SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    Axis, Comparison, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Grouping,
+    ItemKind, Key, Level, Mode, OpenState, Outline, Searched, Snapshot, SortDirection, SortSpec,
+    StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -11,7 +12,8 @@ const MAX_CANVAS: (usize, usize) = (160, 60);
 /// Renders a Snapshot as text: a summary line, each Strip as
 /// `position#key@offset+size` after its Scroll Anchor (`position+offset`) and
 /// thumb (`fraction/size`) (key `?` while unfilled), with `clipped at` where
-/// a pinned Strip clips, then a character
+/// a pinned Strip clips (an item of a grouped axis adds its outline as
+/// `[kind depth open ^ancestors field=value]`), then a character
 /// picture treating one unit as one character, each item starting at the first
 /// whole character it reaches. Column headers show the column
 /// Key, row headers the row Position, cells `rowkey.colkey`. A placed focus
@@ -250,14 +252,7 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
     if !pinned.is_empty() {
         out.push_str(" pinned");
         for item in pinned {
-            let _ = write!(
-                out,
-                " {}#{}@{}+{}",
-                item.position,
-                key_text(item),
-                item.offset,
-                item.size
-            );
+            out.push_str(&item_text(snap, axis, item));
         }
         let region = snap.pinned_region(axis, Edge::Leading);
         if pinned.last().is_some_and(|it| it.end() > region.end) {
@@ -266,14 +261,7 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
         let _ = write!(out, " | scrolling from {} |", snap.scrolling(axis).start);
     }
     for item in snap.strip(axis) {
-        let _ = write!(
-            out,
-            " {}#{}@{}+{}",
-            item.position,
-            key_text(item),
-            item.offset,
-            item.size
-        );
+        out.push_str(&item_text(snap, axis, item));
     }
     let trailing = snap.pinned(axis, Edge::Trailing);
     if !trailing.is_empty() {
@@ -287,14 +275,7 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
             let _ = write!(out, " clipped at {}", region.start);
         }
         for item in trailing {
-            let _ = write!(
-                out,
-                " {}#{}@{}+{}",
-                item.position,
-                key_text(item),
-                item.offset,
-                item.size
-            );
+            out.push_str(&item_text(snap, axis, item));
         }
     }
     out
@@ -322,6 +303,86 @@ pub(crate) fn view_text(spec: &ViewSpec) -> String {
             text += &format!(" cols {}", keys(&spec.cols.hidden));
         }
     }
+    if let Some(grouping) = &spec.grouping {
+        text += &grouping_text(grouping);
+    }
+    text
+}
+
+/// A Strip item as ` position#key@offset+size`, then its outline if it has
+/// one.
+fn item_text(snap: &Snapshot, axis: Axis, item: &StripItem) -> String {
+    let mut text = format!(
+        " {}#{}@{}+{}",
+        item.position,
+        key_text(item),
+        item.offset,
+        item.size
+    );
+    if let Some(outline) = snap.outline(axis, item.position) {
+        text.push_str(&outline_text(outline));
+    }
+    text
+}
+
+/// An item's outline as `[kind depth open]`, kind `L` (Leaf), `G` (Group
+/// Item), `S` (Subtotal) or `T` (Grand Total), open `+` (open), `-`
+/// (closed) or nothing (can't open), then `^key` for each ancestor and
+/// `field=value` for a group.
+fn outline_text(outline: &Outline) -> String {
+    let kind = match outline.kind {
+        ItemKind::Leaf => "L",
+        ItemKind::Group => "G",
+        ItemKind::Subtotal => "S",
+        ItemKind::GrandTotal => "T",
+    };
+    let open = match outline.open {
+        OpenState::Open => "+",
+        OpenState::Closed => "-",
+        OpenState::CantOpen => "",
+    };
+    let mut text = format!("[{kind}{}{open}", outline.depth);
+    for key in &outline.ancestors {
+        let _ = write!(text, " ^{}", key.0);
+    }
+    if let Some(group) = &outline.group {
+        let value = match &group.value {
+            Value::Text(t) => format!("{t:?}"),
+            Value::Blank => "blank".to_string(),
+        };
+        let _ = write!(text, " {}={value}", group.field.0);
+    }
+    text.push(']');
+    text
+}
+
+/// A grouping as `group`, the row levels' fields, `cols` and the column
+/// levels' if any, then `values` and each as `aggregate(field)` (`-` for
+/// none).
+fn grouping_text(grouping: &Grouping) -> String {
+    let levels = |levels: &[Level]| {
+        let names: Vec<String> = levels
+            .iter()
+            .map(|l| {
+                l.field_key()
+                    .map_or("values".to_string(), |k| k.0.to_string())
+            })
+            .collect();
+        names.join(",")
+    };
+    let mut text = format!(" group {}", levels(&grouping.row_levels));
+    if !grouping.col_levels.is_empty() {
+        let _ = write!(text, " cols {}", levels(&grouping.col_levels));
+    }
+    let values: Vec<String> = grouping
+        .values
+        .iter()
+        .map(|v| {
+            let field = v.field.map_or("-".to_string(), |k| k.0.to_string());
+            format!("{}({field})", v.aggregate)
+        })
+        .collect();
+    let _ = write!(text, " values {}", values.join(","));
     text
 }
 

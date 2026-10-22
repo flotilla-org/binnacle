@@ -17,6 +17,7 @@ mod find;
 mod focus;
 mod gesture;
 mod grid;
+mod grouping;
 mod measure;
 mod moves;
 mod notice;
@@ -36,6 +37,10 @@ pub use find::{FindDirection, FindMatch, FindQuery};
 pub use focus::FocusEnd;
 pub use gesture::Mode;
 pub use grid::{AxisConfig, DEFAULT_DRAG_THRESHOLD, Grid, WindowRequests};
+pub use grouping::{
+    AggregateValue, Depth, Expand, Form, GroupOf, GroupedAxis, Grouping, ItemKind, Level,
+    OpenState, Outline, Placement,
+};
 pub use measure::{AxisMeasure, ItemAt, WindowChange};
 pub use notice::ChangeNotice;
 pub use pointer::{Button, Modifiers, PointerEvent, PointerKind};

@@ -6,6 +6,7 @@ use crate::effect::{Action, Effect, FocusStep, Stamped};
 use crate::find::{FindDirection, FindState};
 use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
+use crate::grouping::Outline;
 use crate::measure::{AxisMeasure, WindowChange};
 use crate::moves::MoveState;
 use crate::notice::Locating;
@@ -297,7 +298,21 @@ impl Grid {
         self.window_changed(axis, change);
     }
 
+    /// The outlines of the items at Positions `start..` of a grouped axis,
+    /// sent after the Window they belong to ([`Grid::set_window`] drops
+    /// them); Positions outside the Window are ignored.
+    pub fn set_outlines(&mut self, axis: Axis, start: Position, outlines: &[Outline]) {
+        let st = self.axis_mut(axis);
+        for (position, outline) in (start..).zip(outlines) {
+            if let Some(key) = st.measure.key_at(position) {
+                st.outlines.insert(key, outline.clone());
+            }
+        }
+        self.pending_damage.positions = true;
+    }
+
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {
+        self.axis_mut(axis).outlines.clear();
         self.axis_mut(axis).sync_pins();
         self.finish_freeze(axis);
         self.pending_damage.positions |= change.keys;

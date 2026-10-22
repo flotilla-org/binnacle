@@ -38,11 +38,18 @@ impl<S> Transposed<S> {
     }
 }
 
-/// `spec` with its axes' parts swapped.
+/// `spec` with its axes' parts swapped, its grouping's levels and axes
+/// included.
 pub fn transpose_spec(spec: &ViewSpec) -> ViewSpec {
+    let grouping = spec.grouping.clone().map(|mut g| {
+        std::mem::swap(&mut g.row_levels, &mut g.col_levels);
+        std::mem::swap(&mut g.rows, &mut g.cols);
+        g
+    });
     ViewSpec {
         rows: spec.cols.clone(),
         cols: spec.rows.clone(),
+        grouping,
     }
 }
 

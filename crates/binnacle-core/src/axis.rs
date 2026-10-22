@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
+use crate::grouping::Outline;
 use crate::measure::{AxisMeasure, ItemAt};
 use crate::pin::Pin;
 use crate::snapshot::{ScrollAnchor, StripItem, Thumb};
@@ -48,6 +50,8 @@ pub(crate) struct AxisState {
     pub slide: [f32; 2],
     /// Where the pinned Strips draw, as last laid out.
     pub regions: [Range<f32>; 2],
+    /// The outlines the Table Source sent with the Window, by Key.
+    pub outlines: HashMap<Key, Outline>,
 }
 
 impl AxisState {
@@ -70,6 +74,7 @@ impl AxisState {
             focused: None,
             slide: [0.0; 2],
             regions: [0.0..0.0, 0.0..0.0],
+            outlines: HashMap::new(),
         }
     }
 

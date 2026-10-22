@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::effect::Effect;
 use crate::grid::Grid;
+use crate::grouping::{AggregateValue, Grouping, Level};
 use crate::pointer::Modifiers;
 use crate::sort::{HeaderSort, SortSpec};
 use crate::types::{Axis, Key, Position};
@@ -372,12 +373,14 @@ impl AxisView {
 }
 
 /// The declared view a Table Source should present for the whole table, one
-/// part per axis. The default is the Table Source's base view: nothing
-/// filtered, unsorted.
+/// part per axis and the whole-table grouping. The default is the Table
+/// Source's base view: nothing filtered, unsorted, ungrouped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ViewSpec {
     pub rows: AxisView,
     pub cols: AxisView,
+    /// How the table is grouped; `None` for a plain table.
+    pub grouping: Option<Grouping>,
 }
 
 impl ViewSpec {
@@ -413,8 +416,14 @@ impl ViewSpec {
         self
     }
 
+    /// This spec grouped by `grouping`, or plain with `None`.
+    pub fn with_grouping(mut self, grouping: Option<Grouping>) -> Self {
+        self.grouping = grouping;
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty() && self.cols.is_empty()
+        self.rows.is_empty() && self.cols.is_empty() && self.grouping.is_none()
     }
 }
 
@@ -457,6 +466,12 @@ pub enum ViewEdit {
     Hide { axis: Axis, keys: Vec<Key> },
     /// The hidden items of `axis` with `keys` were shown again.
     Show { axis: Axis, keys: Vec<Key> },
+    /// `axis` was grouped by `field`, a base field, as its innermost level.
+    /// A plain table becomes grouped with one value, the count.
+    Group { axis: Axis, field: Key },
+    /// Every level of `axis` was removed; with none left on either axis the
+    /// table is plain again.
+    Ungroup { axis: Axis },
 }
 
 /// How a Table Source matches a Text Query: `regex` if it takes patterns as
@@ -519,6 +534,8 @@ pub struct Support {
     /// The axis may be filtered by comparison conditions on the item, and
     /// on which kind of value; `None` (the default) if not.
     pub compare: Option<Compared>,
+    /// The axis may be grouped by the item, a base field. Not by default.
+    pub group: bool,
 }
 
 /// The kind of value comparison conditions on an item compare: its values
@@ -536,6 +553,7 @@ impl Default for Support {
             text: Some(TextSupport::default()),
             one_of: false,
             compare: None,
+            group: false,
         }
     }
 }
@@ -558,6 +576,11 @@ impl Support {
 
     pub fn with_compare(mut self, compare: Option<Compared>) -> Self {
         self.compare = compare;
+        self
+    }
+
+    pub fn with_group(mut self, group: bool) -> Self {
+        self.group = group;
         self
     }
 }
@@ -904,6 +927,34 @@ impl Grid {
         }
     }
 
+    /// Groups `axis` by `field`, a base field, as its innermost level, and
+    /// requests the result. Nothing happens if the axis is grouped by it
+    /// already or the Table Source can't group the axis by it.
+    pub fn group_by(&mut self, axis: Axis, field: Key) {
+        let grouped = self
+            .latest_view()
+            .grouping
+            .as_ref()
+            .is_some_and(|g| g.groups_by(axis, field));
+        if grouped || !self.view.support(axis, field).group {
+            return;
+        }
+        self.edit_view(ViewEdit::Group { axis, field });
+    }
+
+    /// Removes every level of `axis` and requests the result. Nothing
+    /// happens if the axis is not grouped.
+    pub fn ungroup(&mut self, axis: Axis) {
+        let grouped = self
+            .latest_view()
+            .grouping
+            .as_ref()
+            .is_some_and(|g| !g.levels(axis).is_empty());
+        if grouped {
+            self.edit_view(ViewEdit::Ungroup { axis });
+        }
+    }
+
     /// The View Spec the latest request asks for, else the applied one.
     pub(crate) fn latest_view(&self) -> &ViewSpec {
         self.view.requested.as_ref().unwrap_or(&self.view.applied)
@@ -954,6 +1005,21 @@ impl Grid {
             }
             ViewEdit::Show { axis, keys } => {
                 spec.axis_mut(*axis).hidden.retain(|k| !keys.contains(k));
+            }
+            ViewEdit::Group { axis, field } => {
+                let grouping = spec.grouping.get_or_insert_with(|| Grouping {
+                    values: vec![AggregateValue::count()],
+                    ..Grouping::default()
+                });
+                grouping.levels_mut(*axis).push(Level::field(*field));
+            }
+            ViewEdit::Ungroup { axis } => {
+                if let Some(grouping) = &mut spec.grouping {
+                    grouping.levels_mut(*axis).clear();
+                    if grouping.row_levels.is_empty() && grouping.col_levels.is_empty() {
+                        spec.grouping = None;
+                    }
+                }
             }
             ViewEdit::Replace | ViewEdit::ShownChanged { .. } | ViewEdit::Reapply => {}
         }

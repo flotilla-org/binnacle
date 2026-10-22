@@ -2,6 +2,7 @@ use crate::find::{FindMatch, FindQuery};
 use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
+use crate::grouping::Outline;
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
 use std::ops::Range;
@@ -239,6 +240,13 @@ impl<'a> Snapshot<'a> {
     /// The Gap between items on `axis`.
     pub fn gap(&self, axis: Axis) -> f32 {
         self.grid.axis(axis).measure.gap()
+    }
+
+    /// The outline the Table Source sent for the item at `position` on
+    /// `axis`, if the axis is grouped and the item is in the Window.
+    pub fn outline(&self, axis: Axis, position: Position) -> Option<&'a Outline> {
+        let st = self.grid.axis(axis);
+        st.outlines.get(&st.measure.key_at(position)?)
     }
 
     /// The scrolling Strip of `axis`: the visible items that follow the
