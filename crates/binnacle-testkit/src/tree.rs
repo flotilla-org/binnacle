@@ -4,8 +4,8 @@
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Depth, Expand, Grouping, Key, Located, OpenState, Outline, Position,
-    Support, Value, ViewSpec,
+    Axis, ChangeNotice, Depth, Expand, GroupOf, Grouping, Key, Located, OpenState, Outline,
+    Position, Support, Value, ViewSpec,
 };
 use binnacle_memory::{PumpSource, Viewed};
 
@@ -95,7 +95,13 @@ impl TreeTable {
 
     fn lay_out(&self, expand: &Expand) -> Vec<(Key, Outline)> {
         let mut out = Vec::new();
-        self.walk(&self.tree, &mut Vec::new(), expand, &mut out);
+        self.walk(
+            &self.tree,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            expand,
+            &mut out,
+        );
         out
     }
 
@@ -103,6 +109,7 @@ impl TreeTable {
         &self,
         groups: &[Group],
         up: &mut Vec<Key>,
+        path: &mut Vec<GroupOf>,
         expand: &Expand,
         out: &mut Vec<(Key, Outline)>,
     ) {
@@ -123,19 +130,27 @@ impl TreeTable {
                 (false, false) => OpenState::Closed,
             };
             let value = Value::Text(g.value.into());
-            let outline = Outline::group(up.clone(), state, self.levels[level], value);
+            let field = self.levels[level];
+            let outline =
+                Outline::group(up.clone(), state, field, value.clone()).with_path(path.clone());
+            let at = out.len();
             out.push((g.key, outline));
             if state != OpenState::Open {
                 continue;
             }
             up.push(g.key);
+            path.push(GroupOf { field, value });
             match &g.under {
-                Under::Groups(kids) => self.walk(kids, up, expand, out),
+                Under::Groups(kids) => self.walk(kids, up, path, expand, out),
                 Under::Leaves(keys) => {
-                    out.extend(keys.iter().map(|&k| (k, Outline::leaf(up.clone()))));
+                    let leaf = || Outline::leaf(up.clone()).with_path(path.clone());
+                    out.extend(keys.iter().map(|&k| (k, leaf())));
                 }
             }
             up.pop();
+            path.pop();
+            let span = (out.len() - at - 1) as u64;
+            out[at].1 = out[at].1.clone().with_span(span);
         }
     }
 

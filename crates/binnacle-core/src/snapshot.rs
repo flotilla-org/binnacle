@@ -2,7 +2,7 @@ use crate::find::{FindMatch, FindQuery};
 use crate::focus::FocusEnd;
 use crate::gesture::Mode;
 use crate::grid::Grid;
-use crate::grouping::{Aggregate, AggregateValue, GRAND_TOTAL, Level, Outline};
+use crate::grouping::{Aggregate, AggregateValue, Level, Outline};
 use crate::selection::CellRange;
 use crate::sort::HeaderSort;
 use std::ops::Range;
@@ -246,15 +246,8 @@ impl<'a> Snapshot<'a> {
     /// `axis`, if the axis is grouped and the item is in the Window. A
     /// pinned Grand Total has its outline wherever it is.
     pub fn outline(&self, axis: Axis, position: Position) -> Option<&'a Outline> {
-        static GRAND: Outline = Outline::grand_total();
-        let st = self.grid.axis(axis);
-        let key = st.key_at(position)?;
-        let grouped =
-            (self.applied_view().grouping.as_ref()).is_some_and(|g| !g.levels(axis).is_empty());
-        match st.outlines.get(&key) {
-            None if key == GRAND_TOTAL && grouped => Some(&GRAND),
-            found => found,
-        }
+        let key = self.grid.axis(axis).key_at(position)?;
+        self.grid.outline_by_key(axis, key)
     }
 
     /// The scrolling Strip of `axis`: the visible items that follow the

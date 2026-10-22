@@ -15,6 +15,8 @@ export type Action =
   | { type: "Cancel" }
   | { type: "Activate" }
   | { type: "BeginEdit" }
+  /** Copies the selection, or the focused cell, as the grid shows it. */
+  | { type: "Copy" }
   | { type: "ScrollBy"; axis: AxisName; items: number }
   /** Opens the focused column's menu, if a column menu is mounted; the key is the page's otherwise. */
   | { type: "OpenColumnMenu" }
@@ -137,9 +139,9 @@ const move = (axis: AxisName, by: FocusStep, forward: boolean, extend: boolean):
  * The default bindings: arrows, Shift to extend, Mod+arrow to the edge,
  * pages (Alt+PageUp and Alt+PageDown along the columns), Home and End (the
  * first and last row), Mod+A, Ctrl+Space the column and Shift+Space the row,
- * Alt+ArrowDown (or Shift+F10, or the context menu key) for the column menu
- * and Alt+ArrowRight for the row menu, Mod+F for the find bar, F3 (Shift+F3
- * back) to step between matches, Alt+Shift with an arrow to pin the focused
+ * Mod+C to copy, Alt+ArrowDown (or Shift+F10, or the context menu key) for
+ * the column menu and Alt+ArrowRight for the row menu, Mod+F for the find
+ * bar, F3 (Shift+F3 back) to step between matches, Alt+Shift with an arrow to pin the focused
  * column left or right, or its row to the top or bottom (or unpin it),
  * Alt+Shift+Backspace to unpin the column and Mod+Alt+Shift+Backspace the
  * row, Alt+Shift+Home to freeze the columns up to the focused one and
@@ -180,6 +182,7 @@ export function defaultBindings(): KeyBindings {
   bindings["Escape"] = { type: "Cancel" };
   bindings["Enter"] = { type: "Activate" };
   bindings["F2"] = { type: "BeginEdit" };
+  bindings["Mod+C"] = { type: "Copy" };
   bindings["Alt+ArrowDown"] = { type: "OpenColumnMenu" };
   bindings["Alt+ArrowRight"] = { type: "OpenRowMenu" };
   bindings["Mod+F"] = { type: "OpenFind" };

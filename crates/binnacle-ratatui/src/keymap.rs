@@ -13,7 +13,8 @@ use crate::Preset;
 /// rows, Alt+PageUp and Alt+PageDown a page of columns, Home and End to the
 /// first and last row, Ctrl with an arrow to the edge that way. Shift with
 /// any of these extends the selection. Ctrl+A selects all, Ctrl+Space selects
-/// the whole column and Shift+Space the whole row, Esc cancels. Enter
+/// the whole column and Shift+Space the whole row, Esc cancels. Ctrl+C
+/// copies (see [`crate::copy_text`]; a host quitting on it unbinds it). Enter
 /// activates, F2 begins an edit, and any other character typed without Ctrl
 /// or Alt is sent as `TypeText` (see [`Keymap::set_typing`]). In the outline
 /// column (the row band of rows grouped in outline form) the arrows walk the
@@ -155,6 +156,7 @@ impl Default for Keymap {
             }
         }
         keymap.bind(KeyCode::Char('a'), KeyModifiers::CONTROL, Action::SelectAll);
+        keymap.bind(KeyCode::Char('c'), KeyModifiers::CONTROL, Action::Copy);
         keymap.bind(
             KeyCode::Char(' '),
             KeyModifiers::CONTROL,

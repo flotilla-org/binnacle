@@ -8,9 +8,9 @@
 
 use binnacle_core::{
     AggregateValue, Axis, CellState, Comparison, Condition, ConditionKind, ConditionState, Cursor,
-    Depth, DropTarget, Edge, Form, GroupedAxis, Grouping, HeaderPlacement, ItemKind, Key, Level,
-    Mode, OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot, SortDirection, SortSpec,
-    TextQuery, Value, ViewSpec,
+    Depth, DropTarget, Edge, Form, GroupOf, GroupedAxis, Grouping, HeaderPlacement, ItemKind, Key,
+    Level, Mode, OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot, SortDirection,
+    SortSpec, TextQuery, Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -354,7 +354,8 @@ impl Writer<'_> {
     /// An item's outline, flagged: its kind (0 Leaf, 1 Group Item, 2
     /// Subtotal, 3 Grand Total), depth, open state (0 open, 1 closed, 2
     /// can't open), ancestor Keys, then its group, flagged: the field's Key
-    /// and the value, flagged unless blank.
+    /// and the value, flagged unless blank; then its span and its path, a
+    /// list of groups as the group is written.
     fn outline(&mut self, outline: Option<&Outline>) {
         self.flag(outline.is_some());
         let Some(o) = outline else {
@@ -378,14 +379,24 @@ impl Writer<'_> {
         }
         self.flag(o.group.is_some());
         if let Some(g) = &o.group {
-            self.key(g.field);
-            match &g.value {
-                Value::Text(t) => {
-                    self.flag(true);
-                    self.text(t);
-                }
-                Value::Blank => self.flag(false),
+            self.group(g);
+        }
+        self.position(o.span);
+        self.len(o.path.len());
+        for g in &o.path {
+            self.group(g);
+        }
+    }
+
+    /// A group: its field's Key and its value, flagged unless blank.
+    fn group(&mut self, g: &GroupOf) {
+        self.key(g.field);
+        match &g.value {
+            Value::Text(t) => {
+                self.flag(true);
+                self.text(t);
             }
+            Value::Blank => self.flag(false),
         }
     }
 

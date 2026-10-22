@@ -420,7 +420,11 @@ fn activate_and_begin_edit_name_the_focused_cell(tc: TestCase) {
     if let Some((r, c)) = cell {
         let (row, col) = (Key(r), Key(c));
         expected.push(match action {
-            Action::Activate => Effect::Activated { row, col },
+            Action::Activate => Effect::Activated {
+                row,
+                col,
+                drill_down: None,
+            },
             _ => Effect::EditRequested { row, col },
         });
     }

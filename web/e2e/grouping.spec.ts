@@ -5,7 +5,10 @@
 // click on a disclosure mark and the tree keys of the outline column open
 // and close groups; the column menu ungroups the rows and groups them by
 // another column, focus staying on its shipment; and a saved layout keeps
-// the grouping.
+// the grouping. A click on a Group Item's label selects its group and
+// Shift-click stretches by whole groups (#205); Ctrl/Cmd-C copies the rows
+// as shown, and Enter on a Summary Item's cell hands the demo its
+// drill-down.
 
 import { expect, test, type Page } from "@playwright/test";
 import { REGIONS, shipments } from "../demo/sources/shipments-data";
@@ -15,6 +18,13 @@ const ROW = 24;
 
 const status = (page: Page) => page.locator("#status");
 const en = (n: number) => n.toLocaleString("en");
+
+/** Cmd where the page sees macOS, Ctrl elsewhere: the user agent the browser is given decides. */
+const mod = (page: Page) =>
+  page.evaluate(() => {
+    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+    return /mac/i.test(nav.userAgentData?.platform ?? nav.platform) ? "Meta" : "Control";
+  });
 
 /** The groups a column makes of the shipments. */
 const groupsBy = (field: "region" | "crates") => new Set(shipments.map((s) => s[field])).size;
@@ -86,6 +96,57 @@ test("a click on a port's disclosure mark opens it, its figures moving to its Su
   // A click on the label beside the mark opens nothing.
   await band(page, 1, 80);
   await expect(status(page)).toContainText(`of ${en(closed())}`);
+});
+
+test("a click on a Group Item's label selects its group, and Shift-click stretches by whole groups", async ({ page }) => {
+  const [east, north] = regions();
+  const eastRows = 1 + portsOf(east!).length + 1;
+  await band(page, 0, 80);
+  await expect(status(page)).toContainText(`selected ${eastRows} × 4`);
+  // A closed port selects its own row.
+  await band(page, 1, 80);
+  await expect(status(page)).toContainText("selected 1 × 4");
+  await band(page, 0, 80);
+  await page.keyboard.down("Shift");
+  await band(page, eastRows, 80);
+  await page.keyboard.up("Shift");
+  await expect(status(page)).toContainText(`selected ${eastRows + 1 + portsOf(north!).length + 1} × 4`);
+});
+
+test("Ctrl/Cmd-C copies a group as shown: labels first, closed ports' figures, the open region's in its Subtotal", async ({ page }) => {
+  await page.evaluate(() => {
+    const w = window as unknown as { copied: string[] };
+    w.copied = [];
+    window.addEventListener("copy", (e) => w.copied.push(e.clipboardData?.getData("text/plain") ?? ""));
+  });
+  const [east] = regions();
+  const ports = portsOf(east!);
+  await band(page, 0, 80);
+  await page.keyboard.press(`${await mod(page)}+c`);
+  await expect(page.locator("#received")).toHaveText(`copied ${ports.length + 2} rows`);
+  const [text] = await page.evaluate(() => (window as unknown as { copied: string[] }).copied);
+  const lines = text!.split("\n").map((l) => l.split("\t"));
+  const weight = (rows: typeof shipments) => String(Math.round(rows.reduce((w, s) => w + (s.weight ?? 0), 0) * 10) / 10);
+  const inEast = shipments.filter((s) => s.region === east);
+  expect(lines.map((l) => l.length)).toEqual(lines.map(() => 5));
+  expect(lines[0]).toEqual([`${east} (${inEast.length})`, "", "", "", ""]);
+  for (const [i, port] of ports.entries()) {
+    expect(lines[i + 1]![0]).toBe(`${port} (${shipped(east!, port)})`);
+    expect(lines[i + 1]![3]).toBe(weight(inEast.filter((s) => s.port === port)));
+  }
+  expect(lines.at(-1)![0]).toMatch(new RegExp(`^${east} total`));
+  expect(lines.at(-1)![3]).toBe(weight(inEast));
+});
+
+test("Enter on a Summary Item's cell hands the demo its drill-down", async ({ page }) => {
+  const [east] = regions();
+  const [first] = portsOf(east!);
+  await click(page, 1, 2);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#received")).toHaveText(`drill-down: region ${east}, port ${first}`);
+  await click(page, 0, 2);
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#received")).toHaveText(`drill-down: region ${east}`);
 });
 
 test("the outline column's tree keys open and close groups, and Tab leaves it", async ({ page }) => {

@@ -53,7 +53,8 @@ fn activate_and_begin_edit_name_the_focused_cell() {
         vec![
             Effect::Activated {
                 row: cell.0,
-                col: cell.1
+                col: cell.1,
+                drill_down: None,
             },
             Effect::EditRequested {
                 row: cell.0,
@@ -90,7 +91,8 @@ fn a_plain_double_click_on_a_cell_activates_it() {
         s.effects(),
         vec![Effect::Activated {
             row: Key(2),
-            col: Key(1)
+            col: Key(1),
+            drill_down: None,
         }]
     );
     // A double press on a header, in a Gap, or under a modifier is no
@@ -141,7 +143,8 @@ fn the_grid_cancels_an_edit_on_cancel_or_a_press_and_says_so() {
     s.input(|g| g.pointer(PointerEvent::down(12.0, 3.0).clicks(2)));
     assert!(s.effects().contains(&Effect::Activated {
         row: Key(2),
-        col: Key(1)
+        col: Key(1),
+        drill_down: None,
     }));
     s.input(|g| {
         g.edit_started(Key(2), Key(1));

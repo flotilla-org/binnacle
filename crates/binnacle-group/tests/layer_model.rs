@@ -132,6 +132,10 @@ struct Described {
     open: OpenState,
     ancestors: Vec<Path>,
     group: Option<(Key, Value)>,
+    /// How many items a Group Item shows under it.
+    span: u64,
+    /// The groups of its ancestors, as the outline names them.
+    path: Path,
 }
 
 fn path_of(row: &Row, depth: usize) -> Path {
@@ -185,6 +189,8 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                     open: OpenState::CantOpen,
                     ancestors: prefixes(&path),
                     group: None,
+                    span: 0,
+                    path: path.clone(),
                 });
             }
             return;
@@ -215,10 +221,13 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                 },
                 ancestors: prefixes(&path),
                 group: Some((FIELDS[depth], value.clone())),
+                span: 0,
+                path: path.clone(),
             });
             if !open {
                 continue;
             }
+            let at = out.len() - 1;
             let subtotal = Described {
                 item: Item::Subtotal(child.clone()),
                 aggregates: Some(aggregates(&under)),
@@ -227,6 +236,8 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                 open: OpenState::CantOpen,
                 ancestors: prefixes(&child),
                 group: Some((FIELDS[depth], value.clone())),
+                span: 0,
+                path: child.clone(),
             };
             if shape.subtotals[depth] == Placement::Before {
                 out.push(subtotal.clone());
@@ -235,6 +246,7 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
             if shape.subtotals[depth] == Placement::After {
                 out.push(subtotal);
             }
+            out[at].span = (out.len() - at - 1) as u64;
         }
     }
     let all: Vec<&Row> = rows.iter().collect();
@@ -246,6 +258,8 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
         open: OpenState::CantOpen,
         ancestors: Vec::new(),
         group: None,
+        span: 0,
+        path: Vec::new(),
     };
     let mut out = Vec::new();
     if shape.grand_total == Placement::Before {
@@ -511,6 +525,10 @@ fn describe(layer: &GroupingLayer<u64>, key: Key, outline: &Outline) -> Describe
             .map(|&k| path(k).unwrap())
             .collect(),
         group: outline.group.as_ref().map(|g| (g.field, g.value.clone())),
+        span: outline.span,
+        path: (outline.path.iter())
+            .map(|g| (g.field, g.value.clone()))
+            .collect(),
     }
 }
 

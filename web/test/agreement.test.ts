@@ -380,16 +380,18 @@ describe("Grouping", () => {
       grid.begin_frame(400, 200);
       const north = 2n ** 63n;
       grid.set_window(0, 0, BigUint64Array.from([north, 7n, 2n ** 60n, 9n]));
+      const path = [{ field: 1n, value: "North" }];
       const outlines = [
-        { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "North" } },
-        { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [north], group: null },
-        { kind: "group", depth: 0, open: "closed", ancestors: [], group: { field: 1n, value: null } },
+        { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "North" }, span: 1, path: [] },
+        { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [north], group: null, span: 0, path },
+        { kind: "group", depth: 0, open: "closed", ancestors: [], group: { field: 1n, value: null }, span: 0, path: [] },
+        // A source may leave out the span and the path.
         { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null },
       ];
       grid.set_outlines(0, 0, outlines);
       grid.begin_frame(400, 200);
       const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
-      expect(s.rows.strip.map((i) => i.outline)).toEqual(outlines);
+      expect(s.rows.strip.map((i) => i.outline)).toEqual(outlines.map((o) => ({ span: 0, path: [], ...o })));
       expect(s.cols.strip.map((i) => i.outline)).toEqual([null, null]);
       expect(() => grid.set_outlines(0, 0, [{ kind: "branch" }])).toThrow(/outlines/);
 
@@ -442,22 +444,38 @@ describe("Grouping", () => {
       type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
       const items = memory.grouped_window(0, 12) as Item[];
       const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
-      const group = (value: string | null) => ({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value } });
-      const leaf = (parent: bigint) => ({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null });
-      const subtotal = (parent: bigint, value: string | null) => ({ ...leaf(parent), kind: "subtotal", group: { field: 1n, value } });
+      const group = (value: string | null, span: number) => ({
+        kind: "group",
+        depth: 0,
+        open: "open",
+        ancestors: [],
+        group: { field: 1n, value },
+        span,
+        path: [],
+      });
+      const leaf = (parent: bigint, value: string | null) => ({
+        kind: "leaf",
+        depth: 1,
+        open: "cantOpen",
+        ancestors: [parent],
+        group: null,
+        span: 0,
+        path: [{ field: 1n, value }],
+      });
+      const subtotal = (parent: bigint, value: string | null) => ({ ...leaf(parent, value), kind: "subtotal", group: { field: 1n, value } });
       expect(items.map((i) => [i.item, i.outline])).toEqual([
-        [null, group("a")],
-        [1, leaf(a)],
-        [4, leaf(a)],
+        [null, group("a", 3)],
+        [1, leaf(a, "a")],
+        [4, leaf(a, "a")],
         [null, subtotal(a, "a")],
-        [null, group("b")],
-        [0, leaf(b)],
-        [2, leaf(b)],
+        [null, group("b", 3)],
+        [0, leaf(b, "b")],
+        [2, leaf(b, "b")],
         [null, subtotal(b, "b")],
-        [null, group(null)],
-        [3, leaf(blank)],
+        [null, group(null, 2)],
+        [3, leaf(blank, null)],
         [null, subtotal(blank, null)],
-        [null, { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null }],
+        [null, { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null, span: 0, path: [] }],
       ]);
       expect(items.map((i) => i.aggregates)).toEqual([
         [5, 2], null, null, [5, 2], [7, 2], null, null, [7, 2], [10, 1], null, [10, 1], [22, 5],

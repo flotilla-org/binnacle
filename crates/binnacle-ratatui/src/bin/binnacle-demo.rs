@@ -1122,7 +1122,7 @@ impl App {
             }
             for effect in effects {
                 match effect {
-                    Effect::Activated { row, col } | Effect::EditRequested { row, col } => {
+                    Effect::Activated { row, col, .. } | Effect::EditRequested { row, col } => {
                         if let (NAME, Some(text)) = (col, table.name(row)) {
                             grid.edit_started(row, col);
                             self.editor = Some(Editor { row, col, text });

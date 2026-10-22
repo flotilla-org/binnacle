@@ -148,6 +148,21 @@ impl AxisState {
     /// The Positions of the items at `indices` in drawn order, as sorted
     /// runs apart from each other.
     pub fn drawn_runs(&self, indices: Range<u64>) -> Vec<Range<Position>> {
+        let mut runs = self.runs_in_drawn_order(indices);
+        runs.sort_by_key(|r| r.start);
+        let mut merged: Vec<Range<Position>> = Vec::with_capacity(runs.len());
+        for r in runs {
+            match merged.last_mut() {
+                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        merged
+    }
+
+    /// The Positions of the items at `indices` in drawn order, as runs in
+    /// that order: the leading pins, the scrolling items, the trailing pins.
+    pub fn runs_in_drawn_order(&self, indices: Range<u64>) -> Vec<Range<Position>> {
         let indices = indices.start..indices.end.min(self.drawn_len());
         let mut runs: Vec<Range<Position>> = Vec::new();
         let (leading, scrolling) = (self.pinned_len(Edge::Leading), self.scrolling_len());
@@ -177,14 +192,13 @@ impl AxisState {
             }
         }
         runs.extend(pinned(Edge::Trailing, leading + scrolling, &indices));
-        runs.sort_by_key(|r| r.start);
-        let mut merged: Vec<Range<Position>> = Vec::with_capacity(runs.len());
+        let mut joined: Vec<Range<Position>> = Vec::with_capacity(runs.len());
         for r in runs {
-            match merged.last_mut() {
-                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
-                _ => merged.push(r),
+            match joined.last_mut() {
+                Some(last) if r.start == last.end => last.end = r.end,
+                _ => joined.push(r),
             }
         }
-        merged
+        joined
     }
 }

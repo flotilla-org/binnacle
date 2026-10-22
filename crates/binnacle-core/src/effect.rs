@@ -1,4 +1,7 @@
+use std::ops::Range;
+
 use crate::find::{FindDirection, FindMatch, FindQuery};
+use crate::grouping::DrillDown;
 use crate::types::{Axis, Edge, Generation, Key, Position};
 use crate::view::{ViewEdit, ViewSpec};
 
@@ -13,8 +16,13 @@ pub enum Effect {
     TextTyped { text: String },
     /// The user activated the cell with `row` and `col` (Enter, or a
     /// double-click): the host decides whether that opens, edits or does
-    /// nothing.
-    Activated { row: Key, col: Key },
+    /// nothing. On a cell of a Summary Item, `drill_down` says which base
+    /// rows lie under it, for the host to open, show beside or ignore.
+    Activated {
+        row: Key,
+        col: Key,
+        drill_down: Option<DrillDown>,
+    },
     /// The user asked to edit the cell with `row` and `col` (F2). The host
     /// starts its own editor and calls [`crate::Grid::edit_started`], or
     /// ignores it (a read-only grid).
@@ -73,6 +81,20 @@ pub enum Effect {
         keys: Vec<Key>,
         to: Position,
     },
+    /// The user asked to copy the selection (Ctrl/Cmd+C): the cells where
+    /// the items at `rows` cross those at `cols`, each a list of runs of
+    /// Positions in drawn order, as shown (a collapsed group's items are
+    /// not at any Position, so they are left out). With `row_labels`, the
+    /// rows are grouped and each copied row leads with its label from the
+    /// row Header Band (a Group Item's value, say, without indent);
+    /// `col_labels` likewise for grouped columns. The host fills the
+    /// clipboard, and may copy something else instead.
+    CopyRequested {
+        rows: Vec<Range<Position>>,
+        cols: Vec<Range<Position>>,
+        row_labels: bool,
+        col_labels: bool,
+    },
     /// The Find Query changed to `query`, or find closed (`None`): the host
     /// fetches the marks for what it shows again, and the count.
     FindRequested { query: Option<FindQuery> },
@@ -106,6 +128,9 @@ pub enum Action {
     Activate,
     /// Asks to edit the focused cell (F2): emits `EditRequested`.
     BeginEdit,
+    /// Asks to copy the selection, or the focused cell without one
+    /// (Ctrl/Cmd+C): emits `CopyRequested`.
+    Copy,
     /// Moves focus along `axis` by one item, a page or to the edge, towards the
     /// end if `forward`, and scrolls to show the focused cell. `extend` asks
     /// for the move to stretch the selection range instead of replacing it.

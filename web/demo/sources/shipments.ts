@@ -18,8 +18,14 @@
 // date field beside the text condition and the checklist: a weight over
 // 100, or the shipments of one quarter. Each comparison shows as a chip in
 // the filter bar.
+//
+// A click on a Group Item's row header selects its whole group, and Shift
+// stretches the selection by whole groups. Ctrl/Cmd-C copies what is shown,
+// labels first, and the toolbar says how many rows went. Enter or a double
+// click on a Summary Item's cell activates it, and the toolbar shows the
+// drill-down it carries: the conditions that pick out its shipments.
 
-import { createColumnMenu, createFilterBar, fromRows, GridWidget, LAYOUT_VERSION, rowsBy, textRenderer } from "../../src";
+import { createColumnMenu, createFilterBar, fromRows, GridWidget, LAYOUT_VERSION, rowsBy, textRenderer, type Condition } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { layoutControls } from "./layout";
 import { day, SHIPMENTS, shipments, type Shipment } from "./shipments-data";
@@ -27,12 +33,19 @@ import { day, SHIPMENTS, shipments, type Shipment } from "./shipments-data";
 const WIDTHS = { id: 64, region: 96, port: 128, shipped: 112, weight: 96, crates: 80 } as const;
 const HEADER = 28;
 
+/** A drill-down's condition as the toolbar shows it. */
+function described({ id, kind, not }: Condition<keyof Shipment>): string {
+  const what =
+    kind.type === "OneOf" ? `${not ? "not " : ""}${kind.values.map((v) => v ?? "(blank)").join(" or ")}` : `${not ? "not " : ""}${JSON.stringify(kind)}`;
+  return `${id} ${what}`;
+}
+
 export const shipmentsDemo: DemoSource = {
   name: "shipments",
   description: `${SHIPMENTS.toLocaleString("en")} shipments by region then port, with Subtotals and a Grand Total: group by any column, compare numbers and dates`,
   showIds: true,
   filterBar: true,
-  async mount(host, _toolbar, look) {
+  async mount(host, toolbar, look) {
     const number = textRenderer<Shipment[keyof Shipment]>({ align: "end" });
     // A total weight to one decimal place, as each shipment's is.
     const weight = textRenderer({ align: "end", format: (w: number | null) => (w === null ? "" : String(Math.round(w * 10) / 10)) });
@@ -45,6 +58,13 @@ export const shipmentsDemo: DemoSource = {
       { key: "weight", renderer: weight },
       { key: "crates", renderer: number },
     ]);
+    // Joins the toolbar only once it has something to say, leaving the page's layout as it was until then.
+    const received = document.createElement("output");
+    received.id = "received";
+    const note = (text: string) => {
+      received.textContent = text;
+      if (!received.isConnected) toolbar.append(received);
+    };
     const frame = document.createElement("div");
     frame.className = "with-filter-bar";
     const gridBox = document.createElement("div");
@@ -56,6 +76,12 @@ export const shipmentsDemo: DemoSource = {
       columnWidth: 120,
       headerHeight: HEADER,
       initialColumnWidth: (col) => WIDTHS[col],
+      onActivate: ({ drillDown }) => {
+        if (drillDown) note(`drill-down: ${drillDown.map(described).join(", ") || "every shipment"}`);
+      },
+      onCopy: ({ rows }) => {
+        note(`copied ${rows.length} ${rows.length === 1 ? "row" : "rows"}`);
+      },
       ...look,
     });
     // As a saved layout would come back, with a row band wide enough for
@@ -108,6 +134,7 @@ export const shipmentsDemo: DemoSource = {
         columnMenu.destroy();
         widget.destroy();
         frame.remove();
+        received.remove();
         source.destroy();
       },
     };

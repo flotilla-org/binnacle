@@ -193,6 +193,10 @@ export interface Outline<Id, FieldId> {
   open: "open" | "closed" | "cantOpen";
   ancestors: Id[];
   group?: { field: FieldId; value: ListedValue } | null;
+  /** On a Group Item, how many items are shown under it (its Subtotal included; 0 while closed): a click on its header selects them all. */
+  span?: number;
+  /** The group of each of `ancestors`, outermost first, from which an activated Summary Item's drill-down is built. */
+  path?: { field: FieldId; value: ListedValue }[];
 }
 
 /** A Window of a grouped axis: its IDs, and each one's outline. */

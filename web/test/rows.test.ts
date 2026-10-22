@@ -1140,17 +1140,20 @@ describe("fromRows's grouping", () => {
     const n = source.rows.count() as number;
     const window = source.rows.window(0, n, signal) as OutlinedWindow<number, keyof Rec>;
     let parent: number | undefined;
+    let path: { field: keyof Rec; value: string | null }[] = [];
     return window.ids.map((id, i) => {
       const outline = window.outlines[i]!;
       if (outline.kind === "leaf") {
         expect(id).toBeGreaterThanOrEqual(0);
-        expect(outline).toEqual({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null });
+        expect(outline).toEqual({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null, span: 0, path });
         return id;
       }
       parent = id;
       expect(id).toBeLessThan(0);
       const group = source.group(id)!;
-      expect(outline).toEqual({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field, value: group.value } });
+      // An open Group Item spans its rows, as no Subtotal is placed; its path is its ancestors', none.
+      expect(outline).toEqual({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field, value: group.value }, span: group.count, path: [] });
+      path = [{ field, value: group.value }];
       expect(group.field).toBe(field);
       expect(source.rows.groupLabel!(id, outline)).toBe(`${group.value ?? "(blank)"} (${group.count})`);
       expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: i });

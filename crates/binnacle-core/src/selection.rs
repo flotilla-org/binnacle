@@ -87,25 +87,47 @@ impl Span {
     /// one corner to the other, in drawn order, or every item where the
     /// axis is whole.
     pub(crate) fn range(&self, axes: &[AxisState; 2]) -> CellRange {
+        CellRange {
+            rows: self.along(axes, Axis::Rows, AxisState::drawn_runs),
+            cols: self.along(axes, Axis::Cols, AxisState::drawn_runs),
+        }
+    }
+
+    /// The Positions the range covers on each axis, as runs in drawn order
+    /// rather than sorted: what a copy lists.
+    pub(crate) fn drawn_order(&self, axes: &[AxisState; 2]) -> CellRange {
         let along = |axis: Axis| {
-            let (i, st) = (axis.index(), &axes[axis.index()]);
-            let count = st.measure.count();
-            if self.whole[i] {
-                return std::iter::once(0..count)
-                    .filter(|r| !r.is_empty())
-                    .collect();
+            let st = &axes[axis.index()];
+            match self.whole[axis.index()] {
+                true => st.runs_in_drawn_order(0..st.drawn_len()),
+                false => self.along(axes, axis, AxisState::runs_in_drawn_order),
             }
-            let (a, b) = (self.anchor[i], self.head[i]);
-            if count == 0 || a.position.min(b.position) >= count {
-                return Vec::new();
-            }
-            let (a, b) = (st.drawn_index(st.slot_of(a)), st.drawn_index(st.slot_of(b)));
-            st.drawn_runs(a.min(b)..a.max(b) + 1)
         };
         CellRange {
             rows: along(Axis::Rows),
             cols: along(Axis::Cols),
         }
+    }
+
+    fn along(
+        &self,
+        axes: &[AxisState; 2],
+        axis: Axis,
+        runs: fn(&AxisState, Range<u64>) -> Vec<Range<Position>>,
+    ) -> Vec<Range<Position>> {
+        let (i, st) = (axis.index(), &axes[axis.index()]);
+        let count = st.measure.count();
+        if self.whole[i] {
+            return std::iter::once(0..count)
+                .filter(|r| !r.is_empty())
+                .collect();
+        }
+        let (a, b) = (self.anchor[i], self.head[i]);
+        if count == 0 || a.position.min(b.position) >= count {
+            return Vec::new();
+        }
+        let (a, b) = (st.drawn_index(st.slot_of(a)), st.drawn_index(st.slot_of(b)));
+        runs(st, a.min(b)..a.max(b) + 1)
     }
 }
 

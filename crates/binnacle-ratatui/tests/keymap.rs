@@ -131,10 +131,11 @@ fn hosts_rebind_and_unbind_keys() {
 }
 
 #[test]
-fn the_default_keymap_selects_all_selects_columns_and_rows_and_cancels() {
+fn the_default_keymap_selects_all_copies_selects_columns_and_rows_and_cancels() {
     let keys = Keymap::default();
     let cases = [
         (KeyCode::Char('a'), KeyModifiers::CONTROL, Action::SelectAll),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL, Action::Copy),
         (
             KeyCode::Char(' '),
             KeyModifiers::CONTROL,

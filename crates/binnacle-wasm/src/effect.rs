@@ -563,6 +563,22 @@ impl From<Edge> for WireEdge {
     }
 }
 
+/// Positions `start..end`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WireRun {
+    pub start: f64,
+    pub end: f64,
+}
+
+impl From<std::ops::Range<u64>> for WireRun {
+    fn from(r: std::ops::Range<u64>) -> Self {
+        WireRun {
+            start: r.start as f64,
+            end: r.end as f64,
+        }
+    }
+}
+
 /// One Effect with the generation it was stamped with.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct WireStamped {
@@ -582,6 +598,16 @@ pub enum WireEffect {
     Activated {
         row: u64,
         col: u64,
+        #[serde(rename = "drillDown")]
+        drill_down: Option<Vec<WireCondition>>,
+    },
+    CopyRequested {
+        rows: Vec<WireRun>,
+        cols: Vec<WireRun>,
+        #[serde(rename = "rowLabels")]
+        row_labels: bool,
+        #[serde(rename = "colLabels")]
+        col_labels: bool,
     },
     EditRequested {
         row: u64,
@@ -654,9 +680,25 @@ impl From<Effect> for WireEffect {
         let k = |key: Key| key.0;
         match effect {
             Effect::TextTyped { text } => WireEffect::TextTyped { text },
-            Effect::Activated { row, col } => WireEffect::Activated {
+            Effect::Activated {
+                row,
+                col,
+                drill_down,
+            } => WireEffect::Activated {
                 row: k(row),
                 col: k(col),
+                drill_down: drill_down.map(|d| d.conditions.iter().map(Into::into).collect()),
+            },
+            Effect::CopyRequested {
+                rows,
+                cols,
+                row_labels,
+                col_labels,
+            } => WireEffect::CopyRequested {
+                rows: rows.into_iter().map(WireRun::from).collect(),
+                cols: cols.into_iter().map(WireRun::from).collect(),
+                row_labels,
+                col_labels,
             },
             Effect::EditRequested { row, col } => WireEffect::EditRequested {
                 row: k(row),

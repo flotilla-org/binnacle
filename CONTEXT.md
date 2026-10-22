@@ -147,7 +147,7 @@ Any item a grouped axis shows that the source computes rather than holds: a Grou
 _Avoid_: Aggregate row, synthetic row, virtual row
 
 **Outline**:
-Where an item sits in a grouped axis, given with each Window item: its kind (Leaf or which Summary Item), its depth, its ancestors' Keys from the outermost Group Item down to its parent, whether it is open, and on a Group Item or Subtotal its level's field and value.
+Where an item sits in a grouped axis, given with each Window item: its kind (Leaf or which Summary Item), its depth, its ancestors' Keys from the outermost Group Item down to its parent, whether it is open, on a Group Item or Subtotal its level's field and value, its path (each ancestor's field and value, outermost first), and on a Group Item its span (how many items are shown under it, its Subtotal included; 0 while closed). The span is what a click on a Group Item's header selects; the path is what its Drill-Down Spec names.
 _Avoid_: Tree info, hierarchy, node
 
 **Collapsed / Expanded**:
@@ -191,7 +191,7 @@ Where the two Header Bands' tiers cross on a table grouped in header form: each 
 _Avoid_: Top-left corner, pivot corner
 
 **Drill-Down Spec**:
-What activating a Summary Item's cell hands the app with the `Activated` Effect: the Slicers in force plus a OneOf for each field and value on the row's and column's paths, picking the Leaves behind the cell. binnacle builds no drill-down view.
+What activating a Summary Item's cell hands the app with the `Activated` Effect (`DrillDown`): the Slicers in force plus a OneOf for each field and value on the row's and column's paths, picking the Leaves behind the cell. Only a cell whose row or column is a Summary Item carries one; a Leaf's cell carries none and may begin an edit. binnacle builds no drill-down view.
 _Avoid_: Detail query, drill-through
 
 ### Inside an In-Memory Table Source

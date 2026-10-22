@@ -463,9 +463,10 @@ impl Grid {
             Action::Activate if self.tree_activate() => {}
             Action::Activate => {
                 if let Some((row, col)) = self.focused_keys() {
-                    self.push(Effect::Activated { row, col });
+                    self.activate(row, col);
                 }
             }
+            Action::Copy => self.copy(),
             Action::BeginEdit => {
                 if let Some((row, col)) = self.focused_keys() {
                     self.push(Effect::EditRequested { row, col });

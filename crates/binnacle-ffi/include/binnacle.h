@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 7u
+#define BINNACLE_ABI_VERSION 8u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -139,7 +139,10 @@ uint32_t binnacle_abi_version(void);
  * them with binnacle_grid_set_pins. At most one per edge is queued. */
 #define BINNACLE_EFFECT_PINS_CHANGED 11
 /* The user activated the cell with row and col (Enter, or a double-click):
- * open it, edit it or ignore it. */
+ * open it, edit it or ignore it. On a Summary Item's cell has_drill_down is
+ * 1 and drill_down lists the conditions that pick out the base rows under
+ * it: the grouping's slicers, then a ONE_OF per group on the row's and the
+ * column's paths, outermost first. */
 #define BINNACLE_EFFECT_ACTIVATED 12
 /* The user asked to edit the cell with row and col (F2): open an editor on
  * it and call binnacle_grid_edit_started, or ignore it. */
@@ -154,6 +157,14 @@ uint32_t binnacle_abi_version(void);
 /* The border after the item with key on axis was double-clicked: measure
  * its content and answer with binnacle_grid_set_size. */
 #define BINNACLE_EFFECT_AUTO_SIZE_REQUESTED 16
+/* The user asked to copy (binnacle_grid_copy): the cells where the items at
+ * copy_runs[BINNACLE_ROWS] cross those at copy_runs[BINNACLE_COLS], each
+ * runs of Positions in drawn order, as shown (a collapsed group's items are
+ * at no Position, so they are left out). copy_labels[axis] 1: the axis is
+ * grouped, and its labels (a Group Item's value, without indent) lead each
+ * copied row, or head each column. Fill the clipboard, or copy something
+ * else instead. */
+#define BINNACLE_EFFECT_COPY_REQUESTED 17
 
 /* binnacle_grid_edit_ended: the host kept the new value, or threw it away. */
 #define BINNACLE_EDIT_COMMIT 0
@@ -455,13 +466,24 @@ typedef struct {
   BinnacleText text;
 } BinnacleValue;
 
+/* A group: its level's field and its value there. */
+typedef struct {
+  uint64_t field;
+  BinnacleValue value;
+} BinnacleGroupOf;
+
 /* Where an item sits in a grouped axis, as the Table Source sends it with a
  * Window (binnacle_grid_set_outlines). kind is BINNACLE_ITEM_*, open
  * BINNACLE_OPEN_STATE_*. depth is 0 for the top groups and a Grand Total; a
  * Leaf of a group at depth d is at d + 1. ancestors are the Group Item Keys
  * from the outermost level down to the parent, so the parent is the last
  * (there are depth of them). Group Items and Subtotals have has_group 1, with
- * their level's field and the group's value there. */
+ * their level's field and the group's value there. span: on a Group Item,
+ * how many items are shown under it (its Subtotal included; 0 while
+ * closed), so a click on its header selects the group. path: the group of
+ * each ancestor, outermost first, from which an activated cell's drill-down
+ * is built; a source that sends none gets drill-downs naming the item's own
+ * group alone. */
 typedef struct {
   uint32_t kind;
   uint32_t depth;
@@ -471,6 +493,9 @@ typedef struct {
   uint32_t has_group;
   uint64_t field;
   BinnacleValue value;
+  uint64_t span;
+  const BinnacleGroupOf *path;
+  size_t path_len;
 } BinnacleOutline;
 
 /*
@@ -945,6 +970,16 @@ typedef struct {
   uint64_t to;
   /* PINS_CHANGED: the edge (BINNACLE_EDGE_*). */
   uint32_t edge;
+  /* ACTIVATED: with has_drill_down 1, the drill-down's conditions, valid as
+   * view's arrays are. */
+  uint32_t has_drill_down;
+  const BinnacleCondition *drill_down;
+  size_t drill_down_len;
+  /* COPY_REQUESTED: per axis, the runs of Positions to copy, valid as text
+   * is, and whether the axis's labels lead. */
+  const BinnacleRange *copy_runs[2];
+  size_t copy_runs_len[2];
+  uint32_t copy_labels[2];
 } BinnacleEffect;
 
 /* Every Size Override on an axis, in Key order: keys[i] has sizes[i]. Valid
@@ -1277,6 +1312,10 @@ int binnacle_grid_move_answered(BinnacleGrid *grid, const uint8_t *refusal, size
 /* The Activate Action (Enter): ACTIVATED for the focused cell. Nothing
  * without one. */
 int binnacle_grid_activate(BinnacleGrid *grid);
+
+/* The Copy Action (Ctrl/Cmd+C): COPY_REQUESTED for the range, or the
+ * focused cell without one. Nothing without either. */
+int binnacle_grid_copy(BinnacleGrid *grid);
 
 /* The Begin Edit Action (F2): EDIT_REQUESTED for the focused cell. Nothing
  * without one. */
