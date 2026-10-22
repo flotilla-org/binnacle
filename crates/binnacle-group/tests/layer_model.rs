@@ -637,10 +637,19 @@ fn summary_keys_stay_the_same_across_a_refresh_and_a_new_spec(tc: TestCase) {
 fn slicers_and_the_filter_reach_the_backend_as_they_are(tc: TestCase) {
     let native = tc.draw(gs::text());
     let mut spec = spec(1, &Shape::default());
-    let slicers = vec![
-        Condition::native(FIELDS[1], native.clone()),
-        Condition::compare(FIELDS[0], Comparison::AtLeast(Scalar::Number(2.0))).not(true),
-    ];
+    let slicer = |tc: &TestCase| {
+        let field = FIELDS[tc.draw(gs::integers::<usize>().max_value(FIELDS.len() - 1))];
+        let condition = match tc.draw(gs::booleans()) {
+            true => Condition::native(field, tc.draw(gs::text())),
+            false => {
+                let n = tc.draw(gs::floats::<f64>().allow_nan(false));
+                Condition::compare(field, Comparison::AtLeast(Scalar::Number(n)))
+            }
+        };
+        condition.not(tc.draw(gs::booleans()))
+    };
+    let count = tc.draw(gs::integers::<usize>().max_value(4));
+    let slicers: Vec<Condition> = (0..count).map(|_| slicer(&tc)).collect();
     spec.grouping.as_mut().unwrap().slicers = slicers.clone();
     let filter = FilterSpec::default()
         .with_conditions(vec![Condition::native(FIELDS[0], native.clone() + " or not")].into());
