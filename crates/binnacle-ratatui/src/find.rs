@@ -396,7 +396,8 @@ impl FindBar {
 }
 
 /// "3 of 120" once a step has landed on a current match, else "120
-/// matches"; "No matches"; a partial count with "+".
+/// matches"; "No matches"; a partial count with "+"; with ", 5 in collapsed
+/// groups" for matches closed groups hide.
 fn count_text(open: bool, status: &FindStatus, current: bool) -> String {
     let Some(c) = status.count.filter(|_| open) else {
         return match status.index.filter(|_| current) {
@@ -409,9 +410,13 @@ fn count_text(open: bool, status: &FindStatus, current: bool) -> String {
     }
     let plus = if c.partial { "+" } else { "" };
     let total = format!("{}{plus}", crate::filter::grouped(c.total));
+    let hidden = match c.hidden {
+        0 => String::new(),
+        n => format!(", {} in collapsed groups", crate::filter::grouped(n)),
+    };
     match status.index.filter(|_| current) {
-        Some(i) => format!("{} of {total}", crate::filter::grouped(i + 1)),
-        None if c.total == 1 && !c.partial => "1 match".into(),
-        None => format!("{total} matches"),
+        Some(i) => format!("{} of {total}{hidden}", crate::filter::grouped(i + 1)),
+        None if c.total == 1 && !c.partial => format!("1 match{hidden}"),
+        None => format!("{total} matches{hidden}"),
     }
 }

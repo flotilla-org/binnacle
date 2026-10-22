@@ -262,6 +262,14 @@ fn the_bar_shows_the_text_toggles_count_and_wrap() {
         ..FindStatus::default()
     };
     out.push(bar_line(&bar, &snapshot(&mut grid), &status));
+    // Some lie in collapsed groups.
+    status.count = Some(FindCount {
+        total: 12,
+        partial: false,
+        hidden: 5,
+    });
+    status.index = Some(2);
+    out.push(bar_line(&bar, &snapshot(&mut grid), &status));
     bar.key(&press(KeyCode::Char('c'), KeyModifiers::ALT), &mut grid);
     bar.key(&press(KeyCode::Esc, KeyModifiers::NONE), &mut grid);
     status = FindStatus {

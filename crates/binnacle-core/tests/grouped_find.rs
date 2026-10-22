@@ -156,6 +156,30 @@ fn a_group_label_matches_in_the_outline_column() {
 }
 
 #[test]
+fn a_top_level_label_answered_under_no_group_is_focused_in_the_outline_column() {
+    let mut s = finding(Expand::to(Depth::Levels(0)), "south");
+    s.input(|g| g.action(Action::FindNext));
+    let snapshot = s.frame(V);
+    assert_eq!(snapshot.find_match(), Some(FindMatch::new(SOUTH, REGION)));
+    assert!(snapshot.outline_focused());
+    assert_eq!(snapshot.focus(Axis::Rows).and_then(|f| f.key), Some(SOUTH));
+}
+
+#[test]
+fn a_cell_match_after_a_label_match_leaves_the_outline_column() {
+    let mut s = finding(Expand::to(Depth::Levels(0)), "bergen");
+    s.input(|g| g.action(Action::FindNext));
+    s.frame(V);
+    s.input(|g| g.set_find(Some(FindQuery::new(TextQuery::new("r4c0")))));
+    s.input(|g| g.action(Action::FindNext));
+    let snapshot = s.frame(V);
+    assert_eq!(snapshot.find_match(), Some(FindMatch::new(Key(4), Key(0))));
+    assert!(!snapshot.outline_focused());
+    let focus = Axis::ALL.map(|a| snapshot.focus(a).and_then(|f| f.key));
+    assert_eq!(focus, [Some(Key(4)), Some(Key(0))]);
+}
+
+#[test]
 fn a_new_query_before_the_groups_open_leaves_focus_alone() {
     let mut s = finding(Expand::to(Depth::Levels(1)), "r4c0");
     s.input(|g| g.set_focus(SOUTH, Key(0)));

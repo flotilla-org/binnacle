@@ -24,22 +24,34 @@
 //! labels first, to the terminal's clipboard (OSC 52), and Enter on a
 //! Summary Item's cell shows the drill-down it carries on the status line.
 //! `t` cycles the Theme presets, `q` quits.
+//!
+//! Ctrl+F opens the find bar: it matches the regions' and ports' labels and
+//! the shipments' cells, counts the matches the closed ports hide ("3 of 12,
+//! 5 in collapsed groups"), and a step to one (Enter, or Ctrl+N and Ctrl+P)
+//! opens its port first. Drag a shipment's row number to move it within its
+//! port; a drop in another port is refused, and the status line says so.
+//! F2 edits the weight or crew in place; `p` sends the focused shipment to
+//! the next port. It stays where it is, dimmed, while its groups' figures
+//! change at once, and the next sort or grouping puts it in its new port.
+//! Group rows and totals never edit or move.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::ops::Range;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use binnacle_core::{
-    AggregateValue, Axis, AxisConfig, Condition, ConditionKind, Depth, DrillDown, Effect, Expand,
-    Grid, Grouping, ItemKind, Key, Level, Outline, Placement, Position, Value, ViewSpec, Viewport,
+    AggregateValue, Axis, AxisConfig, Condition, ConditionKind, Depth, DrillDown, EditEnd, Effect,
+    Expand, FindQuery, Grid, Grouping, ItemKind, Key, Level, Outline, Placement, Position, Value,
+    ViewSpec, Viewport,
 };
 use binnacle_group::{Figure, GroupedMemory};
-use binnacle_memory::{MemorySource, PumpSource, pump};
+use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, HeaderMenu, Keymap, Layout,
-    Mouse, PendingMarks, Preset, RenderContext, Theme, begin_frame, copy_text, disclosure_at,
-    render_conditions, render_with, wheel,
+    ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar, FindStatus,
+    HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, Theme, begin_frame,
+    copy_text, disclosure_at, render_conditions, render_editor, render_with, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -52,6 +64,7 @@ const HEADERS: [&str; 5] = ["id", "region", "port", "weight", "crew"];
 const REGION: Key = Key(1);
 const PORT: Key = Key(2);
 const WEIGHT: Key = Key(3);
+const CREW: Key = Key(4);
 
 const REGIONS: [&str; 4] = ["North", "South", "East", "West"];
 const PORTS: [&str; 6] = [
@@ -117,6 +130,10 @@ struct Text<'a> {
     rows: &'a [Shipment],
     source: &'a GroupedMemory<Shipment>,
     grouping: Option<&'a Grouping>,
+    /// The cells the Find Query matches, and the shipments left unmatched
+    /// in their old group after an edit.
+    marked: &'a HashSet<(Key, Key)>,
+    unmatched: &'a HashSet<Key>,
 }
 
 impl Text<'_> {
@@ -171,6 +188,47 @@ impl Content for Text<'_> {
         match self.figure(row, None, Some("count")) {
             Some(Figure::Count(n)) => format!("{label} ({n})"),
             _ => label,
+        }
+    }
+
+    fn marked(&self, row: Key, col: Key) -> bool {
+        self.marked.contains(&(row, col))
+    }
+
+    fn unmatched(&self, axis: Axis, key: Key) -> bool {
+        axis == Axis::Rows && self.unmatched.contains(&key)
+    }
+}
+
+/// The host's own editor: the edited cell and the text so far.
+struct Editor {
+    row: Key,
+    col: Key,
+    text: String,
+}
+
+/// Keeps the editor's text in its shipment if it reads as the column's
+/// number, and tells the Grid what changed.
+fn commit(
+    editor: Editor,
+    grid: &mut Grid,
+    source: &mut GroupedMemory<Shipment>,
+    rows: &mut [Shipment],
+) {
+    let row = editor.row.0 as usize;
+    let text = editor.text.trim();
+    let kept = match editor.col {
+        WEIGHT => text.parse().ok().map(|w| rows[row].weight = w),
+        _ => text.parse().ok().map(|c| rows[row].crew = c),
+    };
+    let end = match kept {
+        Some(()) => EditEnd::Commit,
+        None => EditEnd::Cancel,
+    };
+    grid.edit_ended(end);
+    if kept.is_some() {
+        for (axis, notice) in source.edited(rows, row, editor.col) {
+            grid.notify(axis, notice);
         }
     }
 }
@@ -238,6 +296,8 @@ fn copied(
         rows,
         source,
         grouping,
+        marked: &HashSet::new(),
+        unmatched: &HashSet::new(),
     };
     (items.len(), copy_text(&text, &items, &cols, copy.labels))
 }
@@ -303,7 +363,7 @@ fn mark_clicked(m: &MouseEvent, grid: &mut Grid, area: ratatui::layout::Rect) ->
 }
 
 fn main() -> io::Result<()> {
-    let rows: Vec<Shipment> = (0..SHIPMENTS).map(Shipment::generate).collect();
+    let mut rows: Vec<Shipment> = (0..SHIPMENTS).map(Shipment::generate).collect();
     let mut source = source();
     let mut grid = Grid::new(
         AxisConfig::new(SHIPMENTS as u64, 1.0).header(1.0),
@@ -312,9 +372,14 @@ fn main() -> io::Result<()> {
             .gap(1.0),
     );
     declare(&mut grid, &mut source, &rows);
+    grid.set_find_support(source.over(&rows).find_support());
     grid.request_view(ViewSpec::default().with_grouping(Some(grouping())));
     let keymap = Keymap::preset(Preset::Chords);
     let controls = Controls::preset(Preset::Chords);
+    let mut find = FindBar::new().pause(Duration::ZERO);
+    // The last step answered, for the find bar's "3 of 12".
+    let mut step: Option<(FindQuery, FindStep)> = None;
+    let mut editor: Option<Editor> = None;
     let mut menu = HeaderMenu::new();
     let mut popup = ColumnFilter::new();
     let mut mouse = Mouse::default();
@@ -334,29 +399,57 @@ fn main() -> io::Result<()> {
             terminal.draw(|frame| {
                 let full = frame.area();
                 let mut area = full;
-                area.height = full.height.saturating_sub(2);
-                // Answers the requests in the queue; moves are refused while
-                // grouped. Copies and activations are the demo's.
+                area.height = full.height.saturating_sub(2 + u16::from(find.is_open()));
+                // Answers the requests in the queue, then acts on what the
+                // demo owns: its editor, the step's place among the matches,
+                // copies and drill-downs.
+                let mut effects = Vec::new();
+                pump(&mut grid, &mut source.over(&rows), |_, e| effects.push(e.effect));
                 let mut copy = None;
-                pump(&mut grid, &mut source.over(&rows), |_, stamped| match stamped.effect {
-                    Effect::CopyRequested {
-                        rows,
-                        cols,
-                        row_labels,
-                        ..
-                    } => {
-                        copy = Some(Copy {
+                for effect in effects {
+                    match effect {
+                        Effect::FindStepRequested {
+                            query,
+                            from,
+                            direction,
+                        } => {
+                            step = (source.find_next(&rows, &query, from, direction))
+                                .map(|s| (query, s));
+                        }
+                        Effect::CopyRequested {
                             rows,
                             cols,
-                            labels: row_labels,
-                        })
+                            row_labels,
+                            ..
+                        } => {
+                            copy = Some(Copy {
+                                rows,
+                                cols,
+                                labels: row_labels,
+                            })
+                        }
+                        Effect::Activated { row, col, .. } | Effect::EditRequested { row, col }
+                            if matches!(col, WEIGHT | CREW) && (row.0 as usize) < SHIPMENTS =>
+                        {
+                            grid.edit_started(row, col);
+                            let text = Text {
+                                rows: &rows,
+                                source: &source,
+                                grouping: None,
+                                marked: &HashSet::new(),
+                                unmatched: &HashSet::new(),
+                            }
+                            .cell(row, col);
+                            editor = Some(Editor { row, col, text });
+                        }
+                        Effect::Activated {
+                            drill_down: Some(d),
+                            ..
+                        } => note = described(&d),
+                        Effect::EditCancelled { .. } => editor = None,
+                        _ => {}
                     }
-                    Effect::Activated {
-                        drill_down: Some(d),
-                        ..
-                    } => note = described(&d),
-                    _ => {}
-                });
+                }
                 if let Some(copy) = copy {
                     let grouping = grid.snapshot().applied_view().grouping.clone();
                     let (n, text) = copied(&copy, &mut source, &rows, grouping.as_ref());
@@ -376,12 +469,45 @@ fn main() -> io::Result<()> {
                 popup.fetch(&snapshot, |axis, key, query| {
                     Some(source.source_mut().distinct(&rows, axis, key, query))
                 });
+                let shown = |axis| -> Vec<Key> { snapshot.drawn(axis).filter_map(|i| i.key).collect() };
+                let (row_keys, col_keys) = (shown(Axis::Rows), shown(Axis::Cols));
+                let mut found = FindStatus::default();
+                let mut marked = HashSet::new();
+                if let Some(query) = snapshot.find() {
+                    let flags = source.find_marks(&rows, &row_keys, &col_keys, query);
+                    let cells = row_keys.iter().flat_map(|&r| col_keys.iter().map(move |&c| (r, c)));
+                    marked = cells.zip(flags).filter_map(|(cell, m)| m.then_some(cell)).collect();
+                    let step = step.as_ref().filter(|(q, _)| q == query).map(|(_, s)| s);
+                    found = FindStatus {
+                        count: Some(source.find_count(&rows, query)),
+                        index: step.and_then(|s| s.index),
+                        wrapped: step.is_some_and(|s| s.wrapped),
+                        ..FindStatus::default()
+                    };
+                }
+                let flags = source.unmatched(&rows, Axis::Rows, &row_keys);
+                let unmatched = (row_keys.iter().zip(flags))
+                    .filter_map(|(&k, u)| u.then_some(k))
+                    .collect();
                 let text = Text {
                     rows: &rows,
                     source: &source,
                     grouping: snapshot.applied_view().grouping.as_ref(),
+                    marked: &marked,
+                    unmatched: &unmatched,
                 };
                 render_with(&snapshot, &text, &ctx, area, frame.buffer_mut());
+                if let Some(editor) = &editor {
+                    render_editor(&snapshot, &editor.text, layout.grid, frame.buffer_mut());
+                }
+                if find.is_open() {
+                    let bar = ratatui::layout::Rect {
+                        y: area.bottom(),
+                        height: 1,
+                        ..full
+                    };
+                    find.render(&snapshot, &found, &themes[theme], bar, frame.buffer_mut());
+                }
                 popup.render(
                     &snapshot,
                     &text,
@@ -411,17 +537,40 @@ fn main() -> io::Result<()> {
                     height: 1,
                     ..full
                 };
-                let status = format!(
-                    "m column menu  r row menu  C-c copy  t theme  q quit | {grouped} | {} | {note}",
-                    themes[theme].name
-                );
-                frame.render_widget(ratatui::text::Line::from(status), line);
+                // What a drag or a refused move says, else the keys.
+                let said = status(&snapshot);
+                let line_text = match said.is_empty() {
+                    false => said,
+                    true => format!(
+                        "^F find  F2 edit  p reroute  m column menu  r row menu  C-c copy  t theme  q quit | {grouped} | {} | {note}",
+                        themes[theme].name
+                    ),
+                };
+                frame.render_widget(ratatui::text::Line::from(line_text), line);
             })?;
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     let ctrl = key.modifiers == KeyModifiers::CONTROL;
                     if ctrl && key.code == KeyCode::Char('q') {
                         return Ok(());
+                    }
+                    if let Some(open) = &mut editor {
+                        match key.code {
+                            KeyCode::Char(c) => open.text.push(c),
+                            KeyCode::Backspace => {
+                                open.text.pop();
+                            }
+                            KeyCode::Enter => {
+                                let open = editor.take().unwrap();
+                                commit(open, &mut grid, &mut source, &mut rows);
+                            }
+                            KeyCode::Esc => {
+                                editor = None;
+                                grid.edit_ended(EditEnd::Cancel);
+                            }
+                            _ => {}
+                        }
+                        continue;
                     }
                     if popup.key(&key, &mut grid) {
                         continue;
@@ -434,12 +583,47 @@ fn main() -> io::Result<()> {
                         }
                         continue;
                     }
-                    if controls.control(&key) == Some(Control::ColumnFilter) {
-                        popup.open(&grid.snapshot());
+                    if find.key(&key, &mut grid) {
+                        continue;
+                    }
+                    let took = match controls.control(&key) {
+                        Some(Control::ColumnFilter) => {
+                            popup.open(&grid.snapshot());
+                            true
+                        }
+                        Some(Control::Find) => {
+                            if find.open(&grid.snapshot()) {
+                                find.apply(&mut grid);
+                            }
+                            true
+                        }
+                        Some(Control::FindNext) => find.repeat(false, &mut grid),
+                        Some(Control::FindPrevious) => find.repeat(true, &mut grid),
+                        Some(Control::Close) if find.is_open() => {
+                            find.close(&mut grid);
+                            true
+                        }
+                        _ => false,
+                    };
+                    if took {
                         continue;
                     }
                     match key.code {
                         KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('p') => {
+                            // The focused shipment goes to the next port.
+                            let snapshot = grid.snapshot();
+                            let focus = snapshot.focus(Axis::Rows).and_then(|f| f.key);
+                            if let Some(row) =
+                                focus.map(|k| k.0 as usize).filter(|&r| r < SHIPMENTS)
+                            {
+                                let next = PORTS.iter().position(|&p| p == rows[row].port);
+                                rows[row].port = PORTS[next.map_or(0, |i| (i + 1) % PORTS.len())];
+                                for (axis, notice) in source.edited(&rows, row, PORT) {
+                                    grid.notify(axis, notice);
+                                }
+                            }
+                        }
                         KeyCode::Char('t') => theme = (theme + 1) % themes.len(),
                         KeyCode::Char('m') => {
                             menu.open(&grid.snapshot(), Axis::Cols);

@@ -626,8 +626,10 @@ export function createFeed<RowId, ColId, V>(
     const row = from && rows.interner.id(from.row);
     const col = from && cols.interner.id(from.col);
     const fromIds = row !== undefined && row !== null && col !== undefined && col !== null ? { row, col } : null;
-    const answer = (found: { row: bigint; col: bigint } | null) => {
-      grid?.find_stepped(found);
+    const answer = (found: { row: bigint; col: bigint } | null, within?: { rows: bigint[]; cols: bigint[] }) => {
+      if (found && within && (within.rows.length > 0 || within.cols.length > 0)) {
+        grid?.find_stepped_within(found, BigUint64Array.from(within.rows), BigUint64Array.from(within.cols));
+      } else grid?.find_stepped(found);
       schedule();
     };
     if (!finder || !ids) return answer(null);
@@ -638,7 +640,11 @@ export function createFeed<RowId, ColId, V>(
         if (step && epoch === findEpoch) {
           findState = { ...findState, step: { index: step.index ?? null, wrapped: step.wrapped ?? false } };
         }
-        answer(step && { row: rows.interner.key(step.row), col: cols.interner.key(step.col) });
+        const within = step?.ancestors && {
+          rows: (step.ancestors.rows ?? []).map((id) => rows.interner.key(id)),
+          cols: (step.ancestors.cols ?? []).map((id) => cols.interner.key(id)),
+        };
+        answer(step && { row: rows.interner.key(step.row), col: cols.interner.key(step.col) }, within);
       },
       { otherwise: () => answer(null), failed: findFailed("next", epoch) },
     );

@@ -234,6 +234,12 @@ export function paintRowNumbers(p: PaintContext): void {
       ctx.fillStyle = h.hovered ? theme.headerHovered.background : role!.background;
       ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
     }
+    // A Group Item's label that is the current match, as a cell would be.
+    const found = s.findMatch;
+    if (found && found.row === h.key && outline?.kind === "group" && outline.group?.field === found.col) {
+      ctx.fillStyle = theme.findCurrent.background;
+      ctx.fillRect(h.rect.x, h.rect.y, h.rect.width, h.rect.height);
+    }
     if (h.sort.pending || h.movePending) paintShimmer(p, h.rect);
     const inset = paintFilter(p, "rows", h);
     // A row the columns sort by ends in its marker, as a column header does.

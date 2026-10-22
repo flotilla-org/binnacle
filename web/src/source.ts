@@ -230,12 +230,22 @@ export interface FindMatch<RowId, ColId> {
 export interface FindStep<RowId, ColId> extends FindMatch<RowId, ColId> {
   index?: number;
   wrapped?: boolean;
+  /**
+   * On a grouped axis, the IDs of the Group Items the match lies under,
+   * outermost first (a group label's own group is not among them): the
+   * widget opens each closed one, then focuses the match.
+   */
+  ancestors?: { rows?: RowId[]; cols?: ColId[] };
 }
 
-/** How many cells match, and whether the source stopped counting early (`total` is then a floor). */
+/**
+ * How many cells match, whether the source stopped counting early (`total`
+ * is then a floor), and how many of them lie in collapsed groups.
+ */
 export interface FindCount {
   total: number;
   partial?: boolean;
+  hidden?: number;
 }
 
 /**

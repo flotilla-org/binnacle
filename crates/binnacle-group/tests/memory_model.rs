@@ -755,8 +755,9 @@ fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
     spec.grouping = Some(grouping);
     source.view(&rows, &spec);
     let hidden: Vec<Key> = spec.rows.hidden.clone();
-    let digit = tc.draw(gs::integers::<u8>().max_value(9));
-    let query = FindQuery::new(TextQuery::new(digit.to_string()));
+    // One or two digits, so a query may match a cell, a label, or nothing.
+    let digits = tc.draw(gs::integers::<u8>().max_value(99)).to_string();
+    let query = FindQuery::new(TextQuery::new(digits.clone()));
 
     // The model: every item open, a label then the shown columns in order.
     let searched: Vec<usize> = (0..COLS)
@@ -764,7 +765,7 @@ fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
         .collect();
     let mut want = Vec::new();
     for item in model(&rows, &asked, &spec.rows.sort, &hidden) {
-        let has = |v: &Value| matches!(v, Value::Text(t) if t.contains(&digit.to_string()));
+        let has = |v: &Value| matches!(v, Value::Text(t) if t.contains(&digits));
         match item {
             Item::Summary(ItemKind::Group, path, _) => {
                 if has(path.last().unwrap()) {
@@ -816,13 +817,12 @@ fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
         assert_eq!(ancestors.len(), depth_of);
         from = Some(step.at);
     }
-    if let Some((first, _)) = want.first() {
+    if !want.is_empty() {
         let step = source
             .find_next(&rows, &query, from, FindDirection::Next)
             .unwrap();
         assert!(step.wrapped, "past the last it wraps");
         assert_eq!(step.index, Some(0));
-        let _ = first;
     } else {
         assert_eq!(
             source.find_next(&rows, &query, None, FindDirection::Next),
@@ -913,5 +913,10 @@ fn a_leaf_moves_within_its_group_and_nowhere_else(tc: TestCase) {
         .find(|(_, i)| matches!(i, Item::Summary(..)))
         .unwrap()
         .0;
-    assert!(source.move_items(&rows, Axis::Rows, &[summary], 0).is_err());
+    assert_eq!(
+        source
+            .move_items(&rows, Axis::Rows, &[summary], 0)
+            .map(|_| ()),
+        Err("Group rows and totals can't be moved".to_string())
+    );
 }

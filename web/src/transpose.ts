@@ -71,8 +71,9 @@ function transposeCells<V>(cells: V[][], rows: number, cols: number): V[][] {
 
 function transposeStep<RowId, ColId>(step: FindStep<ColId, RowId> | null): FindStep<RowId, ColId> | null {
   if (!step) return null;
-  const { row, col, ...rest } = step;
-  return { ...rest, row: col, col: row };
+  const { row, col, ancestors, ...rest } = step;
+  const turned = ancestors && { ...(ancestors.cols ? { rows: ancestors.cols } : {}), ...(ancestors.rows ? { cols: ancestors.rows } : {}) };
+  return { ...rest, row: col, col: row, ...(turned ? { ancestors: turned } : {}) };
 }
 
 /**

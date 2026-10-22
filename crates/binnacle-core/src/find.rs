@@ -148,16 +148,15 @@ impl Grid {
     /// in order. The match becomes the current match and takes focus (found
     /// with `Locate` if outside the Window) and is scrolled into view; the
     /// selection is left as it is. An answer for a query since replaced, or
-    /// with find closed, is ignored.
+    /// with find closed, is ignored. On grouped rows, a match is under no
+    /// group, as [`Grid::find_stepped_within`] with no ancestors takes it: a
+    /// top level Group Item's label is focused in the outline column.
     pub fn find_stepped(&mut self, found: Option<FindMatch>) {
-        if !self.find_answered() {
-            return;
+        match found {
+            Some(found) => self.find_stepped_within(found, [&[], &[]]),
+            None if self.find_answered() => self.step_held(),
+            None => {}
         }
-        if let Some(found) = found {
-            self.find.current = Some(found);
-            self.land(found);
-        }
-        self.step_held();
     }
 
     /// The answer to a `FindStepRequested` on a grouped table, as
@@ -223,6 +222,7 @@ impl Grid {
     /// outside the Window: in the outline column for a label.
     fn land(&mut self, found: FindMatch) {
         if !self.find.label {
+            self.outline_focus = false;
             self.place_focus(found.row, found.col, false);
         } else {
             let col = (self.focus.and_then(|f| f[Axis::Cols.index()].key)).or_else(|| {

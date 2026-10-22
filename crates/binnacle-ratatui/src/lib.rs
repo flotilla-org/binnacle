@@ -381,6 +381,17 @@ pub fn render_with(
         if let Some(role) = role {
             style = style.patch(role);
         }
+        // A Group Item's label that is the current match, as a cell would
+        // be.
+        let found = snapshot.find_match().is_some_and(|m| {
+            Some(m.row) == r.key
+                && outline
+                    .and_then(|o| o.group.as_ref())
+                    .is_some_and(|g| g.field == m.col)
+        });
+        if found {
+            style = style.patch(theme.find_current);
+        }
         if band_focused {
             style = style.patch(theme.focus);
         }

@@ -23,6 +23,8 @@ export function dropCaption(axis: AxisName, target: DropTarget): string | null {
     }
     case "Stay":
       return null;
+    case "Refused":
+      return target.why === "betweenGroups" ? "Can't move between groups" : "Group rows and totals can't move";
   }
 }
 
@@ -74,7 +76,8 @@ export function paintDropCaption(p: PaintContext): void {
   x = Math.max(0, x);
   y = Math.max(0, y);
   ctx.save();
-  ctx.fillStyle = theme.dropIndicator.color;
+  // A refused drop's caption is an error.
+  ctx.fillStyle = drop.target.type === "Refused" ? theme.error : theme.dropIndicator.color;
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, height / 2);
   ctx.fill();
