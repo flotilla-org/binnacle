@@ -988,6 +988,9 @@ impl Grid {
     pub fn view_applied(&mut self, spec: ViewSpec, totals: Totals) {
         self.view.due = self.view.due.saturating_sub(1);
         self.view_changed(spec, totals);
+        if self.view.due == 0 {
+            self.find_revealed();
+        }
     }
 
     /// The Table Source's news, not an answer to a request: the View Spec it

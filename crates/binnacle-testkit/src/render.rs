@@ -216,6 +216,7 @@ fn summary(snap: &Snapshot) -> String {
                 d.axis,
                 before.map_or("end".into(), |k| k.0.to_string())
             ),
+            DropTarget::Refused { to, why } => format!("refused {why:?} at {:?} {to}", d.axis),
             DropTarget::Stay => unreachable!("no indicator for Stay"),
         };
         let _ = write!(out, " | moving {} {what} at {}", keys.join(","), d.offset);

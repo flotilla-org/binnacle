@@ -35,28 +35,29 @@ impl Grid {
         grouped(self.latest_view(), axis).is_some_and(|g| g.axis(axis).expand.opens(level, key))
     }
 
-    /// Requests `axis` opened as `expand` says, by `edit`. Refused with
-    /// nothing asked if its exceptions would pass the cap.
-    fn request_expand(
+    /// Requests `axis` opened as `expand` says, by `edit`; returns whether
+    /// it asked. Refused with nothing asked if its exceptions would pass
+    /// the cap.
+    pub(crate) fn request_expand(
         &mut self,
         axis: Axis,
         expand: Expand,
         edit: ViewEdit,
-    ) -> Result<(), ExceptCapped> {
+    ) -> Result<bool, ExceptCapped> {
         let mut spec = self.latest_view().clone();
         let Some(grouping) = spec.grouping.as_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         let current = &mut grouping.axis_mut(axis).expand;
         if *current == expand {
-            return Ok(());
+            return Ok(false);
         }
         if expand.except.len() > EXCEPT_CAP && expand.except.len() > current.except.len() {
             return Err(ExceptCapped { cap: EXCEPT_CAP });
         }
         *current = expand;
         self.request(spec, edit);
-        Ok(())
+        Ok(true)
     }
 
     /// Opens or closes the group of `axis` headed by the Group Item `key`.
@@ -73,7 +74,7 @@ impl Grid {
             true => ViewEdit::Expand { axis, key },
             false => ViewEdit::Collapse { axis, key },
         };
-        self.request_expand(axis, expand, edit)
+        self.request_expand(axis, expand, edit).map(|_| ())
     }
 
     /// Opens the group of `axis` headed by the Group Item `key` and requests
@@ -128,7 +129,7 @@ impl Grid {
         for (_, depth, k) in under {
             expand = expand.with(depth, k, true);
         }
-        self.request_expand(axis, expand, ViewEdit::ExpandAll { axis, key })
+        (self.request_expand(axis, expand, ViewEdit::ExpandAll { axis, key })).map(|_| ())
     }
 
     /// Opens every group of `axis` to `depth` levels and closes those below,

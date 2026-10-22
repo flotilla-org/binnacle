@@ -231,7 +231,13 @@ fn alt_f_shows_only_matching_rows_and_again_shows_them_all() {
 fn the_bar_shows_the_text_toggles_count_and_wrap() {
     let mut grid = grid(true);
     let mut bar = FindBar::new().pause(Duration::ZERO);
-    let count = |total, partial| Some(FindCount { total, partial });
+    let count = |total, partial| {
+        Some(FindCount {
+            total,
+            partial,
+            hidden: 0,
+        })
+    };
     let mut out = vec![];
     bar.open(&snapshot(&mut grid));
     for c in "bergen".chars() {

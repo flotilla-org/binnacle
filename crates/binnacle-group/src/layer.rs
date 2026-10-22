@@ -53,10 +53,10 @@ struct Ask {
 
 /// Where the Subtotals of each level and the Grand Total go.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct Shape {
+pub(crate) struct Shape {
     /// One per level of the scope, outermost first.
     subtotals: Vec<Placement>,
-    grand_total: Placement,
+    pub(crate) grand_total: Placement,
 }
 
 impl Shape {
@@ -75,7 +75,7 @@ impl Shape {
         }
     }
 
-    fn subtotal(&self, level: usize) -> Placement {
+    pub(crate) fn subtotal(&self, level: usize) -> Placement {
         self.subtotals.get(level).copied().unwrap_or_default()
     }
 
@@ -92,14 +92,14 @@ impl Shape {
     }
 
     /// Where the top groups start: past a Grand Total placed before.
-    fn top(&self) -> u64 {
+    pub(crate) fn top(&self) -> u64 {
         u64::from(self.grand_total == Placement::Before)
     }
 }
 
 /// Which groups of the rows are open, as an `expand` says.
 #[derive(Clone, Debug, Default)]
-struct Open {
+pub(crate) struct Open {
     expand: Expand,
     except: HashSet<Key>,
 }
@@ -116,14 +116,19 @@ impl Open {
         self.expand.depth == other.expand.depth && self.except == other.except
     }
 
+    /// Whether the group whose Group Item is `key`, at `level`, is open,
+    /// whatever is under it.
+    pub(crate) fn opens(&self, level: usize, key: Key) -> bool {
+        self.expand.opens_level(level as u32) != self.except.contains(&key)
+    }
+
     /// Whether the group at `node` shows what is under it: it is open and
     /// has something to show.
     fn shows<A>(&self, node: &Node<A>) -> bool {
         let Some(level) = node.path.len().checked_sub(1) else {
             return true;
         };
-        node.children() > 0
-            && self.expand.opens_level(level as u32) != self.except.contains(&node.key)
+        node.children() > 0 && self.opens(level, node.key)
     }
 }
 
@@ -320,6 +325,28 @@ impl<A> Node<A> {
         }
     }
 
+    /// The paths of the groups held under this node, each with its row.
+    fn held_groups(&self, out: &mut Vec<Path>) {
+        let Kids::Groups(g) = &self.kids else {
+            return;
+        };
+        for node in g.nodes.iter().flatten() {
+            out.push(node.path.clone());
+            node.held_groups(out);
+        }
+    }
+
+    /// The group under this node whose fetched Leaves hold `key`.
+    fn holding(&self, key: Key) -> Option<&Node<A>> {
+        match &self.kids {
+            Kids::Groups(g) => g.nodes.iter().flatten().find_map(|n| n.holding(key)),
+            Kids::Leaves(runs) => runs
+                .values()
+                .any(|keys| keys.contains(&key))
+                .then_some(self),
+        }
+    }
+
     /// How many groups and Leaves are held under this node.
     fn held(&self) -> u64 {
         match &self.kids {
@@ -374,6 +401,8 @@ pub struct GroupingLayer<A> {
     /// Answers to Locates: the path and index of each Leaf asked about, or
     /// `None` for one gone from the view.
     located: HashMap<Key, Option<(Path, u64)>>,
+    /// Change Notices for figures answered anew since [`GroupingLayer::refigure`].
+    changes: VecDeque<(Axis, ChangeNotice)>,
 }
 
 impl<A> Default for GroupingLayer<A> {
@@ -427,6 +456,7 @@ impl<A> GroupingLayer<A> {
             laid_out: false,
             news: VecDeque::new(),
             located: HashMap::new(),
+            changes: VecDeque::new(),
         }
     }
 
@@ -477,6 +507,7 @@ impl<A> GroupingLayer<A> {
         self.in_flight.clear();
         self.misses.clear();
         self.located.clear();
+        self.changes.clear();
         self.settled = false;
         self.laid_out = false;
         self.settle();
@@ -544,11 +575,7 @@ impl<A> GroupingLayer<A> {
                 self.located
                     .insert(key, found.then_some((answer.path, answer.start)));
             }
-            Body::Total { aggregates } => {
-                if answer.path.is_empty() {
-                    self.total = Some(aggregates);
-                }
-            }
+            Body::Total { aggregates } => self.figured(&answer.path, aggregates),
             body => {
                 let (open, want) = (&self.open, &self.want);
                 let shown = |n: &Node<A>| open.shows(n) || want.shows(n);
@@ -565,6 +592,117 @@ impl<A> GroupingLayer<A> {
             }
         }
         self.settle();
+    }
+
+    /// Takes the figures answered for the group at `path` (the whole axis
+    /// at the empty path). Figures answered anew after
+    /// [`GroupingLayer::refigure`] say where they are drawn with
+    /// `ContentChanged`.
+    fn figured(&mut self, path: &Path, aggregates: Vec<A>) {
+        let top = self.shape.top();
+        let (root, shape, open) = (&self.root, &self.shape, &self.open);
+        let at: Vec<Position> = match path.is_empty() {
+            true if self.total.is_some() => match shape.grand_total {
+                Placement::Before => vec![0],
+                Placement::After => self.count(Axis::Rows).map(|n| n - 1).into_iter().collect(),
+                Placement::Off => Vec::new(),
+            },
+            true => Vec::new(),
+            false => [
+                group_position(root, shape, open, path),
+                subtotal_position(root, shape, open, path),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|p| p + top)
+            .collect(),
+        };
+        match path.is_empty() {
+            true => self.total = Some(aggregates),
+            false => match node_mut(&mut self.root, path, |_| true).and_then(|n| n.row.as_mut()) {
+                Some(row) => row.aggregates = aggregates,
+                None => return,
+            },
+        }
+        (self.changes).extend(at.into_iter().map(|p| {
+            let notice = ChangeNotice::ContentChanged(p..p + 1);
+            (Axis::Rows, notice)
+        }));
+    }
+
+    /// The data under the groups changed, by the user's edit: asks the
+    /// figures of every group held, and of the whole axis, again, keeping
+    /// every item where it is until the next View Spec, as for an
+    /// Unmatched Row. Each figure answered says where it is drawn through
+    /// [`GroupingLayer::poll_change`]. Groups keep their child counts.
+    pub fn refigure(&mut self) {
+        if self.scope.is_none() {
+            return;
+        }
+        let mut paths = vec![Vec::new()];
+        self.root.held_groups(&mut paths);
+        self.misses.extend(paths.into_iter().map(|path| Ask {
+            path,
+            want: Want::Total,
+            range: 0..0,
+        }));
+    }
+
+    /// The next Change Notice for figures answered anew since
+    /// [`GroupingLayer::refigure`].
+    pub fn poll_change(&mut self) -> Option<(Axis, ChangeNotice)> {
+        self.changes.pop_front()
+    }
+
+    /// Where the Subtotals and the Grand Total go, as last asked.
+    pub(crate) fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    /// Which groups are open in the layout given.
+    pub(crate) fn layout(&self) -> &Open {
+        &self.open
+    }
+
+    /// The Key the layer gives the Summary Item `id`, interning it if new.
+    pub fn key_of(&mut self, id: SummaryId) -> Key {
+        summary_key(&mut self.keys, id)
+    }
+
+    /// Which Summary Item `key` is, if the layer gave it out.
+    pub fn identity(&self, key: Key) -> Option<&SummaryId> {
+        match key.0 & SUMMARY_KEY_BIT {
+            0 => None,
+            _ => self.keys.identity(Key(key.0 & !SUMMARY_KEY_BIT)),
+        }
+    }
+
+    /// The path of the group `key` heads or totals (empty for the Grand
+    /// Total), or of the group holding the Leaf `key` among those fetched.
+    pub fn path(&self, key: Key) -> Option<&Path> {
+        if key.0 & SUMMARY_KEY_BIT != 0 {
+            return match self.identity(key)? {
+                SummaryId::Group(path) | SummaryId::Subtotal(path) => Some(path),
+                SummaryId::GrandTotal => Some(&self.root.path),
+            };
+        }
+        self.root.holding(key).map(|n| &n.path)
+    }
+
+    /// Where a move of Leaves of the group at `path` on `axis` to before
+    /// Position `to` lands: the index among the group's Leaves, which the
+    /// backend maps to its own order. `None` for a Position outside the
+    /// group's Leaves, or a group not shown.
+    pub fn place_move(&self, axis: Axis, path: &Path, to: Position) -> Option<u64> {
+        if !self.grouped(axis) {
+            return None;
+        }
+        let (root, shape, open) = (&self.root, &self.shape, &self.open);
+        let node = node_at(root, path).filter(|n| open.shows(n))?;
+        let level = path.len().saturating_sub(1);
+        let start = group_position(root, shape, open, path)? + shape.top() + shape.lead(level);
+        let index = to.checked_sub(start)?;
+        (index <= node.children()).then_some(index)
     }
 
     /// Gives the applied spec once every group the axis shows under it is

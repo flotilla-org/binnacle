@@ -1,0 +1,59 @@
+---
+source: crates/binnacle-core/tests/grouped_find.rs
+expression: out
+---
+--- 1. ports closed; find "r4c1", in closed Bergen
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): ViewRequested unsorted group 10,11 values count(-) expand Rows 1 by Replace
+  view: applied unsorted group 10,11 values count(-) expand Rows 1, notices [(Rows, Refiltered(5))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Gone { suggest: None }
+window Rows 0..5
+effect (gen 2): FindRequested { query: Some(FindQuery { query: TextQuery { text: "r4c1", case_sensitive: false, regex: false, searches: Shown }, by: Rows }) }
+gen 4 | damage none | find "r4c1"
+Rows: count 5, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 10="North"] 1#110@2+1[G1- ^100 11="Aberdeen"] 2#111@3+1[G1- ^100 11="Bergen"] 3#101@4+1[G0+ 10="South"] 4#120@5+1[G1- ^101 11="Cadiz"]
+Cols: count 3, extent 20, header 3, anchor 0+0, thumb 0.0000/1.0000 | 0#0@3+5 1#1@8+5 2#2@13+5
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  111.0111.1111.2
+3  101.0101.1101.2
+4  120.0120.1120.2
+
+
+
+
+
+
+
+--- 2. next: Bergen opens by an Expand, then shipment 4 takes focus
+effect (gen 4): FindStepRequested { query: FindQuery { query: TextQuery { text: "r4c1", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: None, direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(4), col: Key(1) }, index: Some(0), wrapped: false })
+  ancestors Rows Key(4): [Key(100), Key(111)]
+effect (gen 4): ViewRequested unsorted group 10,11 values count(-) expand Rows 1 except 111 by Expand { axis: Rows, key: Key(111) }
+  view: applied unsorted group 10,11 values count(-) expand Rows 1 except 111, notices [(Rows, Expanded { at: 3, n: 1 })]
+effect (gen 4): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Found(3)
+effect (gen 4): FocusChanged { row: Key(4), col: Key(1) }
+window Rows 0..6
+gen 5 | damage layout selection positions | focus 3#4,1#1 at 8,4 5x1 | find "r4c1" | match 4,1
+Rows: count 6, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#100@1+1[G0+ 10="North"] 1#110@2+1[G1- ^100 11="Aberdeen"] 2#111@3+1[G1+ ^100 11="Bergen"] 3#4@4+1[L2 ^100 ^111] 4#101@5+1[G0+ 10="South"] 5#120@6+1[G1- ^101 11="Cadiz"]
+Cols: (unchanged)
+   0    1    2
+0  100.0100.1100.2
+1  110.0110.1110.2
+2  111.0111.1111.2
+3  4.0  *!4.14.2
+4  101.0101.1101.2
+5  120.0120.1120.2

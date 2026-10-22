@@ -143,6 +143,21 @@ pub enum DropTarget {
     },
     /// Nothing: unpinned items over the body of an axis that can't move.
     Stay,
+    /// Nothing, for the reason `why`, which the host shows as a caption at
+    /// the drop line before Position `to`: on a grouped axis, a Summary Item
+    /// or a Leaf leaving its group.
+    Refused { to: Position, why: MoveRefusal },
+}
+
+/// Why a drop on a grouped axis would move nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MoveRefusal {
+    /// A Leaf can't move into another group: changing its group is an edit.
+    BetweenGroups,
+    /// Group Items, Subtotals and Grand Totals can't move: sorting orders
+    /// them.
+    Summary,
 }
 
 /// Where headers being dragged would drop, and what that would do, drawn as
@@ -714,7 +729,7 @@ impl<'a> Snapshot<'a> {
         let last = f64::from(f32::from_bits(st.extent.to_bits().saturating_sub(1)).max(0.0));
         let offset = match target {
             DropTarget::Stay => return None,
-            DropTarget::Move { to, .. } => in_body(to),
+            DropTarget::Move { to, .. } | DropTarget::Refused { to, .. } => in_body(to),
             DropTarget::Unpin { at } => in_body(at).clamp(
                 f64::from(st.scroll_start()) - gap / 2.0,
                 f64::from(st.scroll_end()) - gap / 2.0,

@@ -13,14 +13,14 @@ use binnacle_core::{
     Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
     ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
     Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located,
-    Mode, Modifiers, OpenState, Outline, Placement, Placements, PointerEvent, PointerKind, Rect,
-    Scalar, Searched, SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support,
-    TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements, PointerEvent,
+    PointerKind, Rect, Scalar, Searched, SelectionUnit, SortColumn, SortDirection, SortSpec,
+    StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 8;
+pub const BINNACLE_ABI_VERSION: u32 = 9;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -57,6 +57,11 @@ pub const BINNACLE_MODE_MOVING_HEADERS: u32 = 4;
 pub const BINNACLE_DROP_MOVE: u32 = 0;
 pub const BINNACLE_DROP_UNPIN: u32 = 1;
 pub const BINNACLE_DROP_PIN: u32 = 2;
+pub const BINNACLE_DROP_REFUSED: u32 = 3;
+
+pub const BINNACLE_MOVE_REFUSAL_OTHER: u32 = 0;
+pub const BINNACLE_MOVE_REFUSAL_BETWEEN_GROUPS: u32 = 1;
+pub const BINNACLE_MOVE_REFUSAL_SUMMARY: u32 = 2;
 
 pub const BINNACLE_EFFECT_OTHER: u32 = 0;
 pub const BINNACLE_EFFECT_TEXT_TYPED: u32 = 1;
@@ -761,6 +766,7 @@ pub struct BinnacleSnapshot {
     pub has_drop_before: u32,
     pub drop_before: u64,
     pub drop_reorder: u32,
+    pub drop_refusal: u32,
     pub pin_zones: [BinnacleZone; 2],
     pub pin_zones_len: usize,
     pub slicers: *const BinnacleListedCondition,
@@ -2593,9 +2599,20 @@ impl BinnacleGrid {
             _ => BINNACLE_MODE_OTHER,
         };
         let drop = snap.drop_indicator();
+        let mut drop_refusal = BINNACLE_MOVE_REFUSAL_OTHER;
         let (target, position, unpin, edge, before, reorder) = match drop.map(|d| d.target) {
             Some(DropTarget::Move { to, unpin }) => {
                 (BINNACLE_DROP_MOVE, to, unpin, None, None, false)
+            }
+            Some(DropTarget::Refused { to, why }) => {
+                #[allow(unreachable_patterns)] // Refusals added later are OTHER.
+                let why = match why {
+                    MoveRefusal::BetweenGroups => BINNACLE_MOVE_REFUSAL_BETWEEN_GROUPS,
+                    MoveRefusal::Summary => BINNACLE_MOVE_REFUSAL_SUMMARY,
+                    _ => BINNACLE_MOVE_REFUSAL_OTHER,
+                };
+                drop_refusal = why;
+                (BINNACLE_DROP_REFUSED, to, false, None, None, false)
             }
             Some(DropTarget::Unpin { at }) => (BINNACLE_DROP_UNPIN, at, false, None, None, false),
             Some(DropTarget::Pin {
@@ -2662,6 +2679,7 @@ impl BinnacleGrid {
             has_drop_before: flag(before.is_some()),
             drop_before: before.map_or(0, |k| k.0),
             drop_reorder: flag(reorder),
+            drop_refusal,
             pin_zones,
             pin_zones_len: zones.len().min(2),
             slicers: self.listed_slicers.1.as_ptr(),
@@ -3894,6 +3912,42 @@ pub unsafe extern "C" fn binnacle_grid_find_next(grid: *mut BinnacleGrid) -> i32
 pub unsafe extern "C" fn binnacle_grid_find_previous(grid: *mut BinnacleGrid) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { act(grid, Some(Action::FindPrevious)) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `found` is valid for a read; each
+/// ancestors pointer is valid for its length of reads, or NULL with length 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_find_stepped_within(
+    grid: *mut BinnacleGrid,
+    found: *const BinnacleFindMatch,
+    row_ancestors: *const u64,
+    row_ancestors_len: usize,
+    col_ancestors: *const u64,
+    col_ancestors_len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let Some(found) = (unsafe { found.as_ref() }) else {
+        return 0;
+    };
+    let found = FindMatch::new(Key(found.row), Key(found.col));
+    // SAFETY: the caller's contract.
+    let rows: Vec<Key> = unsafe { borrowed(row_ancestors, row_ancestors_len) }
+        .iter()
+        .map(|&k| Key(k))
+        .collect();
+    // SAFETY: the caller's contract.
+    let cols: Vec<Key> = unsafe { borrowed(col_ancestors, col_ancestors_len) }
+        .iter()
+        .map(|&k| Key(k))
+        .collect();
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.find_stepped_within(found, [&rows, &cols]);
+            Some(())
+        })
+    }
 }
 
 /// # Safety

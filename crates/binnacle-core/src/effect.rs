@@ -25,11 +25,12 @@ pub enum Effect {
     },
     /// The user asked to edit the cell with `row` and `col` (F2). The host
     /// starts its own editor and calls [`crate::Grid::edit_started`], or
-    /// ignores it (a read-only grid).
+    /// ignores it (a read-only grid). Never sent for a Summary Item's cell.
     EditRequested { row: Key, col: Key },
     /// The Grid ended the edit of the cell with `row` and `col` itself: its
-    /// Key left the Table Source, the user cancelled, or a press elsewhere
-    /// ended it. The host drops its editor without committing.
+    /// Key left the Table Source, the user cancelled, a press elsewhere
+    /// ended it, or the cell is a Summary Item's, which never edits. The
+    /// host drops its editor without committing.
     EditCancelled { row: Key, col: Key },
     /// Focus landed on a new cell, named by its row and column Keys. Sent once
     /// both Keys are known, and at most once per drain: a later change replaces
@@ -126,7 +127,8 @@ pub enum Action {
     /// Activates the focused cell (Enter): emits `Activated`. In the outline
     /// column it toggles the focused group instead.
     Activate,
-    /// Asks to edit the focused cell (F2): emits `EditRequested`.
+    /// Asks to edit the focused cell (F2): emits `EditRequested`, unless it
+    /// is a Summary Item's.
     BeginEdit,
     /// Asks to copy the selection, or the focused cell without one
     /// (Ctrl/Cmd+C): emits `CopyRequested`.

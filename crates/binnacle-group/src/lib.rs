@@ -12,7 +12,7 @@ mod memory;
 mod query;
 
 pub use layer::{GroupingLayer, SUMMARY_KEY_BIT, Summary, SummaryId, settle};
-pub use memory::{Figure, GroupedMemory, MemoryAggregates, Window};
+pub use memory::{Figure, GroupedMemory, Item, MemoryAggregates, Window};
 pub use query::{
     AggregateBackend, Answer, Batch, Body, GroupRow, Path, Request, RequestId, Scope, Stamp, Want,
     having,

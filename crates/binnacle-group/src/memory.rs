@@ -8,13 +8,15 @@ use std::ops::Range;
 
 use binnacle_core::{
     Aggregate, AggregateValue, Axis, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
-    ConditionTree, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, Grouping, Key,
-    Level, Located, Outline, Placements, Position, Scalar, SortColumn, SortDirection, SortSpec,
-    Support, TextSupport, Totals, Value, ViewSpec,
+    ConditionTree, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, GRAND_TOTAL,
+    Grouping, ItemKind, Key, Level, Located, MoveRefusal, Outline, Placement, Placements, Position,
+    Scalar, SortColumn, SortDirection, SortSpec, Support, TextSupport, Totals, Value, ViewSpec,
 };
-use binnacle_memory::{FindStep, MemorySource, Moved, PumpSource, Viewed};
+use binnacle_memory::{
+    FindCount, FindStep, MemorySource, MovePolicy, Moved, PumpSource, TextMatcher, Viewed,
+};
 
-use crate::layer::{GroupingLayer, Summary, settle};
+use crate::layer::{GroupingLayer, Summary, SummaryId, settle};
 use crate::query::{
     AggregateBackend, Answer, Batch, Body, GroupRow, Path, Scope, Stamp, Want, having,
 };
@@ -114,6 +116,7 @@ fn by_figure(a: Figure, b: Figure, direction: SortDirection) -> Ordering {
 /// such value); unsorted, or on a tie, the order the rows gave them.
 pub struct MemoryAggregates {
     stamp: Stamp,
+    scope: Scope,
     levels: usize,
     root: Bucket,
     /// Where each Leaf is: its group's path and its index there.
@@ -136,30 +139,10 @@ impl MemoryAggregates {
     ) -> Self {
         let scope = &batch.scope;
         let levels = scope.levels.len();
-        let mut root = Bucket::default();
-        for (i, &row) in rows.iter().enumerate() {
-            let mut bucket = &mut root;
-            bucket.rows.push(i);
-            for &field in &scope.levels {
-                let v = value(field, i);
-                let at = match bucket.index.get(&v) {
-                    Some(&at) => at,
-                    None => {
-                        bucket.index.insert(v.clone(), bucket.kids.len());
-                        bucket.kids.push(Bucket {
-                            value: Some(v),
-                            ..Bucket::default()
-                        });
-                        bucket.kids.len() - 1
-                    }
-                };
-                bucket = &mut bucket.kids[at];
-                bucket.rows.push(i);
-            }
-            bucket.leaves.push(row);
-        }
+        let mut root = bucket(rows, scope, &value);
         let mut aggregates = MemoryAggregates {
             stamp: batch.stamp,
+            scope: scope.clone(),
             levels,
             root: Bucket::default(),
             places: HashMap::new(),
@@ -174,6 +157,104 @@ impl MemoryAggregates {
             &mut aggregates.places,
         );
         aggregates
+    }
+
+    /// Works out every group's aggregates again over `rows`, as
+    /// [`MemoryAggregates::new`] takes them, after the user edited some,
+    /// keeping the groups and their Leaves as they were: a group the rows
+    /// no longer fill has the aggregates of no rows, and one they would
+    /// newly form is not shown until the next View Spec.
+    pub fn refigure(
+        &mut self,
+        rows: &[Key],
+        value: impl Fn(Key, usize) -> Value,
+        number: impl Fn(Key, usize) -> Option<f64>,
+    ) {
+        let mut fresh = bucket(rows, &self.scope, &value);
+        finish(&mut fresh, 0, &self.scope, &value, &number);
+        let empty = self.empty();
+        fn copy(old: &mut Bucket, new: Option<&Bucket>, empty: &[Figure]) {
+            old.figures = new.map_or_else(|| empty.to_vec(), |b| b.figures.clone());
+            for kid in &mut old.kids {
+                let value = kid.value.clone().unwrap_or(Value::Blank);
+                let new = new.and_then(|b| b.index.get(&value).map(|&i| &b.kids[i]));
+                copy(kid, new, empty);
+            }
+        }
+        copy(&mut self.root, Some(&fresh), &empty);
+    }
+
+    /// The Leaf Keys of the group at `path`, in order.
+    pub fn leaves(&self, path: &Path) -> Option<&[Key]> {
+        Some(&self.bucket(path)?.leaves)
+    }
+
+    /// The path of the group holding the Leaf `key`.
+    pub fn path_of(&self, key: Key) -> Option<&Path> {
+        self.places.get(&key).map(|(path, _)| path)
+    }
+
+    /// Whether the Leaf `key` no longer belongs in the group holding it:
+    /// `value` gives its value now in each level's field.
+    pub fn regrouped(&self, key: Key, value: impl Fn(Key) -> Value) -> bool {
+        (self.path_of(key)).is_some_and(|path| path.iter().any(|(f, v)| value(*f) != *v))
+    }
+
+    /// The Group Item Keys above the item with `key`, outermost first, open
+    /// or not: a Leaf's group and its ancestors, a Subtotal's group and its
+    /// ancestors, a Group Item's ancestors.
+    pub fn ancestors(&self, layer: &mut GroupingLayer<Figure>, key: Key) -> Vec<Key> {
+        let path = match layer.identity(key) {
+            Some(SummaryId::Group(path)) => &path[..path.len().saturating_sub(1)],
+            Some(SummaryId::Subtotal(path)) => &path[..],
+            Some(SummaryId::GrandTotal) => return Vec::new(),
+            None => match self.path_of(key) {
+                Some(path) => &path[..],
+                None => return Vec::new(),
+            },
+        }
+        .to_vec();
+        (1..=path.len())
+            .map(|d| layer.key_of(SummaryId::Group(path[..d].to_vec())))
+            .collect()
+    }
+
+    /// Where among the rows not grouped a move of the Leaves `keys` to
+    /// before Position `to` of the grouped `axis` lands, or why it is
+    /// refused: `base` gives a Leaf's Position among those rows.
+    pub fn place_move(
+        &self,
+        layer: &GroupingLayer<Figure>,
+        axis: Axis,
+        keys: &[Key],
+        to: Position,
+        mut base: impl FnMut(Key) -> Option<Position>,
+    ) -> Result<Position, MoveRefusal> {
+        if keys.iter().any(|k| k.0 & crate::SUMMARY_KEY_BIT != 0) {
+            return Err(MoveRefusal::Summary);
+        }
+        let between = MoveRefusal::BetweenGroups;
+        let paths: Option<Vec<&Path>> = keys.iter().map(|&k| self.path_of(k)).collect();
+        let path = (paths.as_deref())
+            .and_then(|p| p.first().filter(|first| p.iter().all(|q| q == *first)))
+            .ok_or(between)?;
+        let index = layer.place_move(axis, path, to).ok_or(between)?;
+        let leaves = self.leaves(path).unwrap_or_default();
+        let to = match (leaves.get(index as usize), leaves.last()) {
+            (Some(&k), _) => base(k),
+            (None, Some(&last)) => base(last).map(|p| p + 1),
+            (None, None) => None,
+        };
+        to.ok_or(MoveRefusal::BetweenGroups)
+    }
+
+    /// The aggregates of no rows.
+    fn empty(&self) -> Vec<Figure> {
+        let none = |_: Key, _: usize| Value::Blank;
+        let rows: &[usize] = &[];
+        (self.scope.values.iter())
+            .map(|v| figure(v, rows, &none, &|_, _| None))
+            .collect()
     }
 
     /// The stamp of the batch these groups were worked out for.
@@ -196,6 +277,34 @@ impl MemoryAggregates {
             aggregates: bucket.figures.clone(),
         }
     }
+}
+
+/// The groups of `rows` by the scope's levels, every group holding its
+/// rows' indices and Leaf Keys in order.
+fn bucket(rows: &[Key], scope: &Scope, value: &impl Fn(Key, usize) -> Value) -> Bucket {
+    let mut root = Bucket::default();
+    for (i, &row) in rows.iter().enumerate() {
+        let mut bucket = &mut root;
+        bucket.rows.push(i);
+        for &field in &scope.levels {
+            let v = value(field, i);
+            let at = match bucket.index.get(&v) {
+                Some(&at) => at,
+                None => {
+                    bucket.index.insert(v.clone(), bucket.kids.len());
+                    bucket.kids.push(Bucket {
+                        value: Some(v),
+                        ..Bucket::default()
+                    });
+                    bucket.kids.len() - 1
+                }
+            };
+            bucket = &mut bucket.kids[at];
+            bucket.rows.push(i);
+        }
+        bucket.leaves.push(row);
+    }
+    root
 }
 
 /// Works out the aggregates of `bucket` (at `depth`) and all under it, and
@@ -292,6 +401,114 @@ fn place(bucket: &Bucket, levels: &[Key], path: &mut Path, places: &mut HashMap<
     }
 }
 
+/// One item of the grouped rows as if every group were open, in drawn
+/// order, for searching what closed groups hide.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Item<'a> {
+    pub key: Key,
+    pub kind: ItemKind,
+    /// The Group Item Keys above it, outermost first.
+    pub ancestors: Vec<Key>,
+    /// Whether a closed group hides it: it is not among the items shown.
+    pub hidden: bool,
+    /// A Group Item's or Subtotal's level field and value.
+    pub group: Option<(Key, &'a Value)>,
+    /// A Summary Item's aggregates, one per value; empty for a Leaf.
+    pub figures: &'a [Figure],
+}
+
+impl MemoryAggregates {
+    /// Every item of the grouped rows, open or not, in the order the layer
+    /// draws them, with its Keys as the layer gives them and whether the
+    /// groups `layer` has closed hide it.
+    pub fn items(&self, layer: &mut GroupingLayer<Figure>) -> Vec<Item<'_>> {
+        let shape = layer.shape().clone();
+        let total = Item {
+            key: GRAND_TOTAL,
+            kind: ItemKind::GrandTotal,
+            ancestors: Vec::new(),
+            hidden: false,
+            group: None,
+            figures: &self.root.figures,
+        };
+        let mut out = Vec::new();
+        if shape.grand_total == Placement::Before {
+            out.push(total.clone());
+        }
+        let levels = self.scope.levels.clone();
+        let mut walk = Walk {
+            layer,
+            shape: &shape,
+            levels: &levels,
+            path: Vec::new(),
+            ancestors: Vec::new(),
+            out: &mut out,
+        };
+        walk.bucket(&self.root, false);
+        if shape.grand_total == Placement::After {
+            out.push(total);
+        }
+        out
+    }
+}
+
+/// A walk through every group for [`MemoryAggregates::items`].
+struct Walk<'w, 'a> {
+    layer: &'w mut GroupingLayer<Figure>,
+    shape: &'w crate::layer::Shape,
+    levels: &'w [Key],
+    path: Path,
+    ancestors: Vec<Key>,
+    out: &'w mut Vec<Item<'a>>,
+}
+
+impl<'a> Walk<'_, 'a> {
+    fn bucket(&mut self, bucket: &'a Bucket, hidden: bool) {
+        let depth = self.path.len();
+        let Some(&field) = self.levels.get(depth) else {
+            self.out.extend(bucket.leaves.iter().map(|&key| Item {
+                key,
+                kind: ItemKind::Leaf,
+                ancestors: self.ancestors.clone(),
+                hidden,
+                group: None,
+                figures: &[],
+            }));
+            return;
+        };
+        for kid in &bucket.kids {
+            let value = kid.value.as_ref().unwrap_or(&Value::Blank);
+            self.path.push((field, value.clone()));
+            let key = self.layer.key_of(SummaryId::Group(self.path.clone()));
+            let summary = |kind, key, ancestors| Item {
+                key,
+                kind,
+                ancestors,
+                hidden,
+                group: Some((field, value)),
+                figures: &kid.figures,
+            };
+            self.out
+                .push(summary(ItemKind::Group, key, self.ancestors.clone()));
+            let shows = self.layer.layout().opens(depth, key);
+            let subtotal = self.layer.key_of(SummaryId::Subtotal(self.path.clone()));
+            self.ancestors.push(key);
+            let mut sub = summary(ItemKind::Subtotal, subtotal, self.ancestors.clone());
+            sub.hidden = hidden || !shows;
+            let placed = self.shape.subtotal(depth);
+            if placed == Placement::Before {
+                self.out.push(sub.clone());
+            }
+            self.bucket(kid, hidden || !shows);
+            if placed == Placement::After {
+                self.out.push(sub);
+            }
+            self.ancestors.pop();
+            self.path.pop();
+        }
+    }
+}
+
 /// The part of `items` in `range`.
 fn slice<'a, T>(items: &'a [T], range: &Range<u64>) -> &'a [T] {
     let end = (range.end as usize).min(items.len());
@@ -315,6 +532,12 @@ impl AggregateBackend<Figure> for MemoryAggregates {
                     let (path, start) = self.places.get(&key).cloned().unwrap_or_default();
                     let found = self.places.contains_key(&key);
                     answers.push(answer(path, start, Body::Located { key, found }));
+                }
+                Want::Total if self.bucket(&request.path).is_none() => {
+                    let body = Body::Total {
+                        aggregates: self.empty(),
+                    };
+                    answers.push(answer(request.path.clone(), 0, body));
                 }
                 want => {
                     let Some(bucket) = self.bucket(&request.path) else {
@@ -349,16 +572,37 @@ pub struct Window {
     pub outlines: Option<Vec<Outline>>,
 }
 
+/// How a host writes a Summary Item's figure in a column, as its cells
+/// show it, for find to match.
+type FigureText = Box<dyn Fn(Key, Figure) -> Option<String>>;
+
+/// A match of grouped find: its place among every cell searched, the cell,
+/// and whether a closed group hides it.
+type Found = (u64, FindMatch, bool);
+
 /// A [`MemorySource`] that groups its rows under the grouping layer. While
 /// the rows are grouped, the base rows are sorted by the levels' fields
 /// first (in the direction the user sorts them, ascending otherwise) and
 /// then by the user's sort, and the levels' fields leave the columns.
+///
+/// Find searches every item as if every group were open, counting the
+/// matches closed groups hide: a Leaf's cells as the base source matches
+/// them, and a Group Item's label (its value) at its level's field. A
+/// Summary Item's figures match only once the host says how its cells
+/// write them ([`GroupedMemory::find_figures`]). Leaves move within their
+/// group, and the user's edit moves nothing until the next View Spec.
 pub struct GroupedMemory<R> {
     source: MemorySource<R>,
     layer: GroupingLayer<Figure>,
     aggregates: Option<MemoryAggregates>,
     /// The fields hidden from the columns because the rows group by them.
     lifted: Vec<Key>,
+    /// The View Spec last applied.
+    spec: ViewSpec,
+    /// Whether the user edited a row since the rows were last grouped, so
+    /// the next View Spec groups them again.
+    edited: bool,
+    figure_text: Option<FigureText>,
 }
 
 impl<R> GroupedMemory<R> {
@@ -368,7 +612,19 @@ impl<R> GroupedMemory<R> {
             layer: GroupingLayer::new(),
             aggregates: None,
             lifted: Vec::new(),
+            spec: ViewSpec::default(),
+            edited: false,
+            figure_text: None,
         }
+    }
+
+    /// Lets find match a Summary Item's figures, as `text` writes the
+    /// figure of the value over a column in that column's cells (`None`
+    /// for one drawn blank). By default they don't: aggregates are
+    /// computed, not data.
+    pub fn find_figures(mut self, text: impl Fn(Key, Figure) -> Option<String> + 'static) -> Self {
+        self.figure_text = Some(Box::new(text));
+        self
     }
 
     pub fn source(&self) -> &MemorySource<R> {
@@ -509,7 +765,8 @@ impl<R> GroupedMemory<R> {
             .filter(|g| !levels.is_empty() || !g.slicers.is_empty());
         let scope_before = self.layer.grouped(Axis::Rows);
         self.layer.request_view(applied.clone());
-        if rows_changed && scope_before && self.layer.grouped(Axis::Rows) {
+        let edited = std::mem::take(&mut self.edited);
+        if (rows_changed || edited) && scope_before && self.layer.grouped(Axis::Rows) {
             self.layer.refresh();
         }
         self.settle(rows);
@@ -536,6 +793,7 @@ impl<R> GroupedMemory<R> {
         if grouped {
             totals.rows = None;
         }
+        self.spec = applied.clone();
         Viewed {
             applied,
             totals,
@@ -609,6 +867,364 @@ impl<R> GroupedMemory<R> {
         self.layer.summary(key)
     }
 
+    /// The path of the group the Summary Item `key` heads or totals (empty
+    /// for the Grand Total), shown or not, or of the group holding the Leaf
+    /// `key` among those shown.
+    pub fn path(&self, key: Key) -> Option<&Path> {
+        self.layer.path(key)
+    }
+
+    /// The user edited the value in `column` of base row `row`, as
+    /// [`MemorySource::edited`] takes it. While the rows are grouped
+    /// nothing moves until the next View Spec, even a Leaf whose edit
+    /// changed its group, which stays where it is, unmatched; the figures
+    /// of every Summary Item are worked out again at once. Returns the
+    /// Change Notices: `ContentChanged` for the Leaf and for each Summary
+    /// Item whose figures were answered anew, as the layer places them.
+    ///
+    /// # Panics
+    ///
+    /// As [`MemorySource::edited`].
+    pub fn edited(&mut self, rows: &[R], row: usize, column: Key) -> Vec<(Axis, ChangeNotice)> {
+        let notices = self.source.edited(rows, row, column);
+        if !self.layer.grouped(Axis::Rows) {
+            return notices;
+        }
+        self.edited = true;
+        let mut out: Vec<_> = notices
+            .into_iter()
+            .filter(|(a, _)| *a == Axis::Cols)
+            .collect();
+        if let Some(aggregates) = self.aggregates.as_mut() {
+            let count = self.source.count(Axis::Rows);
+            let keys = self.source.window(Axis::Rows, 0..count);
+            let logical = self.source.logical_window(Axis::Rows, 0..count);
+            let source = &self.source;
+            let row = |i: usize| &rows[logical[i]];
+            aggregates.refigure(
+                &keys,
+                |field, i| source.value(field, row(i)),
+                |field, i| source.number(field, row(i)),
+            );
+        }
+        self.layer.refigure();
+        self.settle(rows);
+        let key = self.source.base_key(Axis::Rows, row);
+        if let Located::Found(p) = self.locate(rows, Axis::Rows, key) {
+            out.push((Axis::Rows, ChangeNotice::ContentChanged(p..p + 1)));
+        }
+        while let Some(change) = self.layer.poll_change() {
+            out.push(change);
+        }
+        out.sort_by_key(|(a, _)| a.index());
+        out
+    }
+
+    /// Whether each item with `keys` on `axis` is unmatched: in view though
+    /// the filter in force drops it (see [`MemorySource::unmatched`]), or a
+    /// Leaf whose values no longer fit the group it is shown in, since the
+    /// user's edit.
+    pub fn unmatched(&mut self, rows: &[R], axis: Axis, keys: &[Key]) -> Vec<bool> {
+        let mut flags = self.source.unmatched(axis, keys);
+        if !self.layer.grouped(axis) {
+            return flags;
+        }
+        for (flag, &key) in flags.iter_mut().zip(keys) {
+            if key.0 & crate::SUMMARY_KEY_BIT != 0 {
+                *flag = false;
+                continue;
+            }
+            let Some(row) = self.source.logical_index(axis, key) else {
+                continue;
+            };
+            let Some(aggregates) = self.aggregates.as_ref() else {
+                continue;
+            };
+            *flag |= aggregates.regrouped(key, |field| self.source.value(field, &rows[row]));
+        }
+        flags
+    }
+
+    /// Whether the fields the Leaves are sorted by include one the rows do
+    /// not group by.
+    fn sorted_within(&self) -> bool {
+        let levels = (self.spec.grouping.iter())
+            .flat_map(|g| g.row_levels.iter().filter_map(|l| l.field_key()))
+            .collect::<Vec<_>>();
+        (self.spec.rows.sort.columns().iter()).any(|c| !levels.contains(&c.key))
+    }
+
+    /// Whether the items of `axis` can move now: grouped Leaves can, within
+    /// their group, unless moves on a sorted axis are refused and the
+    /// Leaves are sorted.
+    pub fn movable(&self, axis: Axis) -> bool {
+        match self.layer.grouped(axis) {
+            false => self.source.movable(axis),
+            true => self.source.move_policy() == MovePolicy::Bake || !self.sorted_within(),
+        }
+    }
+
+    /// Moves the items with `keys` on `axis` to before Position `to`, as
+    /// [`MemorySource::move_items`] does for a plain axis. Grouped Leaves
+    /// move within their group; on Leaves sorted by a field the rows do not
+    /// group by, the order shown is kept and that sort dropped (unless
+    /// moves on a sorted axis are refused). Returns the Change Notices and
+    /// the spec now applied if the sort changed, or why it was refused.
+    pub fn move_items(
+        &mut self,
+        rows: &[R],
+        axis: Axis,
+        keys: &[Key],
+        to: Position,
+    ) -> Result<Moved, String> {
+        let sorted = "Can't move while sorted: clear the sort first";
+        if !self.layer.grouped(axis) {
+            let before = self.source.view_spec();
+            let notice = self.source.move_items(axis, keys, to).ok_or(sorted)?;
+            let after = self.source.view_spec();
+            return Ok(Moved {
+                notices: vec![(axis, notice)],
+                view: (after != before).then(|| (after, self.source.totals())),
+            });
+        }
+        let refused = |r| match r {
+            MoveRefusal::Summary => "Group rows and totals can't be moved".to_string(),
+            _ => "Can't move between groups".to_string(),
+        };
+        let aggregates = self.aggregates.as_ref();
+        let aggregates = aggregates.ok_or_else(|| refused(MoveRefusal::BetweenGroups))?;
+        let source = &mut self.source;
+        let base_to = aggregates
+            .place_move(&self.layer, axis, keys, to, |k| {
+                match source.locate(axis, k) {
+                    Located::Found(p) => Some(p),
+                    Located::Gone { .. } => None,
+                }
+            })
+            .map_err(refused)?;
+        let sorted_within = self.sorted_within();
+        if sorted_within && self.source.move_policy() == MovePolicy::Refuse {
+            return Err(sorted.into());
+        }
+        // The base rows are always sorted by the levels: the order shown is
+        // baked, and the levels sort them again with the next View Spec.
+        let policy = self.source.move_policy();
+        self.source.set_move_policy(MovePolicy::Bake);
+        self.source.move_items(axis, keys, base_to);
+        self.source.set_move_policy(policy);
+        let levels: Vec<Key> = (self.spec.grouping.iter())
+            .flat_map(|g| g.row_levels.iter().filter_map(|l| l.field_key()))
+            .collect();
+        let view = sorted_within.then(|| {
+            let kept = (self.spec.rows.sort.columns().iter())
+                .filter(|c| levels.contains(&c.key))
+                .copied()
+                .collect();
+            self.spec.rows.sort = SortSpec::new(kept);
+            (self.spec.clone(), self.totals())
+        });
+        match &view {
+            Some((spec, _)) => self.layer.request_view(spec.clone()),
+            None => self.layer.refresh(),
+        }
+        self.settle(rows);
+        while self.layer.poll_viewed().is_some() {}
+        Ok(Moved {
+            notices: vec![(axis, ChangeNotice::Reordered)],
+            view,
+        })
+    }
+
+    /// The Group Item Keys above the item with `key` on `axis`, outermost
+    /// first, open or not; empty where `axis` is not grouped.
+    pub fn ancestors(&mut self, axis: Axis, key: Key) -> Vec<Key> {
+        match (self.layer.grouped(axis), self.aggregates.as_ref()) {
+            (true, Some(aggregates)) => aggregates.ancestors(&mut self.layer, key),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The text of the cell of the Summary Item `key` in `col` that find
+    /// matches: its label at its level's field, its figure in a column a
+    /// value aggregates once the host writes figures, else none.
+    fn summary_text(&self, key: Key, col: Key) -> Option<String> {
+        let summary = self.layer.summary(key)?;
+        if let (ItemKind::Group, Some((field, value))) = (summary.kind, summary.path.last())
+            && *field == col
+        {
+            return match value {
+                Value::Text(t) => Some(t.clone()),
+                Value::Blank => None,
+            };
+        }
+        let text = self.figure_text.as_ref()?;
+        let values = &self.spec.grouping.as_ref()?.values;
+        let i = values.iter().position(|v| v.field == Some(col))?;
+        text(col, *summary.aggregates.get(i)?)
+    }
+
+    /// Which cells of the block `row_keys` by `col_keys` match `query`, row
+    /// by row, as [`MemorySource::find_marks`] says for a plain table: a
+    /// Group Item's label at its level's field, and a Leaf's cells.
+    pub fn find_marks(
+        &mut self,
+        rows: &[R],
+        row_keys: &[Key],
+        col_keys: &[Key],
+        query: &FindQuery,
+    ) -> Vec<bool> {
+        if !self.layer.grouped(Axis::Rows) {
+            return self.source.find_marks(rows, row_keys, col_keys, query);
+        }
+        let mut marks = self.source.find_marks(rows, row_keys, col_keys, query);
+        let Some(matcher) = TextMatcher::new(&query.query) else {
+            return marks;
+        };
+        let searched: Vec<Key> = (self.source.find_columns(&query.query).into_iter())
+            .map(|(_, c)| c)
+            .collect();
+        for (i, &r) in row_keys.iter().enumerate() {
+            if r.0 & crate::SUMMARY_KEY_BIT == 0 {
+                continue;
+            }
+            for (j, &c) in col_keys.iter().enumerate() {
+                let label =
+                    (self.layer.path(r).and_then(|p| p.last())).is_some_and(|(f, _)| *f == c);
+                let hit = (label || searched.contains(&c))
+                    && self
+                        .summary_text(r, c)
+                        .is_some_and(|t| matcher.is_match(&t));
+                marks[i * col_keys.len() + j] = hit;
+            }
+        }
+        marks
+    }
+
+    /// Every cell of the grouped rows that matches `query`, in its order
+    /// (as if every group were open: by rows, each row's label before its
+    /// cells; by columns, the labels first), with its place among every
+    /// cell searched and whether a closed group hides it; and the place of
+    /// the cell `from`, if the rows hold it. `None` for an invalid regex.
+    fn grouped_matches(
+        &mut self,
+        rows: &[R],
+        query: &FindQuery,
+        from: Option<FindMatch>,
+    ) -> Option<(Vec<Found>, Option<u64>)> {
+        let matcher = TextMatcher::new(&query.query)?;
+        let cols: Vec<Key> = (self.source.find_columns(&query.query).into_iter())
+            .map(|(_, c)| c)
+            .collect();
+        self.settle(rows);
+        let Some(aggregates) = self.aggregates.as_ref() else {
+            return Some((Vec::new(), None));
+        };
+        let items = aggregates.items(&mut self.layer);
+        let (n, slots) = (items.len() as u64, cols.len() as u64 + 1);
+        let place = |item: u64, slot: u64| match query.by {
+            Axis::Rows => item * slots + slot,
+            Axis::Cols => slot * n + item,
+        };
+        let from = from.and_then(|f| {
+            let item = items.iter().position(|i| i.key == f.row)? as u64;
+            let slot = match cols.iter().position(|&c| c == f.col) {
+                Some(c) => c as u64 + 1,
+                None => 0,
+            };
+            Some(place(item, slot))
+        });
+        let mut found = Vec::new();
+        let source = &mut self.source;
+        let text = self.figure_text.as_ref();
+        let values = self
+            .spec
+            .grouping
+            .as_ref()
+            .map_or(&[][..], |g| &g.values[..]);
+        for (i, item) in (0..).zip(&items) {
+            let mut hit = |slot: u64, col: Key, t: Option<String>| {
+                if t.is_some_and(|t| matcher.is_match(&t)) {
+                    found.push((place(i, slot), FindMatch::new(item.key, col), item.hidden));
+                }
+            };
+            if item.kind == ItemKind::Group
+                && let Some((field, Value::Text(label))) = item.group
+            {
+                hit(0, field, Some(label.clone()));
+            }
+            for (slot, &col) in (1..).zip(&cols) {
+                let t = match item.kind {
+                    ItemKind::Leaf => source
+                        .logical_index(Axis::Rows, item.key)
+                        .and_then(|r| source.text(col, &rows[r]).map(|t| t.into_owned())),
+                    _ => text.and_then(|text| {
+                        let i = values.iter().position(|v| v.field == Some(col))?;
+                        text(col, *item.figures.get(i)?)
+                    }),
+                };
+                hit(slot, col, t);
+            }
+        }
+        found.sort_by_key(|(at, ..)| *at);
+        Some((found, from))
+    }
+
+    /// The match of `query` next after `from` (or before it), as
+    /// [`MemorySource::find_next`] steps a plain table: on grouped rows,
+    /// through every item as if every group were open, so a match a closed
+    /// group hides is stepped to as well.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn find_next(
+        &mut self,
+        rows: &[R],
+        query: &FindQuery,
+        from: Option<FindMatch>,
+        direction: FindDirection,
+    ) -> Option<FindStep> {
+        if !self.layer.grouped(Axis::Rows) {
+            return self.source.find_next(rows, query, from, direction);
+        }
+        let (found, from) = self.grouped_matches(rows, query, from)?;
+        let i = match (direction, from) {
+            (FindDirection::Next, Some(at)) => found.iter().position(|(p, ..)| *p > at),
+            (FindDirection::Next, None) => (!found.is_empty()).then_some(0),
+            (FindDirection::Previous, Some(at)) => found.iter().rposition(|(p, ..)| *p < at),
+            (FindDirection::Previous, None) => found.len().checked_sub(1),
+        };
+        let (i, wrapped) = match (i, direction) {
+            (Some(i), _) => (i, false),
+            (None, _) if found.is_empty() => return None,
+            (None, FindDirection::Next) => (0, true),
+            (None, FindDirection::Previous) => (found.len() - 1, true),
+        };
+        Some(FindStep {
+            at: found[i].1,
+            index: Some(i as u64),
+            wrapped,
+        })
+    }
+
+    /// How many cells match `query`, as [`MemorySource::find_count`] counts
+    /// a plain table; on grouped rows, with those closed groups hide.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base row count.
+    pub fn find_count(&mut self, rows: &[R], query: &FindQuery) -> FindCount {
+        if !self.layer.grouped(Axis::Rows) {
+            return self.source.find_count(rows, query);
+        }
+        let found = (self.grouped_matches(rows, query, None)).map_or(Vec::new(), |(f, _)| f);
+        FindCount {
+            total: found.len() as u64,
+            partial: false,
+            hidden: found.iter().filter(|(.., hidden)| *hidden).count() as u64,
+        }
+    }
+
     /// This source with the host's `rows`, as [`binnacle_memory::pump`]
     /// needs it.
     pub fn over<'a>(&'a mut self, rows: &'a [R]) -> impl PumpSource + 'a {
@@ -675,22 +1291,15 @@ impl<R> PumpSource for Over<'_, R> {
     }
 
     fn movable(&mut self, axis: Axis) -> Option<bool> {
-        Some(!self.source.grouped(axis) && self.source.source.movable(axis))
+        Some(self.source.movable(axis))
     }
 
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
-        if self.source.grouped(axis) {
-            return Err("Can't move while grouped".into());
-        }
-        let before = self.source.source.view_spec();
-        let Some(notice) = self.source.source.move_items(axis, keys, to) else {
-            return Err("Can't move while sorted: clear the sort first".into());
-        };
-        let after = self.source.source.view_spec();
-        Ok(Moved {
-            notices: vec![(axis, notice)],
-            view: (after != before).then(|| (after, self.source.source.totals())),
-        })
+        self.source.move_items(self.rows, axis, keys, to)
+    }
+
+    fn ancestors(&mut self, axis: Axis, key: Key) -> Vec<Key> {
+        self.source.ancestors(axis, key)
     }
 
     fn find_support(&mut self) -> Option<TextSupport> {
@@ -703,9 +1312,7 @@ impl<R> PumpSource for Over<'_, R> {
         from: Option<FindMatch>,
         direction: FindDirection,
     ) -> Option<FindStep> {
-        self.source
-            .source
-            .find_next(self.rows, query, from, direction)
+        self.source.find_next(self.rows, query, from, direction)
     }
 }
 

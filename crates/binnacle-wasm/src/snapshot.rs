@@ -9,8 +9,8 @@
 use binnacle_core::{
     AggregateValue, Axis, CellState, Comparison, Condition, ConditionKind, ConditionState, Cursor,
     Depth, DropTarget, Edge, Form, GroupOf, GroupedAxis, Grouping, HeaderPlacement, ItemKind, Key,
-    Level, Mode, OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot, SortDirection,
-    SortSpec, TextQuery, Value, ViewSpec,
+    Level, Mode, MoveRefusal, OpenState, Outline, Placement, Rect, Scalar, Searched, Snapshot,
+    SortDirection, SortSpec, TextQuery, Value, ViewSpec,
 };
 
 use crate::codes::{find_bits, support_bits};
@@ -101,8 +101,9 @@ impl Writer<'_> {
         self.out.keys.push(key.0);
     }
 
-    /// A drop target: a code (0 move, 1 unpin, 2 pin, 3 stay) and its
-    /// fields.
+    /// A drop target: a code (0 move, 1 unpin, 2 pin, 3 stay, 4 refused)
+    /// and its fields; a refusal's reason is 0 between groups, 1 a Summary
+    /// Item, 2 another.
     fn target(&mut self, target: DropTarget) {
         match target {
             DropTarget::Move { to, unpin } => {
@@ -125,6 +126,16 @@ impl Writer<'_> {
                 self.flag(reorder);
             }
             DropTarget::Stay => self.num(3),
+            DropTarget::Refused { to, why } => {
+                self.num(4);
+                self.position(to);
+                #[allow(unreachable_patterns)] // Refusals added later are 2.
+                self.num(match why {
+                    MoveRefusal::BetweenGroups => 0,
+                    MoveRefusal::Summary => 1,
+                    _ => 2,
+                });
+            }
         }
     }
 

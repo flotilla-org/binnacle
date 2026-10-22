@@ -49,7 +49,7 @@ pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
     Action, AggregateValue, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, ItemKind,
-    Key, Mode, OpenState, Outline, Snapshot, SortDirection, StripItem, Value,
+    Key, Mode, MoveRefusal, OpenState, Outline, Snapshot, SortDirection, StripItem, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -548,7 +548,11 @@ pub fn render_with(
         }
     }
     if let Some(drop) = snapshot.drop_indicator() {
-        let style = theme.drop_indicator;
+        // A refused drop draws its line as an error.
+        let style = match drop.target {
+            DropTarget::Refused { .. } => theme.drop_indicator.patch(theme.error),
+            _ => theme.drop_indicator,
+        };
         // The middle of a Gap rounds down onto the Gap's cell.
         let at = drop.offset.floor() as i64;
         // Dashed where an unpinned item returns to its own place.
@@ -782,6 +786,11 @@ pub fn status(snapshot: &Snapshot) -> String {
                     format!("pin {what} {side}")
                 }
                 DropTarget::Stay => format!("{what} can't move: drag to an edge to pin"),
+                DropTarget::Refused {
+                    why: MoveRefusal::BetweenGroups,
+                    ..
+                } => "can't move between groups".to_string(),
+                DropTarget::Refused { .. } => "group rows and totals can't move".to_string(),
             }
         }
         Mode::Idle => {

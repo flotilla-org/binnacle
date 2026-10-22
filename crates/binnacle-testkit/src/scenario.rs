@@ -522,6 +522,17 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
         let _ = writeln!(self.log.borrow_mut(), "  find: {answer:?}");
         answer
     }
+
+    fn ancestors(&mut self, axis: Axis, key: Key) -> Vec<Key> {
+        let answer = self.source.ancestors(axis, key);
+        if !answer.is_empty() {
+            let _ = writeln!(
+                self.log.borrow_mut(),
+                "  ancestors {axis:?} {key:?}: {answer:?}"
+            );
+        }
+        answer
+    }
 }
 
 /// A host in miniature: a Grid, its Table Source and a log of what passed

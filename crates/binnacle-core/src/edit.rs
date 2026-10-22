@@ -23,8 +23,14 @@ impl Grid {
     /// enters `Editing`, which follows those Keys through Change Notices. A
     /// gesture in progress ends where it is (a resize keeps its size, a
     /// header move is dropped). A host that never calls this never edits.
+    /// A Summary Item's cell never edits: the Grid answers at once with
+    /// `EditCancelled`, so the host drops its editor.
     pub fn edit_started(&mut self, row: Key, col: Key) {
         if matches!(self.gesture, Gesture::Editing { keys, .. } if keys == [row, col]) {
+            return;
+        }
+        if self.summary_cell(row, col) {
+            self.push(Effect::EditCancelled { row, col });
             return;
         }
         self.end_resize();
@@ -33,6 +39,15 @@ impl Grid {
             due: [0; 2],
         };
         self.pending_damage.selection = true;
+    }
+
+    /// Whether the cell with `row` and `col` is a Summary Item's, on either
+    /// axis, as the outlines in the Windows say.
+    pub(crate) fn summary_cell(&self, row: Key, col: Key) -> bool {
+        let summary = |axis: Axis, key| {
+            (self.axis(axis).outlines.get(&key)).is_some_and(|o| o.kind.is_summary())
+        };
+        summary(Axis::Rows, row) || summary(Axis::Cols, col)
     }
 
     /// The host closed its editor. The Grid returns to `Idle` and sends

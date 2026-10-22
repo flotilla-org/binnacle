@@ -134,6 +134,21 @@ impl Matcher {
     }
 }
 
+/// Matches text as a Text Query says, as find and the quick filter do, for
+/// sources that search text of their own (a group's label, say).
+pub struct TextMatcher(Matcher);
+
+impl TextMatcher {
+    /// `None` for an invalid regex.
+    pub fn new(query: &TextQuery) -> Option<Self> {
+        Matcher::new(query).map(TextMatcher)
+    }
+
+    pub fn is_match(&self, text: &str) -> bool {
+        self.0.is_match(text)
+    }
+}
+
 /// The kind of value `comparison` compares with: that of its scalars, or
 /// none for a between mixing numbers and dates.
 fn compared(comparison: &Comparison) -> Option<Compared> {
@@ -428,8 +443,8 @@ impl<R> MemorySource<R> {
     }
 
     /// Column `column`'s text form of `row`, if it has one and `row` is not
-    /// blank there.
-    fn text<'r>(&self, column: Key, row: &'r R) -> Option<Cow<'r, str>> {
+    /// blank there: what filters and find match.
+    pub fn text<'r>(&self, column: Key, row: &'r R) -> Option<Cow<'r, str>> {
         match self.texts.get(&column) {
             Some(f) => f(row),
             None => self.columns.get(&column)?.display(row),
@@ -1118,6 +1133,12 @@ impl<R> MemorySource<R> {
             .collect()
     }
 
+    /// The columns shown that `query` searches and that have a text form,
+    /// as (Position, Key) in column order.
+    pub fn find_columns(&self, query: &TextQuery) -> Vec<(Position, Key)> {
+        self.searched(query)
+    }
+
     /// Whether the cell of base row `row` in column `col` matches.
     fn found(&self, matcher: &Matcher, row: &R, col: Key) -> bool {
         self.text(col, row).is_some_and(|t| matcher.is_match(&t))
@@ -1227,6 +1248,7 @@ impl<R> MemorySource<R> {
         FindCount {
             total,
             partial: false,
+            hidden: 0,
         }
     }
 
@@ -1267,6 +1289,26 @@ impl<R> MemorySource<R> {
     /// See [`InMemoryTableSource::movable`].
     pub fn movable(&self, axis: Axis) -> bool {
         self.table.movable(axis)
+    }
+
+    /// See [`InMemoryTableSource::set_move_policy`].
+    pub fn set_move_policy(&mut self, policy: MovePolicy) {
+        self.table.set_move_policy(policy);
+    }
+
+    /// See [`InMemoryTableSource::move_policy`].
+    pub fn move_policy(&self) -> MovePolicy {
+        self.table.move_policy()
+    }
+
+    /// See [`InMemoryTableSource::logical_index`].
+    pub fn logical_index(&mut self, axis: Axis, key: Key) -> Option<usize> {
+        self.table.logical_index(axis, key)
+    }
+
+    /// See [`InMemoryTableSource::base_key`].
+    pub fn base_key(&self, axis: Axis, item: usize) -> Key {
+        self.table.base_key(axis, item)
     }
 
     /// See [`InMemoryTableSource::set_move_policy`].

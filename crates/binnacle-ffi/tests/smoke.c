@@ -467,6 +467,17 @@ int main(void) {
   CHECK(snap.find_support == BINNACLE_FIND && snap.has_find && snap.find.by == BINNACLE_COLS);
   CHECK(snap.has_find_match && snap.find_match.row == found.row && snap.find_match.col == 2001);
   CHECK(r->focus.key == found.row && c->focus.key == 2001);
+  /* A match within no groups lands at once, as binnacle_grid_find_stepped. */
+  CHECK(binnacle_grid_find_next(grid));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_FIND_STEP_REQUESTED);
+  CHECK(!binnacle_grid_find_stepped_within(grid, NULL, NULL, 0, NULL, 0));
+  found.row = r->strip[3].key;
+  CHECK(binnacle_grid_find_stepped_within(grid, &found, NULL, 0, NULL, 0));
+  drain(grid, &focus);
+  frame(grid, &snap);
+  CHECK(snap.has_find_match && snap.find_match.row == found.row);
+  CHECK(r->focus.key == found.row && c->focus.key == 2001);
   CHECK(binnacle_grid_set_find(grid, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_FIND_REQUESTED && !effect.has_find);
@@ -532,6 +543,7 @@ int main(void) {
   frame(grid, &snap);
   CHECK(snap.mode == BINNACLE_MODE_MOVING_HEADERS && snap.has_drop);
   CHECK(snap.drop_axis == BINNACLE_COLS && snap.drop_target == BINNACLE_DROP_PIN);
+  CHECK(snap.drop_refusal == BINNACLE_MOVE_REFUSAL_OTHER);
   CHECK(snap.drop_edge == BINNACLE_EDGE_LEADING && !snap.has_drop_before && !snap.drop_reorder);
   CHECK(snap.pin_zones_len == 2 && snap.pin_zones[0].hot && !snap.pin_zones[1].hot);
   CHECK(snap.pin_zones[0].edge == BINNACLE_EDGE_LEADING && snap.pin_zones[0].size == 3);
