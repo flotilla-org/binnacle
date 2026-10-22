@@ -7,11 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use binnacle_core::{
-    Aggregate, AggregateValue, Axis, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
-    ConditionTree, Distinct, DistinctQuery, FilterSpec, FindDirection, FindMatch, FindQuery,
-    GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located, MoveRefusal, Outline, Placement,
-    Placements, Position, Scalar, SortColumn, SortDirection, SortSpec, Support, TextSupport,
-    Totals, Value, ViewSpec,
+    Aggregate, AggregateValue, Axis, AxisView, ChangeNotice, Compared, Comparison, Condition,
+    ConditionKind, ConditionTree, Distinct, DistinctQuery, FilterSpec, FindDirection, FindMatch,
+    FindQuery, GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located, MoveRefusal, Outline,
+    Placement, Placements, Position, Scalar, SortColumn, SortDirection, SortSpec, Support,
+    TextSupport, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{
     FindCount, FindStep, MemorySource, MovePolicy, Moved, PumpSource, TextMatcher, Viewed,
@@ -793,8 +793,8 @@ impl<R> GroupedMemory<R> {
     }
 
     /// The rows may group by a column that sorts and has a text form, with
-    /// Subtotals before or after, and slice by any column as they filter by
-    /// it. Not the columns: there is no pivot yet.
+    /// Subtotals before or after, pivot by it (the columns grouped by it),
+    /// and slice by any column as they filter by it.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
         let support = self.source.support(axis, key);
         let group = axis == Axis::Rows && support.sort && support.text.is_some();
@@ -802,7 +802,7 @@ impl<R> GroupedMemory<R> {
             true => Placements::BOTH,
             false => Placements::default(),
         };
-        support.with_group(group).with_subtotals(subtotals)
+        (support.with_group(group).with_pivot(group)).with_subtotals(subtotals)
     }
 
     /// The aggregates a value over column `key` may take while the rows are
@@ -818,19 +818,25 @@ impl<R> GroupedMemory<R> {
     }
 
     /// The parts of `grouping` this source applies: the levels on the rows
-    /// it may group by (none on the columns), with their Subtotals, and the
-    /// values with aggregates it offers. Slicers are the base source's to
-    /// apply.
+    /// it may group by, those on the columns it may pivot by, with their
+    /// Subtotals, the values pseudo-level, and the values with aggregates
+    /// it offers. Slicers are the base source's to apply.
     fn applicable(&self, grouping: &Grouping) -> Grouping {
         let mut applied = grouping.clone();
-        applied.row_levels.retain(|l| match l {
-            Level::Field { field, subtotal } => {
-                let support = self.support(Axis::Rows, *field);
-                support.group && support.subtotals.allows(*subtotal)
-            }
-            _ => false,
-        });
-        applied.col_levels.clear();
+        for axis in Axis::ALL {
+            applied.levels_mut(axis).retain(|l| match l {
+                Level::Field { field, subtotal } => {
+                    let support = self.support(Axis::Rows, *field);
+                    let may = match axis {
+                        Axis::Rows => support.group,
+                        Axis::Cols => support.pivot,
+                    };
+                    may && support.subtotals.allows(*subtotal)
+                }
+                Level::Values => true,
+                _ => false,
+            });
+        }
         applied.values.retain(|v| match v.field {
             None => v.aggregate == "count" && v.params.is_empty(),
             Some(field) => (self.aggregates(Axis::Rows, field).iter())
@@ -844,13 +850,23 @@ impl<R> GroupedMemory<R> {
     /// the Change Notices: the rows' `Refiltered` whenever their grouping
     /// or the rows under it change, and `Collapsed` or `Expanded` when one
     /// group opens or closes.
+    ///
+    /// On a pivot the columns come from the data too: the base columns
+    /// leave, any change to the pivot columns comes as `Refiltered`, and
+    /// the column axis's Sort Spec orders them by a column level's field or
+    /// by the Grand Total row; other column sorts, filters and hidden Keys
+    /// are not applied.
     pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Viewed {
         let grouping = spec.grouping.as_ref().map(|g| self.applicable(g));
-        let levels: Vec<Key> = (grouping.iter())
-            .flat_map(|g| g.row_levels.iter().filter_map(|l| l.field_key()))
-            .collect();
+        let fields = |axis| -> Vec<Key> {
+            (grouping.iter())
+                .flat_map(|g| g.levels(axis).iter().filter_map(|l| l.field_key()))
+                .collect()
+        };
+        let (levels, columns) = (fields(Axis::Rows), fields(Axis::Cols));
+        let pivot = grouping.as_ref().is_some_and(Grouping::pivot);
         let values = match &grouping {
-            Some(g) if !levels.is_empty() => g.values.as_slice(),
+            Some(g) if !levels.is_empty() || pivot => g.values.as_slice(),
             _ => &[],
         };
         let slicers = grouping.as_ref().map_or(&[][..], |g| &g.slicers);
@@ -863,8 +879,11 @@ impl<R> GroupedMemory<R> {
         base.grouping = None;
         base.rows.filter.conditions =
             ConditionTree::All(leaves.iter().copied().chain(slicers).cloned().collect());
+        if pivot {
+            base.cols = AxisView::default();
+        }
         self.lifted = (levels.iter())
-            .filter(|f| !spec.cols.hidden.contains(f))
+            .filter(|f| !spec.cols.hidden.contains(f) && !pivot)
             .copied()
             .collect();
         base.cols.hidden.extend(&self.lifted);
@@ -878,6 +897,7 @@ impl<R> GroupedMemory<R> {
         base.rows.sort = SortSpec::new(sort);
 
         let was_grouped = self.layer.grouped(Axis::Rows);
+        let was_pivot = self.layer.pivot();
         let mut notices = self.source.view(rows, &base).unwrap_or_default();
         let rows_changed = notices.iter().any(|(a, _)| *a == Axis::Rows);
         let mut applied = self.source.view_spec();
@@ -912,7 +932,20 @@ impl<R> GroupedMemory<R> {
                 g.slicers = slicers;
                 g
             })
-            .filter(|g| !levels.is_empty() || !g.slicers.is_empty());
+            .filter(|g| !levels.is_empty() || pivot || !g.slicers.is_empty());
+        if pivot {
+            let sorts = |c: &&SortColumn| columns.contains(&c.key) || c.key == GRAND_TOTAL;
+            applied.cols = AxisView::default();
+            applied.cols.sort = SortSpec::new(
+                spec.cols
+                    .sort
+                    .columns()
+                    .iter()
+                    .filter(sorts)
+                    .copied()
+                    .collect(),
+            );
+        }
         let scope_before = self.layer.grouped(Axis::Rows);
         self.layer.request_view(applied.clone());
         let edited = std::mem::take(&mut self.edited);
@@ -928,20 +961,27 @@ impl<R> GroupedMemory<R> {
                 applied.grouping = viewed.applied.grouping;
             }
         }
-        let grouped = self.layer.grouped(Axis::Rows);
-        if grouped || was_grouped {
-            notices.retain(|(a, _)| *a != Axis::Rows);
-        }
-        if grouped {
-            notices.extend(layered.into_iter().filter(|(a, _)| *a == Axis::Rows));
-        } else if was_grouped {
-            let count = self.source.count(Axis::Rows);
-            notices.push((Axis::Rows, ChangeNotice::Refiltered(count)));
+        let now = Axis::ALL.map(|a| self.layer.grouped(a));
+        let was = [was_grouped, was_pivot];
+        for axis in Axis::ALL {
+            let i = axis.index();
+            if now[i] || was[i] {
+                notices.retain(|(a, _)| *a != axis);
+            }
+            if now[i] {
+                notices.extend(layered.iter().filter(|(a, _)| *a == axis).cloned());
+            } else if was[i] {
+                let count = self.source.count(axis);
+                notices.push((axis, ChangeNotice::Refiltered(count)));
+            }
         }
         notices.sort_by_key(|(a, _)| a.index());
         let mut totals = self.source.totals();
-        if grouped {
+        if now[0] {
             totals.rows = None;
+        }
+        if now[1] {
+            totals.cols = None;
         }
         self.spec = applied.clone();
         Viewed {
@@ -1375,6 +1415,17 @@ impl<R> GroupedMemory<R> {
         }
     }
 
+    /// Whether the table is a pivot now.
+    pub fn pivot(&self) -> bool {
+        self.layer.pivot()
+    }
+
+    /// The figure of a pivot's cell at the row `row` and the column `col`;
+    /// `None` where no rows meet.
+    pub fn cell(&self, row: Key, col: Key) -> Option<Figure> {
+        self.layer.cell(row, col).copied()
+    }
+
     /// This source with the host's `rows`, as [`binnacle_memory::pump`]
     /// needs it.
     pub fn over<'a>(&'a mut self, rows: &'a [R]) -> impl PumpSource + 'a {
@@ -1472,6 +1523,9 @@ impl<R> GroupedMemory<R> {
         let mut totals = self.source.totals();
         if self.layer.grouped(Axis::Rows) {
             totals.rows = None;
+        }
+        if self.layer.grouped(Axis::Cols) {
+            totals.cols = None;
         }
         totals
     }
