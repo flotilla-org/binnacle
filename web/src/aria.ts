@@ -2,11 +2,25 @@
 // window, kept beside the canvas for assistive technology. Elements are
 // reused by Key, so a cell keeps its `id` (and a screen reader its place)
 // while the table scrolls; only what changed is written.
+//
+// Rows grouped in outline form make it a `treegrid` (the WAI-ARIA treegrid
+// pattern): each row carries its level, a Group Item whether it is
+// expanded, and every row its place among its siblings, as the outline
+// gives it. In header form each level is a column of row headers, each
+// group one cell spanning its rows in view. Summary Items say their kind.
 
 import { AXES, type AxisName } from "./codes";
 import type { Content } from "./content";
 import { cellText, plainText, type RendererChoice } from "./renderer";
-import { cellState, itemSpan, type AxisSnapshot, type Snapshot, type StripItem } from "./snapshot";
+import {
+  cellState,
+  itemSpan,
+  type AxisSnapshot,
+  type HeaderSpan,
+  type KeyedOutline,
+  type Snapshot,
+  type StripItem,
+} from "./snapshot";
 
 export interface AriaOptions {
   /** The grid's accessible name. */
@@ -78,6 +92,34 @@ function visible(axis: AxisSnapshot): { item: StripItem; index: number }[] {
   return out.sort((a, b) => a.item.position - b.item.position);
 }
 
+/** What a Summary Item's row is called in place of "row"; a Leaf's is a row. */
+const KINDS: Record<Exclude<KeyedOutline["kind"], "leaf">, string> = {
+  group: "group row",
+  subtotal: "subtotal row",
+  grandTotal: "grand total row",
+};
+
+/**
+ * Header form's level columns as the visible rows meet them: for each row,
+ * the span covering it at each tier, up to the first tier none covers (the
+ * row's own header takes the rest of the band).
+ */
+function coverage(axis: AxisSnapshot, rows: { index: number }[], tiers: number): HeaderSpan[][] {
+  const at = new Map(rows.map(({ index }, r) => [index, r]));
+  const covers: (HeaderSpan | undefined)[][] = rows.map(() => []);
+  for (const span of axis.spans) {
+    if (span.tier >= tiers) continue;
+    for (let i = span.first; i <= span.last; i++) {
+      const r = at.get(i);
+      if (r !== undefined) covers[r]![span.tier] = span;
+    }
+  }
+  return covers.map((c) => {
+    const k = Array.from({ length: tiers }, (_, t) => c[t]).findIndex((span) => span === undefined);
+    return (k < 0 ? c : c.slice(0, k)) as HeaderSpan[];
+  });
+}
+
 /** A visible item's name among its axis's elements: its Key, or its Position while the Key is unknown. */
 const name = (item: StripItem) => (item.key === null ? `p${item.position}` : String(item.key));
 
@@ -133,6 +175,10 @@ export function createAria(options: AriaOptions): Aria {
 
   let headers = new Map<string, HTMLTableCellElement>();
   let rows = new Map<string, Row>();
+  /** The row band's column headers, one per tier where it crosses the corner. */
+  let corners: HTMLTableCellElement[] = [corner];
+  /** Header form's spanning cells, by tier and group Key. */
+  let spans = new Map<string, HTMLTableCellElement>();
   /** Each axis's applied Sort Spec last seen, `null` before the first frame. */
   const sorted: Record<AxisName, string | null> = { rows: null, cols: null };
   /** The applied rows filter last seen, `null` before the first frame. */
@@ -196,9 +242,27 @@ export function createAria(options: AriaOptions): Aria {
     const choose = options.renderer();
     const primary = s.appliedView.rows.sort[0];
     const primaryRow = s.appliedView.cols.sort[0];
+    const grouping = s.appliedView.grouping;
+    const form = grouping && grouping.rowLevels.length > 0 ? grouping.rowAxis.form : null;
+    const tree = form === "outline";
+    set(table, "role", tree ? "treegrid" : "grid");
+    // The row band's columns: one per level in header form, then the items' own headers.
+    const tiers = form === "header" ? Math.max(0, s.rows.corner.length - 1) : 0;
+    const band = tiers + 1;
     set(table, "aria-rowcount", String(s.rows.count + 1));
-    set(table, "aria-colcount", String(s.cols.count + 1));
+    set(table, "aria-colcount", String(s.cols.count + band));
     const cols = visible(s.cols);
+
+    corners = Array.from({ length: band }, (_, t) => {
+      const th = corners[t] ?? newCorner();
+      set(th, "aria-colindex", String(t + 1));
+      // A level column names its level; the items' own names every level in outline form.
+      const levels = s.rows.corner[t]?.levels ?? [];
+      text(th, levels.map((l) => content.levelName("rows", l.field)).join(", "));
+      const sorts = primary !== undefined && levels.some((l) => l.field === primary.key);
+      set(th, "aria-sort", sorts ? primary.direction : null);
+      return th;
+    });
 
     const nextHeaders = new Map<string, HTMLTableCellElement>();
     for (const { item } of cols) {
@@ -207,20 +271,59 @@ export function createAria(options: AriaOptions): Aria {
       nextHeaders.set(key, th);
       set(th, "role", "columnheader");
       set(th, "id", item.key === null ? null : `${prefix}-c${item.key}`);
-      set(th, "aria-colindex", String(item.position + 2));
+      set(th, "aria-colindex", String(item.position + 1 + band));
       // Only the most significant sort column, as ARIA asks; the live region names the rest.
       set(th, "aria-sort", primary && primary.key === item.key ? primary.direction : null);
       text(th, content.label("cols", item));
     }
     headers = nextHeaders;
-    arrange(headRow, [corner, ...headers.values()]);
+    arrange(headRow, [...corners, ...headers.values()]);
 
+    const shownRows = visible(s.rows);
+    const covers = coverage(s.rows, shownRows, tiers);
+    const nextSpans = new Map<string, HTMLTableCellElement>();
+    /** Per visible row, the spanning cell over it at each tier it is covered. */
+    const over: HTMLTableCellElement[][] = shownRows.map(() => []);
     const nextRows = new Map<string, Row>();
-    for (const { item: rowItem, index: i } of visible(s.rows)) {
+    for (const [r, { item: rowItem, index: i }] of shownRows.entries()) {
       const key = name(rowItem);
       const row = rows.get(key) ?? newRow();
       nextRows.set(key, row);
       set(row.el, "aria-rowindex", String(rowItem.position + 2));
+      set(row.el, "id", rowItem.key === null ? null : `${prefix}-row${rowItem.key}`);
+      const outline = rowItem.outline;
+      const opens = tree && outline?.kind === "group" && outline.open !== "cantOpen";
+      set(row.el, "aria-level", tree && outline ? String(outline.depth + 1) : null);
+      set(row.el, "aria-expanded", opens ? String(outline.open === "open") : null);
+      set(row.el, "aria-posinset", tree && outline?.set ? String(outline.set.index + 1) : null);
+      set(row.el, "aria-setsize", tree && outline?.set ? String(outline.set.size) : null);
+      set(row.el, "aria-roledescription", outline && outline.kind !== "leaf" ? KINDS[outline.kind] : null);
+
+      // A span's cell sits in the first row of each run of rows it covers, spanning the run.
+      const covered = covers[r]!;
+      const starts: HTMLTableCellElement[] = [];
+      covered.forEach((span, t) => {
+        const above = covers[r - 1]?.[t];
+        if (above?.key === span.key) {
+          over[r]![t] = over[r - 1]![t]!;
+          return;
+        }
+        let n = 1;
+        while (covers[r + n]?.[t]?.key === span.key) n++;
+        const id = `${t}:${span.key}`;
+        const fresh = nextSpans.has(id);
+        const th = (fresh ? undefined : spans.get(id)) ?? newSpan();
+        nextSpans.set(fresh ? `${id}:${r}` : id, th);
+        set(th, "id", fresh ? null : `${prefix}-t${t}-${span.key}`);
+        set(th, "aria-colindex", String(t + 1));
+        set(th, "rowspan", n > 1 ? String(n) : null);
+        set(th, "aria-expanded", String(span.open === "open"));
+        text(th, content.spanLabel("rows", span));
+        over[r]![t] = th;
+        starts.push(th);
+      });
+      set(row.header, "aria-colindex", String(covered.length + 1));
+      set(row.header, "colspan", band - covered.length > 1 ? String(band - covered.length) : null);
       set(row.header, "id", rowItem.key === null ? null : `${prefix}-r${rowItem.key}`);
       set(row.header, "aria-sort", primaryRow && primaryRow.key === rowItem.key ? primaryRow.direction : null);
       text(row.header, content.label("rows", rowItem));
@@ -232,7 +335,7 @@ export function createAria(options: AriaOptions): Aria {
         cells.set(colKey, cell);
         const { el } = cell;
         set(el, "id", rowItem.key === null || colItem.key === null ? null : `${prefix}-${rowItem.key}-${colItem.key}`);
-        set(el, "aria-colindex", String(colItem.position + 2));
+        set(el, "aria-colindex", String(colItem.position + 1 + band));
         set(el, "aria-selected", String(cellState(s, i, j).selected));
         const value = content.value(i, j);
         const failed = content.failed(i, j);
@@ -247,9 +350,10 @@ export function createAria(options: AriaOptions): Aria {
         }
       }
       row.cells = cells;
-      arrange(row.el, [row.header, ...[...cells.values()].map((c) => c.el)]);
+      arrange(row.el, [...starts, row.header, ...[...cells.values()].map((c) => c.el)]);
     }
     rows = nextRows;
+    spans = nextSpans;
     arrange(body, [...rows.values()].map((r) => r.el));
 
     // While an edit is open the textarea is the editor, read as itself and
@@ -257,8 +361,16 @@ export function createAria(options: AriaOptions): Aria {
     const { mode } = s;
     const row = mode.type === "Editing" ? mode.row : s.rows.focus?.key;
     const col = mode.type === "Editing" ? mode.col : s.cols.focus?.key;
-    const focused = row == null || col == null ? null : rows.get(String(row))?.cells.get(String(col));
-    set(options.focus, "aria-activedescendant", mode.type === "Editing" ? null : focused?.el.id || null);
+    const focusedRow = row == null ? undefined : rows.get(String(row));
+    // In the row band, focus is on a tree's row, or in header form on the level column's span over the row.
+    let focused: HTMLElement | undefined;
+    if (s.outlineFocused && focusedRow) {
+      const r = shownRows.findIndex(({ item }) => item.key === row);
+      focused = tree ? focusedRow.el : (over[r]?.[s.focusedTier] ?? focusedRow.header);
+    } else if (col != null) {
+      focused = focusedRow?.cells.get(String(col))?.el;
+    }
+    set(options.focus, "aria-activedescendant", mode.type === "Editing" ? null : focused?.id || null);
     const label = (axis: "rows" | "cols", key: bigint) => {
       const item = s[axis].strip.find((i) => i.key === key);
       return item ? content.label(axis, item) : "";
@@ -348,6 +460,18 @@ function newRow(): Row {
   header.setAttribute("aria-colindex", "1");
   el.append(header);
   return { el, header, cells: new Map() };
+}
+
+function newCorner(): HTMLTableCellElement {
+  const th = document.createElement("th");
+  th.setAttribute("role", "columnheader");
+  return th;
+}
+
+function newSpan(): HTMLTableCellElement {
+  const th = document.createElement("th");
+  th.setAttribute("role", "rowheader");
+  return th;
 }
 
 function newCell(): Cell {

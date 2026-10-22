@@ -147,8 +147,12 @@ Any item a grouped axis shows that the source computes rather than holds: a Grou
 _Avoid_: Aggregate row, synthetic row, virtual row
 
 **Outline**:
-Where an item sits in a grouped axis, given with each Window item: its kind (Leaf or which Summary Item), its depth, its ancestors' Keys from the outermost Group Item down to its parent, whether it is open, on a Group Item or Subtotal its level's field and value, its path (each ancestor's field and value, outermost first), and on a Group Item its span (how many items are shown under it, its Subtotal included; 0 while closed). The span is what a click on a Group Item's header selects; the path is what its Drill-Down Spec names.
+Where an item sits in a grouped axis, given with each Window item: its kind (Leaf or which Summary Item), its depth, its ancestors' Keys from the outermost Group Item down to its parent, whether it is open, on a Group Item or Subtotal its level's field and value, its path (each ancestor's field and value, outermost first), on a Group Item its span (how many items are shown under it, its Subtotal included; 0 while closed), and its Set Position. The span is what a click on a Group Item's header selects; the path is what its Drill-Down Spec names.
 _Avoid_: Tree info, hierarchy, node
+
+**Set Position**:
+An item's place among its parent's children, as a tree reads it: its index and the set's size. A group's children are its child groups or Leaves, with its Subtotal first or last where its level places one; the top's are the top groups, with a placed Grand Total first or last. It holds whether or not the parent is open, and in either form. The web's ARIA treegrid reads it as `aria-posinset` and `aria-setsize`. `SetPosition` in code.
+_Avoid_: Sibling index
 
 **Collapsed / Expanded**:
 The Change Notices for a group closing or opening: `Collapsed { at, n }` hides the `n` items from Position `at`, under the Group Item at `at - 1`, and `Expanded { at, n }` shows `n` there. Position-precise like Removed and Inserted, but the hidden items stay alive: their Size Overrides and pins are kept (the pins dormant), focus and range corners inside pull to the Group Item, picks inside are dropped, and the Scroll Anchor moves to the Group Item. In header form, where no Group Item stands before them, they pull instead to the Subtotal of the deepest group beside the hidden run, and the Scroll Anchor goes there too. A change touching several groups comes as Refiltered.
