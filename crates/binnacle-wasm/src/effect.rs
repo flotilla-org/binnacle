@@ -9,7 +9,7 @@ use binnacle_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::grouping::{WireDepth, WireForm, WireGrouping};
+use crate::grouping::{WireAggregateValue, WireDepth, WireForm, WireGrouping};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -424,6 +424,21 @@ pub enum WireViewEdit {
         axis: WireAxis,
         form: WireForm,
     },
+    /// `field` is `null` for the values pseudo-level.
+    RemoveLevel {
+        axis: WireAxis,
+        field: Option<u64>,
+    },
+    MoveLevel {
+        axis: WireAxis,
+        field: Option<u64>,
+    },
+    AddValue {
+        value: WireAggregateValue,
+    },
+    RemoveValue {
+        value: WireAggregateValue,
+    },
     Other,
 }
 
@@ -497,6 +512,20 @@ impl From<ViewEdit> for WireViewEdit {
             ViewEdit::SetForm { axis, form } => WireViewEdit::SetForm {
                 axis: axis.into(),
                 form: form.into(),
+            },
+            ViewEdit::RemoveLevel { axis, field } => WireViewEdit::RemoveLevel {
+                axis: axis.into(),
+                field: field.map(|k| k.0),
+            },
+            ViewEdit::MoveLevel { axis, field } => WireViewEdit::MoveLevel {
+                axis: axis.into(),
+                field: field.map(|k| k.0),
+            },
+            ViewEdit::AddValue { value } => WireViewEdit::AddValue {
+                value: (&value).into(),
+            },
+            ViewEdit::RemoveValue { value } => WireViewEdit::RemoveValue {
+                value: (&value).into(),
             },
             _ => WireViewEdit::Other,
         }

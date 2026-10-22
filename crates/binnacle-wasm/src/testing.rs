@@ -938,6 +938,20 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             form: Form::Header,
         },
+        ViewEdit::RemoveLevel {
+            axis: Axis::Rows,
+            field: Some(col),
+        },
+        ViewEdit::MoveLevel {
+            axis: Axis::Cols,
+            field: None,
+        },
+        ViewEdit::AddValue {
+            value: AggregateValue::of(col, "percentile").with_params(vec!["0.9".into()]),
+        },
+        ViewEdit::RemoveValue {
+            value: AggregateValue::count(),
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
