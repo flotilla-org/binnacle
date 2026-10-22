@@ -1143,7 +1143,7 @@ describe("fromRows's grouping", () => {
       const group = source.group(id)!;
       expect(outline).toEqual({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field, value: group.value } });
       expect(group.field).toBe(field);
-      expect(source.rows.label!(id, i)).toBe(`${group.value ?? "(blank)"} (${group.count})`);
+      expect(source.rows.groupLabel!(id, outline)).toBe(`${group.value ?? "(blank)"} (${group.count})`);
       expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: i });
       return { group: group.value, count: group.count };
     });

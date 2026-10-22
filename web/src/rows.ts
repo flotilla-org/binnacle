@@ -690,10 +690,9 @@ export function fromRows<R extends object>(
         Array.from(memory().unmatched(ROWS, Uint32Array.from(ids, (id) => (id < 0 ? rows.length : id))), (u) => u === 1),
       move: (ids, to) => move(ROWS, ids, to),
       movable: () => levels.length === 0 && memory().movable(ROWS),
-      label: (id, position) => {
-        const group = id < 0 ? groups.get(id) : undefined;
-        if (group) return `${group.value ?? "(blank)"} (${group.count})`;
-        return Number.isNaN(position) ? String(id) : String(position + 1);
+      groupLabel: (id) => {
+        const group = groups.get(id);
+        return group ? `${group.value ?? "(blank)"} (${group.count})` : "";
       },
     },
     cols: {

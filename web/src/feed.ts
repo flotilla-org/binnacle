@@ -47,6 +47,7 @@ import type {
   Totals,
   ViewSpec,
 } from "./source";
+import { summaryLabel } from "./source";
 import type { WebGrid } from "./wasm";
 
 export interface Feed<RowId = unknown, ColId = unknown> {
@@ -772,6 +773,21 @@ export function createFeed<RowId, ColId, V>(
     group: o.group ? { field: by.interner.key(o.group.field), value: o.group.value } : null,
   });
 
+  /** An outline by IDs, as `outlineKeys` took it; Keys the interners no longer know are left out. */
+  const outlineIds = <Id>(own: Axis<Id>, by: Axis<unknown>, o: KeyedOutline): Outline<Id, unknown> => {
+    const field = o.group ? by.interner.id(o.group.field) : undefined;
+    return {
+      kind: o.kind,
+      depth: o.depth,
+      open: o.open,
+      ancestors: o.ancestors.flatMap((key) => {
+        const id = own.interner.id(key);
+        return id === undefined ? [] : [id];
+      }),
+      group: o.group && field !== undefined ? { field, value: o.group.value } : null,
+    };
+  };
+
   const viewIds = (spec: KeyedViewSpec): ViewSpec<RowId, ColId> => ({
     rows: partKnownIds(cols, rows, spec.rows),
     cols: partKnownIds(rows, cols, spec.cols),
@@ -1074,6 +1090,11 @@ export function createFeed<RowId, ColId, V>(
     label: (axis, item) => {
       const { source: s, interner } = axes[axis];
       const id = item.key === null ? undefined : interner.id(item.key);
+      const outline = item.outline;
+      if (outline && outline.kind !== "leaf") {
+        const asked = id === undefined ? undefined : s.groupLabel?.(id, outlineIds(axes[axis], cross(axis), outline));
+        return asked ?? summaryLabel(outline);
+      }
       const label = id === undefined ? undefined : s.label?.(id, item.position);
       if (label !== undefined) return label;
       return axis === "rows" || id === undefined ? String(item.position + 1) : String(id);

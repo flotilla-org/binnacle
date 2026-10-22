@@ -477,6 +477,12 @@ export interface AxisMethods<Id, CrossId> {
   movable?(): boolean;
   /** Header text for an item; defaults to `String(id)` for columns and Position + 1 for rows. */
   label?(id: Id, position: number): string;
+  /**
+   * Header text for a Summary Item of a grouped axis, drawn after its
+   * indent and disclosure mark; defaults to its group's value, "(blank)"
+   * for a blank, and "Grand total".
+   */
+  groupLabel?(id: Id, outline: Outline<Id, CrossId>): string;
   /** The axis's IDs are its Positions, so the widget keeps no Key Interner for it. */
   identity?: "position";
 }
@@ -513,4 +519,11 @@ export interface TableSource<RowId, ColId, V = unknown> {
   find?: FindMethods<RowId, ColId>;
   /** Hands the source its sinks for Change Notices and news; returns how to detach. */
   attach?(sink: TableSink<RowId, ColId>): () => void;
+}
+
+/** A Summary Item's header text when the source gives none: its group's value, "(blank)" for a blank, or "Grand total". */
+export function summaryLabel(outline: Outline<unknown, unknown>): string {
+  if (outline.kind === "grandTotal") return "Grand total";
+  const value = outline.group?.value;
+  return value === undefined ? "" : (value ?? "(blank)");
 }
