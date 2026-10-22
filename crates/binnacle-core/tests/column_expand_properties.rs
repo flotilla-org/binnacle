@@ -191,7 +191,6 @@ fn collapsing_then_expanding_a_column_group_restores_focus_sizes_and_pins(tc: Te
                 .map(|i| i.key)
                 .collect()
         });
-        drop(snap);
         let kept = edges.map(|edge| s.grid.pins(Axis::Cols, edge).collect::<Vec<Key>>());
         (kept, drawn)
     };
