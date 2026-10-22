@@ -1,7 +1,7 @@
 // The header bands: column headers along the top, row numbers down the left,
 // and the corner where they meet.
 
-import type { AxisName } from "../codes";
+import { VALUES_FIELD, type AxisName } from "../codes";
 import { itemSpan, type HeaderPlacement, type KeyedOutline, type Rect, type Snapshot, type SortDirection } from "../snapshot";
 import { PAD, clip, summaryStyle, type PaintContext } from "./context";
 import { markBeat, paintShimmer } from "./pending";
@@ -258,8 +258,10 @@ export function paintRowNumbers(p: PaintContext): void {
     // In header form the spans stand for the groups: a Summary Item's label
     // starts where its header does, past them.
     if (header && outline && outline.kind !== "leaf") {
-      // A closed group's Subtotal sits under its span, which names it.
+      // A closed group's Subtotal sits under its span, which names it; one
+      // of a value names the value.
       if (!underOwnSpan(s, h.position, outline)) paintSummary(p, h, text, color, y);
+      else if (outline.group?.field === VALUES_FIELD) paintSummary(p, h, outline.group.value ?? "", color, y);
     }
     else if (outline && !header) paintOutline(p, outline, text, color, y, room, p.markPending(h.key));
     else {

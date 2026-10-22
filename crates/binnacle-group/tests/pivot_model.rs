@@ -7,7 +7,7 @@
 
 use binnacle_core::{
     AggregateValue, Axis, ChangeNotice, Depth, Expand, Form, Grouping, ItemKind, Key, Level,
-    OpenState, Outline, Placement, VALUES_FIELD, Value, ViewSpec,
+    Located, OpenState, Outline, Placement, VALUES_FIELD, Value, ViewSpec,
 };
 use binnacle_group::{Answer, Batch, Body, GroupRow, GroupingLayer, Path, Want};
 use hegel::TestCase;
@@ -68,7 +68,7 @@ fn placement(tc: &TestCase) -> Placement {
 /// order; one value or two; the values pseudo-level anywhere on either axis
 /// (or left out, which the layer puts innermost on the columns when there
 /// are two values); placements and forms of every kind; rows open to any
-/// depth, columns all open.
+/// depth (or all), columns all open.
 #[hegel::composite]
 fn pivot(tc: &TestCase) -> Grouping {
     let order = tc.draw(gs::permutations(vec![0usize, 1, 2]));
@@ -105,10 +105,11 @@ fn pivot(tc: &TestCase) -> Grouping {
             false => Form::Outline,
         };
     }
-    if tc.draw(gs::booleans()) {
-        let depth = tc.draw(gs::integers::<u32>().max_value(3));
-        grouping.rows.expand = Expand::to(Depth::Levels(depth));
-    }
+    let depth = tc.draw(gs::integers::<u32>().max_value(4));
+    grouping.rows.expand = Expand::to(match depth {
+        4 => Depth::All,
+        n => Depth::Levels(n),
+    });
     grouping
 }
 
@@ -117,6 +118,9 @@ fn pivot(tc: &TestCase) -> Grouping {
 enum Item {
     Group(Path),
     Subtotal(Path),
+    /// The Subtotal of a group above the values pseudo-level for one
+    /// value: the group's path, then the value's step.
+    ValueSubtotal(Path),
     GrandTotal,
     ValueTotal(String),
 }
@@ -169,8 +173,10 @@ fn steps_under(rows: &[&Row], step: Option<Key>, values: &[String]) -> Vec<(Key,
 /// group's Group Item (in outline form) and Subtotals around what is under
 /// it, a closed one alone (in header form, its Subtotal), the innermost
 /// groups items that can't open, and the Grand Total (one per value where
-/// the values are on the axis) where it goes. The groups at `except`
-/// are in the opposite state to the one their level's depth gives them.
+/// the values are on the axis) where it goes. A group above the values
+/// pseudo-level has one Subtotal per value, and closed shows them after its
+/// Group Item in outline form too. The groups at `except` are in the
+/// opposite state to the one their level's depth gives them.
 fn model(rows: &[Row], g: &Grouping, axis: Axis, except: &[Path]) -> Vec<Described> {
     let steps: Vec<Option<Key>> = g.levels(axis).iter().map(Level::field_key).collect();
     let subtotals: Vec<Placement> = (g.levels(axis).iter())
@@ -208,16 +214,28 @@ fn model(rows: &[Row], g: &Grouping, axis: Axis, except: &[Path]) -> Vec<Describ
             };
             let open = children > 0 && expand.opens_level(depth as u32) != except.contains(&child);
             let group = Some((field, value.clone()));
-            let subtotal = Described {
-                item: Item::Subtotal(child.clone()),
+            let split = !values.is_empty() && steps[depth + 1..].contains(&None);
+            let subtotal = |item, group| Described {
+                item,
                 kind: ItemKind::Subtotal,
                 depth: depth as u32 + 1,
                 open: OpenState::CantOpen,
                 ancestors: prefixes(&child),
-                group: group.clone(),
+                group,
+            };
+            let totals: Vec<Described> = match split {
+                false => vec![subtotal(Item::Subtotal(child.clone()), group.clone())],
+                true => (values.iter())
+                    .map(|v| {
+                        let step = (VALUES_FIELD, Value::Text(v.clone()));
+                        let mut path = child.clone();
+                        path.push(step.clone());
+                        subtotal(Item::ValueSubtotal(path), Some(step))
+                    })
+                    .collect(),
             };
             if header && children > 0 && !open {
-                out.push(subtotal);
+                out.extend(totals);
                 continue;
             }
             if !header || children == 0 {
@@ -235,16 +253,19 @@ fn model(rows: &[Row], g: &Grouping, axis: Axis, except: &[Path]) -> Vec<Describ
                 });
             }
             if !open {
+                if split && children > 0 {
+                    out.extend(totals);
+                }
                 continue;
             }
             if subtotals[depth] == Placement::Before {
-                out.push(subtotal.clone());
+                out.extend(totals.clone());
             }
             walk(
                 &under, child, steps, subtotals, values, header, expand, except, out,
             );
             if subtotals[depth] == Placement::After {
-                out.push(subtotal);
+                out.extend(totals);
             }
         }
     }
@@ -303,20 +324,24 @@ fn item_path(item: &Item) -> (Path, Option<String>) {
         })
     };
     match item {
-        Item::Group(p) | Item::Subtotal(p) => (p.clone(), value_of(p)),
+        Item::Group(p) | Item::Subtotal(p) | Item::ValueSubtotal(p) => (p.clone(), value_of(p)),
         Item::GrandTotal => (Vec::new(), None),
         Item::ValueTotal(v) => (Vec::new(), Some(v.clone())),
     }
 }
 
 /// The model's figure for the cell of `row` and `col`: the value either
-/// shows (the first if neither) aggregated over the rows under both paths.
-/// A cell under no rows has none, unless a Grand Total heads either axis.
+/// shows aggregated over the rows under both paths. Where neither shows
+/// one, the only value, unless an axis splits the values: a group above
+/// them has no figure of its own. A cell under no rows has none, unless a
+/// Grand Total heads either axis.
 fn cell(rows: &[Row], g: &Grouping, row: &Item, col: &Item) -> Option<u64> {
     let (rp, rv) = item_path(row);
     let (cp, cv) = item_path(col);
+    let split = g.splits_values(Axis::Rows) || g.splits_values(Axis::Cols);
     let index = match rv.or(cv) {
         Some(v) => g.value_of(&v).unwrap().0,
+        None if split => return None,
         None => 0,
     };
     let under: Vec<&Row> = (rows.iter())
@@ -468,6 +493,10 @@ fn describe(layer: &GroupingLayer<u64>, g: &Grouping, key: Key, outline: &Outlin
     let path = |k: Key| layer.summary(k).map(|s| s.path.clone()).unwrap();
     let item = match (outline.kind, &outline.group) {
         (ItemKind::Group, _) => Item::Group(path(key)),
+        // A value's Subtotal sits a level above its path's end.
+        (ItemKind::Subtotal, _) if path(key).len() == outline.depth as usize + 1 => {
+            Item::ValueSubtotal(path(key))
+        }
         (ItemKind::Subtotal, _) => Item::Subtotal(path(key)),
         (ItemKind::GrandTotal, Some(group)) => {
             let Value::Text(id) = &group.value else {
@@ -508,8 +537,12 @@ struct Settled {
 }
 
 fn settle(tc: &TestCase) -> Settled {
-    let rows = tc.draw(rows());
     let grouping = tc.draw(pivot());
+    settle_with(tc, grouping)
+}
+
+fn settle_with(tc: &TestCase, grouping: Grouping) -> Settled {
+    let rows = tc.draw(rows());
     let mut fake = Fake {
         rows: rows.clone(),
         late: Vec::new(),
@@ -548,12 +581,61 @@ fn items(s: &mut Settled) -> [Vec<(Key, Described)>; 2] {
     })
 }
 
+/// Each of `items` on `axis` is found where it sits.
+fn assert_located(layer: &mut GroupingLayer<u64>, axis: Axis, items: &[(Key, Described)]) {
+    for (at, (key, d)) in items.iter().enumerate() {
+        assert_eq!(
+            layer.locate(axis, *key),
+            Some(Located::Found(at as u64)),
+            "{axis:?} {:?}",
+            d.item
+        );
+    }
+}
+
 #[hegel::test(test_cases = 300)]
 fn a_pivot_shows_the_items_a_whole_table_pivot_shows(tc: TestCase) {
     let mut s = settle(&tc);
     for (axis, got) in Axis::ALL.into_iter().zip(items(&mut s)) {
         let got: Vec<Described> = got.into_iter().map(|(_, d)| d).collect();
         assert_eq!(got, model(&s.rows, &s.grouping, axis, &[]), "{axis:?}");
+    }
+}
+
+/// Rows closed above the values pseudo-level show a Subtotal of each value,
+/// after the Group Item in outline form, and no figure on the Group Item.
+#[hegel::test(test_cases = 200)]
+fn rows_closed_above_the_values_show_a_subtotal_of_each(tc: TestCase) {
+    let mut grouping = tc.draw(pivot());
+    for axis in Axis::ALL {
+        grouping.levels_mut(axis).retain(|l| *l != Level::Values);
+    }
+    tc.assume(!grouping.row_levels.is_empty());
+    let at = tc.draw(
+        gs::integers::<usize>()
+            .min_value(1)
+            .max_value(grouping.row_levels.len()),
+    );
+    grouping.row_levels.insert(at, Level::Values);
+    let depth = tc.draw(gs::integers::<u32>().max_value(at as u32 - 1));
+    grouping.rows.expand = Expand::to(Depth::Levels(depth));
+    let mut s = settle_with(&tc, grouping);
+    let [rows, cols] = items(&mut s);
+    let got: Vec<Described> = rows.iter().map(|(_, d)| d.clone()).collect();
+    assert_eq!(got, model(&s.rows, &s.grouping, Axis::Rows, &[]));
+    for (rk, r) in &rows {
+        for (ck, c) in &cols {
+            let want = cell(&s.rows, &s.grouping, &r.item, &c.item);
+            assert_eq!(s.layer.cell(*rk, *ck).copied(), want);
+        }
+    }
+}
+
+#[hegel::test(test_cases = 200)]
+fn each_item_of_a_pivot_is_found_where_it_sits(tc: TestCase) {
+    let mut s = settle(&tc);
+    for (axis, got) in Axis::ALL.into_iter().zip(items(&mut s)) {
+        assert_located(&mut s.layer, axis, &got);
     }
 }
 
@@ -697,19 +779,27 @@ fn opening_and_closing_column_groups_says_where_with_collapsed_or_expanded(tc: T
         }
         let got = items(&mut s);
         assert_eq!(got[0], rows_before, "the rows stay as they are");
+        assert_located(&mut s.layer, Axis::Cols, &got[1]);
         let after: Vec<Item> = got[1].iter().map(|(_, d)| d.item.clone()).collect();
         let want = model(&s.rows, &s.grouping, Axis::Cols, &except);
         let described: Vec<Described> = got[1].iter().map(|(_, d)| d.clone()).collect();
         assert_eq!(described, want);
+        // Where a closed group shows Subtotals (in header form, or above
+        // the values pseudo-level), they stand in for what it hid only if
+        // placed while open too.
         let header = s.grouping.cols.form == Form::Header;
-        let seen = toggled.is_some_and(|p| match header {
-            false => before.contains(&Item::Group(p)),
-            true => {
-                let placed = match &s.grouping.col_levels[p.len() - 1] {
-                    Level::Field { subtotal, .. } => *subtotal != Placement::Off,
-                    _ => false,
-                };
-                placed && before.iter().any(|i| item_path(i).0.starts_with(&p))
+        let seen = toggled.is_some_and(|p| {
+            let levels = &s.grouping.col_levels;
+            let stands_in = header || levels[p.len()..].contains(&Level::Values);
+            match stands_in {
+                false => before.contains(&Item::Group(p)),
+                true => {
+                    let placed = match &levels[p.len() - 1] {
+                        Level::Field { subtotal, .. } => *subtotal != Placement::Off,
+                        _ => false,
+                    };
+                    placed && before.iter().any(|i| item_path(i).0.starts_with(&p))
+                }
             }
         });
         assert!(notices.iter().all(|(a, _)| *a == Axis::Cols), "{notices:?}");

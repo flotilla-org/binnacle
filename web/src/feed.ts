@@ -1172,8 +1172,12 @@ export function createFeed<RowId, ColId, V>(
       const id = axes[axis].interner.id(span.key);
       const asked = id === undefined ? undefined : axes[axis].source.spanLabel?.(id, span.tier);
       if (asked !== undefined) return asked;
-      // A Subtotal of the group in view names its value.
-      const total = shown?.[axis].strip.find((i) => i.outline?.kind === "subtotal" && i.outline.ancestors.at(-1) === span.key);
+      // A Subtotal of the group in view names its value, unless it is one
+      // of a value's.
+      const total = shown?.[axis].strip.find(
+        (i) =>
+          i.outline?.kind === "subtotal" && i.outline.ancestors.at(-1) === span.key && i.outline.group?.field !== VALUES_FIELD,
+      );
       const value = total?.outline?.group?.value;
       return value === undefined ? "" : (value ?? "(blank)");
     },

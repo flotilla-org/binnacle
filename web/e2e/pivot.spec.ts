@@ -16,6 +16,9 @@ const COLUMN = 112 + 1;
 const ROWS_BAND = 180;
 
 const status = (page: Page) => page.locator("#status");
+/** A column header by its accessible name. */
+const header = (page: Page, name: string) =>
+  page.locator(".binnacle-aria").getByRole("columnheader", { name, exact: true });
 
 const regions = new Set(quarterShipments.map((s) => s.region)).size;
 const ports = new Set(quarterShipments.map((s) => `${s.region}/${s.port}`)).size;
@@ -89,7 +92,7 @@ test("focus moves along a row's quarters, each pivot column by its own ID", asyn
   await expect(status(page)).toContainText(`focus ${first}`);
 });
 
-test("Up from the first row enters the quarters, where Left steps out to Q1 and closes it to its total column", async ({
+test("Up from the first row enters the quarters, where Left steps out to Q1 and closes it to its total columns", async ({
   page,
   browserName,
 }) => {
@@ -98,13 +101,14 @@ test("Up from the first row enters the quarters, where Left steps out to Q1 and 
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("ArrowLeft");
   await page.keyboard.press("ArrowLeft");
-  // Q1's two value columns give way to its one total column.
-  await expect(status(page)).toContainText(`of ${quarters * 2 + 1}`);
+  // Q1's two value columns give way to its total of each value.
+  await expect(header(page, "Q1 count")).toBeVisible();
+  await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
   if (browserName === "chromium") {
     await expect(page.locator("#grid")).toHaveScreenshot("pivot-q1-closed.png", { scale: "device" });
   }
   await page.keyboard.press("Enter");
-  await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
+  await expect(header(page, "Q1 count")).toHaveCount(0);
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowRight");
   await expect(status(page)).toContainText("focus row 1, column 2");
@@ -114,7 +118,7 @@ test("a click on a quarter's mark closes it and another opens it", async ({ page
   const b = (await page.locator(".binnacle-layer").boundingBox())!;
   const mark = { x: b.x + ROWS_BAND + 10, y: b.y + 14 };
   await page.mouse.click(mark.x, mark.y);
-  await expect(status(page)).toContainText(`of ${quarters * 2 + 1}`);
+  await expect(header(page, "Q1 count")).toBeVisible();
   await page.mouse.click(mark.x, mark.y);
-  await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
+  await expect(header(page, "Q1 count")).toHaveCount(0);
 });

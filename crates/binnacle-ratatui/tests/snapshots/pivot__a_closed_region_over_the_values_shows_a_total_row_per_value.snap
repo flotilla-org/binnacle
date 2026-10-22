@@ -1,0 +1,13 @@
+---
+source: crates/binnacle-ratatui/tests/pivot.rs
+assertion_line: 243
+expression: text(&drawn)
+---
+|    quarter → Q1       │Q2       │                            All       |
+|region › Σ val         │         │                                      |
+|▸ North                                                      ║         █|
+|    North sum…9         4                                    ║13       █|
+|    North cou…2         1                                    ║3        █|
+|▾ South                                                      ║         │|
+|              ═══════════════════════════════════════════════╬═════════│|
+|Grand total s…25        6                                    ║31       │|

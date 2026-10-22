@@ -16,7 +16,7 @@ use std::cmp::Ordering;
 use binnacle_core::{
     Aggregate, AggregateValue, Axis, ChangeNotice, Comparison, Condition, Expand, FilterSpec,
     FindDirection, FindQuery, Grouping, ItemKind, Key, Level, OpenState, Placement, Placements,
-    Scalar, SortColumn, SortDirection, SortSpec, TextQuery, Value, ViewSpec,
+    Scalar, SortColumn, SortDirection, SortSpec, TextQuery, VALUES_FIELD, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::MemorySource;
@@ -1120,7 +1120,7 @@ fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
 }
 
 #[test]
-fn closing_a_pivot_column_group_shows_its_total_column_with_collapsed() {
+fn closing_a_pivot_column_group_shows_its_total_columns_with_collapsed() {
     let rows: Vec<Record> = vec![
         [Some(1), Some(5), Some(10)],
         [Some(2), Some(6), Some(20)],
@@ -1143,7 +1143,11 @@ fn closing_a_pivot_column_group_shows_its_total_column_with_collapsed() {
         source.window(&rows, Axis::Cols, 0..n)
     };
     let before = cols(&mut source);
-    assert_eq!(before.keys.len(), 6, "each port's count, sum and total");
+    assert_eq!(
+        before.keys.len(),
+        8,
+        "each port's count and sum, then a total of each"
+    );
     let five = before.outlines.as_ref().unwrap()[0].ancestors[0];
 
     grouping.cols.expand = Expand::default().with(0, five, false);
@@ -1153,16 +1157,26 @@ fn closing_a_pivot_column_group_shows_its_total_column_with_collapsed() {
         vec![(Axis::Cols, ChangeNotice::Collapsed { at: 0, n: 2 })]
     );
     let after = cols(&mut source);
-    assert_eq!(after.keys[..], before.keys[2..], "5's total column stays");
-    let outline = &after.outlines.unwrap()[0];
-    assert_eq!(
-        (outline.kind, outline.ancestors.as_slice()),
-        (ItemKind::Subtotal, [five].as_slice())
-    );
+    assert_eq!(after.keys[..], before.keys[2..], "5's total columns stay");
+    let outlines = after.outlines.unwrap();
+    for (outline, id) in outlines[..2].iter().zip(["count()", "sum(2)"]) {
+        assert_eq!(
+            (outline.kind, outline.ancestors.as_slice()),
+            (ItemKind::Subtotal, [five].as_slice())
+        );
+        let group = outline.group.as_ref().unwrap();
+        assert_eq!(
+            (group.field, &group.value),
+            (VALUES_FIELD, &Value::Text(id.into()))
+        );
+    }
     let one = source.window(&rows, Axis::Rows, 0..1).keys[0];
     assert_eq!(
-        source.cell(one, after.keys[0]),
-        Some(Figure::Count(2)),
-        "the closed group's first value over its rows"
+        (
+            source.cell(one, after.keys[0]),
+            source.cell(one, after.keys[1])
+        ),
+        (Some(Figure::Count(2)), Some(Figure::Number(40.0))),
+        "each of the closed group's values over its rows"
     );
 }
