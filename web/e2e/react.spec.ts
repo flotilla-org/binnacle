@@ -110,3 +110,21 @@ test("onCommit and editor props reach the widget: an edit commits through the la
   await expect(page.locator("#committed")).toHaveText('port of 0 = "Bergen" (edit 3)');
   expect(await tagged(page)).toBe(true);
 });
+
+test("typing straight after a commit and a move, before the next frame, keeps every character", async ({ page }) => {
+  const box = await page.locator(".binnacle-layer").boundingBox();
+  await page.mouse.click(box!.x + column(1), box!.y + HEADER + ROW / 2);
+  await page.keyboard.type("Zed");
+  // The commit drops the Keys in view until a frame fetches them again; the
+  // commit, the move and the typing all come in one task, before that frame.
+  await page.locator(".binnacle-input").evaluate((textarea: HTMLTextAreaElement) => {
+    const key = (key: string) => textarea.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    key("Enter");
+    key("ArrowUp");
+    textarea.value = "Ahoy";
+    textarea.dispatchEvent(new InputEvent("input", { data: "Ahoy", inputType: "insertText", bubbles: true }));
+    key("Enter");
+  });
+  // React has not rendered between the two commits, so the demo counts edit 1 twice.
+  await expect(page.locator("#committed")).toHaveText(/^name of 0 = "Ahoy"/);
+});
