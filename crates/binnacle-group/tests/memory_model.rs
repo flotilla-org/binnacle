@@ -5,13 +5,18 @@
 //! the aggregate of the sorted column, or by their value when sorting by
 //! their own column, else in ascending order of their value (blanks last);
 //! Leaves in source order or the user's sort within their group. Hidden
-//! rows are left out, and the grouped columns leave the columns.
+//! rows are left out, and the grouped columns leave the columns. A slicer
+//! on any column, hidden or not, leaves rows out before aggregating; a
+//! comparison in the rows' filter on a column a value aggregates leaves out
+//! the groups whose figure fails it (`HAVING`), and on any other column the
+//! Leaves that fail it, before aggregating.
 
 use std::cmp::Ordering;
 
 use binnacle_core::{
-    AggregateValue, Axis, ChangeNotice, Expand, Grouping, ItemKind, Key, Level, OpenState,
-    Placement, SortColumn, SortDirection, SortSpec, Value, ViewSpec,
+    Aggregate, AggregateValue, Axis, ChangeNotice, Comparison, Condition, Expand, FilterSpec,
+    Grouping, ItemKind, Key, Level, OpenState, Placement, Placements, Scalar, SortColumn,
+    SortDirection, SortSpec, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::MemorySource;
@@ -64,6 +69,37 @@ fn order<T: PartialOrd>(a: Option<T>, b: Option<T>, direction: SortDirection) ->
     }
 }
 
+/// A comparison as the model reads it: a column's value (or a figure) at
+/// least, or less than, a threshold; with `not` the other way. A blank
+/// never passes, so `not` keeps it.
+#[derive(Clone, Copy, Debug)]
+struct Compare {
+    column: usize,
+    at_least: bool,
+    threshold: i64,
+    not: bool,
+}
+
+impl Compare {
+    fn passes(&self, n: Option<f64>) -> bool {
+        let t = self.threshold as f64;
+        let passed = n.is_some_and(|n| match self.at_least {
+            true => n >= t,
+            false => n < t,
+        });
+        passed != self.not
+    }
+
+    fn condition(&self) -> Condition {
+        let t = Scalar::Number(self.threshold as f64);
+        let comparison = match self.at_least {
+            true => Comparison::AtLeast(t),
+            false => Comparison::Less(t),
+        };
+        Condition::compare(Key(self.column as u64), comparison).not(self.not)
+    }
+}
+
 /// What a grouping asks for, as the model reads it.
 #[derive(Clone, Debug)]
 struct Asked {
@@ -73,6 +109,9 @@ struct Asked {
     /// The column summed, and the one counted distinctly.
     sum: usize,
     distinct: usize,
+    slicer: Option<Compare>,
+    /// A comparison in the rows' filter.
+    filter: Option<Compare>,
 }
 
 impl Asked {
@@ -94,7 +133,15 @@ impl Asked {
             .collect();
         grouping.values = self.values();
         grouping.rows.grand_total = self.grand_total;
+        grouping.slicers = self.slicer.iter().map(Compare::condition).collect();
         grouping
+    }
+
+    /// The value whose figure the filter's comparison reads, if it is on a
+    /// column a value aggregates.
+    fn having(&self) -> Option<usize> {
+        let f = self.filter?;
+        (self.values().iter()).position(|v| v.field == Some(Key(f.column as u64)))
     }
 }
 
@@ -127,8 +174,14 @@ fn figures(rows: &[Record], kept: &[usize], asked: &Asked) -> Vec<Figure> {
 
 /// The model: the grouped items as the one sort rule orders them.
 fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec<Item> {
+    let number = |r: usize, c: Compare| rows[r][c.column].map(|n| n as f64);
     let kept: Vec<usize> = (0..rows.len())
         .filter(|&i| !hidden.contains(&Key(i as u64)))
+        .filter(|&i| asked.slicer.is_none_or(|c| c.passes(number(i, c))))
+        .filter(|&i| match (asked.filter, asked.having()) {
+            (Some(c), None) => c.passes(number(i, c)),
+            _ => true,
+        })
         .collect();
     let levels: Vec<usize> = asked.levels.iter().map(|l| l.0).collect();
     fn walk(
@@ -191,6 +244,16 @@ fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec
             let mut path = path.clone();
             path.push(text(value));
             let figures = figures(rows, &members, asked);
+            if let (Some(c), Some(i)) = (asked.filter, asked.having()) {
+                let n = match figures[i] {
+                    Figure::Count(n) => Some(n as f64),
+                    Figure::Number(n) => Some(n),
+                    Figure::Blank => None,
+                };
+                if !c.passes(n) {
+                    continue;
+                }
+            }
             out.push(Item::Summary(
                 ItemKind::Group,
                 path.clone(),
@@ -238,6 +301,17 @@ fn column(tc: &TestCase) -> usize {
 }
 
 #[hegel::composite]
+fn compare(tc: &TestCase) -> Compare {
+    Compare {
+        column: tc.draw(column()),
+        at_least: tc.draw(gs::booleans()),
+        // Near the small values, and the small sums and counts of them.
+        threshold: tc.draw(gs::integers::<i64>().min_value(-4).max_value(30)),
+        not: tc.draw(gs::booleans()),
+    }
+}
+
+#[hegel::composite]
 fn asked(tc: &TestCase) -> Asked {
     let outer = tc.draw(column());
     let mut levels = vec![(outer, tc.draw(placement()))];
@@ -250,6 +324,8 @@ fn asked(tc: &TestCase) -> Asked {
         grand_total: tc.draw(placement()),
         sum: tc.draw(column()),
         distinct: tc.draw(column()),
+        slicer: tc.draw(gs::optional(compare())),
+        filter: tc.draw(gs::optional(compare())),
     }
 }
 
@@ -273,9 +349,20 @@ fn spec(tc: &TestCase, rows: usize) -> (Asked, ViewSpec) {
     let sort = tc.draw(sort());
     let hidden =
         tc.draw(gs::vecs(gs::integers::<u64>().max_value(rows as u64).map(Key)).max_size(4));
+    let filter: Vec<Condition> = asked.filter.iter().map(Compare::condition).collect();
+    // The slicer's column is hidden now and then: it slices all the same.
+    let hidden_cols: Vec<Key> = match (asked.slicer, tc.draw(gs::booleans())) {
+        (Some(c), true) => vec![Key(c.column as u64)],
+        _ => Vec::new(),
+    };
     let spec = ViewSpec::default()
         .with_sort(Axis::Rows, sort)
         .with_hidden(Axis::Rows, hidden)
+        .with_filter(
+            Axis::Rows,
+            FilterSpec::default().with_conditions(filter.into()),
+        )
+        .with_hidden(Axis::Cols, hidden_cols)
         .with_grouping(Some(asked.grouping()));
     (asked, spec)
 }
@@ -304,12 +391,13 @@ fn grouped_rows_match_a_whole_table_grouping(tc: TestCase) {
             .contains(&(Axis::Rows, ChangeNotice::Refiltered(count)))
     );
     assert_eq!(viewed.applied.grouping, spec.grouping);
+    assert_eq!(viewed.applied.rows.filter, spec.rows.filter);
     assert_eq!(
         viewed.applied.rows.sort, spec.rows.sort,
         "the levels' sort is not added"
     );
     assert!(
-        viewed.applied.cols.hidden.is_empty(),
+        (viewed.applied.cols.hidden.iter()).all(|k| spec.cols.hidden.contains(k)),
         "the grouped columns are not written in"
     );
 
@@ -330,10 +418,11 @@ fn grouped_rows_match_a_whole_table_grouping(tc: TestCase) {
         .collect();
     assert_eq!(got, want);
 
-    // The grouped columns leave the columns.
+    // The grouped columns leave the columns, with the hidden ones.
     let cols = source.window(&rows, Axis::Cols, 0..COLS as u64).keys;
     let want_cols: Vec<Key> = (0..COLS)
         .filter(|c| !asked.levels.iter().any(|l| l.0 == *c))
+        .filter(|&c| !spec.cols.hidden.contains(&Key(c as u64)))
         .map(|c| Key(c as u64))
         .collect();
     assert_eq!(cols, want_cols);
@@ -362,9 +451,10 @@ fn ungrouping_brings_back_the_plain_rows_and_the_column(tc: TestCase) {
     let mut fresh = self::source(rows.len());
     fresh.view(&rows, &plain);
     assert_eq!(window.keys, fresh.window(&rows, Axis::Rows, 0..count).keys);
+    let shown = (0..COLS as u64).filter(|c| !spec.cols.hidden.contains(&Key(*c)));
     assert_eq!(
         source.window(&rows, Axis::Cols, 0..COLS as u64).keys.len(),
-        COLS
+        shown.count()
     );
 }
 
@@ -453,4 +543,113 @@ fn closing_a_group_hides_its_leaves_with_collapsed_and_regrouping_prunes_it() {
         viewed.applied.grouping.unwrap().rows.expand,
         Expand::default()
     );
+}
+
+/// Columns 0 and 2 hold numbers; column 1 has no closure, so the rows
+/// neither group nor slice by it.
+fn partial(rows: usize) -> GroupedMemory<Record> {
+    GroupedMemory::new(
+        MemorySource::<Record>::new(rows, COLS)
+            .i64_column(Key(0), |r: &Record| r[0])
+            .i64_column(Key(2), |r: &Record| r[2]),
+    )
+}
+
+#[test]
+fn the_source_declares_what_it_groups_and_aggregates_per_column() {
+    let source = partial(1);
+    let support = source.support(Axis::Rows, Key(0));
+    assert!(support.group && !support.pivot && !support.native);
+    assert_eq!(support.subtotals, Placements::BOTH);
+    assert!(!source.support(Axis::Rows, Key(1)).group);
+    assert_eq!(source.aggregates(Axis::Rows, Key(0)), Aggregate::numbers());
+    assert_eq!(source.aggregates(Axis::Rows, Key(1)), vec![]);
+    assert_eq!(source.aggregates(Axis::Cols, Key(0)), vec![]);
+    let texts = GroupedMemory::new(
+        MemorySource::<Record>::new(1, 1)
+            .text_column(Key(0), |r: &Record| r[0].map(|n| n.to_string().into())),
+    );
+    assert_eq!(texts.aggregates(Axis::Rows, Key(0)), Aggregate::counts());
+}
+
+#[test]
+fn a_grouping_beyond_support_is_applied_as_far_as_it_can_be() {
+    let rows: Vec<Record> = vec![
+        [Some(1), Some(5), Some(1)],
+        [Some(2), Some(6), Some(0)],
+        [Some(1), Some(5), Some(3)],
+    ];
+    let mut source = partial(rows.len());
+    let mut asked = Grouping::rows_by(Key(1));
+    asked.row_levels = vec![
+        Level::field(Key(1)),
+        Level::Field {
+            field: Key(0),
+            subtotal: Placement::Before,
+        },
+    ];
+    asked.col_levels = vec![Level::field(Key(2))];
+    let sum = |c| AggregateValue::of(Key(c), "sum");
+    asked.values = vec![
+        AggregateValue::count(),
+        sum(1),
+        sum(2),
+        AggregateValue::of(Key(2), "median"),
+    ];
+    let sliced = Condition::compare(Key(2), Comparison::AtLeast(Scalar::Number(1.0)));
+    asked.slicers = vec![
+        Condition::native(Key(0), "x > 1"),
+        Condition::compare(Key(1), Comparison::AtLeast(Scalar::Number(1.0))),
+        sliced.clone(),
+    ];
+    let viewed = source.view(&rows, &ViewSpec::default().with_grouping(Some(asked)));
+
+    let mut want = Grouping::rows_by(Key(0));
+    want.row_levels = vec![Level::Field {
+        field: Key(0),
+        subtotal: Placement::Before,
+    }];
+    want.values = vec![AggregateValue::count(), sum(2)];
+    want.slicers = vec![sliced];
+    assert_eq!(viewed.applied.grouping, Some(want));
+    // Grouped by column 0 over the two rows the slicer keeps, each group
+    // with a Subtotal before it.
+    let window = source.window(&rows, Axis::Rows, 0..10);
+    let kinds: Vec<ItemKind> = window.outlines.unwrap().iter().map(|o| o.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            ItemKind::Group,
+            ItemKind::Subtotal,
+            ItemKind::Leaf,
+            ItemKind::Leaf
+        ]
+    );
+    assert_eq!(&window.keys[2..], &[Key(0), Key(2)]);
+}
+
+#[test]
+fn slicers_with_no_levels_slice_the_plain_rows() {
+    let rows: Vec<Record> = vec![
+        [Some(1), None, Some(1)],
+        [Some(2), None, Some(0)],
+        [Some(1), None, Some(3)],
+    ];
+    let mut source = partial(rows.len());
+    let mut asked = Grouping::default();
+    asked.values = vec![AggregateValue::count()];
+    asked.slicers = vec![Condition::compare(
+        Key(2),
+        Comparison::AtLeast(Scalar::Number(1.0)),
+    )];
+    let spec = ViewSpec::default().with_grouping(Some(asked));
+    let viewed = source.view(&rows, &spec);
+    assert_eq!(viewed.applied, spec, "the slicer stays in the grouping");
+    assert_eq!(
+        viewed.notices,
+        vec![(Axis::Rows, ChangeNotice::Refiltered(2))]
+    );
+    let window = source.window(&rows, Axis::Rows, 0..3);
+    assert_eq!(window.keys, vec![Key(0), Key(2)]);
+    assert_eq!(window.outlines, None, "not grouped");
 }

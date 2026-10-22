@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use binnacle_core::{
     Axis, Blanks, Compared, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery,
-    Edge, FilterSpec, Grid, Key, Snapshot, TextQuery, TextSupport, Value,
+    Edge, FilterSpec, Grid, Key, Level, Placement, Snapshot, TextQuery, TextSupport, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -993,6 +993,11 @@ impl ColumnFilter {
         }
     }
 
+    /// Whether it is open in slicer mode ([`ColumnFilter::open_slicer`]).
+    pub fn slicing(&self) -> bool {
+        self.open.as_ref().is_some_and(|o| o.column.slicing)
+    }
+
     /// The column it is open on, if it is open on a column.
     pub fn column(&self) -> Option<Key> {
         self.open
@@ -1066,9 +1071,29 @@ impl ColumnFilter {
         opened
     }
 
+    /// Opens in slicer mode on column `key`, shown, hidden or grouped by:
+    /// it edits the grouping's slicers on the column instead of the rows'
+    /// conditions, with the same keys, titled "Slice by" the column. Returns
+    /// whether the column takes Text, OneOf or comparison conditions.
+    pub fn open_slicer(&mut self, snapshot: &Snapshot, key: Key) -> bool {
+        let opened = self.put(snapshot, sliced(snapshot, key));
+        if self.drawer {
+            self.shown = Some((Axis::Rows, key));
+            self.focused = opened;
+        }
+        opened
+    }
+
     /// Puts `key`'s conditions on `axis` in it, or nothing if it takes none;
     /// returns whether it takes any.
     fn show(&mut self, snapshot: &Snapshot, axis: Axis, key: Key) -> bool {
+        self.put(snapshot, Column::of(&asked(snapshot, axis), axis, key))
+    }
+
+    /// Puts `column` in it, or nothing if it takes no conditions; returns
+    /// whether it takes any.
+    fn put(&mut self, snapshot: &Snapshot, column: Column) -> bool {
+        let (axis, key) = (column.axis, column.key);
         let support = snapshot.support(axis, key);
         if support.text.is_none() && !support.one_of && support.compare.is_none() {
             if self.drawer {
@@ -1076,7 +1101,6 @@ impl ColumnFilter {
             }
             return false;
         }
-        let column = Column::of(&asked(snapshot, axis), axis, key);
         let mut open = Open {
             axis,
             key,
@@ -1176,10 +1200,17 @@ impl ColumnFilter {
         };
         let key = snapshot.focus(axis.other()).and_then(|f| f.key);
         let key = key.unwrap_or(shown);
-        let column = Column::of(&asked(snapshot, axis), axis, key);
+        let slicing = self.slicing();
+        let column = match slicing {
+            true => sliced(snapshot, key),
+            false => Column::of(&asked(snapshot, axis), axis, key),
+        };
         let same = self.open.as_ref().map(|o| (o.key, &o.column));
         if key != shown || same.is_some_and(|same| same != (key, &column)) {
-            self.show(snapshot, axis, key);
+            match slicing && key == shown {
+                true => self.put(snapshot, column),
+                false => self.show(snapshot, axis, key),
+            };
             self.shown = Some((axis, key));
         }
     }
@@ -1337,7 +1368,10 @@ impl ColumnFilter {
             hints = vec![format!("Follows the focused {}", noun(o.axis))];
         }
         // The column's Text condition and comparison as listed, if they are.
-        let listed = snapshot.conditions(o.axis);
+        let listed = match o.column.slicing {
+            true => snapshot.slicers(),
+            false => snapshot.conditions(o.axis),
+        };
         let state_of = |c: &Option<Condition>| {
             let c = c.as_ref()?;
             (listed.iter())
@@ -1395,6 +1429,9 @@ impl ColumnFilter {
             }
         };
         let title = match o.axis {
+            Axis::Rows if o.column.slicing => {
+                format!(" Slice by {} ", label(content, o.axis, o.key))
+            }
             Axis::Rows => format!(" Filter {} ", label(content, o.axis, o.key)),
             Axis::Cols => format!(" Filter columns by {} ", label(content, o.axis, o.key)),
         };
@@ -1616,6 +1653,15 @@ fn asked(snapshot: &Snapshot, axis: Axis) -> Vec<Condition> {
         .filter(|(_, state)| *state != ConditionState::Removing)
         .map(|(c, _)| c)
         .collect()
+}
+
+/// The slicers on column `key` as last asked for, less those being removed.
+fn sliced(snapshot: &Snapshot, key: Key) -> Column {
+    let slicers: Vec<Condition> = (snapshot.slicers().into_iter())
+        .filter(|(_, state)| *state != ConditionState::Removing)
+        .map(|(c, _)| c)
+        .collect();
+    Column::sliced(&slicers, key)
 }
 
 /// What a popup filtering `axis` is open on: "column" or "row".
@@ -1982,8 +2028,11 @@ pub(crate) fn toggle_style(theme: &Theme, on: bool) -> Style {
 /// for each, such as `port: not bergen` or `name: /^an/ Aa` (a column's
 /// conditions named by their row's [`Content::row_label`]), dimmed with a
 /// `~` while being added, struck through while being removed, and in the
-/// error style with a `!` when the Table Source did not apply it. Draws
-/// nothing while there are none.
+/// error style with a `!` when the Table Source did not apply it. Then
+/// the grouping's slicers after a `Sliced by` label, chips as the
+/// conditions', and each level and value of the grouping the source left
+/// out, such as `Grouped by port (Subtotal before)!` or `median(weight)!`,
+/// in the error style. Draws nothing while there are none.
 pub fn render_conditions(
     snapshot: &Snapshot,
     content: &impl Content,
@@ -1993,7 +2042,24 @@ pub fn render_conditions(
 ) {
     let area = area.intersection(buf.area);
     let listed = [Axis::Rows, Axis::Cols].map(|axis| snapshot.conditions(axis));
-    if area.is_empty() || listed.iter().all(Vec::is_empty) {
+    let slicers = snapshot.slicers();
+    let not_applied = |state: &ConditionState| *state == ConditionState::NotApplied;
+    let left_out: Vec<String> = (Axis::ALL.into_iter())
+        .flat_map(|axis| {
+            let levels = snapshot.levels(axis).into_iter();
+            levels
+                .filter(|(_, state)| not_applied(state))
+                .map(move |(level, _)| level_text(content, axis, &level))
+        })
+        .chain(
+            (snapshot.values().into_iter())
+                .filter(|(_, state)| not_applied(state))
+                .map(|(value, _)| content.value_name(&value)),
+        )
+        .collect();
+    if area.is_empty()
+        || (listed.iter().all(Vec::is_empty) && slicers.is_empty() && left_out.is_empty())
+    {
         return;
     }
     let mut x = area.x;
@@ -2018,6 +2084,40 @@ pub fn render_conditions(
         }
         put(&mut x, title, theme.header.add_modifier(Modifier::REVERSED));
         chips(&mut put, &mut x, content, theme, axis, listed);
+    }
+    if !slicers.is_empty() {
+        if x > area.x {
+            put(&mut x, " ", theme.body);
+        }
+        let title = " Sliced by ";
+        put(&mut x, title, theme.header.add_modifier(Modifier::REVERSED));
+        chips(&mut put, &mut x, content, theme, Axis::Rows, slicers);
+    }
+    let error = theme
+        .body
+        .patch(theme.error)
+        .add_modifier(Modifier::REVERSED);
+    for text in left_out {
+        put(&mut x, " ", theme.body);
+        put(&mut x, &format!(" {text}! "), error);
+    }
+}
+
+/// A level of `axis`'s grouping for its chip: `Grouped by port` on the
+/// rows, `Pivoted by port` on the columns, with where its Subtotal goes.
+fn level_text(content: &impl Content, axis: Axis, level: &Level) -> String {
+    let Level::Field { field, subtotal } = level else {
+        return "Values level".into();
+    };
+    let by = match axis {
+        Axis::Rows => "Grouped by",
+        Axis::Cols => "Pivoted by",
+    };
+    let name = label(content, Axis::Rows, *field);
+    match subtotal {
+        Placement::Before => format!("{by} {name} (Subtotal before)"),
+        Placement::After => format!("{by} {name} (Subtotal after)"),
+        _ => format!("{by} {name}"),
     }
 }
 
@@ -2069,6 +2169,8 @@ fn chip_text(label: &str, c: &Condition) -> String {
         }
         ConditionKind::OneOf(values) => format!("{label}: {not}{}", listed_text(values)),
         ConditionKind::Compare(c) => format!("{label}: {not}{}", compare::text(c)),
+        // The source's own language, passed through as typed.
+        ConditionKind::Native(text) => format!("{label}: {not}‹{text}›"),
         _ => format!("{label}: …"),
     }
 }

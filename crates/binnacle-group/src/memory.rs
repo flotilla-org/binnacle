@@ -7,14 +7,17 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use binnacle_core::{
-    AggregateValue, Axis, ChangeNotice, Distinct, DistinctQuery, FindDirection, FindMatch,
-    FindQuery, Key, Located, Outline, Position, SortColumn, SortDirection, SortSpec, Support,
-    TextSupport, Totals, Value, ViewSpec,
+    Aggregate, AggregateValue, Axis, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
+    ConditionTree, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, Grouping, Key,
+    Level, Located, Outline, Placements, Position, Scalar, SortColumn, SortDirection, SortSpec,
+    Support, TextSupport, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{FindStep, MemorySource, Moved, PumpSource, Viewed};
 
 use crate::layer::{GroupingLayer, Summary, settle};
-use crate::query::{AggregateBackend, Answer, Batch, Body, GroupRow, Path, Scope, Stamp, Want};
+use crate::query::{
+    AggregateBackend, Answer, Batch, Body, GroupRow, Path, Scope, Stamp, Want, having,
+};
 
 /// An aggregate as the In-Memory Table Source computes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,8 +124,10 @@ impl MemoryAggregates {
     /// The groups of `rows`, the Leaf Keys in view order, for `batch`'s
     /// scope: `value(field, i)` is row `i`'s value in `field`, which groups
     /// it and which counts count, and `number(field, i)` its number there,
-    /// which sums and averages take. The scope's filter, hidden Keys and
-    /// sort are the caller's to have applied to `rows`.
+    /// which sums and averages take. The slicers, the scope's filter but its
+    /// comparisons read after aggregating ([`having`]), the hidden Keys and
+    /// the sort are the caller's to have applied to `rows`; those
+    /// comparisons leave out the groups whose figures fail them here.
     pub fn new(
         batch: &Batch,
         rows: &[Key],
@@ -212,6 +217,18 @@ fn finish(
     let Some(&field) = scope.levels.get(depth) else {
         return;
     };
+    let having: Vec<(usize, &Condition)> = (scope.filter.conditions.conditions().iter())
+        .filter_map(|c| Some((having(c, &scope.values)?, c)))
+        .collect();
+    if !having.is_empty() {
+        let before = bucket.kids.len();
+        bucket
+            .kids
+            .retain(|k| having.iter().all(|&(i, c)| passes(c, k.figures[i])));
+        if bucket.kids.len() != before {
+            reindex(bucket);
+        }
+    }
     // Each sort column that orders this level's groups, as the index of
     // the value whose aggregate it sorts by; `None` for the level's own
     // field, which keeps the order the rows gave.
@@ -231,9 +248,35 @@ fn finish(
             .find(|o| o.is_ne())
             .unwrap_or(Ordering::Equal)
     });
+    reindex(bucket);
+}
+
+/// Finds each group of `bucket` by its value again, after they moved.
+fn reindex(bucket: &mut Bucket) {
     bucket.index = (bucket.kids.iter().enumerate())
         .map(|(i, k)| (k.value.clone().unwrap_or(Value::Blank), i))
         .collect();
+}
+
+/// Whether a group whose figure is `figure` passes `condition`, a
+/// comparison read after aggregating: never a blank.
+fn passes(condition: &Condition, figure: Figure) -> bool {
+    let ConditionKind::Compare(comparison) = &condition.kind else {
+        return true;
+    };
+    let scalar = |n: f64| match comparison {
+        Comparison::Equal(s)
+        | Comparison::NotEqual(s)
+        | Comparison::Less(s)
+        | Comparison::AtMost(s)
+        | Comparison::Greater(s)
+        | Comparison::AtLeast(s)
+        | Comparison::Between(s, _) => match s {
+            Scalar::Number(_) => Scalar::Number(n),
+            Scalar::Date(_) => Scalar::Date(n as i64),
+        },
+    };
+    comparison.passes(figure.number().map(scalar)) != condition.not
 }
 
 /// Records where each Leaf under `bucket` (at `path`) is.
@@ -343,11 +386,51 @@ impl<R> GroupedMemory<R> {
         self.layer.grouped(axis)
     }
 
-    /// The rows may group by a column that sorts and has a text form.
+    /// The rows may group by a column that sorts and has a text form, with
+    /// Subtotals before or after, and slice by any column as they filter by
+    /// it. Not the columns: there is no pivot yet.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
         let support = self.source.support(axis, key);
         let group = axis == Axis::Rows && support.sort && support.text.is_some();
-        support.with_group(group)
+        let subtotals = match group {
+            true => Placements::BOTH,
+            false => Placements::default(),
+        };
+        support.with_group(group).with_subtotals(subtotals)
+    }
+
+    /// The aggregates a value over column `key` may take while the rows are
+    /// grouped: count and distinct count over a column with a text form,
+    /// and the rest of the standard ones over a column of numbers.
+    pub fn aggregates(&self, axis: Axis, key: Key) -> Vec<Aggregate> {
+        let support = self.source.support(axis, key);
+        match (axis, support.compare) {
+            (Axis::Rows, Some(Compared::Numbers)) => Aggregate::numbers(),
+            (Axis::Rows, _) if support.text.is_some() => Aggregate::counts(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The parts of `grouping` this source applies: the levels on the rows
+    /// it may group by (none on the columns), with their Subtotals, and the
+    /// values with aggregates it offers. Slicers are the base source's to
+    /// apply.
+    fn applicable(&self, grouping: &Grouping) -> Grouping {
+        let mut applied = grouping.clone();
+        applied.row_levels.retain(|l| match l {
+            Level::Field { field, subtotal } => {
+                let support = self.support(Axis::Rows, *field);
+                support.group && support.subtotals.allows(*subtotal)
+            }
+            _ => false,
+        });
+        applied.col_levels.clear();
+        applied.values.retain(|v| match v.field {
+            None => v.aggregate == "count" && v.params.is_empty(),
+            Some(field) => (self.aggregates(Axis::Rows, field).iter())
+                .any(|a| a.name == v.aggregate && a.params.len() == v.params.len()),
+        });
+        applied
     }
 
     /// Presents the table as `spec` asks, grouping included; answers with
@@ -356,15 +439,24 @@ impl<R> GroupedMemory<R> {
     /// or the rows under it change, and `Collapsed` or `Expanded` when one
     /// group opens or closes.
     pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Viewed {
-        let levels: Vec<Key> = (spec.grouping.iter())
+        let grouping = spec.grouping.as_ref().map(|g| self.applicable(g));
+        let levels: Vec<Key> = (grouping.iter())
             .flat_map(|g| g.row_levels.iter().filter_map(|l| l.field_key()))
             .collect();
-        let levels: Vec<Key> = match levels.iter().all(|&f| self.support(Axis::Rows, f).group) {
-            true => levels,
-            false => Vec::new(),
+        let values = match &grouping {
+            Some(g) if !levels.is_empty() => g.values.as_slice(),
+            _ => &[],
         };
+        let slicers = grouping.as_ref().map_or(&[][..], |g| &g.slicers);
+        // The base rows take the conditions on the Leaves, then the slicers;
+        // the comparisons on a value's field wait for the figures.
+        let conditions = spec.rows.filter.conditions.conditions();
+        let (later, leaves): (Vec<&Condition>, Vec<&Condition>) =
+            conditions.iter().partition(|c| having(c, values).is_some());
         let mut base = spec.clone();
         base.grouping = None;
+        base.rows.filter.conditions =
+            ConditionTree::All(leaves.iter().copied().chain(slicers).cloned().collect());
         self.lifted = (levels.iter())
             .filter(|f| !spec.cols.hidden.contains(f))
             .copied()
@@ -391,10 +483,30 @@ impl<R> GroupedMemory<R> {
                 .collect(),
         );
         applied.cols.hidden.retain(|k| !self.lifted.contains(k));
-        applied.grouping = match levels.is_empty() {
-            true => None,
-            false => spec.grouping.clone(),
-        };
+        // The base applied an ordered part of what it was given: the Leaves'
+        // conditions, then the slicers.
+        let mut taken = applied
+            .rows
+            .filter
+            .conditions
+            .conditions()
+            .iter()
+            .peekable();
+        let mut took = |c: &Condition| taken.next_if(|t| *t == c).is_some();
+        let leaves: Vec<&Condition> = leaves.into_iter().filter(|c| took(c)).collect();
+        let slicers: Vec<Condition> = slicers.iter().filter(|c| took(c)).cloned().collect();
+        applied.rows.filter.conditions = ConditionTree::All(
+            (conditions.iter())
+                .filter(|c| later.contains(c) || leaves.contains(c))
+                .cloned()
+                .collect(),
+        );
+        applied.grouping = grouping
+            .map(|mut g| {
+                g.slicers = slicers;
+                g
+            })
+            .filter(|g| !levels.is_empty() || !g.slicers.is_empty());
         let scope_before = self.layer.grouped(Axis::Rows);
         self.layer.request_view(applied.clone());
         if rows_changed && scope_before && self.layer.grouped(Axis::Rows) {

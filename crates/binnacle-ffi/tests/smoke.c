@@ -357,7 +357,7 @@ int main(void) {
    * request has that one level, counting each group. */
   CHECK(binnacle_grid_group_by(grid, BINNACLE_ROWS, 2002));
   CHECK(!binnacle_grid_poll_effect(grid, &effect));
-  CHECK(!binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002, 128));
+  CHECK(!binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002, 2048));
   CHECK(binnacle_grid_set_support(grid, BINNACLE_ROWS, 2002,
                                   BINNACLE_SUPPORT_SORT | BINNACLE_SUPPORT_GROUP));
   CHECK(!binnacle_grid_group_by(grid, 2, 2002));
@@ -415,6 +415,28 @@ int main(void) {
   CHECK(binnacle_grid_view_applied(grid, &effect.view, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.keys_len == 0);
+
+  /* A native slicer on the plain table asks for a grouping with no levels
+   * that carries the text as written; a source that drops it leaves it
+   * listed, not applied. */
+  BinnacleCondition native = {.key = 2002, .kind = BINNACLE_CONDITION_NATIVE,
+                              .text = {.text = {(const uint8_t *)"year = 2024", 11}}};
+  CHECK(!binnacle_grid_add_slicer(grid, &(BinnacleCondition){.key = 2002, .kind = 5}));
+  CHECK(binnacle_grid_add_slicer(grid, &native));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_ADD_SLICER && effect.edit.key == 2002);
+  CHECK(effect.view.has_grouping && effect.view.grouping.slicers_len == 1);
+  CHECK(effect.view.grouping.axes[BINNACLE_ROWS].levels_len == 0);
+  CHECK(effect.view.grouping.slicers[0].kind == BINNACLE_CONDITION_NATIVE);
+  CHECK(memcmp(effect.view.grouping.slicers[0].text.text.data, "year = 2024", 11) == 0);
+  effect.view.has_grouping = 0;
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, NULL));
+  frame(grid, &snap);
+  CHECK(snap.slicers_len == 1 && snap.slicers[0].state == BINNACLE_CONDITION_NOT_APPLIED);
+  CHECK(binnacle_grid_remove_slicer(grid, &native));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_REMOVE_SLICER && !effect.view.has_grouping);
+  CHECK(binnacle_grid_view_applied(grid, &effect.view, NULL));
 
   /* Find: the host declares it, sets a query, steps, and answers the step;
    * the match takes focus, and closing find drops it. */

@@ -3,7 +3,7 @@
 // the typed object. The agreement tests check the decoder against Rust.
 
 import type { AxisName, PinEdge } from "./codes";
-import type { CompareOp, Comparison, Grouping, Level, Outline, Placement, Scalar } from "./source";
+import type { Aggregate, AggregateValue, CompareOp, Comparison, Grouping, Level, Outline, Placement, Scalar } from "./source";
 
 export interface Rect {
   x: number;
@@ -56,8 +56,8 @@ export interface KeyedTextQuery {
  * `key` names (of the other axis) satisfies `kind`, or with `not` those
  * whose value does not. A Text condition's query searches `key` alone; a
  * OneOf condition lists values, `null` for a blank; a Compare condition
- * compares as `Condition` in `source.ts` says. `Other` is a kind this build
- * does not know.
+ * compares as `Condition` in `source.ts` says; a Native condition's text is
+ * the Table Source's own. `Other` is a kind this build does not know.
  */
 export interface KeyedCondition {
   key: bigint;
@@ -65,6 +65,7 @@ export interface KeyedCondition {
     | { type: "Text"; query: KeyedTextQuery }
     | { type: "OneOf"; values: (string | null)[] }
     | { type: "Compare"; comparison: Comparison }
+    | { type: "Native"; text: string }
     | { type: "Other" };
   not: boolean;
 }
@@ -127,7 +128,18 @@ export interface HeaderPlacement {
    */
   filter: { filtered: boolean; pending: boolean; notApplied: boolean };
   /** What the Table Source supports when viewing the other axis by this item; all off while the Key is unknown. */
-  support: { sort: boolean; text: { regex: boolean } | null; oneOf: boolean; compare: "numbers" | "dates" | null; group: boolean };
+  support: {
+    sort: boolean;
+    text: { regex: boolean } | null;
+    oneOf: boolean;
+    compare: "numbers" | "dates" | null;
+    group: boolean;
+    native: boolean;
+    pivot: boolean;
+    subtotals: { before: boolean; after: boolean };
+  };
+  /** The aggregates the Table Source offers over this item while grouping the other axis; none while the Key is unknown. */
+  aggregates: Required<Aggregate>[];
   /** Whether this item's move is requested and not yet answered. */
   movePending: boolean;
 }
@@ -170,6 +182,12 @@ export interface AxisSnapshot {
   hideCap: number;
   /** The axis's conditions as the filter's chips list them: the latest request's, then the applied ones it drops. */
   conditions: { condition: KeyedCondition; state: ConditionState }[];
+  /**
+   * The axis's grouping levels as asked for: the latest request's, then the
+   * applied ones it drops. A level applied with another Subtotal than the
+   * one asked for is listed once, as asked, not applied.
+   */
+  levels: { level: Level<bigint>; state: ConditionState }[];
   /** Whether the Table Source can move the axis's items now, so dragging a header moves them. */
   movable: boolean;
   /** The Keys pinned to each edge, in pin order, dormant pins (their items gone for now) included. */
@@ -251,6 +269,10 @@ export interface Snapshot {
   findMatch: FindMatch | null;
   /** Whether the Table Source finds, and with regexes; `null` if it does not. */
   findSupport: { regex: boolean } | null;
+  /** The grouping's slicers, listed as the conditions are. */
+  slicers: { condition: KeyedCondition; state: ConditionState }[];
+  /** The grouping's values, listed as the conditions are. */
+  values: { value: AggregateValue<bigint>; state: ConditionState }[];
   /** Cell states as bit flags, row-major over the Strips; read with `cellState`. */
   cells: Uint8Array;
 }
@@ -341,6 +363,10 @@ const COMPARE_DATES_BIT = 32;
 const COMPARE_OPS: readonly CompareOp[] = ["equal", "notEqual", "less", "atMost", "greater", "atLeast"];
 const BETWEEN = 6;
 const GROUP_BIT = 64;
+const NATIVE_BIT = 128;
+const PIVOT_BIT = 256;
+const SUBTOTAL_BEFORE_BIT = 512;
+const SUBTOTAL_AFTER_BIT = 1024;
 const PLACEMENTS: readonly Placement[] = ["before", "after", "off"];
 const KINDS: readonly KeyedOutline["kind"][] = ["leaf", "group", "subtotal", "grandTotal"];
 const OPEN_STATES: readonly KeyedOutline["open"][] = ["open", "closed", "cantOpen"];
@@ -421,7 +447,9 @@ class Reader {
           ? { type: "OneOf", values: this.list(() => (this.flag() ? null : this.text())) }
           : code === 3
             ? { type: "Compare", comparison: this.comparison() }
-            : { type: "Other" };
+            : code === 4
+              ? { type: "Native", text: this.text() }
+              : { type: "Other" };
     return { key, kind, not };
   }
 
@@ -454,6 +482,17 @@ class Reader {
     }
   }
 
+  value(): AggregateValue<bigint> {
+    const field = this.optKey();
+    const aggregate = this.text();
+    const params = this.list(() => this.text());
+    return { field, aggregate, ...(params.length > 0 ? { params } : {}) };
+  }
+
+  state(): ConditionState {
+    return CONDITION_STATES[this.num()]!;
+  }
+
   groupedAxis(): KeyedGrouping["rowAxis"] {
     const grandTotal = PLACEMENTS[this.num()]!;
     const form = this.num() === 0 ? "outline" : "header";
@@ -464,12 +503,7 @@ class Reader {
   grouping(): KeyedGrouping {
     const rowLevels = this.list(() => this.level());
     const colLevels = this.list(() => this.level());
-    const values = this.list(() => {
-      const field = this.optKey();
-      const aggregate = this.text();
-      const params = this.list(() => this.text());
-      return { field, aggregate, ...(params.length > 0 ? { params } : {}) };
-    });
+    const values = this.list(() => this.value());
     const slicers = this.list(() => this.condition());
     const rowAxis = this.groupedAxis();
     return { rowLevels, colLevels, values, slicers, rowAxis, colAxis: this.groupedAxis() };
@@ -532,10 +566,15 @@ function readAxis(r: Reader): AxisSnapshot {
     filter: { filtered: r.flag(), pending: r.flag(), notApplied: r.flag() },
     movePending: r.flag(),
     support: supportOf(r.num()),
+    aggregates: r.list(() => ({ name: r.text(), params: r.list(() => r.text()) })),
   }));
   const conditions = r.list(() => {
-    const state = CONDITION_STATES[r.num()]!;
+    const state = r.state();
     return { condition: r.condition(), state };
+  });
+  const levels = r.list(() => {
+    const state = r.state();
+    return { level: r.level(), state };
   });
   const total = r.opt(() => r.num());
   const quickFilter = r.opt(() => ({ regex: r.flag() }));
@@ -563,6 +602,7 @@ function readAxis(r: Reader): AxisSnapshot {
     hideSupport,
     hideCap,
     conditions,
+    levels,
     movable,
     pins,
   };
@@ -575,6 +615,9 @@ function supportOf(bits: number): HeaderPlacement["support"] {
     oneOf: (bits & ONE_OF_BIT) !== 0,
     compare: (bits & COMPARE_NUMBERS_BIT) !== 0 ? "numbers" : (bits & COMPARE_DATES_BIT) !== 0 ? "dates" : null,
     group: (bits & GROUP_BIT) !== 0,
+    native: (bits & NATIVE_BIT) !== 0,
+    pivot: (bits & PIVOT_BIT) !== 0,
+    subtotals: { before: (bits & SUBTOTAL_BEFORE_BIT) !== 0, after: (bits & SUBTOTAL_AFTER_BIT) !== 0 },
   };
 }
 
@@ -654,6 +697,14 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const findMatch = r.opt(() => ({ row: r.key(), col: r.key() }));
   const findBits = r.num();
   const findSupport = findBits & FIND_BIT ? { regex: (findBits & FIND_REGEX_BIT) !== 0 } : null;
+  const slicers = r.list(() => {
+    const state = r.state();
+    return { condition: r.condition(), state };
+  });
+  const values = r.list(() => {
+    const state = r.state();
+    return { value: r.value(), state };
+  });
   const cells = new Uint8Array(rows.strip.length * cols.strip.length);
   for (let i = 0; i < cells.length; i++) cells[i] = r.num();
   if (!r.done()) throw new Error("binnacle: Snapshot has data past its end");
@@ -684,6 +735,8 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     find,
     findMatch,
     findSupport,
+    slicers,
+    values,
     cells,
   };
 }

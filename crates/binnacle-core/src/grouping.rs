@@ -88,6 +88,53 @@ impl AggregateValue {
     }
 }
 
+/// An aggregate a Table Source offers over a base field, as it declares with
+/// [`crate::Grid::set_aggregates`]: its name, and the names of the
+/// parameters a value with it takes, in order. A value with no field is a
+/// count, which every grouped source offers.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Aggregate {
+    pub name: String,
+    pub params: Vec<String>,
+}
+
+impl Aggregate {
+    /// The aggregate `name`, which takes no parameters.
+    pub fn new(name: impl Into<String>) -> Self {
+        Aggregate {
+            name: name.into(),
+            params: Vec::new(),
+        }
+    }
+
+    /// This aggregate taking the parameters named `params`.
+    pub fn with_params(mut self, params: Vec<String>) -> Self {
+        self.params = params;
+        self
+    }
+
+    /// The standard aggregates over a field of numbers: count, distinct
+    /// count, sum, average, minimum and maximum.
+    pub fn numbers() -> Vec<Aggregate> {
+        [
+            "count",
+            "distinct count",
+            "sum",
+            "average",
+            "minimum",
+            "maximum",
+        ]
+        .map(Aggregate::new)
+        .to_vec()
+    }
+
+    /// The standard aggregates over any field: count and distinct count.
+    pub fn counts() -> Vec<Aggregate> {
+        ["count", "distinct count"].map(Aggregate::new).to_vec()
+    }
+}
+
 /// How a grouped axis is drawn: each group a Group Item at its own Position,
 /// or each level a tier of the cross Header Band.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

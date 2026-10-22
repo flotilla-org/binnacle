@@ -9,6 +9,11 @@
 // change to the field sets the widget's quick filter, typing once a pause
 // has passed (`typingPause`) and Enter, the toggles and × at once; the widget
 // announces the count to assistive technology once the filter is applied.
+// While the Table Source groups, "Sliced by" lists a chip for each slicer
+// (its label opens the column menu in slicer mode, × removes it) beside
+// "+ Slice", which lists every column that takes conditions, hidden or
+// grouped by too; a level or value of the grouping the source left out shows
+// as a red chip, not applied, until the grouping changes.
 // Grouped rows show no count. While a filter is pending the count reads
 // "filtering…" and its chips fade; a quick filter or condition the Table Source did not apply turns red with
 // its message, the text kept. Drawn in the widget's Theme; hidden while the
@@ -19,7 +24,8 @@ import { rowCount } from "./aria";
 import { AXES, type AxisName } from "./codes";
 import { comparisonText } from "./compare";
 import type { ColumnMenu } from "./columnmenu";
-import type { Condition } from "./source";
+import type { AggregateValue, Condition, Level } from "./source";
+import { valueName } from "./source";
 import type { ConditionState } from "./snapshot";
 import type { FrameInfo, GridWidget } from "./widget";
 import { createPause } from "./pause";
@@ -108,6 +114,15 @@ export function createFilterBar<RowId, ColId, V>(
   across.setAttribute("aria-label", `Filters on the ${nouns.cols[1]}`);
   across.style.display = "none";
   const menu = options.columnMenu;
+  const sliced = el("div", "binnacle-slicer-chips", CHIPS_STYLE + " align-items: center;");
+  sliced.setAttribute("role", "list");
+  sliced.setAttribute("aria-label", "Slicers");
+  sliced.style.display = "none";
+  const slice = el("button", "binnacle-add-slicer", ADD_STYLE);
+  slice.type = "button";
+  slice.textContent = "+ Slice";
+  slice.setAttribute("aria-haspopup", "menu");
+  slice.hidden = true;
   const add = el("button", "binnacle-add-filter", ADD_STYLE);
   add.type = "button";
   add.textContent = "+ Filter";
@@ -125,7 +140,7 @@ export function createFilterBar<RowId, ColId, V>(
   const capped = el("span", "binnacle-hide-capped", ERROR_STYLE);
   capped.setAttribute("role", "status");
   capped.hidden = true;
-  element.append(field, error, chips, across, add, reapply, count, colCount, capped);
+  element.append(field, error, chips, across, add, sliced, slice, reapply, count, colCount, capped);
 
   let picker: HTMLElement | null = null;
   const closePicker = () => {
@@ -134,16 +149,28 @@ export function createFilterBar<RowId, ColId, V>(
     document.removeEventListener("pointerdown", outsidePicker, true);
   };
   const outsidePicker = (e: PointerEvent) => {
-    if (picker && !picker.contains(e.target as Node) && e.target !== add) closePicker();
+    if (picker && !picker.contains(e.target as Node) && e.target !== add && e.target !== slice) closePicker();
   };
-  /** Lists the columns that take conditions; picking one opens its menu. */
-  const openPicker = async () => {
-    const columns = (await widget.columns()).filter((c) => c.support.text || c.support.oneOf || c.support.compare);
+  /** The columns in view, then those hidden or grouped by, once each. */
+  const everyColumn = async () => {
+    const shown = await widget.columns();
+    const out = [...widget.hidden("cols"), ...widget.groupedBy()].filter((id) => !shown.some((c) => c.id === id));
+    const rest = [...new Set(out)].map((id) => ({ id, label: widget.columnLabel(id), support: widget.columnSupport(id) }));
+    return [...shown, ...rest];
+  };
+  /**
+   * Lists the columns that take conditions; picking one opens its menu, or
+   * with `slicing` its menu in slicer mode, listing every column.
+   */
+  const openPicker = async (slicing = false) => {
+    const opener = slicing ? slice : add;
+    const all = slicing ? await everyColumn() : await widget.columns();
+    const columns = all.filter((c) => c.support.text || c.support.oneOf || c.support.compare);
     closePicker();
     const t = widget.theme;
     const list = el("div", "binnacle-filter-picker", PICKER_STYLE);
     list.setAttribute("role", "menu");
-    list.setAttribute("aria-label", "Filter column");
+    list.setAttribute("aria-label", slicing ? "Slice by column" : "Filter column");
     list.style.font = t.font;
     list.style.color = t.body.color;
     list.style.background = t.body.background;
@@ -157,9 +184,10 @@ export function createFilterBar<RowId, ColId, V>(
       b.addEventListener("focus", () => (b.style.background = t.headerHovered.background));
       b.addEventListener("blur", () => (b.style.background = "transparent"));
       b.addEventListener("click", () => {
-        const anchor = add.getBoundingClientRect();
+        const anchor = opener.getBoundingClientRect();
         closePicker();
-        menu?.open(c.id, anchor);
+        if (slicing) menu?.openSlicer(c.id, anchor);
+        else menu?.open(c.id, anchor);
       });
       return b;
     });
@@ -173,10 +201,10 @@ export function createFilterBar<RowId, ColId, V>(
       } else if (e.key === "Escape") {
         e.preventDefault();
         closePicker();
-        add.focus();
+        opener.focus();
       }
     });
-    const r = add.getBoundingClientRect();
+    const r = opener.getBoundingClientRect();
     list.style.left = `${r.left}px`;
     list.style.top = `${r.bottom + 4}px`;
     document.body.append(list);
@@ -185,6 +213,7 @@ export function createFilterBar<RowId, ColId, V>(
     items[0]?.focus();
   };
   add.addEventListener("click", () => (picker ? closePicker() : void openPicker()));
+  slice.addEventListener("click", () => (picker ? closePicker() : void openPicker(true)));
 
   /** A condition's chip text: "port: not Bergen" on the rows, "3: Bergen" on the columns. */
   const chipOf = (on: AxisName, condition: Condition<RowId | ColId>) =>
@@ -195,11 +224,11 @@ export function createFilterBar<RowId, ColId, V>(
    * `message` when not applied; the label opens the menu of the item it
    * reads, × removes it.
    */
-  const chip = (on: AxisName, condition: Condition<RowId | ColId>, state: ConditionState, message: string) => {
+  const chip = (on: AxisName | "slicers", condition: Condition<RowId | ColId>, state: ConditionState, message: string) => {
     const t = widget.theme;
     const item = el("div", "binnacle-chip", CHIP_STYLE);
     item.setAttribute("role", "listitem");
-    const text = chipOf(on, condition);
+    const text = chipOf(on === "cols" ? "cols" : "rows", condition);
     const label = el("button", "binnacle-chip-label", CHIP_LABEL_STYLE);
     label.type = "button";
     label.textContent = text;
@@ -207,16 +236,19 @@ export function createFilterBar<RowId, ColId, V>(
     label.style.cursor = label.disabled ? "default" : "pointer";
     label.addEventListener("click", () => {
       const anchor = item.getBoundingClientRect();
-      if (on === "rows") menu?.open(condition.id as ColId, anchor);
+      if (on === "slicers") menu?.openSlicer(condition.id as ColId, anchor);
+      else if (on === "rows") menu?.open(condition.id as ColId, anchor);
       else menu?.openRow(condition.id as RowId, anchor);
     });
     const remove = el("button", "binnacle-chip-remove", CHIP_REMOVE_STYLE);
     remove.type = "button";
     remove.textContent = "×";
-    remove.setAttribute("aria-label", `Remove filter ${text}`);
+    remove.setAttribute("aria-label", `Remove ${on === "slicers" ? "slicer" : "filter"} ${text}`);
     remove.hidden = state === "removing";
     remove.style.color = t.rowNumber.color;
-    remove.addEventListener("click", () => widget.removeCondition(condition, on));
+    remove.addEventListener("click", () =>
+      on === "slicers" ? widget.removeSlicer(condition as Condition<ColId>) : widget.removeCondition(condition, on),
+    );
     item.append(label, remove);
     item.style.border = `1px solid ${t.sortMarker}`;
     item.style.background = t.picks.background;
@@ -236,6 +268,31 @@ export function createFilterBar<RowId, ColId, V>(
     }
     return item;
   };
+  /** A level or value of the grouping the Table Source left out: a red chip, not applied, with nothing to press. */
+  const leftOut = (text: string, message: string) => {
+    const t = widget.theme;
+    const item = el("div", "binnacle-chip binnacle-chip-not-applied", CHIP_STYLE);
+    item.setAttribute("role", "listitem");
+    const label = el("span", "binnacle-chip-label", CHIP_LABEL_STYLE + " padding-right: 10px;");
+    label.textContent = `${text}: not applied`;
+    item.append(label);
+    item.style.border = `1px solid ${t.error}`;
+    item.style.color = t.error;
+    item.style.background = t.body.background;
+    item.title = `Not applied: ${message}`;
+    item.setAttribute("aria-description", `Not applied: ${message}`);
+    return item;
+  };
+  /** A level's text: "Grouped by port", with its Subtotal's place if it has one. */
+  const levelText = (level: Level<ColId>) => {
+    if ("values" in level) return "Values level";
+    const subtotal = level.subtotal === "off" ? "" : ` (Subtotal ${level.subtotal})`;
+    return `Grouped by ${widget.columnLabel(level.field)}${subtotal}`;
+  };
+  const valueText = (value: AggregateValue<ColId>) =>
+    valueName(value, (id) => widget.columnLabel(id));
+  const slicedLabel = el("span", "binnacle-slicer-chips-label", "white-space: nowrap;");
+  slicedLabel.textContent = "Sliced by";
   let shownChips = "";
   const acrossLabel = el("span", "binnacle-column-chips-label", "white-space: nowrap;");
   acrossLabel.textContent = `${nouns.cols[1][0]!.toUpperCase()}${nouns.cols[1].slice(1)} where`;
@@ -323,8 +380,11 @@ export function createFilterBar<RowId, ColId, V>(
     count.style.color = t.rowNumber.color;
     colCount.style.color = t.rowNumber.color;
     acrossLabel.style.color = t.rowNumber.color;
-    add.style.color = t.rowNumber.color;
-    add.style.border = `1px dashed ${t.border}`;
+    slicedLabel.style.color = t.rowNumber.color;
+    for (const b of [add, slice]) {
+      b.style.color = t.rowNumber.color;
+      b.style.border = `1px dashed ${t.border}`;
+    }
     reapply.style.color = t.focus.color;
     reapply.style.border = `1px solid ${t.focus.color}`;
     for (const b of [caseToggle, regexToggle]) {
@@ -338,8 +398,16 @@ export function createFilterBar<RowId, ColId, V>(
     info = f;
     const q = quickOf(f)!;
     const conditions = { rows: f.conditions, cols: f.columnsFilter.conditions };
+    const { slicers } = f.grouping;
+    const notApplied = [
+      ...f.grouping.levels.flatMap(({ level, state }) => (state === "notApplied" ? [levelText(level)] : [])),
+      ...f.grouping.values.flatMap(({ value, state }) => (state === "notApplied" ? [valueText(value)] : [])),
+    ];
+    const slices = axis === "rows" && widget.groups();
+    slice.hidden = !menu || !slices;
     // Inline styles would win over the `hidden` attribute.
-    const bare = q.quickFilter === null && !conditions.rows.length && !conditions.cols.length && !menu;
+    const bare =
+      q.quickFilter === null && !conditions.rows.length && !conditions.cols.length && !slicers.length && !notApplied.length && !menu;
     element.style.display = bare ? "none" : "flex";
     field.style.display = q.quickFilter === null ? "none" : "flex";
     regexAllowed = q.quickFilter?.regex ?? false;
@@ -361,6 +429,8 @@ export function createFilterBar<RowId, ColId, V>(
       ...AXES.flatMap((on) =>
         conditions[on].map(({ condition, state }) => `${on} ${state} ${chipOf(on, condition as Condition<RowId | ColId>)}`),
       ),
+      ...slicers.map(({ condition, state }) => `slicer ${state} ${chipOf("rows", condition as Condition<RowId | ColId>)}`),
+      ...notApplied.map((text) => `left out ${text}`),
     ].join("\n");
     if (key !== shownChips) {
       shownChips = key;
@@ -370,6 +440,12 @@ export function createFilterBar<RowId, ColId, V>(
       across.replaceChildren(...(conditions.cols.length ? [acrossLabel, ...chipsOf("cols")] : []));
       // Inline styles would win over the `hidden` attribute, and an empty list would still take a gap.
       across.style.display = conditions.cols.length ? "flex" : "none";
+      const slicerChips = slicers.map(({ condition, state }) =>
+        chip("slicers", condition as Condition<RowId | ColId>, state, message),
+      );
+      const parts = [...slicerChips, ...notApplied.map((text) => leftOut(text, message))];
+      sliced.replaceChildren(...(slicers.length ? [slicedLabel] : []), ...parts);
+      sliced.style.display = parts.length ? "flex" : "none";
     }
     regexToggle.hidden = !regexAllowed;
     const edited = AXES.flatMap((on) => {
@@ -429,6 +505,7 @@ function chipText<ColId>(label: string, c: Condition<ColId>): string {
   const not = c.not ? "not " : "";
   if (c.kind.type === "OneOf") return `${label}: ${not}${listedText(c.kind.values)}`;
   if (c.kind.type === "Compare") return `${label}: ${not}${comparisonText(c.kind.comparison)}`;
+  if (c.kind.type === "Native") return `${label}: ${not}‹${c.kind.text}›`;
   const q = c.kind.query;
   const text = q.regex ? `/${q.text}/` : q.text;
   return `${label}: ${not}${text}${q.caseSensitive ? " (Aa)" : ""}`;

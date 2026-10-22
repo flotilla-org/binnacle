@@ -42,6 +42,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "restored",
     "endGap",
     "grouped",
+    "sliced",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -175,6 +176,9 @@ describe("View Specs", () => {
         "Collapse",
         "ExpandAll",
         "ExpandTo",
+        "AddSlicer",
+        "RemoveSlicer",
+        "ReplaceSlicer",
       ]),
     );
     const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
@@ -303,26 +307,32 @@ describe("Support", () => {
         SUPPORT.sort,
         SUPPORT.text,
         SUPPORT.sort | SUPPORT.text | SUPPORT.textRegex,
-        SUPPORT.oneOf | SUPPORT.group,
-        SUPPORT.compareNumbers,
+        SUPPORT.oneOf | SUPPORT.group | SUPPORT.subtotalAfter | SUPPORT.native,
+        SUPPORT.compareNumbers | SUPPORT.pivot | SUPPORT.subtotalBefore,
         SUPPORT.sort | SUPPORT.compareDates,
       ];
       grid.begin_frame(400, 200);
       grid.set_window(1, 0, BigUint64Array.from([10n, 11n, 12n, 13n, 14n, 15n, 16n]));
       declared.forEach((bits, i) => grid.set_support(0, BigInt(10 + i), bits));
+      const offered = [{ name: "sum", params: [] }, { name: "percentile", params: ["p"] }];
+      grid.set_aggregates(0, 15n, offered);
       grid.begin_frame(400, 200);
       const s = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
-      const dump = (grid.debug_frame() as DebugFrame).dump as { cols: { headers: { support: unknown }[] } };
+      const dump = (grid.debug_frame() as DebugFrame).dump as { cols: { headers: { support: unknown; aggregates: unknown }[] } };
       expect(s.cols.headers.map((h) => h.support)).toEqual(dump.cols.headers.map((h) => h.support));
+      expect(s.cols.headers.map((h) => h.aggregates)).toEqual(dump.cols.headers.map((h) => h.aggregates));
+      const none = { group: false, native: false, pivot: false, subtotals: { before: false, after: false } };
       expect(s.cols.headers.map((h) => h.support)).toEqual([
-        { sort: false, text: null, oneOf: false, compare: null, group: false },
-        { sort: true, text: null, oneOf: false, compare: null, group: false },
-        { sort: false, text: { regex: false }, oneOf: false, compare: null, group: false },
-        { sort: true, text: { regex: true }, oneOf: false, compare: null, group: false },
-        { sort: false, text: null, oneOf: true, compare: null, group: true },
-        { sort: false, text: null, oneOf: false, compare: "numbers", group: false },
-        { sort: true, text: null, oneOf: false, compare: "dates", group: false },
+        { ...none, sort: false, text: null, oneOf: false, compare: null },
+        { ...none, sort: true, text: null, oneOf: false, compare: null },
+        { ...none, sort: false, text: { regex: false }, oneOf: false, compare: null },
+        { ...none, sort: true, text: { regex: true }, oneOf: false, compare: null },
+        { ...none, sort: false, text: null, oneOf: true, compare: null, group: true, native: true, subtotals: { before: false, after: true } },
+        { ...none, sort: false, text: null, oneOf: false, compare: "numbers", pivot: true, subtotals: { before: true, after: false } },
+        { ...none, sort: true, text: null, oneOf: false, compare: "dates" },
       ]);
+      expect(s.cols.headers.map((h) => h.aggregates.length)).toEqual([0, 0, 0, 0, 0, 2, 0]);
+      expect(s.cols.headers[5]!.aggregates).toEqual(offered);
     } finally {
       grid.free();
     }
@@ -428,7 +438,7 @@ describe("Grouping", () => {
       memory.stage_strings(...region);
       memory.sort(0, BigUint64Array.from([1n]), Uint8Array.from([0]));
       stage();
-      expect(memory.group(grouping, new Uint32Array(), new Uint8Array())).toBe(12);
+      expect(memory.group(grouping, new Uint32Array(), new Uint8Array(), [])).toBe(12);
       type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
       const items = memory.grouped_window(0, 12) as Item[];
       const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
@@ -463,7 +473,7 @@ describe("Grouping", () => {
       memory.stage_numbers(Float64Array.from(weights), new Uint8Array(5));
       memory.sort(0, BigUint64Array.from([1n, 0n]), Uint8Array.from([0, 1]));
       stage();
-      memory.group(grouping, Uint32Array.from([0]), Uint8Array.from([1]));
+      memory.group(grouping, Uint32Array.from([0]), Uint8Array.from([1]), []);
       const sorted = memory.grouped_window(0, 12) as Item[];
       expect(sorted.map((i) => i.item ?? `${i.outline.kind} ${i.outline.group?.value}`)).toEqual([
         "group null", 3, "subtotal null", "group b", 0, 2, "subtotal b", "group a", 4, 1, "subtotal a", "grandTotal undefined",

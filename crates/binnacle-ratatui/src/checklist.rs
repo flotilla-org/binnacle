@@ -8,7 +8,8 @@
 //! The checklist owns a column's first Text condition and its first OneOf;
 //! the popup's comparison row owns its first comparison; any others stay as
 //! they are. A value a Text condition rejects can't be
-//! ticked: the popup shows it dimmed.
+//! ticked: the popup shows it dimmed. A column read from the grouping's
+//! slicers writes the same changes as slicer edits.
 
 use binnacle_core::{Axis, Condition, ConditionKind, Grid, Key, TextQuery, Value};
 use regex::RegexBuilder;
@@ -28,6 +29,9 @@ pub(crate) struct Column {
     pub compare: Option<Condition>,
     /// Every condition on the column, those two included, in order.
     pub all: Vec<Condition>,
+    /// Whether the conditions are the grouping's slicers on the column,
+    /// written as slicer edits, rather than conditions filtering `axis`.
+    pub slicing: bool,
 }
 
 /// The values the checklist shows: the blank first if listed, whether there
@@ -57,6 +61,15 @@ impl Column {
             one_of: first(|k| matches!(k, ConditionKind::OneOf(_))),
             compare: first(|k| matches!(k, ConditionKind::Compare(_))),
             all,
+            slicing: false,
+        }
+    }
+
+    /// The slicers on `key` among `slicers`.
+    pub fn sliced<'a>(slicers: impl IntoIterator<Item = &'a Condition>, key: Key) -> Column {
+        Column {
+            slicing: true,
+            ..Column::of(slicers, Axis::Rows, key)
         }
     }
 
@@ -99,21 +112,33 @@ impl Column {
             let at = from.as_ref().and_then(|f| all.iter().position(|c| c == f));
             match (from, at, to) {
                 (Some(f), Some(i), Some(t)) => {
-                    grid.replace_condition(self.axis, f, t.clone());
+                    match self.slicing {
+                        true => grid.replace_slicer(f, t.clone()),
+                        false => grid.replace_condition(self.axis, f, t.clone()),
+                    }
                     all[i] = t;
                 }
                 (Some(f), Some(i), None) => {
-                    grid.remove_condition(self.axis, f);
+                    match self.slicing {
+                        true => grid.remove_slicer(f),
+                        false => grid.remove_condition(self.axis, f),
+                    }
                     all.remove(i);
                 }
                 (_, _, Some(t)) => {
-                    grid.add_condition(self.axis, t.clone());
+                    match self.slicing {
+                        true => grid.add_slicer(t.clone()),
+                        false => grid.add_condition(self.axis, t.clone()),
+                    }
                     all.push(t);
                 }
                 _ => {}
             }
         }
-        Column::of(&all, self.axis, self.key)
+        Column {
+            slicing: self.slicing,
+            ..Column::of(&all, self.axis, self.key)
+        }
     }
 
     /// Ticks (`on`) or unticks `value`: with no OneOf, unticking writes `not

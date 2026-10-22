@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::effect::Effect;
 use crate::grid::Grid;
-use crate::grouping::{AggregateValue, Depth, GRAND_TOTAL, Grouping, Level};
+use crate::grouping::{Aggregate, AggregateValue, Depth, GRAND_TOTAL, Grouping, Level, Placement};
 use crate::pointer::Modifiers;
 use crate::sort::{HeaderSort, SortSpec};
 use crate::types::{Axis, Edge, Key, Position};
@@ -217,6 +217,9 @@ pub enum ConditionKind {
     /// The value, a number or a date, compares so. A blank, a NaN, or a
     /// value of the other kind never passes, so `not` keeps it.
     Compare(Comparison),
+    /// An opaque condition in the Table Source's own syntax, such as a SQL
+    /// fragment, passed to it as it is. binnacle never reads it.
+    Native(String),
 }
 
 /// One condition on the items of an axis, read in one item of the other
@@ -259,17 +262,28 @@ impl Condition {
         }
     }
 
+    /// Keeps the items `text`, in the Table Source's own syntax, keeps:
+    /// a Native condition, read in `key`.
+    pub fn native(key: Key, text: impl Into<String>) -> Self {
+        Condition {
+            key,
+            kind: ConditionKind::Native(text.into()),
+            not: false,
+        }
+    }
+
     /// This condition, or with `not` its opposite.
     pub fn not(mut self, not: bool) -> Self {
         self.not = not;
         self
     }
 
-    /// A Text condition with no text, which asks for nothing. Other kinds
-    /// always ask for something, even OneOf with no values.
+    /// A Text or Native condition with no text, which asks for nothing.
+    /// Other kinds always ask for something, even OneOf with no values.
     fn is_empty(&self) -> bool {
         match &self.kind {
             ConditionKind::Text(query) => query.text.is_empty(),
+            ConditionKind::Native(text) => text.is_empty(),
             ConditionKind::OneOf(_) | ConditionKind::Compare(_) => false,
         }
     }
@@ -469,9 +483,17 @@ pub enum ViewEdit {
     /// `axis` was grouped by `field`, a base field, as its innermost level.
     /// A plain table becomes grouped with one value, the count.
     Group { axis: Axis, field: Key },
-    /// Every level of `axis` was removed; with none left on either axis the
-    /// table is plain again.
+    /// Every level of `axis` was removed; with none left on either axis and
+    /// no slicers the table is plain again.
     Ungroup { axis: Axis },
+    /// `condition` was added to the slicers, which filter before
+    /// aggregating. A plain table gains a grouping with no levels, counting.
+    AddSlicer { condition: Condition },
+    /// The first slicer equal to `condition` was removed; with no slicers
+    /// and no levels left the table is plain again.
+    RemoveSlicer { condition: Condition },
+    /// The first slicer equal to `from` became `to`, in place.
+    ReplaceSlicer { from: Condition, to: Condition },
     /// The group of `axis` headed by the Group Item `key` was opened: the
     /// Key joins or leaves `expand.except`.
     Expand { axis: Axis, key: Key },
@@ -544,8 +566,43 @@ pub struct Support {
     /// The axis may be filtered by comparison conditions on the item, and
     /// on which kind of value; `None` (the default) if not.
     pub compare: Option<Compared>,
-    /// The axis may be grouped by the item, a base field. Not by default.
+    /// The axis may be filtered by Native conditions on the item, in the
+    /// Table Source's own syntax. Not by default.
+    pub native: bool,
+    /// The axis may be grouped by the item, a base field: a level of the
+    /// axis. Not by default.
     pub group: bool,
+    /// The other axis may be grouped by the item's values, a base field: a
+    /// level of the other axis, as in a pivot. Not by default.
+    pub pivot: bool,
+    /// Where the Subtotals of a level grouping by the item may go, beyond
+    /// off. Nowhere by default.
+    pub subtotals: Placements,
+}
+
+/// Where Subtotals may be placed, beyond off, which every grouped Table
+/// Source can do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Placements {
+    pub before: bool,
+    pub after: bool,
+}
+
+impl Placements {
+    /// Before and after both.
+    pub const BOTH: Placements = Placements {
+        before: true,
+        after: true,
+    };
+
+    /// Whether `placement` is one of these, or off.
+    pub fn allows(self, placement: Placement) -> bool {
+        match placement {
+            Placement::Before => self.before,
+            Placement::After => self.after,
+            Placement::Off => true,
+        }
+    }
 }
 
 /// The kind of value comparison conditions on an item compare: its values
@@ -563,7 +620,10 @@ impl Default for Support {
             text: Some(TextSupport::default()),
             one_of: false,
             compare: None,
+            native: false,
             group: false,
+            pivot: false,
+            subtotals: Placements::default(),
         }
     }
 }
@@ -589,8 +649,23 @@ impl Support {
         self
     }
 
+    pub fn with_native(mut self, native: bool) -> Self {
+        self.native = native;
+        self
+    }
+
     pub fn with_group(mut self, group: bool) -> Self {
         self.group = group;
+        self
+    }
+
+    pub fn with_pivot(mut self, pivot: bool) -> Self {
+        self.pivot = pivot;
+        self
+    }
+
+    pub fn with_subtotals(mut self, subtotals: Placements) -> Self {
+        self.subtotals = subtotals;
         self
     }
 }
@@ -607,7 +682,8 @@ pub struct HeaderFilter {
 }
 
 /// Where a condition stands between the applied View Spec and the latest
-/// request, as [`crate::Snapshot::conditions`] lists it.
+/// request, as [`crate::Snapshot::conditions`] lists it; likewise a slicer,
+/// a level or a value of the grouping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConditionState {
     /// Applied, and still requested.
@@ -617,7 +693,8 @@ pub enum ConditionState {
     /// Applied, no longer requested.
     Removing,
     /// Requested, with no answer due, but left out of the applied spec: the
-    /// Table Source rejected it, failed, or stopped applying it.
+    /// Table Source rejected it, failed, stopped applying it, or never
+    /// could (a restored layout asking more than it supports).
     NotApplied,
 }
 
@@ -646,6 +723,9 @@ pub(crate) struct ViewState {
     /// Per axis viewed, the items of the other axis whose support differs
     /// from the default (sparse, set by the host).
     support: [BTreeMap<Key, Support>; 2],
+    /// Per axis viewed, the aggregates the Table Source offers over each
+    /// item of the other axis that has any (sparse, set by the host).
+    aggregates: [BTreeMap<Key, Vec<Aggregate>>; 2],
     /// Per axis, its quick filter's support, if it has one.
     pub quick_filter: [Option<TextSupport>; 2],
     /// Per axis, whether the Table Source hides its items.
@@ -701,37 +781,69 @@ impl ViewState {
     /// The conditions of `axis`: the latest request's, each `Applied` or
     /// `Adding`, then the applied ones it drops, `Removing`.
     pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
-        let mut applied: Vec<&Condition> = self
-            .applied
-            .axis(axis)
-            .filter
-            .conditions
-            .conditions()
-            .iter()
-            .collect();
+        let of = |spec: &ViewSpec| spec.axis(axis).filter.conditions.conditions().to_vec();
+        self.listed(of, |a, b| a == b)
+    }
+
+    /// The slicers, listed as [`ViewState::conditions`] lists conditions.
+    pub fn slicers(&self) -> Vec<(Condition, ConditionState)> {
+        let of = |spec: &ViewSpec| {
+            (spec.grouping.iter())
+                .flat_map(|g| g.slicers.clone())
+                .collect()
+        };
+        self.listed(of, |a, b| a == b)
+    }
+
+    /// The levels of `axis`, listed as [`ViewState::conditions`] lists
+    /// conditions; a requested level is matched with the applied level on
+    /// its field, and is not applied while they differ (in its Subtotal).
+    pub fn levels(&self, axis: Axis) -> Vec<(Level, ConditionState)> {
+        let of = |spec: &ViewSpec| {
+            (spec.grouping.iter())
+                .flat_map(|g| g.levels(axis).to_vec())
+                .collect()
+        };
+        self.listed(of, |a: &Level, b: &Level| a.field_key() == b.field_key())
+    }
+
+    /// The values, listed as [`ViewState::conditions`] lists conditions.
+    pub fn values(&self) -> Vec<(AggregateValue, ConditionState)> {
+        let of = |spec: &ViewSpec| {
+            (spec.grouping.iter())
+                .flat_map(|g| g.values.clone())
+                .collect()
+        };
+        self.listed(of, |a, b| a == b)
+    }
+
+    /// The parts `of` a View Spec, the latest request's first, each matched
+    /// with an applied part the `same` way: `Applied` where they are equal,
+    /// else `Adding` while an answer is due and `NotApplied` once none is;
+    /// then the applied parts left unmatched, `Removing`.
+    fn listed<T: Clone + PartialEq>(
+        &self,
+        of: impl Fn(&ViewSpec) -> Vec<T>,
+        same: impl Fn(&T, &T) -> bool,
+    ) -> Vec<(T, ConditionState)> {
+        let mut applied = of(&self.applied);
         let Some(requested) = &self.requested else {
-            return applied
-                .into_iter()
-                .map(|c| (c.clone(), ConditionState::Applied))
+            return (applied.into_iter())
+                .map(|c| (c, ConditionState::Applied))
                 .collect();
         };
         let mut out = Vec::new();
-        for c in requested.axis(axis).filter.conditions.conditions() {
-            let state = match applied.iter().position(|a| *a == c) {
-                Some(i) => {
-                    applied.remove(i);
-                    ConditionState::Applied
-                }
-                None if self.pending() => ConditionState::Adding,
-                None => ConditionState::NotApplied,
+        for c in of(requested) {
+            let matched = applied.iter().position(|a| same(a, &c));
+            let equal = matched.map(|i| applied.remove(i)).is_some_and(|a| a == c);
+            let state = match equal {
+                true => ConditionState::Applied,
+                false if self.pending() => ConditionState::Adding,
+                false => ConditionState::NotApplied,
             };
-            out.push((c.clone(), state));
+            out.push((c, state));
         }
-        out.extend(
-            applied
-                .into_iter()
-                .map(|c| (c.clone(), ConditionState::Removing)),
-        );
+        out.extend(applied.into_iter().map(|c| (c, ConditionState::Removing)));
         out
     }
 
@@ -741,12 +853,37 @@ impl ViewState {
             .copied()
             .unwrap_or_default()
     }
+
+    pub fn aggregates(&self, axis: Axis, key: Key) -> &[Aggregate] {
+        self.aggregates[axis.index()]
+            .get(&key)
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
+/// The grouping of `spec`, made one with no levels counting each group if
+/// the table is plain.
+fn counting(spec: &mut ViewSpec) -> &mut Grouping {
+    spec.grouping.get_or_insert_with(|| Grouping {
+        values: vec![AggregateValue::count()],
+        ..Grouping::default()
+    })
+}
+
+/// Makes `spec` a plain table if its grouping has no levels and no slicers.
+fn plain_if_bare(spec: &mut ViewSpec) {
+    let bare =
+        |g: &Grouping| g.row_levels.is_empty() && g.col_levels.is_empty() && g.slicers.is_empty();
+    if spec.grouping.as_ref().is_some_and(bare) {
+        spec.grouping = None;
+    }
 }
 
 /// What the user asked for, `wanted`, once the Table Source has answered with
 /// `applied`: the source's sort and hidden Keys (pruned of those its data
 /// lost), its conditions plus the wanted ones it left out, and the wanted
-/// quick filter if there is one, else its own.
+/// quick filter if there is one, else its own. Likewise its grouping, with
+/// the wanted levels, values and slicers it left out.
 fn kept(wanted: ViewSpec, applied: &ViewSpec) -> ViewSpec {
     let mut kept = applied.clone();
     for axis in Axis::ALL {
@@ -755,23 +892,60 @@ fn kept(wanted: ViewSpec, applied: &ViewSpec) -> ViewSpec {
         if wanted.quick.is_some() {
             filter.quick = wanted.quick.clone();
         }
-        // In the wanted order, so a chip the source left out stays in place.
-        let mut extra: Vec<Condition> = filter.conditions.conditions().to_vec();
-        let mut list = Vec::new();
-        let mut missing = false;
-        for c in wanted.conditions.conditions() {
-            match extra.iter().position(|a| a == c) {
-                Some(i) => drop(extra.remove(i)),
-                None => missing = true,
-            }
-            list.push(c.clone());
-        }
-        if missing {
-            list.extend(extra);
+        let have = filter.conditions.conditions();
+        if let Some(list) = merged(wanted.conditions.conditions(), have, |a, b| a == b) {
             filter.conditions = ConditionTree::All(list);
         }
     }
+    if let Some(wanted) = wanted.grouping {
+        let mut grouping = kept.grouping.clone().unwrap_or_else(|| Grouping {
+            row_levels: Vec::new(),
+            col_levels: Vec::new(),
+            values: Vec::new(),
+            slicers: Vec::new(),
+            ..wanted.clone()
+        });
+        let mut changed = false;
+        for axis in Axis::ALL {
+            let field = |a: &Level, b: &Level| a.field_key() == b.field_key();
+            if let Some(list) = merged(wanted.levels(axis), grouping.levels(axis), field) {
+                *grouping.levels_mut(axis) = list;
+                changed = true;
+            }
+        }
+        if let Some(list) = merged(&wanted.values, &grouping.values, |a, b| a == b) {
+            grouping.values = list;
+            changed = true;
+        }
+        if let Some(list) = merged(&wanted.slicers, &grouping.slicers, |a, b| a == b) {
+            grouping.slicers = list;
+            changed = true;
+        }
+        if changed {
+            kept.grouping = Some(grouping);
+        }
+    }
     kept
+}
+
+/// The `wanted` parts in their order, then the `applied` ones matched to
+/// none of them the `same` way, if some wanted part has no equal applied
+/// one; `None` when the applied parts stand. In the wanted order, so a chip
+/// the source left out stays in place.
+fn merged<T: Clone + PartialEq>(
+    wanted: &[T],
+    applied: &[T],
+    same: impl Fn(&T, &T) -> bool,
+) -> Option<Vec<T>> {
+    let mut extra = applied.to_vec();
+    let mut missing = false;
+    for w in wanted {
+        match extra.iter().position(|a| same(a, w)) {
+            Some(i) => missing |= extra.remove(i) != *w,
+            None => missing = true,
+        }
+    }
+    missing.then(|| wanted.iter().cloned().chain(extra).collect())
 }
 
 impl Grid {
@@ -784,6 +958,18 @@ impl Grid {
             declared.remove(&key);
         } else {
             declared.insert(key, support);
+        }
+    }
+
+    /// The aggregates the Table Source offers when grouping `axis` with a
+    /// value over `key`, a base field (an item of the other axis): none
+    /// until set. A value with no field, a count, needs no declaring.
+    pub fn set_aggregates(&mut self, axis: Axis, key: Key, aggregates: Vec<Aggregate>) {
+        let declared = &mut self.view.aggregates[axis.index()];
+        if aggregates.is_empty() {
+            declared.remove(&key);
+        } else {
+            declared.insert(key, aggregates);
         }
     }
 
@@ -964,6 +1150,44 @@ impl Grid {
         self.edit_view(ViewEdit::Group { axis, field });
     }
 
+    /// Adds `condition` to the slicers, which filter the base fields before
+    /// aggregating, and requests the result. A Text or Native condition
+    /// with no text asks for nothing.
+    pub fn add_slicer(&mut self, condition: Condition) {
+        if condition.is_empty() {
+            return;
+        }
+        self.edit_view(ViewEdit::AddSlicer { condition });
+    }
+
+    /// Removes the first slicer equal to `condition`, if the latest request
+    /// has one, and requests the result.
+    pub fn remove_slicer(&mut self, condition: &Condition) {
+        if !self.slicers().contains(condition) {
+            return;
+        }
+        let condition = condition.clone();
+        self.edit_view(ViewEdit::RemoveSlicer { condition });
+    }
+
+    /// Puts `to` in place of the first slicer equal to `from` and requests
+    /// the result, as [`Grid::replace_condition`] does for conditions.
+    pub fn replace_slicer(&mut self, from: &Condition, to: Condition) {
+        if !self.slicers().contains(from) {
+            self.add_slicer(to);
+        } else if to.is_empty() {
+            self.remove_slicer(from);
+        } else if *from != to {
+            let from = from.clone();
+            self.edit_view(ViewEdit::ReplaceSlicer { from, to });
+        }
+    }
+
+    /// The slicers of the latest request.
+    fn slicers(&self) -> &[Condition] {
+        (self.latest_view().grouping.as_ref()).map_or(&[], |g| &g.slicers)
+    }
+
     /// Removes every level of `axis` and requests the result. Nothing
     /// happens if the axis is not grouped.
     pub fn ungroup(&mut self, axis: Axis) {
@@ -1029,18 +1253,32 @@ impl Grid {
                 spec.axis_mut(*axis).hidden.retain(|k| !keys.contains(k));
             }
             ViewEdit::Group { axis, field } => {
-                let grouping = spec.grouping.get_or_insert_with(|| Grouping {
-                    values: vec![AggregateValue::count()],
-                    ..Grouping::default()
-                });
-                grouping.levels_mut(*axis).push(Level::field(*field));
+                counting(&mut spec)
+                    .levels_mut(*axis)
+                    .push(Level::field(*field));
             }
             ViewEdit::Ungroup { axis } => {
                 if let Some(grouping) = &mut spec.grouping {
                     grouping.levels_mut(*axis).clear();
-                    if grouping.row_levels.is_empty() && grouping.col_levels.is_empty() {
-                        spec.grouping = None;
-                    }
+                }
+                plain_if_bare(&mut spec);
+            }
+            ViewEdit::AddSlicer { condition } => {
+                counting(&mut spec).slicers.push(condition.clone());
+            }
+            ViewEdit::RemoveSlicer { condition } => {
+                if let Some(grouping) = &mut spec.grouping
+                    && let Some(i) = grouping.slicers.iter().position(|c| c == condition)
+                {
+                    grouping.slicers.remove(i);
+                }
+                plain_if_bare(&mut spec);
+            }
+            ViewEdit::ReplaceSlicer { from, to } => {
+                if let Some(grouping) = &mut spec.grouping
+                    && let Some(c) = grouping.slicers.iter_mut().find(|c| *c == from)
+                {
+                    *c = to.clone();
                 }
             }
             ViewEdit::Replace

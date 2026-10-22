@@ -1,0 +1,7 @@
+---
+source: crates/binnacle-ratatui/tests/slicers.rs
+assertion_line: 266
+expression: "out.join(\"\\n\")"
+---
+ Sliced by   weight: > 100~   port: ‹port LIKE 'A%'›~
+ Sliced by   weight: > 100   port: ‹port LIKE 'A%'›!   Grouped by port (Subtotal before)!   median(weight)!

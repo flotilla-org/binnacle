@@ -3,11 +3,12 @@
 //! the shape `web/src/snapshot.ts` decodes to, and one of every Effect.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, ChangeNotice, Compared, Comparison, Condition, ConditionState,
-    Cursor, Depth, DropTarget, Edge, Effect, FilterSpec, FindDirection, FindMatch, FindQuery,
-    FocusStep, Grid, HeaderPlacement, Key, Mode, Modifiers, OpenState, Outline, PointerEvent, Rect,
-    Scalar, Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport,
-    Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Action, Aggregate, AggregateValue, Axis, AxisConfig, ChangeNotice, Compared, Comparison,
+    Condition, ConditionState, Cursor, Depth, DropTarget, Edge, Effect, FilterSpec, FindDirection,
+    FindMatch, FindQuery, FocusStep, Grid, Grouping, HeaderPlacement, Key, Level, Mode, Modifiers,
+    OpenState, Outline, Placement, Placements, PointerEvent, Rect, Scalar, Searched, Snapshot,
+    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -15,7 +16,7 @@ use crate::effect::{
     WireAxis, WireCondition, WireDirection, WireFindMatch, WireFindQuery, WireStamped,
     WireViewEdit, WireViewSpec,
 };
-use crate::grouping::WireOutline;
+use crate::grouping::{WireAggregate, WireAggregateValue, WireLevel, WireOutline};
 use crate::snapshot::cell_bits;
 
 #[derive(Serialize)]
@@ -47,6 +48,8 @@ pub struct Dump {
     find: Option<WireFindQuery>,
     find_match: Option<WireFindMatch>,
     find_support: Option<DumpTextSupport>,
+    slicers: Vec<DumpListed>,
+    values: Vec<DumpListedValue>,
     cells: Vec<u8>,
 }
 
@@ -120,6 +123,7 @@ struct DumpAxis {
     total: Option<f64>,
     quick_filter: Option<DumpTextSupport>,
     conditions: Vec<DumpListed>,
+    levels: Vec<DumpListedLevel>,
     movable: bool,
     hide_support: bool,
     hide_cap: f64,
@@ -144,6 +148,36 @@ struct DumpListed {
 }
 
 #[derive(Serialize)]
+struct DumpListedLevel {
+    level: WireLevel,
+    state: &'static str,
+}
+
+#[derive(Serialize)]
+struct DumpListedValue {
+    value: WireAggregateValue,
+    state: &'static str,
+}
+
+fn state_name(state: ConditionState) -> &'static str {
+    match state {
+        ConditionState::Applied => "applied",
+        ConditionState::Adding => "adding",
+        ConditionState::Removing => "removing",
+        ConditionState::NotApplied => "notApplied",
+    }
+}
+
+fn listed(conditions: Vec<(Condition, ConditionState)>) -> Vec<DumpListed> {
+    (conditions.iter())
+        .map(|(c, state)| DumpListed {
+            condition: c.into(),
+            state: state_name(*state),
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
 struct DumpSupport {
     sort: bool,
     text: Option<DumpTextSupport>,
@@ -151,6 +185,15 @@ struct DumpSupport {
     one_of: bool,
     compare: Option<&'static str>,
     group: bool,
+    native: bool,
+    pivot: bool,
+    subtotals: DumpPlacements,
+}
+
+#[derive(Serialize)]
+struct DumpPlacements {
+    before: bool,
+    after: bool,
 }
 
 impl From<Support> for DumpSupport {
@@ -164,6 +207,12 @@ impl From<Support> for DumpSupport {
                 Compared::Dates => "dates",
             }),
             group: s.group,
+            native: s.native,
+            pivot: s.pivot,
+            subtotals: DumpPlacements {
+                before: s.subtotals.before,
+                after: s.subtotals.after,
+            },
         }
     }
 }
@@ -216,6 +265,8 @@ struct DumpHeader {
     filter: DumpHeaderFilter,
     /// The support of the item's Key, or none (all off) for an unfilled one.
     support: DumpSupport,
+    /// The aggregates offered over the item's Key; none for an unfilled one.
+    aggregates: Vec<WireAggregate>,
     #[serde(rename = "movePending")]
     move_pending: bool,
 }
@@ -233,7 +284,7 @@ struct DumpApplied {
 }
 
 impl DumpHeader {
-    fn new(h: HeaderPlacement, support: Support) -> Self {
+    fn new(h: HeaderPlacement, support: Support, aggregates: &[Aggregate]) -> Self {
         DumpHeader {
             position: h.position as f64,
             key: h.key.map(|k| k.0),
@@ -253,6 +304,7 @@ impl DumpHeader {
                 not_applied: h.filter.not_applied,
             },
             support: support.into(),
+            aggregates: aggregates.iter().map(WireAggregate::from).collect(),
             move_pending: h.move_pending,
         }
     }
@@ -463,20 +515,15 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             .map(|h| {
                 let none = Support::default().with_sort(false).with_text(None);
                 let support = h.key.map_or(none, |k| s.support(axis.other(), k));
-                DumpHeader::new(h, support)
+                let offered = h.key.map_or(&[][..], |k| s.aggregates(axis.other(), k));
+                DumpHeader::new(h, support, offered)
             })
             .collect(),
-        conditions: s
-            .conditions(axis)
-            .iter()
-            .map(|(c, state)| DumpListed {
-                condition: c.into(),
-                state: match state {
-                    ConditionState::Applied => "applied",
-                    ConditionState::Adding => "adding",
-                    ConditionState::Removing => "removing",
-                    ConditionState::NotApplied => "notApplied",
-                },
+        conditions: listed(s.conditions(axis)),
+        levels: (s.levels(axis).iter())
+            .map(|(level, state)| DumpListedLevel {
+                level: level.into(),
+                state: state_name(*state),
             })
             .collect(),
         movable: s.movable(axis),
@@ -576,6 +623,13 @@ pub fn dump(s: &Snapshot<'_>) -> Dump {
         find: s.find().map(WireFindQuery::from),
         find_match: s.find_match().map(WireFindMatch::from),
         find_support: s.find_support().map(|f| DumpTextSupport { regex: f.regex }),
+        slicers: listed(s.slicers()),
+        values: (s.values().iter())
+            .map(|(v, state)| DumpListedValue {
+                value: v.into(),
+                state: state_name(*state),
+            })
+            .collect(),
         cells,
     }
 }
@@ -604,6 +658,7 @@ pub fn every_effect() -> Vec<WireStamped> {
             ],
         )
         .not(true),
+        Condition::native(Key(7), "price > 'Bér 🚢'").not(true),
     ];
     let spec = spec.with_filter(
         Axis::Rows,
@@ -763,6 +818,16 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
             axis: Axis::Rows,
             depth: Depth::All,
         },
+        ViewEdit::AddSlicer {
+            condition: Condition::native(col, "year = 2024"),
+        },
+        ViewEdit::RemoveSlicer {
+            condition: Condition::compare(col, Comparison::AtMost(Scalar::Number(2.0))),
+        },
+        ViewEdit::ReplaceSlicer {
+            from: Condition::native(Key(7), "a"),
+            to: Condition::native(Key(7), "b").not(true),
+        },
     ]
     .into_iter()
     .map(WireViewEdit::from)
@@ -770,7 +835,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 23] = [
+pub const SCENARIOS: [&str; 24] = [
     "plain",
     "busy",
     "resizing",
@@ -794,6 +859,7 @@ pub const SCENARIOS: [&str; 23] = [
     "restored",
     "endGap",
     "grouped",
+    "sliced",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -1115,6 +1181,46 @@ pub fn scenario(name: &str) -> Grid {
             let applied = grid.snapshot().requested_view().cloned().unwrap();
             grid.view_applied(applied, Totals::unknown());
         }
+        "sliced" => {
+            // The rows grouped by column 1 with its Subtotal before, summing
+            // column 3 and taking its 90th percentile, sliced by a
+            // comparison and a Native condition; column 3 declares every
+            // grouping support bit and two aggregates. The source applies
+            // the level without its Subtotal, the sum and the comparison.
+            let support = Support::default()
+                .with_group(true)
+                .with_native(true)
+                .with_pivot(true)
+                .with_subtotals(Placements {
+                    before: false,
+                    after: true,
+                })
+                .with_compare(Some(Compared::Numbers));
+            grid.set_support(Axis::Rows, key(1), Support::default().with_group(true));
+            grid.set_support(Axis::Rows, key(3), support);
+            let percentile = Aggregate::new("percentile").with_params(vec!["p".into()]);
+            grid.set_aggregates(Axis::Rows, key(3), vec![Aggregate::new("sum"), percentile]);
+            let heavy = Condition::compare(key(3), Comparison::Greater(Scalar::Number(100.0)));
+            let mut wanted = Grouping::rows_by(key(1));
+            wanted.row_levels = vec![Level::Field {
+                field: key(1),
+                subtotal: Placement::Before,
+            }];
+            wanted.values = vec![
+                AggregateValue::of(key(3), "sum"),
+                AggregateValue::of(key(3), "percentile").with_params(vec!["0.9".into()]),
+            ];
+            wanted.slicers = vec![
+                heavy.clone(),
+                Condition::native(key(4), "year = 2024").not(true),
+            ];
+            grid.request_view(ViewSpec::default().with_grouping(Some(wanted)));
+            let mut applied = Grouping::rows_by(key(1));
+            applied.values = vec![AggregateValue::of(key(3), "sum")];
+            applied.slicers = vec![heavy];
+            let applied = ViewSpec::default().with_grouping(Some(applied));
+            grid.view_applied(applied, Totals::unknown());
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -1333,6 +1439,19 @@ mod tests {
                     assert!(s.toggle_pending(Axis::Rows, key(0)));
                     assert!(!s.toggle_pending(Axis::Rows, key(5)));
                 }
+                "sliced" => {
+                    let key = |p: u64| Key(KEY_BASE + p);
+                    use ConditionState::*;
+                    let slicers: Vec<_> = s.slicers().into_iter().map(|(_, st)| st).collect();
+                    assert_eq!(slicers, [Applied, NotApplied]);
+                    let values: Vec<_> = s.values().into_iter().map(|(_, st)| st).collect();
+                    assert_eq!(values, [Applied, NotApplied]);
+                    let levels: Vec<_> =
+                        s.levels(Axis::Rows).into_iter().map(|(_, st)| st).collect();
+                    assert_eq!(levels, [NotApplied]);
+                    assert!(s.support(Axis::Rows, key(3)).native);
+                    assert_eq!(s.aggregates(Axis::Rows, key(3)).len(), 2);
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
@@ -1368,6 +1487,7 @@ mod tests {
                 "Idle",
                 "MovingHeaders",
                 "MovingHeaders",
+                "Idle",
                 "Idle",
                 "Idle",
                 "Idle",

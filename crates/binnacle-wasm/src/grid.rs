@@ -2,7 +2,8 @@
 //! Action or setting is a few lines here plus its call in `web/src`.
 
 use binnacle_core::{
-    Action, AxisConfig, Depth, Grid, Key, Outline, PointerEvent, TextQuery, Totals, Viewport,
+    Action, Aggregate, AxisConfig, Depth, Grid, Key, Outline, PointerEvent, TextQuery, Totals,
+    Viewport,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -11,7 +12,7 @@ use crate::codes::{self, axis, focus_step, position};
 use crate::effect::{
     WireCondition, WireFindMatch, WireFindQuery, WireStamped, WireTextQuery, WireViewSpec,
 };
-use crate::grouping::WireOutline;
+use crate::grouping::{WireAggregate, WireOutline};
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -268,7 +269,7 @@ impl WebGrid {
 
     /// What the Table Source supports when viewing axis `a` by `key`, an
     /// item of the other axis; see [`codes::support`].
-    pub fn set_support(&mut self, a: u8, key: u64, bits: u8) {
+    pub fn set_support(&mut self, a: u8, key: u64, bits: u32) {
         self.grid
             .set_support(axis(a), Key(key), codes::support(bits));
     }
@@ -355,6 +356,39 @@ impl WebGrid {
     pub fn replace_condition(&mut self, a: u8, from: JsValue, to: JsValue) -> Result<(), JsError> {
         let (from, to) = (self::condition(from)?, self::condition(to)?);
         self.grid.replace_condition(axis(a), &from, to);
+        Ok(())
+    }
+
+    /// Adds `condition` to the slicers, which filter the base fields (shown
+    /// or not) before anything is grouped or aggregated.
+    pub fn add_slicer(&mut self, condition: JsValue) -> Result<(), JsError> {
+        self.grid.add_slicer(self::condition(condition)?);
+        Ok(())
+    }
+
+    /// Removes the first slicer equal to `condition`.
+    pub fn remove_slicer(&mut self, condition: JsValue) -> Result<(), JsError> {
+        self.grid.remove_slicer(&self::condition(condition)?);
+        Ok(())
+    }
+
+    /// Puts `to` in place of the first slicer equal to `from`.
+    pub fn replace_slicer(&mut self, from: JsValue, to: JsValue) -> Result<(), JsError> {
+        let (from, to) = (self::condition(from)?, self::condition(to)?);
+        self.grid.replace_slicer(&from, to);
+        Ok(())
+    }
+
+    /// The aggregates the Table Source offers over `key` (an item of the
+    /// other axis) when grouping axis `a`: `{ name, params? }` objects, the
+    /// field-less count aside.
+    pub fn set_aggregates(&mut self, a: u8, key: u64, aggregates: JsValue) -> Result<(), JsError> {
+        let aggregates: Vec<WireAggregate> = serde_wasm_bindgen::from_value(aggregates)
+            .map_err(|e| JsError::new(&format!("binnacle: not a list of aggregates: {e}")))?;
+        let aggregates = (aggregates.into_iter())
+            .map(|a| Aggregate::new(a.name).with_params(a.params))
+            .collect();
+        self.grid.set_aggregates(axis(a), Key(key), aggregates);
         Ok(())
     }
 

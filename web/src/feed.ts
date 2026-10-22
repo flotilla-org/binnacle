@@ -24,6 +24,7 @@ import type {
   StripItem,
 } from "./snapshot";
 import type {
+  Aggregate,
   AppliedAxisView,
   AppliedView,
   AxisMethods,
@@ -154,6 +155,14 @@ export interface ColumnSupport {
   compare: "numbers" | "dates" | null;
   /** Whether the axis may be grouped by the item. */
   group: boolean;
+  /** Whether the other axis may be grouped (pivoted) by the item. */
+  pivot: boolean;
+  /** Where a level's Subtotals may go. */
+  subtotals: { before: boolean; after: boolean };
+  /** Whether the axis may be filtered or sliced by Native conditions on the item. */
+  native: boolean;
+  /** The aggregates offered over the item while grouping, the count aside. */
+  aggregates: Aggregate[];
 }
 
 export interface FeedHooks<RowId = unknown, ColId = unknown> {
@@ -228,7 +237,17 @@ interface Block {
 
 const known = <T>(v: T | undefined): v is T => v !== undefined;
 
-const NO_SUPPORT: ColumnSupport = { sort: false, text: null, oneOf: false, compare: null, group: false };
+const NO_SUPPORT: ColumnSupport = {
+  sort: false,
+  text: null,
+  oneOf: false,
+  compare: null,
+  group: false,
+  pivot: false,
+  subtotals: { before: false, after: false },
+  native: false,
+  aggregates: [],
+};
 
 const GONE: Located = { type: "Gone", suggest: null };
 /** What a refused move says when the Table Source gives no reason, as the Rust `PumpSource` default does. */
@@ -449,6 +468,10 @@ export function createFeed<RowId, ColId, V>(
       oneOf: listed && (support.oneOf ?? true),
       compare: support.compare ?? null,
       group: support.group ?? false,
+      pivot: support.pivot ?? false,
+      subtotals: { before: support.subtotals?.before ?? false, after: support.subtotals?.after ?? false },
+      native: support.native ?? false,
+      aggregates: support.aggregates ?? [],
     };
   };
   const columnSupport = (id: ColId) => supportOf("rows", id);
@@ -463,8 +486,15 @@ export function createFeed<RowId, ColId, V>(
       const text = support.text ? SUPPORT.text | (support.text.regex ? SUPPORT.textRegex : 0) : 0;
       const oneOf = support.oneOf ? SUPPORT.oneOf : 0;
       const compare = support.compare === null ? 0 : support.compare === "numbers" ? SUPPORT.compareNumbers : SUPPORT.compareDates;
-      const group = support.group ? SUPPORT.group : 0;
-      grid?.set_support(AXIS_CODE[axis], key, (support.sort ? SUPPORT.sort : 0) | text | oneOf | compare | group);
+      const flags =
+        (support.sort ? SUPPORT.sort : 0) |
+        (support.group ? SUPPORT.group : 0) |
+        (support.pivot ? SUPPORT.pivot : 0) |
+        (support.subtotals.before ? SUPPORT.subtotalBefore : 0) |
+        (support.subtotals.after ? SUPPORT.subtotalAfter : 0) |
+        (support.native ? SUPPORT.native : 0);
+      grid?.set_support(AXIS_CODE[axis], key, flags | text | oneOf | compare);
+      grid?.set_aggregates(AXIS_CODE[axis], key, support.aggregates);
     }
   };
 
@@ -671,6 +701,8 @@ export function createFeed<RowId, ColId, V>(
         return { id, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
       case "Compare":
         return { id, kind: { type: "Compare", comparison: { ...c.kind.comparison } }, not: c.not };
+      case "Native":
+        return { id, kind: { type: "Native", text: c.kind.text }, not: c.not };
       default:
         return undefined;
     }
@@ -680,6 +712,7 @@ export function createFeed<RowId, ColId, V>(
     const key = by.interner.key(c.id);
     if (c.kind.type === "OneOf") return { key, kind: { type: "OneOf", values: [...c.kind.values] }, not: c.not };
     if (c.kind.type === "Compare") return { key, kind: { type: "Compare", comparison: { ...c.kind.comparison } }, not: c.not };
+    if (c.kind.type === "Native") return { key, kind: { type: "Native", text: c.kind.text }, not: c.not };
     const { text, caseSensitive, regex } = c.kind.query;
     return { key, kind: { type: "Text", query: { text, caseSensitive, regex, searches: [key] } }, not: c.not };
   };

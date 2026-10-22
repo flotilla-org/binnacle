@@ -1,7 +1,8 @@
 //! The header menu: a popup under the focused column's header (or under the
 //! focused row) with Pin left and Pin right (Pin top and Pin bottom for a
 //! row), or Unpin on a pinned item, and Freeze up to here; then Group rows
-//! by a column the rows group by, or Ungroup rows once grouped; then, where the
+//! by a column the rows group by, or Ungroup rows once grouped, and while the
+//! Table Source groups, Slice by a column that takes conditions; then, where the
 //! axis hides, Hide, Show only these and Choose, the axis's hidden items
 //! inline, numbered, and Show all, each shown again in its place. Hide and
 //! Show only act on the picks or the selection as well as the focused item,
@@ -187,7 +188,8 @@ pub fn cap_hint(axis: Axis, cap: usize) -> String {
 /// right (`t` and `b` a row to the top and bottom), `u` unpins it (offered
 /// wherever it is pinned, clipped or not), `f` freezes up to it, `h` hides
 /// the chosen items ([`Chosen`]), `o` shows only them, `c` asks for the
-/// chooser ([`HeaderMenu::take_chooser`]), `1` to `9` show that hidden item,
+/// chooser ([`HeaderMenu::take_chooser`]), `s` for a slicer on the column
+/// ([`HeaderMenu::take_slicer`]), `1` to `9` show that hidden item,
 /// `a` shows them all, Esc closes. Pinning, unpinning, freezing and hiding
 /// close it; showing leaves it open, and so does a hide past the cap, which
 /// says to filter instead.
@@ -196,6 +198,8 @@ pub struct HeaderMenu {
     open: Option<Open>,
     /// The axis whose chooser the menu asked for, until the host takes it.
     chooser: Option<Axis>,
+    /// The column the menu asked to slice by, until the host takes it.
+    slicer: Option<Key>,
 }
 
 #[derive(Clone, Debug)]
@@ -217,6 +221,7 @@ enum Entry {
     Freeze,
     Group,
     Ungroup,
+    Slice,
     Hide,
     ShowOnly,
     Choose,
@@ -235,6 +240,7 @@ impl Entry {
             (Entry::Unpin, _) => 'u',
             (Entry::Freeze, _) => 'f',
             (Entry::Group | Entry::Ungroup, _) => 'g',
+            (Entry::Slice, _) => 's',
             (Entry::Hide, _) => 'h',
             (Entry::ShowOnly, _) => 'o',
             (Entry::Choose, _) => 'c',
@@ -247,8 +253,10 @@ impl Entry {
 /// them: Pin at the leading edge, or Unpin wherever it is pinned; Pin at the
 /// trailing edge unless pinned; Freeze unless pinned at the trailing edge;
 /// Ungroup rows once the rows are grouped, else on a column the rows group
-/// by, Group rows by it; then, on an axis that hides, Hide, Show only and Choose, each hidden
-/// item and Show all.
+/// by, Group rows by it; on a column that takes conditions while the source
+/// groups (the rows are grouped or sliced, or a column shown groups them),
+/// Slice by it; then, on an axis that hides, Hide, Show only and Choose,
+/// each hidden item and Show all.
 fn entries(snapshot: &Snapshot, axis: Axis, key: Key) -> Vec<Entry> {
     let pinned_at = |edge| (snapshot.pinned(axis, edge).iter()).any(|i| i.key == Some(key));
     let trailing = pinned_at(Edge::Trailing);
@@ -266,6 +274,16 @@ fn entries(snapshot: &Snapshot, axis: Axis, key: Key) -> Vec<Entry> {
         entries.push(Entry::Ungroup);
     } else if axis == Axis::Cols && snapshot.support(Axis::Rows, key).group {
         entries.push(Entry::Group);
+    }
+    let groups = view.grouping.is_some()
+        || !snapshot.slicers().is_empty()
+        || !snapshot.levels(Axis::Rows).is_empty()
+        || (snapshot.cols().iter())
+            .any(|c| c.key.is_some_and(|k| snapshot.support(Axis::Rows, k).group));
+    let support = snapshot.support(Axis::Rows, key);
+    let conditions = support.text.is_some() || support.one_of || support.compare.is_some();
+    if axis == Axis::Cols && groups && conditions {
+        entries.push(Entry::Slice);
     }
     if snapshot.hide_support(axis) {
         entries.extend([Entry::Hide, Entry::ShowOnly, Entry::Choose]);
@@ -326,6 +344,13 @@ impl HeaderMenu {
     /// opens its [`crate::Chooser`] there.
     pub fn take_chooser(&mut self) -> Option<Axis> {
         self.chooser.take()
+    }
+
+    /// The column the user picked "Slice by this column" on, once: the host
+    /// opens its [`crate::ColumnFilter`] there in slicer mode
+    /// ([`crate::ColumnFilter::open_slicer`]).
+    pub fn take_slicer(&mut self) -> Option<Key> {
+        self.slicer.take()
     }
 
     /// Handles a key press while open: `true` if the menu took it. Every
@@ -392,6 +417,11 @@ impl HeaderMenu {
             }
             Some(Entry::Ungroup) => {
                 grid.ungroup(Axis::Rows);
+                closes = true;
+                None
+            }
+            Some(Entry::Slice) => {
+                self.slicer = Some(key);
                 closes = true;
                 None
             }
@@ -549,6 +579,7 @@ impl HeaderMenu {
                 Entry::Freeze => "Freeze up to here".into(),
                 Entry::Group => "Group rows by this column".into(),
                 Entry::Ungroup => "Ungroup rows".into(),
+                Entry::Slice => "Slice by this column".into(),
                 Entry::Hide => match chosen {
                     1 => format!("Hide {noun}"),
                     n => format!("Hide {} {nouns}", grouped(n)),

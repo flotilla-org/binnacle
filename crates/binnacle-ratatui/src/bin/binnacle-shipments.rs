@@ -9,7 +9,13 @@
 //! apart from its label, and the Grand Total is pinned at the bottom (`r`
 //! on it opens the row menu, which unpins it). Press `m` for the focused column's menu:
 //! "Ungroup rows" brings back the plain table, and on the region, port or
-//! crew column "Group rows by this column" adds a level. Click the weight
+//! crew column "Group rows by this column" adds a level. "Slice by this
+//! column" (`s` in the menu) opens the column's filter popup in slicer
+//! mode: what it asks for keeps only the shipments that pass before they
+//! group, so the figures change, and the slicers show on the bottom line
+//! after "Sliced by". A comparison on the weight from the popup filtering
+//! the rows (Alt+Down) acts on the groups instead, leaving out those whose
+//! total fails it. Click the weight
 //! header to sort: regions and ports order by their total weight, and
 //! shipments by theirs within their port. Arrows move through Summary Items
 //! and shipments alike, and focus stays on its shipment through grouping
@@ -26,8 +32,9 @@ use binnacle_core::{
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    ColorSupport, Content, HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext,
-    Theme, begin_frame, disclosure_at, render_with, wheel,
+    ColorSupport, ColumnFilter, Content, Control, Controls, HeaderMenu, Keymap, Layout, Mouse,
+    PendingMarks, Preset, RenderContext, Theme, begin_frame, disclosure_at, render_conditions,
+    render_with, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -182,6 +189,11 @@ fn declare(grid: &mut Grid, source: &mut GroupedMemory<Shipment>, rows: &[Shipme
     for c in 0..HEADERS.len() as u64 {
         grid.set_support(Axis::Rows, Key(c), over.support(Axis::Rows, Key(c)));
     }
+    drop(over);
+    for c in 0..HEADERS.len() as u64 {
+        grid.set_aggregates(Axis::Rows, Key(c), source.aggregates(Axis::Rows, Key(c)));
+    }
+    let mut over = source.over(rows);
     for axis in Axis::ALL {
         grid.set_hide_support(axis, over.hide_support(axis));
     }
@@ -209,7 +221,9 @@ fn main() -> io::Result<()> {
     declare(&mut grid, &mut source, &rows);
     grid.request_view(ViewSpec::default().with_grouping(Some(grouping())));
     let keymap = Keymap::preset(Preset::Chords);
+    let controls = Controls::preset(Preset::Chords);
     let mut menu = HeaderMenu::new();
+    let mut popup = ColumnFilter::new();
     let mut mouse = Mouse::default();
     let mut marks = PendingMarks::default();
     let start = Instant::now();
@@ -225,7 +239,7 @@ fn main() -> io::Result<()> {
             terminal.draw(|frame| {
                 let full = frame.area();
                 let mut area = full;
-                area.height = full.height.saturating_sub(1);
+                area.height = full.height.saturating_sub(2);
                 // Answers the requests in the queue; moves are refused while
                 // grouped, and nothing else is the demo's to act on.
                 pump(&mut grid, &mut source.over(&rows), |_, _| {});
@@ -237,12 +251,22 @@ fn main() -> io::Result<()> {
                 let snapshot = grid.snapshot();
                 marks.seen(&snapshot, now);
                 let ctx = ctx.marks(&marks);
+                popup.fetch(&snapshot, |axis, key, query| {
+                    Some(source.source_mut().distinct(&rows, axis, key, query))
+                });
                 let text = Text {
                     rows: &rows,
                     source: &source,
                     grouping: snapshot.applied_view().grouping.as_ref(),
                 };
                 render_with(&snapshot, &text, &ctx, area, frame.buffer_mut());
+                popup.render(
+                    &snapshot,
+                    &text,
+                    &themes[theme],
+                    layout.grid,
+                    frame.buffer_mut(),
+                );
                 menu.render(
                     &snapshot,
                     &text,
@@ -254,6 +278,12 @@ fn main() -> io::Result<()> {
                     true => "grouped",
                     false => "plain",
                 };
+                let chips = ratatui::layout::Rect {
+                    y: full.bottom().saturating_sub(2),
+                    height: 1,
+                    ..full
+                };
+                render_conditions(&snapshot, &text, &themes[theme], chips, frame.buffer_mut());
                 let line = ratatui::layout::Rect {
                     y: full.bottom().saturating_sub(1),
                     height: 1,
@@ -271,9 +301,19 @@ fn main() -> io::Result<()> {
                     if ctrl && matches!(key.code, KeyCode::Char('c' | 'q')) {
                         return Ok(());
                     }
+                    if popup.key(&key, &mut grid) {
+                        continue;
+                    }
                     if menu.key(&key, &mut grid, |axis, range| {
                         source.window(&rows, axis, range).keys
                     }) {
+                        if let Some(key) = menu.take_slicer() {
+                            popup.open_slicer(&grid.snapshot(), key);
+                        }
+                        continue;
+                    }
+                    if controls.control(&key) == Some(Control::ColumnFilter) {
+                        popup.open(&grid.snapshot());
                         continue;
                     }
                     match key.code {
