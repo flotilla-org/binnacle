@@ -303,8 +303,9 @@ impl Grid {
     /// them); Positions outside the Window are ignored.
     pub fn set_outlines(&mut self, axis: Axis, start: Position, outlines: &[Outline]) {
         let st = self.axis_mut(axis);
-        for (position, outline) in (start..).zip(outlines) {
-            if let Some(key) = st.measure.key_at(position) {
+        for (i, outline) in outlines.iter().enumerate() {
+            let position = start.checked_add(i as u64);
+            if let Some(key) = position.and_then(|p| st.measure.key_at(p)) {
                 st.outlines.insert(key, outline.clone());
             }
         }

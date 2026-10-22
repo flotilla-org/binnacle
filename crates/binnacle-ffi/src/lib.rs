@@ -9,12 +9,13 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
-    ConditionState, DropTarget, Edge, EditEnd, Effect, FilterSpec, FindDirection, FindMatch,
-    FindQuery, FocusEnd, FocusStep, Grid, HeaderClick, HeaderPlacement, Key, Located, Mode,
-    Modifiers, PointerEvent, PointerKind, Rect, Scalar, Searched, SelectionUnit, SortColumn,
-    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    Action, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared, Comparison,
+    Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect, Expand,
+    FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep, Form, Grid, GroupOf,
+    Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located, Mode, Modifiers,
+    OpenState, Outline, Placement, PointerEvent, PointerKind, Rect, Scalar, Searched,
+    SelectionUnit, SortColumn, SortDirection, SortSpec, StripItem, Support, TextQuery,
+    TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
@@ -98,6 +99,8 @@ pub const BINNACLE_VIEW_EDIT_REPLACE_CONDITION: u32 = 7;
 pub const BINNACLE_VIEW_EDIT_REAPPLY: u32 = 8;
 pub const BINNACLE_VIEW_EDIT_HIDE: u32 = 9;
 pub const BINNACLE_VIEW_EDIT_SHOW: u32 = 10;
+pub const BINNACLE_VIEW_EDIT_GROUP: u32 = 11;
+pub const BINNACLE_VIEW_EDIT_UNGROUP: u32 = 12;
 
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
@@ -132,9 +135,30 @@ pub const BINNACLE_SUPPORT_TEXT_REGEX: u32 = 4;
 pub const BINNACLE_SUPPORT_ONE_OF: u32 = 8;
 pub const BINNACLE_SUPPORT_COMPARE_NUMBERS: u32 = 16;
 pub const BINNACLE_SUPPORT_COMPARE_DATES: u32 = 32;
+pub const BINNACLE_SUPPORT_GROUP: u32 = 64;
 
 pub const BINNACLE_QUICK_FILTER: u32 = 1;
 pub const BINNACLE_QUICK_FILTER_REGEX: u32 = 2;
+
+pub const BINNACLE_PLACEMENT_OFF: u32 = 0;
+pub const BINNACLE_PLACEMENT_BEFORE: u32 = 1;
+pub const BINNACLE_PLACEMENT_AFTER: u32 = 2;
+
+pub const BINNACLE_LEVEL_FIELD: u32 = 0;
+pub const BINNACLE_LEVEL_VALUES: u32 = 1;
+pub const BINNACLE_LEVEL_OTHER: u32 = 2;
+
+pub const BINNACLE_FORM_OUTLINE: u32 = 0;
+pub const BINNACLE_FORM_HEADER: u32 = 1;
+
+pub const BINNACLE_ITEM_LEAF: u32 = 0;
+pub const BINNACLE_ITEM_GROUP: u32 = 1;
+pub const BINNACLE_ITEM_SUBTOTAL: u32 = 2;
+pub const BINNACLE_ITEM_GRAND_TOTAL: u32 = 3;
+
+pub const BINNACLE_OPEN_STATE_OPEN: u32 = 0;
+pub const BINNACLE_OPEN_STATE_CLOSED: u32 = 1;
+pub const BINNACLE_OPEN_STATE_CANT_OPEN: u32 = 2;
 
 pub const BINNACLE_LOCATED_FOUND: u32 = 0;
 pub const BINNACLE_LOCATED_GONE: u32 = 1;
@@ -177,6 +201,9 @@ pub const BINNACLE_HEADER_CLICK_NONE: u32 = 2;
 pub struct BinnacleGrid {
     grid: Grid,
     strips: [Vec<BinnacleStripItem>; 2],
+    /// The last Snapshot's outline ancestors and group value texts per axis.
+    ancestors: [Vec<u64>; 2],
+    outline_texts: [String; 2],
     headers: [Vec<BinnacleHeader>; 2],
     picked: [Vec<u64>; 2],
     /// The last Snapshot's selection range, as runs of Positions per axis.
@@ -192,6 +219,12 @@ pub struct BinnacleGrid {
     quick_keys: [Vec<u64>; 2],
     conditions: [CConditions; 2],
     hidden: [Vec<u64>; 2],
+    /// The last polled Effect's grouping: each axis's levels and except
+    /// Keys, the values with their aggregates' texts, and the slicers.
+    levels: [Vec<BinnacleLevel>; 2],
+    excepts: [Vec<u64>; 2],
+    aggregates: (String, Vec<BinnacleAggregateValue>),
+    slicers: CConditions,
     /// The last polled Effect's View Edit Keys.
     edit_keys: Vec<u64>,
     /// The last Snapshot's hidden Keys per axis.
@@ -361,6 +394,34 @@ pub struct BinnacleRect {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleOutline {
+    pub kind: u32,
+    pub depth: u32,
+    pub open: u32,
+    pub ancestors: *const u64,
+    pub ancestors_len: usize,
+    pub has_group: u32,
+    pub field: u64,
+    pub value: BinnacleValue,
+}
+
+impl Default for BinnacleOutline {
+    fn default() -> Self {
+        BinnacleOutline {
+            kind: BINNACLE_ITEM_LEAF,
+            depth: 0,
+            open: BINNACLE_OPEN_STATE_OPEN,
+            ancestors: std::ptr::null(),
+            ancestors_len: 0,
+            has_group: 0,
+            field: 0,
+            value: BinnacleValue::default(),
+        }
+    }
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BinnacleStripItem {
     pub position: u64,
@@ -368,6 +429,8 @@ pub struct BinnacleStripItem {
     pub key: u64,
     pub offset: f32,
     pub size: f32,
+    pub has_outline: u32,
+    pub outline: BinnacleOutline,
 }
 
 #[repr(C)]
@@ -656,8 +719,76 @@ pub struct BinnacleTotals {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleLevel {
+    pub kind: u32,
+    pub field: u64,
+    pub subtotal: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleAggregateValue {
+    pub has_field: u32,
+    pub field: u64,
+    pub aggregate: BinnacleText,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleGroupedAxis {
+    pub levels: *const BinnacleLevel,
+    pub levels_len: usize,
+    pub grand_total: u32,
+    pub form: u32,
+    pub expand_all: u32,
+    pub expand_depth: u32,
+    pub except: *const u64,
+    pub except_len: usize,
+}
+
+impl Default for BinnacleGroupedAxis {
+    fn default() -> Self {
+        BinnacleGroupedAxis {
+            levels: std::ptr::null(),
+            levels_len: 0,
+            grand_total: BINNACLE_PLACEMENT_OFF,
+            form: BINNACLE_FORM_OUTLINE,
+            expand_all: 0,
+            expand_depth: 0,
+            except: std::ptr::null(),
+            except_len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleGrouping {
+    pub axes: [BinnacleGroupedAxis; 2],
+    pub values: *const BinnacleAggregateValue,
+    pub values_len: usize,
+    pub slicers: *const BinnacleCondition,
+    pub slicers_len: usize,
+}
+
+impl Default for BinnacleGrouping {
+    fn default() -> Self {
+        BinnacleGrouping {
+            axes: Default::default(),
+            values: std::ptr::null(),
+            values_len: 0,
+            slicers: std::ptr::null(),
+            slicers_len: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BinnacleViewSpec {
     pub axes: [BinnacleAxisView; 2],
+    pub has_grouping: u32,
+    pub grouping: BinnacleGrouping,
 }
 
 #[repr(C)]
@@ -859,7 +990,95 @@ impl From<&StripItem> for BinnacleStripItem {
             key: item.key.map_or(0, |k| k.0),
             offset: item.offset,
             size: item.size,
+            has_outline: 0,
+            outline: BinnacleOutline::default(),
         }
+    }
+}
+
+/// `outline` in C form, its ancestors already copied to `ancestors` and its
+/// group value's text to `text`.
+fn outline_to_c(outline: &Outline, ancestors: *const u64, text: *const u8) -> BinnacleOutline {
+    let (has_group, field, value) = match &outline.group {
+        Some(GroupOf { field, value }) => (1, field.0, value_to_c(value, text)),
+        None => (0, 0, BinnacleValue::default()),
+    };
+    BinnacleOutline {
+        kind: match outline.kind {
+            ItemKind::Leaf => BINNACLE_ITEM_LEAF,
+            ItemKind::Group => BINNACLE_ITEM_GROUP,
+            ItemKind::Subtotal => BINNACLE_ITEM_SUBTOTAL,
+            ItemKind::GrandTotal => BINNACLE_ITEM_GRAND_TOTAL,
+        },
+        depth: outline.depth,
+        open: match outline.open {
+            OpenState::Open => BINNACLE_OPEN_STATE_OPEN,
+            OpenState::Closed => BINNACLE_OPEN_STATE_CLOSED,
+            OpenState::CantOpen => BINNACLE_OPEN_STATE_CANT_OPEN,
+        },
+        ancestors,
+        ancestors_len: outline.ancestors.len(),
+        has_group,
+        field,
+        value,
+    }
+}
+
+/// `value` in C form, its text already copied to `text`.
+fn value_to_c(value: &Value, text: *const u8) -> BinnacleValue {
+    match value {
+        Value::Text(t) => BinnacleValue {
+            blank: 0,
+            text: BinnacleText {
+                data: text,
+                len: t.len(),
+            },
+        },
+        Value::Blank => BinnacleValue {
+            blank: 1,
+            text: BinnacleText::default(),
+        },
+    }
+}
+
+impl BinnacleOutline {
+    /// The outline, or `None` if a tag or flag is unknown or the group
+    /// value's text is not UTF-8.
+    ///
+    /// # Safety
+    /// A non-NULL `ancestors` is valid for `ancestors_len` reads, and the
+    /// value's text as [`BinnacleValue::to_core`] requires.
+    unsafe fn to_core(self) -> Option<Outline> {
+        let kind = match self.kind {
+            BINNACLE_ITEM_LEAF => ItemKind::Leaf,
+            BINNACLE_ITEM_GROUP => ItemKind::Group,
+            BINNACLE_ITEM_SUBTOTAL => ItemKind::Subtotal,
+            BINNACLE_ITEM_GRAND_TOTAL => ItemKind::GrandTotal,
+            _ => return None,
+        };
+        let open = match self.open {
+            BINNACLE_OPEN_STATE_OPEN => OpenState::Open,
+            BINNACLE_OPEN_STATE_CLOSED => OpenState::Closed,
+            BINNACLE_OPEN_STATE_CANT_OPEN => OpenState::CantOpen,
+            _ => return None,
+        };
+        let group = match self.has_group {
+            0 => None,
+            1 => Some(GroupOf {
+                field: Key(self.field),
+                // SAFETY: the caller's contract.
+                value: unsafe { self.value.to_core() }?,
+            }),
+            _ => return None,
+        };
+        // SAFETY: the caller's contract.
+        let ancestors = unsafe { borrowed(self.ancestors, self.ancestors_len) };
+        let mut outline = Outline::leaf(ancestors.iter().map(|&k| Key(k)).collect());
+        outline.kind = kind;
+        outline.depth = self.depth;
+        outline.open = open;
+        outline.group = group;
+        Some(outline)
     }
 }
 
@@ -902,6 +1121,7 @@ fn support_bits(support: Support) -> u32 {
     compare
         | bit(support.sort, BINNACLE_SUPPORT_SORT)
         | bit(support.one_of, BINNACLE_SUPPORT_ONE_OF)
+        | bit(support.group, BINNACLE_SUPPORT_GROUP)
         | support.text.map_or(0, |t| {
             BINNACLE_SUPPORT_TEXT | bit(t.regex, BINNACLE_SUPPORT_TEXT_REGEX)
         })
@@ -1112,6 +1332,128 @@ impl BinnacleValue {
     }
 }
 
+/// The placement a C tag names, if any.
+fn placement(tag: u32) -> Option<Placement> {
+    match tag {
+        BINNACLE_PLACEMENT_OFF => Some(Placement::Off),
+        BINNACLE_PLACEMENT_BEFORE => Some(Placement::Before),
+        BINNACLE_PLACEMENT_AFTER => Some(Placement::After),
+        _ => None,
+    }
+}
+
+fn placement_tag(placement: Placement) -> u32 {
+    match placement {
+        Placement::Off => BINNACLE_PLACEMENT_OFF,
+        Placement::Before => BINNACLE_PLACEMENT_BEFORE,
+        Placement::After => BINNACLE_PLACEMENT_AFTER,
+    }
+}
+
+impl From<&Level> for BinnacleLevel {
+    fn from(level: &Level) -> Self {
+        #[allow(unreachable_patterns)] // Levels added to the Grid later are OTHER.
+        let (kind, field, subtotal) = match level {
+            Level::Field { field, subtotal } => {
+                (BINNACLE_LEVEL_FIELD, field.0, placement_tag(*subtotal))
+            }
+            Level::Values => (BINNACLE_LEVEL_VALUES, 0, BINNACLE_PLACEMENT_OFF),
+            _ => (BINNACLE_LEVEL_OTHER, 0, BINNACLE_PLACEMENT_OFF),
+        };
+        BinnacleLevel {
+            kind,
+            field,
+            subtotal,
+        }
+    }
+}
+
+impl BinnacleLevel {
+    /// The level, or `None` if its kind or placement is unknown; a VALUES
+    /// level ignores both of its other fields.
+    fn to_core(self) -> Option<Level> {
+        match self.kind {
+            BINNACLE_LEVEL_FIELD => Some(Level::Field {
+                field: Key(self.field),
+                subtotal: placement(self.subtotal)?,
+            }),
+            BINNACLE_LEVEL_VALUES => Some(Level::Values),
+            _ => None,
+        }
+    }
+}
+
+impl BinnacleAggregateValue {
+    /// The value, or `None` if `has_field` is not 0 or 1 or the aggregate is
+    /// not UTF-8.
+    ///
+    /// # Safety
+    /// A non-NULL `aggregate.data` is valid for `aggregate.len` reads.
+    unsafe fn to_core(self) -> Option<AggregateValue> {
+        let field = match self.has_field {
+            0 => None,
+            1 => Some(Key(self.field)),
+            _ => return None,
+        };
+        // SAFETY: the caller's contract.
+        let bytes = unsafe { borrowed(self.aggregate.data, self.aggregate.len) };
+        Some(AggregateValue::new(field, std::str::from_utf8(bytes).ok()?))
+    }
+}
+
+impl BinnacleGrouping {
+    /// The grouping, or `None` if a tag or flag is unknown or text is not
+    /// UTF-8.
+    ///
+    /// # Safety
+    /// Each non-NULL `levels` is valid for `levels_len` reads, `except` for
+    /// `except_len`, `values` for `values_len` (each aggregate as
+    /// [`BinnacleAggregateValue::to_core`] requires) and `slicers` for
+    /// `slicers_len` (each as [`BinnacleCondition::to_core`] requires).
+    unsafe fn to_core(self) -> Option<Grouping> {
+        let mut grouping = Grouping::default();
+        for axis in Axis::ALL {
+            let a = self.axes[axis.index()];
+            // SAFETY: the caller's contract.
+            *grouping.levels_mut(axis) = unsafe { borrowed(a.levels, a.levels_len) }
+                .iter()
+                .map(|l| l.to_core())
+                .collect::<Option<Vec<_>>>()?;
+            let depth = match a.expand_all {
+                0 => Depth::Levels(a.expand_depth),
+                1 => Depth::All,
+                _ => return None,
+            };
+            // SAFETY: the caller's contract.
+            let except = unsafe { borrowed(a.except, a.except_len) };
+            let g = grouping.axis_mut(axis);
+            g.grand_total = placement(a.grand_total)?;
+            g.form = match a.form {
+                BINNACLE_FORM_OUTLINE => Form::Outline,
+                BINNACLE_FORM_HEADER => Form::Header,
+                _ => return None,
+            };
+            g.expand = Expand {
+                depth,
+                except: except.iter().map(|&k| Key(k)).collect(),
+            };
+        }
+        // SAFETY: the caller's contract.
+        grouping.values = unsafe { borrowed(self.values, self.values_len) }
+            .iter()
+            // SAFETY: the caller's contract.
+            .map(|v| unsafe { v.to_core() })
+            .collect::<Option<Vec<_>>>()?;
+        // SAFETY: the caller's contract.
+        grouping.slicers = unsafe { borrowed(self.slicers, self.slicers_len) }
+            .iter()
+            // SAFETY: the caller's contract.
+            .map(|c| unsafe { c.to_core() })
+            .collect::<Option<Vec<_>>>()?;
+        Some(grouping)
+    }
+}
+
 impl BinnacleViewSpec {
     /// The View Spec, or `None` if a direction, tag or flag is unknown or
     /// text is not UTF-8.
@@ -1120,9 +1462,16 @@ impl BinnacleViewSpec {
     /// Each non-NULL `sort` is valid for `sort_len` reads, `conditions` for
     /// `conditions_len` and `hidden` for `hidden_len`, and each quick filter
     /// present and condition as
-    /// [`BinnacleTextQuery::to_core`] requires.
+    /// [`BinnacleTextQuery::to_core`] requires; a grouping present as
+    /// [`BinnacleGrouping::to_core`] requires.
     unsafe fn to_core(self) -> Option<ViewSpec> {
-        let mut spec = ViewSpec::default();
+        let grouping = match self.has_grouping {
+            0 => None,
+            // SAFETY: the caller's contract.
+            1 => Some(unsafe { self.grouping.to_core() }?),
+            _ => return None,
+        };
+        let mut spec = ViewSpec::default().with_grouping(grouping);
         for axis in Axis::ALL {
             let view = self.axes[axis.index()];
             // SAFETY: the caller's contract.
@@ -1240,6 +1589,8 @@ pub extern "C" fn binnacle_grid_new(
     Box::into_raw(Box::new(BinnacleGrid {
         grid: Grid::new(rows, cols),
         strips: Default::default(),
+        ancestors: Default::default(),
+        outline_texts: Default::default(),
         headers: Default::default(),
         picked: Default::default(),
         runs: Default::default(),
@@ -1251,6 +1602,10 @@ pub extern "C" fn binnacle_grid_new(
         quick_keys: [Vec::new(), Vec::new()],
         conditions: Default::default(),
         hidden: Default::default(),
+        levels: Default::default(),
+        excepts: Default::default(),
+        aggregates: Default::default(),
+        slicers: Default::default(),
         edit_keys: Vec::new(),
         hidden_listed: Default::default(),
         listed: Default::default(),
@@ -1410,6 +1765,32 @@ pub unsafe extern "C" fn binnacle_grid_set_window_sized(
     unsafe {
         with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_window_sized(axis, start, &keys, sizes, min_size))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; a non-NULL `outlines` is valid for `len`
+/// reads, each as [`BinnacleOutline::to_core`] requires.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_outlines(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    start: u64,
+    outlines: *const BinnacleOutline,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let outlines = unsafe { borrowed(outlines, len) }
+        .iter()
+        // SAFETY: the caller's contract.
+        .map(|o| unsafe { o.to_core() })
+        .collect::<Option<Vec<_>>>();
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_outlines(axis(axis_tag)?, start, &outlines?);
+            Some(())
         })
     }
 }
@@ -1648,8 +2029,43 @@ impl BinnacleGrid {
         let damage = snap.damage();
         for axis in Axis::ALL {
             let strip = &mut self.strips[axis.index()];
+            let ancestors = &mut self.ancestors[axis.index()];
+            let texts = &mut self.outline_texts[axis.index()];
             strip.clear();
-            strip.extend(snap.drawn(axis).map(BinnacleStripItem::from));
+            ancestors.clear();
+            texts.clear();
+            // Ancestors and texts first, then the items, so the pointers
+            // taken after stay valid.
+            let mut spans = Vec::new();
+            for item in snap.drawn(axis) {
+                let outline = snap.outline(axis, item.position).map(|o| {
+                    let (keys, text) = (ancestors.len(), texts.len());
+                    ancestors.extend(o.ancestors.iter().map(|k| k.0));
+                    if let Some(GroupOf {
+                        value: Value::Text(t),
+                        ..
+                    }) = &o.group
+                    {
+                        texts.push_str(t);
+                    }
+                    (o, keys, text)
+                });
+                spans.push((item, outline));
+            }
+            strip.extend(spans.into_iter().map(|(item, outline)| {
+                let Some((o, keys, text)) = outline else {
+                    return BinnacleStripItem::from(item);
+                };
+                BinnacleStripItem {
+                    has_outline: 1,
+                    outline: outline_to_c(
+                        o,
+                        ancestors.as_ptr().wrapping_add(keys),
+                        texts.as_ptr().wrapping_add(text),
+                    ),
+                    ..BinnacleStripItem::from(item)
+                }
+            }));
             let headers = &mut self.headers[axis.index()];
             headers.clear();
             headers.extend(snap.headers(axis).map(|h| {
@@ -1877,6 +2293,64 @@ impl BinnacleGrid {
         }
     }
 
+    /// `grouping` in C form, copied into the handle's grouping buffers.
+    fn grouping_to_c(&mut self, grouping: &Grouping) -> BinnacleGrouping {
+        let mut c = BinnacleGrouping::default();
+        for axis in Axis::ALL {
+            let levels = &mut self.levels[axis.index()];
+            levels.clear();
+            levels.extend(grouping.levels(axis).iter().map(BinnacleLevel::from));
+            let g = grouping.axis(axis);
+            let except = &mut self.excepts[axis.index()];
+            except.clear();
+            except.extend(g.expand.except.iter().map(|k| k.0));
+            let (expand_all, expand_depth) = match g.expand.depth {
+                Depth::All => (1, 0),
+                Depth::Levels(n) => (0, n),
+            };
+            c.axes[axis.index()] = BinnacleGroupedAxis {
+                levels: levels.as_ptr(),
+                levels_len: levels.len(),
+                grand_total: placement_tag(g.grand_total),
+                form: match g.form {
+                    Form::Outline => BINNACLE_FORM_OUTLINE,
+                    Form::Header => BINNACLE_FORM_HEADER,
+                },
+                expand_all,
+                expand_depth,
+                except: except.as_ptr(),
+                except_len: except.len(),
+            };
+        }
+        // Texts first, then the values, so the pointers taken after stay
+        // valid.
+        let (texts, values) = &mut self.aggregates;
+        texts.clear();
+        values.clear();
+        for v in &grouping.values {
+            texts.push_str(&v.aggregate);
+        }
+        let mut at = 0;
+        values.extend(grouping.values.iter().map(|v| {
+            let data = texts.as_ptr().wrapping_add(at);
+            at += v.aggregate.len();
+            BinnacleAggregateValue {
+                has_field: flag(v.field.is_some()),
+                field: v.field.map_or(0, |k| k.0),
+                aggregate: BinnacleText {
+                    data,
+                    len: v.aggregate.len(),
+                },
+            }
+        }));
+        self.slicers.fill(&grouping.slicers);
+        c.values = values.as_ptr();
+        c.values_len = values.len();
+        c.slicers = self.slicers.items.as_ptr();
+        c.slicers_len = self.slicers.items.len();
+        c
+    }
+
     /// Takes the oldest Effect, keeping its text in the handle.
     fn poll_effect(&mut self) -> Option<BinnacleEffect> {
         let stamped = self.grid.poll_effect()?;
@@ -1975,6 +2449,10 @@ impl BinnacleGrid {
                         hidden_len: hidden.len(),
                     };
                 }
+                if let Some(grouping) = &spec.grouping {
+                    effect.view.has_grouping = 1;
+                    effect.view.grouping = self.grouping_to_c(grouping);
+                }
                 let on = |kind, axis| BinnacleViewEdit {
                     kind,
                     axis: axis_tag(axis),
@@ -2028,6 +2506,11 @@ impl BinnacleGrid {
                             ..on(BINNACLE_VIEW_EDIT_SHOW, axis)
                         }
                     }
+                    ViewEdit::Group { axis, field } => BinnacleViewEdit {
+                        key: field.0,
+                        ..on(BINNACLE_VIEW_EDIT_GROUP, axis)
+                    },
+                    ViewEdit::Ungroup { axis } => on(BINNACLE_VIEW_EDIT_UNGROUP, axis),
                     _ => BinnacleViewEdit::default(),
                 };
             }
@@ -2165,6 +2648,30 @@ pub unsafe extern "C" fn binnacle_grid_request_view(
     let spec = unsafe { view_spec(spec) };
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| spec.map(|s| h.grid.request_view(s))) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_group_by(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    field: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.group_by(axis, Key(field)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_ungroup(grid: *mut BinnacleGrid, axis_tag: u32) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { with_handle(grid, |h| axis(axis_tag).map(|axis| h.grid.ungroup(axis))) }
 }
 
 /// # Safety
@@ -2333,7 +2840,8 @@ pub unsafe extern "C" fn binnacle_grid_set_support(
         | BINNACLE_SUPPORT_TEXT_REGEX
         | BINNACLE_SUPPORT_ONE_OF
         | BINNACLE_SUPPORT_COMPARE_NUMBERS
-        | BINNACLE_SUPPORT_COMPARE_DATES;
+        | BINNACLE_SUPPORT_COMPARE_DATES
+        | BINNACLE_SUPPORT_GROUP;
     let compare =
         match support & (BINNACLE_SUPPORT_COMPARE_NUMBERS | BINNACLE_SUPPORT_COMPARE_DATES) {
             0 => Some(None),
@@ -2357,6 +2865,7 @@ pub unsafe extern "C" fn binnacle_grid_set_support(
                 .with_text(text)
                 .with_one_of(support & BINNACLE_SUPPORT_ONE_OF != 0)
                 .with_compare(compare)
+                .with_group(support & BINNACLE_SUPPORT_GROUP != 0)
         });
     // SAFETY: the caller's contract.
     unsafe {
