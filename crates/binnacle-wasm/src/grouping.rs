@@ -3,8 +3,8 @@
 //! names with IDs: Keys as `u64` (a `bigint` in JS), names as strings.
 
 use binnacle_core::{
-    Aggregate, AggregateValue, Depth, Expand, Form, GroupedAxis, Grouping, ItemKind, Key, Level,
-    OpenState, Outline, Placement, Value,
+    Aggregate, AggregateValue, Depth, Expand, Form, GroupOf, GroupedAxis, Grouping, ItemKind, Key,
+    Level, OpenState, Outline, Placement, Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -279,6 +279,33 @@ pub struct WireOutline {
     pub ancestors: Vec<u64>,
     #[serde(default)]
     pub group: Option<WireGroupOf>,
+    /// On a Group Item, how many items are shown under it.
+    #[serde(default)]
+    pub span: f64,
+    /// The group of each ancestor, outermost first.
+    #[serde(default)]
+    pub path: Vec<WireGroupOf>,
+}
+
+impl From<&GroupOf> for WireGroupOf {
+    fn from(g: &GroupOf) -> Self {
+        WireGroupOf {
+            field: g.field.0,
+            value: match &g.value {
+                Value::Text(t) => Some(t.clone()),
+                Value::Blank => None,
+            },
+        }
+    }
+}
+
+impl From<WireGroupOf> for GroupOf {
+    fn from(g: WireGroupOf) -> Self {
+        GroupOf {
+            field: Key(g.field),
+            value: Value::of(g.value.as_deref()),
+        }
+    }
 }
 
 impl From<&Outline> for WireItemKind {
@@ -309,13 +336,9 @@ impl From<&Outline> for WireOutline {
             depth: o.depth,
             open: o.into(),
             ancestors: o.ancestors.iter().map(|k| k.0).collect(),
-            group: o.group.as_ref().map(|g| WireGroupOf {
-                field: g.field.0,
-                value: match &g.value {
-                    Value::Text(t) => Some(t.clone()),
-                    Value::Blank => None,
-                },
-            }),
+            group: o.group.as_ref().map(WireGroupOf::from),
+            span: o.span as f64,
+            path: o.path.iter().map(WireGroupOf::from).collect(),
         }
     }
 }
@@ -331,7 +354,9 @@ impl From<WireOutline> for Outline {
         let mut outline = match w.group {
             Some(g) => Outline::group(ancestors, open, Key(g.field), Value::of(g.value.as_deref())),
             None => Outline::leaf(ancestors),
-        };
+        }
+        .with_span(w.span as u64)
+        .with_path(w.path.into_iter().map(GroupOf::from).collect());
         outline.kind = match w.kind {
             WireItemKind::Leaf => ItemKind::Leaf,
             WireItemKind::Group => ItemKind::Group,
@@ -388,7 +413,12 @@ mod tests {
                 OpenState::Open,
                 Key(7),
                 Value::Text("Ø".into()),
-            ),
+            )
+            .with_span(12)
+            .with_path(vec![GroupOf {
+                field: Key(6),
+                value: Value::Blank,
+            }]),
             Outline::subtotal(vec![Key(9), Key(10)], Key(7), Value::Text("a".into())),
             Outline::grand_total(),
         ];

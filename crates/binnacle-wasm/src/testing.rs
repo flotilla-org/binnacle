@@ -4,11 +4,11 @@
 
 use binnacle_core::{
     Action, Aggregate, AggregateValue, Axis, AxisConfig, ChangeNotice, Compared, Comparison,
-    Condition, ConditionState, Cursor, Depth, DropTarget, Edge, Effect, FilterSpec, FindDirection,
-    FindMatch, FindQuery, FocusStep, Grid, Grouping, HeaderPlacement, Key, Level, Mode, Modifiers,
-    OpenState, Outline, Placement, Placements, PointerEvent, Rect, Scalar, Searched, Snapshot,
-    SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    Condition, ConditionState, Cursor, Depth, DrillDown, DropTarget, Edge, Effect, FilterSpec,
+    FindDirection, FindMatch, FindQuery, FocusStep, Grid, GroupOf, Grouping, HeaderPlacement, Key,
+    Level, Mode, Modifiers, OpenState, Outline, Placement, Placements, PointerEvent, Rect, Scalar,
+    Searched, Snapshot, SortColumn, SortSpec, Stamped, Support, TextQuery, TextSupport, Totals,
+    Value, ViewEdit, ViewSpec, Viewport,
 };
 use serde::Serialize;
 
@@ -677,7 +677,23 @@ pub fn every_effect() -> Vec<WireStamped> {
     };
     [
         Effect::TextTyped { text: "é".into() },
-        Effect::Activated { row, col },
+        Effect::Activated {
+            row,
+            col,
+            drill_down: Some(DrillDown::new(vec![
+                Condition::one_of(col, vec![Value::Text("Bér 🚢".into()), Value::Blank]),
+                Condition::compare(
+                    col,
+                    Comparison::Between(Scalar::Number(1.5), Scalar::date(2024, 4, 1)),
+                ),
+            ])),
+        },
+        Effect::CopyRequested {
+            rows: vec![9..12, 0..3, 2_000_000_000_000..2_000_000_000_001],
+            cols: vec![],
+            row_labels: true,
+            col_labels: false,
+        },
         Effect::EditRequested { row, col },
         Effect::EditCancelled { row, col },
         Effect::FocusChanged { row, col },
@@ -1236,9 +1252,15 @@ pub fn scenario(name: &str) -> Grid {
                         1 => OpenState::Closed,
                         _ => OpenState::Open,
                     };
-                    Outline::group(vec![], open, key(1), value)
+                    Outline::group(vec![], open, key(1), value).with_span(4)
                 }
-                n => Outline::leaf(vec![key(p - n)]),
+                n => {
+                    let group = GroupOf {
+                        field: key(1),
+                        value: Value::Text(format!("group {}", p / 5)),
+                    };
+                    Outline::leaf(vec![key(p - n)]).with_path(vec![group])
+                }
             })
             .collect();
         grid.set_outlines(Axis::Rows, 0, &outlines);
@@ -1505,6 +1527,7 @@ mod tests {
             .map(|s| match &s.effect {
                 crate::effect::WireEffect::TextTyped { .. } => "TextTyped",
                 crate::effect::WireEffect::Activated { .. } => "Activated",
+                crate::effect::WireEffect::CopyRequested { .. } => "CopyRequested",
                 crate::effect::WireEffect::EditRequested { .. } => "EditRequested",
                 crate::effect::WireEffect::EditCancelled { .. } => "EditCancelled",
                 crate::effect::WireEffect::FocusChanged { .. } => "FocusChanged",
@@ -1523,6 +1546,6 @@ mod tests {
             .collect();
         let mut unique = seen.clone();
         unique.dedup();
-        assert_eq!(unique.len(), 16, "{seen:?}");
+        assert_eq!(unique.len(), 17, "{seen:?}");
     }
 }

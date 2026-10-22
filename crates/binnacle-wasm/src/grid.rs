@@ -523,6 +523,12 @@ impl WebGrid {
         self.grid.action(Action::Activate);
     }
 
+    /// The Copy Action (Ctrl/Cmd+C): `CopyRequested` for the range, or the
+    /// focused cell.
+    pub fn copy(&mut self) {
+        self.grid.action(Action::Copy);
+    }
+
     pub fn begin_edit(&mut self) {
         self.grid.action(Action::BeginEdit);
     }
