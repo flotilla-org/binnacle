@@ -1219,6 +1219,17 @@ impl Grid {
     }
 
     /// The View Spec the latest request asks for, else the applied one.
+    /// Cycles the sort of `axis` by `key`, an item of the other axis, as a
+    /// Sort header click on its header does: ascending, descending, then
+    /// off, keeping the rest of the sort if `multi`. A level name in the
+    /// corner sorts by its field so, header or not. Nothing happens unless
+    /// the Table Source sorts `axis` by `key`.
+    pub fn cycle_sort(&mut self, axis: Axis, key: Key, multi: bool) {
+        if self.view.support(axis, key).sort {
+            self.edit_view(ViewEdit::CycleSort { axis, key, multi });
+        }
+    }
+
     pub(crate) fn latest_view(&self) -> &ViewSpec {
         self.view.requested.as_ref().unwrap_or(&self.view.applied)
     }
@@ -1328,14 +1339,6 @@ impl Grid {
         let Some(key) = self.axis(axis).key_at(position) else {
             return;
         };
-        let sorted = axis.other();
-        if !self.view.support(sorted, key).sort {
-            return;
-        }
-        self.edit_view(ViewEdit::CycleSort {
-            axis: sorted,
-            key,
-            multi: modifiers.shift,
-        });
+        self.cycle_sort(axis.other(), key, modifiers.shift);
     }
 }

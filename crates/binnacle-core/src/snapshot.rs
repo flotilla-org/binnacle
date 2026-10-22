@@ -1,3 +1,4 @@
+use crate::corner::CornerGrid;
 use crate::find::{FindMatch, FindQuery};
 use crate::focus::FocusEnd;
 use crate::gesture::Mode;
@@ -277,6 +278,12 @@ impl<'a> Snapshot<'a> {
     /// order, Strip by Strip: a span never straddles a pinned edge.
     pub fn spans(&self, axis: Axis) -> &'a [HeaderSpan] {
         &self.grid.spans[axis.index()]
+    }
+
+    /// The corner grid where the tiers of the two Header Bands cross: each
+    /// cell's geometry and the levels each tier names.
+    pub fn corner(&self) -> &'a CornerGrid {
+        &self.grid.corner
     }
 
     /// The scrolling Strip of `axis`: the visible items that follow the
