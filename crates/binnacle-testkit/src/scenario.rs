@@ -353,7 +353,8 @@ impl PumpSource for ColumnMajorTable {
 
 /// A table whose rows can be grouped by one column, serving outlines made
 /// by hand: the plain rows, and the grouped items in the order the test
-/// gives them. Grouping by the column (and nothing else) is supported,
+/// gives them, whatever the grouping asked for, so long as its outermost
+/// level is the column. Grouping by the column (and nothing else) is supported,
 /// and the column leaves the columns while the rows are grouped. Columns
 /// are keyed by Position.
 pub struct GroupedTable {
@@ -418,11 +419,10 @@ impl PumpSource for GroupedTable {
     fn view(&mut self, spec: &ViewSpec) -> Viewed {
         let wanted = spec.grouping.clone().filter(|g| {
             g.col_levels.is_empty()
-                && g.row_levels.len() == 1
-                && g.groups_by(Axis::Rows, self.field)
+                && g.row_levels.first().and_then(|l| l.field_key()) == Some(self.field)
         });
         let applied = ViewSpec::default().with_grouping(wanted.clone());
-        let changed = wanted.is_some() != self.grouping.is_some();
+        let changed = wanted != self.grouping;
         self.grouping = wanted;
         let notices = if changed {
             vec![

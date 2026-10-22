@@ -2,7 +2,8 @@ use std::fmt::Write;
 
 use binnacle_core::{
     Axis, Comparison, ConditionKind, Cursor, DropTarget, Edge, FilterSpec, FocusEnd, Grouping,
-    ItemKind, Key, Level, Mode, OpenState, Outline, Searched, Snapshot, SortDirection, SortSpec,
+    ItemKind, Key, Level, Mode, OpenState, Outline, Placement, Searched, Snapshot, SortDirection,
+    SortSpec,
     StripItem, TextQuery, Value, ViewSpec,
 };
 
@@ -356,16 +357,26 @@ fn outline_text(outline: &Outline) -> String {
     text
 }
 
-/// A grouping as `group`, the row levels' fields, `cols` and the column
-/// levels' if any, then `values` and each as `aggregate(field)` (`-` for
-/// none).
+/// A grouping as `group`, the row levels' fields (each with `/before` or
+/// `/after` where it places a Subtotal), `cols` and the column levels' if
+/// any, then `values` and each as `aggregate(field)` (`-` for none, then
+/// `;` and each parameter), then each axis's Grand Total placed, as `total
+/// rows after`.
 fn grouping_text(grouping: &Grouping) -> String {
+    let placement = |p: Placement| match p {
+        Placement::Before => "before",
+        Placement::After => "after",
+        Placement::Off => "off",
+    };
     let levels = |levels: &[Level]| {
         let names: Vec<String> = levels
             .iter()
-            .map(|l| {
-                l.field_key()
-                    .map_or("values".to_string(), |k| k.0.to_string())
+            .map(|l| match l {
+                Level::Field { field, subtotal } => match subtotal {
+                    Placement::Off => field.0.to_string(),
+                    p => format!("{}/{}", field.0, placement(*p)),
+                },
+                _ => "values".to_string(),
             })
             .collect();
         names.join(",")
@@ -378,11 +389,20 @@ fn grouping_text(grouping: &Grouping) -> String {
         .values
         .iter()
         .map(|v| {
-            let field = v.field.map_or("-".to_string(), |k| k.0.to_string());
+            let mut field = v.field.map_or("-".to_string(), |k| k.0.to_string());
+            for p in &v.params {
+                let _ = write!(field, ";{p}");
+            }
             format!("{}({field})", v.aggregate)
         })
         .collect();
     let _ = write!(text, " values {}", values.join(","));
+    for axis in Axis::ALL {
+        let p = grouping.axis(axis).grand_total;
+        if p != Placement::Off {
+            let _ = write!(text, " total {axis:?} {}", placement(p));
+        }
+    }
     text
 }
 

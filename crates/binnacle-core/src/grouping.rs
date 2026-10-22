@@ -44,15 +44,22 @@ impl Level {
     }
 }
 
+/// The Key of an axis's Grand Total, whoever groups it: the grouping layer
+/// names it so, and a grouped Table Source that skips the layer must too,
+/// so the Grid can pin a Grand Total placed after before it is in a Window.
+pub const GRAND_TOTAL: Key = Key(1 << 63);
+
 /// One value a grouped table shows: an aggregate, an open name such as
 /// `sum`, `count`, `average`, `minimum`, `maximum`, `distinct count` or one
 /// the Table Source declares, over a base field (`None` for a count of
-/// items).
+/// items), with the parameters a declared aggregate takes, passed to the
+/// backend as they are.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct AggregateValue {
     pub field: Option<Key>,
     pub aggregate: String,
+    pub params: Vec<String>,
 }
 
 impl AggregateValue {
@@ -60,12 +67,24 @@ impl AggregateValue {
         AggregateValue {
             field,
             aggregate: aggregate.into(),
+            params: Vec::new(),
         }
     }
 
     /// The count of items in each group.
     pub fn count() -> Self {
         AggregateValue::new(None, "count")
+    }
+
+    /// `aggregate` of `field`, such as `sum` of the weights.
+    pub fn of(field: Key, aggregate: impl Into<String>) -> Self {
+        AggregateValue::new(Some(field), aggregate)
+    }
+
+    /// This value with the parameters `params`.
+    pub fn with_params(mut self, params: Vec<String>) -> Self {
+        self.params = params;
+        self
     }
 }
 
@@ -185,6 +204,35 @@ impl Grouping {
         }
     }
 
+    /// The value whose name is the table's caption: the only one, where
+    /// there is one. Several values form the values pseudo-level instead.
+    pub fn caption(&self) -> Option<&AggregateValue> {
+        match self.values.as_slice() {
+            [value] => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Whether `axis` is grouped and its Grand Total placed after, which
+    /// the Grid pins at the trailing edge by default.
+    pub fn grand_total_after(&self, axis: Axis) -> bool {
+        !self.levels(axis).is_empty() && self.axis(axis).grand_total == Placement::After
+    }
+
+    /// Whether the item `outline` describes on `axis` draws blank apart
+    /// from its label and count: an open Group Item whose level places a
+    /// Subtotal, which carries the group's figures instead (as in Excel). A
+    /// closed Group Item carries them itself.
+    pub fn blank(&self, axis: Axis, outline: &Outline) -> bool {
+        let subtotal = match self.levels(axis).get(outline.depth as usize) {
+            Some(Level::Field { subtotal, .. }) => *subtotal,
+            _ => Placement::Off,
+        };
+        outline.kind == ItemKind::Group
+            && outline.open == OpenState::Open
+            && subtotal != Placement::Off
+    }
+
     /// Whether `axis` is grouped by `field`.
     pub fn groups_by(&self, axis: Axis, field: Key) -> bool {
         self.levels(axis)
@@ -267,6 +315,30 @@ impl Outline {
             open,
             ancestors,
             group: Some(GroupOf { field, value }),
+        }
+    }
+
+    /// The Subtotal of the group `field` = `value`, whose Group Item is the
+    /// last of `ancestors`: it sits inside its group, a level below the
+    /// Group Item.
+    pub fn subtotal(ancestors: Vec<Key>, field: Key, value: Value) -> Self {
+        Outline {
+            kind: ItemKind::Subtotal,
+            depth: ancestors.len() as u32,
+            open: OpenState::CantOpen,
+            ancestors,
+            group: Some(GroupOf { field, value }),
+        }
+    }
+
+    /// The Grand Total of an axis, at the top level.
+    pub const fn grand_total() -> Self {
+        Outline {
+            kind: ItemKind::GrandTotal,
+            depth: 0,
+            open: OpenState::CantOpen,
+            ancestors: Vec::new(),
+            group: None,
         }
     }
 

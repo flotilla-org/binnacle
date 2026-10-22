@@ -2,8 +2,8 @@
 //! Table Source's outlines reaching the Snapshot, and ungrouping.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Effect, FocusStep, Grid, Grouping, Key, OpenState, Outline, Support,
-    Value, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Edge, Effect, FocusStep, GRAND_TOTAL, Grid, Grouping, ItemKind, Key,
+    Level, OpenState, Outline, Placement, Support, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_testkit::{GroupedTable, Scenario};
 
@@ -144,4 +144,112 @@ fn arrows_step_through_group_items_like_any_item() {
         .map(Some)
         .collect();
     assert_eq!(visited, want);
+}
+
+const PORT: Key = Key(2);
+
+/// The six shipments by region, then port, each level with a Subtotal
+/// after its group, and the Grand Total after everything: 19 items, more
+/// than the viewport shows.
+fn nested() -> Scenario<GroupedTable> {
+    let text = |name: &str| Value::Text(name.into());
+    let mut items = Vec::new();
+    let regions: [(Key, &str, &[(Key, &str, &[u64])]); 2] = [
+        (NORTH, "North", &[(Key(110), "Aberdeen", &[0, 3]), (Key(111), "Bergen", &[4])]),
+        (SOUTH, "South", &[(Key(120), "Cadiz", &[1, 2, 5])]),
+    ];
+    let mut subtotal = 200;
+    for (region, name, ports) in regions {
+        items.push((region, Outline::group(vec![], OpenState::Open, REGION, text(name))));
+        for &(port, port_name, leaves) in ports {
+            let up = vec![region];
+            items.push((port, Outline::group(up, OpenState::Open, PORT, text(port_name))));
+            for &leaf in leaves {
+                items.push((Key(leaf), Outline::leaf(vec![region, port])));
+            }
+            subtotal += 1;
+            let sub = Outline::subtotal(vec![region, port], PORT, text(port_name));
+            items.push((Key(subtotal), sub));
+        }
+        subtotal += 1;
+        let sub = Outline::subtotal(vec![region], REGION, text(name));
+        items.push((Key(subtotal), sub));
+    }
+    items.push((GRAND_TOTAL, Outline::grand_total()));
+    let grid = Grid::new(
+        AxisConfig::new(6, 1.0).header(1.0),
+        AxisConfig::new(3, 5.0).header(3.0),
+    );
+    Scenario::new(
+        grid,
+        GroupedTable::new((0..6).map(Key).collect(), 3, REGION, items),
+    )
+}
+
+/// Rows by region, then port, Subtotals after each, the Grand Total placed
+/// as `total` says.
+fn by_region_and_port(total: Placement) -> ViewSpec {
+    let mut grouping = Grouping::rows_by(REGION);
+    grouping.row_levels = vec![
+        Level::Field {
+            field: REGION,
+            subtotal: Placement::After,
+        },
+        Level::Field {
+            field: PORT,
+            subtotal: Placement::After,
+        },
+    ];
+    grouping.rows.grand_total = total;
+    ViewSpec::default().with_grouping(Some(grouping))
+}
+
+fn trailing_pins(s: &mut Scenario<GroupedTable>) -> Vec<Key> {
+    s.frame(V).pins(Axis::Rows, Edge::Trailing).collect()
+}
+
+#[test]
+fn a_grand_total_placed_after_is_pinned_by_default_and_drawn_as_one() {
+    let mut s = nested();
+    s.frame(V);
+    s.input(|g| g.request_view(by_region_and_port(Placement::After)));
+    let mut out = s.step(
+        "region, then port, Subtotals after: the Grand Total is pinned at the bottom, outside the Window",
+        V,
+    );
+    let snap = s.frame(V);
+    let pinned = snap.pinned(Axis::Rows, Edge::Trailing);
+    assert_eq!(pinned.len(), 1);
+    assert_eq!(pinned[0].key, Some(GRAND_TOTAL));
+    let outline = snap.outline(Axis::Rows, pinned[0].position);
+    assert_eq!(outline.map(|o| o.kind), Some(ItemKind::GrandTotal));
+    s.input(|g| g.unpin(Axis::Rows, GRAND_TOTAL));
+    out += &s.step("unpinned: it scrolls with the rest", V);
+    insta::assert_snapshot!(out);
+}
+
+#[test]
+fn an_unpinned_grand_total_stays_unpinned_until_placed_after_again() {
+    let mut s = nested();
+    s.frame(V);
+    s.input(|g| g.request_view(by_region_and_port(Placement::After)));
+    assert_eq!(trailing_pins(&mut s), vec![GRAND_TOTAL]);
+    s.input(|g| g.unpin(Axis::Rows, GRAND_TOTAL));
+    let mut other = by_region_and_port(Placement::After);
+    if let Some(Level::Field { subtotal, .. }) =
+        other.grouping.as_mut().unwrap().row_levels.get_mut(1)
+    {
+        *subtotal = Placement::Before;
+    }
+    s.input(|g| g.request_view(other));
+    assert_eq!(trailing_pins(&mut s), vec![], "another spec, still placed after");
+    s.input(|g| g.request_view(by_region_and_port(Placement::Before)));
+    assert_eq!(trailing_pins(&mut s), vec![], "placed before");
+    s.input(|g| g.request_view(by_region_and_port(Placement::After)));
+    assert_eq!(trailing_pins(&mut s), vec![GRAND_TOTAL], "placed after again");
+    s.input(|g| g.request_view(by_region_and_port(Placement::Off)));
+    assert_eq!(trailing_pins(&mut s), vec![], "off: the default pin goes");
+    s.input(|g| g.request_view(by_region_and_port(Placement::After)));
+    s.input(|g| g.request_view(ViewSpec::default()));
+    assert_eq!(trailing_pins(&mut s), vec![], "ungrouped");
 }

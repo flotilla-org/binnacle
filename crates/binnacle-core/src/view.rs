@@ -5,10 +5,10 @@ use std::hash::{Hash, Hasher};
 
 use crate::effect::Effect;
 use crate::grid::Grid;
-use crate::grouping::{AggregateValue, Grouping, Level};
+use crate::grouping::{AggregateValue, GRAND_TOTAL, Grouping, Level};
 use crate::pointer::Modifiers;
 use crate::sort::{HeaderSort, SortSpec};
-use crate::types::{Axis, Key, Position};
+use crate::types::{Axis, Edge, Key, Position};
 
 /// The items of the other axis a Text Query searches.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -800,6 +800,18 @@ impl Grid {
     /// new spec leaves out stays, shown as not applied.
     pub fn view_changed(&mut self, spec: ViewSpec, totals: Totals) {
         let wanted = self.latest_view().clone();
+        let after = |spec: &ViewSpec, axis| {
+            (spec.grouping.as_ref()).is_some_and(|g| g.grand_total_after(axis))
+        };
+        for axis in Axis::ALL {
+            // A Grand Total placed after is pinned when it comes, and the
+            // pin goes with it; unpinned, it stays so while it stays after.
+            match (after(&self.view.applied, axis), after(&spec, axis)) {
+                (false, true) => self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None),
+                (true, false) => self.unpin(axis, GRAND_TOTAL),
+                _ => {}
+            }
+        }
         self.view.applied = spec;
         self.view.totals = totals;
         if self.view.due == 0 {
