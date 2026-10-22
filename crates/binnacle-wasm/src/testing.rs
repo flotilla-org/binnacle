@@ -1182,6 +1182,9 @@ mod tests {
                             ConditionState::Applied,
                             ConditionState::Adding,
                             ConditionState::Adding,
+                            // The between of dates and the not at least.
+                            ConditionState::Adding,
+                            ConditionState::Adding,
                             ConditionState::Removing
                         ]
                     );
