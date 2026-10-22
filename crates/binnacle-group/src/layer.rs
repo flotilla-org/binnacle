@@ -1147,14 +1147,15 @@ impl<A> GroupingLayer<A> {
     }
 
     /// The Keys and outlines of the items at `range` on `axis`, from its
-    /// start up to the first one not fetched yet, which the next batch asks
-    /// for: the Grid draws the rest pending.
+    /// start up to the first one not fetched yet: the Grid draws the rest
+    /// pending. The next batch asks for everything in `range` not fetched.
     pub fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<(Key, Outline)> {
         let Some(count) = self.count(axis) else {
             return Vec::new();
         };
         self.frame += 1;
         let mut items = Vec::new();
+        let mut missed = false;
         let top = self.shape.top();
         for position in range.start..range.end.min(count) {
             let total = match self.shape.grand_total {
@@ -1163,18 +1164,29 @@ impl<A> GroupingLayer<A> {
                 Placement::Off => false,
             };
             if total {
-                items.push((GRAND_TOTAL, Outline::grand_total()));
+                if !missed {
+                    items.push((GRAND_TOTAL, Outline::grand_total()));
+                }
                 continue;
             }
             let (root, shape, frame) = (&self.root, &self.shape, self.frame);
             match item_at(root, shape, &mut self.keys, position - top, frame) {
-                Ok(item) => items.push(item),
+                Ok(item) if !missed => items.push(item),
+                Ok(_) => {}
+                // Past the first item missing, the rest are only asked for,
+                // so that one batch asks for all the Window lacks.
                 Err(ask) => {
-                    if !self.read.contains(&ask) {
+                    missed = true;
+                    let within = |a: &Ask| {
+                        a.path == ask.path
+                            && a.want == ask.want
+                            && a.range.start <= ask.range.start
+                            && ask.range.end <= a.range.end
+                    };
+                    if !self.misses.iter().any(within) {
                         self.read.push(ask.clone());
+                        self.misses.push(ask);
                     }
-                    self.misses.push(ask);
-                    break;
                 }
             }
         }

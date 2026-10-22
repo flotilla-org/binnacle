@@ -1159,7 +1159,10 @@ fn closed_groups_lay_out_before_they_are_fetched(tc: TestCase) {
 /// The pages each item of `items` is fetched in, by its index: whether it
 /// is a Group Item or a Leaf, its parent's path and the page's first
 /// index, with the page's size.
-fn pages(items: &[Described]) -> Vec<Option<((bool, Vec<Path>, u64), u64)>> {
+/// A page: whether of Group Items, its parent's path and its first index.
+type Page = (bool, Vec<Path>, u64);
+
+fn pages(items: &[Described]) -> Vec<Option<(Page, u64)>> {
     let mut index: HashMap<(bool, Vec<Path>), u64> = HashMap::new();
     let mut at = Vec::new();
     for d in items {
@@ -1225,7 +1228,7 @@ fn the_layer_holds_open_groups_and_a_bounded_cache_whatever_the_rows(tc: TestCas
         .count() as u64;
     let pages = pages(&want);
     let read = |range: Range<u64>| {
-        let mut seen: Vec<&(bool, Vec<Path>, u64)> = Vec::new();
+        let mut seen: Vec<&Page> = Vec::new();
         let mut n = 0;
         for (page, size) in pages[range.start as usize..range.end as usize]
             .iter()
@@ -1308,4 +1311,54 @@ fn items_are_located_after_their_pages_are_let_go(tc: TestCase) {
         let located = locate(&tc, &mut layer, &mut fake, keys[i]);
         assert_eq!(located, Located::Found(i as u64), "{:?}", want[i].item);
     }
+}
+
+/// A Window asks for everything it lacks in one batch, so a backend
+/// answering that batch whole fills it in one round trip.
+#[hegel::test(test_cases = 50)]
+fn a_window_asks_for_all_it_lacks_in_one_batch(tc: TestCase) {
+    let groups = tc.draw(gs::integers::<usize>().min_value(1).max_value(150));
+    let per = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
+    let rows = many(groups, per);
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
+    let first = depth(&tc, levels);
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::new();
+    layer.request_view(opening(levels, &shape, Expand::to(first)));
+    drive(&tc, &mut layer, &mut fake);
+    let count = layer.count(Axis::Rows).unwrap();
+    let start = tc.draw(gs::integers::<u64>().max_value(count.saturating_sub(1)));
+    let end = tc.draw(gs::integers::<u64>().min_value(start).max_value(count));
+    layer.window(Axis::Rows, start..end);
+    if let Some(batch) = layer.poll_batch() {
+        // Answered whole, as asked, in one go.
+        for request in &batch.requests {
+            let all = fake.under(&request.path);
+            let body = match request.want {
+                Want::Leaves => Body::Leaves {
+                    keys: all.iter().map(|r| r.0).collect(),
+                },
+                Want::Groups => {
+                    let groups = fake.groups(&request.path, levels);
+                    Body::Groups {
+                        total: groups.len() as u64,
+                        groups,
+                    }
+                }
+                _ => continue,
+            };
+            layer.answer(Answer {
+                stamp: batch.stamp,
+                id: Some(request.id),
+                path: request.path.clone(),
+                start: 0,
+                body,
+            });
+        }
+    }
+    assert_eq!(
+        layer.window(Axis::Rows, start..end).len() as u64,
+        end - start
+    );
 }
