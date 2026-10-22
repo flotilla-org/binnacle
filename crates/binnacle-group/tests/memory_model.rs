@@ -1,13 +1,17 @@
 //! The In-Memory Table Source under the grouping layer (`GroupedMemory`)
-//! against a naive model: rows grouped by one column, groups in ascending
-//! order of their value (blanks last) or in the user's direction when the
-//! user sorts by that column, Leaves in source order or the user's sort
-//! within their group, hidden rows left out, and the grouped column leaving
-//! the columns.
+//! against a naive model: rows grouped by one or two columns, with a count,
+//! a sum and a distinct count, Subtotals and the Grand Total placed before,
+//! after or nowhere. One sort rule orders siblings at every level: groups by
+//! the aggregate of the sorted column, or by their value when sorting by
+//! their own column, else in ascending order of their value (blanks last);
+//! Leaves in source order or the user's sort within their group. Hidden
+//! rows are left out, and the grouped columns leave the columns.
+
+use std::cmp::Ordering;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Grouping, ItemKind, Key, SortColumn, SortDirection, SortSpec, Value,
-    ViewSpec,
+    AggregateValue, Axis, ChangeNotice, Grouping, ItemKind, Key, Level, Placement, SortColumn,
+    SortDirection, SortSpec, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::MemorySource;
@@ -20,11 +24,12 @@ type Record = [Option<i64>; COLS];
 
 #[hegel::composite]
 fn record(tc: &TestCase) -> Record {
-    // Mostly a few values, so groups fill up; any i64 now and then.
+    // Mostly a few values, so groups fill up; larger ones now and then,
+    // small enough that any sum of them is exact.
     let value = || {
         gs::optional(hegel::one_of!(
             gs::integers::<i64>().min_value(-3).max_value(12),
-            gs::integers::<i64>()
+            gs::integers::<i64>().min_value(-(1 << 40)).max_value(1 << 40)
         ))
     };
     [tc.draw(value()), tc.draw(value()), tc.draw(value())]
@@ -42,79 +47,222 @@ fn text(v: Option<i64>) -> Value {
 }
 
 /// Orders by `a` then `b` as a sort column does: nulls last either way.
-fn order(a: Option<i64>, b: Option<i64>, direction: SortDirection) -> std::cmp::Ordering {
+fn order<T: PartialOrd>(a: Option<T>, b: Option<T>, direction: SortDirection) -> Ordering {
     match (a, b) {
-        (Some(a), Some(b)) => match direction {
-            SortDirection::Ascending => a.cmp(&b),
-            SortDirection::Descending => b.cmp(&a),
-        },
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
+        (Some(a), Some(b)) => {
+            let o = a.partial_cmp(&b).unwrap();
+            match direction {
+                SortDirection::Ascending => o,
+                SortDirection::Descending => o.reverse(),
+            }
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     }
 }
 
-/// What the model shows: each group's value with its count, then its Leaf
-/// Keys.
-fn model(
-    rows: &[Record],
-    field: usize,
-    sort: &SortSpec,
-    hidden: &[Key],
-) -> Vec<Result<(Value, u64), Key>> {
-    let mut kept: Vec<usize> = (0..rows.len())
+/// What a grouping asks for, as the model reads it.
+#[derive(Clone, Debug)]
+struct Asked {
+    /// The level columns, outermost first, each with its Subtotal.
+    levels: Vec<(usize, Placement)>,
+    grand_total: Placement,
+    /// The column summed, and the one counted distinctly.
+    sum: usize,
+    distinct: usize,
+}
+
+impl Asked {
+    fn values(&self) -> Vec<AggregateValue> {
+        vec![
+            AggregateValue::count(),
+            AggregateValue::of(Key(self.sum as u64), "sum"),
+            AggregateValue::of(Key(self.distinct as u64), "distinct count"),
+        ]
+    }
+
+    fn grouping(&self) -> Grouping {
+        let mut grouping = Grouping::rows_by(Key(self.levels[0].0 as u64));
+        grouping.row_levels = (self.levels.iter())
+            .map(|&(c, subtotal)| Level::Field {
+                field: Key(c as u64),
+                subtotal,
+            })
+            .collect();
+        grouping.values = self.values();
+        grouping.rows.grand_total = self.grand_total;
+        grouping
+    }
+}
+
+/// An item as the model describes it: a Summary Item by kind, its group's
+/// values outermost first and its aggregates; a Leaf by Key.
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    Summary(ItemKind, Vec<Value>, Vec<Figure>),
+    Leaf(Key),
+}
+
+/// The count, the sum and the distinct count of `rows`.
+fn figures(rows: &[Record], kept: &[usize], asked: &Asked) -> Vec<Figure> {
+    let sums: Vec<i64> = kept.iter().filter_map(|&r| rows[r][asked.sum]).collect();
+    let mut distinct: Vec<i64> = kept.iter().filter_map(|&r| rows[r][asked.distinct]).collect();
+    distinct.sort();
+    distinct.dedup();
+    vec![
+        Figure::Count(kept.len() as u64),
+        match sums.is_empty() {
+            true => Figure::Blank,
+            false => Figure::Number(sums.iter().sum::<i64>() as f64),
+        },
+        Figure::Count(distinct.len() as u64),
+    ]
+}
+
+/// The model: the grouped items as the one sort rule orders them.
+fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec<Item> {
+    let kept: Vec<usize> = (0..rows.len())
         .filter(|&i| !hidden.contains(&Key(i as u64)))
         .collect();
-    let group_direction = match sort.find(Key(field as u64)) {
-        Some((_, d)) => d,
-        None => SortDirection::Ascending,
-    };
-    kept.sort_by(|&a, &b| {
-        let mut o = order(rows[a][field], rows[b][field], group_direction);
-        for c in sort.columns() {
-            o = o.then(order(
-                rows[a][c.key.0 as usize],
-                rows[b][c.key.0 as usize],
-                c.direction,
-            ));
+    let levels: Vec<usize> = asked.levels.iter().map(|l| l.0).collect();
+    fn walk(
+        rows: &[Record],
+        kept: Vec<usize>,
+        asked: &Asked,
+        sort: &SortSpec,
+        path: Vec<Value>,
+        out: &mut Vec<Item>,
+    ) {
+        let depth = path.len();
+        let levels: Vec<usize> = asked.levels.iter().map(|l| l.0).collect();
+        let Some(&(field, subtotal)) = asked.levels.get(depth) else {
+            // Leaves: the user's sort on columns that are not levels, else
+            // source order.
+            let mut leaves = kept;
+            leaves.sort_by(|&a, &b| {
+                (sort.columns().iter())
+                    .filter(|c| !levels.contains(&(c.key.0 as usize)))
+                    .map(|c| {
+                        let c0 = c.key.0 as usize;
+                        order(rows[a][c0], rows[b][c0], c.direction)
+                    })
+                    .find(|o| o.is_ne())
+                    .unwrap_or(Ordering::Equal)
+            });
+            out.extend(leaves.into_iter().map(|r| Item::Leaf(Key(r as u64))));
+            return;
+        };
+        let mut groups: Vec<(Option<i64>, Vec<usize>)> = Vec::new();
+        for &r in &kept {
+            match groups.iter_mut().find(|(v, _)| *v == rows[r][field]) {
+                Some((_, members)) => members.push(r),
+                None => groups.push((rows[r][field], vec![r])),
+            }
         }
-        o
-    });
+        let label = sort.find(Key(field as u64)).map_or(SortDirection::Ascending, |(_, d)| d);
+        groups.sort_by(|a, b| {
+            let mut o = Ordering::Equal;
+            for c in sort.columns() {
+                if c.key.0 as usize == field {
+                    break;
+                }
+                let value = |v: &AggregateValue| v.field == Some(c.key);
+                if let Some(i) = asked.values().iter().position(value) {
+                    let (fa, fb) = (figures(rows, &a.1, asked)[i], figures(rows, &b.1, asked)[i]);
+                    let n = |f: Figure| match f {
+                        Figure::Count(n) => Some(n as f64),
+                        Figure::Number(n) => Some(n),
+                        Figure::Blank => None,
+                    };
+                    o = o.then(order(n(fa), n(fb), c.direction));
+                }
+            }
+            o.then(order(a.0, b.0, label))
+        });
+        for (value, members) in groups {
+            let mut path = path.clone();
+            path.push(text(value));
+            let figures = figures(rows, &members, asked);
+            out.push(Item::Summary(ItemKind::Group, path.clone(), figures.clone()));
+            let sub = Item::Summary(ItemKind::Subtotal, path.clone(), figures);
+            if subtotal == Placement::Before {
+                out.push(sub.clone());
+            }
+            walk(rows, members, asked, sort, path, out);
+            if subtotal == Placement::After {
+                out.push(sub);
+            }
+        }
+    }
+    let _ = levels;
+    let total = Item::Summary(ItemKind::GrandTotal, Vec::new(), figures(rows, &kept, asked));
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < kept.len() {
-        let value = rows[kept[i]][field];
-        let run: Vec<usize> = kept[i..]
-            .iter()
-            .take_while(|&&r| rows[r][field] == value)
-            .copied()
-            .collect();
-        out.push(Ok((text(value), run.len() as u64)));
-        out.extend(run.iter().map(|&r| Err(Key(r as u64))));
-        i += run.len();
+    if asked.grand_total == Placement::Before {
+        out.push(total.clone());
+    }
+    walk(rows, kept, asked, sort, Vec::new(), &mut out);
+    if asked.grand_total == Placement::After {
+        out.push(total);
     }
     out
 }
 
 #[hegel::composite]
-fn spec(tc: &TestCase, rows: usize) -> (usize, ViewSpec) {
-    let field = tc.draw(gs::integers::<usize>().max_value(COLS - 1));
-    let sort = match tc.draw(gs::optional(
-        gs::integers::<u64>().max_value(COLS as u64 - 1),
-    )) {
-        Some(c) => match tc.draw(gs::booleans()) {
-            true => SortSpec::new(vec![SortColumn::ascending(Key(c))]),
-            false => SortSpec::new(vec![SortColumn::descending(Key(c))]),
-        },
-        None => SortSpec::unsorted(),
-    };
+fn placement(tc: &TestCase) -> Placement {
+    tc.draw(gs::sampled_from(vec![
+        Placement::Before,
+        Placement::After,
+        Placement::Off,
+    ]))
+}
+
+#[hegel::composite]
+fn column(tc: &TestCase) -> usize {
+    tc.draw(gs::integers::<usize>().max_value(COLS - 1))
+}
+
+#[hegel::composite]
+fn asked(tc: &TestCase) -> Asked {
+    let outer = tc.draw(column());
+    let mut levels = vec![(outer, tc.draw(placement()))];
+    if tc.draw(gs::booleans()) {
+        let inner = tc.draw(column().filter(move |&c| c != outer));
+        levels.push((inner, tc.draw(placement())));
+    }
+    Asked {
+        levels,
+        grand_total: tc.draw(placement()),
+        sum: tc.draw(column()),
+        distinct: tc.draw(column()),
+    }
+}
+
+#[hegel::composite]
+fn sort(tc: &TestCase) -> SortSpec {
+    let columns = tc.draw(gs::vecs(column()).max_size(2).unique(true));
+    SortSpec::new(
+        columns
+            .into_iter()
+            .map(|c| match tc.draw(gs::booleans()) {
+                true => SortColumn::ascending(Key(c as u64)),
+                false => SortColumn::descending(Key(c as u64)),
+            })
+            .collect(),
+    )
+}
+
+#[hegel::composite]
+fn spec(tc: &TestCase, rows: usize) -> (Asked, ViewSpec) {
+    let asked = tc.draw(asked());
+    let sort = tc.draw(sort());
     let hidden =
         tc.draw(gs::vecs(gs::integers::<u64>().max_value(rows as u64).map(Key)).max_size(4));
     let spec = ViewSpec::default()
         .with_sort(Axis::Rows, sort)
         .with_hidden(Axis::Rows, hidden)
-        .with_grouping(Some(Grouping::rows_by(Key(field as u64))));
-    (field, spec)
+        .with_grouping(Some(asked.grouping()));
+    (asked, spec)
 }
 
 #[hegel::test(test_cases = 300)]
@@ -122,7 +270,7 @@ fn grouped_rows_match_a_whole_table_grouping(tc: TestCase) {
     let rows = tc.draw(gs::vecs(record()).max_size(90));
     let mut source = source(rows.len());
     source.view(&rows, &ViewSpec::default());
-    let (field, spec) = tc.draw(spec(rows.len()));
+    let (asked, spec) = tc.draw(spec(rows.len()));
     let viewed = source.view(&rows, &spec);
 
     let hidden: Vec<Key> = spec
@@ -132,7 +280,7 @@ fn grouped_rows_match_a_whole_table_grouping(tc: TestCase) {
         .filter(|k| (k.0 as usize) < rows.len())
         .copied()
         .collect();
-    let want = model(&rows, field, &spec.rows.sort, &hidden);
+    let want = model(&rows, &asked, &spec.rows.sort, &hidden);
     let count = source.count(Axis::Rows);
     assert_eq!(count, want.len() as u64);
     assert!(
@@ -143,39 +291,35 @@ fn grouped_rows_match_a_whole_table_grouping(tc: TestCase) {
     assert_eq!(viewed.applied.grouping, spec.grouping);
     assert_eq!(
         viewed.applied.rows.sort, spec.rows.sort,
-        "the level's sort is not added"
+        "the levels' sort is not added"
     );
     assert!(
         viewed.applied.cols.hidden.is_empty(),
-        "the grouped column is not written in"
+        "the grouped columns are not written in"
     );
 
     let window = source.window(&rows, Axis::Rows, 0..count);
     let outlines = window.outlines.expect("grouped rows have outlines");
-    let got: Vec<Result<(Value, u64), Key>> = window
+    let got: Vec<Item> = window
         .keys
         .iter()
         .zip(&outlines)
         .map(|(&key, outline)| match outline.kind {
-            ItemKind::Group => {
-                let summary = source.summary(key).expect("a known Group Item");
-                let count = match summary.aggregates {
-                    [Figure::Count(n)] => *n,
-                    other => panic!("count expected, got {other:?}"),
-                };
-                assert_eq!(summary.children, count);
-                Ok((outline.group.clone().unwrap().value, count))
+            ItemKind::Leaf => Item::Leaf(key),
+            kind => {
+                let summary = source.summary(key).expect("a known Summary Item");
+                let path = summary.path.iter().map(|(_, v)| v.clone()).collect();
+                Item::Summary(kind, path, summary.aggregates.to_vec())
             }
-            _ => Err(key),
         })
         .collect();
     assert_eq!(got, want);
 
-    // The grouped column leaves the columns.
+    // The grouped columns leave the columns.
     let cols = source.window(&rows, Axis::Cols, 0..COLS as u64).keys;
-    let want_cols: Vec<Key> = (0..COLS as u64)
-        .filter(|&c| c != field as u64)
-        .map(Key)
+    let want_cols: Vec<Key> = (0..COLS)
+        .filter(|c| !asked.levels.iter().any(|l| l.0 == *c))
+        .map(|c| Key(c as u64))
         .collect();
     assert_eq!(cols, want_cols);
 }

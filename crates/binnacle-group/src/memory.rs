@@ -2,18 +2,19 @@
 //! over rows held in memory, and [`GroupedMemory`], a `MemorySource` that
 //! groups.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use binnacle_core::{
     AggregateValue, Axis, ChangeNotice, Distinct, DistinctQuery, FindDirection, FindMatch,
-    FindQuery, Key, Located, Outline, Position, SortColumn, SortSpec, Support, TextSupport, Totals,
-    Value, ViewSpec,
+    FindQuery, Key, Located, Outline, Position, SortColumn, SortDirection, SortSpec, Support,
+    TextSupport, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{FindStep, MemorySource, Moved, PumpSource, Viewed};
 
 use crate::layer::{GroupingLayer, Summary, settle};
-use crate::query::{AggregateBackend, Answer, Batch, Body, GroupRow, Path, Stamp, Want};
+use crate::query::{AggregateBackend, Answer, Batch, Body, GroupRow, Path, Scope, Stamp, Want};
 
 /// An aggregate as the In-Memory Table Source computes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,24 +25,89 @@ pub enum Figure {
     Blank,
 }
 
+impl Figure {
+    /// The figure as a number to sort by; `None` for a blank.
+    pub fn number(self) -> Option<f64> {
+        match self {
+            Figure::Count(n) => Some(n as f64),
+            Figure::Number(n) => Some(n),
+            Figure::Blank => None,
+        }
+    }
+}
+
 /// One group of rows, and the groups of the next level within it.
 #[derive(Default)]
 struct Bucket {
     value: Option<Value>,
-    count: u64,
+    /// The rows in the group, as indices into the rows in view.
+    rows: Vec<usize>,
     leaves: Vec<Key>,
     kids: Vec<Bucket>,
     index: HashMap<Value, usize>,
+    figures: Vec<Figure>,
+}
+
+/// The standard aggregate `value` of the rows `rows`: `value(field, i)` is
+/// row `i`'s value in a field and `number(field, i)` its number there.
+fn figure(
+    aggregate: &AggregateValue,
+    rows: &[usize],
+    value: &impl Fn(Key, usize) -> Value,
+    number: &impl Fn(Key, usize) -> Option<f64>,
+) -> Figure {
+    let Some(field) = aggregate.field else {
+        return match aggregate.aggregate.as_str() {
+            "count" => Figure::Count(rows.len() as u64),
+            _ => Figure::Blank,
+        };
+    };
+    let numbers = || rows.iter().filter_map(|&i| number(field, i));
+    let present = || rows.iter().map(|&i| value(field, i)).filter(|v| *v != Value::Blank);
+    let fold = |f: fn(f64, f64) -> f64| numbers().reduce(f).map_or(Figure::Blank, Figure::Number);
+    match aggregate.aggregate.as_str() {
+        "count" => Figure::Count(present().count() as u64),
+        "distinct count" => Figure::Count(present().collect::<HashSet<_>>().len() as u64),
+        "sum" => fold(|a, b| a + b),
+        "minimum" => fold(f64::min),
+        "maximum" => fold(f64::max),
+        "average" => {
+            let (sum, n) = numbers().fold((0.0, 0u64), |(s, n), x| (s + x, n + 1));
+            match n {
+                0 => Figure::Blank,
+                n => Figure::Number(sum / n as f64),
+            }
+        }
+        _ => Figure::Blank,
+    }
+}
+
+/// Orders `a` and `b` as a sort column does: blanks last either way.
+fn by_figure(a: Figure, b: Figure, direction: SortDirection) -> Ordering {
+    match (a.number(), b.number()) {
+        (Some(a), Some(b)) => match direction {
+            SortDirection::Ascending => a.total_cmp(&b),
+            SortDirection::Descending => b.total_cmp(&a),
+        },
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
 }
 
 /// The aggregate backend over a table in memory: every group of the rows in
-/// view, worked out once, answering any request about them. Groups come in
-/// the order of their first row and Leaves in row order, so rows sorted by
-/// the levels' fields first give groups in ascending order.
+/// view, worked out once with its aggregates, answering any request about
+/// them.
+///
+/// The rows come sorted by the levels' fields first, so groups first come
+/// in the order of their first row, and Leaves in row order. Siblings are
+/// then ordered by the scope's Sort Spec, one rule at every level: by a
+/// sort column on the level's own field, the order the rows gave them; by
+/// a sort column on a value's field, that value's aggregate (the first
+/// such value); unsorted, or on a tie, the order the rows gave them.
 pub struct MemoryAggregates {
     stamp: Stamp,
     levels: usize,
-    values: Vec<AggregateValue>,
     root: Bucket,
     /// Where each Leaf is: its group's path and its index there.
     places: HashMap<Key, (Path, u64)>,
@@ -49,20 +115,24 @@ pub struct MemoryAggregates {
 
 impl MemoryAggregates {
     /// The groups of `rows`, the Leaf Keys in view order, for `batch`'s
-    /// scope: `value(level, i)` is row `i`'s value in the field of level
-    /// `level`. The scope's filter, hidden Keys and sort are the caller's to
-    /// have applied to `rows`.
-    pub fn new(batch: &Batch, rows: &[Key], value: impl Fn(usize, usize) -> Value) -> Self {
-        let levels = batch.scope.levels.len();
+    /// scope: `value(field, i)` is row `i`'s value in `field`, which groups
+    /// it and which counts count, and `number(field, i)` its number there,
+    /// which sums and averages take. The scope's filter, hidden Keys and
+    /// sort are the caller's to have applied to `rows`.
+    pub fn new(
+        batch: &Batch,
+        rows: &[Key],
+        value: impl Fn(Key, usize) -> Value,
+        number: impl Fn(Key, usize) -> Option<f64>,
+    ) -> Self {
+        let scope = &batch.scope;
+        let levels = scope.levels.len();
         let mut root = Bucket::default();
-        let mut places = HashMap::new();
-        for (i, &key) in rows.iter().enumerate() {
+        for i in 0..rows.len() {
             let mut bucket = &mut root;
-            let mut path = Vec::with_capacity(levels);
-            bucket.count += 1;
-            for level in 0..levels {
-                let v = value(level, i);
-                path.push((batch.scope.levels[level], v.clone()));
+            bucket.rows.push(i);
+            for &field in &scope.levels {
+                let v = value(field, i);
                 let at = match bucket.index.get(&v) {
                     Some(&at) => at,
                     None => {
@@ -75,18 +145,21 @@ impl MemoryAggregates {
                     }
                 };
                 bucket = &mut bucket.kids[at];
-                bucket.count += 1;
+                bucket.rows.push(i);
             }
-            places.insert(key, (path, bucket.leaves.len() as u64));
-            bucket.leaves.push(key);
+            bucket.leaves.push(rows[i]);
         }
-        MemoryAggregates {
+        let mut aggregates = MemoryAggregates {
             stamp: batch.stamp,
             levels,
-            values: batch.scope.values.clone(),
-            root,
-            places,
-        }
+            root: Bucket::default(),
+            places: HashMap::new(),
+        };
+        finish(&mut root, 0, scope, &value, &number);
+        aggregates.root = root;
+        let mut path = Vec::new();
+        place(&aggregates.root, &scope.levels, &mut path, &mut aggregates.places);
+        aggregates
     }
 
     /// The stamp of the batch these groups were worked out for.
@@ -99,13 +172,6 @@ impl MemoryAggregates {
             .try_fold(&self.root, |b, (_, v)| b.index.get(v).map(|&i| &b.kids[i]))
     }
 
-    fn aggregate(&self, bucket: &Bucket, value: &AggregateValue) -> Figure {
-        match (value.aggregate.as_str(), value.field) {
-            ("count", None) => Figure::Count(bucket.count),
-            _ => Figure::Blank,
-        }
-    }
-
     fn row(&self, bucket: &Bucket, depth: usize) -> GroupRow<Figure> {
         GroupRow {
             value: bucket.value.clone().unwrap_or(Value::Blank),
@@ -113,10 +179,64 @@ impl MemoryAggregates {
                 true => bucket.kids.len() as u64,
                 false => bucket.leaves.len() as u64,
             },
-            aggregates: (self.values.iter())
-                .map(|v| self.aggregate(bucket, v))
-                .collect(),
+            aggregates: bucket.figures.clone(),
         }
+    }
+}
+
+/// Works out the aggregates of `bucket` (at `depth`) and all under it, and
+/// orders its groups by the scope's sort.
+fn finish(
+    bucket: &mut Bucket,
+    depth: usize,
+    scope: &Scope,
+    value: &impl Fn(Key, usize) -> Value,
+    number: &impl Fn(Key, usize) -> Option<f64>,
+) {
+    bucket.figures = (scope.values.iter())
+        .map(|v| figure(v, &bucket.rows, value, number))
+        .collect();
+    bucket.rows = Vec::new();
+    for kid in &mut bucket.kids {
+        finish(kid, depth + 1, scope, value, number);
+    }
+    let Some(&field) = scope.levels.get(depth) else {
+        return;
+    };
+    // Each sort column that orders this level's groups, as the index of
+    // the value whose aggregate it sorts by; `None` for the level's own
+    // field, which keeps the order the rows gave.
+    let by: Vec<(usize, SortDirection)> = (scope.sort.columns().iter())
+        .take_while(|c| c.key != field)
+        .filter_map(|c| {
+            let i = (scope.values.iter()).position(|v| v.field == Some(c.key))?;
+            Some((i, c.direction))
+        })
+        .collect();
+    if by.is_empty() {
+        return;
+    }
+    bucket.kids.sort_by(|a, b| {
+        (by.iter())
+            .map(|&(i, d)| by_figure(a.figures[i], b.figures[i], d))
+            .find(|o| o.is_ne())
+            .unwrap_or(Ordering::Equal)
+    });
+    bucket.index = (bucket.kids.iter().enumerate())
+        .map(|(i, k)| (k.value.clone().unwrap_or(Value::Blank), i))
+        .collect();
+}
+
+/// Records where each Leaf under `bucket` (at `path`) is.
+fn place(bucket: &Bucket, levels: &[Key], path: &mut Path, places: &mut HashMap<Key, (Path, u64)>) {
+    for (i, &key) in bucket.leaves.iter().enumerate() {
+        places.insert(key, (path.clone(), i as u64));
+    }
+    for kid in &bucket.kids {
+        let field = levels[path.len()];
+        path.push((field, kid.value.clone().unwrap_or(Value::Blank)));
+        place(kid, levels, path, places);
+        path.pop();
     }
 }
 
@@ -154,6 +274,9 @@ impl AggregateBackend<Figure> for MemoryAggregates {
                             groups: (slice(&bucket.kids, &request.range).iter())
                                 .map(|b| self.row(b, request.path.len() + 1))
                                 .collect(),
+                        },
+                        Want::Total => Body::Total {
+                            aggregates: bucket.figures.clone(),
                         },
                         _ => Body::Leaves {
                             keys: slice(&bucket.leaves, &request.range).to_vec(),
@@ -381,10 +504,13 @@ impl<R> AggregateBackend<Figure> for Backend<'_, R> {
             let count = self.source.count(Axis::Rows);
             let keys = self.source.window(Axis::Rows, 0..count);
             let logical = self.source.logical_window(Axis::Rows, 0..count);
-            let levels = &batch.scope.levels;
-            *self.aggregates = Some(MemoryAggregates::new(batch, &keys, |level, i| {
-                self.source.value(levels[level], &self.rows[logical[i]])
-            }));
+            let row = |i: usize| &self.rows[logical[i]];
+            *self.aggregates = Some(MemoryAggregates::new(
+                batch,
+                &keys,
+                |field, i| self.source.value(field, row(i)),
+                |field, i| self.source.number(field, row(i)),
+            ));
         }
         self.aggregates
             .as_mut()

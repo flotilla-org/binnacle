@@ -417,6 +417,16 @@ impl<R> MemorySource<R> {
         Value::of(self.text(column, row).as_deref())
     }
 
+    /// Column `column`'s number in `row`: an integer or float column's
+    /// value, `None` for a blank or any other column. Aggregates such as a
+    /// sum work on these.
+    pub fn number(&self, column: Key, row: &R) -> Option<f64> {
+        match self.columns.get(&column)?.scalar(row)? {
+            Scalar::Number(n) => Some(n),
+            Scalar::Date(_) => None,
+        }
+    }
+
     /// Column `column`'s text form of `row`, if it has one and `row` is not
     /// blank there.
     fn text<'r>(&self, column: Key, row: &'r R) -> Option<Cow<'r, str>> {
