@@ -1,6 +1,7 @@
 //! The header menu: a popup under the focused column's header (or under the
 //! focused row) with Pin left and Pin right (Pin top and Pin bottom for a
-//! row), or Unpin on a pinned item, and Freeze up to here; then, where the
+//! row), or Unpin on a pinned item, and Freeze up to here; then Group rows
+//! by a column the rows group by, or Ungroup rows once grouped; then, where the
 //! axis hides, Hide, Show only these and Choose, the axis's hidden items
 //! inline, numbered, and Show all, each shown again in its place. Hide and
 //! Show only act on the picks or the selection as well as the focused item,
@@ -214,6 +215,8 @@ enum Entry {
     Pin(Edge),
     Unpin,
     Freeze,
+    Group,
+    Ungroup,
     Hide,
     ShowOnly,
     Choose,
@@ -231,6 +234,7 @@ impl Entry {
             (Entry::Pin(Edge::Trailing), Axis::Rows) => 'b',
             (Entry::Unpin, _) => 'u',
             (Entry::Freeze, _) => 'f',
+            (Entry::Group | Entry::Ungroup, _) => 'g',
             (Entry::Hide, _) => 'h',
             (Entry::ShowOnly, _) => 'o',
             (Entry::Choose, _) => 'c',
@@ -242,7 +246,8 @@ impl Entry {
 /// The menu's lines for `key` on `axis`, in order, as the web's menu lists
 /// them: Pin at the leading edge, or Unpin wherever it is pinned; Pin at the
 /// trailing edge unless pinned; Freeze unless pinned at the trailing edge;
-/// then, on an axis that hides, Hide, Show only and Choose, each hidden
+/// Ungroup rows once the rows are grouped, else on a column the rows group
+/// by, Group rows by it; then, on an axis that hides, Hide, Show only and Choose, each hidden
 /// item and Show all.
 fn entries(snapshot: &Snapshot, axis: Axis, key: Key) -> Vec<Entry> {
     let pinned_at = |edge| (snapshot.pinned(axis, edge).iter()).any(|i| i.key == Some(key));
@@ -254,6 +259,13 @@ fn entries(snapshot: &Snapshot, axis: Axis, key: Key) -> Vec<Entry> {
     };
     if !trailing {
         entries.push(Entry::Freeze);
+    }
+    let view = snapshot.requested_view().unwrap_or(snapshot.applied_view());
+    let grouped = (view.grouping.as_ref()).is_some_and(|g| !g.levels(Axis::Rows).is_empty());
+    if grouped {
+        entries.push(Entry::Ungroup);
+    } else if axis == Axis::Cols && snapshot.support(Axis::Rows, key).group {
+        entries.push(Entry::Group);
     }
     if snapshot.hide_support(axis) {
         entries.extend([Entry::Hide, Entry::ShowOnly, Entry::Choose]);
@@ -370,6 +382,16 @@ impl HeaderMenu {
             }
             Some(Entry::Freeze) => {
                 grid.freeze(axis, key);
+                closes = true;
+                None
+            }
+            Some(Entry::Group) => {
+                grid.group_by(Axis::Rows, key);
+                closes = true;
+                None
+            }
+            Some(Entry::Ungroup) => {
+                grid.ungroup(Axis::Rows);
                 closes = true;
                 None
             }
@@ -525,6 +547,8 @@ impl HeaderMenu {
                 Entry::Pin(Edge::Trailing) => "Pin bottom".into(),
                 Entry::Unpin => "Unpin".into(),
                 Entry::Freeze => "Freeze up to here".into(),
+                Entry::Group => "Group rows by this column".into(),
+                Entry::Ungroup => "Ungroup rows".into(),
                 Entry::Hide => match chosen {
                     1 => format!("Hide {noun}"),
                     n => format!("Hide {} {nouns}", grouped(n)),

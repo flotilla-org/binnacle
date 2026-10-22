@@ -107,6 +107,7 @@ name = "binnacle-ratatui"
 version = "0.1.0"
 dependencies = [
  "binnacle-core",
+ "binnacle-group",
  "binnacle-memory",
  "binnacle-testkit",
  "hegeltest",

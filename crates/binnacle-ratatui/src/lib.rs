@@ -44,8 +44,8 @@ pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
-    Action, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, Key, Mode, Snapshot,
-    SortDirection, StripItem,
+    Action, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, ItemKind, Key, Mode,
+    OpenState, Outline, Snapshot, SortDirection, StripItem, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -82,6 +82,21 @@ pub trait Content {
     fn row_header(&self, row: Key, position: u64) -> String {
         let _ = row;
         position.saturating_add(1).to_string()
+    }
+
+    /// The label of a Summary Item row in a grouped table, drawn in the row
+    /// Header Band after its indent and disclosure mark: the group's value
+    /// unless overridden. A host adds the count it gets from its Table
+    /// Source (`GroupedMemory::summary`, say).
+    fn group_label(&self, row: Key, outline: &Outline) -> String {
+        let _ = row;
+        let value = outline.group.as_ref().map(|g| &g.value);
+        match (outline.kind, value) {
+            (ItemKind::GrandTotal, _) => "Grand total".into(),
+            (_, Some(Value::Text(t))) => t.clone(),
+            (_, Some(Value::Blank)) => "(blank)".into(),
+            (_, None) => String::new(),
+        }
     }
 
     /// The name of the row with Key `row` away from its header, such as on
@@ -269,10 +284,33 @@ pub fn render_with(
         let span_y = row_span(i);
         // The lines of the row it may draw on.
         let ys = cell(r.offset.max(span_y.start))..cell(r.end().min(span_y.end));
+        let outline = snapshot.outline(Axis::Rows, r.position);
         let number = r.key.map_or_else(
             || r.position.saturating_add(1).to_string(),
-            |k| content.row_header(k, r.position),
+            |k| match outline {
+                Some(o) if o.kind.is_summary() => content.group_label(k, o),
+                _ => content.row_header(k, r.position),
+            },
         );
+        // Outline form: an indent per level, then the disclosure mark, or
+        // its room on a Leaf.
+        let (indent, mark) = match outline {
+            Some(o) => (
+                "  ".repeat(o.depth as usize),
+                match (o.kind, o.open) {
+                    (ItemKind::Group, OpenState::Open) => "▾ ",
+                    (ItemKind::Group, OpenState::Closed) => "▸ ",
+                    _ => "  ",
+                },
+            ),
+            None => (String::new(), ""),
+        };
+        let role = outline.and_then(|o| match o.kind {
+            ItemKind::Leaf => None,
+            ItemKind::Group => Some(theme.group_item),
+            ItemKind::Subtotal => Some(theme.subtotal),
+            ItemKind::GrandTotal => Some(theme.grand_total),
+        });
         // As on column headers, the marker keeps the header's last cells; a
         // row the columns are filtered by marks it too.
         let requested = snapshot.requested_view().map(|v| &v.cols.filter.conditions);
@@ -286,17 +324,27 @@ pub fn render_with(
         }
         let width = usize::try_from(cell(left)).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
-        let number = fit(&number, u32::try_from(room).unwrap_or(u32::MAX));
-        let style = band(theme.row_number, &h);
+        let lead = indent.chars().count() + mark.chars().count();
+        let label_room = room.saturating_sub(lead);
+        let number = fit(&number, u32::try_from(label_room).unwrap_or(u32::MAX));
+        let mut style = band(theme.row_number, &h);
+        if let Some(role) = role {
+            style = style.patch(role);
+        }
         let clip = (0.0, left, span_y.start, span_y.end);
         put(
             buf,
             area,
             (0.0, r.offset),
             clip,
-            &pad(format!("{number:<room$}")),
+            &pad(format!("{indent}{mark}{number:<label_room$}")),
             style,
         );
+        if !mark.trim().is_empty() {
+            let at = indent.chars().count() as f32;
+            let style = style.patch(theme.disclosure);
+            put(buf, area, (at, r.offset), clip, mark.trim_end(), style);
+        }
         if !marker.is_empty() {
             let at = room as f32;
             let style = style.patch(if h.filter.not_applied {
@@ -313,8 +361,9 @@ pub fn render_with(
             }
         }
         let mut row_style = theme.body;
-        if let Some(zebra) = theme.zebra.filter(|_| r.position % 2 == 1) {
-            row_style = row_style.patch(zebra);
+        let zebra = theme.zebra.filter(|_| r.position % 2 == 1);
+        if let Some(over) = zebra.into_iter().chain(role).reduce(|a, b| a.patch(b)) {
+            row_style = row_style.patch(over);
             let blank = " ".repeat(usize::from(area.width));
             for y in ys.clone() {
                 let clip = (left, f32::INFINITY, span_y.start, span_y.end);
@@ -375,6 +424,9 @@ pub fn render_with(
             match (r.key, c.key) {
                 (Some(row), Some(col)) => {
                     content.renderer(row, col).draw(row, col, &mut canvas);
+                    if let Some(role) = role {
+                        canvas.patch(role);
+                    }
                     if state.current_match {
                         canvas.patch(theme.find_current);
                     } else if content.marked(row, col) {
