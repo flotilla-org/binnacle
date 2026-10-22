@@ -49,6 +49,11 @@ impl Level {
 /// so the Grid can pin a Grand Total placed after before it is in a Window.
 pub const GRAND_TOTAL: Key = Key(1 << 63);
 
+/// The field a group of the values pseudo-level names in its path and its
+/// [`GroupOf`], beside the value's [`AggregateValue::identity`] as text. Its
+/// top bit is set, so it never meets a base field's Key.
+pub const VALUES_FIELD: Key = Key(u64::MAX);
+
 /// One value a grouped table shows: an aggregate, an open name such as
 /// `sum`, `count`, `average`, `minimum`, `maximum`, `distinct count` or one
 /// the Table Source declares, over a base field (`None` for a count of
@@ -85,6 +90,17 @@ impl AggregateValue {
     pub fn with_params(mut self, params: Vec<String>) -> Self {
         self.params = params;
         self
+    }
+
+    /// What names this value wherever it heads a group of the values
+    /// pseudo-level, in Keys interned from paths (a pivot column's, say):
+    /// its aggregate, its field's Key and its parameters, as in
+    /// `sum(3)`, `count()` or `percentile(3;0.9)`. Not its index, so state
+    /// on its items survives the values being reordered.
+    pub fn identity(&self) -> String {
+        let field = self.field.map(|f| f.0.to_string()).unwrap_or_default();
+        let params: String = self.params.iter().map(|p| format!(";{p}")).collect();
+        format!("{}({field}{params})", self.aggregate)
     }
 }
 
@@ -310,6 +326,27 @@ impl Grouping {
         !self.levels(axis).is_empty() && self.axis(axis).grand_total == Placement::After
     }
 
+    /// Whether this grouping is a pivot: the column axis comes from the
+    /// data, as it does when there are column levels or the values
+    /// pseudo-level is among the row levels. A pivot shows no Leaves: each
+    /// group of an axis's innermost level is one item, which can't open.
+    pub fn pivot(&self) -> bool {
+        !self.col_levels.is_empty() || self.row_levels.contains(&Level::Values)
+    }
+
+    /// Whether the values pseudo-level is among `axis`'s levels, so that
+    /// its Grand Total is one item per value, each its own Key, rather than
+    /// the one [`GRAND_TOTAL`].
+    pub fn splits_values(&self, axis: Axis) -> bool {
+        self.levels(axis).contains(&Level::Values)
+    }
+
+    /// The value a group of the values pseudo-level names by its
+    /// [`AggregateValue::identity`], and its index among the values.
+    pub fn value_of(&self, identity: &str) -> Option<(usize, &AggregateValue)> {
+        (self.values.iter().enumerate()).find(|(_, v)| v.identity() == identity)
+    }
+
     /// Whether the item `outline` describes on `axis` draws blank apart
     /// from its label and count: an open Group Item whose level places a
     /// Subtotal, which carries the group's figures instead (as in Excel). A
@@ -508,6 +545,19 @@ impl Outline {
     pub fn with_set(mut self, index: u64, size: u64) -> Self {
         self.set = Some(SetPosition { index, size });
         self
+    }
+
+    /// The Grand Total of one value, where the values pseudo-level is on
+    /// the axis: at the top level, its group the value's identity under
+    /// [`VALUES_FIELD`].
+    pub fn grand_total_of(identity: String) -> Self {
+        Outline {
+            group: Some(GroupOf {
+                field: VALUES_FIELD,
+                value: Value::Text(identity),
+            }),
+            ..Outline::grand_total()
+        }
     }
 
     /// The parent Group Item's Key; `None` at the top.
