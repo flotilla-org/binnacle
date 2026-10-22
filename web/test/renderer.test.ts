@@ -182,12 +182,13 @@ describe("auto-size", () => {
       measure,
       theme: light,
       headerHeight: 24,
+      rowMenu: false,
       renderer: renderer as RendererChoice<unknown, unknown, unknown>,
     });
     expect(h.frame().cols.strip[0]!.size).toBe(90);
   });
 
-  test("the row header band fits its labels, with room for a sort marker while the columns sort by a row shown", () => {
+  test("the row header band fits its labels beside the marks a row header can show: filter mark or menu button, and sort marker", () => {
     const source = fromRows(
       [
         { a: 2, b: 1 },
@@ -198,25 +199,28 @@ describe("auto-size", () => {
     const h = new Harness(source);
     try {
       const measure = { width: (t: string) => 10 * t.length, fit: (t: string) => t, clear() {} };
-      const fit = () => {
+      const fit = (rowMenu: boolean) => {
         const s = h.frame();
         answerAutoSize({ type: "BandAutoSizeRequested", generation: s.generation, axis: "cols" }, s, h.feed.content(s), {
           grid: h.grid,
           measure,
           theme: light,
           headerHeight: 24,
+          rowMenu,
           renderer: () => plainText,
         });
         return h.frame().cols.header;
       };
       h.frame();
-      // Labels "1" and "2".
-      expect(fit()).toBe(10 + 2 * PAD);
+      // Labels "1" and "2", beside a filtered row's 13 px mark (the columns
+      // can be filtered by a row), or with a row menu its 21 px button.
+      expect(fit(false)).toBe(10 + 2 * PAD + 13);
+      expect(fit(true)).toBe(10 + 2 * PAD + 21);
       h.grid.set_header_click(AXIS_CODE.rows, HEADER_CLICK.sort);
       h.click(5, HEADER + ROW_HEIGHT / 2);
       h.frame();
       expect(h.snapshot.rows.headers[0]!.sort.applied).not.toBeNull();
-      expect(fit()).toBe(10 + 2 * PAD + MARKED);
+      expect(fit(true)).toBe(10 + 2 * PAD + 21 + MARKED);
     } finally {
       h.destroy();
       source.destroy();

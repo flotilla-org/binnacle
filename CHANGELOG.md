@@ -102,5 +102,6 @@
 - **core:** a selection range that a filter or a hide partly removes shrinks to the items still shown between its corners, on either axis, and clears only when none is left; it was cleared ([#164](https://github.com/flotilla-org/binnacle/issues/164)).
 - **ratatui:** with `Grid`, the rule above the first visible row is drawn when the row before it ends exactly at the column header band's end, and likewise the line before the first visible column with `Columns` ([#41](https://github.com/flotilla-org/binnacle/issues/41)).
 - **web:** `fromRows` names a rejected regex without RegExp's prefix even when the pattern holds a line break.
+- **web:** the row Header Band fits each label beside the row menu's button (shown on hover) or a filtered row's mark, and beside the widest row number, so a hovered or filtered row's label stays whole; it was cut short ([#160](https://github.com/flotilla-org/binnacle/issues/160)).
 
 - **web:** the find count is asked again when the columns are refiltered ([#139](https://github.com/flotilla-org/binnacle/issues/139)).

@@ -1,7 +1,7 @@
 // Answers to the Grid's auto-size Effects, measured from the visible cells
 // through their Cell Renderers: the Grid never measures, the widget does.
 
-import { MARKED } from "./canvas/bands";
+import { MARKED, rowFilterRoom } from "./canvas/bands";
 import { PAD } from "./canvas/context";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -18,6 +18,8 @@ export interface SizingParts {
   theme: Theme;
   /** The column header band's thickness the widget was created with. */
   headerHeight: number;
+  /** Whether a row menu is mounted, so a hovered row header shows its button. */
+  rowMenu: boolean;
   renderer: RendererChoice<unknown, unknown, unknown>;
 }
 
@@ -52,19 +54,29 @@ export function answerAutoSize(effect: Effect, s: Snapshot | null, content: Cont
 
 /**
  * The width of the row-number band that shows the labels of the rows in the
- * Strip whole; `null`, when `complete`, while any of those rows is still to
- * come. `sorts` leaves room for a sort marker before any row shows one.
+ * Strip whole, and any as wide as `label`, beside whatever marks their
+ * headers can show; `null`, when `complete`, while any of those rows is
+ * still to come. `sorts` leaves room for a sort marker before any row shows one.
  */
-export function bandWidth(s: Snapshot, content: Content, parts: SizingParts, complete: boolean, sorts = false): number | null {
+export function bandWidth(
+  s: Snapshot,
+  content: Content,
+  parts: SizingParts,
+  complete: boolean,
+  sorts = false,
+  label = 0,
+): number | null {
   const { measure, theme } = parts;
-  let width = 0;
+  let width = label;
   for (const row of s.rows.strip) {
     if (row.key === null && complete) return null;
     width = Math.max(width, measure.width(content.label("rows", row), theme.font));
   }
   // Room for a sort marker while a row shown sorts the columns, or will.
   const marked = sorts || s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);
-  return width + 2 * PAD + (marked ? MARKED : 0);
+  // Room for the row menu's button or a filter mark, at the label's left.
+  const filters = Math.max(0, ...s.rows.headers.map((h) => rowFilterRoom(parts.rowMenu, h)));
+  return width + 2 * PAD + (marked ? MARKED : 0) + filters;
 }
 
 /**

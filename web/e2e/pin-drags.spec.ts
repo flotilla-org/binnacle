@@ -93,7 +93,8 @@ test.describe("records", () => {
 test("on the column-major source a record's column header pins left and a field's row header pins bottom", async ({
   page,
 }) => {
-  const FIRST = 90;
+  // The row header band fits the field names beside their marks, so the records start at 96.
+  const FIRST = 100;
   const COLUMN = 112 + 1;
   await page.setViewportSize({ width: 1000, height: 400 });
   await page.goto("/?source=transposed&theme=light");

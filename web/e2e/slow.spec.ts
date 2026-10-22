@@ -13,8 +13,8 @@ import { rows } from "../demo/sources/records-data";
 const HEADER = 28;
 const ROW = 24;
 const COLUMN = 141;
-/** Inside the first column whatever the row-number band's width (40 to 60 px). */
-const FIRST = 62;
+/** Inside the first column whatever the row-number band's width (40 to 85 px). */
+const FIRST = 90;
 
 const status = (page: Page) => page.locator("#status");
 const requests = (page: Page) => page.locator("#tools .requests");

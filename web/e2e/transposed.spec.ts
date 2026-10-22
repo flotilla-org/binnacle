@@ -8,8 +8,8 @@ import { matches, rows } from "../demo/sources/records-data";
 
 const HEADER = 28;
 const ROW = 24;
-/** Inside the first record's column: the row-number band fits the field names and a sort marker. */
-const FIRST = 90;
+/** Inside the first record's column: the row header band fits the field names beside a sort marker and the row menu's button, so the records start at 96. */
+const FIRST = 100;
 /** The demo's column width and the Gap after it. */
 const COLUMN = 112 + 1;
 

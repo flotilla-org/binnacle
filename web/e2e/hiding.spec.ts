@@ -102,8 +102,8 @@ test("in the transposed demo, hiding a column hides a record and the bar counts 
   await page.setViewportSize({ width: 1000, height: 400 });
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText(`of ${en(rows.length)}`);
-  // The row header band fits the field names, so the records start at 90.
-  await click(page, 1, 90 + 113);
+  // The row header band fits the field names beside their marks, so the records start at 96.
+  await click(page, 1, 100 + 113);
   await expect(status(page)).toContainText("focus row 2, column 2 (name / 1)");
   await page.keyboard.press(`${await mod(page)}+Alt+0`);
   await expect(bar(page)).toContainText(`${en(rows.length - 1)} of ${en(rows.length)} records`);

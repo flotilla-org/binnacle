@@ -94,7 +94,8 @@ test("the slow demo restores before its data arrives: the saved filter reads fil
 });
 
 test("the transposed demo keeps a pinned record", async ({ page }) => {
-  const FIELDS_BAND = 90;
+  // The row header band fits the field names beside their marks, so the records start at 96.
+  const FIELDS_BAND = 100;
   const COLUMN = 112 + 1;
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto("/?source=transposed&theme=light");

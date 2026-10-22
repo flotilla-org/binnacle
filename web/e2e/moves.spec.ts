@@ -254,7 +254,8 @@ test.describe("slow", () => {
 });
 
 test("the transposed source moves a field by its row header and a record by its column header", async ({ page }) => {
-  const FIRST_RECORD = 90;
+  // The row header band fits the field names beside their marks, so the records start at 96.
+  const FIRST_RECORD = 100;
   const COLUMN = 112 + 1;
   const fields: (keyof RecordRow)[] = ["id", "name", "weight", "crew", "port"];
   await page.setViewportSize({ width: 1000, height: 400 });

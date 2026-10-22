@@ -30,6 +30,21 @@ export function filterButtonRect(band: AxisName, h: HeaderPlacement): Rect {
   return { x, y: h.rect.y + (h.rect.height - size) / 2, width: size, height: size };
 }
 
+/** The room a filtered row's plain mark takes from its label. */
+const MARK_ROOM = FUNNEL + 3;
+
+/**
+ * The most room a row header's button or filter mark can take from its
+ * label: the button's while hovered, if a row menu is mounted; else the
+ * plain mark's, if the columns can be filtered by the row (or already are).
+ */
+export function rowFilterRoom(filterButtons: boolean, h: HeaderPlacement): number {
+  if (hasFilterButton(filterButtons, h)) return Math.min(BUTTON, h.rect.height) + 3;
+  const { filtered, notApplied, pending } = h.filter;
+  const filterable = h.support.text !== null || h.support.oneOf;
+  return filterable || filtered || notApplied || pending ? MARK_ROOM : 0;
+}
+
 /**
  * How a header shows the conditions that read its item (the rows' for a
  * column header, the columns' for a row header): filtered (where the latest
@@ -100,7 +115,7 @@ function paintFilter(p: PaintContext, band: AxisName, h: HeaderPlacement): numbe
     ctx.stroke();
   }
   ctx.restore();
-  return compact ? FUNNEL + 3 : r.width + 3;
+  return compact ? MARK_ROOM : r.width + 3;
 }
 
 /**
