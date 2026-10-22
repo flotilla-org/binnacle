@@ -935,7 +935,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   openRowMenu(rowId: RowId, anchor?: DOMRect, at: MenuAt = "top"): boolean {
     const open = this.rowMenu;
     const support = this.feed.rowSupport(rowId);
-    if (!open || this.destroyed || (!support.text && !support.oneOf && !this.canHide("rows"))) return false;
+    if (!open || this.destroyed || (!support.text && !support.oneOf && !support.compare && !this.canHide("rows"))) return false;
     const key = this.feed.rowKey(rowId);
     const header = this.last?.rows.headers.find((h) => h.key === key && this.inView("rows", h));
     open(rowId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })), at);

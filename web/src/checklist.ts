@@ -11,10 +11,15 @@
 
 import type { Condition, ListedValue, TextMatch } from "./source";
 
-/** The conditions on one column the checklist reads and writes: its first Text condition and its first OneOf. */
+/**
+ * The conditions on one column the column menu reads and writes: its first
+ * Text condition and its first OneOf (the checklist's), and its first
+ * comparison.
+ */
 export interface ColumnConditions<ColId> {
   text: Condition<ColId> | null;
   oneOf: Condition<ColId> | null;
+  compare: Condition<ColId> | null;
   /** Every condition on the column, those two included, in order. */
   all: Condition<ColId>[];
 }
@@ -33,6 +38,7 @@ export function columnConditions<ColId>(conditions: Condition<ColId>[], id: ColI
   return {
     text: all.find((c) => c.kind.type === "Text") ?? null,
     oneOf: all.find((c) => c.kind.type === "OneOf") ?? null,
+    compare: all.find((c) => c.kind.type === "Compare") ?? null,
     all,
   };
 }
@@ -78,10 +84,24 @@ export function ticked<ColId>(column: ColumnConditions<ColId>, value: ListedValu
   return column.all.every((c) => keeps(c, value));
 }
 
-/** The conditions the checklist writes in place of the column's Text condition and OneOf. */
+/**
+ * The conditions the column menu writes in place of the column's Text
+ * condition and OneOf, and its comparison when `compare` is given.
+ */
 export interface Written<ColId> {
   text: Condition<ColId> | null;
   oneOf: Condition<ColId> | null;
+  compare?: Condition<ColId> | null;
+}
+
+/** Each condition `written` replaces on `column`, and what replaces it (`null` to remove it). */
+export function writes<ColId>(column: ColumnConditions<ColId>, written: Written<ColId>) {
+  const pairs: [Condition<ColId> | null, Condition<ColId> | null][] = [
+    [column.text, written.text],
+    [column.oneOf, written.oneOf],
+  ];
+  if (written.compare !== undefined) pairs.push([column.compare, written.compare]);
+  return pairs;
 }
 
 /**
@@ -146,7 +166,7 @@ export function tickHead<ColId>(column: ColumnConditions<ColId>, id: ColId, on: 
   let now = column;
   for (const value of shown.values) {
     const written = tick(now, id, value, false, shown);
-    now = { ...written, all: replaced(now, written) };
+    now = { text: written.text, oneOf: written.oneOf, compare: now.compare, all: replaced(now, written) };
   }
   return { text: now.text, oneOf: now.oneOf };
 }
@@ -154,10 +174,7 @@ export function tickHead<ColId>(column: ColumnConditions<ColId>, id: ColId, on: 
 /** The column's conditions with `written` in place of its Text condition and OneOf (each added at the end if new). */
 export function replaced<ColId>(column: ColumnConditions<ColId>, written: Written<ColId>): Condition<ColId>[] {
   let all = [...column.all];
-  for (const [from, to] of [
-    [column.text, written.text],
-    [column.oneOf, written.oneOf],
-  ] as const) {
+  for (const [from, to] of writes(column, written)) {
     const i = from ? all.indexOf(from) : -1;
     if (i >= 0 && to) all[i] = to;
     else if (i >= 0) all = all.filter((_, j) => j !== i);

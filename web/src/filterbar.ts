@@ -138,7 +138,7 @@ export function createFilterBar<RowId, ColId, V>(
   };
   /** Lists the columns that take conditions; picking one opens its menu. */
   const openPicker = async () => {
-    const columns = (await widget.columns()).filter((c) => c.support.text || c.support.oneOf);
+    const columns = (await widget.columns()).filter((c) => c.support.text || c.support.oneOf || c.support.compare);
     closePicker();
     const t = widget.theme;
     const list = el("div", "binnacle-filter-picker", PICKER_STYLE);

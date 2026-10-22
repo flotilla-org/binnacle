@@ -16,7 +16,7 @@ const FUNNEL = 10;
 
 /** Whether a header shows its menu's button: a menu is mounted for its band and its item can be filtered by. */
 export function hasFilterButton(filterButtons: boolean, h: HeaderPlacement): boolean {
-  return filterButtons && h.key !== null && h.support.text !== null;
+  return filterButtons && h.key !== null && (h.support.text !== null || h.support.compare !== null);
 }
 
 /**
