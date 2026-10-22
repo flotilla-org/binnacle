@@ -416,6 +416,11 @@ impl Writer<'_> {
         for g in &o.path {
             self.group(g);
         }
+        self.flag(o.set.is_some());
+        if let Some(set) = o.set {
+            self.num(set.index as f64);
+            self.num(set.size as f64);
+        }
     }
 
     /// A group: its field's Key and its value, flagged unless blank.

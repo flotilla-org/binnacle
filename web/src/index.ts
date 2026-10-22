@@ -58,6 +58,7 @@ export type {
   Placement,
   Primitive,
   QuickFilterSupport,
+  SetPosition,
   SortDirection,
   SortSpec,
   Support,

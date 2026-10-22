@@ -1376,14 +1376,18 @@ pub fn scenario(name: &str) -> Grid {
                         1 => OpenState::Closed,
                         _ => OpenState::Open,
                     };
-                    Outline::group(vec![], open, key(1), value).with_span(4)
+                    Outline::group(vec![], open, key(1), value)
+                        .with_span(4)
+                        .with_set(p / 5, 8)
                 }
                 n => {
                     let group = GroupOf {
                         field: key(1),
                         value: Value::Text(format!("group {}", p / 5)),
                     };
-                    Outline::leaf(vec![key(p - n)]).with_path(vec![group])
+                    Outline::leaf(vec![key(p - n)])
+                        .with_path(vec![group])
+                        .with_set(n - 1, 4)
                 }
             })
             .collect();

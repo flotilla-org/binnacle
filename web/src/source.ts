@@ -184,8 +184,9 @@ export type ItemKind = "leaf" | "group" | "subtotal" | "grandTotal";
  * its depth (0 for the top groups; a Leaf of a group at depth `d` is at
  * `d + 1`), whether it is open (Leaves, Subtotals and the Grand Total
  * can't), the IDs of its ancestor Group Items from the outermost down to its
- * parent (`depth` of them), and on Group Items and Subtotals their level's
- * field and the group's value.
+ * parent (`depth` of them), on Group Items and Subtotals their level's
+ * field and the group's value, and if the source knows it the item's place
+ * among its siblings (see `SetPosition`).
  */
 export interface Outline<Id, FieldId> {
   kind: ItemKind;
@@ -197,6 +198,19 @@ export interface Outline<Id, FieldId> {
   span?: number;
   /** The group of each of `ancestors`, outermost first, from which an activated Summary Item's drill-down is built. */
   path?: { field: FieldId; value: ListedValue }[];
+  set?: SetPosition | null;
+}
+
+/**
+ * An item's place among its parent's children, as a tree reads it: `index`
+ * (0 first) of `size`. A group's children are its child groups or Leaves,
+ * with its Subtotal first or last where its level places one; the top's are
+ * the top groups, with a placed Grand Total first or last. It holds whether
+ * or not the parent is open.
+ */
+export interface SetPosition {
+  index: number;
+  size: number;
 }
 
 /** A Window of a grouped axis: its IDs, and each one's outline. */

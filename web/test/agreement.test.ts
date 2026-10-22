@@ -386,11 +386,11 @@ describe("Grouping", () => {
       grid.set_window(0, 0, BigUint64Array.from([north, 7n, 2n ** 60n, 9n]));
       const path = [{ field: 1n, value: "North" }];
       const outlines = [
-        { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "North" }, span: 1, path: [] },
-        { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [north], group: null, span: 0, path },
-        { kind: "group", depth: 0, open: "closed", ancestors: [], group: { field: 1n, value: null }, span: 0, path: [] },
+        { kind: "group", depth: 0, open: "open", ancestors: [], group: { field: 1n, value: "North" }, span: 1, path: [], set: { index: 0, size: 3 } },
+        { kind: "leaf", depth: 1, open: "cantOpen", ancestors: [north], group: null, span: 0, path, set: { index: 41, size: 2 ** 40 } },
+        { kind: "group", depth: 0, open: "closed", ancestors: [], group: { field: 1n, value: null }, span: 0, path: [], set: null },
         // A source may leave out the span and the path.
-        { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null },
+        { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null, set: { index: 2, size: 3 } },
       ];
       grid.set_outlines(0, 0, outlines);
       grid.begin_frame(400, 200);
@@ -448,7 +448,9 @@ describe("Grouping", () => {
       type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
       const items = memory.grouped_window(0, 12) as Item[];
       const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
-      const group = (value: string | null, span: number) => ({
+      // Each item's place among its siblings: the top holds three groups and the Grand Total, each group its Leaves and Subtotal.
+      const set = (index: number, size: number) => ({ index, size });
+      const group = (value: string | null, index: number, span: number) => ({
         kind: "group",
         depth: 0,
         open: "open",
@@ -456,8 +458,9 @@ describe("Grouping", () => {
         group: { field: 1n, value },
         span,
         path: [],
+        set: set(index, 4),
       });
-      const leaf = (parent: bigint, value: string | null) => ({
+      const leaf = (parent: bigint, value: string | null, index: number, size: number) => ({
         kind: "leaf",
         depth: 1,
         open: "cantOpen",
@@ -465,21 +468,26 @@ describe("Grouping", () => {
         group: null,
         span: 0,
         path: [{ field: 1n, value }],
+        set: set(index, size),
       });
-      const subtotal = (parent: bigint, value: string | null) => ({ ...leaf(parent, value), kind: "subtotal", group: { field: 1n, value } });
+      const subtotal = (parent: bigint, value: string | null, size: number) => ({
+        ...leaf(parent, value, size - 1, size),
+        kind: "subtotal",
+        group: { field: 1n, value },
+      });
       expect(items.map((i) => [i.item, i.outline])).toEqual([
-        [null, group("a", 3)],
-        [1, leaf(a, "a")],
-        [4, leaf(a, "a")],
-        [null, subtotal(a, "a")],
-        [null, group("b", 3)],
-        [0, leaf(b, "b")],
-        [2, leaf(b, "b")],
-        [null, subtotal(b, "b")],
-        [null, group(null, 2)],
-        [3, leaf(blank, null)],
-        [null, subtotal(blank, null)],
-        [null, { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null, span: 0, path: [] }],
+        [null, group("a", 0, 3)],
+        [1, leaf(a, "a", 0, 3)],
+        [4, leaf(a, "a", 1, 3)],
+        [null, subtotal(a, "a", 3)],
+        [null, group("b", 1, 3)],
+        [0, leaf(b, "b", 0, 3)],
+        [2, leaf(b, "b", 1, 3)],
+        [null, subtotal(b, "b", 3)],
+        [null, group(null, 2, 2)],
+        [3, leaf(blank, null, 0, 2)],
+        [null, subtotal(blank, null, 2)],
+        [null, { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null, span: 0, path: [], set: set(3, 4) }],
       ]);
       expect(items.map((i) => i.aggregates)).toEqual([
         [5, 2], null, null, [5, 2], [7, 2], null, null, [7, 2], [10, 1], null, [10, 1], [22, 5],

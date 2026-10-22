@@ -4,7 +4,7 @@
 
 use binnacle_core::{
     Aggregate, AggregateValue, Depth, Expand, Form, GroupOf, GroupedAxis, Grouping, ItemKind, Key,
-    Level, OpenState, Outline, Placement, Value,
+    Level, OpenState, Outline, Placement, SetPosition, Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -291,6 +291,8 @@ pub struct WireOutline {
     /// The group of each ancestor, outermost first.
     #[serde(default)]
     pub path: Vec<WireGroupOf>,
+    #[serde(default)]
+    pub set: Option<WireSet>,
 }
 
 impl From<&GroupOf> for WireGroupOf {
@@ -312,6 +314,14 @@ impl From<WireGroupOf> for GroupOf {
             value: Value::of(g.value.as_deref()),
         }
     }
+}
+
+/// An item's place among its siblings: its index (0 first) and the set's
+/// size, as numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WireSet {
+    pub index: f64,
+    pub size: f64,
 }
 
 impl From<&Outline> for WireItemKind {
@@ -345,6 +355,10 @@ impl From<&Outline> for WireOutline {
             group: o.group.as_ref().map(WireGroupOf::from),
             span: o.span as f64,
             path: o.path.iter().map(WireGroupOf::from).collect(),
+            set: o.set.map(|s| WireSet {
+                index: s.index as f64,
+                size: s.size as f64,
+            }),
         }
     }
 }
@@ -371,6 +385,10 @@ impl From<WireOutline> for Outline {
         };
         outline.open = open;
         outline.depth = w.depth;
+        outline.set = w.set.map(|s| SetPosition {
+            index: s.index as u64,
+            size: s.size as u64,
+        });
         outline
     }
 }

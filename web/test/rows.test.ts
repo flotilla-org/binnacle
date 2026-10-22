@@ -1135,24 +1135,32 @@ describe("fromRows's grouping", () => {
     return out;
   };
 
-  /** What the source shows: each Group Item as its group's text and count (checked against its label and outline), each Leaf by its row ID. */
+  /**
+   * What the source shows: each Group Item as its group's text and count (checked against its label and outline), each
+   * Leaf by its row ID. Each outline places its item among its siblings: the groups, or its group's Leaves.
+   */
   const shown = (source: ReturnType<typeof fromRows<Rec>>, field: keyof Rec) => {
     const n = source.rows.count() as number;
     const window = source.rows.window(0, n, signal) as OutlinedWindow<number, keyof Rec>;
+    const groups = window.outlines.filter((o) => o.kind === "group").length;
     let parent: number | undefined;
     let path: { field: keyof Rec; value: string | null }[] = [];
+    let [nth, leaf, size] = [-1, 0, 0];
     return window.ids.map((id, i) => {
       const outline = window.outlines[i]!;
       if (outline.kind === "leaf") {
         expect(id).toBeGreaterThanOrEqual(0);
-        expect(outline).toEqual({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null, span: 0, path });
+        const set = { index: leaf++, size };
+        expect(outline).toEqual({ kind: "leaf", depth: 1, open: "cantOpen", ancestors: [parent], group: null, span: 0, path, set });
         return id;
       }
       parent = id;
       expect(id).toBeLessThan(0);
       const group = source.group(id)!;
+      [nth, leaf, size] = [nth + 1, 0, group.count];
+      const set = { index: nth, size: groups };
       // An open Group Item spans its rows, as no Subtotal is placed; its path is its ancestors', none.
-      expect(outline).toEqual({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field, value: group.value }, span: group.count, path: [] });
+      expect(outline).toEqual({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field, value: group.value }, span: group.count, path: [], set });
       path = [{ field, value: group.value }];
       expect(group.field).toBe(field);
       expect(source.rows.groupLabel!(id, outline)).toBe(`${group.value ?? "(blank)"} (${group.count})`);
