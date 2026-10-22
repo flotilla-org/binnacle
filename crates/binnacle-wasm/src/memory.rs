@@ -9,10 +9,11 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Range;
 
 use binnacle_core::{
     Axis, ChangeNotice, Depth, Expand, FilterSpec, Grouping, ItemKind, Key, Located, MoveRefusal,
-    SortColumn, SortSpec, Value, ViewSpec,
+    Outline, Position, SortColumn, SortSpec, VALUES_FIELD, Value, ViewSpec,
 };
 use binnacle_group::{
     AggregateBackend, Answer, Batch, Figure, GroupingLayer, MemoryAggregates, settle,
@@ -110,16 +111,19 @@ impl AggregateBackend<Figure> for Backend<'_> {
 }
 
 /// One item of a grouped Window: its layer Key, its Logical Index if a
-/// Leaf, its outline (a Summary Item's field is its column index), and a
-/// Summary Item's aggregates, one per value (`null` for a blank), with how
-/// many children its group has.
-#[derive(Serialize)]
+/// Leaf, its outline (a Summary Item's field is its column index, or
+/// [`VALUES_FIELD`] for the values pseudo-level), a Summary Item's
+/// aggregates, one per value (`null` for a blank), with how many children
+/// its group has, and the index of the value it stands for, if one does (a
+/// group of the values pseudo-level, a Grand Total split by value).
+#[derive(Debug, Serialize)]
 struct GroupedItem {
     key: u64,
     item: Option<u32>,
     outline: WireOutline,
     aggregates: Option<Vec<Option<f64>>>,
     children: Option<f64>,
+    value: Option<u32>,
 }
 
 /// An item of the grouped rows as find walks them, every group open: its
@@ -137,14 +141,16 @@ struct FoundItem {
 }
 
 /// A Summary Item as [`WebMemory::summary`] reads it: its kind, its group's
-/// innermost field and value (none for the Grand Total), its aggregates
-/// and how many children its group has.
+/// innermost field and value (none for the Grand Total), its aggregates,
+/// how many children its group has, and the value it stands for, as a
+/// [`GroupedItem`]'s.
 #[derive(Serialize)]
 struct SummaryOf {
     kind: WireItemKind,
     group: Option<WireGroupOf>,
     aggregates: Vec<Option<f64>>,
     children: f64,
+    value: Option<u32>,
 }
 
 #[wasm_bindgen]
@@ -204,7 +210,7 @@ impl WebMemory {
     /// [`codes::located`] reads them.
     pub fn locate(&mut self, a: u8, item: u32) -> Vec<f64> {
         let located = match self.layer.grouped(axis(a)) {
-            true => self.locate_grouped(Key(item as u64)),
+            true => self.locate_grouped(axis(a), Key(item as u64)),
             false => self.table.locate(axis(a), Key(item as u64)),
         };
         match located {
@@ -213,10 +219,10 @@ impl WebMemory {
         }
     }
 
-    /// Where the Summary Item with the layer's Key `key` sits, as
-    /// [`WebMemory::locate`] answers.
-    pub fn locate_summary(&mut self, key: u64) -> Vec<f64> {
-        match self.locate_grouped(Key(key)) {
+    /// Where the Summary Item with the layer's Key `key` sits on axis `a`,
+    /// as [`WebMemory::locate`] answers.
+    pub fn locate_summary(&mut self, a: u8, key: u64) -> Vec<f64> {
+        match self.locate_grouped(axis(a), Key(key)) {
             Located::Found(p) => vec![0.0, p as f64],
             Located::Gone { .. } => vec![1.0, f64::NAN],
         }
@@ -250,26 +256,35 @@ impl WebMemory {
     /// the user's sort columns (indices) and directions (0 ascending), which
     /// order the groups. `having` lists the rows' comparisons on a field a
     /// value aggregates (conditions naming columns by index): they leave out
-    /// the groups whose figure fails them, not the rows. Returns the new
-    /// count for the `Refiltered`.
+    /// the groups whose figure fails them, not the rows. `col_sort` and
+    /// `col_directions` order a pivot's columns as `sort` orders the groups,
+    /// each a column level's field (by value) or `GRAND_TOTAL` (by the Grand
+    /// Total row's figure). Returns the new count for the `Refiltered`.
     pub fn group(
         &mut self,
         grouping: JsValue,
         sort: &[u32],
         directions: &[u8],
         having: JsValue,
+        col_sort: &[u64],
+        col_directions: &[u8],
     ) -> Result<f64, JsValue> {
         let grouping: WireGrouping = serde_wasm_bindgen::from_value(grouping)?;
         let having: Vec<WireCondition> = serde_wasm_bindgen::from_value(having)?;
         let having = having.into_iter().filter_map(WireCondition::into_core);
-        let sort = (sort.iter().zip(directions))
-            .map(|(&c, &d)| match d {
-                0 => SortColumn::ascending(Key(c as u64)),
-                _ => SortColumn::descending(Key(c as u64)),
-            })
-            .collect();
+        let spec = |keys: &mut dyn Iterator<Item = u64>, directions: &[u8]| {
+            let columns = (keys.zip(directions))
+                .map(|(c, &d)| match d {
+                    0 => SortColumn::ascending(Key(c)),
+                    _ => SortColumn::descending(Key(c)),
+                })
+                .collect();
+            SortSpec::new(columns)
+        };
+        let sort = spec(&mut sort.iter().map(|&c| c as u64), directions);
+        let col_sort = spec(&mut col_sort.iter().copied(), col_directions);
         let filter = FilterSpec::default().with_conditions(having.collect::<Vec<_>>().into());
-        Ok(self.group_by(grouping.into(), SortSpec::new(sort), filter))
+        Ok(self.group_by(grouping.into(), sort, filter, col_sort))
     }
 
     /// Ungroups the rows; returns the count for the `Refiltered`.
@@ -328,37 +343,23 @@ impl WebMemory {
         self.layer.grouped(Axis::Rows)
     }
 
-    /// The grouped rows' items at Positions `start..end`, clipped to the
-    /// count: an array of objects, each Leaf by its Logical Index and every
-    /// item with its outline.
-    pub fn grouped_window(&mut self, start: f64, end: f64) -> JsValue {
-        let range = position(start)..position(end);
-        let want = range
-            .end
-            .min(self.count(0) as u64)
-            .saturating_sub(range.start) as usize;
-        let mut items = self.layer.window(Axis::Rows, range.clone());
-        while items.len() < want {
-            self.settle();
-            let more = self.layer.window(Axis::Rows, range.clone());
-            if more.len() <= items.len() {
-                break;
-            }
-            items = more;
-        }
-        let items: Vec<GroupedItem> = (items.into_iter())
-            .map(|(key, outline)| {
-                let summary = self.layer.summary(key);
-                GroupedItem {
-                    key: key.0,
-                    item: (outline.kind == ItemKind::Leaf).then_some(key.0 as u32),
-                    outline: (&outline).into(),
-                    aggregates: summary.map(|s| s.aggregates.iter().map(|f| f.number()).collect()),
-                    children: summary.map(|s| s.children as f64),
-                }
-            })
-            .collect();
-        to_js(&items)
+    /// Whether the table is a pivot: its columns come from the data too.
+    pub fn pivot(&self) -> bool {
+        self.layer.pivot()
+    }
+
+    /// The figure of a pivot's cell where the row and the column with the
+    /// layer's Keys `row` and `col` cross, `undefined` for a blank or a
+    /// Key the layer does not know.
+    pub fn cell(&self, row: u64, col: u64) -> Option<f64> {
+        self.layer.cell(Key(row), Key(col)).and_then(|f| f.number())
+    }
+
+    /// The items of grouped axis `a` at Positions `start..end`, clipped to
+    /// the count: an array of objects, each Leaf by its Logical Index and
+    /// every item with its outline.
+    pub fn grouped_window(&mut self, a: u8, start: f64, end: f64) -> JsValue {
+        to_js(&self.window_items(axis(a), position(start)..position(end)))
     }
 
     /// Every item of the grouped rows in order as if every group were
@@ -484,6 +485,10 @@ impl WebMemory {
             }),
             aggregates: s.aggregates.iter().map(|f| f.number()).collect(),
             children: s.children as f64,
+            value: s
+                .path
+                .last()
+                .and_then(|(field, value)| self.value_index(*field, value)),
         })
     }
 
@@ -622,11 +627,18 @@ impl WebMemory {
 }
 
 impl WebMemory {
-    fn group_by(&mut self, grouping: Grouping, sort: SortSpec, having: FilterSpec) -> f64 {
+    fn group_by(
+        &mut self,
+        grouping: Grouping,
+        sort: SortSpec,
+        having: FilterSpec,
+        col_sort: SortSpec,
+    ) -> f64 {
         self.fields = std::mem::take(&mut self.staged_fields);
         let spec = ViewSpec::default()
             .with_sort(Axis::Rows, sort)
             .with_filter(Axis::Rows, having)
+            .with_sort(Axis::Cols, col_sort)
             .with_grouping(Some(grouping));
         self.spec = spec.clone();
         self.layer.request_view(spec);
@@ -634,6 +646,53 @@ impl WebMemory {
         self.layer.refresh();
         self.settle();
         self.count(0)
+    }
+
+    /// The items of grouped `axis` at `range`, as [`WebMemory::grouped_window`]
+    /// gives them.
+    fn window_items(&mut self, axis: Axis, range: Range<Position>) -> Vec<GroupedItem> {
+        let want = range
+            .end
+            .min(self.count(axis.index() as u8) as u64)
+            .saturating_sub(range.start) as usize;
+        let mut items = self.layer.window(axis, range.clone());
+        while items.len() < want {
+            self.settle();
+            let more = self.layer.window(axis, range.clone());
+            if more.len() <= items.len() {
+                break;
+            }
+            items = more;
+        }
+        (items.into_iter())
+            .map(|(key, outline)| {
+                let summary = self.layer.summary(key);
+                GroupedItem {
+                    key: key.0,
+                    item: (outline.kind == ItemKind::Leaf).then_some(key.0 as u32),
+                    outline: (&outline).into(),
+                    aggregates: summary.map(|s| s.aggregates.iter().map(|f| f.number()).collect()),
+                    children: summary.map(|s| s.children as f64),
+                    value: self.value_of(&outline),
+                }
+            })
+            .collect()
+    }
+
+    /// The index of the value `outline` stands for, if any.
+    fn value_of(&self, outline: &Outline) -> Option<u32> {
+        let group = outline.group.as_ref()?;
+        self.value_index(group.field, &group.value)
+    }
+
+    /// The index of the value a group of `field` with `value` stands for,
+    /// if `field` is the values pseudo-level's.
+    fn value_index(&self, field: Key, value: &Value) -> Option<u32> {
+        let (Value::Text(identity), true) = (value, field == VALUES_FIELD) else {
+            return None;
+        };
+        let grouping = self.spec.grouping.as_ref()?;
+        grouping.value_of(identity).map(|(i, _)| i as u32)
     }
 
     fn settle(&mut self) {
@@ -645,17 +704,18 @@ impl WebMemory {
         settle(&mut self.layer, &mut backend);
         self.notices.clear();
         while let Some(viewed) = self.layer.poll_viewed() {
-            self.notices
-                .extend(viewed.notices.into_iter().map(|(_, n)| n));
+            // A pivot's columns are told apart, with a `Refiltered`.
+            let rows = (viewed.notices.into_iter()).filter(|(a, _)| *a == Axis::Rows);
+            self.notices.extend(rows.map(|(_, n)| n));
             if let Some(g) = viewed.applied.grouping {
                 self.applied = g.rows.expand;
             }
         }
     }
 
-    fn locate_grouped(&mut self, key: Key) -> Located {
+    fn locate_grouped(&mut self, axis: Axis, key: Key) -> Located {
         loop {
-            if let Some(located) = self.layer.locate(Axis::Rows, key) {
+            if let Some(located) = self.layer.locate(axis, key) {
                 return located;
             }
             self.settle();
@@ -666,7 +726,9 @@ impl WebMemory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binnacle_core::{AggregateValue, Comparison, Condition, GRAND_TOTAL, Placement, Scalar};
+    use binnacle_core::{
+        AggregateValue, Comparison, Condition, GRAND_TOTAL, Level, Placement, Scalar,
+    };
 
     const ROWS: u8 = 0;
     const COLS: u8 = 1;
@@ -782,16 +844,22 @@ mod tests {
             m.group_by(
                 grouping.clone(),
                 SortSpec::unsorted(),
-                FilterSpec::default()
+                FilterSpec::default(),
+                SortSpec::unsorted(),
             ),
             9.0,
             "three groups, five Leaves and the Grand Total"
         );
-        assert_eq!(m.locate_summary(GRAND_TOTAL.0), vec![0.0, 8.0]);
+        assert_eq!(m.locate_summary(ROWS, GRAND_TOTAL.0), vec![0.0, 8.0]);
         stage(&mut m);
         grouping.rows.grand_total = Placement::Off;
         assert_eq!(
-            m.group_by(grouping, SortSpec::unsorted(), FilterSpec::default()),
+            m.group_by(
+                grouping,
+                SortSpec::unsorted(),
+                FilterSpec::default(),
+                SortSpec::unsorted(),
+            ),
             8.0,
             "three groups and five Leaves"
         );
@@ -805,6 +873,95 @@ mod tests {
         assert_eq!(m.ungroup(), 4.0);
         assert!(!m.grouped());
         assert_eq!(m.locate(ROWS, 3), vec![0.0, 3.0]);
+    }
+
+    /// Stages column `field`'s texts, none of them numbers.
+    fn stage_texts(m: &mut WebMemory, field: u32, texts: &[&str]) {
+        let bytes = texts.concat().into_bytes();
+        let ends = (texts.iter())
+            .scan(0, |end, t| {
+                *end += t.len() as u32;
+                Some(*end)
+            })
+            .collect();
+        let n = texts.len();
+        m.stage_field(field, bytes, ends, vec![0; n], vec![0.0; n], vec![1; n]);
+    }
+
+    #[test]
+    fn a_pivot_lists_its_columns_from_the_data_and_crosses_them_with_the_rows() {
+        let mut m = WebMemory::new(5, 3);
+        let stage = |m: &mut WebMemory| {
+            stage_texts(m, 0, &["N", "S", "N", "N", "S"]);
+            stage_texts(m, 1, &["Q2", "Q1", "Q1", "Q2", "Q2"]);
+            let (numbers, nulls) = (vec![1.0, 2.0, 3.0, 4.0, 5.0], vec![0; 5]);
+            m.stage_field(2, b"".to_vec(), vec![0; 5], vec![1; 5], numbers, nulls);
+        };
+        stage(&mut m);
+        let mut grouping = Grouping::rows_by(Key(0));
+        grouping.col_levels = vec![Level::field(Key(1)), Level::Values];
+        grouping.values = vec![AggregateValue::of(Key(2), "sum"), AggregateValue::count()];
+        grouping.cols.grand_total = Placement::After;
+        let rows = m.group_by(
+            grouping.clone(),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+            SortSpec::unsorted(),
+        );
+        assert!(m.pivot());
+        assert_eq!(rows, 2.0, "N and S, no Leaves");
+        assert_eq!(
+            m.count(COLS),
+            6.0,
+            "Q1 and Q2 each by sum and count, then All by each"
+        );
+        let cols = m.window_items(Axis::Cols, 0..6);
+        let named: Vec<(Option<String>, Option<u32>)> = (cols.iter())
+            .map(|c| {
+                (
+                    c.outline.group.as_ref().and_then(|g| g.value.clone()),
+                    c.value,
+                )
+            })
+            .collect();
+        let sum = Some("sum(2)".to_string());
+        let count = Some("count()".to_string());
+        assert_eq!(
+            named,
+            vec![
+                (sum.clone(), Some(0)),
+                (count.clone(), Some(1)),
+                (sum.clone(), Some(0)),
+                (count.clone(), Some(1)),
+                (sum, Some(0)),
+                (count, Some(1)),
+            ]
+        );
+        assert!(
+            cols.iter()
+                .all(|c| c.outline.group.as_ref().unwrap().field == VALUES_FIELD.0)
+        );
+        let rows = m.window_items(Axis::Rows, 0..2);
+        let n = rows[0].key;
+        let cell = |m: &WebMemory, col: usize| m.cell(n, cols[col].key);
+        // N holds rows 0, 2 and 3: Q2 by 0 and 3, Q1 by 2.
+        assert_eq!(cell(&m, 0), Some(3.0), "N's Q1 sum");
+        assert_eq!(cell(&m, 2), Some(5.0), "N's Q2 sum");
+        assert_eq!(cell(&m, 3), Some(2.0), "N's Q2 count");
+        assert_eq!(cell(&m, 4), Some(8.0), "N's sum over all quarters");
+        assert_eq!(m.locate_summary(COLS, cols[5].key), vec![0.0, 5.0]);
+        // By the Grand Total row's sum, most first: Q2's 10 before Q1's 5.
+        stage(&mut m);
+        let by_total = SortSpec::new(vec![SortColumn::descending(GRAND_TOTAL)]);
+        m.group_by(
+            grouping,
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+            by_total,
+        );
+        let cols = m.window_items(Axis::Cols, 0..1);
+        let n = m.window_items(Axis::Rows, 0..1)[0].key;
+        assert_eq!(m.cell(n, cols[0].key), Some(5.0), "N's Q2 sum leads");
     }
 
     #[test]
@@ -822,7 +979,10 @@ mod tests {
         let big = Condition::compare(Key(1), Comparison::Greater(Scalar::Number(5.0)));
         let having = FilterSpec::default().with_conditions(vec![big].into());
         // Group "b" (sum 30) and its two Leaves, and the Grand Total.
-        assert_eq!(m.group_by(grouping, SortSpec::unsorted(), having), 4.0);
+        assert_eq!(
+            m.group_by(grouping, SortSpec::unsorted(), having, SortSpec::unsorted()),
+            4.0
+        );
         assert_eq!(m.locate(ROWS, 0)[0], 1.0, "under a group left out");
         assert_eq!(m.locate(ROWS, 2), vec![0.0, 1.0]);
     }
@@ -843,6 +1003,7 @@ mod tests {
             Grouping::rows_by(Key(1)),
             SortSpec::unsorted(),
             FilterSpec::default(),
+            SortSpec::unsorted(),
         );
         // a: 1, 4; b: 0, 2; blank: 3.
         assert_eq!(m.locate(ROWS, 0), vec![0.0, 4.0]);

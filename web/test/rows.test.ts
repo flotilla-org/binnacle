@@ -537,6 +537,7 @@ describe("fromRows", () => {
       oneOf: false,
       compare: null,
       group: true,
+      pivot: false,
       subtotals: { before: true, after: true },
       aggregates: ["count", "distinct count", "sum", "average", "minimum", "maximum"].map((name) => ({ name })),
     });

@@ -27,7 +27,7 @@ export interface StripItem {
   togglePending: boolean;
 }
 
-/** An outline by Keys: ancestors by Keys of the axis, the group's field by a Key of the other axis. */
+/** An outline by Keys: ancestors by Keys of the axis, the group's field by a Key of the columns (a base field), `VALUES_FIELD` for the values pseudo-level. */
 export type KeyedOutline = Outline<bigint, bigint>;
 
 /** The grouping part of a View Spec by Keys: fields are Keys of the columns. */

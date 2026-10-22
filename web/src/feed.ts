@@ -4,7 +4,7 @@
 // Locate, move, find steps), and find's marks and count. Every answer goes
 // through one `settle`.
 
-import { AXES, AXIS_CODE, EDGE_CODE, FIND, GRAND_TOTAL, NOTICE_CODE, QUICK_FILTER, SUPPORT, other, type AxisName } from "./codes";
+import { AXES, AXIS_CODE, EDGE_CODE, FIND, GRAND_TOTAL, NOTICE_CODE, QUICK_FILTER, SUPPORT, VALUES_FIELD, other, type AxisName } from "./codes";
 import { createValueCache, FAILED, PENDING } from "./cache";
 import type { Content } from "./content";
 import type { Effect } from "./effects";
@@ -810,21 +810,28 @@ export function createFeed<RowId, ColId, V>(
     };
   };
 
-  /** An outline by Keys: its ancestors interned on `own`, its group's field on the other axis. */
-  const outlineKeys = <Id>(own: Axis<Id>, by: Axis<unknown>, o: Outline<Id, unknown>): KeyedOutline => ({
+  /** A group's field as a Key: a base field is a column ID, on either axis; the values pseudo-level's is `VALUES_FIELD`. */
+  const fieldKey = (field: ColId | null): bigint => (field === null ? VALUES_FIELD : cols.interner.key(field));
+
+  /** A group's field by ID as `fieldKey` took it, `undefined` if the columns no longer know it. */
+  const fieldId = (key: bigint | null): ColId | null | undefined =>
+    key === null ? undefined : key === VALUES_FIELD ? null : cols.interner.id(key);
+
+  /** An outline by Keys: its ancestors interned on `own`, its groups' fields as `fieldKey` takes them. */
+  const outlineKeys = <Id>(own: Axis<Id>, o: Outline<Id, ColId>): KeyedOutline => ({
     kind: o.kind,
     depth: o.depth,
     open: o.open,
     ancestors: o.ancestors.map((id) => own.interner.key(id)),
-    group: o.group ? { field: by.interner.key(o.group.field), value: o.group.value } : null,
+    group: o.group ? { field: fieldKey(o.group.field), value: o.group.value } : null,
     span: o.span ?? 0,
-    path: (o.path ?? []).map((g) => ({ field: by.interner.key(g.field), value: g.value })),
+    path: (o.path ?? []).map((g) => ({ field: fieldKey(g.field), value: g.value })),
     set: o.set ?? null,
   });
 
   /** An outline by IDs, as `outlineKeys` took it; Keys the interners no longer know are left out. */
-  const outlineIds = <Id>(own: Axis<Id>, by: Axis<unknown>, o: KeyedOutline): Outline<Id, unknown> => {
-    const field = o.group ? by.interner.id(o.group.field) : undefined;
+  const outlineIds = <Id>(own: Axis<Id>, o: KeyedOutline): Outline<Id, ColId> => {
+    const field = o.group ? fieldId(o.group.field) : undefined;
     return {
       kind: o.kind,
       depth: o.depth,
@@ -836,7 +843,7 @@ export function createFeed<RowId, ColId, V>(
       group: o.group && field !== undefined ? { field, value: o.group.value } : null,
       span: o.span ?? 0,
       path: (o.path ?? []).flatMap((g) => {
-        const id = by.interner.id(g.field);
+        const id = fieldId(g.field);
         return id === undefined ? [] : [{ field: id, value: g.value }];
       }),
       set: o.set ?? null,
@@ -1147,7 +1154,7 @@ export function createFeed<RowId, ColId, V>(
       const id = item.key === null ? undefined : interner.id(item.key);
       const outline = item.outline;
       if (outline && outline.kind !== "leaf") {
-        const asked = id === undefined ? undefined : s.groupLabel?.(id, outlineIds(axes[axis], cross(axis), outline));
+        const asked = id === undefined ? undefined : s.groupLabel?.(id, outlineIds(axes[axis], outline));
         return asked ?? summaryLabel(outline);
       }
       const label = id === undefined ? undefined : s.label?.(id, item.position);
@@ -1221,8 +1228,7 @@ export function createFeed<RowId, ColId, V>(
             const keys = keysOf(axis, windowIds(window));
             (grid ?? g).set_window(i, start, keys);
             if (!Array.isArray(window)) {
-              const by = cross(name) as Axis<unknown>;
-              const outlines = window.outlines.map((o) => outlineKeys(axis, by, o));
+              const outlines = window.outlines.map((o) => outlineKeys(axis, o as Outline<unknown, ColId>));
               (grid ?? g).set_outlines(i, start, outlines);
             }
             markSupport(other(name), keys);

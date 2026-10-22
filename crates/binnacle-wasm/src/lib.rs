@@ -29,6 +29,12 @@ pub fn grand_total_key() -> u64 {
     binnacle_core::GRAND_TOTAL.0
 }
 
+/// The field of the values pseudo-level in a pivot's outlines, as a Key.
+#[wasm_bindgen]
+pub fn values_field() -> u64 {
+    binnacle_core::VALUES_FIELD.0
+}
+
 /// Runs when the module loads: debug builds report panics to the console.
 #[wasm_bindgen(start)]
 pub fn start() {

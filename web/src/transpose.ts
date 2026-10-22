@@ -12,6 +12,7 @@
 
 import type {
   AppliedView,
+  AxisSource,
   FindMethods,
   FindQuery,
   FindStep,
@@ -117,8 +118,9 @@ export function transpose<RowId, ColId, V>(source: TableSource<RowId, ColId, V>)
   const { view, renderer, find, attach, emptyMessage } = source;
   const asked = new WeakMap<FindQuery<ColId>, FindQuery<RowId>>();
   return {
-    rows: source.cols,
-    cols: source.rows,
+    // Never grouped, so no outline names a base field.
+    rows: source.cols as AxisSource<ColId, RowId, never>,
+    cols: source.rows as AxisSource<RowId, ColId, never>,
     ...(view && {
       view: (spec: ViewSpec<ColId, RowId>, signal: AbortSignal) =>
         then(view.call(source, transposeView(spec), signal), transposeApplied),

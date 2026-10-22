@@ -395,7 +395,8 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
     depth: o.depth,
     open: o.open,
     ancestors: o.ancestors.map(rowId),
-    group: o.group ? { field: colId(o.group.field)!, value: o.group.value } : null,
+    // No pivot over the layer's wire yet, so never the values pseudo-level's null field.
+    group: o.group && o.group.field !== null ? { field: colId(o.group.field)!, value: o.group.value } : null,
   });
 
   const summary = (id: number): GroupedSummary<ColId> | undefined => {
