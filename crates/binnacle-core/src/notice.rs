@@ -166,7 +166,19 @@ impl Grid {
                 let at = at.min(count);
                 let n = n.min(u64::MAX - count);
                 if n > 0 {
+                    // In header form a group opening before its Subtotal at
+                    // the Scroll Anchor shows what it opened.
+                    let anchor = self.axis(axis).anchor;
+                    let reveal = folding
+                        && self.header_levels(axis) > 0
+                        && anchor.position == at
+                        && (self.outline_at(axis, at))
+                            .is_some_and(|o| o.kind == ItemKind::Subtotal);
                     self.inserted_or_removed(axis, Shift::Inserted { at, n });
+                    if reveal {
+                        self.axis_mut(axis).anchor = anchor;
+                        self.axis_mut(axis).clamp_anchor();
+                    }
                     if folding {
                         self.refetch(axis);
                     }

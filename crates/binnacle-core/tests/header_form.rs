@@ -316,3 +316,25 @@ fn clicking_a_level_column_focuses_that_tier() {
     s.click(1.0, 2.5, Modifiers::NONE);
     assert_eq!(s.frame(V).focused_tier(), 0);
 }
+
+#[test]
+fn opening_a_span_whose_subtotal_leads_the_view_shows_what_it_opened() {
+    let short = Viewport {
+        width: 30.0,
+        height: 4.0,
+    };
+    let mut s = grouped(Expand::to(Depth::Levels(1)), subtotal(BERGEN));
+    s.frame(short);
+    s.input(|g| g.scroll_to_item(Axis::Rows, 1));
+    let first = |s: &mut Scenario<TreeTable>| s.frame(short).rows().first().and_then(|i| i.key);
+    assert_eq!(first(&mut s), Some(subtotal(BERGEN)));
+    s.input(|g| g.expand(Axis::Rows, BERGEN).unwrap());
+    s.frame(short);
+    assert_eq!(
+        first(&mut s),
+        Some(Key(4)),
+        "Bergen's shipment, above its Subtotal"
+    );
+    let focus = s.frame(short).focus(Axis::Rows).and_then(|f| f.key);
+    assert_eq!(focus, Some(subtotal(BERGEN)), "focus stays on the Subtotal");
+}
