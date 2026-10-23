@@ -13,7 +13,9 @@ use binnacle_core::{Key, Located, Position};
 
 pub use interner::KeyInterner;
 pub use memory_source::{MemorySource, TextMatcher, Unsortable, query_error};
-pub use pump::{FindCount, FindStep, Moved, PumpSource, Viewed, answer_move, pump};
+pub use pump::{
+    FindCount, FindStep, Moved, PumpSource, Viewed, answer_move, forget_retired, pump,
+};
 pub use sort_keys::SortKeys;
 pub use table::{InMemoryTableSource, MovePolicy};
 pub use transposed::{

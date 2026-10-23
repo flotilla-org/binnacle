@@ -9,7 +9,7 @@ use crate::grouping::{
     Aggregate, AggregateValue, Depth, Form, GRAND_TOTAL, Grouping, Level, Placement,
 };
 use crate::pointer::Modifiers;
-use crate::sort::{HeaderSort, SortSpec};
+use crate::sort::{HeaderSort, SortColumn, SortSpec};
 use crate::types::{Axis, Edge, Key, Position};
 
 /// The items of the other axis a Text Query searches.
@@ -803,6 +803,14 @@ impl ViewState {
         self.listed(of, |a, b| a == b)
     }
 
+    /// The sort terms of `axis`, listed as [`ViewState::conditions`] lists
+    /// conditions; a requested term is matched with the applied term on its
+    /// item, and is not applied while their directions differ.
+    pub fn sorts(&self, axis: Axis) -> Vec<(SortColumn, ConditionState)> {
+        let of = |spec: &ViewSpec| spec.axis(axis).sort.columns().to_vec();
+        self.listed(of, |a: &SortColumn, b: &SortColumn| a.key == b.key)
+    }
+
     /// The slicers, listed as [`ViewState::conditions`] lists conditions.
     pub fn slicers(&self) -> Vec<(Condition, ConditionState)> {
         let of = |spec: &ViewSpec| {
@@ -901,10 +909,20 @@ fn plain_if_bare(spec: &mut ViewSpec) {
 /// `applied`: the source's sort and hidden Keys (pruned of those its data
 /// lost), its conditions plus the wanted ones it left out, and the wanted
 /// quick filter if there is one, else its own. Likewise its grouping, with
-/// the wanted levels, values and slicers it left out.
+/// the wanted levels, values and slicers it left out. On a Pivot, where an
+/// item a sort term names comes and goes with the data, the wanted sort
+/// stands too, its terms the source left out kept not applied.
 fn kept(wanted: ViewSpec, applied: &ViewSpec) -> ViewSpec {
     let mut kept = applied.clone();
+    let pivot = (applied.grouping.as_ref()).is_some_and(Grouping::pivot);
     for axis in Axis::ALL {
+        if pivot {
+            let have = kept.axis(axis).sort.columns();
+            let same = |a: &SortColumn, b: &SortColumn| a.key == b.key;
+            if let Some(list) = merged(wanted.axis(axis).sort.columns(), have, same) {
+                kept.axis_mut(axis).sort = SortSpec::new(list);
+            }
+        }
         let wanted = &wanted.axis(axis).filter;
         let filter = &mut kept.axis_mut(axis).filter;
         if wanted.quick.is_some() {
@@ -1111,6 +1129,65 @@ impl Grid {
     /// View Edit [`ViewEdit::Replace`].
     pub fn request_view(&mut self, spec: ViewSpec) {
         self.request(spec, ViewEdit::Replace);
+    }
+
+    /// Every Key of `axis` the Grid keeps state on apart from its Windows:
+    /// its Size Overrides and pins (dormant ones too), and in the latest
+    /// View Spec its hidden Keys and the other axis's sort terms and
+    /// conditions naming its items. Each once, in no promised order: a host
+    /// whose Table Source retires Keys asks which of these to
+    /// [`Grid::forget`].
+    pub fn held_keys(&self, axis: Axis) -> Vec<Key> {
+        let spec = self.latest_view();
+        let across = spec.axis(axis.other());
+        let mut keys: Vec<Key> = (self.size_overrides(axis).map(|(k, _)| k))
+            .chain(Edge::ALL.into_iter().flat_map(|e| self.pins(axis, e)))
+            .chain(spec.axis(axis).hidden.iter().copied())
+            .chain(across.sort.columns().iter().map(|c| c.key))
+            .chain(across.filter.conditions.conditions().iter().map(|c| c.key))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    /// The Table Source will never show the items `keys` of `axis` again,
+    /// say path Keys whose paths no longer fit the levels: drops their Size
+    /// Overrides and pins, and from the latest View Spec the axis's hidden
+    /// Keys and the other axis's sort terms and conditions naming them, so
+    /// none of these is left not applied. Asks the source for nothing.
+    pub fn forget(&mut self, axis: Axis, keys: &[Key]) {
+        if keys.is_empty() {
+            return;
+        }
+        for &key in keys {
+            if self.size_override(axis, key).is_some() {
+                self.clear_size(axis, key);
+            }
+            if Edge::ALL.into_iter().any(|e| self.pins(axis, e).any(|k| k == key)) {
+                self.unpin(axis, key);
+            }
+        }
+        self.view.totals_pinned[axis.index()].retain(|k| !keys.contains(k));
+        let Some(requested) = self.view.requested.as_mut() else {
+            return;
+        };
+        requested.axis_mut(axis).hidden.retain(|k| !keys.contains(k));
+        let across = requested.axis_mut(axis.other());
+        let sort: Vec<SortColumn> = (across.sort.columns().iter())
+            .filter(|c| !keys.contains(&c.key))
+            .copied()
+            .collect();
+        across.sort = SortSpec::new(sort);
+        across
+            .filter
+            .conditions
+            .list_mut()
+            .retain(|c| !keys.contains(&c.key));
+        if self.view.requested.as_ref() == Some(&self.view.applied) {
+            self.view.requested = None;
+        }
+        self.pending_damage.selection = true;
     }
 
     /// Requests the latest View Spec again, with the View Edit

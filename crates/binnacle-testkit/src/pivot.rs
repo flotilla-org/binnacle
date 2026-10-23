@@ -3,8 +3,8 @@
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Grouping, Key, Located, OpenState, Outline, Position, Support, Value,
-    ViewSpec,
+    Axis, ChangeNotice, Grouping, Key, Located, OpenState, Outline, Position, SortSpec, Support,
+    Value, ViewSpec,
 };
 use binnacle_memory::{PumpSource, Viewed};
 
@@ -16,21 +16,27 @@ use crate::scenario::ScenarioSource;
 /// keyed by Position. Changing the pivot columns ([`PivotTable::set_columns`])
 /// answers with `Refiltered`, never `Removed`, as a pivot's column axis
 /// does, and its columns can't move while it pivots: their order is the
-/// data's. The View Spec asked for is applied whole.
+/// data's. The View Spec asked for is applied whole, but for a sort term
+/// on a pivot column it lacks for now. A pivot column's Key fits the
+/// columns only while the table pivots.
 pub struct PivotTable {
     rows: u64,
     plain: u64,
     pivot: Vec<(Key, Outline)>,
-    applied: ViewSpec,
+    /// Every pivot column it was ever given.
+    made: Vec<Key>,
+    asked: ViewSpec,
 }
 
 impl PivotTable {
     pub fn new(rows: u64, plain: u64, pivot: Vec<(Key, Outline)>) -> Self {
+        let made = pivot.iter().map(|(k, _)| *k).collect();
         PivotTable {
             rows,
             plain,
             pivot,
-            applied: ViewSpec::default(),
+            made,
+            asked: ViewSpec::default(),
         }
     }
 
@@ -46,7 +52,7 @@ impl PivotTable {
     }
 
     fn pivots(&self) -> bool {
-        (self.applied.grouping.as_ref()).is_some_and(Grouping::pivot)
+        (self.asked.grouping.as_ref()).is_some_and(Grouping::pivot)
     }
 
     fn columns(&self) -> Vec<Key> {
@@ -59,9 +65,25 @@ impl PivotTable {
     /// The pivot columns change, say as a value leaves the data: the
     /// Change Notice for the columns, if they show.
     pub fn set_columns(&mut self, pivot: Vec<(Key, Outline)>) -> Option<ChangeNotice> {
+        self.made.extend(pivot.iter().map(|(k, _)| *k));
         self.pivot = pivot;
         let count = self.pivot.len() as u64;
         self.pivots().then_some(ChangeNotice::Refiltered(count))
+    }
+}
+
+impl PivotTable {
+    /// The View Spec it applies now: the one asked for, its rows' sort
+    /// leaving out the pivot columns it lacks.
+    pub fn applied(&self) -> ViewSpec {
+        let mut applied = self.asked.clone();
+        let columns = self.columns();
+        let sort = (applied.rows.sort.columns().iter())
+            .filter(|c| !self.made.contains(&c.key) || columns.contains(&c.key))
+            .copied()
+            .collect();
+        applied.rows.sort = SortSpec::new(sort);
+        applied
     }
 }
 
@@ -92,14 +114,14 @@ impl ScenarioSource for PivotTable {
 impl PumpSource for PivotTable {
     fn view(&mut self, spec: &ViewSpec) -> Viewed {
         let before = self.columns();
-        self.applied = spec.clone();
+        self.asked = spec.clone();
         let after = self.columns();
         let notices = match before == after {
             true => Vec::new(),
             false => vec![(Axis::Cols, ChangeNotice::Refiltered(after.len() as u64))],
         };
         Viewed {
-            applied: spec.clone(),
+            applied: self.applied(),
             totals: Default::default(),
             notices,
         }
@@ -111,6 +133,10 @@ impl PumpSource for PivotTable {
 
     fn movable(&mut self, axis: Axis) -> Option<bool> {
         Some(axis == Axis::Rows || !self.pivots())
+    }
+
+    fn fits(&mut self, axis: Axis, key: Key) -> bool {
+        axis == Axis::Rows || self.pivots() || !self.made.contains(&key)
     }
 
     fn locate(&mut self, axis: Axis, key: Key) -> Located {

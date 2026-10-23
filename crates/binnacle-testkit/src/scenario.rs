@@ -496,6 +496,10 @@ impl<S: ScenarioSource> PumpSource for Answering<'_, S> {
         self.source.movable(axis)
     }
 
+    fn fits(&mut self, axis: Axis, key: Key) -> bool {
+        self.source.fits(axis, key)
+    }
+
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         let answer = self.source.move_items(axis, keys, to);
         let said = match &answer {

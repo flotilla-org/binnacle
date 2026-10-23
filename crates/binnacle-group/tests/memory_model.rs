@@ -1180,3 +1180,188 @@ fn closing_a_pivot_column_group_shows_its_total_columns_with_collapsed() {
         "each of the closed group's values over its rows"
     );
 }
+
+/// A pivot by `r` on the rows and `c` on the columns, counting and summing
+/// `summed`, the column Grand Total after and the rows' off.
+fn crossed(r: usize, c: usize, summed: usize) -> Grouping {
+    let mut grouping = Grouping::rows_by(Key(r as u64));
+    grouping.col_levels = vec![Level::field(Key(c as u64))];
+    grouping.values = vec![
+        AggregateValue::count(),
+        AggregateValue::of(Key(summed as u64), "sum"),
+    ];
+    grouping.cols.grand_total = Placement::After;
+    grouping
+}
+
+/// Each pivot column of `source` by its Key: its column group's value
+/// (`None` for an All column) and its value's index.
+fn pivot_columns(
+    source: &mut GroupedMemory<Record>,
+    rows: &[Record],
+) -> Vec<(Key, Option<Value>, usize)> {
+    let n = source.count(Axis::Cols);
+    let window = source.window(rows, Axis::Cols, 0..n);
+    let outlines = window.outlines.expect("pivot columns have outlines");
+    (window.keys.iter().zip(&outlines))
+        .map(|(&k, o)| {
+            let up = (o.ancestors.first()).map(|&a| source.summary(a).unwrap().path[0].1.clone());
+            let Some(Value::Text(id)) = o.group.as_ref().map(|g| &g.value) else {
+                panic!("a pivot column names its value")
+            };
+            let value = usize::from(id != "count()");
+            (k, up, value)
+        })
+        .collect()
+}
+
+/// The value of each row group shown, in order.
+fn row_groups(source: &mut GroupedMemory<Record>, rows: &[Record]) -> Vec<Value> {
+    let n = source.count(Axis::Rows);
+    let window = source.window(rows, Axis::Rows, 0..n);
+    (window.keys.iter())
+        .map(|&k| source.summary(k).unwrap().path[0].1.clone())
+        .collect()
+}
+
+#[hegel::test(test_cases = 200)]
+fn a_pivots_rows_sort_by_a_pivot_columns_figures(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).min_size(1).max_size(40));
+    let cols = tc.draw(gs::permutations(vec![0usize, 1, 2]));
+    let (r, c, summed) = (cols[0], cols[1], cols[2]);
+    let mut source = source(rows.len());
+    let spec = ViewSpec::default().with_grouping(Some(crossed(r, c, summed)));
+    source.view(&rows, &spec);
+    let columns = pivot_columns(&mut source, &rows);
+    let (key, cv, value) = columns[tc.draw(gs::integers::<usize>().max_value(columns.len() - 1))]
+        .clone();
+    let direction = tc.draw(gs::sampled_from(vec![
+        SortDirection::Ascending,
+        SortDirection::Descending,
+    ]));
+    let mut sorted = spec.clone();
+    sorted.rows.sort = SortSpec::new(vec![SortColumn { key, direction }]);
+    let viewed = source.view(&rows, &sorted);
+    assert_eq!(viewed.applied.rows.sort, sorted.rows.sort, "the column is there");
+
+    // The groups ascending, then stably by their figure in the column: a
+    // cell where no rows meet is blank, and blanks go last either way.
+    let mut want: Vec<Option<i64>> = rows.iter().map(|x| x[r]).collect();
+    want.sort_by(ascending);
+    want.dedup();
+    let figure = |rv: &Option<i64>| -> Option<i64> {
+        let under: Vec<&Record> = (rows.iter())
+            .filter(|x| x[r] == *rv && cv.as_ref().is_none_or(|cv| text(x[c]) == *cv))
+            .collect();
+        match value {
+            _ if under.is_empty() => None,
+            0 => Some(under.len() as i64),
+            _ => {
+                let sums: Vec<i64> = under.iter().filter_map(|x| x[summed]).collect();
+                (!sums.is_empty()).then(|| sums.iter().sum())
+            }
+        }
+    };
+    want.sort_by(|a, b| order(figure(a), figure(b), direction));
+    let want: Vec<Value> = want.into_iter().map(text).collect();
+    assert_eq!(row_groups(&mut source, &rows), want, "by {cv:?} value {value}");
+}
+
+#[hegel::test(test_cases = 200)]
+fn a_pivots_columns_filtered_by_the_grand_total_row_keep_those_whose_figure_passes(
+    tc: TestCase,
+) {
+    let rows = tc.draw(gs::vecs(record()).max_size(40));
+    let cols = tc.draw(gs::permutations(vec![0usize, 1, 2]));
+    let (r, c, summed) = (cols[0], cols[1], cols[2]);
+    // A comparison on the count, the first value.
+    let compare = Compare {
+        column: 0,
+        at_least: tc.draw(gs::booleans()),
+        threshold: tc.draw(gs::integers::<i64>().min_value(0).max_value(6)),
+        not: tc.draw(gs::booleans()),
+    };
+    let mut condition = compare.condition();
+    condition.key = binnacle_core::GRAND_TOTAL;
+    let mut source = source(rows.len());
+    let mut spec = ViewSpec::default().with_grouping(Some(crossed(r, c, summed)));
+    spec.cols.filter = FilterSpec::default().with_conditions(vec![condition].into());
+    let viewed = source.view(&rows, &spec);
+    assert_eq!(viewed.applied.cols.filter, spec.cols.filter);
+
+    let mut want: Vec<Option<i64>> = rows.iter().map(|x| x[c]).collect();
+    want.sort_by(ascending);
+    want.dedup();
+    want.retain(|cv| {
+        let count = rows.iter().filter(|x| x[c] == *cv).count();
+        compare.passes(Some(count as f64))
+    });
+    let got: Vec<Value> = (pivot_columns(&mut source, &rows).into_iter())
+        .filter_map(|(_, cv, value)| cv.filter(|_| value == 0))
+        .collect();
+    assert_eq!(got, want.into_iter().map(text).collect::<Vec<_>>());
+}
+
+/// Rows of regions 1 and 2 over quarters 1 and 2, the second quarter only
+/// in region 2, each row weighing its region.
+fn quarters() -> Vec<Record> {
+    vec![
+        [Some(1), Some(1), Some(1)],
+        [Some(2), Some(1), Some(2)],
+        [Some(2), Some(2), Some(2)],
+    ]
+}
+
+#[test]
+fn a_sort_term_on_a_pivot_column_the_data_lacks_is_left_out_until_it_returns() {
+    let rows = quarters();
+    let mut source = source(rows.len());
+    let spec = ViewSpec::default().with_grouping(Some(crossed(0, 1, 2)));
+    source.view(&rows, &spec);
+    let q2 = (pivot_columns(&mut source, &rows).into_iter())
+        .find(|(_, cv, value)| *cv == Some(text(Some(2))) && *value == 1)
+        .map(|(k, ..)| k)
+        .unwrap();
+    let mut sorted = spec.clone();
+    sorted.rows.sort = SortSpec::new(vec![SortColumn::descending(q2)]);
+    assert_eq!(source.view(&rows, &sorted).applied.rows.sort, sorted.rows.sort);
+    assert_eq!(row_groups(&mut source, &rows), [text(Some(2)), text(Some(1))]);
+
+    // A slicer leaves out the second quarter, and its sort with it.
+    let mut sliced = sorted.clone();
+    let slicer = Condition::compare(Key(1), Comparison::Less(Scalar::Number(2.0)));
+    sliced.grouping.as_mut().unwrap().slicers = vec![slicer];
+    assert_eq!(source.view(&rows, &sliced).applied.rows.sort, SortSpec::default());
+    assert_eq!(row_groups(&mut source, &rows), [text(Some(1)), text(Some(2))]);
+
+    assert_eq!(source.view(&rows, &sorted).applied.rows.sort, sorted.rows.sort);
+    assert_eq!(row_groups(&mut source, &rows), [text(Some(2)), text(Some(1))]);
+}
+
+#[test]
+fn a_pivot_columns_key_fits_until_the_column_levels_change() {
+    let rows = quarters();
+    let mut source = source(rows.len());
+    let spec = ViewSpec::default().with_grouping(Some(crossed(0, 1, 2)));
+    source.view(&rows, &spec);
+    let columns = pivot_columns(&mut source, &rows);
+    let fits = |source: &GroupedMemory<Record>| -> Vec<bool> {
+        (columns.iter()).map(|(k, ..)| source.fits(Axis::Cols, *k)).collect()
+    };
+    assert!(fits(&source).iter().all(|&f| f));
+
+    // Slicing the data away keeps them.
+    let mut sliced = spec.clone();
+    let slicer = Condition::compare(Key(1), Comparison::Less(Scalar::Number(0.0)));
+    sliced.grouping.as_mut().unwrap().slicers = vec![slicer];
+    source.view(&rows, &sliced);
+    assert!(fits(&source).iter().all(|&f| f));
+
+    // Grouping the columns by another field leaves only the All columns.
+    let mut other = spec.clone();
+    other.grouping.as_mut().unwrap().col_levels = vec![Level::field(Key(2))];
+    source.view(&rows, &other);
+    let all: Vec<bool> = columns.iter().map(|(_, cv, _)| cv.is_none()).collect();
+    assert_eq!(fits(&source), all);
+    assert!(source.fits(Axis::Rows, Key(0)), "a Leaf Key keeps today's rule");
+}

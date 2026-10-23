@@ -134,6 +134,10 @@ impl<S: PumpSource> PumpSource for Transposed<S> {
         self.0.movable(axis.other())
     }
 
+    fn fits(&mut self, axis: Axis, key: Key) -> bool {
+        self.0.fits(axis.other(), key)
+    }
+
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         let moved = self.0.move_items(axis.other(), keys, to)?;
         Ok(Moved {

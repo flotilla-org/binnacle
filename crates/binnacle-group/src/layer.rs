@@ -6,14 +6,15 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Expand, Form, GRAND_TOTAL, GroupOf, Grouping, ItemKind, Key, Level,
-    Located, OpenState, Outline, Placement, Position, SetPosition, Totals, VALUES_FIELD, Value,
-    ViewSpec,
+    Axis, ChangeNotice, ConditionTree, Expand, Form, GRAND_TOTAL, GroupOf, Grouping, ItemKind, Key,
+    Level, Located, OpenState, Outline, Placement, Position, SetPosition, SortSpec, Totals,
+    VALUES_FIELD, Value, ViewSpec,
 };
 use binnacle_memory::{KeyInterner, Viewed};
 
 use crate::query::{
-    AggregateBackend, Answer, Batch, Body, GroupRow, Path, Request, RequestId, Scope, Stamp, Want,
+    AggregateBackend, Answer, Batch, Body, GroupRow, Path, PathKey, Request, RequestId, Scope,
+    Stamp, Want,
 };
 
 /// How many groups or Leaves one request asks for.
@@ -280,6 +281,14 @@ impl Open {
     }
 }
 
+/// Whether a group's `path` fits an axis whose levels are `steps`: each of
+/// its fields is the field of the level at its depth.
+fn fits_steps(path: &Path, steps: &[Option<Key>]) -> bool {
+    !path.is_empty()
+        && path.len() <= steps.len()
+        && (path.iter().zip(steps)).all(|((f, _), s)| *f == s.unwrap_or(VALUES_FIELD))
+}
+
 /// Leaves out of `expand.except` the Group Item Keys whose paths do not fit
 /// `steps`. Keys the layer never issued, and Leaf Keys, stay.
 fn prune(keys: &KeyInterner<SummaryId>, steps: &[Option<Key>], expand: &mut Expand) {
@@ -289,14 +298,46 @@ fn prune(keys: &KeyInterner<SummaryId>, steps: &[Option<Key>], expand: &mut Expa
         }
         match keys.identity(Key(k.0 & !SUMMARY_KEY_BIT)) {
             None => true,
-            Some(SummaryId::Group(path)) => {
-                !path.is_empty()
-                    && path.len() <= steps.len()
-                    && (path.iter().zip(steps)).all(|((f, _), s)| *f == s.unwrap_or(VALUES_FIELD))
-            }
+            Some(SummaryId::Group(path)) => fits_steps(path, steps),
             Some(_) => false,
         }
     });
+}
+
+/// The path Key `key` names on a pivot grouped as `grouping`, if the layer
+/// issued it: the data path of its group and the index of its value.
+fn path_key(keys: &KeyInterner<SummaryId>, grouping: &Grouping, key: Key) -> Option<PathKey> {
+    if key.0 & SUMMARY_KEY_BIT == 0 {
+        return None;
+    }
+    let (path, value) = match keys.identity(Key(key.0 & !SUMMARY_KEY_BIT))? {
+        SummaryId::Group(p) | SummaryId::Subtotal(p) => (data(p), value_on(p)),
+        SummaryId::GrandTotal => (Vec::new(), None),
+        SummaryId::ValueTotal(v) => (Vec::new(), Some(v.as_str())),
+    };
+    let value = match value {
+        Some(v) => grouping.value_of(v)?.0,
+        None => 0,
+    };
+    Some(PathKey { key, path, value })
+}
+
+/// The Keys `spec`'s sorts and filters name on a pivot, each with the axis
+/// whose item it names: the rows' name columns, the columns' rows.
+fn named(spec: &ViewSpec) -> Vec<(Axis, Key)> {
+    let pivot = (spec.grouping.as_ref()).is_some_and(Grouping::pivot);
+    if !pivot {
+        return Vec::new();
+    }
+    let mut named = Vec::new();
+    for axis in Axis::ALL {
+        let view = spec.axis(axis);
+        let sorted = view.sort.columns().iter().map(|c| c.key);
+        let filtered = view.filter.conditions.conditions().iter().map(|c| c.key);
+        named.extend((sorted.chain(filtered)).map(|k| (axis.other(), k)));
+    }
+    named.retain(|(_, k)| k.0 & SUMMARY_KEY_BIT != 0);
+    named
 }
 
 /// A group (or the whole axis, at the root) and what is known under it.
@@ -653,6 +694,39 @@ impl<A> Node<A> {
         }
     }
 
+    /// What is still to ask for (`want`, groups or columns) to know whether
+    /// a group at `rest` past this node is there, open or not.
+    fn reach(&self, rest: &[(Key, Value)], want: Want, asks: &mut Vec<Ask>) {
+        let (Some(((field, value), rest)), Kids::Groups(g)) = (rest.split_first(), &self.kids)
+        else {
+            return;
+        };
+        match self.child(value) {
+            Some(child) if child.path.last().is_some_and(|(f, _)| f == field) => {
+                return child.reach(rest, want, asks);
+            }
+            Some(_) => return,
+            None if g.values => return,
+            None => {}
+        }
+        let path = data(&self.path);
+        match g.total {
+            None => asks.push(Ask {
+                path,
+                want,
+                range: 0..PAGE,
+            }),
+            Some(total) => {
+                let known = |i| g.nodes.contains_key(&i);
+                asks.extend(missing(0..total, total, known).into_iter().map(|range| Ask {
+                    path: path.clone(),
+                    want,
+                    range,
+                }));
+            }
+        }
+    }
+
     /// Forgets what is under the groups `open` closes, so memory grows only
     /// with the open groups.
     fn fold(&mut self, open: &Open, shape: &Shape, keys: &mut KeyInterner<SummaryId>) {
@@ -887,6 +961,9 @@ pub struct GroupingLayer<A> {
     /// What Windows and Locates found missing and the answers have not
     /// covered yet: answered, it stays cached through the next Window.
     read: Vec<Ask>,
+    /// The group paths the sorts and filters name, by the axis they are
+    /// on: whether each is there decides whether its term applies.
+    named: [Vec<Path>; 2],
     /// Whether the applied spec has been given for the latest request.
     settled: bool,
     news: VecDeque<Viewed>,
@@ -914,8 +991,8 @@ impl<A: Clone> Default for GroupingLayer<A> {
 }
 
 /// The scope a View Spec gives, if its rows are grouped: by row levels, or
-/// as a pivot's.
-fn scope_of(spec: &ViewSpec) -> Option<Scope> {
+/// as a pivot's, its sorts and filters naming the path Keys in `keys`.
+fn scope_of(spec: &ViewSpec, keys: &KeyInterner<SummaryId>) -> Option<Scope> {
     let grouping = spec.grouping.as_ref()?;
     let fields = |axis| -> Vec<Key> {
         (grouping.levels(axis).iter())
@@ -943,6 +1020,13 @@ fn scope_of(spec: &ViewSpec) -> Option<Scope> {
             true => spec.cols.sort.clone(),
             false => Default::default(),
         },
+        col_filter: match pivot {
+            true => spec.cols.filter.clone(),
+            false => Default::default(),
+        },
+        path_keys: (named(spec).into_iter())
+            .filter_map(|(_, k)| path_key(keys, grouping, k))
+            .collect(),
     })
 }
 
@@ -981,6 +1065,7 @@ impl<A: Clone> GroupingLayer<A> {
             in_flight: Vec::new(),
             misses: Vec::new(),
             read: Vec::new(),
+            named: [Vec::new(), Vec::new()],
             settled: true,
             news: VecDeque::new(),
             located: HashMap::new(),
@@ -1009,7 +1094,14 @@ impl<A: Clone> GroupingLayer<A> {
         if let Some(grouping) = spec.grouping.as_mut() {
             normalize(grouping);
         }
-        let scope = scope_of(&spec);
+        let scope = scope_of(&spec, &self.keys);
+        self.named = [Vec::new(), Vec::new()];
+        for (axis, key) in named(&spec) {
+            if let Some(SummaryId::Group(path) | SummaryId::Subtotal(path)) = self.identity(key) {
+                let path = path.clone();
+                self.named[axis.index()].push(path);
+            }
+        }
         let shapes = Axis::ALL.map(|axis| match scope {
             Some(_) => Shape::of(&spec, axis),
             None => Shape::default(),
@@ -1091,13 +1183,79 @@ impl<A: Clone> GroupingLayer<A> {
         self.grouped(Axis::Cols)
     }
 
-    /// What each grouped axis still needs asked for.
+    /// What each grouped axis still needs asked for, the groups the sorts
+    /// and filters name included.
     fn needs(&self, asks: &mut Vec<Ask>) {
         let rows = self.tree(Axis::Rows);
         rows.root.needs(&rows.want, Want::Groups, asks);
         if self.pivot() {
             let cols = self.tree(Axis::Cols);
             cols.root.needs(&cols.want, Want::Columns, asks);
+            for axis in Axis::ALL {
+                let (tree, want) = (self.tree(axis), self.tree(axis).shape.groups());
+                for path in &self.named[axis.index()] {
+                    tree.root.reach(path, want, asks);
+                }
+            }
+        }
+    }
+
+    /// Whether the item `key` names on `axis` is there now: a Grand Total
+    /// always, a group once found where its path leads.
+    fn present(&self, axis: Axis, key: Key) -> bool {
+        match self.identity(key) {
+            None => false,
+            Some(SummaryId::GrandTotal) => true,
+            Some(SummaryId::ValueTotal(id)) => {
+                (self.spec.grouping.as_ref()).is_some_and(|g| g.value_of(id).is_some())
+            }
+            Some(SummaryId::Group(path) | SummaryId::Subtotal(path)) => {
+                node_at(&self.tree(axis).root, path).is_some()
+            }
+        }
+    }
+
+    /// The spec as applied: its sort terms and conditions on a pivot that
+    /// name an item the data lacks for now left out.
+    fn applied(&self) -> ViewSpec {
+        let mut applied = self.spec.clone();
+        let named = named(&applied);
+        if named.is_empty() {
+            return applied;
+        }
+        let absent: Vec<Key> = (named.into_iter())
+            .filter(|&(axis, k)| !self.present(axis, k))
+            .map(|(_, k)| k)
+            .collect();
+        for axis in Axis::ALL {
+            let view = applied.axis_mut(axis);
+            let sort = (view.sort.columns().iter())
+                .filter(|c| !absent.contains(&c.key))
+                .copied()
+                .collect();
+            view.sort = SortSpec::new(sort);
+            let conditions = (view.filter.conditions.conditions().iter())
+                .filter(|c| !absent.contains(&c.key))
+                .cloned()
+                .collect::<Vec<_>>();
+            view.filter.conditions = ConditionTree::All(conditions);
+        }
+        applied
+    }
+
+    /// Whether the Key `key` may still name an item of `axis`: a Leaf Key,
+    /// a Key the layer never issued and the Grand Total always; a group's
+    /// (a Group Item's, a Subtotal's, a pivot column's) while its path fits
+    /// the axis's levels as last asked; a value's Grand Total while the
+    /// axis splits the values. Hosts have the Grid forget those that don't.
+    pub fn fits(&self, axis: Axis, key: Key) -> bool {
+        let shape = &self.tree(axis).shape;
+        match self.identity(key) {
+            None | Some(SummaryId::GrandTotal) => true,
+            Some(SummaryId::ValueTotal(_)) => shape.split(),
+            Some(SummaryId::Group(path) | SummaryId::Subtotal(path)) => {
+                fits_steps(path, &shape.steps)
+            }
         }
     }
 
@@ -1468,6 +1626,9 @@ impl<A: Clone> GroupingLayer<A> {
                 };
                 notices.extend(notice.map(|n| (axis, n)));
             }
+        }
+        let applied = self.applied();
+        if self.scope.is_some() {
             for tree in &mut self.axes {
                 tree.laid_out = true;
                 let (open, shape) = (&tree.open, &tree.shape);
@@ -1478,7 +1639,7 @@ impl<A: Clone> GroupingLayer<A> {
         // What the cache may let go of changes with the groups open.
         self.cached = u64::MAX;
         self.news.push_back(Viewed {
-            applied: self.spec.clone(),
+            applied,
             totals: Totals::unknown(),
             notices,
         });
