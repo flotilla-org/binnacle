@@ -378,9 +378,18 @@ impl<'a> Snapshot<'a> {
 
     /// Whether focus is in the outline column: on the focused row's cell
     /// of the row Header Band, where the tree keys act, rather than on the
-    /// focused column's body cell.
+    /// focused column's body cell. The same as
+    /// [`Snapshot::band_focused`] for [`Axis::Rows`].
     pub fn outline_focused(&self) -> bool {
         self.grid.in_outline()
+    }
+
+    /// Whether focus is in the Header Band heading `axis`, where the tree
+    /// keys act on that axis's groups: for [`Axis::Rows`] the outline
+    /// column (or a level column in header form) on the focused row, for
+    /// [`Axis::Cols`] a tier of the column band on the focused column.
+    pub fn band_focused(&self, axis: Axis) -> bool {
+        self.grid.band() == Some(axis)
     }
 
     /// Whether the disclosure mark of the Group Item `key` on `axis` is
@@ -391,47 +400,58 @@ impl<'a> Snapshot<'a> {
         self.grid.toggle_pending(axis, key)
     }
 
-    /// The tier of the row Header Band focus is in while it is in the
-    /// band ([`Snapshot::outline_focused`]) and the rows are in header
-    /// form: 0 for the outermost level's column. 0 in outline form.
+    /// The tier of the Header Band focus is in while it is in one
+    /// ([`Snapshot::band_focused`]) and its axis is in header form: 0 for
+    /// the outermost level's tier. 0 in outline form.
     pub fn focused_tier(&self) -> u32 {
         self.grid.band_tier
     }
 
-    /// The focused band cell around `row`: the whole band in outline form;
-    /// in header form the span the focused tier holds the row in, else the
-    /// row's own header.
-    fn band_focus_rect(&self, row: &StripItem) -> Rect {
-        let thickness = self.header(Axis::Cols);
-        let tiers = self.tiers(Axis::Rows);
-        let whole = Rect {
-            x: 0.0,
-            y: row.offset,
-            width: thickness,
-            height: row.size,
+    /// The focused band cell around `item` of `axis`: the whole band in
+    /// outline form; in header form the span the focused tier holds the
+    /// item in, else the item's own header.
+    fn band_focus_rect(&self, axis: Axis, item: &StripItem) -> Rect {
+        let thickness = self.header(axis.other());
+        let whole = match axis {
+            Axis::Rows => Rect {
+                x: 0.0,
+                y: item.offset,
+                width: thickness,
+                height: item.size,
+            },
+            Axis::Cols => Rect {
+                x: item.offset,
+                y: 0.0,
+                width: item.size,
+                height: thickness,
+            },
         };
-        if tiers.is_empty() {
+        if self.tiers(axis).is_empty() {
             return whole;
         }
         let tier = self.focused_tier();
         let inside = |s: &&HeaderSpan| {
-            s.tier == tier && s.rect.y <= row.offset && row.end() <= s.rect.y + s.rect.height
+            let (start, length) = match axis {
+                Axis::Rows => (s.rect.y, s.rect.height),
+                Axis::Cols => (s.rect.x, s.rect.width),
+            };
+            s.tier == tier && start <= item.offset && item.end() <= start + length
         };
-        if let Some(span) = self.spans(Axis::Rows).iter().find(inside) {
+        if let Some(span) = self.spans(axis).iter().find(inside) {
             return span.rect;
         }
-        (self.headers(Axis::Rows))
-            .find(|h| h.position == row.position && h.key == row.key)
+        (self.headers(axis))
+            .find(|h| h.position == item.position && h.key == item.key)
             .map_or(whole, |h| h.rect)
     }
 
     /// The focused cell's rectangle, unclipped, if it is visible and its Keys
     /// are known: in the outline column, the focused row's band cell.
     pub fn focus_rect(&self) -> Option<Rect> {
-        let row = self.focused_item(Axis::Rows)?;
-        if self.outline_focused() {
-            return Some(self.band_focus_rect(row));
+        if let Some(axis) = self.grid.band() {
+            return Some(self.band_focus_rect(axis, self.focused_item(axis)?));
         }
+        let row = self.focused_item(Axis::Rows)?;
         let col = self.focused_item(Axis::Cols)?;
         Some(Rect {
             x: col.offset,
@@ -482,7 +502,7 @@ impl<'a> Snapshot<'a> {
             .current
             .is_some_and(|m| (row.key, col.key) == (Some(m.row), Some(m.col)));
         CellState {
-            focused: on(Axis::Rows, row) && on(Axis::Cols, col) && !self.outline_focused(),
+            focused: on(Axis::Rows, row) && on(Axis::Cols, col) && self.grid.band().is_none(),
             selected: in_range || picked,
             editing,
             current_match,

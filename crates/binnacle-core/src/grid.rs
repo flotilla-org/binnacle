@@ -117,10 +117,12 @@ pub struct Grid {
     pub(crate) damage: Damage,
     /// The focused cell, one end per axis; `None` while unplaced.
     pub(crate) focus: Option<[FocusEnd; 2]>,
-    /// Focus is in the outline column, on the focused row's band cell; the
-    /// column end is where it goes back to.
-    pub(crate) outline_focus: bool,
-    /// The tier of the row Header Band focus is in, in header form.
+    /// The Header Band focus is in, if any: the row band (the outline
+    /// column, or a level column in header form) on the focused row, or
+    /// the column band's tiers on the focused column. The other end is
+    /// where focus goes back to in the body.
+    pub(crate) band_focus: Option<Axis>,
+    /// The tier of the Header Band focus is in, in header form.
     pub(crate) band_tier: u32,
     /// `*` asked to open everything under this Group Item: closed groups
     /// under it are opened as Windows bring them, until another toggle.
@@ -188,7 +190,7 @@ impl Grid {
             pending_damage: Damage::ALL,
             damage: Damage::NONE,
             focus: None,
-            outline_focus: false,
+            band_focus: None,
             band_tier: 0,
             expanding_all: None,
             heard: None,
@@ -534,7 +536,7 @@ impl Grid {
                 forward,
                 extend,
             } => {
-                if axis == Axis::Cols && self.tree_move(by, forward) {
+                if self.tree_move(axis, by, forward) {
                     return;
                 }
                 let m = Move {
@@ -588,7 +590,7 @@ impl Grid {
                 self.refilter_scrolled(axis);
                 self.pending_damage.layout |= self.axis_mut(axis).scroll_items(items);
             }
-            Action::LeaveOutline => self.leave_outline(),
+            Action::LeaveOutline => self.leave_band(),
             Action::FindNext => self.find_step(FindDirection::Next),
             Action::FindPrevious => self.find_step(FindDirection::Previous),
         }

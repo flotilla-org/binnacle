@@ -566,7 +566,9 @@ impl<A> Node<A> {
                 });
                 return;
             };
-            if open.needs_all(self) {
+            // A pivot's columns are laid out whole: every group under an
+            // open one.
+            if want == Want::Columns || open.needs_all(self) {
                 let known = |i| g.nodes.contains_key(&i);
                 for range in missing(0..total, total, known) {
                     asks.push(Ask {
@@ -805,7 +807,8 @@ impl<A> Tree<A> {
 ///
 /// On a pivot both axes are the layer's: the columns come from the data,
 /// each innermost column group one column, and [`GroupingLayer::cell`]
-/// gives a cell's figure. Any change to them comes as `Refiltered`.
+/// gives a cell's figure. Any change to them but one group opening or
+/// closing comes as `Refiltered`.
 ///
 /// It holds the open groups and, as a cache, pages of closed groups and of
 /// Leaves: always those the latest two Windows read, and others up to its
@@ -942,9 +945,9 @@ impl<A: Clone> GroupingLayer<A> {
     /// axes afresh, and the old batches' answers are dropped; one that only
     /// places Subtotals or the Grand Total elsewhere lays out what is known
     /// again; one that opens or closes groups is applied once what they
-    /// show is known, with `Expanded` or `Collapsed` for one row group the
-    /// user sees and `Refiltered` for more; otherwise the spec is applied as
-    /// it stands. Each axis's `expand.except` loses the Group Item Keys whose
+    /// show is known, with `Expanded` or `Collapsed` for one group the
+    /// user sees (on either axis of a pivot) and `Refiltered` for more;
+    /// otherwise the spec is applied as it stands. Each axis's `expand.except` loses the Group Item Keys whose
     /// paths no longer fit its levels.
     pub fn request_view(&mut self, mut spec: ViewSpec) {
         if let Some(grouping) = spec.grouping.as_mut() {
@@ -1386,26 +1389,24 @@ impl<A: Clone> GroupingLayer<A> {
             if !asks.is_empty() {
                 return;
             }
-            let notice = match self.axes[0].laid_out {
-                true => self.unfold(),
-                false => {
-                    let rows = &mut self.axes[0];
-                    rows.lay_out();
-                    rows.laid_out = true;
-                    rows.count().map(ChangeNotice::Refiltered)
-                }
+            // A pivot's columns are the layer's too. Any other change to
+            // them than one group opening or closing comes as Refiltered,
+            // so their state stays by Key.
+            let axes = match self.axes[1].shape.pivot {
+                true => &Axis::ALL[..],
+                false => &[Axis::Rows],
             };
-            notices.extend(notice.map(|n| (Axis::Rows, n)));
-            // Any change to a pivot's columns comes as Refiltered, so their
-            // state stays by Key.
-            let cols = &mut self.axes[1];
-            if cols.shape.pivot && (!cols.laid_out || !cols.want.same(&cols.open)) {
-                cols.lay_out();
-                cols.laid_out = true;
-                notices.extend(
-                    cols.count()
-                        .map(|n| (Axis::Cols, ChangeNotice::Refiltered(n))),
-                );
+            for &axis in axes {
+                let notice = match self.axes[axis.index()].laid_out {
+                    true => self.unfold(axis),
+                    false => {
+                        let tree = &mut self.axes[axis.index()];
+                        tree.lay_out();
+                        tree.laid_out = true;
+                        tree.count().map(ChangeNotice::Refiltered)
+                    }
+                };
+                notices.extend(notice.map(|n| (axis, n)));
             }
             for tree in &mut self.axes {
                 tree.laid_out = true;
@@ -1423,13 +1424,13 @@ impl<A: Clone> GroupingLayer<A> {
         });
     }
 
-    /// Lays the groups out as the latest spec opens them, all known, and
-    /// says how: `Collapsed` or `Expanded` when one group the user sees
-    /// opened or closed, nothing when no group the user sees did, and
-    /// `Refiltered` for more.
-    fn unfold(&mut self) -> Option<ChangeNotice> {
+    /// Lays the groups of `axis` out as the latest spec opens them, all
+    /// known, and says how: `Collapsed` or `Expanded` when one group the
+    /// user sees opened or closed, nothing when no group the user sees did,
+    /// and `Refiltered` for more.
+    fn unfold(&mut self, axis: Axis) -> Option<ChangeNotice> {
         let keys = &self.keys;
-        let tree = &mut self.axes[0];
+        let tree = &mut self.axes[axis.index()];
         if tree.want.same(&tree.open) {
             return None;
         }

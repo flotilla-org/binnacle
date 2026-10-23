@@ -36,7 +36,7 @@ pub use filter::{
 pub use find::{FindBar, FindStatus};
 pub use keymap::Keymap;
 pub use layout::{LAYOUT_VERSION, SavedLayout, restore_layout, save_layout};
-pub use marks::{MARK_DELAY, PendingMarks, disclosure_at};
+pub use marks::{MARK_DELAY, PendingMarks, column_disclosure_at, disclosure_at};
 pub use menu::{Chosen, HeaderMenu, Hid, cap_hint, hide_chosen, hide_focused, show_only_chosen};
 pub use mouse::Mouse;
 pub use pin::{freeze_focused, toggle_pin, unpin_focused};
@@ -231,8 +231,9 @@ pub fn animating(snapshot: &Snapshot) -> bool {
     let toggling = (snapshot.drawn(Axis::Rows)).any(|r| {
         r.key
             .is_some_and(|k| snapshot.toggle_pending(Axis::Rows, k))
-    }) || (snapshot.spans(Axis::Rows).iter())
-        .any(|s| snapshot.toggle_pending(Axis::Rows, s.key));
+    }) || Axis::ALL
+        .into_iter()
+        .any(|axis| (snapshot.spans(axis).iter()).any(|s| snapshot.toggle_pending(axis, s.key)));
     sorting || toggling || locating(snapshot) && snapshot.focus_rect().is_some()
 }
 
@@ -791,13 +792,17 @@ fn draw_spans(
             put(buf, area, (end, y), clip, "›", style.patch(theme.loading));
         }
     }
-    draw_column_spans(snapshot, content, theme, area, buf);
+    draw_column_spans(snapshot, content, ctx, theme, area, buf);
     let Some((rect, along)) = tiers_focus(snapshot) else {
         return;
     };
-    let lines = cell(rect.y.max(along.start))..cell((rect.y + rect.height).min(along.end));
+    let (xs, ys) = match snapshot.band_focused(Axis::Cols) {
+        false => (rect.x..rect.x + rect.width, along),
+        true => (along, rect.y..rect.y + rect.height),
+    };
+    let lines = cell(rect.y.max(ys.start))..cell((rect.y + rect.height).min(ys.end));
     for y in lines {
-        for x in cell(rect.x)..cell(rect.x + rect.width) {
+        for x in cell(rect.x.max(xs.start))..cell((rect.x + rect.width).min(xs.end)) {
             let inside =
                 (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y);
             if inside && let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
@@ -818,12 +823,14 @@ fn value_of<'a>(grouping: Option<&'a Grouping>, outline: &Outline) -> Option<&'a
 }
 
 /// Draws the columns' spans in header form, a pivot's: each group one cell
-/// over its columns in its tier of the column Header Band, its label kept
-/// in view as it scrolls, `›` where it goes on past the view or a pinned
-/// edge. Columns don't open or close yet, so there is no disclosure mark.
+/// over its columns in its tier of the column Header Band, its disclosure
+/// mark (`⋯` once a toggle has waited a while for its answer) and label
+/// kept in view as it scrolls, `‹` or `›` where it goes on past the view or
+/// a pinned edge.
 fn draw_column_spans(
     snapshot: &Snapshot,
     content: &impl Content,
+    ctx: &RenderContext,
     theme: &Theme,
     area: Rect,
     buf: &mut Buffer,
@@ -849,10 +856,24 @@ fn draw_column_spans(
         let label = content.span_label(span);
         let label = fit(
             &label,
-            u32::try_from(width.saturating_sub(cut)).unwrap_or(0),
+            u32::try_from(width.saturating_sub(cut + 2)).unwrap_or(0),
         );
         let at = v.x + f32::from(u8::from(span.cut_before));
-        put(buf, area, (at, y), clip, &label, style);
+        let pending = ctx.marks.is_some_and(|m| m.pending(span.key, ctx.now));
+        let mark = match span.open {
+            _ if pending => "⋯",
+            OpenState::Open => "▾",
+            _ => "▸",
+        };
+        put(
+            buf,
+            area,
+            (at, y),
+            clip,
+            mark,
+            style.patch(theme.disclosure),
+        );
+        put(buf, area, (at + 2.0, y), clip, &label, style);
         let loading = style.patch(theme.loading);
         if span.cut_before {
             put(buf, area, (v.x, y), clip, "‹", loading);
@@ -864,20 +885,22 @@ fn draw_column_spans(
 }
 
 /// The focused band cell in header form, if drawn: its rectangle and
-/// where along the rows it may draw (a span's visible part, or the
-/// focused row's Strip).
+/// where along its axis it may draw (a span's visible part, or the
+/// focused item's Strip), for the rows' level columns or the columns'
+/// tiers.
 fn tiers_focus(snapshot: &Snapshot) -> Option<(binnacle_core::Rect, Range<f32>)> {
-    if snapshot.tiers(Axis::Rows).is_empty() || !snapshot.outline_focused() {
-        return None;
-    }
+    let axis = Axis::ALL
+        .into_iter()
+        .find(|&a| snapshot.band_focused(a) && !snapshot.tiers(a).is_empty())?;
     let rect = snapshot.focus_rect()?;
-    let span = (snapshot.spans(Axis::Rows).iter())
-        .find(|s| s.rect == rect && s.tier == snapshot.focused_tier());
-    let along = match span {
-        Some(s) => s.visible.y..s.visible.y + s.visible.height,
-        None => {
-            let key = snapshot.focus(Axis::Rows)?.key?;
-            span_of(snapshot, Axis::Rows, key)
+    let span =
+        (snapshot.spans(axis).iter()).find(|s| s.rect == rect && s.tier == snapshot.focused_tier());
+    let along = match (span, axis) {
+        (Some(s), Axis::Rows) => s.visible.y..s.visible.y + s.visible.height,
+        (Some(s), Axis::Cols) => s.visible.x..s.visible.x + s.visible.width,
+        (None, _) => {
+            let key = snapshot.focus(axis)?.key?;
+            span_of(snapshot, axis, key)
         }
     };
     Some((rect, along))

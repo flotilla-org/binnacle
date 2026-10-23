@@ -43,7 +43,11 @@
 //! `v` pivots: ports by region down the rows and quarters across, each
 //! quarter spanning its total weight and count columns in the column Header
 //! Band, the All columns, one per value, pinned at the right and the Grand
-//! Total row at the bottom. `v` again goes back to the grouped rows.
+//! Total row at the bottom. A quarter's mark closes it to its total column;
+//! Up from the first row enters the quarters' tier, where Left and Right
+//! close and open a quarter, Enter toggles it, `*` and the digits act on
+//! the columns, and Down goes back to the body. `v` again goes back to the
+//! grouped rows.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -61,8 +65,8 @@ use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
     ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar, FindStatus,
     HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, Theme, begin_frame,
-    copy_text, corner_level_at, disclosure_at, render_conditions, render_editor, render_with,
-    status, wheel,
+    column_disclosure_at, copy_text, corner_level_at, disclosure_at, render_conditions,
+    render_editor, render_with, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -398,14 +402,21 @@ fn described(drill_down: &DrillDown) -> String {
     }
 }
 
-/// The Group Item whose disclosure mark a left press in `m` lands on.
-fn mark_clicked(m: &MouseEvent, grid: &mut Grid, area: ratatui::layout::Rect) -> Option<Key> {
+/// The group whose disclosure mark a left press in `m` lands on, on the
+/// rows or the columns.
+fn mark_clicked(
+    m: &MouseEvent,
+    grid: &mut Grid,
+    area: ratatui::layout::Rect,
+) -> Option<(Axis, Key)> {
     if m.kind != MouseEventKind::Down(MouseButton::Left) {
         return None;
     }
     let x = m.column.checked_sub(area.x)?;
     let y = m.row.checked_sub(area.y)?;
-    disclosure_at(&grid.snapshot(), x, y)
+    let snapshot = grid.snapshot();
+    (column_disclosure_at(&snapshot, x, y).map(|k| (Axis::Cols, k)))
+        .or_else(|| disclosure_at(&snapshot, x, y).map(|k| (Axis::Rows, k)))
 }
 
 /// A press in `m` on a level name in the corner: a left press sorts by its
@@ -758,8 +769,8 @@ fn main() -> io::Result<()> {
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
                     } else if corner_clicked(&m, &mut grid, &text, &mut popup, layout.grid) {
-                    } else if let Some(key) = mark_clicked(&m, &mut grid, layout.grid) {
-                        let _ = grid.toggle(Axis::Rows, key);
+                    } else if let Some((axis, key)) = mark_clicked(&m, &mut grid, layout.grid) {
+                        let _ = grid.toggle(axis, key);
                     } else if let Some(pointer) = mouse.event(&m, layout.grid, Instant::now()) {
                         grid.pointer(pointer);
                     }

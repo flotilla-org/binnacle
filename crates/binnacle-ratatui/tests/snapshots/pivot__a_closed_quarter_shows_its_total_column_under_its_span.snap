@@ -1,0 +1,13 @@
+---
+source: crates/binnacle-ratatui/tests/pivot.rs
+assertion_line: 180
+expression: drawn
+---
+|Σ v quarter → ▸ Q1     │▾ Q2     │         │        All sum(…│All count |
+|region        Q1 total │sum(weig…│count    │                 │          |
+|  North       9         4         1                ║13        3        █|
+|  South       16        2         1                ║18        2        █|
+|                                                   ║                   █|
+|                                                   ║                   █|
+|              ═════════════════════════════════════╬═══════════════════█|
+|Grand total   25        6         2                ║31        5        █|

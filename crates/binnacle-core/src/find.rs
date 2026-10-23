@@ -222,7 +222,7 @@ impl Grid {
     /// outside the Window: in the outline column for a label.
     fn land(&mut self, found: FindMatch) {
         if !self.find.label {
-            self.outline_focus = false;
+            self.band_focus = None;
             self.place_focus(found.row, found.col, false);
         } else {
             let col = (self.focus.and_then(|f| f[Axis::Cols.index()].key)).or_else(|| {
@@ -231,7 +231,7 @@ impl Grid {
             });
             if let Some(col) = col {
                 self.place_focus(found.row, col, false);
-                self.outline_focus = true;
+                self.band_focus = Some(Axis::Rows);
             }
         }
         for axis in Axis::ALL {

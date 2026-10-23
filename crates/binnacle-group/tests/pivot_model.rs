@@ -169,8 +169,9 @@ fn steps_under(rows: &[&Row], step: Option<Key>, values: &[String]) -> Vec<(Key,
 /// group's Group Item (in outline form) and Subtotals around what is under
 /// it, a closed one alone (in header form, its Subtotal), the innermost
 /// groups items that can't open, and the Grand Total (one per value where
-/// the values are on the axis) where it goes.
-fn model(rows: &[Row], g: &Grouping, axis: Axis) -> Vec<Described> {
+/// the values are on the axis) where it goes. The groups at `except`
+/// are in the opposite state to the one their level's depth gives them.
+fn model(rows: &[Row], g: &Grouping, axis: Axis, except: &[Path]) -> Vec<Described> {
     let steps: Vec<Option<Key>> = g.levels(axis).iter().map(Level::field_key).collect();
     let subtotals: Vec<Placement> = (g.levels(axis).iter())
         .map(|l| match l {
@@ -190,6 +191,7 @@ fn model(rows: &[Row], g: &Grouping, axis: Axis) -> Vec<Described> {
         values: &[String],
         header: bool,
         expand: &Expand,
+        except: &[Path],
         out: &mut Vec<Described>,
     ) {
         let depth = path.len();
@@ -204,7 +206,7 @@ fn model(rows: &[Row], g: &Grouping, axis: Axis) -> Vec<Described> {
                 None => 0,
                 Some(&next) => steps_under(&under, next, values).len(),
             };
-            let open = children > 0 && expand.opens_level(depth as u32);
+            let open = children > 0 && expand.opens_level(depth as u32) != except.contains(&child);
             let group = Some((field, value.clone()));
             let subtotal = Described {
                 item: Item::Subtotal(child.clone()),
@@ -238,7 +240,9 @@ fn model(rows: &[Row], g: &Grouping, axis: Axis) -> Vec<Described> {
             if subtotals[depth] == Placement::Before {
                 out.push(subtotal.clone());
             }
-            walk(&under, child, steps, subtotals, values, header, expand, out);
+            walk(
+                &under, child, steps, subtotals, values, header, expand, except, out,
+            );
             if subtotals[depth] == Placement::After {
                 out.push(subtotal);
             }
@@ -254,6 +258,7 @@ fn model(rows: &[Row], g: &Grouping, axis: Axis) -> Vec<Described> {
         &values,
         header,
         &ax.expand,
+        except,
         &mut out,
     );
     let placement = match steps.as_slice() {
@@ -548,14 +553,14 @@ fn a_pivot_shows_the_items_a_whole_table_pivot_shows(tc: TestCase) {
     let mut s = settle(&tc);
     for (axis, got) in Axis::ALL.into_iter().zip(items(&mut s)) {
         let got: Vec<Described> = got.into_iter().map(|(_, d)| d).collect();
-        assert_eq!(got, model(&s.rows, &s.grouping, axis), "{axis:?}");
+        assert_eq!(got, model(&s.rows, &s.grouping, axis, &[]), "{axis:?}");
     }
 }
 
 #[hegel::test(test_cases = 100)]
 fn a_pivot_refilters_both_axes(tc: TestCase) {
     let s = settle(&tc);
-    let want = Axis::ALL.map(|axis| model(&s.rows, &s.grouping, axis).len() as u64);
+    let want = Axis::ALL.map(|axis| model(&s.rows, &s.grouping, axis, &[]).len() as u64);
     assert_eq!(
         s.notices,
         vec![
@@ -621,4 +626,108 @@ fn a_pivot_column_keeps_its_key_while_its_value_leaves_and_returns(tc: TestCase)
     layer.refresh();
     let after = columns(&mut layer, &mut fake);
     assert_eq!(after, before, "every column back under its Key");
+}
+
+/// The column groups the user can toggle: the Group Items that can open
+/// and the groups whose spans hold columns, with their paths.
+fn column_groups(layer: &mut GroupingLayer<u64>) -> Vec<(Key, Path)> {
+    let n = layer.count(Axis::Cols).unwrap();
+    let mut keys: Vec<Key> = Vec::new();
+    for (key, outline) in layer.window(Axis::Cols, 0..n) {
+        if outline.kind == ItemKind::Group && outline.open != OpenState::CantOpen {
+            keys.push(key);
+        }
+        keys.extend(outline.ancestors);
+    }
+    keys.sort();
+    keys.dedup();
+    (keys.into_iter())
+        .map(|k| (k, layer.summary(k).unwrap().path.clone()))
+        .collect()
+}
+
+/// Opening and closing column groups, one at a time or to a depth, shows
+/// the columns the model shows, and the notices take the columns shown
+/// before to those shown after: `Collapsed` or `Expanded` when one group
+/// the user sees opens or closes, `Refiltered` only for other changes. The
+/// rows stay as they are.
+#[hegel::test(test_cases = 300)]
+fn opening_and_closing_column_groups_says_where_with_collapsed_or_expanded(tc: TestCase) {
+    let mut s = settle(&tc);
+    let mut fake = Fake {
+        rows: s.rows.clone(),
+        late: Vec::new(),
+    };
+    let levels = s.grouping.col_levels.len() as u32;
+    let mut except: Vec<Path> = Vec::new();
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+    for _ in 0..steps {
+        let known = column_groups(&mut s.layer);
+        let [rows_before, cols_before] = items(&mut s);
+        let before: Vec<Item> = cols_before.iter().map(|(_, d)| d.item.clone()).collect();
+        let expand = &mut s.grouping.cols.expand;
+        let mut toggled = None;
+        match known.is_empty() || tc.draw(gs::weighted_booleans(0.25)) {
+            true => {
+                let n = tc.draw(gs::integers::<u32>().max_value(levels + 1));
+                *expand = Expand::to(match n > levels {
+                    true => Depth::All,
+                    false => Depth::Levels(n),
+                });
+                except.clear();
+            }
+            false => {
+                let (key, path) = tc.draw(gs::sampled_from(known));
+                let level = path.len() as u32 - 1;
+                let open = expand.opens(level, key);
+                *expand = expand.clone().with(level, key, !open);
+                match except.iter().position(|p| *p == path) {
+                    Some(i) => drop(except.remove(i)),
+                    None => except.push(path.clone()),
+                }
+                toggled = Some(path);
+            }
+        }
+        let spec = ViewSpec::default().with_grouping(Some(s.grouping.clone()));
+        s.layer.request_view(spec);
+        drive(&tc, &mut s.layer, &mut fake);
+        let mut notices = Vec::new();
+        while let Some(v) = s.layer.poll_viewed() {
+            notices.extend(v.notices);
+        }
+        let got = items(&mut s);
+        assert_eq!(got[0], rows_before, "the rows stay as they are");
+        let after: Vec<Item> = got[1].iter().map(|(_, d)| d.item.clone()).collect();
+        let want = model(&s.rows, &s.grouping, Axis::Cols, &except);
+        let described: Vec<Described> = got[1].iter().map(|(_, d)| d.clone()).collect();
+        assert_eq!(described, want);
+        let header = s.grouping.cols.form == Form::Header;
+        let seen = toggled.is_some_and(|p| match header {
+            false => before.contains(&Item::Group(p)),
+            true => {
+                let placed = match &s.grouping.col_levels[p.len() - 1] {
+                    Level::Field { subtotal, .. } => *subtotal != Placement::Off,
+                    _ => false,
+                };
+                placed && before.iter().any(|i| item_path(i).0.starts_with(&p))
+            }
+        });
+        assert!(notices.iter().all(|(a, _)| *a == Axis::Cols), "{notices:?}");
+        let notices: Vec<ChangeNotice> = notices.into_iter().map(|(_, n)| n).collect();
+        match notices.as_slice() {
+            [] => assert_eq!(before, after, "no notice, nothing moved"),
+            [ChangeNotice::Collapsed { at, n }] => {
+                let mut was = before.clone();
+                was.drain(*at as usize..(at + n) as usize);
+                assert_eq!(was, after);
+            }
+            [ChangeNotice::Expanded { at, n }] => {
+                let mut now = after.clone();
+                now.drain(*at as usize..(at + n) as usize);
+                assert_eq!(before, now);
+            }
+            [ChangeNotice::Refiltered(n)] if !seen => assert_eq!(*n, after.len() as u64),
+            other => panic!("unexpected notices {other:?}"),
+        }
+    }
 }

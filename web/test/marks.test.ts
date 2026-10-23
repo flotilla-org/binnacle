@@ -15,7 +15,7 @@ const frame = (keys: bigint[], pending: bigint[]): Snapshot => {
     outline: { kind: "group", depth: 0, open: "open", ancestors: [], group: null },
     togglePending: pending.includes(key),
   }));
-  return { rows: { strip, spans: [] } } as unknown as Snapshot;
+  return { rows: { strip, spans: [] }, cols: { strip: [], spans: [] } } as unknown as Snapshot;
 };
 
 test("a mark draws pending only once its toggle has waited 150 ms, and not once answered", () => {
@@ -42,4 +42,16 @@ test("a toggle answered and made again waits its own 150 ms", () => {
   expect(marks.pending(1n, 200 + MARK_DELAY - 1)).toBe(false);
   expect(marks.pending(1n, 200 + MARK_DELAY)).toBe(true);
   expect(marks.pending(null, 1000)).toBe(false);
+});
+
+test("a column span's mark waits its 150 ms as a row's does", () => {
+  const marks = createPendingMarks();
+  const span = (togglePending: boolean) => ({ axis: "cols", key: 7n, togglePending });
+  const frame = (pending: boolean) =>
+    ({ rows: { strip: [], spans: [] }, cols: { strip: [], spans: [span(pending)] } }) as unknown as Snapshot;
+  marks.seen(frame(true), 0);
+  marks.seen(frame(true), MARK_DELAY);
+  expect(marks.pending(7n, MARK_DELAY)).toBe(true);
+  marks.seen(frame(false), 200);
+  expect(marks.waiting).toBe(false);
 });

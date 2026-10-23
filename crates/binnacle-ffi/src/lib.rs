@@ -24,7 +24,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 14;
+pub const BINNACLE_ABI_VERSION: u32 = 15;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -894,6 +894,7 @@ pub struct BinnacleAxisSnapshot {
     pub corner_tiers_len: usize,
     pub corner_levels: *const BinnacleCornerLevel,
     pub corner_levels_len: usize,
+    pub band_focused: u32,
 }
 
 #[repr(C)]
@@ -2866,6 +2867,7 @@ impl BinnacleGrid {
                 corner_tiers_len: corner_tiers.len(),
                 corner_levels: corner_levels.as_ptr(),
                 corner_levels_len: corner_levels.len(),
+                band_focused: flag(snap.band_focused(axis)),
                 selection_runs: runs.as_ptr(),
                 selection_runs_len: runs.len(),
             }

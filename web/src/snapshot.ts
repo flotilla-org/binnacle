@@ -201,6 +201,11 @@ export interface AxisSnapshot {
    * last. `rows.corner` gives the corner's columns (x), `cols.corner` its rows (y); see `cornerCell`.
    */
   corner: CornerTier[];
+  /**
+   * Focus is in the Header Band heading this axis's items, where the tree keys act on its groups: for `rows` the
+   * outline column (or a level column in header form), for `cols` a tier of the column band.
+   */
+  bandFocused: boolean;
 }
 
 /**
@@ -321,7 +326,7 @@ export interface Snapshot {
   viewPending: boolean;
   /** Focus is in the row Header Band of grouped rows: the outline column, or in header form a level column. */
   outlineFocused: boolean;
-  /** In header form, the tier (level column) the focus is on while `outlineFocused`. */
+  /** In header form, the tier the focus is on while it is in a Header Band (`bandFocused`): a level column of the rows, or a tier of the columns. */
   focusedTier: number;
   /** The move requested and not yet answered: its axis and Keys. No other move starts until it is answered. */
   pendingMove: { axis: AxisName; keys: bigint[] } | null;
@@ -669,6 +674,7 @@ function readAxis(r: Reader): AxisSnapshot {
     across: { start: r.num(), end: r.num() },
     levels: r.list(() => ({ index: r.num(), field: r.optKey() })),
   }));
+  const bandFocused = r.flag();
   return {
     count,
     extent,
@@ -695,6 +701,7 @@ function readAxis(r: Reader): AxisSnapshot {
     tiers,
     spans,
     corner,
+    bandFocused,
   };
 }
 

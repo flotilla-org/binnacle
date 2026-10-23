@@ -1381,8 +1381,14 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private markPress(x: number, y: number): boolean {
     const s = this.last;
-    if (!s || x >= s.cols.header || y < s.rows.header) return false;
+    if (!s) return false;
     const inside = (r: Rect) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+    if (y < s.rows.header && x >= s.cols.header) {
+      const span = s.cols.spans.find((span) => inside(span.visible) && inside(spanMarkRect(s, span)));
+      if (span) this.grid.toggle(AXIS_CODE.cols, span.key);
+      return span !== undefined;
+    }
+    if (x >= s.cols.header || y < s.rows.header) return false;
     for (const span of s.rows.spans) {
       if (inside(span.visible) && inside(spanMarkRect(s, span))) {
         this.grid.toggle(AXIS_CODE.rows, span.key);

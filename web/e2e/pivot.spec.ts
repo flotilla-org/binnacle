@@ -88,3 +88,33 @@ test("focus moves along a row's quarters, each pivot column by its own ID", asyn
   await page.keyboard.press("ArrowLeft");
   await expect(status(page)).toContainText(`focus ${first}`);
 });
+
+test("Up from the first row enters the quarters, where Left steps out to Q1 and closes it to its total column", async ({
+  page,
+  browserName,
+}) => {
+  await cell(page, 0, 0);
+  await expect(status(page)).toContainText("focus row 1, column 1");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  // Q1's two value columns give way to its one total column.
+  await expect(status(page)).toContainText(`of ${quarters * 2 + 1}`);
+  if (browserName === "chromium") {
+    await expect(page.locator("#grid")).toHaveScreenshot("pivot-q1-closed.png", { scale: "device" });
+  }
+  await page.keyboard.press("Enter");
+  await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowRight");
+  await expect(status(page)).toContainText("focus row 1, column 2");
+});
+
+test("a click on a quarter's mark closes it and another opens it", async ({ page }) => {
+  const b = (await page.locator(".binnacle-layer").boundingBox())!;
+  const mark = { x: b.x + ROWS_BAND + 10, y: b.y + 14 };
+  await page.mouse.click(mark.x, mark.y);
+  await expect(status(page)).toContainText(`of ${quarters * 2 + 1}`);
+  await page.mouse.click(mark.x, mark.y);
+  await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
+});

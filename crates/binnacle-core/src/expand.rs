@@ -198,25 +198,36 @@ impl Grid {
             .map_or(0, |g| g.levels(axis).len() as u32)
     }
 
+    /// The Header Band focus is in, if any: [`Axis::Rows`] for the row
+    /// band (the outline column, or a level column in header form) on the
+    /// focused row, [`Axis::Cols`] for the tiers of the column band on the
+    /// focused column, while that axis is grouped (the columns in header
+    /// form).
+    pub(crate) fn band(&self) -> Option<Axis> {
+        let axis = self.band_focus?;
+        let grouped = grouped(&self.view.applied, axis).is_some();
+        let tiers = axis == Axis::Rows || self.header_levels(axis) > 0;
+        (self.focus.is_some() && grouped && tiers).then_some(axis)
+    }
+
     /// Whether focus is in the row Header Band, on the focused row's band
     /// cell rather than a body cell: the outline column, or a level column
     /// in header form.
     pub(crate) fn in_outline(&self) -> bool {
-        self.outline_focus
-            && self.focus.is_some()
-            && grouped(&self.view.applied, Axis::Rows).is_some()
+        self.band() == Some(Axis::Rows)
     }
 
-    /// The tier focus is in, kept inside the row levels in header form.
-    fn tier(&self) -> u32 {
+    /// The tier focus is in, kept inside the levels of `axis` in header
+    /// form.
+    fn tier(&self, axis: Axis) -> u32 {
         self.band_tier
-            .min(self.header_levels(Axis::Rows).saturating_sub(1))
+            .min(self.header_levels(axis).saturating_sub(1))
     }
 
-    /// Focus leaves the outline column for the body, on the column it was
-    /// on before.
-    pub(crate) fn leave_outline(&mut self) {
-        if std::mem::take(&mut self.outline_focus) {
+    /// Focus leaves the Header Band for the body, on the item it was on
+    /// before across the band.
+    pub(crate) fn leave_band(&mut self) {
+        if self.band_focus.take().is_some() {
             self.pending_damage.selection = true;
         }
     }
@@ -228,41 +239,98 @@ impl Grid {
         if grouped(&self.view.applied, Axis::Rows).is_none() || self.focus.is_none() {
             return;
         }
-        self.outline_focus = true;
+        self.band_focus = Some(Axis::Rows);
         let tiers = &self.tiers[Axis::Rows.index()];
         self.band_tier =
             (tiers.iter().position(|t| x < t.end)).unwrap_or(tiers.len().saturating_sub(1)) as u32;
         self.pending_damage.selection = true;
     }
 
-    /// The focused row's Position and outline, while focus is in the outline
-    /// column.
-    fn focused_outline(&self) -> Option<(Position, Key, Outline)> {
-        let end = self.focus?[Axis::Rows.index()];
-        let key = end.key?;
-        Some((end.position, key, self.outline_of(Axis::Rows, key)?.clone()))
+    /// A click on a column header at `y`: on a span in a tier of grouped
+    /// columns, focus goes to that tier. A click on a column's own header
+    /// leaves focus in the body.
+    pub(crate) fn column_header_clicked(&mut self, y: f32) {
+        if self.header_levels(Axis::Cols) == 0 || self.focus.is_none() {
+            return;
+        }
+        let tiers = &self.tiers[Axis::Cols.index()];
+        let Some(tier) = tiers.iter().position(|t| y < t.end) else {
+            return;
+        };
+        let position = self.focus.map(|f| f[Axis::Cols.index()].position);
+        if position
+            .and_then(|p| self.span_key(Axis::Cols, p, tier))
+            .is_none()
+        {
+            return;
+        }
+        self.band_focus = Some(Axis::Cols);
+        self.band_tier = tier as u32;
+        self.pending_damage.selection = true;
     }
 
-    /// A focus move along the columns, which in the outline column walks
-    /// the tree: Right opens a closed group or steps in to its first child,
-    /// else into the body; Left closes an open group or steps out to the
-    /// parent. Moving left from the first column enters the outline column.
-    /// Returns whether it handled the move.
-    pub(crate) fn tree_move(&mut self, by: FocusStep, forward: bool) -> bool {
-        if !self.in_outline() {
-            return self.enter_outline(by, forward);
+    /// The focused item's Position, Key and outline on `axis`, while focus
+    /// is in the band heading it.
+    fn focused_outline(&self, axis: Axis) -> Option<(Position, Key, Outline)> {
+        let end = self.focus?[axis.index()];
+        let key = end.key?;
+        Some((end.position, key, self.outline_of(axis, key)?.clone()))
+    }
+
+    /// A focus move along `axis` that the Header Bands take. In the outline
+    /// column, moves along the columns walk the tree: Right opens a closed
+    /// group or steps in to its first child, else into the body; Left
+    /// closes an open group or steps out to the parent. Moving left from
+    /// the first column enters the outline column. In the tiers of the
+    /// column band, Right and Left do the same for the column groups, Up
+    /// steps a tier out and Down leaves for the body; moving up from the
+    /// first row enters the innermost tier. Returns whether it handled the
+    /// move.
+    pub(crate) fn tree_move(&mut self, axis: Axis, by: FocusStep, forward: bool) -> bool {
+        match (self.band(), axis) {
+            (None, Axis::Cols) => self.enter_outline(by, forward),
+            (None, Axis::Rows) => self.enter_tiers(by, forward),
+            (Some(Axis::Rows), Axis::Rows) => false,
+            (Some(Axis::Rows), Axis::Cols) => self.outline_move(by, forward),
+            (Some(Axis::Cols), Axis::Cols) => {
+                if by != FocusStep::Item {
+                    return false;
+                }
+                if let Some((_, _, outline)) = self.focused_outline(Axis::Cols) {
+                    self.header_tree_move(Axis::Cols, &outline, forward);
+                }
+                true
+            }
+            (Some(Axis::Cols), Axis::Rows) => {
+                let tier = self.tier(Axis::Cols);
+                match (forward, by) {
+                    (true, by) => {
+                        self.leave_band();
+                        by == FocusStep::Item
+                    }
+                    (false, FocusStep::Item) if tier > 0 => {
+                        self.step_tier(tier - 1);
+                        true
+                    }
+                    (false, _) => true,
+                }
+            }
         }
+    }
+
+    /// A focus move along the columns in the outline column.
+    fn outline_move(&mut self, by: FocusStep, forward: bool) -> bool {
         if by != FocusStep::Item {
             if forward {
-                self.leave_outline();
+                self.leave_band();
             }
             return !forward;
         }
-        let Some((position, key, outline)) = self.focused_outline() else {
+        let Some((position, key, outline)) = self.focused_outline(Axis::Rows) else {
             return true;
         };
         if self.header_levels(Axis::Rows) > 0 {
-            self.header_tree_move(&outline, forward);
+            self.header_tree_move(Axis::Rows, &outline, forward);
             return true;
         }
         let group = outline.kind == ItemKind::Group;
@@ -274,7 +342,7 @@ impl Grid {
                 self.step_rows(position + 1);
             }
             (true, OpenState::Open) if group => {}
-            (true, _) => self.leave_outline(),
+            (true, _) => self.leave_band(),
             (false, OpenState::Open) if group => {
                 let _ = self.collapse(Axis::Rows, key);
             }
@@ -290,11 +358,12 @@ impl Grid {
         true
     }
 
-    /// The group the focused tier stands for on a row with `outline`, in
-    /// header form: its ancestor at that level (an open group's own
-    /// Subtotal included), or a Group Item that is its own header there.
-    fn tier_group(&self, outline: &Outline, key: Key) -> Option<Key> {
-        let tier = self.tier() as usize;
+    /// The group the focused tier of `axis` stands for on an item with
+    /// `outline`, in header form: its ancestor at that level (an open
+    /// group's own Subtotal included), or a Group Item that is its own
+    /// header there.
+    fn tier_group(&self, axis: Axis, outline: &Outline, key: Key) -> Option<Key> {
+        let tier = self.tier(axis) as usize;
         match outline.ancestors.get(tier) {
             Some(&group) => Some(group),
             None if outline.kind == ItemKind::Group && outline.depth as usize == tier => Some(key),
@@ -302,33 +371,33 @@ impl Grid {
         }
     }
 
-    /// The tree keys in header form, where each level is a column of the
-    /// band: Right opens the focused tier's closed group or steps to the
-    /// next level's column (from the last, into the body); Left closes an
-    /// open group or steps to the previous level's column.
-    fn header_tree_move(&mut self, outline: &Outline, forward: bool) {
-        let (tier, levels) = (self.tier(), self.header_levels(Axis::Rows));
-        let key = self.focus.and_then(|f| f[Axis::Rows.index()].key);
-        let group = key.and_then(|k| self.tier_group(outline, k));
+    /// The tree keys in header form, where each level of `axis` is a tier
+    /// of its band: Right opens the focused tier's closed group or steps a
+    /// tier in (from the last, into the body); Left closes an open group or
+    /// steps a tier out.
+    fn header_tree_move(&mut self, axis: Axis, outline: &Outline, forward: bool) {
+        let (tier, levels) = (self.tier(axis), self.header_levels(axis));
+        let key = self.focus.and_then(|f| f[axis.index()].key);
+        let group = key.and_then(|k| self.tier_group(axis, outline, k));
         let open = group
-            .and_then(|g| Some((g, self.openable(Axis::Rows, g)?)))
-            .map(|(g, level)| (g, self.applied_opens(Axis::Rows, level, g)));
+            .and_then(|g| Some((g, self.openable(axis, g)?)))
+            .map(|(g, level)| (g, self.applied_opens(axis, level, g)));
         match (forward, open) {
             (true, Some((g, false))) => {
-                let _ = self.expand(Axis::Rows, g);
+                let _ = self.expand(axis, g);
             }
-            (true, Some((g, true))) if self.toggle_pending(Axis::Rows, g) => {}
+            (true, Some((g, true))) if self.toggle_pending(axis, g) => {}
             (true, _) if tier + 1 < levels => self.step_tier(tier + 1),
-            (true, _) => self.leave_outline(),
+            (true, _) => self.leave_band(),
             (false, Some((g, true))) => {
-                let _ = self.collapse(Axis::Rows, g);
+                let _ = self.collapse(axis, g);
             }
             (false, _) if tier > 0 => self.step_tier(tier - 1),
             (false, _) => {}
         }
     }
 
-    /// Focus steps to the band's level column `tier`.
+    /// Focus steps to the band's tier `tier`.
     fn step_tier(&mut self, tier: u32) {
         self.band_tier = tier;
         self.pending_damage.selection = true;
@@ -341,13 +410,30 @@ impl Grid {
         if forward || by != FocusStep::Item || grouped(&self.view.applied, Axis::Rows).is_none() {
             return false;
         }
-        let Some(f) = self.focus else { return false };
-        let st = self.axis(Axis::Cols);
-        if st.drawn_index(st.slot_of(f[Axis::Cols.index()])) != 0 {
+        self.enter_band(Axis::Rows)
+    }
+
+    /// Moving up by one from the first row, on columns grouped in header
+    /// form, enters the column band's innermost tier. Returns whether it
+    /// did.
+    fn enter_tiers(&mut self, by: FocusStep, forward: bool) -> bool {
+        if forward || by != FocusStep::Item || self.header_levels(Axis::Cols) == 0 {
             return false;
         }
-        self.outline_focus = true;
-        self.band_tier = self.header_levels(Axis::Rows).saturating_sub(1);
+        self.enter_band(Axis::Cols)
+    }
+
+    /// Focus enters the band heading `axis`, at its innermost tier, if the
+    /// focused item across it is the first drawn. Returns whether it did.
+    fn enter_band(&mut self, axis: Axis) -> bool {
+        let Some(f) = self.focus else { return false };
+        let across = axis.other();
+        let st = self.axis(across);
+        if st.drawn_index(st.slot_of(f[across.index()])) != 0 {
+            return false;
+        }
+        self.band_focus = Some(axis);
+        self.band_tier = self.header_levels(axis).saturating_sub(1);
         self.pending_damage.selection = true;
         true
     }
@@ -365,51 +451,57 @@ impl Grid {
         self.reveal_focus();
     }
 
-    /// Enter in the outline column: toggles the focused group. Returns
-    /// whether it handled the key.
+    /// The group the focused band cell stands for, with the band's axis:
+    /// in outline form the focused Group Item, in header form the focused
+    /// tier's group.
+    fn band_group(&self) -> Option<(Axis, Key, Outline)> {
+        let axis = self.band()?;
+        let (_, key, outline) = self.focused_outline(axis)?;
+        Some((axis, key, outline))
+    }
+
+    /// Enter in a Header Band: toggles the focused group. Returns whether
+    /// it handled the key.
     pub(crate) fn tree_activate(&mut self) -> bool {
-        if !self.in_outline() {
-            return false;
-        }
-        let Some((_, key, outline)) = self.focused_outline() else {
+        let Some((axis, key, outline)) = self.band_group() else {
             return false;
         };
-        let group = match self.header_levels(Axis::Rows) {
+        let group = match self.header_levels(axis) {
             0 => (outline.kind == ItemKind::Group).then_some(key),
-            _ => self.tier_group(&outline, key),
+            _ => self.tier_group(axis, &outline, key),
         };
         if let Some(group) = group {
-            let _ = self.toggle(Axis::Rows, group);
+            let _ = self.toggle(axis, group);
             return true;
         }
         false
     }
 
-    /// Text typed in the outline column: `*` opens everything under the
-    /// focused group (or the focused item's parent), a digit opens the
-    /// rows to that many levels. Returns whether it handled the text.
+    /// Text typed in a Header Band: `*` opens everything under the focused
+    /// group (or the focused item's parent), a digit opens the band's axis
+    /// to that many levels. Returns whether it handled the text.
     pub(crate) fn tree_typed(&mut self, text: &str) -> bool {
-        if !self.in_outline() {
+        let Some(axis) = self.band() else {
             return false;
-        }
+        };
         match text {
             "*" => {
-                if let Some((_, key, outline)) = self.focused_outline() {
-                    let header = self.header_levels(Axis::Rows) > 0;
+                if let Some((_, key, outline)) = self.band_group() {
+                    let header = self.header_levels(axis) > 0;
                     let group = match outline.kind {
-                        _ if header => self.tier_group(&outline, key).or(outline.parent()),
+                        _ if header => self.tier_group(axis, &outline, key).or(outline.parent()),
                         ItemKind::Group => Some(key),
                         _ => outline.parent(),
                     };
                     if let Some(group) = group {
-                        let _ = self.expand_all(Axis::Rows, group);
+                        let _ = self.expand_all(axis, group);
                     }
                 }
                 true
             }
             _ => match text.parse::<u32>() {
                 Ok(n) if text.len() == 1 => {
-                    self.expand_to(Axis::Rows, Depth::Levels(n));
+                    self.expand_to(axis, Depth::Levels(n));
                     true
                 }
                 _ => false,

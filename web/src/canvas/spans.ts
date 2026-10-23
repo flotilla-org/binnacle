@@ -1,8 +1,7 @@
 // Header form: each level of a grouped axis a tier of its Header Band (a
 // column of the row band, a row of the column band), each group one
 // spanning cell over its items, labelled at the start of the part in view,
-// and faded where it goes on out of view. A row group's span has its
-// disclosure mark; a column group's has none yet, as columns don't toggle.
+// and faded where it goes on out of view, after its disclosure mark.
 
 import type { HeaderSpan, Rect, Snapshot } from "../snapshot";
 import { PAD, clip, type PaintContext } from "./context";
@@ -13,8 +12,9 @@ const DISCLOSURE = 14;
 /** How far a cut span fades out toward its cut edge, CSS px. */
 const FADE = 12;
 
-/** The height of a span's first line in view: that of the row drawn at its top. */
+/** The height of a span's first line in view: that of the row drawn at its top, or a column span's whole tier. */
 function lineOf(s: Snapshot, span: HeaderSpan): number {
+  if (span.axis === "cols") return span.visible.height;
   const top = span.visible.y;
   const row = s.rows.strip.find((i) => i.position >= span.first && i.position <= span.last && i.offset + i.size > top);
   return Math.min(span.visible.height, row?.size ?? span.visible.height);
@@ -28,8 +28,8 @@ export function spanMarkRect(s: Snapshot, span: HeaderSpan): Rect {
 /**
  * Each group's span in its tier: tinted, ruled where it starts and ends and
  * at its tier's far side, with its label at the start of its part in view
- * (a row group's after its disclosure mark, pulsing while a toggle waits for
- * its answer). A side the group goes on past fades out instead of closing.
+ * after its disclosure mark, which pulses while a toggle waits for its
+ * answer. A side the group goes on past fades out instead of closing.
  */
 export function paintSpans(p: PaintContext): void {
   paintRowSpans(p);
@@ -51,13 +51,7 @@ function paintRowSpans(p: PaintContext): void {
     if (!span.cutAfter) ctx.fillRect(v.x, span.rect.y + span.rect.height - p.pixel, v.width, p.pixel);
     ctx.fillRect(v.x + v.width - p.pixel, v.y, p.pixel, v.height);
     const y = v.y + lineOf(s, span) / 2;
-    ctx.save();
-    ctx.font = theme.headerFont;
-    ctx.textAlign = "left";
-    ctx.fillStyle = theme.disclosure;
-    if (p.markPending(span.key)) ctx.globalAlpha = markBeat(p);
-    ctx.fillText(span.open === "closed" ? "▸" : "▾", v.x + PAD, y);
-    ctx.restore();
+    paintMark(p, span, v.x + PAD, y);
     const room = v.width - 2 * PAD - DISCLOSURE;
     ctx.font = theme.headerFont;
     ctx.textAlign = "left";
@@ -82,13 +76,28 @@ function paintColumnSpans(p: PaintContext): void {
     if (!span.cutBefore) ctx.fillRect(span.rect.x, v.y, p.pixel, v.height);
     if (!span.cutAfter) ctx.fillRect(span.rect.x + span.rect.width - p.pixel, v.y, p.pixel, v.height);
     ctx.fillRect(v.x, v.y + v.height - p.pixel, v.width, p.pixel);
+    const y = v.y + v.height / 2;
+    paintMark(p, span, v.x + PAD, y);
     ctx.font = theme.headerFont;
     ctx.textAlign = "left";
     ctx.fillStyle = theme.groupItem.color;
-    const label = measure.fit(p.content.spanLabel("cols", span), theme.headerFont, v.width - 2 * PAD);
-    ctx.fillText(label, v.x + PAD, v.y + v.height / 2);
+    const room = v.width - 2 * PAD - DISCLOSURE;
+    const label = measure.fit(p.content.spanLabel("cols", span), theme.headerFont, room);
+    ctx.fillText(label, v.x + PAD + DISCLOSURE, y);
     ctx.restore();
   }
+  ctx.restore();
+}
+
+/** A span's disclosure mark at (`x`, `y`): ▸ closed, ▾ open, pulsing while its toggle is pending. */
+function paintMark(p: PaintContext, span: HeaderSpan, x: number, y: number): void {
+  const { ctx, theme } = p;
+  ctx.save();
+  ctx.font = theme.headerFont;
+  ctx.textAlign = "left";
+  ctx.fillStyle = theme.disclosure;
+  if (p.markPending(span.key)) ctx.globalAlpha = markBeat(p);
+  ctx.fillText(span.open === "closed" ? "▸" : "▾", x, y);
   ctx.restore();
 }
 

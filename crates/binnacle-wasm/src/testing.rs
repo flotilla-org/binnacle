@@ -132,6 +132,7 @@ struct DumpAxis {
     tiers: Vec<DumpSpan>,
     spans: Vec<DumpHeaderSpan>,
     corner: Vec<DumpCornerTier>,
+    band_focused: bool,
 }
 
 #[derive(Serialize)]
@@ -620,6 +621,7 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                     .collect(),
             })
             .collect(),
+        band_focused: s.band_focused(axis),
     }
 }
 
@@ -943,7 +945,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 27] = [
+pub const SCENARIOS: [&str; 28] = [
     "plain",
     "busy",
     "resizing",
@@ -971,6 +973,7 @@ pub const SCENARIOS: [&str; 27] = [
     "dropRefused",
     "headerForm",
     "corner",
+    "columnTiers",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -1361,6 +1364,14 @@ pub fn scenario(name: &str) -> Grid {
             grid.set_tiers(Axis::Rows, &[16.0, 12.0]);
             grid.set_tiers(Axis::Cols, &[8.0, 8.0]);
         }
+        "columnTiers" => {
+            // The columns grouped by row 3 in header form, its tier 8 high.
+            let mut grouping = Grouping::default();
+            grouping.col_levels = vec![Level::field(key(3))];
+            let spec = ViewSpec::default().with_grouping(Some(grouping));
+            grid.view_applied(spec, Totals::unknown());
+            grid.set_tiers(Axis::Cols, &[8.0]);
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -1426,6 +1437,23 @@ pub fn scenario(name: &str) -> Grid {
         grid.pointer(PointerEvent::up(20.0, y));
         // The first region closed by a request still due.
         grid.toggle(Axis::Rows, region(0)).unwrap();
+    }
+    if name == "columnTiers" {
+        // Column groups of three columns each, every column a Leaf.
+        let group = |p: u64| Key(KEY_BASE + 1000 + p / 3);
+        let outlines: Vec<Outline> = (0..20).map(|p| Outline::leaf(vec![group(p)])).collect();
+        grid.set_outlines(Axis::Cols, 0, &outlines);
+        // Up from the first row enters the column tiers, and Left there
+        // closes the first group by a request still due.
+        grid.set_focus(key(0), key(1));
+        for (axis, forward) in [(Axis::Rows, false), (Axis::Cols, false)] {
+            grid.action(Action::MoveFocus {
+                axis,
+                by: FocusStep::Item,
+                forward,
+                extend: false,
+            });
+        }
     }
     grid
 }
@@ -1658,6 +1686,12 @@ mod tests {
                     assert_eq!(s.focused_tier(), 1);
                     assert!(s.toggle_pending(Axis::Rows, spans[0].key));
                 }
+                "columnTiers" => {
+                    assert!(s.band_focused(Axis::Cols) && !s.outline_focused());
+                    assert_eq!(s.focused_tier(), 0);
+                    let first = s.spans(Axis::Cols)[0].key;
+                    assert!(s.toggle_pending(Axis::Cols, first));
+                }
                 "found" => {
                     assert!(s.find().is_some_and(|f| f.by == Axis::Cols));
                     assert!(s.find_support().is_some());
@@ -1700,7 +1734,8 @@ mod tests {
                 "Idle",
                 "MovingHeaders",
                 "Idle",
-                "Idle"
+                "Idle",
+                "Idle",
             ]
         );
     }
