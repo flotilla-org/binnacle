@@ -845,6 +845,27 @@ pub unsafe extern "C" fn binnacle_group_layer_summary(
     }
 }
 
+/// Whether `key` may still name an item of `axis` (a Leaf Key, a Key the
+/// layer never issued, a group's while its path fits the levels): 1 if so,
+/// else 0, and 1 for NULL or a bad axis, which retire nothing.
+///
+/// # Safety
+/// `layer` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_group_layer_fits(
+    layer: *const BinnacleGroupLayer,
+    axis_tag: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let Some(h) = (unsafe { layer.as_ref() }) else {
+        return 1;
+    };
+    axis(axis_tag)
+        .is_none_or(|a| h.layer.fits(a, Key(key)))
+        .into()
+}
+
 /// How many groups and Leaves the layer holds; 0 for NULL.
 ///
 /// # Safety

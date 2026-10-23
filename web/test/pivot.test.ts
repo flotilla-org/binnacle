@@ -12,6 +12,7 @@ import { fromRows, type RowsColId } from "../src/rows";
 import type {
   AggregateValue,
   AppliedView,
+  CompareOp,
   ChangeNotice,
   Grouping,
   Level,
@@ -271,6 +272,96 @@ describe("fromRows's pivot", () => {
       source.destroy();
     }
   });
+
+  test("whatever the data, the regions sorted by a quarter's column follow its figures, blanks last", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(ships.filter((r) => r.length > 0));
+      const source = pivotSource(rows);
+      try {
+        const g = pivot(true, [SUM], "off", "off");
+        source.view!(viewOf(g), signal);
+        const unsorted = shown(source, g);
+        const at = tc.draw(gs.integers({ minValue: 0, maxValue: unsorted.cols.length - 1 }));
+        const direction = tc.draw(gs.sampledFrom(["ascending", "descending"] as const));
+        const sort = [{ id: unsorted.ids[at]!, direction }];
+        const answer = source.view!({ ...viewOf(g), rows: { ...plain, sort } }, signal) as AppliedView<number, Col>;
+        expect(answer.rows.sort).toEqual(sort);
+        const quarter = unsorted.cols[at]!.quarter;
+        const of = (region: RowOf) => figure(rows, g, region, { quarter, value: 0 });
+        const want = [...unsorted.rows].sort((a, b) => {
+          const [x, y] = [of(a), of(b)];
+          if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
+          return direction === "ascending" ? x - y : y - x;
+        });
+        expect(shown(source, g).rows).toEqual(want);
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("a sort term on a quarter the data lacks is left out, and applies again when the quarter returns", () => {
+    const rows: Ship[] = [
+      { region: "North", quarter: "Q1", weight: 1 },
+      { region: "South", quarter: "Q1", weight: 2 },
+      { region: "North", quarter: "Q2", weight: 5 },
+    ];
+    const source = pivotSource(rows);
+    const told: AppliedView<number, Col>[] = [];
+    source.attach!({ ...sinksTo([]), viewChanged: (v) => void told.push(v) });
+    try {
+      const g = pivot(true, [SUM], "off", "off");
+      source.view!(viewOf(g), signal);
+      const q2 = shown(source, g).ids[1]!;
+      const sort = [{ id: q2, direction: "descending" as const }];
+      const asked = { ...viewOf(g), rows: { ...plain, sort } };
+      expect((source.view!(asked, signal) as AppliedView<number, Col>).rows.sort).toEqual(sort);
+      expect(shown(source, g).rows).toEqual(["North", "South"]);
+      // Q2 leaves with North's row in it: the term is left out, unprompted.
+      source.filter((r) => r.quarter !== "Q2");
+      expect(told.at(-1)!.rows.sort).toEqual([]);
+      expect((source.view!(asked, signal) as AppliedView<number, Col>).rows.sort).toEqual([]);
+      expect(source.cols.fits!(q2)).toBe(true);
+      source.filter(null);
+      expect(told.at(-1)!.rows.sort).toEqual(sort);
+      // Without the column levels, no pivot column's path fits.
+      source.view!(viewOf({ ...g, colLevels: [] }), signal);
+      expect(source.cols.fits!(q2)).toBe(false);
+    } finally {
+      source.destroy();
+    }
+  });
+
+  test("whatever the data, the quarters filtered by the Grand Total row keep those whose total passes", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(ships);
+      const source = pivotSource(rows);
+      try {
+        const g = pivot(true, [SUM], "off", "after");
+        const value = tc.draw(gs.integers({ minValue: -1_000_000_000, maxValue: 1_000_000_000 }));
+        const op = tc.draw(gs.sampledFrom<CompareOp>(["equal", "notEqual", "less", "atMost", "greater", "atLeast"]));
+        const not = tc.draw(gs.booleans());
+        const having = { id: -1, kind: { type: "Compare" as const, comparison: { op, value: { type: "number" as const, value } } }, not };
+        const answer = source.view!({ ...viewOf(g), cols: { ...plain, filter: { quick: null, conditions: [having] } } }, signal);
+        expect((answer as AppliedView<number, Col>).cols.filter?.conditions).toEqual([having]);
+        const holds: Record<CompareOp, (t: number) => boolean> = {
+          equal: (t) => t === value,
+          notEqual: (t) => t !== value,
+          less: (t) => t < value,
+          atMost: (t) => t <= value,
+          greater: (t) => t > value,
+          atLeast: (t) => t >= value,
+        };
+        // A blank total passes no comparison, so `not` keeps it.
+        const passes = (quarter: string) => {
+          const total = figure(rows, g, undefined, { quarter, value: 0 });
+          return (total !== null && holds[op](total)) !== not;
+        };
+        const want = model(rows, g).cols.filter((c) => c.quarter === undefined || passes(c.quarter));
+        expect(shown(source, g).cols).toEqual(want);
+      } finally {
+        source.destroy();
+      }
+    }));
 
   test("with the values on the rows, each region heads a row per value, and each cell is that value's figure", () => {
     const rows: Ship[] = [

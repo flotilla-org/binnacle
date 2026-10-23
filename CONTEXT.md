@@ -147,11 +147,15 @@ A column Grand Total, labelled "All". Where the column axis splits the values (t
 _Avoid_: Total column, grand total column
 
 **Pivot**:
-A grouping with column levels, or with the values pseudo-level among its row levels: both axes are then the Grouping Layer's, each item a Summary Item and each cell the figure where a row's path and a column's path cross. The innermost groups don't open (there are no Leaves), the columns follow the column Sort Spec and can't be moved, and any change to them is answered with Refiltered (or Reset), never Removed. A group above the values pseudo-level shows no figure of its own: its Subtotals, one per value, carry them.
+A grouping with column levels, or with the values pseudo-level among its row levels: both axes are then the Grouping Layer's, each item a Summary Item and each cell the figure where a row's path and a column's path cross. The innermost groups don't open (there are no Leaves), the columns follow the column Sort Spec and can't be moved, and any change to them is answered with Refiltered (or Reset), never Removed. A group above the values pseudo-level shows no figure of its own: its Subtotals, one per value, carry them. Either axis sorts and filters by the other's Summary Items: the rows by a Pivot Column's figures, the columns by a row's (a comparison on the Grand Total row's figure drops the quarters it fails, HAVING across). A sort term or comparison naming an item the data lacks for now is left out of the applied View Spec; the Grid keeps such a sort term asked for, not applied, while the grouping applied pivots, and it applies again when the item returns.
 _Avoid_: Cross-tab, matrix
 
 **Pivot Column**:
 A column a Pivot builds from the data: its Key is interned from its path (each column level's field and value, then the value's identity when the columns split the values), so state on it (a Size Override, a pin) survives re-sorting and data changes. In TypeScript, `fromRows` with `pivots: true` gives them negative IDs.
+
+**Path Key**:
+A Key the Grouping Layer interns from a path of group values: a Summary Item's or a Pivot Column's. State the Grid holds on one (a Size Override, a pin, a hidden Key, a sort term or condition naming it) survives any change of data and goes when the levels change so its path no longer fits them: the Table Source says which Keys still fit (`fits`), and after each View Spec lands the host asks it of the Grid's held Keys and has the Grid forget the rest, never to come back. A Leaf Key always fits.
+_Avoid_: Group key, summary id
 _Avoid_: Dynamic column, generated column
 
 **Values Pseudo-Level**:

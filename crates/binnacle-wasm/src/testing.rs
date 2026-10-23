@@ -13,8 +13,8 @@ use binnacle_core::{
 use serde::Serialize;
 
 use crate::effect::{
-    WireAxis, WireCondition, WireDirection, WireFindMatch, WireFindQuery, WireStamped,
-    WireViewEdit, WireViewSpec,
+    WireAxis, WireCondition, WireDirection, WireFindMatch, WireFindQuery, WireSortColumn,
+    WireStamped, WireViewEdit, WireViewSpec,
 };
 use crate::grouping::{WireAggregate, WireAggregateValue, WireLevel, WireOutline};
 use crate::snapshot::cell_bits;
@@ -133,6 +133,7 @@ struct DumpAxis {
     spans: Vec<DumpHeaderSpan>,
     corner: Vec<DumpCornerTier>,
     band_focused: bool,
+    sorts: Vec<DumpListedSort>,
 }
 
 #[derive(Serialize)]
@@ -186,6 +187,12 @@ struct DumpListed {
 #[derive(Serialize)]
 struct DumpListedLevel {
     level: WireLevel,
+    state: &'static str,
+}
+
+#[derive(Serialize)]
+struct DumpListedSort {
+    column: WireSortColumn,
     state: &'static str,
 }
 
@@ -622,6 +629,15 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
             })
             .collect(),
         band_focused: s.band_focused(axis),
+        sorts: (s.sorts(axis).into_iter())
+            .map(|(c, state)| DumpListedSort {
+                column: WireSortColumn {
+                    key: c.key.0,
+                    direction: c.direction.into(),
+                },
+                state: state_name(state),
+            })
+            .collect(),
     }
 }
 
@@ -959,7 +975,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 28] = [
+pub const SCENARIOS: [&str; 29] = [
     "plain",
     "busy",
     "resizing",
@@ -988,6 +1004,7 @@ pub const SCENARIOS: [&str; 28] = [
     "headerForm",
     "corner",
     "columnTiers",
+    "pivotSorted",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -1349,6 +1366,24 @@ pub fn scenario(name: &str) -> Grid {
             let applied = ViewSpec::default().with_grouping(Some(applied));
             grid.view_applied(applied, Totals::unknown());
         }
+        "pivotSorted" => {
+            // A pivot's rows sorted by two pivot columns, the first then
+            // gone from the data: the source applies the second alone, and
+            // the first stays asked for, not applied.
+            let pivot_column = |n: u64| Key((1 << 63) | (KEY_BASE + n));
+            let mut pivot = Grouping::rows_by(key(1));
+            pivot.col_levels = vec![Level::field(key(2))];
+            pivot.values = vec![AggregateValue::of(key(3), "sum")];
+            let sort = |keys: &[Key]| {
+                SortSpec::new(keys.iter().map(|&k| SortColumn::descending(k)).collect())
+            };
+            let asked = ViewSpec::default()
+                .with_sort(Axis::Rows, sort(&[pivot_column(0), pivot_column(1)]))
+                .with_grouping(Some(pivot));
+            grid.request_view(asked.clone());
+            let applied = asked.with_sort(Axis::Rows, sort(&[pivot_column(1)]));
+            grid.view_applied(applied, Totals::unknown());
+        }
         "headerForm" => {
             // The rows grouped by columns 1 then 2 in header form, tiers 16
             // and 12 wide, row 6 pinned leading and the rest scrolled so
@@ -1673,6 +1708,13 @@ mod tests {
                     assert!(s.support(Axis::Rows, key(3)).native);
                     assert_eq!(s.aggregates(Axis::Rows, key(3)).len(), 2);
                 }
+                "pivotSorted" => {
+                    use ConditionState::*;
+                    let sorts: Vec<_> = (s.sorts(Axis::Rows).into_iter())
+                        .map(|(c, st)| (c.key.0 & !(1 << 63), st))
+                        .collect();
+                    assert_eq!(sorts, [(KEY_BASE, NotApplied), (KEY_BASE + 1, Applied)]);
+                }
                 "corner" => {
                     let corner = s.corner();
                     let across = |axis| -> Vec<_> {
@@ -1747,6 +1789,7 @@ mod tests {
                 "Idle",
                 "Idle",
                 "MovingHeaders",
+                "Idle",
                 "Idle",
                 "Idle",
                 "Idle",

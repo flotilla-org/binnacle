@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use binnacle_core::{
     Axis, Blanks, Compared, Condition, ConditionKind, ConditionState, Distinct, DistinctQuery,
-    Edge, FilterSpec, Grid, Key, Level, Placement, Snapshot, TextQuery, TextSupport, Value,
+    Edge, FilterSpec, Grid, Key, Level, Placement, Snapshot, SortColumn, SortDirection, TextQuery,
+    TextSupport, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -2056,6 +2057,13 @@ pub fn render_conditions(
                 .filter(|(_, state)| not_applied(state))
                 .map(|(value, _)| content.value_name(&value)),
         )
+        .chain(Axis::ALL.into_iter().flat_map(|axis| {
+            // A sort term on an item the data lacks for now (a pivot
+            // column gone), kept until it returns.
+            (snapshot.sorts(axis).into_iter())
+                .filter(|(_, state)| not_applied(state))
+                .map(move |(c, _)| sort_text(content, axis, &c))
+        }))
         .collect();
     if area.is_empty()
         || (listed.iter().all(Vec::is_empty) && slicers.is_empty() && left_out.is_empty())
@@ -2101,6 +2109,16 @@ pub fn render_conditions(
         put(&mut x, " ", theme.body);
         put(&mut x, &format!(" {text}! "), error);
     }
+}
+
+/// A sort term of `axis` for its chip: `Sorted by Q2 sum(weight)
+/// descending`.
+fn sort_text(content: &impl Content, axis: Axis, column: &SortColumn) -> String {
+    let direction = match column.direction {
+        SortDirection::Ascending => "ascending",
+        SortDirection::Descending => "descending",
+    };
+    format!("Sorted by {} {direction}", label(content, axis, column.key))
 }
 
 /// A level of `axis`'s grouping for its chip: `Grouped by port` on the

@@ -31,6 +31,11 @@ pub struct RequestId(pub u64);
 /// the same Leaves across, and `col_sort` orders the column groups. The
 /// values pseudo-level is in neither list: where it goes is the layer's
 /// concern, and the backend aggregates every value for every group.
+///
+/// On a pivot too, a sort column or a comparison may name an item of the
+/// other axis by its Key, a path Key listed in `path_keys`: the rows sort
+/// by a pivot column, or the columns filter by a row (`HAVING` on the
+/// columns). It reads each group's figure where it crosses that item.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Scope {
     pub levels: Vec<Key>,
@@ -41,10 +46,37 @@ pub struct Scope {
     pub sort: SortSpec,
     pub columns: Vec<Key>,
     /// The column axis's Sort Spec: a sort column on a column level's field
-    /// orders its groups by their value, one on the rows' Grand Total
-    /// (`GRAND_TOTAL`) by their first value's aggregate. Unsorted, column
-    /// groups come in ascending value.
+    /// orders its groups by their value, one on a path Key (the rows' Grand
+    /// Total, `GRAND_TOTAL`, say) by their figure in that row. Unsorted, or
+    /// on a tie, column groups come in ascending value.
     pub col_sort: SortSpec,
+    /// The column axis's filter: a comparison on a path Key, a row, leaves
+    /// out the column groups whose figure in that row fails it, with
+    /// everything under them. Nothing else in it applies.
+    pub col_filter: FilterSpec,
+    /// The items of either axis that the sorts and filters name, each by
+    /// its Key with the path it crosses at.
+    pub path_keys: Vec<PathKey>,
+}
+
+/// An item of a pivot named by its Key in a sort or a filter of the other
+/// axis: the data path of its group on its own axis (the columns' for a
+/// pivot column, the rows' for a row; empty for a Grand Total) and the
+/// index of the value whose figure it shows (the first where it shows
+/// every value). A group's figure there is its cell where its path and
+/// `path` cross: the figure of its rows that are also under `path`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PathKey {
+    pub key: Key,
+    pub path: Path,
+    pub value: usize,
+}
+
+impl Scope {
+    /// The path Key `key`, if a sort or a filter names it.
+    pub fn path_key(&self, key: Key) -> Option<&PathKey> {
+        self.path_keys.iter().find(|p| p.key == key)
+    }
 }
 
 /// The value whose figure `condition`, in a grouped axis's filter, reads

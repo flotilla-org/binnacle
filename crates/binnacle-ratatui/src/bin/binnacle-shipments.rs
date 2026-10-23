@@ -53,8 +53,14 @@
 //! Total row at the bottom. A quarter's mark closes it to its total column;
 //! Up from the first row enters the quarters' tier, where Left and Right
 //! close and open a quarter, Enter toggles it, `*` and the digits act on
-//! the columns, and Down goes back to the body. `v` again goes back to the
-//! grouped rows.
+//! the columns, and Down goes back to the body. Click a value column's
+//! header to sort the regions and ports by its figures; Alt+Right on the
+//! Grand Total row opens its filter popup, whose comparison keeps the
+//! quarters whose total passes it (`Columns where` on the bottom line). A
+//! sort on a quarter a slicer takes away stays on the bottom line, not
+//! applied (`!`), and applies again when the quarter returns. `v` again
+//! goes back to the grouped rows, which forgets the widths, pins and sort
+//! terms on the pivot columns.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -64,10 +70,10 @@ use std::time::{Duration, Instant};
 
 use binnacle_core::{
     AggregateValue, Axis, AxisConfig, Condition, ConditionKind, Depth, DrillDown, EditEnd, Effect,
-    Expand, FindQuery, Form, Grid, Grouping, HeaderSpan, ItemKind, Key, Level, Outline, Placement,
-    Position, Value, ViewSpec, Viewport,
+    Expand, FindQuery, Form, GRAND_TOTAL, Grid, Grouping, HeaderSpan, ItemKind, Key, Level,
+    Outline, Placement, Position, VALUES_FIELD, Value, ViewSpec, Viewport,
 };
-use binnacle_group::{Figure, GroupedMemory};
+use binnacle_group::{Figure, GroupedMemory, SUMMARY_KEY_BIT};
 use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
     Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar,
@@ -177,6 +183,25 @@ struct Text<'a> {
 }
 
 impl Text<'_> {
+    /// A Summary Item or pivot column by its path, on a chip or menu
+    /// title: "North Bergen", "Q2 sum(weight)", or "Grand total".
+    fn named(&self, key: Key) -> String {
+        if key == GRAND_TOTAL {
+            return "Grand total".into();
+        }
+        let names = (self.source.path(key).into_iter().flatten()).map(|(field, value)| {
+            let value_of = |t: &str| self.grouping?.value_of(t).map(|(_, v)| self.value_name(v));
+            match value {
+                Value::Text(t) if *field == VALUES_FIELD => {
+                    value_of(t).unwrap_or_else(|| t.clone())
+                }
+                Value::Text(t) => t.clone(),
+                Value::Blank => "(none)".into(),
+            }
+        });
+        names.collect::<Vec<_>>().join(" ")
+    }
+
     /// The Summary Item `row`'s figure for the value `aggregate` over
     /// `field`, if the grouping shows one.
     fn figure(&self, row: Key, field: Option<Key>, aggregate: Option<&str>) -> Option<Figure> {
@@ -217,11 +242,21 @@ impl Content for Text<'_> {
     }
 
     fn column_header(&self, col: Key) -> String {
-        HEADERS[col.0 as usize].to_string()
+        match HEADERS.get(col.0 as usize) {
+            Some(h) => h.to_string(),
+            None => self.named(col),
+        }
     }
 
     fn row_header(&self, row: Key, _: u64) -> String {
         format!("#{}", row.0)
+    }
+
+    fn row_label(&self, row: Key) -> String {
+        match row.0 & SUMMARY_KEY_BIT {
+            0 => self.row_header(row, row.0),
+            _ => self.named(row),
+        }
     }
 
     fn group_label(&self, row: Key, outline: &Outline) -> String {
@@ -300,8 +335,20 @@ fn fill(grid: &mut Grid, source: &mut GroupedMemory<Shipment>, rows: &[Shipment]
     for (axis, range) in grid.begin_frame(v) {
         let window = source.window(rows, axis, range.clone());
         grid.set_window(axis, range.start, &window.keys);
+        // A pivot's Summary Items sort and filter the other axis by figure.
+        for &key in &window.keys {
+            if key.0 & SUMMARY_KEY_BIT != 0 {
+                grid.set_support(axis.other(), key, source.support(axis.other(), key));
+            }
+        }
         if let Some(outlines) = window.outlines {
             grid.set_outlines(axis, range.start, &outlines);
+        }
+    }
+    // The Grand Totals too, pinned and so filled once.
+    if source.pivot() {
+        for axis in Axis::ALL {
+            grid.set_support(axis, GRAND_TOTAL, source.support(axis, GRAND_TOTAL));
         }
     }
 }
@@ -726,6 +773,10 @@ fn main() -> io::Result<()> {
                     let took = match controls.control(&key) {
                         Some(Control::ColumnFilter) => {
                             popup.open(&grid.snapshot());
+                            true
+                        }
+                        Some(Control::RowFilter) => {
+                            popup.open_row(&grid.snapshot());
                             true
                         }
                         Some(Control::Find) => {

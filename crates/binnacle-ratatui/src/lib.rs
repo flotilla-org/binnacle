@@ -50,9 +50,9 @@ pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
-    Action, AggregateValue, Axis, Cursor, DropTarget, Edge, Grouping, HeaderPlacement, HeaderSort,
-    HeaderSpan, ItemKind, Key, Mode, MoveRefusal, OpenState, Outline, Snapshot, SortDirection,
-    StripItem, VALUES_FIELD, Value,
+    Action, AggregateValue, Axis, Cursor, DropTarget, Edge, GRAND_TOTAL, Grouping, HeaderPlacement,
+    HeaderSort, HeaderSpan, ItemKind, Key, Mode, MoveRefusal, OpenState, Outline, Snapshot,
+    SortDirection, StripItem, VALUES_FIELD, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -191,11 +191,15 @@ pub trait Content {
     }
 
     /// The name of the row with Key `row` away from its header, such as on
-    /// a filter chip or popup title for a condition on it:
-    /// [`Content::row_header`] as if at Position `row.0` unless overridden,
-    /// which suits rows keyed by Logical Index.
+    /// a filter chip or popup title for a condition on it: "Grand total"
+    /// for a grouped axis's Grand Total (a pivot's columns filter by it),
+    /// else [`Content::row_header`] as if at Position `row.0` unless
+    /// overridden, which suits rows keyed by Logical Index.
     fn row_label(&self, row: Key) -> String {
-        self.row_header(row, row.0)
+        match row == GRAND_TOTAL {
+            true => "Grand total".into(),
+            false => self.row_header(row, row.0),
+        }
     }
 
     /// Whether the cell matches the Find Query in force, as the host's Table

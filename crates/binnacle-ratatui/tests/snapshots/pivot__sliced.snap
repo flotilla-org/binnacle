@@ -1,0 +1,13 @@
+---
+source: crates/binnacle-ratatui/tests/pivot.rs
+expression: "screen(&mut grid, &source, &ctx)"
+---
+|Σ v quarter → ▾ Q1     │         │                  All sum(…│All count |
+|region        sum(weig…│count    │                           │          |
+|  North       9         2                          ║9         2        █|
+|  South       16        1                          ║16        1        █|
+|                                                   ║                   █|
+|                                                   ║                   █|
+|              ═════════════════════════════════════╬═══════════════════█|
+|Grand total   25        3                          ║25        3        █|
+| Sliced by   quarter: Q1   Sorted by Q2 sum(weight) ascending!          |

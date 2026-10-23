@@ -103,6 +103,31 @@ describe("fill", () => {
 });
 
 describe("a user's resize", () => {
+  test("goes, with a pin, once a View Spec lands after the Table Source says the item no longer fits", () => {
+    const fitting = new Set(["c0", "c1", "c2"]);
+    const source = table(5, [1, 1, 1]);
+    source.cols.fits = (id) => fitting.has(id);
+    const h = new Harness(source, 1000, 300);
+    try {
+      h.settled();
+      const [c1, c2] = [h.feed.colKey("c1"), h.feed.colKey("c2")];
+      h.grid.set_size(1, c1, 55);
+      h.grid.set_size(1, c2, 66);
+      h.grid.pin(1, 0, c1);
+      fitting.delete("c1");
+      h.settled();
+      expect(h.grid.size_override(1, c1)).toBe(55);
+      h.grid.cycle_sort(0, c2, false);
+      h.drain();
+      h.settled();
+      expect(Number.isNaN(h.grid.size_override(1, c1))).toBe(true);
+      expect(Array.from(h.grid.pin_keys(1, 0))).toEqual([]);
+      expect(h.grid.size_override(1, c2)).toBe(66);
+    } finally {
+      h.destroy();
+    }
+  });
+
   test("before a fill waiting on a fit wins over the fill", async () => {
     const late = latecomer(table(5, [12, 3, 3]));
     const h = new Harness(late.source, 1000, 300, { cols: (id) => (id === "c0" ? "fit" : "fill") });

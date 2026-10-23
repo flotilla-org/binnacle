@@ -117,6 +117,14 @@ pub trait PumpSource {
         Vec::new()
     }
 
+    /// Whether the Key `key` may still name an item of `axis`: `false` for
+    /// one the source retired for good (a path Key whose path no longer fits
+    /// the levels), which [`pump`] has the Grid [`Grid::forget`] after each
+    /// View Spec applied. The default retires none.
+    fn fits(&mut self, _axis: Axis, _key: Key) -> bool {
+        true
+    }
+
     /// Whether the items of `axis` can move now, which [`pump`] declares
     /// with [`Grid::set_movable`] before it drains and after each answer
     /// (so a source can withdraw moves while sorted, say). The default,
@@ -130,6 +138,18 @@ pub trait PumpSource {
     /// the user (the default: the Table Source moves nothing).
     fn move_items(&mut self, _axis: Axis, _keys: &[Key], _to: Position) -> Result<Moved, String> {
         Err("These can't be moved".into())
+    }
+}
+
+/// Has `grid` forget the Keys it holds state on that `source` retired.
+pub fn forget_retired(grid: &mut Grid, source: &mut (impl PumpSource + ?Sized)) {
+    for axis in Axis::ALL {
+        let held = grid.held_keys(axis);
+        let retired: Vec<Key> = held
+            .into_iter()
+            .filter(|&k| !source.fits(axis, k))
+            .collect();
+        grid.forget(axis, &retired);
     }
 }
 
@@ -188,6 +208,7 @@ pub fn pump(
                 for (axis, notice) in viewed.notices {
                     grid.notify(axis, notice);
                 }
+                forget_retired(grid, source);
             }
             &Effect::Locate { axis, key } => {
                 let answer = source.locate(axis, key);

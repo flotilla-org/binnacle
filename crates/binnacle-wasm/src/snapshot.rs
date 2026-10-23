@@ -626,6 +626,14 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             }
         }
         w.flag(s.band_focused(axis));
+        // The sort terms, listed as the conditions are.
+        let sorts = s.sorts(axis);
+        w.len(sorts.len());
+        for (c, state) in &sorts {
+            w.state(*state);
+            w.key(c.key);
+            w.num(direction_code(c.direction));
+        }
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());

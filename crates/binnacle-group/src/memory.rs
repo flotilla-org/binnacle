@@ -17,9 +17,9 @@ use binnacle_memory::{
     FindCount, FindStep, MemorySource, MovePolicy, Moved, PumpSource, TextMatcher, Viewed,
 };
 
-use crate::layer::{GroupingLayer, Summary, SummaryId, settle};
+use crate::layer::{GroupingLayer, SUMMARY_KEY_BIT, Summary, SummaryId, settle};
 use crate::query::{
-    AggregateBackend, Answer, Batch, Body, GroupRow, Path, Scope, Stamp, Want, having,
+    AggregateBackend, Answer, Batch, Body, GroupRow, Path, PathKey, Scope, Stamp, Want, having,
 };
 
 /// An aggregate as the In-Memory Table Source computes it.
@@ -181,7 +181,7 @@ impl MemoryAggregates {
             grouped: rows.iter().copied().collect(),
         };
         finish(&mut root, 0, scope, &value, &number);
-        finish_columns(&mut cols, 0, scope, &value, &number);
+        finish_columns(&mut cols, &mut Vec::new(), &root, scope, &value, &number);
         aggregates.root = root;
         aggregates.cols = cols;
         let mut path = Vec::new();
@@ -389,14 +389,58 @@ fn by_value(
     }
 }
 
-/// Works out the column totals of `bucket` (at `depth` of the column
-/// levels) and all under it, and orders its groups by the column Sort Spec:
-/// a sort column on the level's field by value (blanks last either way),
-/// one on the Grand Total row by the first value's figure; unsorted, or on
-/// a tie, by ascending value.
+/// The figure of a row group `bucket` where it crosses the pivot column
+/// `across` names: its own figure under an All column, else its cell there
+/// (blank where none of its rows are under that column).
+fn crossing(bucket: &Bucket, across: &PathKey) -> Figure {
+    let figures = match across.path.is_empty() {
+        true => Some(&bucket.figures),
+        false => (bucket.cells.iter())
+            .find(|(p, _)| *p == across.path)
+            .map(|(_, f)| f),
+    };
+    (figures.and_then(|f| f.get(across.value)).copied()).unwrap_or(Figure::Blank)
+}
+
+/// The figure of a column group `col`, at the column path `path`, in the
+/// row `row` names: its own figure over all the rows for the Grand Total,
+/// else the row group's cell there (blank where they share no rows).
+fn crossing_column(root: &Bucket, col: &Bucket, path: &Path, row: &PathKey) -> Figure {
+    if row.path.is_empty() {
+        return (col.figures.get(row.value).copied()).unwrap_or(Figure::Blank);
+    }
+    let Some(group) = walk(root, &row.path) else {
+        return Figure::Blank;
+    };
+    let figures = (group.cells.iter()).find(|(p, _)| p == path);
+    (figures.and_then(|(_, f)| f.get(row.value)).copied()).unwrap_or(Figure::Blank)
+}
+
+/// The item of the other axis that `key` names in a sort or a filter, if
+/// it names one: a path Key of the scope, or the Grand Total.
+fn across(scope: &Scope, key: Key) -> Option<PathKey> {
+    match scope.path_key(key) {
+        Some(p) => Some(p.clone()),
+        None if key == GRAND_TOTAL => Some(PathKey {
+            key,
+            path: Vec::new(),
+            value: 0,
+        }),
+        None => None,
+    }
+}
+
+/// Works out the column totals of `bucket` (at `path`, a column path, of
+/// the column levels) and all under it, leaves out the column groups whose
+/// figure in a row fails a comparison of the column filter naming it, and
+/// orders the rest by the column Sort Spec: a sort column on the level's
+/// field by value (blanks last either way), one on a row (the Grand Total,
+/// say) by their figure in that row; unsorted, or on a tie, by ascending
+/// value. `root` holds the row groups, worked out.
 fn finish_columns(
     bucket: &mut Bucket,
-    depth: usize,
+    path: &mut Path,
+    root: &Bucket,
     scope: &Scope,
     value: &impl Fn(Key, usize) -> Value,
     number: &impl Fn(Key, usize) -> Option<f64>,
@@ -405,38 +449,64 @@ fn finish_columns(
         .map(|v| figure(v, &bucket.rows, value, number))
         .collect();
     bucket.rows = Vec::new();
-    for kid in &mut bucket.kids {
-        finish_columns(kid, depth + 1, scope, value, number);
-    }
-    let Some(&field) = scope.columns.get(depth) else {
+    let Some(&field) = scope.columns.get(path.len()) else {
         return;
     };
-    bucket.kids.sort_by(|a, b| {
+    for kid in &mut bucket.kids {
+        path.push((field, kid.value.clone().unwrap_or(Value::Blank)));
+        finish_columns(kid, path, root, scope, value, number);
+        path.pop();
+    }
+    let in_row = |kid: &Bucket, row: &PathKey| {
+        let mut at = path.clone();
+        at.push((field, kid.value.clone().unwrap_or(Value::Blank)));
+        crossing_column(root, kid, &at, row)
+    };
+    let having: Vec<(PathKey, &Condition)> = (scope.col_filter.conditions.conditions().iter())
+        .filter(|c| matches!(c.kind, ConditionKind::Compare(_)))
+        .filter_map(|c| Some((across(scope, c.key)?, c)))
+        .collect();
+    if !having.is_empty() {
+        let kids = std::mem::take(&mut bucket.kids);
+        bucket.kids = (kids.into_iter())
+            .filter(|k| having.iter().all(|(row, c)| passes(c, in_row(k, row))))
+            .collect();
+    }
+    let sorts: Vec<(Option<PathKey>, SortDirection)> = (scope.col_sort.columns().iter())
+        .filter_map(|c| match c.key {
+            k if k == field => Some((None, c.direction)),
+            k => Some((Some(across(scope, k)?), c.direction)),
+        })
+        .collect();
+    // Each kid's figure in each row sorted by, worked out once.
+    let mut keyed: Vec<(Vec<Figure>, Bucket)> = (std::mem::take(&mut bucket.kids).into_iter())
+        .map(|k| {
+            let rows = sorts.iter().filter_map(|(row, _)| row.as_ref());
+            (rows.map(|row| in_row(&k, row)).collect(), k)
+        })
+        .collect();
+    keyed.sort_by(|(fa, a), (fb, b)| {
         let blank = |k: &Bucket| k.value == Some(Value::Blank);
-        let sorted = (scope.col_sort.columns().iter()).filter_map(|c| {
-            let order = match c.key {
-                // Blanks last either way.
-                k if k == field && (blank(a) || blank(b)) => {
-                    return Some(by_value(field, a, b, number));
-                }
-                k if k == field => by_value(field, a, b, number),
-                GRAND_TOTAL if !scope.values.is_empty() => {
-                    return Some(by_figure(a.figures[0], b.figures[0], c.direction));
-                }
-                _ => return None,
-            };
-            Some(match c.direction {
-                SortDirection::Ascending => order,
-                SortDirection::Descending => order.reverse(),
-            })
+        let mut figures = fa.iter().zip(fb);
+        let sorted = sorts.iter().map(|(row, direction)| match row {
+            Some(_) => {
+                let (x, y) = figures.next().expect("one per row sorted by");
+                by_figure(*x, *y, *direction)
+            }
+            // Blanks last either way.
+            None if blank(a) || blank(b) => by_value(field, a, b, number),
+            None => match direction {
+                SortDirection::Ascending => by_value(field, a, b, number),
+                SortDirection::Descending => by_value(field, a, b, number).reverse(),
+            },
         });
-        (sorted.chain([by_value(field, a, b, number)]))
+        (sorted.collect::<Vec<_>>().into_iter())
+            .chain([by_value(field, a, b, number)])
             .find(|o| o.is_ne())
             .unwrap_or(Ordering::Equal)
     });
-    bucket.index = (bucket.kids.iter().enumerate())
-        .map(|(i, k)| (k.value.clone().unwrap_or(Value::Blank), i))
-        .collect();
+    bucket.kids = keyed.into_iter().map(|(_, k)| k).collect();
+    reindex(bucket);
 }
 
 /// Works out the aggregates of `bucket` (at `depth`) and all under it, and
@@ -464,26 +534,41 @@ fn finish(
     let Some(&field) = scope.levels.get(depth) else {
         return;
     };
-    let having: Vec<(usize, &Condition)> = (scope.filter.conditions.conditions().iter())
-        .filter_map(|c| Some((having(c, &scope.values)?, c)))
+    // What a group's figure is read as: one of its own, by the value's
+    // index, or its cell under a pivot column.
+    let read = |by: &By, k: &Bucket| match by {
+        By::Value(i) => k.figures[*i],
+        By::Column(column) => crossing(k, column),
+    };
+    let having: Vec<(By, &Condition)> = (scope.filter.conditions.conditions().iter())
+        .filter_map(|c| match having(c, &scope.values) {
+            Some(i) => Some((By::Value(i), c)),
+            None if matches!(c.kind, ConditionKind::Compare(_)) => {
+                Some((By::Column(scope.path_key(c.key)?.clone()), c))
+            }
+            None => None,
+        })
         .collect();
     if !having.is_empty() {
         let before = bucket.kids.len();
         bucket
             .kids
-            .retain(|k| having.iter().all(|&(i, c)| passes(c, k.figures[i])));
+            .retain(|k| having.iter().all(|(by, c)| passes(c, read(by, k))));
         if bucket.kids.len() != before {
             reindex(bucket);
         }
     }
-    // Each sort column that orders this level's groups, as the index of
-    // the value whose aggregate it sorts by; `None` for the level's own
-    // field, which keeps the order the rows gave.
-    let by: Vec<(usize, SortDirection)> = (scope.sort.columns().iter())
+    // Each sort column that orders this level's groups: by a value's
+    // aggregate, or by a pivot column. The level's own field keeps the
+    // order the rows gave.
+    let by: Vec<(By, SortDirection)> = (scope.sort.columns().iter())
         .take_while(|c| c.key != field)
         .filter_map(|c| {
-            let i = (scope.values.iter()).position(|v| v.field == Some(c.key))?;
-            Some((i, c.direction))
+            let by = match (scope.values.iter()).position(|v| v.field == Some(c.key)) {
+                Some(i) => By::Value(i),
+                None => By::Column(scope.path_key(c.key)?.clone()),
+            };
+            Some((by, c.direction))
         })
         .collect();
     if by.is_empty() {
@@ -491,11 +576,19 @@ fn finish(
     }
     bucket.kids.sort_by(|a, b| {
         (by.iter())
-            .map(|&(i, d)| by_figure(a.figures[i], b.figures[i], d))
+            .map(|(by, d)| by_figure(read(by, a), read(by, b), *d))
             .find(|o| o.is_ne())
             .unwrap_or(Ordering::Equal)
     });
     reindex(bucket);
+}
+
+/// What a row group's figure is read as, to sort or filter it by.
+enum By {
+    /// Its own aggregate of the value at this index.
+    Value(usize),
+    /// Its cell under this pivot column.
+    Column(PathKey),
 }
 
 /// Finds each group of `bucket` by its value again, after they moved.
@@ -802,8 +895,14 @@ impl<R> GroupedMemory<R> {
 
     /// The rows may group by a column that sorts and has a text form, with
     /// Subtotals before or after, pivot by it (the columns grouped by it),
-    /// and slice by any column as they filter by it.
+    /// and slice by any column as they filter by it. On a pivot the other
+    /// axis's Summary Items (a pivot column, the Grand Total row) sort and
+    /// compare by their figures, and nothing else.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
+        if self.pivot() && key.0 & SUMMARY_KEY_BIT != 0 {
+            return (Support::default().with_text(None).with_one_of(false))
+                .with_compare(Some(Compared::Numbers));
+        }
         let support = self.source.support(axis, key);
         let group = axis == Axis::Rows && support.sort && support.text.is_some();
         let subtotals = match group {
@@ -881,9 +980,12 @@ impl<R> GroupedMemory<R> {
         let slicers = grouping.as_ref().map_or(&[][..], |g| &g.slicers);
         // The base rows take the conditions on the Leaves, then the slicers;
         // the comparisons on a value's field wait for the figures.
+        // On a pivot, a sort term or a condition may name an item of the
+        // other axis, a path Key: the layer's to apply, never the base's.
+        let named = |key: Key| pivot && key.0 & SUMMARY_KEY_BIT != 0;
         let conditions = spec.rows.filter.conditions.conditions();
         let (later, leaves): (Vec<&Condition>, Vec<&Condition>) =
-            conditions.iter().partition(|c| having(c, values).is_some());
+            (conditions.iter()).partition(|c| having(c, values).is_some() || named(c.key));
         let mut base = spec.clone();
         base.grouping = None;
         base.rows.filter.conditions =
@@ -902,7 +1004,9 @@ impl<R> GroupedMemory<R> {
                 None => SortColumn::ascending(f),
             })
             .collect();
-        sort.extend((spec.rows.sort.columns().iter()).filter(|c| !levels.contains(&c.key)));
+        sort.extend(
+            (spec.rows.sort.columns().iter()).filter(|c| !levels.contains(&c.key) && !named(c.key)),
+        );
         base.rows.sort = SortSpec::new(sort);
 
         let was_grouped = self.layer.grouped(Axis::Rows);
@@ -913,7 +1017,7 @@ impl<R> GroupedMemory<R> {
         let base_sort = applied.rows.sort.clone();
         applied.rows.sort = SortSpec::new(
             (spec.rows.sort.columns().iter())
-                .filter(|c| base_sort.find(c.key).is_some())
+                .filter(|c| base_sort.find(c.key).is_some() || named(c.key))
                 .copied()
                 .collect(),
         );
@@ -943,7 +1047,7 @@ impl<R> GroupedMemory<R> {
             })
             .filter(|g| !levels.is_empty() || pivot || !g.slicers.is_empty());
         if pivot {
-            let sorts = |c: &&SortColumn| columns.contains(&c.key) || c.key == GRAND_TOTAL;
+            let sorts = |c: &&SortColumn| columns.contains(&c.key) || named(c.key);
             applied.cols = AxisView::default();
             applied.cols.sort = SortSpec::new(
                 spec.cols
@@ -954,6 +1058,9 @@ impl<R> GroupedMemory<R> {
                     .copied()
                     .collect(),
             );
+            let rows = (spec.cols.filter.conditions.conditions().iter())
+                .filter(|c| named(c.key) && matches!(c.kind, ConditionKind::Compare(_)));
+            applied.cols.filter.conditions = ConditionTree::All(rows.cloned().collect());
         }
         let scope_before = self.layer.grouped(Axis::Rows);
         self.layer.request_view(applied.clone());
@@ -968,6 +1075,11 @@ impl<R> GroupedMemory<R> {
             // The layer prunes `expand` as the levels change.
             if applied.grouping.is_some() {
                 applied.grouping = viewed.applied.grouping;
+            }
+            // And on a pivot leaves out what names an item not there now.
+            if pivot {
+                applied.rows = viewed.applied.rows;
+                applied.cols = viewed.applied.cols;
             }
         }
         let now = Axis::ALL.map(|a| self.layer.grouped(a));
@@ -1424,6 +1536,13 @@ impl<R> GroupedMemory<R> {
         }
     }
 
+    /// Whether `key` may still name an item of `axis`, as
+    /// [`GroupingLayer::fits`] says: a Leaf's always, a Summary Item's or a
+    /// pivot column's while its path fits the axis's levels.
+    pub fn fits(&self, axis: Axis, key: Key) -> bool {
+        self.layer.fits(axis, key)
+    }
+
     /// Whether the table is a pivot now.
     pub fn pivot(&self) -> bool {
         self.layer.pivot()
@@ -1510,6 +1629,10 @@ impl<R> PumpSource for Over<'_, R> {
 
     fn ancestors(&mut self, axis: Axis, key: Key) -> Vec<Key> {
         self.source.ancestors(axis, key)
+    }
+
+    fn fits(&mut self, axis: Axis, key: Key) -> bool {
+        self.source.fits(axis, key)
     }
 
     fn find_support(&mut self) -> Option<TextSupport> {

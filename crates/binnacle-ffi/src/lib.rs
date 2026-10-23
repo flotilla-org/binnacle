@@ -24,7 +24,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 16;
+pub const BINNACLE_ABI_VERSION: u32 = 17;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -264,6 +264,9 @@ pub struct BinnacleGrid {
     /// The last Snapshot's conditions per axis, with their states.
     listed: [CConditions; 2],
     listed_states: [Vec<BinnacleListedCondition>; 2],
+    listed_sorts: [Vec<BinnacleListedSort>; 2],
+    /// The Keys the last `binnacle_grid_held_keys` listed.
+    held: Vec<u64>,
     /// The last Snapshot's slicers, levels per axis and values, with their
     /// states, and the aggregates each header's item offers.
     listed_slicers: (CConditions, Vec<BinnacleListedCondition>),
@@ -901,6 +904,8 @@ pub struct BinnacleAxisSnapshot {
     pub corner_levels: *const BinnacleCornerLevel,
     pub corner_levels_len: usize,
     pub band_focused: u32,
+    pub sorts: *const BinnacleListedSort,
+    pub sorts_len: usize,
 }
 
 #[repr(C)]
@@ -1068,6 +1073,13 @@ impl Default for BinnacleCondition {
             high: BinnacleScalar::default(),
         }
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleListedSort {
+    pub state: u32,
+    pub column: BinnacleSortColumn,
 }
 
 #[repr(C)]
@@ -2129,6 +2141,8 @@ pub extern "C" fn binnacle_grid_new(
         hidden_listed: Default::default(),
         listed: Default::default(),
         listed_states: Default::default(),
+        listed_sorts: Default::default(),
+        held: Vec::new(),
         listed_slicers: Default::default(),
         listed_levels: Default::default(),
         listed_values: Default::default(),
@@ -2349,6 +2363,53 @@ pub unsafe extern "C" fn binnacle_grid_pin(
         with_handle(grid, |h| {
             let edge = edge(edge_tag)?;
             axis(axis_tag).map(|axis| h.grid.pin(axis, edge, Key(key)))
+        })
+    }
+}
+
+/// Lists into `keys` and `len` every Key of `axis` the Grid keeps state on
+/// apart from its Windows; valid until the next call on `grid`.
+///
+/// # Safety
+/// `grid` is NULL or a live handle; `keys` and `len` are NULL or valid for
+/// a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_held_keys(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    keys: *mut *const u64,
+    len: *mut usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let axis = axis(axis_tag)?;
+            h.held = h.grid.held_keys(axis).iter().map(|k| k.0).collect();
+            write_out(keys, h.held.as_ptr())?;
+            write_out(len, h.held.len())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `keys` is valid for `len` reads (or NULL
+/// with `len` 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_forget(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    keys: *const u64,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let keys: Vec<Key> = unsafe { borrowed(keys, len) }
+        .iter()
+        .map(|&k| Key(k))
+        .collect();
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.forget(axis, &keys))
         })
     }
 }
@@ -2673,6 +2734,16 @@ impl BinnacleGrid {
             let hidden = &mut self.hidden_listed[axis.index()];
             hidden.clear();
             hidden.extend(snap.hidden(axis).iter().map(|k| k.0));
+            let sorts = &mut self.listed_sorts[axis.index()];
+            sorts.clear();
+            sorts.extend(
+                snap.sorts(axis)
+                    .iter()
+                    .map(|(c, state)| BinnacleListedSort {
+                        state: state_tag(*state),
+                        column: c.into(),
+                    }),
+            );
             let listed = snap.conditions(axis);
             let c = &mut self.listed[axis.index()];
             c.fill(listed.iter().map(|(c, _)| c));
@@ -2823,6 +2894,7 @@ impl BinnacleGrid {
             let spans = &self.spans[axis.index()];
             let corner_tiers = &self.corner_tiers[axis.index()];
             let corner_levels = &self.corner_levels[axis.index()];
+            let sorts = &self.listed_sorts[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -2879,6 +2951,8 @@ impl BinnacleGrid {
                 corner_levels: corner_levels.as_ptr(),
                 corner_levels_len: corner_levels.len(),
                 band_focused: flag(snap.band_focused(axis)),
+                sorts: sorts.as_ptr(),
+                sorts_len: sorts.len(),
                 selection_runs: runs.as_ptr(),
                 selection_runs_len: runs.len(),
             }

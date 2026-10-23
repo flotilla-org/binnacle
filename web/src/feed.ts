@@ -508,10 +508,25 @@ export function createFeed<RowId, ColId, V>(
     }
   };
 
+  /** Forgets the Grid's state on the Keys whose paths no longer fit the levels, as the Table Source says. */
+  const forgetRetired = () => {
+    for (const axis of AXES) {
+      const a = axes[axis];
+      const fits = a.source.fits;
+      if (!grid || !fits) continue;
+      const gone = Array.from(grid.held_keys(AXIS_CODE[axis])).filter((key) => {
+        const id = a.interner.id(key);
+        return id !== undefined && !fits.call(a.source, id);
+      });
+      if (gone.length) grid.forget(AXIS_CODE[axis], BigUint64Array.from(gone));
+    }
+  };
+
   const viewApplied = (spec: KeyedViewSpec, now: Totals = {}) => {
     applied = spec;
     totals = now;
     grid?.view_applied(spec, now.rows ?? NaN, now.cols ?? NaN);
+    forgetRetired();
     for (const axis of AXES) reflag(axis);
     remark(true);
     markMovable();
@@ -560,6 +575,7 @@ export function createFeed<RowId, ColId, V>(
     applied = viewKeys(view);
     totals = view.totals ?? totals;
     grid?.view_changed(applied, totals.rows ?? NaN, totals.cols ?? NaN);
+    forgetRetired();
     if (view.error !== undefined) viewError = view.error;
     remark(true);
     markMovable();

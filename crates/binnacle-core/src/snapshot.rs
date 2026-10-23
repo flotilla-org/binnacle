@@ -5,7 +5,7 @@ use crate::gesture::Mode;
 use crate::grid::Grid;
 use crate::grouping::{Aggregate, AggregateValue, Level, Outline};
 use crate::selection::CellRange;
-use crate::sort::HeaderSort;
+use crate::sort::{HeaderSort, SortColumn};
 use crate::span::{HeaderSpan, band_rect};
 use std::ops::Range;
 
@@ -604,6 +604,13 @@ impl<'a> Snapshot<'a> {
     /// removed.
     pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
         self.grid.view.conditions(axis)
+    }
+
+    /// The sort terms of `axis`, listed as [`Snapshot::conditions`] are: a
+    /// term the Table Source left out shows not applied (on a Pivot, one
+    /// naming an item the data lacks for now).
+    pub fn sorts(&self, axis: Axis) -> Vec<(SortColumn, ConditionState)> {
+        self.grid.view.sorts(axis)
     }
 
     /// The slicers, as their chips list them: the latest request's, each

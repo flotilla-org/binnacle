@@ -32,6 +32,7 @@ import {
   type KeyedTextQuery,
   type Rect,
   type Snapshot,
+  type SortDirection,
   type Span,
 } from "./snapshot";
 import type {
@@ -219,6 +220,12 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
    * being removed. Pending ones (`adding`, `removing`) are not applied yet.
    */
   conditions: { condition: Condition<ColId>; state: ConditionState }[];
+  /**
+   * The rows' sort terms, listed as `conditions` is: on a pivot, a term on a
+   * pivot column the data lacks for now stays asked for, `notApplied`, and
+   * applies again when the column returns.
+   */
+  sorts: { sort: { id: ColId; direction: SortDirection }; state: ConditionState }[];
   /** The grouping as asked for, each part where it stands, listed as `conditions` is. */
   grouping: GroupingInfo<ColId>;
   /** The column headers in view, by the Table Source's IDs: how each is filtered, and what it supports. */
@@ -1171,12 +1178,16 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return this.feed.rowSupport(rowId);
   }
 
-  /** A row's header text: the source's `rows.label` (given the row's Position if in view, else NaN), else its Position + 1, else its ID. */
+  /** A row's header text: the source's `rows.label` (given the row's Position if in view, else NaN), else a Summary Item's group, else its Position + 1, else its ID. */
   rowLabel(rowId: RowId): string {
     const key = this.feed.rowKey(rowId);
-    const position = this.last?.rows.strip.find((i) => i.key === key)?.position ?? Number.NaN;
+    const item = this.last?.rows.strip.find((i) => i.key === key);
+    const position = item?.position ?? Number.NaN;
     const label = this.options.source.rows.label?.(rowId, position);
-    return label ?? (Number.isNaN(position) ? String(rowId) : String(position + 1));
+    if (label !== undefined) return label;
+    // A Summary Item by its group, without its count: "Grand total" (a pivot's columns filter by one).
+    if (item?.outline && item.outline.kind !== "leaf") return summaryLabel(item.outline);
+    return Number.isNaN(position) ? String(rowId) : String(position + 1);
   }
 
   /** A column's header text: the source's `cols.label` (given the column's Position if in view, else NaN), else its ID. */
@@ -1747,6 +1758,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       conditions: snapshot.rows.conditions.flatMap(({ condition, state }) => {
         const c = this.feed.conditionId(condition);
         return c ? [{ condition: c, state }] : [];
+      }),
+      sorts: snapshot.rows.sorts.flatMap(({ column, state }) => {
+        const id = this.feed.colId(column.key);
+        return id === undefined ? [] : [{ sort: { id, direction: column.direction }, state }];
       }),
       grouping: this.groupingInfo(snapshot),
       columns: visible(snapshot.cols).flatMap((item) => {

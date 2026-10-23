@@ -68,6 +68,9 @@ enum Op {
     Pin(Axis, Edge, u64),
     SetPins(Axis, Edge, Vec<u64>),
     Unpin(Axis, u64),
+    /// Lists the Keys held on the axis, then forgets these, or every one
+    /// held.
+    Forget(Axis, Vec<u64>, bool),
     Freeze(Axis, u64),
     /// A press `inset` inside the end of the band leading the axis (where its
     /// edge is, given a Gap), halfway across the other band as of the last
@@ -682,7 +685,7 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(40)) {
+    match tc.draw(gs::integers::<u8>().max_value(41)) {
         38 => {
             let axis = tc.draw(axes());
             // Mostly a field the groupings use, sometimes any column.
@@ -702,6 +705,15 @@ fn op(tc: &TestCase) -> Op {
                 true => Op::AddValue(value, tc.draw(gs::booleans())),
                 false => Op::RemoveValue(value),
             }
+        }
+        40 => {
+            let axis = tc.draw(axes());
+            let keys = tc.draw(gs::vecs(key(axis)).max_size(3));
+            Op::Forget(
+                axis,
+                keys.iter().map(|k| k.0).collect(),
+                tc.draw(gs::booleans()),
+            )
         }
         37 => {
             let axis = tc.draw(axes());
@@ -873,7 +885,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(97))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(99))),
     }
 }
 
@@ -1168,6 +1180,11 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             88 => binnacle_grid_set_form(h, ROWS, 2),
             89 => binnacle_grid_cycle_sort(h, 2, 0, 0),
             90 => binnacle_grid_cycle_sort(h, ROWS, 0, 2),
+            98 => binnacle_grid_forget(h, 2, std::ptr::null(), 0),
+            99 => {
+                let (mut keys, mut len) = (std::ptr::null(), 0usize);
+                binnacle_grid_held_keys(h, 2, &mut keys, &mut len)
+            }
             61..=64 | 91 => {
                 let mut bad = BinnacleOutline::default();
                 match which {
@@ -1438,6 +1455,22 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             .map(|l| (level_from_c(&l.level), state_from_c(l.state)))
             .collect();
         assert_eq!(got, rust.levels(axis), "{axis:?} levels");
+        let listed = unsafe { c_slice(a.sorts, a.sorts_len) };
+        let got: Vec<(SortColumn, ConditionState)> = listed
+            .iter()
+            .map(|l| {
+                let direction = match l.column.direction {
+                    BINNACLE_SORT_ASCENDING => SortDirection::Ascending,
+                    _ => SortDirection::Descending,
+                };
+                let column = SortColumn {
+                    key: Key(l.column.key),
+                    direction,
+                };
+                (column, state_from_c(l.state))
+            })
+            .collect();
+        assert_eq!(got, rust.sorts(axis), "{axis:?} sorts");
         let picked = unsafe { slice::from_raw_parts(a.picked, a.picked_len) };
         let keys: Vec<u64> = rust.picked(axis).iter().map(|k| k.0).collect();
         assert_eq!(picked, keys, "{axis:?} picks");
@@ -2887,6 +2920,20 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.unpin(axis, Key(key));
                     binnacle_grid_unpin(h, tag(axis), key)
                 }
+                Op::Forget(axis, keys, all) => {
+                    let (mut held, mut len) = (std::ptr::null(), 0usize);
+                    assert_eq!(
+                        binnacle_grid_held_keys(h, tag(axis), &mut held, &mut len),
+                        1
+                    );
+                    let held = slice::from_raw_parts(held, len).to_vec();
+                    let want: Vec<u64> = grid.held_keys(axis).iter().map(|k| k.0).collect();
+                    assert_eq!(held, want, "{axis:?} held Keys");
+                    let keys = if all { held } else { keys };
+                    let rust: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+                    grid.forget(axis, &rust);
+                    binnacle_grid_forget(h, tag(axis), keys.as_ptr(), keys.len())
+                }
                 Op::BandDrag {
                     axis,
                     inset,
@@ -3928,8 +3975,11 @@ unsafe fn batch_from_c(b: &BinnacleGroupBatch) -> binnacle_group::Batch {
         filter,
         hidden,
         sort,
+        // No pivot over C: nothing crosses.
         columns: Vec::new(),
         col_sort: SortSpec::default(),
+        col_filter: FilterSpec::default(),
+        path_keys: Vec::new(),
     };
     let requests = unsafe { c_slice(b.requests, b.requests_len) }
         .iter()
@@ -4448,6 +4498,18 @@ fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
             assert_eq!((got == 1).then_some(n), layer.count(axis), "{axis:?} count");
             let grouped = unsafe { binnacle_group_layer_grouped(h, tag(axis)) };
             assert_eq!(grouped, i32::from(layer.grouped(axis)));
+            // The first Summary Keys the layer issues, and Leaf Keys.
+            let keys = (0..12)
+                .map(|n| n | binnacle_group::SUMMARY_KEY_BIT)
+                .chain(0..3);
+            for key in keys {
+                let fits = unsafe { binnacle_group_layer_fits(h, tag(axis), key) };
+                assert_eq!(
+                    fits,
+                    i32::from(layer.fits(axis, Key(key))),
+                    "{axis:?} fits {key}"
+                );
+            }
         }
         assert_eq!(unsafe { binnacle_group_layer_held(h) }, layer.held());
     }
