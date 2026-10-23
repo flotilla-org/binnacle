@@ -138,7 +138,10 @@ export interface GroupedAxis<ItemId = unknown> {
 /**
  * The whole-table grouping part of a View Spec, naming the Table Source's
  * base fields (its items before any pivot; for a plain records table, the
- * column IDs). No column levels: no pivot, and the Leaves stay.
+ * column IDs). No column levels: no pivot, and the Leaves stay. With column
+ * levels, or the values pseudo-level on the rows, it is a pivot: both axes
+ * come from the data, each axis's innermost groups its items, and the
+ * columns' Change Notices are `Refiltered` (or `Reset`).
  */
 export interface Grouping<FieldId, RowId = unknown, ColId = unknown> {
   rowLevels: Level<FieldId>[];
@@ -186,18 +189,20 @@ export type ItemKind = "leaf" | "group" | "subtotal" | "grandTotal";
  * can't), the IDs of its ancestor Group Items from the outermost down to its
  * parent (`depth` of them), on Group Items and Subtotals their level's
  * field and the group's value, and if the source knows it the item's place
- * among its siblings (see `SetPosition`).
+ * among its siblings (see `SetPosition`). A group of the values
+ * pseudo-level has the field `null` and the value's name as its value; so
+ * does a pivot's Grand Total split by value, one per value.
  */
 export interface Outline<Id, FieldId> {
   kind: ItemKind;
   depth: number;
   open: "open" | "closed" | "cantOpen";
   ancestors: Id[];
-  group?: { field: FieldId; value: ListedValue } | null;
+  group?: { field: FieldId | null; value: ListedValue } | null;
   /** On a Group Item, how many items are shown under it (its Subtotal included; 0 while closed): a click on its header selects them all. */
   span?: number;
   /** The group of each of `ancestors`, outermost first, from which an activated Summary Item's drill-down is built. */
-  path?: { field: FieldId; value: ListedValue }[];
+  path?: { field: FieldId | null; value: ListedValue }[];
   set?: SetPosition | null;
 }
 
@@ -213,10 +218,10 @@ export interface SetPosition {
   size: number;
 }
 
-/** A Window of a grouped axis: its IDs, and each one's outline. */
-export interface OutlinedWindow<Id, CrossId> {
+/** A Window of a grouped axis: its IDs, and each one's outline, naming base fields (column IDs). */
+export interface OutlinedWindow<Id, FieldId> {
   ids: Id[];
-  outlines: Outline<Id, CrossId>[];
+  outlines: Outline<Id, FieldId>[];
 }
 
 /**
@@ -489,13 +494,18 @@ export interface TableSink<RowId, ColId> {
   findCounted(query: FindQuery<ColId>, count: FindCount): void;
 }
 
-export interface AxisMethods<Id, CrossId> {
+/**
+ * One axis's methods: `CrossId` names the other axis's items, `FieldId` the
+ * base fields its outlines name (column IDs on both axes, for a records
+ * table).
+ */
+export interface AxisMethods<Id, CrossId, FieldId = CrossId> {
   count(): MaybePromise<number>;
   /**
    * The IDs at Positions `start..end` (fewer past the end), with their
    * outlines while the axis is grouped.
    */
-  window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[] | OutlinedWindow<Id, CrossId>>;
+  window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[] | OutlinedWindow<Id, FieldId>>;
   /** How this axis may be viewed by `by`; asked as `by` comes into view. */
   support?(by: CrossId): Support;
   /** Set if this axis takes a quick filter (the source must also have `view`). */
@@ -545,7 +555,7 @@ export interface AxisMethods<Id, CrossId> {
    * Header text for a Summary Item of a grouped axis, drawn after its
    * indent and disclosure mark; defaults to `summaryLabel`.
    */
-  groupLabel?(id: Id, outline: Outline<Id, CrossId>): string;
+  groupLabel?(id: Id, outline: Outline<Id, FieldId>): string;
   /**
    * Header text for a group drawn in header form, as one spanning cell in
    * level column `tier` (0 outermost); `id` is its Group Item's ID, though
@@ -568,12 +578,12 @@ export interface AxisMethods<Id, CrossId> {
  * (tuples, paths, objects) must come with `idKey`, their canonical primitive
  * form, so that equal IDs match by value rather than by reference.
  */
-export type AxisSource<Id, CrossId> = AxisMethods<Id, CrossId> &
+export type AxisSource<Id, CrossId, FieldId = CrossId> = AxisMethods<Id, CrossId, FieldId> &
   ([Id] extends [Primitive] ? { idKey?: (id: Id) => Primitive } : { idKey: (id: Id) => Primitive });
 
 export interface TableSource<RowId, ColId, V = unknown> {
   rows: AxisSource<RowId, ColId>;
-  cols: AxisSource<ColId, RowId>;
+  cols: AxisSource<ColId, RowId, ColId>;
   /**
    * Presents the table as `spec` asks and returns the View Spec now in force:
    * the request, the part of it applied, or the old one to reject it, with

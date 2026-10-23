@@ -368,11 +368,7 @@ impl Fake {
                     }
                     false => rows.len(),
                 };
-                GroupRow {
-                    value,
-                    children: children as u64,
-                    aggregates: aggregates(&rows),
-                }
+                GroupRow::new(value, children as u64, aggregates(&rows))
             })
             .collect()
     }
@@ -440,6 +436,7 @@ impl Fake {
                     });
                     continue;
                 }
+                Want::Columns => unreachable!("no pivot here"),
                 Want::Locate(key) => {
                     let row = self.rows.iter().find(|r| r.0 == key);
                     let (path, start) = match row {

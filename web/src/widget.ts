@@ -343,6 +343,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private tierWidths: number[] = [];
   /** How many level columns the row band was last widened for; 0 out of header form. */
   private fittedTiers = 0;
+  /** The column levels the column band was last given rows for, as `fitColumnTiers` names them; empty out of header form. */
+  private fittedColumnTiers = "";
   private last: Snapshot | null = null;
   private readonly selectionEvents: (s: Snapshot) => void;
   private readonly cleanup: (() => void)[] = [];
@@ -458,7 +460,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       onEffect: (e) => this.dispatch(e),
       settle: (s) => {
         const content = this.feed.content(s);
-        const band = this.fitBand(s, content) || this.fitTiers(s, content);
+        const band = this.fitBand(s, content) || this.fitTiers(s, content) || this.fitColumnTiers(s);
         return (this.sizes?.settle(s, content) ?? false) || band;
       },
     };
@@ -1281,6 +1283,28 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     width = Math.ceil(width + 2 * PAD + filters);
     if (width <= s.cols.header) return false;
     this.grid.set_header(AXIS_CODE.cols, width);
+    return true;
+  }
+
+  /**
+   * Gives the column band a row per level of grouped columns in header form
+   * (a pivot's), each as high as a plain band, and a row for the columns'
+   * own headers, once each time those levels change; returns whether it
+   * did. A pivot's innermost groups are its columns, so the innermost
+   * level's tier is theirs: kept a row, so the corner names it, unless it
+   * is the values pseudo-level, which the corner names on its top row.
+   */
+  private fitColumnTiers(s: Snapshot): boolean {
+    const n = s.cols.tiers.length;
+    const innermost = s.appliedView.grouping?.colLevels.at(-1);
+    const values = innermost !== undefined && "values" in innermost;
+    const fitted = n === 0 ? "" : `${n} ${values}`;
+    if (fitted === this.fittedColumnTiers) return false;
+    this.fittedColumnTiers = fitted;
+    const line = this.options.headerHeight ?? HEADER_HEIGHT;
+    const sizes = Array.from({ length: n }, (_, i) => (values && i === n - 1 ? 0 : line));
+    this.grid.set_tiers(AXIS_CODE.cols, Float32Array.from(sizes));
+    this.grid.set_header(AXIS_CODE.rows, sizes.reduce((a, b) => a + b, line));
     return true;
   }
 

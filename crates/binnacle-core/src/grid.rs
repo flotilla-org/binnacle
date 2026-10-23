@@ -7,7 +7,7 @@ use crate::effect::{Action, Effect, FocusStep, Stamped};
 use crate::find::{FindDirection, FindState};
 use crate::focus::{self, FocusEnd, Move};
 use crate::gesture::Gesture;
-use crate::grouping::Outline;
+use crate::grouping::{ItemKind, Outline};
 use crate::measure::{AxisMeasure, WindowChange};
 use crate::moves::MoveState;
 use crate::notice::Locating;
@@ -332,7 +332,30 @@ impl Grid {
             }
         }
         self.pending_damage.positions = true;
+        self.pin_totals(axis, start, outlines);
         self.keep_expanding(axis);
+    }
+
+    /// Pins at the trailing edge each Grand Total item among `outlines`
+    /// (from `start`) not pinned by default yet, while the axis's Grand
+    /// Total is placed after: one per value, which the Grid knows only by
+    /// the Window.
+    fn pin_totals(&mut self, axis: Axis, start: Position, outlines: &[Outline]) {
+        let after =
+            (self.view.applied.grouping.as_ref()).is_some_and(|g| g.grand_total_after(axis));
+        if !after {
+            return;
+        }
+        let st = self.axis(axis);
+        let keys: Vec<Key> = (outlines.iter().enumerate())
+            .filter(|(_, o)| o.kind == ItemKind::GrandTotal)
+            .filter_map(|(i, _)| st.measure.key_at(start.checked_add(i as u64)?))
+            .filter(|k| !self.view.totals_pinned[axis.index()].contains(k))
+            .collect();
+        for key in keys {
+            self.view.totals_pinned[axis.index()].push(key);
+            self.pin_before(axis, Edge::Trailing, &[key], None);
+        }
     }
 
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {

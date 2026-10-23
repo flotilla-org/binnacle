@@ -12,7 +12,7 @@ use binnacle_core::{
     HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline,
     PinZone, Placement, Placements, PointerEvent, PointerKind, Scalar, Searched, SelectionUnit,
     SetPosition, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport,
-    Totals, Value, ViewEdit, ViewSpec, Viewport,
+    Totals, VALUES_FIELD, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -451,7 +451,11 @@ fn outline(tc: &TestCase, axis: Axis) -> Outline {
         OpenState::CantOpen,
     ]));
     outline.group = tc.draw(gs::booleans()).then(|| GroupOf {
-        field: tc.draw(key(axis.other())),
+        // Now and then a group of the values pseudo-level.
+        field: match tc.draw(gs::weighted_booleans(0.2)) {
+            true => VALUES_FIELD,
+            false => tc.draw(key(axis.other())),
+        },
         value: tc.draw(value()),
     });
     let path = tc.draw(gs::vecs(hegel::tuples!(key(axis.other()), value())).max_size(3));
@@ -3748,6 +3752,8 @@ unsafe fn batch_from_c(b: &BinnacleGroupBatch) -> binnacle_group::Batch {
         filter,
         hidden,
         sort,
+        columns: Vec::new(),
+        col_sort: SortSpec::default(),
     };
     let requests = unsafe { c_slice(b.requests, b.requests_len) }
         .iter()
@@ -3854,6 +3860,7 @@ fn with_c_answer<T>(
             c.figures = total.as_ptr();
             c.figures_len = total.len();
         }
+        Body::Columns { .. } => unreachable!("the C wire has no pivot"),
     }
     f(&c)
 }
@@ -3942,6 +3949,7 @@ impl LayerFake {
                             value: v.clone(),
                             children,
                             aggregates: Self::figures(scope, &inner),
+                            cells: Vec::new(),
                         }
                     })
                     .collect();
@@ -3972,6 +3980,7 @@ impl LayerFake {
                 }
                 Body::Located { key, found }
             }
+            Want::Columns => unreachable!("the C wire has no pivot"),
         };
         answer
     }
@@ -4088,11 +4097,18 @@ fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
         };
         match &op {
             LayerOp::View(spec) => {
+                // The C layer does not pivot: it drops the column levels and
+                // the values pseudo-level.
+                let mut dropped = (**spec).clone();
+                if let Some(g) = dropped.grouping.as_mut() {
+                    g.col_levels.clear();
+                    g.row_levels.retain(|l| *l != Level::Values);
+                }
                 with_c_view(spec, |c| {
                     assert_eq!(unsafe { binnacle_group_layer_request_view(h, c) }, 1);
-                    layer.request_view((**spec).clone());
+                    layer.request_view(dropped.clone());
                 });
-                current = (**spec).clone();
+                current = dropped;
             }
             LayerOp::Toggle(i) => {
                 let (Some(&key), Some(grouping)) = (shown.get(*i), current.grouping.as_mut())
@@ -4361,4 +4377,9 @@ fn header_form_through_the_c_api_mirrors_the_grid() {
     );
     unsafe { check_effects(h, &mut grid) };
     unsafe { binnacle_grid_free(h) };
+}
+
+#[test]
+fn the_values_pseudo_levels_field_is_the_cores() {
+    assert_eq!(binnacle_ffi::BINNACLE_VALUES_FIELD, VALUES_FIELD.0);
 }

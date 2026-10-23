@@ -47,8 +47,9 @@ export const PAD = 6;
 /** The Theme role a Summary Item's row is drawn in; `null` for a Leaf or a plain row. */
 export function summaryStyle(theme: Theme, outline: KeyedOutline | null): Style | null {
   switch (outline?.kind) {
+    // A group that can't open, a pivot's innermost, is an item of its own.
     case "group":
-      return theme.groupItem;
+      return outline.open === "cantOpen" ? null : theme.groupItem;
     case "subtotal":
       return theme.subtotal;
     case "grandTotal":

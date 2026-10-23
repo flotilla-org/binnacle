@@ -559,7 +559,7 @@ fn partial(rows: usize) -> GroupedMemory<Record> {
 fn the_source_declares_what_it_groups_and_aggregates_per_column() {
     let source = partial(1);
     let support = source.support(Axis::Rows, Key(0));
-    assert!(support.group && !support.pivot && !support.native);
+    assert!(support.group && support.pivot && !support.native);
     assert_eq!(support.subtotals, Placements::BOTH);
     assert!(!source.support(Axis::Rows, Key(1)).group);
     assert_eq!(source.aggregates(Axis::Rows, Key(0)), Aggregate::numbers());
@@ -588,7 +588,7 @@ fn a_grouping_beyond_support_is_applied_as_far_as_it_can_be() {
             subtotal: Placement::Before,
         },
     ];
-    asked.col_levels = vec![Level::field(Key(2))];
+    asked.col_levels = vec![Level::field(Key(1))];
     let sum = |c| AggregateValue::of(Key(c), "sum");
     asked.values = vec![
         AggregateValue::count(),
@@ -942,4 +942,153 @@ fn a_leaf_moves_within_its_group_and_nowhere_else(tc: TestCase) {
             .map(|_| ()),
         Err("Group rows and totals can't be moved".to_string())
     );
+}
+
+/// A value's place among ascending values as the pivot orders column
+/// groups: numbers ascending, blanks last.
+fn ascending(a: &Option<i64>, b: &Option<i64>) -> Ordering {
+    order(*a, *b, SortDirection::Ascending)
+}
+
+#[hegel::test(test_cases = 200)]
+fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
+    let rows = tc.draw(gs::vecs(record()).max_size(60));
+    let cols = tc.draw(gs::permutations(vec![0usize, 1, 2]));
+    let (r, c, summed) = (cols[0], cols[1], cols[2]);
+    // Columns unsorted, or by the Grand Total row's count or by their own
+    // value, either way.
+    let direction = gs::sampled_from(vec![SortDirection::Ascending, SortDirection::Descending]);
+    let col_sort = tc.draw(gs::optional(hegel::tuples!(
+        gs::sampled_from(vec![binnacle_core::GRAND_TOTAL, Key(c as u64)]),
+        direction
+    )));
+    let placement = || gs::sampled_from(vec![Placement::Before, Placement::After, Placement::Off]);
+    let (row_total, col_total) = (tc.draw(placement()), tc.draw(placement()));
+    let mut source = source(rows.len());
+    source.view(&rows, &ViewSpec::default());
+    let mut grouping = Grouping::rows_by(Key(r as u64));
+    grouping.col_levels = vec![Level::field(Key(c as u64))];
+    grouping.values = vec![
+        AggregateValue::count(),
+        AggregateValue::of(Key(summed as u64), "sum"),
+    ];
+    grouping.rows.grand_total = row_total;
+    grouping.cols.grand_total = col_total;
+    let mut spec = ViewSpec::default().with_grouping(Some(grouping));
+    if let Some((key, direction)) = col_sort {
+        spec.cols.sort = SortSpec::new(vec![SortColumn { key, direction }]);
+    }
+    let viewed = source.view(&rows, &spec);
+    assert!(source.pivot());
+    assert_eq!(viewed.applied.cols.sort, spec.cols.sort);
+
+    let distinct = |i: usize| {
+        let mut v: Vec<Option<i64>> = rows.iter().map(|x| x[i]).collect();
+        v.sort_by(ascending);
+        v.dedup();
+        v
+    };
+    let count_of = |cv: &Option<i64>| rows.iter().filter(|x| x[c] == *cv).count();
+    let mut col_values = distinct(c);
+    match col_sort {
+        Some((binnacle_core::GRAND_TOTAL, d)) => {
+            col_values.sort_by(|a, b| order(Some(count_of(a)), Some(count_of(b)), d));
+        }
+        Some((_, d)) => col_values.sort_by(|a, b| order(*a, *b, d)),
+        None => {}
+    }
+    /// Where a Grand Total placed `at` goes among `items`.
+    fn placed<T>(items: Vec<T>, totals: Vec<T>, at: Placement) -> Vec<T> {
+        match at {
+            Placement::Before => totals.into_iter().chain(items).collect(),
+            Placement::After => items.into_iter().chain(totals).collect(),
+            Placement::Off => items,
+        }
+    }
+    // Each row's group value, `None` for the Grand Total.
+    let row_values = placed(
+        distinct(r).into_iter().map(Some).collect(),
+        vec![None],
+        row_total,
+    );
+    let ids = ["count()".to_string(), format!("sum({summed})")];
+
+    let ncols = source.count(Axis::Cols);
+    assert!(
+        viewed
+            .notices
+            .contains(&(Axis::Cols, ChangeNotice::Refiltered(ncols)))
+    );
+    let window = source.window(&rows, Axis::Cols, 0..ncols);
+    let outlines = window.outlines.expect("pivot columns have outlines");
+    // Each column as the value of its column group (`None` for an All
+    // column) and its value's identity.
+    let got: Vec<(Option<Value>, String)> = (window.keys.iter().zip(&outlines))
+        .map(|(_, o)| {
+            let group = o.group.as_ref().unwrap();
+            let Value::Text(id) = &group.value else {
+                panic!()
+            };
+            let up = o
+                .ancestors
+                .first()
+                .map(|&a| source.summary(a).unwrap().path[0].1.clone());
+            (up, id.clone())
+        })
+        .collect();
+    let want: Vec<(Option<Value>, String)> = placed(
+        (col_values.iter())
+            .flat_map(|v| ids.iter().map(move |id| (Some(text(*v)), id.clone())))
+            .collect(),
+        ids.iter().map(|id| (None, id.clone())).collect(),
+        col_total,
+    );
+    assert_eq!(got, want, "columns sorted {col_sort:?}");
+
+    let nrows = source.count(Axis::Rows);
+    assert_eq!(
+        nrows as usize,
+        row_values.len(),
+        "one row per group and the Grand Total where placed, no Leaves"
+    );
+    let row_window = source.window(&rows, Axis::Rows, 0..nrows);
+    let row_kinds: Vec<ItemKind> = row_window
+        .outlines
+        .unwrap()
+        .iter()
+        .map(|o| o.kind)
+        .collect();
+    let want_kinds: Vec<ItemKind> = (row_values.iter())
+        .map(|v| match v {
+            Some(_) => ItemKind::Group,
+            None => ItemKind::GrandTotal,
+        })
+        .collect();
+    assert_eq!(row_kinds, want_kinds);
+    for (rk, rv) in row_window.keys.iter().zip(&row_values) {
+        for ((ck, (cv, id)), _) in window.keys.iter().zip(&want).zip(&outlines) {
+            let under: Vec<&Record> = (rows.iter())
+                .filter(|x| {
+                    rv.is_none_or(|rv| x[r] == rv) && cv.as_ref().is_none_or(|cv| text(x[c]) == *cv)
+                })
+                .collect();
+            let figure = match id.as_str() {
+                "count()" => Figure::Count(under.len() as u64),
+                _ => {
+                    let sums: Vec<i64> = under.iter().filter_map(|x| x[summed]).collect();
+                    match sums.is_empty() {
+                        true => Figure::Blank,
+                        false => Figure::Number(sums.iter().sum::<i64>() as f64),
+                    }
+                }
+            };
+            // Groups that share no rows have no figure; a Grand Total always does.
+            let want = (!under.is_empty() || rv.is_none() || cv.is_none()).then_some(figure);
+            assert_eq!(
+                source.cell(*rk, *ck),
+                want,
+                "row {rv:?}, column {cv:?} {id}"
+            );
+        }
+    }
 }

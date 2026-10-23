@@ -739,6 +739,9 @@ pub(crate) struct ViewState {
     pub hide_caps: [Option<usize>; 2],
     /// The unfiltered counts from the last `view_applied`.
     pub totals: Totals,
+    /// Per axis, the Grand Total items pinned by default since its Grand
+    /// Total was last placed after: a user's unpin of one sticks.
+    pub totals_pinned: [Vec<Key>; 2],
 }
 
 impl ViewState {
@@ -1006,12 +1009,29 @@ impl Grid {
         let after = |spec: &ViewSpec, axis| {
             (spec.grouping.as_ref()).is_some_and(|g| g.grand_total_after(axis))
         };
+        // The one Grand Total, as opposed to one per value.
+        let single = |spec: &ViewSpec, axis| {
+            after(spec, axis) && !(spec.grouping.as_ref()).is_some_and(|g| g.splits_values(axis))
+        };
         for axis in Axis::ALL {
             // A Grand Total placed after is pinned when it comes, and the
             // pin goes with it; unpinned, it stays so while it stays after.
-            match (after(&self.view.applied, axis), after(&spec, axis)) {
-                (false, true) => self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None),
-                (true, false) => self.unpin(axis, GRAND_TOTAL),
+            // One per value is pinned as Windows bring it.
+            let i = axis.index();
+            if after(&self.view.applied, axis) && !after(&spec, axis) {
+                for key in std::mem::take(&mut self.view.totals_pinned[i]) {
+                    self.unpin(axis, key);
+                }
+            }
+            match (single(&self.view.applied, axis), single(&spec, axis)) {
+                (false, true) => {
+                    self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
+                    self.view.totals_pinned[i].push(GRAND_TOTAL);
+                }
+                (true, false) => {
+                    self.unpin(axis, GRAND_TOTAL);
+                    self.view.totals_pinned[i].retain(|&k| k != GRAND_TOTAL);
+                }
                 _ => {}
             }
         }

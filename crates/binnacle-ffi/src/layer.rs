@@ -4,7 +4,9 @@
 //! answers handed back. Every array a call fills points into buffers the
 //! [`BinnacleGroupLayer`] handle owns, one set per call.
 
-use binnacle_core::{Axis, AxisView, ChangeNotice, ItemKind, Key, Located, Outline, Totals, Value};
+use binnacle_core::{
+    Axis, AxisView, ChangeNotice, ItemKind, Key, Level, Located, Outline, Totals, Value,
+};
 use binnacle_group::{Answer, Batch, Body, GroupRow, GroupingLayer, Path, RequestId, Stamp, Want};
 
 use crate::{
@@ -419,6 +421,7 @@ impl BinnacleGroupAnswer {
                             children: g.children,
                             // SAFETY: the caller's contract.
                             aggregates: unsafe { figures_in(g.figures, g.figures_len) }?,
+                            cells: Vec::new(),
                         })
                     })
                     .collect::<Option<_>>()?;
@@ -482,22 +485,25 @@ impl BinnacleGroupLayer {
         self.requests.clear();
         let mut at = 0;
         for r in &batch.requests {
+            let path = self.batch_paths.at(at);
+            at += r.path.len();
             let (want, key) = match r.want {
                 Want::Groups => (BINNACLE_WANT_GROUPS, 0),
                 Want::Leaves => (BINNACLE_WANT_LEAVES, 0),
                 Want::Locate(key) => (BINNACLE_WANT_LOCATE, key.0),
                 Want::Total => (BINNACLE_WANT_TOTAL, 0),
+                // No pivot over C yet: request_view drops column levels.
+                Want::Columns => continue,
             };
             self.requests.push(BinnacleGroupRequest {
                 id: r.id.0,
-                path: self.batch_paths.at(at),
+                path,
                 path_len: r.path.len(),
                 want,
                 key,
                 start: r.range.start,
                 end: r.range.end,
             });
-            at += r.path.len();
         }
         BinnacleGroupBatch {
             stamp: batch.stamp.0,
@@ -633,7 +639,13 @@ pub unsafe extern "C" fn binnacle_group_layer_request_view(
     spec: *const BinnacleViewSpec,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let spec = unsafe { view_spec(spec) };
+    let mut spec = unsafe { view_spec(spec) };
+    // The C wire has no pivot yet, so the applied spec has no column levels
+    // and no values pseudo-level.
+    if let Some(g) = spec.as_mut().and_then(|s| s.grouping.as_mut()) {
+        g.col_levels.clear();
+        g.row_levels.retain(|l| *l != Level::Values);
+    }
     // SAFETY: the caller's contract.
     unsafe { with_layer(layer, |h| spec.map(|s| h.layer.request_view(s))) }
 }

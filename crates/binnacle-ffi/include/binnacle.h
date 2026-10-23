@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 13u
+#define BINNACLE_ABI_VERSION 14u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -354,8 +354,16 @@ uint32_t binnacle_abi_version(void);
 
 /* The Key of an axis's Grand Total, whoever groups it: a grouped Table
  * Source names its Grand Total so, and the Grid pins one placed after at
- * the trailing edge by default, before it is in a Window. */
+ * the trailing edge by default, before it is in a Window. Where the values
+ * pseudo-level is on the axis, its Grand Total is one item per value, each
+ * keyed by the source; the Grid pins each as a Window first brings it. */
 #define BINNACLE_GRAND_TOTAL_KEY 0x8000000000000000ull
+
+/* The field a group of the values pseudo-level names in its outline's group
+ * (BinnacleOutline.field), beside the value's identity as its text,
+ * such as "sum(3)": the aggregate, its field's Key and any parameters. A
+ * pivot's columns under the values pseudo-level are such groups. */
+#define BINNACLE_VALUES_FIELD 0xffffffffffffffffull
 
 /* BinnacleOutline.open: whether a Group Item is open. Other items, and Group
  * Items with nothing under them to show, can't open. */
@@ -1660,7 +1668,8 @@ BinnacleGroupLayer *binnacle_group_layer_new(uint32_t has_cache, uint64_t cache)
 void binnacle_group_layer_free(BinnacleGroupLayer *layer);
 
 /* Takes the View Spec asked for; NULL is the base view. 0 as for
- * binnacle_grid_view_applied. */
+ * binnacle_grid_view_applied. It does not pivot yet: it drops the column
+ * levels and the values pseudo-level, and the applied View Spec says so. */
 int binnacle_group_layer_request_view(BinnacleGroupLayer *layer, const BinnacleViewSpec *spec);
 
 /* Starts the grouped axes afresh under the same View Spec, after the data

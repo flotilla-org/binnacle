@@ -471,6 +471,7 @@ int main(void) {
   CHECK(binnacle_grid_view_changed(grid, &totalled, NULL));
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == BINNACLE_GRAND_TOTAL_KEY);
+  CHECK(BINNACLE_VALUES_FIELD != BINNACLE_GRAND_TOTAL_KEY);
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_PINS_CHANGED && effect.edge == BINNACLE_EDGE_TRAILING);
   CHECK(effect.keys_len == 1 && effect.keys[0] == BINNACLE_GRAND_TOTAL_KEY);

@@ -3,7 +3,9 @@
 // loading marker while its Key or value has not arrived, or the error marker
 // once the Table Source failed the request for it. Cells of an unmatched row
 // or column are dimmed under a wash. An open Group Item whose Subtotal is
-// placed draws no figures: they are the Subtotal's.
+// placed draws no figures: they are the Subtotal's. A Summary Item's column
+// (a pivot's All column) is tinted as its row would be, where no Summary
+// Item's row tints it.
 
 import type { Align, CellCanvas, CellStatus } from "../renderer";
 import { cellState, itemSpan } from "../snapshot";
@@ -20,6 +22,7 @@ export function paintBody(p: PaintContext): boolean {
   const pickedRows = new Set(s.picked.rows);
   const pickedCols = new Set(s.picked.cols);
   const cols = s.cols.strip;
+  const colRoles = cols.map((col) => summaryStyle(theme, col.outline));
   const levels = s.appliedView.grouping?.rowLevels ?? [];
   s.rows.strip.forEach((row, i) => {
     const level = row.outline?.kind === "group" && row.outline.open === "open" ? levels[row.outline.depth] : undefined;
@@ -51,6 +54,11 @@ export function paintBody(p: PaintContext): boolean {
       ctx.translate(col.offset, row.offset);
       clip(ctx, 0, 0, col.size, row.size);
       cell.place(col.size, row.size, status);
+      const colRole = colRoles[j];
+      if (colRole && !role) {
+        ctx.fillStyle = colRole.background;
+        ctx.fillRect(0, 0, col.size, row.size);
+      }
       if (state.currentMatch || p.content.marked(i, j)) {
         ctx.fillStyle = state.currentMatch ? theme.findCurrent.background : theme.findMatch.background;
         ctx.fillRect(0, 0, col.size, row.size);

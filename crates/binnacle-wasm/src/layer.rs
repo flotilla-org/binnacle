@@ -3,7 +3,7 @@
 //! sans-IO, and its batches and answers cross as plain objects. Keys are
 //! `u64` (a `bigint`); stamps, request ids, counts and indices are numbers.
 
-use binnacle_core::{Axis, ChangeNotice, ItemKind, Key, Located, Value, ViewSpec};
+use binnacle_core::{Axis, ChangeNotice, ItemKind, Key, Level, Located, Value, ViewSpec};
 use binnacle_group::{
     Answer, Batch, Body, GroupRow, GroupingLayer, Path, Request, RequestId, Stamp, Want,
 };
@@ -95,17 +95,22 @@ pub struct WireBatch {
 impl From<&Batch> for WireBatch {
     fn from(batch: &Batch) -> Self {
         let scope = &batch.scope;
-        let request = |r: &Request| WireRequest {
-            id: r.id.0 as f64,
-            path: path_out(&r.path),
-            want: match r.want {
-                Want::Groups => WireWant::Groups,
-                Want::Leaves => WireWant::Leaves,
-                Want::Total => WireWant::Total,
-                Want::Locate(key) => WireWant::Locate(key.0),
-            },
-            start: r.range.start as f64,
-            end: r.range.end as f64,
+        let request = |r: &Request| {
+            Some(WireRequest {
+                id: r.id.0 as f64,
+                path: path_out(&r.path),
+                want: match r.want {
+                    Want::Groups => WireWant::Groups,
+                    Want::Leaves => WireWant::Leaves,
+                    Want::Total => WireWant::Total,
+                    Want::Locate(key) => WireWant::Locate(key.0),
+                    // No pivot on the wire yet: request_view drops column
+                    // levels.
+                    Want::Columns => return None,
+                },
+                start: r.range.start as f64,
+                end: r.range.end as f64,
+            })
         };
         WireBatch {
             stamp: batch.stamp.0 as f64,
@@ -128,7 +133,7 @@ impl From<&Batch> for WireBatch {
                 hidden: scope.hidden.iter().map(|k| k.0).collect(),
                 sort: sort_columns(&scope.sort),
             },
-            requests: batch.requests.iter().map(request).collect(),
+            requests: batch.requests.iter().filter_map(request).collect(),
         }
     }
 }
@@ -183,6 +188,7 @@ impl From<WireAnswer> for Answer<Figure> {
                         value: Value::of(g.value.as_deref()),
                         children: position(g.children),
                         aggregates: g.aggregates,
+                        cells: Vec::new(),
                     })
                     .collect(),
             },
@@ -269,7 +275,14 @@ impl WebGroupingLayer {
     pub fn request_view(&mut self, spec: JsValue) -> Result<(), JsError> {
         let spec: crate::effect::WireViewSpec =
             serde_wasm_bindgen::from_value(spec).map_err(|e| JsError::new(&e.to_string()))?;
-        self.layer.request_view(ViewSpec::from(spec));
+        let mut spec = ViewSpec::from(spec);
+        // The wire has no pivot yet, so the applied spec has no column
+        // levels and no values pseudo-level.
+        if let Some(g) = spec.grouping.as_mut() {
+            g.col_levels.clear();
+            g.row_levels.retain(|l| *l != Level::Values);
+        }
+        self.layer.request_view(spec);
         Ok(())
     }
 

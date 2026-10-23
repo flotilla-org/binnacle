@@ -44,18 +44,13 @@ impl Content for Pivot {
         "9".into()
     }
 
+    // A level's field is a column on either axis.
     fn column_header(&self, col: Key) -> String {
         match col {
             REGION => "region".into(),
             PORT => "port".into(),
-            Key(k) => format!("c{k}"),
-        }
-    }
-
-    fn row_header(&self, row: Key, position: u64) -> String {
-        match row {
             QUARTER => "quarter".into(),
-            _ => format!("{}", position + 1),
+            Key(k) => format!("c{k}"),
         }
     }
 }

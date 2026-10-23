@@ -46,6 +46,9 @@ export const HEADER_CLICK = { sort: 0, select: 1, none: 2 } as const;
 /** The Key of a grouped axis's Grand Total, as the wasm `grand_total_key` gives it: the Grid pins one placed after by it. */
 export const GRAND_TOTAL = 1n << 63n;
 
+/** The field of the values pseudo-level in an outline by Keys, as the wasm `values_field` gives it. */
+export const VALUES_FIELD = (1n << 64n) - 1n;
+
 /** The support bits the wasm `set_support` input takes; `textRegex` needs `text`. */
 export const SUPPORT = {
   sort: 1,

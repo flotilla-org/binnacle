@@ -444,9 +444,9 @@ describe("Grouping", () => {
       memory.stage_strings(...region);
       memory.sort(0, BigUint64Array.from([1n]), Uint8Array.from([0]));
       stage();
-      expect(memory.group(grouping, new Uint32Array(), new Uint8Array(), [])).toBe(12);
+      expect(memory.group(grouping, new Uint32Array(), new Uint8Array(), [], new BigUint64Array(), new Uint8Array())).toBe(12);
       type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
-      const items = memory.grouped_window(0, 12) as Item[];
+      const items = memory.grouped_window(0, 0, 12) as Item[];
       const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
       // Each item's place among its siblings: the top holds three groups and the Grand Total, each group its Leaves and Subtotal.
       const set = (index: number, size: number) => ({ index, size });
@@ -494,8 +494,8 @@ describe("Grouping", () => {
       ]);
       expect(items[11]!.key).toBe(bridge().grand_total_key());
       expect(GRAND_TOTAL).toBe(bridge().grand_total_key());
-      expect(Array.from(memory.locate_summary(items[4]!.key))).toEqual([0, 4]);
-      expect(Array.from(memory.locate_summary(GRAND_TOTAL))).toEqual([0, 11]);
+      expect(Array.from(memory.locate_summary(0, items[4]!.key))).toEqual([0, 4]);
+      expect(Array.from(memory.locate_summary(0, GRAND_TOTAL))).toEqual([0, 11]);
       expect(Array.from(memory.locate(0, 3))).toEqual([0, 9]);
 
       // Sorted by the weight, heaviest first: the groups by their sum.
@@ -503,8 +503,8 @@ describe("Grouping", () => {
       memory.stage_numbers(Float64Array.from(weights), new Uint8Array(5));
       memory.sort(0, BigUint64Array.from([1n, 0n]), Uint8Array.from([0, 1]));
       stage();
-      memory.group(grouping, Uint32Array.from([0]), Uint8Array.from([1]), []);
-      const sorted = memory.grouped_window(0, 12) as Item[];
+      memory.group(grouping, Uint32Array.from([0]), Uint8Array.from([1]), [], new BigUint64Array(), new Uint8Array());
+      const sorted = memory.grouped_window(0, 0, 12) as Item[];
       expect(sorted.map((i) => i.item ?? `${i.outline.kind} ${i.outline.group?.value}`)).toEqual([
         "group null", 3, "subtotal null", "group b", 0, 2, "subtotal b", "group a", 4, 1, "subtotal a", "grandTotal undefined",
       ]);

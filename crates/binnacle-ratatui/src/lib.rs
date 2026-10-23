@@ -50,9 +50,9 @@ pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
-    Action, AggregateValue, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort,
+    Action, AggregateValue, Axis, Cursor, DropTarget, Edge, Grouping, HeaderPlacement, HeaderSort,
     HeaderSpan, ItemKind, Key, Mode, MoveRefusal, OpenState, Outline, Snapshot, SortDirection,
-    StripItem, Value,
+    StripItem, VALUES_FIELD, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -92,7 +92,8 @@ pub trait Content {
     }
 
     /// The label of a Summary Item row in a grouped table, drawn in the row
-    /// Header Band after its indent and disclosure mark: unless overridden,
+    /// Header Band after its indent and disclosure mark, or of a pivot's
+    /// column (its Key `row` then names the column): unless overridden,
     /// the group's value on a Group Item, the value and "total" on a
     /// Subtotal ("Bergen total"), and "Grand total". A host adds the count
     /// it gets from its Table Source (`GroupedMemory::summary`, say).
@@ -107,6 +108,33 @@ pub trait Content {
             ItemKind::GrandTotal => "Grand total".into(),
             ItemKind::Subtotal => format!("{value} total"),
             _ => value,
+        }
+    }
+
+    /// The label of a Summary Item of `axis`, by its Key `key`, where its
+    /// header is drawn: `value` is the value it stands for, if it is a
+    /// group of the values pseudo-level or a Grand Total split by value.
+    /// Unless overridden, the value's [`Content::value_name`] for such a
+    /// group; a column Grand Total is "All", a row one "Grand total", each
+    /// followed by its value's name if split; else
+    /// [`Content::group_label`].
+    fn summary_label(
+        &self,
+        axis: Axis,
+        key: Key,
+        outline: &Outline,
+        value: Option<&AggregateValue>,
+    ) -> String {
+        let name = value.map(|v| self.value_name(v));
+        let total = match axis {
+            Axis::Rows => "Grand total",
+            Axis::Cols => "All",
+        };
+        match (outline.kind, name) {
+            (ItemKind::GrandTotal, Some(name)) => format!("{total} {name}"),
+            (ItemKind::GrandTotal, None) if axis == Axis::Cols => total.into(),
+            (_, Some(name)) => name,
+            _ => self.group_label(key, outline),
         }
     }
 
@@ -136,14 +164,14 @@ pub trait Content {
     }
 
     /// The name of a level of `axis` in the corner where the Header Bands
-    /// meet: unless overridden, its field's header (a column's for a row
-    /// level, a row's for a column level), or "Σ values" for the values
-    /// pseudo-level (`None`).
+    /// meet: unless overridden, its field's column header (a base field is
+    /// a column on either axis), or "Σ values" for the values pseudo-level
+    /// (`None`).
     fn level_name(&self, axis: Axis, field: Option<Key>) -> String {
-        match (axis, field) {
-            (_, None) => "Σ values".into(),
-            (Axis::Rows, Some(f)) => self.column_header(f),
-            (Axis::Cols, Some(f)) => self.row_label(f),
+        let _ = axis;
+        match field {
+            None => "Σ values".into(),
+            Some(f) => self.column_header(f),
         }
     }
 
@@ -270,9 +298,16 @@ pub fn render_with(
     let area_end = i64::from(area.width);
     for (i, h) in snapshot.headers(Axis::Cols).enumerate() {
         let span = spans(snapshot, Axis::Cols)(i);
-        let label = h
-            .key
-            .map_or_else(|| LOADING.to_string(), |k| content.column_header(k));
+        // A pivot's columns are Summary Items, labelled as rows' are.
+        let outline = snapshot.outline(Axis::Cols, h.position);
+        let label = match (h.key, outline) {
+            (None, _) => LOADING.to_string(),
+            (Some(k), Some(o)) if o.kind.is_summary() => {
+                let grouping = snapshot.applied_view().grouping.as_ref();
+                content.summary_label(Axis::Cols, k, o, value_of(grouping, o))
+            }
+            (Some(k), _) => content.column_header(k),
+        };
         let requested = snapshot.requested_view().map(|v| &v.rows.filter.conditions);
         let filtered = match (h.filter.pending, h.key, requested) {
             (true, Some(key), Some(conditions)) => conditions.on(key).next().is_some(),
@@ -289,36 +324,43 @@ pub fn render_with(
         let style = band(theme.header, &h);
         let clip = (span.start, end.min(span.end), 0.0, f32::INFINITY);
         let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
-        if marker.is_empty() {
+        // In header form a header starts past the tiers its spans take,
+        // and fills the lines down to its own row.
+        let y = h.rect.y;
+        let tiered = !snapshot.tiers(Axis::Cols).is_empty();
+        for line in (cell(y) + 1..cell(y + h.rect.height)).filter(|_| tiered) {
             put(
                 buf,
                 area,
-                (start, 0.0),
+                (start, line as f32),
                 clip,
-                &pad(label.into_owned()),
+                &pad(String::new()),
                 style,
             );
+        }
+        if marker.is_empty() {
+            put(buf, area, (start, y), clip, &pad(label.into_owned()), style);
         } else {
             let label = format!("{label:<room$}");
-            put(buf, area, (start, 0.0), clip, &label, style);
+            put(buf, area, (start, y), clip, &label, style);
             let at = start + room as f32;
             let style = style.patch(if h.filter.not_applied {
                 theme.error
             } else {
                 theme.sort_marker
             });
-            put(buf, area, (at, 0.0), clip, &marker, style);
+            put(buf, area, (at, y), clip, &marker, style);
         }
         if h.key.is_none() {
             let style = style.patch(theme.loading);
-            put(buf, area, (start, 0.0), clip, LOADING, style);
+            put(buf, area, (start, y), clip, LOADING, style);
         }
         if h.sort.pending || h.move_pending {
             let (x0, x1) = (
                 cell(start.max(span.start)),
                 cell(end.min(span.end)).min(area_end),
             );
-            shimmer(buf, area, (x0..x1, 0), &sweep, 0);
+            shimmer(buf, area, (x0..x1, cell(y)), &sweep, 0);
         }
     }
     let grouping = snapshot.applied_view().grouping.as_ref();
@@ -360,7 +402,9 @@ pub fn render_with(
             },
             |k| match outline {
                 Some(o) if !tiers.is_empty() && under_span(o) => String::new(),
-                Some(o) if o.kind.is_summary() => content.group_label(k, o),
+                Some(o) if o.kind.is_summary() => {
+                    content.summary_label(Axis::Rows, k, o, value_of(grouping, o))
+                }
                 _ => content.row_header(k, r.position),
             },
         );
@@ -747,6 +791,7 @@ fn draw_spans(
             put(buf, area, (end, y), clip, "›", style.patch(theme.loading));
         }
     }
+    draw_column_spans(snapshot, content, theme, area, buf);
     let Some((rect, along)) = tiers_focus(snapshot) else {
         return;
     };
@@ -758,6 +803,62 @@ fn draw_spans(
             if inside && let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
                 c.set_style(c.style().patch(theme.focus));
             }
+        }
+    }
+}
+
+/// The value a group of the values pseudo-level, or a Grand Total split by
+/// value, stands for under `grouping`.
+fn value_of<'a>(grouping: Option<&'a Grouping>, outline: &Outline) -> Option<&'a AggregateValue> {
+    let group = outline.group.as_ref().filter(|g| g.field == VALUES_FIELD)?;
+    let Value::Text(identity) = &group.value else {
+        return None;
+    };
+    grouping?.value_of(identity).map(|(_, v)| v)
+}
+
+/// Draws the columns' spans in header form, a pivot's: each group one cell
+/// over its columns in its tier of the column Header Band, its label kept
+/// in view as it scrolls, `›` where it goes on past the view or a pinned
+/// edge. Columns don't open or close yet, so there is no disclosure mark.
+fn draw_column_spans(
+    snapshot: &Snapshot,
+    content: &impl Content,
+    theme: &Theme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let mut style = theme.header.patch(theme.group_item);
+    if theme.invert_headers {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    for span in snapshot.spans(Axis::Cols) {
+        let v = span.visible;
+        let clip = (
+            v.x,
+            v.x + v.width,
+            span.rect.y,
+            span.rect.y + span.rect.height,
+        );
+        let width = usize::try_from(cell(v.x + v.width) - cell(v.x)).unwrap_or(0);
+        for y in cell(v.y)..cell(v.y + v.height) {
+            put(buf, area, (v.x, y as f32), clip, &" ".repeat(width), style);
+        }
+        let y = v.y;
+        let cut = usize::from(span.cut_before) + usize::from(span.cut_after);
+        let label = content.span_label(span);
+        let label = fit(
+            &label,
+            u32::try_from(width.saturating_sub(cut)).unwrap_or(0),
+        );
+        let at = v.x + f32::from(u8::from(span.cut_before));
+        put(buf, area, (at, y), clip, &label, style);
+        let loading = style.patch(theme.loading);
+        if span.cut_before {
+            put(buf, area, (v.x, y), clip, "‹", loading);
+        }
+        if span.cut_after {
+            put(buf, area, (v.x + v.width - 1.0, y), clip, "›", loading);
         }
     }
 }

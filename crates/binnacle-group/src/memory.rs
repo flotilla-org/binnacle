@@ -7,11 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use binnacle_core::{
-    Aggregate, AggregateValue, Axis, ChangeNotice, Compared, Comparison, Condition, ConditionKind,
-    ConditionTree, Distinct, DistinctQuery, FilterSpec, FindDirection, FindMatch, FindQuery,
-    GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located, MoveRefusal, Outline, Placement,
-    Placements, Position, Scalar, SortColumn, SortDirection, SortSpec, Support, TextSupport,
-    Totals, Value, ViewSpec,
+    Aggregate, AggregateValue, Axis, AxisView, ChangeNotice, Compared, Comparison, Condition,
+    ConditionKind, ConditionTree, Distinct, DistinctQuery, FilterSpec, FindDirection, FindMatch,
+    FindQuery, GRAND_TOTAL, Grouping, ItemKind, Key, Level, Located, MoveRefusal, Outline,
+    Placement, Placements, Position, Scalar, SortColumn, SortDirection, SortSpec, Support,
+    TextSupport, Totals, Value, ViewSpec,
 };
 use binnacle_memory::{
     FindCount, FindStep, MemorySource, MovePolicy, Moved, PumpSource, TextMatcher, Viewed,
@@ -48,10 +48,35 @@ struct Bucket {
     value: Option<Value>,
     /// The rows in the group, as indices into the rows in view.
     rows: Vec<usize>,
+    /// The first of them.
+    first: usize,
     leaves: Vec<Key>,
     kids: Vec<Bucket>,
     index: HashMap<Value, usize>,
     figures: Vec<Figure>,
+    /// On a pivot, the rows of a row group under each column group, by its
+    /// path, until their figures are worked out into `cells`.
+    crossed: HashMap<Path, Vec<usize>>,
+    cells: Vec<(Path, Vec<Figure>)>,
+}
+
+impl Bucket {
+    /// The group of `value` among this one's kids, made if new.
+    fn kid(&mut self, value: Value, row: usize) -> &mut Bucket {
+        let at = match self.index.get(&value) {
+            Some(&at) => at,
+            None => {
+                self.index.insert(value.clone(), self.kids.len());
+                self.kids.push(Bucket {
+                    value: Some(value),
+                    first: row,
+                    ..Bucket::default()
+                });
+                self.kids.len() - 1
+            }
+        };
+        &mut self.kids[at]
+    }
 }
 
 /// The standard aggregate `value` of the rows `rows`: `value(field, i)` is
@@ -120,6 +145,8 @@ pub struct MemoryAggregates {
     scope: Scope,
     levels: usize,
     root: Bucket,
+    /// On a pivot, the column groups, by the column levels.
+    cols: Bucket,
     /// Where each Leaf is: its group's path and its index there.
     places: HashMap<Key, (Path, u64)>,
     /// The rows grouped, the Leaves of groups left out included: the only
@@ -143,17 +170,20 @@ impl MemoryAggregates {
     ) -> Self {
         let scope = &batch.scope;
         let levels = scope.levels.len();
-        let mut root = bucket(rows, scope, &value);
+        let (mut root, mut cols) = bucket(rows, scope, &value);
         let mut aggregates = MemoryAggregates {
             stamp: batch.stamp,
             scope: scope.clone(),
             levels,
             root: Bucket::default(),
+            cols: Bucket::default(),
             places: HashMap::new(),
             grouped: rows.iter().copied().collect(),
         };
         finish(&mut root, 0, scope, &value, &number);
+        finish_columns(&mut cols, 0, scope, &value, &number);
         aggregates.root = root;
+        aggregates.cols = cols;
         let mut path = Vec::new();
         place(
             &aggregates.root,
@@ -189,7 +219,7 @@ impl MemoryAggregates {
             filter: FilterSpec::default(),
             ..self.scope.clone()
         };
-        let mut fresh = bucket(&keys, &scope, &value);
+        let (mut fresh, _) = bucket(&keys, &scope, &value);
         finish(&mut fresh, 0, &scope, &value, &number);
         let empty = self.empty();
         fn copy(old: &mut Bucket, new: Option<&Bucket>, empty: &[Figure]) {
@@ -226,7 +256,7 @@ impl MemoryAggregates {
         let path = match layer.identity(key) {
             Some(SummaryId::Group(path)) => &path[..path.len().saturating_sub(1)],
             Some(SummaryId::Subtotal(path)) => &path[..],
-            Some(SummaryId::GrandTotal) => return Vec::new(),
+            Some(SummaryId::GrandTotal | SummaryId::ValueTotal(_)) => return Vec::new(),
             None => match self.path_of(key) {
                 Some(path) => &path[..],
                 None => return Vec::new(),
@@ -282,8 +312,7 @@ impl MemoryAggregates {
     }
 
     fn bucket(&self, path: &Path) -> Option<&Bucket> {
-        path.iter()
-            .try_fold(&self.root, |b, (_, v)| b.index.get(v).map(|&i| &b.kids[i]))
+        walk(&self.root, path)
     }
 
     fn row(&self, bucket: &Bucket, depth: usize) -> GroupRow<Figure> {
@@ -294,36 +323,118 @@ impl MemoryAggregates {
                 false => bucket.leaves.len() as u64,
             },
             aggregates: bucket.figures.clone(),
+            cells: bucket.cells.clone(),
         }
     }
 }
 
 /// The groups of `rows` by the scope's levels, every group holding its
-/// rows' indices and Leaf Keys in order.
-fn bucket(rows: &[Key], scope: &Scope, value: &impl Fn(Key, usize) -> Value) -> Bucket {
+/// rows' indices and Leaf Keys in order, and on a pivot the column groups
+/// by the column levels, each row group holding the rows it shares with
+/// each column group.
+fn bucket(rows: &[Key], scope: &Scope, value: &impl Fn(Key, usize) -> Value) -> (Bucket, Bucket) {
     let mut root = Bucket::default();
+    let mut cols = Bucket::default();
     for (i, &row) in rows.iter().enumerate() {
+        // On a pivot: each column group the row is in, outermost first.
+        let mut across: Vec<Path> = Vec::new();
+        let mut col = &mut cols;
+        col.rows.push(i);
+        for &field in &scope.columns {
+            let v = value(field, i);
+            let mut path = across.last().cloned().unwrap_or_default();
+            path.push((field, v.clone()));
+            across.push(path);
+            col = col.kid(v, i);
+            col.rows.push(i);
+        }
         let mut bucket = &mut root;
         bucket.rows.push(i);
         for &field in &scope.levels {
-            let v = value(field, i);
-            let at = match bucket.index.get(&v) {
-                Some(&at) => at,
-                None => {
-                    bucket.index.insert(v.clone(), bucket.kids.len());
-                    bucket.kids.push(Bucket {
-                        value: Some(v),
-                        ..Bucket::default()
-                    });
-                    bucket.kids.len() - 1
-                }
-            };
-            bucket = &mut bucket.kids[at];
+            bucket = bucket.kid(value(field, i), i);
             bucket.rows.push(i);
+            for path in &across {
+                bucket.crossed.entry(path.clone()).or_default().push(i);
+            }
         }
         bucket.leaves.push(row);
     }
-    root
+    (root, cols)
+}
+
+fn walk<'b>(root: &'b Bucket, path: &Path) -> Option<&'b Bucket> {
+    path.iter()
+        .try_fold(root, |b, (_, v)| b.index.get(v).map(|&i| &b.kids[i]))
+}
+
+/// Orders two groups' values as ascending typed values do: by the number
+/// `number` gives their first rows where both have one, else by text, with
+/// blanks last.
+fn by_value(
+    field: Key,
+    a: &Bucket,
+    b: &Bucket,
+    number: &impl Fn(Key, usize) -> Option<f64>,
+) -> Ordering {
+    match (number(field, a.first), number(field, b.first)) {
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        _ => match (&a.value, &b.value) {
+            (Some(Value::Blank), Some(Value::Blank)) => Ordering::Equal,
+            (Some(Value::Blank), _) => Ordering::Greater,
+            (_, Some(Value::Blank)) => Ordering::Less,
+            (x, y) => x.cmp(y),
+        },
+    }
+}
+
+/// Works out the column totals of `bucket` (at `depth` of the column
+/// levels) and all under it, and orders its groups by the column Sort Spec:
+/// a sort column on the level's field by value (blanks last either way),
+/// one on the Grand Total row by the first value's figure; unsorted, or on
+/// a tie, by ascending value.
+fn finish_columns(
+    bucket: &mut Bucket,
+    depth: usize,
+    scope: &Scope,
+    value: &impl Fn(Key, usize) -> Value,
+    number: &impl Fn(Key, usize) -> Option<f64>,
+) {
+    bucket.figures = (scope.values.iter())
+        .map(|v| figure(v, &bucket.rows, value, number))
+        .collect();
+    bucket.rows = Vec::new();
+    for kid in &mut bucket.kids {
+        finish_columns(kid, depth + 1, scope, value, number);
+    }
+    let Some(&field) = scope.columns.get(depth) else {
+        return;
+    };
+    bucket.kids.sort_by(|a, b| {
+        let blank = |k: &Bucket| k.value == Some(Value::Blank);
+        let sorted = (scope.col_sort.columns().iter()).filter_map(|c| {
+            let order = match c.key {
+                // Blanks last either way.
+                k if k == field && (blank(a) || blank(b)) => {
+                    return Some(by_value(field, a, b, number));
+                }
+                k if k == field => by_value(field, a, b, number),
+                GRAND_TOTAL if !scope.values.is_empty() => {
+                    return Some(by_figure(a.figures[0], b.figures[0], c.direction));
+                }
+                _ => return None,
+            };
+            Some(match c.direction {
+                SortDirection::Ascending => order,
+                SortDirection::Descending => order.reverse(),
+            })
+        });
+        (sorted.chain([by_value(field, a, b, number)]))
+            .find(|o| o.is_ne())
+            .unwrap_or(Ordering::Equal)
+    });
+    bucket.index = (bucket.kids.iter().enumerate())
+        .map(|(i, k)| (k.value.clone().unwrap_or(Value::Blank), i))
+        .collect();
 }
 
 /// Works out the aggregates of `bucket` (at `depth`) and all under it, and
@@ -339,6 +450,12 @@ fn finish(
         .map(|v| figure(v, &bucket.rows, value, number))
         .collect();
     bucket.rows = Vec::new();
+    bucket.cells = (std::mem::take(&mut bucket.crossed).into_iter())
+        .map(|(path, rows)| {
+            let figures = (scope.values.iter()).map(|v| figure(v, &rows, value, number));
+            (path, figures.collect())
+        })
+        .collect();
     for kid in &mut bucket.kids {
         finish(kid, depth + 1, scope, value, number);
     }
@@ -558,6 +675,26 @@ impl AggregateBackend<Figure> for MemoryAggregates {
                     };
                     answers.push(answer(request.path.clone(), 0, body));
                 }
+                Want::Columns => {
+                    let Some(bucket) = walk(&self.cols, &request.path) else {
+                        continue;
+                    };
+                    let depth = request.path.len() + 1;
+                    let body = Body::Columns {
+                        total: bucket.kids.len() as u64,
+                        groups: (slice(&bucket.kids, &request.range).iter())
+                            .map(|b| GroupRow {
+                                cells: Vec::new(),
+                                children: match depth < batch.scope.columns.len() {
+                                    true => b.kids.len() as u64,
+                                    false => 0,
+                                },
+                                ..self.row(b, depth)
+                            })
+                            .collect(),
+                    };
+                    answers.push(answer(request.path.clone(), request.range.start, body));
+                }
                 want => {
                     let Some(bucket) = self.bucket(&request.path) else {
                         continue;
@@ -662,8 +799,8 @@ impl<R> GroupedMemory<R> {
     }
 
     /// The rows may group by a column that sorts and has a text form, with
-    /// Subtotals before or after, and slice by any column as they filter by
-    /// it. Not the columns: there is no pivot yet.
+    /// Subtotals before or after, pivot by it (the columns grouped by it),
+    /// and slice by any column as they filter by it.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
         let support = self.source.support(axis, key);
         let group = axis == Axis::Rows && support.sort && support.text.is_some();
@@ -671,7 +808,7 @@ impl<R> GroupedMemory<R> {
             true => Placements::BOTH,
             false => Placements::default(),
         };
-        support.with_group(group).with_subtotals(subtotals)
+        (support.with_group(group).with_pivot(group)).with_subtotals(subtotals)
     }
 
     /// The aggregates a value over column `key` may take while the rows are
@@ -687,19 +824,25 @@ impl<R> GroupedMemory<R> {
     }
 
     /// The parts of `grouping` this source applies: the levels on the rows
-    /// it may group by (none on the columns), with their Subtotals, and the
-    /// values with aggregates it offers. Slicers are the base source's to
-    /// apply.
+    /// it may group by, those on the columns it may pivot by, with their
+    /// Subtotals, the values pseudo-level, and the values with aggregates
+    /// it offers. Slicers are the base source's to apply.
     fn applicable(&self, grouping: &Grouping) -> Grouping {
         let mut applied = grouping.clone();
-        applied.row_levels.retain(|l| match l {
-            Level::Field { field, subtotal } => {
-                let support = self.support(Axis::Rows, *field);
-                support.group && support.subtotals.allows(*subtotal)
-            }
-            _ => false,
-        });
-        applied.col_levels.clear();
+        for axis in Axis::ALL {
+            applied.levels_mut(axis).retain(|l| match l {
+                Level::Field { field, subtotal } => {
+                    let support = self.support(Axis::Rows, *field);
+                    let may = match axis {
+                        Axis::Rows => support.group,
+                        Axis::Cols => support.pivot,
+                    };
+                    may && support.subtotals.allows(*subtotal)
+                }
+                Level::Values => true,
+                _ => false,
+            });
+        }
         applied.values.retain(|v| match v.field {
             None => v.aggregate == "count" && v.params.is_empty(),
             Some(field) => (self.aggregates(Axis::Rows, field).iter())
@@ -713,13 +856,23 @@ impl<R> GroupedMemory<R> {
     /// the Change Notices: the rows' `Refiltered` whenever their grouping
     /// or the rows under it change, and `Collapsed` or `Expanded` when one
     /// group opens or closes.
+    ///
+    /// On a pivot the columns come from the data too: the base columns
+    /// leave, any change to the pivot columns comes as `Refiltered`, and
+    /// the column axis's Sort Spec orders them by a column level's field or
+    /// by the Grand Total row; other column sorts, filters and hidden Keys
+    /// are not applied.
     pub fn view(&mut self, rows: &[R], spec: &ViewSpec) -> Viewed {
         let grouping = spec.grouping.as_ref().map(|g| self.applicable(g));
-        let levels: Vec<Key> = (grouping.iter())
-            .flat_map(|g| g.row_levels.iter().filter_map(|l| l.field_key()))
-            .collect();
+        let fields = |axis| -> Vec<Key> {
+            (grouping.iter())
+                .flat_map(|g| g.levels(axis).iter().filter_map(|l| l.field_key()))
+                .collect()
+        };
+        let (levels, columns) = (fields(Axis::Rows), fields(Axis::Cols));
+        let pivot = grouping.as_ref().is_some_and(Grouping::pivot);
         let values = match &grouping {
-            Some(g) if !levels.is_empty() => g.values.as_slice(),
+            Some(g) if !levels.is_empty() || pivot => g.values.as_slice(),
             _ => &[],
         };
         let slicers = grouping.as_ref().map_or(&[][..], |g| &g.slicers);
@@ -732,8 +885,11 @@ impl<R> GroupedMemory<R> {
         base.grouping = None;
         base.rows.filter.conditions =
             ConditionTree::All(leaves.iter().copied().chain(slicers).cloned().collect());
+        if pivot {
+            base.cols = AxisView::default();
+        }
         self.lifted = (levels.iter())
-            .filter(|f| !spec.cols.hidden.contains(f))
+            .filter(|f| !spec.cols.hidden.contains(f) && !pivot)
             .copied()
             .collect();
         base.cols.hidden.extend(&self.lifted);
@@ -747,6 +903,7 @@ impl<R> GroupedMemory<R> {
         base.rows.sort = SortSpec::new(sort);
 
         let was_grouped = self.layer.grouped(Axis::Rows);
+        let was_pivot = self.layer.pivot();
         let mut notices = self.source.view(rows, &base).unwrap_or_default();
         let rows_changed = notices.iter().any(|(a, _)| *a == Axis::Rows);
         let mut applied = self.source.view_spec();
@@ -781,7 +938,20 @@ impl<R> GroupedMemory<R> {
                 g.slicers = slicers;
                 g
             })
-            .filter(|g| !levels.is_empty() || !g.slicers.is_empty());
+            .filter(|g| !levels.is_empty() || pivot || !g.slicers.is_empty());
+        if pivot {
+            let sorts = |c: &&SortColumn| columns.contains(&c.key) || c.key == GRAND_TOTAL;
+            applied.cols = AxisView::default();
+            applied.cols.sort = SortSpec::new(
+                spec.cols
+                    .sort
+                    .columns()
+                    .iter()
+                    .filter(sorts)
+                    .copied()
+                    .collect(),
+            );
+        }
         let scope_before = self.layer.grouped(Axis::Rows);
         self.layer.request_view(applied.clone());
         let edited = std::mem::take(&mut self.edited);
@@ -797,20 +967,27 @@ impl<R> GroupedMemory<R> {
                 applied.grouping = viewed.applied.grouping;
             }
         }
-        let grouped = self.layer.grouped(Axis::Rows);
-        if grouped || was_grouped {
-            notices.retain(|(a, _)| *a != Axis::Rows);
-        }
-        if grouped {
-            notices.extend(layered.into_iter().filter(|(a, _)| *a == Axis::Rows));
-        } else if was_grouped {
-            let count = self.source.count(Axis::Rows);
-            notices.push((Axis::Rows, ChangeNotice::Refiltered(count)));
+        let now = Axis::ALL.map(|a| self.layer.grouped(a));
+        let was = [was_grouped, was_pivot];
+        for axis in Axis::ALL {
+            let i = axis.index();
+            if now[i] || was[i] {
+                notices.retain(|(a, _)| *a != axis);
+            }
+            if now[i] {
+                notices.extend(layered.iter().filter(|(a, _)| *a == axis).cloned());
+            } else if was[i] {
+                let count = self.source.count(axis);
+                notices.push((axis, ChangeNotice::Refiltered(count)));
+            }
         }
         notices.sort_by_key(|(a, _)| a.index());
         let mut totals = self.source.totals();
-        if grouped {
+        if now[0] {
             totals.rows = None;
+        }
+        if now[1] {
+            totals.cols = None;
         }
         self.spec = applied.clone();
         Viewed {
@@ -1244,6 +1421,17 @@ impl<R> GroupedMemory<R> {
         }
     }
 
+    /// Whether the table is a pivot now.
+    pub fn pivot(&self) -> bool {
+        self.layer.pivot()
+    }
+
+    /// The figure of a pivot's cell at the row `row` and the column `col`;
+    /// `None` where no rows meet.
+    pub fn cell(&self, row: Key, col: Key) -> Option<Figure> {
+        self.layer.cell(row, col).copied()
+    }
+
     /// This source with the host's `rows`, as [`binnacle_memory::pump`]
     /// needs it.
     pub fn over<'a>(&'a mut self, rows: &'a [R]) -> impl PumpSource + 'a {
@@ -1341,6 +1529,9 @@ impl<R> GroupedMemory<R> {
         let mut totals = self.source.totals();
         if self.layer.grouped(Axis::Rows) {
             totals.rows = None;
+        }
+        if self.layer.grouped(Axis::Cols) {
+            totals.cols = None;
         }
         totals
     }
