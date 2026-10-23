@@ -221,7 +221,7 @@ The name of the one value a grouped axis shows, drawn in the corner so the figur
 _Avoid_: Measure label, value header
 
 **Slicer**:
-A Condition in the grouping part of a View Spec on a base field, applied before aggregating (`WHERE`), even on a field not shown, hidden or grouped by. Slicers outlive the levels: a grouping with Slicers and no levels is a plain table, sliced. Adding, replacing and removing one are View Edits. The rows' own Conditions differ: a comparison there on a field a value aggregates acts on the groups by that value's figure (`HAVING`), leaving out a group whose figure fails it and everything under it while the figures above stay; any other Condition acts on the Leaves. A group whose child groups all fail keeps its Group Item and figures but draws no Subtotal.
+A Condition in the grouping part of a View Spec on a base field, applied before aggregating (`WHERE`), even on a field not shown, hidden or grouped by. Slicers outlive the levels: a grouping with Slicers and no levels is a plain table, sliced. Adding, replacing and removing one are View Edits. The rows' own Conditions differ: a comparison there on a field a value aggregates acts on the groups by that value's figure (`HAVING`), leaving out a group whose figure fails it and everything under it while the figures above stay; any other Condition acts on the Leaves. A group whose child groups all fail drops out too, Group Item and Subtotal alike: an empty group has nothing to total.
 _Avoid_: Pre-filter, where clause
 
 **Grouping Support**:

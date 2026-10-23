@@ -551,9 +551,12 @@ fn finish(
         .collect();
     if !having.is_empty() {
         let before = bucket.kids.len();
-        bucket
-            .kids
-            .retain(|k| having.iter().all(|(by, c)| passes(c, read(by, k))));
+        // A group left with no sub-groups drops out too: an empty group has
+        // nothing to total.
+        let inner = depth + 1 < scope.levels.len();
+        bucket.kids.retain(|k| {
+            having.iter().all(|(by, c)| passes(c, read(by, k))) && !(inner && k.kids.is_empty())
+        });
         if bucket.kids.len() != before {
             reindex(bucket);
         }
