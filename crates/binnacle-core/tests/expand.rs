@@ -4,7 +4,8 @@
 
 use binnacle_core::{
     Action, Axis, AxisConfig, Depth, EXCEPT_CAP, Edge, Effect, ExceptCapped, Expand, FocusStep,
-    Grid, Grouping, Key, Level, Modifiers, PointerEvent, ViewEdit, ViewSpec, Viewport,
+    Grid, Grouping, Key, Level, Modifiers, Outline, PointerEvent, Totals, ViewEdit, ViewSpec,
+    Viewport,
 };
 use binnacle_testkit::{Group, Scenario, TreeTable};
 
@@ -454,4 +455,37 @@ fn a_subtotal_counts_last_among_its_groups_children() {
     assert_eq!(place(TreeTable::subtotal(ABERDEEN)), (2, 3));
     assert_eq!(place(TreeTable::subtotal(NORTH)), (2, 3));
     assert_eq!(place(NORTH), (0, 2), "the top has no Grand Total");
+}
+
+/// #238: when the outlines a Window holds disagree about a group's level
+/// (a Table Source sending a malformed tree), the group takes its level from
+/// the first item under it in the Window, whatever order the Grid keeps its
+/// outlines in. Each fresh Grid hashes its outlines afresh, so many Grids
+/// cover many orders.
+#[test]
+fn a_group_whose_outlines_disagree_takes_its_level_from_the_first_item_under_it() {
+    let mut grouping = Grouping::rows_by(REGION);
+    grouping.row_levels = vec![Level::field(REGION), Level::field(PORT)];
+    grouping.rows.expand = Expand::to(Depth::Levels(1));
+    let spec = ViewSpec::default().with_grouping(Some(grouping));
+    for _ in 0..64 {
+        let mut grid = Grid::new(
+            AxisConfig::new(2, 1.0).header(1.0),
+            AxisConfig::new(3, 5.0).header(3.0),
+        );
+        grid.view_applied(spec.clone(), Totals::default());
+        grid.begin_frame(V);
+        grid.set_window(Axis::Rows, 0, &[Key(0), Key(1)]);
+        // Under North at level 1 first, then at level 0.
+        let outlines = [
+            Outline::leaf(vec![SOUTH, NORTH]),
+            Outline::leaf(vec![NORTH]),
+        ];
+        grid.set_outlines(Axis::Rows, 0, &outlines);
+        let _ = grid.expand(Axis::Rows, NORTH);
+        let want = Expand::to(Depth::Levels(1)).with(1, NORTH, true);
+        let asked = grid.snapshot().requested_view().cloned();
+        let asked = asked.and_then(|v| v.grouping).map(|g| g.rows.expand);
+        assert_eq!(asked, Some(want));
+    }
 }
