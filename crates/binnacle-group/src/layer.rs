@@ -283,7 +283,7 @@ impl Open {
 
 /// Whether a group's `path` fits an axis whose levels are `steps`: each of
 /// its fields is the field of the level at its depth.
-fn fits_steps(path: &Path, steps: &[Option<Key>]) -> bool {
+fn fits_steps(path: &Steps, steps: &[Option<Key>]) -> bool {
     !path.is_empty()
         && path.len() <= steps.len()
         && (path.iter().zip(steps)).all(|((f, _), s)| *f == s.unwrap_or(VALUES_FIELD))
@@ -311,7 +311,9 @@ fn path_key(keys: &KeyInterner<SummaryId>, grouping: &Grouping, key: Key) -> Opt
         return None;
     }
     let (path, value) = match keys.identity(Key(key.0 & !SUMMARY_KEY_BIT))? {
-        SummaryId::Group(p) | SummaryId::Subtotal(p) => (data(p), value_on(p)),
+        SummaryId::Group(p) | SummaryId::Subtotal(p) | SummaryId::ValueSubtotal(p) => {
+            (data(p), value_on(p))
+        }
         SummaryId::GrandTotal => (Vec::new(), None),
         SummaryId::ValueTotal(v) => (Vec::new(), Some(v.as_str())),
     };
@@ -1216,6 +1218,10 @@ impl<A: Clone> GroupingLayer<A> {
             Some(SummaryId::Group(path) | SummaryId::Subtotal(path)) => {
                 node_at(&self.tree(axis).root, path).is_some()
             }
+            Some(SummaryId::ValueSubtotal(path)) => split_value(path).is_some_and(|(group, id)| {
+                (self.spec.grouping.as_ref()).is_some_and(|g| g.value_of(id).is_some())
+                    && node_at(&self.tree(axis).root, group).is_some()
+            }),
         }
     }
 
@@ -1250,8 +1256,10 @@ impl<A: Clone> GroupingLayer<A> {
     /// Whether the Key `key` may still name an item of `axis`: a Leaf Key,
     /// a Key the layer never issued and the Grand Total always; a group's
     /// (a Group Item's, a Subtotal's, a pivot column's) while its path fits
-    /// the axis's levels as last asked; a value's Grand Total while the
-    /// axis splits the values. Hosts have the Grid forget those that don't.
+    /// the axis's levels as last asked, a value's Subtotal's while its
+    /// group's does with the values pseudo-level below it; a value's Grand
+    /// Total while the axis splits the values. Hosts have the Grid forget
+    /// those that don't.
     pub fn fits(&self, axis: Axis, key: Key) -> bool {
         let shape = &self.tree(axis).shape;
         match self.identity(key) {
@@ -1260,6 +1268,9 @@ impl<A: Clone> GroupingLayer<A> {
             Some(SummaryId::Group(path) | SummaryId::Subtotal(path)) => {
                 fits_steps(path, &shape.steps)
             }
+            Some(SummaryId::ValueSubtotal(path)) => split_value(path).is_some_and(|(group, _)| {
+                fits_steps(group, &shape.steps) && shape.splits(group.len() - 1)
+            }),
         }
     }
 

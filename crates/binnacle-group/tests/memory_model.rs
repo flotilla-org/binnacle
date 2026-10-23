@@ -16,8 +16,8 @@ use std::cmp::Ordering;
 use binnacle_core::{
     Aggregate, AggregateValue, Axis, ChangeNotice, Compared, Comparison, Condition, Expand,
     FilterSpec, FindDirection, FindQuery, GRAND_TOTAL, Grouping, ItemKind, Key, Level, OpenState,
-    Placement, Placements, Scalar, SortColumn, SortDirection, SortSpec, Support, TextQuery, VALUES_FIELD, Value,
-    ViewSpec,
+    Placement, Placements, Scalar, SortColumn, SortDirection, SortSpec, Support, TextQuery,
+    VALUES_FIELD, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::MemorySource;

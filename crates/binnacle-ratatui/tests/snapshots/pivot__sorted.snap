@@ -1,9 +1,8 @@
 ---
 source: crates/binnacle-ratatui/tests/pivot.rs
-assertion_line: 219
 expression: sorted
 ---
-|Σ v quarter → Q1       │         │Q2       │      › All sum(…│All count |
+|Σ v quarter → ▾ Q1     │         │▾ Q2     │      › All sum(…│All count |
 |region        sum(weig…│count    │sum(wei…▲│count            │          |
 |  South       16        1         2         1      ║18        2        █|
 |  North       9         2         4         1      ║13        3        █|

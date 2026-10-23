@@ -278,22 +278,6 @@ fn in_header_form_a_closed_region_names_each_value_under_its_span() {
     insta::assert_snapshot!(text(&drawn));
 }
 
-/// Pumps the source and runs frames until the Grid settles.
-fn settle(grid: &mut Grid, source: &mut GroupedMemory<Ship>, rows: &[Ship], ctx: &RenderContext) {
-    for _ in 0..4 {
-        pump(grid, &mut source.over(rows), |_, _| {});
-        begin_frame(grid, ctx, AREA, |grid, v| {
-            for (axis, range) in grid.begin_frame(v) {
-                let window = source.window(rows, axis, range.clone());
-                grid.set_window(axis, range.start, &window.keys);
-                if let Some(outlines) = window.outlines {
-                    grid.set_outlines(axis, range.start, &outlines);
-                }
-            }
-        });
-    }
-}
-
 /// The table, then the conditions line under it.
 fn screen(grid: &mut Grid, source: &GroupedMemory<Ship>, ctx: &RenderContext) -> String {
     let snapshot = grid.snapshot();
