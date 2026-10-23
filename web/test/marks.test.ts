@@ -15,7 +15,7 @@ const frame = (keys: bigint[], pending: bigint[]): Snapshot => {
     outline: { kind: "group", depth: 0, open: "open", ancestors: [], group: null },
     togglePending: pending.includes(key),
   }));
-  return { rows: { strip } } as unknown as Snapshot;
+  return { rows: { strip, spans: [] } } as unknown as Snapshot;
 };
 
 test("a mark draws pending only once its toggle has waited 150 ms, and not once answered", () => {

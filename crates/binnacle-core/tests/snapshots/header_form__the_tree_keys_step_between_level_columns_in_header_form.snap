@@ -1,0 +1,165 @@
+---
+source: crates/binnacle-core/tests/header_form.rs
+assertion_line: 290
+expression: out
+---
+--- 1. depth 1, Left from the first column: the port column, on Aberdeen's span
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): ViewRequested unsorted group 1,2 values count(-) Rows Header form expand Rows 1 by Replace
+  view: applied unsorted group 1,2 values count(-) Rows Header form expand Rows 1, notices [(Rows, Refiltered(5))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Gone { suggest: None }
+window Rows 0..5
+effect (gen 2): FocusChanged { row: Key(1000110), col: Key(1) }
+effect (gen 3): FocusChanged { row: Key(1000110), col: Key(0) }
+gen 6 | damage none | focus 0#1000110,0#0 at 4,1 6x1 in outline tier 1
+Rows: count 5, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1000110@1+1[S2 ^100 ^110 2="Aberdeen"] 1#1000111@2+1[S2 ^100 ^111 2="Bergen"] 2#1000100@3+1[S1 ^100 1="North"] 3#1000120@4+1[S2 ^101 ^120 2="Cadiz"] 4#1000101@5+1[S1 ^101 1="South"] | tiers 0..4 4..10 | spans t0#100+ 0-1@1+2 t0#101+ 3-3@4+1 t1#110- 0-0@1+1 t1#111- 1-1@2+1 t1#120- 3-3@4+1
+Cols: count 3, extent 30, header 12, anchor 0+0, thumb 0.0000/1.0000 | 0#0@12+5 1#1@17+5 2#2@22+5
+            0    1    2
+0           100011000110001
+1           100011000110001
+2           100011000110001
+3           100011000110001
+4           100011000110001
+
+
+
+
+
+
+
+--- 2. Right on a closed span opens it
+effect (gen 6): ViewRequested unsorted group 1,2 values count(-) Rows Header form expand Rows 1 except 110 by Expand { axis: Rows, key: Key(110) }
+  view: applied unsorted group 1,2 values count(-) Rows Header form expand Rows 1 except 110, notices [(Rows, Expanded { at: 0, n: 2 })]
+window Rows 0..7
+gen 8 | damage none | focus 2#1000110,0#0 at 4,3 8x1 in outline tier 1
+Rows: count 7, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#0@1+1[L2 ^100 ^110] 1#3@2+1[L2 ^100 ^110] 2#1000110@3+1[S2 ^100 ^110 2="Aberdeen"] 3#1000111@4+1[S2 ^100 ^111 2="Bergen"] 4#1000100@5+1[S1 ^100 1="North"] 5#1000120@6+1[S2 ^101 ^120 2="Cadiz"] 6#1000101@7+1[S1 ^101 1="South"] | tiers 0..4 4..10 | spans t0#100+ 0-3@1+4 t0#101+ 5-5@6+1 t1#110+ 0-1@1+2 t1#111- 3-3@4+1 t1#120- 5-5@6+1
+Cols: (unchanged)
+            0    1    2
+0           0.0  0.1  0.2
+1           3.0  3.1  3.2
+2           100011000110001
+3           100011000110001
+4           100011000110001
+5           100011000110001
+6           100011000110001
+
+
+
+
+
+--- 3. Right on an open span at the last level enters the body
+gen 10 | damage none | focus 2#1000110,0#0 at 12,3 5x1
+Rows: (unchanged)
+Cols: (unchanged)
+            0    1    2
+0           0.0  0.1  0.2
+1           3.0  3.1  3.2
+2           *10001000110001
+3           100011000110001
+4           100011000110001
+5           100011000110001
+6           100011000110001
+
+
+
+
+
+--- 4. Left back into the band, Left on open Aberdeen closes it
+effect (gen 11): ViewRequested unsorted group 1,2 values count(-) Rows Header form expand Rows 1 by Collapse { axis: Rows, key: Key(110) }
+  view: applied unsorted group 1,2 values count(-) Rows Header form expand Rows 1, notices [(Rows, Collapsed { at: 0, n: 2 })]
+window Rows 0..5
+gen 13 | damage none | focus 0#1000110,0#0 at 4,1 6x1 in outline tier 1
+Rows: count 5, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1000110@1+1[S2 ^100 ^110 2="Aberdeen"] 1#1000111@2+1[S2 ^100 ^111 2="Bergen"] 2#1000100@3+1[S1 ^100 1="North"] 3#1000120@4+1[S2 ^101 ^120 2="Cadiz"] 4#1000101@5+1[S1 ^101 1="South"] | tiers 0..4 4..10 | spans t0#100+ 0-1@1+2 t0#101+ 3-3@4+1 t1#110- 0-0@1+1 t1#111- 1-1@2+1 t1#120- 3-3@4+1
+Cols: (unchanged)
+            0    1    2
+0           100011000110001
+1           100011000110001
+2           100011000110001
+3           100011000110001
+4           100011000110001
+
+
+
+
+
+
+
+--- 5. Left on a closed span steps to the region column
+gen 15 | damage none | focus 0#1000110,0#0 at 0,1 4x2 in outline tier 0
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 6. Left on open North closes it
+effect (gen 15): ViewRequested unsorted group 1,2 values count(-) Rows Header form expand Rows 1 except 100 by Collapse { axis: Rows, key: Key(100) }
+  view: applied unsorted group 1,2 values count(-) Rows Header form expand Rows 1 except 100, notices [(Rows, Collapsed { at: 0, n: 2 })]
+effect (gen 15): FocusChanged { row: Key(1000100), col: Key(0) }
+window Rows 0..3
+gen 17 | damage none | focus 0#1000100,0#0 at 0,1 4x1 in outline tier 0
+Rows: count 3, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1000100@1+1[S1 ^100 1="North"] 1#1000120@2+1[S2 ^101 ^120 2="Cadiz"] 2#1000101@3+1[S1 ^101 1="South"] | tiers 0..4 4..10 | spans t0#100- 0-0@1+1 t0#101+ 1-1@2+1 t1#120- 1-1@2+1
+Cols: (unchanged)
+            0    1    2
+0           100011000110001
+1           100011000110001
+2           100011000110001
+
+
+
+
+
+
+
+
+
+--- 7. Enter toggles North open
+effect (gen 17): ViewRequested unsorted group 1,2 values count(-) Rows Header form expand Rows 1 by Expand { axis: Rows, key: Key(100) }
+  view: applied unsorted group 1,2 values count(-) Rows Header form expand Rows 1, notices [(Rows, Expanded { at: 0, n: 2 })]
+window Rows 0..5
+gen 19 | damage none | focus 2#1000100,0#0 at 0,3 12x1 in outline tier 0
+Rows: count 5, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1000110@1+1[S2 ^100 ^110 2="Aberdeen"] 1#1000111@2+1[S2 ^100 ^111 2="Bergen"] 2#1000100@3+1[S1 ^100 1="North"] 3#1000120@4+1[S2 ^101 ^120 2="Cadiz"] 4#1000101@5+1[S1 ^101 1="South"] | tiers 0..4 4..10 | spans t0#100+ 0-1@1+2 t0#101+ 3-3@4+1 t1#110- 0-0@1+1 t1#111- 1-1@2+1 t1#120- 3-3@4+1
+Cols: (unchanged)
+            0    1    2
+0           100011000110001
+1           100011000110001
+2           100011000110001
+3           100011000110001
+4           100011000110001
+
+
+
+
+
+
+
+--- 8. Right on open North steps to the port column
+gen 21 | damage none | focus 2#1000100,0#0 at 0,3 12x1 in outline tier 1
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 9. Down stays in the port column
+effect (gen 21): FocusChanged { row: Key(1000120), col: Key(0) }
+gen 23 | damage none | focus 3#1000120,0#0 at 4,4 6x1 in outline tier 1
+Rows: (unchanged)
+Cols: (unchanged)
+(picture unchanged)
+--- 10. Tab leaves the band for the body
+gen 25 | damage none | focus 3#1000120,0#0 at 12,4 5x1
+Rows: (unchanged)
+Cols: (unchanged)
+            0    1    2
+0           100011000110001
+1           100011000110001
+2           100011000110001
+3           *10001000110001
+4           100011000110001

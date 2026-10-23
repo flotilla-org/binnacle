@@ -4,8 +4,8 @@
 use std::ops::Range;
 
 use binnacle_core::{
-    Axis, ChangeNotice, Depth, Expand, FindDirection, FindMatch, FindQuery, GroupOf, Grouping, Key,
-    Located, OpenState, Outline, Position, Support, Value, ViewSpec,
+    Axis, ChangeNotice, Depth, Expand, FindDirection, FindMatch, FindQuery, Form, GroupOf,
+    Grouping, Key, Located, OpenState, Outline, Position, Support, Value, ViewSpec,
 };
 use binnacle_memory::{FindCount, FindStep, Moved, PumpSource, Viewed};
 
@@ -45,11 +45,14 @@ impl Group {
 }
 
 /// A table whose rows group by `levels` (one field per level, outermost
-/// first) into a hand-made tree of [`Group`]s, with no Subtotals. Its groups
-/// open as the grouping's `expand` says; it answers a change of `expand`
-/// that opens or closes one run of items with `Expanded` or `Collapsed`,
-/// and any other change with `Refiltered`. Columns are keyed by Position;
-/// the level fields stay among them.
+/// first) into a hand-made tree of [`Group`]s, with no Subtotals unless
+/// [`TreeTable::subtotals_after`] places them. Its groups open as the
+/// grouping's `expand` says; it answers a change of `expand` that opens or
+/// closes one run of items with `Expanded` or `Collapsed`, and any other
+/// change with `Refiltered`. In header form a group has no Group Item: a
+/// closed one shows its Subtotal alone, and one with nothing under it its
+/// Group Item, which can't open. Columns are keyed by Position; the level
+/// fields stay among them.
 ///
 /// Find matches, ignoring case, a Leaf's cell text `r{row}c{col}` (Keys)
 /// and a Group Item's label, its value, at the column of its level's field;
@@ -61,12 +64,16 @@ pub struct TreeTable {
     levels: Vec<Key>,
     tree: Vec<Group>,
     cols: u64,
+    subtotals: bool,
     grouping: Option<Grouping>,
     shown: Vec<(Key, Outline)>,
 }
 
 /// A row of [`TreeTable::every`]: its Key, its ancestors and its label.
 type Row = (Key, Vec<Key>, Option<(Key, &'static str)>);
+
+/// What a Group Item's Key gains to make its Subtotal's.
+const SUBTOTAL: u64 = 1_000_000;
 
 impl TreeTable {
     pub fn new(levels: Vec<Key>, cols: u64, tree: Vec<Group>) -> Self {
@@ -85,9 +92,21 @@ impl TreeTable {
             levels,
             tree,
             cols,
+            subtotals: false,
             grouping: None,
             shown: Vec::new(),
         }
+    }
+
+    /// This table with a Subtotal after each open group.
+    pub fn subtotals_after(mut self) -> Self {
+        self.subtotals = true;
+        self
+    }
+
+    /// The Key of the Subtotal of the group whose Group Item is `group`.
+    pub fn subtotal(group: Key) -> Key {
+        Key(group.0 + SUBTOTAL)
     }
 
     /// The rows as the table shows them now, with their outlines.
@@ -102,13 +121,14 @@ impl TreeTable {
         }
     }
 
-    fn lay_out(&self, expand: &Expand) -> Vec<(Key, Outline)> {
+    fn lay_out(&self, expand: &Expand, form: Form) -> Vec<(Key, Outline)> {
         let mut out = Vec::new();
         self.walk(
             &self.tree,
             &mut Vec::new(),
             &mut Vec::new(),
             expand,
+            form,
             &mut out,
         );
         out
@@ -120,6 +140,7 @@ impl TreeTable {
         up: &mut Vec<Key>,
         path: &mut Vec<GroupOf>,
         expand: &Expand,
+        form: Form,
         out: &mut Vec<(Key, Outline)>,
     ) {
         let level = up.len();
@@ -138,28 +159,43 @@ impl TreeTable {
                 (false, true) => OpenState::Open,
                 (false, false) => OpenState::Closed,
             };
-            let value = Value::Text(g.value.into());
-            let field = self.levels[level];
-            let outline =
-                Outline::group(up.clone(), state, field, value.clone()).with_path(path.clone());
+            let (field, value) = (self.levels[level], Value::Text(g.value.into()));
+            let header = form == Form::Header && state != OpenState::CantOpen;
             let at = out.len();
-            out.push((g.key, outline));
-            if state != OpenState::Open {
+            if !header {
+                let outline =
+                    Outline::group(up.clone(), state, field, value.clone()).with_path(path.clone());
+                out.push((g.key, outline));
+            }
+            if state == OpenState::CantOpen {
                 continue;
             }
             up.push(g.key);
-            path.push(GroupOf { field, value });
-            match &g.under {
-                Under::Groups(kids) => self.walk(kids, up, path, expand, out),
-                Under::Leaves(keys) => {
-                    let leaf = || Outline::leaf(up.clone()).with_path(path.clone());
-                    out.extend(keys.iter().map(|&k| (k, leaf())));
+            path.push(GroupOf {
+                field,
+                value: value.clone(),
+            });
+            if state == OpenState::Open {
+                match &g.under {
+                    Under::Groups(kids) => self.walk(kids, up, path, expand, form, out),
+                    Under::Leaves(keys) => {
+                        let leaf = || Outline::leaf(up.clone()).with_path(path.clone());
+                        out.extend(keys.iter().map(|&k| (k, leaf())));
+                    }
                 }
+            }
+            if (state == OpenState::Open && self.subtotals)
+                || (state == OpenState::Closed && header)
+            {
+                let outline = Outline::subtotal(up.clone(), field, value).with_path(path.clone());
+                out.push((TreeTable::subtotal(g.key), outline));
             }
             up.pop();
             path.pop();
-            let span = (out.len() - at - 1) as u64;
-            out[at].1 = out[at].1.clone().with_span(span);
+            if !header {
+                let span = (out.len() - at - 1) as u64;
+                out[at].1 = out[at].1.clone().with_span(span);
+            }
         }
     }
 
@@ -240,18 +276,20 @@ impl TreeTable {
                     == self.levels.iter().copied().map(Some).collect::<Vec<_>>()
         });
         let before = self.rows();
-        let regrouped = (wanted.as_ref().map(|g| &g.row_levels))
-            != (self.grouping.as_ref().map(|g| &g.row_levels));
+        let shape = |g: &Option<Grouping>| g.as_ref().map(|g| (g.row_levels.clone(), g.rows.form));
+        let regrouped = shape(&wanted) != shape(&self.grouping);
         self.shown = match &wanted {
-            Some(g) => self.lay_out(&g.rows.expand),
+            Some(g) => self.lay_out(&g.rows.expand, g.rows.form),
             None => Vec::new(),
         };
         self.grouping = wanted.clone();
         let after = self.rows();
-        let notices = if before == after {
-            Vec::new()
-        } else if regrouped {
+        // A regrouping sends new outlines, so the Window is fetched again
+        // even where the Keys stay.
+        let notices = if regrouped {
             vec![(Axis::Rows, ChangeNotice::Refiltered(after.len() as u64))]
+        } else if before == after {
+            Vec::new()
         } else {
             vec![(Axis::Rows, change(&before, &after))]
         };
@@ -373,8 +411,11 @@ impl PumpSource for TreeTable {
         let at = before.and_then(|b| run.iter().position(|k| *k == b));
         let at = at.unwrap_or(run.len());
         run.splice(at..at, keys.iter().copied());
-        let expand = self.grouping.as_ref().map(|g| g.rows.expand.clone());
-        self.shown = self.lay_out(&expand.unwrap_or_default());
+        let (expand, form) = match &self.grouping {
+            Some(g) => (g.rows.expand.clone(), g.rows.form),
+            None => (Expand::default(), Form::Outline),
+        };
+        self.shown = self.lay_out(&expand, form);
         Ok(Moved {
             notices: vec![(Axis::Rows, ChangeNotice::Reordered)],
             view: None,

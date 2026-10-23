@@ -16,6 +16,7 @@ import type { PaintContext } from "./context";
 import { paintDropCaption, paintPinZones } from "./drop";
 import { createPendingMarks, paintPulse, paintRefusal, shimmering } from "./pending";
 import { paintFocus, paintGuides, paintHeaderStates, paintSelection } from "./selection";
+import { paintSpans } from "./spans";
 
 export interface CanvasPainter extends Painter {
   readonly element: HTMLCanvasElement;
@@ -109,6 +110,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintCorner(p);
       paintHeaderStates(p);
       paintBorders(p, painter.border, layer);
+      paintSpans(p);
       paintPinnedEdges(p);
       paintPinZones(p);
       paintFocus(p);

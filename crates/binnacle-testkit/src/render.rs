@@ -2,8 +2,8 @@ use std::fmt::Write;
 
 use binnacle_core::{
     Axis, Comparison, ConditionKind, Cursor, Depth, DropTarget, Edge, Expand, FilterSpec, FocusEnd,
-    Grouping, ItemKind, Key, Level, Mode, OpenState, Outline, Placement, Searched, Snapshot,
-    SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
+    GroupedAxis, Grouping, ItemKind, Key, Level, Mode, OpenState, Outline, Placement, Searched,
+    Snapshot, SortDirection, SortSpec, StripItem, TextQuery, Value, ViewSpec,
 };
 
 /// Largest canvas drawn, in characters; larger viewports are clipped.
@@ -115,6 +115,9 @@ fn summary(snap: &Snapshot) -> String {
         }
         if snap.outline_focused() {
             out.push_str(" in outline");
+            if !snap.tiers(Axis::Rows).is_empty() {
+                let _ = write!(out, " tier {}", snap.focused_tier());
+            }
         }
         for axis in Axis::ALL {
             if snap.locating(axis) {
@@ -282,6 +285,51 @@ fn strip(snap: &Snapshot, axis: Axis) -> String {
             out.push_str(&item_text(snap, axis, item));
         }
     }
+    out.push_str(&spans_text(snap, axis));
+    out
+}
+
+/// The tiers and spans of an axis in header form: ` | tiers` and each
+/// tier's range across the band, then ` | spans` and each span as
+/// ` t{tier}#{key}{+ open, - closed} {first}-{last}@{start}+{length}`
+/// along the axis, its visible part after `~` where that differs, and `<`
+/// or `>` where it is cut. Empty in outline form.
+fn spans_text(snap: &Snapshot, axis: Axis) -> String {
+    let tiers = snap.tiers(axis);
+    if tiers.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(" | tiers");
+    for t in tiers {
+        let _ = write!(out, " {}..{}", t.start, t.end);
+    }
+    out.push_str(" | spans");
+    let along = |r: &binnacle_core::Rect| match axis {
+        Axis::Rows => (r.y, r.height),
+        Axis::Cols => (r.x, r.width),
+    };
+    for span in snap.spans(axis) {
+        let open = match span.open {
+            OpenState::Open => "+",
+            _ => "-",
+        };
+        let (start, length) = along(&span.rect);
+        let _ = write!(
+            out,
+            " t{}#{}{open} {}-{}@{start}+{length}",
+            span.tier, span.key.0, span.first, span.last
+        );
+        let visible = along(&span.visible);
+        if visible != (start, length) {
+            let _ = write!(out, "~{}+{}", visible.0, visible.1);
+        }
+        if span.cut_before {
+            out.push('<');
+        }
+        if span.cut_after {
+            out.push('>');
+        }
+    }
     out
 }
 
@@ -406,6 +454,13 @@ fn grouping_text(grouping: &Grouping) -> String {
         let p = grouping.axis(axis).grand_total;
         if p != Placement::Off {
             let _ = write!(text, " total {axis:?} {}", placement(p));
+        }
+    }
+    // Only a form other than the axis's default is written.
+    for axis in Axis::ALL {
+        let form = grouping.axis(axis).form;
+        if form != GroupedAxis::new(axis).form {
+            let _ = write!(text, " {axis:?} {form:?} form");
         }
     }
     for axis in Axis::ALL {

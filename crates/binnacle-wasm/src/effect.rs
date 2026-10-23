@@ -9,7 +9,7 @@ use binnacle_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::grouping::{WireDepth, WireGrouping};
+use crate::grouping::{WireDepth, WireForm, WireGrouping};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -420,6 +420,10 @@ pub enum WireViewEdit {
         from: WireCondition,
         to: WireCondition,
     },
+    SetForm {
+        axis: WireAxis,
+        form: WireForm,
+    },
     Other,
 }
 
@@ -489,6 +493,10 @@ impl From<ViewEdit> for WireViewEdit {
             ViewEdit::ReplaceSlicer { from, to } => WireViewEdit::ReplaceSlicer {
                 from: (&from).into(),
                 to: (&to).into(),
+            },
+            ViewEdit::SetForm { axis, form } => WireViewEdit::SetForm {
+                axis: axis.into(),
+                form: form.into(),
             },
             _ => WireViewEdit::Other,
         }

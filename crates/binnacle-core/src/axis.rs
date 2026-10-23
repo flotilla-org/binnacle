@@ -52,6 +52,9 @@ pub(crate) struct AxisState {
     pub regions: [Range<f32>; 2],
     /// The outlines the Table Source sent with the Window, by Key.
     pub outlines: HashMap<Key, Outline>,
+    /// The sizes of the tiers of the Header Band heading this axis's items
+    /// in header form, as the host set them (see [`crate::Grid::set_tiers`]).
+    pub tier_sizes: Vec<f32>,
 }
 
 impl AxisState {
@@ -75,6 +78,7 @@ impl AxisState {
             slide: [0.0; 2],
             regions: [0.0..0.0, 0.0..0.0],
             outlines: HashMap::new(),
+            tier_sizes: Vec::new(),
         }
     }
 

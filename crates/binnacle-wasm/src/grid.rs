@@ -2,8 +2,8 @@
 //! Action or setting is a few lines here plus its call in `web/src`.
 
 use binnacle_core::{
-    Action, Aggregate, AxisConfig, Depth, Grid, Key, Outline, PointerEvent, TextQuery, Totals,
-    Viewport,
+    Action, Aggregate, AxisConfig, Depth, Form, Grid, Key, Outline, PointerEvent, TextQuery,
+    Totals, Viewport,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -178,6 +178,22 @@ impl WebGrid {
 
     pub fn set_header(&mut self, a: u8, thickness: f32) {
         self.grid.set_header(axis(a), thickness);
+    }
+
+    /// The sizes of the tiers of the Header Band heading axis `a`'s items
+    /// in header form, outermost first; tiers past them share what is left.
+    pub fn set_tiers(&mut self, a: u8, sizes: &[f32]) {
+        self.grid.set_tiers(axis(a), sizes);
+    }
+
+    /// Draws axis `a`'s groups as an outline column (0) or as spanning
+    /// headers (1): a view edit the host answers like any other.
+    pub fn set_form(&mut self, a: u8, form: u8) {
+        let form = match form {
+            1 => Form::Header,
+            _ => Form::Outline,
+        };
+        self.grid.set_form(axis(a), form);
     }
 
     pub fn set_gap(&mut self, a: u8, gap: f32) {

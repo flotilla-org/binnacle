@@ -68,11 +68,14 @@ export function bandWidth(
 ): number | null {
   const { measure, theme } = parts;
   let width = label;
-  for (const row of s.rows.strip) {
+  // In header form each label starts past the level columns spanning it.
+  const header = s.rows.tiers.length > 0;
+  for (const [i, row] of s.rows.strip.entries()) {
     if (row.key === null && complete) return null;
     const { outline } = row;
     const font = outline && outline.kind !== "leaf" ? theme.headerFont : theme.font;
-    width = Math.max(width, measure.width(content.label("rows", row), font) + (outline ? outlineInset(outline) : 0));
+    const inset = header ? (s.rows.headers[i]?.rect.x ?? 0) : outline ? outlineInset(outline) : 0;
+    width = Math.max(width, measure.width(content.label("rows", row), font) + inset);
   }
   // Room for a sort marker while a row shown sorts the columns, or will.
   const marked = sorts || s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);

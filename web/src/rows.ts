@@ -190,6 +190,14 @@ interface GroupedMatch<ColId> {
   ancestors: number[];
 }
 
+/** A Summary Item as `WebMemory.summary` reads it, by its Key: its group's field (a column index) and value. */
+interface SummaryOf {
+  kind: "group" | "subtotal" | "grandTotal";
+  group: { field: bigint; value: string | null } | null;
+  aggregates: (number | null)[];
+  children: number;
+}
+
 /** The top bit of a Summary Item's Key, which its negative row ID leaves out. */
 const SUMMARY = 1n << 63n;
 const summaryId = (key: bigint) => -Number(key & (SUMMARY - 1n)) - 1;
@@ -776,6 +784,14 @@ export function fromRows<R extends object>(
   /** A Summary Item as last listed, else read where it sits now (a pinned Grand Total out of view). */
   const summaryOf = (id: number): RowsGroup<ColId> | undefined => {
     if (!groups.has(id) && memory().grouped()) {
+      // A group in header form has no Position, but the layer knows it.
+      const known = memory().summary(summaryKey(id)) as SummaryOf | undefined;
+      if (known) {
+        const field = known.group ? columns[Number(known.group.field)]!.key : null;
+        const count = known.aggregates[counted()] ?? known.children;
+        groups.set(id, { kind: known.kind, field, value: known.group?.value ?? null, count, aggregates: known.aggregates });
+        return groups.get(id);
+      }
       const [code, position] = memory().locate_summary(summaryKey(id));
       if (code === 0) groupedWindow(position!, position! + 1);
     }
@@ -944,6 +960,12 @@ export function fromRows<R extends object>(
       move: (ids, to) => move(ROWS, ids, to),
       movable: () =>
         levels.length === 0 ? memory().movable(ROWS) : options.sortedMoves !== "refuse" || leafSort().length === 0,
+      spanLabel: (id) => {
+        const group = summaryOf(id);
+        if (!group) return "";
+        const label = group.value ?? "(blank)";
+        return counted() < 0 ? label : `${label} (${group.count})`;
+      },
       groupLabel: (id, outline) => {
         const group = summaryOf(id);
         if (!group) return "";

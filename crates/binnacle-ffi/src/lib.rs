@@ -23,7 +23,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 10;
+pub const BINNACLE_ABI_VERSION: u32 = 11;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -117,6 +117,7 @@ pub const BINNACLE_VIEW_EDIT_EXPAND_TO: u32 = 16;
 pub const BINNACLE_VIEW_EDIT_ADD_SLICER: u32 = 17;
 pub const BINNACLE_VIEW_EDIT_REMOVE_SLICER: u32 = 18;
 pub const BINNACLE_VIEW_EDIT_REPLACE_SLICER: u32 = 19;
+pub const BINNACLE_VIEW_EDIT_SET_FORM: u32 = 20;
 
 pub const BINNACLE_CONDITION_OTHER: u32 = 0;
 pub const BINNACLE_CONDITION_TEXT: u32 = 1;
@@ -273,6 +274,9 @@ pub struct BinnacleGrid {
     /// The last Snapshot's pending move Keys and move refusal.
     pending_move: Vec<u64>,
     refusal: String,
+    /// The last Snapshot's header-form tiers and spans per axis.
+    tiers: [Vec<BinnacleExtent>; 2],
+    spans: [Vec<BinnacleHeaderSpan>; 2],
 }
 
 /// Values in C form, with the aggregate names and parameters they point
@@ -586,10 +590,7 @@ impl CView {
                 levels: levels.as_ptr(),
                 levels_len: levels.len(),
                 grand_total: placement_tag(g.grand_total),
-                form: match g.form {
-                    Form::Outline => BINNACLE_FORM_OUTLINE,
-                    Form::Header => BINNACLE_FORM_HEADER,
-                },
+                form: form_tag(g.form),
                 expand_all,
                 expand_depth,
                 except: except.as_ptr(),
@@ -638,6 +639,32 @@ pub struct BinnacleWindowRequests {
 pub struct BinnacleRange {
     pub start: u64,
     pub end: u64,
+}
+
+/// Where a tier lies across its Header Band.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleExtent {
+    pub start: f32,
+    pub end: f32,
+}
+
+/// One spanning cell of a tier in header form.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleHeaderSpan {
+    pub axis: u32,
+    pub tier: u32,
+    pub key: u64,
+    pub has_field: u32,
+    pub field: u64,
+    pub open: u32,
+    pub first: u64,
+    pub last: u64,
+    pub rect: BinnacleRect,
+    pub visible: BinnacleRect,
+    pub cut_before: u32,
+    pub cut_after: u32,
 }
 
 /// A lit pin zone while headers are dragged.
@@ -828,6 +855,10 @@ pub struct BinnacleAxisSnapshot {
     pub leading_pins_len: usize,
     pub trailing_pins: *const u64,
     pub trailing_pins_len: usize,
+    pub tiers: *const BinnacleExtent,
+    pub tiers_len: usize,
+    pub spans: *const BinnacleHeaderSpan,
+    pub spans_len: usize,
 }
 
 #[repr(C)]
@@ -880,6 +911,7 @@ pub struct BinnacleSnapshot {
     pub slicers_len: usize,
     pub values: *const BinnacleListedValue,
     pub values_len: usize,
+    pub focused_tier: u32,
 }
 
 #[repr(C)]
@@ -1157,6 +1189,7 @@ pub struct BinnacleViewEdit {
     pub keys_len: usize,
     pub expand_all: u32,
     pub expand_depth: u32,
+    pub form: u32,
 }
 
 impl Default for BinnacleViewEdit {
@@ -1170,6 +1203,7 @@ impl Default for BinnacleViewEdit {
             keys_len: 0,
             expand_all: 0,
             expand_depth: 0,
+            form: BINNACLE_FORM_OUTLINE,
         }
     }
 }
@@ -1484,6 +1518,22 @@ impl From<Rect> for BinnacleRect {
             width: r.width,
             height: r.height,
         }
+    }
+}
+
+/// The form a `BINNACLE_FORM_*` tag names.
+fn form(tag: u32) -> Option<Form> {
+    match tag {
+        BINNACLE_FORM_OUTLINE => Some(Form::Outline),
+        BINNACLE_FORM_HEADER => Some(Form::Header),
+        _ => None,
+    }
+}
+
+fn form_tag(form: Form) -> u32 {
+    match form {
+        Form::Outline => BINNACLE_FORM_OUTLINE,
+        Form::Header => BINNACLE_FORM_HEADER,
     }
 }
 
@@ -1843,11 +1893,7 @@ impl BinnacleGrouping {
             let except = unsafe { borrowed(a.except, a.except_len) };
             let g = grouping.axis_mut(axis);
             g.grand_total = placement(a.grand_total)?;
-            g.form = match a.form {
-                BINNACLE_FORM_OUTLINE => Form::Outline,
-                BINNACLE_FORM_HEADER => Form::Header,
-                _ => return None,
-            };
+            g.form = form(a.form)?;
             g.expand = Expand {
                 depth,
                 except: except.iter().map(|&k| Key(k)).collect(),
@@ -2007,6 +2053,8 @@ pub extern "C" fn binnacle_grid_new(
         ancestors: Default::default(),
         outline_texts: Default::default(),
         paths: Default::default(),
+        tiers: Default::default(),
+        spans: Default::default(),
         headers: Default::default(),
         picked: Default::default(),
         runs: Default::default(),
@@ -2359,6 +2407,43 @@ pub unsafe extern "C" fn binnacle_grid_set_header(
 }
 
 /// # Safety
+/// `grid` is NULL or a live handle; a non-NULL `sizes` is valid for `len`
+/// reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_tiers(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    sizes: *const f32,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let sizes = unsafe { borrowed(sizes, len) };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.set_tiers(axis, sizes))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_form(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    form_tag: u32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_form(axis(axis_tag)?, form(form_tag)?);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_set_pin_zone(
@@ -2599,6 +2684,34 @@ impl BinnacleGrid {
                 );
             }
         }
+        for axis in Axis::ALL {
+            let tiers = &mut self.tiers[axis.index()];
+            tiers.clear();
+            tiers.extend((snap.tiers(axis).iter()).map(|t| BinnacleExtent {
+                start: t.start,
+                end: t.end,
+            }));
+            let spans = &mut self.spans[axis.index()];
+            spans.clear();
+            spans.extend(snap.spans(axis).iter().map(|s| BinnacleHeaderSpan {
+                axis: axis_tag(s.axis),
+                tier: s.tier,
+                key: s.key.0,
+                has_field: flag(s.field.is_some()),
+                field: s.field.map_or(0, |k| k.0),
+                open: match s.open {
+                    OpenState::Open => BINNACLE_OPEN_STATE_OPEN,
+                    OpenState::Closed => BINNACLE_OPEN_STATE_CLOSED,
+                    OpenState::CantOpen => BINNACLE_OPEN_STATE_CANT_OPEN,
+                },
+                first: s.first,
+                last: s.last,
+                rect: BinnacleRect::from(s.rect),
+                visible: BinnacleRect::from(s.visible),
+                cut_before: flag(s.cut_before),
+                cut_after: flag(s.cut_after),
+            }));
+        }
         let range = snap.selection_range();
         for axis in Axis::ALL {
             let runs = &mut self.runs[axis.index()];
@@ -2621,6 +2734,8 @@ impl BinnacleGrid {
             let hidden = &self.hidden_listed[axis.index()];
             let runs = &self.runs[axis.index()];
             let [leading_pins, trailing_pins] = &self.pins[axis.index()];
+            let tiers = &self.tiers[axis.index()];
+            let spans = &self.spans[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -2668,6 +2783,10 @@ impl BinnacleGrid {
                 leading_pins_len: leading_pins.len(),
                 trailing_pins: trailing_pins.as_ptr(),
                 trailing_pins_len: trailing_pins.len(),
+                tiers: tiers.as_ptr(),
+                tiers_len: tiers.len(),
+                spans: spans.as_ptr(),
+                spans_len: spans.len(),
                 selection_runs: runs.as_ptr(),
                 selection_runs_len: runs.len(),
             }
@@ -2785,6 +2904,7 @@ impl BinnacleGrid {
             slicers_len: self.listed_slicers.1.len(),
             values: self.listed_values.1.as_ptr(),
             values_len: self.listed_values.1.len(),
+            focused_tier: snap.focused_tier(),
         }
     }
 
@@ -2962,6 +3082,10 @@ impl BinnacleGrid {
                             ..on(BINNACLE_VIEW_EDIT_EXPAND_TO, axis)
                         }
                     }
+                    ViewEdit::SetForm { axis, form } => BinnacleViewEdit {
+                        form: form_tag(form),
+                        ..on(BINNACLE_VIEW_EDIT_SET_FORM, axis)
+                    },
                     _ => BinnacleViewEdit::default(),
                 };
             }

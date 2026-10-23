@@ -48,8 +48,9 @@ pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 
 use binnacle_core::{
-    Action, AggregateValue, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort, ItemKind,
-    Key, Mode, MoveRefusal, OpenState, Outline, Snapshot, SortDirection, StripItem, Value,
+    Action, AggregateValue, Axis, Cursor, DropTarget, Edge, HeaderPlacement, HeaderSort,
+    HeaderSpan, ItemKind, Key, Mode, MoveRefusal, OpenState, Outline, Snapshot, SortDirection,
+    StripItem, Value,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -105,6 +106,16 @@ pub trait Content {
             ItemKind::Subtotal => format!("{value} total"),
             _ => value,
         }
+    }
+
+    /// The label of a group drawn in header form as a span over its items
+    /// in a level column of the row Header Band, after its disclosure
+    /// mark. Its Group Item is in no Window, so the host names it by its
+    /// Key (`GroupedMemory::summary` gives its path): empty unless
+    /// overridden.
+    fn span_label(&self, span: &HeaderSpan) -> String {
+        let _ = span;
+        String::new()
     }
 
     /// The name of a value of a grouped table, drawn as its caption in the
@@ -178,7 +189,8 @@ pub fn animating(snapshot: &Snapshot) -> bool {
     let toggling = (snapshot.drawn(Axis::Rows)).any(|r| {
         r.key
             .is_some_and(|k| snapshot.toggle_pending(Axis::Rows, k))
-    });
+    }) || (snapshot.spans(Axis::Rows).iter())
+        .any(|s| snapshot.toggle_pending(Axis::Rows, s.key));
     sorting || toggling || locating(snapshot) && snapshot.focus_rect().is_some()
 }
 
@@ -316,6 +328,8 @@ pub fn render_with(
         .map(|(j, c)| (c, col_span(j)))
         .collect();
     let row_span = spans(snapshot, Axis::Rows);
+    // Header form: the band's level columns, which spans fill.
+    let tiers = snapshot.tiers(Axis::Rows);
     let rows = snapshot.drawn(Axis::Rows).enumerate();
     for ((i, r), h) in rows.zip(snapshot.headers(Axis::Rows)) {
         let span_y = row_span(i);
@@ -325,12 +339,19 @@ pub fn render_with(
         // An item a grouped axis's source has not answered yet draws
         // pending, as its cells do, rather than a row number.
         let unanswered = r.key.is_none() && grouped.is_some();
+        // In header form a closed group's Subtotal sits under its span,
+        // which names it.
+        let under_span = |o: &Outline| {
+            let tier = (o.depth as usize).checked_sub(1).and_then(|t| tiers.get(t));
+            o.kind == ItemKind::Subtotal && tier.is_some_and(|t| h.rect.x > t.start)
+        };
         let number = r.key.map_or_else(
             || match unanswered {
                 true => LOADING.to_string(),
                 false => r.position.saturating_add(1).to_string(),
             },
             |k| match outline {
+                Some(o) if !tiers.is_empty() && under_span(o) => String::new(),
                 Some(o) if o.kind.is_summary() => content.group_label(k, o),
                 _ => content.row_header(k, r.position),
             },
@@ -341,6 +362,7 @@ pub fn render_with(
         // sits flush.
         let pending = (r.key.zip(ctx.marks)).is_some_and(|(k, m)| m.pending(k, ctx.now));
         let (indent, mark) = match outline {
+            _ if !tiers.is_empty() => (String::new(), ""),
             Some(o) => (
                 "  ".repeat(o.depth as usize),
                 match (o.kind, o.open) {
@@ -355,6 +377,7 @@ pub fn render_with(
         };
         // In the outline column focus is on the focused row's band cell.
         let band_focused = snapshot.outline_focused()
+            && tiers.is_empty()
             && snapshot
                 .focus(Axis::Rows)
                 .is_some_and(|f| f.position == r.position);
@@ -378,7 +401,12 @@ pub fn render_with(
         if h.filter.not_applied {
             marker.push('!');
         }
-        let width = usize::try_from(cell(left)).unwrap_or(0);
+        // In header form the row's own header starts past its spans.
+        let x0 = match tiers.is_empty() {
+            true => 0.0,
+            false => h.rect.x.min(left),
+        };
+        let width = usize::try_from(cell(left) - cell(x0)).unwrap_or(0);
         let room = width.saturating_sub(marker.chars().count());
         let lead = indent.chars().count() + mark.chars().count();
         let label_room = room.saturating_sub(lead);
@@ -405,10 +433,20 @@ pub fn render_with(
             style = style.patch(theme.focus);
         }
         let clip = (0.0, left, span_y.start, span_y.end);
+        if x0 > 0.0 {
+            put(
+                buf,
+                area,
+                (0.0, r.offset),
+                clip,
+                &pad(String::new()),
+                band(theme.row_number, &h),
+            );
+        }
         put(
             buf,
             area,
-            (0.0, r.offset),
+            (x0, r.offset),
             clip,
             &pad(format!("{indent}{mark}{number:<label_room$}")),
             style,
@@ -419,7 +457,7 @@ pub fn render_with(
             put(buf, area, (at, r.offset), clip, mark.trim_end(), style);
         }
         if !marker.is_empty() {
-            let at = room as f32;
+            let at = x0 + room as f32;
             let style = style.patch(if h.filter.not_applied {
                 theme.error
             } else {
@@ -536,6 +574,7 @@ pub fn render_with(
             }
         }
     }
+    draw_spans(snapshot, content, ctx, theme, area, buf);
     if Axis::ALL.into_iter().any(|a| snapshot.count(a) == 0) {
         empty(ctx.empty, theme, (left, top), area, buf);
     }
@@ -619,6 +658,120 @@ pub fn render_with(
             _ => {}
         }
     }
+}
+
+/// Draws the spans of rows in header form, each in its level column: on
+/// the first line it shows, its disclosure mark (`⋯` once a toggle has
+/// waited a while for its answer) and label, kept in view while it
+/// scrolls; a thin rule on the lines below; and `›` on a side that goes on
+/// past the view or a pinned edge. Then focus in the band, on a whole span
+/// or a row's own header.
+fn draw_spans(
+    snapshot: &Snapshot,
+    content: &impl Content,
+    ctx: &RenderContext,
+    theme: &Theme,
+    area: Rect,
+    buf: &mut Buffer,
+) {
+    let mut base = theme.header.patch(theme.row_number);
+    if theme.invert_headers {
+        base = base.add_modifier(Modifier::REVERSED);
+    }
+    let style = base.patch(theme.group_item);
+    let spans = snapshot.spans(Axis::Rows);
+    for span in spans {
+        let (x, w) = (span.rect.x, span.rect.width);
+        let clip = (
+            x,
+            x + w,
+            span.visible.y,
+            span.visible.y + span.visible.height,
+        );
+        let lines = cell(span.visible.y)..cell(span.visible.y + span.visible.height);
+        let pending = ctx.marks.is_some_and(|m| m.pending(span.key, ctx.now));
+        let mark = match span.open {
+            _ if pending => "⋯",
+            OpenState::Open => "▾",
+            _ => "▸",
+        };
+        let width = usize::try_from(cell(x + w) - cell(x)).unwrap_or(0);
+        for y in lines.clone() {
+            let y = y as f32;
+            put(buf, area, (x, y), clip, &" ".repeat(width), style);
+            if y == lines.start as f32 {
+                let label = content.span_label(span);
+                let room = width.saturating_sub(3 + usize::from(span.cut_before));
+                let label = fit(&label, u32::try_from(room).unwrap_or(0));
+                put(buf, area, (x + 3.0, y), clip, &label, style);
+                put(
+                    buf,
+                    area,
+                    (x + 1.0, y),
+                    clip,
+                    mark,
+                    style.patch(theme.disclosure),
+                );
+            } else {
+                put(
+                    buf,
+                    area,
+                    (x + 1.0, y),
+                    clip,
+                    "│",
+                    style.patch(theme.border),
+                );
+            }
+        }
+        let end = x + w - 1.0;
+        if span.cut_before {
+            put(
+                buf,
+                area,
+                (end, lines.start as f32),
+                clip,
+                "›",
+                style.patch(theme.loading),
+            );
+        }
+        if span.cut_after {
+            let y = (lines.end - 1) as f32;
+            put(buf, area, (end, y), clip, "›", style.patch(theme.loading));
+        }
+    }
+    let Some((rect, along)) = tiers_focus(snapshot) else {
+        return;
+    };
+    let lines = cell(rect.y.max(along.start))..cell((rect.y + rect.height).min(along.end));
+    for y in lines {
+        for x in cell(rect.x)..cell(rect.x + rect.width) {
+            let inside =
+                (0..i64::from(area.width)).contains(&x) && (0..i64::from(area.height)).contains(&y);
+            if inside && let Some(c) = buf.cell_mut((area.x + x as u16, area.y + y as u16)) {
+                c.set_style(c.style().patch(theme.focus));
+            }
+        }
+    }
+}
+
+/// The focused band cell in header form, if drawn: its rectangle and
+/// where along the rows it may draw (a span's visible part, or the
+/// focused row's Strip).
+fn tiers_focus(snapshot: &Snapshot) -> Option<(binnacle_core::Rect, Range<f32>)> {
+    if snapshot.tiers(Axis::Rows).is_empty() || !snapshot.outline_focused() {
+        return None;
+    }
+    let rect = snapshot.focus_rect()?;
+    let span = (snapshot.spans(Axis::Rows).iter())
+        .find(|s| s.rect == rect && s.tier == snapshot.focused_tier());
+    let along = match span {
+        Some(s) => s.visible.y..s.visible.y + s.visible.height,
+        None => {
+            let key = snapshot.focus(Axis::Rows)?.key?;
+            span_of(snapshot, Axis::Rows, key)
+        }
+    };
+    Some((rect, along))
 }
 
 /// Draws a minimal inline editor over the edited cell, if it is visible:

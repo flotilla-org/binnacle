@@ -44,6 +44,8 @@ enum Op {
     /// the group headed by a Key.
     Toggle(u8, Axis, Key),
     ExpandTo(Axis, Depth),
+    SetTiers(Axis, Vec<f32>),
+    SetForm(Axis, Form),
     Pointer(PointerEvent),
     /// A primary press, then a move away (no release) or the release.
     Gesture([PointerEvent; 2]),
@@ -638,7 +640,7 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(35)) {
+    match tc.draw(gs::integers::<u8>().max_value(37)) {
         33 => Op::Toggle(
             tc.draw(gs::integers::<u8>().max_value(3)),
             Axis::Rows,
@@ -791,7 +793,21 @@ fn op(tc: &TestCase) -> Op {
                 .collect(),
         ),
         9 => Op::Pointer(PointerEvent::up(tc.draw(coord()), tc.draw(coord()))),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(86))),
+        35 => Op::SetTiers(
+            tc.draw(axes()),
+            tc.draw(
+                gs::vecs(hegel::one_of!(
+                    gs::sampled_from(vec![-1.0f32, f32::NAN, f32::INFINITY]),
+                    gs::floats::<f32>().min_value(0.0).max_value(8.0),
+                ))
+                .max_size(4),
+            ),
+        ),
+        36 => Op::SetForm(
+            tc.draw(axes()),
+            tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
+        ),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(88))),
     }
 }
 
@@ -1082,6 +1098,8 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             78 => binnacle_grid_expand_all(h, 2, 0),
             79 => binnacle_grid_expand_to(h, 2, 0, 1),
             80 => binnacle_grid_expand_to(h, ROWS, 2, 1),
+            87 => binnacle_grid_set_tiers(h, 2, std::ptr::null(), 0),
+            88 => binnacle_grid_set_form(h, ROWS, 2),
             61..=64 => {
                 let mut bad = BinnacleOutline::default();
                 match which {
@@ -1348,6 +1366,42 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
             let want: Vec<u64> = rust.pins(axis, edge).map(|k| k.0).collect();
             assert_eq!(got, want, "{axis:?} {edge:?} pins");
         }
+        let tiers = unsafe { slice::from_raw_parts(a.tiers, a.tiers_len) };
+        let got: Vec<_> = tiers.iter().map(|t| t.start..t.end).collect();
+        assert_eq!(got, rust.tiers(axis), "{axis:?} tiers");
+        let spans = unsafe { slice::from_raw_parts(a.spans, a.spans_len) };
+        assert_eq!(spans.len(), rust.spans(axis).len(), "{axis:?} spans");
+        for (got, want) in spans.iter().zip(rust.spans(axis)) {
+            let open = match want.open {
+                OpenState::Open => BINNACLE_OPEN_STATE_OPEN,
+                OpenState::Closed => BINNACLE_OPEN_STATE_CLOSED,
+                OpenState::CantOpen => BINNACLE_OPEN_STATE_CANT_OPEN,
+            };
+            assert_eq!(
+                (got.axis, got.tier, got.key, got.open, got.first, got.last),
+                (
+                    tag(want.axis),
+                    want.tier,
+                    want.key.0,
+                    open,
+                    want.first,
+                    want.last
+                ),
+                "{want:?}"
+            );
+            assert_eq!((got.has_field != 0).then_some(Key(got.field)), want.field);
+            assert_eq!(
+                (got.cut_before != 0, got.cut_after != 0),
+                (want.cut_before, want.cut_after)
+            );
+            let same = |r: &BinnacleRect, w: &binnacle_core::Rect| {
+                same_f32(r.x, w.x)
+                    && same_f32(r.y, w.y)
+                    && same_f32(r.width, w.width)
+                    && same_f32(r.height, w.height)
+            };
+            assert!(same(&got.rect, &want.rect) && same(&got.visible, &want.visible));
+        }
     }
     let rect = |r: &BinnacleRect, w: &binnacle_core::Rect| {
         same_f32(r.x, w.x)
@@ -1426,6 +1480,7 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         rust.outline_focused(),
         "outline focused"
     );
+    assert_eq!(c.focused_tier, rust.focused_tier(), "focused tier");
     let pending = (c.has_pending_move != 0).then(|| {
         let keys = unsafe { slice::from_raw_parts(c.pending_move_keys, c.pending_move_keys_len) };
         (
@@ -1644,6 +1699,10 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                     ViewEdit::ReplaceSlicer { ref to, .. } => BinnacleViewEdit {
                         key: to.key.0,
                         ..on(19, Axis::Rows)
+                    },
+                    ViewEdit::SetForm { axis, form } => BinnacleViewEdit {
+                        form: u32::from(form == Form::Header),
+                        ..on(20, axis)
                     },
                     #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
                     _ => BinnacleViewEdit::default(),
@@ -2507,6 +2566,18 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     };
                     assert_eq!(c(h, tag(axis), key.0), want);
                     want
+                }
+                Op::SetTiers(axis, sizes) => {
+                    grid.set_tiers(axis, &sizes);
+                    binnacle_grid_set_tiers(h, tag(axis), sizes.as_ptr(), sizes.len())
+                }
+                Op::SetForm(axis, form) => {
+                    grid.set_form(axis, form);
+                    let form = match form {
+                        Form::Outline => BINNACLE_FORM_OUTLINE,
+                        Form::Header => BINNACLE_FORM_HEADER,
+                    };
+                    binnacle_grid_set_form(h, tag(axis), form)
                 }
                 Op::ExpandTo(axis, depth) => {
                     grid.expand_to(axis, depth);
@@ -4141,4 +4212,105 @@ fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
         assert_eq!(unsafe { binnacle_group_layer_held(h) }, layer.held());
     }
     unsafe { binnacle_group_layer_free(h) };
+}
+
+/// Rows grouped in header form, with tiers set and a row pinned, give the
+/// same tiers, spans, header rects and focused tier through the C API.
+#[test]
+fn header_form_through_the_c_api_mirrors_the_grid() {
+    let (rows, cols) = (
+        AxisConfig::new(6, 1.0).header(1.0),
+        AxisConfig::new(3, 5.0).header(12.0),
+    );
+    let c_config = |a: AxisConfig| BinnacleAxisConfig {
+        count: a.count,
+        default_size: a.default_size,
+        header: a.header,
+        gap: a.gap,
+    };
+    let h = binnacle_grid_new(c_config(rows), c_config(cols));
+    let mut grid = Grid::new(rows, cols);
+    let (north, aberdeen, bergen) = (Key(100), Key(110), Key(111));
+    let mut grouping = Grouping::rows_by(Key(1));
+    grouping.row_levels = vec![Level::field(Key(1)), Level::field(Key(2))];
+    grouping.rows.form = Form::Header;
+    let spec = ViewSpec::default().with_grouping(Some(grouping));
+    let outlines = [
+        Outline::leaf(vec![north, aberdeen]),
+        Outline::leaf(vec![north, aberdeen]),
+        Outline::subtotal(
+            vec![north, aberdeen],
+            Key(2),
+            Value::Text("Aberdeen".into()),
+        ),
+        Outline::leaf(vec![north, bergen]),
+        Outline::subtotal(vec![north, bergen], Key(2), Value::Text("Bergen".into())),
+        Outline::subtotal(vec![north], Key(1), Value::Text("North".into())),
+    ];
+    let sizes = [4.0f32, 6.0];
+    grid.view_applied(spec.clone(), Totals::unknown());
+    grid.set_tiers(Axis::Rows, &sizes);
+    unsafe {
+        with_c_view(&spec, |c| {
+            assert_eq!(
+                binnacle_grid_view_applied(h, c, &BinnacleTotals::default()),
+                1
+            )
+        });
+        assert_eq!(
+            binnacle_grid_set_tiers(h, ROWS, sizes.as_ptr(), sizes.len()),
+            1
+        );
+    }
+    let frame = |h, grid: &mut Grid| {
+        let mut requests = BinnacleWindowRequests::default();
+        assert_eq!(
+            unsafe { binnacle_grid_begin_frame(h, 30.0, 13.0, &mut requests) },
+            1
+        );
+        for (axis, range) in grid.begin_frame(Viewport::new(30.0, 13.0)) {
+            let k: Vec<u64> = range.clone().collect();
+            unsafe { binnacle_grid_set_window(h, tag(axis), range.start, k.as_ptr(), k.len()) };
+            let keys: Vec<Key> = k.into_iter().map(Key).collect();
+            grid.set_window(axis, range.start, &keys);
+            if axis == Axis::Rows {
+                let part = &outlines[range.start as usize..range.end as usize];
+                grid.set_outlines(axis, range.start, part);
+                with_c_outlines(part, |c| unsafe {
+                    binnacle_grid_set_outlines(h, ROWS, range.start, c.as_ptr(), c.len())
+                });
+            }
+        }
+        let mut snap = unsafe { std::mem::zeroed::<BinnacleSnapshot>() };
+        assert_eq!(unsafe { binnacle_grid_snapshot(h, &mut snap) }, 1);
+        let rust = grid.snapshot();
+        unsafe { check_snapshot(&snap, &rust) };
+        (snap.axes[ROWS as usize].spans_len, snap.focused_tier)
+    };
+    assert_eq!(frame(h, &mut grid), (3, 0), "North, Aberdeen and Bergen");
+    grid.pin(Axis::Rows, Edge::Leading, Key(0));
+    unsafe { binnacle_grid_pin(h, ROWS, BINNACLE_EDGE_LEADING, 0) };
+    frame(h, &mut grid);
+    for e in [PointerEvent::down(13.0, 2.5), PointerEvent::up(13.0, 2.5)] {
+        grid.pointer(e);
+        assert_eq!(unsafe { binnacle_grid_pointer(h, pointer_event(e)) }, 1);
+    }
+    let left = Action::MoveFocus {
+        axis: Axis::Cols,
+        by: FocusStep::Item,
+        forward: false,
+        extend: false,
+    };
+    assert_eq!(unsafe { send(h, &left) }, 1);
+    grid.action(left);
+    let (spans, tier) = frame(h, &mut grid);
+    assert!(spans > 3, "the pinned edge breaks spans");
+    assert_eq!(tier, 1, "Left from the body enters the innermost level");
+    grid.set_form(Axis::Rows, Form::Outline);
+    assert_eq!(
+        unsafe { binnacle_grid_set_form(h, ROWS, BINNACLE_FORM_OUTLINE) },
+        1
+    );
+    unsafe { check_effects(h, &mut grid) };
+    unsafe { binnacle_grid_free(h) };
 }

@@ -192,6 +192,32 @@ export interface AxisSnapshot {
   movable: boolean;
   /** The Keys pinned to each edge, in pin order, dormant pins (their items gone for now) included. */
   pins: { leading: bigint[]; trailing: bigint[] };
+  /** In header form, where each tier lies across the Header Band, outermost first; empty otherwise. */
+  tiers: Span[];
+  /** In header form, each group's spanning cell in each Strip it is drawn in. */
+  spans: HeaderSpan[];
+}
+
+/**
+ * A group drawn in header form: one spanning cell at `tier` (0 outermost)
+ * over the items `first` to `last` of one Strip. `visible` is the part of
+ * `rect` its Strip draws, where the label goes; `cutBefore` and `cutAfter`
+ * say the group goes on past that side.
+ */
+export interface HeaderSpan {
+  axis: AxisName;
+  tier: number;
+  key: bigint;
+  field: bigint | null;
+  open: "open" | "closed";
+  first: number;
+  last: number;
+  rect: Rect;
+  visible: Rect;
+  cutBefore: boolean;
+  cutAfter: boolean;
+  /** Whether a toggle of this group waits for its answer. */
+  togglePending: boolean;
 }
 
 export type Mode =
@@ -264,8 +290,10 @@ export interface Snapshot {
   requestedView: KeyedViewSpec | null;
   /** Whether an answer to a View Spec request is due. */
   viewPending: boolean;
-  /** Focus is in the outline column (the row Header Band of rows grouped in outline form), on the focused row's band cell. */
+  /** Focus is in the row Header Band of grouped rows: the outline column, or in header form a level column. */
   outlineFocused: boolean;
+  /** In header form, the tier (level column) the focus is on while `outlineFocused`. */
+  focusedTier: number;
   /** The move requested and not yet answered: its axis and Keys. No other move starts until it is answered. */
   pendingMove: { axis: AxisName; keys: bigint[] } | null;
   /** The last move the Table Source refused and why, until the next press. */
@@ -592,6 +620,21 @@ function readAxis(r: Reader): AxisSnapshot {
   const hideSupport = r.flag();
   const hideCap = r.num();
   const pins = { leading: r.list(() => r.key()), trailing: r.list(() => r.key()) };
+  const tiers = r.list(() => ({ start: r.num(), end: r.num() }));
+  const spans = r.list(() => ({
+    axis: r.axis(),
+    tier: r.num(),
+    key: r.key(),
+    field: r.optKey(),
+    open: r.num() === 0 ? ("open" as const) : ("closed" as const),
+    first: r.num(),
+    last: r.num(),
+    rect: r.rect(),
+    visible: r.rect(),
+    cutBefore: r.flag(),
+    cutAfter: r.flag(),
+    togglePending: r.flag(),
+  }));
   return {
     count,
     extent,
@@ -615,6 +658,8 @@ function readAxis(r: Reader): AxisSnapshot {
     levels,
     movable,
     pins,
+    tiers,
+    spans,
   };
 }
 
@@ -700,6 +745,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
   const requestedView = r.opt(() => r.view());
   const viewPending = r.flag();
   const outlineFocused = r.flag();
+  const focusedTier = r.num();
   const pendingMove = r.opt(() => ({ axis: r.axis(), keys: r.list(() => r.key()) }));
   const moveRefusal = r.opt(() => ({ axis: r.axis(), reason: r.text() }));
   const find = r.opt(() => {
@@ -742,6 +788,7 @@ export function decodeSnapshot(numbers: Float64Array, keys: BigUint64Array): Sna
     requestedView,
     viewPending,
     outlineFocused,
+    focusedTier,
     pendingMove,
     moveRefusal,
     find,

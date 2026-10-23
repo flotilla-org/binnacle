@@ -24,7 +24,7 @@ use wasm_bindgen::prelude::*;
 use crate::codes::{self, axis, position};
 use crate::effect::WireCondition;
 use crate::grid::to_js;
-use crate::grouping::{WireGrouping, WireOutline};
+use crate::grouping::{WireGroupOf, WireGrouping, WireItemKind, WireOutline};
 
 /// One sort column's keys, staged until [`WebMemory::sort`].
 enum Staged {
@@ -134,6 +134,17 @@ struct FoundItem {
     ancestors: Vec<u64>,
     field: Option<u64>,
     label: Option<String>,
+}
+
+/// A Summary Item as [`WebMemory::summary`] reads it: its kind, its group's
+/// innermost field and value (none for the Grand Total), its aggregates
+/// and how many children its group has.
+#[derive(Serialize)]
+struct SummaryOf {
+    kind: WireItemKind,
+    group: Option<WireGroupOf>,
+    aggregates: Vec<Option<f64>>,
+    children: f64,
 }
 
 #[wasm_bindgen]
@@ -448,6 +459,32 @@ impl WebMemory {
         self.layer.refresh();
         self.settle();
         0
+    }
+
+    /// The Summary Item with the layer's Key `key` as the rows are grouped
+    /// now, `undefined` if the layer does not know it: in header form a
+    /// group has no Position, but its span still names it by this Key.
+    pub fn summary(&self, key: u64) -> JsValue {
+        let Some(s) = self.layer.summary(Key(key)) else {
+            return JsValue::UNDEFINED;
+        };
+        to_js(&SummaryOf {
+            kind: match s.kind {
+                ItemKind::Leaf => WireItemKind::Leaf,
+                ItemKind::Group => WireItemKind::Group,
+                ItemKind::Subtotal => WireItemKind::Subtotal,
+                ItemKind::GrandTotal => WireItemKind::GrandTotal,
+            },
+            group: s.path.last().map(|(field, value)| WireGroupOf {
+                field: field.0,
+                value: match value {
+                    Value::Text(t) => Some(t.clone()),
+                    Value::Blank => None,
+                },
+            }),
+            aggregates: s.aggregates.iter().map(|f| f.number()).collect(),
+            children: s.children as f64,
+        })
     }
 
     /// Stages the next sort item's keys as numbers, one per base item of

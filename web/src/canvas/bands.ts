@@ -223,6 +223,7 @@ export function paintRowNumbers(p: PaintContext): void {
   ctx.textAlign = "right";
   // On a grouped axis an item has no label until the source says what it is.
   const grouped = (s.appliedView.grouping?.rowLevels.length ?? 0) > 0;
+  const header = s.rows.tiers.length > 0;
   for (const [i, h] of s.rows.headers.entries()) {
     const outline = s.rows.strip[i]?.outline ?? null;
     const togglePending = s.rows.strip[i]?.togglePending ?? false;
@@ -250,7 +251,13 @@ export function paintRowNumbers(p: PaintContext): void {
     const room = left - 2 * PAD - (mark ? MARKED : 0) - inset;
     const color = loading ? theme.loading : h.hovered ? theme.headerHovered.color : (role?.color ?? theme.rowNumber.color);
     const y = h.rect.y + h.rect.height / 2;
-    if (outline) paintOutline(p, outline, text, color, y, room, p.markPending(h.key));
+    // In header form the spans stand for the groups: a Summary Item's label
+    // starts where its header does, past them.
+    if (header && outline && outline.kind !== "leaf") {
+      // A closed group's Subtotal sits under its span, which names it.
+      if (!underOwnSpan(s, h.position, outline)) paintSummary(p, h, text, color, y);
+    }
+    else if (outline && !header) paintOutline(p, outline, text, color, y, room, p.markPending(h.key));
     else {
       ctx.fillStyle = color;
       ctx.fillText(measure.fit(text, theme.font, room), left - PAD - (mark ? MARKED : 0), y);
@@ -299,6 +306,27 @@ function paintOutline(
   ctx.fillText(measure.fit(text, font, room - (x - PAD)), x, y);
   ctx.textAlign = "right";
   ctx.font = theme.font;
+}
+
+/** Whether a Subtotal in header form stands under its own group's span: the group is closed. */
+function underOwnSpan(s: Snapshot, position: number, outline: KeyedOutline): boolean {
+  const group = outline.ancestors.at(-1);
+  if (outline.kind !== "subtotal" || group === undefined) return false;
+  const tier = outline.ancestors.length - 1;
+  return s.rows.spans.some((sp) => sp.key === group && sp.tier === tier && sp.first <= position && position <= sp.last);
+}
+
+/** A Summary Item's label in header form, left-aligned in its header in the header font, clear of its filter button. */
+function paintSummary(p: PaintContext, h: HeaderPlacement, text: string, color: string, y: number): void {
+  const { ctx, theme, measure } = p;
+  const { rect } = h;
+  const inset = rowFilterRoom(p.filterButtons.rows, h);
+  ctx.save();
+  ctx.textAlign = "left";
+  ctx.font = theme.headerFont;
+  ctx.fillStyle = color;
+  ctx.fillText(measure.fit(text, theme.headerFont, rect.width - 2 * PAD - inset), rect.x + PAD + inset, y);
+  ctx.restore();
 }
 
 /** The corner: blank, or the name of the one value grouped rows show. */

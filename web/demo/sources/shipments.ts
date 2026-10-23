@@ -11,7 +11,10 @@
 // rows by this column" while not. Sorting by the grouped column orders the
 // groups; any other column orders the shipments within their group. Focus
 // stays on its shipment through grouping and ungrouping. Sorting by weight
-// orders the groups at every level by their total weight.
+// orders the groups at every level by their total weight. `&form=header`
+// draws the groups in header form instead: the region and port each a
+// column of the row band, each group one cell spanning its rows. A page
+// opened with a `form` shows a select in the toolbar to switch forms.
 //
 // The weight and crates columns hold numbers and the shipped column dates,
 // so their column menus offer "Equal to" through "Between" on a number or
@@ -41,12 +44,31 @@
 // and Leaves the grouping layer holds. Groups not yet answered, and Leaves,
 // draw pending (a "…" in the band and loading cells) until they arrive.
 
-import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, groupedSource, LAYOUT_VERSION, rowsBy, textRenderer, type Condition, type TableSource } from "../../src";
+import { createColumnMenu, createFilterBar, createFindBar, fromRows, GridWidget, groupedSource, LAYOUT_VERSION, rowsBy, textRenderer, type Condition, type GroupedAxis, type TableSource } from "../../src";
 import { AGGREGATE_PACES, slowBackend, type AggregatePace } from "./aggregates";
 import type { DemoSource } from "./demo-source";
 import { layoutControls } from "./layout";
 import { PORTS } from "./records-data";
 import { day, SHIPMENTS, shipments, type Shipment } from "./shipments-data";
+
+/** The `form` the page asks for, if any: `&form=header` draws each level as a column of the row band. */
+const askedForm = () => new URL(location.href).searchParams.get("form");
+const initialForm = (): GroupedAxis["form"] => (askedForm() === "header" ? "header" : "outline");
+
+/** A select between outline form and header form for the grouped rows. */
+function formSelect(widget: GridWidget<number, keyof Shipment>): HTMLSelectElement {
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Group form");
+  for (const [value, text] of [
+    ["outline", "Groups as an outline"],
+    ["header", "Groups as level columns"],
+  ] as const) {
+    select.append(new Option(text, value));
+  }
+  select.value = initialForm();
+  select.addEventListener("change", () => widget.setRowForm(select.value === "header" ? "header" : "outline"));
+  return select;
+}
 
 const WIDTHS = { id: 64, region: 96, port: 128, shipped: 112, weight: 96, crates: 80 } as const;
 const HEADER = 28;
@@ -178,10 +200,13 @@ export const shipmentsDemo: DemoSource = {
           ],
           values: [{ field: "weight", aggregate: "sum" }, ...byRegion.values],
           // The regions open and the ports closed, so both show.
-          rowAxis: { ...byRegion.rowAxis, grandTotal: "after", expand: { depth: 1, except: [] } },
+          rowAxis: { ...byRegion.rowAxis, grandTotal: "after", form: initialForm(), expand: { depth: 1, except: [] } },
         },
       },
     });
+    // Only a page that asks for a form shows the select.
+    const form = askedForm() === null ? null : formSelect(widget);
+    if (form) toolbar.append(form);
     const layout = layoutControls(widget, "shipments");
     const columnMenu = createColumnMenu(widget);
     const bar = createFilterBar(widget, { columnMenu });
@@ -211,6 +236,7 @@ export const shipmentsDemo: DemoSource = {
         findButton.remove();
         reroute.remove();
         committed.remove();
+        form?.remove();
         layout.destroy();
         bar.destroy();
         columnMenu.destroy();

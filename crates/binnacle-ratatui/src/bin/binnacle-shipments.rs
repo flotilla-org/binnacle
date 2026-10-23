@@ -23,7 +23,10 @@
 //! Shift-click stretches by whole groups. Ctrl+C copies what is shown,
 //! labels first, to the terminal's clipboard (OSC 52), and Enter on a
 //! Summary Item's cell shows the drill-down it carries on the status line.
-//! `t` cycles the Theme presets, `q` quits.
+//! `f` switches the rows between outline and header form: in header form
+//! the region and port are columns of the row Header Band, each group one
+//! span over its rows with its mark and label, and Left and Right step
+//! between those columns. `t` cycles the Theme presets, `q` quits.
 //!
 //! Ctrl+F opens the find bar: it matches the regions' and ports' labels and
 //! the shipments' cells, counts the matches the closed ports hide ("3 of 12,
@@ -43,8 +46,8 @@ use std::time::{Duration, Instant};
 
 use binnacle_core::{
     AggregateValue, Axis, AxisConfig, Condition, ConditionKind, Depth, DrillDown, EditEnd, Effect,
-    Expand, FindQuery, Grid, Grouping, ItemKind, Key, Level, Outline, Placement, Position, Value,
-    ViewSpec, Viewport,
+    Expand, FindQuery, Form, Grid, Grouping, HeaderSpan, ItemKind, Key, Level, Outline, Placement,
+    Position, Value, ViewSpec, Viewport,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
@@ -188,6 +191,14 @@ impl Content for Text<'_> {
         match self.figure(row, None, Some("count")) {
             Some(Figure::Count(n)) => format!("{label} ({n})"),
             _ => label,
+        }
+    }
+
+    fn span_label(&self, span: &HeaderSpan) -> String {
+        let summary = self.source.summary(span.key);
+        match summary.as_ref().and_then(|s| s.path.last()) {
+            Some((_, Value::Text(t))) => t.clone(),
+            _ => "blank".into(),
         }
     }
 
@@ -373,6 +384,7 @@ fn main() -> io::Result<()> {
     );
     declare(&mut grid, &mut source, &rows);
     grid.set_find_support(source.over(&rows).find_support());
+    grid.set_tiers(Axis::Rows, &[8.0, 11.0]);
     grid.request_view(ViewSpec::default().with_grouping(Some(grouping())));
     let keymap = Keymap::preset(Preset::Chords);
     let controls = Controls::preset(Preset::Chords);
@@ -522,9 +534,11 @@ fn main() -> io::Result<()> {
                     layout.grid,
                     frame.buffer_mut(),
                 );
-                let grouped = match source.grouped(Axis::Rows) {
-                    true => "grouped",
-                    false => "plain",
+                let applied = snapshot.applied_view().grouping.as_ref();
+                let grouped = match applied.map(|g| (g.row_levels.is_empty(), g.rows.form)) {
+                    Some((false, Form::Header)) => "grouped, header form",
+                    Some((false, Form::Outline)) => "grouped, outline form",
+                    _ => "plain",
                 };
                 let chips = ratatui::layout::Rect {
                     y: full.bottom().saturating_sub(2),
@@ -542,7 +556,7 @@ fn main() -> io::Result<()> {
                 let line_text = match said.is_empty() {
                     false => said,
                     true => format!(
-                        "^F find  F2 edit  p reroute  m column menu  r row menu  C-c copy  t theme  q quit | {grouped} | {} | {note}",
+                        "^F find  F2 edit  p reroute  m column menu  r row menu  f form  C-c copy  t theme  q quit | {grouped} | {} | {note}",
                         themes[theme].name
                     ),
                 };
@@ -625,6 +639,16 @@ fn main() -> io::Result<()> {
                             }
                         }
                         KeyCode::Char('t') => theme = (theme + 1) % themes.len(),
+                        KeyCode::Char('f') => {
+                            let snapshot = grid.snapshot();
+                            let latest = snapshot.requested_view();
+                            let latest = latest.unwrap_or(snapshot.applied_view());
+                            let form = match latest.grouping.as_ref().map(|g| g.rows.form) {
+                                Some(Form::Header) => Form::Outline,
+                                _ => Form::Header,
+                            };
+                            grid.set_form(Axis::Rows, form);
+                        }
                         KeyCode::Char('m') => {
                             menu.open(&grid.snapshot(), Axis::Cols);
                         }

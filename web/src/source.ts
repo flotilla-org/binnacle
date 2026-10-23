@@ -533,6 +533,13 @@ export interface AxisMethods<Id, CrossId> {
    */
   groupLabel?(id: Id, outline: Outline<Id, CrossId>): string;
   /**
+   * Header text for a group drawn in header form, as one spanning cell in
+   * level column `tier` (0 outermost); `id` is its Group Item's ID, though
+   * no Group Item is in view. Defaults to the group's value as a Subtotal
+   * of it in view gives it, else nothing.
+   */
+  spanLabel?(id: Id, tier: number): string;
+  /**
    * The ID of this axis's Grand Total while it is grouped, if it has one:
    * the widget names it by the Key the Grid pins a Grand Total placed after
    * by, so it is pinned before it comes into a Window.

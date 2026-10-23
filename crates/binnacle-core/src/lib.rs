@@ -28,6 +28,7 @@ mod refilter;
 mod selection;
 mod snapshot;
 mod sort;
+mod span;
 mod summary;
 mod types;
 mod view;
@@ -52,6 +53,7 @@ pub use snapshot::{
     Rect, ResizeGuide, ScrollAnchor, Snapshot, StripItem, Thumb,
 };
 pub use sort::{HeaderSort, Located, SortColumn, SortDirection, SortSpec};
+pub use span::HeaderSpan;
 pub use types::{Axis, Edge, Generation, Key, Position, Viewport};
 pub use view::{
     AxisView, Compared, Comparison, Condition, ConditionKind, ConditionState, ConditionTree,

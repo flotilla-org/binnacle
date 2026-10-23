@@ -23,10 +23,13 @@ pub struct PendingMarks {
 impl PendingMarks {
     /// Brings the marks up to date with `snapshot` at `now`.
     pub fn seen(&mut self, snapshot: &Snapshot, now: Duration) {
-        let keys: Vec<Key> = (snapshot.drawn(Axis::Rows))
+        let spans = snapshot.spans(Axis::Rows).iter().map(|s| s.key);
+        let mut keys: Vec<Key> = (snapshot.drawn(Axis::Rows))
             .filter_map(|i| i.key)
+            .chain(spans)
             .filter(|&k| snapshot.toggle_pending(Axis::Rows, k))
             .collect();
+        keys.dedup();
         self.since.retain(|k, _| keys.contains(k));
         for key in keys {
             self.since.entry(key).or_insert(now);
@@ -41,12 +44,18 @@ impl PendingMarks {
 }
 
 /// The Group Item whose disclosure mark is at (`x`, `y`) in the Grid's
-/// area, as [`render_with`](crate::render_with) draws it in the row band:
-/// a click there toggles its group with
-/// [`Grid::toggle`](binnacle_core::Grid::toggle). `None` elsewhere, and on
-/// a Group Item that can't open, which has no mark.
+/// area, as [`render_with`](crate::render_with) draws it in the row band,
+/// or in header form on a span's first line shown: a click there toggles
+/// its group with [`Grid::toggle`](binnacle_core::Grid::toggle). `None`
+/// elsewhere, and on a Group Item that can't open, which has no mark.
 pub fn disclosure_at(snapshot: &Snapshot, x: u16, y: u16) -> Option<Key> {
     let (x, y) = (f32::from(x), f32::from(y));
+    if !snapshot.tiers(Axis::Rows).is_empty() {
+        let on = |s: &&binnacle_core::HeaderSpan| {
+            s.visible.y.ceil() == y && s.rect.x + 1.0 <= x && x < s.rect.x + 2.0
+        };
+        return snapshot.spans(Axis::Rows).iter().find(on).map(|s| s.key);
+    }
     if x >= snapshot.header(Axis::Cols) || y < snapshot.header(Axis::Rows) {
         return None;
     }
