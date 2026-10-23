@@ -422,3 +422,45 @@ fn a_header_dropped_into_the_trailing_strip_pins_where_its_drop_line_showed(tc: 
     expected.insert(at, key);
     assert_eq!(pinned(&mut s, Edge::Trailing), expected);
 }
+
+/// #197: a Gap widened while a pinned header is dragged out over the
+/// scrolling region can leave that region no room, its start rounded a
+/// step past its end. The drop line still shows, between the pinned
+/// Strips, rather than panic on bounds that cross.
+#[test]
+fn a_drop_line_shows_when_the_pins_leave_the_scrolling_region_no_room() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(4, 1.0).header(1.0),
+        AxisConfig::new(5, 3.0).gap(1.0),
+    );
+    let v = Viewport::new(11.136542, 5.0);
+    s.input(|g| {
+        g.set_pin_zone(Axis::Cols, 0.0);
+        g.set_end_gap(Axis::Cols, 1.0);
+        g.set_size(Axis::Cols, Key(1), 4.0903974);
+        g.pin(Axis::Cols, Edge::Trailing, Key(0));
+        g.pin(Axis::Cols, Edge::Leading, Key(1));
+    });
+    s.frame(v);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(1.0, 0.5));
+        g.pointer(PointerEvent::moved(5.5, 0.5));
+    });
+    s.frame(v);
+    s.input(|g| g.set_gap(Axis::Cols, 2.0));
+    let snap = s.frame(v);
+    assert!(matches!(
+        snap.mode(),
+        Mode::MovingHeaders {
+            target: DropTarget::Unpin { .. },
+            ..
+        }
+    ));
+    let drop = snap.drop_indicator().expect("a drop line while unpinning");
+    // Between the leading Strip's end and the trailing Strip's start, in
+    // the middle of their Gaps.
+    assert!(
+        (4.0903974 + 1.0..=8.090397 - 1.0).contains(&drop.offset),
+        "{drop:?}"
+    );
+}

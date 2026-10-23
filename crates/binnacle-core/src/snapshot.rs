@@ -818,10 +818,13 @@ impl<'a> Snapshot<'a> {
         let offset = match target {
             DropTarget::Stay => return None,
             DropTarget::Move { to, .. } | DropTarget::Refused { to, .. } => in_body(to),
-            DropTarget::Unpin { at } => in_body(at).clamp(
-                f64::from(st.scroll_start()) - gap / 2.0,
-                f64::from(st.scroll_end()) - gap / 2.0,
-            ),
+            DropTarget::Unpin { at } => {
+                // The pinned regions are summed in f32, so a scrolling region
+                // with no room may end a step before it starts.
+                let start = f64::from(st.scroll_start()) - gap / 2.0;
+                let end = f64::from(st.scroll_end()) - gap / 2.0;
+                in_body(at).clamp(start, end.max(start))
+            }
             DropTarget::Pin { edge, before, .. } => {
                 let items: Vec<StripItem> = st.pinned_items(edge).collect();
                 let at = before.and_then(|b| items.iter().find(|it| it.key == Some(b)));
