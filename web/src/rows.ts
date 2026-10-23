@@ -776,7 +776,7 @@ export function fromRows<R extends object>(
         groups.set(id(item), { ...summary, count, aggregates: item.aggregates });
       }
       const path = (o.path ?? []).map(field);
-      return { kind: o.kind, depth: o.depth, open: o.open, ancestors: o.ancestors.map(summaryId), group, span: o.span ?? 0, path };
+      return { kind: o.kind, depth: o.depth, open: o.open, ancestors: o.ancestors.map(summaryId), group, span: o.span ?? 0, path, set: o.set ?? null };
     });
     return { ids: items.map(id), outlines };
   };

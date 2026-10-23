@@ -407,6 +407,22 @@ pub struct Outline {
     /// item's whole path, from which the Grid builds a drill-down. A source
     /// that sends no path gets drill-downs naming its own group alone.
     pub path: Vec<GroupOf>,
+    /// Where the item sits among its siblings, if the source says.
+    pub set: Option<SetPosition>,
+}
+
+/// An item's place among its parent's children, as a tree reads it: a
+/// group's children are its child groups or Leaves, with its Subtotal first
+/// or last where its level places one; the top's are the top groups, with a
+/// placed Grand Total first or last. It holds whether or not the parent is
+/// open, and in either form. A closed group's Subtotal standing in for it in
+/// header form, with its level placing none, has no place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SetPosition {
+    /// 0 for the first child.
+    pub index: u64,
+    /// How many children the parent has.
+    pub size: u64,
 }
 
 impl Outline {
@@ -420,6 +436,7 @@ impl Outline {
             group: None,
             span: 0,
             path: Vec::new(),
+            set: None,
         }
     }
 
@@ -434,6 +451,7 @@ impl Outline {
             group: Some(GroupOf { field, value }),
             span: 0,
             path: Vec::new(),
+            set: None,
         }
     }
 
@@ -449,6 +467,7 @@ impl Outline {
             group: Some(GroupOf { field, value }),
             span: 0,
             path: Vec::new(),
+            set: None,
         }
     }
 
@@ -462,6 +481,7 @@ impl Outline {
             group: None,
             span: 0,
             path: Vec::new(),
+            set: None,
         }
     }
 
@@ -482,6 +502,12 @@ impl Outline {
     pub fn groups(&self) -> impl Iterator<Item = &GroupOf> {
         let own = (self.group.as_ref()).filter(|g| self.path.last() != Some(*g));
         self.path.iter().chain(own)
+    }
+
+    /// The same outline at `index` of `size` siblings.
+    pub fn with_set(mut self, index: u64, size: u64) -> Self {
+        self.set = Some(SetPosition { index, size });
+        self
     }
 
     /// The parent Group Item's Key; `None` at the top.

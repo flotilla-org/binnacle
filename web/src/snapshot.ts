@@ -585,7 +585,8 @@ class Reader {
     const group = this.opt(groupOf);
     const span = this.num();
     const path = this.list(groupOf);
-    return { kind, depth, open, ancestors, group, span, path };
+    const set = this.opt(() => ({ index: this.num(), size: this.num() }));
+    return { kind, depth, open, ancestors, group, span, path, set };
   }
 
   view(): KeyedViewSpec {

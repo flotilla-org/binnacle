@@ -143,6 +143,8 @@ struct Described {
     span: u64,
     /// The groups of its ancestors, as the outline names them.
     path: Path,
+    /// Its index among its siblings and how many there are.
+    set: Option<(u64, u64)>,
 }
 
 fn path_of(row: &Row, depth: usize) -> Path {
@@ -172,12 +174,36 @@ impl Opened {
     }
 }
 
-/// The naive model: every group in order of its first row, each open
+/// The naive model of what the layer shows, each item placed among its
+/// siblings as they stand with every group open in outline form: those
+/// sharing its ancestors, in order.
+fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Described> {
+    let whole = Shape {
+        header: false,
+        ..shape.clone()
+    };
+    let tree = lay_out(rows, levels, &whole, &Opened::default());
+    let set = |d: &Described| {
+        let i = tree.iter().position(|t| t.item == d.item)?;
+        let siblings: Vec<_> = (tree.iter())
+            .filter(|t| t.ancestors == tree[i].ancestors)
+            .collect();
+        let index = siblings.iter().position(|t| t.item == d.item)?;
+        Some((index as u64, siblings.len() as u64))
+    };
+    let mut out = lay_out(rows, levels, shape, opened);
+    for d in &mut out {
+        d.set = set(d);
+    }
+    out
+}
+
+/// What the layer shows, with no sets: every group in order of its first row, each open
 /// Group Item followed by what is under it, with its Subtotal before or
 /// after that, a closed one alone, and the Grand Total before or after it
 /// all. In header form a group has no Group Item, and a closed one shows
 /// its Subtotal alone.
-fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Described> {
+fn lay_out(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Described> {
     fn walk(
         rows: &[&Row],
         path: Path,
@@ -199,6 +225,7 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                     group: None,
                     span: 0,
                     path: path.clone(),
+                    set: None,
                 });
             }
             return;
@@ -228,6 +255,7 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                 group: Some((FIELDS[depth], value.clone())),
                 span: 0,
                 path: child.clone(),
+                set: None,
             };
             if shape.header && !open {
                 out.push(subtotal);
@@ -248,6 +276,7 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
                     group: Some((FIELDS[depth], value.clone())),
                     span: 0,
                     path: path.clone(),
+                    set: None,
                 });
             }
             if !open {
@@ -276,6 +305,7 @@ fn model(rows: &[Row], levels: usize, shape: &Shape, opened: &Opened) -> Vec<Des
         group: None,
         span: 0,
         path: Vec::new(),
+        set: None,
     };
     let mut out = Vec::new();
     if shape.grand_total == Placement::Before {
@@ -569,6 +599,7 @@ fn describe(layer: &GroupingLayer<u64>, key: Key, outline: &Outline) -> Describe
         path: (outline.path.iter())
             .map(|g| (g.field, g.value.clone()))
             .collect(),
+        set: outline.set.map(|s| (s.index, s.size)),
     }
 }
 
