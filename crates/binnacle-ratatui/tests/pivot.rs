@@ -3,18 +3,22 @@
 //! column Header Band's top line, each value column's header on the line
 //! below, and the All columns, one per value, taking both lines, pinned at
 //! the right. A quarter closes (#210) to its total columns under its span,
-//! one per value (#229), as a region over the values closes to its own.
+//! one per value (#229), as a region over the values closes to its own. The regions sort by a
+//! pivot column (#211), a sort term on one the data lacks shows on the
+//! conditions line, not applied, until it returns, and the columns filter
+//! by the Grand Total row's figures.
 
 use std::borrow::Cow;
 
 use binnacle_core::{
-    AggregateValue, Axis, AxisConfig, Form, Grid, Grouping, HeaderSpan, Key, Level, Placement,
-    Value, ViewSpec,
+    AggregateValue, Axis, AxisConfig, Comparison, Condition, Form, GRAND_TOTAL, Grid, Grouping,
+    HeaderSpan, Key, Level, Placement, Scalar, VALUES_FIELD, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{MemorySource, pump};
 use binnacle_ratatui::{
-    Content, Keymap, RenderContext, Theme, begin_frame, column_disclosure_at, render_with,
+    Content, Keymap, RenderContext, Theme, begin_frame, column_disclosure_at, render_conditions,
+    render_with,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -96,9 +100,19 @@ impl Content for Text<'_> {
     }
 
     fn column_header(&self, col: Key) -> String {
-        HEADERS
-            .get(col.0 as usize)
-            .map_or_else(String::new, |h| h.to_string())
+        if let Some(h) = HEADERS.get(col.0 as usize) {
+            return h.to_string();
+        }
+        // A pivot column, by its path: "Q2 sum(weight)".
+        let pivot = pivot();
+        let names = (self.0.path(col).into_iter().flatten()).map(|(field, value)| match value {
+            Value::Text(t) if *field == VALUES_FIELD => pivot
+                .value_of(t)
+                .map_or_else(|| t.clone(), |(_, v)| self.value_name(v)),
+            Value::Text(t) => t.clone(),
+            Value::Blank => "(blank)".into(),
+        });
+        names.collect::<Vec<_>>().join(" ")
     }
 
     fn span_label(&self, span: &HeaderSpan) -> String {
@@ -262,4 +276,93 @@ fn in_header_form_a_closed_region_names_each_value_under_its_span() {
         grid.collapse(Axis::Rows, north).unwrap();
     });
     insta::assert_snapshot!(text(&drawn));
+}
+
+/// Pumps the source and runs frames until the Grid settles.
+fn settle(grid: &mut Grid, source: &mut GroupedMemory<Ship>, rows: &[Ship], ctx: &RenderContext) {
+    for _ in 0..4 {
+        pump(grid, &mut source.over(rows), |_, _| {});
+        begin_frame(grid, ctx, AREA, |grid, v| {
+            for (axis, range) in grid.begin_frame(v) {
+                let window = source.window(rows, axis, range.clone());
+                grid.set_window(axis, range.start, &window.keys);
+                if let Some(outlines) = window.outlines {
+                    grid.set_outlines(axis, range.start, &outlines);
+                }
+            }
+        });
+    }
+}
+
+/// The table, then the conditions line under it.
+fn screen(grid: &mut Grid, source: &GroupedMemory<Ship>, ctx: &RenderContext) -> String {
+    let snapshot = grid.snapshot();
+    let mut buf = Buffer::empty(Rect::new(0, 0, AREA.width, AREA.height + 1));
+    render_with(&snapshot, &Text(source), ctx, AREA, &mut buf);
+    let line = Rect::new(0, AREA.height, AREA.width, 1);
+    render_conditions(&snapshot, &Text(source), ctx.theme, line, &mut buf);
+    (0..buf.area.height)
+        .map(|y| {
+            let line: String = (0..AREA.width).map(|x| buf[(x, y)].symbol()).collect();
+            format!("|{line}|\n")
+        })
+        .collect()
+}
+
+#[test]
+fn the_regions_sort_by_a_quarters_column_kept_not_applied_while_the_quarter_is_sliced_away() {
+    let rows: Vec<Ship> = SHIPS.into_iter().collect();
+    let mut source = source();
+    let mut grid = Grid::new(
+        AxisConfig::new(rows.len() as u64, 1.0).header(2.0),
+        AxisConfig::new(HEADERS.len() as u64, 9.0)
+            .header(14.0)
+            .gap(1.0),
+    );
+    grid.set_tiers(Axis::Cols, &[1.0, 0.0]);
+    grid.request_view(ViewSpec::default().with_grouping(Some(pivot())));
+    let theme = Theme::classic();
+    let ctx = RenderContext::new(&theme);
+    settle(&mut grid, &mut source, &rows, &ctx);
+    // Q1's sum and count, then Q2's: South's Q2 sum (2) is under North's (4).
+    let q2 = source.window(&rows, Axis::Cols, 2..3).keys[0];
+    grid.cycle_sort(Axis::Rows, q2, false);
+    settle(&mut grid, &mut source, &rows, &ctx);
+    let sorted = screen(&mut grid, &source, &ctx);
+    insta::assert_snapshot!("sorted", sorted);
+
+    let q1 = Condition::one_of(QUARTER, vec![Value::Text("Q1".into())]);
+    grid.add_slicer(q1.clone());
+    settle(&mut grid, &mut source, &rows, &ctx);
+    insta::assert_snapshot!("sliced", screen(&mut grid, &source, &ctx));
+
+    grid.remove_slicer(&q1);
+    settle(&mut grid, &mut source, &rows, &ctx);
+    assert_eq!(
+        screen(&mut grid, &source, &ctx),
+        sorted,
+        "Q2 back, sorted by"
+    );
+}
+
+#[test]
+fn the_quarters_filter_by_the_grand_total_rows_figure() {
+    let rows: Vec<Ship> = SHIPS.into_iter().collect();
+    let mut source = source();
+    let mut grid = Grid::new(
+        AxisConfig::new(rows.len() as u64, 1.0).header(2.0),
+        AxisConfig::new(HEADERS.len() as u64, 9.0)
+            .header(14.0)
+            .gap(1.0),
+    );
+    grid.set_tiers(Axis::Cols, &[1.0, 0.0]);
+    grid.request_view(ViewSpec::default().with_grouping(Some(pivot())));
+    let theme = Theme::classic();
+    let ctx = RenderContext::new(&theme);
+    settle(&mut grid, &mut source, &rows, &ctx);
+    // Q1's total weight is 25, Q2's 6.
+    let heavy = Condition::compare(GRAND_TOTAL, Comparison::Greater(Scalar::Number(10.0)));
+    grid.add_condition(Axis::Cols, heavy);
+    settle(&mut grid, &mut source, &rows, &ctx);
+    insta::assert_snapshot!(screen(&mut grid, &source, &ctx));
 }
