@@ -1254,9 +1254,10 @@ describe("fromRows's grouping", () => {
       }
       return groups.flatMap(([value, group]) => {
         if (!having(figures(group).sum)) return [];
-        // A group whose groups were all left out has no Subtotal.
+        // A group whose groups were all left out drops out, Subtotal and all.
         const under = walk(group, depth + 1);
-        const sub = under.length > 0 ? [{ kind: "subtotal", value, ...figures(group) }] : [];
+        if (under.length === 0) return [];
+        const sub = [{ kind: "subtotal", value, ...figures(group) }];
         return [
           { kind: "group", value, ...figures(group) },
           ...(subtotal === "before" ? sub : []),
@@ -1383,6 +1384,35 @@ describe("fromRows's grouping", () => {
         source.destroy();
       }
     }));
+
+  test("a group whose groups all fail a comparison on the sum drops out, though its own sum passes", () => {
+    const rows: Rec[] = [
+      { n: null, s: null, b: 1 },
+      { n: 0, s: null, b: 1 },
+    ];
+    const source = fromRows(rows, COLUMNS);
+    try {
+      const over: Condition<keyof Rec> = { id: "b", kind: { type: "Compare", comparison: { op: "greater", value: { type: "number", value: 1 } } }, not: false };
+      const grouping = {
+        ...rowsBy<keyof Rec>("s"),
+        rowLevels: [
+          { field: "s" as const, subtotal: "before" as const },
+          { field: "n" as const, subtotal: "before" as const },
+        ],
+        values: [
+          { field: "b" as const, aggregate: "sum" },
+          { field: null, aggregate: "count" },
+        ],
+        rowAxis: { ...rowsBy("s").rowAxis, grandTotal: "before" as const },
+      };
+      source.view!({ ...rowsSorted<keyof Rec>([], null, [over]), grouping }, signal);
+      const window = source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, keyof Rec>;
+      // The blank group sums 2, but each of its groups sums 1: only the Grand Total is left.
+      expect(window.ids.map((id) => source.group(id)?.kind)).toEqual(["grandTotal"]);
+    } finally {
+      source.destroy();
+    }
+  });
 
   test("with slicers and no levels the rows are plain and sliced, and a comparison on a summed column filters the rows again", () => {
     const rows: Rec[] = [
