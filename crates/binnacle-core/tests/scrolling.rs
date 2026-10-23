@@ -4,7 +4,8 @@
 use std::ops::Range;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Edge, FocusStep, Grid, Key, Position, ScrollAnchor, Viewport,
+    Action, Axis, AxisConfig, ChangeNotice, Edge, FocusStep, Grid, Key, Position, ScrollAnchor,
+    Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{PumpSource, Scenario, ScenarioSource};
@@ -701,5 +702,41 @@ fn an_end_gap_set_at_the_end_keeps_the_view_at_the_end() {
     assert_eq!(
         snap.rows().last().map(|r| (r.position, r.end())),
         Some((19, 4.0))
+    );
+}
+
+/// #222: a reorder empties the Window, so the end measured before the Window
+/// returns uses default sizes. Here they would all fit, and an anchor at the
+/// end must not be pulled back to the start by that estimate.
+#[test]
+fn an_anchor_at_the_end_stays_there_through_a_reorder() {
+    let mut s = table();
+    let v = Viewport::new(36.0, 4.0);
+    s.input(|g| {
+        g.set_size(Axis::Cols, Key(4), 12.0);
+        g.action(Action::Scroll { dx: 100.0, dy: 0.0 });
+    });
+    let end = ScrollAnchor {
+        position: 0,
+        offset: 4.0,
+    };
+    assert_eq!(s.frame(v).scroll_anchor(Axis::Cols), end);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reordered));
+    assert_eq!(s.frame(v).scroll_anchor(Axis::Cols), end);
+    s.input(|g| g.set_size(Axis::Cols, Key(4), 14.0));
+    let snap = s.frame(v);
+    assert_eq!(
+        (
+            snap.scroll_anchor(Axis::Cols),
+            snap.cols().last().map(|c| c.end())
+        ),
+        (
+            ScrollAnchor {
+                position: 1,
+                offset: 0.0
+            },
+            Some(36.0)
+        ),
+        "still following the end"
     );
 }

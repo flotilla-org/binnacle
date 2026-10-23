@@ -370,8 +370,8 @@ impl AxisState {
     /// anchor at the end stays at the end. While the Window does not hold the
     /// anchor's item (a notice emptied it) its size is only the default, so
     /// the offset is kept until the Window brings the real one; likewise the
-    /// end clamp pulls the anchor back only once the Window holds the items
-    /// it is measured over. An empty axis has no item to wait for: its anchor
+    /// end clamp pulls the anchor back, even one following the end, only once
+    /// the Window holds the items it is measured over. An empty axis has no item to wait for: its anchor
     /// goes back to the start.
     pub fn clamp_anchor(&mut self) -> bool {
         // An item pinned since takes the anchor to the next scrolling one.
@@ -386,20 +386,28 @@ impl AxisState {
         let count = self.measure.count();
         let position = self.anchor.position.min(count.saturating_sub(1));
         let max = self.max_anchor();
-        let to = if self.at_end || count == 0 {
+        // The end clamp is exact only once the Window holds every item from
+        // it to the end; until then the anchor waits for the Window the next
+        // frame asks for, which reaches the end.
+        let exact = self.window_covers(&(max.position..count));
+        let held = ScrollAnchor {
+            position,
+            ..self.anchor
+        };
+        // An end estimated short of an anchor following it may be wrong.
+        let waiting = self.at_end
+            && count > 0
+            && !exact
+            && (held.position, held.offset) > (max.position, max.offset);
+        let to = if waiting {
+            held
+        } else if self.at_end || count == 0 {
             max
         } else if !self.window_covers(&(position..position + 1)) {
-            ScrollAnchor {
-                position,
-                ..self.anchor
-            }
+            held
         } else {
             let stride = self.measure.size_at(position) + self.measure.gap();
             let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
-            // The end clamp is exact only once the Window holds every item
-            // from it to the end; until then the anchor waits for the Window
-            // the next frame asks for, which reaches the end.
-            let exact = self.window_covers(&(max.position..count));
             if (position, offset) > (max.position, max.offset) && exact {
                 max
             } else {
@@ -408,6 +416,9 @@ impl AxisState {
         };
         let following = self.at_end;
         let moved = self.settle(to, max);
+        if waiting {
+            self.at_end = true;
+        }
         // An anchor left where it was follows the end only if it already
         // did: the end may be an estimate the next Window's sizes move.
         if !moved && !following {
