@@ -1409,7 +1409,7 @@ describe("fromRows's grouping", () => {
     }
   });
 
-  test("a group whose groups all fail a comparison on the sum keeps its Group Item and figures, without a Subtotal", () => {
+  test("a group whose groups all fail a comparison on the sum drops out, with its Subtotal", () => {
     const rows: Rec[] = [
       { n: 1, s: "a", b: 1 },
       { n: 2, s: "a", b: 1 },
@@ -1440,8 +1440,8 @@ describe("fromRows's grouping", () => {
         const group = source.group(id)!;
         return `${group.kind} ${group.value} ${group.aggregates[0]}`;
       });
-      // "a" sums 2 and stays, but each of its groups sums 1; of "b"'s, the first sums 2.
-      expect(shown).toEqual(["group a 2", "group b 2", "group 1 2", 2, "subtotal 1 2", "subtotal b 2", "grandTotal null 4"]);
+      // "a" sums 2, but each of its groups sums 1, so it has nothing to total; of "b"'s, the first sums 2.
+      expect(shown).toEqual(["group b 2", "group 1 2", 2, "subtotal 1 2", "subtotal b 2", "grandTotal null 4"]);
     } finally {
       source.destroy();
     }

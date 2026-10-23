@@ -8,8 +8,9 @@
 //! rows are left out, and the grouped columns leave the columns. A slicer
 //! on any column, hidden or not, leaves rows out before aggregating; a
 //! comparison in the rows' filter on a column a value aggregates leaves out
-//! the groups whose figure fails it (`HAVING`), and on any other column the
-//! Leaves that fail it, before aggregating.
+//! the groups whose figure fails it (`HAVING`) and any group left with no
+//! sub-groups, and on any other column the Leaves that fail it, before
+//! aggregating.
 
 use std::cmp::Ordering;
 
@@ -255,16 +256,23 @@ fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec
                     continue;
                 }
             }
+            let mut under = Vec::new();
+            walk(rows, members, asked, sort, path.clone(), &mut under);
+            // A group the filter leaves with no sub-groups drops out, with
+            // its Subtotal.
+            if under.is_empty() {
+                continue;
+            }
             out.push(Item::Summary(
                 ItemKind::Group,
                 path.clone(),
                 figures.clone(),
             ));
-            let sub = Item::Summary(ItemKind::Subtotal, path.clone(), figures);
+            let sub = Item::Summary(ItemKind::Subtotal, path, figures);
             if subtotal == Placement::Before {
                 out.push(sub.clone());
             }
-            walk(rows, members, asked, sort, path, out);
+            out.extend(under);
             if subtotal == Placement::After {
                 out.push(sub);
             }
@@ -653,6 +661,60 @@ fn a_grouping_beyond_support_is_applied_as_far_as_it_can_be() {
         ]
     );
     assert_eq!(&window.keys[2..], &[Key(0), Key(2)]);
+}
+
+#[test]
+fn a_group_the_rows_filter_leaves_with_no_sub_groups_drops_out_with_its_subtotal() {
+    let rows: Vec<Record> = vec![
+        [Some(1), None, Some(3)],
+        [Some(0), None, Some(3)],
+        [Some(2), Some(7), Some(5)],
+    ];
+    let mut source = source(rows.len());
+    let asked = Asked {
+        levels: vec![(1, Placement::Before), (0, Placement::Before)],
+        grand_total: Placement::Off,
+        sum: 2,
+        distinct: 0,
+        slicer: None,
+        // The blank group's sum, 6, passes; each of its sub-groups', 3,
+        // fails.
+        filter: Some(Compare {
+            column: 2,
+            at_least: true,
+            threshold: 5,
+            not: false,
+        }),
+    };
+    let filter =
+        FilterSpec::default().with_conditions(vec![asked.filter.unwrap().condition()].into());
+    let spec = ViewSpec::default()
+        .with_filter(Axis::Rows, filter)
+        .with_grouping(Some(asked.grouping()));
+    source.view(&rows, &spec);
+    let seven = || text(Some(7));
+    let paths: Vec<(ItemKind, Vec<Value>)> = shown(&mut source, &rows)
+        .into_iter()
+        .map(|(key, item)| match item {
+            Item::Summary(kind, path, _) => (kind, path),
+            Item::Leaf(_) => (ItemKind::Leaf, vec![text(Some(key.0 as i64))]),
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            (ItemKind::Group, vec![seven()]),
+            (ItemKind::Subtotal, vec![seven()]),
+            (ItemKind::Group, vec![seven(), text(Some(2))]),
+            (ItemKind::Subtotal, vec![seven(), text(Some(2))]),
+            (ItemKind::Leaf, vec![text(Some(2))]),
+        ]
+    );
+    assert_eq!(
+        model(&rows, &asked, &spec.rows.sort, &[]).len(),
+        paths.len(),
+        "the model agrees"
+    );
 }
 
 #[test]

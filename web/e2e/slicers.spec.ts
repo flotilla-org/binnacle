@@ -80,14 +80,14 @@ test("a comparison on the summed weight leaves out the ports whose total fails i
   await menu.getByRole("spinbutton", { name: "weight value" }).fill(String(over));
   await page.keyboard.press("Escape");
 
-  // Each region passing shows its ports passing, then its Subtotal if any did.
+  // Each region passing with a port passing shows those ports, then its Subtotal; one with none drops out.
   const regions = [...new Set(shipments.map((s) => s.region))].filter((r) => total(shipments.filter((s) => s.region === r)) > over);
   const portsOf = (r: string | null) =>
     new Set(shipments.filter((s) => s.region === r).map((s) => s.port)).size -
     [...new Set(shipments.filter((s) => s.region === r).map((s) => s.port))].filter(
       (p) => total(shipments.filter((s) => s.region === r && s.port === p)) <= over,
     ).length;
-  const shown = regions.reduce((n, r) => n + 1 + portsOf(r) + (portsOf(r) > 0 ? 1 : 0), 0) + 1;
+  const shown = regions.reduce((n, r) => n + (portsOf(r) > 0 ? 2 + portsOf(r) : 0), 0) + 1;
   expect(ports.filter((t) => t > over).length).toBeGreaterThan(0);
   expect(shown).toBeLessThan(closed(shipments));
   await expect(status(page)).toContainText(`of ${en(shown)}`);
