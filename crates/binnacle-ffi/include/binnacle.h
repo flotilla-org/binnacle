@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 16u
+#define BINNACLE_ABI_VERSION 17u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -676,6 +676,7 @@ typedef struct {
 /* Defined with BinnacleCondition, BinnacleLevel and BinnacleAggregateValue,
  * below. */
 typedef struct BinnacleListedCondition BinnacleListedCondition;
+typedef struct BinnacleListedSort BinnacleListedSort;
 typedef struct BinnacleListedLevel BinnacleListedLevel;
 typedef struct BinnacleListedValue BinnacleListedValue;
 
@@ -781,6 +782,11 @@ typedef struct {
    * column in header form) on the focused row, COLS a tier of the column
    * band on the focused column. ROWS is the same as outline_focused. */
   uint32_t band_focused;
+  /* The axis's sort terms, listed as conditions are: on a pivot, a term
+   * naming an item the data lacks for now (a pivot column gone) stays
+   * requested, NOT_APPLIED, and applies again when the item returns. */
+  const BinnacleListedSort *sorts;
+  size_t sorts_len;
 } BinnacleAxisSnapshot;
 
 /*
@@ -915,6 +921,12 @@ typedef struct {
   BinnacleScalar scalar;
   BinnacleScalar high;
 } BinnacleCondition;
+
+struct BinnacleListedSort {
+  /* BINNACLE_CONDITION_*, as for a listed condition. */
+  uint32_t state;
+  BinnacleSortColumn column;
+};
 
 struct BinnacleListedCondition {
   /* BINNACLE_CONDITION_APPLIED, ADDING or REMOVING. */
@@ -1226,6 +1238,21 @@ int binnacle_grid_freeze(BinnacleGrid *grid, uint32_t axis, uint64_t key);
 
 /* Unpins the item with key on axis; the scroll stays where it is. */
 int binnacle_grid_unpin(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+
+/* Lists into keys and len every Key of axis the Grid keeps state on apart
+ * from its Windows: its Size Overrides and pins (dormant too), and in the
+ * latest View Spec its hidden Keys and the other axis's sort terms and
+ * conditions naming its items. Valid until the next call on grid. A host
+ * whose Table Source retires Keys (binnacle_group_layer_fits) passes those
+ * it retired to binnacle_grid_forget after each View Spec applied. */
+int binnacle_grid_held_keys(BinnacleGrid *grid, uint32_t axis, const uint64_t **keys,
+                            size_t *len);
+
+/* The Table Source will never show the len keys of axis again (path Keys
+ * whose paths no longer fit the levels): drops their Size Overrides and
+ * pins, and from the latest View Spec the axis's hidden Keys and the other
+ * axis's sort terms and conditions naming them. Requests nothing. */
+int binnacle_grid_forget(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, size_t len);
 
 /* Makes the len keys the pins of edge on axis, in that order, say to restore
  * a saved layout: keys pinned there before and not listed are unpinned, a
@@ -1756,6 +1783,12 @@ int binnacle_group_layer_locate(BinnacleGroupLayer *layer, uint32_t axis, uint64
  * figures, else 0. */
 int binnacle_group_layer_summary(BinnacleGroupLayer *layer, uint64_t key,
                                  BinnacleGroupSummary *out);
+
+/* 1 if key may still name an item of axis: a Leaf Key, a Key the layer
+ * never issued, the Grand Total, a group's (a Group Item's, a Subtotal's)
+ * while its path fits the axis's levels as last asked; 0 for one retired,
+ * which the host has the Grid forget (binnacle_grid_forget). 1 for NULL. */
+int binnacle_group_layer_fits(const BinnacleGroupLayer *layer, uint32_t axis, uint64_t key);
 
 /* How many groups and Leaves the layer holds; 0 for NULL. */
 uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
