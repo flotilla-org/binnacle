@@ -930,10 +930,11 @@ fn the_scroll_anchor_and_thumb_stay_in_bounds(tc: TestCase) {
                 anchor.position < count.max(1),
                 "{axis:?}: {anchor:?} past the count {count}"
             );
+            // Summed in f64: the f32 sum may round down onto the offset.
+            let stride = f64::from(seen_size(snap, axis, model, anchor.position))
+                + f64::from(snap.gap(axis));
             assert!(
-                anchor.offset >= 0.0
-                    && anchor.offset
-                        < seen_size(snap, axis, model, anchor.position) + snap.gap(axis),
+                anchor.offset >= 0.0 && f64::from(anchor.offset) < stride,
                 "{axis:?}: {anchor:?} outside its item and Gap"
             );
             let thumb = snap.thumb(axis);
@@ -1194,6 +1195,57 @@ fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
             assert!(snap.focus_rect().is_some() || !resolvable_body(snap, step));
         }
     });
+}
+
+/// #159: revealing a row past a Gap of 2^18 anchors in the item before it,
+/// where an f32 offset steps by 1/8. The row may sit one such step off, no
+/// more: the anchor's offset is bounded by the item's stride in f64, not by
+/// that stride rounded to f32.
+#[test]
+fn revealing_focus_across_a_huge_gap_misplaces_the_row_by_one_f32_step_at_most() {
+    let range = |c: AxisConfig| c.min_size(1.0).max_size(1048576.0);
+    let rows = range(AxisConfig::new(2, 1.0)).gap(262144.06);
+    let cols = range(AxisConfig::new(1, 1.0));
+    // Row 0 is raised to the hint; row 1's size is unknown, so default.
+    let content = Content {
+        sizes: vec![1.0, 0.0],
+        hint: 786433.0,
+    };
+    let source = Sized {
+        table: IdentityTable {
+            rows: IdentitySource::new(2),
+            cols: IdentitySource::new(1),
+        },
+        content: [Some(content), None],
+        windows: [0..0, 0..0],
+        requests: Rc::new(RefCell::new(Vec::new())),
+    };
+    let mut s = Scenario::new(Grid::new(rows, cols), source);
+    for forward in [false, true] {
+        s.input(|g| {
+            g.action(Action::MoveFocus {
+                axis: Axis::Rows,
+                by: FocusStep::Item,
+                forward,
+                extend: false,
+            })
+        });
+    }
+    let v = Viewport::new(1.0, 1.03125);
+    let snap = s.frame(v);
+    let item = snap
+        .strip(Axis::Rows)
+        .iter()
+        .find(|i| i.position == 1)
+        .copied();
+    let item = item.expect("the focused row is not in the Strip");
+    let stride = 786433.0f32 + 262144.06;
+    let step = next_f32(stride) - stride;
+    assert!(
+        item.offset >= -step && item.end() <= v.height + step,
+        "{item:?} not inside the body 0..{}",
+        v.height
+    );
 }
 
 /// Whether both axes have a body and sizes f32 offsets place precisely, so a

@@ -295,17 +295,27 @@ impl AxisState {
     /// The anchor for a located offset, rounded toward the axis start so a
     /// clamped view never shows space past the last item.
     fn anchor_at(&self, l: ItemAt) -> ScrollAnchor {
-        let stride = self.measure.size_at(l.position) + self.measure.gap();
         let mut offset = l.within as f32;
         if f64::from(offset) > l.within {
             offset = f32::from_bits(offset.to_bits() - 1);
         }
-        if offset >= stride {
-            offset = f32::from_bits(stride.to_bits() - 1);
-        }
+        let offset = offset.min(self.below_stride(l.position));
         ScrollAnchor {
             position: l.position,
             offset,
+        }
+    }
+
+    /// The largest anchor offset inside the item at `p`: the f32 just below
+    /// its size plus the Gap, summed in f64. Rounding that sum to f32 first
+    /// can land below it by a step, which a huge Gap makes visible.
+    fn below_stride(&self, p: Position) -> f32 {
+        let stride = f64::from(self.measure.size_at(p)) + f64::from(self.measure.gap());
+        let below = stride as f32;
+        if f64::from(below) < stride {
+            below
+        } else {
+            f32::from_bits(below.to_bits() - 1)
         }
     }
 
@@ -406,8 +416,7 @@ impl AxisState {
         } else if !self.window_covers(&(position..position + 1)) {
             held
         } else {
-            let stride = self.measure.size_at(position) + self.measure.gap();
-            let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
+            let offset = self.anchor.offset.min(self.below_stride(position));
             if (position, offset) > (max.position, max.offset) && exact {
                 max
             } else {
