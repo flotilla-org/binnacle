@@ -3,8 +3,8 @@
 //! Key.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Condition, FocusStep, Grid, Key, Modifiers, PointerEvent, TextQuery,
-    ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Condition, Edge, FocusStep, Grid, Key, Modifiers, PointerEvent,
+    TextQuery, ViewSpec, Viewport,
 };
 use binnacle_testkit::{RecordTable, Scenario};
 
@@ -440,6 +440,58 @@ fn a_range_shrinks_around_filtered_out_items_and_clears_when_none_remain() {
     out += &s.step("filter out record 7: the whole column stays selected", TALL);
     assert!(s.grid.snapshot().selection_range().is_some());
     insta::assert_snapshot!(out);
+}
+
+/// #193: a filtered-out corner pulls in to the nearest item still drawn
+/// inside the range, never to a pinned item drawn outside it.
+#[test]
+fn a_filtered_out_corner_pulls_in_to_the_next_row_drawn_inside_the_range_not_a_pinned_one() {
+    const TALL: Viewport = Viewport {
+        width: 26.0,
+        height: 9.0,
+    };
+    let mut s = records();
+    s.input(|g| {
+        g.pin(Axis::Rows, Edge::Leading, Key(1));
+        g.pin(Axis::Rows, Edge::Trailing, Key(6));
+    });
+    s.frame(TALL);
+    // As drawn: record 1 pinned, records 0, 2, 3, 4, 5, 7, record 6 pinned.
+    s.click(5.0, 2.5, Modifiers::NONE);
+    s.click(5.0, 4.5, Modifiers::SHIFT);
+    s.frame(TALL);
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(0, 1), (2, 4)]));
+    filter(&mut s, |r| r[0] != Some(5));
+    s.frame(TALL);
+    assert_eq!(
+        runs(&mut s, Axis::Rows),
+        Some(vec![(1, 3)]),
+        "records 2 and 3, now rows 1 and 2; record 1, pinned on top, stays out"
+    );
+    // Records 2 to 5 (rows 1 to 4); record 6 is pinned at the bottom.
+    s.input(|g| {
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: FocusStep::Item,
+            forward: true,
+            extend: true,
+        });
+        g.action(Action::MoveFocus {
+            axis: Axis::Rows,
+            by: FocusStep::Item,
+            forward: true,
+            extend: true,
+        });
+    });
+    s.frame(TALL);
+    assert_eq!(runs(&mut s, Axis::Rows), Some(vec![(1, 5)]));
+    filter(&mut s, |r| r[0] != Some(5) && r[0] != Some(2));
+    s.frame(TALL);
+    assert_eq!(
+        runs(&mut s, Axis::Rows),
+        Some(vec![(1, 4)]),
+        "records 2 to 4; record 6, pinned at the bottom, stays out"
+    );
 }
 
 /// Regression (found by the state machine): a pick made by a press still

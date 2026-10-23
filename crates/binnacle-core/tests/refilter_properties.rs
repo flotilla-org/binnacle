@@ -2,8 +2,8 @@
 //! Source, filtered and unfiltered through the frame loop and the shared pump.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Grid, Key, Modifiers, SelectionUnit, SortColumn, SortSpec, ViewSpec,
-    Viewport,
+    Action, Axis, AxisConfig, Edge, Grid, Key, Modifiers, SelectionUnit, SortColumn, SortSpec,
+    ViewSpec, Viewport,
 };
 use binnacle_testkit::{RecordTable, Scenario};
 use hegel::TestCase;
@@ -125,12 +125,13 @@ enum Refilter {
 
 /// A range made on either axis, then filtered, hidden and shown around in
 /// any order: once every answer is in, it covers on that axis exactly the
-/// items still shown between its corners, a corner that left pulled in to
-/// the nearest item inside, and it is gone once none is left. (Copy and the
-/// drawn range read these Positions, so neither reaches a filtered out or
-/// hidden item.)
+/// items still shown drawn between its corners, a corner that left pulled in
+/// to the nearest item drawn inside, and it is gone once none is left. Up to
+/// 3 items are pinned first, so a range can straddle a pin drawn apart from
+/// its Position (#193). (Copy and the drawn range read these Positions, so
+/// neither reaches a filtered out or hidden item.)
 #[hegel::test(test_cases = 1000)]
-fn a_range_covers_the_items_still_shown_between_its_corners(tc: TestCase) {
+fn a_range_covers_the_items_still_shown_drawn_between_its_corners(tc: TestCase) {
     let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
     let m = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
     let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
@@ -150,22 +151,53 @@ fn a_range_covers_the_items_still_shown_between_its_corners(tc: TestCase) {
         grid.set_hide_support(a, true);
     }
     let mut s = Scenario::new(grid, RecordTable::new(rows, m, 0..m as u64));
-    // Every item shows, so any can be clicked.
-    let view = Viewport::new(3.0 + 4.0 * m as f32 + 1.0, n as f32 + 2.0);
+    // Every item shows, so any can be clicked, and the pinned Strips meet
+    // the scrolling one with no space between.
+    let view = Viewport::new(3.0 + 4.0 * m as f32, n as f32 + 1.0);
     // Sorting the axis descending by the first item across reverses it.
     let sorted = tc.draw(gs::booleans());
     if sorted {
         let by = SortSpec::new(vec![SortColumn::descending(Key(0))]);
         s.input(|g| g.request_view(ViewSpec::default().with_sort(axis, by)));
     }
-    s.frame(view);
-    // The Keys of the axis in order (Keys are Logical Indices).
+    // The Keys of the axis by Position (Keys are Logical Indices).
     let order: Vec<usize> = match sorted {
         true => (0..len).rev().collect(),
         false => (0..len).collect(),
     };
+    let pins = tc.draw(
+        gs::vecs(hegel::tuples!(
+            gs::integers::<usize>().max_value(len - 1),
+            gs::booleans()
+        ))
+        .max_size(3),
+    );
+    let mut pinned: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    for (k, leading) in pins {
+        let edge = if leading {
+            Edge::Leading
+        } else {
+            Edge::Trailing
+        };
+        s.input(|g| g.pin(axis, edge, Key(k as u64)));
+        // Pinning a Key again moves it to the end of its edge's list.
+        pinned.iter_mut().for_each(|p| p.retain(|&j| j != k));
+        pinned[edge as usize].push(k);
+    }
+    s.frame(view);
+    // Every Key in drawn order, shown or not: the leading pins, the rest by
+    // Position, then the trailing pins.
+    let drawn: Vec<usize> = (pinned[0].iter().copied())
+        .chain(
+            order
+                .iter()
+                .copied()
+                .filter(|k| !pinned.iter().flatten().any(|j| j == k)),
+        )
+        .chain(pinned[1].iter().copied())
+        .collect();
 
-    // A cell on the axis at `p`, the other axis at `q`.
+    // A cell on the axis at drawn index `p`, the other axis at `q`.
     let at = |p: usize, q: usize| match axis {
         Axis::Rows => (3.0 + 4.0 * q as f32 + 2.0, 1.0 + p as f32 + 0.5),
         Axis::Cols => (3.0 + 4.0 * p as f32 + 2.0, 1.0 + q as f32 + 0.5),
@@ -198,8 +230,7 @@ fn a_range_covers_the_items_still_shown_between_its_corners(tc: TestCase) {
     s.frame(view);
     assert!(s.grid.snapshot().selection_range().is_some());
 
-    // Corners as indices into `order`; a Position is the rank among the
-    // shown items in `order`.
+    // Corners as indices into `drawn`.
     let mut corners = Some((anchor.min(head), anchor.max(head)));
     let mut kept = vec![true; len];
     let mut hidden = vec![false; len];
@@ -232,28 +263,25 @@ fn a_range_covers_the_items_still_shown_between_its_corners(tc: TestCase) {
             }
         }
         s.frame(view);
-        let shown: Vec<usize> = (0..len)
-            .filter(|&i| kept[order[i]] && !hidden[order[i]])
-            .collect();
+        let is_shown = |k: usize| kept[k] && !hidden[k];
         corners = corners.and_then(|(lo, hi)| {
-            let inside: Vec<usize> = shown
-                .iter()
-                .copied()
-                .filter(|k| (lo..=hi).contains(k))
-                .collect();
+            let inside: Vec<usize> = (lo..=hi).filter(|&d| is_shown(drawn[d])).collect();
             Some((*inside.first()?, *inside.last()?))
         });
-        let rank = |k: usize| shown.iter().position(|&j| j == k).unwrap() as u64;
-        let expected = corners.map(|(lo, hi)| vec![(rank(lo), rank(hi) + 1)]);
+        // A Position is the rank among the shown Keys in `order`.
+        let shown: Vec<usize> = order.iter().copied().filter(|&k| is_shown(k)).collect();
+        let position = |k: usize| shown.iter().position(|&j| j == k).unwrap() as u64;
+        let expected = corners.map(|(lo, hi)| {
+            let mut covered: Vec<u64> = (lo..=hi)
+                .filter(|&d| is_shown(drawn[d]))
+                .map(|d| position(drawn[d]))
+                .collect();
+            covered.sort();
+            covered
+        });
         let snap = s.grid.snapshot();
-        assert_eq!(
-            (snap.selection_range()).map(|r| r
-                .span(axis)
-                .iter()
-                .map(|r| (r.start, r.end))
-                .collect()),
-            expected,
-            "after {step:?}: shown {shown:?}"
-        );
+        let covered = (snap.selection_range())
+            .map(|r| r.span(axis).iter().cloned().flatten().collect::<Vec<u64>>());
+        assert_eq!(covered, expected, "after {step:?}: shown {shown:?}");
     }
 }

@@ -8,7 +8,7 @@ use crate::axis::AxisState;
 use crate::focus::FocusEnd;
 use std::ops::Range;
 
-use crate::types::{Edge, Position};
+use crate::types::{Edge, Key, Position};
 
 /// Where an item sits in drawn order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +61,26 @@ impl AxisState {
             Slot::Scrolling(p) => leading + p - self.measure.skipped_before(p),
             Slot::Pinned(Edge::Trailing, i) => leading + self.scrolling_len() + i as u64,
         }
+    }
+
+    /// Where in drawn order an item that has left would be drawn: among its
+    /// edge's drawn pins if `key` is pinned, else among the scrolling items
+    /// at `suggest`, the Position the Table Source suggests for it. The
+    /// item there is the next one drawn after it.
+    pub fn drawn_gap(&self, key: Key, suggest: Position) -> u64 {
+        for edge in Edge::ALL {
+            let pins = &self.pins[edge.index()];
+            if let Some(j) = pins.iter().position(|pin| pin.key == key) {
+                let before = pins[..j].iter().filter(|pin| self.trusted(pin).is_some());
+                let start = match edge {
+                    Edge::Leading => 0,
+                    Edge::Trailing => self.pinned_len(Edge::Leading) + self.scrolling_len(),
+                };
+                return start + before.count() as u64;
+            }
+        }
+        let suggest = suggest.min(self.measure.count());
+        self.pinned_len(Edge::Leading) + suggest - self.measure.skipped_before(suggest)
     }
 
     /// The slot at `index` in drawn order, clamped to the last.

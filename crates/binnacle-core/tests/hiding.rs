@@ -261,3 +261,37 @@ fn a_hidden_pinned_column_goes_dormant_and_returns_to_its_place_when_shown() {
     );
     insta::assert_snapshot!(out);
 }
+
+/// #193: a hidden corner that was pinned pulls in to the item drawn next
+/// inside the range, placed only once every pin has its new Position (here
+/// column 1's answer comes after the corners').
+#[test]
+fn a_hidden_pinned_corner_pulls_in_past_the_pins_drawn_beside_it() {
+    let rows = vec![(0..3).map(Some).collect()];
+    let mut grid = Grid::new(
+        AxisConfig::new(1, 1.0).header(1.0),
+        AxisConfig::new(3, 4.0).header(3.0),
+    );
+    grid.set_hide_support(Axis::Cols, true);
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 3, 0..3));
+    let v = Viewport::new(15.0, 2.0);
+    s.input(|g| {
+        g.pin(Axis::Cols, Edge::Trailing, Key(0));
+        g.pin(Axis::Cols, Edge::Trailing, Key(1));
+        g.pin(Axis::Cols, Edge::Leading, Key(2));
+    });
+    s.frame(v);
+    // As drawn: column 2 pinned, then columns 0 and 1 pinned.
+    s.click(5.0, 1.5, Modifiers::NONE);
+    s.click(9.0, 1.5, Modifiers::SHIFT);
+    s.input(|g| g.action(Action::SelectColumn));
+    s.frame(v);
+    assert_eq!(runs(&mut s, Axis::Cols), Some(vec![(0, 1), (2, 3)]));
+    s.input(|g| g.hide(Axis::Cols, &[Key(0)]).unwrap());
+    s.frame(v);
+    assert_eq!(
+        runs(&mut s, Axis::Cols),
+        Some(vec![(1, 2)]),
+        "column 2 alone; column 1, pinned after column 0, stays out"
+    );
+}
