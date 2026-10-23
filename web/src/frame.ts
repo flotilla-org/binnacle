@@ -17,7 +17,7 @@ export interface FrameParts {
   /** The Grid's viewport in CSS px. */
   viewport(): { width: number; height: number };
   onEffect(effect: Effect): void;
-  /** Sets sizes the Snapshot makes possible; `true` skips this frame's paint for another frame. */
+  /** Sets sizes the Snapshot makes possible; `true` begins the frame again. */
   settle?(s: Snapshot): boolean;
 }
 
@@ -37,17 +37,27 @@ export function drainEffects(parts: FrameParts): void {
   }
 }
 
-/** Runs one frame. `force` paints even without Damage (a resize or DPR change). */
+/** How many times one frame begins again for sizes `settle` sets before it leaves the rest to the next. */
+const SETTLE_PASSES = 4;
+
+/**
+ * Runs one frame. `force` paints even without Damage (a resize or DPR
+ * change). Sizes `settle` sets begin the frame again, so the Snapshot it
+ * returns, which input hit-tests and `onFrame` reports, is the one painted.
+ */
 export function runFrame(parts: FrameParts, force: boolean): FrameResult {
   const { grid } = parts;
-  parts.scroll.take(grid);
-  const { width, height } = parts.viewport();
-  parts.feed.fill(grid, grid.begin_frame(width, height));
-  drainEffects(parts);
-  const snapshot = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
-  if (parts.settle?.(snapshot)) {
+  let snapshot: Snapshot;
+  for (let pass = 1; ; pass++) {
+    parts.scroll.take(grid);
+    const { width, height } = parts.viewport();
+    parts.feed.fill(grid, grid.begin_frame(width, height));
+    drainEffects(parts);
+    snapshot = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
+    if (!parts.settle?.(snapshot)) break;
     parts.scroll.writeBack(snapshot);
-    return { snapshot, painted: false, again: true };
+    if (pass === SETTLE_PASSES) return { snapshot, painted: false, again: true };
+    force = true;
   }
   const { damage } = snapshot;
   let painted = false;

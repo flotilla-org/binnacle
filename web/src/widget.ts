@@ -1478,6 +1478,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    */
   layout(): Layout<RowId, ColId> {
     this.catchUp();
+    // A pin or a hide keyed just now waits for that frame, and shows in the next.
+    this.catchUp();
     return readLayout(this.last!, this.layoutParts());
   }
 
