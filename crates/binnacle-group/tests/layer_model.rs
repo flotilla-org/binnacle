@@ -1354,6 +1354,54 @@ fn the_layer_holds_open_groups_and_a_bounded_cache_whatever_the_rows(tc: TestCas
     }
 }
 
+/// A page a Window read long ago, answered only now, is no fresher than any
+/// other: the cache keeps what the latest two Windows read, and up to its
+/// size more.
+#[hegel::test(test_cases = 30)]
+fn a_page_answered_late_is_not_kept_past_the_cache(tc: TestCase) {
+    let groups = tc.draw(
+        gs::integers::<u64>()
+            .min_value(3 * PAGE + 1)
+            .max_value(4 * PAGE),
+    );
+    let cache = tc.draw(gs::integers::<u64>().max_value(PAGE / 2));
+    let shape = Shape {
+        subtotals: [Placement::Off; 2],
+        grand_total: Placement::Off,
+        header: tc.draw(gs::booleans()),
+    };
+    let mut fake = Fake::new(many(groups as usize, 1));
+    let mut layer = GroupingLayer::<u64>::with_cache(cache);
+    layer.request_view(opening(1, &shape, Expand::to(Depth::Levels(0))));
+    drive(&tc, &mut layer, &mut fake);
+    // A Window reads the second page; its answers are held back.
+    layer.window(Axis::Rows, PAGE..PAGE + 1);
+    let batch = layer.poll_batch().expect("the second page is asked for");
+    let mut held = fake.answer(&tc, &batch);
+    held.append(&mut fake.late);
+    // Windows read the last page meanwhile.
+    let last = (groups - 1) / PAGE * PAGE;
+    for _ in 0..20 {
+        if layer.window(Axis::Rows, last..groups).len() as u64 == groups - last {
+            break;
+        }
+        drive(&tc, &mut layer, &mut fake);
+    }
+    assert_eq!(
+        layer.window(Axis::Rows, last..groups).len() as u64,
+        groups - last
+    );
+    for answer in held {
+        layer.answer(answer);
+    }
+    assert!(
+        layer.held() <= cache + (groups - last),
+        "holds {} for a cache of {cache} and {} read lately",
+        layer.held(),
+        groups - last
+    );
+}
+
 /// With a small cache, the pages a Key was read in are let go of, yet the
 /// layer still locates every item where a Window put it, asking for the
 /// pages it needs again.
