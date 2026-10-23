@@ -3,8 +3,8 @@
 //! read from the View Spec the Grid requests.
 
 use binnacle_core::{
-    Aggregate, AggregateValue, Axis, AxisConfig, Effect, Grid, Grouping, Key, Level, Placement,
-    Support, Totals, ViewEdit, ViewSpec,
+    Aggregate, AggregateValue, Axis, AxisConfig, Comparison, Condition, Effect, Grid, Grouping,
+    Key, Level, Placement, Scalar, Support, Totals, ViewEdit, ViewSpec,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -95,6 +95,51 @@ fn removing_the_last_level_makes_the_table_plain() {
         grouping(asked(&mut grid, |g| g.remove_level(Axis::Rows, Some(REGION)))),
         None
     );
+}
+
+/// #248: the values level alone is no level. With no field level left on
+/// either axis and no slicer, the table is plain and its values go too; a
+/// slicer keeps the grouping.
+#[test]
+fn removing_the_last_field_level_beside_the_values_level_makes_the_table_plain() {
+    let mut g = grouped();
+    g.row_levels = vec![Level::Values];
+    g.col_levels = vec![Level::field(QUARTER)];
+    let mut grid = grid(spec(g.clone()));
+    assert_eq!(
+        grouping(asked(&mut grid, |g| g.remove_level(Axis::Cols, Some(QUARTER)))),
+        None
+    );
+    g.slicers = vec![Condition::compare(
+        WEIGHT,
+        Comparison::Greater(Scalar::Number(100.0)),
+    )];
+    let mut grid = self::grid(spec(g));
+    let kept = grouping(asked(&mut grid, |g| {
+        g.remove_level(Axis::Cols, Some(QUARTER))
+    }));
+    let kept = kept.expect("a slicer keeps the grouping");
+    assert_eq!(kept.col_levels, vec![]);
+    assert_eq!(kept.values, vec![sum(), AggregateValue::count()]);
+}
+
+/// #248's shrunk picks: group the columns, add a second value, move the
+/// values level to the rows, then remove the column level.
+#[test]
+fn the_values_level_left_alone_on_the_rows_goes_with_the_last_field_level() {
+    let mut grid = grid(ViewSpec::default());
+    let picks: [&dyn Fn(&mut Grid); 4] = [
+        &|g| g.group_by(Axis::Cols, QUARTER),
+        &|g| g.add_value(sum()),
+        &|g| g.move_level(Axis::Cols, None),
+        &|g| g.remove_level(Axis::Cols, Some(QUARTER)),
+    ];
+    for pick in picks {
+        if let Some((spec, _)) = asked(&mut grid, pick) {
+            grid.view_applied(spec, Totals::unknown());
+        }
+    }
+    assert_eq!(grid.snapshot().applied_view().grouping, None);
 }
 
 #[test]

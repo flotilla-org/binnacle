@@ -896,10 +896,13 @@ fn counting(spec: &mut ViewSpec) -> &mut Grouping {
     })
 }
 
-/// Makes `spec` a plain table if its grouping has no levels and no slicers.
+/// Makes `spec` a plain table, its values gone too, if its grouping has no
+/// field level on either axis (the values level alone is none) and no
+/// slicers.
 fn plain_if_bare(spec: &mut ViewSpec) {
+    let fields = |levels: &[Level]| levels.iter().any(|l| l.field_key().is_some());
     let bare =
-        |g: &Grouping| g.row_levels.is_empty() && g.col_levels.is_empty() && g.slicers.is_empty();
+        |g: &Grouping| !fields(&g.row_levels) && !fields(&g.col_levels) && g.slicers.is_empty();
     if spec.grouping.as_ref().is_some_and(bare) {
         spec.grouping = None;
     }
