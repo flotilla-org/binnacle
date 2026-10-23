@@ -2,7 +2,7 @@
 // sort and a pinned column through a reload and puts them back with Restore
 // after they change; the slow demo restores before its data arrives, so the
 // saved filter reads "filtering…" until the late answer; the transposed demo
-// keeps a pinned record.
+// keeps a pinned record, saved even straight after the pin key.
 
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
@@ -23,6 +23,10 @@ async function click(page: Page, x: number, y: number) {
 }
 
 const cell = (page: Page, row: number, x: number) => click(page, x, HEADER + row * ROW + ROW / 2);
+
+// The transposed demo's row header band fits the field names beside their marks, so the records start at 96.
+const TRANSPOSED_BAND = 100;
+const TRANSPOSED_COLUMN = 112 + 1;
 
 /** The record first by weight, ascending (nulls last, ties in the records' order). */
 const lightest = rows.reduce((best, r) => (r.weight !== null && (best.weight === null || r.weight < best.weight) ? r : best)).id;
@@ -93,19 +97,41 @@ test("the slow demo restores before its data arrives: the saved filter reads fil
   await expect(count).toHaveText(`${kept.toLocaleString("en")} of 5,000`);
 });
 
-test("the transposed demo keeps a pinned record", async ({ page }) => {
-  // The row header band fits the field names beside their marks, so the records start at 96.
-  const FIELDS_BAND = 100;
-  const COLUMN = 112 + 1;
+/** The transposed demo, the name of record 3 focused (the fourth record column, after the field names' band). */
+async function transposed(page: Page) {
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText("rows 1 to 5 of 5");
-  await cell(page, 1, FIELDS_BAND + 3 * COLUMN);
+  await cell(page, 1, TRANSPOSED_BAND + 3 * TRANSPOSED_COLUMN);
   await expect(status(page)).toContainText("focus row 2, column 4 (name / 3)");
-  await page.keyboard.press("Alt+Shift+ArrowLeft");
-  await page.getByRole("button", { name: "Save layout" }).click();
+}
+
+/** Reloads the transposed demo and checks record 3 comes back pinned first. */
+async function pinnedAfterReload(page: Page) {
   await page.reload();
   await expect(state(page)).toHaveText("restored");
-  await cell(page, 1, FIELDS_BAND);
+  // The restored pin lands in the next frame; a click before it hits record 0.
+  await nextFrame(page);
+  await cell(page, 1, TRANSPOSED_BAND);
   await expect(status(page)).toContainText("focus row 2, column 4 (name / 3)");
+}
+
+test("the transposed demo keeps a pinned record", async ({ page }) => {
+  await transposed(page);
+  await page.keyboard.press("Alt+Shift+ArrowLeft");
+  await page.getByRole("button", { name: "Save layout" }).click();
+  await pinnedAfterReload(page);
+});
+
+test("a layout saved straight after the pin key, before the next frame, keeps the pin", async ({ page }) => {
+  await transposed(page);
+  // The pin waits for the frame after the key; Save comes in the same task, before it.
+  await page.locator(".binnacle-input").evaluate((textarea) => {
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, shiftKey: true, bubbles: true, cancelable: true }),
+    );
+    document.querySelector<HTMLButtonElement>('button[aria-label="Save layout"]')!.click();
+  });
+  await expect(state(page)).toHaveText("saved");
+  await pinnedAfterReload(page);
 });

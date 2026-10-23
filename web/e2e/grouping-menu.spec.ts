@@ -3,8 +3,9 @@
 // it or expands through it, removes or adds a value, or groups by a column no
 // level uses. Moving the port level to the columns turns the grouped
 // shipments into a pivot of ports across, and moving it back the grouped
-// table again. The column chooser lists the columns the rows group by as
-// "grouped".
+// table again, and a right-click in the very frame that first reports the
+// pivot finds the corner as drawn. The column chooser lists the columns the
+// rows group by as "grouped".
 
 import { expect, test, type Page } from "@playwright/test";
 import { quarterShipments } from "../demo/sources/pivot";
@@ -63,6 +64,29 @@ test.describe("the grouped shipments", () => {
     await rightClick(page, 165, HEADER / 2);
     await page.getByRole("dialog", { name: "Column level port" }).getByRole("button", { name: "Move to rows" }).click();
     await expect(status(page)).toContainText("of 56  ·  columns 1 to 4 of 4");
+  });
+
+  test("a right-click in the frame that first reports the pivot finds the corner as that frame drew it", async ({ page }) => {
+    await rightClick(page, 68, HEADER / 2);
+    // Once the status line reports the pivot, right-click the port's name before another frame runs.
+    await page.evaluate(
+      ({ reported, x, y }) => {
+        const status = document.querySelector("#status")!;
+        const layer = document.querySelector(".binnacle-layer")!;
+        const observer = new MutationObserver(() => {
+          if (!status.textContent?.includes(reported)) return;
+          observer.disconnect();
+          const b = layer.getBoundingClientRect();
+          const init = { clientX: b.left + x, clientY: b.top + y, button: 2, buttons: 2, pointerType: "mouse", bubbles: true, cancelable: true };
+          layer.dispatchEvent(new PointerEvent("pointerdown", init));
+          layer.dispatchEvent(new PointerEvent("pointerup", init));
+        });
+        observer.observe(status, { childList: true, characterData: true, subtree: true });
+      },
+      { reported: `of ${ports * 4}`, x: 165, y: HEADER / 2 },
+    );
+    await page.getByRole("dialog", { name: "Row level port" }).getByRole("button", { name: "Move to columns" }).click();
+    await expect(page.getByRole("dialog", { name: "Column level port" })).toBeVisible();
   });
 
   test("the chooser lists the columns the rows group by as grouped, with no tick", async ({ page, browserName }) => {

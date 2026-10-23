@@ -71,9 +71,13 @@ test("the filter notifies the same widget", async ({ page }) => {
 
 test("a new creation option makes a new widget", async ({ page }) => {
   await tag(page);
+  const before = await shownRows(page);
   await page.getByLabel("Compact rows").check();
   await expect.poll(() => tagged(page)).toBe(false);
   await expect(grids(page)).toHaveCount(1);
+  // The status line keeps the old widget's last frame until the new one
+  // draws its first, with more rows to the height; a click before then is lost.
+  await expect.poll(() => shownRows(page)).not.toBe(before);
   await expect(status(page)).toContainText(`of ${rows.length.toLocaleString("en")}`);
   await cell(page, 0);
   await expect(status(page)).toContainText("focus row 1 (0 / id)");
