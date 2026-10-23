@@ -135,7 +135,7 @@ The Summary Item heading one group of a level: drawn in outline form at its own 
 _Avoid_: Group row, group header, parent row
 
 **Subtotal**:
-The Summary Item holding a group's figures, placed before or after the group's items or left out, per level; it does not open. Its Outline sits one level below its Group Item, which is its parent. While a group is open and its Subtotal placed, the Group Item draws only its label and count, the figures being the Subtotal's; a closed Group Item carries them itself.
+The Summary Item holding a group's figures, placed before or after the group's items or left out, per level; it does not open. Its Outline sits one level below its Group Item, which is its parent. While a group is open and its Subtotal placed, the Group Item draws only its label and count, the figures being the Subtotal's; a closed Group Item carries them itself. A group above the values pseudo-level has one Subtotal per value instead, labelled by its group then its value ("Q1 sum(weight)"), each a Summary Item at its own Key interned from the group's path and the value's identity; closed, such a group shows them (after its Group Item in outline form), and its Group Item draws no figures, as the column Grand Total splits per value and as in Excel.
 _Avoid_: Group total, footer row
 
 **Grand Total**:
@@ -147,7 +147,7 @@ A column Grand Total, labelled "All". Where the column axis splits the values (t
 _Avoid_: Total column, grand total column
 
 **Pivot**:
-A grouping with column levels, or with the values pseudo-level among its row levels: both axes are then the Grouping Layer's, each item a Summary Item and each cell the figure where a row's path and a column's path cross. The innermost groups don't open (there are no Leaves), the columns follow the column Sort Spec and can't be moved, and any change to them is answered with Refiltered (or Reset), never Removed. A row group above the values pseudo-level shows the first value's figure.
+A grouping with column levels, or with the values pseudo-level among its row levels: both axes are then the Grouping Layer's, each item a Summary Item and each cell the figure where a row's path and a column's path cross. The innermost groups don't open (there are no Leaves), the columns follow the column Sort Spec and can't be moved, and any change to them is answered with Refiltered (or Reset), never Removed. A group above the values pseudo-level shows no figure of its own: its Subtotals, one per value, carry them.
 _Avoid_: Cross-tab, matrix
 
 **Pivot Column**:

@@ -241,10 +241,14 @@ impl Content for Text<'_> {
     }
 
     fn span_label(&self, span: &HeaderSpan) -> String {
-        let summary = self.source.summary(span.key);
-        match summary.as_ref().and_then(|s| s.path.last()) {
-            Some((_, Value::Text(t))) => t.clone(),
-            _ => "blank".into(),
+        self.group_name(span.axis, span.key)
+            .unwrap_or_else(|| "blank".into())
+    }
+
+    fn group_name(&self, _: Axis, group: Key) -> Option<String> {
+        match self.source.summary(group)?.path.last()? {
+            (_, Value::Text(t)) => Some(t.clone()),
+            _ => None,
         }
     }
 

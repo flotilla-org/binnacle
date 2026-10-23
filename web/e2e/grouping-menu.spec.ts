@@ -13,6 +13,9 @@ import { shipments } from "../demo/sources/shipments-data";
 const HEADER = 28;
 
 const status = (page: Page) => page.locator("#status");
+/** A column header by its accessible name. */
+const header = (page: Page, name: string) =>
+  page.locator(".binnacle-aria").getByRole("columnheader", { name, exact: true });
 
 const regions = new Set(shipments.map((s) => s.region)).size;
 const ports = new Set(shipments.map((s) => s.port)).size;
@@ -52,9 +55,9 @@ test.describe("the grouped shipments", () => {
     if (browserName === "chromium") await expect(page).toHaveScreenshot("level-menu.png", { scale: "device" });
     await menu.getByRole("button", { name: "Move to columns" }).click();
     await expect(menu).toBeHidden();
-    // A row for each region and the Grand Total; for each port its two values and its Subtotal.
+    // A row for each region and the Grand Total; for each port its two values and a Subtotal of each.
     await expect(status(page)).toContainText(`of ${regions + 1}  ·  columns 1 to`);
-    await expect(status(page)).toContainText(`of ${ports * 3}`);
+    await expect(status(page)).toContainText(`of ${ports * 4}`);
 
     // The port's name now sits at the right of the corner's top row.
     await rightClick(page, 165, HEADER / 2);
@@ -114,9 +117,11 @@ test.describe("the pivot", () => {
     const menu = await columnMenu(page);
     await expect(menu.getByRole("button", { name: "Remove level" })).toBeVisible();
     await menu.getByRole("button", { name: "Collapse to quarter" }).click();
-    // Each quarter closed to its total, and the All columns.
-    await expect(status(page)).toContainText(`of ${quarters + 2}`);
+    // Each quarter closed to its total of each value, and the All columns.
+    await expect(header(page, "Q1 count")).toBeVisible();
+    await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
     await (await columnMenu(page)).getByRole("button", { name: "Expand through quarter" }).click();
+    await expect(header(page, "Q1 count")).toHaveCount(0);
     await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
   });
 

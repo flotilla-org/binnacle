@@ -115,7 +115,8 @@ impl AggregateBackend<Figure> for Backend<'_> {
 /// [`VALUES_FIELD`] for the values pseudo-level), a Summary Item's
 /// aggregates, one per value (`null` for a blank), with how many children
 /// its group has, and the index of the value it stands for, if one does (a
-/// group of the values pseudo-level, a Grand Total split by value).
+/// group of the values pseudo-level, a Subtotal of one value, a Grand Total
+/// split by value).
 #[derive(Debug, Serialize)]
 struct GroupedItem {
     key: u64,

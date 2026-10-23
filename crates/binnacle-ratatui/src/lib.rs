@@ -113,11 +113,13 @@ pub trait Content {
 
     /// The label of a Summary Item of `axis`, by its Key `key`, where its
     /// header is drawn: `value` is the value it stands for, if it is a
-    /// group of the values pseudo-level or a Grand Total split by value.
-    /// Unless overridden, the value's [`Content::value_name`] for such a
-    /// group; a column Grand Total is "All", a row one "Grand total", each
-    /// followed by its value's name if split; else
-    /// [`Content::group_label`].
+    /// group of the values pseudo-level, a Subtotal of one value (of a
+    /// group above the values pseudo-level) or a Grand Total split by
+    /// value. Unless overridden, the value's [`Content::value_name`] for
+    /// such a group; for such a Subtotal its group's
+    /// [`Content::group_name`], if any, then the value's ("Q1 sum(weight)");
+    /// a column Grand Total is "All", a row one "Grand total", each
+    /// followed by its value's name if split; else [`Content::group_label`].
     fn summary_label(
         &self,
         axis: Axis,
@@ -130,8 +132,13 @@ pub trait Content {
             Axis::Rows => "Grand total",
             Axis::Cols => "All",
         };
+        let group = || outline.parent().and_then(|g| self.group_name(axis, g));
         match (outline.kind, name) {
             (ItemKind::GrandTotal, Some(name)) => format!("{total} {name}"),
+            (ItemKind::Subtotal, Some(name)) => match group() {
+                Some(group) => format!("{group} {name}"),
+                None => name,
+            },
             (ItemKind::GrandTotal, None) if axis == Axis::Cols => total.into(),
             (_, Some(name)) => name,
             _ => self.group_label(key, outline),
@@ -146,6 +153,14 @@ pub trait Content {
     fn span_label(&self, span: &HeaderSpan) -> String {
         let _ = span;
         String::new()
+    }
+
+    /// The name of the group of `axis` whose Group Item has Key `group`, for
+    /// the labels of its Subtotals of one value ("Q1 sum(weight)"). Unless
+    /// overridden, none: they are labelled by their value alone.
+    fn group_name(&self, axis: Axis, group: Key) -> Option<String> {
+        let _ = (axis, group);
+        None
     }
 
     /// The name of a value of a grouped table, drawn as its caption in the
@@ -391,7 +406,7 @@ pub fn render_with(
         // pending, as its cells do, rather than a row number.
         let unanswered = r.key.is_none() && grouped.is_some();
         // In header form a closed group's Subtotal sits under its span,
-        // which names it.
+        // which names it, so it names only its value, if one.
         let under_span = |o: &Outline| {
             let tier = (o.depth as usize).checked_sub(1).and_then(|t| tiers.get(t));
             o.kind == ItemKind::Subtotal && tier.is_some_and(|t| h.rect.x > t.start)
@@ -402,7 +417,9 @@ pub fn render_with(
                 false => r.position.saturating_add(1).to_string(),
             },
             |k| match outline {
-                Some(o) if !tiers.is_empty() && under_span(o) => String::new(),
+                Some(o) if !tiers.is_empty() && under_span(o) => {
+                    value_of(grouping, o).map_or_else(String::new, |v| content.value_name(v))
+                }
                 Some(o) if o.kind.is_summary() => {
                     content.summary_label(Axis::Rows, k, o, value_of(grouping, o))
                 }

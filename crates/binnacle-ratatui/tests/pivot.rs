@@ -2,13 +2,14 @@
 //! rows and quarters across, each quarter spanning its value columns in the
 //! column Header Band's top line, each value column's header on the line
 //! below, and the All columns, one per value, taking both lines, pinned at
-//! the right. A quarter closes (#210) to its total column under its span.
+//! the right. A quarter closes (#210) to its total columns under its span,
+//! one per value (#229), as a region over the values closes to its own.
 
 use std::borrow::Cow;
 
 use binnacle_core::{
-    AggregateValue, Axis, AxisConfig, Grid, Grouping, HeaderSpan, Key, Level, Placement, Value,
-    ViewSpec,
+    AggregateValue, Axis, AxisConfig, Form, Grid, Grouping, HeaderSpan, Key, Level, Placement,
+    Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{MemorySource, pump};
@@ -80,8 +81,9 @@ fn pivot() -> Grouping {
     grouping
 }
 
-/// What a host draws: its column names, each region's name, each quarter's,
-/// and the figure where a row and a column cross.
+/// What a host draws: its column names, each region's name, each quarter's
+/// (on its span and its totals of each value), and the figure where a row
+/// and a column cross.
 struct Text<'a>(&'a GroupedMemory<Ship>);
 
 impl Content for Text<'_> {
@@ -100,13 +102,13 @@ impl Content for Text<'_> {
     }
 
     fn span_label(&self, span: &HeaderSpan) -> String {
-        match self
-            .0
-            .summary(span.key)
-            .and_then(|s| s.path.last().cloned())
-        {
-            Some((_, Value::Text(t))) => t,
-            _ => String::new(),
+        self.group_name(span.axis, span.key).unwrap_or_default()
+    }
+
+    fn group_name(&self, _: Axis, group: Key) -> Option<String> {
+        match self.0.summary(group)?.path.last()? {
+            (_, Value::Text(t)) => Some(t.clone()),
+            _ => None,
         }
     }
 }
@@ -129,6 +131,11 @@ fn settle(grid: &mut Grid, source: &mut GroupedMemory<Ship>, rows: &[Ship], ctx:
 
 /// Draws the pivot after `act` has had its way with the Grid.
 fn draw_after(act: impl FnOnce(&mut Grid)) -> Buffer {
+    draw_pivot(pivot(), act)
+}
+
+/// Draws `grouping` after `act` has had its way with the Grid.
+fn draw_pivot(grouping: Grouping, act: impl FnOnce(&mut Grid)) -> Buffer {
     let rows: Vec<Ship> = SHIPS.into_iter().collect();
     let mut source = source();
     let mut grid = Grid::new(
@@ -140,7 +147,7 @@ fn draw_after(act: impl FnOnce(&mut Grid)) -> Buffer {
     // The quarters' line, then the value columns' own: the values
     // pseudo-level, innermost, is named on the corner's top line.
     grid.set_tiers(Axis::Cols, &[1.0, 0.0]);
-    grid.request_view(ViewSpec::default().with_grouping(Some(pivot())));
+    grid.request_view(ViewSpec::default().with_grouping(Some(grouping)));
     let theme = Theme::classic();
     let ctx = RenderContext::new(&theme);
     settle(&mut grid, &mut source, &rows, &ctx);
@@ -178,7 +185,7 @@ fn first_quarter(grid: &mut Grid) -> Key {
 }
 
 #[test]
-fn a_closed_quarter_shows_its_total_column_under_its_span() {
+fn a_closed_quarter_shows_a_total_column_per_value_under_its_span() {
     let drawn = draw_after(|grid| {
         let q1 = first_quarter(grid);
         let snapshot = grid.snapshot();
@@ -222,4 +229,37 @@ fn up_from_the_first_row_enters_the_column_tiers_where_left_steps_out_then_close
     let focused = |x, y| (drawn[(x, y)].style().add_modifier).contains(focus);
     assert!(focused(16, 0), "the focus is drawn on Q1's span");
     assert!(!focused(16, 2), "and not in the body");
+}
+
+#[test]
+fn a_closed_region_over_the_values_shows_a_total_row_per_value() {
+    let mut grouping = pivot();
+    grouping.row_levels = vec![Level::field(REGION), Level::Values];
+    grouping.col_levels = vec![Level::field(QUARTER)];
+    let drawn = draw_pivot(grouping, |grid| {
+        let north = grid.snapshot().rows().first().and_then(|i| i.key).unwrap();
+        grid.collapse(Axis::Rows, north).unwrap();
+    });
+    insta::assert_snapshot!(text(&drawn));
+}
+
+#[test]
+fn in_header_form_a_closed_region_names_each_value_under_its_span() {
+    let mut grouping = pivot();
+    // A total row after each open region too, so closing North keeps the
+    // rows in place (Collapsed), its totals left under its span.
+    let region = Level::Field {
+        field: REGION,
+        subtotal: Placement::After,
+    };
+    grouping.row_levels = vec![region, Level::Values];
+    grouping.col_levels = vec![Level::field(QUARTER)];
+    grouping.rows.form = Form::Header;
+    let drawn = draw_pivot(grouping, |grid| {
+        grid.set_tiers(Axis::Rows, &[7.0]);
+        let snapshot = grid.snapshot();
+        let north = snapshot.outline(Axis::Rows, 0).unwrap().ancestors[0];
+        grid.collapse(Axis::Rows, north).unwrap();
+    });
+    insta::assert_snapshot!(text(&drawn));
 }

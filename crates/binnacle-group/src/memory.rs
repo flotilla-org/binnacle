@@ -256,6 +256,8 @@ impl MemoryAggregates {
         let path = match layer.identity(key) {
             Some(SummaryId::Group(path)) => &path[..path.len().saturating_sub(1)],
             Some(SummaryId::Subtotal(path)) => &path[..],
+            // A value's Subtotal: its group's, past the value's step.
+            Some(SummaryId::ValueSubtotal(path)) => &path[..path.len().saturating_sub(1)],
             Some(SummaryId::GrandTotal | SummaryId::ValueTotal(_)) => return Vec::new(),
             None => match self.path_of(key) {
                 Some(path) => &path[..],

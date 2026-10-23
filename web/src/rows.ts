@@ -857,6 +857,18 @@ export function fromRows<R extends object>(
       ? { field: null, value: value === null ? group.value : valueLabel(value) }
       : { field: columns[Number(group.field)]!.key, value: group.value };
 
+  /**
+   * A Summary Item's label, its group's value given as `value`: a Subtotal of one value, of a group above the
+   * values pseudo-level, names the group then the value ("Q1 sum(weight)").
+   */
+  const labelOf = <Id, F>(outline: Outline<Id, F>, value: string | null, axis: typeof ROWS | typeof COLS) => {
+    const parent = outline.ancestors.at(-1);
+    const ofValue = outline.kind === "subtotal" && outline.group?.field === null && typeof parent === "number";
+    const up = ofValue ? summaryOf(parent, axis) : undefined;
+    if (up && up.field !== null) return `${up.value ?? "(blank)"} ${value}`;
+    return summaryLabel({ ...outline, group: outline.group ? { ...outline.group, value } : null });
+  };
+
   /** The items of grouped `axis` at Positions `start..end`, each Summary Item by its negative ID. */
   const groupedWindow = (axis: typeof ROWS | typeof COLS, start: number, end: number) => {
     const items = memory().grouped_window(axis, start, end) as GroupedItem[];
@@ -1098,7 +1110,7 @@ export function fromRows<R extends object>(
       groupLabel: (id, outline) => {
         const group = summaryOf(id);
         if (!group) return "";
-        const label = summaryLabel({ ...outline, group: outline.group ? { ...outline.group, value: group.value } : null });
+        const label = labelOf(outline, group.value, ROWS);
         return counted() < 0 ? label : `${label} (${group.count})`;
       },
       grandTotal: -1,
@@ -1134,7 +1146,7 @@ export function fromRows<R extends object>(
         const known = typeof id === "number" ? summaryOf(id, COLS) : undefined;
         const value = known?.value ?? outline.group?.value ?? null;
         if (outline.kind === "grandTotal") return value === null ? "All" : `All: ${value}`;
-        return summaryLabel({ ...outline, group: outline.group ? { ...outline.group, value } : null });
+        return labelOf(outline, value, COLS);
       },
       spanLabel: (id) => (typeof id === "number" ? summaryOf(id, COLS)?.value : undefined) ?? "(blank)",
       grandTotal: -1,

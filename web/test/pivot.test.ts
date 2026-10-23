@@ -213,7 +213,7 @@ describe("fromRows's pivot", () => {
     }
   });
 
-  test("a quarter closed shows its total column, told as a Collapsed, and opened again as an Expanded", () => {
+  test("a quarter closed shows its total column of each value, told as a Collapsed, and opened again as an Expanded", () => {
     const rows: Ship[] = [
       { region: "North", quarter: "Q1", weight: 1 },
       { region: "South", quarter: "Q1", weight: 4 },
@@ -228,7 +228,8 @@ describe("fromRows's pivot", () => {
       source.view!(viewOf(g), signal);
       const columns = () => source.cols.window(0, source.cols.count() as number, signal) as OutlinedWindow<Col, Col>;
       const open = columns();
-      expect(open.outlines.map((o) => o.kind)).toEqual(["group", "group", "subtotal", "group", "group", "subtotal"]);
+      const quarter = ["group", "group", "subtotal", "subtotal"];
+      expect(open.outlines.map((o) => o.kind)).toEqual([...quarter, ...quarter]);
       const q1 = open.outlines[0]!.ancestors[0]!;
       notices.length = 0;
       const closing = { ...g, colAxis: { ...g.colAxis, expand: { depth: "all" as const, except: [q1] } } };
@@ -237,11 +238,15 @@ describe("fromRows's pivot", () => {
       expect(notices).toEqual([{ type: "Collapsed", at: 0, n: 2 }]);
       const closed = columns();
       expect(closed.ids).toEqual(open.ids.slice(2));
-      expect(closed.outlines[0]!.kind).toBe("subtotal");
-      expect(source.cols.groupLabel!(closed.ids[0]!, closed.outlines[0]!)).toBe("Q1 total");
+      const totals = closed.ids.slice(0, 2);
+      expect(closed.outlines.slice(0, 2).map((o) => o.kind)).toEqual(["subtotal", "subtotal"]);
+      expect(totals.map((id, i) => source.cols.groupLabel!(id, closed.outlines[i]!))).toEqual(["Q1 sum(weight)", "Q1 count"]);
       const regions = (source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, Col>).ids;
-      // A closed quarter's total shows its first value, as a group over the values does.
-      expect(source.cells(regions, [closed.ids[0]!], signal)).toEqual([[1], [4]]);
+      // A closed quarter's totals show each value.
+      expect(source.cells(regions, totals, signal)).toEqual([
+        [1, 1],
+        [4, 1],
+      ]);
       source.view!(viewOf(g), signal);
       expect(notices.at(-1)).toEqual({ type: "Expanded", at: 0, n: 2 });
       expect(columns().ids).toEqual(open.ids);
@@ -285,14 +290,36 @@ describe("fromRows's pivot", () => {
       expect(window.outlines[1]!.group).toEqual({ field: null, value: "sum(weight)" });
       const cols = source.cols.window(0, source.cols.count() as number, signal) as OutlinedWindow<Col, Col>;
       expect(cols.outlines.map((o) => o.group?.value)).toEqual(["Q1", "Q2"]);
-      // A region's own row shows the first value's figure, as a Group Item over no values does.
+      // A region's own row shows no figure: its rows of each value do.
       expect(source.cells(window.ids, cols.ids, signal)).toEqual([
-        [5, null],
+        [null, null],
         [5, null],
         [2, null],
-        [null, 2],
+        [null, null],
         [null, 2],
         [null, 1],
+      ]);
+      // Closed, North still heads a row of each value, its totals.
+      const north = window.ids[0]!;
+      source.view!(viewOf({ ...g, rowAxis: { ...g.rowAxis, expand: { depth: "all", except: [north] } } }), signal);
+      const closed = source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, Col>;
+      expect(closed.ids.map((id, i) => source.rows.groupLabel!(id, closed.outlines[i]!))).toEqual([
+        "North (2)",
+        "North sum(weight) (2)",
+        "North count (2)",
+        "South (1)",
+        "sum(weight) (1)",
+        "count (1)",
+      ]);
+      expect(closed.outlines.slice(0, 3).map((o) => [o.kind, o.open])).toEqual([
+        ["group", "closed"],
+        ["subtotal", "cantOpen"],
+        ["subtotal", "cantOpen"],
+      ]);
+      expect(source.cells(closed.ids.slice(0, 3), cols.ids, signal)).toEqual([
+        [null, null],
+        [5, null],
+        [2, null],
       ]);
     } finally {
       source.destroy();
