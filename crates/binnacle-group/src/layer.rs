@@ -965,8 +965,9 @@ pub struct GroupingLayer<A> {
     /// What Windows and Locates found missing since the last batch.
     misses: Vec<Ask>,
     /// What Windows and Locates found missing and the answers have not
-    /// covered yet: answered, it stays cached through the next Window.
-    read: Vec<Ask>,
+    /// covered yet, with the Window that last did: answered within the
+    /// next Window, it stays cached through it.
+    read: Vec<(u64, Ask)>,
     /// The group paths the sorts and filters name, by the axis they are
     /// on: whether each is there decides whether its term applies.
     named: [Vec<Path>; 2],
@@ -1347,8 +1348,8 @@ impl<A: Clone> GroupingLayer<A> {
             // what none did goes first.
             let frame = self.frame;
             let asked = (self.read.iter())
-                .filter(|a| a.path == answer.path && a.want == want)
-                .map(|a| a.range.clone())
+                .filter(|(_, a)| a.path == answer.path && a.want == want)
+                .map(|(_, a)| a.range.clone())
                 .collect::<Vec<_>>();
             let fresh =
                 |r: Range<u64>| match asked.iter().any(|a| a.start < r.end && r.start < a.end) {
@@ -1374,7 +1375,7 @@ impl<A: Clone> GroupingLayer<A> {
             .filter(|(_, ask)| !self.covers(ask))
             .collect();
         let read = std::mem::take(&mut self.read);
-        self.read = read.into_iter().filter(|ask| !self.covers(ask)).collect();
+        self.read = read.into_iter().filter(|(_, a)| !self.covers(a)).collect();
         self.settle();
         self.trim();
     }
@@ -1747,6 +1748,10 @@ impl<A: Clone> GroupingLayer<A> {
             return Vec::new();
         };
         self.frame += 1;
+        // What the latest two Windows did not read is not fresh when it
+        // comes, however late.
+        let frame = self.frame;
+        self.read.retain(|(read, _)| read + 1 >= frame);
         let mut items = Vec::new();
         let mut missed = false;
         let tree = &self.axes[axis.index()];
@@ -1796,8 +1801,11 @@ impl<A: Clone> GroupingLayer<A> {
                             && a.range.start <= ask.range.start
                             && ask.range.end <= a.range.end
                     };
+                    match self.read.iter_mut().find(|(_, a)| *a == ask) {
+                        Some((read, _)) => *read = self.frame,
+                        None => self.read.push((self.frame, ask.clone())),
+                    }
                     if !self.misses.iter().any(within) {
-                        self.read.push(ask.clone());
                         self.misses.push(ask);
                     }
                 }
@@ -1878,8 +1886,9 @@ impl<A: Clone> GroupingLayer<A> {
             Ok(found) => Some(found.map_or(gone, |p| Located::Found(p + top))),
             Err(asks) => {
                 for ask in asks {
-                    if !self.read.contains(&ask) {
-                        self.read.push(ask.clone());
+                    match self.read.iter_mut().find(|(_, a)| *a == ask) {
+                        Some((read, _)) => *read = self.frame,
+                        None => self.read.push((self.frame, ask.clone())),
                     }
                     self.misses.push(ask);
                 }
