@@ -14,6 +14,6 @@ mod query;
 pub use layer::{CACHE, GroupingLayer, SUMMARY_KEY_BIT, Summary, SummaryId, settle};
 pub use memory::{Figure, GroupedMemory, Item, MemoryAggregates, Window};
 pub use query::{
-    AggregateBackend, Answer, Batch, Body, GroupRow, Path, PathKey, Request, RequestId, Scope, Stamp, Want,
-    having,
+    AggregateBackend, Answer, Batch, Body, GroupRow, Path, PathKey, Request, RequestId, Scope,
+    Stamp, Want, having,
 };

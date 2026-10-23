@@ -206,6 +206,12 @@ export interface AxisSnapshot {
    * outline column (or a level column in header form), for `cols` a tier of the column band.
    */
   bandFocused: boolean;
+  /**
+   * The axis's sort terms, listed as the conditions are: on a pivot, a term
+   * naming an item the data lacks for now (a pivot column gone) stays asked
+   * for, `notApplied`, and applies again when the item returns.
+   */
+  sorts: { column: { key: bigint; direction: SortDirection }; state: ConditionState }[];
 }
 
 /**
@@ -675,6 +681,10 @@ function readAxis(r: Reader): AxisSnapshot {
     levels: r.list(() => ({ index: r.num(), field: r.optKey() })),
   }));
   const bandFocused = r.flag();
+  const sorts = r.list(() => {
+    const state = r.state();
+    return { column: { key: r.key(), direction: DIRECTIONS[r.num()]! }, state };
+  });
   return {
     count,
     extent,
@@ -702,6 +712,7 @@ function readAxis(r: Reader): AxisSnapshot {
     spans,
     corner,
     bandFocused,
+    sorts,
   };
 }
 

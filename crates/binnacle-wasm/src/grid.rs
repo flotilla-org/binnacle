@@ -268,6 +268,25 @@ impl WebGrid {
         }
     }
 
+    /// The Keys of axis `a` the Grid holds state on: Size Overrides, pins,
+    /// hidden Keys, and the other axis's sort terms and conditions naming
+    /// them (see [`binnacle_core::Grid::held_keys`]).
+    pub fn held_keys(&self, a: u8) -> Vec<u64> {
+        self.grid
+            .held_keys(axis(a))
+            .into_iter()
+            .map(|k| k.0)
+            .collect()
+    }
+
+    /// Drops every piece of state the Grid holds on `keys` of axis `a`,
+    /// Keys whose paths no longer fit the levels (see
+    /// [`binnacle_core::Grid::forget`]).
+    pub fn forget(&mut self, a: u8, keys: &[u64]) {
+        let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+        self.grid.forget(axis(a), &keys);
+    }
+
     /// Makes `keys` the pins of edge `edge` of axis `a`, in that order (see
     /// [`binnacle_core::Grid::set_pins`]).
     pub fn set_pins(&mut self, a: u8, edge: u8, keys: &[u64]) {

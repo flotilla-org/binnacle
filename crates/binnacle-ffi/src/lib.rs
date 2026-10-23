@@ -2407,7 +2407,11 @@ pub unsafe extern "C" fn binnacle_grid_forget(
         .map(|&k| Key(k))
         .collect();
     // SAFETY: the caller's contract.
-    unsafe { with_handle(grid, |h| axis(axis_tag).map(|axis| h.grid.forget(axis, &keys))) }
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.forget(axis, &keys))
+        })
+    }
 }
 
 /// # Safety
@@ -2732,10 +2736,14 @@ impl BinnacleGrid {
             hidden.extend(snap.hidden(axis).iter().map(|k| k.0));
             let sorts = &mut self.listed_sorts[axis.index()];
             sorts.clear();
-            sorts.extend(snap.sorts(axis).iter().map(|(c, state)| BinnacleListedSort {
-                state: state_tag(*state),
-                column: c.into(),
-            }));
+            sorts.extend(
+                snap.sorts(axis)
+                    .iter()
+                    .map(|(c, state)| BinnacleListedSort {
+                        state: state_tag(*state),
+                        column: c.into(),
+                    }),
+            );
             let listed = snap.conditions(axis);
             let c = &mut self.listed[axis.index()];
             c.fill(listed.iter().map(|(c, _)| c));

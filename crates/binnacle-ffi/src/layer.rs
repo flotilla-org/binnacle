@@ -861,7 +861,9 @@ pub unsafe extern "C" fn binnacle_group_layer_fits(
     let Some(h) = (unsafe { layer.as_ref() }) else {
         return 1;
     };
-    axis(axis_tag).is_none_or(|a| h.layer.fits(a, Key(key))).into()
+    axis(axis_tag)
+        .is_none_or(|a| h.layer.fits(a, Key(key)))
+        .into()
 }
 
 /// How many groups and Leaves the layer holds; 0 for NULL.

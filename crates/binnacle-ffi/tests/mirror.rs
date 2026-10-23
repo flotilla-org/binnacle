@@ -709,7 +709,11 @@ fn op(tc: &TestCase) -> Op {
         40 => {
             let axis = tc.draw(axes());
             let keys = tc.draw(gs::vecs(key(axis)).max_size(3));
-            Op::Forget(axis, keys.iter().map(|k| k.0).collect(), tc.draw(gs::booleans()))
+            Op::Forget(
+                axis,
+                keys.iter().map(|k| k.0).collect(),
+                tc.draw(gs::booleans()),
+            )
         }
         37 => {
             let axis = tc.draw(axes());
@@ -2918,7 +2922,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 }
                 Op::Forget(axis, keys, all) => {
                     let (mut held, mut len) = (std::ptr::null(), 0usize);
-                    assert_eq!(binnacle_grid_held_keys(h, tag(axis), &mut held, &mut len), 1);
+                    assert_eq!(
+                        binnacle_grid_held_keys(h, tag(axis), &mut held, &mut len),
+                        1
+                    );
                     let held = slice::from_raw_parts(held, len).to_vec();
                     let want: Vec<u64> = grid.held_keys(axis).iter().map(|k| k.0).collect();
                     assert_eq!(held, want, "{axis:?} held Keys");
@@ -4492,10 +4499,16 @@ fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
             let grouped = unsafe { binnacle_group_layer_grouped(h, tag(axis)) };
             assert_eq!(grouped, i32::from(layer.grouped(axis)));
             // The first Summary Keys the layer issues, and Leaf Keys.
-            let keys = (0..12).map(|n| n | binnacle_group::SUMMARY_KEY_BIT).chain(0..3);
+            let keys = (0..12)
+                .map(|n| n | binnacle_group::SUMMARY_KEY_BIT)
+                .chain(0..3);
             for key in keys {
                 let fits = unsafe { binnacle_group_layer_fits(h, tag(axis), key) };
-                assert_eq!(fits, i32::from(layer.fits(axis, Key(key))), "{axis:?} fits {key}");
+                assert_eq!(
+                    fits,
+                    i32::from(layer.fits(axis, Key(key))),
+                    "{axis:?} fits {key}"
+                );
             }
         }
         assert_eq!(unsafe { binnacle_group_layer_held(h) }, layer.held());

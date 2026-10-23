@@ -47,6 +47,7 @@ describe("the decoded Snapshot equals Rust's dump of the same frame", () => {
     "headerForm",
     "corner",
     "columnTiers",
+    "pivotSorted",
   ];
 
   test("the scenario list matches Rust's", () => {
@@ -306,6 +307,33 @@ describe("Hiding", () => {
   });
 });
 
+describe("Keys the Grid holds state on", () => {
+  test("held Keys and forgetting them agree with Rust's Snapshot", () => {
+    const grid = bridge().WebGrid.debug_scenario("pivotSorted");
+    try {
+      const sorts = () => {
+        const frame = grid.debug_frame() as DebugFrame;
+        const s = decodeSnapshot(new Float64Array(frame.numbers), new BigUint64Array(frame.keys));
+        expect(s.rows.sorts).toEqual((frame.dump as { rows: { sorts: unknown } }).rows.sorts);
+        return s.rows.sorts.map((t) => [t.column.key, t.state]);
+      };
+      const [gone, kept] = sorts().map(([key]) => key as bigint);
+      expect(sorts()).toEqual([
+        [gone, "notApplied"],
+        [kept, "applied"],
+      ]);
+      // The rows' sort terms name pivot columns: the columns' held Keys.
+      expect(Array.from(grid.held_keys(1))).toEqual([gone, kept].sort((a, b) => (a! < b! ? -1 : 1)));
+      expect(Array.from(grid.held_keys(0))).toEqual([]);
+      grid.forget(1, BigUint64Array.from([gone!]));
+      expect(sorts()).toEqual([[kept, "applied"]]);
+      expect(Array.from(grid.held_keys(1))).toEqual([kept]);
+    } finally {
+      grid.free();
+    }
+  });
+});
+
 describe("Support", () => {
   test("each support code names the same support in Rust's Snapshot", () => {
     const { WebAxis, WebGrid } = bridge();
@@ -449,7 +477,7 @@ describe("Grouping", () => {
       memory.stage_strings(...region);
       memory.sort(0, BigUint64Array.from([1n]), Uint8Array.from([0]));
       stage();
-      expect(memory.group(grouping, new Uint32Array(), new Uint8Array(), [], new BigUint64Array(), new Uint8Array())).toBe(12);
+      expect(memory.group(grouping, new BigUint64Array(), new Uint8Array(), [], new BigUint64Array(), new Uint8Array(), [])).toBe(12);
       type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
       const items = memory.grouped_window(0, 0, 12) as Item[];
       const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
@@ -508,7 +536,7 @@ describe("Grouping", () => {
       memory.stage_numbers(Float64Array.from(weights), new Uint8Array(5));
       memory.sort(0, BigUint64Array.from([1n, 0n]), Uint8Array.from([0, 1]));
       stage();
-      memory.group(grouping, Uint32Array.from([0]), Uint8Array.from([1]), [], new BigUint64Array(), new Uint8Array());
+      memory.group(grouping, BigUint64Array.from([0n]), Uint8Array.from([1]), [], new BigUint64Array(), new Uint8Array(), []);
       const sorted = memory.grouped_window(0, 0, 12) as Item[];
       expect(sorted.map((i) => i.item ?? `${i.outline.kind} ${i.outline.group?.value}`)).toEqual([
         "group null", 3, "subtotal null", "group b", 0, 2, "subtotal b", "group a", 4, 1, "subtotal a", "grandTotal undefined",

@@ -1164,7 +1164,10 @@ impl Grid {
             if self.size_override(axis, key).is_some() {
                 self.clear_size(axis, key);
             }
-            if Edge::ALL.into_iter().any(|e| self.pins(axis, e).any(|k| k == key)) {
+            if Edge::ALL
+                .into_iter()
+                .any(|e| self.pins(axis, e).any(|k| k == key))
+            {
                 self.unpin(axis, key);
             }
         }
@@ -1172,7 +1175,10 @@ impl Grid {
         let Some(requested) = self.view.requested.as_mut() else {
             return;
         };
-        requested.axis_mut(axis).hidden.retain(|k| !keys.contains(k));
+        requested
+            .axis_mut(axis)
+            .hidden
+            .retain(|k| !keys.contains(k));
         let across = requested.axis_mut(axis.other());
         let sort: Vec<SortColumn> = (across.sort.columns().iter())
             .filter(|c| !keys.contains(&c.key))

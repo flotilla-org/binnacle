@@ -145,7 +145,10 @@ pub trait PumpSource {
 pub fn forget_retired(grid: &mut Grid, source: &mut (impl PumpSource + ?Sized)) {
     for axis in Axis::ALL {
         let held = grid.held_keys(axis);
-        let retired: Vec<Key> = held.into_iter().filter(|&k| !source.fits(axis, k)).collect();
+        let retired: Vec<Key> = held
+            .into_iter()
+            .filter(|&k| !source.fits(axis, k))
+            .collect();
         grid.forget(axis, &retired);
     }
 }

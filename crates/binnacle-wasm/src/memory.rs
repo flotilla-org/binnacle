@@ -169,6 +169,9 @@ pub struct WebMemory {
     spec: ViewSpec,
     notices: [Vec<ChangeNotice>; 2],
     applied: [Expand; 2],
+    /// The sort terms the layer last applied, by axis: on a pivot it leaves
+    /// out a term naming an item the data lacks.
+    sorted: [Vec<u64>; 2],
     policy: MovePolicy,
 }
 
@@ -186,6 +189,7 @@ impl WebMemory {
             spec: ViewSpec::default(),
             notices: Default::default(),
             applied: Default::default(),
+            sorted: [Vec::new(), Vec::new()],
             policy: MovePolicy::Bake,
         }
     }
@@ -255,25 +259,34 @@ impl WebMemory {
     /// index), with the fields it reads staged, over the rows in view as
     /// they are sorted and filtered now (its slicers among the filters),
     /// grouping them again if they were already. `sort` and `directions` are
-    /// the user's sort columns (indices) and directions (0 ascending), which
-    /// order the groups. `having` lists the rows' comparisons on a field a
-    /// value aggregates (conditions naming columns by index): they leave out
-    /// the groups whose figure fails them, not the rows. `col_sort` and
+    /// the user's sort columns (indices, or a pivot column's layer Key) and
+    /// directions (0 ascending), which order the groups. `having` lists the
+    /// rows' comparisons on a field a value aggregates (conditions naming
+    /// columns by index) or on a pivot column (by its layer Key): they leave
+    /// out the groups whose figure fails them, not the rows. `col_sort` and
     /// `col_directions` order a pivot's columns as `sort` orders the groups,
-    /// each a column level's field (by value) or `GRAND_TOTAL` (by the Grand
-    /// Total row's figure). Returns the new count for the `Refiltered`.
+    /// each a column level's field (by value) or a row's layer Key (by its
+    /// figure, `GRAND_TOTAL` for the Grand Total row's), and `col_having`
+    /// lists comparisons on a row's figure (naming it so) that leave out the
+    /// pivot columns failing them. Returns the new count for the
+    /// `Refiltered`.
+    #[allow(clippy::too_many_arguments)]
     pub fn group(
         &mut self,
         grouping: JsValue,
-        sort: &[u32],
+        sort: &[u64],
         directions: &[u8],
         having: JsValue,
         col_sort: &[u64],
         col_directions: &[u8],
+        col_having: JsValue,
     ) -> Result<f64, JsValue> {
         let grouping: WireGrouping = serde_wasm_bindgen::from_value(grouping)?;
-        let having: Vec<WireCondition> = serde_wasm_bindgen::from_value(having)?;
-        let having = having.into_iter().filter_map(WireCondition::into_core);
+        let conditions = |having: JsValue| -> Result<FilterSpec, JsValue> {
+            let having: Vec<WireCondition> = serde_wasm_bindgen::from_value(having)?;
+            let having = having.into_iter().filter_map(WireCondition::into_core);
+            Ok(FilterSpec::default().with_conditions(having.collect::<Vec<_>>().into()))
+        };
         let spec = |keys: &mut dyn Iterator<Item = u64>, directions: &[u8]| {
             let columns = (keys.zip(directions))
                 .map(|(c, &d)| match d {
@@ -283,10 +296,24 @@ impl WebMemory {
                 .collect();
             SortSpec::new(columns)
         };
-        let sort = spec(&mut sort.iter().map(|&c| c as u64), directions);
+        let sort = spec(&mut sort.iter().copied(), directions);
         let col_sort = spec(&mut col_sort.iter().copied(), col_directions);
-        let filter = FilterSpec::default().with_conditions(having.collect::<Vec<_>>().into());
-        Ok(self.group_by(grouping.into(), sort, filter, col_sort))
+        let (rows, cols) = (conditions(having)?, conditions(col_having)?);
+        Ok(self.group_by(grouping.into(), sort, rows, col_sort, cols))
+    }
+
+    /// The Keys of the sort terms on axis `a` as the grouping last applied
+    /// them: a pivot leaves out a term naming an item its data lacks (a
+    /// pivot column gone), which applies again when the item returns.
+    pub fn applied_sort(&self, a: u8) -> Vec<u64> {
+        self.sorted[axis(a).index()].clone()
+    }
+
+    /// Whether state on the item with layer Key `key` of axis `a` (a width,
+    /// a pin, a sort term naming it) still fits the levels: a Summary
+    /// Item's or pivot column's path fits them; anything else always does.
+    pub fn fits(&self, a: u8, key: u64) -> bool {
+        self.layer.fits(axis(a), Key(key))
     }
 
     /// Ungroups the rows; returns the count for the `Refiltered`.
@@ -649,12 +676,14 @@ impl WebMemory {
         sort: SortSpec,
         having: FilterSpec,
         col_sort: SortSpec,
+        col_having: FilterSpec,
     ) -> f64 {
         self.fields = std::mem::take(&mut self.staged_fields);
         let spec = ViewSpec::default()
             .with_sort(Axis::Rows, sort)
             .with_filter(Axis::Rows, having)
             .with_sort(Axis::Cols, col_sort)
+            .with_filter(Axis::Cols, col_having)
             .with_grouping(Some(grouping));
         self.spec = spec.clone();
         self.layer.request_view(spec);
@@ -722,6 +751,10 @@ impl WebMemory {
         while let Some(viewed) = self.layer.poll_viewed() {
             for (a, n) in viewed.notices {
                 self.notices[a.index()].push(n);
+            }
+            for axis in Axis::ALL {
+                let sort = viewed.applied.axis(axis).sort.columns();
+                self.sorted[axis.index()] = sort.iter().map(|c| c.key.0).collect();
             }
             if let Some(g) = viewed.applied.grouping {
                 self.applied = Axis::ALL.map(|a| g.axis(a).expand.clone());
@@ -862,6 +895,7 @@ mod tests {
                 SortSpec::unsorted(),
                 FilterSpec::default(),
                 SortSpec::unsorted(),
+                FilterSpec::default()
             ),
             9.0,
             "three groups, five Leaves and the Grand Total"
@@ -875,6 +909,7 @@ mod tests {
                 SortSpec::unsorted(),
                 FilterSpec::default(),
                 SortSpec::unsorted(),
+                FilterSpec::default()
             ),
             8.0,
             "three groups and five Leaves"
@@ -923,6 +958,7 @@ mod tests {
             SortSpec::unsorted(),
             FilterSpec::default(),
             SortSpec::unsorted(),
+            FilterSpec::default(),
         );
         assert!(m.pivot());
         assert_eq!(rows, 2.0, "N and S, no Leaves");
@@ -974,10 +1010,118 @@ mod tests {
             SortSpec::unsorted(),
             FilterSpec::default(),
             by_total,
+            FilterSpec::default(),
         );
         let cols = m.window_items(Axis::Cols, 0..1);
         let n = m.window_items(Axis::Rows, 0..1)[0].key;
         assert_eq!(m.cell(n, cols[0].key), Some(5.0), "N's Q2 sum leads");
+    }
+
+    #[test]
+    fn a_pivots_rows_sort_by_a_pivot_column_left_out_while_the_data_lacks_it() {
+        let mut m = WebMemory::new(5, 3);
+        // N holds rows 0, 2 and 3 (Q2 5, Q1 3); S rows 1 and 4 (Q1 2, Q2 10).
+        let stage = |m: &mut WebMemory| {
+            stage_texts(m, 0, &["N", "S", "N", "N", "S"]);
+            stage_texts(m, 1, &["Q2", "Q1", "Q1", "Q2", "Q2"]);
+            let (numbers, nulls) = (vec![1.0, 2.0, 3.0, 4.0, 10.0], vec![0; 5]);
+            m.stage_field(2, b"".to_vec(), vec![0; 5], vec![1; 5], numbers, nulls);
+        };
+        let mut grouping = Grouping::rows_by(Key(0));
+        grouping.col_levels = vec![Level::field(Key(1))];
+        grouping.values = vec![AggregateValue::of(Key(2), "sum")];
+        stage(&mut m);
+        m.group_by(
+            grouping.clone(),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+        );
+        let cols = m.window_items(Axis::Cols, 0..2);
+        let (q1, q2) = (cols[0].key, cols[1].key);
+        let first = |m: &mut WebMemory| {
+            let row = m.window_items(Axis::Rows, 0..1).remove(0);
+            row.outline.group.and_then(|g| g.value)
+        };
+        assert_eq!(first(&mut m).as_deref(), Some("N"));
+
+        let by = |key| SortSpec::new(vec![SortColumn::descending(Key(key))]);
+        stage(&mut m);
+        m.group_by(
+            grouping.clone(),
+            by(q2),
+            FilterSpec::default(),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+        );
+        assert_eq!(first(&mut m).as_deref(), Some("S"), "S's Q2 10 leads");
+        assert_eq!(m.applied_sort(ROWS), vec![q2]);
+        assert!(m.fits(COLS, q2));
+
+        // Q1's rows filtered out: no Q1 column, so its term is left out.
+        m.filter(ROWS, &[1, 0, 0, 1, 1]);
+        stage(&mut m);
+        m.group_by(
+            grouping.clone(),
+            by(q1),
+            FilterSpec::default(),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+        );
+        assert_eq!(m.applied_sort(ROWS), Vec::<u64>::new());
+        m.clear_filter(ROWS);
+        stage(&mut m);
+        m.group_by(
+            grouping.clone(),
+            by(q1),
+            FilterSpec::default(),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+        );
+        assert_eq!(m.applied_sort(ROWS), vec![q1], "back with Q1");
+        assert_eq!(first(&mut m).as_deref(), Some("N"), "N's Q1 3 leads");
+
+        // Without column levels no pivot column's path fits.
+        grouping.col_levels.clear();
+        stage(&mut m);
+        m.group_by(
+            grouping,
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+        );
+        assert!(!m.fits(COLS, q1));
+    }
+
+    #[test]
+    fn a_pivots_columns_filtered_by_the_grand_total_row_keep_those_whose_figure_passes() {
+        let mut m = WebMemory::new(4, 3);
+        stage_texts(&mut m, 0, &["N", "S", "N", "S"]);
+        stage_texts(&mut m, 1, &["Q1", "Q1", "Q2", "Q3"]);
+        let (numbers, nulls) = (vec![1.0, 2.0, 30.0, 40.0], vec![0; 4]);
+        m.stage_field(2, b"".to_vec(), vec![0; 4], vec![1; 4], numbers, nulls);
+        let mut grouping = Grouping::rows_by(Key(0));
+        grouping.col_levels = vec![Level::field(Key(1))];
+        grouping.values = vec![AggregateValue::of(Key(2), "sum")];
+        grouping.cols.grand_total = Placement::After;
+        let big = Condition::compare(GRAND_TOTAL, Comparison::Greater(Scalar::Number(5.0)));
+        let having = FilterSpec::default().with_conditions(vec![big].into());
+        m.group_by(
+            grouping,
+            SortSpec::unsorted(),
+            FilterSpec::default(),
+            SortSpec::unsorted(),
+            having,
+        );
+        // Q1 sums to 3 and goes; Q2 (30), Q3 (40) and All stay.
+        assert_eq!(m.count(COLS), 3.0);
+        let cols = m.window_items(Axis::Cols, 0..3);
+        let values: Vec<_> = (cols.iter())
+            .map(|c| c.outline.group.as_ref().and_then(|g| g.value.clone()))
+            .collect();
+        assert_eq!(values, vec![Some("Q2".into()), Some("Q3".into()), None]);
     }
 
     #[test]
@@ -996,7 +1140,13 @@ mod tests {
         let having = FilterSpec::default().with_conditions(vec![big].into());
         // Group "b" (sum 30) and its two Leaves, and the Grand Total.
         assert_eq!(
-            m.group_by(grouping, SortSpec::unsorted(), having, SortSpec::unsorted()),
+            m.group_by(
+                grouping,
+                SortSpec::unsorted(),
+                having,
+                SortSpec::unsorted(),
+                FilterSpec::default()
+            ),
             4.0
         );
         assert_eq!(m.locate(ROWS, 0)[0], 1.0, "under a group left out");
@@ -1020,6 +1170,7 @@ mod tests {
             SortSpec::unsorted(),
             FilterSpec::default(),
             SortSpec::unsorted(),
+            FilterSpec::default(),
         );
         // a: 1, 4; b: 0, 2; blank: 3.
         assert_eq!(m.locate(ROWS, 0), vec![0.0, 4.0]);

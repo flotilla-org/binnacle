@@ -116,19 +116,20 @@ fn state_on_path_keys_survives_the_data_and_goes_exactly_when_their_paths_stop_f
     grid.request_view(spec.clone());
     pump(&mut grid, &mut source.over(&rows), |_, _| {});
 
-    // A width on every group of either axis, a pin on each row group and
-    // the rows sorted by the first pivot column.
+    // A width and a pin on every group of either axis, and the rows sorted
+    // by the first pivot column.
     let mut held: Vec<(Axis, Key, Path)> = Vec::new();
     for axis in Axis::ALL {
         for (key, path) in groups(&mut source, &rows, axis) {
             grid.set_size(axis, key, 3.0);
-            if axis == Axis::Rows {
-                grid.pin(axis, Edge::Leading, key);
-            }
+            grid.pin(axis, Edge::Leading, key);
             held.push((axis, key, path));
         }
     }
-    let sorted = held.iter().find(|(a, ..)| *a == Axis::Cols).map(|(_, k, _)| *k);
+    let sorted = held
+        .iter()
+        .find(|(a, ..)| *a == Axis::Cols)
+        .map(|(_, k, _)| *k);
     if let Some(key) = sorted {
         grid.cycle_sort(Axis::Rows, key, false);
         spec.rows.sort = vec![SortColumn::ascending(key)].into();
@@ -141,7 +142,10 @@ fn state_on_path_keys_survives_the_data_and_goes_exactly_when_their_paths_stop_f
             Step::Slice(slicer) => {
                 let slicers = (slicer.into_iter())
                     .map(|(c, t)| {
-                        Condition::compare(Key(c as u64), Comparison::AtLeast(Scalar::Number(t as f64)))
+                        Condition::compare(
+                            Key(c as u64),
+                            Comparison::AtLeast(Scalar::Number(t as f64)),
+                        )
                     })
                     .collect();
                 if let Some(g) = spec.grouping.as_mut() {
@@ -167,10 +171,8 @@ fn state_on_path_keys_survives_the_data_and_goes_exactly_when_their_paths_stop_f
             let kept = alive.contains(key);
             let sized = grid.size_override(*axis, *key).is_some();
             assert_eq!(sized, kept, "{axis:?} {path:?} under {now:?}");
-            if *axis == Axis::Rows {
-                let pinned = grid.pins(*axis, Edge::Leading).any(|k| k == *key);
-                assert_eq!(pinned, kept, "pin on {path:?} under {now:?}");
-            }
+            let pinned = grid.pins(*axis, Edge::Leading).any(|k| k == *key);
+            assert_eq!(pinned, kept, "pin on {path:?} under {now:?}");
         }
         if let Some(key) = sorted {
             let named = grid.held_keys(Axis::Cols).contains(&key);

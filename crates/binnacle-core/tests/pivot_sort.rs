@@ -5,8 +5,7 @@
 
 use binnacle_core::{
     AggregateValue, Axis, AxisConfig, Comparison, Condition, ConditionState, Edge, GRAND_TOTAL,
-    Grid, Grouping, Key, Level, Outline, Placement, Scalar, SortColumn, Totals, ViewSpec,
-    Viewport,
+    Grid, Grouping, Key, Level, Outline, Placement, Scalar, SortColumn, Totals, ViewSpec, Viewport,
 };
 use binnacle_testkit::{PivotTable, Scenario};
 
@@ -113,8 +112,7 @@ fn off_a_pivot_a_sort_term_the_source_leaves_out_is_dropped() {
 }
 
 #[test]
-fn widths_pins_and_sorts_on_pivot_columns_survive_the_data_and_go_when_their_paths_no_longer_fit()
-{
+fn widths_pins_and_sorts_on_pivot_columns_survive_the_data_and_go_when_their_paths_no_longer_fit() {
     let mut s = scenario(&[0, 1, 2]);
     s.input(|g| {
         g.set_size(Axis::Cols, q(2), 9.0);
@@ -125,7 +123,10 @@ fn widths_pins_and_sorts_on_pivot_columns_survive_the_data_and_go_when_their_pat
     change_columns(&mut s, &[2]);
     change_columns(&mut s, &[0, 1, 2]);
     assert_eq!(s.grid.size_override(Axis::Cols, q(2)), Some(9.0));
-    assert_eq!(s.grid.pins(Axis::Cols, Edge::Leading).collect::<Vec<_>>(), [q(1)]);
+    assert_eq!(
+        s.grid.pins(Axis::Cols, Edge::Leading).collect::<Vec<_>>(),
+        [q(1)]
+    );
     assert_eq!(sorts(&mut s).len(), 1);
 
     // The column levels go: no pivot column's path fits any more.
@@ -135,7 +136,11 @@ fn widths_pins_and_sorts_on_pivot_columns_survive_the_data_and_go_when_their_pat
     s.frame(V);
     assert_eq!(s.grid.size_override(Axis::Cols, q(2)), None);
     assert_eq!(s.grid.pins(Axis::Cols, Edge::Leading).count(), 0);
-    assert_eq!(sorts(&mut s), vec![], "the term is gone, not left not applied");
+    assert_eq!(
+        sorts(&mut s),
+        vec![],
+        "the term is gone, not left not applied"
+    );
 }
 
 #[test]

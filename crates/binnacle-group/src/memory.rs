@@ -895,8 +895,14 @@ impl<R> GroupedMemory<R> {
 
     /// The rows may group by a column that sorts and has a text form, with
     /// Subtotals before or after, pivot by it (the columns grouped by it),
-    /// and slice by any column as they filter by it.
+    /// and slice by any column as they filter by it. On a pivot the other
+    /// axis's Summary Items (a pivot column, the Grand Total row) sort and
+    /// compare by their figures, and nothing else.
     pub fn support(&self, axis: Axis, key: Key) -> Support {
+        if self.pivot() && key.0 & SUMMARY_KEY_BIT != 0 {
+            return (Support::default().with_text(None).with_one_of(false))
+                .with_compare(Some(Compared::Numbers));
+        }
         let support = self.source.support(axis, key);
         let group = axis == Axis::Rows && support.sort && support.text.is_some();
         let subtotals = match group {
@@ -978,8 +984,8 @@ impl<R> GroupedMemory<R> {
         // other axis, a path Key: the layer's to apply, never the base's.
         let named = |key: Key| pivot && key.0 & SUMMARY_KEY_BIT != 0;
         let conditions = spec.rows.filter.conditions.conditions();
-        let (later, leaves): (Vec<&Condition>, Vec<&Condition>) = (conditions.iter())
-            .partition(|c| having(c, values).is_some() || named(c.key));
+        let (later, leaves): (Vec<&Condition>, Vec<&Condition>) =
+            (conditions.iter()).partition(|c| having(c, values).is_some() || named(c.key));
         let mut base = spec.clone();
         base.grouping = None;
         base.rows.filter.conditions =

@@ -374,6 +374,12 @@ impl WebGroupingLayer {
         })
     }
 
+    /// Whether state on the item with Key `key` of axis `a` still fits the
+    /// levels: a Summary Item's path fits them; anything else always does.
+    pub fn fits(&self, a: u8, key: u64) -> bool {
+        self.layer.fits(crate::codes::axis(a), Key(key))
+    }
+
     /// How many groups and Leaves the layer holds.
     pub fn held(&self) -> f64 {
         self.layer.held() as f64

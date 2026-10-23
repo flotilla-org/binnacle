@@ -718,11 +718,15 @@ impl<A> Node<A> {
             }),
             Some(total) => {
                 let known = |i| g.nodes.contains_key(&i);
-                asks.extend(missing(0..total, total, known).into_iter().map(|range| Ask {
-                    path: path.clone(),
-                    want,
-                    range,
-                }));
+                asks.extend(
+                    missing(0..total, total, known)
+                        .into_iter()
+                        .map(|range| Ask {
+                            path: path.clone(),
+                            want,
+                            range,
+                        }),
+                );
             }
         }
     }
