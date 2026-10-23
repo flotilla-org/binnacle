@@ -1016,12 +1016,45 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
     let rows = tc.draw(axis_config());
     let cols = tc.draw(axis_config());
     let axis = tc.draw(axis());
-    let config = [rows, cols][axis.index()];
     let fraction = tc.draw(hegel::one_of!(
         gs::sampled_from(vec![0.0, 0.5, 1.0]),
         gs::floats::<f64>().min_value(0.0).max_value(1.0),
         gs::floats::<f64>()
     ));
+    let (w, h) = tc.draw(hegel::tuples!(
+        extent(cols, cols.default_size),
+        extent(rows, rows.default_size)
+    ));
+    let end_gap = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(8.0),
+    ));
+    check_scroll_to_round_trip([rows, cols], axis, fraction, Viewport::new(w, h), end_gap);
+}
+
+/// #246: a body of one f32 step at 0.5 is still a body, so the single
+/// column, which does not fit it, scrolls. Measured in f32, the body
+/// rounded to nothing and the thumb looked as though it could not move.
+#[test]
+fn scroll_to_round_trips_over_a_body_one_f32_step_long() {
+    let rows = AxisConfig::new(0, 1.0).max_size(1048576.0);
+    let cols = AxisConfig::new(1, 1.0)
+        .max_size(1048576.0)
+        .header(0.5000002);
+    let viewport = Viewport::new(1.5000002, 0.0);
+    check_scroll_to_round_trip([rows, cols], Axis::Cols, 0.5, viewport, 1.0);
+}
+
+/// `ScrollTo` on `axis` of a fresh Grid over `configs` and an identity
+/// source, with `end_gap` on that axis, reads back `fraction` from the thumb.
+fn check_scroll_to_round_trip(
+    configs: [AxisConfig; 2],
+    axis: Axis,
+    fraction: f64,
+    viewport: Viewport,
+    end_gap: f32,
+) {
+    let config = configs[axis.index()];
     // Fractions outside 0..=1 are clamped; NaN is ignored, leaving the fresh
     // Grid at the start.
     let expected = if fraction.is_nan() {
@@ -1029,27 +1062,15 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
     } else {
         fraction.clamp(0.0, 1.0)
     };
-    let (w, h) = tc.draw(hegel::tuples!(
-        extent(cols, cols.default_size),
-        extent(rows, rows.default_size)
-    ));
-    let viewport = Viewport::new(w, h);
-    let end_gap = tc.draw(hegel::one_of!(
-        gs::just(0.0f32),
-        gs::floats::<f32>().min_value(0.0).max_value(8.0),
-    ));
-    let mut s = Scenario::identity(rows, cols);
+    let mut s = Scenario::identity(configs[0], configs[1]);
     s.input(|g| g.set_end_gap(axis, end_gap));
     s.frame(viewport);
     s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
     let snap = s.frame(viewport);
     let thumb = snap.thumb(axis).fraction;
     // The End Gap shortens the body the last item may end in.
-    let scrollable = scrollable(
-        snap.count(axis),
-        config,
-        snap.extent(axis) - snap.header(axis) - end_gap,
-    );
+    let body = f64::from(snap.extent(axis)) - f64::from(snap.header(axis)) - f64::from(end_gap);
+    let scrollable = scrollable(snap.count(axis), config, body);
     if scrollable <= 0.0 {
         assert_eq!(thumb, 0.0);
         return;
@@ -1062,8 +1083,8 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
         return;
     }
     // The anchor's offset is f32, rounded toward the start and kept below the
-    // f32 sum of item size and Gap (itself rounded), so it lands within two f32
-    // steps of the stride; the rest is f64 rounding.
+    // sum of item size and Gap, so it lands within two f32 steps of the
+    // stride; the rest is f64 rounding.
     let stride = (f64::from(config.default_size) + f64::from(config.gap)).min(f64::from(f32::MAX));
     let stride = stride as f32;
     let step = f64::from(next_f32(stride)) - f64::from(stride);
@@ -1076,7 +1097,7 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
 
 /// How far an axis of default-sized items can scroll for a body length: until
 /// the last item ends the body, or with no body until it starts it.
-fn scrollable(count: u64, config: AxisConfig, body: f32) -> f64 {
+fn scrollable(count: u64, config: AxisConfig, body: f64) -> f64 {
     if count == 0 {
         return 0.0;
     }
@@ -1085,7 +1106,7 @@ fn scrollable(count: u64, config: AxisConfig, body: f32) -> f64 {
     if body <= 0.0 {
         return last_start;
     }
-    (last_start + f64::from(config.default_size) - f64::from(body)).max(0.0)
+    (last_start + f64::from(config.default_size) - body).max(0.0)
 }
 
 #[hegel::test(test_cases = 1000)]
