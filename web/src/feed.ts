@@ -439,7 +439,14 @@ export function createFeed<RowId, ColId, V>(
       ? ids.map((id) => by.interner.key(id))
       : (shown?.[other(axis)].strip ?? []).flatMap((i) => (i.key === null ? [] : [i.key]));
     markSupport(axis, BigUint64Array.from(keys));
+    if (axis === "rows" && !ids) markFields();
     schedule();
+  };
+
+  /** Tells the Grid how the rows may be viewed by each base field the columns list, in view or not. */
+  const markFields = () => {
+    const fields = axes.cols.source.fields?.();
+    if (fields) markSupport("rows", keysOf(axes.cols, fields));
   };
 
   const sinkFor = (axis: AxisName) => ({
@@ -1202,6 +1209,7 @@ export function createFeed<RowId, ColId, V>(
       grid = g;
       markQuickFilter(g);
       markMovable();
+      markFields();
       g.set_find_support(finder ? FIND.on | (finder.regex ? FIND.regex : 0) : 0);
       for (const axis of AXES) {
         const count = early[axis];

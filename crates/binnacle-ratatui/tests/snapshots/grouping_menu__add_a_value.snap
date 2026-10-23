@@ -1,0 +1,20 @@
+---
+source: crates/binnacle-ratatui/tests/grouping_menu.rs
+expression: t.draw()
+---
+|region › quart┌─ Column weight ──────────────────────┐      |
+|              │ l Pin left                           │      |
+|▾ North       │ r Pin right                          │     █|
+|  ▾ Q1        │ f Freeze up to here                  │     █|
+|      3       │   Group rows by this column          │     █|
+|  ▾ Q2        │ p Add as a column level              │     █|
+|      5       │▸v Add a value ▾                      │     █|
+|▾ South       │     count(weight)                    │     █|
+|  ▾ Q1        │     distinct count(weight)           │     █|
+|      8       │     sum(weight)                      │     █|
+|  ▾ Q2        │     average(weight)                  │     █|
+|      10      │     minimum(weight)                  │     █|
+|              │     maximum(weight)                  │     █|
+|              │ g Ungroup rows                       │     █|
+|              │ s Slice by this column               │     █|
+|              │ ↑↓ Enter  Esc close                  │     █|

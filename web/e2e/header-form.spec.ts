@@ -118,5 +118,5 @@ test("the corner names each row level over its column; a click sorts by it, a ri
     await expect(page.locator(".grid-box")).toHaveScreenshot("header-form-corner-sorted.png", { scale: "device" });
   }
   await page.mouse.click(port.x, port.y, { button: "right" });
-  await expect(page.getByRole("dialog", { name: "Filter port" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Row level port" })).toBeVisible();
 });

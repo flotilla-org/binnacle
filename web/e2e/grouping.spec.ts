@@ -193,7 +193,8 @@ test("the column menu ungroups the rows and groups them by its column, focus sta
   const id = (await status(page).textContent())!.match(focus)![1];
   await page.keyboard.press("Alt+ArrowDown");
   const menu = page.getByRole("dialog", { name: "Filter shipped" });
-  await expect(menu.getByRole("button", { name: "Group rows by this column" })).toBeHidden();
+  // While grouped, it groups by its column as one level more (#212).
+  await expect(menu.getByRole("button", { name: "Group rows by this column" })).toBeVisible();
   await menu.getByRole("button", { name: "Ungroup rows" }).click();
   await expect(menu).toBeHidden();
   await expect(status(page)).toContainText(`of ${en(shipments.length)}  ·  columns 1 to 6 of 6`);
@@ -252,13 +253,13 @@ test("a rerouted shipment stays where it was, the rows unchanged", async ({ page
   await expect(status(page)).toContainText(`of ${en(nested())}`);
 });
 
-test("the corner joins the row levels' names in the outline column, and a right-click on one opens its menu", async ({ page }) => {
+test("the corner joins the row levels' names in the outline column, and a right-click on one opens its level menu", async ({ page }) => {
   const b = await page.locator(".binnacle-layer").boundingBox();
   if (!b) throw new Error("no grid");
   // "region › port" from the band's padding: the port's name past the region's.
   await page.mouse.click(b.x + 80, b.y + HEADER / 2, { button: "right" });
-  await expect(page.getByRole("dialog", { name: "Filter port" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Row level port" })).toBeVisible();
   await page.keyboard.press("Escape");
   await page.mouse.click(b.x + 20, b.y + HEADER / 2, { button: "right" });
-  await expect(page.getByRole("dialog", { name: "Filter region" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Row level region" })).toBeVisible();
 });

@@ -361,6 +361,46 @@ impl Grouping {
             && subtotal != Placement::Off
     }
 
+    /// Adds `level` to `axis` as its innermost level, but inside a values
+    /// pseudo-level that is innermost already.
+    pub(crate) fn add_level(&mut self, axis: Axis, level: Level) {
+        let levels = self.levels_mut(axis);
+        let at = match levels.last() {
+            Some(Level::Values) if level != Level::Values => levels.len() - 1,
+            _ => levels.len(),
+        };
+        levels.insert(at, level);
+    }
+
+    /// Takes the level of `axis` grouping by `field` (`None`: the values
+    /// pseudo-level) out of it.
+    pub(crate) fn take_level(&mut self, axis: Axis, field: Option<Key>) -> Option<Level> {
+        let levels = self.levels_mut(axis);
+        let i = levels.iter().position(|l| l.field_key() == field)?;
+        Some(levels.remove(i))
+    }
+
+    /// Places the values pseudo-level as the values and column levels ask,
+    /// after a level or value changed: several values on a table whose
+    /// columns group by a field show it, innermost on the columns unless it
+    /// is placed already; one value is a caption, with no level; and with
+    /// no field left on the columns, a values level there leaves, so the
+    /// table is no pivot unless its rows hold the values level.
+    pub(crate) fn settle_values(&mut self) {
+        let fields = |levels: &[Level]| levels.iter().any(|l| l.field_key().is_some());
+        if self.values.len() < 2 || !fields(&self.col_levels) {
+            self.col_levels.retain(|l| *l != Level::Values);
+        }
+        if self.values.len() < 2 {
+            self.row_levels.retain(|l| *l != Level::Values);
+        } else if fields(&self.col_levels)
+            && !self.row_levels.contains(&Level::Values)
+            && !self.col_levels.contains(&Level::Values)
+        {
+            self.col_levels.push(Level::Values);
+        }
+    }
+
     /// Whether `axis` is grouped by `field`.
     pub fn groups_by(&self, axis: Axis, field: Key) -> bool {
         self.levels(axis)

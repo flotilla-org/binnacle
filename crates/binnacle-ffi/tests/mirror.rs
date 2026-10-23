@@ -39,6 +39,14 @@ enum Op {
     /// Grouping the axis by a Key of the other axis, first declaring that
     /// the Table Source groups by it if the flag is set.
     GroupBy(Axis, Key, bool),
+    /// Removing or moving the level of the axis on a field (`None`: the
+    /// values pseudo-level).
+    RemoveLevel(Axis, Option<Key>),
+    MoveLevel(Axis, Option<Key>),
+    /// Adding a value, first declaring its aggregate offered over its field
+    /// if the flag is set; removing one.
+    AddValue(AggregateValue, bool),
+    RemoveValue(AggregateValue),
     CycleSort(Axis, Key, bool),
     Ungroup(Axis),
     /// Expand (0), collapse (1), toggle (2) or expand everything under (3)
@@ -265,6 +273,13 @@ fn key(tc: &TestCase, axis: Axis) -> Key {
     Key(base + tc.draw(gs::integers::<u64>().max_value(12)))
 }
 
+/// A base field to group by: one of a few column Keys, so that levels,
+/// group edits and level edits meet.
+#[hegel::composite]
+fn field(tc: &TestCase) -> Key {
+    Key(5000 + tc.draw(gs::integers::<u64>().max_value(2)))
+}
+
 /// A Position or a number of items, usually small enough to touch the
 /// Window.
 #[hegel::composite]
@@ -387,10 +402,28 @@ fn level(tc: &TestCase) -> Level {
     match tc.draw(gs::weighted_booleans(0.2)) {
         true => Level::Values,
         false => Level::Field {
-            field: tc.draw(key(Axis::Cols)),
+            field: tc.draw(field()),
             subtotal: tc.draw(placement()),
         },
     }
+}
+
+/// A value as a View Spec's grouping holds it: counting or over a column,
+/// with parameters now and then.
+#[hegel::composite]
+fn aggregate_value(tc: &TestCase) -> AggregateValue {
+    let field = tc.draw(gs::optional(key(Axis::Cols)));
+    let name = tc.draw(gs::sampled_from(vec!["count", "sum", "Ø mean", ""]));
+    let params = tc.draw(gs::vecs(gs::text().max_size(6)).max_size(2));
+    AggregateValue::new(field, name).with_params(params)
+}
+
+/// An aggregate a Table Source might offer, with parameter names.
+#[hegel::composite]
+fn aggregate(tc: &TestCase) -> Aggregate {
+    let name = tc.draw(gs::sampled_from(vec!["count", "sum", "Ø mean", ""]));
+    let params = tc.draw(gs::vecs(gs::text().max_size(6)).max_size(2));
+    Aggregate::new(name).with_params(params)
 }
 
 /// A View Spec's grouping: levels on either axis or none, values counting
@@ -649,7 +682,27 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(38)) {
+    match tc.draw(gs::integers::<u8>().max_value(40)) {
+        38 => {
+            let axis = tc.draw(axes());
+            // Mostly a field the groupings use, sometimes any column.
+            let field = tc.draw(gs::optional(hegel::one_of!(
+                field(),
+                field(),
+                key(Axis::Cols)
+            )));
+            match tc.draw(gs::booleans()) {
+                true => Op::RemoveLevel(axis, field),
+                false => Op::MoveLevel(axis, field),
+            }
+        }
+        39 => {
+            let value = tc.draw(aggregate_value());
+            match tc.draw(gs::booleans()) {
+                true => Op::AddValue(value, tc.draw(gs::booleans())),
+                false => Op::RemoveValue(value),
+            }
+        }
         37 => {
             let axis = tc.draw(axes());
             Op::CycleSort(axis, tc.draw(key(axis.other())), tc.draw(gs::booleans()))
@@ -674,7 +727,7 @@ fn op(tc: &TestCase) -> Op {
         32 => match tc.draw(gs::weighted_booleans(0.7)) {
             true => {
                 let axis = tc.draw(axes());
-                Op::GroupBy(axis, tc.draw(key(axis.other())), tc.draw(gs::booleans()))
+                Op::GroupBy(axis, tc.draw(field()), tc.draw(gs::booleans()))
             }
             false => Op::Ungroup(tc.draw(axes())),
         },
@@ -820,7 +873,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(91))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(97))),
     }
 }
 
@@ -1212,6 +1265,31 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 binnacle_grid_set_aggregates(h, ROWS, 0, &aggregate, 1)
             }
             85 => binnacle_grid_set_aggregates(h, 2, 0, std::ptr::null(), 0),
+            92 => binnacle_grid_remove_level(h, ROWS, std::ptr::null()),
+            93 => binnacle_grid_move_level(h, 2, &level_to_c(None)),
+            94 => {
+                let level = BinnacleLevel {
+                    kind: BINNACLE_LEVEL_OTHER,
+                    ..BinnacleLevel::default()
+                };
+                binnacle_grid_move_level(h, ROWS, &level)
+            }
+            95 | 96 => {
+                let bad = [0xff];
+                let value = BinnacleAggregateValue {
+                    has_field: if which == 95 { 2 } else { 0 },
+                    aggregate: BinnacleText {
+                        data: bad.as_ptr(),
+                        len: usize::from(which == 96),
+                    },
+                    ..BinnacleAggregateValue::default()
+                };
+                match which {
+                    95 => binnacle_grid_add_value(h, &value),
+                    _ => binnacle_grid_remove_value(h, &value),
+                }
+            }
+            97 => binnacle_grid_add_value(h, std::ptr::null()),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -1615,6 +1693,7 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
         let mut view = ViewSpec::default();
         let mut edit = BinnacleViewEdit::default();
         let mut edit_keys: Vec<u64> = Vec::new();
+        let mut edit_value: Option<AggregateValue> = None;
         let mut size = 0.0;
         let mut find = None;
         let mut from = None;
@@ -1746,6 +1825,22 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
                         form: u32::from(form == Form::Header),
                         ..on(20, axis)
                     },
+                    ViewEdit::RemoveLevel { axis, field } => BinnacleViewEdit {
+                        level: level_to_c(field),
+                        ..on(21, axis)
+                    },
+                    ViewEdit::MoveLevel { axis, field } => BinnacleViewEdit {
+                        level: level_to_c(field),
+                        ..on(22, axis)
+                    },
+                    ViewEdit::AddValue { ref value } => {
+                        edit_value = Some(value.clone());
+                        on(23, Axis::Rows)
+                    }
+                    ViewEdit::RemoveValue { ref value } => {
+                        edit_value = Some(value.clone());
+                        on(24, Axis::Rows)
+                    }
                     #[allow(unreachable_patterns)] // Edits added to the Grid later are OTHER.
                     _ => BinnacleViewEdit::default(),
                 };
@@ -1824,9 +1919,13 @@ unsafe fn check_effects(h: *mut BinnacleGrid, grid: &mut Grid) -> Option<(Axis, 
             false => unsafe { slice::from_raw_parts(c.edit.keys, c.edit.keys_len) },
         };
         assert_eq!(got_keys, edit_keys, "edit Keys for {want:?}");
+        let got_value = (!c.edit.value.aggregate.data.is_null() || c.edit.value.has_field != 0)
+            .then(|| unsafe { aggregate_value_from_c(&c.edit.value) });
+        assert_eq!(got_value, edit_value, "edit value for {want:?}");
         let bare = BinnacleViewEdit {
             keys: std::ptr::null(),
             keys_len: 0,
+            value: BinnacleAggregateValue::default(),
             ..c.edit
         };
         assert_eq!(bare, edit);
@@ -2060,6 +2159,44 @@ unsafe fn find_from_c(f: &BinnacleFindQuery) -> FindQuery {
         _ => Axis::Cols,
     };
     FindQuery::new(unsafe { query_from_c(&f.query) }).by(by)
+}
+
+/// The level a View Edit names by its field, `None` the values
+/// pseudo-level, in C.
+fn level_to_c(field: Option<Key>) -> BinnacleLevel {
+    BinnacleLevel {
+        kind: match field {
+            Some(_) => BINNACLE_LEVEL_FIELD,
+            None => BINNACLE_LEVEL_VALUES,
+        },
+        field: field.map_or(0, |k| k.0),
+        subtotal: BINNACLE_PLACEMENT_OFF,
+    }
+}
+
+fn with_c_value<T>(v: &AggregateValue, f: impl FnOnce(&BinnacleAggregateValue) -> T) -> T {
+    let params: Vec<BinnacleText> = v.params.iter().map(|p| text_to_c(p)).collect();
+    f(&BinnacleAggregateValue {
+        has_field: u32::from(v.field.is_some()),
+        field: v.field.map_or(0, |k| k.0),
+        aggregate: text_to_c(&v.aggregate),
+        params: params.as_ptr(),
+        params_len: params.len(),
+    })
+}
+
+fn with_c_aggregates<T>(list: &[Aggregate], f: impl FnOnce(&[BinnacleAggregate]) -> T) -> T {
+    let params: Vec<Vec<BinnacleText>> = (list.iter())
+        .map(|a| a.params.iter().map(|p| text_to_c(p)).collect())
+        .collect();
+    let c: Vec<BinnacleAggregate> = (list.iter().zip(&params))
+        .map(|(a, ps)| BinnacleAggregate {
+            name: text_to_c(&a.name),
+            params: ps.as_ptr(),
+            params_len: ps.len(),
+        })
+        .collect();
+    f(&c)
 }
 
 /// The support bits from the header's constants.
@@ -2591,13 +2728,47 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 }
                 Op::GroupBy(axis, field, declare) => {
                     if declare {
-                        let support = Support::default().with_group(true);
-                        grid.set_support(axis, field, support);
+                        let support = Support::default().with_group(true).with_pivot(true);
+                        grid.set_support(Axis::Rows, field, support);
                         let bits = support_bits(support);
-                        assert_eq!(binnacle_grid_set_support(h, tag(axis), field.0, bits), 1);
+                        assert_eq!(binnacle_grid_set_support(h, ROWS, field.0, bits), 1);
                     }
                     grid.group_by(axis, field);
                     binnacle_grid_group_by(h, tag(axis), field.0)
+                }
+                Op::RemoveLevel(axis, field) => {
+                    grid.remove_level(axis, field);
+                    binnacle_grid_remove_level(h, tag(axis), &level_to_c(field))
+                }
+                Op::MoveLevel(axis, field) => {
+                    // Declared, so that a level the spec has moves.
+                    if let Some(field) = field {
+                        let support = Support::default().with_group(true).with_pivot(true);
+                        grid.set_support(Axis::Rows, field, support);
+                        let bits = support_bits(support);
+                        assert_eq!(binnacle_grid_set_support(h, ROWS, field.0, bits), 1);
+                    }
+                    grid.move_level(axis, field);
+                    binnacle_grid_move_level(h, tag(axis), &level_to_c(field))
+                }
+                Op::AddValue(value, declare) => {
+                    if declare && let Some(field) = value.field {
+                        let offered = vec![
+                            Aggregate::new(value.aggregate.clone())
+                                .with_params(value.params.clone()),
+                        ];
+                        let ok = with_c_aggregates(&offered, |c| {
+                            binnacle_grid_set_aggregates(h, ROWS, field.0, c.as_ptr(), c.len())
+                        });
+                        assert_eq!(ok, 1);
+                        grid.set_aggregates(Axis::Rows, field, offered);
+                    }
+                    grid.add_value(value.clone());
+                    with_c_value(&value, |c| binnacle_grid_add_value(h, c))
+                }
+                Op::RemoveValue(value) => {
+                    grid.remove_value(&value);
+                    with_c_value(&value, |c| binnacle_grid_remove_value(h, c))
                 }
                 Op::CycleSort(axis, key, multi) => {
                     grid.cycle_sort(axis, key, multi);

@@ -508,6 +508,17 @@ pub enum ViewEdit {
     ExpandTo { axis: Axis, depth: Depth },
     /// `axis` is drawn in `form`: outline form or header form.
     SetForm { axis: Axis, form: Form },
+    /// The level of `axis` grouping by `field` was removed; with none left
+    /// on either axis the table is plain again. (`None`, the values
+    /// pseudo-level, is never removed: it goes with the second last value.)
+    RemoveLevel { axis: Axis, field: Option<Key> },
+    /// The level of `axis` grouping by `field` (`None`: the values
+    /// pseudo-level) moved to the other axis, as its innermost field level.
+    MoveLevel { axis: Axis, field: Option<Key> },
+    /// `value` joined the values, after the others.
+    AddValue { value: AggregateValue },
+    /// `value` left the values.
+    RemoveValue { value: AggregateValue },
 }
 
 /// How a Table Source matches a Text Query: `regex` if it takes patterns as
@@ -1162,16 +1173,15 @@ impl Grid {
         }
     }
 
-    /// Groups `axis` by `field`, a base field, as its innermost level, and
-    /// requests the result. Nothing happens if the axis is grouped by it
-    /// already or the Table Source can't group the axis by it.
+    /// Groups `axis` by `field`, a base field, as its innermost level (inside
+    /// any values pseudo-level), and requests the result. Nothing happens if
+    /// either axis is grouped by it already or the Table Source can't group
+    /// `axis` by it ([`Support::group`] for the rows, [`Support::pivot`]
+    /// for the columns, both declared on the rows by the field).
     pub fn group_by(&mut self, axis: Axis, field: Key) {
-        let grouped = self
-            .latest_view()
-            .grouping
-            .as_ref()
-            .is_some_and(|g| g.groups_by(axis, field));
-        if grouped || !self.view.support(axis, field).group {
+        let grouped = (self.latest_view().grouping.as_ref())
+            .is_some_and(|g| Axis::ALL.iter().any(|&a| g.groups_by(a, field)));
+        if grouped || !self.groups(axis, field) {
             return;
         }
         self.edit_view(ViewEdit::Group { axis, field });
@@ -1213,6 +1223,75 @@ impl Grid {
     /// The slicers of the latest request.
     fn slicers(&self) -> &[Condition] {
         (self.latest_view().grouping.as_ref()).map_or(&[], |g| &g.slicers)
+    }
+
+    /// Whether the Table Source groups `axis` by the base field `field`.
+    fn groups(&self, axis: Axis, field: Key) -> bool {
+        let support = self.view.support(Axis::Rows, field);
+        match axis {
+            Axis::Rows => support.group,
+            Axis::Cols => support.pivot,
+        }
+    }
+
+    /// Removes the level of `axis` grouping by `field` and requests the
+    /// result ([`ViewEdit::RemoveLevel`]); with no level left on either axis
+    /// and no slicer the table is plain again. Nothing happens if `axis` has no such
+    /// level. The values pseudo-level (`None`) is not removed this way: it
+    /// leaves when one value is left ([`Grid::remove_value`]).
+    pub fn remove_level(&mut self, axis: Axis, field: Option<Key>) {
+        if field.is_some() && self.has_level(axis, field) {
+            self.edit_view(ViewEdit::RemoveLevel { axis, field });
+        }
+    }
+
+    /// Moves the level of `axis` grouping by `field` (`None`: the values
+    /// pseudo-level) to the other axis, as its innermost level (inside any
+    /// values pseudo-level), and requests the result
+    /// ([`ViewEdit::MoveLevel`]). It keeps its Subtotal. Nothing happens if
+    /// `axis` has no such level or the Table Source can't group the other
+    /// axis by its field.
+    pub fn move_level(&mut self, axis: Axis, field: Option<Key>) {
+        let fits = field.is_none_or(|f| self.groups(axis.other(), f));
+        if fits && self.has_level(axis, field) {
+            self.edit_view(ViewEdit::MoveLevel { axis, field });
+        }
+    }
+
+    /// Whether the latest request has a level of `axis` on `field`.
+    fn has_level(&self, axis: Axis, field: Option<Key>) -> bool {
+        (self.latest_view().grouping.as_ref())
+            .is_some_and(|g| g.levels(axis).iter().any(|l| l.field_key() == field))
+    }
+
+    /// Adds `value` to the values of a grouped table and requests the
+    /// result ([`ViewEdit::AddValue`]). Nothing happens on a plain table,
+    /// with the value there already, or if the Table Source does not offer
+    /// its aggregate over its field ([`Grid::set_aggregates`]); a count of
+    /// items, with no field, is always offered.
+    pub fn add_value(&mut self, value: AggregateValue) {
+        let Some(grouping) = self.latest_view().grouping.as_ref() else {
+            return;
+        };
+        let offered = match value.field {
+            None => value.aggregate == "count",
+            Some(f) => (self.view.aggregates(Axis::Rows, f).iter())
+                .any(|a| a.name == value.aggregate && a.params.len() == value.params.len()),
+        };
+        if offered && !grouping.values.contains(&value) {
+            self.edit_view(ViewEdit::AddValue { value });
+        }
+    }
+
+    /// Removes `value` from the values and requests the result
+    /// ([`ViewEdit::RemoveValue`]). Nothing happens unless it is one of
+    /// them and not the only one.
+    pub fn remove_value(&mut self, value: &AggregateValue) {
+        let values = (self.latest_view().grouping.as_ref()).map_or(&[][..], |g| &g.values);
+        if values.len() > 1 && values.contains(value) {
+            let value = value.clone();
+            self.edit_view(ViewEdit::RemoveValue { value });
+        }
     }
 
     /// Removes every level of `axis` and requests the result. Nothing
@@ -1301,9 +1380,9 @@ impl Grid {
                 spec.axis_mut(*axis).hidden.retain(|k| !keys.contains(k));
             }
             ViewEdit::Group { axis, field } => {
-                counting(&mut spec)
-                    .levels_mut(*axis)
-                    .push(Level::field(*field));
+                let grouping = counting(&mut spec);
+                grouping.add_level(*axis, Level::field(*field));
+                grouping.settle_values();
             }
             ViewEdit::Ungroup { axis } => {
                 if let Some(grouping) = &mut spec.grouping {
@@ -1339,6 +1418,33 @@ impl Grid {
             ViewEdit::SetForm { axis, form } => {
                 if let Some(grouping) = &mut spec.grouping {
                     grouping.axis_mut(*axis).form = *form;
+                }
+            }
+            ViewEdit::RemoveLevel { axis, field } => {
+                if let Some(grouping) = &mut spec.grouping {
+                    grouping.take_level(*axis, *field);
+                    grouping.settle_values();
+                }
+                plain_if_bare(&mut spec);
+            }
+            ViewEdit::MoveLevel { axis, field } => {
+                if let Some(grouping) = &mut spec.grouping
+                    && let Some(level) = grouping.take_level(*axis, *field)
+                {
+                    grouping.add_level(axis.other(), level);
+                    grouping.settle_values();
+                }
+            }
+            ViewEdit::AddValue { value } => {
+                if let Some(grouping) = &mut spec.grouping {
+                    grouping.values.push(value.clone());
+                    grouping.settle_values();
+                }
+            }
+            ViewEdit::RemoveValue { value } => {
+                if let Some(grouping) = &mut spec.grouping {
+                    grouping.values.retain(|v| v != value);
+                    grouping.settle_values();
                 }
             }
         }

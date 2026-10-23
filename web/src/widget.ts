@@ -50,7 +50,7 @@ import type {
   ViewSpec,
 } from "./source";
 import { summaryLabel } from "./source";
-import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, type AxisName, type PinEdge } from "./codes";
+import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, VALUES_FIELD, type AxisName, type PinEdge } from "./codes";
 import { readLayout, restoreLayout, type Layout, type LayoutParts } from "./layout";
 import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
 import {
@@ -368,6 +368,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private readonly listeners = new Set<(frame: FrameInfo<RowId, ColId>) => void>();
   /** The mounted column menu's opener, if one is mounted. */
   private columnMenu: ((colId: ColId, anchor: DOMRect, at: MenuAt) => void) | null = null;
+  /** The mounted level menu's opener, if one is mounted. */
+  private levelMenu: ((axis: AxisName, field: ColId | null, anchor: DOMRect) => void) | null = null;
   /** The mounted row menu's opener, if one is mounted. */
   private rowMenu: ((rowId: RowId, anchor: DOMRect, at: MenuAt) => void) | null = null;
   /** The mounted find bar's opener, if one is mounted. */
@@ -1007,6 +1009,32 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
+   * Mounts a level menu, to change the grouping from a level (see
+   * `createColumnMenu`): a right press on a level's name in the corner, or
+   * `openLevelMenu`, calls `open` with the level's axis, its field (`null`
+   * for the values pseudo-level) and a rectangle to place the menu under.
+   * Returns how to unmount it; one menu is mounted at a time.
+   */
+  attachLevelMenu(open: (axis: AxisName, field: ColId | null, anchor: DOMRect) => void): () => void {
+    this.levelMenu = open;
+    return () => {
+      if (this.levelMenu === open) this.levelMenu = null;
+    };
+  }
+
+  /**
+   * Opens the mounted level menu for `axis`'s level by `field` (`null` for
+   * the values pseudo-level) under `anchor` (or the grid's top left):
+   * `false` if no menu is mounted or `axis` has no such level.
+   */
+  openLevelMenu(axis: AxisName, field: ColId | null, anchor?: DOMRect): boolean {
+    const open = this.levelMenu;
+    if (!open || this.destroyed || !this.levels(axis).includes(field)) return false;
+    open(axis, field, anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 }));
+    return true;
+  }
+
+  /**
    * Mounts a chooser (see `createChooser`): Mod+Alt+O (Mod+Alt+Shift+O for
    * the rows), a menu's "Choose columns…" or `openChooser` calls `open` with
    * the axis and, from a menu, a rectangle to place it by. Returns how to
@@ -1207,13 +1235,124 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
-   * Groups the rows by column `colId`, one level, each group headed by its
-   * Group Item: the Table Source answers as it does any View Spec, and the
-   * column leaves the body while the rows group by it. Nothing happens on a
-   * column the source cannot group the rows by (`columnSupport(colId).group`).
+   * Groups `axis` (the rows by default) by column `colId` as well, one level
+   * more, innermost but for the values pseudo-level: the Table Source
+   * answers as it does any View Spec. The column leaves the body while the
+   * rows group by it; grouping the columns by it makes a pivot. Nothing
+   * happens on a column a level already groups by, or one the source cannot
+   * group `axis` by (`columnSupport(colId).group` for the rows, `.pivot` for
+   * the columns).
    */
-  groupBy(colId: ColId): void {
-    this.editView(() => this.grid.group_by(AXIS_CODE.rows, this.feed.colKey(colId)));
+  groupBy(colId: ColId, axis: AxisName = "rows"): void {
+    this.editView(() => this.grid.group_by(AXIS_CODE[axis], this.feed.colKey(colId)));
+  }
+
+  /**
+   * The levels `axis` groups by, outermost first, as last asked for: each a
+   * column's ID, or `null` for the values pseudo-level. Empty while `axis`
+   * is not grouped.
+   */
+  levels(axis: AxisName): (ColId | null)[] {
+    const grouping = this.grouping();
+    const levels = (axis === "rows" ? grouping?.rowLevels : grouping?.colLevels) ?? [];
+    return levels.flatMap((level) => {
+      if (!("field" in level)) return [null];
+      const id = this.feed.colId(level.field);
+      return id === undefined ? [] : [id];
+    });
+  }
+
+  /** The values the grouping figures, as last asked for; empty while nothing is grouped. */
+  values(): AggregateValue<ColId>[] {
+    return (this.grouping()?.values ?? []).flatMap((v) => {
+      const field = v.field === null ? null : this.feed.colId(v.field);
+      if (field === undefined) return [];
+      return [{ field, aggregate: v.aggregate, params: [...(v.params ?? [])] }];
+    });
+  }
+
+  /**
+   * Removes `axis`'s level by column `field`: the Table Source answers as it
+   * does any View Spec, and without levels on either axis the plain table
+   * comes back. The values pseudo-level goes when values do, not this way.
+   */
+  removeLevel(axis: AxisName, field: ColId): void {
+    this.editView(() => this.grid.remove_level(AXIS_CODE[axis], this.feed.colKey(field)));
+  }
+
+  /**
+   * Moves `axis`'s level by column `field` (`null` for the values
+   * pseudo-level) to the other axis, innermost but for the values
+   * pseudo-level: the rows' last field level moved to the columns makes a
+   * pivot, and back again the plain grouped table. Nothing happens where the
+   * source cannot group the other axis by the field.
+   */
+  moveLevel(axis: AxisName, field: ColId | null): void {
+    this.editView(() => this.grid.move_level(AXIS_CODE[axis], field === null ? undefined : this.feed.colKey(field)));
+  }
+
+  /**
+   * Adds a value the grouping figures: an aggregate the source offers over
+   * the column (`columnSupport(field).aggregates`), or a count of no column.
+   * Nothing happens while nothing is grouped, or for a value already there.
+   */
+  addValue(value: AggregateValue<ColId>): void {
+    this.editView(() => this.grid.add_value(this.keyedValue(value)));
+  }
+
+  /** Removes a value the grouping figures; the last one stays. */
+  removeValue(value: AggregateValue<ColId>): void {
+    this.editView(() => this.grid.remove_value(this.keyedValue(value)));
+  }
+
+  /**
+   * Opens every group of grouped `axis` down to `depth` levels and closes
+   * the rest (0 closes them all), or with `"all"` opens every group.
+   */
+  expandTo(axis: AxisName, depth: number | "all"): void {
+    this.editView(() => this.grid.expand_to(AXIS_CODE[axis], depth === "all" ? -1 : depth));
+  }
+
+  /**
+   * The columns the grouping may use, as the Table Source lists them
+   * (`cols.fields`), else the columns of the table in view: a pivot's
+   * columns are its groups, so only a source that lists its fields offers
+   * them there.
+   */
+  fields(): ColId[] {
+    const listed = this.options.source.cols.fields?.();
+    if (listed) return [...listed];
+    const s = this.last;
+    if (!s || s.appliedView.grouping?.colLevels.length) return [];
+    return s.cols.strip.flatMap((i) => {
+      const id = i.key === null ? undefined : this.feed.colId(i.key);
+      return id === undefined ? [] : [id];
+    });
+  }
+
+  /**
+   * The level column `colId` heads a group of, if it is a pivot's column: its
+   * innermost column level's field, `null` for the values pseudo-level.
+   * `undefined` for a column of the table, or a pivot's Grand Total.
+   */
+  columnLevel(colId: ColId): ColId | null | undefined {
+    const key = this.feed.colKey(colId);
+    const field = this.last?.cols.strip.find((i) => i.key === key)?.outline?.group?.field;
+    if (field === undefined || field === null) return undefined;
+    return field === VALUES_FIELD ? null : this.feed.colId(field);
+  }
+
+  private grouping() {
+    const s = this.last;
+    return s ? (s.requestedView ?? s.appliedView).grouping : null;
+  }
+
+  private keyedValue(value: AggregateValue<ColId>) {
+    return {
+      field: value.field === null ? null : this.feed.colKey(value.field),
+      aggregate: value.aggregate,
+      params: [...(value.params ?? [])],
+    };
   }
 
   /** Brings back the plain rows: no grouping. */
@@ -1364,19 +1503,15 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private cornerPress(x: number, y: number, button: number, shift: boolean): boolean {
     const hit = this.cornerLevelAt(x, y);
-    const field = hit?.level?.field;
-    if (!hit || field == null) return false;
+    const level = hit?.level;
+    if (!hit || !level) return false;
     if (button === 0) {
-      this.grid.cycle_sort(AXIS_CODE[hit.axis], field, shift);
+      if (level.field === null) return false;
+      this.grid.cycle_sort(AXIS_CODE[hit.axis], level.field, shift);
       return true;
     }
-    const anchor = this.clientRect(hit.rect);
-    if (hit.axis === "rows") {
-      const id = this.feed.colId(field);
-      return id !== undefined && this.openColumnMenu(id, anchor);
-    }
-    const id = this.feed.rowId(field);
-    return id !== undefined && this.openRowMenu(id, anchor);
+    const field = level.field === null ? null : this.feed.colId(level.field);
+    return field !== undefined && this.openLevelMenu(hit.axis, field, this.clientRect(hit.rect));
   }
 
   private markPress(x: number, y: number): boolean {

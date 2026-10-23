@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 15u
+#define BINNACLE_ABI_VERSION 16u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -246,6 +246,14 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_VIEW_EDIT_REPLACE_SLICER 19
 /* axis is drawn in form (BINNACLE_FORM_*). */
 #define BINNACLE_VIEW_EDIT_SET_FORM 20
+/* The level of axis named by level (its kind and field) was removed (with
+ * no level left on either axis and no slicer, the table is plain again), or
+ * moved to the other axis as its innermost field level. */
+#define BINNACLE_VIEW_EDIT_REMOVE_LEVEL 21
+#define BINNACLE_VIEW_EDIT_MOVE_LEVEL 22
+/* value joined the values, after the others, or left them. */
+#define BINNACLE_VIEW_EDIT_ADD_VALUE 23
+#define BINNACLE_VIEW_EDIT_REMOVE_VALUE 24
 
 /* BinnacleCondition.kind. Kinds the Grid gained after this header read as
  * BINNACLE_CONDITION_OTHER, and are refused as input. TEXT: the value
@@ -1006,7 +1014,10 @@ typedef struct {
 /* The cause of a requested View Spec, a hint: the spec alone is the request.
  * keys is set for HIDE and SHOW, key for GROUP (the field) and for EXPAND,
  * COLLAPSE and EXPAND_ALL (the Group Item), expand_all and expand_depth for
- * EXPAND_TO, form (BINNACLE_FORM_*) for SET_FORM. */
+ * EXPAND_TO, form (BINNACLE_FORM_*) for SET_FORM, level for REMOVE_LEVEL and
+ * MOVE_LEVEL (a FIELD level's field, or VALUES; its subtotal unused), and
+ * value for ADD_VALUE and REMOVE_VALUE (its texts valid as the View Spec's
+ * are). */
 typedef struct {
   uint32_t kind;
   uint32_t axis;
@@ -1017,6 +1028,8 @@ typedef struct {
   uint32_t expand_all;
   uint32_t expand_depth;
   uint32_t form;
+  BinnacleLevel level;
+  BinnacleAggregateValue value;
 } BinnacleViewEdit;
 
 /* Each axis's unfiltered count, where the Table Source knows it. */
@@ -1388,6 +1401,36 @@ int binnacle_grid_cycle_sort(BinnacleGrid *grid, uint32_t axis, uint64_t key, ui
 /* Removes every level of axis and requests the result with
  * BINNACLE_VIEW_EDIT_UNGROUP. Nothing if axis is not grouped. */
 int binnacle_grid_ungroup(BinnacleGrid *grid, uint32_t axis);
+
+/* Removes the level of axis grouping by level's field and requests the
+ * result with BINNACLE_VIEW_EDIT_REMOVE_LEVEL; with no level left on either
+ * axis and no slicer the table is plain again. Nothing if axis has no such level, or for a
+ * VALUES level, which leaves when one value is left. level's subtotal is
+ * ignored. 0 for an unknown level kind. */
+int binnacle_grid_remove_level(BinnacleGrid *grid, uint32_t axis, const BinnacleLevel *level);
+
+/* Moves the level of axis named by level (a FIELD level's field, or VALUES)
+ * to the other axis as its innermost level (inside a VALUES level there),
+ * keeping its Subtotal, and requests the result with
+ * BINNACLE_VIEW_EDIT_MOVE_LEVEL. Nothing if axis has no such level or the
+ * Table Source can't group the other axis by its field
+ * (BINNACLE_SUPPORT_GROUP for the rows, BINNACLE_SUPPORT_PIVOT for the
+ * columns, declared on the rows by the field). Several values beside a
+ * column field bring a VALUES level, innermost on the columns; with one
+ * value, or no column field left, a VALUES level on the columns leaves. */
+int binnacle_grid_move_level(BinnacleGrid *grid, uint32_t axis, const BinnacleLevel *level);
+
+/* Adds value to the values of a grouped table and requests the result with
+ * BINNACLE_VIEW_EDIT_ADD_VALUE. Nothing on a plain table, with the value
+ * there already, or if the Table Source does not offer its aggregate over
+ * its field (binnacle_grid_set_aggregates; a count with no field is always
+ * offered). 0 for an invalid value. */
+int binnacle_grid_add_value(BinnacleGrid *grid, const BinnacleAggregateValue *value);
+
+/* Removes value from the values and requests the result with
+ * BINNACLE_VIEW_EDIT_REMOVE_VALUE. Nothing unless it is one of them and not
+ * the only one. 0 for an invalid value. */
+int binnacle_grid_remove_value(BinnacleGrid *grid, const BinnacleAggregateValue *value);
 
 /* The most Keys an axis's expand except list takes. */
 #define BINNACLE_EXCEPT_CAP 1000

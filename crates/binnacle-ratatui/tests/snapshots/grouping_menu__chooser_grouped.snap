@@ -1,0 +1,20 @@
+---
+source: crates/binnacle-ratatui/tests/grouping_menu.rs
+expression: lines(&buf)
+---
+|                                                            |
+|                                                            |
+|              ┌─ Choose columns ─────────────────────┐      |
+|              │ Search ▏                             │      |
+|              ├─ 3 columns ──────────────────────────┤      |
+|              │ [x] (Show all)                       │      |
+|              │ [x] quarter                          │      |
+|              │ [x] weight                           │      |
+|              │     region                   grouped │      |
+|              │ 2 of 3 columns shown                 │      |
+|              │ Space tick  Enter, Esc close         │      |
+|              └──────────────────────────────────────┘      |
+|                                                            |
+|                                                            |
+|                                                            |
+|                                                            |

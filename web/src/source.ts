@@ -508,6 +508,13 @@ export interface AxisMethods<Id, CrossId, FieldId = CrossId> {
   window(start: number, end: number, signal: AbortSignal): MaybePromise<Id[] | OutlinedWindow<Id, FieldId>>;
   /** How this axis may be viewed by `by`; asked as `by` comes into view. */
   support?(by: CrossId): Support;
+  /**
+   * The base fields the grouping may use, for the columns: the grouping menu
+   * offers them, and their support is asked for at once. Needed while the
+   * columns pivot, when they are groups, not fields; without it the menu
+   * offers the columns in view.
+   */
+  fields?(): FieldId[];
   /** Set if this axis takes a quick filter (the source must also have `view`). */
   quickFilter?: QuickFilterSupport;
   /**

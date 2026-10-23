@@ -101,6 +101,12 @@ impl From<&AggregateValue> for WireAggregateValue {
     }
 }
 
+impl From<WireAggregateValue> for AggregateValue {
+    fn from(v: WireAggregateValue) -> Self {
+        AggregateValue::new(v.field.map(Key), v.aggregate).with_params(v.params)
+    }
+}
+
 /// An aggregate the Table Source offers over a field: its name and the
 /// names of the parameters it takes (none if omitted).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -239,9 +245,7 @@ impl From<WireGrouping> for Grouping {
         let mut g = Grouping::default();
         g.row_levels = levels(w.row_levels);
         g.col_levels = levels(w.col_levels);
-        g.values = (w.values.into_iter())
-            .map(|v| AggregateValue::new(v.field.map(Key), v.aggregate).with_params(v.params))
-            .collect();
+        g.values = w.values.into_iter().map(AggregateValue::from).collect();
         g.slicers = (w.slicers.into_iter())
             .filter_map(WireCondition::into_core)
             .collect();

@@ -10,7 +10,9 @@
 
 use std::ops::Range;
 
-use binnacle_core::{Axis, Edge, Grid, Key, Position, Snapshot};
+use binnacle_core::{
+    AggregateValue, Axis, Depth, Edge, Grid, Grouping, Key, Position, Snapshot, VALUES_FIELD,
+};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::Rect;
@@ -180,19 +182,25 @@ pub fn cap_hint(axis: Axis, cap: usize) -> String {
     format!("Can't hide over {} {noun}: filter", grouped(cap as u64))
 }
 
-/// The header menu of a column or row. [`HeaderMenu::open`] drops it under
-/// the focused item's header with the cursor on its first line;
-/// [`HeaderMenu::open_hidden`], on an axis whose Table Source hides, with it
-/// on the first hidden item. While open it takes the keys: Up and Down move
-/// the cursor, Enter does what it is on, `l` and `r` pin a column left and
-/// right (`t` and `b` a row to the top and bottom), `u` unpins it (offered
-/// wherever it is pinned, clipped or not), `f` freezes up to it, `h` hides
+/// The header menu of a column or row, and the grouping menu of a level.
+/// [`HeaderMenu::open`] drops it under the focused item's header with the
+/// cursor on its first line; [`HeaderMenu::open_hidden`], on an axis whose
+/// Table Source hides, with it on the first hidden item;
+/// [`HeaderMenu::open_level`] under the corner, for a level named there.
+/// While open it takes the keys: Up and Down move the cursor, Enter does
+/// what it is on, `l` and `r` pin a column left and right (`t` and `b` a row
+/// to the top and bottom), `u` unpins it (offered wherever it is pinned,
+/// clipped or not), `f` freezes up to it, `g` groups the rows by the column
+/// (or ungroups them once grouped), `p` adds it as a column level, `h` hides
 /// the chosen items ([`Chosen`]), `o` shows only them, `c` asks for the
 /// chooser ([`HeaderMenu::take_chooser`]), `s` for a slicer on the column
 /// ([`HeaderMenu::take_slicer`]), `1` to `9` show that hidden item,
-/// `a` shows them all, Esc closes. Pinning, unpinning, freezing and hiding
-/// close it; showing leaves it open, and so does a hide past the cap, which
-/// says to filter instead.
+/// `a` shows them all, Esc closes. The grouping lines: `x` removes the
+/// level, `m` moves it to the other axis, `-` collapses to it, `+` expands
+/// through it, `v` opens the values to add and `n` the columns to group by,
+/// each listed under it. Pinning, unpinning, freezing, hiding and each
+/// grouping change close it; showing and opening a list leave it open, and
+/// so does a hide past the cap, which says to filter instead.
 #[derive(Clone, Debug, Default)]
 pub struct HeaderMenu {
     open: Option<Open>,
@@ -200,28 +208,69 @@ pub struct HeaderMenu {
     chooser: Option<Axis>,
     /// The column the menu asked to slice by, until the host takes it.
     slicer: Option<Key>,
+    /// The base fields the grouping may use, as the host lists them.
+    fields: Vec<Key>,
 }
 
 #[derive(Clone, Debug)]
 struct Open {
-    /// The item's own axis: the columns for a column's menu.
+    /// The item's own axis (the columns for a column's menu), or the
+    /// level's.
     axis: Axis,
-    key: Key,
+    target: Target,
     /// An index into [`entries`].
     cursor: usize,
     /// Why the last hide hid nothing.
     hint: Option<String>,
+    /// Whether the values to add, and the columns to group by, are listed.
+    adding: bool,
+    others: bool,
+}
+
+impl Open {
+    fn new(axis: Axis, target: Target) -> Self {
+        Open {
+            axis,
+            target,
+            cursor: 0,
+            hint: None,
+            adding: false,
+            others: false,
+        }
+    }
+}
+
+/// What a menu is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    /// An item of the axis, by its Key.
+    Item(Key),
+    /// A level of the axis, by its field (`None` for the values
+    /// pseudo-level).
+    Level(Option<Key>),
 }
 
 /// What a line of the menu does.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Entry {
     Pin(Edge),
     Unpin,
     Freeze,
-    Group,
+    /// Groups the axis by the field, one level more.
+    Group(Axis, Key),
     Ungroup,
     Slice,
+    RemoveLevel(Axis, Key),
+    MoveLevel(Axis, Option<Key>),
+    /// Opens the axis's groups down to the level at this index.
+    CollapseTo(Axis, u32, Key),
+    ExpandThrough(Axis, u32, Key),
+    RemoveValue(AggregateValue),
+    /// Lists the values to add, or stops listing them.
+    Adding,
+    AddValue(AggregateValue),
+    /// Lists the columns no level uses, or stops listing them.
+    Others,
     Hide,
     ShowOnly,
     Choose,
@@ -230,67 +279,218 @@ enum Entry {
 }
 
 impl Entry {
-    /// The key that picks it, but for a hidden item's number.
-    fn key(self, axis: Axis) -> char {
-        match (self, axis) {
+    /// The key that picks it, if any, but for a hidden item's number. `g`
+    /// ungroups the rows while the menu offers that, else groups them by
+    /// the item.
+    fn key(&self, axis: Axis, item: Option<Key>, ungroups: bool) -> Option<char> {
+        Some(match (self, axis) {
             (Entry::Pin(Edge::Leading), Axis::Cols) => 'l',
             (Entry::Pin(Edge::Trailing), Axis::Cols) => 'r',
             (Entry::Pin(Edge::Leading), Axis::Rows) => 't',
             (Entry::Pin(Edge::Trailing), Axis::Rows) => 'b',
             (Entry::Unpin, _) => 'u',
             (Entry::Freeze, _) => 'f',
-            (Entry::Group | Entry::Ungroup, _) => 'g',
+            (Entry::Group(Axis::Rows, f), _) if Some(*f) == item && !ungroups => 'g',
+            (Entry::Group(Axis::Cols, f), _) if Some(*f) == item => 'p',
+            (Entry::Ungroup, _) => 'g',
+            (Entry::RemoveLevel(..), _) => 'x',
+            (Entry::MoveLevel(..), _) => 'm',
+            (Entry::CollapseTo(..), _) => '-',
+            (Entry::ExpandThrough(..), _) => '+',
+            (Entry::Adding, _) => 'v',
+            (Entry::Others, _) => 'n',
             (Entry::Slice, _) => 's',
             (Entry::Hide, _) => 'h',
             (Entry::ShowOnly, _) => 'o',
             (Entry::Choose, _) => 'c',
             (Entry::Show(_) | Entry::ShowAll, _) => 'a',
+            _ => return None,
+        })
+    }
+
+    /// Whether it is listed under Add a value or Group by another column.
+    fn listed(&self, item: Option<Key>) -> bool {
+        match self {
+            Entry::AddValue(_) => true,
+            Entry::Group(_, f) => Some(*f) != item,
+            _ => false,
         }
     }
 }
 
-/// The menu's lines for `key` on `axis`, in order, as the web's menu lists
-/// them: Pin at the leading edge, or Unpin wherever it is pinned; Pin at the
-/// trailing edge unless pinned; Freeze unless pinned at the trailing edge;
-/// Ungroup rows once the rows are grouped, else on a column the rows group
-/// by, Group rows by it; on a column that takes conditions while the source
+/// The grouping the latest request asked for, else the one applied.
+fn grouping<'s>(snapshot: &Snapshot<'s>) -> Option<&'s Grouping> {
+    let view = snapshot.requested_view().unwrap_or(snapshot.applied_view());
+    view.grouping.as_ref()
+}
+
+/// The menu's lines for `open`, in order, as the web's menu lists them.
+/// An item's menu: Pin at the leading edge, or Unpin wherever it is pinned;
+/// Pin at the trailing edge unless pinned; Freeze unless pinned at the
+/// trailing edge; the grouping lines of a column (below); Ungroup rows once
+/// the rows are grouped; on a column that takes conditions while the source
 /// groups (the rows are grouped or sliced, or a column shown groups them),
 /// Slice by it; then, on an axis that hides, Hide, Show only and Choose,
-/// each hidden item and Show all.
-fn entries(snapshot: &Snapshot, axis: Axis, key: Key) -> Vec<Entry> {
-    let pinned_at = |edge| (snapshot.pinned(axis, edge).iter()).any(|i| i.key == Some(key));
-    let trailing = pinned_at(Edge::Trailing);
-    let mut entries = if pinned_at(Edge::Leading) || trailing {
-        vec![Entry::Unpin]
-    } else {
-        vec![Entry::Pin(Edge::Leading), Entry::Pin(Edge::Trailing)]
+/// each hidden item and Show all. A level's menu: its grouping lines alone.
+///
+/// The grouping lines of a column of the table: Group rows by it and Add it
+/// as a column level where the source supports them and no level uses it,
+/// and while grouped Add a value, listing the aggregates the source offers
+/// over it. Of a pivot's column, the lines of the column level it is a
+/// group of (a value's column, the innermost field level). Of a level:
+/// Remove level and Move to the other axis (where the source supports
+/// it), Collapse to it, and Expand through it unless it is a pivot's
+/// innermost; the values pseudo-level only moves. Then Remove value for
+/// each value while there are two or more, Add a value (a count, and the
+/// aggregates the source offers over `fields`), and Group by another column
+/// with the `fields` no level uses. Aggregates that take parameters are
+/// left out: the menu has nowhere to ask for them.
+fn entries(snapshot: &Snapshot, open: &Open, fields: &[Key]) -> Vec<Entry> {
+    let axis = open.axis;
+    let grouping = grouping(snapshot);
+    let levels = |axis| grouping.map_or(&[][..], |g| g.levels(axis));
+    let used = |field| {
+        [Axis::Rows, Axis::Cols]
+            .iter()
+            .any(|&a| levels(a).iter().any(|l| l.field_key() == Some(field)))
     };
-    if !trailing {
-        entries.push(Entry::Freeze);
+    let pivot = !levels(Axis::Cols).is_empty();
+    let values = grouping.map_or(&[][..], |g| &g.values[..]);
+    let addable = |field: Key| -> Vec<Entry> {
+        (snapshot.aggregates(Axis::Rows, field).iter())
+            .filter(|a| a.params.is_empty())
+            .map(|a| AggregateValue::new(Some(field), &a.name))
+            .filter(|v| !values.contains(v))
+            .map(Entry::AddValue)
+            .collect()
+    };
+    let mut entries = Vec::new();
+    // Whether the level's lines follow, and the level they are for: none
+    // for a pivot's Grand Total, the values pseudo-level's `None`.
+    let (lines, level) = match open.target {
+        Target::Item(key) => {
+            let pinned_at = |edge| (snapshot.pinned(axis, edge).iter()).any(|i| i.key == Some(key));
+            let trailing = pinned_at(Edge::Trailing);
+            match pinned_at(Edge::Leading) || trailing {
+                true => entries.push(Entry::Unpin),
+                false => entries.extend([Entry::Pin(Edge::Leading), Entry::Pin(Edge::Trailing)]),
+            }
+            if !trailing {
+                entries.push(Entry::Freeze);
+            }
+            match axis == Axis::Cols && pivot {
+                // The column level the pivot's column is a group of.
+                true => {
+                    let at = snapshot
+                        .strip(Axis::Cols)
+                        .iter()
+                        .find(|i| i.key == Some(key));
+                    let outline = at.and_then(|i| snapshot.outline(Axis::Cols, i.position));
+                    let level = match outline.and_then(|o| o.group.as_ref()).map(|g| g.field) {
+                        Some(VALUES_FIELD) => levels(Axis::Cols)
+                            .iter()
+                            .rev()
+                            .find_map(|l| l.field_key())
+                            .map(Some),
+                        field => field.map(Some),
+                    };
+                    (true, level)
+                }
+                false if axis == Axis::Cols => {
+                    let support = snapshot.support(Axis::Rows, key);
+                    if support.group && !used(key) {
+                        entries.push(Entry::Group(Axis::Rows, key));
+                    }
+                    if support.pivot && !used(key) {
+                        entries.push(Entry::Group(Axis::Cols, key));
+                    }
+                    let adding = addable(key);
+                    if grouping.is_some() && !adding.is_empty() {
+                        entries.push(Entry::Adding);
+                        if open.adding {
+                            entries.extend(adding);
+                        }
+                    }
+                    (false, None)
+                }
+                false => (false, None),
+            }
+        }
+        Target::Level(field) => (true, Some(field)),
+    };
+    if lines {
+        let levels = levels(axis);
+        let at = level.and_then(|field| levels.iter().position(|l| l.field_key() == field));
+        let other = axis.other();
+        match (level.flatten(), at) {
+            (Some(field), Some(at)) => {
+                let support = snapshot.support(Axis::Rows, field);
+                entries.push(Entry::RemoveLevel(axis, field));
+                if (other == Axis::Cols && support.pivot) || (other == Axis::Rows && support.group)
+                {
+                    entries.push(Entry::MoveLevel(axis, Some(field)));
+                }
+                entries.push(Entry::CollapseTo(axis, at as u32, field));
+                // A pivot's innermost groups are its items: nothing under them to open.
+                if !(pivot && at + 1 == levels.len()) {
+                    entries.push(Entry::ExpandThrough(axis, at as u32 + 1, field));
+                }
+            }
+            (None, Some(_)) => entries.push(Entry::MoveLevel(axis, None)),
+            _ => {}
+        }
+        if values.len() > 1 {
+            entries.extend(values.iter().cloned().map(Entry::RemoveValue));
+        }
+        let count = AggregateValue::count();
+        let mut adding: Vec<Entry> = match values.contains(&count) {
+            true => Vec::new(),
+            false => vec![Entry::AddValue(count)],
+        };
+        adding.extend(fields.iter().flat_map(|&f| addable(f)));
+        if !adding.is_empty() {
+            entries.push(Entry::Adding);
+            if open.adding {
+                entries.extend(adding);
+            }
+        }
+        let others: Vec<Entry> = (fields.iter().filter(|&&f| !used(f)))
+            .flat_map(|&f| {
+                let support = snapshot.support(Axis::Rows, f);
+                [(support.group, Axis::Rows), (support.pivot, Axis::Cols)]
+                    .into_iter()
+                    .filter(|&(on, _)| on)
+                    .map(move |(_, axis)| Entry::Group(axis, f))
+            })
+            .collect();
+        if !others.is_empty() {
+            entries.push(Entry::Others);
+            if open.others {
+                entries.extend(others);
+            }
+        }
     }
-    let view = snapshot.requested_view().unwrap_or(snapshot.applied_view());
-    let grouped = (view.grouping.as_ref()).is_some_and(|g| !g.levels(Axis::Rows).is_empty());
-    if grouped {
-        entries.push(Entry::Ungroup);
-    } else if axis == Axis::Cols && snapshot.support(Axis::Rows, key).group {
-        entries.push(Entry::Group);
-    }
-    let groups = view.grouping.is_some()
-        || !snapshot.slicers().is_empty()
-        || !snapshot.levels(Axis::Rows).is_empty()
-        || (snapshot.cols().iter())
-            .any(|c| c.key.is_some_and(|k| snapshot.support(Axis::Rows, k).group));
-    let support = snapshot.support(Axis::Rows, key);
-    let conditions = support.text.is_some() || support.one_of || support.compare.is_some();
-    if axis == Axis::Cols && groups && conditions {
-        entries.push(Entry::Slice);
-    }
-    if snapshot.hide_support(axis) {
-        entries.extend([Entry::Hide, Entry::ShowOnly, Entry::Choose]);
-        let hidden = snapshot.hidden(axis);
-        entries.extend(hidden.iter().map(|&k| Entry::Show(k)));
-        if !hidden.is_empty() {
-            entries.push(Entry::ShowAll);
+    if let Target::Item(key) = open.target {
+        if grouping.is_some_and(|g| !g.levels(Axis::Rows).is_empty()) {
+            entries.push(Entry::Ungroup);
+        }
+        let groups = grouping.is_some()
+            || !snapshot.slicers().is_empty()
+            || !snapshot.levels(Axis::Rows).is_empty()
+            || (snapshot.cols().iter())
+                .any(|c| c.key.is_some_and(|k| snapshot.support(Axis::Rows, k).group));
+        let support = snapshot.support(Axis::Rows, key);
+        let conditions = support.text.is_some() || support.one_of || support.compare.is_some();
+        if axis == Axis::Cols && groups && conditions {
+            entries.push(Entry::Slice);
+        }
+        if snapshot.hide_support(axis) {
+            entries.extend([Entry::Hide, Entry::ShowOnly, Entry::Choose]);
+            let hidden = snapshot.hidden(axis);
+            entries.extend(hidden.iter().map(|&k| Entry::Show(k)));
+            if !hidden.is_empty() {
+                entries.push(Entry::ShowAll);
+            }
         }
     }
     entries
@@ -305,18 +505,49 @@ impl HeaderMenu {
         self.open.is_some()
     }
 
+    /// Sets the base fields the grouping may use (columns of the table, by
+    /// Key): the grouping menu offers values over them and groups by those
+    /// no level uses. A pivot's columns are its groups, so only fields
+    /// listed here are offered there.
+    pub fn set_fields(&mut self, fields: Vec<Key>) {
+        self.fields = fields;
+    }
+
+    /// The fields to offer: those set, else the columns in view while the
+    /// columns are not grouped.
+    fn fields(&self, snapshot: &Snapshot) -> Vec<Key> {
+        if !self.fields.is_empty() {
+            return self.fields.clone();
+        }
+        match grouping(snapshot).is_some_and(|g| !g.levels(Axis::Cols).is_empty()) {
+            true => Vec::new(),
+            false => snapshot
+                .strip(Axis::Cols)
+                .iter()
+                .filter_map(|i| i.key)
+                .collect(),
+        }
+    }
+
     /// Opens the menu of the focused item of `axis` (`Axis::Cols` for the
     /// focused column's): `false` if nothing there is focused.
     pub fn open(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
         let Some(key) = snapshot.focus(axis).and_then(|f| f.key) else {
             return false;
         };
-        self.open = Some(Open {
-            axis,
-            key,
-            cursor: 0,
-            hint: None,
-        });
+        self.open = Some(Open::new(axis, Target::Item(key)));
+        true
+    }
+
+    /// Opens the grouping menu of `axis`'s level by `field` (`None` for the
+    /// values pseudo-level), as a right click on its name in the corner
+    /// does: `false` if `axis` has no such level.
+    pub fn open_level(&mut self, snapshot: &Snapshot, axis: Axis, field: Option<Key>) -> bool {
+        let levels = grouping(snapshot).map_or(&[][..], |g| g.levels(axis));
+        if !levels.iter().any(|l| l.field_key() == field) {
+            return false;
+        }
+        self.open = Some(Open::new(axis, Target::Level(field)));
         true
     }
 
@@ -327,9 +558,10 @@ impl HeaderMenu {
         if !snapshot.hide_support(axis) || !self.open(snapshot, axis) {
             return false;
         }
+        let fields = self.fields(snapshot);
         if let Some(o) = &mut self.open {
-            let entries = entries(snapshot, axis, o.key);
-            let choose = entries.iter().position(|&e| e == Entry::Choose);
+            let entries = entries(snapshot, o, &fields);
+            let choose = entries.iter().position(|e| *e == Entry::Choose);
             o.cursor = choose.map_or(0, |i| (i + 1).min(entries.len() - 1));
         }
         true
@@ -363,19 +595,28 @@ impl HeaderMenu {
         grid: &mut Grid,
         keys_at: impl FnMut(Axis, Range<Position>) -> Vec<Key>,
     ) -> bool {
-        let Some(Open {
-            axis, key, cursor, ..
-        }) = self.open.clone()
-        else {
+        let Some(open) = self.open.clone() else {
             return false;
         };
         if event.kind == KeyEventKind::Release {
             return true;
         }
         let snapshot = grid.snapshot();
-        let entries = entries(&snapshot, axis, key);
+        let fields = self.fields(&snapshot);
+        let entries = entries(&snapshot, &open, &fields);
+        let Open { axis, cursor, .. } = open;
+        let item = match open.target {
+            Target::Item(key) => Some(key),
+            Target::Level(_) => None,
+        };
         let hidden: Vec<Key> = snapshot.hidden(axis).to_vec();
-        let last = entries.len() - 1;
+        let ungroups = entries.contains(&Entry::Ungroup);
+        let Some(last) = entries.len().checked_sub(1) else {
+            return match event.code {
+                KeyCode::Esc => self.close(),
+                _ => true,
+            };
+        };
         let cursor = cursor.min(last);
         let mut moved = cursor;
         let mut act = None;
@@ -383,64 +624,113 @@ impl HeaderMenu {
             KeyCode::Esc => return self.close(),
             KeyCode::Up => moved = cursor.checked_sub(1).unwrap_or(last),
             KeyCode::Down => moved = if cursor >= last { 0 } else { cursor + 1 },
-            KeyCode::Enter => act = Some(entries[cursor]),
-            KeyCode::Char(c @ '1'..='9') => {
+            KeyCode::Enter => act = Some(entries[cursor].clone()),
+            KeyCode::Char(c @ '1'..='9') if item.is_some() => {
                 act = (hidden.get(c as usize - '1' as usize)).map(|&k| Entry::Show(k));
             }
             KeyCode::Char(c) => {
-                act = (entries.iter().copied())
-                    .find(|&e| !matches!(e, Entry::Show(_)) && e.key(axis) == c);
+                act = (entries.iter())
+                    .find(|e| {
+                        !matches!(e, Entry::Show(_)) && e.key(axis, item, ungroups) == Some(c)
+                    })
+                    .cloned();
             }
             _ => {}
         }
-        let mut closes = false;
+        let mut closes = true;
         let hid = match act {
             Some(Entry::Pin(edge)) => {
-                grid.pin(axis, edge, key);
-                closes = true;
+                item.inspect(|&key| grid.pin(axis, edge, key));
                 None
             }
             Some(Entry::Unpin) => {
-                grid.unpin(axis, key);
-                closes = true;
+                item.inspect(|&key| grid.unpin(axis, key));
                 None
             }
             Some(Entry::Freeze) => {
-                grid.freeze(axis, key);
-                closes = true;
+                item.inspect(|&key| grid.freeze(axis, key));
                 None
             }
-            Some(Entry::Group) => {
-                grid.group_by(Axis::Rows, key);
-                closes = true;
+            Some(Entry::Group(axis, field)) => {
+                grid.group_by(axis, field);
                 None
             }
             Some(Entry::Ungroup) => {
                 grid.ungroup(Axis::Rows);
-                closes = true;
                 None
             }
             Some(Entry::Slice) => {
-                self.slicer = Some(key);
-                closes = true;
+                self.slicer = item;
                 None
             }
-            Some(Entry::Hide) => Some(hide_chosen(grid, axis, keys_at)),
-            Some(Entry::ShowOnly) => Some(show_only_chosen(grid, axis, keys_at)),
+            Some(Entry::RemoveLevel(axis, field)) => {
+                grid.remove_level(axis, Some(field));
+                None
+            }
+            Some(Entry::MoveLevel(axis, field)) => {
+                grid.move_level(axis, field);
+                None
+            }
+            Some(Entry::CollapseTo(axis, at, _) | Entry::ExpandThrough(axis, at, _)) => {
+                grid.expand_to(axis, Depth::Levels(at));
+                None
+            }
+            Some(Entry::RemoveValue(value)) => {
+                grid.remove_value(&value);
+                None
+            }
+            Some(Entry::AddValue(value)) => {
+                grid.add_value(value);
+                None
+            }
+            Some(Entry::Adding) => {
+                closes = false;
+                if let Some(o) = &mut self.open {
+                    o.adding = !o.adding;
+                }
+                moved = entries
+                    .iter()
+                    .position(|e| *e == Entry::Adding)
+                    .unwrap_or(moved);
+                None
+            }
+            Some(Entry::Others) => {
+                closes = false;
+                if let Some(o) = &mut self.open {
+                    o.others = !o.others;
+                }
+                moved = entries
+                    .iter()
+                    .position(|e| *e == Entry::Others)
+                    .unwrap_or(moved);
+                None
+            }
+            Some(Entry::Hide) => {
+                closes = false;
+                Some(hide_chosen(grid, axis, keys_at))
+            }
+            Some(Entry::ShowOnly) => {
+                closes = false;
+                Some(show_only_chosen(grid, axis, keys_at))
+            }
             Some(Entry::Choose) => {
                 self.chooser = Some(axis);
-                self.open = None;
-                return true;
+                None
             }
             Some(Entry::Show(k)) => {
+                closes = false;
                 grid.show(axis, &[k]);
                 None
             }
             Some(Entry::ShowAll) => {
+                closes = false;
                 grid.show(axis, &hidden);
                 None
             }
-            None => None,
+            None => {
+                closes = false;
+                None
+            }
         };
         if closes {
             self.open = None;
@@ -461,11 +751,12 @@ impl HeaderMenu {
     }
 
     /// Draws the open menu in `area` (the table's), under the column's
-    /// header or under the row, moved to fit: the pin lines, then where the
-    /// axis hides the actions (Hide and Show only naming how many items
-    /// they reach), the hidden items numbered
-    /// (scrolled to the cursor past [`LIST_ROWS`]), Show all, a hint after a
-    /// hide past the cap, and the keys.
+    /// header or under the row (a level's under the corner), moved to fit:
+    /// the pin lines and the grouping lines (scrolled to the cursor when
+    /// they don't fit), then where the axis hides the actions (Hide and
+    /// Show only naming how many items they reach), the hidden items
+    /// numbered (scrolled to the cursor past [`LIST_ROWS`]), Show all, a
+    /// hint after a hide past the cap, and the keys.
     pub fn render(
         &self,
         snapshot: &Snapshot,
@@ -484,23 +775,29 @@ impl HeaderMenu {
             Axis::Cols => ("column", "columns"),
             Axis::Rows => ("row", "rows"),
         };
-        let entries = entries(snapshot, o.axis, o.key);
+        let entries = entries(snapshot, o, &self.fields(snapshot));
+        let item = match o.target {
+            Target::Item(key) => Some(key),
+            Target::Level(_) => None,
+        };
         let hides = entries.contains(&Entry::Hide);
+        let ungroups = entries.contains(&Entry::Ungroup);
         let hidden = if hides { snapshot.hidden(o.axis) } else { &[] };
         // The lines above the heading: the pin lines and the actions.
         let above = entries.len() - hidden.len() - usize::from(!hidden.is_empty());
-        let (left, top) = match o.axis {
-            Axis::Cols => {
+        let (left, top) = match (item, o.axis) {
+            (None, _) => (0.0, snapshot.header(Axis::Rows)),
+            (Some(key), Axis::Cols) => {
                 let x = (snapshot.headers(Axis::Cols))
-                    .find(|h| h.key == Some(o.key))
+                    .find(|h| h.key == Some(key))
                     .map_or(snapshot.header(Axis::Cols), |h| {
                         h.rect.x.max(snapshot.header(Axis::Cols))
                     });
                 (x, snapshot.header(Axis::Rows))
             }
-            Axis::Rows => {
+            (Some(key), Axis::Rows) => {
                 let y = (snapshot.headers(Axis::Rows))
-                    .find(|h| h.key == Some(o.key))
+                    .find(|h| h.key == Some(key))
                     .map_or(0.0, |h| h.rect.y + h.rect.height);
                 (
                     snapshot.header(Axis::Cols),
@@ -511,13 +808,20 @@ impl HeaderMenu {
         let list = hidden.len().min(LIST_ROWS);
         // Borders, the lines above the heading, the heading, the list and
         // Show all, any hint, the keys.
-        let height = 2
-            + above as u16
+        let rest = 2
             + u16::from(hides)
             + list as u16
             + u16::from(!hidden.is_empty())
             + u16::from(o.hint.is_some())
             + 1;
+        // The lines above the heading that fit, scrolled to the cursor.
+        let room = usize::from(area.height.saturating_sub(rest)).max(1);
+        let shown = above.min(room);
+        let skip = match o.cursor < above {
+            true => o.cursor.saturating_sub(shown - 1),
+            false => 0,
+        };
+        let height = rest + shown as u16;
         let width = WIDTH.min(area.width);
         let height = height.min(area.height);
         if width < 8 || height < 4 {
@@ -541,9 +845,17 @@ impl HeaderMenu {
             }
         };
         let chosen = Chosen::of(snapshot, o.axis).map_or(1, |c| c.len());
-        let title = match chosen {
-            1 => format!(" {} {} ", capital(noun), name(o.key)),
-            n => format!(" {} {nouns} chosen ", grouped(n)),
+        let title = match (o.target, chosen) {
+            (Target::Level(None), _) => " Values ".into(),
+            (Target::Level(Some(field)), _) => {
+                let level = match o.axis {
+                    Axis::Cols => "Column level",
+                    Axis::Rows => "Row level",
+                };
+                format!(" {level} {} ", content.column_header(field))
+            }
+            (Target::Item(key), 1) => format!(" {} {} ", capital(noun), name(key)),
+            (Target::Item(_), n) => format!(" {} {nouns} chosen ", grouped(n)),
         };
         let title = fit(&title, u32::try_from(inner.saturating_sub(1)).unwrap_or(0));
         let rule = inner.saturating_sub(char_count(&title) as usize + 1);
@@ -569,7 +881,12 @@ impl HeaderMenu {
             1 => format!("this {noun}"),
             n => format!("these {}", grouped(n)),
         };
-        for (i, &entry) in entries.iter().take(above).enumerate() {
+        let field = |key: Key| content.column_header(key);
+        let other = |axis: Axis| match axis {
+            Axis::Cols => "columns",
+            Axis::Rows => "rows",
+        };
+        for (i, entry) in entries.iter().enumerate().take(above).skip(skip) {
             let label = match entry {
                 Entry::Pin(Edge::Leading) if o.axis == Axis::Cols => "Pin left".into(),
                 Entry::Pin(Edge::Trailing) if o.axis == Axis::Cols => "Pin right".into(),
@@ -577,9 +894,25 @@ impl HeaderMenu {
                 Entry::Pin(Edge::Trailing) => "Pin bottom".into(),
                 Entry::Unpin => "Unpin".into(),
                 Entry::Freeze => "Freeze up to here".into(),
-                Entry::Group => "Group rows by this column".into(),
+                Entry::Group(Axis::Rows, f) if Some(*f) == item => {
+                    "Group rows by this column".into()
+                }
+                Entry::Group(Axis::Cols, f) if Some(*f) == item => "Add as a column level".into(),
+                Entry::Group(Axis::Rows, f) => format!("Group rows by {}", field(*f)),
+                Entry::Group(Axis::Cols, f) => format!("Add {} as a column level", field(*f)),
                 Entry::Ungroup => "Ungroup rows".into(),
                 Entry::Slice => "Slice by this column".into(),
+                Entry::RemoveLevel(..) => "Remove level".into(),
+                Entry::MoveLevel(axis, _) => format!("Move to {}", other(axis.other())),
+                Entry::CollapseTo(_, _, f) => format!("Collapse to {}", field(*f)),
+                Entry::ExpandThrough(_, _, f) => format!("Expand through {}", field(*f)),
+                Entry::RemoveValue(v) => format!("Remove value {}", content.value_name(v)),
+                Entry::Adding => format!("Add a value {}", if o.adding { "▾" } else { "▸" }),
+                Entry::AddValue(v) => content.value_name(v),
+                Entry::Others => format!(
+                    "Group by another column {}",
+                    if o.others { "▾" } else { "▸" }
+                ),
                 Entry::Hide => match chosen {
                     1 => format!("Hide {noun}"),
                     n => format!("Hide {} {nouns}", grouped(n)),
@@ -589,7 +922,9 @@ impl HeaderMenu {
                 Entry::Show(_) | Entry::ShowAll => continue,
             };
             let (mark, style) = at(i);
-            line(row, &format!("{mark}{} {label}", entry.key(o.axis)), style);
+            let key = entry.key(o.axis, item, ungroups).unwrap_or(' ');
+            let indent = if entry.listed(item) { "  " } else { "" };
+            line(row, &format!("{mark}{key} {indent}{label}"), style);
             row += 1;
         }
         if hides {

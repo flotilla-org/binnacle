@@ -8,14 +8,16 @@
 //! follows each group with its weight, so an open Group Item stays blank
 //! apart from its label, and the Grand Total is pinned at the bottom (`r`
 //! on it opens the row menu, which unpins it). Press `m` for the focused column's menu:
-//! "Ungroup rows" brings back the plain table, and on the region, port or
-//! crew column "Group rows by this column" adds a level. "Slice by this
-//! column" (`s` in the menu) opens the column's filter popup in slicer
-//! mode: what it asks for keeps only the shipments that pass before they
-//! group, so the figures change, and the slicers show on the bottom line
-//! after "Sliced by". A comparison on the weight from the popup filtering
-//! the rows (Alt+Down) acts on the groups instead, leaving out those whose
-//! total fails it. Click the weight
+//! "Ungroup rows" brings back the plain table, on the crew or quarter
+//! column "Group rows by this column" adds a level and "Add as a column
+//! level" makes a pivot, and "Add a value" lists the values to add over
+//! it. The column chooser (`c` in the menu) lists region and port as
+//! "grouped". "Slice by this column" (`s` in the menu) opens the column's
+//! filter popup in slicer mode: what it asks for keeps only the shipments
+//! that pass before they group, so the figures change, and the slicers show
+//! on the bottom line after "Sliced by". A comparison on the weight from the
+//! popup filtering the rows (Alt+Down) acts on the groups instead, leaving
+//! out those whose total fails it. Click the weight
 //! header to sort: regions and ports order by their total weight, and
 //! shipments by theirs within their port. Arrows move through Summary Items
 //! and shipments alike, and focus stays on its shipment through grouping
@@ -27,8 +29,13 @@
 //! the region and port are columns of the row Header Band, each group one
 //! span over its rows with its mark and label, and Left and Right step
 //! between those columns. The corner names each level: click a name to
-//! sort by its field, right-click it to filter by it. `t` cycles the Theme
-//! presets, `q` quits.
+//! sort by its field, right-click it for its grouping menu (the values
+//! level's too): remove the level, move it to the other axis ("Move to
+//! columns" on port makes a pivot of ports across, and "Move to rows" there
+//! brings the grouped table back), collapse to it or expand through it,
+//! remove or add a value, or group by a column no level uses. The column
+//! Header Band takes a line per column level. `t` cycles the Theme presets,
+//! `q` quits.
 //!
 //! Ctrl+F opens the find bar: it matches the regions' and ports' labels and
 //! the shipments' cells, counts the matches the closed ports hide ("3 of 12,
@@ -63,10 +70,10 @@ use binnacle_core::{
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar, FindStatus,
-    HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, Theme, begin_frame,
-    column_disclosure_at, copy_text, corner_level_at, disclosure_at, render_conditions,
-    render_editor, render_with, status, wheel,
+    Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar,
+    FindStatus, HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, Theme,
+    begin_frame, column_disclosure_at, copy_text, corner_level_at, disclosure_at,
+    render_conditions, render_editor, render_with, status, wheel,
 };
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -296,8 +303,11 @@ fn fill(grid: &mut Grid, source: &mut GroupedMemory<Shipment>, rows: &[Shipment]
 }
 
 /// Declares what each column supports, which says the rows group by the
-/// text columns.
+/// text columns, and the aggregates a value over it takes.
 fn declare(grid: &mut Grid, source: &mut GroupedMemory<Shipment>, rows: &[Shipment]) {
+    for c in 0..HEADERS.len() as u64 {
+        grid.set_aggregates(Axis::Rows, Key(c), source.aggregates(Axis::Rows, Key(c)));
+    }
     let mut over = source.over(rows);
     for c in 0..HEADERS.len() as u64 {
         grid.set_support(Axis::Rows, Key(c), over.support(Axis::Rows, Key(c)));
@@ -420,32 +430,45 @@ fn mark_clicked(
 }
 
 /// A press in `m` on a level name in the corner: a left press sorts by its
-/// field (Shift keeps the rest of the sort), a right press opens the filter
-/// popup on it. Whether it landed on one.
+/// field (Shift keeps the rest of the sort), a right press opens the
+/// level's grouping menu. Whether it landed on one.
 fn corner_clicked(
     m: &MouseEvent,
     grid: &mut Grid,
     text: &Text,
-    popup: &mut ColumnFilter,
+    menu: &mut HeaderMenu,
     area: ratatui::layout::Rect,
 ) -> bool {
     let (Some(x), Some(y)) = (m.column.checked_sub(area.x), m.row.checked_sub(area.y)) else {
         return false;
     };
-    let Some((axis, field)) = corner_level_at(&grid.snapshot(), text, x, y)
-        .and_then(|(axis, level)| level.field.map(|f| (axis, f)))
-    else {
+    let Some((axis, level)) = corner_level_at(&grid.snapshot(), text, x, y) else {
         return false;
     };
-    match m.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
+    match (m.kind, level.field) {
+        (MouseEventKind::Down(MouseButton::Left), Some(field)) => {
             let shift = m.modifiers.contains(KeyModifiers::SHIFT);
             grid.cycle_sort(axis, field, shift);
             true
         }
-        MouseEventKind::Down(MouseButton::Right) => popup.open_on(&grid.snapshot(), axis, field),
+        (MouseEventKind::Down(MouseButton::Right), field) => {
+            menu.open_level(&grid.snapshot(), axis, field)
+        }
         _ => false,
     }
+}
+
+/// The column Header Band's tiers for `grouping`: a line per column level
+/// but an innermost values level, which the value columns' own line names.
+fn column_tiers(grouping: Option<&Grouping>) -> Vec<f32> {
+    let levels = grouping.map_or(&[][..], |g| g.levels(Axis::Cols));
+    let n = levels.len();
+    (levels.iter().enumerate())
+        .map(|(i, l)| match i + 1 == n && *l == Level::Values {
+            true => 0.0,
+            false => 1.0,
+        })
+        .collect()
 }
 
 fn main() -> io::Result<()> {
@@ -468,6 +491,10 @@ fn main() -> io::Result<()> {
     let mut step: Option<(FindQuery, FindStep)> = None;
     let mut editor: Option<Editor> = None;
     let mut menu = HeaderMenu::new();
+    menu.set_fields((0..HEADERS.len() as u64).map(Key).collect());
+    let mut chooser = Chooser::new();
+    // The column tiers last fitted to the grouping applied.
+    let mut tiers: Vec<f32> = Vec::new();
     let mut popup = ColumnFilter::new();
     let mut mouse = Mouse::default();
     let mut marks = PendingMarks::default();
@@ -546,6 +573,12 @@ fn main() -> io::Result<()> {
                         Err(e) => format!("copy failed: {e}"),
                     };
                 }
+                let fitted = column_tiers(grid.snapshot().applied_view().grouping.as_ref());
+                if fitted != tiers {
+                    grid.set_tiers(Axis::Cols, &fitted);
+                    grid.set_header(Axis::Rows, fitted.iter().sum::<f32>() + 1.0);
+                    tiers = fitted;
+                }
                 let now = start.elapsed();
                 let ctx = RenderContext::new(&themes[theme]).colors(colors).at(now);
                 layout = begin_frame(&mut grid, &ctx, area, |grid, v| {
@@ -577,6 +610,10 @@ fn main() -> io::Result<()> {
                 let unmatched = (row_keys.iter().zip(flags))
                     .filter_map(|(&k, u)| u.then_some(k))
                     .collect();
+                // The chooser's items, while it is open.
+                let listed = (chooser.axis())
+                    .map(|axis| source.window(&rows, axis, 0..snapshot.count(axis)).keys)
+                    .unwrap_or_default();
                 let text = Text {
                     rows: &rows,
                     source: &source,
@@ -610,6 +647,8 @@ fn main() -> io::Result<()> {
                     layout.grid,
                     frame.buffer_mut(),
                 );
+                chooser.fetch(&snapshot, &text, |_, _| listed);
+                chooser.render(&snapshot, &themes[theme], layout.grid, frame.buffer_mut());
                 let applied = snapshot.applied_view().grouping.as_ref();
                 let grouped = match applied.map(|g| (g.row_levels.is_empty(), g.rows.form)) {
                     _ if applied.is_some_and(Grouping::pivot) => "pivot",
@@ -663,7 +702,7 @@ fn main() -> io::Result<()> {
                         }
                         continue;
                     }
-                    if popup.key(&key, &mut grid) {
+                    if popup.key(&key, &mut grid) || chooser.key(&key, &mut grid) {
                         continue;
                     }
                     if menu.key(&key, &mut grid, |axis, range| {
@@ -671,6 +710,9 @@ fn main() -> io::Result<()> {
                     }) {
                         if let Some(key) = menu.take_slicer() {
                             popup.open_slicer(&grid.snapshot(), key);
+                        }
+                        if let Some(axis) = menu.take_chooser() {
+                            chooser.open(&grid.snapshot(), axis);
                         }
                         continue;
                     }
@@ -732,17 +774,7 @@ fn main() -> io::Result<()> {
                             let latest = latest.unwrap_or(snapshot.applied_view());
                             let pivoted = latest.grouping.as_ref().is_some_and(Grouping::pivot);
                             let mut view = latest.clone();
-                            if pivoted {
-                                view.grouping = Some(grouping());
-                                // The column band back to one line.
-                                grid.set_tiers(Axis::Cols, &[]);
-                                grid.set_header(Axis::Rows, 1.0);
-                            } else {
-                                view.grouping = Some(pivot());
-                                // The quarters' line, then the value columns' own.
-                                grid.set_tiers(Axis::Cols, &[1.0, 0.0]);
-                                grid.set_header(Axis::Rows, 2.0);
-                            }
+                            view.grouping = Some(if pivoted { grouping() } else { pivot() });
                             grid.request_view(view);
                         }
                         KeyCode::Char('m') => {
@@ -768,7 +800,7 @@ fn main() -> io::Result<()> {
                     };
                     if let Some(action) = wheel(&m) {
                         grid.action(action);
-                    } else if corner_clicked(&m, &mut grid, &text, &mut popup, layout.grid) {
+                    } else if corner_clicked(&m, &mut grid, &text, &mut menu, layout.grid) {
                     } else if let Some((axis, key)) = mark_clicked(&m, &mut grid, layout.grid) {
                         let _ = grid.toggle(axis, key);
                     } else if let Some(pointer) = mouse.event(&m, layout.grid, Instant::now()) {

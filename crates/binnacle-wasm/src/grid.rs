@@ -2,8 +2,8 @@
 //! Action or setting is a few lines here plus its call in `web/src`.
 
 use binnacle_core::{
-    Action, Aggregate, AxisConfig, Depth, Form, Grid, Key, Outline, PointerEvent, TextQuery,
-    Totals, Viewport,
+    Action, Aggregate, AggregateValue, AxisConfig, Depth, Form, Grid, Key, Outline, PointerEvent,
+    TextQuery, Totals, Viewport,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -12,7 +12,7 @@ use crate::codes::{self, axis, focus_step, position};
 use crate::effect::{
     WireCondition, WireFindMatch, WireFindQuery, WireStamped, WireTextQuery, WireViewSpec,
 };
-use crate::grouping::{WireAggregate, WireOutline};
+use crate::grouping::{WireAggregate, WireAggregateValue, WireOutline};
 use crate::snapshot::{Encoded, encode};
 use crate::testing;
 
@@ -117,6 +117,31 @@ impl WebGrid {
     /// Removes every level of axis `a`.
     pub fn ungroup(&mut self, a: u8) {
         self.grid.ungroup(axis(a));
+    }
+
+    /// Removes the level of axis `a` grouping by `field`; the values
+    /// pseudo-level (`undefined`) is never removed this way.
+    pub fn remove_level(&mut self, a: u8, field: Option<u64>) {
+        self.grid.remove_level(axis(a), field.map(Key));
+    }
+
+    /// Moves the level of axis `a` grouping by `field` (`undefined`: the
+    /// values pseudo-level) to the other axis.
+    pub fn move_level(&mut self, a: u8, field: Option<u64>) {
+        self.grid.move_level(axis(a), field.map(Key));
+    }
+
+    /// Adds `value`, a `{ field, aggregate, params? }` object, to the
+    /// values, if the Table Source offers its aggregate.
+    pub fn add_value(&mut self, value: JsValue) -> Result<(), JsError> {
+        self.grid.add_value(aggregate_value(value)?);
+        Ok(())
+    }
+
+    /// Removes `value` from the values, unless it is the only one.
+    pub fn remove_value(&mut self, value: JsValue) -> Result<(), JsError> {
+        self.grid.remove_value(&aggregate_value(value)?);
+        Ok(())
     }
 
     /// Opens the group of axis `a` headed by the Group Item `key`. Returns
@@ -688,4 +713,11 @@ pub fn debug_every_view_edit() -> JsValue {
 #[wasm_bindgen]
 pub fn debug_every_effect() -> JsValue {
     to_js(&testing::every_effect())
+}
+
+/// A value from JS: `{ field, aggregate, params? }`.
+fn aggregate_value(value: JsValue) -> Result<AggregateValue, JsError> {
+    let v: WireAggregateValue = serde_wasm_bindgen::from_value(value)
+        .map_err(|e| JsError::new(&format!("binnacle: not a value: {e}")))?;
+    Ok(AggregateValue::from(v))
 }

@@ -184,6 +184,10 @@ describe("View Specs", () => {
         "RemoveSlicer",
         "ReplaceSlicer",
         "SetForm",
+        "RemoveLevel",
+        "MoveLevel",
+        "AddValue",
+        "RemoveValue",
       ]),
     );
     const unsorted = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
