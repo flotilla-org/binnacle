@@ -251,3 +251,14 @@ test("a rerouted shipment stays where it was, the rows unchanged", async ({ page
   await expect(status(page)).toContainText(`focus row ${row}, column 1 (${id} / id)`);
   await expect(status(page)).toContainText(`of ${en(nested())}`);
 });
+
+test("the corner joins the row levels' names in the outline column, and a right-click on one opens its menu", async ({ page }) => {
+  const b = await page.locator(".binnacle-layer").boundingBox();
+  if (!b) throw new Error("no grid");
+  // "region › port" from the band's padding: the port's name past the region's.
+  await page.mouse.click(b.x + 80, b.y + HEADER / 2, { button: "right" });
+  await expect(page.getByRole("dialog", { name: "Filter port" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.mouse.click(b.x + 20, b.y + HEADER / 2, { button: "right" });
+  await expect(page.getByRole("dialog", { name: "Filter region" })).toBeVisible();
+});

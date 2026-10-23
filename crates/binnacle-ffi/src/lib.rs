@@ -23,7 +23,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 11;
+pub const BINNACLE_ABI_VERSION: u32 = 12;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -277,6 +277,10 @@ pub struct BinnacleGrid {
     /// The last Snapshot's header-form tiers and spans per axis.
     tiers: [Vec<BinnacleExtent>; 2],
     spans: [Vec<BinnacleHeaderSpan>; 2],
+    /// The last Snapshot's corner grid per axis: its tiers and the levels
+    /// they name.
+    corner_tiers: [Vec<BinnacleCornerTier>; 2],
+    corner_levels: [Vec<BinnacleCornerLevel>; 2],
 }
 
 /// Values in C form, with the aggregate names and parameters they point
@@ -649,6 +653,24 @@ pub struct BinnacleExtent {
     pub end: f32,
 }
 
+/// A level the corner names.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleCornerLevel {
+    pub index: u32,
+    pub kind: u32,
+    pub field: u64,
+}
+
+/// One tier of a Header Band where it crosses the corner.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleCornerTier {
+    pub across: BinnacleExtent,
+    pub levels_start: usize,
+    pub levels_len: usize,
+}
+
 /// One spanning cell of a tier in header form.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -859,6 +881,10 @@ pub struct BinnacleAxisSnapshot {
     pub tiers_len: usize,
     pub spans: *const BinnacleHeaderSpan,
     pub spans_len: usize,
+    pub corner_tiers: *const BinnacleCornerTier,
+    pub corner_tiers_len: usize,
+    pub corner_levels: *const BinnacleCornerLevel,
+    pub corner_levels_len: usize,
 }
 
 #[repr(C)]
@@ -2055,6 +2081,8 @@ pub extern "C" fn binnacle_grid_new(
         paths: Default::default(),
         tiers: Default::default(),
         spans: Default::default(),
+        corner_tiers: Default::default(),
+        corner_levels: Default::default(),
         headers: Default::default(),
         picked: Default::default(),
         runs: Default::default(),
@@ -2711,6 +2739,30 @@ impl BinnacleGrid {
                 cut_before: flag(s.cut_before),
                 cut_after: flag(s.cut_after),
             }));
+            let (tiers, levels) = (
+                &mut self.corner_tiers[axis.index()],
+                &mut self.corner_levels[axis.index()],
+            );
+            tiers.clear();
+            levels.clear();
+            for t in snap.corner().tiers(axis) {
+                tiers.push(BinnacleCornerTier {
+                    across: BinnacleExtent {
+                        start: t.across.start,
+                        end: t.across.end,
+                    },
+                    levels_start: levels.len(),
+                    levels_len: t.levels.len(),
+                });
+                levels.extend(t.levels.iter().map(|l| BinnacleCornerLevel {
+                    index: l.index,
+                    kind: match l.field {
+                        Some(_) => BINNACLE_LEVEL_FIELD,
+                        None => BINNACLE_LEVEL_VALUES,
+                    },
+                    field: l.field.map_or(0, |k| k.0),
+                }));
+            }
         }
         let range = snap.selection_range();
         for axis in Axis::ALL {
@@ -2736,6 +2788,8 @@ impl BinnacleGrid {
             let [leading_pins, trailing_pins] = &self.pins[axis.index()];
             let tiers = &self.tiers[axis.index()];
             let spans = &self.spans[axis.index()];
+            let corner_tiers = &self.corner_tiers[axis.index()];
+            let corner_levels = &self.corner_levels[axis.index()];
             BinnacleAxisSnapshot {
                 count: snap.count(axis),
                 extent: snap.extent(axis),
@@ -2787,6 +2841,10 @@ impl BinnacleGrid {
                 tiers_len: tiers.len(),
                 spans: spans.as_ptr(),
                 spans_len: spans.len(),
+                corner_tiers: corner_tiers.as_ptr(),
+                corner_tiers_len: corner_tiers.len(),
+                corner_levels: corner_levels.as_ptr(),
+                corner_levels_len: corner_levels.len(),
                 selection_runs: runs.as_ptr(),
                 selection_runs_len: runs.len(),
             }
@@ -3237,6 +3295,28 @@ pub unsafe extern "C" fn binnacle_grid_group_by(
     unsafe {
         with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.group_by(axis, Key(field)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_cycle_sort(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+    multi: u32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let multi = match multi {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
+            axis(axis_tag).map(|axis| h.grid.cycle_sort(axis, Key(key), multi))
         })
     }
 }

@@ -607,6 +607,19 @@ pub fn encode(s: &Snapshot<'_>, out: &mut Encoded) {
             w.span(span);
             w.flag(s.toggle_pending(axis, span.key));
         }
+        // The corner grid: this band's tiers across the corner, each with
+        // the levels it names (a field, or none for the values level).
+        let corner = s.corner().tiers(axis);
+        w.len(corner.len());
+        for t in corner {
+            w.num(t.across.start);
+            w.num(t.across.end);
+            w.len(t.levels.len());
+            for l in &t.levels {
+                w.num(l.index);
+                w.opt_key(l.field);
+            }
+        }
     }
     w.opt_rect(s.focus_rect());
     w.opt_rect(s.editor_rect());

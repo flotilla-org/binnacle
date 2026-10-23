@@ -9,6 +9,7 @@
 //! [`Effect`] and drained with [`Grid::poll_effect`].
 
 mod axis;
+mod corner;
 mod distinct;
 mod drawn;
 mod edit;
@@ -33,6 +34,7 @@ mod summary;
 mod types;
 mod view;
 
+pub use corner::{CornerGrid, CornerLevel, CornerTier};
 pub use distinct::{Blanks, Distinct, DistinctQuery, DistinctValue};
 pub use edit::EditEnd;
 pub use effect::{Action, Effect, FocusStep, Stamped};

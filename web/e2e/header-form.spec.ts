@@ -4,7 +4,9 @@
 // where it goes on out of view; a click on a span's mark opens or closes its
 // group; the toolbar's select (shown when the page asks for a form)
 // switches between the forms; a pinned row
-// breaks the spans over it in two, each part labelled.
+// breaks the spans over it in two, each part labelled; the corner names
+// each level over its column (#208), sorting by it on a click and opening
+// its menu on a right-click.
 
 import { expect, test, type Page } from "@playwright/test";
 import { REGIONS, shipments } from "../demo/sources/shipments-data";
@@ -101,4 +103,20 @@ test("a pinned shipment breaks its spans in two, each part labelled", async ({ p
   await page.keyboard.press("Alt+Shift+ArrowUp");
   test.skip(browserName !== "chromium", "screenshots are taken in Chromium only");
   await expect(page.locator(".grid-box")).toHaveScreenshot("header-form-pinned.png", { scale: "device" });
+});
+
+test("the corner names each row level over its column; a click sorts by it, a right-click opens its menu", async ({ page, browserName }) => {
+  const b = await page.locator(".binnacle-layer").boundingBox();
+  if (!b) throw new Error("no grid");
+  // The port's name, at the top of the port column: two clicks sort the ports descending.
+  const port = { x: b.x + PORT + 16, y: b.y + HEADER / 2 };
+  await page.mouse.click(port.x, port.y);
+  await page.mouse.click(port.x, port.y);
+  // The sort keeps the top row in place: back to the top to see each region's last port first.
+  await scrollToTop(page);
+  if (browserName === "chromium") {
+    await expect(page.locator(".grid-box")).toHaveScreenshot("header-form-corner-sorted.png", { scale: "device" });
+  }
+  await page.mouse.click(port.x, port.y, { button: "right" });
+  await expect(page.getByRole("dialog", { name: "Filter port" })).toBeVisible();
 });

@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::ops::Range;
 
 use crate::axis::AxisState;
+use crate::corner::CornerGrid;
 use crate::effect::{Action, Effect, FocusStep, Stamped};
 use crate::find::{FindDirection, FindState};
 use crate::focus::{self, FocusEnd, Move};
@@ -155,6 +156,8 @@ pub struct Grid {
     /// for the last Snapshot.
     pub(crate) tiers: [Vec<Range<f32>>; 2],
     pub(crate) spans: [Vec<HeaderSpan>; 2],
+    /// The corner grid where the two bands' tiers cross.
+    pub(crate) corner: CornerGrid,
     pub(crate) view: ViewState,
     pub(crate) find: FindState,
     pub(crate) moves: MoveState,
@@ -206,6 +209,7 @@ impl Grid {
             fills: Vec::new(),
             tiers: [Vec::new(), Vec::new()],
             spans: [Vec::new(), Vec::new()],
+            corner: CornerGrid::default(),
             view: ViewState::default(),
             find: FindState::default(),
             moves: MoveState::default(),
@@ -1080,6 +1084,7 @@ impl Grid {
             .map(|s| s.range(&self.axes));
         self.fill_selection();
         self.lay_out_spans();
+        self.lay_out_corner();
         self.damage = std::mem::replace(&mut self.pending_damage, Damage::NONE);
         Snapshot { grid: self }
     }

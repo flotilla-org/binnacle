@@ -196,6 +196,35 @@ export interface AxisSnapshot {
   tiers: Span[];
   /** In header form, each group's spanning cell in each Strip it is drawn in. */
   spans: HeaderSpan[];
+  /**
+   * The corner grid: this axis's Header Band tiers where they cross the corner, outermost first, the items' own headers
+   * last. `rows.corner` gives the corner's columns (x), `cols.corner` its rows (y); see `cornerCell`.
+   */
+  corner: CornerTier[];
+}
+
+/**
+ * One tier of a Header Band where it crosses the corner: where it lies across the band, and the levels it names. In
+ * header form a level's tier names that level and the items' own tier none; in outline form the one tier names every
+ * level of its axis.
+ */
+export interface CornerTier {
+  across: Span;
+  levels: CornerLevel[];
+}
+
+/** A level named in the corner: its place among its axis's levels (0 outermost), and its field, `null` for the values pseudo-level. */
+export interface CornerLevel {
+  index: number;
+  field: bigint | null;
+}
+
+/** The corner cell where the column tier `colTier` crosses the row tier `rowTier`, or `null` past either band's tiers. */
+export function cornerCell(s: Snapshot, colTier: number, rowTier: number): Rect | null {
+  const x = s.rows.corner[rowTier]?.across;
+  const y = s.cols.corner[colTier]?.across;
+  if (!x || !y) return null;
+  return { x: x.start, y: y.start, width: x.end - x.start, height: y.end - y.start };
 }
 
 /**
@@ -635,6 +664,10 @@ function readAxis(r: Reader): AxisSnapshot {
     cutAfter: r.flag(),
     togglePending: r.flag(),
   }));
+  const corner = r.list(() => ({
+    across: { start: r.num(), end: r.num() },
+    levels: r.list(() => ({ index: r.num(), field: r.optKey() })),
+  }));
   return {
     count,
     extent,
@@ -660,6 +693,7 @@ function readAxis(r: Reader): AxisSnapshot {
     pins,
     tiers,
     spans,
+    corner,
   };
 }
 

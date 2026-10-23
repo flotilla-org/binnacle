@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-ratatui/tests/corner.rs
+expression: out
+---
+--- rows in outline form
+|region › port     count |
+--- rows in header form
+|region  port      count |
+--- a pivot, rows in outline form
+|count Σ value quarter → |
+|                        |
+|region › port           |
+--- a pivot, rows in header form
+|count Σ value quarter → |
+|                        |
+|region  port            |

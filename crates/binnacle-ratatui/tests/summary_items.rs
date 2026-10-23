@@ -72,7 +72,7 @@ impl Content for Shipments {
     }
 
     fn column_header(&self, col: Key) -> String {
-        ["id", "kg"][col.0 as usize].into()
+        ["id", "kg", "port"][col.0 as usize].into()
     }
 
     fn row_header(&self, row: Key, _: u64) -> String {

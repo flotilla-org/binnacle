@@ -220,8 +220,11 @@ fn the_column_menu_groups_the_rows_by_its_column_and_ungroups_them() {
     assert_eq!(grouping(&mut s), Some(Grouping::rows_by(REGION)));
     let shown = text(&draw(&mut s, &Theme::classic(), None));
     assert!(shown.contains("▾ North (3)"), "{shown}");
+    // The corner names the level; the column headers past the band don't.
+    let (corner, headers) = shown.lines().next().unwrap().split_at(12);
+    assert!(corner.starts_with("region"), "{shown}");
     assert!(
-        !shown.contains("region"),
+        !headers.contains("region"),
         "the region column leaves: {shown}"
     );
 

@@ -131,6 +131,21 @@ struct DumpAxis {
     pins: DumpPins,
     tiers: Vec<DumpSpan>,
     spans: Vec<DumpHeaderSpan>,
+    corner: Vec<DumpCornerTier>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DumpCornerTier {
+    across: DumpSpan,
+    levels: Vec<DumpCornerLevel>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DumpCornerLevel {
+    index: u32,
+    field: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -591,6 +606,20 @@ fn dump_axis(s: &Snapshot<'_>, axis: Axis) -> DumpAxis {
                 toggle_pending: s.toggle_pending(axis, h.key),
             })
             .collect(),
+        corner: (s.corner().tiers(axis).iter())
+            .map(|t| DumpCornerTier {
+                across: DumpSpan {
+                    start: t.across.start.into(),
+                    end: t.across.end.into(),
+                },
+                levels: (t.levels.iter())
+                    .map(|l| DumpCornerLevel {
+                        index: l.index,
+                        field: l.field.map(|k| k.0),
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -914,7 +943,7 @@ pub fn every_view_edit() -> Vec<WireViewEdit> {
 }
 
 /// The scenarios [`scenario`] knows, for the agreement tests to loop over.
-pub const SCENARIOS: [&str; 26] = [
+pub const SCENARIOS: [&str; 27] = [
     "plain",
     "busy",
     "resizing",
@@ -941,6 +970,7 @@ pub const SCENARIOS: [&str; 26] = [
     "sliced",
     "dropRefused",
     "headerForm",
+    "corner",
 ];
 
 /// Keys far past 2^53, so every Key in a scenario tests the `bigint` path.
@@ -1318,6 +1348,19 @@ pub fn scenario(name: &str) -> Grid {
             frame(&mut grid);
             grid.action(Action::Scroll { dx: 0.0, dy: 60.0 });
         }
+        "corner" => {
+            // The rows grouped by columns 1 then 2 in header form, tiers 16
+            // and 12 wide; the columns by row 3 then the values pseudo-level,
+            // tiers 8 high each.
+            let mut grouping = Grouping::rows_by(key(1));
+            grouping.row_levels = vec![Level::field(key(1)), Level::field(key(2))];
+            grouping.rows.form = Form::Header;
+            grouping.col_levels = vec![Level::field(key(3)), Level::Values];
+            let spec = ViewSpec::default().with_grouping(Some(grouping));
+            grid.view_applied(spec, Totals::unknown());
+            grid.set_tiers(Axis::Rows, &[16.0, 12.0]);
+            grid.set_tiers(Axis::Cols, &[8.0, 8.0]);
+        }
         other => panic!("no scenario {other}"),
     }
     fill(&mut grid, row_limit);
@@ -1584,6 +1627,23 @@ mod tests {
                     assert!(s.support(Axis::Rows, key(3)).native);
                     assert_eq!(s.aggregates(Axis::Rows, key(3)).len(), 2);
                 }
+                "corner" => {
+                    let corner = s.corner();
+                    let across = |axis| -> Vec<_> {
+                        (corner.tiers(axis).iter())
+                            .map(|t| (t.across.clone(), t.levels.len()))
+                            .collect()
+                    };
+                    assert_eq!(
+                        across(Axis::Rows),
+                        [(0.0..16.0, 1), (16.0..28.0, 1), (28.0..40.0, 0)]
+                    );
+                    assert_eq!(
+                        across(Axis::Cols),
+                        [(0.0..8.0, 1), (8.0..16.0, 1), (16.0..24.0, 0)]
+                    );
+                    assert!(corner.tiers(Axis::Cols)[1].levels[0].is_values());
+                }
                 "headerForm" => {
                     assert_eq!(s.tiers(Axis::Rows), [0.0..16.0, 16.0..28.0]);
                     let spans = s.spans(Axis::Rows);
@@ -1635,6 +1695,7 @@ mod tests {
                 "Idle",
                 "Idle",
                 "MovingHeaders",
+                "Idle",
                 "Idle"
             ]
         );

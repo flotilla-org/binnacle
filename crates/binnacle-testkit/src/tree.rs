@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use binnacle_core::{
     Axis, ChangeNotice, Depth, Expand, FindDirection, FindMatch, FindQuery, Form, GroupOf,
-    Grouping, Key, Located, OpenState, Outline, Position, Support, Value, ViewSpec,
+    Grouping, Key, Level, Located, OpenState, Outline, Position, Support, Value, ViewSpec,
 };
 use binnacle_memory::{FindCount, FindStep, Moved, PumpSource, Viewed};
 
@@ -52,7 +52,7 @@ impl Group {
 /// change with `Refiltered`. In header form a group has no Group Item: a
 /// closed one shows its Subtotal alone, and one with nothing under it its
 /// Group Item, which can't open. Columns are keyed by Position; the level
-/// fields stay among them.
+/// fields stay among them. [`TreeTable::cols_by`] groups the columns too.
 ///
 /// Find matches, ignoring case, a Leaf's cell text `r{row}c{col}` (Keys)
 /// and a Group Item's label, its value, at the column of its level's field;
@@ -64,6 +64,8 @@ pub struct TreeTable {
     levels: Vec<Key>,
     tree: Vec<Group>,
     cols: u64,
+    col_levels: Vec<Level>,
+    col_tree: Vec<(Key, Outline)>,
     subtotals: bool,
     grouping: Option<Grouping>,
     shown: Vec<(Key, Outline)>,
@@ -92,6 +94,8 @@ impl TreeTable {
             levels,
             tree,
             cols,
+            col_levels: Vec::new(),
+            col_tree: Vec::new(),
             subtotals: false,
             grouping: None,
             shown: Vec::new(),
@@ -104,6 +108,28 @@ impl TreeTable {
         self
     }
 
+    /// This table with its columns grouped by `levels` into `tree`, each
+    /// group open and in header form, while the grouping asks for exactly
+    /// those column levels. The values pseudo-level may be among `levels`;
+    /// the tree's depth gives the levels its groups head.
+    pub fn cols_by(mut self, levels: Vec<Level>, tree: Vec<Group>) -> Self {
+        fn walk(groups: &[Group], up: &mut Vec<Key>, out: &mut Vec<(Key, Outline)>) {
+            for g in groups {
+                up.push(g.key);
+                match &g.under {
+                    Under::Groups(kids) => walk(kids, up, out),
+                    Under::Leaves(keys) => {
+                        out.extend(keys.iter().map(|&k| (k, Outline::leaf(up.clone()))));
+                    }
+                }
+                up.pop();
+            }
+        }
+        walk(&tree, &mut Vec::new(), &mut self.col_tree);
+        self.col_levels = levels;
+        self
+    }
+
     /// The Key of the Subtotal of the group whose Group Item is `group`.
     pub fn subtotal(group: Key) -> Key {
         Key(group.0 + SUBTOTAL)
@@ -112,6 +138,17 @@ impl TreeTable {
     /// The rows as the table shows them now, with their outlines.
     pub fn shown(&self) -> &[(Key, Outline)] {
         &self.shown
+    }
+
+    fn cols_grouped(&self) -> bool {
+        (self.grouping.as_ref()).is_some_and(|g| !g.col_levels.is_empty())
+    }
+
+    fn columns(&self) -> Vec<Key> {
+        match self.cols_grouped() {
+            true => self.col_tree.iter().map(|(k, _)| *k).collect(),
+            false => (0..self.cols).map(Key).collect(),
+        }
     }
 
     fn rows(&self) -> Vec<Key> {
@@ -269,13 +306,14 @@ impl TreeTable {
 
     fn apply(&mut self, spec: &ViewSpec) -> Viewed {
         let wanted = spec.grouping.clone().filter(|g| {
-            g.col_levels.is_empty()
+            (g.col_levels.is_empty() || g.col_levels == self.col_levels)
                 && (g.row_levels.iter())
                     .map(|l| l.field_key())
                     .collect::<Vec<_>>()
                     == self.levels.iter().copied().map(Some).collect::<Vec<_>>()
         });
         let before = self.rows();
+        let cols_before = self.columns();
         let shape = |g: &Option<Grouping>| g.as_ref().map(|g| (g.row_levels.clone(), g.rows.form));
         let regrouped = shape(&wanted) != shape(&self.grouping);
         self.shown = match &wanted {
@@ -286,13 +324,18 @@ impl TreeTable {
         let after = self.rows();
         // A regrouping sends new outlines, so the Window is fetched again
         // even where the Keys stay.
-        let notices = if regrouped {
+        let mut notices = if regrouped {
             vec![(Axis::Rows, ChangeNotice::Refiltered(after.len() as u64))]
         } else if before == after {
             Vec::new()
         } else {
             vec![(Axis::Rows, change(&before, &after))]
         };
+        let cols_after = self.columns();
+        if cols_after != cols_before {
+            let n = cols_after.len() as u64;
+            notices.push((Axis::Cols, ChangeNotice::Refiltered(n)));
+        }
         Viewed {
             applied: ViewSpec::default().with_grouping(wanted),
             totals: Default::default(),
@@ -324,7 +367,7 @@ impl ScenarioSource for TreeTable {
     fn window(&mut self, axis: Axis, range: Range<Position>) -> Vec<Key> {
         let keys = match axis {
             Axis::Rows => self.rows(),
-            Axis::Cols => (0..self.cols).map(Key).collect(),
+            Axis::Cols => self.columns(),
         };
         let end = (range.end as usize).min(keys.len());
         keys.get(range.start as usize..end)
@@ -333,12 +376,17 @@ impl ScenarioSource for TreeTable {
 
     fn outlines(&mut self, axis: Axis, keys: &[Key]) -> Option<Vec<Outline>> {
         self.grouping.as_ref()?;
-        (axis == Axis::Rows).then(|| {
+        let shown = match axis {
+            Axis::Rows => &self.shown,
+            Axis::Cols if self.cols_grouped() => &self.col_tree,
+            Axis::Cols => return None,
+        };
+        Some(
             keys.iter()
-                .filter_map(|k| self.shown.iter().find(|(g, _)| g == k))
+                .filter_map(|k| shown.iter().find(|(g, _)| g == k))
                 .map(|(_, o)| o.clone())
-                .collect()
-        })
+                .collect(),
+        )
     }
 }
 
@@ -429,7 +477,7 @@ impl PumpSource for TreeTable {
     fn locate(&mut self, axis: Axis, key: Key) -> Located {
         let keys = match axis {
             Axis::Rows => self.rows(),
-            Axis::Cols => (0..self.cols).map(Key).collect(),
+            Axis::Cols => self.columns(),
         };
         match keys.iter().position(|&k| k == key) {
             Some(p) => Located::Found(p as u64),

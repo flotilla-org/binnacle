@@ -10,6 +10,7 @@ mod chooser;
 mod compare;
 mod context;
 mod copy;
+mod corner;
 mod filter;
 mod find;
 mod keymap;
@@ -27,6 +28,7 @@ pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
 pub use context::RenderContext;
 pub use copy::{CopiedRow, copy_text};
+pub use corner::corner_level_at;
 pub use filter::{
     ColumnFilter, Control, Controls, Preset, QuickFilter, TYPING_PAUSE, clear_filters, count,
     keep_value, remove_conditions, render_conditions, row_count,
@@ -130,6 +132,18 @@ pub trait Content {
         match args.is_empty() {
             true => value.aggregate.clone(),
             false => format!("{}({})", value.aggregate, args.join(", ")),
+        }
+    }
+
+    /// The name of a level of `axis` in the corner where the Header Bands
+    /// meet: unless overridden, its field's header (a column's for a row
+    /// level, a row's for a column level), or "Σ values" for the values
+    /// pseudo-level (`None`).
+    fn level_name(&self, axis: Axis, field: Option<Key>) -> String {
+        match (axis, field) {
+            (_, None) => "Σ values".into(),
+            (Axis::Rows, Some(f)) => self.column_header(f),
+            (Axis::Cols, Some(f)) => self.row_label(f),
         }
     }
 
@@ -309,13 +323,7 @@ pub fn render_with(
     }
     let grouping = snapshot.applied_view().grouping.as_ref();
     let grouped = grouping.filter(|g| !g.levels(Axis::Rows).is_empty());
-    // The only value's name, as a caption in the corner.
-    if let Some(value) = grouped.and_then(|g| g.caption()) {
-        let name = content.value_name(value);
-        let caption = fit(&name, u32::try_from(cell(left)).unwrap_or(0));
-        let clip = (0.0, left, 0.0, top);
-        put(buf, area, (0.0, 0.0), clip, &caption, theme.header);
-    }
+    corner::render(snapshot, content, theme, area, buf);
     let locating = locating(snapshot);
     let picked = Axis::ALL.map(|a| snapshot.picked(a));
     let hovered_col = match snapshot.hovered_header() {
@@ -884,7 +892,7 @@ fn shimmer(
 /// Writes `text` from `(x, y)` into `area` of `buf`, keeping the characters
 /// in `[x_min, x_end)` on a line in `[y_min, y_end)` (moving `y` down to
 /// `y_min`), all in cells relative to `area`.
-fn put(
+pub(crate) fn put(
     buf: &mut Buffer,
     area: Rect,
     (x, y): (f32, f32),
@@ -1012,7 +1020,7 @@ fn header_marker(sort: HeaderSort, filtered: bool, filter_pending: bool, multi: 
 /// A viewport-relative coordinate as a whole terminal cell (negative when
 /// before the area's edge). Rounding up maps contiguous part-scrolled items to
 /// distinct cells, each starting at the first cell it reaches.
-fn cell(v: f32) -> i64 {
+pub(crate) fn cell(v: f32) -> i64 {
     if v.is_finite() {
         v.ceil() as i64
     } else if v > 0.0 {
