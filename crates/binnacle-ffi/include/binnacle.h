@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 12u
+#define BINNACLE_ABI_VERSION 13u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -543,7 +543,10 @@ typedef struct {
  * closed), so a click on its header selects the group. path: the group of
  * each ancestor, outermost first, from which an activated cell's drill-down
  * is built; a source that sends none gets drill-downs naming the item's own
- * group alone. */
+ * group alone. has_set 1 places the item among its parent's children:
+ * set_index (0 first) of set_size, a group's Subtotal first or last where
+ * its level places one, and at the top a placed Grand Total likewise, open
+ * or closed and in either form. */
 typedef struct {
   uint32_t kind;
   uint32_t depth;
@@ -556,6 +559,9 @@ typedef struct {
   uint64_t span;
   const BinnacleGroupOf *path;
   size_t path_len;
+  uint32_t has_set;
+  uint64_t set_index;
+  uint64_t set_size;
 } BinnacleOutline;
 
 /*

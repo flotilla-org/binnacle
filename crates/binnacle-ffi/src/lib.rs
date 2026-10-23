@@ -17,13 +17,14 @@ use binnacle_core::{
     ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
     Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located,
     Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements, PointerEvent,
-    PointerKind, Rect, Scalar, Searched, SelectionUnit, SortColumn, SortDirection, SortSpec,
-    StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec, Viewport,
+    PointerKind, Rect, Scalar, Searched, SelectionUnit, SetPosition, SortColumn, SortDirection,
+    SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
+    Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 12;
+pub const BINNACLE_ABI_VERSION: u32 = 13;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -730,6 +731,9 @@ pub struct BinnacleOutline {
     pub span: u64,
     pub path: *const BinnacleGroupOf,
     pub path_len: usize,
+    pub has_set: u32,
+    pub set_index: u64,
+    pub set_size: u64,
 }
 
 impl Default for BinnacleOutline {
@@ -746,6 +750,9 @@ impl Default for BinnacleOutline {
             span: 0,
             path: std::ptr::null(),
             path_len: 0,
+            has_set: 0,
+            set_index: 0,
+            set_size: 0,
         }
     }
 }
@@ -1461,6 +1468,9 @@ fn outline_to_c(
         span: outline.span,
         path,
         path_len: outline.path.len(),
+        has_set: u32::from(outline.set.is_some()),
+        set_index: outline.set.map_or(0, |s| s.index),
+        set_size: outline.set.map_or(0, |s| s.size),
     }
 }
 
@@ -1512,6 +1522,14 @@ impl BinnacleOutline {
             }),
             _ => return None,
         };
+        let set = match self.has_set {
+            0 => None,
+            1 => Some(SetPosition {
+                index: self.set_index,
+                size: self.set_size,
+            }),
+            _ => return None,
+        };
         // SAFETY: the caller's contract.
         let ancestors = unsafe { borrowed(self.ancestors, self.ancestors_len) };
         // SAFETY: the caller's contract.
@@ -1532,6 +1550,7 @@ impl BinnacleOutline {
         outline.depth = self.depth;
         outline.open = open;
         outline.group = group;
+        outline.set = set;
         Some(outline)
     }
 }

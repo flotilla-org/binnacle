@@ -11,8 +11,8 @@ use binnacle_core::{
     FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping,
     HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline,
     PinZone, Placement, Placements, PointerEvent, PointerKind, Scalar, Searched, SelectionUnit,
-    Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, Value,
-    ViewEdit, ViewSpec, Viewport,
+    SetPosition, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport,
+    Totals, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -458,6 +458,10 @@ fn outline(tc: &TestCase, axis: Axis) -> Outline {
     let path = path
         .into_iter()
         .map(|(field, value)| GroupOf { field, value });
+    if tc.draw(gs::booleans()) {
+        let size = tc.draw(gs::integers::<u64>());
+        outline = outline.with_set(tc.draw(gs::integers::<u64>()), size);
+    }
     outline
         .with_span(tc.draw(gs::integers::<u64>().max_value(20)))
         .with_path(path.collect())
@@ -812,7 +816,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(90))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(91))),
     }
 }
 
@@ -1107,12 +1111,13 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             88 => binnacle_grid_set_form(h, ROWS, 2),
             89 => binnacle_grid_cycle_sort(h, 2, 0, 0),
             90 => binnacle_grid_cycle_sort(h, ROWS, 0, 2),
-            61..=64 => {
+            61..=64 | 91 => {
                 let mut bad = BinnacleOutline::default();
                 match which {
                     61 => bad.kind = 4,
                     62 => bad.open = 3,
                     63 => bad.has_group = 2,
+                    91 => bad.has_set = 2,
                     _ => {
                         bad.has_group = 1;
                         bad.value.blank = 2;
@@ -1962,6 +1967,14 @@ unsafe fn outline_from_c(o: &BinnacleOutline) -> Outline {
         }),
         g => panic!("has_group {g}"),
     };
+    outline.set = match o.has_set {
+        0 => None,
+        1 => Some(SetPosition {
+            index: o.set_index,
+            size: o.set_size,
+        }),
+        h => panic!("has_set {h}"),
+    };
     outline
 }
 
@@ -2005,6 +2018,9 @@ fn with_c_outlines<T>(outlines: &[Outline], f: impl FnOnce(&[BinnacleOutline]) -
             span: o.span,
             path: path.as_ptr(),
             path_len: path.len(),
+            has_set: u32::from(o.set.is_some()),
+            set_index: o.set.map_or(0, |s| s.index),
+            set_size: o.set.map_or(0, |s| s.size),
         })
         .collect();
     f(&c)
