@@ -11,9 +11,15 @@
 // quarters by their total weight. A pivot column's menu, or a right press on
 // a level's name in the corner, has the grouping menu: remove or move a
 // level, collapse to it or expand through it, remove or add a value, or
-// group by a column no level uses.
+// group by a column no level uses. The Grand Total row's menu also has a
+// comparison that keeps the quarters whose total passes it (a chip across
+// the columns). A click on a value column's header sorts the ports (and the
+// regions) by that column.
+// Unticking "Q4 shipments" takes the Q4 shipments out of the data, and with
+// them the Q4 columns: a sort on one stays, not applied (a red chip), and
+// applies again when they come back.
 
-import { createChooser, createColumnMenu, fromRows, GridWidget, LAYOUT_VERSION, textRenderer, type Grouping, type RowsColId } from "../../src";
+import { createChooser, createColumnMenu, createFilterBar, fromRows, GridWidget, LAYOUT_VERSION, textRenderer, type Grouping, type RowsColId } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { layoutControls } from "./layout";
 import { shipments } from "./shipments-data";
@@ -58,7 +64,7 @@ export const pivotDemo: DemoSource = {
   name: "pivot",
   description: "The shipments as a pivot: ports by region down, quarters across, each by total weight and count",
   showIds: true,
-  async mount(host, _toolbar, look) {
+  async mount(host, toolbar, look) {
     // A total weight to one decimal place, as each shipment's is.
     const weight = textRenderer({ align: "end", format: (w: number | null) => (w === null ? "" : String(Math.round(w * 10) / 10)) });
     const source = fromRows(
@@ -66,7 +72,13 @@ export const pivotDemo: DemoSource = {
       [{ key: "region" }, { key: "port" }, { key: "quarter" }, { key: "weight", renderer: weight }],
       { pivots: true },
     );
-    const widget = await GridWidget.create(host, {
+    const frame = document.createElement("div");
+    frame.className = "with-filter-bar";
+    const gridBox = document.createElement("div");
+    gridBox.className = "grid-box";
+    frame.append(gridBox);
+    host.append(frame);
+    const widget = await GridWidget.create(gridBox, {
       source,
       columnWidth: 112,
       headerHeight: HEADER,
@@ -84,6 +96,15 @@ export const pivotDemo: DemoSource = {
     const layout = layoutControls(widget, "pivot");
     const columnMenu = createColumnMenu(widget);
     const chooser = createChooser(widget);
+    const bar = createFilterBar(widget, { columnMenu });
+    frame.prepend(bar.element);
+    const q4 = document.createElement("label");
+    const q4Box = document.createElement("input");
+    q4Box.type = "checkbox";
+    q4Box.checked = true;
+    q4Box.addEventListener("change", () => source.filter(q4Box.checked ? null : (s) => s.quarter !== "Q4"));
+    q4.append(q4Box, " Q4 shipments");
+    toolbar.append(q4);
     return {
       get theme() {
         return widget.theme;
@@ -98,11 +119,14 @@ export const pivotDemo: DemoSource = {
         widget.border = style;
       },
       destroy() {
+        q4.remove();
+        bar.destroy();
         layout.destroy();
         columnMenu.destroy();
         chooser.destroy();
         widget.destroy();
         source.destroy();
+        frame.remove();
       },
     };
   },

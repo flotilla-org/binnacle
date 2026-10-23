@@ -471,9 +471,16 @@ export function fromRows<R extends object>(
   /** The columns the rows group by, outermost first, and the grouping in force. */
   let levels: ColId[] = [];
   let grouping: Grouping<ColId, number, Col> | null = null;
-  /** Whether the grouping in force pivots, and the columns' sort while it does: by the Grand Total row alone. */
+  /** Whether the grouping in force pivots, and the columns' sort while it does: by Summary Items' figures alone. */
   let pivot = false;
   let pivotSort: SortSpec<number> = [];
+  /**
+   * While pivoting, the rows' sort terms that order the groups (on base
+   * columns or pivot columns) in the order asked, and those the grouping
+   * applied: a term on a pivot column the data lacks is left out.
+   */
+  let groupSort: SortSpec<Col> = [];
+  let groupSorted: SortSpec<Col> = [];
   /** Whether the rows go through the grouping layer: grouped, or a pivot's. */
   const grouped = () => levels.length > 0 || pivot;
   /** The slicers in force, each with its test. */
@@ -481,6 +488,8 @@ export function fromRows<R extends object>(
   /** The Summary Items seen in grouped Windows since the rows last grouped, by row ID, and the pivot columns by column ID. */
   const groups = new Map<number, RowsGroup<ColId>>();
   const pivotColumns = new Map<number, RowsGroup<ColId>>();
+  /** Each pivot column's header text as last shown, by column ID. */
+  const pivotLabels = new Map<number, string>();
   /** Each pivot column's value, by column ID, for its renderer. */
   const columnValues = new Map<number, number>();
   /** Whether the user edited a row since the rows last grouped: the next View Spec groups them again. */
@@ -493,9 +502,11 @@ export function fromRows<R extends object>(
     if (kind === undefined) kinds.set(id, (kind = comparedOf(rows.map((r) => r[id]))));
     return kind;
   };
-  /** What the columns compare by row `id`: the kind its values in the filterable columns share. */
-  const comparedAcross = (id: number): Compared | null =>
-    isRow(id) ? comparedOf(columns.filter((c) => c.filterable !== false).map((c) => rows[id]![c.key])) : null;
+  /** What the columns compare by row `id`: the kind its values in the filterable columns share, a pivot's Summary Item's figures. */
+  const comparedAcross = (id: number): Compared | null => {
+    if (pivot && id < 0) return "numbers";
+    return isRow(id) ? comparedOf(columns.filter((c) => c.filterable !== false).map((c) => rows[id]![c.key])) : null;
+  };
   const takesColumn: Takes<Col> = Object.assign((id: Col) => filterable(id), { compared });
   /** The aggregates column `id` takes: every one of a column of numbers or dates. */
   const aggregatesOf = (id: ColId): readonly Aggregate[] => {
@@ -511,7 +522,8 @@ export function fromRows<R extends object>(
     conditions: [...filters.rows.conditions.filter((k) => !later(k.condition)), ...slicers],
   });
   const isRow = (id: number) => Number.isInteger(id) && id >= 0 && id < rows.length;
-  const takesRow: Takes<number> = Object.assign((id: number) => isRow(id), { compared: comparedAcross });
+  /** A pivot's columns also filter by a Summary Item's figures, the Grand Total row's among them. */
+  const takesRow: Takes<number> = Object.assign((id: number) => isRow(id) || (pivot && id < 0), { compared: comparedAcross });
   // Created on first use, once the widget has loaded the wasm module.
   const memory = () => {
     if (wasm) return wasm;
@@ -655,8 +667,9 @@ export function fromRows<R extends object>(
   /** Hands binnacle-memory the columns the columns' filter keeps. */
   const refilterColumns = () => {
     const m = memory();
-    if (!filtering(filters.cols)) m.clear_filter(COLS);
-    else m.filter(COLS, columnKeeps());
+    const own = { ...filters.cols, conditions: filters.cols.conditions.filter((k) => isRow(k.condition.id)) };
+    if (!filtering(own)) m.clear_filter(COLS);
+    else m.filter(COLS, Uint8Array.from(columns, (_, c) => (columnKeeper(own)(c) ? 1 : 0)));
   };
 
   /**
@@ -774,14 +787,23 @@ export function fromRows<R extends object>(
     const having = filters.rows.conditions
       .filter((k) => later(k.condition))
       .map(({ condition: c }) => ({ key: column(c.id), kind: c.kind, not: c.not }));
+    // A pivot's columns filtered by a Summary Item's figures: HAVING across.
+    const colHaving = filters.cols.conditions
+      .filter((k) => pivot && k.condition.id < 0)
+      .map(({ condition: c }) => ({ key: summaryKey(c.id), kind: c.kind, not: c.not }));
+    const by = pivot ? groupSort : applied;
+    const sortKey = (id: Col) => (isBase(id) ? BigInt(index.get(id)!) : summaryKey(id as number));
     m.group(
       { ...wire, slicers: [] },
-      Uint32Array.from(applied, (c) => index.get(c.id)!),
-      Uint8Array.from(applied, (c) => DIRECTION[c.direction]),
+      BigUint64Array.from(by, (c) => sortKey(c.id)),
+      Uint8Array.from(by, (c) => DIRECTION[c.direction]),
       having,
-      BigUint64Array.from(pivotSort, () => GRAND_TOTAL),
+      BigUint64Array.from(pivotSort, (c) => summaryKey(c.id)),
       Uint8Array.from(pivotSort, (c) => DIRECTION[c.direction]),
+      colHaving,
     );
+    const sorted = new Set(m.applied_sort(ROWS));
+    groupSorted = groupSort.filter((c) => isBase(c.id) || sorted.has(sortKey(c.id)));
     // The Group Items whose paths no longer fit the levels are pruned.
     const pruned = <Id,>(axis: AxisName, ax: GroupedAxis<Id>): GroupedAxis<Id> => ({
       ...ax,
@@ -937,7 +959,7 @@ export function fromRows<R extends object>(
 
   /** The View Spec in force, as `view` answers it. */
   const current = (): AppliedView<number, Col> => ({
-    rows: { filter: spec(filters.rows), sort: applied, hidden: hidden.rows },
+    rows: { filter: spec(filters.rows), sort: pivot ? groupSorted : applied, hidden: hidden.rows },
     cols: { filter: spec(filters.cols), sort: pivot ? pivotSort : colsApplied, hidden: hidden.cols },
     totals: pivot ? { rows: rows.length } : { rows: rows.length, cols: columns.length },
     grouping,
@@ -1101,6 +1123,15 @@ export function fromRows<R extends object>(
       move: (ids, to) => move(ROWS, ids, to),
       movable: () =>
         !pivot && (levels.length === 0 ? memory().movable(ROWS) : options.sortedMoves !== "refuse" || leafSort().length === 0),
+      // A Summary Item is named by its group (a pivot's columns filter by one), a row by its Position.
+      label: (id, position) =>
+        id === -1
+          ? "Grand total"
+          : id < 0
+            ? (summaryOf(id)?.value ?? "(blank)")
+            : Number.isNaN(position)
+              ? String(id)
+              : String(position + 1),
       spanLabel: (id) => {
         const group = summaryOf(id);
         if (!group) return "";
@@ -1113,6 +1144,7 @@ export function fromRows<R extends object>(
         const label = labelOf(outline, group.value, ROWS);
         return counted() < 0 ? label : `${label} (${group.count})`;
       },
+      fits: (id) => id >= 0 || memory().fits(ROWS, summaryKey(id)),
       grandTotal: -1,
     },
     cols: {
@@ -1123,7 +1155,8 @@ export function fromRows<R extends object>(
       quickFilter: { regex: true },
       hide: true,
       ...(options.hideCap?.cols === undefined ? {} : { hideCap: options.hideCap.cols }),
-      support: (by) => ({ sort: true, text: { regex: true }, oneOf: true, compare: comparedAcross(by) }),
+      support: (by) =>
+        by < 0 ? { sort: pivot, text: false, oneOf: false, compare: comparedAcross(by) } : { sort: true, text: { regex: true }, oneOf: true, compare: comparedAcross(by) },
       distinct: (by, { search, limit, narrow }) => distinctAcross(by, search, limit, narrow),
       locate: (id) =>
         located(
@@ -1140,15 +1173,24 @@ export function fromRows<R extends object>(
           to,
         ),
       movable: () => !pivot && memory().movable(COLS),
-      label: (id) => String(columnLabel(id)),
+      // A pivot column is named as last shown, so a sort term on one the data lacks still reads.
+      label: (id) => (typeof id === "number" ? (pivotLabels.get(id) ?? "") : String(columnLabel(id))),
       // A Grand Total split by value is "All" for that value.
       groupLabel: (id, outline) => {
         const known = typeof id === "number" ? summaryOf(id, COLS) : undefined;
         const value = known?.value ?? outline.group?.value ?? null;
-        if (outline.kind === "grandTotal") return value === null ? "All" : `All: ${value}`;
-        return labelOf(outline, value, COLS);
+        const label = outline.kind === "grandTotal" ? (value === null ? "All" : `All: ${value}`) : labelOf(outline, value, COLS);
+        if (typeof id === "number") {
+          // A value's column is named with its quarter's (its parent's) value: "Q4 sum(weight)".
+          const parent = outline.ancestors.at(-1);
+          const over = typeof parent === "number" ? summaryOf(parent, COLS)?.value : undefined;
+          const prefixed = outline.kind === "subtotal" && outline.group?.field === null;
+          pivotLabels.set(id, over == null || prefixed ? label : `${over} ${label}`);
+        }
+        return label;
       },
       spanLabel: (id) => (typeof id === "number" ? summaryOf(id, COLS)?.value : undefined) ?? "(blank)",
+      fits: (id) => typeof id !== "number" || memory().fits(COLS, summaryKey(id)),
       grandTotal: -1,
     },
     // A quick filter whose pattern is not a valid RegExp leaves the one in
@@ -1163,22 +1205,30 @@ export function fromRows<R extends object>(
       }
       const byRows = asked.cols.sort.filter((c) => isRow(c.id));
       const leavesBefore = JSON.stringify(spec(leafFilter()));
+      // The level columns leave the columns while the rows group by them.
+      const before = grouping;
+      const wasPivot = pivot;
+      const sortedBefore = pivotSort;
+      const groupSortBefore = groupSort;
+      const rowLevels = levelsOf(asked.grouping?.rowLevels).filter((l) => options.pivots === true || "field" in l);
+      const colLevels = options.pivots === true ? levelsOf(asked.grouping?.colLevels) : [];
+      pivot = options.pivots === true && (colLevels.length > 0 || rowLevels.some((l) => "values" in l));
       const forRows = take(filters.rows, asked.rows.filter, takesColumn);
-      const forCols = take(filters.cols, asked.cols.filter, takesRow);
+      // A Summary Item filters a pivot's columns by comparing its figures alone.
+      const across = asked.cols.filter && {
+        ...asked.cols.filter,
+        conditions: asked.cols.filter.conditions.filter((c) => c.id >= 0 || c.kind.type === "Compare"),
+      };
+      const forCols = take(filters.cols, across, takesRow);
       filters = { rows: forRows.filter, cols: forCols.filter };
       const error = forRows.error ?? forCols.error;
       const was = hidden;
       hidden = { rows: pruned(asked.rows.hidden, isRow), cols: [...new Set(asked.cols.hidden.filter(isBase))] };
       const m = memory();
-      // The level columns leave the columns while the rows group by them.
-      const before = grouping;
-      const wasPivot = pivot;
-      const sortedBefore = pivotSort;
-      const rowLevels = levelsOf(asked.grouping?.rowLevels).filter((l) => options.pivots === true || "field" in l);
-      const colLevels = options.pivots === true ? levelsOf(asked.grouping?.colLevels) : [];
       levels = fieldsOf(rowLevels);
-      pivot = options.pivots === true && (colLevels.length > 0 || rowLevels.some((l) => "values" in l));
-      pivotSort = pivot ? asked.cols.sort.filter((c) => c.id === -1) : [];
+      pivotSort = pivot ? asked.cols.sort.filter((c) => c.id < 0) : [];
+      // A pivot's groups also sort by its columns' figures.
+      groupSort = pivot ? asked.rows.sort.filter((c) => isBase(c.id) || (typeof c.id === "number" && c.id < 0)) : [];
       slicers = testable(asked.grouping?.slicers ?? [], takesColumn);
       const offered = (v: AggregateValue<Col>): v is AggregateValue<ColId> =>
         v.field === null
@@ -1197,7 +1247,11 @@ export function fromRows<R extends object>(
       // Opening and closing groups regroups nothing.
       const shape = (g: typeof grouping) =>
         JSON.stringify(g && { ...g, rowAxis: { ...g.rowAxis, expand: null }, colAxis: { ...g.colAxis, expand: null } });
-      const regrouping = shape(grouping) !== shape(before) || !same(pivotSort, sortedBefore);
+      const regrouping =
+        shape(grouping) !== shape(before) ||
+        !same(pivotSort, sortedBefore) ||
+        !same(groupSort, groupSortBefore) ||
+        (pivot && forCols.changed);
       const reopening = (axis: AxisName) =>
         JSON.stringify(grouping && axisOf(grouping, axis).expand) !==
         JSON.stringify(before && axisOf(before, axis).expand);
@@ -1327,10 +1381,16 @@ export function fromRows<R extends object>(
     filter(next) {
       keep = next;
       refilter();
+      const sortedBefore = groupSorted;
       if (grouped()) regroup();
       tell({ type: "Refiltered" });
       if (grouped()) refigured();
       if (pivot) tell({ type: "Refiltered" }, "cols");
+      // A sort term on a pivot column the data now lacks, or has again.
+      if (!same(groupSorted, sortedBefore)) {
+        const view = current();
+        for (const s of sinks) s.viewChanged(view);
+      }
     },
     row: (id) => rows[id]!,
     group: (id) => summaryOf(id),

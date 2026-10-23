@@ -556,6 +556,15 @@ export interface AxisMethods<Id, CrossId, FieldId = CrossId> {
    * after each View Spec and move, and when the sink's `movableChanged` says.
    */
   movable?(): boolean;
+  /**
+   * Whether the widget's state on `id` (a width, a pin, a sort term or
+   * condition naming it) still fits this axis's levels: a Summary Item or
+   * pivot column names a path of group values, which fits the levels until
+   * they change. Asked of the Keys the widget holds state on after each
+   * View Spec lands; those that no longer fit are forgotten, never to come
+   * back. Without it, everything fits.
+   */
+  fits?(id: Id): boolean;
   /** Header text for an item; defaults to `String(id)` for columns and Position + 1 for rows. */
   label?(id: Id, position: number): string;
   /**

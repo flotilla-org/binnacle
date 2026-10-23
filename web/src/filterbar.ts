@@ -283,6 +283,9 @@ export function createFilterBar<RowId, ColId, V>(
     item.setAttribute("aria-description", `Not applied: ${message}`);
     return item;
   };
+  /** A sort term's text: "Sorted by Q2 descending". */
+  const sortText = (sort: FrameInfo<RowId, ColId>["sorts"][number]["sort"]) =>
+    `Sorted by ${widget.columnLabel(sort.id) || "a column"} ${sort.direction}`;
   /** A level's text: "Grouped by port", with its Subtotal's place if it has one. */
   const levelText = (level: Level<ColId>) => {
     if ("values" in level) return "Values level";
@@ -402,6 +405,7 @@ export function createFilterBar<RowId, ColId, V>(
     const notApplied = [
       ...f.grouping.levels.flatMap(({ level, state }) => (state === "notApplied" ? [levelText(level)] : [])),
       ...f.grouping.values.flatMap(({ value, state }) => (state === "notApplied" ? [valueText(value)] : [])),
+      ...(axis === "rows" ? f.sorts : []).flatMap(({ sort, state }) => (state === "notApplied" ? [sortText(sort)] : [])),
     ];
     const slices = axis === "rows" && widget.groups();
     slice.hidden = !menu || !slices;

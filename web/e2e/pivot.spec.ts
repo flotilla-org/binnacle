@@ -2,7 +2,9 @@
 // the rows and quarters across, each quarter spanning its total weight and
 // count columns, the All columns pinned right. Cells are canvas pixels, so
 // the status line's focus (Position and IDs) is the probe: a pivot's rows and
-// columns both come from the data, by negative IDs.
+// columns both come from the data, by negative IDs. Sorting and filtering
+// across the pivot (#211) read the ARIA table's row headers and the filter
+// bar's chips.
 
 import { expect, test, type Page } from "@playwright/test";
 import { quarterShipments } from "../demo/sources/pivot";
@@ -19,6 +21,43 @@ const status = (page: Page) => page.locator("#status");
 /** A column header by its accessible name. */
 const header = (page: Page, name: string) =>
   page.locator(".binnacle-aria").getByRole("columnheader", { name, exact: true });
+const bar = (page: Page) => page.getByRole("search");
+
+/** The ARIA table's body rows: each one's level and header text, its count left off. */
+const rowHeaders = (page: Page) =>
+  page.evaluate(() =>
+    [...document.querySelectorAll(".binnacle-aria tbody tr")].map((tr) => ({
+      level: tr.getAttribute("aria-level"),
+      header: (tr.querySelector('[role="rowheader"]')?.textContent ?? "").replace(/ \(\d+\)$/, ""),
+    })),
+  );
+
+/** The ports shown under `region`, in order. */
+async function portsUnder(page: Page, region: string): Promise<string[]> {
+  const rows = await rowHeaders(page);
+  const at = rows.findIndex((r) => r.level === "1" && r.header === region);
+  const end = rows.findIndex((r, i) => i > at && r.level === "1");
+  return rows.slice(at + 1, end < 0 ? undefined : end).map((r) => r.header);
+}
+
+/** `region`'s ports by their total weight in `quarter`, most first, those with none last; ties by name. */
+function byQuarter(region: string, quarter: string): string[] {
+  const totals = new Map<string, number | null>();
+  for (const s of quarterShipments) {
+    if (s.region !== region) continue;
+    if (!totals.has(s.port)) totals.set(s.port, null);
+    if (s.quarter === quarter && s.weight !== null) totals.set(s.port, (totals.get(s.port) ?? 0) + s.weight);
+  }
+  return [...totals]
+    .sort(([a, x], [b, y]) => (x === y ? (a < b ? -1 : 1) : x === null ? 1 : y === null ? -1 : y - x))
+    .map(([port]) => port);
+}
+
+/** Clicks the header of screen column `col` in the value columns' row. */
+async function clickHeader(page: Page, col: number) {
+  const b = (await page.locator(".binnacle-layer").boundingBox())!;
+  await page.mouse.click(b.x + ROWS_BAND + col * COLUMN + COLUMN / 2, b.y + BAND - 14);
+}
 
 const regions = new Set(quarterShipments.map((s) => s.region)).size;
 const ports = new Set(quarterShipments.map((s) => `${s.region}/${s.port}`)).size;
@@ -121,4 +160,55 @@ test("a click on a quarter's mark closes it and another opens it", async ({ page
   await expect(header(page, "Q1 count")).toBeVisible();
   await page.mouse.click(mark.x, mark.y);
   await expect(header(page, "Q1 count")).toHaveCount(0);
+});
+
+test("a click on Q4's weight header sorts each region's ports by it; without the Q4 shipments the sort stays, not applied, and applies again with them", async ({
+  page,
+}) => {
+  const ascending = await portsUnder(page, "East");
+  expect(ascending).toEqual([...ascending].sort((a, b) => (a < b ? -1 : 1)));
+  // Q4's weight is the seventh column: two per quarter before it. Ascending, then descending.
+  await clickHeader(page, 6);
+  await clickHeader(page, 6);
+  const sorted = byQuarter("East", "Q4");
+  expect(sorted).not.toEqual(ascending);
+  await expect.poll(() => portsUnder(page, "East")).toEqual(sorted);
+  await expect(bar(page).getByText("not applied")).toHaveCount(0);
+
+  await page.getByLabel("Q4 shipments").uncheck();
+  await expect(status(page)).toContainText(`of ${(quarters - 1) * 2 + 2}`);
+  await expect(bar(page).getByText("Sorted by Q4 sum(weight) descending: not applied")).toBeVisible();
+  await expect.poll(() => portsUnder(page, "East")).toEqual(ascending);
+
+  await page.getByLabel("Q4 shipments").check();
+  await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
+  await expect(bar(page).getByText("not applied")).toHaveCount(0);
+  await expect.poll(() => portsUnder(page, "East")).toEqual(sorted);
+});
+
+test("the Grand Total row's menu keeps the quarters whose total weight passes its comparison", async ({ page }) => {
+  const b = (await page.locator(".binnacle-layer").boundingBox())!;
+  // The Grand Total row, pinned at the bottom.
+  await page.mouse.click(b.x + ROWS_BAND + COLUMN / 2, b.y + b.height - ROW / 2);
+  await expect(status(page)).toContainText(`focus row ${regions + ports + 1},`);
+  await page.keyboard.press("Alt+ArrowRight");
+  const menu = page.getByRole("dialog", { name: "Filter columns by Grand total" });
+  await menu.getByRole("combobox", { name: "Comparison" }).selectOption("greater");
+  await menu.getByRole("spinbutton").fill("110000");
+  await page.keyboard.press("Escape");
+  const totals = new Map<string, number>();
+  for (const s of quarterShipments) totals.set(s.quarter, (totals.get(s.quarter) ?? 0) + (s.weight ?? 0));
+  const kept = [...totals.values()].filter((t) => t > 110_000).length;
+  expect(kept).toBeGreaterThan(0);
+  expect(kept).toBeLessThan(quarters);
+  await expect(status(page)).toContainText(`of ${kept * 2 + 2}`);
+  await expect(bar(page).getByRole("listitem")).toHaveText(["Grand total: > 110000×"]);
+});
+
+test("a sort on a quarter the data lacks shows as a red chip", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "screenshots are taken in Chromium only");
+  await clickHeader(page, 6);
+  await page.getByLabel("Q4 shipments").uncheck();
+  await expect(bar(page).getByText("not applied")).toBeVisible();
+  await expect(page.locator("#grid")).toHaveScreenshot("pivot-sort-not-applied.png", { scale: "device" });
 });

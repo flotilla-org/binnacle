@@ -32,6 +32,7 @@ import {
   type KeyedTextQuery,
   type Rect,
   type Snapshot,
+  type SortDirection,
   type Span,
 } from "./snapshot";
 import type {
@@ -219,6 +220,12 @@ export interface FrameInfo<RowId = unknown, ColId = unknown> {
    * being removed. Pending ones (`adding`, `removing`) are not applied yet.
    */
   conditions: { condition: Condition<ColId>; state: ConditionState }[];
+  /**
+   * The rows' sort terms, listed as `conditions` is: on a pivot, a term on a
+   * pivot column the data lacks for now stays asked for, `notApplied`, and
+   * applies again when the column returns.
+   */
+  sorts: { sort: { id: ColId; direction: SortDirection }; state: ConditionState }[];
   /** The grouping as asked for, each part where it stands, listed as `conditions` is. */
   grouping: GroupingInfo<ColId>;
   /** The column headers in view, by the Table Source's IDs: how each is filtered, and what it supports. */
@@ -1747,6 +1754,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       conditions: snapshot.rows.conditions.flatMap(({ condition, state }) => {
         const c = this.feed.conditionId(condition);
         return c ? [{ condition: c, state }] : [];
+      }),
+      sorts: snapshot.rows.sorts.flatMap(({ column, state }) => {
+        const id = this.feed.colId(column.key);
+        return id === undefined ? [] : [{ sort: { id, direction: column.direction }, state }];
       }),
       grouping: this.groupingInfo(snapshot),
       columns: visible(snapshot.cols).flatMap((item) => {
