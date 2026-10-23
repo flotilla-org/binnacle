@@ -236,6 +236,8 @@ impl Grid {
         let (Some(a), Some(h)) = (anchor.key, head.key) else {
             return self.set_span(None);
         };
+        let st = self.axis(axis);
+        let drawn = |end| st.drawn_index(st.slot_of(end));
         let corner = |key| Corner {
             key,
             due: 0,
@@ -243,15 +245,15 @@ impl Grid {
         };
         self.refiltering.corners[i].get_or_insert(Corners {
             ends: [corner(a), corner(h)],
-            anchor_first: anchor.position <= head.position,
+            anchor_first: drawn(anchor) <= drawn(head),
         });
         self.pending_damage.selection = true;
     }
 
-    /// A `located` answer about `key`, a corner of the range on `axis`. Once
-    /// both corners have answered, the range covers the items still between
-    /// them: a corner that left pulls in to the nearest item inside, and the
-    /// range clears if none is left (or a corner cannot be placed).
+    /// A `located` answer about `key` on `axis`, a corner of the range or a
+    /// pin. Once both corners and every pin have answered, the range covers the items still between
+    /// them: a corner that left pulls in to the nearest item drawn inside,
+    /// never a pin drawn outside, and the range clears if none is left (or a corner cannot be placed).
     fn corner_located(&mut self, axis: Axis, key: Key, answer: Located) {
         let i = axis.index();
         let Some(corners) = &mut self.refiltering.corners[i] else {
@@ -265,7 +267,10 @@ impl Grid {
                 }
             }
         }
-        if corners.ends.iter().any(|e| e.answer.is_none()) {
+        // A corner pulls in past the pins drawn beside it, so their
+        // Positions must be known first.
+        let mut pins = self.axes[i].pins.iter().flatten();
+        if corners.ends.iter().any(|e| e.answer.is_none()) || pins.any(|p| p.due > 0) {
             return;
         }
         let corners = self.refiltering.corners[i].take().expect("checked above");
@@ -283,22 +288,24 @@ impl Grid {
                     position: p,
                     key: Some(end.key),
                 }),
-                // Where the Key would sit: the next item's Position.
+                // The nearest item drawn inward of where the Key would be.
                 Located::Gone { suggest: Some(s) } if s <= count => {
-                    let p = if n == first {
-                        Some(s).filter(|&s| s < count)
+                    let at = st.drawn_gap(end.key, s);
+                    let index = if n == first {
+                        Some(at).filter(|&i| i < st.drawn_len())
                     } else {
-                        s.checked_sub(1)
+                        at.checked_sub(1)
                     };
-                    p.map(|p| FocusEnd::at(st, p))
+                    index.map(|i| st.end_at(st.slot_at(i)))
                 }
                 _ => None,
             };
         }
+        let drawn = |end| st.drawn_index(st.slot_of(end));
         // A notice since may have moved a corner to another item.
         let same = [span.anchor[i].key, span.head[i].key] == corners.ends.map(|e| Some(e.key));
         let span = match placed {
-            [Some(a), Some(h)] if same && [a, h][first].position <= [a, h][1 - first].position => {
+            [Some(a), Some(h)] if same && drawn([a, h][first]) <= drawn([a, h][1 - first]) => {
                 span.anchor[i] = a;
                 span.head[i] = h;
                 Some(span)
