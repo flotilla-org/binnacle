@@ -24,15 +24,21 @@ impl Grid {
 
     /// The level of the Group Item `key` on `axis`, if the Grid holds its
     /// outline and it can open, or (in header form, where a group is a span
-    /// rather than an item) an item of the Window lies under it.
+    /// rather than an item) an item of the Window lies under it. Should the
+    /// outlines disagree about its level, the first item under it decides.
     fn openable(&self, axis: Axis, key: Key) -> Option<u32> {
         if let Some(outline) = self.outline_of(axis, key) {
             return (outline.kind == ItemKind::Group && outline.open != OpenState::CantOpen)
                 .then_some(outline.depth);
         }
-        (self.axis(axis).outlines.values())
-            .find_map(|o| o.ancestors.iter().position(|&a| a == key))
-            .map(|level| level as u32)
+        let st = self.axis(axis);
+        (st.outlines.iter())
+            .filter_map(|(&k, o)| {
+                let level = o.ancestors.iter().position(|&a| a == key)?;
+                Some((st.measure.position_of(k), level as u32))
+            })
+            .min()
+            .map(|(_, level)| level)
     }
 
     /// The groups of `axis` the Window shows under the group `key`, at any
