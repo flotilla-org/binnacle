@@ -558,6 +558,10 @@ struct Step<'a> {
     requests: &'a RefCell<Vec<(Axis, Range<Position>)>>,
     /// The End Gap of each axis.
     end_gaps: [f32; 2],
+    /// The largest count each axis had at any release in this step: a
+    /// release names its drop against the count then, which a later Reset
+    /// in the same step may shrink.
+    release_counts: [u64; 2],
 }
 
 /// Draws a table, then a few steps of random inputs, each followed by a pump
@@ -640,6 +644,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
     }
     for _ in 0..steps {
         let (mut moved_focus, mut reveals_focus) = (false, false);
+        let mut release_counts = [0; 2];
         let mut inputs = tc.draw(gs::vecs(input()).max_size(4));
         if tc.draw(gs::weighted_booleans(0.5)) {
             inputs.extend(tc.draw(gesture()).into_iter().map(Input::Pointer));
@@ -687,7 +692,13 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
-                Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(&target))),
+                Input::Pointer(p) => {
+                    if p.event.kind == PointerKind::Up {
+                        release_counts = Axis::ALL
+                            .map(|a| release_counts[a.index()].max(models[a.index()].config.count));
+                    }
+                    s.input(|g| g.pointer(p.resolve(&target)))
+                }
                 Input::SetSize(axis, key, size) if knobs.resize => {
                     s.input(|g| g.set_size(axis, key, size));
                     let model = &mut models[axis.index()];
@@ -748,6 +759,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             reveals_focus,
             requests: &requests,
             end_gaps,
+            release_counts,
         };
         let snap = s.frame(next);
         if let Mode::Resizing { axis, key, .. } = snap.mode() {
@@ -2137,7 +2149,7 @@ fn check_resize_feedback(tc: &TestCase, snap: &Snapshot, axis: Axis, key: Key) {
 /// order. The identity table never moves anything, so a Key is its Position.
 #[hegel::test(test_cases = 2000)]
 fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) {
-    frames(&tc, BODIES, |snap, step| {
+    frames(&tc, BODIES, |_, step| {
         for effect in step.drained {
             let Effect::MoveRequested { axis, keys, to } = effect else {
                 continue;
@@ -2147,7 +2159,7 @@ fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) 
             check_moved_keys(keys);
             let (first, last) = (keys[0].0, keys[keys.len() - 1].0);
             let block = last - first + 1 == keys.len() as u64;
-            assert!(*to <= snap.count(Axis::Cols));
+            assert!(*to <= step.release_counts[Axis::Cols.index()]);
             assert!(
                 !(block && (first..=last + 1).contains(to)),
                 "{keys:?} to {to} moves nothing"
