@@ -39,6 +39,7 @@ enum Op {
     /// Grouping the axis by a Key of the other axis, first declaring that
     /// the Table Source groups by it if the flag is set.
     GroupBy(Axis, Key, bool),
+    CycleSort(Axis, Key, bool),
     Ungroup(Axis),
     /// Expand (0), collapse (1), toggle (2) or expand everything under (3)
     /// the group headed by a Key.
@@ -640,7 +641,11 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(37)) {
+    match tc.draw(gs::integers::<u8>().max_value(38)) {
+        37 => {
+            let axis = tc.draw(axes());
+            Op::CycleSort(axis, tc.draw(key(axis.other())), tc.draw(gs::booleans()))
+        }
         33 => Op::Toggle(
             tc.draw(gs::integers::<u8>().max_value(3)),
             Axis::Rows,
@@ -807,7 +812,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(88))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(90))),
     }
 }
 
@@ -1100,6 +1105,8 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             80 => binnacle_grid_expand_to(h, ROWS, 2, 1),
             87 => binnacle_grid_set_tiers(h, 2, std::ptr::null(), 0),
             88 => binnacle_grid_set_form(h, ROWS, 2),
+            89 => binnacle_grid_cycle_sort(h, 2, 0, 0),
+            90 => binnacle_grid_cycle_sort(h, ROWS, 0, 2),
             61..=64 => {
                 let mut bad = BinnacleOutline::default();
                 match which {
@@ -1369,6 +1376,27 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         let tiers = unsafe { slice::from_raw_parts(a.tiers, a.tiers_len) };
         let got: Vec<_> = tiers.iter().map(|t| t.start..t.end).collect();
         assert_eq!(got, rust.tiers(axis), "{axis:?} tiers");
+        let corner = unsafe { slice::from_raw_parts(a.corner_tiers, a.corner_tiers_len) };
+        let levels = unsafe { slice::from_raw_parts(a.corner_levels, a.corner_levels_len) };
+        let want = rust.corner().tiers(axis);
+        assert_eq!(corner.len(), want.len(), "{axis:?} corner tiers");
+        for (got, want) in corner.iter().zip(want) {
+            assert!(same_f32(got.across.start, want.across.start));
+            assert!(same_f32(got.across.end, want.across.end));
+            let named = &levels[got.levels_start..got.levels_start + got.levels_len];
+            let named: Vec<(u32, Option<Key>)> = (named.iter())
+                .map(|l| match l.kind {
+                    BINNACLE_LEVEL_FIELD => (l.index, Some(Key(l.field))),
+                    kind => {
+                        assert_eq!((kind, l.field), (BINNACLE_LEVEL_VALUES, 0));
+                        (l.index, None)
+                    }
+                })
+                .collect();
+            let want: Vec<(u32, Option<Key>)> =
+                want.levels.iter().map(|l| (l.index, l.field)).collect();
+            assert_eq!(named, want, "{axis:?} corner levels");
+        }
         let spans = unsafe { slice::from_raw_parts(a.spans, a.spans_len) };
         assert_eq!(spans.len(), rust.spans(axis).len(), "{axis:?} spans");
         for (got, want) in spans.iter().zip(rust.spans(axis)) {
@@ -2545,6 +2573,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     }
                     grid.group_by(axis, field);
                     binnacle_grid_group_by(h, tag(axis), field.0)
+                }
+                Op::CycleSort(axis, key, multi) => {
+                    grid.cycle_sort(axis, key, multi);
+                    binnacle_grid_cycle_sort(h, tag(axis), key.0, u32::from(multi))
                 }
                 Op::Ungroup(axis) => {
                     grid.ungroup(axis);

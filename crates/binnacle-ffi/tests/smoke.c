@@ -601,9 +601,19 @@ int main(void) {
   CHECK(!binnacle_grid_set_tiers(grid, 2, tiers, 2));
   CHECK(binnacle_grid_set_form(grid, BINNACLE_ROWS, BINNACLE_FORM_HEADER));
   CHECK(!binnacle_grid_set_form(grid, BINNACLE_ROWS, 2));
+  /* A level name in the corner sorts by its field as a header click does. */
+  CHECK(binnacle_grid_cycle_sort(grid, BINNACLE_ROWS, 1, 0));
+  CHECK(!binnacle_grid_cycle_sort(grid, BINNACLE_ROWS, 1, 2));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_VIEW_REQUESTED);
+  CHECK(effect.edit.kind == BINNACLE_VIEW_EDIT_CYCLE_SORT && effect.edit.key == 1);
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
   frame(grid, &snap);
   CHECK(snap.mode == BINNACLE_MODE_IDLE);
   CHECK(c->header == 0 && c->strip[0].offset == 0);
+  /* Ungrouped, the corner is one cell naming no level. */
+  CHECK(r->corner_tiers_len == 1 && c->corner_tiers_len == 1);
+  CHECK(r->corner_tiers[0].levels_len == 0 && c->corner_levels_len == 0);
   CHECK(snap.damage & BINNACLE_DAMAGE_LAYOUT);
 
   /* Dragging column 1's header into the empty leading pin zone pins it. */

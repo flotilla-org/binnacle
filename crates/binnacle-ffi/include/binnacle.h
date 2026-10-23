@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 11u
+#define BINNACLE_ABI_VERSION 12u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -471,6 +471,24 @@ typedef struct {
   float end;
 } BinnacleExtent;
 
+/* A level the corner names: its place among its axis's levels (0
+ * outermost) and BINNACLE_LEVEL_FIELD with the field it groups by, or
+ * BINNACLE_LEVEL_VALUES for the values pseudo-level (field 0). */
+typedef struct {
+  uint32_t index;
+  uint32_t kind;
+  uint64_t field;
+} BinnacleCornerLevel;
+
+/* One tier of a Header Band where it crosses the corner: where it lies
+ * across the band, and the levels it names, corner_levels[levels_start]
+ * on for levels_len. */
+typedef struct {
+  BinnacleExtent across;
+  size_t levels_start;
+  size_t levels_len;
+} BinnacleCornerTier;
+
 /* One spanning cell of a tier in header form: the group of axis keyed key
  * (its Group Item Key), at level tier (0 outermost), whose level groups by
  * field (has_field 0 for the values pseudo-level), open or closed
@@ -726,6 +744,16 @@ typedef struct {
   size_t tiers_len;
   const BinnacleHeaderSpan *spans;
   size_t spans_len;
+  /* The corner grid: the tiers of the band heading this axis's items where
+   * it crosses the corner, outermost first, the items' own headers last
+   * (ROWS: the corner's columns, COLS: its rows). In header form a level's
+   * tier names that level; in outline form the one tier names every level.
+   * A cell is where a COLS tier crosses a ROWS tier. corner_levels holds the
+   * levels the tiers name, in tier order. */
+  const BinnacleCornerTier *corner_tiers;
+  size_t corner_tiers_len;
+  const BinnacleCornerLevel *corner_levels;
+  size_t corner_levels_len;
 } BinnacleAxisSnapshot;
 
 /*
@@ -1331,6 +1359,12 @@ int binnacle_grid_show(BinnacleGrid *grid, uint32_t axis, const uint64_t *keys, 
  * already or the Table Source can't group axis by it (BINNACLE_SUPPORT_GROUP
  * for field). */
 int binnacle_grid_group_by(BinnacleGrid *grid, uint32_t axis, uint64_t field);
+
+/* Cycles axis's sort by key, an item of the other axis, as a Sort header
+ * click on its header does (BINNACLE_VIEW_EDIT_CYCLE_SORT), keeping the rest
+ * of the sort if multi is 1: how a level name in the corner sorts by its
+ * field. Nothing unless the Table Source sorts axis by key. */
+int binnacle_grid_cycle_sort(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint32_t multi);
 
 /* Removes every level of axis and requests the result with
  * BINNACLE_VIEW_EDIT_UNGROUP. Nothing if axis is not grouped. */
