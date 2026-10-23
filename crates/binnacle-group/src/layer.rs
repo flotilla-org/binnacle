@@ -1130,7 +1130,7 @@ impl<A: Clone> GroupingLayer<A> {
             at_data_path(&mut tree.root, &answer.path, &shown, &mut targets);
             for node in targets {
                 let (start, body) = (answer.start, body.clone());
-                let added = place(node, start, body, &tree.shape, &mut self.keys, &fresh);
+                let added = place(node, start, body, &tree.shape, &mut self.keys, fresh);
                 self.cached = self.cached.saturating_add(added);
             }
         }
