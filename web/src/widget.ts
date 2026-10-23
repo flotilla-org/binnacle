@@ -1178,12 +1178,16 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     return this.feed.rowSupport(rowId);
   }
 
-  /** A row's header text: the source's `rows.label` (given the row's Position if in view, else NaN), else its Position + 1, else its ID. */
+  /** A row's header text: the source's `rows.label` (given the row's Position if in view, else NaN), else a Summary Item's group, else its Position + 1, else its ID. */
   rowLabel(rowId: RowId): string {
     const key = this.feed.rowKey(rowId);
-    const position = this.last?.rows.strip.find((i) => i.key === key)?.position ?? Number.NaN;
+    const item = this.last?.rows.strip.find((i) => i.key === key);
+    const position = item?.position ?? Number.NaN;
     const label = this.options.source.rows.label?.(rowId, position);
-    return label ?? (Number.isNaN(position) ? String(rowId) : String(position + 1));
+    if (label !== undefined) return label;
+    // A Summary Item by its group, without its count: "Grand total" (a pivot's columns filter by one).
+    if (item?.outline && item.outline.kind !== "leaf") return summaryLabel(item.outline);
+    return Number.isNaN(position) ? String(rowId) : String(position + 1);
   }
 
   /** A column's header text: the source's `cols.label` (given the column's Position if in view, else NaN), else its ID. */

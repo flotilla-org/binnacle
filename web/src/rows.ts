@@ -1123,15 +1123,6 @@ export function fromRows<R extends object>(
       move: (ids, to) => move(ROWS, ids, to),
       movable: () =>
         !pivot && (levels.length === 0 ? memory().movable(ROWS) : options.sortedMoves !== "refuse" || leafSort().length === 0),
-      // A Summary Item is named by its group (a pivot's columns filter by one), a row by its Position.
-      label: (id, position) =>
-        id === -1
-          ? "Grand total"
-          : id < 0
-            ? (summaryOf(id)?.value ?? "(blank)")
-            : Number.isNaN(position)
-              ? String(id)
-              : String(position + 1),
       spanLabel: (id) => {
         const group = summaryOf(id);
         if (!group) return "";
@@ -1156,7 +1147,9 @@ export function fromRows<R extends object>(
       hide: true,
       ...(options.hideCap?.cols === undefined ? {} : { hideCap: options.hideCap.cols }),
       support: (by) =>
-        by < 0 ? { sort: pivot, text: false, oneOf: false, compare: comparedAcross(by) } : { sort: true, text: { regex: true }, oneOf: true, compare: comparedAcross(by) },
+        pivot && by < 0
+          ? { sort: true, text: false, oneOf: false, compare: comparedAcross(by) }
+          : { sort: true, text: { regex: true }, oneOf: true, compare: comparedAcross(by) },
       distinct: (by, { search, limit, narrow }) => distinctAcross(by, search, limit, narrow),
       locate: (id) =>
         located(
