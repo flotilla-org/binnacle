@@ -4,6 +4,7 @@
 
 ### Breaking
 
+- **group:** `Body::Total` gains `cells`: on a pivot, the group's figures under each column group (at the empty path, each column group's own), as `GroupRow::cells` holds them; empty otherwise. A backend answers them so an edit refigures a pivot's cells.
 - **ratatui:** `Content::renderer` now chooses the Cell Renderer per cell, from the row Key and the column Key, as the web's `RendererChoice` does, so a column-major table can draw each row its own way. A host that chose by column renames its `renderer(&self, col)` to `column_renderer(&self, col)`, which the default `renderer` calls. `fit_width` asks each cell's own renderer.
 - **core:** a Sort header click on a row header now sorts the columns by that row, as a column header click sorts the rows (it did nothing before). Row headers keep `HeaderClick::Select` by default.
 - **memory:** `InMemoryTableSource::apply_sort` and `sort_spec` take the axis, so either axis sorts. `MemorySource::view`, `changed`, `edited` and `replaced` return each axis's Change Notices as `Vec<(Axis, ChangeNotice)>`, since sorting the columns by a row makes a row's change move the columns. The testkit's `RecordTable` and `ColumnMajorTable` `edit` and `replace` follow. A sort now starts from the order column moves left, so ties keep it, and a move on sorted columns makes that order the columns' own and clears their sort.
@@ -99,6 +100,7 @@
 
 ### Fixed
 
+- **group, web:** an edit under a pivot refigures its cells and its columns' totals at once with the row Subtotals and the Grand Total, in the In-Memory Table Source (`GroupedMemory`, `fromRows`) and over a backend; they were stale until the next View Spec. Rows under the values pseudo-level are refigured and redrawn too ([#239](https://github.com/flotilla-org/binnacle/issues/239)).
 - **group, web:** an edit under rows grouped over an async backend refigures every figure at once, each drawn pending until the backend answers and every item staying where it is: `GroupingLayer::refigure` makes the figures pending (a `Summary` with no aggregates, no `cell`), says where with `ContentChanged`, and drops answers to figures asked before the edit; `groupedSource` refigures on its base's `ContentChanged` while grouped (`WebGroupingLayer.refigure`, `poll_changes`). It waited for the next View Spec ([#236](https://github.com/flotilla-org/binnacle/issues/236)).
 - **core:** a selection range that a filter or a hide partly removes shrinks to the items still shown between its corners, on either axis, and clears only when none is left; it was cleared ([#164](https://github.com/flotilla-org/binnacle/issues/164)).
 - **ratatui:** with `Grid`, the rule above the first visible row is drawn when the row before it ends exactly at the column header band's end, and likewise the line before the first visible column with `Columns` ([#41](https://github.com/flotilla-org/binnacle/issues/41)).

@@ -1348,8 +1348,8 @@ impl<A: Clone> GroupingLayer<A> {
                     .insert(key, found.then_some((answer.path.clone(), answer.start)));
                 None
             }
-            Body::Total { aggregates } => {
-                self.figured(&answer.path, aggregates);
+            Body::Total { aggregates, cells } => {
+                self.figured(&answer.path, aggregates, cells);
                 None
             }
             Body::Columns { total, groups } => {
@@ -1395,30 +1395,39 @@ impl<A: Clone> GroupingLayer<A> {
         self.trim();
     }
 
-    /// The Positions where the figures of the group at `path` (the whole
-    /// axis at the empty path, once answered) are drawn.
+    /// The Positions where the figures of the group at the data path
+    /// `path` (the whole axis at the empty path) are drawn: its Group Item
+    /// and Subtotals, and those of the values pseudo-level's groups under
+    /// it, which show its figures one value each.
     fn drawn(&self, path: &Path) -> Vec<Position> {
         let rows = &self.axes[Axis::Rows.index()];
         let (root, shape) = (&rows.root, &rows.shape);
         let top = shape.top();
-        match path.is_empty() {
-            true if self.total.is_some() => match shape.grand_total {
-                Placement::Before => (0..shape.totals()).collect(),
-                Placement::After => (rows.count())
-                    .map_or(0..0, |n| n - shape.totals()..n)
-                    .collect(),
-                Placement::Off => Vec::new(),
-            },
-            true => Vec::new(),
-            false => [group_position(root, shape, path).filter(|_| {
-                !shape.header || node_at(root, path).is_some_and(|n| n.children() == 0)
-            })]
-            .into_iter()
-            .chain((0..shape.per(path.len() - 1)).map(|i| subtotal_position(root, shape, path, i)))
-            .flatten()
-            .map(|p| p + top)
-            .collect(),
-        }
+        let totals: Vec<Position> = match (path.is_empty(), shape.grand_total) {
+            (true, Placement::Before) => (0..shape.totals()).collect(),
+            (true, Placement::After) => (rows.count())
+                .map_or(0..0, |n| n - shape.totals()..n)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let mut nodes = Vec::new();
+        showing(root, path, &mut nodes);
+        let groups = (nodes.into_iter())
+            .filter(|n| !n.path.is_empty())
+            .flat_map(|n| {
+                let path = &n.path;
+                let item = group_position(root, shape, path)
+                    .filter(|_| !shape.header || n.children() == 0);
+                let level = path.len() - 1;
+                let subtotals =
+                    (0..shape.per(level)).map(|i| subtotal_position(root, shape, path, i));
+                [item]
+                    .into_iter()
+                    .chain(subtotals)
+                    .flatten()
+                    .map(|p| p + top)
+            });
+        totals.into_iter().chain(groups).collect()
     }
 
     /// Says where each of `paths`' figures is drawn with `ContentChanged`.
@@ -1431,21 +1440,38 @@ impl<A: Clone> GroupingLayer<A> {
     }
 
     /// Takes the figures answered for the group at `path` (the whole axis
-    /// at the empty path). Figures answered anew after
+    /// at the empty path) and on a pivot its cells: at the empty path, the
+    /// column groups' own figures. Figures answered anew after
     /// [`GroupingLayer::refigure`] say where they are drawn with
     /// `ContentChanged`.
-    fn figured(&mut self, path: &Path, aggregates: Vec<A>) {
-        self.due.remove(path);
+    fn figured(&mut self, path: &Path, aggregates: Vec<A>, cells: Vec<(Path, Vec<A>)>) {
+        // The Grand Total's first answer is no change.
+        let anew = self.due.remove(path) || !path.is_empty() || self.total.is_some();
         match path.is_empty() {
-            true => self.total = Some(aggregates),
+            true => {
+                self.total = Some(aggregates);
+                let cols = &mut self.axes[Axis::Cols.index()].root;
+                for (col, figures) in cells {
+                    let mut nodes = Vec::new();
+                    figured_at(cols, &col, &mut nodes);
+                    for row in nodes.into_iter().filter_map(|n| n.row.as_mut()) {
+                        row.aggregates = figures.clone();
+                    }
+                }
+            }
             false => {
+                let pivot = self.pivot();
                 let mut nodes = Vec::new();
-                let rows = &mut self.axes[Axis::Rows.index()].root;
-                at_data_path(rows, path, &|_| true, &mut nodes);
-                let rows = nodes.into_iter().filter_map(|n| n.row.as_mut());
+                figured_at(&mut self.axes[Axis::Rows.index()].root, path, &mut nodes);
                 let mut any = false;
-                for row in rows {
+                for node in nodes {
+                    let Some(row) = node.row.as_mut() else {
+                        continue;
+                    };
                     row.aggregates = aggregates.clone();
+                    if pivot {
+                        node.cells = cells.iter().cloned().collect();
+                    }
                     any = true;
                 }
                 if !any {
@@ -1453,7 +1479,9 @@ impl<A: Clone> GroupingLayer<A> {
                 }
             }
         }
-        self.redraw(std::slice::from_ref(path));
+        if anew {
+            self.redraw(std::slice::from_ref(path));
+        }
     }
 
     /// The data under the groups changed, by the user's edit: asks the
@@ -1965,9 +1993,14 @@ impl<A: Clone> GroupingLayer<A> {
             .iter()
             .find(|t| node_at(&t.root, group).is_some())?;
         let node = node_at(&tree.root, group)?;
+        // A column's figures come with the Grand Total's.
+        let due = |path: &Path| match tree.shape.columns {
+            true => self.due.contains(&Vec::new()),
+            false => self.due.contains(&data(path)),
+        };
         // A group of the values pseudo-level at the top holds every row.
         let aggregates = match figures(&tree.root, group) {
-            Some(node) if self.due.contains(&data(&node.path)) => &[],
+            Some(node) if due(&node.path) => &[],
             Some(node) => &node.row.as_ref()?.aggregates[..],
             None if self.due.contains(&Vec::new()) => &[],
             None => self.total.as_deref().unwrap_or_default(),
@@ -2167,6 +2200,47 @@ fn at_data<'n, A>(node: &'n Node<A>, rest: &[(Key, Value)], out: &mut Vec<&'n No
                 }
             }
         }
+    }
+}
+
+/// The nodes whose data path is `rest` past `node`'s, shown or not, that
+/// hold its figures: every copy under the values pseudo-level's groups
+/// above it, none of those below it.
+fn figured_at<'n, A>(node: &'n mut Node<A>, rest: &[(Key, Value)], out: &mut Vec<&'n mut Node<A>>) {
+    let Some(((_, value), next)) = rest.split_first() else {
+        return out.push(node);
+    };
+    let Kids::Groups(g) = &mut node.kids else {
+        return;
+    };
+    if g.values {
+        for kid in g.nodes.values_mut() {
+            figured_at(kid, rest, out);
+        }
+    } else if let Some(kid) = g.by_value.get(value).and_then(|i| g.nodes.get_mut(i)) {
+        figured_at(kid, next, out);
+    }
+}
+
+/// The nodes whose data path is `rest` past `node`'s, shown or not, and
+/// the groups of the values pseudo-level under each, which show its
+/// figures.
+fn showing<'n, A>(node: &'n Node<A>, rest: &[(Key, Value)], out: &mut Vec<&'n Node<A>>) {
+    if rest.is_empty() {
+        out.push(node);
+    }
+    match (&node.kids, rest.split_first()) {
+        (Kids::Groups(g), _) if g.values => {
+            for kid in g.nodes.values() {
+                showing(kid, rest, out);
+            }
+        }
+        (_, Some(((_, value), rest))) => {
+            if let Some(kid) = node.child(value) {
+                showing(kid, rest, out);
+            }
+        }
+        _ => {}
     }
 }
 

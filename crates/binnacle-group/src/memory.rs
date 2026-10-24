@@ -217,13 +217,17 @@ impl MemoryAggregates {
         // Every group shown keeps its place, so no figure leaves one out now.
         let scope = Scope {
             filter: FilterSpec::default(),
+            col_filter: FilterSpec::default(),
             ..self.scope.clone()
         };
-        let (mut fresh, _) = bucket(&keys, &scope, &value);
+        let (mut fresh, mut cols) = bucket(&keys, &scope, &value);
         finish(&mut fresh, 0, &scope, &value, &number);
+        finish_columns(&mut cols, &mut Vec::new(), &fresh, &scope, &value, &number);
         let empty = self.empty();
+        // A group's figures and its cells, of no rows where none are left.
         fn copy(old: &mut Bucket, new: Option<&Bucket>, empty: &[Figure]) {
             old.figures = new.map_or_else(|| empty.to_vec(), |b| b.figures.clone());
+            old.cells = new.map_or_else(Vec::new, |b| b.cells.clone());
             for kid in &mut old.kids {
                 let value = kid.value.clone().unwrap_or(Value::Blank);
                 let new = new.and_then(|b| b.index.get(&value).map(|&i| &b.kids[i]));
@@ -231,6 +235,31 @@ impl MemoryAggregates {
             }
         }
         copy(&mut self.root, Some(&fresh), &empty);
+        copy(&mut self.cols, Some(&cols), &empty);
+    }
+
+    /// Each column group's figures over all the rows, by its path, at
+    /// every column level: the Grand Total's cells.
+    fn column_cells(&self) -> Vec<(Path, Vec<Figure>)> {
+        fn walk(
+            bucket: &Bucket,
+            path: &mut Path,
+            fields: &[Key],
+            out: &mut Vec<(Path, Vec<Figure>)>,
+        ) {
+            let Some((&field, rest)) = fields.split_first() else {
+                return;
+            };
+            for kid in &bucket.kids {
+                path.push((field, kid.value.clone().unwrap_or(Value::Blank)));
+                out.push((path.clone(), kid.figures.clone()));
+                walk(kid, path, rest, out);
+                path.pop();
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.cols, &mut Vec::new(), &self.scope.columns, &mut out);
+        out
     }
 
     /// The Leaf Keys of the group at `path`, in order.
@@ -770,6 +799,7 @@ impl AggregateBackend<Figure> for MemoryAggregates {
                 Want::Total if self.bucket(&request.path).is_none() => {
                     let body = Body::Total {
                         aggregates: self.empty(),
+                        cells: Vec::new(),
                     };
                     answers.push(answer(request.path.clone(), 0, body));
                 }
@@ -806,6 +836,10 @@ impl AggregateBackend<Figure> for MemoryAggregates {
                         },
                         Want::Total => Body::Total {
                             aggregates: bucket.figures.clone(),
+                            cells: match request.path.is_empty() {
+                                true => self.column_cells(),
+                                false => bucket.cells.clone(),
+                            },
                         },
                         _ => Body::Leaves {
                             keys: slice(&bucket.leaves, &request.range).to_vec(),

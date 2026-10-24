@@ -436,7 +436,10 @@ impl Fake {
                         id: Some(request.id),
                         path: request.path.clone(),
                         start: 0,
-                        body: Body::Total { aggregates },
+                        body: Body::Total {
+                            aggregates,
+                            cells: Vec::new(),
+                        },
                     });
                     continue;
                 }
@@ -1284,6 +1287,7 @@ fn closed_groups_lay_out_before_they_are_fetched(tc: TestCase) {
         let body = match request.want {
             Want::Total => Body::Total {
                 aggregates: aggregates(&fake.under(&request.path)),
+                cells: Vec::new(),
             },
             _ => {
                 let all = fake.groups(&request.path, levels);

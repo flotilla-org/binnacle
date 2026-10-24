@@ -181,6 +181,31 @@ describe("fromRows's pivot", () => {
       }
     }));
 
+  test("an edit refigures every cell at once, nothing moving while the rows group", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(ships.filter((r) => r.length > 0));
+      const source = pivotSource(rows);
+      try {
+        const values = tc.draw(gs.sampledFrom([[SUM], [SUM, COUNT]]));
+        const placement = gs.sampledFrom<Placement>(["before", "after", "off"]);
+        const byRegion = tc.draw(gs.booleans());
+        const g = pivot(byRegion, values, tc.draw(placement), tc.draw(placement));
+        source.view!(viewOf(g), signal);
+        const before = shown(source, g);
+        const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+        // Without row levels a pivot regroups at once, so only a value's field keeps its columns.
+        const field = byRegion ? tc.draw(gs.sampledFrom<keyof Ship>(["weight", "region", "quarter"])) : "weight";
+        rows[id] = { ...rows[id]!, [field]: tc.draw(ships.filter((r) => r.length > 0))[0]![field] };
+        source.edited(id);
+        const after = shown(source, g);
+        expect(after.ids).toEqual(before.ids);
+        expect(after.rows).toEqual(before.rows);
+        expect(after.cells).toEqual(after.rows.map((r) => after.cols.map((c) => figure(rows, g, r, c))));
+      } finally {
+        source.destroy();
+      }
+    }));
+
   test("the columns hear every change as a Refiltered, keep their IDs as rows come and go, and never move", () => {
     const rows: Ship[] = [
       { region: "North", quarter: "Q1", weight: 1 },

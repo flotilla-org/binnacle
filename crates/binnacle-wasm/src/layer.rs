@@ -199,7 +199,10 @@ impl From<WireAnswer> for Answer<Figure> {
                 key: Key(key),
                 found,
             },
-            WireBody::Total { aggregates } => Body::Total { aggregates },
+            WireBody::Total { aggregates } => Body::Total {
+                aggregates,
+                cells: Vec::new(),
+            },
         };
         Answer {
             stamp: Stamp(position(w.stamp)),

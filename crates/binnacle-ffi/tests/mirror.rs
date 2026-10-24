@@ -4080,7 +4080,7 @@ fn with_c_answer<T>(
             c.key = key.0;
             c.found = u32::from(*found);
         }
-        Body::Total { aggregates } => {
+        Body::Total { aggregates, .. } => {
             total = figures(aggregates);
             c.body = BINNACLE_BODY_TOTAL;
             c.figures = total.as_ptr();
@@ -4190,6 +4190,7 @@ impl LayerFake {
             },
             Want::Total => Body::Total {
                 aggregates: Self::figures(scope, &rows),
+                cells: Vec::new(),
             },
             Want::Locate(key) => {
                 let row = key.0.wrapping_sub(1000);

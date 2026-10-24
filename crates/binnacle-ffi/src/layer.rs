@@ -448,6 +448,7 @@ impl BinnacleGroupAnswer {
             BINNACLE_BODY_TOTAL => Body::Total {
                 // SAFETY: the caller's contract.
                 aggregates: unsafe { figures_in(self.figures, self.figures_len) }?,
+                cells: Vec::new(),
             },
             _ => return None,
         };

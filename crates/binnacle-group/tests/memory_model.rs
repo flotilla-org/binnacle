@@ -1039,6 +1039,130 @@ fn ascending(a: &Option<i64>, b: &Option<i64>) -> Ordering {
     order(*a, *b, SortDirection::Ascending)
 }
 
+/// The figure of `id` ("count()" or a sum of column `summed`) over the
+/// rows whose value in column `r` shows as `rv` and in `c` as `cv` (either
+/// `None` for a Grand Total): none where row and column groups share no
+/// rows, a Grand Total's always.
+fn cross_figure(
+    rows: &[Record],
+    (r, c, summed): (usize, usize, usize),
+    rv: Option<&Value>,
+    cv: Option<&Value>,
+    id: &str,
+) -> Option<Figure> {
+    let under: Vec<&Record> = (rows.iter())
+        .filter(|x| rv.is_none_or(|v| text(x[r]) == *v) && cv.is_none_or(|v| text(x[c]) == *v))
+        .collect();
+    let figure = match id {
+        "count()" => Figure::Count(under.len() as u64),
+        _ => {
+            let sums: Vec<i64> = under.iter().filter_map(|x| x[summed]).collect();
+            match sums.is_empty() {
+                true => Figure::Blank,
+                false => Figure::Number(sums.iter().sum::<i64>() as f64),
+            }
+        }
+    };
+    (!under.is_empty() || rv.is_none() || cv.is_none()).then_some(figure)
+}
+
+/// An edit under a pivot moves no row and no column, and every cell
+/// follows it at once: the figure over the rows in the row and column
+/// groups as they were, by the values those rows hold now, each row whose
+/// cells changed said to with `ContentChanged`.
+#[hegel::test(test_cases = 200)]
+fn an_edit_under_a_pivot_refigures_every_cell_at_once(tc: TestCase) {
+    let mut rows = tc.draw(gs::vecs(record()).min_size(1).max_size(40));
+    let cols = tc.draw(gs::permutations(vec![0usize, 1, 2]));
+    let (r, c, summed) = (cols[0], cols[1], cols[2]);
+    let placement = || gs::sampled_from(vec![Placement::Before, Placement::After, Placement::Off]);
+    let mut source = source(rows.len());
+    let mut grouping = crossed(r, c, summed);
+    grouping.rows.grand_total = tc.draw(placement());
+    grouping.cols.grand_total = tc.draw(placement());
+    source.view(&rows, &ViewSpec::default().with_grouping(Some(grouping)));
+
+    let window = |source: &mut GroupedMemory<Record>, rows: &[Record], axis| {
+        let n = source.count(axis);
+        source.window(rows, axis, 0..n)
+    };
+    let (row_items, col_items) = (
+        window(&mut source, &rows, Axis::Rows),
+        window(&mut source, &rows, Axis::Cols),
+    );
+    // Each row by its group's value (`None` for the Grand Total), each
+    // column by its column group's and its value's identity.
+    let row_values: Vec<Option<Value>> = (row_items.keys.iter())
+        .map(|&k| {
+            source
+                .summary(k)
+                .unwrap()
+                .path
+                .first()
+                .map(|(_, v)| v.clone())
+        })
+        .collect();
+    let col_values: Vec<(Option<Value>, String)> = (col_items.outlines.as_ref().unwrap().iter())
+        .map(|o| {
+            let Value::Text(id) = &o.group.as_ref().unwrap().value else {
+                panic!("a pivot column names its value")
+            };
+            let up = (o.ancestors.first()).map(|&a| source.summary(a).unwrap().path[0].1.clone());
+            (up, id.clone())
+        })
+        .collect();
+    let cells = |source: &GroupedMemory<Record>| -> Vec<Vec<Option<Figure>>> {
+        (row_items.keys.iter())
+            .map(|&rk| {
+                col_items
+                    .keys
+                    .iter()
+                    .map(|&ck| source.cell(rk, ck))
+                    .collect()
+            })
+            .collect()
+    };
+    let was = cells(&source);
+
+    let row = tc.draw(gs::integers::<usize>().max_value(rows.len() - 1));
+    let column = tc.draw(column());
+    rows[row][column] = tc.draw(record())[column];
+    let notices = source.edited(&rows, row, Key(column as u64));
+    let mut redrawn = Vec::new();
+    for (axis, notice) in notices {
+        assert_eq!(axis, Axis::Rows, "the columns stay as they are");
+        let ChangeNotice::ContentChanged(range) = notice else {
+            panic!("only figures change: {notice:?}");
+        };
+        redrawn.push(range);
+    }
+
+    assert_eq!(
+        window(&mut source, &rows, Axis::Rows).keys,
+        row_items.keys,
+        "no row moves"
+    );
+    assert_eq!(
+        window(&mut source, &rows, Axis::Cols).keys,
+        col_items.keys,
+        "no column moves"
+    );
+    let now = cells(&source);
+    for (at, rv) in row_values.iter().enumerate() {
+        for (j, (cv, id)) in col_values.iter().enumerate() {
+            let want = cross_figure(&rows, (r, c, summed), rv.as_ref(), cv.as_ref(), id);
+            assert_eq!(now[at][j], want, "row {rv:?}, column {cv:?} {id}");
+        }
+        if now[at] != was[at] {
+            let at = at as u64;
+            assert!(
+                redrawn.iter().any(|r| r.contains(&at)),
+                "row {rv:?} is drawn anew"
+            );
+        }
+    }
+}
+
 #[hegel::test(test_cases = 200)]
 fn a_pivot_matches_a_whole_table_cross_tabulation(tc: TestCase) {
     let rows = tc.draw(gs::vecs(record()).max_size(60));
