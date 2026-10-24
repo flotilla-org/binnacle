@@ -35,7 +35,7 @@ The Grid's per-frame, read-only description of what to draw (cell and header pla
 _Avoid_: Frame, render list, view model
 
 **Change Notice**:
-A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed, and on a grouped axis collapsed and expanded). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys. A group toggle answered with Refiltered keeps the group in view: if the Scroll Anchor's item was in the group, the anchor goes to where the group now starts (its Group Item, or in header form the first item it spans).
+A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed, and on a grouped axis collapsed and expanded). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys. A group toggle answered with Refiltered keeps the group in view: if the Scroll Anchor's item was in the group, the anchor goes to where the group now starts (its Group Item, or in header form the first item it spans), and focus that was in the group and left goes there too, as with Collapsed.
 _Avoid_: Invalidation, update event, data changed
 
 ### Axes and identity

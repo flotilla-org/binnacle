@@ -350,8 +350,9 @@ fn closing_a_span_scrolled_into_with_no_subtotals_keeps_it_and_focus_in_view() {
     insta::assert_snapshot!(out);
     let first = closed.lines().nth(1).unwrap();
     assert!(first.contains("▸ Aberdeen"), "{closed}");
-    let snap = s.frame(short);
-    let focused = snap.focus(Axis::Rows).and_then(|f| f.key);
-    let shown: Vec<Option<Key>> = snap.rows().iter().map(|i| i.key).collect();
-    assert!(shown.contains(&focused), "focus stays in view");
+    assert_eq!(
+        s.frame(short).focus(Axis::Rows).and_then(|f| f.key),
+        Some(TreeTable::subtotal(ABERDEEN)),
+        "focus on what stands for Aberdeen, in view"
+    );
 }

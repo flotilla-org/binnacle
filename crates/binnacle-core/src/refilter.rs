@@ -29,8 +29,20 @@ struct Shown {
     /// that item stays on top.
     anchor: Option<(Key, f32)>,
     /// The group a toggle opened or closed, asked about when the anchor's
-    /// item was in it: the view goes to where it is, or would sit.
-    group: Option<Asked>,
+    /// item or focus was in it.
+    group: Option<Toggled>,
+}
+
+/// The group whose toggle a `Refiltered` answers, located so that what was
+/// in it goes to where it is now, or would sit.
+#[derive(Clone, Copy, Debug)]
+struct Toggled {
+    asked: Asked,
+    /// The anchor's item was in it: the view goes there.
+    scroll: bool,
+    /// The focused Key on the axis, if in it: should it leave, focus goes
+    /// there, as a `Collapsed` pulls it to what stands for the group.
+    focus: Option<Key>,
 }
 
 /// A range's corner on one axis, asked about with `Locate` after a
@@ -92,17 +104,21 @@ impl Grid {
                 .map(|key| (key, st.anchor.offset)),
             group: None,
         });
-        if let (Some(group), Some((key, _)), None) = (toggled, shown.anchor, shown.group) {
-            let under = |k: Key| {
-                st.outlines
-                    .get(&k)
-                    .is_some_and(|o| o.ancestors.contains(&group))
+        if let (Some(group), None) = (toggled, shown.group) {
+            let within = |k: Key| {
+                k == group || (st.outlines.get(&k)).is_some_and(|o| o.ancestors.contains(&group))
             };
-            if key == group || under(key) {
-                shown.group = Some(Asked {
-                    key: group,
-                    due: 0,
-                    at: None,
+            let scroll = shown.anchor.is_some_and(|(k, _)| within(k));
+            let focus = self.focus.and_then(|f| f[i].key).filter(|&k| within(k));
+            if scroll || focus.is_some() {
+                shown.group = Some(Toggled {
+                    asked: Asked {
+                        key: group,
+                        due: 0,
+                        at: None,
+                    },
+                    scroll,
+                    focus,
                 });
             }
         }
@@ -140,7 +156,11 @@ impl Grid {
         let i = axis.index();
         let mut shown = self.refiltering.shown[i].take();
         let mut picks = std::mem::take(&mut self.refiltering.picks[i]);
-        let asked = (shown.iter_mut()).flat_map(|s| s.asked.iter_mut().chain(s.group.as_mut()));
+        let asked = (shown.iter_mut()).flat_map(|s| {
+            s.asked
+                .iter_mut()
+                .chain(s.group.as_mut().map(|g| &mut g.asked))
+        });
         for a in asked.chain(picks.iter_mut()) {
             a.at = None;
             a.due = self.request_locate(axis, a.key, a.due);
@@ -194,7 +214,7 @@ impl Grid {
             });
             // A group gone as an item (a span in header form) goes where
             // it would sit.
-            if let Some(g) = &mut shown.group
+            if let Some(Toggled { asked: g, .. }) = &mut shown.group
                 && g.key == key
                 && g.due > 0
             {
@@ -225,7 +245,10 @@ impl Grid {
         let Some(shown) = &self.refiltering.shown[i] else {
             return;
         };
-        let asked = shown.asked.iter().chain(&shown.group);
+        let asked = shown
+            .asked
+            .iter()
+            .chain(shown.group.as_ref().map(|g| &g.asked));
         if self.locating.waiting[i] || asked.into_iter().any(|a| a.at.is_none()) {
             return;
         }
@@ -235,7 +258,19 @@ impl Grid {
             .iter()
             .find_map(|a| a.at.flatten().map(|p| (a.key, p)));
         let focused = self.focus.map(|f| f[i]);
-        let group = (shown.group).and_then(|g| Some((g.key, g.at.flatten()?)));
+        let landing = (shown.group).and_then(|g| Some((g, g.asked.at.flatten()?)));
+        // Focus that left the group goes to where it starts.
+        if let Some((g, position)) = landing
+            && let Some(key) = g.focus
+            && let Some(mut f) = self.focus
+            && f[i].key != Some(key)
+        {
+            f[i] = FocusEnd::at(self.axis(axis), position);
+            self.focus = Some(f);
+            self.pending_damage.selection = true;
+            self.announce_focus();
+        }
+        let group = (landing.filter(|(g, _)| g.scroll)).map(|(g, p)| (g.asked.key, p));
         let st = self.axis_mut(axis);
         match (group.or(top), focused) {
             (Some((key, position)), _) => {

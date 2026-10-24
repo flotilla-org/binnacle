@@ -366,3 +366,39 @@ fn closing_a_group_that_leads_the_view_keeps_what_stands_for_it_in_view() {
         "the Subtotal standing for Aberdeen leads the view, not Bergen"
     );
 }
+
+#[test]
+fn closing_a_group_with_focus_inside_and_no_subtotals_moves_focus_to_what_stands_for_it() {
+    let short = Viewport {
+        width: 30.0,
+        height: 4.0,
+    };
+    // Bergen below the view's top, and Aberdeen scrolled into.
+    for (viewport, group, row) in [(V, BERGEN, Key(4)), (short, ABERDEEN, Key(3))] {
+        let grid = Grid::new(
+            AxisConfig::new(6, 1.0).header(1.0),
+            AxisConfig::new(3, 5.0).header(12.0),
+        );
+        let mut s = Scenario::new(grid, TreeTable::new(vec![REGION, PORT], 3, tree()));
+        s.frame(viewport);
+        s.input(|g| g.request_view(spec(Expand::default(), Form::Header)));
+        s.frame(viewport);
+        s.input(|g| {
+            g.scroll_to_item(Axis::Rows, 1);
+            g.set_focus(row, Key(1));
+        });
+        s.frame(viewport);
+        s.input(|g| g.collapse(Axis::Rows, group).unwrap());
+        let out = s.step("close the group focus is in: Refiltered", viewport);
+        assert!(
+            out.contains("Refiltered(5)") || out.contains("Refiltered(6)"),
+            "{out}"
+        );
+        let snap = s.frame(viewport);
+        assert_eq!(
+            snap.focus(Axis::Rows).and_then(|f| f.key),
+            Some(subtotal(group)),
+            "as Collapsed would leave it, not on the next row"
+        );
+    }
+}
