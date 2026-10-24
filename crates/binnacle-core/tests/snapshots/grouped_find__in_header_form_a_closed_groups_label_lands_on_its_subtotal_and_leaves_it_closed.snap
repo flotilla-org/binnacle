@@ -1,6 +1,5 @@
 ---
 source: crates/binnacle-core/tests/grouped_find.rs
-assertion_line: 247
 expression: out
 ---
 --- 1. everything closed in header form; find "bergen"
@@ -50,6 +49,8 @@ effect (gen 4): Locate { axis: Rows, key: Key(1000100) }
   locate Rows Key(1000100): Gone { suggest: None }
 effect (gen 4): Locate { axis: Rows, key: Key(1000101) }
   locate Rows Key(1000101): Found(2)
+effect (gen 4): Locate { axis: Rows, key: Key(100) }
+  locate Rows Key(100): Gone { suggest: Some(0) }
 effect (gen 4): FocusChanged { row: Key(1000111), col: Key(0) }
 window Rows 0..3
 gen 5 | damage layout selection positions | focus 1#1000111,0#0 at 1.5,2 1.5x1 in outline tier 1 | find "bergen" | match 1000111,11
