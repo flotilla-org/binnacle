@@ -2,7 +2,7 @@
 // column left or right and its row top or bottom, where they stay while the
 // body scrolls under them, on the records and on their column-major twin;
 // arrow keys follow drawn order; Freeze up to here pins from the start. ARIA
-// reads the cells in Position order whatever is pinned. Screenshots show the
+// reads and numbers the cells in drawn order, pins included. Screenshots show the
 // edge in each Border Style and Theme, with its shadow once the body has
 // scrolled, and all four edges at once.
 
@@ -30,8 +30,8 @@ const headers = (page: Page) => page.getByRole("grid").getByRole("columnheader")
 const indices = (page: Page) =>
   headers(page).evaluateAll((els) => els.map((el) => Number(el.getAttribute("aria-colindex"))));
 
-/** Whether the headers are read in Position order. */
-async function inPositionOrder(page: Page) {
+/** Whether the headers are numbered in the order they are read. */
+async function inReadOrder(page: Page) {
   const read = await indices(page);
   return read.every((index, i) => i === 0 || index > read[i - 1]!);
 }
@@ -52,22 +52,24 @@ test.describe("records", () => {
     await page.mouse.click(at.x, at.y);
   });
 
-  test("Alt+Shift+ArrowLeft pins the focused column, which stays while the body scrolls, read in Position order", async ({
+  test("Alt+Shift+ArrowLeft pins the focused column, which stays while the body scrolls, read where it is drawn", async ({
     page,
   }) => {
     for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Alt+Shift+ArrowLeft");
-    // Drawn first, read where it belongs: after weight, at its own index.
-    await expect(headers(page).nth(1)).toHaveText("id");
-    await expect(headers(page).filter({ hasText: "crew" })).toHaveAttribute("aria-colindex", "5");
-    expect(await inPositionOrder(page)).toBe(true);
+    // Drawn first, read first and numbered so; id follows it.
+    await expect(headers(page).nth(1)).toHaveText("crew");
+    await expect(headers(page).nth(1)).toHaveAttribute("aria-colindex", "2");
+    await expect(headers(page).nth(2)).toHaveText("id");
+    await expect(headers(page).nth(2)).toHaveAttribute("aria-colindex", "3");
+    expect(await inReadOrder(page)).toBe(true);
     const at = await firstCell(page);
     await page.mouse.move(at.x + 150, at.y + 100);
     await page.mouse.wheel(600, 0);
     // id and name scrolled under the pinned crew column; crew stays.
     await expect(headers(page).filter({ hasText: /^id$/ })).toHaveCount(0);
     await expect(headers(page).filter({ hasText: "crew" })).toHaveCount(1);
-    expect(await inPositionOrder(page)).toBe(true);
+    expect(await inReadOrder(page)).toBe(true);
     await expect(await pinButton(page)).toHaveText("Unpin");
     await page.keyboard.press("Escape");
     await page.keyboard.press("Alt+Shift+ArrowLeft");
@@ -174,7 +176,7 @@ test.describe("records", () => {
     // The pin lands after the next frame: wait for it before stepping.
     await expect(await pinButton(page)).toHaveText("Unpin");
     await page.keyboard.press("Escape");
-    expect(await inPositionOrder(page)).toBe(true);
+    expect(await inReadOrder(page)).toBe(true);
     // Right from it stays; left is the last scrolling column; from the start, the first scrolling one.
     await page.keyboard.press("ArrowRight");
     await expect(status(page)).toContainText("column 1 ");
@@ -207,7 +209,7 @@ test.describe("records", () => {
     await expect(headers(page).filter({ hasText: /^weight$/ })).toHaveCount(0);
     await expect(headers(page).nth(1)).toHaveText("id");
     await expect(headers(page).nth(2)).toHaveText("name");
-    expect(await inPositionOrder(page)).toBe(true);
+    expect(await inReadOrder(page)).toBe(true);
   });
 });
 
@@ -224,7 +226,47 @@ test("on the column-major records, a record's column pins and stays while the ot
   await expect(headers(page).filter({ hasText: /^3$/ })).toHaveCount(0);
   await expect(headers(page).first()).toHaveText("");
   await expect(headers(page).nth(1)).toHaveText("1");
-  await expect(headers(page).nth(1)).toHaveAttribute("aria-colindex", "3");
+  await expect(headers(page).nth(1)).toHaveAttribute("aria-colindex", "2");
+});
+
+/** The ARIA row headers' text and their rows' indices, in the order they are read. */
+const rowHeaders = (page: Page) =>
+  page
+    .getByRole("grid")
+    .getByRole("rowheader")
+    .evaluateAll((els) => els.map((el) => `${el.textContent} ${el.closest("tr")!.getAttribute("aria-rowindex")}`));
+
+/** The ARIA column headers' text and indices, in the order they are read. */
+const columnHeaders = (page: Page) =>
+  headers(page).evaluateAll((els) => els.map((el) => `${el.textContent} ${el.getAttribute("aria-colindex")}`));
+
+test("on the records, a row pinned top is read first and numbered where it is drawn", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 300 });
+  await page.goto("/?source=records&theme=light");
+  await expect(headers(page).filter({ hasText: "crew" })).toHaveCount(1);
+  const at = await firstCell(page);
+  await page.mouse.click(at.x, at.y);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Alt+Shift+ArrowUp");
+  await expect.poll(async () => (await rowHeaders(page)).slice(0, 4)).toEqual(["3 2", "1 3", "2 4", "4 5"]);
+});
+
+test("on the column-major records, a record pinned left or right is read where it is drawn", async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 300 });
+  await page.goto("/?source=transposed&theme=light");
+  await expect(headers(page).filter({ hasText: /^3$/ })).toHaveCount(1);
+  const at = await firstCell(page);
+  await page.mouse.click(at.x, at.y);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Alt+Shift+ArrowLeft");
+  await expect.poll(async () => (await columnHeaders(page)).slice(0, 4)).toEqual([" 1", "2 2", "0 3", "1 4"]);
+  expect(await inReadOrder(page)).toBe(true);
+  await page.keyboard.press("Alt+Shift+ArrowRight");
+  const count = Number(await page.getByRole("grid").getAttribute("aria-colcount"));
+  await expect.poll(async () => (await columnHeaders(page)).at(-1)).toBe(`2 ${count}`);
+  expect(await inReadOrder(page)).toBe(true);
 });
 
 test("on the column-major records, a field's row pins to the bottom and a record's column to the right", async ({ page }) => {

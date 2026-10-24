@@ -27,7 +27,7 @@ The single interaction the Grid is in the middle of: idle, dragging a selection,
 _Avoid_: State, gesture, tool
 
 **Strip**:
-One axis's list of visible items in a Snapshot (Position, Key, offset, size), which the host crosses with the other axis's Strip to draw cells.
+One axis's list of visible items in a Snapshot (Position, Key, offset, size), which the host crosses with the other axis's Strip to draw cells. Its items come in drawn order: the leading pinned items, the scrolling ones in Position order, then the trailing pinned ones. The web's ARIA table reads them in that order, pins included, and numbers each (`aria-rowindex`, `aria-colindex`) by its place in it, not by its Position.
 _Avoid_: Band, row list, track
 
 **Snapshot**:

@@ -79,17 +79,25 @@ interface Row {
 }
 
 /**
- * The visible items of an axis with their places among the drawn items, in
- * Position order: pinned items read where they belong, not where they are
- * drawn. A scrolling item is hidden once it slides under a pinned Strip.
+ * The visible items of an axis in drawn order, each with its index among the
+ * drawn items and its place along the whole axis as drawn: the leading pins,
+ * then the rest in Position order, then the trailing pins. A scrolling item
+ * is hidden once it slides under a pinned Strip.
  */
-function visible(axis: AxisSnapshot): { item: StripItem; index: number }[] {
-  const out: { item: StripItem; index: number }[] = [];
-  axis.strip.forEach((item, index) => {
+function visible(axis: AxisSnapshot): { item: StripItem; index: number; place: number }[] {
+  const { strip, pinned, trailing, count } = axis;
+  const pins = [...strip.slice(0, pinned), ...strip.slice(strip.length - trailing)].map((item) => item.position);
+  const place = (item: StripItem, index: number) => {
+    if (index < pinned) return index;
+    if (index >= strip.length - trailing) return count - (strip.length - index);
+    return pinned + item.position - pins.filter((p) => p < item.position).length;
+  };
+  const out: { item: StripItem; index: number; place: number }[] = [];
+  strip.forEach((item, index) => {
     const span = itemSpan(axis, index);
-    if (item.offset + item.size > span.start && item.offset < span.end) out.push({ item, index });
+    if (item.offset + item.size > span.start && item.offset < span.end) out.push({ item, index, place: place(item, index) });
   });
-  return out.sort((a, b) => a.item.position - b.item.position);
+  return out;
 }
 
 /** What a Summary Item's row is called in place of "row"; a Leaf's is a row. */
@@ -265,13 +273,13 @@ export function createAria(options: AriaOptions): Aria {
     });
 
     const nextHeaders = new Map<string, HTMLTableCellElement>();
-    for (const { item } of cols) {
+    for (const { item, place } of cols) {
       const key = name(item);
       const th = headers.get(key) ?? document.createElement("th");
       nextHeaders.set(key, th);
       set(th, "role", "columnheader");
       set(th, "id", item.key === null ? null : `${prefix}-c${item.key}`);
-      set(th, "aria-colindex", String(item.position + 1 + band));
+      set(th, "aria-colindex", String(place + 1 + band));
       // Only the most significant sort column, as ARIA asks; the live region names the rest.
       set(th, "aria-sort", primary && primary.key === item.key ? primary.direction : null);
       text(th, content.label("cols", item));
@@ -285,11 +293,11 @@ export function createAria(options: AriaOptions): Aria {
     /** Per visible row, the spanning cell over it at each tier it is covered. */
     const over: HTMLTableCellElement[][] = shownRows.map(() => []);
     const nextRows = new Map<string, Row>();
-    for (const [r, { item: rowItem, index: i }] of shownRows.entries()) {
+    for (const [r, { item: rowItem, index: i, place: rowPlace }] of shownRows.entries()) {
       const key = name(rowItem);
       const row = rows.get(key) ?? newRow();
       nextRows.set(key, row);
-      set(row.el, "aria-rowindex", String(rowItem.position + 2));
+      set(row.el, "aria-rowindex", String(rowPlace + 2));
       set(row.el, "id", rowItem.key === null ? null : `${prefix}-row${rowItem.key}`);
       const outline = rowItem.outline;
       const opens = tree && outline?.kind === "group" && outline.open !== "cantOpen";
@@ -329,13 +337,13 @@ export function createAria(options: AriaOptions): Aria {
       text(row.header, content.label("rows", rowItem));
       const rowId = content.id("rows", rowItem);
       const cells = new Map<string, Cell>();
-      for (const { item: colItem, index: j } of cols) {
+      for (const { item: colItem, index: j, place: colPlace } of cols) {
         const colKey = name(colItem);
         const cell = row.cells.get(colKey) ?? newCell();
         cells.set(colKey, cell);
         const { el } = cell;
         set(el, "id", rowItem.key === null || colItem.key === null ? null : `${prefix}-${rowItem.key}-${colItem.key}`);
-        set(el, "aria-colindex", String(colItem.position + 1 + band));
+        set(el, "aria-colindex", String(colPlace + 1 + band));
         set(el, "aria-selected", String(cellState(s, i, j).selected));
         const value = content.value(i, j);
         const failed = content.failed(i, j);
