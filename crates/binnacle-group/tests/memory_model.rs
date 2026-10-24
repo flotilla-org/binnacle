@@ -995,7 +995,7 @@ fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
             0 => Row::Leaf(step.at.row),
             _ => {
                 let summary = source.summary(step.at.row).expect("a Summary Item shown");
-                Row::Summary(summary.kind, values(&summary.path))
+                Row::Summary(summary.kind, values(summary.path))
             }
         };
         source.view(&rows, &spec);
