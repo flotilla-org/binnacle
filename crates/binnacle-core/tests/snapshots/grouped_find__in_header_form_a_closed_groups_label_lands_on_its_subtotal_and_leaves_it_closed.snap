@@ -1,0 +1,61 @@
+---
+source: crates/binnacle-core/tests/grouped_find.rs
+assertion_line: 247
+expression: out
+---
+--- 1. everything closed in header form; find "bergen"
+window Rows 0..6
+window Cols 0..3
+effect (gen 1): ViewRequested unsorted group 10,11 values count(-) Rows Header form expand Rows 0 by Replace
+  view: applied unsorted group 10,11 values count(-) Rows Header form expand Rows 0, notices [(Rows, Refiltered(2))]
+effect (gen 1): Locate { axis: Rows, key: Key(0) }
+  locate Rows Key(0): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(3) }
+  locate Rows Key(3): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(4) }
+  locate Rows Key(4): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(1) }
+  locate Rows Key(1): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(2) }
+  locate Rows Key(2): Gone { suggest: None }
+effect (gen 1): Locate { axis: Rows, key: Key(5) }
+  locate Rows Key(5): Gone { suggest: None }
+window Rows 0..2
+effect (gen 2): FindRequested { query: Some(FindQuery { query: TextQuery { text: "bergen", case_sensitive: false, regex: false, searches: Shown }, by: Rows }) }
+gen 4 | damage none | find "bergen"
+Rows: count 2, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1000100@1+1[S1 ^100 10="North"] 1#1000101@2+1[S1 ^101 10="South"] | tiers 0..1.5 1.5..3 | spans t0#100- 0-0@1+1 t0#101- 1-1@2+1
+Cols: count 3, extent 20, header 3, anchor 0+0, thumb 0.0000/1.0000 | 0#0@3+5 1#1@8+5 2#2@13+5
+   0    1    2
+0  100011000110001
+1  100011000110001
+
+
+
+
+
+
+
+
+
+
+--- 2. next: North opens, Bergen stays closed, and focus takes its span on its Subtotal
+effect (gen 4): FindStepRequested { query: FindQuery { query: TextQuery { text: "bergen", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: None, direction: Next }
+  find: Some(FindStep { at: FindMatch { row: Key(1000111), col: Key(11) }, index: Some(0), wrapped: false })
+  ancestors Rows Key(1000111): [Key(100)]
+effect (gen 4): ViewRequested unsorted group 10,11 values count(-) Rows Header form expand Rows 0 except 100 by Expand { axis: Rows, key: Key(100) }
+  view: applied unsorted group 10,11 values count(-) Rows Header form expand Rows 0 except 100, notices [(Rows, Refiltered(3))]
+effect (gen 4): Locate { axis: Rows, key: Key(1000111) }
+  locate Rows Key(1000111): Found(1)
+effect (gen 4): Locate { axis: Rows, key: Key(1000100) }
+  locate Rows Key(1000100): Gone { suggest: None }
+effect (gen 4): Locate { axis: Rows, key: Key(1000101) }
+  locate Rows Key(1000101): Found(2)
+effect (gen 4): FocusChanged { row: Key(1000111), col: Key(0) }
+window Rows 0..3
+gen 5 | damage layout selection positions | focus 1#1000111,0#0 at 1.5,2 1.5x1 in outline tier 1 | find "bergen" | match 1000111,11
+Rows: count 3, extent 13, header 1, anchor 0+0, thumb 0.0000/1.0000 | 0#1000110@1+1[S2 ^100 ^110 11="Aberdeen"] 1#1000111@2+1[S2 ^100 ^111 11="Bergen"] 2#1000101@3+1[S1 ^101 10="South"] | tiers 0..1.5 1.5..3 | spans t0#100+ 0-1@1+2 t0#101- 2-2@3+1 t1#110- 0-0@1+1 t1#111- 1-1@2+1
+Cols: (unchanged)
+   0    1    2
+0  100011000110001
+1  100011000110001
+2  100011000110001

@@ -58,9 +58,10 @@ impl Group {
 /// the columns.
 ///
 /// Find matches, ignoring case, a Leaf's cell text `r{row}c{col}` (Keys)
-/// and a Group Item's label, its value, at the column of its level's field;
-/// it steps by rows through every item as if all were open, a label before
-/// the row's cells. Leaves move within their group while grouped; a move
+/// and a group's label, its value, at the column of its level's field, on
+/// its Group Item or, in header form, on the row carrying its label; it
+/// steps by rows through every item as if all were open, a row's labels
+/// before its cells. Leaves move within their group while grouped; a move
 /// across groups, or of a Group Item, is refused.
 pub struct TreeTable {
     plain: Vec<Key>,
@@ -76,8 +77,9 @@ pub struct TreeTable {
     shown_cols: Vec<(Key, Outline)>,
 }
 
-/// A row of [`TreeTable::every`]: its Key, its ancestors and its label.
-type Row = (Key, Vec<Key>, Option<(Key, &'static str)>);
+/// A row of [`TreeTable::every`]: its Key, the groups that must open to
+/// show it, the labels it carries and whether it is a Leaf.
+type Row = (Key, Vec<Key>, Vec<(Key, &'static str)>, bool);
 
 /// What a Group Item's Key gains to make its Subtotal's.
 const SUBTOTAL: u64 = 1_000_000;
@@ -208,22 +210,68 @@ impl TreeTable {
         out
     }
 
-    /// Every row as if every group were open, with its ancestors and, for a
-    /// Group Item, its label's column and text.
+    /// Every row as if every group were open, with the groups that must
+    /// open to show it, the labels it carries (each by its level's field,
+    /// outermost first) and whether it is a Leaf. In outline form a Group
+    /// Item carries its own label; in header form, where a group has none,
+    /// the first row of its span carries it: its first row while open, its
+    /// Subtotal standing in for it while closed, before the rows it hides.
     fn every(&self) -> Vec<Row> {
-        fn walk(levels: &[Key], groups: &[Group], up: &mut Vec<Key>, out: &mut Vec<Row>) {
-            for g in groups {
-                out.push((g.key, up.clone(), Some((levels[up.len()], g.value))));
-                up.push(g.key);
-                match &g.under {
-                    Under::Groups(kids) => walk(levels, kids, up, out),
-                    Under::Leaves(keys) => out.extend(keys.iter().map(|&k| (k, up.clone(), None))),
+        struct Walk<'a> {
+            levels: &'a [Key],
+            header: bool,
+            subtotals: bool,
+            expand: Expand,
+        }
+        impl Walk<'_> {
+            fn walk(&self, groups: &[Group], up: &mut Vec<Key>, out: &mut Vec<Row>) {
+                for g in groups {
+                    let label = (self.levels[up.len()], g.value);
+                    let empty = match &g.under {
+                        Under::Groups(kids) => kids.is_empty(),
+                        Under::Leaves(keys) => keys.is_empty(),
+                    };
+                    if !self.header || empty {
+                        out.push((g.key, up.clone(), vec![label], false));
+                        up.push(g.key);
+                        self.under(g, up, out);
+                        up.pop();
+                        continue;
+                    }
+                    let open = self.expand.opens(up.len() as u32, g.key);
+                    let first = out.len();
+                    let subtotal = (TreeTable::subtotal(g.key), up.clone(), Vec::new(), false);
+                    if !open {
+                        out.push(subtotal.clone());
+                    }
+                    up.push(g.key);
+                    self.under(g, up, out);
+                    up.pop();
+                    if open && self.subtotals {
+                        out.push(subtotal);
+                    }
+                    out[first].2.insert(0, label);
                 }
-                up.pop();
+            }
+
+            fn under(&self, g: &Group, up: &mut Vec<Key>, out: &mut Vec<Row>) {
+                match &g.under {
+                    Under::Groups(kids) => self.walk(kids, up, out),
+                    Under::Leaves(keys) => {
+                        out.extend(keys.iter().map(|&k| (k, up.clone(), Vec::new(), true)))
+                    }
+                }
             }
         }
+        let rows = self.grouping.as_ref().map(|g| &g.rows);
+        let walk = Walk {
+            levels: &self.levels,
+            header: rows.is_some_and(|r| r.form == Form::Header),
+            subtotals: self.subtotals,
+            expand: rows.map_or(Expand::default(), |r| r.expand.clone()),
+        };
         let mut out = Vec::new();
-        walk(&self.levels, &self.tree, &mut Vec::new(), &mut out);
+        walk.walk(&self.tree, &mut Vec::new(), &mut out);
         out
     }
 
@@ -231,17 +279,15 @@ impl TreeTable {
     fn find_order(&self, text: &str) -> Vec<(FindMatch, bool, Vec<Key>)> {
         let text = text.to_lowercase();
         let mut cells = Vec::new();
-        for (row, up, label) in self.every() {
-            match label {
-                Some((field, value)) => {
-                    let hit = value.to_lowercase().contains(&text);
-                    cells.push((FindMatch::new(row, field), hit, up));
-                }
-                None => {
-                    for c in 0..self.cols {
-                        let hit = format!("r{}c{c}", row.0).contains(&text);
-                        cells.push((FindMatch::new(row, Key(c)), hit, up.clone()));
-                    }
+        for (row, up, labels, leaf) in self.every() {
+            for (field, value) in labels {
+                let hit = value.to_lowercase().contains(&text);
+                cells.push((FindMatch::new(row, field), hit, up.clone()));
+            }
+            if leaf {
+                for c in 0..self.cols {
+                    let hit = format!("r{}c{c}", row.0).contains(&text);
+                    cells.push((FindMatch::new(row, Key(c)), hit, up.clone()));
                 }
             }
         }
@@ -490,7 +536,7 @@ impl PumpSource for TreeTable {
         }
         (self.every().into_iter())
             .find(|(k, ..)| *k == key)
-            .map_or(Vec::new(), |(_, up, _)| up)
+            .map_or(Vec::new(), |(_, up, ..)| up)
     }
 
     fn movable(&mut self, axis: Axis) -> Option<bool> {
