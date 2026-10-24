@@ -49,9 +49,11 @@ export function runFrame(parts: FrameParts, force: boolean): FrameResult {
   const { grid } = parts;
   let snapshot: Snapshot;
   for (let pass = 1; ; pass++) {
-    parts.scroll.take(grid);
+    // The scroll is taken against this frame's viewport, which a jump's fraction is placed in.
     const { width, height } = parts.viewport();
-    parts.feed.fill(grid, grid.begin_frame(width, height));
+    let requests = grid.begin_frame(width, height);
+    if (parts.scroll.take(grid)) requests = grid.begin_frame(width, height);
+    parts.feed.fill(grid, requests);
     drainEffects(parts);
     snapshot = decodeSnapshot(grid.snapshot(), grid.snapshot_keys());
     if (!parts.settle?.(snapshot)) break;

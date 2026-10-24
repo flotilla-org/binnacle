@@ -24,8 +24,8 @@ class FakeScroller implements ScrollPort {
   private width: number;
 
   constructor(
-    readonly clientWidth: number,
-    readonly clientHeight: number,
+    public clientWidth: number,
+    public clientHeight: number,
   ) {
     this.width = clientWidth;
     this.height = clientHeight;
@@ -35,17 +35,17 @@ class FakeScroller implements ScrollPort {
     return this.top;
   }
   set scrollTop(v: number) {
-    this.top = Math.round(Math.min(Math.max(0, v), this.height - this.clientHeight));
+    this.top = Math.round(Math.max(0, Math.min(v, this.height - this.clientHeight)));
   }
   get scrollLeft() {
     return this.left;
   }
   set scrollLeft(v: number) {
-    this.left = Math.round(Math.min(Math.max(0, v), this.width - this.clientWidth));
+    this.left = Math.round(Math.max(0, Math.min(v, this.width - this.clientWidth)));
   }
   setSize(width: number, height: number) {
-    this.width = Math.max(width, this.clientWidth);
-    this.height = Math.max(height, this.clientHeight);
+    this.width = width;
+    this.height = height;
     this.scrollTop = this.top;
     this.scrollLeft = this.left;
   }
@@ -90,7 +90,7 @@ class Harness {
       scroll: createScrollMapping(port),
       feed: createFeed(source),
       painter: null,
-      viewport: () => ({ width, height }),
+      viewport: () => ({ width: port.clientWidth, height: port.clientHeight }),
       onEffect: () => {},
     });
   }
@@ -106,6 +106,17 @@ class Harness {
   set offset(v: number) {
     if (this.axis === "rows") this.port.scrollTop = v;
     else this.port.scrollLeft = v;
+  }
+
+  /** The viewport's length along the axis. */
+  get view(): number {
+    return this.axis === "rows" ? this.port.clientHeight : this.port.clientWidth;
+  }
+
+  /** Resizes the viewport along the axis, as a layout change would before the next frame. */
+  set view(v: number) {
+    if (this.axis === "rows") this.port.clientHeight = v;
+    else this.port.clientWidth = v;
   }
 
   /** The largest offset the sizer allows. */
@@ -195,6 +206,25 @@ test("a scroll offset that changed before the frame is never overwritten unread"
     const end = h.place(h.frame());
     tc.note(`moved ${d}: ${start} -> ${end}`);
     expect(d > 0 ? before(start, end) : before(end, start)).toBe(true);
+  }));
+
+test("a jump made after the viewport resized, before the frame that sees it, lands where the sizer puts it", () =>
+  hegel.test((tc) => {
+    // Small enough that the sizer is not capped, so an offset is a distance into the content.
+    const h = Harness.draw(tc, gs.integers({ minValue: 1, maxValue: 5000 }));
+    // One that overflows, so the sizer holds the content rather than the viewport.
+    tc.assume(h.frame()[h.axis].thumb.size < 1);
+    h.view = tc.draw(gs.integers({ minValue: 120, maxValue: 2000 }));
+    const to = tc.draw(gs.integers({ minValue: 0, maxValue: h.max() }));
+    h.offset = to;
+    const s = h.frame();
+    const { strip, gap, thumb } = s[h.axis];
+    const size = strip.find((i) => i.key !== null)?.size ?? 0;
+    const [position, offset] = h.place(s);
+    tc.note(`view ${h.view}, to ${to}: anchor ${position} + ${offset}`);
+    // A table that now fits has nowhere to go; the sizer is sized in whole px, so elsewhere the content may land a px from it.
+    if (thumb.size >= 1) expect([position, offset]).toEqual([0, 0]);
+    else expect(Math.abs(position * (size + gap) + offset - to)).toBeLessThanOrEqual(1);
   }));
 
 test("between the ends, the offset is never pinned to an end", () =>

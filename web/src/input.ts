@@ -304,6 +304,9 @@ export function createInput(host: InputHost): Input {
     if (e.target === textarea || editing.owns(e.target)) return;
     // A press elsewhere commits the edit before the Grid sees it.
     editing.commit();
+    // A frame that is due runs first: a Change Notice since the last one
+    // leaves the Grid without the Keys it drew until the next fetches them.
+    host.catchUp();
     const { x, y } = at(e);
     const finger = e.pointerType === "touch" && e.target !== bands.top && e.target !== bands.left;
     if (e.button === 0 && host.menuPress(x, y)) {
@@ -361,6 +364,7 @@ export function createInput(host: InputHost): Input {
       const tap = !touch.moved;
       touch = null;
       if (!tap) return;
+      host.catchUp();
       press(e, x, y);
       send(POINTER.up, e, x, y);
       takeFocus();

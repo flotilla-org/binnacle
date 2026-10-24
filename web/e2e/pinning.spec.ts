@@ -193,6 +193,9 @@ test.describe("records", () => {
   });
 
   test("Freeze up to here pins every column from the start to the one chosen", async ({ page }) => {
+    // Wide enough that id and name fit pinned beside a scrolling column; at
+    // 360 the freeze stops short at id.
+    await page.setViewportSize({ width: 440, height: 500 });
     await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Alt+ArrowDown");
     await page.getByRole("dialog").getByRole("button", { name: "Freeze up to here" }).click();
@@ -200,6 +203,8 @@ test.describe("records", () => {
     const at = await firstCell(page);
     await page.mouse.move(at.x + 150, at.y + 100);
     await page.mouse.wheel(600, 0);
+    // The scroll lands in a later frame: wait for weight, first after the pins, to scroll away.
+    await expect(headers(page).filter({ hasText: /^weight$/ })).toHaveCount(0);
     await expect(headers(page).nth(1)).toHaveText("id");
     await expect(headers(page).nth(2)).toHaveText("name");
     expect(await inPositionOrder(page)).toBe(true);
