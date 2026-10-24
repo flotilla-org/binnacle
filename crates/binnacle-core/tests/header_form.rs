@@ -338,3 +338,31 @@ fn opening_a_span_whose_subtotal_leads_the_view_shows_what_it_opened() {
     let focus = s.frame(short).focus(Axis::Rows).and_then(|f| f.key);
     assert_eq!(focus, Some(subtotal(BERGEN)), "focus stays on the Subtotal");
 }
+
+#[test]
+fn closing_a_group_that_leads_the_view_keeps_what_stands_for_it_in_view() {
+    let short = Viewport {
+        width: 30.0,
+        height: 4.0,
+    };
+    let grid = Grid::new(
+        AxisConfig::new(6, 1.0).header(1.0),
+        AxisConfig::new(3, 5.0).header(12.0),
+    );
+    let mut s = Scenario::new(grid, TreeTable::new(vec![REGION, PORT], 3, tree()));
+    s.frame(short);
+    s.input(|g| g.request_view(spec(Expand::default(), Form::Header)));
+    s.frame(short);
+    // Aberdeen's second shipment leads the view, its first above.
+    s.input(|g| g.scroll_to_item(Axis::Rows, 1));
+    let first = |s: &mut Scenario<TreeTable>| s.frame(short).rows().first().and_then(|i| i.key);
+    assert_eq!(first(&mut s), Some(Key(3)));
+    s.input(|g| g.collapse(Axis::Rows, ABERDEEN).unwrap());
+    let out = s.step("collapse Aberdeen, scrolled into it: Refiltered", short);
+    assert!(out.contains("Refiltered(5)"), "{out}");
+    assert_eq!(
+        first(&mut s),
+        Some(subtotal(ABERDEEN)),
+        "the Subtotal standing for Aberdeen leads the view, not Bergen"
+    );
+}

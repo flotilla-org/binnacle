@@ -151,6 +151,14 @@ impl Grid {
                 | ChangeNotice::Removed { .. }
                 | ChangeNotice::Collapsed { .. }
         );
+        // The notice answering a toggle on `axis`, whichever it is.
+        let toggled = match self.toggled {
+            Some((a, key)) if a == axis && !matches!(notice, ChangeNotice::ContentChanged(_)) => {
+                self.toggled = None;
+                Some(key)
+            }
+            _ => None,
+        };
         match notice {
             ChangeNotice::Reordered => {
                 self.reordered_or_counted(axis, None, false);
@@ -160,7 +168,7 @@ impl Grid {
                 self.reordered_or_counted(axis, Some(count), false);
                 self.refilter_forget(axis);
             }
-            ChangeNotice::Refiltered(count) => self.refiltered(axis, count),
+            ChangeNotice::Refiltered(count) => self.refiltered(axis, count, toggled),
             ChangeNotice::Inserted { at, n } | ChangeNotice::Expanded { at, n } => {
                 let count = self.axis(axis).measure.count();
                 let at = at.min(count);

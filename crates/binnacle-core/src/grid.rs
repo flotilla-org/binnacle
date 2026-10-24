@@ -127,6 +127,9 @@ pub struct Grid {
     /// `*` asked to open everything under this Group Item: closed groups
     /// under it are opened as Windows bring them, until another toggle.
     pub(crate) expanding_all: Option<(Axis, Key)>,
+    /// The group the latest View Edit opened or closed, until a Change
+    /// Notice on its axis answers it: a `Refiltered` keeps it in view.
+    pub(crate) toggled: Option<(Axis, Key)>,
     /// The Keys named by the last `FocusChanged` the host drained.
     heard: Option<(Key, Key)>,
     /// A focus move asked for the focused cell to be shown and no scroll has
@@ -193,6 +196,7 @@ impl Grid {
             band_focus: None,
             band_tier: 0,
             expanding_all: None,
+            toggled: None,
             heard: None,
             reveal: false,
             locating: Locating::default(),

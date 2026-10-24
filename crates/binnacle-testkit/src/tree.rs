@@ -52,10 +52,11 @@ impl Group {
 /// closes one run of items with `Expanded` or `Collapsed`, and any other
 /// change with `Refiltered`. In header form a group has no Group Item: a
 /// closed one shows its Subtotal alone, and one with nothing under it its
-/// Group Item, which can't open. Columns are keyed by Position; the level
-/// fields stay among them. [`TreeTable::cols_by`] groups the columns too,
-/// opening and closing them the same way, and [`TreeTable::by_cols`] only
-/// the columns.
+/// Group Item, which can't open. Asked to locate a group with no item, it
+/// answers gone, suggesting the first item the group spans. Columns are
+/// keyed by Position; the level fields stay among them.
+/// [`TreeTable::cols_by`] groups the columns too, opening and closing them
+/// the same way, and [`TreeTable::by_cols`] only the columns.
 ///
 /// Find matches, ignoring case, a Leaf's cell text `r{row}c{col}` (Keys)
 /// and a group's label, its value, at the column of its level's field, on
@@ -586,9 +587,18 @@ impl PumpSource for TreeTable {
             Axis::Rows => self.rows(),
             Axis::Cols => self.columns(),
         };
+        // A group with no item of its own (in header form) would sit at the
+        // first item it spans.
+        let shown = match axis {
+            Axis::Rows => &self.shown,
+            Axis::Cols => &self.shown_cols,
+        };
         match keys.iter().position(|&k| k == key) {
             Some(p) => Located::Found(p as u64),
-            None => Located::Gone { suggest: None },
+            None => Located::Gone {
+                suggest: (shown.iter().position(|(_, o)| o.ancestors.contains(&key)))
+                    .map(|p| p as u64),
+            },
         }
     }
 }

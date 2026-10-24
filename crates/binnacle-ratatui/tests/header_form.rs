@@ -313,3 +313,45 @@ fn a_groups_label_that_is_the_current_match_draws_its_span_in_the_find_style() {
     );
     assert!(line.contains("Bergen"), "{line:?}");
 }
+
+#[test]
+fn closing_a_span_scrolled_into_with_no_subtotals_keeps_it_and_focus_in_view() {
+    let grid = Grid::new(
+        AxisConfig::new(6, 1.0).header(1.0),
+        AxisConfig::new(3, 5.0).header(24.0).gap(1.0),
+    );
+    let mut s = Scenario::new(grid, TreeTable::new(vec![REGION, PORT], 3, tree()));
+    let mut grouping = Grouping::rows_by(REGION);
+    grouping.row_levels = vec![Level::field(REGION), Level::field(PORT)];
+    grouping.rows.form = Form::Header;
+    let short = Viewport {
+        width: 40.0,
+        height: 4.0,
+    };
+    s.frame(short);
+    s.input(|g| {
+        g.set_tiers(Axis::Rows, &[8.0, 12.0]);
+        g.request_view(ViewSpec::default().with_grouping(Some(grouping)));
+    });
+    s.frame(short);
+    s.input(|g| {
+        g.scroll_to_item(Axis::Rows, 1);
+        g.set_focus(Key(3), Key(0));
+    });
+    s.frame(short);
+    // The view's four lines of the area.
+    let top = |s: &mut Scenario<TreeTable>| now(s).lines().take(4).collect::<Vec<_>>().join("\n");
+    let mut out = format!("--- Aberdeen's second shipment on top\n{}\n", top(&mut s));
+    s.input(|g| g.collapse(Axis::Rows, ABERDEEN).unwrap());
+    s.frame(short);
+    s.frame(short);
+    let closed = top(&mut s);
+    out += &format!("--- Aberdeen closed: Refiltered, as no Subtotal stands in\n{closed}");
+    insta::assert_snapshot!(out);
+    let first = closed.lines().nth(1).unwrap();
+    assert!(first.contains("▸ Aberdeen"), "{closed}");
+    let snap = s.frame(short);
+    let focused = snap.focus(Axis::Rows).and_then(|f| f.key);
+    let shown: Vec<Option<Key>> = snap.rows().iter().map(|i| i.key).collect();
+    assert!(shown.contains(&focused), "focus stays in view");
+}

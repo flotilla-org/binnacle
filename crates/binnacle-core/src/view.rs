@@ -1541,6 +1541,12 @@ impl Grid {
         self.view.requested = Some(spec.clone());
         self.view.due += 1;
         self.pending_damage.selection = true;
+        self.toggled = match edit {
+            ViewEdit::Expand { axis, key }
+            | ViewEdit::Collapse { axis, key }
+            | ViewEdit::ExpandAll { axis, key } => Some((axis, key)),
+            _ => None,
+        };
         self.push(Effect::ViewRequested { spec, edit });
     }
 

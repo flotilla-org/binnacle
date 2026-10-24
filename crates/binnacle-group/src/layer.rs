@@ -1905,7 +1905,15 @@ impl<A: Clone> GroupingLayer<A> {
                 {
                     find_group(root, shape, path).map(|f| f.map(|f| f.0))
                 }
-                Some(SummaryId::Group(_)) => Ok(None),
+                // Otherwise it is a span, gone as an item, that would sit at
+                // the first item it spans.
+                Some(SummaryId::Group(path)) => match find_group(root, shape, path) {
+                    Ok(f) => {
+                        let suggest = f.map(|f| f.0 + top);
+                        return Some(Located::Gone { suggest });
+                    }
+                    Err(asks) => Err(asks),
+                },
                 Some(SummaryId::Subtotal(path)) if !shape.splits(path.len().wrapping_sub(1)) => {
                     find_group(root, shape, path).map(|f| subtotal_at(root, shape, path, f?, 0))
                 }
