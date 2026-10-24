@@ -1681,29 +1681,50 @@ describe("fromRows's grouping", () => {
       }
     }));
 
-  test("find in grouped rows walks them as if every group were open, a label before its Leaves' cells, and counts the matches closed groups hide", () =>
+  test("find in grouped rows walks them as if every group were open, a label before its Leaves' cells, and counts the matches closed groups hide; in header form a label rides the row carrying it", () =>
     hegel.test((tc) => {
       const rows = tc.draw(plain);
       const source = fromRows(rows, COLUMNS);
       try {
         const depth = tc.draw(gs.sampledFrom<number | "all">([0, "all"]));
-        source.view!({ ...groupedBy("s"), grouping: summing(depth) }, signal);
+        const form = tc.draw(gs.sampledFrom<"outline" | "header">(["outline", "header"]));
+        const grouping = summing(depth);
+        source.view!({ ...groupedBy("s"), grouping: { ...grouping, rowAxis: { ...grouping.rowAxis, form } } }, signal);
         const text = tc.draw(gs.sampledFrom(["x", "1", "X1", "2", "y"]));
         const query = { query: { text, caseSensitive: false, regex: false, searches: "shown" as const }, by: "rows" as const };
-        const groupIds = new Map(ids(source).filter((id) => id < 0).map((id) => [source.group(id)!.value, id]));
-        // The model: every group open, its label then each Leaf's n and b.
+        // Each group's ID, and in header form its Subtotal's, by the
+        // group's value, from the rows shown.
+        const shownNow = source.rows.window(0, source.rows.count() as number, signal) as OutlinedWindow<number, keyof Rec>;
+        const groupIds = new Map<string | null, number>();
+        const subtotalIds = new Map<string | null, number>();
+        shownNow.ids.forEach((id, i) => {
+          const outline = shownNow.outlines[i]!;
+          const value = id < 0 ? (source.group(id)!.value as string | null) : rows[id]!.s;
+          if (outline.kind === "group") groupIds.set(value, id);
+          else if (outline.ancestors.length > 0) groupIds.set(value, outline.ancestors[0]!);
+          if (outline.kind === "subtotal") subtotalIds.set(value, id);
+        });
+        // The model: every group open, its label then each Leaf's n and b;
+        // in header form the label rides the group's first Leaf, or its
+        // Subtotal standing in for it while closed.
         const has = (t: string | null) => t !== null && t.toLowerCase().includes(text.toLowerCase());
         const want: { row: number; col: keyof Rec; hidden: boolean; ancestors: number[] }[] = [];
         let group = 0;
+        let pending = false;
         for (const item of model(rows, "s", [], () => true)) {
           if (typeof item === "number") {
+            if (pending) want.push({ row: item, col: "s", hidden: false, ancestors: [group] });
+            pending = false;
             for (const col of ["n", "b"] as const) {
               const v = rows[item]![col];
               if (has(v === null ? null : String(v))) want.push({ row: item, col, hidden: depth === 0, ancestors: [group] });
             }
           } else {
             group = groupIds.get(item.group)!;
-            if (has(item.group)) want.push({ row: group, col: "s", hidden: false, ancestors: [] });
+            if (!has(item.group)) continue;
+            if (form === "outline") want.push({ row: group, col: "s", hidden: false, ancestors: [] });
+            else if (depth === 0) want.push({ row: subtotalIds.get(item.group)!, col: "s", hidden: false, ancestors: [] });
+            else pending = true;
           }
         }
         const count = source.find!.count!(query, signal);
