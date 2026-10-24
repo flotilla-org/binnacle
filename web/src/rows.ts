@@ -654,7 +654,7 @@ export function fromRows<R extends object>(
     if (from) {
       const key = from.row < 0 ? summaryKey(from.row) : BigInt(from.row);
       const i = items.findIndex((item) => item.key === key);
-      const level = levels.indexOf(from.col);
+      const level = isBase(from.col) ? levels.indexOf(from.col) : -1;
       const at = colsAt.indexOf(index.get(from.col) ?? -1);
       if (i >= 0) start = place(i, level >= 0 ? level : at >= 0 ? labels + at : 0);
     }

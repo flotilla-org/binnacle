@@ -738,8 +738,9 @@ pub fn render_with(
 /// the first line it shows, its disclosure mark (`⋯` once a toggle has
 /// waited a while for its answer) and label, kept in view while it
 /// scrolls; a thin rule on the lines below; and `›` on a side that goes on
-/// past the view or a pinned edge. Then focus in the band, on a whole span
-/// or a row's own header.
+/// past the view or a pinned edge. A group's label that is the current
+/// match is styled as a cell would be. Then focus in the band, on a whole
+/// span or a row's own header.
 fn draw_spans(
     snapshot: &Snapshot,
     content: &impl Content,
@@ -752,9 +753,20 @@ fn draw_spans(
     if theme.invert_headers {
         base = base.add_modifier(Modifier::REVERSED);
     }
-    let style = base.patch(theme.group_item);
+    let group_style = base.patch(theme.group_item);
     let spans = snapshot.spans(Axis::Rows);
+    let found = snapshot.find_match().and_then(|m| {
+        let row = snapshot.drawn(Axis::Rows).find(|r| r.key == Some(m.row))?;
+        Some((m.col, row.position))
+    });
     for span in spans {
+        let found = found.is_some_and(|(col, p)| {
+            span.field == Some(col) && (span.first..=span.last).contains(&p)
+        });
+        let style = match found {
+            true => group_style.patch(theme.find_current),
+            false => group_style,
+        };
         let (x, w) = (span.rect.x, span.rect.width);
         let clip = (
             x,

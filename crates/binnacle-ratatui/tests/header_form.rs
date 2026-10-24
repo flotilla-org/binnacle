@@ -272,3 +272,44 @@ fn the_keymap_steps_between_level_columns_and_toggles_spans() {
     press(&mut s, KeyCode::Tab);
     assert!(!s.frame(V).outline_focused(), "Tab leaves for the body");
 }
+
+#[test]
+fn a_groups_label_that_is_the_current_match_draws_its_span_in_the_find_style() {
+    let theme = Theme::classic();
+    let mut s = shipments(Expand::default());
+    s.input(|g| {
+        g.set_find_support(Some(binnacle_core::TextSupport::new(false)));
+        g.set_find(Some(binnacle_core::FindQuery::new(
+            binnacle_core::TextQuery::new("bergen"),
+        )));
+        g.action(binnacle_core::Action::FindNext);
+    });
+    s.frame(V);
+    let snapshot = s.grid.snapshot();
+    assert_eq!(
+        snapshot.find_match(),
+        Some(binnacle_core::FindMatch::new(Key(4), PORT))
+    );
+    let mut buf = Buffer::empty(AREA);
+    render_with(
+        &snapshot,
+        &Shipments,
+        &RenderContext::new(&theme),
+        AREA,
+        &mut buf,
+    );
+    let found = theme.find_current.bg.unwrap();
+    // The band, 24 wide (the port field is also a column key here).
+    let lit: Vec<(u16, u16)> = (0..AREA.height)
+        .flat_map(|y| (0..24).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf[(x, y)].bg == found)
+        .collect();
+    // Bergen's span, in the port column (8 to 20) on shipment 4's line.
+    let line: String = (lit.iter()).map(|&(x, y)| buf[(x, y)].symbol()).collect();
+    assert!(
+        lit.iter()
+            .all(|&(x, y)| (8..20).contains(&x) && y == lit[0].1),
+        "{lit:?}"
+    );
+    assert!(line.contains("Bergen"), "{line:?}");
+}

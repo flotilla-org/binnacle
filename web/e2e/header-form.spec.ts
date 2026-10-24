@@ -120,3 +120,17 @@ test("the corner names each row level over its column; a click sorts by it, a ri
   await page.mouse.click(port.x, port.y, { button: "right" });
   await expect(page.getByRole("dialog", { name: "Row level port" })).toBeVisible();
 });
+
+test("find matches a closed port's label once, on its Subtotal under its span, and stepping to it leaves the port closed", async ({ page }) => {
+  const port = "Bergen";
+  const n = new Set(shipments.filter((s) => s.port === port).map((s) => s.region)).size;
+  await page.getByRole("button", { name: "Find" }).click();
+  const bar = page.getByRole("search", { name: "Find" });
+  await bar.getByRole("textbox", { name: "Find" }).fill(port);
+  await expect(bar.locator(".binnacle-find-count")).toHaveText(`${n} matches`);
+  await page.keyboard.press("Enter");
+  await expect(bar.locator(".binnacle-find-count")).toHaveText(`1 of ${n}`);
+  // Nothing opens; focus takes the first region's Bergen, its second port's Subtotal.
+  await expect(status(page)).toContainText(`of ${en(closed())}`);
+  await expect(status(page)).toContainText("focus row 2, column 1");
+});

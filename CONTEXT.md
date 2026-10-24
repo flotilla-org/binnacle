@@ -242,6 +242,7 @@ _Avoid_: Detail query, drill-through
 
 **Hidden Match**:
 A find match inside a closed group: counted with the others and named apart ("3 of 12, 5 in collapsed groups"), and stepped to as if every group were open. The source answers the step with the match's closed ancestors, and the Grid opens each with an Expand (the Keys staying as ordinary `except` entries) before focusing it. Find matches a Group Item's label, at its level's field, and never the figures, unless the source says it searches them.
+In header form, where a group has no Group Item, a match on its label lands on the row that carries the label in the band: the first row of its span when it is open (past its own Subtotal placed before, which sits outside the span), or its Subtotal standing in for it when it is closed. Each label is counted once, and find never answers with an item that cannot be shown: the groups the source names above a match are those that must open to show it, so a Subtotal standing in names only the groups above its own. Focus takes the label in its level's Tier.
 _Avoid_: Collapsed match, buried match
 
 **Refused Drop**:

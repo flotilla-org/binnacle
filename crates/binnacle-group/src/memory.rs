@@ -883,8 +883,9 @@ type Found = (u64, FindMatch, bool);
 ///
 /// Find searches every item as if every group were open, counting the
 /// matches closed groups hide: a Leaf's cells as the base source matches
-/// them, and a Group Item's label (its value) at its level's field. A
-/// Summary Item's figures match only once the host says how its cells
+/// them, and a group's label (its value) at its level's field, on its
+/// Group Item or, in header form, on the row carrying the label (see
+/// [`MemoryAggregates::items`]). A Summary Item's figures match only once the host says how its cells
 /// write them ([`GroupedMemory::find_figures`]). Leaves move within their
 /// group, and the user's edit moves nothing until the next View Spec.
 pub struct GroupedMemory<R> {
