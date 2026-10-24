@@ -1,5 +1,6 @@
 // The records source end to end: header clicks sort (Shift adds a column),
-// the filter box filters (keeping the view's place), header drags move columns, and focus follows its
+// the filter box filters (keeping the view's place), a jump lands where the
+// scroller points even straight after a resize, header drags move columns, and focus follows its
 // record through a re-sort. Cells are canvas pixels, so the status line's
 // focus (Position, row ID, column ID) is the probe: the row ID is the
 // record's index, which is also its `id`.
@@ -105,6 +106,18 @@ test("a header click sorts, and focus follows its record through a re-sort", asy
   const b = await layer(page);
   await page.mouse.click(b.x + FIRST, b.y + b.height - ROW / 2);
   await expect(status(page)).toContainText(focus(rows.length - 1, descending.at(-1)!, "id"));
+});
+
+test("a jump straight after the grid shrinks, before the frame that sees it, lands on the row the scroller points to", async ({
+  page,
+}) => {
+  // The shrink and the jump come in one task, before the next frame.
+  await page.evaluate((top) => {
+    const grid = document.querySelector<HTMLElement>("#grid")!;
+    grid.style.maxHeight = `${grid.clientHeight - 55}px`;
+    document.querySelector<HTMLElement>(".binnacle-scroller")!.scrollTop = top;
+  }, 1200 * ROW);
+  await expect(status(page)).toContainText("rows 1,201 to");
 });
 
 test("Shift-click sorts by a second column", async ({ page }) => {

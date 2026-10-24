@@ -606,6 +606,10 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.element.append(this.aria.element);
 
     this.listen(this.scroller, "scroll", () => {
+      // Resized since the last frame: a jump would be placed in the old
+      // viewport, so the next frame takes the scroll in the new one.
+      const { clientWidth, clientHeight } = this.scroller;
+      if (clientWidth !== this.size.width || clientHeight !== this.size.height) return this.schedule();
       if (this.scroll.take(this.grid)) {
         drainEffects(this.parts);
         this.schedule();

@@ -109,6 +109,17 @@ test.beforeEach(async ({ page }) => {
   // Each region heads its ports, and the Grand Total ends the rows; each quarter has two value columns, and each value an All column.
   await expect(status(page)).toContainText(`of ${regions + ports + 1}`);
   await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
+  // The filter bar shows from a frame and shrinks the grid, and the layer
+  // follows in a frame after: wait for it before measuring the layer.
+  await expect(bar(page)).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const height = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().height;
+        return height(".binnacle-layer") === height(".grid-box");
+      }),
+    )
+    .toBe(true);
 });
 
 test("ports by region down and quarters across, each quarter over its values, the All columns pinned right", async ({
