@@ -250,11 +250,17 @@ impl MemoryAggregates {
     }
 
     /// The Group Item Keys above the item with `key`, outermost first, open
-    /// or not: a Leaf's group and its ancestors, a Subtotal's group and its
-    /// ancestors, a Group Item's ancestors.
+    /// or not, that must open to show it: a Leaf's group and its ancestors,
+    /// a Subtotal's group and its ancestors (only its ancestors in header
+    /// form, where a closed group shows its Subtotal), a Group Item's
+    /// ancestors.
     pub fn ancestors(&self, layer: &mut GroupingLayer<Figure>, key: Key) -> Vec<Key> {
         let path = match layer.identity(key) {
             Some(SummaryId::Group(path)) => &path[..path.len().saturating_sub(1)],
+            // In header form a Subtotal shows with its group closed too.
+            Some(SummaryId::Subtotal(path)) if layer.shape().header => {
+                &path[..path.len().saturating_sub(1)]
+            }
             Some(SummaryId::Subtotal(path)) => &path[..],
             // A value's Subtotal: its group's, past the value's step.
             Some(SummaryId::ValueSubtotal(path)) => &path[..path.len().saturating_sub(1)],
@@ -647,6 +653,11 @@ pub struct Item<'a> {
     pub hidden: bool,
     /// A Group Item's or Subtotal's level field and value.
     pub group: Option<(Key, &'a Value)>,
+    /// The labels of the groups drawn on this row, outermost first, each by
+    /// its level's field and value: a Group Item's own; in header form, the
+    /// label of each group whose span starts here (see
+    /// [`MemoryAggregates::items`]).
+    pub labels: Vec<(Key, &'a Value)>,
     /// A Summary Item's aggregates, one per value; empty for a Leaf.
     pub figures: &'a [Figure],
 }
@@ -655,6 +666,13 @@ impl MemoryAggregates {
     /// Every item of the grouped rows, open or not, in the order the layer
     /// draws them, with its Keys as the layer gives them and whether the
     /// groups `layer` has closed hide it.
+    ///
+    /// In header form a group has no Group Item (unless nothing is under
+    /// it): its label is drawn in its span, beside the span's first row,
+    /// which carries it here. That is the group's first row when it is
+    /// open, past its own Subtotal placed before (outside the span), and
+    /// its Subtotal standing in for it when it is closed, placed or not,
+    /// before the items it hides.
     pub fn items(&self, layer: &mut GroupingLayer<Figure>) -> Vec<Item<'_>> {
         let shape = layer.shape().clone();
         let total = Item {
@@ -663,6 +681,7 @@ impl MemoryAggregates {
             ancestors: Vec::new(),
             hidden: false,
             group: None,
+            labels: Vec::new(),
             figures: &self.root.figures,
         };
         let mut out = Vec::new();
@@ -706,6 +725,7 @@ impl<'a> Walk<'_, 'a> {
                 ancestors: self.ancestors.clone(),
                 hidden,
                 group: None,
+                labels: Vec::new(),
                 figures: &[],
             }));
             return;
@@ -720,22 +740,44 @@ impl<'a> Walk<'_, 'a> {
                 ancestors,
                 hidden,
                 group: Some((field, value)),
+                labels: Vec::new(),
                 figures: &kid.figures,
             };
-            self.out
-                .push(summary(ItemKind::Group, key, self.ancestors.clone()));
             let shows = self.layer.layout().opens(depth, key);
             let subtotal = self.layer.key_of(SummaryId::Subtotal(self.path.clone()));
-            self.ancestors.push(key);
-            let mut sub = summary(ItemKind::Subtotal, subtotal, self.ancestors.clone());
-            sub.hidden = hidden || !shows;
             let placed = self.shape.subtotal(depth);
-            if placed == Placement::Before {
-                self.out.push(sub.clone());
-            }
-            self.bucket(kid, hidden || !shows);
-            if placed == Placement::After {
-                self.out.push(sub);
+            if self.shape.header && !(kid.kids.is_empty() && kid.leaves.is_empty()) {
+                // A Subtotal needs no group of its own open to show.
+                let sub = summary(ItemKind::Subtotal, subtotal, self.ancestors.clone());
+                self.ancestors.push(key);
+                let first = match shows {
+                    true if placed == Placement::Before => self.out.len() + 1,
+                    _ => self.out.len(),
+                };
+                if !shows || placed == Placement::Before {
+                    self.out.push(sub.clone());
+                }
+                self.bucket(kid, hidden || !shows);
+                if shows && placed == Placement::After {
+                    self.out.push(sub);
+                }
+                if let Some(item) = self.out.get_mut(first) {
+                    item.labels.insert(0, (field, value));
+                }
+            } else {
+                let mut group = summary(ItemKind::Group, key, self.ancestors.clone());
+                group.labels.push((field, value));
+                self.out.push(group);
+                self.ancestors.push(key);
+                let mut sub = summary(ItemKind::Subtotal, subtotal, self.ancestors.clone());
+                sub.hidden = hidden || !shows;
+                if placed == Placement::Before {
+                    self.out.push(sub.clone());
+                }
+                self.bucket(kid, hidden || !shows);
+                if placed == Placement::After {
+                    self.out.push(sub);
+                }
             }
             self.ancestors.pop();
             self.path.pop();
@@ -1434,16 +1476,19 @@ impl<R> GroupedMemory<R> {
             return Some((Vec::new(), None));
         };
         let items = aggregates.items(&mut self.layer);
-        let (n, slots) = (items.len() as u64, cols.len() as u64 + 1);
+        // A row's labels come first, one slot per level, then its cells.
+        let levels = aggregates.scope.levels.clone();
+        let labels = levels.len() as u64;
+        let (n, slots) = (items.len() as u64, labels + cols.len() as u64);
         let place = |item: u64, slot: u64| match query.by {
             Axis::Rows => item * slots + slot,
             Axis::Cols => slot * n + item,
         };
         let from = from.and_then(|f| {
             let item = items.iter().position(|i| i.key == f.row)? as u64;
-            let slot = match cols.iter().position(|&c| c == f.col) {
-                Some(c) => c as u64 + 1,
-                None => 0,
+            let slot = match levels.iter().position(|&l| l == f.col) {
+                Some(l) => l as u64,
+                None => (cols.iter().position(|&c| c == f.col)).map_or(0, |c| labels + c as u64),
             };
             Some(place(item, slot))
         });
@@ -1461,12 +1506,14 @@ impl<R> GroupedMemory<R> {
                     found.push((place(i, slot), FindMatch::new(item.key, col), item.hidden));
                 }
             };
-            if item.kind == ItemKind::Group
-                && let Some((field, Value::Text(label))) = item.group
-            {
-                hit(0, field, Some(label.clone()));
+            for &(field, value) in &item.labels {
+                if let (Some(l), Value::Text(label)) =
+                    (levels.iter().position(|&l| l == field), value)
+                {
+                    hit(l as u64, field, Some(label.clone()));
+                }
             }
-            for (slot, &col) in (1..).zip(&cols) {
+            for (slot, &col) in (labels..).zip(&cols) {
                 let t = match item.kind {
                     ItemKind::Leaf => source
                         .logical_index(Axis::Rows, item.key)

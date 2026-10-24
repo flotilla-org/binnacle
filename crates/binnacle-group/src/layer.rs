@@ -90,7 +90,7 @@ pub(crate) struct Shape {
     /// One per level.
     subtotals: Vec<Placement>,
     pub(crate) grand_total: Placement,
-    header: bool,
+    pub(crate) header: bool,
     pivot: bool,
     /// The identities of the values, which the values pseudo-level groups.
     values: Vec<String>,
