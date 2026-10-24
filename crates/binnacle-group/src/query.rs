@@ -172,8 +172,13 @@ pub enum Body<A> {
     /// from the view (`found` false).
     Located { key: Key, found: bool },
     /// The aggregates of the whole group at the answer's path, one per
-    /// value of the scope, in order.
-    Total { aggregates: Vec<A> },
+    /// value of the scope, in order. On a pivot, `cells` holds its
+    /// aggregates under each column group as [`GroupRow::cells`] does (at
+    /// the empty path, each column group's own); empty otherwise.
+    Total {
+        aggregates: Vec<A>,
+        cells: Vec<(Path, Vec<A>)>,
+    },
     /// Column groups under the answer's path, a column path, from its
     /// `start`, and how many there are under it in all.
     Columns {

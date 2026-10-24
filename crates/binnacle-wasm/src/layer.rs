@@ -199,7 +199,10 @@ impl From<WireAnswer> for Answer<Figure> {
                 key: Key(key),
                 found,
             },
-            WireBody::Total { aggregates } => Body::Total { aggregates },
+            WireBody::Total { aggregates } => Body::Total {
+                aggregates,
+                cells: Vec::new(),
+            },
         };
         Answer {
             stamp: Stamp(position(w.stamp)),
@@ -289,6 +292,24 @@ impl WebGroupingLayer {
     /// Starts the rows afresh under the same spec, after a change of data.
     pub fn refresh(&mut self) {
         self.layer.refresh();
+    }
+
+    /// The user edited rows under the groups: asks every figure held again,
+    /// pending until answered, every item staying where it is.
+    pub fn refigure(&mut self) {
+        self.layer.refigure();
+    }
+
+    /// The `ContentChanged` ranges for figures answered anew since
+    /// [`WebGroupingLayer::refigure`], as start and end pairs.
+    pub fn poll_changes(&mut self) -> Vec<f64> {
+        let mut out = Vec::new();
+        while let Some((_, change)) = self.layer.poll_change() {
+            if let ChangeNotice::ContentChanged(range) = change {
+                out.extend([range.start as f64, range.end as f64]);
+            }
+        }
+        out
     }
 
     /// Whether the rows are grouped, and so the layer's.

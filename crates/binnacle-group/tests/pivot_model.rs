@@ -359,6 +359,9 @@ fn cell(rows: &[Row], g: &Grouping, row: &Item, col: &Item) -> Option<u64> {
 struct Fake {
     rows: Vec<Row>,
     late: Vec<Answer<u64>>,
+    /// The column groups it gave before an edit: it answers their figures
+    /// still, as of no rows where none are left.
+    columns: Vec<Path>,
 }
 
 impl Fake {
@@ -425,9 +428,26 @@ impl Fake {
                     }
                 }
                 Want::Total => {
-                    let all: Vec<&Row> = self.rows.iter().collect();
+                    let under: Vec<&Row> = self
+                        .rows
+                        .iter()
+                        .filter(|r| fits(r, &request.path))
+                        .collect();
+                    let mut columns = column_paths(&under, &scope.columns);
+                    if request.path.is_empty() {
+                        let gone = self.columns.iter().filter(|c| !columns.contains(c));
+                        columns.extend(gone.cloned().collect::<Vec<_>>());
+                    }
+                    let cells = (columns.into_iter())
+                        .map(|c| {
+                            let rows: Vec<&Row> =
+                                under.iter().copied().filter(|r| fits(r, &c)).collect();
+                            (c, aggregates(&rows, &scope.values))
+                        })
+                        .collect();
                     Body::Total {
-                        aggregates: aggregates(&all, &scope.values),
+                        aggregates: aggregates(&under, &scope.values),
+                        cells,
                     }
                 }
                 Want::Leaves | Want::Locate(_) => panic!("a pivot asks for no Leaves"),
@@ -546,6 +566,7 @@ fn settle_with(tc: &TestCase, grouping: Grouping) -> Settled {
     let mut fake = Fake {
         rows: rows.clone(),
         late: Vec::new(),
+        columns: Vec::new(),
     };
     let mut layer = GroupingLayer::<u64>::new();
     layer.request_view(ViewSpec::default().with_grouping(Some(grouping.clone())));
@@ -677,6 +698,7 @@ fn a_pivot_column_keeps_its_key_while_its_value_leaves_and_returns(tc: TestCase)
     let mut fake = Fake {
         rows: rows.clone(),
         late: Vec::new(),
+        columns: Vec::new(),
     };
     let mut layer = GroupingLayer::<u64>::new();
     layer.request_view(ViewSpec::default().with_grouping(Some(grouping)));
@@ -739,6 +761,7 @@ fn opening_and_closing_column_groups_says_where_with_collapsed_or_expanded(tc: T
     let mut fake = Fake {
         rows: s.rows.clone(),
         late: Vec::new(),
+        columns: Vec::new(),
     };
     let levels = s.grouping.col_levels.len() as u32;
     let mut except: Vec<Path> = Vec::new();
@@ -818,6 +841,107 @@ fn opening_and_closing_column_groups_says_where_with_collapsed_or_expanded(tc: T
             }
             [ChangeNotice::Refiltered(n)] if !seen => assert_eq!(*n, after.len() as u64),
             other => panic!("unexpected notices {other:?}"),
+        }
+    }
+}
+
+/// Edits to the rows under a settled pivot, each refiguring it, move no item
+/// on either axis: every figure, each cell included, is pending until the
+/// backend answers, then each cell is the figure where its row and column
+/// cross over the rows as they are now, each row whose cells changed drawn
+/// anew.
+#[hegel::test(test_cases = 300)]
+fn an_edit_refigures_every_cell_of_a_pivot_in_place(tc: TestCase) {
+    let mut s = settle(&tc);
+    tc.assume(!s.rows.is_empty());
+    let fields: Vec<Key> = (s.grouping.col_levels.iter())
+        .filter_map(|l| l.field_key())
+        .collect();
+    let mut fake = Fake {
+        rows: s.rows.clone(),
+        late: Vec::new(),
+        columns: column_paths(&s.rows.iter().collect::<Vec<_>>(), &fields),
+    };
+    let before = items(&mut s);
+    // Each row's cells, as the layer has them.
+    let figures = |s: &Settled| -> Vec<Vec<Option<u64>>> {
+        (before[0].iter())
+            .map(|(rk, _)| {
+                (before[1].iter())
+                    .map(|(ck, _)| s.layer.cell(*rk, *ck).copied())
+                    .collect()
+            })
+            .collect()
+    };
+    let was = figures(&s);
+
+    let mut redrawn = Vec::new();
+    for _ in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(3)) {
+        let row = tc.draw(gs::integers::<usize>().max_value(s.rows.len() - 1));
+        match tc.draw(gs::integers::<usize>().max_value(3)) {
+            3 => s.rows[row].1 = tc.draw(gs::integers::<u64>().max_value(9)),
+            f => s.rows[row].0[f] = tc.draw(value()),
+        }
+        fake.rows = s.rows.clone();
+        s.layer.refigure();
+        while let Some((axis, notice)) = s.layer.poll_change() {
+            assert_eq!(axis, Axis::Rows);
+            let ChangeNotice::ContentChanged(range) = notice else {
+                panic!("only figures change: {notice:?}");
+            };
+            redrawn.push(range);
+        }
+        for (rk, r) in &before[0] {
+            for (ck, c) in &before[1] {
+                assert_eq!(
+                    s.layer.cell(*rk, *ck),
+                    None,
+                    "the cell of {:?} and {:?} is pending",
+                    r.item,
+                    c.item
+                );
+            }
+        }
+        for (key, d) in before.iter().flatten() {
+            let summary = s.layer.summary(*key).unwrap();
+            assert!(summary.aggregates.is_empty(), "{:?} is pending", d.item);
+        }
+        // Some answers, or none, before the next edit.
+        if tc.draw(gs::booleans())
+            && let Some(batch) = s.layer.poll_batch()
+        {
+            for answer in fake.answer(&tc, &batch) {
+                s.layer.answer(answer);
+            }
+        }
+    }
+
+    drive(&tc, &mut s.layer, &mut fake);
+    while let Some((_, ChangeNotice::ContentChanged(range))) = s.layer.poll_change() {
+        redrawn.push(range);
+    }
+    let after = items(&mut s);
+    assert_eq!(after, before, "nothing moves");
+    for (rk, r) in &after[0] {
+        for (ck, c) in &after[1] {
+            assert_eq!(
+                s.layer.cell(*rk, *ck).copied(),
+                cell(&s.rows, &s.grouping, &r.item, &c.item),
+                "the cell of {:?} and {:?}",
+                r.item,
+                c.item
+            );
+        }
+    }
+    let now = figures(&s);
+    for (at, (was, now)) in was.iter().zip(&now).enumerate() {
+        let at = at as u64;
+        if was != now {
+            assert!(
+                redrawn.iter().any(|r| r.contains(&at)),
+                "the row at {at}, {:?}, is drawn anew",
+                after[0][at as usize].1.item
+            );
         }
     }
 }

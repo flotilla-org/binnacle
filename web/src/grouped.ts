@@ -4,7 +4,9 @@
 // database. The layer owns the structure (groups into items, Summary Item
 // IDs from paths, Subtotals and the Grand Total, open and closed groups);
 // the backend does the arithmetic and the filtering, one Aggregate Query
-// at a time.
+// at a time. An edit to the base's rows (its ContentChanged while grouped)
+// keeps every item where it is and asks every figure again, drawn pending
+// until the backend answers; the next View Spec groups the rows again.
 //
 // A frame's queries go to the backend as one batch. It answers each by id,
 // in any order, in parts, jointly (one scan for several), or with more than
@@ -241,6 +243,11 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
   const wake = () => {
     for (const w of [...waiters]) if (w()) waiters.delete(w);
   };
+  /** Tells where the layer's figures changed: pending after an edit, then answered. */
+  const redraw = () => {
+    const changed = wasm().poll_changes();
+    for (let i = 0; i < changed.length; i += 2) tell({ type: "ContentChanged", start: changed[i]!, end: changed[i + 1]! });
+  };
   const pump = () => {
     for (;;) {
       const wire = wasm().poll_batch() as WireBatch | null;
@@ -255,6 +262,7 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
       const reply = (answer: AggregateAnswer<ColId>) => {
         if (signal.aborted || !layer) return;
         layer.answer(answerKeys(answer));
+        redraw();
         wake();
         pump();
       };
@@ -404,6 +412,11 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
     const s = layer.summary(rowKey(id)) as WireSummary | null;
     return s ? { kind: s.kind, path: pathIds(s.path), children: s.children, figures: s.aggregates } : undefined;
   };
+  /** The Summary Item with this row ID once its figures are known: after an edit they are pending until the backend answers. */
+  const figured = (id: number) => {
+    const s = summary(id);
+    return s && (s.figures.length > 0 || !grouping?.values.length) ? s : undefined;
+  };
 
   /**
    * The rows from `start` the layer holds, asking the backend for the rest:
@@ -450,10 +463,32 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
     return last;
   };
 
-  // The base's news: its columns always, its rows only while not grouped.
+  /**
+   * The user edited the base's rows from `start` to `end` while the rows
+   * are grouped: every item stays where it is, the Leaves are drawn anew
+   * where the layer holds them, and every figure is asked again, pending
+   * until answered.
+   */
+  const edited = (start: number, end: number) => {
+    const leaves = (w: number[] | OutlinedWindow<number, ColId>) => {
+      for (const id of Array.isArray(w) ? w : w.ids) {
+        const [code, at] = wasm().locate(rowKey(id));
+        if (code === 0) tell({ type: "ContentChanged", start: at!, end: at! + 1 });
+      }
+    };
+    const ids = base.rows.window(start, end, controller.signal);
+    if (ids instanceof Promise) void ids.then((w) => layer && leaves(w)).catch(() => {});
+    else leaves(ids);
+    wasm().refigure();
+    redraw();
+    pump();
+  };
+
+  // The base's news: its columns always, its rows while not grouped, and
+  // while grouped its edits, which refigure the groups.
   const relay: TableSink<number, ColId> = {
     rows: {
-      notify: (n) => !wasm().grouped() && tell(n),
+      notify: (n) => (!wasm().grouped() ? tell(n) : n.type === "ContentChanged" && edited(n.start, n.end)),
       supportChanged: (ids) => sinks.forEach((s) => s.rows.supportChanged(ids)),
       movableChanged: () => sinks.forEach((s) => s.rows.movableChanged()),
     } satisfies AxisSink<number, ColId>,
@@ -469,7 +504,7 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
 
   const figure = (id: number, col: ColId): Figure => {
     const at = grouping?.values.findIndex((v) => v.field === col) ?? -1;
-    return at < 0 ? null : (summary(id)?.figures[at] ?? null);
+    return at < 0 ? null : (figured(id)?.figures[at] ?? null);
   };
 
   return {
@@ -493,7 +528,7 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
       },
       label: (id, position) => base.rows.label?.(id, position) ?? String(position + 1),
       groupLabel: (id, outline) => {
-        const s = summary(id);
+        const s = figured(id);
         if (!s) return summaryLabel(outline);
         const counted = grouping?.values.findIndex((v) => v.field === null && v.aggregate === "count") ?? -1;
         const count = counted < 0 ? s.children : s.figures[counted];
@@ -537,8 +572,9 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
       const leaves = rowIds.filter((id) => id >= 0);
       const got = leaves.length ? await base.cells(leaves, colIds, signal) : [];
       const byId = new Map(leaves.map((id, i) => [id, got[i]!]));
-      // A Summary Item's figures may land after the item itself.
-      for (const id of rowIds) if (id < 0) await until(() => summary(id), signal);
+      // A Summary Item's figures may land after the item itself, or be
+      // asked again after an edit.
+      for (const id of rowIds) if (id < 0) await until(() => figured(id), signal);
       return rowIds.map((id) => (id < 0 ? colIds.map((c) => figure(id, c)) : byId.get(id)!));
     },
     ...(base.renderer ? { renderer: base.renderer as NonNullable<GroupedSource<ColId, V>["renderer"]> } : {}),

@@ -326,6 +326,9 @@ struct Fake {
     late: Vec<Answer<u64>>,
     /// The groups whose groups or Leaves the layer asked for.
     asked: Vec<Path>,
+    /// Whether it answers with more than asked: not once an edit has
+    /// changed the rows under groups the layer keeps as they were.
+    unasked: bool,
 }
 
 impl Fake {
@@ -334,6 +337,7 @@ impl Fake {
             rows,
             late: Vec::new(),
             asked: Vec::new(),
+            unasked: true,
         }
     }
 
@@ -432,7 +436,10 @@ impl Fake {
                         id: Some(request.id),
                         path: request.path.clone(),
                         start: 0,
-                        body: Body::Total { aggregates },
+                        body: Body::Total {
+                            aggregates,
+                            cells: Vec::new(),
+                        },
                     });
                     continue;
                 }
@@ -477,7 +484,7 @@ impl Fake {
             }
         }
         // More than asked: a group's whole Leaves, or the top groups.
-        if tc.draw(gs::booleans()) {
+        if self.unasked && tc.draw(gs::booleans()) {
             let path = match tc.draw(gs::booleans()) {
                 true => self
                     .rows
@@ -1094,6 +1101,103 @@ fn open_and_closed_groups_survive_a_change_of_data(tc: TestCase) {
     );
 }
 
+/// The figures of the group each Summary Item in `items` totals (the whole
+/// table for the Grand Total), over `rows` as they are now.
+fn refigured(rows: &[Row], items: &[Described]) -> Vec<Described> {
+    let fake = Fake::new(rows.to_vec());
+    let mut items = items.to_vec();
+    for d in &mut items {
+        let path = match &d.item {
+            Item::Group(path) | Item::Subtotal(path) => path.clone(),
+            Item::GrandTotal => Vec::new(),
+            Item::Leaf(_) => continue,
+        };
+        d.aggregates = Some(aggregates(&fake.under(&path)));
+    }
+    items
+}
+
+/// Edits to the rows under a settled layer, each refiguring it, move no
+/// item: every figure shows pending until the backend answers, then the
+/// figures of the groups as they were over the rows as they are now, each
+/// figure that changed drawn anew where it is. An answer the backend gave
+/// before a later edit never stands for it.
+#[hegel::test(test_cases = 200)]
+fn an_edit_refigures_every_figure_in_place_pending_until_answered(tc: TestCase) {
+    let rows = tc.draw(rows().filter(|r: &Vec<Row>| !r.is_empty()));
+    let levels = tc.draw(gs::integers::<usize>().min_value(1).max_value(2));
+    let shape = tc.draw(shape());
+    let mut fake = Fake::new(rows.clone());
+    let mut layer = GroupingLayer::<u64>::new();
+    layer.request_view(opening(levels, &shape, Expand::to(depth(&tc, levels))));
+    drive(&tc, &mut layer, &mut fake);
+    let before = everything(&tc, &mut layer, &mut fake, &mut Vec::new());
+    while layer.poll_change().is_some() {}
+    fake.unasked = false;
+
+    let edits = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+    let mut slow = Vec::new();
+    for _ in 0..edits {
+        let row = tc.draw(gs::integers::<usize>().max_value(fake.rows.len() - 1));
+        let field = tc.draw(gs::integers::<usize>().max_value(1));
+        fake.rows[row].1[field] = tc.draw(value());
+        layer.refigure();
+        let mut redrawn = Vec::new();
+        while let Some((_, ChangeNotice::ContentChanged(range))) = layer.poll_change() {
+            redrawn.push(range);
+        }
+        let count = layer.count(Axis::Rows).unwrap();
+        let pending = layer.window(Axis::Rows, 0..count);
+        assert_eq!(pending.len() as u64, count, "nothing is let go");
+        for (at, (key, outline)) in pending.iter().enumerate() {
+            let d = describe(&layer, *key, outline);
+            assert_eq!(d.item, before[at].item, "nothing moves");
+            if outline.kind.is_summary() {
+                assert_eq!(d.aggregates, Some(Vec::new()), "{:?} is pending", d.item);
+                let at = at as u64;
+                assert!(
+                    redrawn.iter().any(|r| r.contains(&at)),
+                    "{:?} at {at} is drawn pending",
+                    d.item
+                );
+            }
+        }
+        // The backend works the figures out before the next edit, or not,
+        // answering at once or only after every later one.
+        if tc.draw(gs::booleans())
+            && let Some(batch) = layer.poll_batch()
+        {
+            let answers = fake.answer(&tc, &batch);
+            match tc.draw(gs::booleans()) {
+                true => answers.into_iter().for_each(|a| layer.answer(a)),
+                false => slow.extend(answers),
+            }
+        }
+    }
+    drive(&tc, &mut layer, &mut fake);
+    slow.into_iter().for_each(|a| layer.answer(a));
+    let mut changed = Vec::new();
+    while let Some((axis, notice)) = layer.poll_change() {
+        assert_eq!(axis, Axis::Rows);
+        let ChangeNotice::ContentChanged(range) = notice else {
+            panic!("only figures change: {notice:?}");
+        };
+        changed.push(range);
+    }
+    let after = everything(&tc, &mut layer, &mut fake, &mut Vec::new());
+    assert_eq!(after, refigured(&fake.rows, &before));
+    for (at, (was, now)) in before.iter().zip(&after).enumerate() {
+        let at = at as u64;
+        if was.aggregates != now.aggregates {
+            assert!(
+                changed.iter().any(|r| r.contains(&at)),
+                "{:?} at {at} is drawn anew",
+                now.item
+            );
+        }
+    }
+}
+
 /// A Group Item Key in `expand.except` is kept while its path fits the
 /// levels, through re-sorts and filters, and pruned when the levels change
 /// so that it no longer can; a Key the layer never issued is kept.
@@ -1183,6 +1287,7 @@ fn closed_groups_lay_out_before_they_are_fetched(tc: TestCase) {
         let body = match request.want {
             Want::Total => Body::Total {
                 aggregates: aggregates(&fake.under(&request.path)),
+                cells: Vec::new(),
             },
             _ => {
                 let all = fake.groups(&request.path, levels);
