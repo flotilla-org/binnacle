@@ -414,9 +414,7 @@ impl AxisState {
             && count > 0
             && !exact
             && (held.position, held.offset) > (max.position, max.offset);
-        let to = if waiting {
-            held
-        } else if self.at_end || count == 0 {
+        let to = if (self.at_end && !waiting) || count == 0 {
             max
         } else if !self.window_covers(&(position..position + 1)) {
             held

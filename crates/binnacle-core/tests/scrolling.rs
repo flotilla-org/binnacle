@@ -740,3 +740,25 @@ fn an_anchor_at_the_end_stays_there_through_a_reorder() {
         "still following the end"
     );
 }
+
+/// A regression from #222: an anchor waiting at the end for the Window to
+/// reach it still keeps its offset inside its own item once the Window
+/// holds that item. Here a scroll to the end before any Window measures the
+/// last item at the default size, and the Window then brings a size of 1.
+#[test]
+fn an_anchor_waiting_at_the_end_keeps_its_offset_inside_its_item() {
+    let mut grid = Grid::new(AxisConfig::new(1_000_000, 64.0), AxisConfig::new(0, 1.0));
+    grid.action(Action::ScrollTo {
+        axis: Axis::Rows,
+        fraction: 1.0,
+    });
+    let v = Viewport::new(5.0, 5.0);
+    let requests: Vec<_> = grid.begin_frame(v).into_iter().collect();
+    for (axis, range) in requests {
+        let keys: Vec<Key> = range.clone().map(Key).collect();
+        let sizes = vec![1.0; keys.len()];
+        grid.set_window_sized(axis, range.start, &keys, &sizes, 1.0);
+    }
+    let anchor = grid.snapshot().scroll_anchor(Axis::Rows);
+    assert!(anchor.offset < 1.0, "{anchor:?}");
+}
