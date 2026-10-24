@@ -498,11 +498,17 @@ impl Model {
     }
 }
 
-/// An axis with at least one item and a finite header band.
+/// An axis with at least one item and a header band of up to
+/// [`MAX_VISIBLE`] items of the smallest size: a band dragged to nothing hands
+/// its length to the body.
 #[hegel::composite]
 fn axis_with_items(tc: &TestCase) -> AxisConfig {
     let config = tc.draw(axis_config());
-    let header = tc.draw(gs::floats::<f32>().min_value(0.0).allow_infinity(false));
+    let header = tc.draw(
+        gs::floats::<f32>()
+            .min_value(0.0)
+            .max_value(config.min_size * MAX_VISIBLE),
+    );
     AxisConfig {
         count: config.count.max(1),
         ..config.header(header)
@@ -1477,11 +1483,12 @@ fn a_click_inside_a_visible_cell_focuses_that_cell(tc: TestCase) {
 }
 
 /// An axis with items, a finite header band and a viewport extent leaving a
-/// body past it.
+/// body past it, of up to [`MAX_VISIBLE`] items of the axis's smallest size:
+/// the viewport outlasts gestures that shrink an item to that size.
 #[hegel::composite]
 fn axis_with_a_body(tc: &TestCase) -> (AxisConfig, f32) {
     let config = tc.draw(axis_with_items());
-    (config, tc.draw(body_extent(config, config.default_size)))
+    (config, tc.draw(body_extent(config, config.min_size)))
 }
 
 /// A press that lands in a Gap between cells, in the header corner, or
@@ -1779,6 +1786,23 @@ fn in_header_band(snap: &Snapshot, axis: Axis, v: f32) -> (f32, f32) {
         Axis::Rows => (band, v),
         Axis::Cols => (v, band),
     }
+}
+
+/// A gesture under one viewport can drag the header band to nothing, handing
+/// its length to the body, and resize an item to the smallest size, which
+/// the Window then assumes for every item. A drawn viewport still holds at
+/// most twice [`MAX_VISIBLE`] items of that size. A huge header once let a
+/// band drag show the whole of a 1e15-item axis, and a frame then
+/// materialised a Key per item (#255). The seed keeps the check
+/// deterministic.
+#[hegel::test(seed = Some(255), test_cases = 500)]
+fn a_gesture_cannot_open_more_than_a_bounded_body(tc: TestCase) {
+    let (config, viewport) = tc.draw(axis_with_a_body());
+    let items = f64::from(viewport) / f64::from(config.min_size);
+    assert!(
+        items <= 2.0 * f64::from(MAX_VISIBLE) + 1.0,
+        "{config:?} in {viewport}: {items} items of the smallest size"
+    );
 }
 
 /// An axis with a body, usually of everyday sizes so several borders show,

@@ -13,6 +13,11 @@ use binnacle_memory::{
 
 use crate::render::{Rendered, view_text};
 
+/// Most Keys a scenario fetches for one Window. A larger Window means a
+/// test drew a viewport showing a huge axis whole, and fetching it would
+/// abort the process past Hegel's reach to shrink it (#255).
+const MAX_WINDOW: u64 = 1 << 20;
+
 /// What a scenario's host fetches Keys from, on top of the Effects it answers
 /// through the shared pump.
 pub trait ScenarioSource: PumpSource {
@@ -632,6 +637,10 @@ impl<S: ScenarioSource> Scenario<S> {
     fn fill(&mut self, viewport: Viewport) -> Snapshot<'_> {
         for (axis, range) in self.grid.begin_frame(viewport) {
             let _ = writeln!(self.log, "window {axis:?} {range:?}");
+            assert!(
+                range.end - range.start <= MAX_WINDOW,
+                "a Window of {axis:?} {range:?} is too big to fetch Key by Key"
+            );
             let keys = self.source.window(axis, range.clone());
             match self.source.sizes(axis, &keys) {
                 Some((sizes, min_size)) => {
