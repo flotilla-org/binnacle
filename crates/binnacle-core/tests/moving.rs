@@ -575,3 +575,32 @@ fn a_move_that_reaches_a_source_sorted_since_is_refused_with_its_reason() {
     assert_eq!(rows, [1, 2, 0].map(|k| Some(Key(k))));
     assert!(!snap.movable(Axis::Rows));
 }
+
+/// #163: a release asks for its move against the count at the release. A
+/// Reset before the host drains shrinks the count, yet the drained
+/// `MoveRequested` still names that drop: the host answers it against its
+/// own, newer table.
+#[test]
+fn a_reset_after_the_release_leaves_the_requested_drop_as_released() {
+    let mut s = table();
+    s.frame(V);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(39.0, 0.5));
+        g.pointer(PointerEvent::up(39.0, 0.5));
+    });
+    s.source.cols = binnacle_memory::IdentitySource::new(0);
+    s.input(|g| g.notify(Axis::Cols, ChangeNotice::Reset(0)));
+    let requested: Vec<Effect> = (s.effects().into_iter())
+        .filter(|e| matches!(e, Effect::MoveRequested { .. }))
+        .collect();
+    assert_eq!(
+        requested,
+        vec![Effect::MoveRequested {
+            axis: Axis::Cols,
+            keys: vec![Key(0)],
+            to: 5
+        }]
+    );
+    assert_eq!(s.frame(V).count(Axis::Cols), 0);
+}

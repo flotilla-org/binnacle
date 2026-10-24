@@ -133,17 +133,22 @@ impl AxisState {
 
     /// The length the scrolling Strip shows: between the pinned Strips,
     /// inside the header band.
-    fn body(&self) -> f32 {
-        (self.scroll_end() - self.scroll_start()).max(0.0)
+    /// Measured in f64, where the difference of the edges is exact.
+    fn body(&self) -> f64 {
+        (f64::from(self.scroll_end()) - f64::from(self.scroll_start())).max(0.0)
     }
 
     /// The length the scrolling Strip's last item may end in: its body,
-    /// less the End Gap unless a trailing pinned Strip follows it.
-    fn end_body(&self) -> f32 {
+    /// less the End Gap unless a trailing pinned Strip follows it. Measured
+    /// in f64, as [`AxisState::far_end`] rounded to f32 could make a body of
+    /// one f32 step vanish, or one of nothing appear.
+    fn end_body(&self) -> f64 {
         if self.drawn_pins(Edge::Trailing).next().is_some() {
             return self.body();
         }
-        (self.far_end() - self.scroll_start()).max(0.0)
+        let header = f64::from(self.header.min(self.extent));
+        let far_end = (f64::from(self.extent) - f64::from(self.end_gap)).max(header);
+        (far_end - f64::from(self.scroll_start())).max(0.0)
     }
 
     /// The anchor at the start of the scrolling Strip: its first item, past
@@ -183,7 +188,7 @@ impl AxisState {
         let mut first = self.anchor.position;
         if visible_end == count {
             let stride = f64::from(self.measure.smallest_size()) + f64::from(self.measure.gap());
-            let back = (f64::from(self.body()) / stride).ceil() as u64;
+            let back = (self.body() / stride).ceil() as u64;
             first = first.min(count.saturating_sub(back.saturating_add(1 + pins)));
         }
         let start = first.saturating_sub(OVERSCAN);
@@ -295,17 +300,27 @@ impl AxisState {
     /// The anchor for a located offset, rounded toward the axis start so a
     /// clamped view never shows space past the last item.
     fn anchor_at(&self, l: ItemAt) -> ScrollAnchor {
-        let stride = self.measure.size_at(l.position) + self.measure.gap();
         let mut offset = l.within as f32;
         if f64::from(offset) > l.within {
             offset = f32::from_bits(offset.to_bits() - 1);
         }
-        if offset >= stride {
-            offset = f32::from_bits(stride.to_bits() - 1);
-        }
+        let offset = offset.min(self.below_stride(l.position));
         ScrollAnchor {
             position: l.position,
             offset,
+        }
+    }
+
+    /// The largest anchor offset inside the item at `p`: the f32 just below
+    /// its size plus the Gap, summed in f64. Rounding that sum to f32 first
+    /// can land below it by a step, which a huge Gap makes visible.
+    fn below_stride(&self, p: Position) -> f32 {
+        let stride = f64::from(self.measure.size_at(p)) + f64::from(self.measure.gap());
+        let below = stride as f32;
+        if f64::from(below) < stride {
+            below
+        } else {
+            f32::from_bits(below.to_bits() - 1)
         }
     }
 
@@ -323,7 +338,7 @@ impl AxisState {
             };
         }
         let size = self.measure.size_at(last);
-        let back = f64::from(size) - f64::from(body);
+        let back = f64::from(size) - body;
         match self.measure.locate(last, back) {
             Some(l) => self.anchor_at(l),
             // The body is shorter than the whole axis.
@@ -406,8 +421,7 @@ impl AxisState {
         } else if !self.window_covers(&(position..position + 1)) {
             held
         } else {
-            let stride = self.measure.size_at(position) + self.measure.gap();
-            let offset = self.anchor.offset.min(f32::from_bits(stride.to_bits() - 1));
+            let offset = self.anchor.offset.min(self.below_stride(position));
             if (position, offset) > (max.position, max.offset) && exact {
                 max
             } else {
@@ -452,7 +466,7 @@ impl AxisState {
     /// least one item away and inside the axis.
     pub fn page_from(&self, p: Position, forward: bool) -> Position {
         let last = self.measure.count().saturating_sub(1);
-        let body = f64::from(self.body());
+        let body = self.body();
         let delta = if forward { body } else { -body };
         let landed = self.measure.locate(p, delta).map(|at| at.position);
         if forward {
@@ -470,11 +484,11 @@ impl AxisState {
             return false;
         }
         // The last item shows with the End Gap after it.
-        let body = f64::from(if Some(p) == self.last_shown() {
+        let body = if Some(p) == self.last_shown() {
             self.end_body()
         } else {
             self.body()
-        });
+        };
         let start = self.measure.distance(self.anchor.position, p) - f64::from(self.anchor.offset);
         let size = f64::from(self.measure.size_at(p));
         if start < 0.0 || size >= body {
@@ -536,7 +550,7 @@ impl AxisState {
     pub fn thumb(&self) -> Thumb {
         let (scrolled, scrollable) = self.scrolled();
         // The room the End Gap keeps at the end scrolls like content.
-        let extent = self.measure.extent() + f64::from(self.body() - self.end_body());
+        let extent = self.measure.extent() + (self.body() - self.end_body());
         Thumb {
             fraction: if scrollable > 0.0 {
                 (scrolled / scrollable).clamp(0.0, 1.0)
@@ -544,7 +558,7 @@ impl AxisState {
                 0.0
             },
             size: if extent > 0.0 {
-                (f64::from(self.body()) / extent).min(1.0)
+                (self.body() / extent).min(1.0)
             } else {
                 1.0
             },

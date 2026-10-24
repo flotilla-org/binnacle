@@ -558,6 +558,10 @@ struct Step<'a> {
     requests: &'a RefCell<Vec<(Axis, Range<Position>)>>,
     /// The End Gap of each axis.
     end_gaps: [f32; 2],
+    /// The largest count each axis had at any release in this step: a
+    /// release names its drop against the count then, which a later Reset
+    /// in the same step may shrink.
+    release_counts: [u64; 2],
 }
 
 /// Draws a table, then a few steps of random inputs, each followed by a pump
@@ -640,6 +644,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
     }
     for _ in 0..steps {
         let (mut moved_focus, mut reveals_focus) = (false, false);
+        let mut release_counts = [0; 2];
         let mut inputs = tc.draw(gs::vecs(input()).max_size(4));
         if tc.draw(gs::weighted_booleans(0.5)) {
             inputs.extend(tc.draw(gesture()).into_iter().map(Input::Pointer));
@@ -687,7 +692,13 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             }
             match input {
                 Input::Action(action) => s.input(|g| g.action(action)),
-                Input::Pointer(p) => s.input(|g| g.pointer(p.resolve(&target))),
+                Input::Pointer(p) => {
+                    if p.event.kind == PointerKind::Up {
+                        release_counts = Axis::ALL
+                            .map(|a| release_counts[a.index()].max(models[a.index()].config.count));
+                    }
+                    s.input(|g| g.pointer(p.resolve(&target)))
+                }
                 Input::SetSize(axis, key, size) if knobs.resize => {
                     s.input(|g| g.set_size(axis, key, size));
                     let model = &mut models[axis.index()];
@@ -748,6 +759,7 @@ fn frames(tc: &TestCase, knobs: Knobs, mut check: impl FnMut(&Snapshot, &Step)) 
             reveals_focus,
             requests: &requests,
             end_gaps,
+            release_counts,
         };
         let snap = s.frame(next);
         if let Mode::Resizing { axis, key, .. } = snap.mode() {
@@ -930,10 +942,11 @@ fn the_scroll_anchor_and_thumb_stay_in_bounds(tc: TestCase) {
                 anchor.position < count.max(1),
                 "{axis:?}: {anchor:?} past the count {count}"
             );
+            // Summed in f64: the f32 sum may round down onto the offset.
+            let stride = f64::from(seen_size(snap, axis, model, anchor.position))
+                + f64::from(snap.gap(axis));
             assert!(
-                anchor.offset >= 0.0
-                    && anchor.offset
-                        < seen_size(snap, axis, model, anchor.position) + snap.gap(axis),
+                anchor.offset >= 0.0 && f64::from(anchor.offset) < stride,
                 "{axis:?}: {anchor:?} outside its item and Gap"
             );
             let thumb = snap.thumb(axis);
@@ -1003,12 +1016,45 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
     let rows = tc.draw(axis_config());
     let cols = tc.draw(axis_config());
     let axis = tc.draw(axis());
-    let config = [rows, cols][axis.index()];
     let fraction = tc.draw(hegel::one_of!(
         gs::sampled_from(vec![0.0, 0.5, 1.0]),
         gs::floats::<f64>().min_value(0.0).max_value(1.0),
         gs::floats::<f64>()
     ));
+    let (w, h) = tc.draw(hegel::tuples!(
+        extent(cols, cols.default_size),
+        extent(rows, rows.default_size)
+    ));
+    let end_gap = tc.draw(hegel::one_of!(
+        gs::just(0.0f32),
+        gs::floats::<f32>().min_value(0.0).max_value(8.0),
+    ));
+    check_scroll_to_round_trip([rows, cols], axis, fraction, Viewport::new(w, h), end_gap);
+}
+
+/// #246: a body of one f32 step at 0.5 is still a body, so the single
+/// column, which does not fit it, scrolls. Measured in f32, the body
+/// rounded to nothing and the thumb looked as though it could not move.
+#[test]
+fn scroll_to_round_trips_over_a_body_one_f32_step_long() {
+    let rows = AxisConfig::new(0, 1.0).max_size(1048576.0);
+    let cols = AxisConfig::new(1, 1.0)
+        .max_size(1048576.0)
+        .header(0.5000002);
+    let viewport = Viewport::new(1.5000002, 0.0);
+    check_scroll_to_round_trip([rows, cols], Axis::Cols, 0.5, viewport, 1.0);
+}
+
+/// `ScrollTo` on `axis` of a fresh Grid over `configs` and an identity
+/// source, with `end_gap` on that axis, reads back `fraction` from the thumb.
+fn check_scroll_to_round_trip(
+    configs: [AxisConfig; 2],
+    axis: Axis,
+    fraction: f64,
+    viewport: Viewport,
+    end_gap: f32,
+) {
+    let config = configs[axis.index()];
     // Fractions outside 0..=1 are clamped; NaN is ignored, leaving the fresh
     // Grid at the start.
     let expected = if fraction.is_nan() {
@@ -1016,27 +1062,15 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
     } else {
         fraction.clamp(0.0, 1.0)
     };
-    let (w, h) = tc.draw(hegel::tuples!(
-        extent(cols, cols.default_size),
-        extent(rows, rows.default_size)
-    ));
-    let viewport = Viewport::new(w, h);
-    let end_gap = tc.draw(hegel::one_of!(
-        gs::just(0.0f32),
-        gs::floats::<f32>().min_value(0.0).max_value(8.0),
-    ));
-    let mut s = Scenario::identity(rows, cols);
+    let mut s = Scenario::identity(configs[0], configs[1]);
     s.input(|g| g.set_end_gap(axis, end_gap));
     s.frame(viewport);
     s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
     let snap = s.frame(viewport);
     let thumb = snap.thumb(axis).fraction;
     // The End Gap shortens the body the last item may end in.
-    let scrollable = scrollable(
-        snap.count(axis),
-        config,
-        snap.extent(axis) - snap.header(axis) - end_gap,
-    );
+    let body = f64::from(snap.extent(axis)) - f64::from(snap.header(axis)) - f64::from(end_gap);
+    let scrollable = scrollable(snap.count(axis), config, body);
     if scrollable <= 0.0 {
         assert_eq!(thumb, 0.0);
         return;
@@ -1049,8 +1083,8 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
         return;
     }
     // The anchor's offset is f32, rounded toward the start and kept below the
-    // f32 sum of item size and Gap (itself rounded), so it lands within two f32
-    // steps of the stride; the rest is f64 rounding.
+    // sum of item size and Gap, so it lands within two f32 steps of the
+    // stride; the rest is f64 rounding.
     let stride = (f64::from(config.default_size) + f64::from(config.gap)).min(f64::from(f32::MAX));
     let stride = stride as f32;
     let step = f64::from(next_f32(stride)) - f64::from(stride);
@@ -1063,7 +1097,7 @@ fn scroll_to_then_reading_the_thumb_round_trips(tc: TestCase) {
 
 /// How far an axis of default-sized items can scroll for a body length: until
 /// the last item ends the body, or with no body until it starts it.
-fn scrollable(count: u64, config: AxisConfig, body: f32) -> f64 {
+fn scrollable(count: u64, config: AxisConfig, body: f64) -> f64 {
     if count == 0 {
         return 0.0;
     }
@@ -1072,7 +1106,7 @@ fn scrollable(count: u64, config: AxisConfig, body: f32) -> f64 {
     if body <= 0.0 {
         return last_start;
     }
-    (last_start + f64::from(config.default_size) - f64::from(body)).max(0.0)
+    (last_start + f64::from(config.default_size) - body).max(0.0)
 }
 
 #[hegel::test(test_cases = 1000)]
@@ -1194,6 +1228,57 @@ fn after_a_focus_move_the_focused_cell_lies_within_the_viewport(tc: TestCase) {
             assert!(snap.focus_rect().is_some() || !resolvable_body(snap, step));
         }
     });
+}
+
+/// #159: revealing a row past a Gap of 2^18 anchors in the item before it,
+/// where an f32 offset steps by 1/8. The row may sit one such step off, no
+/// more: the anchor's offset is bounded by the item's stride in f64, not by
+/// that stride rounded to f32.
+#[test]
+fn revealing_focus_across_a_huge_gap_misplaces_the_row_by_one_f32_step_at_most() {
+    let range = |c: AxisConfig| c.min_size(1.0).max_size(1048576.0);
+    let rows = range(AxisConfig::new(2, 1.0)).gap(262144.06);
+    let cols = range(AxisConfig::new(1, 1.0));
+    // Row 0 is raised to the hint; row 1's size is unknown, so default.
+    let content = Content {
+        sizes: vec![1.0, 0.0],
+        hint: 786433.0,
+    };
+    let source = Sized {
+        table: IdentityTable {
+            rows: IdentitySource::new(2),
+            cols: IdentitySource::new(1),
+        },
+        content: [Some(content), None],
+        windows: [0..0, 0..0],
+        requests: Rc::new(RefCell::new(Vec::new())),
+    };
+    let mut s = Scenario::new(Grid::new(rows, cols), source);
+    for forward in [false, true] {
+        s.input(|g| {
+            g.action(Action::MoveFocus {
+                axis: Axis::Rows,
+                by: FocusStep::Item,
+                forward,
+                extend: false,
+            })
+        });
+    }
+    let v = Viewport::new(1.0, 1.03125);
+    let snap = s.frame(v);
+    let item = snap
+        .strip(Axis::Rows)
+        .iter()
+        .find(|i| i.position == 1)
+        .copied();
+    let item = item.expect("the focused row is not in the Strip");
+    let stride = 786433.0f32 + 262144.06;
+    let step = next_f32(stride) - stride;
+    assert!(
+        item.offset >= -step && item.end() <= v.height + step,
+        "{item:?} not inside the body 0..{}",
+        v.height
+    );
 }
 
 /// Whether both axes have a body and sizes f32 offsets place precisely, so a
@@ -2085,7 +2170,7 @@ fn check_resize_feedback(tc: &TestCase, snap: &Snapshot, axis: Axis, key: Key) {
 /// order. The identity table never moves anything, so a Key is its Position.
 #[hegel::test(test_cases = 2000)]
 fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) {
-    frames(&tc, BODIES, |snap, step| {
+    frames(&tc, BODIES, |_, step| {
         for effect in step.drained {
             let Effect::MoveRequested { axis, keys, to } = effect else {
                 continue;
@@ -2095,7 +2180,7 @@ fn move_requests_name_distinct_columns_and_a_drop_that_moves_them(tc: TestCase) 
             check_moved_keys(keys);
             let (first, last) = (keys[0].0, keys[keys.len() - 1].0);
             let block = last - first + 1 == keys.len() as u64;
-            assert!(*to <= snap.count(Axis::Cols));
+            assert!(*to <= step.release_counts[Axis::Cols.index()]);
             assert!(
                 !(block && (first..=last + 1).contains(to)),
                 "{keys:?} to {to} moves nothing"
