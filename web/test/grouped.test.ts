@@ -19,7 +19,7 @@ import {
   type GroupRow,
 } from "../src/grouped";
 import { fromRows } from "../src/rows";
-import { rowsBy, type Grouping, type ListedValue, type Located, type OutlinedWindow, type Placement, type ViewSpec } from "../src/source";
+import { rowsBy, type ChangeNotice, type Grouping, type ListedValue, type Located, type OutlinedWindow, type Placement, type ViewSpec } from "../src/source";
 import { fakeDocument, type DrawCall } from "./canvas";
 import { BAND, HEADER, Harness } from "./harness";
 import { loadForTests } from "./wasm";
@@ -40,14 +40,12 @@ type Field = keyof Rec;
 
 const COLUMNS = [{ key: "s" }, { key: "t" }, { key: "n" }] as const;
 
-const records = gs.arrays(
-  gs.record({
-    s: gs.sampledFrom(["a", "b", "c", null]),
-    t: gs.sampledFrom(["x", "y", null]),
-    n: gs.integers({ minValue: 0, maxValue: 5 }),
-  }),
-  { maxSize: 30 },
-);
+const record = gs.record({
+  s: gs.sampledFrom(["a", "b", "c", null]),
+  t: gs.sampledFrom(["x", "y", null]),
+  n: gs.integers({ minValue: 0, maxValue: 5 }),
+});
+const records = gs.arrays(record, { maxSize: 30 });
 
 const signal = new AbortController().signal;
 
@@ -278,6 +276,55 @@ test("a Leaf is located where grouping at once places it, and a hidden one is go
     } finally {
       source.destroy();
       model.destroy();
+    }
+  }));
+
+test("an edit refigures every figure where it is, pending until the backend answers", () =>
+  hegel.testAsync(async (tc) => {
+    const rows = tc.draw(records.filter((r) => r.length > 0));
+    const { backend, settle, pool } = hostile(tc, rows);
+    const base = fromRows(rows, COLUMNS);
+    const source = groupedSource({ base, backend, cache: tc.draw(caches) });
+    const told: ChangeNotice[] = [];
+    const quiet = { notify: () => {}, supportChanged: () => {}, movableChanged: () => {} };
+    source.attach!({
+      rows: { ...quiet, notify: (n) => told.push(n) },
+      cols: quiet,
+      viewChanged: () => {},
+      findCounted: () => {},
+    });
+    const items = async () => {
+      const n = source.rows.count() as number;
+      let got: OutlinedWindow<number, Field> = { ids: [], outlines: [] };
+      while (got.ids.length < n) got = (await settle(source.rows.window(0, n, signal))) as OutlinedWindow<number, Field>;
+      return got.ids;
+    };
+    try {
+      await settle(source.view!(viewOf(tc.draw(groupings), []), signal));
+      const before = await items();
+      await settle(source.cells(before, ["n"], signal));
+      const paths = new Map(before.filter((id) => id < 0).map((id) => [id, source.summary(id)!.path]));
+      for (let edits = tc.draw(gs.integers({ minValue: 1, maxValue: 3 })); edits > 0; edits--) {
+        const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+        const field = tc.draw(gs.sampledFrom<Field>(["s", "t", "n"]));
+        rows[id] = { ...rows[id]!, [field]: tc.draw(record)[field] };
+        told.length = 0;
+        base.edited(id);
+        expect(told.some((n) => n.type === "ContentChanged"), "the rows are drawn anew").toBe(true);
+        for (const s of paths.keys()) expect(source.summary(s)?.figures ?? [], "figures pending").toEqual([]);
+        // Some answers land before the next edit.
+        for (let i = tc.draw(gs.integers({ minValue: 0, maxValue: 3 })); i > 0 && pool.length > 0; i--) pool.shift()!.send();
+      }
+      told.length = 0;
+      await settle(source.cells(before, ["n"], signal));
+      expect(await items(), "nothing moves").toEqual(before);
+      const figures = (path: GroupPath<Field>): Figure[] => {
+        const leaves = rows.filter((r) => path.every((p) => r[p.field as Field] === p.value));
+        return [leaves.length ? leaves.reduce((sum, r) => sum + r.n, 0) : null, leaves.length];
+      };
+      for (const [id, path] of paths) expect(source.summary(id)?.figures, JSON.stringify(path)).toEqual(figures(path));
+    } finally {
+      source.destroy();
     }
   }));
 

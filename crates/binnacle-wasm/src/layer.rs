@@ -291,6 +291,24 @@ impl WebGroupingLayer {
         self.layer.refresh();
     }
 
+    /// The user edited rows under the groups: asks every figure held again,
+    /// pending until answered, every item staying where it is.
+    pub fn refigure(&mut self) {
+        self.layer.refigure();
+    }
+
+    /// The `ContentChanged` ranges for figures answered anew since
+    /// [`WebGroupingLayer::refigure`], as start and end pairs.
+    pub fn poll_changes(&mut self) -> Vec<f64> {
+        let mut out = Vec::new();
+        while let Some((_, change)) = self.layer.poll_change() {
+            if let ChangeNotice::ContentChanged(range) = change {
+                out.extend([range.start as f64, range.end as f64]);
+            }
+        }
+        out
+    }
+
     /// Whether the rows are grouped, and so the layer's.
     pub fn grouped(&self) -> bool {
         self.layer.grouped(Axis::Rows)

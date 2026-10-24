@@ -50,7 +50,8 @@ pub enum SummaryId {
 /// path (empty for the Grand Total; for a value's Subtotal, its group's
 /// then the value's step), how many children the group has (the top
 /// groups, for the Grand Total) and its aggregates, one per value of the
-/// grouping, as the backend gave them. A Subtotal's are its group's, and a
+/// grouping, as the backend gave them, or none while they are pending
+/// after [`GroupingLayer::refigure`]. A Subtotal's are its group's, and a
 /// group of the values pseudo-level's those of the group it is in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Summary<'a, A> {
@@ -977,8 +978,15 @@ pub struct GroupingLayer<A> {
     /// Answers to Locates: the path and index of each Leaf asked about, or
     /// `None` for one gone from the view.
     located: HashMap<Key, Option<(Path, u64)>>,
-    /// Change Notices for figures answered anew since [`GroupingLayer::refigure`].
+    /// Change Notices for figures [`GroupingLayer::refigure`] made pending
+    /// and for those answered anew since.
     changes: VecDeque<(Axis, ChangeNotice)>,
+    /// The data paths whose figures a refigure asked for again and no
+    /// answer has given yet: they show pending.
+    due: HashSet<Path>,
+    /// The requests for figures a later refigure asked again: their
+    /// answers, from before the edit, are dropped.
+    void: HashSet<RequestId>,
     /// Counts the Windows: the pages the latest two read, or asked for,
     /// stay cached.
     frame: u64,
@@ -1077,6 +1085,8 @@ impl<A: Clone> GroupingLayer<A> {
             news: VecDeque::new(),
             located: HashMap::new(),
             changes: VecDeque::new(),
+            due: HashSet::new(),
+            void: HashSet::new(),
             frame: 1,
             cache: items,
             cached: 0,
@@ -1173,6 +1183,8 @@ impl<A: Clone> GroupingLayer<A> {
         self.read.clear();
         self.located.clear();
         self.changes.clear();
+        self.due.clear();
+        self.void.clear();
         self.cached = 0;
         self.settled = false;
         self.settle();
@@ -1327,6 +1339,9 @@ impl<A: Clone> GroupingLayer<A> {
         if answer.stamp != self.stamp || self.scope.is_none() {
             return;
         }
+        if answer.id.is_some_and(|id| self.void.remove(&id)) {
+            return;
+        }
         let placed = match answer.body {
             Body::Located { key, found } => {
                 self.located
@@ -1380,15 +1395,13 @@ impl<A: Clone> GroupingLayer<A> {
         self.trim();
     }
 
-    /// Takes the figures answered for the group at `path` (the whole axis
-    /// at the empty path). Figures answered anew after
-    /// [`GroupingLayer::refigure`] say where they are drawn with
-    /// `ContentChanged`.
-    fn figured(&mut self, path: &Path, aggregates: Vec<A>) {
+    /// The Positions where the figures of the group at `path` (the whole
+    /// axis at the empty path, once answered) are drawn.
+    fn drawn(&self, path: &Path) -> Vec<Position> {
         let rows = &self.axes[Axis::Rows.index()];
         let (root, shape) = (&rows.root, &rows.shape);
         let top = shape.top();
-        let at: Vec<Position> = match path.is_empty() {
+        match path.is_empty() {
             true if self.total.is_some() => match shape.grand_total {
                 Placement::Before => (0..shape.totals()).collect(),
                 Placement::After => (rows.count())
@@ -1405,7 +1418,24 @@ impl<A: Clone> GroupingLayer<A> {
             .flatten()
             .map(|p| p + top)
             .collect(),
-        };
+        }
+    }
+
+    /// Says where each of `paths`' figures is drawn with `ContentChanged`.
+    fn redraw(&mut self, paths: &[Path]) {
+        let at: Vec<Position> = paths.iter().flat_map(|p| self.drawn(p)).collect();
+        (self.changes).extend(at.into_iter().map(|p| {
+            let notice = ChangeNotice::ContentChanged(p..p + 1);
+            (Axis::Rows, notice)
+        }));
+    }
+
+    /// Takes the figures answered for the group at `path` (the whole axis
+    /// at the empty path). Figures answered anew after
+    /// [`GroupingLayer::refigure`] say where they are drawn with
+    /// `ContentChanged`.
+    fn figured(&mut self, path: &Path, aggregates: Vec<A>) {
+        self.due.remove(path);
         match path.is_empty() {
             true => self.total = Some(aggregates),
             false => {
@@ -1423,21 +1453,26 @@ impl<A: Clone> GroupingLayer<A> {
                 }
             }
         }
-        (self.changes).extend(at.into_iter().map(|p| {
-            let notice = ChangeNotice::ContentChanged(p..p + 1);
-            (Axis::Rows, notice)
-        }));
+        self.redraw(std::slice::from_ref(path));
     }
 
     /// The data under the groups changed, by the user's edit: asks the
     /// figures of every group held, and of the whole axis, again, keeping
     /// every item where it is until the next View Spec, as for an
-    /// Unmatched Row. Each figure answered says where it is drawn through
-    /// [`GroupingLayer::poll_change`]. Groups keep their child counts.
+    /// Unmatched Row. Until the backend answers, those figures are pending
+    /// (a [`Summary`] with no aggregates, no [`GroupingLayer::cell`]), and
+    /// answers to figures asked before are dropped. Each figure says where
+    /// it is drawn through [`GroupingLayer::poll_change`], pending at once
+    /// and again once answered. Groups keep their child counts.
     pub fn refigure(&mut self) {
         if self.scope.is_none() {
             return;
         }
+        let (stale, in_flight) = (std::mem::take(&mut self.in_flight).into_iter())
+            .partition(|(_, ask)| ask.want == Want::Total);
+        self.in_flight = in_flight;
+        let stale: Vec<(RequestId, Ask)> = stale;
+        self.void.extend(stale.into_iter().map(|(id, _)| id));
         let mut held = Vec::new();
         self.tree(Axis::Rows).root.held_groups(&mut held);
         // Each data path once, groups of the values pseudo-level left out.
@@ -1447,6 +1482,8 @@ impl<A: Clone> GroupingLayer<A> {
                 paths.push(path);
             }
         }
+        self.due.extend(paths.iter().cloned());
+        self.redraw(&paths);
         self.misses.extend(paths.into_iter().map(|path| Ask {
             path,
             want: Want::Total,
@@ -1454,8 +1491,8 @@ impl<A: Clone> GroupingLayer<A> {
         }));
     }
 
-    /// The next Change Notice for figures answered anew since
-    /// [`GroupingLayer::refigure`].
+    /// The next Change Notice for figures [`GroupingLayer::refigure`] made
+    /// pending or that were answered anew since.
     pub fn poll_change(&mut self) -> Option<(Axis, ChangeNotice)> {
         self.changes.pop_front()
     }
@@ -1532,7 +1569,8 @@ impl<A: Clone> GroupingLayer<A> {
             !nodes.is_empty() && nodes.iter().all(|n| covered(n))
         };
         match ask.want {
-            Want::Total => self.total.is_some(),
+            Want::Total if self.due.contains(&ask.path) => false,
+            Want::Total => !ask.path.is_empty() || self.total.is_some(),
             Want::Locate(key) => self.located.contains_key(&key),
             Want::Groups | Want::Columns => all(&|n| match &n.kids {
                 Kids::Groups(g) if !g.values => g.total.is_some_and(|total| {
@@ -1915,7 +1953,10 @@ impl<A: Clone> GroupingLayer<A> {
                         Kids::Groups(g) => g.total?,
                         _ => 0,
                     },
-                    aggregates: self.total.as_deref()?,
+                    aggregates: match self.due.contains(&Vec::new()) {
+                        true => &[],
+                        false => self.total.as_deref()?,
+                    },
                 });
             }
         };
@@ -1926,7 +1967,9 @@ impl<A: Clone> GroupingLayer<A> {
         let node = node_at(&tree.root, group)?;
         // A group of the values pseudo-level at the top holds every row.
         let aggregates = match figures(&tree.root, group) {
-            Some(data) => &data.row.as_ref()?.aggregates[..],
+            Some(node) if self.due.contains(&data(&node.path)) => &[],
+            Some(node) => &node.row.as_ref()?.aggregates[..],
+            None if self.due.contains(&Vec::new()) => &[],
             None => self.total.as_deref().unwrap_or_default(),
         };
         Some(Summary {
@@ -1969,10 +2012,17 @@ impl<A: Clone> GroupingLayer<A> {
         };
         // The node holding each item's figures, none where it holds every
         // row.
-        let aggregates = match (
+        let (row, col) = (
             figures(&self.axes[0].root, row_path),
             figures(&self.axes[1].root, col_path),
-        ) {
+        );
+        // A row's figures, its cells among them, are due after a refigure,
+        // and with the Grand Total's those of every column.
+        let due = row.map_or_else(Vec::new, |r| data(&r.path));
+        if self.due.contains(&due) {
+            return None;
+        }
+        let aggregates = match (row, col) {
             (None, None) => self.total.as_ref()?,
             (None, Some(c)) => &c.row.as_ref()?.aggregates,
             (Some(r), None) => &r.row.as_ref()?.aggregates,

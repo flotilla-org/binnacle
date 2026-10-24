@@ -61,3 +61,32 @@ test("groups, then Leaves, arrive late from the slow backend, pending until they
   await expect(queries(page)).toContainText("0 queries in flight");
   await expect(status(page)).toContainText(`of ${en(opened)}`);
 });
+
+test("an edit asks the slow backend for every figure again, the rows staying where they are", async ({ page }) => {
+  await page.clock.install({ time: 0 });
+  await page.clock.pauseAt(1000);
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await page.goto("/?source=shipments&pace=slow&theme=light");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await clocked(page, () => text(page, status)).toContain(`of ${en(closed())}`);
+  await clocked(page, () => text(page, queries)).toMatch(/^0 queries in flight · \d+ held$/);
+
+  // Open the first port and focus its first Leaf, once it lands.
+  const b = await page.locator(".binnacle-layer").boundingBox();
+  if (!b) throw new Error("no grid");
+  await page.mouse.click(b.x + 24, b.y + HEADER + ROW + ROW / 2);
+  await clocked(page, () => text(page, status)).not.toContain("loading");
+  await page.mouse.click(b.x + 400, b.y + HEADER + 2 * ROW + ROW / 2);
+  await clocked(page, () => text(page, status)).toContain("focus row 3");
+  const before = await text(page, status);
+
+  await page.getByRole("button", { name: "Reroute" }).click();
+  await expect(page.locator("#committed")).toContainText("port of");
+  // The figures are asked again at once, loading until the backend
+  // answers, and nothing moves.
+  await expect(queries(page)).not.toContainText(/^0 queries/);
+  await clocked(page, () => text(page, status), 100).toContain("loading");
+  await clocked(page, () => text(page, queries)).toMatch(/^0 queries in flight/);
+  await clocked(page, () => text(page, status)).toBe(before);
+});

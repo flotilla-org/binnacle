@@ -99,6 +99,7 @@
 
 ### Fixed
 
+- **group, web:** an edit under rows grouped over an async backend refigures every figure at once, each drawn pending until the backend answers and every item staying where it is: `GroupingLayer::refigure` makes the figures pending (a `Summary` with no aggregates, no `cell`), says where with `ContentChanged`, and drops answers to figures asked before the edit; `groupedSource` refigures on its base's `ContentChanged` while grouped (`WebGroupingLayer.refigure`, `poll_changes`). It waited for the next View Spec ([#236](https://github.com/flotilla-org/binnacle/issues/236)).
 - **core:** a selection range that a filter or a hide partly removes shrinks to the items still shown between its corners, on either axis, and clears only when none is left; it was cleared ([#164](https://github.com/flotilla-org/binnacle/issues/164)).
 - **ratatui:** with `Grid`, the rule above the first visible row is drawn when the row before it ends exactly at the column header band's end, and likewise the line before the first visible column with `Columns` ([#41](https://github.com/flotilla-org/binnacle/issues/41)).
 - **web:** `fromRows` names a rejected regex without RegExp's prefix even when the pattern holds a line break.

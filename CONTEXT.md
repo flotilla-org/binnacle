@@ -121,7 +121,7 @@ Each axis's count before any filter, as the Table Source gives it with the View 
 _Avoid_: Unfiltered count, base count
 
 **Unmatched Row**:
-A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead. In grouped rows the same rule holds for an edit to a grouping field: the Leaf stays in its old group, dimmed, while every figure follows the edit at once (`ContentChanged`), and the next View Spec groups it anew.
+A row the Table Source keeps in view after the user's edit stopped the filter keeping it, until the next View Spec it applies (a re-apply asks for the same one again); the source flags it for the rows shown, like find marks, and the adapters draw it dimmed. Changes from the data itself and inserted rows are filtered as they arrive instead. In grouped rows the same rule holds for an edit to a grouping field: the Leaf stays in its old group, dimmed, while every figure the edited row is counted in follows the edit at once (`ContentChanged`); over an async backend those figures draw pending until it answers. The next View Spec groups the Leaf anew.
 _Avoid_: Stale row, held row, edited row (as a term)
 
 ### Grouping
