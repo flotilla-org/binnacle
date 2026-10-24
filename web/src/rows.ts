@@ -210,8 +210,8 @@ interface FoundItem {
   item: number | null;
   hidden: boolean;
   ancestors: bigint[];
-  field: bigint | null;
-  label: string | null;
+  /** The labels it carries, outermost first: a Group Item its own; in header form, each group's whose span starts on it. */
+  labels: { field: bigint; label: string | null }[];
 }
 
 /** A match of grouped find: its place in the query's order, its cell, whether a closed group hides it, and the groups above it. */
@@ -632,17 +632,21 @@ export function fromRows<R extends object>(
     const n = columns.length;
     const items = memory().grouped_items() as FoundItem[];
     const { colsAt } = shown();
-    const slots = colsAt.length + 1;
+    // A row's labels come first, one slot per level, then its cells.
+    const labels = levels.length;
+    const slots = labels + colsAt.length;
     const place = (i: number, slot: number) => (query.by === "rows" ? i * slots + slot : slot * items.length + i);
     const found: GroupedMatch<ColId>[] = [];
     items.forEach((item, i) => {
       const at = { hidden: item.hidden, ancestors: item.ancestors.map(summaryId) };
-      if (item.field !== null && item.label !== null && match?.(item.label)) {
-        found.push({ place: place(i, 0), row: summaryId(item.key), col: columns[Number(item.field)]!.key, ...at });
+      const row = item.item ?? summaryId(item.key);
+      for (const { field, label } of item.labels) {
+        const col = columns[Number(field)]!.key;
+        if (label !== null && match?.(label)) found.push({ place: place(i, levels.indexOf(col)), row, col, ...at });
       }
       if (item.item === null) return;
       colsAt.forEach((c, j) => {
-        if (cells[item.item! * n + c] === 1) found.push({ place: place(i, j + 1), row: item.item!, col: columns[c]!.key, ...at });
+        if (cells[item.item! * n + c] === 1) found.push({ place: place(i, labels + j), row: item.item!, col: columns[c]!.key, ...at });
       });
     });
     found.sort((a, b) => a.place - b.place);
@@ -650,7 +654,9 @@ export function fromRows<R extends object>(
     if (from) {
       const key = from.row < 0 ? summaryKey(from.row) : BigInt(from.row);
       const i = items.findIndex((item) => item.key === key);
-      if (i >= 0) start = place(i, colsAt.indexOf(index.get(from.col) ?? -1) + 1);
+      const level = isBase(from.col) ? levels.indexOf(from.col) : -1;
+      const at = colsAt.indexOf(index.get(from.col) ?? -1);
+      if (i >= 0) start = place(i, level >= 0 ? level : at >= 0 ? labels + at : 0);
     }
     return { found, start };
   };

@@ -1,11 +1,12 @@
 //! Seam 1 scenarios for find on grouped rows: a step to a match in
 //! collapsed groups opens each closed ancestor with an `Expand` and focuses
 //! the match once answered, the groups staying open as ordinary exceptions;
-//! a Group Item's label matches in the outline column.
+//! a Group Item's label matches in the outline column, and in header form
+//! a group's label matches in its span, on the row carrying it.
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Depth, Effect, Expand, FindMatch, FindQuery, Grid, Grouping, Key,
-    Level, TextQuery, ViewEdit, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Depth, Effect, Expand, FindMatch, FindQuery, Form, Grid, Grouping,
+    Key, Level, TextQuery, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_testkit::{Group, Scenario, TreeTable};
 
@@ -43,15 +44,21 @@ fn tree() -> Vec<Group> {
     ]
 }
 
-fn spec(expand: Expand) -> ViewSpec {
+fn spec(expand: Expand, form: Form) -> ViewSpec {
     let mut grouping = Grouping::rows_by(REGION);
     grouping.row_levels = vec![Level::field(REGION), Level::field(PORT)];
     grouping.rows.expand = expand;
+    grouping.rows.form = form;
     ViewSpec::default().with_grouping(Some(grouping))
 }
 
 /// The shipments grouped, opened as `expand` says, with find on `text`.
 fn finding(expand: Expand, text: &str) -> Scenario<TreeTable> {
+    finding_in(Form::Outline, expand, text)
+}
+
+/// As [`finding`], drawn in `form`.
+fn finding_in(form: Form, expand: Expand, text: &str) -> Scenario<TreeTable> {
     let grid = Grid::new(
         AxisConfig::new(6, 1.0).header(1.0),
         AxisConfig::new(3, 5.0).header(3.0),
@@ -59,7 +66,7 @@ fn finding(expand: Expand, text: &str) -> Scenario<TreeTable> {
     let table = TreeTable::new(vec![REGION, PORT], 3, tree());
     let mut s = Scenario::new(grid, table);
     s.frame(V);
-    s.input(|g| g.request_view(spec(expand)));
+    s.input(|g| g.request_view(spec(expand, form)));
     s.frame(V);
     s.input(|g| g.set_find(Some(FindQuery::new(TextQuery::new(text)))));
     s.frame(V);
@@ -214,4 +221,36 @@ fn closing_find_while_the_groups_open_drops_the_match() {
         .rows
         .expand;
     assert_eq!(open.except, vec![BERGEN], "Bergen opened all the same");
+}
+
+#[test]
+fn in_header_form_a_label_lands_on_the_first_row_of_its_span_in_its_tier() {
+    let mut s = finding_in(Form::Header, Expand::default(), "north");
+    s.input(|g| g.action(Action::FindNext));
+    assert_eq!(expands(&s.effects()), vec![]);
+    let snapshot = s.frame(V);
+    assert_eq!(snapshot.find_match(), Some(FindMatch::new(Key(0), REGION)));
+    assert!(snapshot.band_focused(Axis::Rows));
+    assert_eq!(snapshot.focused_tier(), 0);
+    assert_eq!(snapshot.focus(Axis::Rows).and_then(|f| f.key), Some(Key(0)));
+}
+
+#[test]
+fn in_header_form_a_closed_groups_label_lands_on_its_subtotal_and_leaves_it_closed() {
+    let mut s = finding_in(Form::Header, Expand::to(Depth::Levels(0)), "bergen");
+    let mut out = s.step("everything closed in header form; find \"bergen\"", V);
+    s.input(|g| g.action(Action::FindNext));
+    out += &s.step(
+        "next: North opens, Bergen stays closed, and focus takes its span on its Subtotal",
+        V,
+    );
+    insta::assert_snapshot!(out);
+    let bergen = TreeTable::subtotal(BERGEN);
+    let snapshot = s.grid.snapshot();
+    assert_eq!(snapshot.find_match(), Some(FindMatch::new(bergen, PORT)));
+    let applied = snapshot.applied_view().grouping.clone().unwrap();
+    assert_eq!(applied.rows.expand.except, vec![NORTH], "only North opens");
+    assert!(snapshot.band_focused(Axis::Rows));
+    assert_eq!(snapshot.focused_tier(), 1);
+    assert_eq!(snapshot.focus(Axis::Rows).and_then(|f| f.key), Some(bergen));
 }

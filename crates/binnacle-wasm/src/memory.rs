@@ -129,15 +129,23 @@ struct GroupedItem {
 
 /// An item of the grouped rows as find walks them, every group open: its
 /// layer Key, its Logical Index if a Leaf, whether a closed group hides it
-/// and the Group Item Keys above it; a Group Item's level column index and
-/// label (`null` for a blank).
+/// and the Group Item Keys that must open to show it; and the labels it
+/// carries, outermost first (a Group Item its own, in header form the row
+/// a group's span starts on the group's).
 #[derive(Serialize)]
 struct FoundItem {
     key: u64,
     item: Option<u32>,
     hidden: bool,
     ancestors: Vec<u64>,
-    field: Option<u64>,
+    labels: Vec<FoundLabel>,
+}
+
+/// A group's label as find matches it: its level column index and its
+/// text, `null` for a blank.
+#[derive(Serialize)]
+struct FoundLabel {
+    field: u64,
     label: Option<String>,
 }
 
@@ -418,13 +426,15 @@ impl WebMemory {
                 item: (i.kind == ItemKind::Leaf).then_some(i.key.0 as u32),
                 hidden: i.hidden,
                 ancestors: i.ancestors.iter().map(|k| k.0).collect(),
-                field: (i.kind == ItemKind::Group)
-                    .then_some(i.group.map(|(f, _)| f.0))
-                    .flatten(),
-                label: match (i.kind, i.group) {
-                    (ItemKind::Group, Some((_, Value::Text(t)))) => Some(t.clone()),
-                    _ => None,
-                },
+                labels: (i.labels.iter())
+                    .map(|&(field, value)| FoundLabel {
+                        field: field.0,
+                        label: match value {
+                            Value::Text(t) => Some(t.clone()),
+                            Value::Blank => None,
+                        },
+                    })
+                    .collect(),
             })
             .collect();
         to_js(&items)

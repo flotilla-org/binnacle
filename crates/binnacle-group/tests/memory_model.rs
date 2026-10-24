@@ -16,9 +16,9 @@ use std::cmp::Ordering;
 
 use binnacle_core::{
     Aggregate, AggregateValue, Axis, ChangeNotice, Compared, Comparison, Condition, Expand,
-    FilterSpec, FindDirection, FindQuery, GRAND_TOTAL, Grouping, ItemKind, Key, Level, OpenState,
-    Placement, Placements, Scalar, SortColumn, SortDirection, SortSpec, Support, TextQuery,
-    VALUES_FIELD, Value, ViewSpec,
+    FilterSpec, FindDirection, FindQuery, Form, GRAND_TOTAL, Grouping, ItemKind, Key, Level,
+    Located, OpenState, Placement, Placements, Scalar, SortColumn, SortDirection, SortSpec,
+    Support, TextQuery, VALUES_FIELD, Value, ViewSpec,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::MemorySource;
@@ -847,22 +847,77 @@ fn an_edit_moves_nothing_and_every_figure_follows_it_at_once(tc: TestCase) {
     assert_eq!(regrouped, model(&rows, &asked, &spec.rows.sort, &hidden));
 }
 
-/// A match as the model describes it: a Group Item's label by its path, or
-/// a Leaf's cell.
+/// A row find visits, as the model describes it: a Summary Item by kind
+/// and its group's values, or a Leaf by Key.
+#[derive(Clone, Debug, PartialEq)]
+enum Row {
+    Summary(ItemKind, Vec<Value>),
+    Leaf(Key),
+}
+
+/// A match as the model describes it: a group's label by its group's
+/// values and the row carrying it, or a Leaf's cell.
 #[derive(Clone, Debug, PartialEq)]
 enum Found {
-    Label(Vec<Value>),
+    Label(Vec<Value>, Row),
     Cell(Key, Key),
 }
 
-#[hegel::test(test_cases = 200)]
+/// The rows find visits in header form, as if every group were open, each
+/// with the labels it carries (by their groups' values, outermost first)
+/// and whether a closed group hides it, given the levels from `depth` on
+/// closed. A group has no Group Item: an open one's label rides the first
+/// row of its span (past its own Subtotal placed before, which sits
+/// outside it), and a closed one's its Subtotal, standing in for it before
+/// the rows it hides.
+fn header_rows(items: Vec<Item>, depth: u32) -> Vec<(Row, Vec<Vec<Value>>, bool)> {
+    let mut out = Vec::new();
+    let mut pending: Vec<Vec<Value>> = Vec::new();
+    let mut closed: Vec<Vec<Value>> = Vec::new();
+    let level = |path: &[Value]| path.len() as u32 - 1;
+    for item in items {
+        match item {
+            Item::Summary(ItemKind::Group, path, _) if level(&path) >= depth => {
+                pending.push(path.clone());
+                let labels = std::mem::take(&mut pending);
+                let hidden = level(&path) > depth;
+                out.push((
+                    Row::Summary(ItemKind::Subtotal, path.clone()),
+                    labels,
+                    hidden,
+                ));
+                closed.push(path);
+            }
+            Item::Summary(ItemKind::Group, path, _) => pending.push(path),
+            Item::Summary(ItemKind::Subtotal, path, _) if closed.contains(&path) => {}
+            Item::Summary(ItemKind::Subtotal, path, _) => {
+                // Inside every span above its group, outside its own.
+                let (own, others) = pending.drain(..).partition(|p| *p == path);
+                pending = own;
+                out.push((Row::Summary(ItemKind::Subtotal, path), others, false));
+            }
+            Item::Summary(kind, path, _) => out.push((Row::Summary(kind, path), Vec::new(), false)),
+            Item::Leaf(key) => {
+                let labels = std::mem::take(&mut pending);
+                out.push((Row::Leaf(key), labels, false));
+            }
+        }
+    }
+    out
+}
+
+#[hegel::test(test_cases = 300)]
 fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
     let rows = tc.draw(gs::vecs(record()).max_size(50));
     let mut source = source(rows.len());
     let (asked, mut spec) = tc.draw(spec(rows.len()));
     let depth = tc.draw(gs::integers::<u32>().max_value(2));
+    let header = tc.draw(gs::booleans());
     let mut grouping = spec.grouping.clone().unwrap();
     grouping.rows.expand = Expand::to(binnacle_core::Depth::Levels(depth));
+    if header {
+        grouping.rows.form = Form::Header;
+    }
     spec.grouping = Some(grouping);
     source.view(&rows, &spec);
     let hidden: Vec<Key> = spec.rows.hidden.clone();
@@ -870,30 +925,43 @@ fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
     let digits = tc.draw(gs::integers::<u8>().max_value(99)).to_string();
     let query = FindQuery::new(TextQuery::new(digits.clone()));
 
-    // The model: every item open, a label then the shown columns in order.
+    // The model: every item open, a row's labels then the shown columns in
+    // order.
     let searched: Vec<usize> = (0..COLS)
         .filter(|c| !asked.levels.iter().any(|l| l.0 == *c))
         .filter(|&c| !spec.cols.hidden.contains(&Key(c as u64)))
         .collect();
+    let items = model(&rows, &asked, &spec.rows.sort, &hidden);
+    let visited: Vec<(Row, Vec<Vec<Value>>, bool)> = match header {
+        true => header_rows(items, depth),
+        // A group at level L hides from depth L on.
+        false => (items.into_iter())
+            .map(|item| match item {
+                Item::Summary(ItemKind::Group, path, _) => {
+                    let hid = path.len() as u32 > depth + 1;
+                    let row = Row::Summary(ItemKind::Group, path.clone());
+                    (row, vec![path], hid)
+                }
+                Item::Summary(kind, path, _) => (Row::Summary(kind, path), Vec::new(), false),
+                Item::Leaf(key) => (Row::Leaf(key), Vec::new(), false),
+            })
+            .collect(),
+    };
+    let leaves_hidden = asked.levels.len() as u32 > depth;
     let mut want = Vec::new();
-    for item in model(&rows, &asked, &spec.rows.sort, &hidden) {
+    for (row, labels, hid) in visited {
         let has = |v: &Value| matches!(v, Value::Text(t) if t.contains(&digits));
-        match item {
-            Item::Summary(ItemKind::Group, path, _) => {
-                if has(path.last().unwrap()) {
-                    // A group at level L hides from depth L on.
-                    want.push((Found::Label(path.clone()), path.len() as u32 > depth + 1));
+        for path in labels {
+            if has(path.last().unwrap()) {
+                want.push((Found::Label(path, row.clone()), hid));
+            }
+        }
+        if let Row::Leaf(key) = row {
+            for &c in &searched {
+                if has(&text(rows[key.0 as usize][c])) {
+                    want.push((Found::Cell(key, Key(c as u64)), leaves_hidden));
                 }
             }
-            Item::Leaf(key) => {
-                for &c in &searched {
-                    if has(&text(rows[key.0 as usize][c])) {
-                        let hid = asked.levels.len() as u32 > depth;
-                        want.push((Found::Cell(key, Key(c as u64)), hid));
-                    }
-                }
-            }
-            Item::Summary(..) => {}
         }
     }
     let count = source.find_count(&rows, &query);
@@ -907,26 +975,53 @@ fn find_steps_through_every_match_as_if_every_group_were_open(tc: TestCase) {
             .expect("a match");
         assert_eq!(step.index, Some(i as u64));
         assert!(!step.wrapped);
-        let got = match step.at.row.0 & binnacle_group::SUMMARY_KEY_BIT {
-            0 => Found::Cell(step.at.row, step.at.col),
+        let values = |path: &binnacle_group::Path| path.iter().map(|(_, v)| v.clone()).collect();
+        // The groups that must open to show it, once open, show it.
+        let ancestors = source.ancestors(Axis::Rows, step.at.row);
+        let mut opened = spec.clone();
+        let g = opened.grouping.as_mut().unwrap();
+        for (level, &key) in ancestors.iter().enumerate() {
+            g.rows.expand = g.rows.expand.clone().with(level as u32, key, true);
+        }
+        source.view(&rows, &opened);
+        assert!(
+            matches!(
+                source.locate(&rows, Axis::Rows, step.at.row),
+                Located::Found(_)
+            ),
+            "{found:?} is shown once its ancestors open"
+        );
+        let row = match step.at.row.0 & binnacle_group::SUMMARY_KEY_BIT {
+            0 => Row::Leaf(step.at.row),
             _ => {
-                let path = source.path(step.at.row).expect("an interned group");
-                assert_eq!(
-                    step.at.col,
-                    path.last().unwrap().0,
-                    "a label's column is its field"
-                );
-                Found::Label(path.iter().map(|(_, v)| v.clone()).collect())
+                let summary = source.summary(step.at.row).expect("a Summary Item shown");
+                Row::Summary(summary.kind, values(summary.path))
             }
         };
-        assert_eq!(got, *found);
-        // Its ancestors are the groups on its path.
-        let ancestors = source.ancestors(Axis::Rows, step.at.row);
-        let depth_of = match &got {
-            Found::Label(path) => path.len() - 1,
-            Found::Cell(..) => asked.levels.len(),
+        source.view(&rows, &spec);
+        let level_field = |values: &[Value]| Key(asked.levels[values.len() - 1].0 as u64);
+        let got = match &found {
+            Found::Label(path, _) => {
+                assert_eq!(
+                    step.at.col,
+                    level_field(path),
+                    "a label's column is its field"
+                );
+                Found::Label(path.clone(), row.clone())
+            }
+            Found::Cell(..) => Found::Cell(step.at.row, step.at.col),
         };
-        assert_eq!(ancestors.len(), depth_of);
+        assert_eq!(got, *found);
+        // Its ancestors are the groups that must open to show it: those on
+        // its path, past a Subtotal's own group in header form, where it
+        // stands in for the group closed.
+        let above = match &row {
+            Row::Leaf(_) => asked.levels.len(),
+            Row::Summary(ItemKind::Subtotal, path) if header => path.len() - 1,
+            Row::Summary(ItemKind::Subtotal, path) => path.len(),
+            Row::Summary(_, path) => path.len() - 1,
+        };
+        assert_eq!(ancestors.len(), above);
         from = Some(step.at);
     }
     if !want.is_empty() {

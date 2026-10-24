@@ -41,11 +41,18 @@ function paintRowSpans(p: PaintContext): void {
   if (s.rows.spans.length === 0) return;
   ctx.save();
   clip(ctx, 0, top, left, p.height - top);
+  // The row a group's label that is the current match rides, as a cell would be.
+  const found = s.findMatch;
+  const at = found ? (s.rows.headers.find((h) => h.key === found.row)?.position ?? null) : null;
   for (const span of s.rows.spans) {
     const v = span.visible;
     ctx.save();
     clip(ctx, v.x, v.y, v.width, v.height);
     paintTint(p, span);
+    if (found && at !== null && span.field === found.col && span.first <= at && at <= span.last) {
+      ctx.fillStyle = theme.findCurrent.background;
+      ctx.fillRect(v.x, v.y, v.width, v.height);
+    }
     ctx.fillStyle = theme.border;
     if (!span.cutBefore) ctx.fillRect(v.x, span.rect.y, v.width, p.pixel);
     if (!span.cutAfter) ctx.fillRect(v.x, span.rect.y + span.rect.height - p.pixel, v.width, p.pixel);

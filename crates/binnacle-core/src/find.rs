@@ -84,6 +84,8 @@ pub(crate) struct FindState {
     /// Whether the current match is a Group Item's label, drawn in the row
     /// Header Band rather than in a column.
     pub label: bool,
+    /// The level of that label, whose tier holds it in header form.
+    pub tier: u32,
     /// The match waiting for the groups it lies in to open before it takes
     /// focus.
     revealing: Option<FindMatch>,
@@ -167,19 +169,27 @@ impl Grid {
     /// one [`ViewEdit::Expand`] each, so they stay open as ordinary
     /// exceptions, and the match takes focus once the Table Source has
     /// answered. A match in the column of the row's own level field is a
-    /// Group Item's label, which focus takes in the outline column.
+    /// Group Item's label, which focus takes in the outline column. In
+    /// header form a match in the column of the field of a level the row
+    /// lies at or under is the label of that level's group, drawn in its
+    /// span on the row carrying it, which focus takes in that level's tier.
     pub fn find_stepped_within(&mut self, found: FindMatch, ancestors: [&[Key]; 2]) {
         if !self.find_answered() {
             return;
         }
         self.find.current = Some(found);
-        let field = (self.view.applied.grouping.as_ref())
-            .and_then(|g| {
-                g.levels(Axis::Rows)
-                    .get(ancestors[Axis::Rows.index()].len())
-            })
-            .and_then(|l| l.field_key());
-        self.find.label = field == Some(found.col);
+        let depth = ancestors[Axis::Rows.index()].len();
+        let levels =
+            (self.view.applied.grouping.as_ref()).map_or(&[][..], |g| g.levels(Axis::Rows));
+        let level = levels.iter().position(|l| l.field_key() == Some(found.col));
+        self.find.label = match (level, self.header_levels(Axis::Rows) > 0) {
+            (Some(level), true) => level <= depth,
+            (Some(level), false) => level == depth,
+            (None, _) => false,
+        };
+        if let (true, Some(level)) = (self.find.label, level) {
+            self.find.tier = level as u32;
+        }
         let mut asked = false;
         for axis in Axis::ALL {
             for (level, &key) in ancestors[axis.index()].iter().enumerate() {
@@ -232,6 +242,7 @@ impl Grid {
             if let Some(col) = col {
                 self.place_focus(found.row, col, false);
                 self.band_focus = Some(Axis::Rows);
+                self.band_tier = self.find.tier;
             }
         }
         for axis in Axis::ALL {
