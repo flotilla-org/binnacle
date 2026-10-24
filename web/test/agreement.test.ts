@@ -530,6 +530,11 @@ describe("Grouping", () => {
       expect(Array.from(memory.locate_summary(0, items[4]!.key))).toEqual([0, 4]);
       expect(Array.from(memory.locate_summary(0, GRAND_TOTAL))).toEqual([0, 11]);
       expect(Array.from(memory.locate(0, 3))).toEqual([0, 9]);
+      // In header form a group is a span, not an item: gone, suggested at its first item.
+      stage();
+      const header = { ...grouping, rowAxis: { ...grouping.rowAxis, form: "header" as const } };
+      memory.group(header, new BigUint64Array(), new Uint8Array(), [], new BigUint64Array(), new Uint8Array(), []);
+      expect(Array.from(memory.locate_summary(0, b))).toEqual([1, 3]);
 
       // Sorted by the weight, heaviest first: the groups by their sum.
       memory.stage_strings(...region);

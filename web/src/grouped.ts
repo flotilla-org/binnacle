@@ -522,7 +522,8 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
         const at = (): Located | undefined => {
           const [code, position] = wasm().locate(key);
           if (code === undefined) return undefined;
-          return code === 0 ? { type: "Found", position: position! } : { type: "Gone", suggest: null };
+          if (code === 0) return { type: "Found", position: position! };
+          return { type: "Gone", suggest: Number.isNaN(position) ? null : position! };
         };
         return until(at, signal) as Located | Promise<Located>;
       },

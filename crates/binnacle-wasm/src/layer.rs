@@ -366,12 +366,12 @@ impl WebGroupingLayer {
         to_js(&items)
     }
 
-    /// Where `key` sits: `[0, position]`, `[1, NaN]` if gone, or `[]`
-    /// while the backend is asked.
+    /// Where `key` sits: `[0, position]`, `[1, suggest]` if gone (`NaN`
+    /// with no suggestion), or `[]` while the backend is asked.
     pub fn locate(&mut self, key: u64) -> Vec<f64> {
         match self.layer.locate(Axis::Rows, Key(key)) {
             Some(Located::Found(p)) => vec![0.0, p as f64],
-            Some(Located::Gone { .. }) => vec![1.0, f64::NAN],
+            Some(Located::Gone { suggest }) => vec![1.0, suggest.map_or(f64::NAN, |p| p as f64)],
             None => Vec::new(),
         }
     }

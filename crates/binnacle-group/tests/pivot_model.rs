@@ -660,6 +660,36 @@ fn each_item_of_a_pivot_is_found_where_it_sits(tc: TestCase) {
     }
 }
 
+/// A group in header form is a span, not an item: it is gone, and would
+/// sit at the first item it spans (#230).
+#[hegel::test(test_cases = 200)]
+fn a_group_in_header_form_is_suggested_at_its_first_item(tc: TestCase) {
+    let mut s = settle(&tc);
+    for axis in Axis::ALL {
+        let n = s.layer.count(axis).unwrap();
+        let got = s.layer.window(axis, 0..n);
+        let mut first: Vec<(Key, u64)> = Vec::new();
+        for (at, (_, outline)) in got.iter().enumerate() {
+            for &group in &outline.ancestors {
+                if !first.iter().any(|&(k, _)| k == group) {
+                    first.push((group, at as u64));
+                }
+            }
+        }
+        for (group, at) in first {
+            if got.iter().any(|(k, _)| *k == group) {
+                continue;
+            }
+            let suggest = Some(at);
+            assert_eq!(
+                s.layer.locate(axis, group),
+                Some(Located::Gone { suggest }),
+                "{axis:?} {group:?}"
+            );
+        }
+    }
+}
+
 #[hegel::test(test_cases = 100)]
 fn a_pivot_refilters_both_axes(tc: TestCase) {
     let s = settle(&tc);

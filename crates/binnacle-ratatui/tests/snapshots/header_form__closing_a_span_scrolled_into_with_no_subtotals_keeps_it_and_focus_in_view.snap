@@ -1,0 +1,14 @@
+---
+source: crates/binnacle-ratatui/tests/header_form.rs
+expression: out
+---
+--- Aberdeen's second shipment on top
+crew    weight    count id   │crew │weig
+ ▾ Nor…› ▾ Aberdeen›#3  s3c0  s3c1  s3c2
+ │       ▾ Bergen   #4  s4c0  s4c1  s4c2
+ ▾ Sout› ▾ Cadiz   ›#1  s1c0  s1c1  s1c2
+--- Aberdeen closed: Refiltered, as no Subtotal stands in
+crew    weight    count id   │crew │weig
+ ▾ North ▸ Aberdeen     sum   sum   sum
+ │       ▾ Bergen   #4  s4c0  s4c1  s4c2
+ ▾ Sout› ▾ Cadiz   ›#1  s1c0  s1c1  s1c2

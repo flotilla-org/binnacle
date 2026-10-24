@@ -238,7 +238,7 @@ impl WebMemory {
     pub fn locate_summary(&mut self, a: u8, key: u64) -> Vec<f64> {
         match self.locate_grouped(axis(a), Key(key)) {
             Located::Found(p) => vec![0.0, p as f64],
-            Located::Gone { .. } => vec![1.0, f64::NAN],
+            Located::Gone { suggest } => vec![1.0, suggest.map_or(f64::NAN, |p| p as f64)],
         }
     }
 
