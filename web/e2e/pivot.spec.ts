@@ -4,7 +4,8 @@
 // the status line's focus (Position and IDs) is the probe: a pivot's rows and
 // columns both come from the data, by negative IDs. Sorting and filtering
 // across the pivot (#211) read the ARIA table's row headers and the filter
-// bar's chips.
+// bar's chips; a second click on a header before the frame that draws the
+// first one's sort still cycles it.
 
 import { expect, test, type Page } from "@playwright/test";
 import { quarterShipments } from "../demo/sources/pivot";
@@ -51,6 +52,30 @@ function byQuarter(region: string, quarter: string): string[] {
   return [...totals]
     .sort(([a, x], [b, y]) => (x === y ? (a < b ? -1 : 1) : x === null ? 1 : y === null ? -1 : y - x))
     .map(([port]) => port);
+}
+
+/**
+ * Clicks the header of screen column `col` in the value columns' row twice in
+ * one task, so both clicks come before the next frame. The presses carry the
+ * mouse's own pointer ID, from a real move, so the layer can capture it.
+ */
+async function clickHeaderTwice(page: Page, col: number) {
+  const layer = page.locator(".binnacle-layer");
+  const at = { x: ROWS_BAND + col * COLUMN + COLUMN / 2, y: BAND - 14 };
+  const b = (await layer.boundingBox())!;
+  await layer.evaluate((el: HTMLElement) =>
+    el.addEventListener("pointermove", (e) => (el.dataset.pointer = String(e.pointerId)), { once: true }),
+  );
+  await page.mouse.move(b.x + at.x, b.y + at.y);
+  await layer.evaluate((el: HTMLElement, { x, y }) => {
+    const b = el.getBoundingClientRect();
+    const pointerId = Number(el.dataset.pointer);
+    const init = { clientX: b.left + x, clientY: b.top + y, pointerId, pointerType: "mouse", button: 0, bubbles: true, cancelable: true };
+    for (let i = 0; i < 2; i++) {
+      el.dispatchEvent(new PointerEvent("pointerdown", { ...init, buttons: 1 }));
+      el.dispatchEvent(new PointerEvent("pointerup", { ...init, buttons: 0 }));
+    }
+  }, at);
 }
 
 /** Clicks the header of screen column `col` in the value columns' row. */
@@ -184,6 +209,15 @@ test("a click on Q4's weight header sorts each region's ports by it; without the
   await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
   await expect(bar(page).getByText("not applied")).toHaveCount(0);
   await expect.poll(() => portsUnder(page, "East")).toEqual(sorted);
+});
+
+test("a second click on Q4's weight header before the frame that draws the first one's sort sorts it descending", async ({
+  page,
+}) => {
+  // The first click's sort is answered at once, which leaves the Grid
+  // without the columns' Keys until the next frame fetches them again.
+  await clickHeaderTwice(page, 6);
+  await expect.poll(() => portsUnder(page, "East")).toEqual(byQuarter("East", "Q4"));
 });
 
 test("the Grand Total row's menu keeps the quarters whose total weight passes its comparison", async ({ page }) => {
