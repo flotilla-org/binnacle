@@ -1603,8 +1603,10 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
     for (r, row) in rows.iter().enumerate() {
         for (k, col) in cols.iter().enumerate() {
             let s = rust.cell_state(row, col);
-            let want =
-                u8::from(s.focused) | u8::from(s.selected) << 1 | u8::from(s.current_match) << 2;
+            let want = u8::from(s.focused)
+                | u8::from(s.selected) << 1
+                | u8::from(s.current_match) << 2
+                | u8::from(s.editing) << 3;
             assert_eq!(cells[r * cols.len() + k], want, "cell {r},{k}");
         }
     }
@@ -1614,9 +1616,20 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         Mode::DraggingSelection => 2,
         Mode::ResizingBand { .. } => 3,
         Mode::MovingHeaders { .. } => 4,
+        Mode::Editing { .. } => 5,
         _ => 0,
     };
     assert_eq!(c.mode, mode);
+    let edited = match rust.mode() {
+        Mode::Editing { row, col } => Some((row.0, col.0)),
+        _ => None,
+    };
+    let got = (c.mode == 5).then_some((c.edit_row, c.edit_col));
+    assert_eq!(got, edited, "edited cell");
+    assert_eq!(c.has_editor_rect != 0, rust.editor_rect().is_some());
+    if let Some(r) = rust.editor_rect() {
+        assert!(rect(&c.editor_rect, &r), "editor rect");
+    }
     assert_eq!(c.capturing != 0, rust.capturing());
     let find = (c.has_find != 0).then(|| unsafe { find_from_c(&c.find) });
     assert_eq!(find.as_ref(), rust.find(), "find");

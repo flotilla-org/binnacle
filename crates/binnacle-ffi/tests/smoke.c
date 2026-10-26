@@ -260,6 +260,20 @@ int main(void) {
   CHECK(binnacle_grid_select_row(grid));
   drain(grid, &focus);
 
+  /* The host opens its editor on row 2, column 1: the Snapshot says where
+   * to place it until the host closes it. */
+  CHECK(binnacle_grid_edit_started(grid, 1002, 2001));
+  frame(grid, &snap);
+  CHECK(snap.mode == BINNACLE_MODE_EDITING);
+  CHECK(snap.edit_row == 1002 && snap.edit_col == 2001);
+  CHECK(snap.has_editor_rect && snap.editor_rect.x == 13 && snap.editor_rect.y == 3);
+  CHECK(snap.editor_rect.width == 8 && snap.editor_rect.height == 1);
+  CHECK(snap.cell_states[2 * 4 + 1] & BINNACLE_CELL_EDITING);
+  CHECK(!(snap.cell_states[0] & BINNACLE_CELL_EDITING));
+  CHECK(binnacle_grid_edit_ended(grid, BINNACLE_EDIT_COMMIT));
+  frame(grid, &snap);
+  CHECK(snap.mode == BINNACLE_MODE_IDLE && !snap.has_editor_rect);
+
   /* Scrolling. */
   CHECK(binnacle_grid_scroll(grid, 0, 3));
   frame(grid, &snap);

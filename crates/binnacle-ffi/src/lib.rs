@@ -24,7 +24,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 17;
+pub const BINNACLE_ABI_VERSION: u32 = 18;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -41,6 +41,7 @@ pub const BINNACLE_DAMAGE_POSITIONS: u32 = 4;
 pub const BINNACLE_CELL_FOCUSED: u8 = 1;
 pub const BINNACLE_CELL_SELECTED: u8 = 2;
 pub const BINNACLE_CELL_CURRENT_MATCH: u8 = 4;
+pub const BINNACLE_CELL_EDITING: u8 = 8;
 
 pub const BINNACLE_HEADER_SORTED: u32 = 1;
 pub const BINNACLE_HEADER_DESCENDING: u32 = 2;
@@ -57,6 +58,7 @@ pub const BINNACLE_MODE_IDLE: u32 = 1;
 pub const BINNACLE_MODE_DRAGGING_SELECTION: u32 = 2;
 pub const BINNACLE_MODE_RESIZING_BAND: u32 = 3;
 pub const BINNACLE_MODE_MOVING_HEADERS: u32 = 4;
+pub const BINNACLE_MODE_EDITING: u32 = 5;
 
 pub const BINNACLE_DROP_MOVE: u32 = 0;
 pub const BINNACLE_DROP_UNPIN: u32 = 1;
@@ -959,6 +961,10 @@ pub struct BinnacleSnapshot {
     pub values: *const BinnacleListedValue,
     pub values_len: usize,
     pub focused_tier: u32,
+    pub edit_row: u64,
+    pub edit_col: u64,
+    pub has_editor_rect: u32,
+    pub editor_rect: BinnacleRect,
 }
 
 #[repr(C)]
@@ -2812,7 +2818,8 @@ impl BinnacleGrid {
                 self.cells.push(
                     bit(state.focused, BINNACLE_CELL_FOCUSED)
                         | bit(state.selected, BINNACLE_CELL_SELECTED)
-                        | bit(state.current_match, BINNACLE_CELL_CURRENT_MATCH),
+                        | bit(state.current_match, BINNACLE_CELL_CURRENT_MATCH)
+                        | bit(state.editing, BINNACLE_CELL_EDITING),
                 );
             }
         }
@@ -2980,8 +2987,14 @@ impl BinnacleGrid {
             Mode::DraggingSelection => BINNACLE_MODE_DRAGGING_SELECTION,
             Mode::ResizingBand { .. } => BINNACLE_MODE_RESIZING_BAND,
             Mode::MovingHeaders { .. } => BINNACLE_MODE_MOVING_HEADERS,
+            Mode::Editing { .. } => BINNACLE_MODE_EDITING,
             _ => BINNACLE_MODE_OTHER,
         };
+        let edited = match snap.mode() {
+            Mode::Editing { row, col } => (row.0, col.0),
+            _ => (0, 0),
+        };
+        let editor_rect = snap.editor_rect();
         let drop = snap.drop_indicator();
         let mut drop_refusal = BINNACLE_MOVE_REFUSAL_OTHER;
         let (target, position, unpin, edge, before, reorder) = match drop.map(|d| d.target) {
@@ -3071,6 +3084,10 @@ impl BinnacleGrid {
             values: self.listed_values.1.as_ptr(),
             values_len: self.listed_values.1.len(),
             focused_tier: snap.focused_tier(),
+            edit_row: edited.0,
+            edit_col: edited.1,
+            has_editor_rect: flag(editor_rect.is_some()),
+            editor_rect: editor_rect.map(BinnacleRect::from).unwrap_or_default(),
         }
     }
 

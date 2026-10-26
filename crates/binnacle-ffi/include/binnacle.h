@@ -30,7 +30,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 17u
+#define BINNACLE_ABI_VERSION 18u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -56,6 +56,8 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_CELL_SELECTED 2u
 /* The current find match, drawn apart from the other matches. */
 #define BINNACLE_CELL_CURRENT_MATCH 4u
+/* The cell the host's editor is open on. */
+#define BINNACLE_CELL_EDITING 8u
 
 /* BinnacleHeader.flags bits. SORTED: the item is in the other axis's sort in
  * the applied View Spec, DESCENDING says which way and sort_place where (0
@@ -91,6 +93,9 @@ uint32_t binnacle_abi_version(void);
  * would drop them. With no drop, the release does nothing (unpinned items
  * over the body of an axis that can't move). */
 #define BINNACLE_MODE_MOVING_HEADERS 4
+/* The host's editor is open on the cell with edit_row and edit_col
+ * (binnacle_grid_edit_started): place it over editor_rect. */
+#define BINNACLE_MODE_EDITING 5
 
 /* BinnacleSnapshot.drop_target: what releasing the dragged headers would do.
  * MOVE: request a move to before drop_position (the count for the end),
@@ -884,6 +889,13 @@ typedef struct {
   /* The tier of the Header Band focus is in while it is in one (see each
    * axis's band_focused) and that axis is in header form; 0 otherwise. */
   uint32_t focused_tier;
+  /* While mode is EDITING: the edited cell's row and column Keys, and its
+   * rect, unclipped like focus_rect, while it is visible (scrolled away,
+   * has_editor_rect is 0 and the editor hides until it returns). */
+  uint64_t edit_row;
+  uint64_t edit_col;
+  uint32_t has_editor_rect;
+  BinnacleRect editor_rect;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
