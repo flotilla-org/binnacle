@@ -925,7 +925,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(105))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(110))),
     }
 }
 
@@ -952,47 +952,103 @@ fn pointer_event(e: PointerEvent) -> BinnaclePointerEvent {
     }
 }
 
+/// An Action as `binnacle_grid_action` takes it; its text borrows the
+/// Action's.
+fn c_action(action: &Action) -> BinnacleAction {
+    let mut c = BinnacleAction::default();
+    let axis_of = |a: &Axis| tag(*a);
+    c.kind = match action {
+        Action::TypeText(t) => {
+            c.args.type_text = BinnacleText {
+                data: t.as_ptr(),
+                len: t.len(),
+            };
+            BINNACLE_ACTION_TYPE_TEXT
+        }
+        Action::Activate => BINNACLE_ACTION_ACTIVATE,
+        Action::BeginEdit => BINNACLE_ACTION_BEGIN_EDIT,
+        Action::Copy => BINNACLE_ACTION_COPY,
+        Action::MoveFocus {
+            axis,
+            by,
+            forward,
+            extend,
+        } => {
+            c.args.move_focus = BinnacleMoveFocus {
+                axis: axis_of(axis),
+                by: match by {
+                    FocusStep::Item => BINNACLE_FOCUS_ITEM,
+                    FocusStep::Page => BINNACLE_FOCUS_PAGE,
+                    FocusStep::Edge => BINNACLE_FOCUS_EDGE,
+                },
+                forward: u32::from(*forward),
+                extend: u32::from(*extend),
+            };
+            BINNACLE_ACTION_MOVE_FOCUS
+        }
+        Action::SelectAll => BINNACLE_ACTION_SELECT_ALL,
+        Action::SelectColumn => BINNACLE_ACTION_SELECT_COLUMN,
+        Action::SelectRow => BINNACLE_ACTION_SELECT_ROW,
+        Action::Cancel => BINNACLE_ACTION_CANCEL,
+        Action::Scroll { dx, dy } => {
+            c.args.scroll = BinnacleScroll { dx: *dx, dy: *dy };
+            BINNACLE_ACTION_SCROLL
+        }
+        Action::ScrollTo { axis, fraction } => {
+            c.args.scroll_to = BinnacleScrollTo {
+                axis: axis_of(axis),
+                fraction: *fraction,
+            };
+            BINNACLE_ACTION_SCROLL_TO
+        }
+        Action::ScrollBy { axis, items } => {
+            c.args.scroll_by = BinnacleScrollBy {
+                axis: axis_of(axis),
+                items: *items,
+            };
+            BINNACLE_ACTION_SCROLL_BY
+        }
+        Action::LeaveOutline => BINNACLE_ACTION_LEAVE_OUTLINE,
+        Action::FindNext => BINNACLE_ACTION_FIND_NEXT,
+        Action::FindPrevious => BINNACLE_ACTION_FIND_PREVIOUS,
+    };
+    c
+}
+
 /// Sends an Action through the C API.
 unsafe fn send(h: *mut BinnacleGrid, action: &Action) -> i32 {
-    unsafe {
-        match action {
-            Action::TypeText(t) => binnacle_grid_type_text(h, t.as_ptr(), t.len()),
-            Action::MoveFocus {
-                axis,
-                by,
-                forward,
-                extend,
-            } => {
-                let by = match by {
-                    FocusStep::Item => 0,
-                    FocusStep::Page => 1,
-                    FocusStep::Edge => 2,
-                };
-                binnacle_grid_move_focus(h, tag(*axis), by, u32::from(*forward), u32::from(*extend))
-            }
-            Action::SelectAll => binnacle_grid_select_all(h),
-            Action::SelectColumn => binnacle_grid_select_column(h),
-            Action::SelectRow => binnacle_grid_select_row(h),
-            Action::Cancel => binnacle_grid_cancel(h),
-            Action::Scroll { dx, dy } => binnacle_grid_scroll(h, *dx, *dy),
-            Action::ScrollTo { axis, fraction } => {
-                binnacle_grid_scroll_to(h, tag(*axis), *fraction)
-            }
-            Action::ScrollBy { axis, items } => binnacle_grid_scroll_by(h, tag(*axis), *items),
-            Action::FindNext => binnacle_grid_find_next(h),
-            Action::FindPrevious => binnacle_grid_find_previous(h),
-            Action::Activate => binnacle_grid_activate(h),
-            Action::BeginEdit => binnacle_grid_begin_edit(h),
-            Action::LeaveOutline => binnacle_grid_leave_outline(h),
-            Action::Copy => binnacle_grid_copy(h),
-            #[allow(unreachable_patterns)] // `action` draws only the Actions above.
-            _ => unreachable!(),
-        }
-    }
+    unsafe { binnacle_grid_action(h, &c_action(action)) }
+}
+
+/// Gives both an Action, which the C API answers as done, or refused
+/// where the Grid refuses it.
+unsafe fn act_both(h: *mut BinnacleGrid, grid: &mut Grid, action: Action) -> i32 {
+    let want = match grid.refuses(&action) {
+        true => BINNACLE_ACTION_REFUSED,
+        false => BINNACLE_ACTION_DONE,
+    };
+    assert_eq!(unsafe { send(h, &action) }, want, "{action:?}");
+    grid.action(action);
+    1
 }
 
 /// Sends an input with an unknown tag in slot `which`; returns what the call
 /// returned.
+/// A focus move with these raw axis, step and forward tags.
+fn moved(axis: u32, by: u32, forward: u32) -> BinnacleAction {
+    let mut c = BinnacleAction {
+        kind: BINNACLE_ACTION_MOVE_FOCUS,
+        ..BinnacleAction::default()
+    };
+    c.args.move_focus = BinnacleMoveFocus {
+        axis,
+        by,
+        forward,
+        extend: 0,
+    };
+    c
+}
+
 unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
     let ok = BinnaclePointerEvent {
         kind: 0,
@@ -1013,9 +1069,16 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                     ..ok
                 },
             ),
-            3 => binnacle_grid_move_focus(h, 2, 0, 1, 0),
-            4 => binnacle_grid_move_focus(h, ROWS, 3, 1, 0),
-            5 => binnacle_grid_scroll_to(h, 2, 1.0),
+            3 => binnacle_grid_action(h, &moved(2, BINNACLE_FOCUS_ITEM, 1)),
+            4 => binnacle_grid_action(h, &moved(ROWS, 3, 1)),
+            5 => {
+                let mut c = c_action(&Action::ScrollTo {
+                    axis: Axis::Rows,
+                    fraction: 1.0,
+                });
+                c.args.scroll_to.axis = 2;
+                binnacle_grid_action(h, &c)
+            }
             6 => binnacle_grid_set_selection_unit(h, 3),
             7 => binnacle_grid_set_header_click(h, ROWS, 3),
             8 => binnacle_grid_set_size(h, 2, 0, 3.0),
@@ -1352,6 +1415,32 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             102 => binnacle_grid_pick(h, 2, 1000),
             103 => binnacle_grid_unpick(h, 2, 1000),
             104 => binnacle_grid_clear_picks(h, 2),
+            105 => binnacle_grid_action(h, &moved(ROWS, BINNACLE_FOCUS_ITEM, 2)),
+            106 => binnacle_grid_action(h, std::ptr::null()),
+            107 => {
+                let unknown = BinnacleAction {
+                    kind: 99,
+                    ..BinnacleAction::default()
+                };
+                binnacle_grid_action(h, &unknown)
+            }
+            108 => {
+                // A size no header ever had.
+                let c = BinnacleAction {
+                    size: size_of::<BinnacleAction>() - 1,
+                    kind: BINNACLE_ACTION_SELECT_ALL,
+                    ..BinnacleAction::default()
+                };
+                binnacle_grid_action(h, &c)
+            }
+            109 => {
+                let c = BinnacleAction {
+                    size: 0,
+                    kind: BINNACLE_ACTION_SELECT_ALL,
+                    ..BinnacleAction::default()
+                };
+                binnacle_grid_action(h, &c)
+            }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -2913,11 +3002,7 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     }
                     1
                 }
-                Op::Action(a) => {
-                    let ok = send(h, &a);
-                    grid.action(a);
-                    ok
-                }
+                Op::Action(a) => act_both(h, &mut grid, a),
                 Op::SetSize(axis, key, size) => {
                     grid.set_size(axis, Key(key + 5000 * u64::from(axis == Axis::Cols)), size);
                     binnacle_grid_set_size(
@@ -3353,7 +3438,15 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     binnacle_grid_reveal(h, tag(axis), key.0, align)
                 }
                 Op::BadText(bytes) => {
-                    assert_eq!(binnacle_grid_type_text(h, bytes.as_ptr(), bytes.len()), 0);
+                    let mut text = BinnacleAction {
+                        kind: BINNACLE_ACTION_TYPE_TEXT,
+                        ..BinnacleAction::default()
+                    };
+                    text.args.type_text = BinnacleText {
+                        data: bytes.as_ptr(),
+                        len: bytes.len(),
+                    };
+                    assert_eq!(binnacle_grid_action(h, &text), 0);
                     assert_eq!(
                         binnacle_grid_move_answered(h, bytes.as_ptr(), bytes.len()),
                         0
@@ -3686,11 +3779,7 @@ fn cell_gestures_through_the_c_api_mirror_the_grid(tc: TestCase) {
                         false => press(&[down, PointerEvent::moved(mx, my)]),
                     }
                 }
-                CellOp::Action(a) => {
-                    let ok = send(h, &a);
-                    grid.action(a);
-                    ok
-                }
+                CellOp::Action(a) => act_both(h, &mut grid, a),
                 CellOp::EditStarted(row, col) => {
                     grid.edit_started(Key(row), Key(col));
                     binnacle_grid_edit_started(h, row, col)
@@ -3845,12 +3934,10 @@ fn summary_items_through_the_c_api_mirror_the_grid(tc: TestCase) {
                     press(down, PointerEvent::up(x, 1.0));
                 }
                 3 => {
-                    grid.action(Action::Activate);
-                    binnacle_grid_activate(h);
+                    act_both(h, &mut grid, Action::Activate);
                 }
                 _ => {
-                    grid.action(Action::Copy);
-                    binnacle_grid_copy(h);
+                    act_both(h, &mut grid, Action::Copy);
                 }
             }
             check_effects(h, &mut grid);
@@ -3908,8 +3995,7 @@ fn find_steps_within_groups_through_the_c_api_mirror_the_grid(tc: TestCase) {
         grid.set_find(Some(query));
         check_effects(h, &mut grid);
         for _ in 0..tc.draw(gs::integers::<u32>().min_value(1).max_value(3)) {
-            grid.action(Action::FindNext);
-            assert_eq!(binnacle_grid_find_next(h), 1);
+            act_both(h, &mut grid, Action::FindNext);
             check_effects(h, &mut grid);
             let found = FindMatch::new(
                 Key(tc.draw(gs::integers::<u64>().max_value(7))),

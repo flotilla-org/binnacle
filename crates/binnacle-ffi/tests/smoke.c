@@ -36,6 +36,34 @@ static void fill(BinnacleGrid *grid, const BinnacleWindowRequests *requests) {
   }
 }
 
+static BinnacleAction action(uint32_t kind) {
+  BinnacleAction a = {.size = sizeof a, .kind = kind};
+  return a;
+}
+
+static int act(BinnacleGrid *grid, uint32_t kind) {
+  BinnacleAction a = action(kind);
+  return binnacle_grid_action(grid, &a);
+}
+
+static int move_focus(BinnacleGrid *grid, uint32_t axis, uint32_t by, uint32_t forward) {
+  BinnacleAction a = action(BINNACLE_ACTION_MOVE_FOCUS);
+  a.args.move_focus = (BinnacleMoveFocus){.axis = axis, .by = by, .forward = forward};
+  return binnacle_grid_action(grid, &a);
+}
+
+static int scroll_to(BinnacleGrid *grid, uint32_t axis, double fraction) {
+  BinnacleAction a = action(BINNACLE_ACTION_SCROLL_TO);
+  a.args.scroll_to = (BinnacleScrollTo){.axis = axis, .fraction = fraction};
+  return binnacle_grid_action(grid, &a);
+}
+
+static int type_text(BinnacleGrid *grid, const uint8_t *text, size_t len) {
+  BinnacleAction a = action(BINNACLE_ACTION_TYPE_TEXT);
+  a.args.type_text = (BinnacleText){text, len};
+  return binnacle_grid_action(grid, &a);
+}
+
 static BinnaclePointerEvent at(uint32_t kind, float x, float y, uint32_t modifiers) {
   BinnaclePointerEvent e = {.kind = kind, .x = x, .y = y,
                             .button = BINNACLE_BUTTON_PRIMARY,
@@ -280,9 +308,9 @@ int main(void) {
 
   /* Typed text comes back as an Effect stamped with the frame it was typed on. */
   const char typed[] = "h\xc3\xa9llo";
-  CHECK(binnacle_grid_type_text(grid, (const uint8_t *)typed, strlen(typed)));
+  CHECK(type_text(grid, (const uint8_t *)typed, strlen(typed)) == BINNACLE_ACTION_DONE);
   const uint8_t not_utf8[] = {0xff};
-  CHECK(!binnacle_grid_type_text(grid, not_utf8, 1));
+  CHECK(type_text(grid, not_utf8, 1) == 0);
   BinnacleEffect effect;
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.generation == 1 && effect.kind == BINNACLE_EFFECT_TEXT_TYPED);
@@ -291,15 +319,24 @@ int main(void) {
   CHECK(!binnacle_grid_poll_effect(grid, &effect));
 
   /* The first focus move lands on the first visible cell. */
-  CHECK(binnacle_grid_move_focus(grid, BINNACLE_ROWS, BINNACLE_FOCUS_ITEM, 1, 0));
-  CHECK(!binnacle_grid_move_focus(grid, 7, BINNACLE_FOCUS_ITEM, 1, 0));
-  CHECK(!binnacle_grid_move_focus(grid, BINNACLE_ROWS, 7, 1, 0));
+  /* Nothing is focused yet, so there is nothing to activate; malformed
+   * Actions are told apart from refused ones. */
+  CHECK(act(grid, BINNACLE_ACTION_ACTIVATE) == BINNACLE_ACTION_REFUSED);
+  CHECK(!binnacle_grid_action(grid, NULL));
+  CHECK(act(grid, 0) == 0 && act(grid, 99) == 0);
+  BinnacleAction stale = action(BINNACLE_ACTION_SELECT_ALL);
+  stale.size = sizeof stale - 1;
+  CHECK(binnacle_grid_action(grid, &stale) == 0);
+  CHECK(move_focus(grid, BINNACLE_ROWS, BINNACLE_FOCUS_ITEM, 1) == BINNACLE_ACTION_DONE);
+  CHECK(move_focus(grid, 7, BINNACLE_FOCUS_ITEM, 1) == 0);
+  CHECK(move_focus(grid, BINNACLE_ROWS, 7, 1) == 0);
+  CHECK(move_focus(grid, BINNACLE_ROWS, BINNACLE_FOCUS_ITEM, 2) == 0);
   BinnacleEffect focus;
   CHECK(drain(grid, &focus) == 1u << BINNACLE_EFFECT_FOCUS_CHANGED);
   CHECK(focus.generation == 1 && focus.row == 1000 && focus.col == 2000);
 
   /* Enter activates the focused cell: the host opens what it shows. */
-  CHECK(binnacle_grid_activate(grid));
+  CHECK(act(grid, BINNACLE_ACTION_ACTIVATE) == BINNACLE_ACTION_DONE);
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_ACTIVATED);
   CHECK(effect.row == 1000 && effect.col == 2000);
@@ -352,17 +389,17 @@ int main(void) {
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 15, 3.5f, 0)));
   frame(grid, &snap);
   CHECK(snap.mode == BINNACLE_MODE_DRAGGING_SELECTION && snap.capturing);
-  CHECK(binnacle_grid_cancel(grid));
+  CHECK(act(grid, BINNACLE_ACTION_CANCEL) == BINNACLE_ACTION_DONE);
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_UP, 15, 3.5f, 0)));
   frame(grid, &snap);
   CHECK(snap.mode == BINNACLE_MODE_IDLE && r->focus.position == 4);
 
-  CHECK(binnacle_grid_select_all(grid));
+  CHECK(act(grid, BINNACLE_ACTION_SELECT_ALL) == BINNACLE_ACTION_DONE);
   frame(grid, &snap);
   CHECK(r->selection_runs_len == 1 && r->selection_runs[0].end == 100);
   CHECK(c->selection_runs_len == 1 && c->selection_runs[0].end == 10);
-  CHECK(binnacle_grid_select_column(grid));
-  CHECK(binnacle_grid_select_row(grid));
+  CHECK(act(grid, BINNACLE_ACTION_SELECT_COLUMN) == BINNACLE_ACTION_DONE);
+  CHECK(act(grid, BINNACLE_ACTION_SELECT_ROW) == BINNACLE_ACTION_DONE);
   drain(grid, &focus);
 
   /* The host opens its editor on row 2, column 1: the Snapshot says where
@@ -380,22 +417,26 @@ int main(void) {
   CHECK(snap.mode == BINNACLE_MODE_IDLE && !snap.has_editor_rect);
 
   /* Scrolling. */
-  CHECK(binnacle_grid_scroll(grid, 0, 3));
+  BinnacleAction wheel = action(BINNACLE_ACTION_SCROLL);
+  wheel.args.scroll = (BinnacleScroll){.dx = 0, .dy = 3};
+  CHECK(binnacle_grid_action(grid, &wheel) == BINNACLE_ACTION_DONE);
   frame(grid, &snap);
   CHECK(r->anchor.position == 3 && r->strip[0].key == 1003);
-  CHECK(binnacle_grid_scroll_by(grid, BINNACLE_ROWS, 2));
+  BinnacleAction by_items = action(BINNACLE_ACTION_SCROLL_BY);
+  by_items.args.scroll_by = (BinnacleScrollBy){.axis = BINNACLE_ROWS, .items = 2};
+  CHECK(binnacle_grid_action(grid, &by_items) == BINNACLE_ACTION_DONE);
   frame(grid, &snap);
   CHECK(r->anchor.position == 5);
-  CHECK(binnacle_grid_scroll_to(grid, BINNACLE_ROWS, 1.0));
+  CHECK(scroll_to(grid, BINNACLE_ROWS, 1.0) == BINNACLE_ACTION_DONE);
   frame(grid, &snap);
   CHECK(r->anchor.position == 95 && r->thumb.fraction == 1);
-  CHECK(!binnacle_grid_scroll_to(grid, 2, 0.5));
+  CHECK(scroll_to(grid, 2, 0.5) == 0);
 
   /* A sort round trip. Two clicks on column 0's header ask for ascending,
    * then descending. The source rejects the first (answering the previous,
    * unsorted, spec) and applies the second by reversing the rows, says so,
    * then answers where the focused row went. */
-  CHECK(binnacle_grid_scroll_to(grid, BINNACLE_ROWS, 0));
+  CHECK(scroll_to(grid, BINNACLE_ROWS, 0) == BINNACLE_ACTION_DONE);
   frame(grid, &snap);
   click(grid, 6, 0.5f, 0);
   click(grid, 6, 0.5f, 0);
@@ -641,7 +682,7 @@ int main(void) {
   drain(grid, &focus);
   frame(grid, &snap);
   CHECK(r->focus.has_key && c->focus.key == 2001);
-  CHECK(binnacle_grid_find_previous(grid));
+  CHECK(act(grid, BINNACLE_ACTION_FIND_PREVIOUS) == BINNACLE_ACTION_DONE);
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_FIND_STEP_REQUESTED);
   CHECK(effect.direction == BINNACLE_FIND_PREVIOUS && effect.has_from);
@@ -656,7 +697,7 @@ int main(void) {
   CHECK(snap.has_find_match && snap.find_match.row == found.row && snap.find_match.col == 2001);
   CHECK(r->focus.key == found.row && c->focus.key == 2001);
   /* A match within no groups lands at once, as binnacle_grid_find_stepped. */
-  CHECK(binnacle_grid_find_next(grid));
+  CHECK(act(grid, BINNACLE_ACTION_FIND_NEXT) == BINNACLE_ACTION_DONE);
   CHECK(binnacle_grid_poll_effect(grid, &effect));
   CHECK(effect.kind == BINNACLE_EFFECT_FIND_STEP_REQUESTED);
   CHECK(!binnacle_grid_find_stepped_within(grid, NULL, NULL, 0, NULL, 0));
@@ -679,7 +720,7 @@ int main(void) {
   CHECK(binnacle_grid_set_header_click(grid, BINNACLE_COLS, BINNACLE_HEADER_CLICK_NONE));
   CHECK(!binnacle_grid_set_header_click(grid, BINNACLE_COLS, 3));
   CHECK(binnacle_grid_set_drag_threshold(grid, 2));
-  CHECK(binnacle_grid_scroll_to(grid, BINNACLE_ROWS, 0));
+  CHECK(scroll_to(grid, BINNACLE_ROWS, 0) == BINNACLE_ACTION_DONE);
   CHECK(binnacle_grid_set_size(grid, BINNACLE_COLS, 2000, 12));
   frame(grid, &snap);
   CHECK(c->strip[0].size == 12 && c->strip[1].offset == 17);

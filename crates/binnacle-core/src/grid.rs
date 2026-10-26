@@ -536,6 +536,43 @@ impl Grid {
         self.axis(axis).measure.size_overrides()
     }
 
+    /// Whether the Grid's state rules `action` out, so that [`Grid::action`]
+    /// would do nothing: `Activate`, `BeginEdit` (or on a Summary Item's
+    /// cell) and `Copy` with nothing focused or selected, a focus move or a
+    /// selection with an axis empty or nothing to select from, `LeaveOutline`
+    /// outside the Header Band, and Find Next or Previous while find is
+    /// closed. Typing, `Cancel` and scrolling are never refused.
+    pub fn refuses(&self, action: &Action) -> bool {
+        let empty = Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0);
+        let idle = self.locating.moves.is_empty();
+        match action {
+            Action::Activate => self.band().is_none() && self.focused_keys().is_none(),
+            Action::BeginEdit => self
+                .focused_keys()
+                .is_none_or(|(row, col)| self.summary_cell(row, col)),
+            Action::Copy => empty || (self.selection.span.is_none() && self.focus.is_none()),
+            Action::MoveFocus { .. } => {
+                empty && self.band().is_none() && !self.locating.any() && !self.pins_waiting()
+            }
+            Action::SelectAll => empty && idle,
+            Action::SelectColumn | Action::SelectRow => {
+                let axis = match action {
+                    Action::SelectColumn => Axis::Cols,
+                    _ => Axis::Rows,
+                };
+                let partial = (self.selection.span).is_some_and(|s| !s.whole[axis.index()]);
+                idle && self.focus.is_none() && !partial
+            }
+            Action::LeaveOutline => self.band_focus.is_none(),
+            Action::FindNext | Action::FindPrevious => self.find.query.is_none(),
+            Action::TypeText(_)
+            | Action::Cancel
+            | Action::Scroll { .. }
+            | Action::ScrollTo { .. }
+            | Action::ScrollBy { .. } => false,
+        }
+    }
+
     pub fn action(&mut self, action: Action) {
         match action {
             Action::TypeText(text) => {

@@ -4,6 +4,7 @@
 
 ### Breaking
 
+- **C API:** one `binnacle_grid_action(grid, const BinnacleAction *action)` replaces the fifteen Action wrappers ([#28](https://github.com/flotilla-org/binnacle/issues/28)): `binnacle_grid_type_text`, `activate`, `begin_edit`, `copy`, `move_focus`, `select_all`, `select_column`, `select_row`, `cancel`, `scroll`, `scroll_to`, `scroll_by`, `leave_outline`, `find_next` and `find_previous`. `BinnacleAction` starts with `size_t size` (`sizeof` as the host's header has it), then a `BINNACLE_ACTION_*` kind with stable values and a union of arguments. It returns `BINNACLE_ACTION_DONE`, `BINNACLE_ACTION_REFUSED` when the Grid's state rules the Action out, or 0 for a malformed one. A focus move's `forward` and `extend` must be 0 or 1.
 - **group:** `Body::Total` gains `cells`: on a pivot, the group's figures under each column group (at the empty path, each column group's own), as `GroupRow::cells` holds them; empty otherwise. A backend answers them so an edit refigures a pivot's cells.
 - **ratatui:** `Content::renderer` now chooses the Cell Renderer per cell, from the row Key and the column Key, as the web's `RendererChoice` does, so a column-major table can draw each row its own way. A host that chose by column renames its `renderer(&self, col)` to `column_renderer(&self, col)`, which the default `renderer` calls. `fit_width` asks each cell's own renderer.
 - **core:** a Sort header click on a row header now sorts the columns by that row, as a column header click sorts the rows (it did nothing before). Row headers keep `HeaderClick::Select` by default.
@@ -51,6 +52,7 @@
 
 ### Added
 
+- **core:** `Grid::refuses(&action)`: whether the Grid's state rules an Action out, so that it would do nothing (Activate, BeginEdit or Copy with nothing focused, a focus move or selection with nothing to act on, LeaveOutline outside a Header Band, a find step while find is closed).
 - **C API:** the grouping layer refigures after an edit, as the wasm and web sources do since [#258](https://github.com/flotilla-org/binnacle/pull/258) ([#259](https://github.com/flotilla-org/binnacle/issues/259)): `binnacle_group_layer_refigure` asks every figure held again, pending until the backend answers, and `binnacle_group_layer_poll_change` hands out the `CONTENT_CHANGED` notices to redraw.
 - **core:** `Grid::pick(axis, key)`, `unpick` and `clear_picks` set and clear picks by Key, as a Ctrl/Cmd-click does, leaving focus and the range alone ([#267](https://github.com/flotilla-org/binnacle/issues/267)). **C API:** `binnacle_grid_pick`, `binnacle_grid_unpick` and `binnacle_grid_clear_picks`. **wasm:** `WebGrid.pick`, `unpick` and `clear_picks`.
 - **core:** `Grid::reveal_key(axis, key, align)` scrolls to an item by its Key, as `reveal` (`Align::Nearest`) or `scroll_to_item` (`Align::Start`) do by Position, finding a Key outside the Window with `Locate` ([#266](https://github.com/flotilla-org/binnacle/issues/266)). **C API:** `binnacle_grid_focus(grid, row, col)` (`Grid::set_focus`) and `binnacle_grid_reveal(grid, axis, key, align)` with `BINNACLE_ALIGN_NEAREST` and `BINNACLE_ALIGN_START`. **wasm:** `WebGrid.reveal_key`.
