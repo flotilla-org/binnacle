@@ -3,7 +3,9 @@
  * far as wheelhouse needs and makes no stability promise: the header and
  * library change together, and BINNACLE_ABI_VERSION says which header a
  * library was built with. The Rust docs on binnacle-core describe each
- * behaviour in full.
+ * behaviour in full. The header is written by hand; binnacle-ffi's
+ * tests/c_smoke.rs checks the size, alignment and field offsets of every
+ * struct and union here against the Rust definitions with _Static_assert.
  *
  * Calls on one Grid are serialised by the host. Input arrays are borrowed for
  * the call only; a NULL array requires zero length. Tags and booleans are
