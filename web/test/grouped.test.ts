@@ -19,7 +19,7 @@ import {
   type GroupRow,
 } from "../src/grouped";
 import { fromRows } from "../src/rows";
-import { rowsBy, type ChangeNotice, type Condition, type Grouping, type ListedValue, type Located, type OutlinedWindow, type Placement, type ViewSpec } from "../src/source";
+import { rowsBy, type AppliedView, type ChangeNotice, type Condition, type Grouping, type ListedValue, type Located, type OutlinedWindow, type Placement, type ViewSpec } from "../src/source";
 import { fakeDocument, type DrawCall } from "./canvas";
 import { BAND, HEADER, Harness } from "./harness";
 import { loadForTests } from "./wasm";
@@ -423,6 +423,71 @@ test("rows a grouped axis has not had answered draw pending in the band, then th
     // A group's disclosure mark and its label, cut to the band's width.
     expect(drawn.map((t) => t.text)).toContain("▾");
     expect(drawn.map((t) => t.text)).toContain("b…");
+  } finally {
+    h.destroy();
+    source.destroy();
+  }
+});
+
+test("after an edit the edited Leaf draws its new cells at once, while its group's figures draw pending", async () => {
+  const rows: Rec[] = Array.from({ length: 6 }, (_, i) => ({ s: "ab"[i % 2]!, t: null, n: i }));
+  // Answered at once until the test holds the answers back.
+  let held: (() => void)[] | null = null;
+  const base = fromRows(rows, COLUMNS);
+  const source = groupedSource({
+    base,
+    backend: {
+      answer(batch, reply) {
+        for (const q of batch.queries) {
+          const send = () => reply(compute(rows, batch, q));
+          if (held) held.push(send);
+          else send();
+        }
+      },
+    },
+  });
+  const h = new Harness(source);
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      h.frame();
+      h.drain();
+    }
+  };
+  /** The value drawn in column `n` of the row with ID `id`, `undefined` while loading. */
+  const drawn = (id: number) => {
+    const s = h.frame();
+    const i = s.rows.strip.findIndex((item) => h.content?.id("rows", item) === id);
+    const j = s.cols.strip.findIndex((item) => h.content?.id("cols", item) === "n");
+    expect(i, `row ${id} shown`).toBeGreaterThanOrEqual(0);
+    return h.content?.value(i, j);
+  };
+  try {
+    h.frame();
+    const by = rowsBy<Field>("s");
+    const grouping: Grouping<Field, number, Field> = {
+      ...by,
+      values: [{ field: "n", aggregate: "sum" }],
+      rowAxis: { ...by.rowAxis, expand: { depth: "all", except: [] } },
+    };
+    h.grid.request_view(h.feed.viewKeys(viewOf(grouping, []) as AppliedView<number, Field>));
+    h.drain();
+    await settle();
+    // Group a, its Leaves 0, 2 and 4.
+    expect(drawn(-2)).toBe(6);
+    expect(drawn(2)).toBe(2);
+    held = [];
+    rows[2] = { ...rows[2]!, n: 9 };
+    base.edited(2);
+    h.drain();
+    await settle();
+    expect(drawn(-2), "the group's figure pending").toBeUndefined();
+    expect(drawn(2), "the edited Leaf drawn at once").toBe(9);
+    const answers = held;
+    held = null;
+    answers.forEach((send) => send());
+    await settle();
+    expect(drawn(-2)).toBe(13);
   } finally {
     h.destroy();
     source.destroy();
