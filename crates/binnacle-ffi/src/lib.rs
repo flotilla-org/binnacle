@@ -12,14 +12,14 @@ mod layer;
 pub use layer::*;
 
 use binnacle_core::{
-    Action, Aggregate, AggregateValue, Axis, AxisConfig, AxisView, Button, ChangeNotice, Compared,
-    Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
-    ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
-    Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located,
-    Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements, PointerEvent,
-    PointerKind, Rect, Scalar, Searched, SelectionUnit, SetPosition, SortColumn, SortDirection,
-    SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
-    Viewport,
+    Action, Aggregate, AggregateValue, Align, Axis, AxisConfig, AxisView, Button, ChangeNotice,
+    Compared, Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge,
+    EditEnd, Effect, ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery,
+    FocusEnd, FocusStep, Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind,
+    Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements,
+    PointerEvent, PointerKind, Rect, Scalar, Searched, SelectionUnit, SetPosition, SortColumn,
+    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
@@ -211,6 +211,9 @@ pub const BINNACLE_EXCEPT_CAPPED: i32 = 2;
 pub const BINNACLE_FOCUS_ITEM: u32 = 0;
 pub const BINNACLE_FOCUS_PAGE: u32 = 1;
 pub const BINNACLE_FOCUS_EDGE: u32 = 2;
+
+pub const BINNACLE_ALIGN_NEAREST: u32 = 0;
+pub const BINNACLE_ALIGN_START: u32 = 1;
 
 pub const BINNACLE_POINTER_DOWN: u32 = 0;
 pub const BINNACLE_POINTER_MOVE: u32 = 1;
@@ -4328,6 +4331,43 @@ pub unsafe extern "C" fn binnacle_grid_scroll_by(
     let action = axis(axis_tag).map(|axis| Action::ScrollBy { axis, items });
     // SAFETY: the caller's contract.
     unsafe { act(grid, action) }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_focus(grid: *mut BinnacleGrid, row: u64, col: u64) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_focus(Key(row), Key(col));
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_reveal(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+    align: u32,
+) -> i32 {
+    let align = match align {
+        BINNACLE_ALIGN_NEAREST => Some(Align::Nearest),
+        BINNACLE_ALIGN_START => Some(Align::Start),
+        _ => None,
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let (axis, align) = (axis(axis_tag)?, align?);
+            h.grid.reveal_key(axis, Key(key), align);
+            Some(())
+        })
+    }
 }
 
 /// # Safety

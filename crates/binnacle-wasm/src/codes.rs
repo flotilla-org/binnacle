@@ -5,9 +5,9 @@
 use std::fmt;
 
 use binnacle_core::{
-    Axis, Button, ChangeNotice, Compared, Edge, EditEnd, FocusStep, HeaderClick, Key, Located,
-    Modifiers, Placements, PointerKind, Position, SelectionUnit, SortColumn, SortSpec, Support,
-    TextSupport,
+    Align, Axis, Button, ChangeNotice, Compared, Edge, EditEnd, FocusStep, HeaderClick, Key,
+    Located, Modifiers, Placements, PointerKind, Position, SelectionUnit, SortColumn, SortSpec,
+    Support, TextSupport,
 };
 
 /// The largest count or Position that crosses as an `f64` exactly
@@ -94,6 +94,15 @@ pub fn header_click(code: u8) -> HeaderClick {
 }
 
 /// How an edit ended: 0 commit, anything else cancel.
+/// Where `reveal_key` scrolls an item to: 1 to start the body, anything
+/// else the least distance that shows it.
+pub fn align(code: u8) -> Align {
+    match code {
+        1 => Align::Start,
+        _ => Align::Nearest,
+    }
+}
+
 pub fn edit_end(code: u8) -> EditEnd {
     match code {
         0 => EditEnd::Commit,

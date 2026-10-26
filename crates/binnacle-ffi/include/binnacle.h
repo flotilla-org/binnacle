@@ -419,6 +419,11 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_FOCUS_PAGE 1
 #define BINNACLE_FOCUS_EDGE 2
 
+/* Where binnacle_grid_reveal scrolls an item to: the least distance that
+ * shows it, or to start the body (as near as the end allows). */
+#define BINNACLE_ALIGN_NEAREST 0
+#define BINNACLE_ALIGN_START 1
+
 /* BinnaclePointerEvent.kind. */
 #define BINNACLE_POINTER_DOWN 0
 #define BINNACLE_POINTER_MOVE 1
@@ -1546,6 +1551,14 @@ int binnacle_grid_edit_ended(BinnacleGrid *grid, uint32_t end);
 /* Text the user typed; 0 if it is not UTF-8. */
 int binnacle_grid_type_text(BinnacleGrid *grid, const uint8_t *text, size_t len);
 
+/* Moves focus to the cell with row and col ("go to row"), selecting as a
+ * focus move does, and scrolls to show it. A key outside the Window is
+ * found with a LOCATE Effect; until binnacle_grid_located answers, focus
+ * keeps its last Position on that axis. A key the Table Source no longer
+ * has leaves focus where it was on that axis. Nothing while either axis is
+ * empty. */
+int binnacle_grid_focus(BinnacleGrid *grid, uint64_t row, uint64_t col);
+
 /* Moves focus along axis by BINNACLE_FOCUS_*, towards the end if forward, and
  * scrolls to show it; extend stretches the range instead of replacing it. */
 int binnacle_grid_move_focus(BinnacleGrid *grid, uint32_t axis, uint32_t by,
@@ -1580,6 +1593,13 @@ int binnacle_grid_scroll_to(BinnacleGrid *grid, uint32_t axis, double fraction);
 
 /* By whole items, landing on an item start. */
 int binnacle_grid_scroll_by(BinnacleGrid *grid, uint32_t axis, int64_t items);
+
+/* Scrolls axis to the item with key as align (BINNACLE_ALIGN_*) says,
+ * leaving focus where it is. A key outside the Window is found with a
+ * LOCATE Effect and the scroll waits for binnacle_grid_located; one the
+ * Table Source no longer has scrolls nothing. A later reveal on the axis
+ * replaces one still waiting. */
+int binnacle_grid_reveal(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint32_t align);
 
 /*
  * The grouping layer (binnacle-group) for a host whose aggregate backend

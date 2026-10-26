@@ -637,6 +637,13 @@ impl WebGrid {
         self.grid.scroll_to_item(axis(a), codes::position(position));
     }
 
+    /// Scrolls `a` to the item with `key` as `align` says
+    /// ([`codes::align`]), asking the Table Source where it is with
+    /// `Locate` if the Window lacks it.
+    pub fn reveal_key(&mut self, a: u8, key: u64, align: u8) {
+        self.grid.reveal_key(axis(a), Key(key), codes::align(align));
+    }
+
     /// What a plain click selects; `unit` as [`codes::selection_unit`].
     pub fn set_selection_unit(&mut self, unit: u8) {
         self.grid.set_selection_unit(codes::selection_unit(unit));

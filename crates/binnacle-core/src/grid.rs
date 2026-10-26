@@ -10,11 +10,12 @@ use crate::gesture::Gesture;
 use crate::grouping::{ItemKind, Outline};
 use crate::measure::{AxisMeasure, WindowChange};
 use crate::moves::MoveState;
-use crate::notice::Locating;
+use crate::notice::{Locating, placement};
 use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
 use crate::selection::{Cell, CellRange, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
+use crate::sort::Located;
 use crate::span::HeaderSpan;
 use crate::types::{Axis, Edge, Generation, Key, Position, Viewport};
 use crate::view::ViewState;
@@ -108,6 +109,25 @@ impl IntoIterator for WindowRequests {
     }
 }
 
+/// Where [`Grid::reveal_key`] scrolls an item to: the least distance that
+/// shows it, as [`Grid::reveal`] does, or to start the body, as
+/// [`Grid::scroll_to_item`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Align {
+    #[default]
+    Nearest,
+    Start,
+}
+
+/// A [`Grid::reveal_key`] waiting for `located` to say where its Key is:
+/// `due` answers still to come.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Revealing {
+    key: Key,
+    align: Align,
+    due: u32,
+}
+
 /// The view controller for one table.
 pub struct Grid {
     pub(crate) axes: [AxisState; 2],
@@ -137,6 +157,8 @@ pub struct Grid {
     /// sizes the move was made against may change before then.
     pub(crate) reveal: bool,
     pub(crate) locating: Locating,
+    /// Per axis, the latest `reveal_key` of a Key outside the Window.
+    pub(crate) revealing: [Option<Revealing>; 2],
     pub(crate) refiltering: Refiltering,
     pub(crate) follow_focus_on_reorder: bool,
     pub(crate) selection: Selection,
@@ -200,6 +222,7 @@ impl Grid {
             heard: None,
             reveal: false,
             locating: Locating::default(),
+            revealing: [None; 2],
             refiltering: Refiltering::default(),
             follow_focus_on_reorder: false,
             selection: Selection::default(),
@@ -725,6 +748,53 @@ impl Grid {
         self.reveal = false;
         self.refilter_scrolled(axis);
         self.pending_damage.layout |= self.axis_mut(axis).scroll_to_item(position);
+    }
+
+    /// Scrolls `axis` to the item with `key` as `align` says, leaving focus
+    /// where it is. A Key outside the Window is found with `Locate`, and the
+    /// scroll waits for `located`; one the Table Source no longer has
+    /// scrolls nothing. A later `reveal_key` on the axis replaces one still
+    /// waiting.
+    pub fn reveal_key(&mut self, axis: Axis, key: Key, align: Align) {
+        let i = axis.index();
+        if let Some(position) = self.axis(axis).measure.position_of(key) {
+            self.revealing[i] = None;
+            self.reveal_aligned(axis, position, align);
+            return;
+        }
+        let due = match self.revealing[i] {
+            Some(r) if r.key == key => r.due,
+            _ => 0,
+        };
+        let due = self.request_locate(axis, key, due);
+        self.revealing[i] = Some(Revealing { key, align, due });
+    }
+
+    fn reveal_aligned(&mut self, axis: Axis, position: Position, align: Align) {
+        match align {
+            Align::Nearest => self.reveal(axis, position),
+            Align::Start => self.scroll_to_item(axis, position),
+        }
+    }
+
+    /// A `located` answer about the Key a `reveal_key` waits for.
+    pub(crate) fn reveal_located(&mut self, axis: Axis, key: Key, answer: Located) {
+        let i = axis.index();
+        let Some(r) = &mut self.revealing[i] else {
+            return;
+        };
+        if r.key != key || r.due == 0 {
+            return;
+        }
+        r.due -= 1;
+        if r.due > 0 {
+            return;
+        }
+        let align = r.align;
+        self.revealing[i] = None;
+        if let Ok(position) = placement(answer, self.axis(axis).measure.count()) {
+            self.reveal_aligned(axis, position, align);
+        }
     }
 
     /// A `MoveFocus`: moves focus, then replaces the range or stretches it.

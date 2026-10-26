@@ -6,7 +6,7 @@
 use std::slice;
 
 use binnacle_core::{
-    Action, Aggregate, AggregateValue, Axis, AxisConfig, Button, ChangeNotice, Compared,
+    Action, Aggregate, AggregateValue, Align, Axis, AxisConfig, Button, ChangeNotice, Compared,
     Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
     FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping,
     HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline,
@@ -139,6 +139,10 @@ enum Op {
     EditStarted(Key, Key),
     /// The host closed its editor.
     EditEnded(EditEnd),
+    /// Focus moved to the cell with these Keys.
+    Focus(Key, Key),
+    /// The item with this Key scrolled into view.
+    Reveal(Axis, Key, Align),
     /// Text that is not UTF-8: refused.
     BadText(Vec<u8>),
     /// An input with an unknown tag: refused.
@@ -274,6 +278,17 @@ fn len(tc: &TestCase) -> f32 {
 fn key(tc: &TestCase, axis: Axis) -> Key {
     let base: u64 = if axis == Axis::Rows { 1000 } else { 5000 };
     Key(base + tc.draw(gs::integers::<u64>().max_value(12)))
+}
+
+/// A Key the Window on `axis` may hold, or one past it that the Table
+/// Source is asked about.
+#[hegel::composite]
+fn key_or_far(tc: &TestCase, axis: Axis) -> Key {
+    let near = tc.draw(key(axis));
+    match tc.draw(gs::booleans()) {
+        true => near,
+        false => Key(near.0 + tc.draw(gs::integers::<u64>().max_value(200))),
+    }
 }
 
 /// A base field to group by: one of a few column Keys, so that levels,
@@ -685,7 +700,21 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(41)) {
+    match tc.draw(gs::integers::<u8>().max_value(42)) {
+        41 => match tc.draw(gs::booleans()) {
+            true => Op::Focus(
+                tc.draw(key_or_far(Axis::Rows)),
+                tc.draw(key_or_far(Axis::Cols)),
+            ),
+            false => {
+                let axis = tc.draw(axes());
+                Op::Reveal(
+                    axis,
+                    tc.draw(key_or_far(axis)),
+                    tc.draw(gs::sampled_from(vec![Align::Nearest, Align::Start])),
+                )
+            }
+        },
         38 => {
             let axis = tc.draw(axes());
             // Mostly a field the groupings use, sometimes any column.
@@ -885,7 +914,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(99))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(102))),
     }
 }
 
@@ -1307,6 +1336,8 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 }
             }
             97 => binnacle_grid_add_value(h, std::ptr::null()),
+            100 => binnacle_grid_reveal(h, 2, 1000, BINNACLE_ALIGN_NEAREST),
+            101 => binnacle_grid_reveal(h, ROWS, 1000, 2),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -3280,6 +3311,18 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 Op::EditEnded(end) => {
                     grid.edit_ended(end);
                     binnacle_grid_edit_ended(h, u32::from(end == EditEnd::Cancel))
+                }
+                Op::Focus(row, col) => {
+                    grid.set_focus(row, col);
+                    binnacle_grid_focus(h, row.0, col.0)
+                }
+                Op::Reveal(axis, key, align) => {
+                    grid.reveal_key(axis, key, align);
+                    let align = match align {
+                        Align::Nearest => BINNACLE_ALIGN_NEAREST,
+                        Align::Start => BINNACLE_ALIGN_START,
+                    };
+                    binnacle_grid_reveal(h, tag(axis), key.0, align)
                 }
                 Op::BadText(bytes) => {
                     assert_eq!(binnacle_grid_type_text(h, bytes.as_ptr(), bytes.len()), 0);

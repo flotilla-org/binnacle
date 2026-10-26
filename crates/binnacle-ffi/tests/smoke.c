@@ -134,6 +134,57 @@ static void group_layer(void) {
   CHECK(binnacle_group_layer_held(NULL) == 0);
 }
 
+/* A fresh Grid over the same table, unsorted: focus, reveal and picks by
+ * Key, for Keys in the Window and outside it. */
+static BinnacleGrid *fresh(BinnacleSnapshot *snap) {
+  BinnacleAxisConfig rows = {.count = 100, .default_size = 1, .header = 1, .gap = 0};
+  BinnacleAxisConfig cols = {.count = 10, .default_size = 8, .header = 4, .gap = 1};
+  BinnacleGrid *grid = binnacle_grid_new(rows, cols);
+  CHECK(grid != NULL);
+  reversed = 0;
+  frame(grid, snap);
+  return grid;
+}
+
+static void by_key(void) {
+  BinnacleSnapshot snap;
+  BinnacleGrid *grid = fresh(&snap);
+  const BinnacleAxisSnapshot *r = &snap.axes[BINNACLE_ROWS];
+  BinnacleEffect effect;
+
+  /* Row 40 is outside the Window: the Grid asks where it is, then scrolls
+   * it to the top. Row 42, in view, needs no scroll. */
+  CHECK(!binnacle_grid_reveal(grid, BINNACLE_ROWS, 1040, 2));
+  CHECK(binnacle_grid_reveal(grid, BINNACLE_ROWS, 1040, BINNACLE_ALIGN_START));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == 1040);
+  CHECK(binnacle_grid_located(grid, BINNACLE_ROWS, 1040, BINNACLE_LOCATED_FOUND, 40));
+  frame(grid, &snap);
+  CHECK(r->anchor.position == 40 && !snap.has_focus);
+  CHECK(binnacle_grid_reveal(grid, BINNACLE_ROWS, 1042, BINNACLE_ALIGN_NEAREST));
+  frame(grid, &snap);
+  CHECK(r->anchor.position == 40);
+  /* Nearest scrolls row 3 just into view at the top. */
+  CHECK(binnacle_grid_reveal(grid, BINNACLE_ROWS, 1003, BINNACLE_ALIGN_NEAREST));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(binnacle_grid_located(grid, BINNACLE_ROWS, 1003, BINNACLE_LOCATED_FOUND, 3));
+  frame(grid, &snap);
+  CHECK(r->anchor.position == 3);
+
+  /* Focus on row 70, column 1: found, then focused and shown. */
+  CHECK(binnacle_grid_focus(grid, 1070, 2001));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_LOCATE && effect.key == 1070);
+  CHECK(binnacle_grid_located(grid, BINNACLE_ROWS, 1070, BINNACLE_LOCATED_FOUND, 70));
+  while (binnacle_grid_poll_effect(grid, &effect)) {}
+  frame(grid, &snap);
+  CHECK(snap.has_focus && r->focus.position == 70 && r->focus.key == 1070);
+  CHECK(snap.axes[BINNACLE_COLS].focus.key == 2001);
+  CHECK(snap.has_focus_rect && snap.focus_rect.y >= 1 && snap.focus_rect.y + 1 <= 6);
+
+  binnacle_grid_free(grid);
+}
+
 int main(void) {
   CHECK(binnacle_abi_version() == BINNACLE_ABI_VERSION);
 
@@ -680,6 +731,7 @@ int main(void) {
   binnacle_grid_free(grid);
   binnacle_grid_free(NULL);
   group_layer();
+  by_key();
   printf("ok\n");
   return 0;
 }
