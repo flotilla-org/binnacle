@@ -1118,10 +1118,13 @@ export function createFeed<RowId, ColId, V>(
   /**
    * Asks for the visible cells the cache lacks, one block per set of missing
    * columns: scrolling down asks for new rows by every column, across for
-   * every row by new columns, diagonally for both.
+   * every row by new columns, diagonally for both. Summary Items go in
+   * blocks of their own, so figures a source works out late never hold
+   * back the Leaves' cells.
    */
   const request = (s: Snapshot) => {
     const rowKeys = s.rows.strip.flatMap((i) => (i.key === null ? [] : [i.key]));
+    const summaries = new Set(s.rows.strip.flatMap((i) => (i.key !== null && i.outline && i.outline.kind !== "leaf" ? [i.key] : [])));
     const colKeys = s.cols.strip.flatMap((i) => (i.key === null ? [] : [i.key]));
     const shownRows = new Set(rowKeys);
     const shownCols = new Set(colKeys);
@@ -1133,7 +1136,7 @@ export function createFeed<RowId, ColId, V>(
     for (const r of rowKeys) {
       const lacking = colKeys.filter((c) => cache.get(r, c) === undefined);
       if (!lacking.length) continue;
-      const id = lacking.join(",");
+      const id = `${summaries.has(r) ? "summary" : "leaf"}:${lacking.join(",")}`;
       const block = missing.get(id);
       if (block) block.rows.push(r);
       else missing.set(id, { rows: [r], cols: lacking });
