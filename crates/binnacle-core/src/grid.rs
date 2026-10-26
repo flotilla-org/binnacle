@@ -10,11 +10,12 @@ use crate::gesture::Gesture;
 use crate::grouping::{ItemKind, Outline};
 use crate::measure::{AxisMeasure, WindowChange};
 use crate::moves::MoveState;
-use crate::notice::Locating;
+use crate::notice::{Locating, placement};
 use crate::pointer::{AxisHit, Hit};
 use crate::refilter::Refiltering;
 use crate::selection::{Cell, CellRange, HeaderClick, Selection, SelectionUnit, Span};
 use crate::snapshot::{Damage, Rect, Snapshot};
+use crate::sort::Located;
 use crate::span::HeaderSpan;
 use crate::types::{Axis, Edge, Generation, Key, Position, Viewport};
 use crate::view::ViewState;
@@ -108,6 +109,25 @@ impl IntoIterator for WindowRequests {
     }
 }
 
+/// Where [`Grid::reveal_key`] scrolls an item to: the least distance that
+/// shows it, as [`Grid::reveal`] does, or to start the body, as
+/// [`Grid::scroll_to_item`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Align {
+    #[default]
+    Nearest,
+    Start,
+}
+
+/// A [`Grid::reveal_key`] waiting for `located` to say where its Key is:
+/// `due` answers still to come.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Revealing {
+    key: Key,
+    align: Align,
+    due: u32,
+}
+
 /// The view controller for one table.
 pub struct Grid {
     pub(crate) axes: [AxisState; 2],
@@ -137,6 +157,8 @@ pub struct Grid {
     /// sizes the move was made against may change before then.
     pub(crate) reveal: bool,
     pub(crate) locating: Locating,
+    /// Per axis, the latest `reveal_key` of a Key outside the Window.
+    pub(crate) revealing: [Option<Revealing>; 2],
     pub(crate) refiltering: Refiltering,
     pub(crate) follow_focus_on_reorder: bool,
     pub(crate) selection: Selection,
@@ -200,6 +222,7 @@ impl Grid {
             heard: None,
             reveal: false,
             locating: Locating::default(),
+            revealing: [None; 2],
             refiltering: Refiltering::default(),
             follow_focus_on_reorder: false,
             selection: Selection::default(),
@@ -513,6 +536,43 @@ impl Grid {
         self.axis(axis).measure.size_overrides()
     }
 
+    /// Whether the Grid's state rules `action` out, so that [`Grid::action`]
+    /// would do nothing: `Activate`, `BeginEdit` (or on a Summary Item's
+    /// cell) and `Copy` with nothing focused or selected, a focus move or a
+    /// selection with an axis empty or nothing to select from, `LeaveOutline`
+    /// outside the Header Band, and Find Next or Previous while find is
+    /// closed. Typing, `Cancel` and scrolling are never refused.
+    pub fn refuses(&self, action: &Action) -> bool {
+        let empty = Axis::ALL.iter().any(|&a| self.axis(a).measure.count() == 0);
+        let idle = self.locating.moves.is_empty();
+        match action {
+            Action::Activate => self.band().is_none() && self.focused_keys().is_none(),
+            Action::BeginEdit => self
+                .focused_keys()
+                .is_none_or(|(row, col)| self.summary_cell(row, col)),
+            Action::Copy => empty || (self.selection.span.is_none() && self.focus.is_none()),
+            Action::MoveFocus { .. } => {
+                empty && self.band().is_none() && !self.locating.any() && !self.pins_waiting()
+            }
+            Action::SelectAll => empty && idle,
+            Action::SelectColumn | Action::SelectRow => {
+                let axis = match action {
+                    Action::SelectColumn => Axis::Cols,
+                    _ => Axis::Rows,
+                };
+                let partial = (self.selection.span).is_some_and(|s| !s.whole[axis.index()]);
+                idle && self.focus.is_none() && !partial
+            }
+            Action::LeaveOutline => self.band_focus.is_none(),
+            Action::FindNext | Action::FindPrevious => self.find.query.is_none(),
+            Action::TypeText(_)
+            | Action::Cancel
+            | Action::Scroll { .. }
+            | Action::ScrollTo { .. }
+            | Action::ScrollBy { .. } => false,
+        }
+    }
+
     pub fn action(&mut self, action: Action) {
         match action {
             Action::TypeText(text) => {
@@ -727,6 +787,53 @@ impl Grid {
         self.pending_damage.layout |= self.axis_mut(axis).scroll_to_item(position);
     }
 
+    /// Scrolls `axis` to the item with `key` as `align` says, leaving focus
+    /// where it is. A Key outside the Window is found with `Locate`, and the
+    /// scroll waits for `located`; one the Table Source no longer has
+    /// scrolls nothing. A later `reveal_key` on the axis replaces one still
+    /// waiting.
+    pub fn reveal_key(&mut self, axis: Axis, key: Key, align: Align) {
+        let i = axis.index();
+        if let Some(position) = self.axis(axis).measure.position_of(key) {
+            self.revealing[i] = None;
+            self.reveal_aligned(axis, position, align);
+            return;
+        }
+        let due = match self.revealing[i] {
+            Some(r) if r.key == key => r.due,
+            _ => 0,
+        };
+        let due = self.request_locate(axis, key, due);
+        self.revealing[i] = Some(Revealing { key, align, due });
+    }
+
+    fn reveal_aligned(&mut self, axis: Axis, position: Position, align: Align) {
+        match align {
+            Align::Nearest => self.reveal(axis, position),
+            Align::Start => self.scroll_to_item(axis, position),
+        }
+    }
+
+    /// A `located` answer about the Key a `reveal_key` waits for.
+    pub(crate) fn reveal_located(&mut self, axis: Axis, key: Key, answer: Located) {
+        let i = axis.index();
+        let Some(r) = &mut self.revealing[i] else {
+            return;
+        };
+        if r.key != key || r.due == 0 {
+            return;
+        }
+        r.due -= 1;
+        if r.due > 0 {
+            return;
+        }
+        let align = r.align;
+        self.revealing[i] = None;
+        if let Ok(position) = placement(answer, self.axis(axis).measure.count()) {
+            self.reveal_aligned(axis, position, align);
+        }
+    }
+
     /// A `MoveFocus`: moves focus, then replaces the range or stretches it.
     pub(crate) fn move_and_select(&mut self, m: Move) {
         let from = self.focus;
@@ -837,6 +944,35 @@ impl Grid {
             whole,
         });
         self.set_span(span);
+    }
+
+    /// Picks the item with `key` on `axis`, as a Ctrl/Cmd-click on its
+    /// header does, leaving focus and the range where they are. A gesture in
+    /// progress keeps going, but `Cancel` no longer undoes this.
+    pub fn pick(&mut self, axis: Axis, key: Key) {
+        self.edit_picks(axis, |picks| {
+            if let Err(i) = picks.binary_search(&key) {
+                picks.insert(i, key);
+            }
+        });
+    }
+
+    /// Drops the pick of the item with `key` on `axis`, if it is picked, as
+    /// [`Grid::pick`] adds one.
+    pub fn unpick(&mut self, axis: Axis, key: Key) {
+        self.edit_picks(axis, |picks| picks.retain(|&k| k != key));
+    }
+
+    /// Drops every pick on `axis`, as [`Grid::pick`] adds one.
+    pub fn clear_picks(&mut self, axis: Axis) {
+        self.edit_picks(axis, Vec::clear);
+    }
+
+    fn edit_picks(&mut self, axis: Axis, edit: impl FnOnce(&mut Vec<Key>)) {
+        let mut selection = self.selection.clone();
+        edit(&mut selection.picks[axis.index()]);
+        self.set_selection(selection);
+        self.rebase_gesture();
     }
 
     /// Toggles the pick of `cell`'s item on `axis`, once its Key is known.

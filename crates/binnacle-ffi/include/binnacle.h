@@ -3,7 +3,9 @@
  * far as wheelhouse needs and makes no stability promise: the header and
  * library change together, and BINNACLE_ABI_VERSION says which header a
  * library was built with. The Rust docs on binnacle-core describe each
- * behaviour in full.
+ * behaviour in full. The header is written by hand; binnacle-ffi's
+ * tests/c_smoke.rs checks the size, alignment and field offsets of every
+ * struct and union here against the Rust definitions with _Static_assert.
  *
  * Calls on one Grid are serialised by the host. Input arrays are borrowed for
  * the call only; a NULL array requires zero length. Tags and booleans are
@@ -30,7 +32,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 17u
+#define BINNACLE_ABI_VERSION 18u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -56,6 +58,8 @@ uint32_t binnacle_abi_version(void);
 #define BINNACLE_CELL_SELECTED 2u
 /* The current find match, drawn apart from the other matches. */
 #define BINNACLE_CELL_CURRENT_MATCH 4u
+/* The cell the host's editor is open on. */
+#define BINNACLE_CELL_EDITING 8u
 
 /* BinnacleHeader.flags bits. SORTED: the item is in the other axis's sort in
  * the applied View Spec, DESCENDING says which way and sort_place where (0
@@ -91,6 +95,9 @@ uint32_t binnacle_abi_version(void);
  * would drop them. With no drop, the release does nothing (unpinned items
  * over the body of an axis that can't move). */
 #define BINNACLE_MODE_MOVING_HEADERS 4
+/* The host's editor is open on the cell with edit_row and edit_col
+ * (binnacle_grid_edit_started): place it over editor_rect. */
+#define BINNACLE_MODE_EDITING 5
 
 /* BinnacleSnapshot.drop_target: what releasing the dragged headers would do.
  * MOVE: request a move to before drop_position (the count for the end),
@@ -168,7 +175,7 @@ uint32_t binnacle_abi_version(void);
 /* The border after the item with key on axis was double-clicked: measure
  * its content and answer with binnacle_grid_set_size. */
 #define BINNACLE_EFFECT_AUTO_SIZE_REQUESTED 16
-/* The user asked to copy (binnacle_grid_copy): the cells where the items at
+/* The user asked to copy (BINNACLE_ACTION_COPY): the cells where the items at
  * copy_runs[BINNACLE_ROWS] cross those at copy_runs[BINNACLE_COLS], each
  * runs of Positions in drawn order, as shown (a collapsed group's items are
  * at no Position, so they are left out). copy_labels[axis] 1: the axis is
@@ -408,11 +415,16 @@ uint32_t binnacle_abi_version(void);
  * before the item at Position at. */
 #define BINNACLE_NOTICE_EXPANDED 7
 
-/* How far binnacle_grid_move_focus goes. */
+/* How far BINNACLE_ACTION_MOVE_FOCUS goes. */
 #define BINNACLE_FOCUS_ITEM 0
 /* A viewport's length (at least one item). */
 #define BINNACLE_FOCUS_PAGE 1
 #define BINNACLE_FOCUS_EDGE 2
+
+/* Where binnacle_grid_reveal scrolls an item to: the least distance that
+ * shows it, or to start the body (as near as the end allows). */
+#define BINNACLE_ALIGN_NEAREST 0
+#define BINNACLE_ALIGN_START 1
 
 /* BinnaclePointerEvent.kind. */
 #define BINNACLE_POINTER_DOWN 0
@@ -884,6 +896,13 @@ typedef struct {
   /* The tier of the Header Band focus is in while it is in one (see each
    * axis's band_focused) and that axis is in header form; 0 otherwise. */
   uint32_t focused_tier;
+  /* While mode is EDITING: the edited cell's row and column Keys, and its
+   * rect, unclipped like focus_rect, while it is visible (scrolled away,
+   * has_editor_rect is 0 and the editor hides until it returns). */
+  uint64_t edit_row;
+  uint64_t edit_col;
+  uint32_t has_editor_rect;
+  BinnacleRect editor_rect;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -1499,27 +1518,10 @@ int binnacle_grid_reapply_view(BinnacleGrid *grid);
  * or text that is not UTF-8. */
 int binnacle_grid_set_find(BinnacleGrid *grid, const BinnacleFindQuery *query);
 
-/* The Find Next and Find Previous Actions: FIND_STEP_REQUESTED from the
- * current match, else the focused cell. Nothing while find is closed. */
-int binnacle_grid_find_next(BinnacleGrid *grid);
-int binnacle_grid_find_previous(BinnacleGrid *grid);
-
 /* The answer to MOVE_REQUESTED: NULL refusal once the items moved, else
  * the reason the Table Source refused, len bytes of UTF-8, which the
  * Snapshot carries until the next press. 0 if it is not UTF-8. */
 int binnacle_grid_move_answered(BinnacleGrid *grid, const uint8_t *refusal, size_t len);
-
-/* The Activate Action (Enter): ACTIVATED for the focused cell. Nothing
- * without one. */
-int binnacle_grid_activate(BinnacleGrid *grid);
-
-/* The Copy Action (Ctrl/Cmd+C): COPY_REQUESTED for the range, or the
- * focused cell without one. Nothing without either. */
-int binnacle_grid_copy(BinnacleGrid *grid);
-
-/* The Begin Edit Action (F2): EDIT_REQUESTED for the focused cell. Nothing
- * without one. */
-int binnacle_grid_begin_edit(BinnacleGrid *grid);
 
 /* The host opened its editor on the cell with row and col (after
  * EDIT_REQUESTED, ACTIVATED or TEXT_TYPED, say): the Grid follows those Keys
@@ -1531,43 +1533,125 @@ int binnacle_grid_edit_started(BinnacleGrid *grid, uint64_t row, uint64_t col);
 /* The host closed its editor, with BINNACLE_EDIT_COMMIT or CANCEL. */
 int binnacle_grid_edit_ended(BinnacleGrid *grid, uint32_t end);
 
-/* Text the user typed; 0 if it is not UTF-8. */
-int binnacle_grid_type_text(BinnacleGrid *grid, const uint8_t *text, size_t len);
+/* BinnacleAction.kind, one per Action of the Rust Grid. These values never
+ * change once released; new kinds take new values.
+ * TYPE_TEXT: text the user typed (args.type_text, UTF-8), passed on as
+ * TEXT_TYPED; in the outline column "*" or a digit opens everything under
+ * the focused group or the rows to that many levels.
+ * ACTIVATE (Enter): ACTIVATED for the focused cell; in the outline column
+ * it toggles the focused group.
+ * BEGIN_EDIT (F2): EDIT_REQUESTED for the focused cell, not a Summary
+ * Item's.
+ * COPY (Ctrl/Cmd+C): COPY_REQUESTED for the range, or the focused cell.
+ * MOVE_FOCUS: args.move_focus moves focus along axis by BINNACLE_FOCUS_*,
+ * towards the end if forward (0 or 1), and scrolls to show it; extend (0
+ * or 1) stretches the range instead of replacing it. In the outline
+ * column one item along the columns walks the tree (forward opens or
+ * steps in, back closes or steps out); one item back from the first
+ * column enters it.
+ * SELECT_ALL; SELECT_COLUMN: every row of the range's columns, or of the
+ * focused column; SELECT_ROW: every column of the range's rows, or of the
+ * focused row.
+ * CANCEL: ends the gesture in progress, restoring focus and selection from
+ * before it, or ends an edit.
+ * SCROLL: by args.scroll's distance in the host's unit, dx across the
+ * columns, dy down the rows. SCROLL_TO: args.scroll_to puts axis's thumb
+ * at fraction of its travel (0 the start, 1 the end). SCROLL_BY:
+ * args.scroll_by scrolls axis by whole items, landing on an item start.
+ * LEAVE_OUTLINE (Tab): focus leaves the outline column for the body.
+ * FIND_NEXT and FIND_PREVIOUS: FIND_STEP_REQUESTED from the current match,
+ * else the focused cell. */
+#define BINNACLE_ACTION_TYPE_TEXT 1
+#define BINNACLE_ACTION_ACTIVATE 2
+#define BINNACLE_ACTION_BEGIN_EDIT 3
+#define BINNACLE_ACTION_COPY 4
+#define BINNACLE_ACTION_MOVE_FOCUS 5
+#define BINNACLE_ACTION_SELECT_ALL 6
+#define BINNACLE_ACTION_SELECT_COLUMN 7
+#define BINNACLE_ACTION_SELECT_ROW 8
+#define BINNACLE_ACTION_CANCEL 9
+#define BINNACLE_ACTION_SCROLL 10
+#define BINNACLE_ACTION_SCROLL_TO 11
+#define BINNACLE_ACTION_SCROLL_BY 12
+#define BINNACLE_ACTION_LEAVE_OUTLINE 13
+#define BINNACLE_ACTION_FIND_NEXT 14
+#define BINNACLE_ACTION_FIND_PREVIOUS 15
 
-/* Moves focus along axis by BINNACLE_FOCUS_*, towards the end if forward, and
- * scrolls to show it; extend stretches the range instead of replacing it. */
-int binnacle_grid_move_focus(BinnacleGrid *grid, uint32_t axis, uint32_t by,
-                             uint32_t forward, uint32_t extend);
+typedef struct {
+  uint32_t axis;
+  uint32_t by;
+  uint32_t forward;
+  uint32_t extend;
+} BinnacleMoveFocus;
 
-int binnacle_grid_select_all(BinnacleGrid *grid);
+typedef struct {
+  float dx;
+  float dy;
+} BinnacleScroll;
 
-/* Every row of the range's columns, or of the focused column. */
-int binnacle_grid_select_column(BinnacleGrid *grid);
+typedef struct {
+  uint32_t axis;
+  double fraction;
+} BinnacleScrollTo;
 
-/* Every column of the range's rows, or of the focused row. */
-int binnacle_grid_select_row(BinnacleGrid *grid);
+typedef struct {
+  uint32_t axis;
+  int64_t items;
+} BinnacleScrollBy;
 
-/* Ends the gesture in progress, restoring focus and selection from before it. */
-int binnacle_grid_cancel(BinnacleGrid *grid);
+/* An Action for binnacle_grid_action: size is sizeof(BinnacleAction) as the
+ * host's header has it (fields appended later keep their zero defaults for
+ * a host built against an older header), kind a BINNACLE_ACTION_*, and args
+ * the part kind names, if any. */
+typedef struct {
+  size_t size;
+  uint32_t kind;
+  union {
+    BinnacleText type_text;
+    BinnacleMoveFocus move_focus;
+    BinnacleScroll scroll;
+    BinnacleScrollTo scroll_to;
+    BinnacleScrollBy scroll_by;
+  } args;
+} BinnacleAction;
 
-/* The Leave Outline Action (Tab): focus leaves the outline column for the
- * body. In the outline column, binnacle_grid_move_focus one item along the
- * columns walks the tree (forward opens or steps in, back closes or steps
- * out), binnacle_grid_activate toggles the focused group, and typed "*" or
- * a digit opens everything under it or the rows to that many levels. One
- * item back from the first column enters it. */
-int binnacle_grid_leave_outline(BinnacleGrid *grid);
+/* What binnacle_grid_action returns beside 0, which is for a malformed
+ * Action (NULL, a size no header had, an unknown kind, tag or flag, or text
+ * that is not UTF-8): DONE once the Grid took it, REFUSED when its state
+ * rules the Action out and nothing happened (ACTIVATE, BEGIN_EDIT or COPY
+ * with nothing focused or selected, a focus move or selection with an axis
+ * empty or nothing to select from, LEAVE_OUTLINE outside a Header Band,
+ * a find step while find is closed). Typing, CANCEL and scrolling are never
+ * refused. */
+#define BINNACLE_ACTION_DONE 1
+#define BINNACLE_ACTION_REFUSED 2
 
-/* Scrolling. */
+int binnacle_grid_action(BinnacleGrid *grid, const BinnacleAction *action);
 
-/* By a distance in the host's unit: dx across the columns, dy down the rows. */
-int binnacle_grid_scroll(BinnacleGrid *grid, float dx, float dy);
+/* Moves focus to the cell with row and col ("go to row"), selecting as a
+ * focus move does, and scrolls to show it. A key outside the Window is
+ * found with a LOCATE Effect; until binnacle_grid_located answers, focus
+ * keeps its last Position on that axis. A key the Table Source no longer
+ * has leaves focus where it was on that axis. Nothing while either axis is
+ * empty. */
+int binnacle_grid_focus(BinnacleGrid *grid, uint64_t row, uint64_t col);
 
-/* Puts axis's thumb at fraction of its travel: 0 the start, 1 the end. */
-int binnacle_grid_scroll_to(BinnacleGrid *grid, uint32_t axis, double fraction);
+/* Picks the item with key on axis, as a Ctrl/Cmd-click on its header does,
+ * or drops its pick, or drops every pick on axis, leaving focus and the
+ * range where they are; the axis snapshot's picked lists them. A gesture in
+ * progress keeps going, but BINNACLE_ACTION_CANCEL no longer undoes this. */
+int binnacle_grid_pick(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_unpick(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_clear_picks(BinnacleGrid *grid, uint32_t axis);
 
-/* By whole items, landing on an item start. */
-int binnacle_grid_scroll_by(BinnacleGrid *grid, uint32_t axis, int64_t items);
+/* Scrolling, beside the SCROLL Actions. */
+
+/* Scrolls axis to the item with key as align (BINNACLE_ALIGN_*) says,
+ * leaving focus where it is. A key outside the Window is found with a
+ * LOCATE Effect and the scroll waits for binnacle_grid_located; one the
+ * Table Source no longer has scrolls nothing. A later reveal on the axis
+ * replaces one still waiting. */
+int binnacle_grid_reveal(BinnacleGrid *grid, uint32_t axis, uint64_t key, uint32_t align);
 
 /*
  * The grouping layer (binnacle-group) for a host whose aggregate backend
@@ -1750,6 +1834,19 @@ int binnacle_group_layer_request_view(BinnacleGroupLayer *layer, const BinnacleV
 /* Starts the grouped axes afresh under the same View Spec, after the data
  * changed. */
 int binnacle_group_layer_refresh(BinnacleGroupLayer *layer);
+
+/* The user edited rows under the groups: asks every figure the layer holds
+ * again (each Subtotal, Group Item and the Grand Total), keeping every item
+ * where it is until the next View Spec. Until the backend answers, those
+ * figures are pending (binnacle_group_layer_summary gives none) and answers
+ * to figures asked before are dropped. Send the next batch to the backend,
+ * then redraw what binnacle_group_layer_poll_change says. */
+int binnacle_group_layer_refigure(BinnacleGroupLayer *layer);
+
+/* Takes the next Change Notice for figures binnacle_group_layer_refigure
+ * made pending, or answered anew since, into out (CONTENT_CHANGED, for
+ * binnacle_grid_notify): 1 if there was one. */
+int binnacle_group_layer_poll_change(BinnacleGroupLayer *layer, BinnacleGroupNotice *out);
 
 /* 1 if axis is grouped, and so the layer's; else 0. */
 int binnacle_group_layer_grouped(BinnacleGroupLayer *layer, uint32_t axis);

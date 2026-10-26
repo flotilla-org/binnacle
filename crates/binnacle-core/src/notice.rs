@@ -556,6 +556,7 @@ impl Grid {
         self.pin_located(axis, key, answer);
         self.refilter_located(axis, key, answer);
         self.find_located(axis, key, answer);
+        self.reveal_located(axis, key, answer);
         self.focus_located(axis, key, answer);
     }
 

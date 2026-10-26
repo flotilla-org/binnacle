@@ -41,7 +41,7 @@ pub use effect::{Action, Effect, FocusStep, Stamped};
 pub use find::{FindDirection, FindMatch, FindQuery};
 pub use focus::FocusEnd;
 pub use gesture::Mode;
-pub use grid::{AxisConfig, DEFAULT_DRAG_THRESHOLD, Grid, WindowRequests};
+pub use grid::{Align, AxisConfig, DEFAULT_DRAG_THRESHOLD, Grid, WindowRequests};
 pub use grouping::{
     Aggregate, AggregateValue, Depth, DrillDown, EXCEPT_CAP, ExceptCapped, Expand, Form,
     GRAND_TOTAL, GroupOf, GroupedAxis, Grouping, ItemKind, Level, OpenState, Outline, Placement,

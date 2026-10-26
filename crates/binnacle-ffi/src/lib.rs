@@ -12,19 +12,19 @@ mod layer;
 pub use layer::*;
 
 use binnacle_core::{
-    Action, Aggregate, AggregateValue, Axis, AxisConfig, AxisView, Button, ChangeNotice, Compared,
-    Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
-    ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery, FocusEnd, FocusStep,
-    Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind, Key, Level, Located,
-    Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements, PointerEvent,
-    PointerKind, Rect, Scalar, Searched, SelectionUnit, SetPosition, SortColumn, SortDirection,
-    SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit, ViewSpec,
-    Viewport,
+    Action, Aggregate, AggregateValue, Align, Axis, AxisConfig, AxisView, Button, ChangeNotice,
+    Compared, Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge,
+    EditEnd, Effect, ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery,
+    FocusEnd, FocusStep, Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind,
+    Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements,
+    PointerEvent, PointerKind, Rect, Scalar, Searched, SelectionUnit, SetPosition, SortColumn,
+    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
+    ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 17;
+pub const BINNACLE_ABI_VERSION: u32 = 18;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -41,6 +41,7 @@ pub const BINNACLE_DAMAGE_POSITIONS: u32 = 4;
 pub const BINNACLE_CELL_FOCUSED: u8 = 1;
 pub const BINNACLE_CELL_SELECTED: u8 = 2;
 pub const BINNACLE_CELL_CURRENT_MATCH: u8 = 4;
+pub const BINNACLE_CELL_EDITING: u8 = 8;
 
 pub const BINNACLE_HEADER_SORTED: u32 = 1;
 pub const BINNACLE_HEADER_DESCENDING: u32 = 2;
@@ -57,6 +58,7 @@ pub const BINNACLE_MODE_IDLE: u32 = 1;
 pub const BINNACLE_MODE_DRAGGING_SELECTION: u32 = 2;
 pub const BINNACLE_MODE_RESIZING_BAND: u32 = 3;
 pub const BINNACLE_MODE_MOVING_HEADERS: u32 = 4;
+pub const BINNACLE_MODE_EDITING: u32 = 5;
 
 pub const BINNACLE_DROP_MOVE: u32 = 0;
 pub const BINNACLE_DROP_UNPIN: u32 = 1;
@@ -209,6 +211,28 @@ pub const BINNACLE_EXCEPT_CAPPED: i32 = 2;
 pub const BINNACLE_FOCUS_ITEM: u32 = 0;
 pub const BINNACLE_FOCUS_PAGE: u32 = 1;
 pub const BINNACLE_FOCUS_EDGE: u32 = 2;
+
+pub const BINNACLE_ACTION_TYPE_TEXT: u32 = 1;
+pub const BINNACLE_ACTION_ACTIVATE: u32 = 2;
+pub const BINNACLE_ACTION_BEGIN_EDIT: u32 = 3;
+pub const BINNACLE_ACTION_COPY: u32 = 4;
+pub const BINNACLE_ACTION_MOVE_FOCUS: u32 = 5;
+pub const BINNACLE_ACTION_SELECT_ALL: u32 = 6;
+pub const BINNACLE_ACTION_SELECT_COLUMN: u32 = 7;
+pub const BINNACLE_ACTION_SELECT_ROW: u32 = 8;
+pub const BINNACLE_ACTION_CANCEL: u32 = 9;
+pub const BINNACLE_ACTION_SCROLL: u32 = 10;
+pub const BINNACLE_ACTION_SCROLL_TO: u32 = 11;
+pub const BINNACLE_ACTION_SCROLL_BY: u32 = 12;
+pub const BINNACLE_ACTION_LEAVE_OUTLINE: u32 = 13;
+pub const BINNACLE_ACTION_FIND_NEXT: u32 = 14;
+pub const BINNACLE_ACTION_FIND_PREVIOUS: u32 = 15;
+
+pub const BINNACLE_ACTION_DONE: i32 = 1;
+pub const BINNACLE_ACTION_REFUSED: i32 = 2;
+
+pub const BINNACLE_ALIGN_NEAREST: u32 = 0;
+pub const BINNACLE_ALIGN_START: u32 = 1;
 
 pub const BINNACLE_POINTER_DOWN: u32 = 0;
 pub const BINNACLE_POINTER_MOVE: u32 = 1;
@@ -959,6 +983,10 @@ pub struct BinnacleSnapshot {
     pub values: *const BinnacleListedValue,
     pub values_len: usize,
     pub focused_tier: u32,
+    pub edit_row: u64,
+    pub edit_col: u64,
+    pub has_editor_rect: u32,
+    pub editor_rect: BinnacleRect,
 }
 
 #[repr(C)]
@@ -1279,6 +1307,154 @@ impl Default for BinnacleText {
             data: std::ptr::null(),
             len: 0,
         }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleMoveFocus {
+    pub axis: u32,
+    pub by: u32,
+    pub forward: u32,
+    pub extend: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleScroll {
+    pub dx: f32,
+    pub dy: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleScrollTo {
+    pub axis: u32,
+    pub fraction: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleScrollBy {
+    pub axis: u32,
+    pub items: i64,
+}
+
+/// What an Action carries beyond its kind; `kind` says which part is set.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union BinnacleActionArgs {
+    pub type_text: BinnacleText,
+    pub move_focus: BinnacleMoveFocus,
+    pub scroll: BinnacleScroll,
+    pub scroll_to: BinnacleScrollTo,
+    pub scroll_by: BinnacleScrollBy,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BinnacleAction {
+    pub size: usize,
+    pub kind: u32,
+    pub args: BinnacleActionArgs,
+}
+
+/// Every size a released header gave `BinnacleAction`, oldest first: what
+/// [`binnacle_grid_action`] reads.
+const ACTION_SIZES: &[usize] = &[size_of::<BinnacleAction>()];
+
+impl Default for BinnacleAction {
+    /// This header's size, no kind and every argument zero.
+    fn default() -> Self {
+        // SAFETY: every field is plain data, for which all-zero bits are valid.
+        let mut c: BinnacleAction = unsafe { std::mem::zeroed() };
+        c.size = size_of::<BinnacleAction>();
+        c
+    }
+}
+
+impl BinnacleAction {
+    /// The Action, or `None` if it is malformed: a size no header had, an
+    /// unknown kind, tag or flag, or text that is not UTF-8.
+    ///
+    /// # Safety
+    /// `action` is valid for reading its `size` field and, if that is a
+    /// size a header had, that many bytes; type text is valid for its
+    /// `len` reads.
+    unsafe fn read(action: *const BinnacleAction) -> Option<Action> {
+        // SAFETY: the caller's contract.
+        let size = unsafe { action.cast::<usize>().as_ref() }.copied()?;
+        if !ACTION_SIZES.contains(&size) {
+            return None;
+        }
+        // Fields past an older header's size stay as `default` has them.
+        let mut c = BinnacleAction::default();
+        // SAFETY: `size` bytes are readable and fit in `c`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                action.cast::<u8>(),
+                (&raw mut c).cast::<u8>(),
+                size.min(size_of::<BinnacleAction>()),
+            );
+        }
+        let flag = |v: u32| match v {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        // SAFETY (each union read): `kind` names the part the host set, and
+        // every part is plain data valid for any bits.
+        Some(match c.kind {
+            BINNACLE_ACTION_TYPE_TEXT => {
+                let t = unsafe { c.args.type_text };
+                // SAFETY: the caller's contract.
+                let text = std::str::from_utf8(unsafe { borrowed(t.data, t.len) }).ok()?;
+                Action::TypeText(text.to_owned())
+            }
+            BINNACLE_ACTION_ACTIVATE => Action::Activate,
+            BINNACLE_ACTION_BEGIN_EDIT => Action::BeginEdit,
+            BINNACLE_ACTION_COPY => Action::Copy,
+            BINNACLE_ACTION_MOVE_FOCUS => {
+                let m = unsafe { c.args.move_focus };
+                Action::MoveFocus {
+                    axis: axis(m.axis)?,
+                    by: match m.by {
+                        BINNACLE_FOCUS_ITEM => FocusStep::Item,
+                        BINNACLE_FOCUS_PAGE => FocusStep::Page,
+                        BINNACLE_FOCUS_EDGE => FocusStep::Edge,
+                        _ => return None,
+                    },
+                    forward: flag(m.forward)?,
+                    extend: flag(m.extend)?,
+                }
+            }
+            BINNACLE_ACTION_SELECT_ALL => Action::SelectAll,
+            BINNACLE_ACTION_SELECT_COLUMN => Action::SelectColumn,
+            BINNACLE_ACTION_SELECT_ROW => Action::SelectRow,
+            BINNACLE_ACTION_CANCEL => Action::Cancel,
+            BINNACLE_ACTION_SCROLL => {
+                let BinnacleScroll { dx, dy } = unsafe { c.args.scroll };
+                Action::Scroll { dx, dy }
+            }
+            BINNACLE_ACTION_SCROLL_TO => {
+                let t = unsafe { c.args.scroll_to };
+                Action::ScrollTo {
+                    axis: axis(t.axis)?,
+                    fraction: t.fraction,
+                }
+            }
+            BINNACLE_ACTION_SCROLL_BY => {
+                let b = unsafe { c.args.scroll_by };
+                Action::ScrollBy {
+                    axis: axis(b.axis)?,
+                    items: b.items,
+                }
+            }
+            BINNACLE_ACTION_LEAVE_OUTLINE => Action::LeaveOutline,
+            BINNACLE_ACTION_FIND_NEXT => Action::FindNext,
+            BINNACLE_ACTION_FIND_PREVIOUS => Action::FindPrevious,
+            _ => return None,
+        })
     }
 }
 
@@ -2812,7 +2988,8 @@ impl BinnacleGrid {
                 self.cells.push(
                     bit(state.focused, BINNACLE_CELL_FOCUSED)
                         | bit(state.selected, BINNACLE_CELL_SELECTED)
-                        | bit(state.current_match, BINNACLE_CELL_CURRENT_MATCH),
+                        | bit(state.current_match, BINNACLE_CELL_CURRENT_MATCH)
+                        | bit(state.editing, BINNACLE_CELL_EDITING),
                 );
             }
         }
@@ -2980,8 +3157,14 @@ impl BinnacleGrid {
             Mode::DraggingSelection => BINNACLE_MODE_DRAGGING_SELECTION,
             Mode::ResizingBand { .. } => BINNACLE_MODE_RESIZING_BAND,
             Mode::MovingHeaders { .. } => BINNACLE_MODE_MOVING_HEADERS,
+            Mode::Editing { .. } => BINNACLE_MODE_EDITING,
             _ => BINNACLE_MODE_OTHER,
         };
+        let edited = match snap.mode() {
+            Mode::Editing { row, col } => (row.0, col.0),
+            _ => (0, 0),
+        };
+        let editor_rect = snap.editor_rect();
         let drop = snap.drop_indicator();
         let mut drop_refusal = BINNACLE_MOVE_REFUSAL_OTHER;
         let (target, position, unpin, edge, before, reorder) = match drop.map(|d| d.target) {
@@ -3071,6 +3254,10 @@ impl BinnacleGrid {
             values: self.listed_values.1.as_ptr(),
             values_len: self.listed_values.1.len(),
             focused_tier: snap.focused_tier(),
+            edit_row: edited.0,
+            edit_col: edited.1,
+            has_editor_rect: flag(editor_rect.is_some()),
+            editor_rect: editor_rect.map(BinnacleRect::from).unwrap_or_default(),
         }
     }
 
@@ -4102,15 +4289,6 @@ pub unsafe extern "C" fn binnacle_grid_pointer(
     unsafe { with_handle(grid, |h| event.to_core().map(|e| h.grid.pointer(e))) }
 }
 
-/// Sends `action`, or returns 0 if it is `None` (an invalid tag).
-///
-/// # Safety
-/// `grid` is NULL or a live handle.
-unsafe fn act(grid: *mut BinnacleGrid, action: Option<Action>) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { with_handle(grid, |h| action.map(|a| h.grid.action(a))) }
-}
-
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
@@ -4183,134 +4361,113 @@ pub unsafe extern "C" fn binnacle_grid_edit_ended(grid: *mut BinnacleGrid, end: 
     unsafe { with_handle(grid, |h| end.map(|end| h.grid.edit_ended(end))) }
 }
 
+/// Gives the Grid an Action: [`BINNACLE_ACTION_DONE`], or
+/// [`BINNACLE_ACTION_REFUSED`] where the Grid's state rules it out
+/// (`Grid::refuses`), or 0 for a malformed one.
+///
 /// # Safety
-/// `grid` is NULL or a live handle.
+/// `grid` is NULL or a live handle; `action` is NULL or as
+/// `BinnacleAction::read` needs it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_activate(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::Activate)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_copy(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::Copy)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_begin_edit(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::BeginEdit)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle; a non-NULL `text` is valid for `len` reads.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_type_text(
+pub unsafe extern "C" fn binnacle_grid_action(
     grid: *mut BinnacleGrid,
-    text: *const u8,
-    len: usize,
+    action: *const BinnacleAction,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let text = std::str::from_utf8(unsafe { borrowed(text, len) });
+    let Some(h) = (unsafe { grid.as_mut() }) else {
+        return 0;
+    };
     // SAFETY: the caller's contract.
-    unsafe { act(grid, text.ok().map(|t| Action::TypeText(t.to_owned()))) }
+    let Some(action) = (unsafe { BinnacleAction::read(action) }) else {
+        return 0;
+    };
+    let refused = h.grid.refuses(&action);
+    h.grid.action(action);
+    match refused {
+        true => BINNACLE_ACTION_REFUSED,
+        false => BINNACLE_ACTION_DONE,
+    }
 }
 
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_move_focus(
+pub unsafe extern "C" fn binnacle_grid_pick(
     grid: *mut BinnacleGrid,
     axis_tag: u32,
-    by: u32,
-    forward: u32,
-    extend: u32,
+    key: u64,
 ) -> i32 {
-    let by = match by {
-        BINNACLE_FOCUS_ITEM => Some(FocusStep::Item),
-        BINNACLE_FOCUS_PAGE => Some(FocusStep::Page),
-        BINNACLE_FOCUS_EDGE => Some(FocusStep::Edge),
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.pick(axis, Key(key)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_unpick(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.unpick(axis, Key(key)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_clear_picks(grid: *mut BinnacleGrid, axis_tag: u32) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.clear_picks(axis))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_focus(grid: *mut BinnacleGrid, row: u64, col: u64) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_focus(Key(row), Key(col));
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_reveal(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+    align: u32,
+) -> i32 {
+    let align = match align {
+        BINNACLE_ALIGN_NEAREST => Some(Align::Nearest),
+        BINNACLE_ALIGN_START => Some(Align::Start),
         _ => None,
     };
-    let action = axis(axis_tag).zip(by).map(|(axis, by)| Action::MoveFocus {
-        axis,
-        by,
-        forward: forward != 0,
-        extend: extend != 0,
-    });
     // SAFETY: the caller's contract.
-    unsafe { act(grid, action) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_select_all(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::SelectAll)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_select_column(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::SelectColumn)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_select_row(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::SelectRow)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_cancel(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::Cancel)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_scroll(grid: *mut BinnacleGrid, dx: f32, dy: f32) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::Scroll { dx, dy })) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_scroll_to(
-    grid: *mut BinnacleGrid,
-    axis_tag: u32,
-    fraction: f64,
-) -> i32 {
-    let action = axis(axis_tag).map(|axis| Action::ScrollTo { axis, fraction });
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, action) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_scroll_by(
-    grid: *mut BinnacleGrid,
-    axis_tag: u32,
-    items: i64,
-) -> i32 {
-    let action = axis(axis_tag).map(|axis| Action::ScrollBy { axis, items });
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, action) }
+    unsafe {
+        with_handle(grid, |h| {
+            let (axis, align) = (axis(axis_tag)?, align?);
+            h.grid.reveal_key(axis, Key(key), align);
+            Some(())
+        })
+    }
 }
 
 /// # Safety
@@ -4346,30 +4503,6 @@ pub unsafe extern "C" fn binnacle_grid_set_find_support(
     };
     // SAFETY: the caller's contract.
     unsafe { with_handle(grid, |h| support.map(|s| h.grid.set_find_support(s))) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_leave_outline(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::LeaveOutline)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_find_next(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::FindNext)) }
-}
-
-/// # Safety
-/// `grid` is NULL or a live handle.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn binnacle_grid_find_previous(grid: *mut BinnacleGrid) -> i32 {
-    // SAFETY: the caller's contract.
-    unsafe { act(grid, Some(Action::FindPrevious)) }
 }
 
 /// # Safety

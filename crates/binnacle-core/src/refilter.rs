@@ -141,7 +141,7 @@ impl Grid {
         if count == 0 {
             self.refiltering.picks[i].clear();
             for key in self.selection.picks[i].clone() {
-                self.unpick(axis, key);
+                self.drop_pick(axis, key);
             }
             self.refiltering.shown[i] = None;
             self.axis_mut(axis).clamp_anchor();
@@ -232,7 +232,7 @@ impl Grid {
         }
         self.refiltering.picks[i].remove(n);
         if at.is_none() {
-            self.unpick(axis, key);
+            self.drop_pick(axis, key);
         }
     }
 
@@ -386,7 +386,7 @@ impl Grid {
 
     /// Drops `key` from the picks of `axis`, and from those a press would
     /// restore.
-    fn unpick(&mut self, axis: Axis, key: Key) {
+    fn drop_pick(&mut self, axis: Axis, key: Key) {
         if self.selection.picked(axis, key) {
             let mut selection = self.selection.clone();
             selection.unpick(axis, key);

@@ -489,3 +489,42 @@ fn a_group_whose_outlines_disagree_takes_its_level_from_the_first_item_under_it(
         assert_eq!(asked, Some(want));
     }
 }
+
+/// The Actions that depend on the outline column: Leave Outline is refused
+/// in the body and done in the band, and Enter on a Group Item there is done
+/// as a toggle, not refused or sent as `Activated`.
+#[test]
+fn leave_outline_and_activate_are_refused_or_done_by_where_focus_is() {
+    let mut s = grouped(Expand::default(), NORTH);
+    s.input(|g| g.set_focus(NORTH, Key(0)));
+    s.frame(V);
+    s.pump();
+    assert!(s.grid.refuses(&Action::LeaveOutline), "in the body");
+    assert!(!s.grid.refuses(&Action::Activate));
+
+    press(&mut s, cols(false));
+    s.pump();
+    assert!(s.frame(V).outline_focused());
+    assert!(!s.grid.refuses(&Action::LeaveOutline), "in the band");
+    assert!(!s.grid.refuses(&Action::Activate), "a group to toggle");
+    s.input(|g| g.action(Action::Activate));
+    let effects = s.effects();
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::Activated { .. })),
+        "{effects:?}"
+    );
+    assert!(
+        requests(&effects).iter().any(|(_, edit)| *edit
+            == ViewEdit::Collapse {
+                axis: Axis::Rows,
+                key: NORTH
+            }),
+        "{effects:?}"
+    );
+
+    press(&mut s, Action::LeaveOutline);
+    assert!(!s.frame(V).outline_focused());
+    assert!(s.grid.refuses(&Action::LeaveOutline), "back in the body");
+}

@@ -587,6 +587,20 @@ impl WebGrid {
         });
     }
 
+    /// Picks the item with `key` on `a`, as a Ctrl/Cmd-click on its header
+    /// does.
+    pub fn pick(&mut self, a: u8, key: u64) {
+        self.grid.pick(axis(a), Key(key));
+    }
+
+    pub fn unpick(&mut self, a: u8, key: u64) {
+        self.grid.unpick(axis(a), Key(key));
+    }
+
+    pub fn clear_picks(&mut self, a: u8) {
+        self.grid.clear_picks(axis(a));
+    }
+
     pub fn select_all(&mut self) {
         self.grid.action(Action::SelectAll);
     }
@@ -635,6 +649,13 @@ impl WebGrid {
     /// Scrolls `a` so the item at `position` starts the body.
     pub fn scroll_to_item(&mut self, a: u8, position: f64) {
         self.grid.scroll_to_item(axis(a), codes::position(position));
+    }
+
+    /// Scrolls `a` to the item with `key` as `align` says
+    /// ([`codes::align`]), asking the Table Source where it is with
+    /// `Locate` if the Window lacks it.
+    pub fn reveal_key(&mut self, a: u8, key: u64, align: u8) {
+        self.grid.reveal_key(axis(a), Key(key), codes::align(align));
     }
 
     /// What a plain click selects; `unit` as [`codes::selection_unit`].

@@ -664,6 +664,41 @@ pub unsafe extern "C" fn binnacle_group_layer_refresh(layer: *mut BinnacleGroupL
     }
 }
 
+/// # Safety
+/// `layer` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_group_layer_refigure(layer: *mut BinnacleGroupLayer) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_layer(layer, |h| {
+            h.layer.refigure();
+            Some(())
+        })
+    }
+}
+
+/// Takes the next Change Notice for refigured items into `out`: 1 if there
+/// was one.
+///
+/// # Safety
+/// `layer` is NULL or a live handle; `out` is NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_group_layer_poll_change(
+    layer: *mut BinnacleGroupLayer,
+    out: *mut BinnacleGroupNotice,
+) -> i32 {
+    if out.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_layer(layer, |h| {
+            let (axis, notice) = h.layer.poll_change()?;
+            write_out(out, notice_to_c(axis, &notice))
+        })
+    }
+}
+
 /// Whether `axis` is grouped, and so the layer's: 1 if so, else 0.
 ///
 /// # Safety
