@@ -4901,3 +4901,93 @@ fn the_column_tiers_through_the_c_api_mirror_the_grid() {
     unsafe { check_effects(h, &mut grid) };
     unsafe { binnacle_grid_free(h) };
 }
+
+/// Through the C API, the outline column decides the band Actions: Leave
+/// Outline is refused in the body and done in the band, and Activate on a
+/// Group Item there is done as a toggle (a Collapse View Edit), not refused
+/// or sent as ACTIVATED.
+#[test]
+fn the_band_actions_through_the_c_api_are_refused_or_done_by_where_focus_is() {
+    let config = |count, size, header| BinnacleAxisConfig {
+        count,
+        default_size: size,
+        header,
+        gap: 0.0,
+    };
+    let h = binnacle_grid_new(config(3, 1.0, 1.0), config(3, 5.0, 3.0));
+    let north = Key(100);
+    let mut grouping = Grouping::rows_by(Key(1));
+    grouping.row_levels = vec![Level::field(Key(1))];
+    let spec = ViewSpec::default().with_grouping(Some(grouping));
+    let outlines = [
+        Outline::group(vec![], OpenState::Open, Key(1), Value::Text("North".into())).with_span(2),
+        Outline::leaf(vec![north]),
+        Outline::leaf(vec![north]),
+    ];
+    let frame = |h| unsafe {
+        let mut requests = BinnacleWindowRequests::default();
+        assert_eq!(binnacle_grid_begin_frame(h, 20.0, 8.0, &mut requests), 1);
+        for axis in [ROWS, COLS] {
+            let r = requests.axes[axis as usize];
+            if r.requested == 0 {
+                continue;
+            }
+            let keys: Vec<u64> = match axis {
+                ROWS => [north.0, 0, 1][r.start as usize..r.end as usize].to_vec(),
+                _ => (r.start..r.end).collect(),
+            };
+            binnacle_grid_set_window(h, axis, r.start, keys.as_ptr(), keys.len());
+            if axis == ROWS {
+                with_c_outlines(&outlines[r.start as usize..r.end as usize], |c| {
+                    binnacle_grid_set_outlines(h, ROWS, r.start, c.as_ptr(), c.len())
+                });
+            }
+        }
+        let mut snap = std::mem::zeroed::<BinnacleSnapshot>();
+        assert_eq!(binnacle_grid_snapshot(h, &mut snap), 1);
+        snap.outline_focused != 0
+    };
+    let kinds = |h| {
+        let mut seen = Vec::new();
+        let mut e = unsafe { std::mem::zeroed::<BinnacleEffect>() };
+        while unsafe { binnacle_grid_poll_effect(h, &mut e) } == 1 {
+            seen.push((e.kind, e.edit.kind));
+        }
+        seen
+    };
+    unsafe {
+        with_c_view(&spec, |c| {
+            assert_eq!(binnacle_grid_view_applied(h, c, std::ptr::null()), 1)
+        });
+        frame(h);
+        assert_eq!(binnacle_grid_focus(h, north.0, 0), 1);
+        assert!(!frame(h));
+        kinds(h);
+        let act = |a: Action| binnacle_grid_action(h, &c_action(&a));
+        assert_eq!(act(Action::LeaveOutline), BINNACLE_ACTION_REFUSED, "body");
+        let left = Action::MoveFocus {
+            axis: Axis::Cols,
+            by: FocusStep::Item,
+            forward: false,
+            extend: false,
+        };
+        assert_eq!(act(left), BINNACLE_ACTION_DONE);
+        assert!(frame(h), "Left from the first column enters the band");
+        kinds(h);
+        assert_eq!(act(Action::Activate), BINNACLE_ACTION_DONE, "a group");
+        let seen = kinds(h);
+        assert!(
+            seen.contains(&(BINNACLE_EFFECT_VIEW_REQUESTED, BINNACLE_VIEW_EDIT_COLLAPSE)),
+            "{seen:?}"
+        );
+        assert!(!seen.iter().any(|&(k, _)| k == BINNACLE_EFFECT_ACTIVATED));
+        assert_eq!(act(Action::LeaveOutline), BINNACLE_ACTION_DONE, "band");
+        assert!(!frame(h));
+        assert_eq!(
+            act(Action::LeaveOutline),
+            BINNACLE_ACTION_REFUSED,
+            "body again"
+        );
+        binnacle_grid_free(h);
+    }
+}
