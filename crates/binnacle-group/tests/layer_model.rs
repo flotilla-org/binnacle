@@ -17,7 +17,7 @@ use binnacle_group::{
     Answer, Batch, Body, GroupRow, GroupingLayer, Path, Request, SUMMARY_KEY_BIT, Want, having,
 };
 use hegel::generators as gs;
-use hegel::{Generator, TestCase};
+use hegel::{Generator, HealthCheck, TestCase};
 
 const FIELDS: [Key; 2] = [Key(10), Key(11)];
 
@@ -1374,7 +1374,11 @@ fn pages(items: &[Described], stands_in: impl Fn(&Path) -> bool) -> Vec<Option<(
 /// However many rows the table has, the layer holds its open groups (with
 /// the closed ones a level opened by default shows) and a bounded cache of
 /// pages: those the latest two Windows read, and up to `cache` more.
-#[hegel::test(test_cases = 60)]
+///
+/// A case of thousands of rows takes seconds in a debug build (the layer and
+/// the naive model, not the draws), so under a loaded machine ten cases
+/// passed Hegel's 30 s TooSlow budget (#264); the scale is the point here.
+#[hegel::test(test_cases = 60, suppress_health_check = [HealthCheck::TooSlow])]
 fn the_layer_holds_open_groups_and_a_bounded_cache_whatever_the_rows(tc: TestCase) {
     let groups = tc.draw(gs::integers::<usize>().min_value(1).max_value(200));
     let per = tc.draw(

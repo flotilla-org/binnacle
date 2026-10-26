@@ -481,7 +481,8 @@ fn a_reorder_drops_the_range_and_any_drag_and_leaves_the_anchor(tc: TestCase) {
 /// its start, or as far towards it as the end allows: the view is then at
 /// its end (the thumb at its end, or everything fitting with the anchor at
 /// the start, or with no room to scroll in, the anchor on the last unpinned
-/// item).
+/// item). With every item pinned nothing scrolls, so the anchor rests at the
+/// start, Position 0 offset 0, as on an empty axis.
 fn anchor_kept_or_stepped_off_a_pin(host: &mut Host, axis: Axis, then: ScrollAnchor) {
     let now = host.view.anchors[axis.index()];
     let count = host.view.counts[axis.index()];
@@ -493,6 +494,10 @@ fn anchor_kept_or_stepped_off_a_pin(host: &mut Host, axis: Axis, then: ScrollAnc
     let pinned: Vec<bool> = keys.iter().map(|k| pins.contains(k)).collect();
     if !pinned.get(then.position as usize).copied().unwrap_or(false) {
         assert_eq!(now, then, "{axis:?}");
+        return;
+    }
+    if pinned.iter().all(|&p| p) {
+        assert_eq!(now, ScrollAnchor::default(), "{axis:?}: every item pinned");
         return;
     }
     let unpinned = |p: &u64| !pinned[*p as usize];
@@ -552,6 +557,36 @@ fn a_sort_moving_a_pin_onto_the_anchor_moves_the_anchor_off_it() {
         ScrollAnchor::default()
     );
     anchor_kept_or_stepped_off_a_pin(&mut host, Axis::Rows, then);
+}
+
+/// The seed of #256: a drag left from the only column's header pins it, so
+/// no column is left unpinned and nothing scrolls. A sort then leaves the
+/// anchor at the start, Position 0, with no unpinned item to step to.
+#[test]
+fn with_every_item_pinned_a_sort_leaves_the_anchor_at_the_start() {
+    let mut host = Host::new(Table {
+        rows: vec![],
+        cols: 1,
+        sortable: vec![],
+        unsortable: vec![],
+        gap: 0.0,
+        row_size: 1.0,
+        viewport: Viewport::new(7.0, 2.0),
+        follow: false,
+        unit: SelectionUnit::Cells,
+    });
+    host.input(Input::Drag([0.5, 0.0], [0.0, 0.0]));
+    host.input(Input::Release);
+    host.frame();
+    assert_eq!(host.s.grid.pins(Axis::Cols, Edge::Leading).count(), 1);
+    let then = host.view.anchors[Axis::Cols.index()];
+    host.input(Input::Sort(SortSpec::unsorted()));
+    host.frame();
+    assert_eq!(
+        host.view.anchors[Axis::Cols.index()],
+        ScrollAnchor::default()
+    );
+    anchor_kept_or_stepped_off_a_pin(&mut host, Axis::Cols, then);
 }
 
 #[hegel::test(test_cases = 1000)]
