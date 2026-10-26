@@ -395,6 +395,16 @@ impl WebGroupingLayer {
         })
     }
 
+    /// The path of the group holding the Leaf `key`, or of the group the
+    /// Summary Item `key` heads or totals; `null` if the layer does not
+    /// hold it.
+    pub fn path(&self, key: u64) -> JsValue {
+        match self.layer.path(Key(key)) {
+            Some(path) => to_js(&path_out(path)),
+            None => JsValue::NULL,
+        }
+    }
+
     /// Whether state on the item with Key `key` of axis `a` still fits the
     /// levels: a Summary Item's path fits them; anything else always does.
     pub fn fits(&self, a: u8, key: u64) -> bool {

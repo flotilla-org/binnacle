@@ -6,7 +6,9 @@
 // the backend does the arithmetic and the filtering, one Aggregate Query
 // at a time. An edit to the base's rows (its ContentChanged while grouped)
 // keeps every item where it is and asks every figure again, drawn pending
-// until the backend answers; the next View Spec groups the rows again.
+// until the backend answers; a Leaf the edit stops matching the filter, or
+// moves out of its group, stays unmatched. The next View Spec groups the
+// rows again.
 //
 // A frame's queries go to the backend as one batch. It answers each by id,
 // in any order, in parts, jointly (one scan for several), or with more than
@@ -145,6 +147,12 @@ export interface GroupedOptions<ColId, V> {
   groups?: (col: ColId) => boolean;
   /** How many closed groups and Leaves the layer caches besides those in view. */
   cache?: number;
+  /**
+   * A Leaf's cell in a level column as the backend groups it, to tell when
+   * an edit moved the Leaf out of the group it is shown in: its text by
+   * default, a date as its ISO day, a blank `null`.
+   */
+  listed?: (value: V, field: ColId) => ListedValue;
   /** Called with a backend's failure (a rejected `answer`). */
   onError?: (error: unknown) => void;
 }
@@ -202,6 +210,9 @@ interface WireSummary {
 
 const known = <T>(x: T | undefined): x is T => x !== undefined;
 
+const text = (v: unknown): ListedValue =>
+  v === null || v === undefined ? null : v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
+
 /**
  * A Table Source whose rows group through the grouping layer over
  * `backend`, with `base` for everything else.
@@ -209,6 +220,7 @@ const known = <T>(x: T | undefined): x is T => x !== undefined;
 export function groupedSource<ColId extends Primitive, V>(options: GroupedOptions<ColId, V>): GroupedSource<ColId, V> {
   const { base, backend } = options;
   const groups = options.groups ?? ((col: ColId) => base.rows.support?.(col).sort !== false);
+  const listed = options.listed ?? text;
   let layer: InstanceType<ReturnType<typeof bridge>["WebGroupingLayer"]> | undefined;
   const wasm = () => (layer ??= new (bridge().WebGroupingLayer)(options.cache ?? NaN));
 
@@ -234,6 +246,8 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
   /** The grouping in force, by IDs, and its level columns. */
   let grouping: Grouping<ColId, number, ColId> | null = null;
   let levels: ColId[] = [];
+  /** The Leaves edited since the View Spec in force: only these can have left their group. */
+  const touched = new Set<number>();
 
   // Batches go out as the layer asks; each stamp's signal aborts once a
   // newer one supersedes it.
@@ -472,6 +486,7 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
   const edited = (start: number, end: number) => {
     const leaves = (w: number[] | OutlinedWindow<number, ColId>) => {
       for (const id of Array.isArray(w) ? w : w.ids) {
+        touched.add(id);
         const [code, at] = wasm().locate(rowKey(id));
         if (code === 0) tell({ type: "ContentChanged", start: at!, end: at! + 1 });
       }
@@ -502,6 +517,29 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
   };
   const detach = base.attach?.(relay);
 
+  /**
+   * Whether each of `ids` is unmatched: a Leaf the base's filter drops since
+   * the user's edit, or one whose level values no longer fit the group it is
+   * shown in. Summary Items never are.
+   */
+  const unmatched = async (ids: number[], signal: AbortSignal): Promise<boolean[]> => {
+    const leaves = ids.filter((id) => id >= 0);
+    const dropped = (await base.rows.unmatched?.(leaves, signal)) ?? leaves.map(() => false);
+    const flags = new Map(leaves.map((id, i) => [id, dropped[i] === true]));
+    const suspects = leaves.filter((id) => touched.has(id) && !flags.get(id));
+    const fields = [...levels];
+    const cells = suspects.length ? await base.cells(suspects, fields, signal) : [];
+    suspects.forEach((id, i) => {
+      const path = layer?.path(rowKey(id)) as WireStep[] | null | undefined;
+      const moved = path?.some((s) => {
+        const at = fields.indexOf(colId(s.field)!);
+        return at >= 0 && listed(cells[i]![at] as V, fields[at]!) !== s.value;
+      });
+      if (moved) flags.set(id, true);
+    });
+    return ids.map((id) => flags.get(id) ?? false);
+  };
+
   const figure = (id: number, col: ColId): Figure => {
     const at = grouping?.values.findIndex((v) => v.field === col) ?? -1;
     return at < 0 ? null : (figured(id)?.figures[at] ?? null);
@@ -516,6 +554,7 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
       window: (start, end, signal) => (wasm().grouped() ? window(start, end, signal) : base.rows.window(start, end, signal)),
       support: (by) => ({ ...base.rows.support?.(by), group: groups(by) }),
       ...(base.rows.quickFilter ? { quickFilter: base.rows.quickFilter } : {}),
+      unmatched: (ids, signal) => (wasm().grouped() ? unmatched(ids, signal) : (base.rows.unmatched?.(ids, signal) ?? ids.map(() => false))),
       locate: (id, signal) => {
         if (!wasm().grouped()) return base.rows.locate?.(id, signal) ?? { type: "Gone", suggest: null };
         const key = rowKey(id);
@@ -541,6 +580,7 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
     async view(asked, signal) {
       const wanted = (asked.grouping?.rowLevels ?? []).flatMap((l) => ("field" in l && groups(l.field) ? [l.field] : []));
       levels = [...new Set(wanted)];
+      touched.clear();
       const was = wasm().grouped();
       grouping =
         levels.length === 0

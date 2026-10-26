@@ -90,3 +90,31 @@ test("an edit asks the slow backend for every figure again, the rows staying whe
   await clocked(page, () => text(page, queries)).toMatch(/^0 queries in flight/);
   await clocked(page, () => text(page, status)).toBe(before);
 });
+
+test("a rerouted shipment stays in its port, unmatched, until Re-apply groups the rows anew", async ({ page }) => {
+  await page.clock.install({ time: 0 });
+  await page.clock.pauseAt(1000);
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await page.goto("/?source=shipments&pace=slow&theme=light");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await clocked(page, () => text(page, status)).toContain(`of ${en(closed())}`);
+  await clocked(page, () => text(page, queries)).toMatch(/^0 queries in flight · \d+ held$/);
+
+  const b = await page.locator(".binnacle-layer").boundingBox();
+  if (!b) throw new Error("no grid");
+  await page.mouse.click(b.x + 24, b.y + HEADER + ROW + ROW / 2);
+  await clocked(page, () => text(page, status)).not.toContain("loading");
+  await page.mouse.click(b.x + 400, b.y + HEADER + 2 * ROW + ROW / 2);
+  await clocked(page, () => text(page, status)).toContain("focus row 3");
+  const reapply = page.locator(".binnacle-reapply");
+  await expect(reapply).toBeHidden();
+
+  await page.getByRole("button", { name: "Reroute" }).click();
+  // Its port's name is no longer its own: it stays, dimmed, until a re-apply.
+  await clocked(page, () => reapply.getAttribute("aria-label"), 100).toBe("Re-apply the filter: 1 edited row no longer matches");
+  await clocked(page, () => text(page, queries)).toMatch(/^0 queries in flight/);
+  await expect(reapply).toBeVisible();
+  await reapply.click();
+  await clocked(page, () => reapply.isHidden(), 100).toBe(true);
+});

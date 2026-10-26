@@ -19,7 +19,7 @@ import {
   type GroupRow,
 } from "../src/grouped";
 import { fromRows } from "../src/rows";
-import { rowsBy, type ChangeNotice, type Grouping, type ListedValue, type Located, type OutlinedWindow, type Placement, type ViewSpec } from "../src/source";
+import { rowsBy, type ChangeNotice, type Condition, type Grouping, type ListedValue, type Located, type OutlinedWindow, type Placement, type ViewSpec } from "../src/source";
 import { fakeDocument, type DrawCall } from "./canvas";
 import { BAND, HEADER, Harness } from "./harness";
 import { loadForTests } from "./wasm";
@@ -58,12 +58,15 @@ const ordered = (values: ListedValue[]) =>
 
 /**
  * The naive backend: every answer worked out from the records at once,
- * whole and exactly as asked.
+ * whole and exactly as asked, keeping the rows the filter's `OneOf`
+ * conditions keep.
  */
 function compute(rows: Rec[], batch: AggregateBatch<Field>, q: AggregateQuery<Field>, start = q.start, end = q.end): AggregateAnswer<Field> {
   const { levels, values } = batch.scope;
   const hidden = new Set(batch.scope.hidden);
-  const ids = rows.flatMap((_, id) => (hidden.has(id) ? [] : [id]));
+  const kept = (id: number) =>
+    batch.scope.filter.conditions.every((c) => c.kind.type !== "OneOf" || c.kind.values.includes(rows[id]![c.id as Field] as ListedValue) !== c.not);
+  const ids = rows.flatMap((_, id) => (hidden.has(id) || !kept(id) ? [] : [id]));
   const under = (path: GroupPath<Field>) => ids.filter((id) => path.every((p) => rows[id]![p.field as Field] === p.value));
   const figures = (leaves: number[]): Figure[] =>
     values.map((v) => (v.aggregate === "count" ? leaves.length : leaves.length ? leaves.reduce((sum, id) => sum + rows[id]!.n, 0) : null));
@@ -177,8 +180,8 @@ const groupings = gs.composite((tc) => {
   return grouping;
 });
 
-const viewOf = (grouping: Grouping<Field, number, Field>, hidden: number[]): ViewSpec<number, Field> => ({
-  rows: { filter: { quick: null, conditions: [] }, sort: [], hidden },
+const viewOf = (grouping: Grouping<Field, number, Field>, hidden: number[], conditions: Condition<Field>[] = []): ViewSpec<number, Field> => ({
+  rows: { filter: { quick: null, conditions }, sort: [], hidden },
   cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
   grouping,
 });
@@ -325,6 +328,47 @@ test("an edit refigures every figure where it is, pending until the backend answ
       for (const [id, path] of paths) expect(source.summary(id)?.figures, JSON.stringify(path)).toEqual(figures(path));
     } finally {
       source.destroy();
+    }
+  }));
+
+/** A filter keeping the rows whose `s` or `t` is one of a few values, or none of them. */
+const filters = gs.composite((tc): Condition<Field>[] => {
+  if (tc.draw(gs.integers({ minValue: 0, maxValue: 3 })) === 0) return [];
+  const id = tc.draw(gs.sampledFrom<Field>(["s", "t"]));
+  const values = tc.draw(gs.arrays(gs.sampledFrom<ListedValue>(["a", "b", "c", "x", "y", null]), { minSize: 1, maxSize: 3 }));
+  return [{ id, kind: { type: "OneOf", values }, not: tc.draw(gs.booleans()) }];
+});
+
+test("an edit that stops a Leaf matching the filter, or fitting its group, leaves it unmatched, as fromRows does", () =>
+  hegel.testAsync(async (tc) => {
+    const rows = tc.draw(records.filter((r) => r.length > 0));
+    const { backend, settle, pool } = hostile(tc, rows);
+    const base = fromRows(rows, COLUMNS);
+    const source = groupedSource({ base, backend, cache: tc.draw(caches) });
+    const model = fromRows(rows, COLUMNS);
+    try {
+      const view = viewOf(tc.draw(groupings), [], tc.draw(filters));
+      model.view!(view, signal);
+      await settle(source.view!(view, signal));
+      const n = source.rows.count() as number;
+      let got: OutlinedWindow<number, Field> = { ids: [], outlines: [] };
+      while (got.ids.length < n) got = (await settle(source.rows.window(0, n, signal))) as OutlinedWindow<number, Field>;
+      for (let edits = tc.draw(gs.integers({ minValue: 1, maxValue: 3 })); edits > 0; edits--) {
+        const id = tc.draw(gs.integers({ minValue: 0, maxValue: rows.length - 1 }));
+        const field = tc.draw(gs.sampledFrom<Field>(["s", "t", "n"]));
+        rows[id] = { ...rows[id]!, [field]: tc.draw(record)[field] };
+        base.edited(id);
+        model.edited(id);
+        for (let i = tc.draw(gs.integers({ minValue: 0, maxValue: 3 })); i > 0 && pool.length > 0; i--) pool.shift()!.send();
+      }
+      const flags = await settle(source.rows.unmatched!(got.ids, signal));
+      const leaves = got.ids.filter((id) => id >= 0);
+      const want = model.rows.unmatched!(leaves, signal) as boolean[];
+      const byLeaf = new Map(leaves.map((id, i) => [id, want[i]]));
+      expect(flags).toEqual(got.ids.map((id) => (id < 0 ? false : byLeaf.get(id))));
+    } finally {
+      source.destroy();
+      model.destroy();
     }
   }));
 
