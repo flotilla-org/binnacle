@@ -143,6 +143,9 @@ enum Op {
     Focus(Key, Key),
     /// The item with this Key scrolled into view.
     Reveal(Axis, Key, Align),
+    /// Picking (0), unpicking (1) the item with this Key, or clearing the
+    /// axis's picks (2).
+    Pick(u8, Axis, Key),
     /// Text that is not UTF-8: refused.
     BadText(Vec<u8>),
     /// An input with an unknown tag: refused.
@@ -700,7 +703,15 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(42)) {
+    match tc.draw(gs::integers::<u8>().max_value(43)) {
+        42 => {
+            let axis = tc.draw(axes());
+            Op::Pick(
+                tc.draw(gs::integers::<u8>().max_value(2)),
+                axis,
+                tc.draw(key_or_far(axis)),
+            )
+        }
         41 => match tc.draw(gs::booleans()) {
             true => Op::Focus(
                 tc.draw(key_or_far(Axis::Rows)),
@@ -914,7 +925,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(102))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(105))),
     }
 }
 
@@ -1338,6 +1349,9 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
             97 => binnacle_grid_add_value(h, std::ptr::null()),
             100 => binnacle_grid_reveal(h, 2, 1000, BINNACLE_ALIGN_NEAREST),
             101 => binnacle_grid_reveal(h, ROWS, 1000, 2),
+            102 => binnacle_grid_pick(h, 2, 1000),
+            103 => binnacle_grid_unpick(h, 2, 1000),
+            104 => binnacle_grid_clear_picks(h, 2),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -3316,6 +3330,20 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                     grid.set_focus(row, col);
                     binnacle_grid_focus(h, row.0, col.0)
                 }
+                Op::Pick(which, axis, key) => match which {
+                    0 => {
+                        grid.pick(axis, key);
+                        binnacle_grid_pick(h, tag(axis), key.0)
+                    }
+                    1 => {
+                        grid.unpick(axis, key);
+                        binnacle_grid_unpick(h, tag(axis), key.0)
+                    }
+                    _ => {
+                        grid.clear_picks(axis);
+                        binnacle_grid_clear_picks(h, tag(axis))
+                    }
+                },
                 Op::Reveal(axis, key, align) => {
                     grid.reveal_key(axis, key, align);
                     let align = match align {

@@ -909,6 +909,35 @@ impl Grid {
         self.set_span(span);
     }
 
+    /// Picks the item with `key` on `axis`, as a Ctrl/Cmd-click on its
+    /// header does, leaving focus and the range where they are. A gesture in
+    /// progress keeps going, but `Cancel` no longer undoes this.
+    pub fn pick(&mut self, axis: Axis, key: Key) {
+        self.edit_picks(axis, |picks| {
+            if let Err(i) = picks.binary_search(&key) {
+                picks.insert(i, key);
+            }
+        });
+    }
+
+    /// Drops the pick of the item with `key` on `axis`, if it is picked, as
+    /// [`Grid::pick`] adds one.
+    pub fn unpick(&mut self, axis: Axis, key: Key) {
+        self.edit_picks(axis, |picks| picks.retain(|&k| k != key));
+    }
+
+    /// Drops every pick on `axis`, as [`Grid::pick`] adds one.
+    pub fn clear_picks(&mut self, axis: Axis) {
+        self.edit_picks(axis, Vec::clear);
+    }
+
+    fn edit_picks(&mut self, axis: Axis, edit: impl FnOnce(&mut Vec<Key>)) {
+        let mut selection = self.selection.clone();
+        edit(&mut selection.picks[axis.index()]);
+        self.set_selection(selection);
+        self.rebase_gesture();
+    }
+
     /// Toggles the pick of `cell`'s item on `axis`, once its Key is known.
     pub(crate) fn toggle_pick(&mut self, axis: Axis, cell: Cell) {
         if let Some(key) = cell[axis.index()].key {

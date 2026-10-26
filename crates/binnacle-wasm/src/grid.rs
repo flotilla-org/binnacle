@@ -587,6 +587,20 @@ impl WebGrid {
         });
     }
 
+    /// Picks the item with `key` on `a`, as a Ctrl/Cmd-click on its header
+    /// does.
+    pub fn pick(&mut self, a: u8, key: u64) {
+        self.grid.pick(axis(a), Key(key));
+    }
+
+    pub fn unpick(&mut self, a: u8, key: u64) {
+        self.grid.unpick(axis(a), Key(key));
+    }
+
+    pub fn clear_picks(&mut self, a: u8) {
+        self.grid.clear_picks(axis(a));
+    }
+
     pub fn select_all(&mut self) {
         self.grid.action(Action::SelectAll);
     }

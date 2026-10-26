@@ -182,6 +182,29 @@ static void by_key(void) {
   CHECK(snap.axes[BINNACLE_COLS].focus.key == 2001);
   CHECK(snap.has_focus_rect && snap.focus_rect.y >= 1 && snap.focus_rect.y + 1 <= 6);
 
+  /* Picks by Key, in view or not, listed in Key order. */
+  const BinnacleAxisSnapshot *c = &snap.axes[BINNACLE_COLS];
+  CHECK(!binnacle_grid_pick(grid, 2, 1001));
+  CHECK(binnacle_grid_pick(grid, BINNACLE_ROWS, 1090));
+  CHECK(binnacle_grid_pick(grid, BINNACLE_ROWS, 1069));
+  CHECK(binnacle_grid_pick(grid, BINNACLE_COLS, 2003));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_SELECTION_CHANGED);
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
+  frame(grid, &snap);
+  CHECK(r->picked_len == 2 && r->picked[0] == 1069 && r->picked[1] == 1090);
+  CHECK(c->picked_len == 1 && c->picked[0] == 2003);
+  /* Row 69, just above the focused row, draws selected across. */
+  size_t picked_row = r->strip_len;
+  for (size_t i = 0; i < r->strip_len; i++)
+    if (r->strip[i].key == 1069) picked_row = i;
+  CHECK(picked_row < r->strip_len);
+  CHECK(snap.cell_states[picked_row * c->strip_len] & BINNACLE_CELL_SELECTED);
+  CHECK(binnacle_grid_unpick(grid, BINNACLE_ROWS, 1090));
+  CHECK(binnacle_grid_clear_picks(grid, BINNACLE_COLS));
+  frame(grid, &snap);
+  CHECK(r->picked_len == 1 && r->picked[0] == 1069 && c->picked_len == 0);
+
   binnacle_grid_free(grid);
 }
 

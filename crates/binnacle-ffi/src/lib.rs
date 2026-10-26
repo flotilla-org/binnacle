@@ -4336,6 +4336,50 @@ pub unsafe extern "C" fn binnacle_grid_scroll_by(
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_pick(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.pick(axis, Key(key)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_unpick(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.unpick(axis, Key(key)))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_clear_picks(grid: *mut BinnacleGrid, axis_tag: u32) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.clear_picks(axis))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_focus(grid: *mut BinnacleGrid, row: u64, col: u64) -> i32 {
     // SAFETY: the caller's contract.
     unsafe {

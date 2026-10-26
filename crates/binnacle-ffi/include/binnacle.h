@@ -1566,6 +1566,14 @@ int binnacle_grid_move_focus(BinnacleGrid *grid, uint32_t axis, uint32_t by,
 
 int binnacle_grid_select_all(BinnacleGrid *grid);
 
+/* Picks the item with key on axis, as a Ctrl/Cmd-click on its header does,
+ * or drops its pick, or drops every pick on axis, leaving focus and the
+ * range where they are; the axis snapshot's picked lists them. A gesture in
+ * progress keeps going, but binnacle_grid_cancel no longer undoes this. */
+int binnacle_grid_pick(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_unpick(BinnacleGrid *grid, uint32_t axis, uint64_t key);
+int binnacle_grid_clear_picks(BinnacleGrid *grid, uint32_t axis);
+
 /* Every row of the range's columns, or of the focused column. */
 int binnacle_grid_select_column(BinnacleGrid *grid);
 
