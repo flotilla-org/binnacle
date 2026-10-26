@@ -1791,6 +1791,19 @@ int binnacle_group_layer_request_view(BinnacleGroupLayer *layer, const BinnacleV
  * changed. */
 int binnacle_group_layer_refresh(BinnacleGroupLayer *layer);
 
+/* The user edited rows under the groups: asks every figure the layer holds
+ * again (each Subtotal, Group Item and the Grand Total), keeping every item
+ * where it is until the next View Spec. Until the backend answers, those
+ * figures are pending (binnacle_group_layer_summary gives none) and answers
+ * to figures asked before are dropped. Send the next batch to the backend,
+ * then redraw what binnacle_group_layer_poll_change says. */
+int binnacle_group_layer_refigure(BinnacleGroupLayer *layer);
+
+/* Takes the next Change Notice for figures binnacle_group_layer_refigure
+ * made pending, or answered anew since, into out (CONTENT_CHANGED, for
+ * binnacle_grid_notify): 1 if there was one. */
+int binnacle_group_layer_poll_change(BinnacleGroupLayer *layer, BinnacleGroupNotice *out);
+
 /* 1 if axis is grouped, and so the layer's; else 0. */
 int binnacle_group_layer_grouped(BinnacleGroupLayer *layer, uint32_t axis);
 

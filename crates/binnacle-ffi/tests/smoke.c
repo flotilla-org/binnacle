@@ -129,6 +129,37 @@ static void group_layer(void) {
   CHECK(summary.figures[0].number == 3);
   CHECK(binnacle_group_layer_held(layer) == 2);
 
+  /* An edit moves a Leaf from "b" to "a": the figures go pending at once,
+   * the rows say to redraw, and the backend's answers bring them back. */
+  CHECK(binnacle_group_layer_refigure(layer));
+  CHECK(binnacle_group_layer_summary(layer, items[0].key, &summary));
+  CHECK(summary.figures_len == 0 && summary.children == 3);
+  BinnacleGroupNotice change;
+  CHECK(!binnacle_group_layer_poll_change(layer, NULL));
+  CHECK(binnacle_group_layer_poll_change(layer, &change));
+  CHECK(change.axis == BINNACLE_ROWS && change.notice == BINNACLE_NOTICE_CONTENT_CHANGED);
+  while (binnacle_group_layer_poll_change(layer, &change)) {}
+  CHECK(binnacle_group_layer_poll_batch(layer, &batch));
+  BinnacleFigure four = {.kind = BINNACLE_FIGURE_NUMBER, .number = 4};
+  BinnacleFigure one = {.kind = BINNACLE_FIGURE_NUMBER, .number = 1};
+  BinnacleFigure five = {.kind = BINNACLE_FIGURE_NUMBER, .number = 5};
+  for (size_t i = 0; i < batch.requests_len; i++) {
+    const BinnacleGroupRequest *q = &batch.requests[i];
+    CHECK(q->want == BINNACLE_WANT_TOTAL);
+    const BinnacleFigure *figure = &five;
+    if (q->path_len == 1) figure = q->path[0].value.text.data[0] == 'a' ? &four : &one;
+    BinnacleGroupAnswer answer = {.stamp = batch.stamp, .has_id = 1, .id = q->id,
+                                  .path = q->path, .path_len = q->path_len,
+                                  .body = BINNACLE_BODY_TOTAL, .figures = figure,
+                                  .figures_len = 1};
+    CHECK(binnacle_group_layer_answer(layer, &answer));
+  }
+  CHECK(binnacle_group_layer_poll_change(layer, &change));
+  CHECK(change.notice == BINNACLE_NOTICE_CONTENT_CHANGED);
+  CHECK(binnacle_group_layer_summary(layer, items[0].key, &summary));
+  CHECK(summary.figures_len == 1 && summary.figures[0].number == 4);
+  CHECK(binnacle_group_layer_count(layer, BINNACLE_ROWS, &n) && n == 2);
+
   binnacle_group_layer_free(layer);
   binnacle_group_layer_free(NULL);
   CHECK(binnacle_group_layer_held(NULL) == 0);

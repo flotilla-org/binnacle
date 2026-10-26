@@ -4301,6 +4301,8 @@ impl LayerFake {
 enum LayerOp {
     View(Box<ViewSpec>),
     Refresh,
+    /// The user edited rows under the groups.
+    Refigure,
     /// Polls a batch from both and answers each request still due, in
     /// order or reversed, with shapes taken in turn: `more` past its end,
     /// unnamed, or left for later.
@@ -4344,7 +4346,8 @@ fn layer_spec(tc: &TestCase) -> ViewSpec {
 
 #[hegel::composite]
 fn layer_op(tc: &TestCase) -> LayerOp {
-    match tc.draw(gs::integers::<u8>().max_value(13)) {
+    match tc.draw(gs::integers::<u8>().max_value(14)) {
+        13 => LayerOp::Refigure,
         0 => LayerOp::View(Box::new(tc.draw(layer_spec()))),
         1 => LayerOp::Refresh,
         2..=5 => LayerOp::Pump(
@@ -4381,10 +4384,32 @@ fn layer_op(tc: &TestCase) -> LayerOp {
     }
 }
 
+fn notice_from_c(n: &BinnacleGroupNotice) -> (Axis, ChangeNotice) {
+    let axis = if n.axis == ROWS {
+        Axis::Rows
+    } else {
+        Axis::Cols
+    };
+    let (at, count) = (n.at, n.n);
+    let notice = match n.notice {
+        BINNACLE_NOTICE_RESET => ChangeNotice::Reset(count),
+        BINNACLE_NOTICE_REORDERED => ChangeNotice::Reordered,
+        BINNACLE_NOTICE_INSERTED => ChangeNotice::Inserted { at, n: count },
+        BINNACLE_NOTICE_REMOVED => ChangeNotice::Removed { at, n: count },
+        BINNACLE_NOTICE_CONTENT_CHANGED => ChangeNotice::ContentChanged(at..at + count),
+        BINNACLE_NOTICE_REFILTERED => ChangeNotice::Refiltered(count),
+        BINNACLE_NOTICE_COLLAPSED => ChangeNotice::Collapsed { at, n: count },
+        BINNACLE_NOTICE_EXPANDED => ChangeNotice::Expanded { at, n: count },
+        k => panic!("notice {k}"),
+    };
+    (axis, notice)
+}
+
 /// The grouping layer through the C API mirrors the Rust layer: given the
-/// same View Specs and answers, it polls the same batches, applies the same
-/// specs with the same Change Notices, and shows the same counts, Windows,
-/// Locates, Summary Items and holdings.
+/// same View Specs, edits and answers, it polls the same batches, applies
+/// the same specs with the same Change Notices, redraws the same refigured
+/// items, and shows the same counts, Windows, Locates, Summary Items and
+/// holdings.
 #[hegel::test(test_cases = 1000)]
 fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
     use binnacle_group::GroupingLayer;
@@ -4439,6 +4464,10 @@ fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
             LayerOp::Refresh => {
                 assert_eq!(unsafe { binnacle_group_layer_refresh(h) }, 1);
                 layer.refresh();
+            }
+            LayerOp::Refigure => {
+                assert_eq!(unsafe { binnacle_group_layer_refigure(h) }, 1);
+                layer.refigure();
             }
             LayerOp::Pump(reverse, shapes) => {
                 let mut c = BinnacleGroupBatch::default();
@@ -4552,30 +4581,17 @@ fn the_c_api_mirrors_the_grouping_layer(tc: TestCase) {
             );
             let notices: Vec<(Axis, ChangeNotice)> = unsafe { c_slice(c.notices, c.notices_len) }
                 .iter()
-                .map(|n| {
-                    let axis = if n.axis == ROWS {
-                        Axis::Rows
-                    } else {
-                        Axis::Cols
-                    };
-                    let (at, count) = (n.at, n.n);
-                    let notice = match n.notice {
-                        BINNACLE_NOTICE_RESET => ChangeNotice::Reset(count),
-                        BINNACLE_NOTICE_REORDERED => ChangeNotice::Reordered,
-                        BINNACLE_NOTICE_INSERTED => ChangeNotice::Inserted { at, n: count },
-                        BINNACLE_NOTICE_REMOVED => ChangeNotice::Removed { at, n: count },
-                        BINNACLE_NOTICE_CONTENT_CHANGED => {
-                            ChangeNotice::ContentChanged(at..at + count)
-                        }
-                        BINNACLE_NOTICE_REFILTERED => ChangeNotice::Refiltered(count),
-                        BINNACLE_NOTICE_COLLAPSED => ChangeNotice::Collapsed { at, n: count },
-                        BINNACLE_NOTICE_EXPANDED => ChangeNotice::Expanded { at, n: count },
-                        k => panic!("notice {k}"),
-                    };
-                    (axis, notice)
-                })
+                .map(notice_from_c)
                 .collect();
             assert_eq!(notices, want.notices);
+        }
+        loop {
+            let mut c = BinnacleGroupNotice::default();
+            let polled = unsafe { binnacle_group_layer_poll_change(h, &mut c) };
+            let want = layer.poll_change();
+            assert_eq!(polled, i32::from(want.is_some()), "change after {op:?}");
+            let Some(want) = want else { break };
+            assert_eq!(notice_from_c(&c), want);
         }
         for axis in Axis::ALL {
             let mut n = 99;
