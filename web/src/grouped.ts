@@ -6,8 +6,8 @@
 // the backend does the arithmetic and the filtering, one Aggregate Query
 // at a time. An edit to the base's rows (its ContentChanged while grouped)
 // keeps every item where it is and asks every figure again, drawn pending
-// until the backend answers; a Leaf the edit stops matching the filter, or
-// moves out of its group, stays unmatched. The next View Spec groups the
+// until the backend answers; a Leaf the edit stops matching the filter or a
+// slicer, or moves out of its group, stays unmatched. The next View Spec groups the
 // rows again.
 //
 // A frame's queries go to the backend as one batch. It answers each by id,
@@ -518,9 +518,9 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
   const detach = base.attach?.(relay);
 
   /**
-   * Whether each of `ids` is unmatched: a Leaf the base's filter drops since
-   * the user's edit, or one whose level values no longer fit the group it is
-   * shown in. Summary Items never are.
+   * Whether each of `ids` is unmatched: a Leaf the base's filter (the
+   * slicers among it) drops since the user's edit, or one whose level values
+   * no longer fit the group it is shown in. Summary Items never are.
    */
   const unmatched = async (ids: number[], signal: AbortSignal): Promise<boolean[]> => {
     const leaves = ids.filter((id) => id >= 0);
@@ -591,11 +591,15 @@ export function groupedSource<ColId extends Primitive, V>(options: GroupedOption
               colLevels: [],
             };
       // The base filters and sorts the rows as asked, which it shows while
-      // they are not grouped; the level columns leave the columns.
+      // they are not grouped, and while grouped takes the slicers too, to
+      // tell the Leaves an edit stops matching; the level columns leave the
+      // columns.
       const hidden = [...new Set([...asked.cols.hidden, ...levels])];
       drain();
       wasm().request_view(specKeys(asked, grouping));
-      const plain = { ...asked, cols: { ...asked.cols, hidden }, grouping: null };
+      const conditions = [...asked.rows.filter.conditions, ...(grouping?.slicers ?? [])];
+      const rows = { ...asked.rows, filter: { ...asked.rows.filter, conditions } };
+      const plain = { ...asked, rows, cols: { ...asked.cols, hidden }, grouping: null };
       const applied = base.view ? await base.view(plain, signal) : { rows: asked.rows, cols: plain.cols };
       const cols = { ...applied.cols, hidden: (applied.cols.hidden ?? []).filter((id) => !levels.includes(id) || asked.cols.hidden.includes(id)) };
       if (!wasm().grouped()) {
