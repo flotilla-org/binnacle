@@ -58,14 +58,14 @@ const ordered = (values: ListedValue[]) =>
 
 /**
  * The naive backend: every answer worked out from the records at once,
- * whole and exactly as asked, keeping the rows the filter's `OneOf`
- * conditions keep.
+ * whole and exactly as asked, keeping the rows the slicers' and the
+ * filter's `OneOf` conditions keep.
  */
 function compute(rows: Rec[], batch: AggregateBatch<Field>, q: AggregateQuery<Field>, start = q.start, end = q.end): AggregateAnswer<Field> {
   const { levels, values } = batch.scope;
   const hidden = new Set(batch.scope.hidden);
   const kept = (id: number) =>
-    batch.scope.filter.conditions.every((c) => c.kind.type !== "OneOf" || c.kind.values.includes(rows[id]![c.id as Field] as ListedValue) !== c.not);
+    [...batch.scope.slicers, ...batch.scope.filter.conditions].every((c) => c.kind.type !== "OneOf" || c.kind.values.includes(rows[id]![c.id as Field] as ListedValue) !== c.not);
   const ids = rows.flatMap((_, id) => (hidden.has(id) || !kept(id) ? [] : [id]));
   const under = (path: GroupPath<Field>) => ids.filter((id) => path.every((p) => rows[id]![p.field as Field] === p.value));
   const figures = (leaves: number[]): Figure[] =>
@@ -339,7 +339,7 @@ const filters = gs.composite((tc): Condition<Field>[] => {
   return [{ id, kind: { type: "OneOf", values }, not: tc.draw(gs.booleans()) }];
 });
 
-test("an edit that stops a Leaf matching the filter, or fitting its group, leaves it unmatched, as fromRows does", () =>
+test("an edit that stops a Leaf matching the filter or a slicer, or fitting its group, leaves it unmatched, as fromRows does", () =>
   hegel.testAsync(async (tc) => {
     const rows = tc.draw(records.filter((r) => r.length > 0));
     const { backend, settle, pool } = hostile(tc, rows);
@@ -347,7 +347,7 @@ test("an edit that stops a Leaf matching the filter, or fitting its group, leave
     const source = groupedSource({ base, backend, cache: tc.draw(caches) });
     const model = fromRows(rows, COLUMNS);
     try {
-      const view = viewOf(tc.draw(groupings), [], tc.draw(filters));
+      const view = viewOf({ ...tc.draw(groupings), slicers: tc.draw(filters) }, [], tc.draw(filters));
       model.view!(view, signal);
       await settle(source.view!(view, signal));
       const n = source.rows.count() as number;

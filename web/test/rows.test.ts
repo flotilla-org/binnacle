@@ -17,6 +17,7 @@ import type {
   Condition,
   Distinct,
   FilterSpec,
+  ListedValue,
   OutlinedWindow,
   SortDirection,
   SortSpec,
@@ -1676,6 +1677,27 @@ describe("fromRows's grouping", () => {
         expect(notices).toContainEqual({ type: "Refiltered" });
         expect(shown(source, "s")).toEqual(model(rows, "s", [], () => true));
         expect(source.rows.unmatched!([r], signal)).toEqual([false]);
+      } finally {
+        source.destroy();
+      }
+    }));
+
+  test("an edit that stops a grouped Leaf matching a slicer dims it, as one the filter drops", () =>
+    hegel.test((tc) => {
+      const rows = tc.draw(plain.filter((r) => r.length > 0));
+      const source = fromRows(rows, COLUMNS);
+      try {
+        const values = tc.draw(gs.arrays(gs.sampledFrom<ListedValue>(["0", "1", "2", null]), { minSize: 1, maxSize: 3 }));
+        const not = tc.draw(gs.booleans());
+        const slicer: Condition<keyof Rec> = { id: "b", kind: { type: "OneOf", values }, not };
+        const sliced = (row: Rec) => values.includes(row.b === null ? null : String(row.b)) !== not;
+        source.view!({ ...groupedBy("s"), grouping: { ...summing("all"), slicers: [slicer] } }, signal);
+        const leaves = ids(source).filter((id) => id >= 0);
+        const r = tc.draw(gs.sampledFrom(leaves.length ? leaves : [0]));
+        const was = rows[r]!;
+        rows[r] = { ...was, b: tc.draw(gs.oneOf(gs.just(null), gs.integers({ minValue: 0, maxValue: 2 }))) };
+        source.edited(r);
+        expect(source.rows.unmatched!(leaves, signal)).toEqual(leaves.map((id) => id === r && !sliced(rows[r]!)));
       } finally {
         source.destroy();
       }

@@ -1028,7 +1028,7 @@ export function fromRows<R extends object>(
     kinds.clear();
     rowKeys.delete(id);
     hits = undefined;
-    if (keep || filtering(filters.rows)) m.defer(ROWS, id, rowKeeper(filters.rows)(rows[id]!) ? 1 : 0);
+    if (keep || filtering(leafFilter())) m.defer(ROWS, id, rowKeeper(leafFilter())(rows[id]!) ? 1 : 0);
     stage(grouping!);
     const changed = m.refigure();
     groups.clear();

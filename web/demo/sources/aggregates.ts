@@ -3,9 +3,9 @@
 // answers it late, groups and totals after one delay and Leaves after a
 // longer one, so pending groups and Leaves show before they fill. The table
 // has already filtered and sorted its rows as the View Spec asks (groupedSource
-// gives it the rows' part), so the backend reads its Leaves from there,
-// groups them by each level column's cell text and orders siblings by the
-// one sort rule, as fromRows does. A query a newer View Spec superseded is
+// gives it the rows' part and the slicers), so the backend reads its Leaves
+// from there, groups them by each level column's cell text and orders
+// siblings by the one sort rule, as fromRows does. A query a newer View Spec superseded is
 // never answered.
 
 import type { AggregateBackend, AggregateBatch, AggregateQuery, Figure, GroupPath, GroupRow, ListedValue, RowsColId, RowsSource } from "../../src";
