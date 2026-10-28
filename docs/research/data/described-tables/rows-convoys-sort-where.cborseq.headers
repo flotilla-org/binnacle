@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+content-type: application/cbor-seq
+cache-control: no-store
+transfer-encoding: chunked
+date: Wed, 28 Oct 2026 23:38:55 GMT
+

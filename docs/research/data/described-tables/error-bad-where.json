@@ -1,0 +1,1 @@
+{"code":"invalid_filter","message":"expected a field path starting with `.` at byte 5 of `$row garbage`"}
