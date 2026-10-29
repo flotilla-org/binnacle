@@ -243,3 +243,41 @@ test("between the ends, the offset is never pinned to an end", () =>
       expect(h.offset).toBeLessThan(max);
     }
   }));
+
+test("on a capped sizer, a move the Grid followed stays where the scroller put it until the scroller is still", () =>
+  hegel.test((tc) => {
+    // Long enough at 1 px an item to pass the sizer's cap.
+    const h = Harness.draw(tc, gs.integers({ minValue: 1e9, maxValue: Number.MAX_SAFE_INTEGER }));
+    h.frame();
+    const half = Math.round(h.max() / 2);
+    h.offset = half;
+    const { scrolling } = h.frame()[h.axis];
+    // A step of an animation: short of the scrolling Strip, so some item stays in view to show the Grid followed.
+    const step = Math.floor((scrolling.end - scrolling.start) / 2);
+    tc.assume(step > 0);
+    const d = tc.draw(gs.integers({ minValue: -step, maxValue: step }));
+    tc.assume(d !== 0);
+    // A browser animating a scroll moves the offset a step per frame.
+    h.offset = h.offset + d;
+    h.frame();
+    expect(h.offset).toBe(half + d);
+    expect(h.parts.scroll.settle()).toBe(true);
+    const { fraction } = h.frame()[h.axis].thumb;
+    tc.note(`moved ${d}: fraction ${fraction}, offset ${h.offset} of ${h.max()}`);
+    expect(Math.abs(h.offset - fraction * h.max())).toBeLessThanOrEqual(1);
+  }));
+
+test("an animated scroll's first step back from the end is kept, and the Grid leaves the end by it", () =>
+  hegel.test((tc) => {
+    const h = Harness.draw(tc);
+    tc.assume(h.frame()[h.axis].thumb.size < 1);
+    h.offset = h.max();
+    const end = h.place(h.frame());
+    const max = h.max();
+    tc.assume(h.offset === max);
+    h.offset = max - 1;
+    const s = h.frame();
+    tc.note(`max ${max}: end ${end}, now ${h.place(s)} at ${h.offset}`);
+    expect(h.offset).toBe(max - 1);
+    expect(before(h.place(s), end)).toBe(true);
+  }));
