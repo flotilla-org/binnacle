@@ -15,4 +15,5 @@ binnacle-group.workspace = true
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dev-dependencies]
+binnacle-memory.workspace = true
 hegeltest.workspace = true
