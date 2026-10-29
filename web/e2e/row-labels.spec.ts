@@ -97,6 +97,9 @@ test.describe("records", () => {
     await hoverRowHeader(page, 2);
     // Once a frame has drawn the rows (the ID column holds the same numbers), none is cut short.
     await expect.poll(() => drawn(page)).toContain("1203");
-    expect((await drawn(page)).filter((t) => t.endsWith("…"))).toEqual([]);
+    // Only the row numbers: a column header may be cut to its width, which the platform's font decides.
+    const numbers = Array.from({ length: 10 }, (_, i) => String(1201 + i));
+    const cut = (await drawn(page)).filter((t) => t.endsWith("…") && numbers.some((n) => n.startsWith(t.slice(0, -1))));
+    expect(cut).toEqual([]);
   });
 });

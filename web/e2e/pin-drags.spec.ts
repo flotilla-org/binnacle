@@ -7,6 +7,7 @@
 // line's caption and the dashed line of an unpin that returns.
 
 import { expect, test, type Page } from "@playwright/test";
+import { COLUMN, firstRecord } from "./transposed-columns";
 
 const HEADER = 28;
 const ROW = 24;
@@ -93,12 +94,10 @@ test.describe("records", () => {
 test("on the column-major source a record's column header pins left and a field's row header pins bottom", async ({
   page,
 }) => {
-  // The row header band fits the field names beside their marks, so the records start at 96.
-  const FIRST = 100;
-  const COLUMN = 112 + 1;
   await page.setViewportSize({ width: 1000, height: 400 });
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText("rows 1 to 5 of 5");
+  const FIRST = await firstRecord(page);
   await drag(page, FIRST + 3 * COLUMN, HEADER / 2, 10, HEADER / 2);
   await click(page, FIRST, 1);
   await expect(status(page)).toContainText("(name / 3)");

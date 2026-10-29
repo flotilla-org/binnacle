@@ -5,7 +5,7 @@
 // band and 24 px rows.
 
 import { expect, test, type Page } from "@playwright/test";
-import type { FrameInfo } from "../src";
+import type { FrameInfo, GridWidget } from "../src";
 import { dblclick } from "./dblclick";
 
 const status = (page: Page) => page.locator("#status");
@@ -114,8 +114,8 @@ async function mount(page: Page) {
     host.style.cssText = "position: fixed; left: 0; top: 0; width: 700px; height: 400px; z-index: 10; background: white;";
     document.body.append(host);
     const range = (s: number, e: number) => Array.from({ length: e - s }, (_, i) => s + i);
-    const w = window as unknown as { frame: FrameInfo };
-    await GridWidget.create(host, {
+    const w = window as unknown as { frame: FrameInfo; grid: unknown };
+    w.grid = await GridWidget.create(host, {
       source: {
         rows: { identity: "position", count: () => 100, window: range },
         cols: { identity: "position", count: () => 6, window: range },
@@ -133,6 +133,13 @@ async function mount(page: Page) {
 }
 
 const frame = (page: Page) => page.evaluate(() => (window as unknown as { frame?: FrameInfo }).frame);
+
+/** Column `col`'s Size Override, from the grid's layout; `undefined` if it has none. */
+const override = (page: Page, col: number) =>
+  page.evaluate(
+    (col) => (window as unknown as { grid: GridWidget<number, number> }).grid.layout().sizes.cols.find(([id]) => id === col)?.[1],
+    col,
+  );
 
 const cursor = (page: Page) => page.locator("#fixture .binnacle-layer").evaluate((el) => (el as HTMLElement).style.cursor);
 
@@ -208,10 +215,14 @@ test.describe("pointer", () => {
 
   test("double-clicking a column border fits the column to its visible text", async ({ page }) => {
     await dblclick(page, 140, 15);
-    // "r99c0" in 13 px type is far narrower than 100 px.
+    // "r99c0" in 13 px type is far narrower than 100 px, by however much the platform's font gives.
+    await expect.poll(() => override(page, 0)).toBeLessThan(100);
+    const width = (await override(page, 0))!;
+    expect(width).toBeGreaterThan(0);
     await page.mouse.move(300, 300);
     expect(await onBorder(page, 140)).toBe(false);
-    await click(page, { x: 90, y: cell(0, 0).y });
+    expect(await onBorder(page, 40 + width)).toBe(true);
+    await click(page, { x: 40 + width + 1 + 10, y: cell(0, 0).y });
     await expect.poll(async () => (await frame(page))?.focus?.col).toBe(1);
   });
 

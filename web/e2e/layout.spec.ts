@@ -7,6 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
 import { column, FIRST } from "./records-columns";
+import { COLUMN, firstRecord } from "./transposed-columns";
 
 const HEADER = 28;
 const ROW = 24;
@@ -24,9 +25,6 @@ async function click(page: Page, x: number, y: number) {
 
 const cell = (page: Page, row: number, x: number) => click(page, x, HEADER + row * ROW + ROW / 2);
 
-// The transposed demo's row header band fits the field names beside their marks, so the records start at 96.
-const TRANSPOSED_BAND = 100;
-const TRANSPOSED_COLUMN = 112 + 1;
 
 /** The record first by weight, ascending (nulls last, ties in the records' order). */
 const lightest = rows.reduce((best, r) => (r.weight !== null && (best.weight === null || r.weight < best.weight) ? r : best)).id;
@@ -102,7 +100,7 @@ async function transposed(page: Page) {
   await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText("rows 1 to 5 of 5");
-  await cell(page, 1, TRANSPOSED_BAND + 3 * TRANSPOSED_COLUMN);
+  await cell(page, 1, (await firstRecord(page)) + 3 * COLUMN);
   await expect(status(page)).toContainText("focus row 2, column 4 (name / 3)");
 }
 
@@ -112,7 +110,7 @@ async function pinnedAfterReload(page: Page) {
   await expect(state(page)).toHaveText("restored");
   // The restored pin lands in the next frame; a click before it hits record 0.
   await nextFrame(page);
-  await cell(page, 1, TRANSPOSED_BAND);
+  await cell(page, 1, await firstRecord(page));
   await expect(status(page)).toContainText("focus row 2, column 4 (name / 3)");
 }
 

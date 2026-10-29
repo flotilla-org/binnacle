@@ -7,6 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
 import { column, FIRST } from "./records-columns";
+import { COLUMN, firstRecord } from "./transposed-columns";
 
 const HEADER = 28;
 const ROW = 24;
@@ -102,8 +103,7 @@ test("in the transposed demo, hiding a column hides a record and the bar counts 
   await page.setViewportSize({ width: 1000, height: 400 });
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText(`of ${en(rows.length)}`);
-  // The row header band fits the field names beside their marks, so the records start at 96.
-  await click(page, 1, 100 + 113);
+  await click(page, 1, (await firstRecord(page)) + COLUMN);
   await expect(status(page)).toContainText("focus row 2, column 2 (name / 1)");
   await page.keyboard.press(`${await mod(page)}+Alt+0`);
   await expect(bar(page)).toContainText(`${en(rows.length - 1)} of ${en(rows.length)} records`);

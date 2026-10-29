@@ -147,8 +147,16 @@ test("a filter keeps the topmost record still shown at the top, and clearing it 
   const b = await layer(page);
   await page.mouse.move(b.x + column(1), b.y + HEADER + ROW * 3);
   await page.mouse.wheel(0, ROW * 25);
-  await expect(status(page)).not.toContainText("rows 1 to");
-  const first = Number(/rows ([\d,]+) to/.exec((await status(page).textContent()) ?? "")![1]!.replace(/,/g, ""));
+  // Some platforms animate a wheel scroll: read the top row once it has stopped moving.
+  const shown = async () => Number(/rows ([\d,]+) to/.exec((await status(page).textContent()) ?? "")![1]!.replace(/,/g, ""));
+  let last = NaN;
+  await expect
+    .poll(async () => {
+      const [before, now] = [last, (last = await shown())];
+      return now > 1 && now === before;
+    })
+    .toBe(true);
+  const first = last;
   // The topmost record shown that matches, and its Position once filtered.
   const kept = sorted([], (r) => matches(r, "e"));
   const survivor = kept.find((i) => i >= first - 1)!;
