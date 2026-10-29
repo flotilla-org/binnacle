@@ -1,0 +1,11 @@
+---
+source: crates/binnacle-described/tests/tables_example.rs
+expression: lines(&buf)
+---
+      Name   │Phase  │Start…▲│CPUs                │Load (%)│note      │Host│
+1     bravo   ∅      ║∅                          2    1.25% ∅          feta
+2     charlie Stalled║!soon   !many                ∅        check disk brie
+3     foxtrot Running║ 2d ago                    8 !high    ∅          feta
+4     delta   Running║15h ago ∅                        3.5%            brie
+5     echo    Done   ║ in 10h 18446744073709551615       2% late       ∅
+6     alpha   Running║ in 10h                    4     0.5%            feta

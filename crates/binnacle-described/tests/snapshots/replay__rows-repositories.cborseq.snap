@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-described/tests/replay.rs
+expression: picture(&mut scenario)
+---
+rows 15 (of Some(15)), columns 11, synced true, partial false, count None, mismatches 0
+Name | Namespace | metadata.resourceVersion | Created | Deleted | metadata.labels | metadata.annotations | Phase | Conditions | Spec | Status
+18bgq9qrinlfemovt24qr753 | flotilla | 27160 | 2026-07-28 19:04 | ∅ | {"flotilla.work/managed- | {"flotilla.work/last-app | ∅ | ∅ | {"forge":{"repository":" | {"default_branch":"main"
+308ku1mv2qf78844kmd82he9 | flotilla | 27276 | 2026-09-16 21:44 | ∅ | {} | {} | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d
+7fnn840ge3ls64p4pud0jkpa | flotilla | 27278 | 2026-10-02 17:12 | ∅ | {} | {} | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d
+aj3k3dqtmoq29sa6aqpabcm9 | flotilla | 27779 | 2026-10-19 19:02 | ∅ | {} | {"flotilla.work/project- | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d
+e0i3hu3i6n5cb0g99dbvk0f4 | flotilla | 27277 | 2026-10-02 17:12 | ∅ | {} | {} | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d
+huhtjfanqkjse4vlh0nv34fe | flotilla | 27274 | 2026-10-01 21:19 | ∅ | {} | {"flotilla.work/project- | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d
+kru3543dk3u467flv91umrt1 | flotilla | 27777 | 2026-10-19 16:49 | ∅ | {} | {"flotilla.work/project- | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d
+ksctk092pqsipun06p48n8ts | flotilla | 27273 | 2026-09-16 21:44 | ∅ | {} | {} | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d
+mf4j6hdb2bco8202bfera47n | flotilla | 26900 | 2026-10-05 13:00 | ∅ | {} | {} | ∅ | ∅ | {"forge":{"repository":" | {"default_branch":"main"
+oalv1ltv780b5o46r37c11aq | flotilla | 27635 | 2026-08-01 17:41 | ∅ | {} | {} | ∅ | ∅ | {"forge":{"repository":" | {"checkouts_by_host":{"d

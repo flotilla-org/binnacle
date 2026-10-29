@@ -1,0 +1,7 @@
+---
+source: crates/binnacle-described/tests/replay.rs
+expression: picture(&mut scenario)
+---
+rows 1 (of Some(1)), columns 11, synced true, partial false, count None, mismatches 0
+Name | Namespace | metadata.resourceVersion | Created | Deleted | metadata.labels | metadata.annotations | Phase | Conditions | Spec | Status
+d783f8a7-6b6f-44a9-bd04- | flotilla | 262378 | 2026-07-27 22:00 | ∅ | {} | {} | ∅ | [{"blocks_forge_observat | {"display_name":"feta"," | {"admission_free_space_f

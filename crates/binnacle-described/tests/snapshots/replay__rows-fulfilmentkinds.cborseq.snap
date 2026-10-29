@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-described/tests/replay.rs
+expression: picture(&mut scenario)
+---
+rows 3 (of Some(3)), columns 11, synced true, partial false, count None, mismatches 0
+Name | Namespace | metadata.resourceVersion | Created | Deleted | metadata.labels | metadata.annotations | Phase | Conditions | Spec | Status
+docker-crew-image-feta | flotilla | 10 | 2026-09-28 11:04 | ∅ | {} | {} | ∅ | ∅ | {"cost_class":"owned_idl | ∅
+docker-on-d783f8a7-6b6f- | flotilla | 2 | 2026-09-28 11:04 | ∅ | {} | {} | ∅ | ∅ | {"grants":[{"kind":"plat | ∅
+host-direct-d783f8a7-6b6 | flotilla | 3 | 2026-09-28 11:04 | ∅ | {} | {} | ∅ | ∅ | {"grants":[{"kind":"plat | ∅

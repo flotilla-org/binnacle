@@ -1,0 +1,23 @@
+[package]
+name = "binnacle-described"
+description = "A sans-IO Table Source for described tables: tables whose schema comes on the wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+binnacle-core.workspace = true
+binnacle-format.workspace = true
+binnacle-group.workspace = true
+binnacle-memory.workspace = true
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[dev-dependencies]
+binnacle-ratatui = { path = "../binnacle-ratatui" }
+binnacle-testkit.workspace = true
+hegeltest.workspace = true
+insta.workspace = true
+ratatui.workspace = true

@@ -1,0 +1,12 @@
+---
+source: crates/binnacle-described/tests/source.rs
+expression: "&first.row_keys()[..2]"
+---
+[
+    Key(
+        1518625640530370749,
+    ),
+    Key(
+        8846068457658485509,
+    ),
+]

@@ -1,0 +1,6 @@
+---
+source: crates/binnacle-described/tests/tables_example.rs
+expression: text
+---
+      Name                                │Phase│Namespace│metadata.resourceVersion│Created│Deleted│
+1     d783f8a7-6b6f-44a9-bd04-5e6e2d43f878 ∅    ║flotilla  262376                   93d ago ∅

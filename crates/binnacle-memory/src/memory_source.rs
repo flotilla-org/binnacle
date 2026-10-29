@@ -13,7 +13,8 @@ use binnacle_core::{
 use regex::{Regex, RegexBuilder};
 
 use crate::{
-    FindCount, FindStep, InMemoryTableSource, MovePolicy, Moved, PumpSource, SortKeys, Viewed,
+    FindCount, FindStep, InMemoryTableSource, MovePolicy, Moved, PumpSource, SortKeys, TypedKey,
+    Viewed,
 };
 
 /// A Sort Spec named a column the table has but no sort-key closure for;
@@ -35,6 +36,7 @@ type Extract<R, T> = Box<dyn Fn(&R) -> Option<T>>;
 type Keep<R> = Box<dyn Fn(&R) -> bool>;
 type ExtractBytes<R> = Box<dyn for<'r> Fn(&'r R) -> Option<Cow<'r, [u8]>>>;
 type ExtractText<R> = Box<dyn for<'r> Fn(&'r R) -> Option<Cow<'r, str>>>;
+type ExtractTyped<R> = Box<dyn for<'r> Fn(&'r R) -> Option<TypedKey<'r>>>;
 
 enum Column<R> {
     I64(Extract<R, i64>),
@@ -43,6 +45,8 @@ enum Column<R> {
     /// Milliseconds since the Unix epoch, sorting as integers.
     Date(Extract<R, i64>),
     Bytes(ExtractBytes<R>),
+    /// Typed Values, compared as the kind given if any.
+    Typed(ExtractTyped<R>, Option<Compared>),
 }
 
 impl<R> Column<R> {
@@ -52,6 +56,7 @@ impl<R> Column<R> {
             Column::U64(f) => SortKeys::U64(rows.iter().map(f).collect()),
             Column::F64(f) => SortKeys::F64(rows.iter().map(f).collect()),
             Column::Bytes(f) => SortKeys::Bytes(rows.iter().map(f).collect()),
+            Column::Typed(f, _) => SortKeys::Typed(rows.iter().map(f).collect()),
         }
     }
 
@@ -64,6 +69,18 @@ impl<R> Column<R> {
             Column::F64(f) => f(row).map(Scalar::Number),
             Column::Date(f) => f(row).map(Scalar::Date),
             Column::Bytes(_) => None,
+            Column::Typed(f, compared) => match (compared, f(row)?) {
+                (Some(Compared::Numbers), TypedKey::I64(v)) => Some(Scalar::Number(v as f64)),
+                (Some(Compared::Numbers), TypedKey::U64(v)) => Some(Scalar::Number(v as f64)),
+                (Some(Compared::Numbers), TypedKey::F64(v)) => Some(Scalar::Number(v)),
+                (Some(Compared::Dates), TypedKey::Instant(nanos)) => {
+                    let millis = nanos.div_euclid(1_000_000);
+                    Some(Scalar::Date(
+                        millis.clamp(i64::MIN.into(), i64::MAX.into()) as i64
+                    ))
+                }
+                _ => None,
+            },
         }
     }
 
@@ -73,6 +90,7 @@ impl<R> Column<R> {
             Column::I64(_) | Column::U64(_) | Column::F64(_) => Some(Compared::Numbers),
             Column::Date(_) => Some(Compared::Dates),
             Column::Bytes(_) => None,
+            Column::Typed(_, compared) => *compared,
         }
     }
 
@@ -86,6 +104,18 @@ impl<R> Column<R> {
             Column::Bytes(f) => f(row).map(|v| match v {
                 Cow::Borrowed(b) => String::from_utf8_lossy(b),
                 Cow::Owned(b) => String::from_utf8_lossy(&b).into_owned().into(),
+            }),
+            Column::Typed(f, _) => f(row).map(|key| match key {
+                TypedKey::Invalid(text) => text,
+                TypedKey::I64(v) => v.to_string().into(),
+                TypedKey::U64(v) => v.to_string().into(),
+                TypedKey::F64(v) => v.to_string().into(),
+                TypedKey::Instant(nanos) => {
+                    let millis = nanos.div_euclid(1_000_000);
+                    let millis = millis.clamp(i64::MIN.into(), i64::MAX.into()) as i64;
+                    Scalar::Date(millis).to_string().into()
+                }
+                TypedKey::Bytes(b) => String::from_utf8_lossy(&b).into_owned().into(),
             }),
         }
     }
@@ -430,6 +460,21 @@ impl<R> MemorySource<R> {
         self
     }
 
+    /// Makes the column with Key `column` a column of Typed Values, sorting
+    /// by the [`TypedKey`] `f` gives a row (nulls lowest, then invalid
+    /// values, then typed ones) and compared as `compared` says: numbers
+    /// by its integer and float keys, dates by its instants (to the
+    /// millisecond), nothing else. `None` is null.
+    pub fn typed_column(
+        mut self,
+        column: Key,
+        compared: Option<Compared>,
+        f: impl for<'r> Fn(&'r R) -> Option<TypedKey<'r>> + 'static,
+    ) -> Self {
+        (self.columns).insert(column, Column::Typed(Box::new(f), compared));
+        self
+    }
+
     /// Gives the column with Key `column` the text form `f`, which a quick
     /// filter matches; `None` is a blank, which never matches.
     pub fn text_column(
@@ -594,7 +639,8 @@ impl<R> MemorySource<R> {
     }
 
     /// The sort keys of `row` across the base columns, by which the columns
-    /// sort: integers if every column with a closure has an integer one (all
+    /// sort: typed keys if every column with a closure is a typed one,
+    /// integers if every column with a closure has an integer one (all
     /// signed or all unsigned), numbers if every one is numeric (a mix of
     /// signed and unsigned falls here, exact only up to 2^53), else text
     /// (bytes as they are, numbers written with `Display`). A column without a closure is null.
@@ -603,6 +649,13 @@ impl<R> MemorySource<R> {
             .map(|c| self.columns.get(&self.table.base_key(Axis::Cols, c)))
             .collect();
         let mut present = columns.iter().flatten();
+        if (present.clone()).all(|c| matches!(c, Column::Typed(..))) {
+            let key = |c: &Option<&Column<R>>| match c {
+                Some(Column::Typed(f, _)) => f(row),
+                _ => None,
+            };
+            return SortKeys::Typed(columns.iter().map(key).collect());
+        }
         if (present.clone()).all(|c| matches!(c, Column::I64(_) | Column::Date(_))) {
             let key = |c: &Option<&Column<R>>| match c {
                 Some(Column::I64(f) | Column::Date(f)) => f(row),
@@ -617,7 +670,7 @@ impl<R> MemorySource<R> {
             };
             return SortKeys::U64(columns.iter().map(key).collect());
         }
-        if present.all(|c| !matches!(c, Column::Bytes(_))) {
+        if present.all(|c| !matches!(c, Column::Bytes(_) | Column::Typed(..))) {
             let key = |c: &Option<&Column<R>>| match c {
                 Some(Column::I64(f) | Column::Date(f)) => f(row).map(|v| v as f64),
                 Some(Column::U64(f)) => f(row).map(|v| v as f64),
