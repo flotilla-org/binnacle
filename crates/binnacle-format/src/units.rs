@@ -31,8 +31,8 @@ impl Num {
 pub(crate) fn with_unit(n: Num, unit: &str, decimals: Option<u8>) -> String {
     match unit {
         "By" => bytes(n.as_f64()),
-        "s" => duration(n.as_f64()),
-        "ms" => duration(n.as_f64() / 1000.0),
+        "s" => duration(n.as_f64(), n.as_f64() * 1000.0),
+        "ms" => duration(n.as_f64() / 1000.0, n.as_f64()),
         "%" => format!("{}%", n.digits(decimals)),
         "1" | "" => n.digits(decimals),
         // A UCUM annotation, `{widgets}`, shows as its text.
@@ -67,15 +67,17 @@ pub(crate) fn bytes(n: f64) -> String {
     }
 }
 
-/// A duration in seconds: `350 ms`, `4.2 s`, `1m 2s`, `1h 2m`, `2d 3h`.
-pub(crate) fn duration(secs: f64) -> String {
+/// A duration of `secs` seconds, which is `ms` milliseconds: `350 ms`,
+/// `4.2 s`, `1m 2s`, `1h 2m`, `2d 3h`. Each form reads the unit it came in,
+/// so `3.97 ms` does not pass through seconds and pick up float noise.
+pub(crate) fn duration(secs: f64, ms: f64) -> String {
     if !secs.is_finite() {
         return format!("{} s", number(secs, 0));
     }
     let sign = if secs < 0.0 { "-" } else { "" };
-    let s = secs.abs();
+    let (s, ms) = (secs.abs(), ms.abs());
     // Each form is chosen by its rounded text, so 59.96 s is `1m 0s`.
-    let ms = number(s * 1000.0, fewest_decimals([s * 1000.0]));
+    let ms = number(ms, fewest_decimals([ms]));
     if ms.parse::<f64>().is_ok_and(|r| r < 1000.0) {
         return format!("{sign}{ms} ms");
     }

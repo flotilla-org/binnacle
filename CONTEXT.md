@@ -42,6 +42,14 @@ _Avoid_: Invalidation, update event, data changed
 A cell's value with its kind (null, bool, integer, number, text, bytes, date, category, JSON tree, or invalid: what the source could not read as the kind its column expects), as a described table gives it, and drawn by every host through the one shared formatter with its column's unit, role and options, so the same value shows the same text everywhere. `Value` in `binnacle-format`, `TypedValue` in TypeScript.
 _Avoid_: Cell value (as a term), datum, variant
 
+**Zone**:
+The local time zone a host hands the formatter, as a lookup from an instant to its offset from UTC, so each date draws in the offset in force at that date, across daylight-saving changes. It supersedes the single `utc_offset` the #296 brief gave `FormatContext`. `Zone` and `FixedOffset` in `binnacle-format`; a function from ms to seconds east in TypeScript.
+_Avoid_: UTC offset (for the zone as a whole), timezone offset
+
+**Stable Text**:
+A Typed Value's text as search, filters, copy and assistive tech read it: the formatted text with every date absolute, so it never goes stale as time passes. `format_stable` in `binnacle-format`.
+_Avoid_: Plain text, display text
+
 ### Axes and identity
 
 **Axis**:

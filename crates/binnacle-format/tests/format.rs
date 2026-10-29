@@ -195,6 +195,12 @@ fn units_go_through_the_registry_and_unknown_ones_are_a_suffix() {
         (Value::Number(-59.96), "s", "-1m 0s"),
         (Value::Int(350), "ms", "350 ms"),
         (Value::Number(0.25), "ms", "0.25 ms"),
+        (Value::Number(1.1), "ms", "1.1 ms"),
+        (Value::Number(3.97), "ms", "3.97 ms"),
+        (Value::Number(15.97), "ms", "15.97 ms"),
+        (Value::Number(-31.67), "ms", "-31.67 ms"),
+        (Value::Number(999.4), "ms", "999.4 ms"),
+        (Value::Number(1500.0), "ms", "1.5 s"),
         (Value::Int(3_720_000), "ms", "1h 2m"),
         (Value::Number(12.5), "%", "12.5%"),
         (Value::Int(-3), "%", "-3%"),
@@ -436,6 +442,8 @@ fn rfc3339_instants_parse_with_fractions_and_offsets() {
         "2026-04-31T00:00:00Z",
         "2026-10-00T00:00:00Z",
         "2026-10-29T13:00:00",
+        "2026-10-29T13:00:00+24:00",
+        "2026-10-29T13:00:00+01:60",
         "x",
     ] {
         assert_eq!(Timestamp::parse_rfc3339(bad), None, "{bad}");

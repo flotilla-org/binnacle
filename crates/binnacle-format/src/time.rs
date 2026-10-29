@@ -136,7 +136,11 @@ impl Timestamp {
                     b'-' => -1,
                     _ => return None,
                 };
-                sign * (num(at + 1..at + 3)? * 3600 + num(at + 4..at + 6)? * 60)
+                let (hours, minutes) = (num(at + 1..at + 3)?, num(at + 4..at + 6)?);
+                if hours > 23 || minutes > 59 {
+                    return None;
+                }
+                sign * (hours * 3600 + minutes * 60)
             }
             _ => return None,
         };
