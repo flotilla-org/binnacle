@@ -1,9 +1,12 @@
 //! Moves: which axes the Table Source can move now, the move requested and
-//! not yet answered, and the last refusal.
+//! not yet answered, those queued behind it, and the last refusal.
 
+use std::collections::VecDeque;
+
+use crate::effect::Effect;
 use crate::gesture::Mode;
 use crate::grid::Grid;
-use crate::types::{Axis, Key};
+use crate::types::{Axis, Key, Position};
 
 /// The Grid's move state.
 #[derive(Clone, Debug, Default)]
@@ -13,6 +16,9 @@ pub(crate) struct MoveState {
     /// The move requested and not yet answered: its axis and Keys. One at a
     /// time; no other move starts until it is answered.
     pub pending: Option<(Axis, Vec<Key>)>,
+    /// Moves asked for with [`Grid::request_move`] while another waited,
+    /// requested in turn as each answer comes.
+    pub queued: VecDeque<(Axis, Vec<Key>, Position)>,
     /// The last move the Table Source refused and why, until the next press.
     pub refused: Option<(Axis, String)>,
 }
@@ -48,6 +54,27 @@ impl Grid {
         };
         self.moves.refused = refusal.map(|reason| (axis, reason));
         self.pending_damage.selection = true;
+        if let Some((axis, keys, to)) = self.moves.queued.pop_front() {
+            self.request_move(axis, keys, to);
+        }
+    }
+
+    /// Asks the Table Source to move the items with `keys`, in that order,
+    /// to before Position `to` on `axis`, as a header drop does: a
+    /// `MoveRequested` now, or once the moves already asked for are
+    /// answered. The source may refuse it, as any move. A restored Layout's
+    /// order comes this way.
+    pub fn request_move(&mut self, axis: Axis, keys: Vec<Key>, to: Position) {
+        if keys.is_empty() {
+            return;
+        }
+        if self.moves.pending.is_some() {
+            self.moves.queued.push_back((axis, keys, to));
+            return;
+        }
+        self.moves.pending = Some((axis, keys.clone()));
+        self.pending_damage.selection = true;
+        self.push(Effect::MoveRequested { axis, keys, to });
     }
 
     /// Whether a move of the item with `key` on `axis` is waiting for its
