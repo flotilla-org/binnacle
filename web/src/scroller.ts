@@ -100,7 +100,7 @@ export function createScrollMapping(port: ScrollPort, options: ScrollOptions = {
         content[axis] = thumb.size >= 1 ? v : v - body + body / thumb.size;
         size[axis] = Math.round(Math.min(cap, content[axis]));
         capped[axis] = content[axis] > cap;
-        following[axis] = followed(axis, s[axis]);
+        following[axis] = followed(axis, s[axis], following[axis]);
         fed[axis] = 0;
       }
       port.setSize(size.cols, size.rows);
@@ -142,21 +142,21 @@ export function createScrollMapping(port: ScrollPort, options: ScrollOptions = {
     },
   };
 
-  /** Whether the Grid moved by just what was taken in as `Scroll` since the last write-back. */
-  function followed(axis: AxisName, a: AxisSnapshot): boolean {
-    const was = placed[axis];
+  /**
+   * Whether the Grid moved by just what was taken in as `Scroll` since the last write-back, as one
+   * scrolling item in view both times shows; the Grid moves its items together. Unmoved, it is still
+   * following if it `was`.
+   */
+  function followed(axis: AxisName, a: AxisSnapshot, was: boolean): boolean {
+    const before = placed[axis];
     const now = new Map<number, number>();
     for (const item of a.strip.slice(a.pinned, a.strip.length - a.trailing)) now.set(item.position, item.offset);
     placed[axis] = now;
     const moved = fed[axis];
     if (moved === null) return false;
-    for (const [position, at] of now) {
-      const before = was.get(position);
-      if (before === undefined) continue;
-      const shift = before - at;
-      if (Math.abs(shift - moved) >= 0.5) return false;
-      return moved !== 0 || following[axis];
-    }
-    return false;
+    const common = [...now.keys()].find((position) => before.has(position));
+    if (common === undefined) return false;
+    const shift = before.get(common)! - now.get(common)!;
+    return Math.abs(shift - moved) < 0.5 && (moved !== 0 || was);
   }
 }

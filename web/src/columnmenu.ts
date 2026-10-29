@@ -773,11 +773,13 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     /** The menu's measured height with the checklist full and a between's second field shown: its most as values land. */
     const tallest = () => {
       const was = [list.style.height, highRow.style.display] as const;
-      list.style.height = list.style.maxHeight;
-      if (support.compare) highRow.style.display = "flex";
-      const height = element.offsetHeight;
-      [list.style.height, highRow.style.display] = was;
-      return height;
+      try {
+        list.style.height = list.style.maxHeight;
+        if (support.compare) highRow.style.display = "flex";
+        return element.offsetHeight;
+      } finally {
+        [list.style.height, highRow.style.display] = was;
+      }
     };
     // Short of room below its header, the list gives way before the menu covers the header.
     const cut = Math.min(tallest() - (innerHeight - top - 8), LIST_HEIGHT - LIST_MIN_HEIGHT);

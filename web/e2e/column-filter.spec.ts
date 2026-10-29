@@ -59,7 +59,7 @@ test.describe("records", () => {
     await expect(dialog.getByRole("group", { name: "3 values" }).getByRole("checkbox").first()).toBeVisible();
     const box = (await dialog.boundingBox())!;
     expect(box.y).toBeGreaterThanOrEqual(0);
-    expect(box.y + box.height).toBeLessThanOrEqual(600);
+    expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize()!.height);
     // Its last control too: the menu does not hide what it cannot fit.
     await expect(dialog.getByRole("button", { name: "Close" })).toBeInViewport({ ratio: 1 });
   });
@@ -72,7 +72,7 @@ test.describe("records", () => {
     await expect(dialog.getByRole("group", { name: "3 values" }).getByRole("checkbox").first()).toBeVisible();
     const box = (await dialog.boundingBox())!;
     expect(box.y).toBeGreaterThanOrEqual(0);
-    expect(box.y + box.height).toBeLessThanOrEqual(300);
+    expect(box.y + box.height).toBeLessThanOrEqual(page.viewportSize()!.height);
     await dialog.getByRole("button", { name: "Close" }).click();
     await expect(dialog).toHaveCount(0);
   });

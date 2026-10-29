@@ -609,6 +609,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     });
     this.element.append(this.aria.element);
 
+    // A capped sizer's offsets are placed once the scroll ends: on `scrollend`, which waits out
+    // an animation however slow its frames, or else once the scroller has been still a while.
+    const still = () => {
+      if (this.scroll.settle()) this.schedule();
+    };
+    const ends = "onscrollend" in this.scroller;
+    if (ends) this.listen(this.scroller, "scrollend", still);
     let settling: ReturnType<typeof setTimeout> | undefined;
     this.listen(this.scroller, "scroll", () => {
       // Resized since the last frame: a jump would be placed in the old
@@ -624,13 +631,6 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         settling = setTimeout(still, SCROLL_STILL_MS);
       }
     });
-    // A capped sizer's offsets are placed once the scroll ends: on `scrollend`, which waits out
-    // an animation however slow its frames, or else once the scroller has been still a while.
-    const still = () => {
-      if (this.scroll.settle()) this.schedule();
-    };
-    const ends = "onscrollend" in this.scroller;
-    if (ends) this.listen(this.scroller, "scrollend", still);
     this.cleanup.push(() => clearTimeout(settling));
     const resize = new ResizeObserver(() => this.invalidate());
     resize.observe(this.element);

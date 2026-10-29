@@ -5,7 +5,7 @@
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, expect, test } from "vitest";
-import type { AxisName } from "../src/codes";
+import { AXIS_CODE, type AxisName } from "../src/codes";
 import { createFeed } from "../src/feed";
 import { runFrame, type FrameParts } from "../src/frame";
 import { createScrollMapping, type ScrollPort } from "../src/scroller";
@@ -280,4 +280,17 @@ test("an animated scroll's first step back from the end is kept, and the Grid le
     tc.note(`max ${max}: end ${end}, now ${h.place(s)} at ${h.offset}`);
     expect(h.offset).toBe(max - 1);
     expect(before(h.place(s), end)).toBe(true);
+  }));
+
+test("a move the Grid made itself, not the scroller, is written back to where the Thumb puts it", () =>
+  hegel.test((tc) => {
+    const h = Harness.draw(tc);
+    tc.assume(h.frame()[h.axis].thumb.size < 1);
+    h.offset = Math.round(h.max() / 2);
+    h.frame();
+    // As a key or a programmatic ScrollTo moves it, the scroller untouched.
+    h.parts.grid.scroll_to(AXIS_CODE[h.axis], tc.draw(gs.floats({ minValue: 0.25, maxValue: 0.75 })));
+    const { fraction } = h.frame()[h.axis].thumb;
+    tc.note(`fraction ${fraction}, offset ${h.offset} of ${h.max()}`);
+    expect(Math.abs(h.offset - fraction * h.max())).toBeLessThanOrEqual(1);
   }));
