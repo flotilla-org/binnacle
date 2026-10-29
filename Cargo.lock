@@ -80,6 +80,7 @@ version = "0.1.0"
 dependencies = [
  "binnacle-core",
  "binnacle-group",
+ "binnacle-memory",
  "hegeltest",
 ]
 

@@ -6,6 +6,7 @@
 //! the host never releases anything but the handle. Effects are polled;
 //! nothing calls back into the host.
 
+use std::collections::VecDeque;
 use std::slice;
 
 mod layer;
@@ -18,8 +19,8 @@ use binnacle_core::{
     FocusEnd, FocusStep, Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind,
     Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements,
     PointerEvent, PointerKind, Rect, Scalar, Searched, SelectionUnit, SetPosition, SortColumn,
-    SortDirection, SortSpec, StripItem, Support, TextQuery, TextSupport, Totals, Value, ViewEdit,
-    ViewSpec, Viewport,
+    SortDirection, SortSpec, Stamped, StripItem, Support, TextQuery, TextSupport, Totals, Value,
+    ViewEdit, ViewSpec, Viewport,
 };
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
@@ -259,6 +260,8 @@ pub const BINNACLE_HEADER_CLICK_NONE: u32 = 2;
 /// Effects point into.
 pub struct BinnacleGrid {
     grid: Grid,
+    /// Effects a Rust host passed on, polled before the Grid's own.
+    passed_on: VecDeque<Stamped>,
     strips: [Vec<BinnacleStripItem>; 2],
     /// The last Snapshot's outline ancestors, group value texts and paths
     /// per axis.
@@ -2293,44 +2296,70 @@ pub extern "C" fn binnacle_grid_new(
     let (Some(rows), Some(cols)) = (rows.to_core(), cols.to_core()) else {
         return std::ptr::null_mut();
     };
-    Box::into_raw(Box::new(BinnacleGrid {
-        grid: Grid::new(rows, cols),
-        strips: Default::default(),
-        ancestors: Default::default(),
-        outline_texts: Default::default(),
-        paths: Default::default(),
-        tiers: Default::default(),
-        spans: Default::default(),
-        corner_tiers: Default::default(),
-        corner_levels: Default::default(),
-        headers: Default::default(),
-        picked: Default::default(),
-        runs: Default::default(),
-        rects: Vec::new(),
-        cells: Vec::new(),
-        text: String::new(),
-        view: CView::default(),
-        drill_down: Default::default(),
-        copy_runs: Default::default(),
-        edit_keys: Vec::new(),
-        edit_value: Default::default(),
-        hidden_listed: Default::default(),
-        listed: Default::default(),
-        listed_states: Default::default(),
-        listed_sorts: Default::default(),
-        held: Vec::new(),
-        listed_slicers: Default::default(),
-        listed_levels: Default::default(),
-        listed_values: Default::default(),
-        offered: Default::default(),
-        find_effect: Default::default(),
-        find_snapshot: Default::default(),
-        move_keys: Vec::new(),
-        pins: Default::default(),
-        overrides: Default::default(),
-        pending_move: Vec::new(),
-        refusal: String::new(),
-    }))
+    Box::into_raw(BinnacleGrid::from_grid(Grid::new(rows, cols)))
+}
+
+/// The embedding API, for a Rust host that drives the Grid itself (pumping
+/// it with a Table Source) while its native layer uses the same handle
+/// through C.
+impl BinnacleGrid {
+    /// A handle over `grid`. `Box::into_raw` gives the pointer C uses, as
+    /// [`binnacle_grid_new`] returns it, freed by [`binnacle_grid_free`].
+    pub fn from_grid(grid: Grid) -> Box<BinnacleGrid> {
+        Box::new(BinnacleGrid {
+            grid,
+            passed_on: VecDeque::new(),
+            strips: Default::default(),
+            ancestors: Default::default(),
+            outline_texts: Default::default(),
+            paths: Default::default(),
+            tiers: Default::default(),
+            spans: Default::default(),
+            corner_tiers: Default::default(),
+            corner_levels: Default::default(),
+            headers: Default::default(),
+            picked: Default::default(),
+            runs: Default::default(),
+            rects: Vec::new(),
+            cells: Vec::new(),
+            text: String::new(),
+            view: CView::default(),
+            drill_down: Default::default(),
+            copy_runs: Default::default(),
+            edit_keys: Vec::new(),
+            edit_value: Default::default(),
+            hidden_listed: Default::default(),
+            listed: Default::default(),
+            listed_states: Default::default(),
+            listed_sorts: Default::default(),
+            held: Vec::new(),
+            listed_slicers: Default::default(),
+            listed_levels: Default::default(),
+            listed_values: Default::default(),
+            offered: Default::default(),
+            find_effect: Default::default(),
+            find_snapshot: Default::default(),
+            move_keys: Vec::new(),
+            pins: Default::default(),
+            overrides: Default::default(),
+            pending_move: Vec::new(),
+            refusal: String::new(),
+        })
+    }
+
+    /// The Grid this handle drives.
+    pub fn grid_mut(&mut self) -> &mut Grid {
+        &mut self.grid
+    }
+
+    /// Hands `f` the Grid and a sink for the Effects it passes on, in
+    /// order: [`binnacle_grid_poll_effect`] returns them before any the Grid
+    /// still holds. For a pump whose `seen` borrows the Grid, passing on
+    /// what the pump did not answer.
+    pub fn pump_with<T>(&mut self, f: impl FnOnce(&mut Grid, &mut dyn FnMut(Stamped)) -> T) -> T {
+        let passed_on = &mut self.passed_on;
+        f(&mut self.grid, &mut |stamped| passed_on.push_back(stamped))
+    }
 }
 
 /// # Safety
@@ -3261,9 +3290,13 @@ impl BinnacleGrid {
         }
     }
 
-    /// Takes the oldest Effect, keeping its text in the handle.
+    /// Takes the oldest Effect, passed-on ones first, keeping its text in
+    /// the handle.
     fn poll_effect(&mut self) -> Option<BinnacleEffect> {
-        let stamped = self.grid.poll_effect()?;
+        let stamped = match self.passed_on.pop_front() {
+            Some(stamped) => stamped,
+            None => self.grid.poll_effect()?,
+        };
         let mut effect = BinnacleEffect {
             generation: stamped.generation,
             ..BinnacleEffect::default()
