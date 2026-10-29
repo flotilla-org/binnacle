@@ -100,6 +100,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "binnacle-format"
+version = "0.1.0"
+dependencies = [
+ "hegeltest",
+ "serde_json",
+]
+
+[[package]]
 name = "binnacle-group"
 version = "0.1.0"
 dependencies = [
@@ -139,6 +147,7 @@ name = "binnacle-ratatui"
 version = "0.1.0"
 dependencies = [
  "binnacle-core",
+ "binnacle-format",
  "binnacle-group",
  "binnacle-memory",
  "binnacle-testkit",
@@ -161,6 +170,7 @@ name = "binnacle-wasm"
 version = "0.1.0"
 dependencies = [
  "binnacle-core",
+ "binnacle-format",
  "binnacle-group",
  "binnacle-memory",
  "console_error_panic_hook",

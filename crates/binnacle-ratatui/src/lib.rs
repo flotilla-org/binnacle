@@ -23,6 +23,7 @@ mod renderer;
 mod scrollbar;
 mod shimmer;
 mod theme;
+mod value;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
@@ -48,6 +49,7 @@ use renderer::{char_count, fit};
 pub use scrollbar::{BarEvent, Layout, MIN_SCROLLING, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
+pub use value::{ValueRenderer, WARNING_MARK, hint_style};
 
 use binnacle_core::{
     Action, AggregateValue, Axis, Cursor, DropTarget, Edge, GRAND_TOTAL, Grouping, HeaderPlacement,

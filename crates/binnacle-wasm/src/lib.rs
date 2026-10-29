@@ -9,6 +9,7 @@
 
 pub mod codes;
 pub mod effect;
+mod format;
 mod grid;
 pub mod grouping;
 mod layer;
@@ -16,6 +17,7 @@ mod memory;
 pub mod snapshot;
 pub mod testing;
 
+pub use format::{WebColumnFormat, fewest_decimals};
 pub use grid::{WebAxis, WebGrid, debug_every_effect, debug_notice, debug_scenarios};
 pub use layer::WebGroupingLayer;
 pub use memory::WebMemory;

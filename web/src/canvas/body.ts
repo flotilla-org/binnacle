@@ -12,7 +12,8 @@ import { cellState, itemSpan } from "../snapshot";
 import { PAD, clip, clipCell, summaryStyle, type PaintContext } from "./context";
 
 /** Paints the body; returns whether a renderer asked for another frame. */
-export function paintBody(p: PaintContext): boolean {
+/** Paints the body; returns whether a renderer asked for another frame, and the soonest it asked for a later one. */
+export function paintBody(p: PaintContext): { again: boolean; due: number } {
   const { ctx, s, theme, left, top, right } = p;
   ctx.save();
   clip(ctx, left, top, p.width - left, p.height - top);
@@ -86,7 +87,7 @@ export function paintBody(p: PaintContext): boolean {
     });
   });
   ctx.restore();
-  return cell.again;
+  return { again: cell.again, due: cell.due };
 }
 
 /** Writes `message` centred in the body, cut to fit. */
@@ -105,6 +106,8 @@ interface PaintedCell extends CellCanvas {
   height: number;
   /** Some renderer asked for another frame. */
   again: boolean;
+  /** The soonest a renderer asked for a later frame, `performance.now()` ms; `Infinity` for none. */
+  due: number;
   place(width: number, height: number, status: CellStatus): void;
   /** A marker in place of the value: loading or failed. */
   marker(glyph: string, color: string): void;
@@ -132,11 +135,13 @@ function createCell(p: PaintContext): PaintedCell {
     theme,
     now: p.now,
     again: false,
-    text(s: string, align: Align = "start") {
-      write(s, align, status.flashing >= 0.5 ? theme.flash.color : theme.body.color);
+    due: Infinity,
+    text(s: string, align: Align = "start", color = theme.body.color) {
+      write(s, align, status.flashing >= 0.5 ? theme.flash.color : color);
     },
-    requestFrame() {
-      cell.again = true;
+    requestFrame(after?: number) {
+      if (after && after > 0) cell.due = Math.min(cell.due, p.now + after);
+      else cell.again = true;
     },
     place(width: number, height: number, next: CellStatus) {
       cell.width = width;

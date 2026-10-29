@@ -38,6 +38,10 @@ _Avoid_: Frame, render list, view model
 A message from the Table Source telling the Grid how an axis changed (reset, reordered, refiltered, inserted, removed, content changed, and on a grouped axis collapsed and expanded). Refiltered means the same Keys, now a subset or superset and possibly reordered, so focus, picks, Size Overrides and the scroll position follow their Keys; Reset promises nothing about Keys. A group toggle answered with Refiltered keeps the group in view: if the Scroll Anchor's item was in the group, the anchor goes to where the group now starts (its Group Item, or in header form the first item it spans), and focus that was in the group and left goes there too, as with Collapsed.
 _Avoid_: Invalidation, update event, data changed
 
+**Typed Value**:
+A cell's value with its kind (null, bool, integer, number, text, bytes, date, category, JSON tree, or invalid: what the source could not read as the kind its column expects), as a described table gives it, and drawn by every host through the one shared formatter with its column's unit, role and options, so the same value shows the same text everywhere. `Value` in `binnacle-format`, `TypedValue` in TypeScript.
+_Avoid_: Cell value (as a term), datum, variant
+
 ### Axes and identity
 
 **Axis**:

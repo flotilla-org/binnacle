@@ -1,0 +1,14 @@
+[package]
+name = "binnacle-format"
+description = "Typed values and the shared formatter every binnacle host draws them with"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+
+[dev-dependencies]
+hegeltest.workspace = true
+serde_json.workspace = true

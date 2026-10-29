@@ -10,6 +10,7 @@ repository = "https://github.com/flotilla-org/binnacle"
 
 [workspace.dependencies]
 binnacle-core = { path = "crates/binnacle-core" }
+binnacle-format = { path = "crates/binnacle-format" }
 binnacle-group = { path = "crates/binnacle-group" }
 binnacle-layout = { path = "crates/binnacle-layout" }
 binnacle-memory = { path = "crates/binnacle-memory" }
@@ -18,3 +19,4 @@ hegeltest = "0.49.2"
 insta = "1.49.0"
 ratatui = "0.30"
 regex = "1.12"
+serde_json = "1"

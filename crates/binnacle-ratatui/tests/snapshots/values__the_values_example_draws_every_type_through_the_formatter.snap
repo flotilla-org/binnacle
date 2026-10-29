@@ -1,0 +1,12 @@
+---
+source: crates/binnacle-ratatui/tests/values.rs
+expression: "lines(&buf).join(\"\\n\")"
+---
+   id                 │count               │price   │name     │active│status │digest      │created         │payload                                         │size (By)│elapsed (ms)│load (%)│seen    │
+1                    1                    0    7.000 Aberdeen  ✓      Healthy 5 B 3fa9c2…  2026-10-29 13:03 {"berths":3,"port":"Aberdeen"}                       512 B       350 ms    12.5% just now
+2                  -42 18446744073709551615   12.500                  warn    0 B          2000-01-01 00:59 [1,2,3]                                            1.5 KiB        1m 2s   100.0%   3m ago
+3  ∅                   ∅                      -0.250 ∅         ∅      ∅       ∅            ∅                ∅                                                ∅         ∅            ∅        ∅
+4  !12x                !-1                       NaN two↵lines !maybe !??     !zz          !yesterday       !{oops                                           !big      !soon        !n/a     !later
+5  9223372036854775807                    7        ∞ Funchal   ✓      Offline 32 B 001122… 2026-10-29 14:30 {"berths":[1,2,3,4,5,6,7,8],"harbour master":"A…   3.0 GiB        1h 2m     0.0%    in 2h
+6                    0                    1       -∞ !0xFFFE          Healthy 3 B 000102   1970-01-01 01:00 {"note":"a\nb"}                                   -2.0 KiB         0 ms   100.0%   1d ago
+7              1000000                 4096 1234.567 Cádiz     ✓      ok      ∅            2026-10-29 14:00 "berth 4"                                          2.0 TiB        2d 3h     3.3%   1y ago
