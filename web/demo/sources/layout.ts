@@ -3,14 +3,15 @@
 // restored as the grid mounts, before its data arrives, as an app would. The
 // buttons sit at the end of the page's second toolbar line (`#layout`).
 
-import type { GridWidget, Layout } from "../../src";
+import type { GridWidget, Layout, LayoutOrder, LayoutV1 } from "../../src";
 
 const storageKey = (demo: string) => `binnacle-demo-layout:${demo}`;
 
-function load<R, C>(demo: string): Layout<R, C> | null {
+/** The saved layout: version 2, or version 1 from before the order. */
+function load<R, C>(demo: string): Layout<R, C> | LayoutV1<R, C> | null {
   try {
     const text = localStorage.getItem(storageKey(demo));
-    return text ? (JSON.parse(text) as Layout<R, C>) : null;
+    return text ? (JSON.parse(text) as Layout<R, C> | LayoutV1<R, C>) : null;
   } catch {
     return null;
   }
@@ -31,7 +32,22 @@ export function layoutControls<R, C>(widget: GridWidget<R, C>, demo: string): { 
     b.addEventListener("click", act);
     return b;
   };
-  const save = button("Save", "Keep the sort, filter, hidden and pinned items, sizes and header bands", () => {
+  // How many of the restored order's items stayed where they were, as the source answers.
+  let unmoved = 0;
+  const restored = () => {
+    state.textContent = unmoved ? `restored, ${unmoved} not moved` : "restored";
+  };
+  const unplaced = ({ rows, cols }: LayoutOrder<R, C>) => {
+    unmoved += rows.length + cols.length;
+    restored();
+  };
+  const put = (layout: Layout<R, C> | LayoutV1<R, C>): boolean => {
+    unmoved = 0;
+    if (!widget.restoreLayout(layout, { unplaced })) return false;
+    restored();
+    return true;
+  };
+  const save = button("Save", "Keep the sort, filter, hidden and pinned items, the order, sizes and header bands", () => {
     const layout = widget.layout();
     try {
       localStorage.setItem(storageKey(demo), JSON.stringify(layout));
@@ -42,10 +58,11 @@ export function layoutControls<R, C>(widget: GridWidget<R, C>, demo: string): { 
   });
   const restore = button("Restore", "Put back the saved layout", () => {
     const layout = load<R, C>(demo);
-    state.textContent = !layout ? "none saved" : widget.restoreLayout(layout) ? "restored" : "too new";
+    if (!layout) state.textContent = "none saved";
+    else if (!put(layout)) state.textContent = "too new";
   });
   const saved = load<R, C>(demo);
-  if (saved && widget.restoreLayout(saved)) state.textContent = "restored";
+  if (saved) put(saved);
   document.querySelector("#layout")?.append(caption, save, restore, state);
   return {
     destroy() {

@@ -203,11 +203,9 @@ export const shipmentsDemo: DemoSource = {
     // in view.
     const plain = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
     const byRegion = rowsBy<keyof Shipment>("region");
-    const none = { leading: [], trailing: [] };
     widget.restoreLayout({
       version: LAYOUT_VERSION,
-      pins: { rows: none, cols: none },
-      sizes: { rows: [], cols: [] },
+      // Pins and sizes are left unset, as the grid has them.
       bands: { rows: HEADER, cols: 200 },
       view: {
         rows: plain,

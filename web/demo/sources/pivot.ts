@@ -84,12 +84,10 @@ export const pivotDemo: DemoSource = {
       headerHeight: HEADER,
       ...look,
     });
+    // As a default view would come: the parts it sets, the others left as they are.
     const plain = { filter: { quick: null, conditions: [] }, sort: [], hidden: [] };
-    const none = { leading: [], trailing: [] };
     widget.restoreLayout({
       version: LAYOUT_VERSION,
-      pins: { rows: none, cols: none },
-      sizes: { rows: [], cols: [] },
       bands: { rows: HEADER, cols: 180 },
       view: { rows: plain, cols: plain, grouping: PIVOT },
     });

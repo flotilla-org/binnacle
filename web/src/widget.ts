@@ -52,7 +52,7 @@ import type {
 } from "./source";
 import { summaryLabel } from "./source";
 import { AXES, AXIS_CODE, EDGE_CODE, HEADER_CLICK, SELECTION_UNIT, VALUES_FIELD, type AxisName, type PinEdge } from "./codes";
-import { readLayout, restoreLayout, type Layout, type LayoutParts } from "./layout";
+import { readLayout, restoreLayout, type Layout, type LayoutParts, type LayoutV1, type RestoreOptions } from "./layout";
 import { freezeFocused, pinFocused, pinnedKeys } from "./pin";
 import {
   capHint,
@@ -1474,13 +1474,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   /**
    * The grid's layout by the Table Source's IDs, to save and give to
-   * `restoreLayout` later: the View Spec last asked for, the pinned items
-   * (those the source no longer has included), every size set by hand,
-   * fitted or restored, and the header band thicknesses. The order of the
-   * items is not in it: that is the source's. Runs a frame first if one is
-   * due, so it is up to date.
+   * `restoreLayout` later: the View Spec last asked for, the order of the
+   * items (on an axis every item of which is drawn, and that no sort or
+   * grouping orders), the pinned items (those the source no longer has
+   * included), every size set by hand, fitted or restored, and the header
+   * band thicknesses. Runs a frame first if one is due, so it is up to date.
    */
-  layout(): Layout<RowId, ColId> {
+  layout(): Required<Layout<RowId, ColId>> {
     this.catchUp();
     // A pin or a hide keyed just now waits for that frame, and shows in the next.
     this.catchUp();
@@ -1488,19 +1488,24 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   }
 
   /**
-   * Puts back a layout from `layout`, before or after the data loads. Pins,
-   * sizes and band thicknesses apply at once; the View Spec goes to the
-   * Table Source as an ordinary request, so the rows in view stay until it
-   * answers. It never fails on what the source lacks: a pinned item that
-   * is missing waits, out of sight, and comes back if it appears; hidden
-   * IDs the source does not know are dropped from its answer; a condition
-   * on a missing column shows as not applied; a size waits for its item.
-   * Returns `false`, changing nothing, for a layout of another version.
+   * Puts back a layout from `layout`, before or after the data loads, each
+   * part it sets; a version 1 layout, saved before the order, restores as
+   * it did. Pins, sizes and band thicknesses apply at once; the View Spec
+   * goes to the Table Source as an ordinary request, so the rows in view
+   * stay until it answers; the order asks the source to move the listed
+   * items to the front, as a header drag does. It never fails on what the
+   * source lacks: a pinned item that is missing waits, out of sight, and
+   * comes back if it appears; hidden IDs the source does not know are
+   * dropped from its answer; a condition on a missing column shows as not
+   * applied; a size waits for its item. Items of the order that could not
+   * be placed (on a sorted or grouped axis, or in a move the source
+   * refused) go to `options.unplaced`. Returns `false`, changing nothing,
+   * for a layout of another version.
    */
-  restoreLayout(layout: Layout<RowId, ColId>): boolean {
-    if (this.destroyed || !restoreLayout(layout, this.layoutParts())) return false;
-    // The restored row-number band stands: no fitting it to the labels later.
-    this.bandFitted = true;
+  restoreLayout(layout: Layout<RowId, ColId> | LayoutV1<RowId, ColId>, options: RestoreOptions<RowId, ColId> = {}): boolean {
+    if (this.destroyed || !restoreLayout(layout, this.layoutParts(), options)) return false;
+    // A restored row-number band stands: no fitting it to the labels later.
+    if (layout.bands) this.bandFitted = true;
     drainEffects(this.parts);
     this.schedule();
     return true;
@@ -1846,7 +1851,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
 
   private layoutParts(): LayoutParts<RowId, ColId> {
     const sizes = this.sizes;
-    return { grid: this.grid, feed: this.feed, ...(sizes ? { computed: sizes.computed } : {}) };
+    return { grid: this.grid, feed: this.feed, shown: this.last, ...(sizes ? { computed: sizes.computed } : {}) };
   }
 
   private createSizes(): InitialSizes | null {

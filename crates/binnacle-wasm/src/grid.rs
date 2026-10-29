@@ -668,6 +668,14 @@ impl WebGrid {
         self.grid.set_movable(axis(a), movable);
     }
 
+    /// Asks the Table Source to move `keys`, in that order, to before
+    /// Position `to` on `a`, as a header drop does (see
+    /// [`binnacle_core::Grid::request_move`]).
+    pub fn request_move(&mut self, a: u8, keys: &[u64], to: f64) {
+        let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+        self.grid.request_move(axis(a), keys, to as u64);
+    }
+
     /// The answer to a `MoveRequested`: `undefined` once the items moved,
     /// else the reason the Table Source refused.
     pub fn move_answered(&mut self, refusal: Option<String>) {
