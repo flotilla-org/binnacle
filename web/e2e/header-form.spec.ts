@@ -59,7 +59,7 @@ test("the groups draw as level columns, each closed port's Subtotal under its sp
 });
 
 test("a click on a span's mark opens its port, and another closes it", async ({ page }) => {
-  const [east] = [...REGIONS].sort();
+  const [east] = [null, ...[...REGIONS].sort()];
   const [first] = portsOf(east!);
   await band(page, 0, PORT + 9);
   await expect(status(page)).toContainText(`of ${en(closed() + shipped(east!, first!))}`);

@@ -143,7 +143,7 @@ test.describe("the records source", () => {
     await page.keyboard.type("100000");
     await page.keyboard.press("Enter");
     await expect(committed(page)).toHaveText(`weight of ${id} = 100000`);
-    const last = rows.filter((r) => r.weight !== null).length;
+    const last = rows.length;
     await expect(status(page)).toContainText(`focus row ${last.toLocaleString("en")}, column 3 (${id} / weight)`);
   });
 
