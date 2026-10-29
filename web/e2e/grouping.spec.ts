@@ -35,7 +35,7 @@ const nested = () => shipments.length + 2 * (groupsBy("region") + new Set(shipme
 
 /** The regions in the order they show, the blank one first, and the ports of `region` in theirs. */
 const regions = (): (string | null)[] => [null, ...[...REGIONS].sort()];
-const label = (region: string | null) => region ?? "(blank)";
+const label = (region: string | null | undefined) => region ?? "(blank)";
 const portsOf = (region: string | null) => [...new Set(shipments.filter((s) => s.region === region).map((s) => s.port))].sort();
 const shipped = (region: string | null, port: string) => shipments.filter((s) => s.region === region && s.port === port).length;
 
@@ -136,7 +136,7 @@ test("Ctrl/Cmd-C copies a group as shown: labels first, closed ports' figures, t
     expect(lines[i + 1]![0]).toBe(`${port} (${shipped(east!, port)})`);
     expect(lines[i + 1]![3]).toBe(weight(inEast.filter((s) => s.port === port)));
   }
-  expect(lines.at(-1)![0]).toMatch(new RegExp(`^${label(east)} total`));
+  expect(lines.at(-1)![0].startsWith(`${label(east)} total`)).toBe(true);
   expect(lines.at(-1)![3]).toBe(weight(inEast));
 });
 

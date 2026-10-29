@@ -204,6 +204,7 @@ test("a click on a quarter's mark closes it and another opens it", async ({ page
 test("a click on Q4's weight header sorts each region's ports by it; without the Q4 shipments the sort stays, not applied, and applies again with them", async ({
   page,
 }) => {
+  await expect.poll(() => portsUnder(page, FIRST)).not.toEqual([]);
   const ascending = await portsUnder(page, FIRST);
   expect(ascending).toEqual([...ascending].sort((a, b) => (a < b ? -1 : 1)));
   // Q4's weight is the seventh column: two per quarter before it. Ascending, then descending.
