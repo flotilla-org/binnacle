@@ -7,6 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { rows } from "../demo/sources/records-data";
 import { column, FIRST } from "./records-columns";
+import { COLUMN, firstRecord } from "./transposed-columns";
 
 const HEADER = 28;
 const ROW = 24;
@@ -78,8 +79,8 @@ test.describe("records", () => {
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     await expect(bar(page)).toContainText(`${en(rows.length)} rows`);
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
+    // The row's menu, moved up to fit the window, covers the first row.
+    await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
     await page.locator(".binnacle-layer").click({ position: { x: FIRST, y: HEADER + ROW / 2 } });
     await page.keyboard.press(`${await mod(page)}+Alt+Shift+0`);
     await expect(flyout(page, "column").getByRole("menuitem")).toHaveText(["name", "Show all"]);
@@ -102,8 +103,7 @@ test("in the transposed demo, hiding a column hides a record and the bar counts 
   await page.setViewportSize({ width: 1000, height: 400 });
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText(`of ${en(rows.length)}`);
-  // The row header band fits the field names beside their marks, so the records start at 96.
-  await click(page, 1, 100 + 113);
+  await click(page, 1, (await firstRecord(page)) + COLUMN);
   await expect(status(page)).toContainText("focus row 2, column 2 (name / 1)");
   await page.keyboard.press(`${await mod(page)}+Alt+0`);
   await expect(bar(page)).toContainText(`${en(rows.length - 1)} of ${en(rows.length)} records`);

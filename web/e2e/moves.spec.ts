@@ -9,6 +9,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { rows, type RecordRow } from "../demo/sources/records-data";
 import { column, FIRST } from "./records-columns";
+import { COLUMN, firstRecord } from "./transposed-columns";
 
 const HEADER = 28;
 const ROW = 24;
@@ -254,13 +255,11 @@ test.describe("slow", () => {
 });
 
 test("the transposed source moves a field by its row header and a record by its column header", async ({ page }) => {
-  // The row header band fits the field names beside their marks, so the records start at 96.
-  const FIRST_RECORD = 100;
-  const COLUMN = 112 + 1;
   const fields: (keyof RecordRow)[] = ["id", "name", "weight", "crew", "port"];
   await page.setViewportSize({ width: 1000, height: 400 });
   await page.goto("/?source=transposed&theme=light");
   await expect(status(page)).toContainText("rows 1 to 5 of 5");
+  const FIRST_RECORD = await firstRecord(page);
   // While the port field is dragged its row header is marked, and only it:
   // record 4's column header, whose Key is the same number, looks like
   // record 3's past its label (the column header band is lit as the top pin

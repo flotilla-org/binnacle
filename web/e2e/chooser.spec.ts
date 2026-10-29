@@ -7,6 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { matches, rows } from "../demo/sources/records-data";
 import { column, FIRST } from "./records-columns";
+import { firstRecord } from "./transposed-columns";
 
 const HEADER = 28;
 const ROW = 24;
@@ -170,8 +171,7 @@ test("in the transposed demo, the columns' chooser lists the records and Show on
   const kept = rows.filter((r) => matches(r, text)).length;
   await page.getByRole("searchbox", { name: "Filter records" }).fill(text);
   await expect(status(page)).toHaveText(new RegExp(`columns 1 to \\d+ of ${kept}\\b`));
-  // The row header band fits the field names beside their marks, so the records start at 96.
-  await cell(page, 1, 100);
+  await cell(page, 1, await firstRecord(page));
   await page.keyboard.press("Alt+ArrowDown");
   await page.getByRole("dialog", { name: /^Filter / }).getByRole("button", { name: "Show only this column" }).click();
   await expect(status(page)).toContainText("columns 1 to 1 of 1");

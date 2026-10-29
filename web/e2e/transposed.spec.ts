@@ -5,13 +5,10 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { matches, rows } from "../demo/sources/records-data";
+import { COLUMN, firstRecord } from "./transposed-columns";
 
 const HEADER = 28;
 const ROW = 24;
-/** Inside the first record's column: the row header band fits the field names beside a sort marker and the row menu's button, so the records start at 96. */
-const FIRST = 100;
-/** The demo's column width and the Gap after it. */
-const COLUMN = 112 + 1;
 
 const status = (page: Page) => page.locator("#status");
 
@@ -19,7 +16,7 @@ const status = (page: Page) => page.locator("#status");
 async function cell(page: Page, row: number, col: number) {
   const b = await page.locator(".binnacle-layer").boundingBox();
   if (!b) throw new Error("no grid");
-  await page.mouse.click(b.x + FIRST + col * COLUMN, b.y + HEADER + row * ROW + ROW / 2);
+  await page.mouse.click(b.x + (await firstRecord(page)) + col * COLUMN, b.y + HEADER + row * ROW + ROW / 2);
 }
 
 const focus = (row: number, field: string, col: number, id: number) =>
@@ -89,7 +86,7 @@ test("a click on a field's row header sorts the records, as columns, by it", asy
   await expect(status(page)).toContainText(focus(0, "id", 0, byWeight(-1)[0]!));
   // A column header selects its record rather than sorting.
   const b = await page.locator(".binnacle-layer").boundingBox();
-  await page.mouse.click(b!.x + FIRST + COLUMN, b!.y + HEADER / 2);
+  await page.mouse.click(b!.x + (await firstRecord(page)) + COLUMN, b!.y + HEADER / 2);
   await expect(weight).toHaveAttribute("aria-sort", "descending");
   await rowHeader(page, 2);
   await expect(weight).not.toHaveAttribute("aria-sort");
@@ -112,6 +109,7 @@ test("each field row draws its own way: the id and weight end-aligned, the crew 
 
 test("records pick and select as columns, and a field row selects whole", async ({ page }) => {
   const b = (await page.locator(".binnacle-layer").boundingBox())!;
+  const FIRST = await firstRecord(page);
   await page.keyboard.down("ControlOrMeta");
   await page.mouse.click(b.x + FIRST + COLUMN, b.y + HEADER / 2);
   await page.mouse.click(b.x + FIRST + 2 * COLUMN, b.y + HEADER / 2);

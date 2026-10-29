@@ -323,6 +323,10 @@ const PIN_ZONE = { rows: 4, cols: 16 } as const;
 
 /** The least length, CSS px, the pinned Strips leave the scrolling ones. */
 const MIN_SCROLLING = 50;
+
+/** Without `scrollend`, how long the scroller stays still before a capped sizer's offsets are placed exactly. */
+const SCROLL_STILL_MS = 150;
+
 // The grid's surfaces are not text: WebKit would tint a selected canvas. Custom
 // editors and the ARIA table opt back in; the textarea is editable, so it stays selectable.
 const ROOT_STYLE =
@@ -605,6 +609,14 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     });
     this.element.append(this.aria.element);
 
+    // A capped sizer's offsets are placed once the scroll ends: on `scrollend`, which waits out
+    // an animation however slow its frames, or else once the scroller has been still a while.
+    const still = () => {
+      if (this.scroll.settle()) this.schedule();
+    };
+    const ends = "onscrollend" in this.scroller;
+    if (ends) this.listen(this.scroller, "scrollend", still);
+    let settling: ReturnType<typeof setTimeout> | undefined;
     this.listen(this.scroller, "scroll", () => {
       // Resized since the last frame: a jump would be placed in the old
       // viewport, so the next frame takes the scroll in the new one.
@@ -614,7 +626,12 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
         drainEffects(this.parts);
         this.schedule();
       }
+      if (!ends) {
+        clearTimeout(settling);
+        settling = setTimeout(still, SCROLL_STILL_MS);
+      }
     });
+    this.cleanup.push(() => clearTimeout(settling));
     const resize = new ResizeObserver(() => this.invalidate());
     resize.observe(this.element);
     this.cleanup.push(() => resize.disconnect());

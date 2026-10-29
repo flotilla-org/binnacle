@@ -56,7 +56,7 @@ jobs:
           WEB: ${{ steps.filter.outputs.web }}
         run: |
           if [ "$EVENT" != pull_request ] || [ "$FULL" = true ]; then
-            echo 'projects=["chromium","firefox"]' >> "$GITHUB_OUTPUT"
+            echo 'projects=["chromium","firefox","webkit"]' >> "$GITHUB_OUTPUT"
             echo e2e=true >> "$GITHUB_OUTPUT"
           else
             echo 'projects=["chromium"]' >> "$GITHUB_OUTPUT"
@@ -131,17 +131,13 @@ jobs:
 
   e2e:
     name: E2E / ${{ matrix.project }}
-    # macOS: several tests place the pointer by measured text, and Linux
-    # fonts measure differently.
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     needs: [fmt, changes]
     if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # WebKit on the macOS runners stalls for over an hour; it joins the
-        # full set once the suite runs on Linux.
         project: ${{ fromJSON(needs.changes.outputs.projects) }}
     defaults:
       run:
@@ -166,8 +162,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps ${{ matrix.project }}
       - run: pnpm build
-      # Screenshot baselines come from a newer macOS than the runner's, so
-      # CI skips pixel comparisons; they stay a local gate.
+      # Screenshot baselines are taken on macOS (*-darwin.png), so CI skips
+      # pixel comparisons; they stay a local gate.
       - run: pnpm exec playwright test --project ${{ matrix.project }} --ignore-snapshots
       - uses: actions/upload-artifact@v4
         if: failure()

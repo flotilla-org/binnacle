@@ -16,7 +16,7 @@ export const COL_WIDTH = 80;
 export const HEADER = 24;
 export const BAND = 40;
 
-const still: ScrollMapping = { take: () => false, writeBack: () => {} };
+const still: ScrollMapping = { take: () => false, writeBack: () => {}, settle: () => false };
 
 export class Harness<RowId, ColId, V> {
   readonly feed: Feed<RowId, ColId>;

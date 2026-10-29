@@ -770,16 +770,25 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     // Under a column header; beside a row header.
     const [left, top] = axis === "rows" ? [anchor.left, anchor.bottom + 4] : [anchor.right + 4, anchor.top];
     element.style.left = `${Math.max(8, Math.min(left, innerWidth - width - 8))}px`;
-    // Room for the checklist once its values land, and for a between's second field.
-    const between = support.compare && op.value !== "between" ? 36 : 0;
-    let height = Math.max(element.offsetHeight + between, support.oneOf ? 380 + compareRow.offsetHeight + between : 0);
+    /** The menu's measured height with the checklist full and a between's second field shown: its most as values land. */
+    const tallest = () => {
+      const was = [list.style.height, highRow.style.display] as const;
+      try {
+        list.style.height = list.style.maxHeight;
+        if (support.compare) highRow.style.display = "flex";
+        return element.offsetHeight;
+      } finally {
+        [list.style.height, highRow.style.display] = was;
+      }
+    };
     // Short of room below its header, the list gives way before the menu covers the header.
-    const cut = Math.min(height - (innerHeight - top - 8), LIST_HEIGHT - LIST_MIN_HEIGHT);
-    if (support.oneOf && cut > 0) {
-      list.style.maxHeight = `${LIST_HEIGHT - cut}px`;
-      height -= cut;
-    }
-    element.style.top = `${Math.max(8, Math.min(top, innerHeight - height - 8))}px`;
+    const cut = Math.min(tallest() - (innerHeight - top - 8), LIST_HEIGHT - LIST_MIN_HEIGHT);
+    if (support.oneOf && cut > 0) list.style.maxHeight = `${LIST_HEIGHT - cut}px`;
+    // Taller than the window even so, it scrolls inside itself.
+    const room = innerHeight - 16;
+    element.style.maxHeight = `${room}px`;
+    element.style.overflowY = "auto";
+    element.style.top = `${Math.max(8, Math.min(top, innerHeight - Math.min(tallest(), room) - 8))}px`;
     document.addEventListener("pointerdown", outside, true);
     menu = { element, close };
     if (at === "hidden" && hides) return openFlyout();
