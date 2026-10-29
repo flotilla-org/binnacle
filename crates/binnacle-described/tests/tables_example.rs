@@ -105,3 +105,26 @@ fn a_table_over_the_cap_says_so() {
     let (tables, _) = load("rows-vessels-page1.ndjson");
     assert_eq!(tables.status(), "5 of more rows");
 }
+
+#[test]
+fn a_summary_row_draws_blank_where_it_has_no_figure() {
+    let (mut tables, mut grid) = load("crews.ndjson");
+    draw(&mut tables, &mut grid);
+    let phase = tables.source.column_key("phase").unwrap();
+    let spec = binnacle_core::ViewSpec::default()
+        .with_hidden(
+            Axis::Cols,
+            grid.snapshot()
+                .applied_view()
+                .axis(Axis::Cols)
+                .hidden
+                .clone(),
+        )
+        .with_grouping(Some(binnacle_core::Grouping::rows_by(phase)));
+    grid.request_view(spec);
+    let text = lines(&draw(&mut tables, &mut grid));
+    let groups: Vec<&str> = (text.lines()).filter(|l| l.starts_with('▾')).collect();
+    assert_eq!(groups.len(), 4, "{text}");
+    assert!(groups.iter().all(|l| !l.contains('∅')), "{text}");
+    insta::assert_snapshot!(text);
+}

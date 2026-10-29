@@ -13,10 +13,21 @@ const SUMMARY_BIT: u64 = 1 << 63;
 /// leaves and comes back keeps it; two identities whose hashes collide take
 /// the next free Key, in order of first sight. Keys never have the
 /// highest bit set, which Summary Items' have.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct StableKeys {
     keys: HashMap<Vec<u8>, Key>,
     identities: HashMap<Key, Vec<u8>>,
+    hash: fn(&[u8]) -> u64,
+}
+
+impl Default for StableKeys {
+    fn default() -> Self {
+        StableKeys {
+            keys: HashMap::new(),
+            identities: HashMap::new(),
+            hash,
+        }
+    }
 }
 
 impl StableKeys {
@@ -24,7 +35,7 @@ impl StableKeys {
         if let Some(&key) = self.keys.get(identity) {
             return key;
         }
-        let mut key = hash(identity);
+        let mut key = (self.hash)(identity) & !SUMMARY_BIT;
         while self.identities.contains_key(&Key(key)) {
             key = (key + 1) & !SUMMARY_BIT;
         }
@@ -51,4 +62,24 @@ fn hash(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash & !SUMMARY_BIT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identities_whose_hashes_collide_take_the_next_free_keys() {
+        let mut keys = StableKeys {
+            hash: |_| u64::MAX,
+            ..StableKeys::default()
+        };
+        let top = Key(!SUMMARY_BIT);
+        assert_eq!(keys.intern(b"a"), top);
+        assert_eq!(keys.intern(b"b"), Key(0), "wrapping below the Summary bit");
+        assert_eq!(keys.intern(b"c"), Key(1));
+        assert_eq!(keys.intern(b"a"), top, "and keep them");
+        assert_eq!(keys.identity(Key(0)), Some(&b"b"[..]));
+        assert_eq!(keys.key(b"c"), Some(Key(1)));
+    }
 }

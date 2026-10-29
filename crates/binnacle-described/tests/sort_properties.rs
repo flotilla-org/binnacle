@@ -3,7 +3,9 @@
 //! where a column expects another kind) exactly as a naive comparator
 //! written from the Sort Order with its invalid tier: nulls lowest, then
 //! invalid values by their text, then typed values; descending reverses
-//! all of it, and ties break on the Key, ascending.
+//! all of it, and ties break on the primary key, ascending. A column of a
+//! type the source does not read keeps integers and floats as they came,
+//! and compares them exactly, a float before an integer of its value.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -23,14 +25,17 @@ enum Kind {
     Number,
     Boolean,
     Datetime,
+    /// A type the source does not read: integers, floats and text mixed.
+    Other,
 }
 
-const KINDS: [Kind; 5] = [
+const KINDS: [Kind; 6] = [
     Kind::String,
     Kind::Integer,
     Kind::Number,
     Kind::Boolean,
     Kind::Datetime,
+    Kind::Other,
 ];
 
 impl Kind {
@@ -41,6 +46,7 @@ impl Kind {
             Kind::Number => FieldType::Number,
             Kind::Boolean => FieldType::Boolean,
             Kind::Datetime => FieldType::Datetime,
+            Kind::Other => FieldType::Other("any".into()),
         }
     }
 }
@@ -91,6 +97,7 @@ fn cell(tc: &TestCase, kind: Kind) -> (Wire, Model) {
     );
     match tc.draw(gs::integers::<u8>().max_value(9)) {
         0 | 1 => return (Wire::Null, Model::Null),
+        _ if kind == Kind::Other => return tc.draw(mixed()),
         2 if kind == Kind::String => {
             let n = tc.draw(gs::integers::<i64>().min_value(-3).max_value(3));
             return (Wire::Int(n.into()), Model::Invalid(n.to_string()));
@@ -175,6 +182,73 @@ fn cell(tc: &TestCase, kind: Kind) -> (Wire, Model) {
                 Model::Instant(secs, nanos),
             )
         }
+        Kind::Other => tc.draw(mixed()),
+    }
+}
+
+/// A cell of a column of a type the source does not read.
+#[hegel::composite]
+fn mixed(tc: &TestCase) -> (Wire, Model) {
+    let big = 1i128 << 53;
+    match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => {
+            let n: i128 = tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![
+                    0,
+                    -1,
+                    1,
+                    big - 1,
+                    big,
+                    big + 1,
+                    big + 2,
+                    u64::MAX.into()
+                ]),
+                gs::integers::<i64>().map(i128::from),
+                gs::integers::<u64>().map(i128::from),
+            ));
+            (Wire::Int(n), Model::Int(n))
+        }
+        1 => {
+            let x = tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![
+                    0.0,
+                    -0.0,
+                    0.5,
+                    -1.0,
+                    9007199254740992.0,
+                    9007199254740994.0,
+                    18446744073709551616.0,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NAN,
+                ]),
+                gs::floats::<f64>(),
+            ));
+            (Wire::Float(x), Model::Float(x))
+        }
+        _ => {
+            let text = tc.draw(gs::text().max_size(2));
+            (Wire::Text(text.clone()), Model::Text(text))
+        }
+    }
+}
+
+/// An integer against a float, exactly: the float's floor written out in
+/// full decimal and read back, a float before an integer of its value.
+fn int_float(i: i128, x: f64) -> Ordering {
+    if x.is_nan() || x == f64::INFINITY {
+        return Ordering::Less;
+    }
+    if x == f64::NEG_INFINITY {
+        return Ordering::Greater;
+    }
+    let floor = format!("{:.0}", x.floor());
+    match floor.parse::<i128>() {
+        Ok(f) if i != f => i.cmp(&f),
+        Ok(_) if x.fract() != 0.0 => Ordering::Less,
+        Ok(_) => Ordering::Greater,
+        Err(_) if x > 0.0 => Ordering::Less,
+        Err(_) => Ordering::Greater,
     }
 }
 
@@ -182,6 +256,8 @@ fn compare(a: &Model, b: &Model) -> Ordering {
     let tier = |m: &Model| match m {
         Model::Null => 0,
         Model::Invalid(_) => 1,
+        // Text after numbers, in a mixed column.
+        Model::Text(_) => 3,
         _ => 2,
     };
     match (a, b) {
@@ -190,6 +266,8 @@ fn compare(a: &Model, b: &Model) -> Ordering {
         (Model::Invalid(x), Model::Invalid(y)) => x.chars().cmp(y.chars()),
         (Model::Text(x), Model::Text(y)) => x.chars().cmp(y.chars()),
         (Model::Int(x), Model::Int(y)) => x.cmp(y),
+        (Model::Int(i), Model::Float(x)) => int_float(*i, *x),
+        (Model::Float(x), Model::Int(i)) => int_float(*i, *x).reverse(),
         (Model::Bool(x), Model::Bool(y)) => x.cmp(y),
         (Model::Instant(s, n), Model::Instant(t, m)) => (s, n).cmp(&(t, m)),
         (Model::Float(x), Model::Float(y)) => match (x.is_nan(), y.is_nan()) {
@@ -291,7 +369,7 @@ fn the_rows_sort_as_the_naive_total_order_with_the_invalid_tier(tc: TestCase) {
                 return ordering;
             }
         }
-        key_of(*a).cmp(&key_of(*b))
+        a.cmp(b)
     });
     let want: Vec<Key> = want.iter().map(|(id, _)| key_of(*id)).collect();
     let viewed = source.view(&ViewSpec::default().with_sort(Axis::Rows, spec.clone()));

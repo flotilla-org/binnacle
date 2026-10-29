@@ -188,3 +188,27 @@ fn aggregates_take_numbers_from_integers_and_numbers_and_skip_invalid_values() {
     s.input(|g| g.request_view(ViewSpec::default().with_grouping(Some(grouping))));
     insta::assert_snapshot!(picture(&mut s));
 }
+
+#[test]
+fn rows_that_tie_break_on_the_primary_key_ascending_both_ways() {
+    let mut s = crews();
+    let note = key(&s, "note");
+    sorted(&mut s, SortColumn::ascending(note));
+    assert_eq!(
+        column_down(&mut s, "name"),
+        ["bravo", "foxtrot", "alpha", "delta", "charlie", "echo"],
+        "two nulls, then two empty texts, each pair by name"
+    );
+    sorted(&mut s, SortColumn::descending(note));
+    assert_eq!(
+        column_down(&mut s, "name"),
+        ["echo", "charlie", "alpha", "delta", "bravo", "foxtrot"],
+        "ties still by name ascending"
+    );
+    let applied = s.frame(support::VIEWPORT).applied_view().clone();
+    assert_eq!(
+        applied.axis(Axis::Rows).sort,
+        SortSpec::new(vec![SortColumn::descending(note)]),
+        "the primary key's term stays hidden"
+    );
+}

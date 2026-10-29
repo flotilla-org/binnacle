@@ -77,8 +77,9 @@ impl Tables {
     /// `origin`.
     pub fn renderer(&self, col: Key) -> ValueRenderer<impl Fn(Key, Key) -> Value + '_> {
         let column = self.source.column(col);
+        // A Summary Item has no cells of its own: it draws blank.
         let renderer = ValueRenderer::new(self.origin, move |row: Key, col: Key| {
-            self.source.cell(row, col).cloned().unwrap_or(Value::Null)
+            (self.source.cell(row, col).cloned()).unwrap_or_else(|| Value::Text(String::new()))
         })
         .role(column.map(|c| c.role()).unwrap_or_default());
         match column.and_then(|c| c.unit()) {

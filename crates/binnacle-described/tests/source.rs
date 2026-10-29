@@ -3,12 +3,13 @@
 
 mod support;
 
-use binnacle_core::Axis;
+use binnacle_core::{Axis, ChangeNotice, SortColumn, SortSpec, ViewSpec};
 use binnacle_described::{
     DescribedSource, Field, FieldType, HostRequest, Message, Received, Reference, Scope,
     WatchRequest, Wire, deterministic_cbor, typed,
 };
 use binnacle_format::{Timestamp, Value, ValueType};
+use binnacle_memory::PumpSource;
 use serde_json::json;
 use support::{messages, replay};
 
@@ -264,5 +265,94 @@ fn deterministic_cbor_is_the_shortest_form_with_sorted_map_keys() {
     assert_eq!(
         deterministic_cbor(&Wire::Float(100000.0)),
         [0xfa, 0x47, 0xc3, 0x50, 0x00]
+    );
+}
+
+/// The crews table's `table` message, and a `rows` message of `rows`.
+fn crews_with(rows: Vec<serde_json::Value>) -> (Message, Message) {
+    let table = messages("crews.ndjson").remove(0);
+    let rows = Message::from_json(&json!({"type": "rows", "rows": rows, "cursor": null})).unwrap();
+    (table, rows)
+}
+
+#[test]
+fn a_row_whose_primary_key_came_before_is_replaced_with_its_mismatches() {
+    let (table, first) = crews_with(vec![
+        json!({"name": "alpha", "cpus": "many", "load": "high"}),
+    ]);
+    let (_, second) = crews_with(vec![json!({"name": "alpha", "cpus": 3, "load": "high"})]);
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    source.receive(table);
+    source.receive(first);
+    let key = source.row_keys()[0];
+    assert_eq!(source.mismatches(), 2);
+    source.receive(second);
+    assert_eq!(source.row_keys(), [key], "one row, the same Key");
+    assert_eq!(source.count(Axis::Rows), 1);
+    let cpus = source.column_key("cpus").unwrap();
+    assert_eq!(source.cell(key, cpus), Some(&Value::Int(3)));
+    assert_eq!(source.mismatches(), 1, "only the load left invalid");
+    let counts: Vec<u64> = source.columns().iter().map(|c| c.mismatches()).collect();
+    assert_eq!(counts, [0, 0, 0, 0, 1, 0, 0, 0]);
+}
+
+#[test]
+fn a_primary_key_field_the_schema_lacks_reads_as_null_in_the_tuple() {
+    let Message::Table(mut table) = messages("crews.ndjson").remove(0) else {
+        panic!("a table first");
+    };
+    table.schema.primary_key = vec!["name".into(), "ghost".into()];
+    let (_, rows) = crews_with(vec![json!({"name": "alpha"}), json!({"name": "bravo"})]);
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    source.receive(Message::Table(table));
+    source.receive(rows);
+    assert_eq!(source.row_count(), 2);
+    let alpha = source.row_keys()[0];
+    assert_eq!(source.row_identity(alpha).unwrap(), b"\x82\x65alpha\xf6");
+}
+
+#[test]
+fn the_status_keeps_the_incarnation_and_the_sequence_synced() {
+    let source = replay("crews.ndjson");
+    let status = source.status();
+    assert_eq!(status.incarnation.as_deref(), Some("durable"));
+    assert_eq!(status.sequence, Some(7));
+}
+
+#[test]
+fn a_later_page_joins_the_rows_in_place_as_inserted_rows() {
+    let all = messages("crews.ndjson");
+    let Message::Rows(rows) = &all[1] else {
+        panic!("rows second");
+    };
+    let page = |range: std::ops::Range<usize>| {
+        let mut page = rows.clone();
+        page.rows = page.rows[range].to_vec();
+        Message::Rows(page)
+    };
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    source.receive(all[0].clone());
+    source.receive(page(0..3));
+    let name = source.column_key("name").unwrap();
+    let spec = ViewSpec::default().with_sort(
+        Axis::Rows,
+        SortSpec::new(vec![SortColumn::descending(name)]),
+    );
+    source.view(&spec);
+    let notices = source.receive(page(3..6));
+    assert!(
+        matches!(&notices, Received::Applied(n) if n.iter().all(|(_, n)| matches!(n, ChangeNotice::Inserted { .. }))),
+        "{notices:?}"
+    );
+    let count = source.count(Axis::Rows);
+    let names: Vec<String> = (source.window(Axis::Rows, 0..count).keys.into_iter())
+        .map(|k| match source.cell(k, name) {
+            Some(Value::Text(t)) => t.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["foxtrot", "echo", "delta", "charlie", "bravo", "alpha"]
     );
 }

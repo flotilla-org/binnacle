@@ -8,7 +8,8 @@ use std::rc::Rc;
 
 use binnacle_core::{
     Aggregate, Axis, ChangeNotice, Compared, Distinct, DistinctQuery, FindDirection, FindMatch,
-    FindQuery, Grid, Key, Located, Position, Support, TextSupport, Totals, ViewSpec,
+    FindQuery, Grid, Key, Located, Position, SortColumn, SortSpec, Support, TextSupport, Totals,
+    ViewSpec,
 };
 use binnacle_format::{
     FixedOffset, FormatContext, FormatOptions, Role, Timestamp, Value, ValueType, Zone,
@@ -113,6 +114,7 @@ impl Column {
 
 /// What a source did with a message.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Received {
     /// Applied: the Grid needs these Change Notices, in order.
     Applied(Vec<(Axis, ChangeNotice)>),
@@ -132,7 +134,8 @@ pub enum Unhandled {
 }
 
 /// How far the rows have come.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Status {
     /// The `table` message has come.
     pub described: bool,
@@ -144,6 +147,11 @@ pub struct Status {
     /// The table's row count, if a `count` message gave it, and whether it
     /// is an estimate.
     pub count: Option<(u64, bool)>,
+    /// Which life of the table the `table` message named: `durable` for
+    /// one that outlives the daemon.
+    pub incarnation: Option<String>,
+    /// The sequence the last `synced` gave.
+    pub sequence: Option<u64>,
 }
 
 /// The Described Table source. Built from a [`Scope`], it asks its host to
@@ -157,13 +165,16 @@ pub struct Status {
 /// deterministic CBOR of its primary-key tuple and a column's from its
 /// field's name; the interner lives as long as the source, so a row or
 /// column that leaves and comes back keeps its Key, and as a Key is a hash
-/// of its identity, every source gives the same row the same Key. A table
-/// with no primary key keys each row by where it came in the stream
-/// instead, so its Keys hold only within one source.
+/// of its identity, every source gives the same row the same Key, barring a
+/// hash collision. A table with no primary key keys each row by where it
+/// came in the stream instead, so its Keys hold only within one source.
 ///
 /// Sorting is the Sort Order with an invalid tier between nulls and typed
-/// values; filters, find and Distinct Values read each value's Stable Text,
-/// never its drawn text; a null is a blank and an empty text is not.
+/// values. Rows that tie on every term of a sort, or within a group, break
+/// the tie on the primary key, ascending, as a final term the applied View
+/// Spec does not show; the Key is the last resort. Filters, find and
+/// Distinct Values read each value's Stable Text, never its drawn text; a
+/// null is a blank and an empty text is not.
 pub struct DescribedSource {
     table: String,
     scope: Scope,
@@ -172,8 +183,8 @@ pub struct DescribedSource {
     schema: Option<Schema>,
     columns: Vec<Column>,
     column_at: HashMap<Key, usize>,
-    /// The primary key's fields, by column index.
-    primary: Vec<usize>,
+    /// The primary key's field names.
+    primary: Vec<String>,
     rows: Vec<Values>,
     row_keys: Vec<Key>,
     row_at: HashMap<Key, usize>,
@@ -245,10 +256,15 @@ impl DescribedSource {
     /// Takes one message from the stream.
     pub fn receive(&mut self, message: Message) -> Received {
         match message {
-            Message::Table(table) => Received::Applied(self.describe(table.schema)),
+            Message::Table(table) => {
+                let notices = self.describe(table.schema);
+                self.status.incarnation = table.incarnation;
+                Received::Applied(notices)
+            }
             Message::Rows(rows) => Received::Applied(self.take_rows(rows)),
-            Message::Synced { .. } => {
+            Message::Synced { sequence } => {
                 self.status.synced = true;
+                self.status.sequence = sequence;
                 Received::Applied(Vec::new())
             }
             Message::Progress { .. } => Received::Applied(Vec::new()),
@@ -265,8 +281,8 @@ impl DescribedSource {
         Received::Unhandled(Unhandled::Ended)
     }
 
-    pub fn status(&self) -> Status {
-        self.status
+    pub fn status(&self) -> &Status {
+        &self.status
     }
 
     pub fn schema(&self) -> Option<&Schema> {
@@ -394,9 +410,7 @@ impl DescribedSource {
         self.column_at = (self.columns.iter().enumerate())
             .map(|(i, c)| (c.key, i))
             .collect();
-        self.primary = (schema.primary_key.iter())
-            .filter_map(|name| schema.fields.iter().position(|f| &f.name == name))
-            .collect();
+        self.primary = schema.primary_key.clone();
         self.schema = Some(schema);
         self.rows.clear();
         self.row_keys.clear();
@@ -414,27 +428,57 @@ impl DescribedSource {
         ]
     }
 
-    /// A `rows` message: its rows join those that came, a row whose
-    /// primary key came before taking that row's place. A cursor on the
-    /// first page means the table is over the cap.
+    /// A `rows` message: its rows join those that came, in place in the
+    /// sort and filter in force, and a row whose primary key came before
+    /// takes that row's place. A cursor on the first page means the table
+    /// is over the cap.
     fn take_rows(&mut self, message: RowsMessage) -> Vec<(Axis, ChangeNotice)> {
         if self.pages == 0 && message.cursor.is_some() {
             self.status.partial = true;
         }
         self.pages += 1;
+        let mut added = Vec::new();
+        let mut replaced = false;
         for row in message.rows {
             let (key, values) = self.parse(&row);
             match self.row_at.get(&key) {
-                Some(&at) => self.rows[at] = values,
+                Some(&at) => {
+                    let old = std::mem::replace(&mut self.rows[at], values);
+                    self.forget_mismatches(&old);
+                    replaced = true;
+                }
                 None => {
                     self.row_at.insert(key, self.rows.len());
                     self.row_keys.push(key);
                     self.rows.push(values);
+                    added.push(key);
                 }
             }
         }
-        self.rebuild();
-        vec![(Axis::Rows, ChangeNotice::Reset(self.count(Axis::Rows)))]
+        let base = self.grouped.source_mut();
+        let notices = match replaced {
+            true => base.replaced(&self.rows, Some(self.row_keys.clone())),
+            false => base.appended(&self.rows, &added),
+        };
+        let grouped = Axis::ALL.map(|axis| self.grouped.grouped(axis));
+        if !grouped.contains(&true) {
+            return notices;
+        }
+        self.grouped.refresh(&self.rows);
+        (Axis::ALL.into_iter())
+            .filter(|&axis| grouped[axis.index()] || notices.iter().any(|(a, _)| *a == axis))
+            .map(|axis| (axis, ChangeNotice::Reset(self.count(axis))))
+            .collect()
+    }
+
+    /// A row's values left: its invalid ones no longer count.
+    fn forget_mismatches(&mut self, values: &Values) {
+        for (column, value) in self.columns.iter_mut().zip(values) {
+            if matches!(value, Value::Invalid { .. }) {
+                column.mismatches -= 1;
+                self.mismatches -= 1;
+            }
+        }
     }
 
     /// `row`'s Key and its Typed Values, counting those that don't match
@@ -444,11 +488,7 @@ impl DescribedSource {
         let tuple: Vec<Wire> = match self.primary.is_empty() {
             true => vec![Wire::Int(self.rows.len() as i128)],
             false => (self.primary.iter())
-                .map(|&c| {
-                    row.get(&self.columns[c].field.name)
-                        .unwrap_or(&null)
-                        .clone()
-                })
+                .map(|name| row.get(name).unwrap_or(&null).clone())
                 .collect(),
         };
         let key = self.row_ids.intern(&identity(&tuple));
@@ -491,9 +531,27 @@ impl DescribedSource {
         }
         self.grouped = GroupedMemory::new(source);
         if self.spec != ViewSpec::default() {
-            let spec = self.spec.clone();
+            let (spec, _) = self.tie_broken(&self.spec);
             self.grouped.view(&self.rows, &spec);
         }
+    }
+
+    /// `spec` with the primary key's columns, ascending, ending the rows'
+    /// sort when it sorts or groups them, and the Keys of the terms added.
+    fn tie_broken(&self, spec: &ViewSpec) -> (ViewSpec, Vec<Key>) {
+        let rows = spec.axis(Axis::Rows);
+        if rows.sort.is_empty() && spec.grouping.is_none() {
+            return (spec.clone(), Vec::new());
+        }
+        let added: Vec<Key> = (self.primary.iter())
+            .filter_map(|name| self.column_key(name))
+            .filter(|&k| !self.column(k).is_some_and(Column::nested))
+            .filter(|&k| rows.sort.find(k).is_none())
+            .collect();
+        let mut sort = rows.sort.columns().to_vec();
+        sort.extend(added.iter().map(|&k| SortColumn::ascending(k)));
+        let spec = spec.clone().with_sort(Axis::Rows, SortSpec::new(sort));
+        (spec, added)
     }
 
     fn over(&mut self) -> impl PumpSource + '_ {
@@ -621,7 +679,15 @@ fn stable_text(
 impl PumpSource for DescribedSource {
     fn view(&mut self, spec: &ViewSpec) -> Viewed {
         self.spec = spec.clone();
-        self.over().view(spec)
+        let (tie_broken, added) = self.tie_broken(spec);
+        let mut viewed = self.over().view(&tie_broken);
+        let rows = viewed.applied.axis_mut(Axis::Rows);
+        let shown: Vec<SortColumn> = (rows.sort.columns().iter())
+            .filter(|c| !added.contains(&c.key))
+            .copied()
+            .collect();
+        rows.sort = SortSpec::new(shown);
+        viewed
     }
 
     fn support(&mut self, axis: Axis, key: Key) -> Support {

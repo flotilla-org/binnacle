@@ -187,3 +187,32 @@ fn typed_keys_put_invalid_values_between_nulls_and_typed_ones() {
     source.apply_sort(Axis::Rows, &spec, vec![SortKeys::Typed(typed)]);
     assert_eq!(source.window(Axis::Rows, 0..6), keys(&[3, 5, 0, 1, 4, 2]));
 }
+
+#[test]
+fn typed_integers_and_floats_compare_exactly() {
+    use binnacle_memory::TypedKey;
+
+    let big = 1i64 << 53;
+    // In the order they sort: a float before an integer of its value.
+    let keys = [
+        TypedKey::F64(f64::NEG_INFINITY),
+        TypedKey::I64(i64::MIN),
+        TypedKey::F64(-0.0),
+        TypedKey::F64(0.0),
+        TypedKey::I64(0),
+        TypedKey::F64(0.5),
+        TypedKey::F64(big as f64),
+        TypedKey::I64(big),
+        TypedKey::I64(big + 1),
+        TypedKey::F64((big + 2) as f64),
+        TypedKey::U64(u64::MAX),
+        TypedKey::F64(1e300),
+        TypedKey::F64(f64::INFINITY),
+        TypedKey::F64(f64::NAN),
+    ];
+    for (i, a) in keys.iter().enumerate() {
+        for (j, b) in keys.iter().enumerate() {
+            assert_eq!(a.cmp(b), i.cmp(&j), "{a:?} against {b:?}");
+        }
+    }
+}

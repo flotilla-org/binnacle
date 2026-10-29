@@ -30,9 +30,10 @@ pub enum SortKeys<'a> {
 /// below every typed value, and invalid values compare by their text, by
 /// code point. Typed keys compare as the other [`SortKeys`] do: integers
 /// exactly, signed or not, floats with NaN the greatest, instants in time
-/// order and bytes lexicographically. A column's typed keys are of one kind;
-/// keys of different kinds order numbers first, then instants, then bytes,
-/// an integer comparing with a float as an `f64`.
+/// order and bytes lexicographically. Integers and floats compare with each
+/// other exactly, a float before an integer of the same value (so `-0.0`,
+/// `0.0` then `0`). Keys of other kinds order numbers first, then instants,
+/// then bytes.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum TypedKey<'a> {
@@ -64,14 +65,26 @@ impl TypedKey<'_> {
             _ => None,
         }
     }
+}
 
-    fn float(&self) -> Option<f64> {
-        match self {
-            TypedKey::I64(v) => Some(*v as f64),
-            TypedKey::U64(v) => Some(*v as f64),
-            TypedKey::F64(v) => Some(*v),
-            _ => None,
-        }
+/// An integer against a float, exactly: NaN is the greatest, and a float
+/// sorts before an integer of the same value.
+fn integer_against_float(i: i128, x: f64) -> Ordering {
+    if x.is_nan() {
+        return Ordering::Less;
+    }
+    let floor = x.floor();
+    // Every i128 lies in [-2^127, 2^127).
+    if floor >= 2f64.powi(127) {
+        return Ordering::Less;
+    }
+    if floor < -(2f64.powi(127)) {
+        return Ordering::Greater;
+    }
+    match i.cmp(&(floor as i128)) {
+        Ordering::Equal if x > floor => Ordering::Less,
+        Ordering::Equal => Ordering::Greater,
+        unequal => unequal,
     }
 }
 
@@ -85,10 +98,10 @@ impl Ord for TypedKey<'_> {
             (TypedKey::Invalid(a), TypedKey::Invalid(b)) => a.cmp(b),
             (TypedKey::Instant(a), TypedKey::Instant(b)) => a.cmp(b),
             (TypedKey::Bytes(a), TypedKey::Bytes(b)) => a.cmp(b),
-            (a, b) => match (a.integer(), b.integer()) {
-                (Some(a), Some(b)) => a.cmp(&b),
-                _ => compare_f64(a.float().unwrap_or(0.0), b.float().unwrap_or(0.0)),
-            },
+            (TypedKey::F64(a), TypedKey::F64(b)) => compare_f64(*a, *b),
+            (TypedKey::F64(x), b) => integer_against_float(b.integer().unwrap_or(0), *x).reverse(),
+            (a, TypedKey::F64(x)) => integer_against_float(a.integer().unwrap_or(0), *x),
+            (a, b) => a.integer().cmp(&b.integer()),
         }
     }
 }
