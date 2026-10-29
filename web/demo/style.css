@@ -49,7 +49,7 @@ header h1 {
   letter-spacing: 0.01em;
 }
 
-#sources { display: flex; gap: 4px; }
+#sources { display: flex; gap: 2px; }
 
 #sources button {
   font: inherit;
