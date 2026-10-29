@@ -84,6 +84,10 @@ _Avoid_: View state, query, view model
 The named cause of a requested View Spec, such as cycling a column's sort, applied by the Grid to the latest requested spec and carried with it as a hint; a Table Source must be correct from the spec alone.
 _Avoid_: View change, view event, view command
 
+**Layout**:
+The portable, versioned document of how a table is presented, by the Table Source's IDs: its View Spec, a partial order of its items (those listed first, the rest in the source's order), its pins, its Size Overrides and its Header Band thicknesses, each part optional. A source ships one as its default view and a user's saved layout is another, laid over it part by part: each part the user's sets replaces the default's, but Size Overrides merge per item. It reads and writes as JSON (the web's and the Rust crate's alike) or CBOR.
+_Avoid_: Saved layout (as a term), view state, preset, profile
+
 **Sort Spec**:
 The sort part of one axis of a View Spec: the ordered list of items on the other axis (columns, for the rows) and directions to sort by.
 _Avoid_: Sort order, remap spec

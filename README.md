@@ -10,5 +10,6 @@ Status: planning. The design is being worked out as a wayfinder map: the issue l
 - `crates/binnacle-memory/`: Table Sources for in-memory data (so far the identity source).
 - `crates/binnacle-ratatui/`: the ratatui adapter and the demo (`cargo run -p binnacle-ratatui --bin binnacle-demo`).
 - `crates/binnacle-ffi/`: the internal C API for wheelhouse (empty for now).
+- `crates/binnacle-layout/`: the portable Layout document (a table's View Spec, order, pins, sizes and band thicknesses) as JSON or CBOR, with its JSON Schema in `layout.schema.json`.
 - `crates/binnacle-testkit/`: the scenario harness and Snapshot text renderer that tests share (not published).
 - `docs/research/`: cited research notes that feed the map's decisions.
