@@ -2,10 +2,16 @@ name: CI
 
 # The Rust workspace (core, memory, group, ratatui, FFI with its C smoke
 # test, wasm bridge) and the web adapter under web/.
+# End-to-end tests run in full (every browser) on main, nightly, by hand,
+# and on a PR labelled `full-e2e`. Other PRs run Chromium only, and only
+# when the change can reach the web adapter.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+  schedule:
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,6 +25,44 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      e2e: ${{ steps.plan.outputs.e2e }}
+      projects: ${{ steps.plan.outputs.projects }}
+    steps:
+      - uses: actions/checkout@v4
+      # Everything but the crates and files the web adapter never builds, so
+      # a new crate counts as web-facing until it is listed here.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            web:
+              - "**"
+              - "!crates/binnacle-ratatui/**"
+              - "!crates/binnacle-ffi/**"
+              - "!docs/**"
+              - "!**/*.md"
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          FULL: ${{ contains(github.event.pull_request.labels.*.name, 'full-e2e') }}
+          WEB: ${{ steps.filter.outputs.web }}
+        run: |
+          if [ "$EVENT" != pull_request ] || [ "$FULL" = true ]; then
+            echo 'projects=["chromium","firefox"]' >> "$GITHUB_OUTPUT"
+            echo e2e=true >> "$GITHUB_OUTPUT"
+          else
+            echo 'projects=["chromium"]' >> "$GITHUB_OUTPUT"
+            echo "e2e=$WEB" >> "$GITHUB_OUTPUT"
+          fi
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -90,14 +134,15 @@ jobs:
     # macOS: several tests place the pointer by measured text, and Linux
     # fonts measure differently.
     runs-on: macos-14
-    needs: fmt
+    needs: [fmt, changes]
+    if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # WebKit on the macOS runners stalls for over an hour; it joins
-        # once the suite runs on Linux.
-        project: [chromium, firefox]
+        # WebKit on the macOS runners stalls for over an hour; it joins the
+        # full set once the suite runs on Linux.
+        project: ${{ fromJSON(needs.changes.outputs.projects) }}
     defaults:
       run:
         working-directory: web
