@@ -32,7 +32,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 18u
+#define BINNACLE_ABI_VERSION 19u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -1286,6 +1286,50 @@ int binnacle_grid_set_pins(BinnacleGrid *grid, uint32_t axis, uint32_t edge,
  * saved layout keeps, restored with binnacle_grid_set_size. */
 int binnacle_grid_size_overrides(BinnacleGrid *grid, uint32_t axis,
                                  BinnacleSizeOverrides *out);
+
+/* A host's ID for an item, as UTF-8 text, and the Key it gives the item. */
+typedef struct {
+  BinnacleText id;
+  uint64_t key;
+} BinnacleNamedKey;
+
+/* The IDs and Keys of one axis's items, each ID and Key once. */
+typedef struct {
+  const BinnacleNamedKey *names;
+  size_t names_len;
+} BinnacleAxisNames;
+
+/* How the host names a table's items in a Layout, per axis (indexed by
+ * BINNACLE_ROWS and BINNACLE_COLS). An ID or Key not listed is unknown:
+ * list at least the items a layout names that the host has, and those the
+ * Grid holds state on (binnacle_grid_held_keys) and in its Windows. */
+typedef struct {
+  BinnacleAxisNames axes[2];
+} BinnacleNames;
+
+/* Loads a Layout, the portable document crates/binnacle-layout describes
+ * (layout.schema.json), from len bytes of JSON of version 1 or 2, naming
+ * items as names does. Each part the layout sets is restored as
+ * binnacle-layout's Layout::restore does: the pins, Size Overrides (others
+ * cleared) and band thicknesses at once, the View Spec as a request, and
+ * the order as a MOVE_REQUESTED of the listed items to Position 0 unless
+ * they are in place already, queued behind a move waiting for its answer.
+ * The Table Source may refuse the move, as any. Whatever names an ID names
+ * does not list is skipped, as is the order of an axis the View Spec sorts
+ * or groups; the handle keeps the layout, so the next save puts the
+ * unknown IDs back. Returns 0, restoring nothing, for bytes that are not a
+ * Layout of a known version, or an ID that is not UTF-8. Poll the Effects
+ * afterwards. */
+int binnacle_grid_load_layout(BinnacleGrid *grid, const BinnacleNames *names,
+                              const uint8_t *json, size_t len);
+
+/* Saves the Grid's layout into out as JSON, naming items as names does,
+ * valid until the next call of this function on grid: every part, as
+ * binnacle-layout's Layout::read reads it (an axis's order only while the
+ * last Snapshot drew every item and no sort or grouping orders it), with
+ * what the last loaded layout held for IDs names does not list put back. */
+int binnacle_grid_save_layout(BinnacleGrid *grid, const BinnacleNames *names,
+                              BinnacleText *out);
 
 /* Lays out the frame and fills out. */
 int binnacle_grid_snapshot(BinnacleGrid *grid, BinnacleSnapshot *out);

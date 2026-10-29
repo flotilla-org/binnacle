@@ -12,6 +12,8 @@ use std::slice;
 mod layer;
 pub use layer::*;
 
+use binnacle_layout::{IdTable, Layout};
+
 use binnacle_core::{
     Action, Aggregate, AggregateValue, Align, Axis, AxisConfig, AxisView, Button, ChangeNotice,
     Compared, Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge,
@@ -25,7 +27,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 18;
+pub const BINNACLE_ABI_VERSION: u32 = 19;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -320,6 +322,10 @@ pub struct BinnacleGrid {
     /// they name.
     corner_tiers: [Vec<BinnacleCornerTier>; 2],
     corner_levels: [Vec<BinnacleCornerLevel>; 2],
+    /// The Layout last loaded, whose IDs the host did not name a save
+    /// keeps, and the last saved Layout's JSON.
+    loaded: Option<Layout<String, String>>,
+    layout_json: Vec<u8>,
 }
 
 /// Values in C form, with the aggregate names and parameters they point
@@ -2344,6 +2350,8 @@ impl BinnacleGrid {
             overrides: Default::default(),
             pending_move: Vec::new(),
             refusal: String::new(),
+            loaded: None,
+            layout_json: Vec::new(),
         })
     }
 
@@ -2640,6 +2648,124 @@ pub unsafe extern "C" fn binnacle_grid_set_pins(
         with_handle(grid, |h| {
             let edge = edge(edge_tag)?;
             axis(axis_tag).map(|axis| h.grid.set_pins(axis, edge, &keys))
+        })
+    }
+}
+
+/// A host's ID for an item, as UTF-8 text, and the Key it gives the item.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleNamedKey {
+    pub id: BinnacleText,
+    pub key: u64,
+}
+
+/// The IDs and Keys of one axis's items, for a Layout.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BinnacleAxisNames {
+    pub names: *const BinnacleNamedKey,
+    pub names_len: usize,
+}
+
+impl Default for BinnacleAxisNames {
+    fn default() -> Self {
+        BinnacleAxisNames {
+            names: std::ptr::null(),
+            names_len: 0,
+        }
+    }
+}
+
+/// How a host names a table's items, per axis.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BinnacleNames {
+    pub axes: [BinnacleAxisNames; 2],
+}
+
+/// The host's names as an ID table, or `None` for NULL or an ID that is not
+/// UTF-8.
+///
+/// # Safety
+/// `names` is NULL or valid for a read, each axis's `names` valid for
+/// `names_len` reads (or NULL with 0) and each ID's text for its length.
+unsafe fn id_table(names: *const BinnacleNames) -> Option<IdTable<String, String>> {
+    // SAFETY: the caller's contract.
+    let names = unsafe { names.as_ref() }?;
+    let axis = |a: BinnacleAxisNames| -> Option<Vec<(String, Key)>> {
+        // SAFETY: the caller's contract.
+        (unsafe { borrowed(a.names, a.names_len) }.iter())
+            .map(|n| {
+                // SAFETY: the caller's contract.
+                let id = std::str::from_utf8(unsafe { borrowed(n.id.data, n.id.len) }).ok()?;
+                Some((id.to_owned(), Key(n.key)))
+            })
+            .collect()
+    };
+    let [rows, cols] = names.axes;
+    Some(IdTable::new(axis(rows)?, axis(cols)?))
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `names` as for [`id_table`]; `json` is
+/// valid for `len` reads (or NULL with `len` 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_load_layout(
+    grid: *mut BinnacleGrid,
+    names: *const BinnacleNames,
+    json: *const u8,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    let Some(ids) = (unsafe { id_table(names) }) else {
+        return 0;
+    };
+    // SAFETY: the caller's contract.
+    let Ok(layout) = Layout::<String, String>::from_json(unsafe { borrowed(json, len) }) else {
+        return 0;
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            layout.restore(&mut h.grid, &ids);
+            h.loaded = Some(layout);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `names` as for [`id_table`]; `out` is
+/// NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_save_layout(
+    grid: *mut BinnacleGrid,
+    names: *const BinnacleNames,
+    out: *mut BinnacleText,
+) -> i32 {
+    if out.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller's contract.
+    let Some(ids) = (unsafe { id_table(names) }) else {
+        return 0;
+    };
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let mut layout = Layout::read(&mut h.grid, &ids);
+            if let Some(loaded) = &h.loaded {
+                layout = layout.keeping(loaded, &ids);
+            }
+            h.layout_json = layout.to_json();
+            write_out(
+                out,
+                BinnacleText {
+                    data: h.layout_json.as_ptr(),
+                    len: h.layout_json.len(),
+                },
+            )
         })
     }
 }

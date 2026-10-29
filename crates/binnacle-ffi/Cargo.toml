@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 binnacle-core.workspace = true
 binnacle-group.workspace = true
+binnacle-layout.workspace = true
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
