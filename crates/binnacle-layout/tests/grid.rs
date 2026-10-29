@@ -489,3 +489,16 @@ fn what_the_host_does_not_name_is_skipped_on_restore_and_kept_on_the_next_save()
     let changed = Layout::read(&mut s.grid, &ids()).keeping(&layout, &ids());
     assert!(changed.view.unwrap().rows.sort.is_empty());
 }
+
+#[test]
+fn an_arrangement_asked_for_while_a_move_waits_is_made_after_it() {
+    let mut s = table();
+    s.input(|g| {
+        assert!(g.arrange(Axis::Cols, vec![Key(2), Key(0)]));
+        // In place now, but the move waiting will change that.
+        assert!(g.arrange(Axis::Cols, vec![Key(0)]));
+    });
+    assert_eq!(moves(&s.effects()), 2);
+    assert_eq!(order(&mut s, Axis::Cols), [0, 2, 1, 3]);
+    assert_eq!(s.grid.arranged(Axis::Cols), [Key(0)]);
+}

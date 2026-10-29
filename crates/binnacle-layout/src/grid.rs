@@ -13,9 +13,10 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
     /// Override and the band thicknesses. An axis's order is the Grid's
     /// arrangement ([`Grid::arranged`]: the items a restored order and the
     /// moves since placed first), unset while there is none or a sort or
-    /// grouping orders the axis. Whatever names a Key `ids` does not know
-    /// is left out; [`Layout::keeping`] puts back what a restored layout
-    /// held for those.
+    /// grouping orders the axis. An item dropped past both the Window and
+    /// the arrangement leaves it, so the order then ends before that item.
+    /// Whatever names a Key `ids` does not know is left out;
+    /// [`Layout::keeping`] puts back what a restored layout held for those.
     pub fn read(grid: &mut Grid, ids: &impl IdMap<RowId, ColId>) -> Self {
         let sizes = Axis::ALL.map(|axis| grid.size_overrides(axis).collect::<Vec<_>>());
         let arranged = Axis::ALL.map(|axis| grid.arranged(axis).to_vec());

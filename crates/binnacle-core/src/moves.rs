@@ -73,23 +73,24 @@ impl Grid {
     /// at once if the Window shows them in place already, else once the
     /// Table Source makes the move to Position 0 this asks for, as a header
     /// drop does: a `MoveRequested` now, or once the move already asked for
-    /// is answered. The source may refuse it, as any move, which leaves the
-    /// arrangement as it was. No `keys` empties the arrangement. Returns
-    /// whether it asks for a move.
+    /// is answered (then asked whether in place or not). The source may
+    /// refuse it, as any move, which leaves the arrangement as it was. No
+    /// `keys` empties the arrangement. Returns whether it asks for a move.
     pub fn arrange(&mut self, axis: Axis, keys: Vec<Key>) -> bool {
         let mut seen = HashSet::new();
         let keys: Vec<Key> = keys.into_iter().filter(|k| seen.insert(*k)).collect();
+        // The move waiting may change the Window, and its answer the arrangement.
+        if self.moves.pending.is_some() {
+            self.moves.queued.push_back((axis, keys));
+            return true;
+        }
         let measure = &self.axis(axis).measure;
         let in_place = (keys.iter().enumerate()).all(|(p, &k)| measure.key_at(p as u64) == Some(k));
         if in_place {
             self.moves.arranged[axis.index()] = keys;
             return false;
         }
-        if self.moves.pending.is_some() {
-            self.moves.queued.push_back((axis, keys));
-        } else {
-            self.ask_move(axis, keys.clone(), 0, keys);
-        }
+        self.ask_move(axis, keys.clone(), 0, keys);
         true
     }
 

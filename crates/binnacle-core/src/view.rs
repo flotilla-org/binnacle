@@ -1179,6 +1179,11 @@ impl Grid {
         if let Some(arranging) = self.moves.arranging.as_mut() {
             arranging.retain(|k| !keys.contains(k));
         }
+        for (a, queued) in self.moves.queued.iter_mut() {
+            if *a == axis {
+                queued.retain(|k| !keys.contains(k));
+            }
+        }
         self.view.totals_pinned[axis.index()].retain(|k| !keys.contains(k));
         let Some(requested) = self.view.requested.as_mut() else {
             return;
