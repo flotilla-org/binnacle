@@ -52,6 +52,31 @@ test.describe("records", () => {
     await expect(status(page)).toContainText("columns 1 to 5 of 5");
   });
 
+  test("a row's menu lies wholly inside a short window, its values landed", async ({ page }) => {
+    await cell(page, 2, 1);
+    await page.keyboard.press("Alt+ArrowRight");
+    const dialog = menu(page, "3");
+    await expect(dialog.getByRole("group", { name: "3 values" }).getByRole("checkbox").first()).toBeVisible();
+    const box = (await dialog.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(600);
+    // Its last control too: the menu does not hide what it cannot fit.
+    await expect(dialog.getByRole("button", { name: "Close" })).toBeInViewport({ ratio: 1 });
+  });
+
+  test("in a window too short for it, a row's menu scrolls inside itself", async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 300 });
+    await cell(page, 2, 1);
+    await page.keyboard.press("Alt+ArrowRight");
+    const dialog = menu(page, "3");
+    await expect(dialog.getByRole("group", { name: "3 values" }).getByRole("checkbox").first()).toBeVisible();
+    const box = (await dialog.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(300);
+    await dialog.getByRole("button", { name: "Close" }).click();
+    await expect(dialog).toHaveCount(0);
+  });
+
   test("an edit that stops a column matching leaves it, counted by Re-apply, until the filter is applied again", async ({
     page,
   }) => {

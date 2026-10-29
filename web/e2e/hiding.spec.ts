@@ -79,8 +79,8 @@ test.describe("records", () => {
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
     await expect(bar(page)).toContainText(`${en(rows.length)} rows`);
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
+    // The row's menu, moved up to fit the window, covers the first row.
+    await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
     await page.locator(".binnacle-layer").click({ position: { x: FIRST, y: HEADER + ROW / 2 } });
     await page.keyboard.press(`${await mod(page)}+Alt+Shift+0`);
     await expect(flyout(page, "column").getByRole("menuitem")).toHaveText(["name", "Show all"]);
