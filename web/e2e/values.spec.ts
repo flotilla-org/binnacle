@@ -43,3 +43,20 @@ test("a relative time redraws as the clock moves on, and reads as the absolute t
   // "1m ago" now.
   expect((await canvas.screenshot()).equals(before)).toBe(false);
 });
+
+test("the demo's banner keeps its height however many sources it lists, so the grid keeps its own", async ({ page }) => {
+  for (const width of [800, 1000, 1400]) {
+    await page.setViewportSize({ width, height: 600 });
+    await page.goto("/?source=records");
+    const banner = page.locator("header");
+    const height = (await banner.boundingBox())!.height;
+    await page.evaluate(() => {
+      const sources = document.querySelector("#sources")!;
+      for (let i = 0; i < 8; i++) sources.append(sources.lastElementChild!.cloneNode(true));
+    });
+    expect((await banner.boundingBox())!.height, `at ${width} px`).toBe(height);
+    const strip = page.locator("#sources");
+    const scrolls = await strip.evaluate((s) => s.scrollWidth > s.clientWidth);
+    expect(scrolls, `the sources scroll at ${width} px`).toBe(true);
+  }
+});
