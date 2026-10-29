@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::{ColorSupport, Content, Theme};
+use crate::{ColorSupport, Content, NextFrame, Theme};
 
 /// Draws cells. [`Content::renderer`] picks one per cell (by column unless
 /// the host says otherwise); the text renderer is the default.
@@ -61,6 +61,7 @@ pub struct CellCanvas<'a> {
     pub(crate) theme: &'a Theme,
     pub(crate) now: Duration,
     pub(crate) colors: ColorSupport,
+    pub(crate) next_frame: Option<&'a NextFrame>,
 }
 
 /// How long [`CellCanvas::flash`] lights a changed cell.
@@ -109,6 +110,14 @@ impl<'a> CellCanvas<'a> {
 
     pub fn colors(&self) -> ColorSupport {
         self.colors
+    }
+
+    /// Asks for a frame `after` this one, for a cell whose drawing moves on
+    /// with time; the host learns of it through its [`NextFrame`].
+    pub fn request_frame_after(&self, after: Duration) {
+        if let Some(next) = self.next_frame {
+            next.request(self.now.saturating_add(after));
+        }
     }
 
     /// The buffer cell at cell-relative `(x, y)`, if it is visible.

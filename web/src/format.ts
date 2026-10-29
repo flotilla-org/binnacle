@@ -72,29 +72,46 @@ export interface Formatted {
   style: number;
 }
 
+/** A zone: its offset from UTC, in seconds east, at `at` (ms since the Unix epoch). */
+export type Zone = (at: number) => number;
+
+/** A zone with one offset at every instant: `fixedZone(0)` is UTC. */
+export function fixedZone(offset: number): Zone {
+  return () => offset;
+}
+
 /** The clock and zone the host injects. */
 export interface FormatClock {
   /** Now, ms since the Unix epoch. */
   now: number;
-  /** The local zone, seconds east of UTC. */
-  utcOffset: number;
+  /** The zone dates draw in, asked for each date's own offset; the runtime's local zone by default. */
+  zone?: Zone;
 }
 
-/** A column's formatter. Call it once the wasm build has loaded (`loadBinnacle`). */
-export function columnFormatter(column: ColumnFormat = {}): (value: TypedValue, clock: FormatClock) => Formatted {
-  let format: WebColumnFormat | undefined;
-  return (value, clock) => {
-    format ??= new (bridge().WebColumnFormat)(column.unit, column.role, column.options);
-    return format.format(value, clock.now, clock.utcOffset) as Formatted;
+/** A column's formatter. Call its methods once the wasm build has loaded (`loadBinnacle`). */
+export interface ColumnFormatter {
+  /** The text drawn at `clock`. */
+  format(value: TypedValue, clock: FormatClock): Formatted;
+  /** The stable text, for search, filters, copy and assistive tech: dates absolute, so it never goes stale. */
+  stable(value: TypedValue, clock: FormatClock): Formatted;
+  /** Whether the column's dates draw relative to now, so its cells redraw as the clock moves. */
+  readonly relative: boolean;
+}
+
+/** A column's formatter, its wasm side made on first use. */
+export function columnFormatter(column: ColumnFormat = {}): ColumnFormatter {
+  let wasm: WebColumnFormat | undefined;
+  const get = () => (wasm ??= new (bridge().WebColumnFormat)(column.unit, column.role, column.options));
+  return {
+    format: (value, clock) => get().format(value, clock.now, clock.zone) as Formatted,
+    stable: (value, clock) => get().formatStable(value, clock.now, clock.zone) as Formatted,
+    get relative() {
+      return get().relative;
+    },
   };
 }
 
 /** The fewest decimals, at most 3, that show every finite number in `numbers`: a column's `decimals`. */
 export function fewestDecimals(numbers: readonly number[]): number {
   return bridge().fewest_decimals(Float64Array.from(numbers));
-}
-
-/** The browser's zone at `at` (ms since the Unix epoch), seconds east of UTC. */
-export function localOffset(at: number): number {
-  return -new Date(at).getTimezoneOffset() * 60;
 }

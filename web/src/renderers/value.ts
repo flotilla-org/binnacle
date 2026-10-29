@@ -1,16 +1,7 @@
 // The value renderer: a Typed Value through the shared formatter, its style
 // hints in the Theme's colours, an invalid value marked in its corner.
 
-import {
-  columnFormatter,
-  DIM,
-  localOffset,
-  WARNING,
-  type ColumnFormat,
-  type FormatClock,
-  type Formatted,
-  type TypedValue,
-} from "../format";
+import { columnFormatter, DIM, WARNING, type ColumnFormat, type FormatClock, type Formatted, type TypedValue } from "../format";
 import type { CellRenderer } from "../renderer";
 
 export interface ValueOptions<V> extends ColumnFormat {
@@ -25,24 +16,21 @@ const MARK = 6;
 /** How often a cell showing a relative time redraws, ms. */
 const TICK = 1000;
 
-const browserClock = (frameNow: number): FormatClock => {
-  const now = performance.timeOrigin + frameNow;
-  return { now, utcOffset: localOffset(now) };
-};
+const browserClock = (frameNow: number): FormatClock => ({ now: performance.timeOrigin + frameNow });
+
+const isDateTime = (v: TypedValue): boolean => v instanceof Date || (typeof v === "object" && v !== null && "instant" in v);
 
 /**
  * Typed Values through the shared formatter. A null draws in the Theme's
  * `dim` colour, an invalid value in its `warning` colour with a mark in the
- * cell's corner. A relative time redraws each second; its text for
- * assistive technology, copying and measuring is the absolute time.
+ * cell's corner. A relative time redraws each second. Its text for search,
+ * copying and assistive technology is the formatter's stable text, with
+ * dates absolute.
  */
 export function valueRenderer<V = TypedValue>(options: ValueOptions<V> = {}): CellRenderer<V> {
   const { value: typed = (v: V) => v as TypedValue, clock = browserClock } = options;
-  const format = columnFormatter(options);
-  const relative = options.options?.time === "relative" || (options.options?.time === undefined && options.role === "time");
-  // Text read, copied or searched is written once and kept, so its dates are absolute.
-  const kept = relative ? columnFormatter({ ...options, options: { ...options.options, time: "absolute" } }) : format;
-  const at = (value: V, frameNow: number): Formatted => format(typed(value), clock(frameNow));
+  const formatter = columnFormatter(options);
+  const at = (value: V, frameNow: number): Formatted => formatter.format(typed(value), clock(frameNow));
   return {
     draw(cell, value) {
       const f = at(value, cell.now);
@@ -59,9 +47,9 @@ export function valueRenderer<V = TypedValue>(options: ValueOptions<V> = {}): Ce
         ctx.closePath();
         ctx.fill();
       }
-      if (relative) cell.requestFrame(TICK);
+      if (formatter.relative && isDateTime(typed(value))) cell.requestFrame(TICK);
     },
     preferredWidth: (value, measure) => measure.text(at(value, performance.now()).text),
-    text: (value) => kept(typed(value), clock(performance.now())).text,
+    text: (value) => formatter.stable(typed(value), clock(performance.now())).text,
   };
 }

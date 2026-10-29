@@ -3,7 +3,8 @@
 //! show the same text for the same value, unit and role.
 //!
 //! Pure and sans-IO: the host injects the clock and the zone through
-//! [`FormatContext`], and the crate knows nothing of the Grid.
+//! [`FormatContext`], and the crate knows nothing of the Grid. What search,
+//! filters, copy and assistive tech read is [`format_stable`]'s text.
 
 pub mod fixture;
 mod format;
@@ -13,10 +14,10 @@ mod units;
 
 pub use format::{
     Align, FormatContext, FormatOptions, Formatted, NULL_GLYPH, PLAIN_NULL_GLYPH, Role, Style,
-    TimeStyle, fewest_decimals, format,
+    TimeStyle, fewest_decimals, format, format_stable,
 };
 pub use json::from_tagged_json;
-pub use time::Timestamp;
+pub use time::{FixedOffset, Timestamp, Zone};
 
 /// A Typed Value: one cell's value with its kind, as a described table
 /// gives it.
@@ -64,20 +65,22 @@ impl Value {
     }
 }
 
-/// Names each kind of [`Value`].
+/// Names each kind of [`Value`]. Each has a fixed, non-zero
+/// [`ValueType::code`] for a C host's kinds, so zero is never a kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum ValueType {
-    Null,
-    Bool,
-    Int,
-    UInt,
-    Number,
-    Text,
-    Bytes,
-    DateTime,
-    Category,
-    Nested,
-    Invalid,
+    Null = 1,
+    Bool = 2,
+    Int = 3,
+    UInt = 4,
+    Number = 5,
+    Text = 6,
+    Bytes = 7,
+    DateTime = 8,
+    Category = 9,
+    Nested = 10,
+    Invalid = 11,
 }
 
 impl ValueType {
@@ -110,6 +113,14 @@ impl ValueType {
             ValueType::Nested => "nested",
             ValueType::Invalid => "invalid",
         }
+    }
+
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_code(code: u8) -> Option<ValueType> {
+        ValueType::ALL.into_iter().find(|t| t.code() == code)
     }
 
     pub fn from_name(name: &str) -> Option<ValueType> {

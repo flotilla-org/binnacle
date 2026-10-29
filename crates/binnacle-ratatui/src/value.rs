@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use binnacle_core::Key;
 use binnacle_format::{
-    Align, FormatContext, FormatOptions, Formatted, Role, Style as Hints, Timestamp, Value, format,
+    Align, FixedOffset, FormatContext, FormatOptions, Formatted, Role, Style as Hints, Timestamp,
+    Value, Zone, format, format_stable,
 };
 use ratatui::style::Style;
 
@@ -15,29 +16,37 @@ use crate::{CellCanvas, CellRenderer, Theme};
 /// What starts an invalid value, in the Theme's `warning` style.
 pub const WARNING_MARK: char = '!';
 
+/// How often a cell showing a relative time asks to be drawn again.
+const TICK: Duration = Duration::from_secs(1);
+
 /// A column's Typed Values from a closure, formatted with its unit, role and
 /// options. A null draws in the Theme's `dim` style and an invalid value in
 /// its `warning` style after [`WARNING_MARK`]. Relative times count from
-/// the frame's time ([`CellCanvas::now`]) past the clock's origin, so they
-/// move on as frames are drawn.
+/// the frame's time ([`CellCanvas::now`]) past the origin, and a cell
+/// showing one asks for a frame a second later
+/// ([`CellCanvas::request_frame_after`]), so they move on. Absolute times
+/// draw in the zone, UTC unless set.
 pub struct ValueRenderer<F> {
     value: F,
     unit: Option<String>,
     role: Role,
     options: FormatOptions,
     origin: Timestamp,
-    utc_offset: i32,
+    zone: Box<dyn Zone>,
 }
 
 impl<F: Fn(Key, Key) -> Value> ValueRenderer<F> {
-    pub fn new(value: F) -> Self {
+    /// `origin` is the UTC instant at the render context's time zero: a
+    /// host whose `now` counts from its start passes the instant it
+    /// started.
+    pub fn new(origin: Timestamp, value: F) -> Self {
         ValueRenderer {
             value,
             unit: None,
             role: Role::None,
             options: FormatOptions::default(),
-            origin: Timestamp::UNIX_EPOCH,
-            utc_offset: 0,
+            origin,
+            zone: Box::new(FixedOffset(0)),
         }
     }
 
@@ -57,24 +66,26 @@ impl<F: Fn(Key, Key) -> Value> ValueRenderer<F> {
         ValueRenderer { options, ..self }
     }
 
-    /// The UTC instant at the render context's time zero, and the local
-    /// zone in seconds east of UTC. A host whose `now` counts from its
-    /// start passes the instant it started.
-    pub fn clock(self, origin: Timestamp, utc_offset: i32) -> Self {
+    /// The local zone absolute times draw in.
+    pub fn zone(self, zone: impl Zone + 'static) -> Self {
         ValueRenderer {
-            origin,
-            utc_offset,
+            zone: Box::new(zone),
             ..self
         }
     }
 
-    fn formatted(&self, row: Key, col: Key, now: Duration) -> Formatted {
-        let ctx = FormatContext {
-            now: self.origin.saturating_add(now),
-            utc_offset: self.utc_offset,
-        };
+    /// The cell's stable text, for copying, search and filters: its dates
+    /// absolute (see [`format_stable`]). A [`Content::cell`](crate::Content::cell)
+    /// for a column this draws returns it.
+    pub fn text(&self, row: Key, col: Key) -> String {
+        let ctx = FormatContext::new(self.origin, &*self.zone);
         let value = (self.value)(row, col);
-        let mut f = format(&value, self.unit.as_deref(), self.role, &self.options, &ctx);
+        format_stable(&value, self.unit.as_deref(), self.role, &self.options, &ctx).text
+    }
+
+    fn formatted(&self, value: &Value, now: Duration) -> Formatted {
+        let ctx = FormatContext::new(self.origin.saturating_add(now), &*self.zone);
+        let mut f = format(value, self.unit.as_deref(), self.role, &self.options, &ctx);
         if f.style.contains(Hints::WARNING) {
             f.text.insert(0, WARNING_MARK);
         }
@@ -96,7 +107,8 @@ pub fn hint_style(theme: &Theme, hints: Hints) -> Style {
 
 impl<F: Fn(Key, Key) -> Value> CellRenderer for ValueRenderer<F> {
     fn draw(&self, row: Key, col: Key, canvas: &mut CellCanvas) {
-        let f = self.formatted(row, col, canvas.now());
+        let value = (self.value)(row, col);
+        let f = self.formatted(&value, canvas.now());
         let text = fit(&f.text, canvas.width());
         let x = match f.align {
             Align::Start => 0,
@@ -105,9 +117,12 @@ impl<F: Fn(Key, Key) -> Value> CellRenderer for ValueRenderer<F> {
         let y = canvas.visible_y().start;
         let style = hint_style(canvas.theme(), f.style);
         canvas.print(x, y, &text, style);
+        if matches!(value, Value::DateTime(_)) && self.options.relative_dates(self.role) {
+            canvas.request_frame_after(TICK);
+        }
     }
 
     fn preferred_width(&self, row: Key, col: Key) -> u32 {
-        char_count(&self.formatted(row, col, Duration::ZERO).text)
+        char_count(&self.formatted(&(self.value)(row, col), Duration::ZERO).text)
     }
 }

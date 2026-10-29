@@ -1,8 +1,10 @@
-//! Formatting never panics, whatever the value, unit, role, options and
-//! clock, and its text is always one line.
+//! Formatting never panics, whatever the value, unit, role, options, clock
+//! and zone, and its text is always one line. Stable text is the text with
+//! dates absolute.
 
 use binnacle_format::{
-    FormatContext, FormatOptions, Role, TimeStyle, Timestamp, Value, ValueType, format,
+    FixedOffset, FormatContext, FormatOptions, Role, TimeStyle, Timestamp, Value, ValueType,
+    format, format_stable,
 };
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -91,16 +93,23 @@ fn formatting_never_panics_and_is_always_one_line(tc: TestCase) {
         null_glyph: tc.draw(gs::booleans()).then(|| text(&tc)),
         plain: tc.draw(gs::booleans()),
     };
-    let ctx = FormatContext {
-        now: timestamp(&tc),
-        utc_offset: tc.draw(gs::integers::<i32>()),
-    };
+    let zone = FixedOffset(tc.draw(gs::integers::<i32>()));
+    let ctx = FormatContext::new(timestamp(&tc), &zone);
     let formatted = format(&value, unit.as_deref(), role, &options, &ctx);
-    assert!(
-        !formatted.text.contains([
-            '\n', '\r', '\u{0b}', '\u{0c}', '\u{85}', '\u{2028}', '\u{2029}'
-        ]),
-        "{value:?} gave {:?}",
-        formatted.text
-    );
+    let stable = format_stable(&value, unit.as_deref(), role, &options, &ctx);
+    for f in [&formatted, &stable] {
+        assert!(
+            !f.text.contains([
+                '\n', '\r', '\u{0b}', '\u{0c}', '\u{85}', '\u{2028}', '\u{2029}'
+            ]),
+            "{value:?} gave {:?}",
+            f.text
+        );
+    }
+    let absolute = FormatOptions {
+        time: Some(TimeStyle::Absolute),
+        ..options.clone()
+    };
+    let expected = format(&value, unit.as_deref(), role, &absolute, &ctx);
+    assert_eq!(stable, expected, "{value:?}");
 }

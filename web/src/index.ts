@@ -143,15 +143,17 @@ export {
   columnFormatter,
   DIM,
   fewestDecimals,
-  localOffset,
+  fixedZone,
   PENDING,
   WARNING,
   type ColumnFormat,
+  type ColumnFormatter,
   type FormatClock,
   type FormatOptions,
   type Formatted,
   type TypedValue,
   type ValueType,
+  type Zone,
 } from "./format";
 export type { Content } from "./content";
 export type { Painter } from "./painter";

@@ -5,7 +5,7 @@
 use serde_json::Value as Json;
 
 use crate::{
-    FormatContext, FormatOptions, Formatted, Role, Style, TimeStyle, Timestamp, Value,
+    FixedOffset, FormatContext, FormatOptions, Formatted, Role, Style, TimeStyle, Timestamp, Value,
     fewest_decimals, format, from_tagged_json,
 };
 
@@ -32,7 +32,8 @@ pub struct Column {
 pub struct Table {
     pub columns: Vec<Column>,
     pub rows: Vec<Vec<Value>>,
-    pub ctx: FormatContext,
+    pub now: Timestamp,
+    pub zone: FixedOffset,
 }
 
 impl Table {
@@ -110,8 +111,14 @@ impl Table {
         Ok(Table {
             columns,
             rows,
-            ctx: FormatContext { now, utc_offset },
+            now,
+            zone: FixedOffset(utc_offset),
         })
+    }
+
+    /// The fixture's own clock and zone.
+    pub fn ctx(&self) -> FormatContext<'_> {
+        FormatContext::new(self.now, &self.zone)
     }
 
     /// The cell at `row`, `col` formatted at `ctx`.
@@ -133,7 +140,7 @@ impl Table {
         let mut out = String::new();
         for row in 0..self.rows.len() {
             for (col, column) in self.columns.iter().enumerate() {
-                let f = self.format(row, col, &self.ctx);
+                let f = self.format(row, col, &self.ctx());
                 let align = match f.align {
                     crate::Align::Start => "start",
                     crate::Align::End => "end",

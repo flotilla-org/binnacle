@@ -6,7 +6,7 @@
 // the fixture's own time, so the "seen" column's "just now" turns "1m ago"
 // within the first minute; dates show in the fixture's zone.
 
-import { fromRows, GridWidget, loadBinnacle, valueRenderer, type TypedValue } from "../../src";
+import { fixedZone, fromRows, GridWidget, loadBinnacle, valueRenderer, type TypedValue } from "../../src";
 import type { DemoSource } from "./demo-source";
 import { valuesFixture } from "./values-data";
 
@@ -17,7 +17,8 @@ export const values: DemoSource = {
     await loadBinnacle();
     const fixture = valuesFixture();
     const start = performance.now();
-    const clock = (frameNow: number) => ({ now: fixture.now + (frameNow - start), utcOffset: fixture.utcOffset });
+    const zone = fixedZone(fixture.utcOffset);
+    const clock = (frameNow: number) => ({ now: fixture.now + (frameNow - start), zone });
     const source = fromRows(
       fixture.rows,
       fixture.columns.map((c) => ({

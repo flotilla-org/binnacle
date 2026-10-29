@@ -4,6 +4,28 @@ use std::time::Duration;
 
 const NANOS: i128 = 1_000_000_000;
 
+/// The local zone: its offset from UTC, in seconds east, at each instant.
+/// A closure `Fn(Timestamp) -> i32` is one.
+pub trait Zone {
+    fn offset_at(&self, at: Timestamp) -> i32;
+}
+
+/// A zone with one offset at every instant: `FixedOffset(0)` is UTC.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FixedOffset(pub i32);
+
+impl Zone for FixedOffset {
+    fn offset_at(&self, _: Timestamp) -> i32 {
+        self.0
+    }
+}
+
+impl<F: Fn(Timestamp) -> i32> Zone for F {
+    fn offset_at(&self, at: Timestamp) -> i32 {
+        self(at)
+    }
+}
+
 /// A UTC instant with nanosecond precision: seconds since the Unix epoch
 /// and the nanoseconds past them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -44,6 +66,13 @@ impl Timestamp {
 
     pub fn unix_nanos(self) -> i128 {
         i128::from(self.secs) * NANOS + i128::from(self.nanos)
+    }
+
+    /// Nanoseconds since the Unix epoch as an `i64`, which spans about 1677
+    /// to 2262: clamped to that range, as a C `DATETIME` takes it.
+    pub fn unix_nanos_i64_saturating(self) -> i64 {
+        let nanos = self.unix_nanos();
+        i64::try_from(nanos).unwrap_or(if nanos < 0 { i64::MIN } else { i64::MAX })
     }
 
     pub fn unix_secs(self) -> i64 {

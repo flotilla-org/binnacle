@@ -7,8 +7,12 @@ mod table;
 
 use std::time::Duration;
 
-use binnacle_core::{Grid, Key, Viewport};
-use binnacle_ratatui::{RenderContext, Theme, render_with};
+use binnacle_core::{Grid, Key, Position, Viewport};
+use binnacle_format::{Role, Timestamp, Value, ValueType};
+use binnacle_ratatui::{
+    CellRenderer, Content, CopiedRow, NextFrame, RenderContext, Theme, ValueRenderer, copy_text,
+    render_with,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
@@ -18,11 +22,24 @@ use table::Values;
 const AREA: Rect = Rect::new(0, 0, 230, 9);
 
 fn draw(values: &Values, grid: &mut Grid, theme: &Theme, now: Duration) -> Buffer {
+    draw_asking(values, values, grid, theme, now, &NextFrame::new())
+}
+
+/// `content` drawn over the values example's Grid, its cells asking `next`
+/// for later frames.
+fn draw_asking(
+    values: &Values,
+    content: &impl Content,
+    grid: &mut Grid,
+    theme: &Theme,
+    now: Duration,
+    next: &NextFrame,
+) -> Buffer {
     let viewport = Viewport::new(AREA.width.into(), AREA.height.into());
     values.fill(grid, viewport);
     let mut buf = Buffer::empty(AREA);
-    let ctx = RenderContext::new(theme).scrollbars(false).at(now);
-    render_with(&grid.snapshot(), values, &ctx, AREA, &mut buf);
+    let ctx = (RenderContext::new(theme).scrollbars(false).at(now)).next_frame(next);
+    render_with(&grid.snapshot(), content, &ctx, AREA, &mut buf);
     buf
 }
 
@@ -119,15 +136,70 @@ fn relative_times_move_on_with_the_frames_time() {
 }
 
 #[test]
+fn a_relative_time_asks_for_a_frame_a_second_on_and_nothing_else_does() {
+    let values = Values::new();
+    let mut grid = values.grid();
+    let next = NextFrame::new();
+    let theme = Theme::classic();
+    draw_asking(
+        &values,
+        &values,
+        &mut grid,
+        &theme,
+        Duration::from_secs(5),
+        &next,
+    );
+    assert_eq!(next.take(), Some(Duration::from_secs(6)));
+    assert_eq!(next.take(), None);
+
+    // The same dates, absolute: nothing moves, so no frame is asked for.
+    struct Absolute(Values);
+    impl Content for Absolute {
+        fn cell(&self, row: Key, col: Key) -> String {
+            self.0.cell(row, col)
+        }
+        fn column_header(&self, col: Key) -> String {
+            self.0.column_header(col)
+        }
+        fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+            Box::new(self.0.renderer(col).role(Role::None))
+        }
+    }
+    let absolute = Absolute(Values::new());
+    draw_asking(
+        &values,
+        &absolute,
+        &mut grid,
+        &theme,
+        Duration::from_secs(5),
+        &next,
+    );
+    assert_eq!(next.take(), None);
+}
+
+#[test]
+fn copied_cells_are_stable_text_with_dates_absolute() {
+    let values = Values::new();
+    let seen = values.table.columns.iter().position(|c| c.name == "seen");
+    let (seen, name) = (Key(seen.unwrap() as u64), Key(3));
+    let row = |i: u64| CopiedRow {
+        key: Key(i),
+        position: i as Position,
+        outline: None,
+    };
+    // Row 0 was seen 30 s before the fixture's 13:00 UTC, an hour east.
+    let text = copy_text(&values, &[row(0), row(1)], &[name, seen], false);
+    assert_eq!(text, "Aberdeen\t2026-10-29 13:59\n\t2026-10-29 13:57");
+}
+
+#[test]
 fn a_value_renderer_wants_its_formatted_width() {
-    use binnacle_format::{Value, ValueType};
-    use binnacle_ratatui::{CellRenderer, ValueRenderer};
-    let renderer = ValueRenderer::new(|_, _| Value::Invalid {
+    let renderer = ValueRenderer::new(Timestamp::UNIX_EPOCH, |_, _| Value::Invalid {
         raw: "12x".into(),
         expected: ValueType::Int,
     });
     assert_eq!(renderer.preferred_width(Key(0), Key(0)), 4);
-    let renderer = ValueRenderer::new(|_, _| Value::Int(1536)).unit("By");
+    let renderer = ValueRenderer::new(Timestamp::UNIX_EPOCH, |_, _| Value::Int(1536)).unit("By");
     assert_eq!(
         renderer.preferred_width(Key(0), Key(0)),
         "1.5 KiB".len() as u32

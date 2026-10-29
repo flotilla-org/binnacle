@@ -1,8 +1,9 @@
 //! The formatter's defaults, per type, unit, role and option.
 
+use binnacle_format::fixture::Table;
 use binnacle_format::{
-    Align, FormatContext, FormatOptions, Formatted, Role, Style, TimeStyle, Timestamp, Value,
-    ValueType, fewest_decimals, format,
+    Align, FixedOffset, FormatContext, FormatOptions, Formatted, Role, Style, TimeStyle, Timestamp,
+    Value, ValueType, fewest_decimals, format, format_stable,
 };
 use serde_json::json;
 
@@ -12,11 +13,10 @@ fn at(rfc3339: &str) -> Timestamp {
     Timestamp::parse_rfc3339(rfc3339).unwrap()
 }
 
-fn ctx() -> FormatContext {
-    FormatContext {
-        now: at(NOW),
-        utc_offset: 3600,
-    }
+static ZONE: FixedOffset = FixedOffset(3600);
+
+fn ctx() -> FormatContext<'static> {
+    FormatContext::new(at(NOW), &ZONE)
 }
 
 /// `(text, align, style)` of `value` in a column with `unit` and `role`.
@@ -242,16 +242,67 @@ fn a_time_role_date_moves_on_as_the_injected_clock_does() {
     let value = Value::DateTime(at(NOW));
     let options = FormatOptions::default();
     let at_secs = |s| {
-        let ctx = FormatContext {
-            now: Timestamp::from_unix_secs(at(NOW).unix_secs() + s),
-            ..ctx()
-        };
+        let now = Timestamp::from_unix_secs(at(NOW).unix_secs() + s);
+        let ctx = FormatContext::new(now, &ZONE);
         format(&value, None, Role::Time, &options, &ctx).text
     };
     assert_eq!(at_secs(0), "just now");
     assert_eq!(at_secs(59), "just now");
     assert_eq!(at_secs(60), "1m ago");
     assert_eq!(at_secs(3600), "1h ago");
+}
+
+#[test]
+fn each_absolute_date_takes_its_own_offset_from_the_zone() {
+    // London: an hour ahead of UTC from 29 March to 25 October 2026.
+    let summer = at("2026-03-29T01:00:00Z")..at("2026-10-25T01:00:00Z");
+    let london = |t: Timestamp| if summer.contains(&t) { 3600 } else { 0 };
+    let ctx = FormatContext::new(at(NOW), &london);
+    let shown = |rfc| {
+        let date = Value::DateTime(at(rfc));
+        format(&date, None, Role::None, &FormatOptions::default(), &ctx).text
+    };
+    assert_eq!(shown("2026-07-01T12:00:00Z"), "2026-07-01 13:00");
+    assert_eq!(shown("2026-10-29T12:00:00Z"), "2026-10-29 12:00");
+    assert_eq!(shown("2026-10-25T00:59:00Z"), "2026-10-25 01:59");
+    assert_eq!(shown("2026-10-25T01:00:00Z"), "2026-10-25 01:00");
+}
+
+#[test]
+fn stable_text_is_the_formatted_text_with_every_date_absolute() {
+    let date = Value::DateTime(at("2026-10-29T12:57:00Z"));
+    let relative = FormatOptions {
+        time: Some(TimeStyle::Relative),
+        ..FormatOptions::default()
+    };
+    for (role, options) in [
+        (Role::Time, FormatOptions::default()),
+        (Role::None, relative),
+    ] {
+        assert_eq!(format(&date, None, role, &options, &ctx()).text, "3m ago");
+        assert_eq!(
+            format_stable(&date, None, role, &options, &ctx()),
+            f("2026-10-29 13:57", End, Style::NONE)
+        );
+    }
+    // Every other cell of the shared fixture is the same either way.
+    let table = Table::values();
+    let ctx = table.ctx();
+    for (row, values) in table.rows.iter().enumerate() {
+        for (col, (value, column)) in values.iter().zip(&table.columns).enumerate() {
+            let stable = format_stable(
+                value,
+                column.unit.as_deref(),
+                column.role,
+                &column.options,
+                &ctx,
+            );
+            match value {
+                Value::DateTime(_) => assert!(!stable.text.contains("ago"), "{value:?}"),
+                _ => assert_eq!(stable, table.format(row, col, &ctx), "{value:?}"),
+            }
+        }
+    }
 }
 
 #[test]
@@ -318,7 +369,50 @@ fn unknown_roles_are_none_and_types_round_trip_their_names() {
     assert_eq!(Role::from_name("money"), Role::None);
     for t in ValueType::ALL {
         assert_eq!(ValueType::from_name(t.name()), Some(t));
+        assert_eq!(ValueType::from_code(t.code()), Some(t));
     }
+}
+
+#[test]
+fn each_type_keeps_its_code_and_none_is_zero() {
+    let codes: Vec<(u8, &str)> = ValueType::ALL
+        .iter()
+        .map(|t| (t.code(), t.name()))
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            (1, "null"),
+            (2, "bool"),
+            (3, "int"),
+            (4, "uint"),
+            (5, "number"),
+            (6, "text"),
+            (7, "bytes"),
+            (8, "datetime"),
+            (9, "category"),
+            (10, "nested"),
+            (11, "invalid"),
+        ]
+    );
+    assert_eq!(ValueType::from_code(0), None);
+    assert_eq!(ValueType::from_code(12), None);
+}
+
+#[test]
+fn nanoseconds_as_an_i64_clamp_past_its_range() {
+    let base = at(NOW);
+    assert_eq!(base.unix_nanos_i64_saturating() as i128, base.unix_nanos());
+    let before = Timestamp::from_unix_nanos(-1);
+    assert_eq!(before.unix_nanos_i64_saturating(), -1);
+    let edge = Timestamp::from_unix_nanos(i128::from(i64::MAX));
+    assert_eq!(edge.unix_nanos_i64_saturating(), i64::MAX);
+    let past = Timestamp::from_unix_nanos(i128::from(i64::MAX) + 1);
+    assert_eq!(past.unix_nanos_i64_saturating(), i64::MAX);
+    let early = Timestamp::from_unix_secs(i64::MIN);
+    assert_eq!(early.unix_nanos_i64_saturating(), i64::MIN);
+    let late = Timestamp::from_unix_secs(i64::MAX);
+    assert_eq!(late.unix_nanos_i64_saturating(), i64::MAX);
 }
 
 #[test]

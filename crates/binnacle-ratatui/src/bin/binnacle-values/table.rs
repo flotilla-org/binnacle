@@ -3,6 +3,7 @@
 //! as its widest cell.
 
 use binnacle_core::{Axis, AxisConfig, Grid, Key, Viewport};
+use binnacle_format::Value;
 use binnacle_format::fixture::Table;
 use binnacle_ratatui::{CellRenderer, Content, ValueRenderer, fit_width};
 
@@ -35,6 +36,23 @@ impl Values {
         grid
     }
 
+    /// Column `col`'s Value Renderer, its clock starting at the fixture's
+    /// own time and its dates in the fixture's zone.
+    pub fn renderer(&self, col: Key) -> ValueRenderer<impl Fn(Key, Key) -> Value + '_> {
+        let c = col.0 as usize;
+        let column = &self.table.columns[c];
+        let renderer = ValueRenderer::new(self.table.now, move |row: Key, _| {
+            self.table.rows[row.0 as usize][c].clone()
+        })
+        .role(column.role)
+        .options(column.options.clone())
+        .zone(self.table.zone);
+        match &column.unit {
+            Some(unit) => renderer.unit(unit.clone()),
+            None => renderer,
+        }
+    }
+
     /// Fills the Grid's Windows: rows and columns are keyed by Position.
     pub fn fill(&self, grid: &mut Grid, viewport: Viewport) {
         for (axis, range) in grid.begin_frame(viewport) {
@@ -45,8 +63,9 @@ impl Values {
 }
 
 impl Content for Values {
-    fn cell(&self, _row: Key, _col: Key) -> String {
-        unreachable!("every column draws with its Value Renderer")
+    /// The stable text copy and find read: dates absolute.
+    fn cell(&self, row: Key, col: Key) -> String {
+        self.renderer(col).text(row, col)
     }
 
     fn column_header(&self, col: Key) -> String {
@@ -58,16 +77,6 @@ impl Content for Values {
     }
 
     fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
-        let c = col.0 as usize;
-        let column = &self.table.columns[c];
-        let mut renderer =
-            ValueRenderer::new(move |row: Key, _| self.table.rows[row.0 as usize][c].clone())
-                .role(column.role)
-                .options(column.options.clone())
-                .clock(self.table.ctx.now, self.table.ctx.utc_offset);
-        if let Some(unit) = &column.unit {
-            renderer = renderer.unit(unit.clone());
-        }
-        Box::new(renderer)
+        Box::new(self.renderer(col))
     }
 }

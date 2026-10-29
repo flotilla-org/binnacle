@@ -4,7 +4,8 @@
 //! Rust does.
 
 use binnacle_format::{
-    Align, FormatContext, FormatOptions, Role, TimeStyle, Timestamp, Value, ValueType, format,
+    Align, FormatContext, FormatOptions, Formatted, Role, TimeStyle, Timestamp, Value, ValueType,
+    Zone, format, format_stable,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
@@ -73,28 +74,77 @@ impl WebColumnFormat {
     }
 
     /// `value` formatted at `now_ms` (milliseconds since the Unix epoch,
-    /// fractions kept) in the zone `utc_offset` seconds east of UTC:
-    /// `{ text, align, style }`.
-    pub fn format(&self, value: &JsValue, now_ms: f64, utc_offset: i32) -> JsValue {
-        let ctx = FormatContext {
-            now: millis(now_ms),
-            utc_offset,
-        };
-        let f = format(
-            &decode(value),
+    /// fractions kept), its dates in `zone` (seconds east of UTC at a time
+    /// in ms; the runtime's local zone when absent): `{ text, align, style }`.
+    pub fn format(&self, value: &JsValue, now_ms: f64, zone: Option<js_sys::Function>) -> JsValue {
+        let zone = JsZone(zone);
+        let ctx = FormatContext::new(millis(now_ms), &zone);
+        let value = decode(value);
+        wire(format(
+            &value,
             self.unit.as_deref(),
             self.role,
             &self.options,
             &ctx,
-        );
-        to_js(&WireFormatted {
-            text: f.text,
-            align: match f.align {
-                Align::Start => "start",
-                Align::End => "end",
-            },
-            style: f.style.bits(),
-        })
+        ))
+    }
+
+    /// The stable text, as [`format`](Self::format) gives the rest: what
+    /// search, copy and assistive tech read, its dates absolute.
+    #[wasm_bindgen(js_name = formatStable)]
+    pub fn format_stable(
+        &self,
+        value: &JsValue,
+        now_ms: f64,
+        zone: Option<js_sys::Function>,
+    ) -> JsValue {
+        let zone = JsZone(zone);
+        let ctx = FormatContext::new(millis(now_ms), &zone);
+        let value = decode(value);
+        wire(format_stable(
+            &value,
+            self.unit.as_deref(),
+            self.role,
+            &self.options,
+            &ctx,
+        ))
+    }
+
+    /// Whether the column's dates draw relative to now, so its cells redraw
+    /// as the clock moves.
+    #[wasm_bindgen(getter)]
+    pub fn relative(&self) -> bool {
+        self.options.relative_dates(self.role)
+    }
+}
+
+fn wire(f: Formatted) -> JsValue {
+    to_js(&WireFormatted {
+        text: f.text,
+        align: match f.align {
+            Align::Start => "start",
+            Align::End => "end",
+        },
+        style: f.style.bits(),
+    })
+}
+
+/// A zone from JavaScript: a function from ms since the Unix epoch to
+/// seconds east of UTC, or the runtime's local zone. A function that throws
+/// or gives no number counts as UTC.
+struct JsZone(Option<js_sys::Function>);
+
+impl Zone for JsZone {
+    fn offset_at(&self, at: Timestamp) -> i32 {
+        let ms = JsValue::from_f64(at.unix_nanos() as f64 / 1e6);
+        let secs = match &self.0 {
+            Some(zone) => zone
+                .call1(&JsValue::NULL, &ms)
+                .ok()
+                .and_then(|s| s.as_f64()),
+            None => Some(-js_sys::Date::new(&ms).get_timezone_offset() * 60.0),
+        };
+        secs.filter(|s| s.is_finite()).map_or(0, |s| s as i32)
     }
 }
 

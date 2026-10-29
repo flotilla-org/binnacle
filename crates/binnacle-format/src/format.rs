@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::ops::{BitOr, BitOrAssign};
 
-use crate::time::{absolute, relative};
+use crate::time::{Zone, absolute, relative};
 use crate::units::{Num, bytes, with_unit};
 use crate::{Timestamp, Value};
 
@@ -129,13 +129,41 @@ pub struct FormatOptions {
     pub plain: bool,
 }
 
+impl FormatOptions {
+    /// Whether a column with `role` draws its dates relative to now, so its
+    /// text moves on as the clock does and a host redraws it.
+    pub fn relative_dates(&self, role: Role) -> bool {
+        match self.time {
+            Some(style) => style == TimeStyle::Relative,
+            None => role == Role::Time,
+        }
+    }
+}
+
 /// What the host injects so the formatter stays pure.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct FormatContext {
+#[non_exhaustive]
+#[derive(Clone, Copy)]
+pub struct FormatContext<'a> {
     /// The time relative dates count from.
     pub now: Timestamp,
-    /// The local zone, in seconds east of UTC, absolute dates draw in.
-    pub utc_offset: i32,
+    /// The local zone absolute dates draw in, asked for each date's own
+    /// offset so a date across a daylight-saving change keeps its hour.
+    pub zone: &'a dyn Zone,
+}
+
+impl<'a> FormatContext<'a> {
+    pub fn new(now: Timestamp, zone: &'a dyn Zone) -> Self {
+        FormatContext { now, zone }
+    }
+}
+
+impl std::fmt::Debug for FormatContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let offset = self.zone.offset_at(self.now);
+        (f.debug_struct("FormatContext").field("now", &self.now))
+            .field("offset_now", &offset)
+            .finish()
+    }
 }
 
 /// Formats `value` of a column with `unit` (a UCUM code), `role` and
@@ -146,6 +174,31 @@ pub fn format(
     role: Role,
     options: &FormatOptions,
     ctx: &FormatContext,
+) -> Formatted {
+    formatted(value, unit, role, options, ctx, false)
+}
+
+/// The stable text of `value`: what stays true as time passes, for search,
+/// filters, copy and assistive tech to read. It is [`format`]'s, except that
+/// a date is always absolute, whatever the column's role or options, so a
+/// cached or matched `3m ago` never goes stale.
+pub fn format_stable(
+    value: &Value,
+    unit: Option<&str>,
+    role: Role,
+    options: &FormatOptions,
+    ctx: &FormatContext,
+) -> Formatted {
+    formatted(value, unit, role, options, ctx, true)
+}
+
+fn formatted(
+    value: &Value,
+    unit: Option<&str>,
+    role: Role,
+    options: &FormatOptions,
+    ctx: &FormatContext,
+    stable: bool,
 ) -> Formatted {
     let start = |text: Cow<'_, str>, style| Formatted {
         text: text.into_owned(),
@@ -176,14 +229,11 @@ pub fn format(
         Value::UInt(u) => end(numeric(Num::Int(i128::from(*u)))),
         Value::Number(x) => end(numeric(Num::Float(*x))),
         Value::DateTime(at) => {
-            let relative_time = match options.time {
-                Some(style) => style == TimeStyle::Relative,
-                None => role == Role::Time,
-            };
+            let relative_time = !stable && options.relative_dates(role);
             end(if relative_time {
                 relative(*at, ctx.now)
             } else {
-                absolute(*at, ctx.utc_offset)
+                absolute(*at, ctx.zone.offset_at(*at))
             })
         }
         Value::Bool(b) => start(Cow::Borrowed(if *b { "✓" } else { "" }), Style::NONE),
