@@ -136,7 +136,7 @@ test("Ctrl/Cmd-C copies a group as shown: labels first, closed ports' figures, t
     expect(lines[i + 1]![0]).toBe(`${port} (${shipped(east!, port)})`);
     expect(lines[i + 1]![3]).toBe(weight(inEast.filter((s) => s.port === port)));
   }
-  expect(lines.at(-1)![0].startsWith(`${label(east)} total`)).toBe(true);
+  expect(lines.at(-1)![0]?.startsWith(`${label(east)} total`)).toBe(true);
   expect(lines.at(-1)![3]).toBe(weight(inEast));
 });
 
