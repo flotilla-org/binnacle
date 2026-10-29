@@ -64,8 +64,9 @@ The grid fills its container, so give the container a size. Other options:
 `rowHeight`, `columnWidth`, `headerHeight`, `theme` (a Theme, or a function
 from `"light" | "dark"` to one; it follows the system by default), `border`
 (a Border Style), `keymap`, `platform`, `renderer` (a Cell Renderer per
-cell, for example `byColumn(...)` over `textRenderer`, `sparklineRenderer`
-and `barRenderer`), `onCommit` (makes cells editable; without it the grid is
+cell, for example `byColumn(...)` over `textRenderer`, `sparklineRenderer`,
+`barRenderer` and `valueRenderer`, which draws Typed Values through the
+formatter every binnacle host shares), `onCommit` (makes cells editable; without it the grid is
 read-only; returning `false` refuses the value, and the cell keeps its own), `editor` (a custom editor per cell), `selectionUnit`
 (`"rows"` makes focus select its whole row, for list-style views),
 `typingPause` (how long, in ms, the filter bar, column menu and find bar

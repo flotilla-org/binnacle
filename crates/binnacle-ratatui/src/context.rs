@@ -1,6 +1,7 @@
 //! The render context: everything [`render_with`](crate::render_with) takes
 //! beside the Snapshot and the Content.
 
+use std::cell::Cell;
 use std::time::Duration;
 
 use crate::{BorderStyle, ColorSupport, PendingMarks, Theme};
@@ -23,6 +24,9 @@ pub struct RenderContext<'a> {
     /// When toggled groups' disclosure marks went pending; without it none
     /// draws pending.
     pub marks: Option<&'a PendingMarks>,
+    /// Where cells ask for a later frame (see
+    /// [`CellCanvas::request_frame_after`](crate::CellCanvas::request_frame_after)).
+    pub next_frame: Option<&'a NextFrame>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -37,6 +41,7 @@ impl<'a> RenderContext<'a> {
             scrollbars: true,
             empty: "No rows",
             marks: None,
+            next_frame: None,
         }
     }
 
@@ -65,5 +70,37 @@ impl<'a> RenderContext<'a> {
             marks: Some(marks),
             ..self
         }
+    }
+
+    pub fn next_frame(self, next_frame: &'a NextFrame) -> Self {
+        RenderContext {
+            next_frame: Some(next_frame),
+            ..self
+        }
+    }
+}
+
+/// The soonest frame time any cell asked for while drawing, as
+/// [`CellCanvas::request_frame_after`](crate::CellCanvas::request_frame_after)
+/// gives it. A host that redraws only on input or while
+/// [`animating`](crate::animating) passes one in the render context and
+/// also redraws once its [`NextFrame::take`] time comes, so a relative time
+/// moves on.
+#[derive(Debug, Default)]
+pub struct NextFrame(Cell<Option<Duration>>);
+
+impl NextFrame {
+    pub fn new() -> Self {
+        NextFrame::default()
+    }
+
+    /// The soonest frame time asked for since the last take, cleared.
+    pub fn take(&self) -> Option<Duration> {
+        self.0.take()
+    }
+
+    pub(crate) fn request(&self, at: Duration) {
+        let due = self.0.get().map_or(at, |due| due.min(at));
+        self.0.set(Some(due));
     }
 }

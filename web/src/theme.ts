@@ -51,6 +51,10 @@ export interface Theme {
   loading: string;
   /** The marker on a cell whose request the Table Source failed. */
   error: string;
+  /** A value the formatter hints dim: a null's glyph. */
+  dim: string;
+  /** A value the formatter hints a warning, an invalid one: its text and the mark in its corner. */
+  warning: string;
   /** A cell whose value just changed. */
   flash: Style;
   /** A cell that matches the Find Query: `background` fills it under its value. */
@@ -100,6 +104,8 @@ export const light: Theme = {
   pinnedShadow: "rgb(15 23 42 / 0.16)",
   loading: "#94a3b8",
   error: "#dc2626",
+  dim: "#94a3b8",
+  warning: "#b45309",
   flash: { color: "#0f172a", background: "#fef08a" },
   findMatch: { color: "#0f172a", background: "#fde68a" },
   findCurrent: { color: "#ea580c", background: "#fdba74" },
@@ -152,6 +158,8 @@ export const catppuccinMocha: Theme = {
   pinnedShadow: "rgb(0 0 0 / 0.5)",
   loading: mocha.overlay0,
   error: mocha.red,
+  dim: mocha.overlay0,
+  warning: mocha.yellow,
   flash: { color: mocha.crust, background: mocha.yellow },
   findMatch: { color: mocha.text, background: "rgb(249 226 175 / 0.22)" },
   findCurrent: { color: mocha.peach, background: "rgb(250 179 135 / 0.45)" },
@@ -187,6 +195,8 @@ export const mono: Theme = {
   pinnedShadow: "rgb(0 0 0 / 0.16)",
   loading: "#8c8c8c",
   error: "#000000",
+  dim: "#8c8c8c",
+  warning: "#000000",
   flash: { color: "#ffffff", background: "#000000" },
   findMatch: { color: "#000000", background: "#d9d9d9" },
   findCurrent: { color: "#000000", background: "#a6a6a6" },

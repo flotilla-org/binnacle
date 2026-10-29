@@ -43,10 +43,13 @@ export interface CellCanvas {
   readonly theme: Theme;
   /** The frame's time, `performance.now()` milliseconds. */
   readonly now: number;
-  /** Writes `s` across the middle of the cell in the Theme's font and colour, padded, ellipsised to fit. */
-  text(s: string, align?: Align): void;
-  /** Asks for another frame after this one, to animate. Ask again each frame for as long as it should run. */
-  requestFrame(): void;
+  /** Writes `s` across the middle of the cell in the Theme's font and `color` (its body colour by default), padded, ellipsised to fit. */
+  text(s: string, align?: Align, color?: string): void;
+  /**
+   * Asks for another frame after this one, to animate. Ask again each frame for as long as it should run.
+   * With `after`, ms, the frame comes no sooner, and the widget idles until then: for text that changes on a clock.
+   */
+  requestFrame(after?: number): void;
 }
 
 export type Align = "start" | "end" | "center";

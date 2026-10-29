@@ -1,0 +1,91 @@
+0	id	1	end	-
+0	count	0	end	-
+0	price	7.000	end	-
+0	name	Aberdeen	start	-
+0	active	✓	start	-
+0	status	Healthy	start	-
+0	digest	5 B 3fa9c2…	start	-
+0	created	2026-10-29 13:03	end	-
+0	payload	{"berths":3,"port":"Aberdeen"}	start	-
+0	size	512 B	end	-
+0	elapsed	350 ms	end	-
+0	load	12.5%	end	-
+0	seen	just now	end	-
+1	id	-42	end	-
+1	count	18446744073709551615	end	-
+1	price	12.500	end	-
+1	name		start	-
+1	active		start	-
+1	status	warn	start	-
+1	digest	0 B	start	-
+1	created	2000-01-01 00:59	end	-
+1	payload	[1,2,3]	start	-
+1	size	1.5 KiB	end	-
+1	elapsed	1m 2s	end	-
+1	load	100.0%	end	-
+1	seen	3m ago	end	-
+2	id	∅	start	dim
+2	count	∅	start	dim
+2	price	-0.250	end	-
+2	name	∅	start	dim
+2	active	∅	start	dim
+2	status	∅	start	dim
+2	digest	∅	start	dim
+2	created	∅	start	dim
+2	payload	∅	start	dim
+2	size	∅	start	dim
+2	elapsed	∅	start	dim
+2	load	∅	start	dim
+2	seen	∅	start	dim
+3	id	12x	start	warning
+3	count	-1	start	warning
+3	price	NaN	end	-
+3	name	two↵lines	start	-
+3	active	maybe	start	warning
+3	status	??	start	warning
+3	digest	zz	start	warning
+3	created	yesterday	start	warning
+3	payload	{oops	start	warning
+3	size	big	start	warning
+3	elapsed	soon	start	warning
+3	load	n/a	start	warning
+3	seen	later	start	warning
+4	id	9223372036854775807	end	-
+4	count	7	end	-
+4	price	∞	end	-
+4	name	Funchal	start	-
+4	active	✓	start	-
+4	status	Offline	start	-
+4	digest	32 B 001122…	start	-
+4	created	2026-10-29 14:30	end	-
+4	payload	{"berths":[1,2,3,4,5,6,7,8],"harbour master":"A…	start	-
+4	size	3.0 GiB	end	-
+4	elapsed	1h 2m	end	-
+4	load	0.0%	end	-
+4	seen	in 2h	end	-
+5	id	0	end	-
+5	count	1	end	-
+5	price	-∞	end	-
+5	name	0xFFFE	start	warning
+5	active		start	-
+5	status	Healthy	start	-
+5	digest	3 B 000102	start	-
+5	created	1970-01-01 01:00	end	-
+5	payload	{"note":"a\nb"}	start	-
+5	size	-2.0 KiB	end	-
+5	elapsed	0 ms	end	-
+5	load	100.0%	end	-
+5	seen	1d ago	end	-
+6	id	1000000	end	-
+6	count	4096	end	-
+6	price	1234.567	end	-
+6	name	Cádiz	start	-
+6	active	✓	start	-
+6	status	ok	start	-
+6	digest	∅	start	dim
+6	created	2026-10-29 14:00	end	-
+6	payload	"berth 4"	start	-
+6	size	2.0 TiB	end	-
+6	elapsed	2d 3h	end	-
+6	load	3.3%	end	-
+6	seen	1y ago	end	-

@@ -12,14 +12,15 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 binnacle-core.workspace = true
+binnacle-format.workspace = true
 binnacle-group.workspace = true
 binnacle-memory.workspace = true
 console_error_panic_hook = "0.1.7"
+js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
+serde_json.workspace = true
 wasm-bindgen = "0.2"
 
 [dev-dependencies]
-serde_json = "1"
 wasm-bindgen-test = "0.3"
-js-sys = "0.3"

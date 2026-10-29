@@ -138,6 +138,23 @@ export {
 export { textRenderer, type TextOptions } from "./renderers/text";
 export { sparklineRenderer, type SparklineOptions } from "./renderers/sparkline";
 export { barRenderer, type BarOptions } from "./renderers/bar";
+export { valueRenderer, type ValueOptions } from "./renderers/value";
+export {
+  columnFormatter,
+  DIM,
+  fewestDecimals,
+  fixedZone,
+  PENDING,
+  WARNING,
+  type ColumnFormat,
+  type ColumnFormatter,
+  type FormatClock,
+  type FormatOptions,
+  type Formatted,
+  type TypedValue,
+  type ValueType,
+  type Zone,
+} from "./format";
 export type { Content } from "./content";
 export type { Painter } from "./painter";
 export type { CornerLevel, CornerTier, DropTarget, PinZone, Snapshot } from "./snapshot";

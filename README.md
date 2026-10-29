@@ -7,8 +7,9 @@ Status: planning. The design is being worked out as a wayfinder map: the issue l
 ## Layout
 
 - `crates/binnacle-core/`: the Grid and every type on its boundary. No toolkit dependencies.
+- `crates/binnacle-format/`: Typed Values and the shared formatter every host draws them with. Pure and sans-IO, with no dependency on the Grid.
 - `crates/binnacle-memory/`: Table Sources for in-memory data (so far the identity source).
-- `crates/binnacle-ratatui/`: the ratatui adapter and the demo (`cargo run -p binnacle-ratatui --bin binnacle-demo`).
+- `crates/binnacle-ratatui/`: the ratatui adapter and the demo (`cargo run -p binnacle-ratatui --bin binnacle-demo`, and the Typed Values with `--bin binnacle-values`).
 - `crates/binnacle-ffi/`: the internal C API for wheelhouse (empty for now).
 - `crates/binnacle-layout/`: the portable Layout document (a table's View Spec, order, pins, sizes and band thicknesses) as JSON or CBOR, with its JSON Schema in `layout.schema.json`.
 - `crates/binnacle-testkit/`: the scenario harness and Snapshot text renderer that tests share (not published).

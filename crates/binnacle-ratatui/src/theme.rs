@@ -62,6 +62,11 @@ pub struct Theme {
     /// Patched over a control whose request the Table Source rejected or
     /// failed: a quick filter, condition or find text it did not apply.
     pub error: Style,
+    /// Patched over a value the formatter hints dim: a null.
+    pub dim: Style,
+    /// Patched over a value the formatter hints a warning: an invalid one,
+    /// which also starts with a `!`.
+    pub warning: Style,
     /// Patched over a Group Item's row, band and body.
     pub group_item: Style,
     /// Patched over a Subtotal's row.
@@ -116,6 +121,8 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             unmatched: none.fg(Color::DarkGray),
             error: none.fg(Color::LightRed).add_modifier(Modifier::BOLD),
+            dim: none.fg(Color::DarkGray),
+            warning: none.fg(Color::Yellow),
             group_item: none
                 .fg(Color::White)
                 .bg(Color::Rgb(38, 48, 64))
@@ -165,6 +172,8 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             unmatched: none.fg(mocha::OVERLAY0),
             error: none.fg(mocha::RED).add_modifier(Modifier::BOLD),
+            dim: none.fg(mocha::OVERLAY0),
+            warning: none.fg(mocha::YELLOW),
             group_item: none
                 .fg(mocha::TEXT)
                 .bg(mocha::SURFACE0)
@@ -211,6 +220,8 @@ impl Theme {
             find_current: none.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             unmatched: none.add_modifier(Modifier::DIM),
             error: none.add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            dim: none.add_modifier(Modifier::DIM),
+            warning: none.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             // Undimmed, so a summary's label in the dim row band reads as bold.
             group_item: none
                 .add_modifier(Modifier::BOLD)
@@ -268,6 +279,8 @@ impl Theme {
             find_current: s(self.find_current),
             unmatched: s(self.unmatched),
             error: s(self.error),
+            dim: s(self.dim),
+            warning: s(self.warning),
             group_item: s(self.group_item),
             subtotal: s(self.subtotal),
             grand_total: s(self.grand_total),

@@ -34,6 +34,8 @@ export interface CanvasPainter extends Painter {
   readonly flashes: Flashes;
   /** Centred in the body when an axis has no items. */
   empty: string;
+  /** The soonest a Cell Renderer asked for a later frame in the last paint, `performance.now()` ms; `Infinity` for none. */
+  readonly due: number;
   /** Whether a column (and a row) menu is mounted, so filterable headers in that band draw its button. */
   filterButtons: { cols: boolean; rows: boolean };
 }
@@ -51,6 +53,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
   /** The last drop line drawn, where a refused move's reason shows. */
   let drop: Snapshot["dropIndicator"] = null;
   const marks = createPendingMarks();
+  let due = Infinity;
 
   const painter: CanvasPainter = {
     element: canvas,
@@ -63,6 +66,9 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     flashes: createFlashes(),
     empty: "No rows",
     filterButtons: { cols: false, rows: false },
+    get due() {
+      return due;
+    },
     resize(w, h, ratio) {
       width = w;
       height = h;
@@ -102,7 +108,8 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         filterButtons: { ...painter.filterButtons },
         markPending: (key) => marks.pending(key, now),
       };
-      const animating = paintBody(p);
+      const body = paintBody(p);
+      due = body.due;
       const pulsing = paintPulse(p);
       if (s.rows.count === 0 || s.cols.count === 0) paintEmpty(p, painter.empty);
       paintSelection(p);
@@ -121,7 +128,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
       paintRefusal(p, drop);
       const pending = painter.motion && (pulsing || shimmering(s));
       // A toggled mark needs frames until it draws pending, then to pulse.
-      return animating || painter.flashes.sweep(p.now) || pending || marks.waiting;
+      return body.again || painter.flashes.sweep(p.now) || pending || marks.waiting;
     },
   };
   return painter;

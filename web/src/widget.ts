@@ -376,6 +376,8 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private force = true;
   /** Paint next frame without Damage: the last paint asked, or a flash was marked. */
   private repaint = false;
+  /** The timer for the later frame a Cell Renderer asked for. */
+  private wake: ReturnType<typeof setTimeout> | undefined;
   private dpr = 1;
   private size = { width: 0, height: 0 };
   private destroyed = false;
@@ -669,6 +671,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     if (this.destroyed) return;
     this.destroyed = true;
     cancelAnimationFrame(this.raf);
+    clearTimeout(this.wake);
     for (const undo of this.cleanup) undo();
     this.input.destroy();
     this.aria.destroy();
@@ -1765,12 +1768,28 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
     this.input.place(snapshot);
     this.aria.frame(snapshot, painted, () => this.feed.content(snapshot));
     if (again) this.schedule();
+    else if (painted) this.wakeAt(this.painter.due);
     this.settleFocus(snapshot);
     for (const waiting of this.framed.splice(0)) waiting();
     const info = this.frameInfo(snapshot, painted, again);
     this.options.onFrame?.(info);
     for (const listener of this.listeners) listener(info);
     this.selectionEvents(snapshot);
+  }
+
+  /** Repaints at `due`, `performance.now()` ms, unless a frame comes first and asks again. */
+  private wakeAt(due: number): void {
+    clearTimeout(this.wake);
+    this.wake = undefined;
+    if (!Number.isFinite(due)) return;
+    this.wake = setTimeout(
+      () => {
+        this.wake = undefined;
+        this.repaint = true;
+        this.schedule();
+      },
+      Math.max(0, due - performance.now()),
+    );
   }
 
   private frameInfo(snapshot: Snapshot, painted: boolean, again: boolean): FrameInfo<RowId, ColId> {

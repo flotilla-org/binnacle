@@ -23,10 +23,11 @@ mod renderer;
 mod scrollbar;
 mod shimmer;
 mod theme;
+mod value;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
-pub use context::RenderContext;
+pub use context::{NextFrame, RenderContext};
 pub use copy::{CopiedRow, copy_text};
 pub use corner::corner_level_at;
 pub use filter::{
@@ -48,6 +49,7 @@ use renderer::{char_count, fit};
 pub use scrollbar::{BarEvent, Layout, MIN_SCROLLING, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
+pub use value::{ValueRenderer, WARNING_MARK, hint_style};
 
 use binnacle_core::{
     Action, AggregateValue, Axis, Cursor, DropTarget, Edge, GRAND_TOTAL, Grouping, HeaderPlacement,
@@ -240,7 +242,8 @@ pub trait Content {
 /// or whose move is unanswered, or on the visible focused cell while its
 /// Locate is pending, and a toggled group's disclosure mark until its
 /// answer (see [`PendingMarks`]). A host redraws on a timer only while
-/// this is true (or its own data ticks).
+/// this is true, its own data ticks or a cell asked for a later frame (see
+/// [`NextFrame`]).
 pub fn animating(snapshot: &Snapshot) -> bool {
     let sorting = Axis::ALL.into_iter().any(|axis| {
         snapshot
@@ -600,6 +603,7 @@ pub fn render_with(
                 theme,
                 now: ctx.now,
                 colors: ctx.colors,
+                next_frame: ctx.next_frame,
             };
             let blank = " ".repeat(visible.width.into());
             for y in canvas.visible_y() {
