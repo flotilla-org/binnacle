@@ -48,21 +48,22 @@ pub(crate) fn with_unit(n: Num, unit: &str, decimals: Option<u8>) -> String {
 
 const BYTE_UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
 
-/// A size in bytes, scaled by 1024 up to TiB: `512 B`, `1.5 KiB`.
+/// A size in bytes, scaled by 1024 up to TiB: `512 B`, `1.5 KiB`. A size
+/// that rounds up to 1024 of one unit shows as 1 of the next.
 pub(crate) fn bytes(n: f64) -> String {
     if !n.is_finite() {
         return format!("{} B", number(n, 0));
     }
     let sign = if n < 0.0 { "-" } else { "" };
     let (mut v, mut unit) = (n.abs(), 0);
-    while v >= 1024.0 && unit < BYTE_UNITS.len() - 1 {
+    loop {
+        let decimals = if unit == 0 { fewest_decimals([v]) } else { 1 };
+        let text = number(v, decimals);
+        if unit == BYTE_UNITS.len() - 1 || text.parse::<f64>().is_ok_and(|r| r < 1024.0) {
+            return format!("{sign}{text} {}", BYTE_UNITS[unit]);
+        }
         v /= 1024.0;
         unit += 1;
-    }
-    if unit == 0 {
-        format!("{sign}{} B", number(v, fewest_decimals([v])))
-    } else {
-        format!("{sign}{v:.1} {}", BYTE_UNITS[unit])
     }
 }
 
@@ -73,15 +74,17 @@ pub(crate) fn duration(secs: f64) -> String {
     }
     let sign = if secs < 0.0 { "-" } else { "" };
     let s = secs.abs();
-    if s < 1.0 {
-        let ms = s * 1000.0;
-        return format!("{sign}{} ms", number(ms, fewest_decimals([ms])));
+    // Each form is chosen by its rounded text, so 59.96 s is `1m 0s`.
+    let ms = number(s * 1000.0, fewest_decimals([s * 1000.0]));
+    if ms.parse::<f64>().is_ok_and(|r| r < 1000.0) {
+        return format!("{sign}{ms} ms");
     }
-    if s < 60.0 {
-        return format!("{sign}{} s", number(s, fewest_decimals([s]).min(1)));
+    let secs = number(s, fewest_decimals([s]).min(1));
+    if secs.parse::<f64>().is_ok_and(|r| r < 60.0) {
+        return format!("{sign}{secs} s");
     }
     // Saturates for durations past u64 seconds, which still draw.
-    let whole = s as u64;
+    let whole = (s as u64).max(60);
     let (big, small, units) = match whole {
         0..3600 => (whole / 60, whole % 60, ["m", "s"]),
         3600..86_400 => (whole / 3600, whole % 3600 / 60, ["h", "m"]),

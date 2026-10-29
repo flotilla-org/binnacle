@@ -139,6 +139,29 @@ fn line_breaks_and_control_characters_never_reach_the_text() {
 }
 
 #[test]
+fn a_large_or_wide_nested_value_shows_the_same_start_as_its_whole_json() {
+    let whole = |v: &serde_json::Value| {
+        let text: String = v.to_string().replace('\n', "↵");
+        match text.chars().count() > 48 {
+            true => text.chars().take(47).chain(['…']).collect(),
+            false => text,
+        }
+    };
+    let cases = [
+        json!((0..100_000).collect::<Vec<_>>()),
+        json!({"name": "日本語の名前".repeat(50), "n": 1}),
+        json!(["🚢".repeat(60)]),
+        json!({"text": "line\n".repeat(30)}),
+        json!("x".repeat(47)),
+        json!("x".repeat(46)),
+    ];
+    for v in cases {
+        let text = plain(Value::Nested(v.clone())).text;
+        assert_eq!(text, whole(&v), "{v:.60}");
+    }
+}
+
+#[test]
 fn units_go_through_the_registry_and_unknown_ones_are_a_suffix() {
     let none = FormatOptions::default();
     let unit = |value, unit| shown(value, Some(unit), Role::None, &none).text;
@@ -152,6 +175,12 @@ fn units_go_through_the_registry_and_unknown_ones_are_a_suffix() {
         (Value::Int(-2048), "By", "-2.0 KiB"),
         (Value::Number(0.5), "By", "0.5 B"),
         (Value::Number(f64::NAN), "By", "NaN B"),
+        (Value::Int(1023), "By", "1023 B"),
+        (Value::Number(1023.9999), "By", "1.0 KiB"),
+        (Value::Int(1_048_575), "By", "1.0 MiB"),
+        (Value::Int(-1_048_575), "By", "-1.0 MiB"),
+        (Value::Int(1_048_524), "By", "1023.9 KiB"),
+        (Value::UInt((1 << 40) - 1), "By", "1.0 TiB"),
         (Value::Number(0.35), "s", "350 ms"),
         (Value::Int(42), "s", "42 s"),
         (Value::Number(4.25), "s", "4.2 s"),
@@ -160,6 +189,10 @@ fn units_go_through_the_registry_and_unknown_ones_are_a_suffix() {
         (Value::Int(183_600), "s", "2d 3h"),
         (Value::Int(-62), "s", "-1m 2s"),
         (Value::Number(f64::INFINITY), "s", "∞ s"),
+        (Value::Number(0.9999996), "s", "1.0 s"),
+        (Value::Number(59.94), "s", "59.9 s"),
+        (Value::Number(59.96), "s", "1m 0s"),
+        (Value::Number(-59.96), "s", "-1m 0s"),
         (Value::Int(350), "ms", "350 ms"),
         (Value::Number(0.25), "ms", "0.25 ms"),
         (Value::Int(3_720_000), "ms", "1h 2m"),
@@ -296,6 +329,8 @@ fn rfc3339_instants_parse_with_fractions_and_offsets() {
         at("2026-10-29T13:00:00.5Z").unix_nanos(),
         base + 500_000_000
     );
+    assert!(Timestamp::parse_rfc3339("2024-02-29T00:00:00Z").is_some());
+    assert!(Timestamp::parse_rfc3339("2026-12-31T00:00:00Z").is_some());
     assert_eq!(
         at("2026-10-29T13:00:00.123456789Z").unix_nanos(),
         base + 123_456_789
@@ -303,6 +338,9 @@ fn rfc3339_instants_parse_with_fractions_and_offsets() {
     for bad in [
         "2026-10-29",
         "2026-13-01T00:00:00Z",
+        "2026-02-29T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "2026-10-00T00:00:00Z",
         "2026-10-29T13:00:00",
         "x",
     ] {

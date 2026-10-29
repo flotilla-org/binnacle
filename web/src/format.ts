@@ -44,7 +44,7 @@ export type TypedValue =
 export interface FormatOptions {
   /** Relative (`3m ago`) or absolute (`2026-10-29 14:03`) dates; by default a `time` column's are relative. */
   time?: "relative" | "absolute";
-  /** Decimals for every Number in the column, usually `fewestDecimals` of its numbers. */
+  /** Decimals for every Number in the column, usually `fewestDecimals` of its numbers: a whole number from 0 to 255, or the formatter throws on its first call. */
   decimals?: number;
   /** What a null shows in place of `∅`. */
   nullGlyph?: string;

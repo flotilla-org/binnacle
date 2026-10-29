@@ -74,7 +74,10 @@ impl Timestamp {
         }
         let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
         let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
-        if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+        if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+            return None;
+        }
+        if hour > 23 || minute > 59 {
             return None;
         }
         if second > 60 {
@@ -111,6 +114,16 @@ impl Timestamp {
         let days = days_from_civil(year, month as u32, day as u32);
         let secs = days * 86_400 + hour * 3600 + minute * 60 + second - offset;
         Some(Timestamp::from_unix_nanos(i128::from(secs) * NANOS + nanos))
+    }
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
     }
 }
 

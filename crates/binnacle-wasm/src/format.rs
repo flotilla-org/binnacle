@@ -165,7 +165,10 @@ fn decode(value: &JsValue) -> Value {
         let ms = date.get_time();
         return match ms.is_finite() {
             true => Value::DateTime(millis(ms)),
-            false => invalid(value, ValueType::DateTime),
+            false => Value::Invalid {
+                raw: "Invalid Date".to_owned(),
+                expected: ValueType::DateTime,
+            },
         };
     }
     if let Some(bytes) = value.dyn_ref::<js_sys::Uint8Array>() {

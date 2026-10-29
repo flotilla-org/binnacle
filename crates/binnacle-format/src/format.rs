@@ -204,7 +204,7 @@ pub fn format(
             start(Cow::Owned(text), Style::NONE)
         }
         Value::Nested(json) => {
-            let text = json.to_string();
+            let text = json_prefix(json, NESTED_MAX);
             start(Cow::Owned(cut(&one_line(&text), NESTED_MAX)), Style::NONE)
         }
     }
@@ -274,6 +274,32 @@ pub(crate) fn one_line(text: &str) -> Cow<'_, str> {
         }
     }
     Cow::Owned(out)
+}
+
+/// The start of `json`'s text, long enough to hold more than `chars`
+/// characters when it has them, without writing the rest of a large tree.
+fn json_prefix(json: &serde_json::Value, chars: usize) -> String {
+    struct Prefix(Vec<u8>, usize);
+    impl std::io::Write for Prefix {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let room = self.1 - self.0.len();
+            self.0.extend_from_slice(&buf[..buf.len().min(room)]);
+            match buf.len() > room {
+                true => Err(std::io::ErrorKind::WriteZero.into()),
+                false => Ok(buf.len()),
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut prefix = Prefix(Vec::new(), (chars + 1) * 4);
+    let _ = serde_json::to_writer(&mut prefix, json);
+    let bytes = prefix.0;
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => text.to_owned(),
+        Err(e) => String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned(),
+    }
 }
 
 /// `text` cut to `max` characters, ending in `…` when cut.

@@ -52,6 +52,7 @@ test("each kind TypeScript writes reaches the formatter as its Typed Value", () 
   expect(text("Bergen")).toBe("Bergen");
   expect(text(new Date(NOW))).toBe("2026-10-29 13:00");
   expect(text({ instant: BigInt(NOW) * 1_000_000n })).toBe("2026-10-29 13:00");
+  expect(plain(new Date(Number.NaN), clock)).toEqual({ text: "Invalid Date", align: "start", style: WARNING });
   expect(text(Uint8Array.of(0x3f, 0xa9, 0xc2, 1))).toBe("4 B 3fa9c2…");
   expect(text({ category: "ok", label: "Healthy" })).toBe("Healthy");
   expect(text({ category: "ok" })).toBe("ok");
@@ -62,6 +63,7 @@ test("each kind TypeScript writes reaches the formatter as its Typed Value", () 
   expect(columnFormatter({ unit: "widgets" })(12, clock).text).toBe("12 widgets");
   expect(columnFormatter({ options: { plain: true } })(null, clock).text).toBe("-");
   expect(columnFormatter({ options: { decimals: 2 } })(7, clock).text).toBe("7.00");
+  expect(() => columnFormatter({ options: { decimals: -1 } })(7, clock)).toThrow();
   expect(fewestDecimals([1, 2.5, 0.125])).toBe(3);
 });
 
