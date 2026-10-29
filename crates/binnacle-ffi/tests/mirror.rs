@@ -3,6 +3,7 @@
 //! same Effects. Tags are encoded from the header's constants, which are the
 //! independent source here; inputs with unknown tags must change nothing.
 
+use binnacle_layout::JsonId;
 use std::slice;
 
 use binnacle_core::{
@@ -4988,6 +4989,195 @@ fn the_band_actions_through_the_c_api_are_refused_or_done_by_where_focus_is() {
             BINNACLE_ACTION_REFUSED,
             "body again"
         );
+        binnacle_grid_free(h);
+    }
+}
+
+const LAYOUT_ROWS: u64 = 6;
+const LAYOUT_COLS: u64 = 5;
+
+/// Row `n`'s ID, a key of two values as a described table's: `["r","n"]`.
+fn row_id(n: String) -> JsonId {
+    JsonId::from_json(format!(r#"["r","{n}"]"#).as_bytes()).unwrap()
+}
+
+/// Column `n`'s ID, `"c<n>"`.
+fn col_id(n: String) -> JsonId {
+    JsonId::from(format!("c{n}").as_str())
+}
+
+/// An ID of an axis of `count` items, now and then one the host does not
+/// name.
+fn layout_id(tc: &TestCase, count: u64, id: fn(String) -> JsonId) -> JsonId {
+    match tc.draw(gs::integers::<u64>().max_value(count)) {
+        n if n == count => id("gone".to_owned()),
+        n => id(n.to_string()),
+    }
+}
+
+/// A Layout naming rows `["r", "0"]`.. and columns `c0`.., some parts
+/// unset.
+fn layout(tc: &TestCase) -> binnacle_layout::Layout<JsonId, JsonId> {
+    use binnacle_layout::view::{Direction, SortColumn};
+    use binnacle_layout::{Bands, EdgePins, Layout, Order, Pins, Sizes, ViewSpec};
+    let row = || layout_id(tc, LAYOUT_ROWS, row_id);
+    let col = || layout_id(tc, LAYOUT_COLS, col_id);
+    let some = |n: usize, f: &dyn Fn() -> JsonId| -> Vec<JsonId> {
+        (0..tc.draw(gs::integers::<usize>().max_value(n)))
+            .map(|_| f())
+            .collect()
+    };
+    let size = || tc.draw(gs::integers::<u32>().min_value(1).max_value(16)) as f64 / 2.0;
+    let set = || tc.draw(gs::booleans());
+    Layout {
+        view: set().then(|| {
+            let mut view = ViewSpec::default();
+            if set() {
+                view.rows.sort = vec![SortColumn {
+                    id: col(),
+                    direction: Direction::Descending,
+                }];
+            }
+            view.rows.hidden = some(2, &row);
+            view.cols.hidden = some(1, &col);
+            view
+        }),
+        order: set().then(|| Order {
+            rows: set().then(|| some(3, &row)),
+            cols: set().then(|| some(4, &col)),
+        }),
+        pins: set().then(|| Pins {
+            rows: EdgePins {
+                leading: some(2, &row),
+                trailing: vec![],
+            },
+            cols: EdgePins {
+                leading: some(2, &col),
+                trailing: some(1, &col),
+            },
+        }),
+        sizes: set().then(|| Sizes {
+            rows: some(2, &row).into_iter().map(|id| (id, size())).collect(),
+            cols: some(3, &col).into_iter().map(|id| (id, size())).collect(),
+        }),
+        bands: set().then(|| Bands {
+            rows: size(),
+            cols: size(),
+        }),
+        ..Layout::default()
+    }
+}
+
+#[hegel::test(test_cases = 150)]
+fn a_layout_loads_and_saves_through_c_as_through_rust(tc: TestCase) {
+    use binnacle_layout::{IdTable, Layout};
+    let config = |count| AxisConfig::new(count, 3.0).header(2.0);
+    let c_config = |count| BinnacleAxisConfig {
+        count,
+        default_size: 3.0,
+        header: 2.0,
+        gap: 0.0,
+    };
+    let mut grid = Grid::new(config(LAYOUT_ROWS), config(LAYOUT_COLS));
+    let h = binnacle_grid_new(c_config(LAYOUT_ROWS), c_config(LAYOUT_COLS));
+    let ids: [Vec<JsonId>; 2] = [
+        (0..LAYOUT_ROWS).map(|i| row_id(i.to_string())).collect(),
+        (0..LAYOUT_COLS).map(|i| col_id(i.to_string())).collect(),
+    ];
+    let table = IdTable::new(
+        (ids[0].iter())
+            .enumerate()
+            .map(|(i, id)| (id.clone(), Key(i as u64))),
+        (ids[1].iter())
+            .enumerate()
+            .map(|(i, id)| (id.clone(), Key(i as u64))),
+    );
+    let texts: [Vec<String>; 2] = ids
+        .each_ref()
+        .map(|list| list.iter().map(|id| id.to_string()).collect());
+    let named: [Vec<BinnacleNamedKey>; 2] = texts.each_ref().map(|list| {
+        (list.iter().enumerate())
+            .map(|(i, id)| BinnacleNamedKey {
+                id: text_to_c(id),
+                key: i as u64,
+            })
+            .collect()
+    });
+    let names = BinnacleNames {
+        axes: named.each_ref().map(|list| BinnacleAxisNames {
+            names: list.as_ptr(),
+            names_len: list.len(),
+        }),
+    };
+    unsafe {
+        for axis in Axis::ALL {
+            binnacle_grid_set_movable(h, tag(axis), 1);
+            grid.set_movable(axis, true);
+        }
+        mirrored_frame(h, &mut grid);
+        let layout = layout(&tc);
+        let json = layout.to_json();
+        assert_eq!(
+            binnacle_grid_load_layout(h, &names, json.as_ptr(), json.len()),
+            1
+        );
+        layout.restore(&mut grid, &table);
+        check_effects(h, &mut grid);
+        mirrored_frame(h, &mut grid);
+        let mut out = BinnacleText::default();
+        assert_eq!(binnacle_grid_save_layout(h, &names, &mut out), 1);
+        let saved = slice::from_raw_parts(out.data, out.len);
+        let want = Layout::read(&mut grid, &table).keeping(&layout, &table);
+        assert_eq!(saved, want.to_json().as_slice());
+        // What the layout set comes back, unknown IDs and all.
+        let saved = Layout::<JsonId, JsonId>::from_json(saved).unwrap();
+        if let Some(pins) = &layout.pins {
+            assert_eq!(
+                saved.pins.as_ref().unwrap().cols.trailing,
+                pins.cols.trailing
+            );
+        }
+        if let Some(bands) = &layout.bands {
+            assert_eq!(saved.bands.as_ref(), Some(bands));
+        }
+        // Bytes that are not a Layout (a misspelt field too), a name that
+        // is not an ID's JSON and a NULL output change nothing.
+        for bad in [
+            &b"{\"version\":3}"[..],
+            b"{\"version\":2,\"oder\":{}}",
+            b"not json",
+            b"",
+        ] {
+            assert_eq!(
+                binnacle_grid_load_layout(h, &names, bad.as_ptr(), bad.len()),
+                0
+            );
+        }
+        for bad in [&[0xff_u8][..], b"r0", b"{\"r\":0}", b"[[1]]"] {
+            let bad_name = [BinnacleNamedKey {
+                id: BinnacleText {
+                    data: bad.as_ptr(),
+                    len: bad.len(),
+                },
+                key: 0,
+            }];
+            let mut bad_names = names;
+            bad_names.axes[0] = BinnacleAxisNames {
+                names: bad_name.as_ptr(),
+                names_len: 1,
+            };
+            assert_eq!(
+                binnacle_grid_load_layout(h, &bad_names, json.as_ptr(), json.len()),
+                0,
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            binnacle_grid_save_layout(h, &names, std::ptr::null_mut()),
+            0
+        );
+        assert_eq!(binnacle_grid_save_layout(h, std::ptr::null(), &mut out), 0);
+        check_effects(h, &mut grid);
         binnacle_grid_free(h);
     }
 }

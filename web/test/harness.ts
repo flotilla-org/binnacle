@@ -75,6 +75,11 @@ export class Harness<RowId, ColId, V> {
     return this.parts.grid;
   }
 
+  /** The last Snapshot drawn, as the widget gives it to `restoreLayout`. */
+  get shown(): Snapshot | undefined {
+    return this.snapshot;
+  }
+
   frame(): Snapshot {
     this.snapshot = runFrame(this.parts, false).snapshot;
     return this.snapshot;

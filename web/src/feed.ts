@@ -80,6 +80,14 @@ export interface Feed<RowId = unknown, ColId = unknown> {
   viewKeys(spec: AppliedView<RowId, ColId>): KeyedViewSpec;
   /** A View Spec by IDs, leaving out each part that names a Key with no ID. */
   viewIds(spec: KeyedViewSpec): ViewSpec<RowId, ColId>;
+  /**
+   * Calls `then` with the Table Source's answer to the move of `keys` on
+   * `axis` the Grid asks for next: `null` once they moved, else the reason
+   * it refused.
+   */
+  onMoved(axis: AxisName, keys: bigint[], then: (refusal: string | null) => void): void;
+  /** Asks the Table Source for the first `n` items of `axis` and calls `then` with their Keys; a failed request calls nothing. */
+  leading(axis: AxisName, n: number, then: (keys: bigint[]) => void): void;
   /** How the rows may be viewed by column `id`, as the source declares it with the defaults filled in. */
   columnSupport(id: ColId): ColumnSupport;
   /** How the columns may be viewed by row `id`, likewise; nothing without the source's `cols.support`. */
@@ -997,12 +1005,20 @@ export function createFeed<RowId, ColId, V>(
     }
   };
 
+  /** Who waits for the answer to a move, by its axis and Keys. */
+  const moveWaiters: { axis: AxisName; keys: bigint[]; then: (refusal: string | null) => void }[] = [];
+  const moveAnswered = (axis: AxisName, keys: bigint[], refusal: string | null) => {
+    const i = moveWaiters.findIndex((w) => w.axis === axis && w.keys.length === keys.length && w.keys.every((k, j) => k === keys[j]));
+    if (i >= 0) moveWaiters.splice(i, 1)[0]!.then(refusal);
+  };
+
   const answerMove = (axis: AxisName, keys: bigint[], to: number) => {
     const { source: s, interner } = axes[axis];
     const ids = keys.map((k) => interner.id(k));
     const refused = (reason: string) => {
       grid?.move_answered(reason);
       markMovable();
+      moveAnswered(axis, keys, reason);
     };
     if (!s.move || !ids.every(known)) return refused(CANNOT_MOVE);
     settle(
@@ -1012,6 +1028,7 @@ export function createFeed<RowId, ColId, V>(
         notify(axis, { type: "Reordered" });
         grid?.move_answered(undefined);
         markMovable();
+        moveAnswered(axis, keys, null);
       },
       {
         failed: (error) => {
@@ -1325,6 +1342,13 @@ export function createFeed<RowId, ColId, V>(
     colKey: (id) => cols.interner.key(id),
     viewKeys,
     viewIds,
+    onMoved: (axis, keys, then) => void moveWaiters.push({ axis, keys, then }),
+    leading: (axis, n, then) =>
+      void settle(
+        (signal) => axes[axis].source.window(0, n, signal),
+        (window) => then([...keysOf(axes[axis], windowIds(window))]),
+        { failed: () => {} },
+      ),
     columnSupport,
     rowSupport,
     conditionKey: (c, axis) => conditionKey(cross(axis ?? "rows"), c as Condition<unknown>),

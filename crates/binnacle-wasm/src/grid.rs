@@ -668,6 +668,21 @@ impl WebGrid {
         self.grid.set_movable(axis(a), movable);
     }
 
+    /// Places `keys` first on `a`, in that order, as a restored Layout's
+    /// order asks: their move to Position 0 unless the Window shows them in
+    /// place; returns whether it asks for one (see
+    /// [`binnacle_core::Grid::arrange`]).
+    pub fn arrange(&mut self, a: u8, keys: &[u64]) -> bool {
+        let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
+        self.grid.arrange(axis(a), keys)
+    }
+
+    /// The Keys placed first on `a`, in order: a restored order and the
+    /// moves since (see [`binnacle_core::Grid::arranged`]).
+    pub fn arranged(&self, a: u8) -> Vec<u64> {
+        self.grid.arranged(axis(a)).iter().map(|k| k.0).collect()
+    }
+
     /// The answer to a `MoveRequested`: `undefined` once the items moved,
     /// else the reason the Table Source refused.
     pub fn move_answered(&mut self, refusal: Option<String>) {

@@ -8,7 +8,9 @@ import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AXIS_CODE, EDGE_CODE } from "../src/codes";
-import { readLayout, restoreLayout, LAYOUT_VERSION, type Layout } from "../src/layout";
+import { readFileSync } from "node:fs";
+import { migrateLayout, readLayout, restoreLayout, LAYOUT_VERSION, type Layout, type LayoutOrder, type LayoutV1 } from "../src/layout";
+import { rows as DEMO_ROWS } from "../demo/sources/records-data";
 import { fromRows } from "../src/rows";
 import type { AppliedView, Comparison, Condition, Scalar, TableSink, TableSource, ViewSpec } from "../src/source";
 import { Harness } from "./harness";
@@ -32,7 +34,7 @@ const RECORDS: Rec[] = Array.from({ length: 12 }, (_, i) => ({ a: (i * 7) % 5, b
 const harness = (rows: Rec[] = RECORDS) => new Harness(fromRows(rows, COLUMNS));
 
 /** Restores `layout` as the widget does, answering what it asks, and settles a frame. */
-function restore<R, C>(h: Harness<R, C, unknown>, layout: Layout<R, C>): boolean {
+function restore<R, C>(h: Harness<R, C, unknown>, layout: Layout<R, C> | LayoutV1<R, C>): boolean {
   const done = restoreLayout(layout, h);
   h.drain();
   h.settled();
@@ -46,10 +48,12 @@ const field = gs.sampledFrom(FIELDS);
 const edge = gs.sampledFrom(["leading", "trailing"] as const);
 
 /**
- * Puts `h` into some state by the controls a user has: pins, sizes, band thicknesses and a View Spec.
+ * Puts `h` into some state by the controls a user has: an order of the columns, pins, sizes, band thicknesses and a View Spec.
  * Sizes and thicknesses are any number: the grid ignores or caps what it does not take.
  */
 function scramble(tc: hegel.TestCase, h: Harness<number, Field, unknown>): void {
+  const moved = tc.draw(gs.arrays(field, { maxSize: 3 }));
+  if (moved.length > 0) restore(h, { version: LAYOUT_VERSION, order: { cols: moved } });
   for (const [id, e] of tc.draw(gs.arrays(gs.tuples(field, edge), { maxSize: 3 }))) {
     h.grid.pin(AXIS_CODE.cols, EDGE_CODE[e], h.feed.colKey(id));
   }
@@ -96,7 +100,7 @@ const compared = gs.composite((tc): Condition<Field> => {
 });
 
 describe("a layout restored onto another grid over the same data reads back the same", () => {
-  test("property: View Spec, pins, sizes and band thickness, whatever the other grid held", () =>
+  test("property: View Spec, order, pins, sizes and band thickness, whatever the other grid held", () =>
     hegel.test(
       (tc) => {
         const a = harness();
@@ -111,7 +115,13 @@ describe("a layout restored onto another grid over the same data reads back the 
           // Plain: it survives JSON.
           const copy = JSON.parse(JSON.stringify(saved)) as Layout<number, Field>;
           expect(restore(b, copy)).toBe(true);
-          expect(read(b)).toEqual(saved);
+          // An order axis the save leaves unset leaves b's own.
+          const { order, ...rest } = read(b);
+          const { order: savedOrder, ...want } = saved;
+          expect(rest).toEqual(want);
+          for (const axis of ["rows", "cols"] as const) {
+            if (savedOrder?.[axis]) expect(order?.[axis]).toEqual(savedOrder[axis]);
+          }
         } finally {
           a.destroy();
           b.destroy();
@@ -134,12 +144,13 @@ describe("a layout restored onto another grid over the same data reads back the 
       h.settled();
       const layout = read(h);
       expect(layout).toEqual({
-        version: 1,
+        version: 2,
         view: {
           rows: { sort: [{ id: "a", direction: "descending" }], filter: { quick: null, conditions: [] }, hidden: [] },
           cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: ["c"] },
           grouping: null,
         },
+        // Nothing arranged, there is no order.
         pins: { rows: { leading: [3], trailing: [] }, cols: { leading: ["b"], trailing: ["c"] } },
         sizes: { rows: [], cols: [["a", 150]] },
         bands: { rows: 24, cols: 70 },
@@ -154,7 +165,7 @@ describe("restoring a layout that names what the source lacks", () => {
   /** A column the data lacks. */
   const GONE = "gone" as Field;
   const missing: Layout<number, Field> = {
-    version: 1,
+    version: LAYOUT_VERSION,
     view: {
       rows: { sort: [{ id: GONE, direction: "ascending" }, { id: "b", direction: "descending" }], filter: { quick: null, conditions: [{ id: GONE, kind: { type: "Text", query: { text: "q", caseSensitive: false, regex: false } }, not: false }] }, hidden: [2, 99] },
       cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: [GONE] },
@@ -212,7 +223,7 @@ describe("restoring a layout that names what the source lacks", () => {
     try {
       h.settled();
       const before = read(h);
-      expect(restore(h, { ...missing, version: 2 } as unknown as typeof missing)).toBe(false);
+      expect(restore(h, { ...missing, version: 3 } as unknown as typeof missing)).toBe(false);
       expect(read(h)).toEqual(before);
     } finally {
       h.destroy();
@@ -242,7 +253,7 @@ test("restored before data loads: the View Spec shows pending, pins, sizes and b
   try {
     h.settled();
     const layout: Layout<string, string> = {
-      version: 1,
+      version: LAYOUT_VERSION,
       view: {
         rows: { sort: [{ id: "c1", direction: "ascending" }], filter: { quick: null, conditions: [] }, hidden: ["r4"] },
         cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: [] },
@@ -297,7 +308,7 @@ test("a missing item's pin or size keeps its ID through any number of Resets, un
     h.settled();
     const none = { quick: null, conditions: [] };
     const layout: Layout<string, string> = {
-      version: 1,
+      version: LAYOUT_VERSION,
       view: { rows: { sort: [], filter: none, hidden: [] }, cols: { sort: [], filter: none, hidden: [] }, grouping: null },
       pins: { rows: { leading: [], trailing: ["gone row"] }, cols: { leading: ["gone", "c1"], trailing: [] } },
       // Sized only, not pinned.
@@ -360,4 +371,169 @@ test("a layout leaves out the widths the widget fitted or filled, and restoring 
     a.destroy();
     b.destroy();
   }
+});
+
+describe("version 2: the order, every part optional, and version 1 migrated", () => {
+  /** A layout saved before the order, as version 1 wrote it: every part set. */
+  const V1 = {
+    version: 1,
+    view: {
+      rows: { filter: { quick: null, conditions: [] }, sort: [{ id: "a", direction: "descending" }], hidden: [2] },
+      cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
+      grouping: null,
+    },
+    pins: { rows: { leading: [], trailing: [] }, cols: { leading: ["c"], trailing: [] } },
+    sizes: { rows: [], cols: [["b", 120]] },
+    bands: { rows: 30, cols: 44 },
+  } as const satisfies LayoutV1<number, Field>;
+
+  test("a version 1 layout restores after migration, as a version 2 one with no order", () => {
+    const h = harness();
+    try {
+      h.settled();
+      const saved = JSON.parse(JSON.stringify(V1)) as LayoutV1<number, Field>;
+      expect(restore(h, saved)).toBe(true);
+      const { version: _, ...parts } = V1;
+      // Nothing arranged, there is no order.
+      expect(read(h)).toEqual({ ...parts, version: 2 });
+      expect(migrateLayout(saved)).toEqual({ ...V1, version: 2 });
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a part left out leaves the grid's own", () => {
+    const h = harness();
+    try {
+      h.settled();
+      h.grid.pin(AXIS_CODE.cols, EDGE_CODE.leading, h.feed.colKey("b"));
+      h.grid.set_size(AXIS_CODE.cols, h.feed.colKey("a"), 150);
+      h.drain();
+      h.settled();
+      const before = read(h);
+      expect(restore(h, { version: LAYOUT_VERSION, bands: { rows: 30, cols: 50 } })).toBe(true);
+      expect(read(h)).toEqual({ ...before, bands: { rows: 30, cols: 50 } });
+    } finally {
+      h.destroy();
+    }
+  });
+
+  const DEMO_COLUMNS = [{ key: "id" }, { key: "name" }, { key: "weight" }, { key: "crew" }, { key: "port" }] as const;
+  type DemoField = (typeof DEMO_COLUMNS)[number]["key"];
+
+  test("an order moves the demo table's listed columns to the front, in that order, the rest after", () => {
+    const h = new Harness(fromRows(DEMO_ROWS, DEMO_COLUMNS), 900, 300);
+    try {
+      h.settled();
+      const shown = () => h.snapshot.cols.strip.map((item) => h.feed.colId(item.key!));
+      expect(shown()).toEqual(["id", "name", "weight", "crew", "port"]);
+      const unplaced: LayoutOrder<number, DemoField>[] = [];
+      const order = { cols: ["port", "weight"] as DemoField[] };
+      expect(restoreLayout({ version: LAYOUT_VERSION, order }, h, { unplaced: (o) => unplaced.push(o) })).toBe(true);
+      h.drain();
+      h.settled();
+      expect(shown()).toEqual(["port", "weight", "id", "name", "crew"]);
+      expect(unplaced).toEqual([]);
+      // Read back: the columns' order, the rows having none.
+      expect(read(h).order).toEqual(order);
+      // In place already, it asks for no move.
+      expect(restoreLayout({ version: LAYOUT_VERSION, order }, h)).toBe(true);
+      expect(h.grid.poll_effects()).toEqual([]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("an ID the source lacks is reported as not placed once the move is made, and the next save keeps it", () => {
+    const h = new Harness(fromRows(DEMO_ROWS, DEMO_COLUMNS), 900, 300);
+    try {
+      h.settled();
+      const unplaced: LayoutOrder<number, DemoField>[] = [];
+      const order = { cols: ["port", "gone", "weight"] as DemoField[] };
+      expect(restoreLayout({ version: LAYOUT_VERSION, order }, h, { unplaced: (o) => unplaced.push(o) })).toBe(true);
+      h.drain();
+      h.settled();
+      expect(h.snapshot.cols.strip.map((item) => h.feed.colId(item.key!))).toEqual(["port", "weight", "id", "name", "crew"]);
+      expect(unplaced).toEqual([{ cols: ["gone"] }]);
+      expect(read(h).order).toEqual(order);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("on a table wider than the grid, the order is saved wherever the columns are scrolled", () => {
+    const h = new Harness(fromRows(DEMO_ROWS, DEMO_COLUMNS), 260, 300);
+    try {
+      h.settled();
+      const order = { cols: ["crew", "id"] as DemoField[] };
+      expect(restore(h, { version: LAYOUT_VERSION, order })).toBe(true);
+      // A wide column and a scroll to the end leave the first columns off screen.
+      h.grid.set_size(AXIS_CODE.cols, h.feed.colKey("name"), 600);
+      h.grid.scroll_to_item(AXIS_CODE.cols, 4);
+      h.drain();
+      const shown = h.settled().cols.strip.map((item) => h.feed.colId(item.key!));
+      expect(shown).not.toContain("crew");
+      expect(read(h).order).toEqual(order);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("a move the source refuses, or an order on a sorted axis, is reported as not placed", () => {
+    const ids = (n: number, p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+    const source: TableSource<string, string, string> = {
+      rows: { count: () => 4, window: (s, e) => ids(4, "r").slice(s, e) },
+      cols: { count: () => 3, window: (s, e) => ids(3, "c").slice(s, e), move: () => ({ refused: "Not these" }) },
+      cells: (rs, cs) => rs.map((r) => cs.map((c) => `${r}:${c}`)),
+      view: (spec) => spec,
+    };
+    const h = new Harness(source);
+    try {
+      h.settled();
+      const unplaced: LayoutOrder<string, string>[] = [];
+      const layout: Layout<string, string> = {
+        version: LAYOUT_VERSION,
+        view: {
+          rows: { filter: { quick: null, conditions: [] }, sort: [{ id: "c1", direction: "ascending" }], hidden: [] },
+          cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
+        },
+        order: { rows: ["r3"], cols: ["c2", "c1"] },
+      };
+      restoreLayout(layout, h, { unplaced: (o) => unplaced.push(o) });
+      // The sorted rows' order is not placed at once.
+      expect(unplaced).toEqual([{ rows: ["r3"] }]);
+      h.drain();
+      h.settled();
+      expect(unplaced).toEqual([{ rows: ["r3"] }, { cols: ["c2", "c1"] }]);
+      // Neither placed, a save keeps the restored order.
+      expect(readLayout(h.snapshot, { grid: h.grid, feed: h.feed, restored: layout }).order).toEqual(layout.order);
+      expect(read(h).order).toBeUndefined();
+      expect(h.snapshot.cols.strip.map((item) => h.feed.colId(item.key!))).toEqual(["c0", "c1", "c2"]);
+      expect(h.snapshot.moveRefusal).toEqual({ axis: "cols", reason: "Not these" });
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("the fixture the Rust crate reads parses here and writes back byte for byte", () => {
+    const text = readFileSync(new URL("../../crates/binnacle-layout/tests/fixtures/layout.json", import.meta.url), "utf8").trimEnd();
+    const layout = JSON.parse(text) as Layout<string, string>;
+    expect(layout.version).toBe(LAYOUT_VERSION);
+    expect(JSON.stringify(layout)).toBe(text);
+    // And it restores onto a grid.
+    const columns = ["vessel", "port", "weight", "due", "region"];
+    const h = new Harness<string, string, string>({
+      rows: { count: () => 3, window: (s, e) => ["row 1", "row 7", "row 12"].slice(s, e), hide: true },
+      cols: { count: () => columns.length, window: (s, e) => columns.slice(s, e) },
+      cells: (rs, cs) => rs.map((r) => cs.map((c) => `${r}:${c}`)),
+      view: (spec) => spec,
+    });
+    try {
+      h.settled();
+      expect(restore(h, layout)).toBe(true);
+      expect(read(h).sizes.cols).toEqual(layout.sizes!.cols);
+    } finally {
+      h.destroy();
+    }
+  });
 });

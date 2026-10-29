@@ -11,6 +11,7 @@ repository = "https://github.com/flotilla-org/binnacle"
 [workspace.dependencies]
 binnacle-core = { path = "crates/binnacle-core" }
 binnacle-group = { path = "crates/binnacle-group" }
+binnacle-layout = { path = "crates/binnacle-layout" }
 binnacle-memory = { path = "crates/binnacle-memory" }
 binnacle-testkit = { path = "crates/binnacle-testkit" }
 hegeltest = "0.49.2"

@@ -69,7 +69,16 @@ export type {
   ViewSpec,
 } from "./source";
 export { rowsBy } from "./source";
-export { LAYOUT_VERSION, type Layout, type LayoutPins } from "./layout";
+export {
+  LAYOUT_VERSION,
+  migrateLayout,
+  type Layout,
+  type LayoutOrder,
+  type LayoutPins,
+  type LayoutV1,
+  type ReadLayout,
+  type RestoreOptions,
+} from "./layout";
 export {
   fromRows,
   type RowsColId,

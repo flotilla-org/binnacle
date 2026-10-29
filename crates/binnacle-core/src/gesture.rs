@@ -617,8 +617,8 @@ impl Grid {
                     let in_place = last - first + 1 == positions.len() as u64
                         && (first..=last + 1).contains(&to);
                     if !in_place {
-                        self.moves.pending = Some((axis, keys.clone()));
-                        self.push(Effect::MoveRequested { axis, keys, to });
+                        let arranging = self.arranged_after(axis, &keys, to);
+                        self.ask_move(axis, keys, to, arranging);
                     }
                 }
                 DropTarget::Refused { .. } | DropTarget::Stay => {}

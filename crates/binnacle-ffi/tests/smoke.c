@@ -205,6 +205,108 @@ static BinnacleGrid *fresh(BinnacleSnapshot *snap) {
   return grid;
 }
 
+static BinnacleText c_text(const char *s) {
+  BinnacleText t = {(const uint8_t *)s, strlen(s)};
+  return t;
+}
+
+static int load(BinnacleGrid *grid, const BinnacleNames *names, const char *json) {
+  return binnacle_grid_load_layout(grid, names, (const uint8_t *)json, strlen(json));
+}
+
+/* A Layout through JSON: the host names rows 0 and 1 and columns 0 to 3 by
+ * ID; a version 1 layout loads, a column it names that the host does not is
+ * skipped, and the save puts it back. Saved and loaded again, it saves the
+ * same. Then an order asks for a move, which the source refuses. */
+/* Whether text holds part. */
+static int has(BinnacleText text, const char *part) {
+  size_t n = strlen(part);
+  for (size_t i = 0; i + n <= text.len; i++) {
+    if (memcmp(text.data + i, part, n) == 0) return 1;
+  }
+  return 0;
+}
+
+static void layout(void) {
+  BinnacleSnapshot snap;
+  BinnacleGrid *grid = fresh(&snap);
+  const BinnacleAxisSnapshot *c = &snap.axes[BINNACLE_COLS];
+  BinnacleEffect effect;
+  /* IDs as JSON: rows by a key of two values, columns by name. */
+  BinnacleNamedKey rows[] = {{c_text("[\"r\",0]"), 1000}, {c_text("[\"r\",1]"), 1001}};
+  BinnacleNamedKey cols[] = {{c_text("\"c0\""), 2000}, {c_text("\"c1\""), 2001},
+                             {c_text("\"c2\""), 2002}, {c_text("\"c3\""), 2003}};
+  BinnacleNames names = {{{rows, 2}, {cols, 4}}};
+
+  CHECK(!load(grid, &names, "{\"version\":3}"));
+  CHECK(!load(grid, &names, "not a layout"));
+  CHECK(!load(grid, &names, "{\"version\":2,\"oder\":{}}"));
+  CHECK(load(grid, &names,
+             "{\"version\":1,"
+             "\"pins\":{\"rows\":{\"leading\":[[\"r\",1]],\"trailing\":[]},"
+             "\"cols\":{\"leading\":[\"c2\",\"gone\"],\"trailing\":[]}},"
+             "\"sizes\":{\"rows\":[],\"cols\":[[\"c3\",12],[\"gone\",5]]},"
+             "\"bands\":{\"rows\":2,\"cols\":6}}"));
+  while (binnacle_grid_poll_effect(grid, &effect)) {}
+  frame(grid, &snap);
+  CHECK(c->leading_pins_len == 1 && c->leading_pins[0] == 2002);
+  CHECK(snap.axes[BINNACLE_ROWS].leading_pins_len == 1);
+  CHECK(snap.axes[BINNACLE_ROWS].header == 2 && c->header == 6);
+  BinnacleSizeOverrides overrides;
+  CHECK(binnacle_grid_size_overrides(grid, BINNACLE_COLS, &overrides));
+  CHECK(overrides.len == 1 && overrides.keys[0] == 2003 && overrides.sizes[0] == 12);
+
+  static const char saved[] =
+      "{\"version\":2,\"view\":{"
+      "\"rows\":{\"filter\":{\"quick\":null,\"conditions\":[]},\"sort\":[],\"hidden\":[]},"
+      "\"cols\":{\"filter\":{\"quick\":null,\"conditions\":[]},\"sort\":[],\"hidden\":[]},"
+      "\"grouping\":null},"
+      "\"pins\":{\"rows\":{\"leading\":[[\"r\",1]],\"trailing\":[]},"
+      "\"cols\":{\"leading\":[\"c2\",\"gone\"],\"trailing\":[]}},"
+      "\"sizes\":{\"rows\":[],\"cols\":[[\"c3\",12],[\"gone\",5]]},"
+      "\"bands\":{\"rows\":2,\"cols\":6}}";
+  BinnacleText out;
+  CHECK(!binnacle_grid_save_layout(grid, &names, NULL));
+  CHECK(binnacle_grid_save_layout(grid, &names, &out));
+  CHECK(out.len == strlen(saved) && memcmp(out.data, saved, out.len) == 0);
+
+  BinnacleSnapshot again_snap;
+  BinnacleGrid *again = fresh(&again_snap);
+  CHECK(binnacle_grid_load_layout(again, &names, out.data, out.len));
+  while (binnacle_grid_poll_effect(again, &effect)) {}
+  frame(again, &again_snap);
+  CHECK(binnacle_grid_save_layout(again, &names, &out));
+  CHECK(out.len == strlen(saved) && memcmp(out.data, saved, out.len) == 0);
+  binnacle_grid_free(again);
+
+  /* The order moves columns 3 and 1 to the front, one move. */
+  CHECK(load(grid, &names, "{\"version\":2,\"order\":{\"cols\":[\"c3\",\"c1\"]}}"));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_MOVE_REQUESTED && effect.axis == BINNACLE_COLS);
+  CHECK(effect.to == 0 && effect.keys_len == 2);
+  CHECK(effect.keys[0] == 2003 && effect.keys[1] == 2001);
+  CHECK(!binnacle_grid_poll_effect(grid, &effect));
+  const char *no = "Not now";
+  CHECK(binnacle_grid_move_answered(grid, (const uint8_t *)no, strlen(no)));
+  frame(grid, &snap);
+  CHECK(snap.has_move_refusal && snap.move_refusal_axis == BINNACLE_COLS);
+  /* Refused, the order is still saved as loaded. */
+  static const char order[] = "\"order\":{\"cols\":[\"c3\",\"c1\"]}";
+  CHECK(binnacle_grid_save_layout(grid, &names, &out));
+  CHECK(has(out, order));
+
+  /* Made, it is the columns' arrangement, saved with no layout loaded
+   * that names it. */
+  CHECK(load(grid, &names, "{\"version\":2,\"order\":{\"cols\":[\"c3\",\"c1\"]}}"));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(binnacle_grid_move_answered(grid, NULL, 0));
+  CHECK(load(grid, &names, "{\"version\":2}"));
+  CHECK(binnacle_grid_save_layout(grid, &names, &out));
+  CHECK(has(out, order));
+
+  binnacle_grid_free(grid);
+}
+
 static void by_key(void) {
   BinnacleSnapshot snap;
   BinnacleGrid *grid = fresh(&snap);
@@ -827,6 +929,7 @@ int main(void) {
   binnacle_grid_free(NULL);
   group_layer();
   by_key();
+  layout();
   printf("ok\n");
   return 0;
 }

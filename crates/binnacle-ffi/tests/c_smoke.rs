@@ -135,6 +135,9 @@ fn rust_layouts() -> Vec<Layout> {
         BinnacleEffect { generation, kind, text, row, col, view, edit, axis, key, size, has_find, find, has_from, from, direction, keys, keys_len, to, edge, has_drill_down, drill_down, drill_down_len, copy_runs, copy_runs_len, copy_labels }
         BinnacleSizeOverrides { keys, sizes, len }
         BinnaclePointerEvent { kind, x, y, button, modifiers, clicks }
+        BinnacleNamedKey { id, key }
+        BinnacleAxisNames { names, names_len }
+        BinnacleNames { axes }
         BinnacleMoveFocus { axis, by, forward, extend }
         BinnacleScroll { dx, dy }
         BinnacleScrollTo { axis, fraction }
