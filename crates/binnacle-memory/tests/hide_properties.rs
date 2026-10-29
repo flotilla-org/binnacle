@@ -161,10 +161,16 @@ impl Model {
         let order = match axis {
             Axis::Rows => {
                 let rank =
-                    |c: usize, i: usize| self.rows[i][c].map_or((2, 0), |v| (0, i128::from(v)));
+                    |c: usize, i: usize| self.rows[i][c].map_or((0, 0), |v| (1, i128::from(v)));
                 let host = |i: usize| self.host.is_none_or(|m| self.rows[i][0] >= Some(m));
                 let keep = |i: usize| host(i) && self.quick_keeps(axis, i);
-                support::model(self.rows.len(), &self.spec.rows.sort, rank, keep)
+                support::model(
+                    self.rows.len(),
+                    &self.spec.rows.sort,
+                    rank,
+                    |i| i as u64,
+                    keep,
+                )
             }
             Axis::Cols => (0..COLS).filter(|&c| self.quick_keeps(axis, c)).collect(),
         };

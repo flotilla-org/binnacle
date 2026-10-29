@@ -96,6 +96,10 @@ _Avoid_: Column order (the source's whole order), user order
 The sort part of one axis of a View Spec: the ordered list of items on the other axis (columns, for the rows) and directions to sort by.
 _Avoid_: Sort order, remap spec
 
+**Sort Order**:
+The one total order every In-Memory Table Source sorts each column by. Nulls are the lowest value: first ascending, last descending. NaN is the greatest number, and all NaNs are equal. Integers compare exactly, signed or unsigned. Byte strings and text compare lexicographically by bytes (for UTF-8, code-point order), with no locale or natural ordering. Descending reverses the whole order, nulls included. Items that tie on every Sort Spec column break the tie on their Key, ascending in both directions, whether sorted from scratch or merged in after a base change.
+_Avoid_: Collation
+
 **Filter Spec**:
 The filter part of one axis of a View Spec: which of its items the Table Source keeps, as the parts it holds (the quick filter, a Text Query across the other axis's items, and the Conditions) all keeping an item. An empty Filter Spec keeps every item.
 _Avoid_: Filter state, predicate

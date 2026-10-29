@@ -33,16 +33,19 @@ const rowHeaders = (page: Page) =>
     })),
   );
 
+/** The region shown first: the blank one, as nulls sort lowest. */
+const FIRST = null;
+
 /** The ports shown under `region`, in order. */
-async function portsUnder(page: Page, region: string): Promise<string[]> {
+async function portsUnder(page: Page, region: string | null): Promise<string[]> {
   const rows = await rowHeaders(page);
-  const at = rows.findIndex((r) => r.level === "1" && r.header === region);
+  const at = rows.findIndex((r) => r.level === "1" && r.header === (region ?? "(blank)"));
   const end = rows.findIndex((r, i) => i > at && r.level === "1");
   return rows.slice(at + 1, end < 0 ? undefined : end).map((r) => r.header);
 }
 
 /** `region`'s ports by their total weight in `quarter`, most first, those with none last; ties by name. */
-function byQuarter(region: string, quarter: string): string[] {
+function byQuarter(region: string | null, quarter: string): string[] {
   const totals = new Map<string, number | null>();
   for (const s of quarterShipments) {
     if (s.region !== region) continue;
@@ -201,25 +204,26 @@ test("a click on a quarter's mark closes it and another opens it", async ({ page
 test("a click on Q4's weight header sorts each region's ports by it; without the Q4 shipments the sort stays, not applied, and applies again with them", async ({
   page,
 }) => {
-  const ascending = await portsUnder(page, "East");
+  await expect.poll(() => portsUnder(page, FIRST)).not.toEqual([]);
+  const ascending = await portsUnder(page, FIRST);
   expect(ascending).toEqual([...ascending].sort((a, b) => (a < b ? -1 : 1)));
   // Q4's weight is the seventh column: two per quarter before it. Ascending, then descending.
   await clickHeader(page, 6);
   await clickHeader(page, 6);
-  const sorted = byQuarter("East", "Q4");
+  const sorted = byQuarter(FIRST, "Q4");
   expect(sorted).not.toEqual(ascending);
-  await expect.poll(() => portsUnder(page, "East")).toEqual(sorted);
+  await expect.poll(() => portsUnder(page, FIRST)).toEqual(sorted);
   await expect(bar(page).getByText("not applied")).toHaveCount(0);
 
   await page.getByLabel("Q4 shipments").uncheck();
   await expect(status(page)).toContainText(`of ${(quarters - 1) * 2 + 2}`);
   await expect(bar(page).getByText("Sorted by Q4 sum(weight) descending: not applied")).toBeVisible();
-  await expect.poll(() => portsUnder(page, "East")).toEqual(ascending);
+  await expect.poll(() => portsUnder(page, FIRST)).toEqual(ascending);
 
   await page.getByLabel("Q4 shipments").check();
   await expect(status(page)).toContainText(`of ${quarters * 2 + 2}`);
   await expect(bar(page).getByText("not applied")).toHaveCount(0);
-  await expect.poll(() => portsUnder(page, "East")).toEqual(sorted);
+  await expect.poll(() => portsUnder(page, FIRST)).toEqual(sorted);
 });
 
 test("a second click on Q4's weight header before the frame that draws the first one's sort sorts it descending", async ({
@@ -228,7 +232,7 @@ test("a second click on Q4's weight header before the frame that draws the first
   // The first click's sort is answered at once, which leaves the Grid
   // without the columns' Keys until the next frame fetches them again.
   await clickHeaderTwice(page, 6);
-  await expect.poll(() => portsUnder(page, "East")).toEqual(byQuarter("East", "Q4"));
+  await expect.poll(() => portsUnder(page, FIRST)).toEqual(byQuarter(FIRST, "Q4"));
 });
 
 test("the Grand Total row's menu keeps the quarters whose total weight passes its comparison", async ({ page }) => {

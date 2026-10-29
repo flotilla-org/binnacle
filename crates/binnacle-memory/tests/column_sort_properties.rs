@@ -1,8 +1,8 @@
 //! Seam 2 properties for sorting the columns: `MemorySource<R>` over random
 //! integer records, its columns sorted by rows' values and put through row
 //! sorts, value edits, wholesale replacements and column moves, against a
-//! naive model (a stable sort of the columns, as moves left them, with
-//! nulls last, comparing as integers, numbers or text by the columns' kinds
+//! naive model (a sort of the columns, ties by Key, with
+//! nulls lowest, comparing as integers, numbers or text by the columns' kinds
 //! of sort key). Each op's Change Notices must say whether the columns moved.
 
 #[allow(dead_code)]
@@ -117,19 +117,20 @@ impl Model {
     /// The columns as Keys (their Logical Indices) in the model's order.
     fn columns(&self) -> Vec<Key> {
         let rank = |r: usize, c: usize| match self.key(r, c) {
-            None => (2, 0),
-            Some(Ok(n)) => (0, n),
+            None => (0, 0),
+            Some(Ok(n)) => (1, n),
             Some(Err(text)) => {
                 let mut texts: Vec<String> = (0..self.kinds.len())
                     .filter_map(|c| self.key(r, c)?.err())
                     .collect();
                 texts.sort();
-                (0, texts.binary_search(&text).unwrap() as i128)
+                (1, texts.binary_search(&text).unwrap() as i128)
             }
         };
-        (support::model_from(self.base.clone(), &self.spec, rank, |_| true).into_iter())
-            .map(|c| Key(c as u64))
-            .collect()
+        (support::model_from(self.base.clone(), &self.spec, rank, |c| c as u64, |_| true)
+            .into_iter())
+        .map(|c| Key(c as u64))
+        .collect()
     }
 }
 

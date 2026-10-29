@@ -52,9 +52,9 @@ const signal = new AbortController().signal;
 /** Cache sizes: none, a little, and the default (`NaN`). */
 const caches = gs.oneOf(gs.integers({ minValue: 0, maxValue: 200 }), gs.just(Number.NaN));
 
-/** Groups' values in order: ascending, the blank last. */
+/** Groups' values in order: ascending, the blank first. */
 const ordered = (values: ListedValue[]) =>
-  [...new Set(values)].sort((a, b) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1));
+  [...new Set(values)].sort((a, b) => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1));
 
 /**
  * The naive backend: every answer worked out from the records at once,

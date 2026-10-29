@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn staged_strings_sort_by_code_point_with_nulls_last() {
+    fn staged_strings_sort_by_code_point_with_nulls_lowest() {
         let mut m = WebMemory::new(4, 1);
         // "b", null, "a", "é" (two bytes, after every ASCII letter).
         let bytes = b"ba\xc3\xa9".to_vec();
@@ -823,11 +823,11 @@ mod tests {
     }
 
     #[test]
-    fn staged_numbers_put_nan_after_numbers_and_nulls_last() {
+    fn staged_numbers_put_nan_after_numbers_and_nulls_first() {
         let mut m = WebMemory::new(4, 1);
         m.stage_numbers(&[f64::NAN, 2.0, 0.0, 1.0], &[0, 0, 1, 0]);
         m.sort(ROWS, &[0], &[0]);
-        assert_eq!(order(&m), vec![3, 1, 0, 2]);
+        assert_eq!(order(&m), vec![2, 3, 1, 0]);
     }
 
     #[test]
@@ -871,7 +871,7 @@ mod tests {
         let mut m = WebMemory::new(1, 3);
         m.stage_numbers(&[2.0, 0.0, 1.0], &[0, 1, 0]);
         m.sort(COLS, &[0], &[0]);
-        assert_eq!(m.window(COLS, 0.0, 3.0), vec![2, 0, 1]);
+        assert_eq!(m.window(COLS, 0.0, 3.0), vec![1, 2, 0]);
         assert_eq!(order(&m), vec![0]);
     }
 
@@ -890,7 +890,7 @@ mod tests {
         // Column 1 is "b", "a", "b", null, "a", sorted by it first.
         m.stage_strings(b"babab".to_vec(), vec![1, 2, 3, 3, 4], vec![0, 0, 0, 1, 0]);
         m.sort(ROWS, &[1], &[0]);
-        assert_eq!(order(&m), vec![1, 4, 0, 2, 3]);
+        assert_eq!(order(&m), vec![3, 1, 4, 0, 2]);
         let stage = |m: &mut WebMemory| {
             let (numbers, nulls) = (vec![0.0; 5], vec![1; 5]);
             let (bytes, ends) = (b"babab".to_vec(), vec![1, 2, 3, 3, 4]);
@@ -925,15 +925,15 @@ mod tests {
             "three groups and five Leaves"
         );
         assert!(m.grouped());
-        // a: 1, 4; b: 0, 2; blank: 3.
-        assert_eq!(m.locate(ROWS, 4), vec![0.0, 2.0]);
-        assert_eq!(m.locate(ROWS, 3), vec![0.0, 7.0]);
+        // blank: 3; a: 1, 4; b: 0, 2.
+        assert_eq!(m.locate(ROWS, 4), vec![0.0, 4.0]);
+        assert_eq!(m.locate(ROWS, 3), vec![0.0, 1.0]);
         m.filter(ROWS, &[1, 1, 0, 1, 1]);
         assert_eq!(m.regroup(), 7.0);
         assert_eq!(m.locate(ROWS, 2)[0], 1.0, "filtered out");
         assert_eq!(m.ungroup(), 4.0);
         assert!(!m.grouped());
-        assert_eq!(m.locate(ROWS, 3), vec![0.0, 3.0]);
+        assert_eq!(m.locate(ROWS, 3), vec![0.0, 0.0]);
     }
 
     /// Stages column `field`'s texts, none of them numbers.
@@ -1182,8 +1182,8 @@ mod tests {
             SortSpec::unsorted(),
             FilterSpec::default(),
         );
-        // a: 1, 4; b: 0, 2; blank: 3.
-        assert_eq!(m.locate(ROWS, 0), vec![0.0, 4.0]);
+        // blank: 3; a: 1, 4; b: 0, 2.
+        assert_eq!(m.locate(ROWS, 0), vec![0.0, 6.0]);
 
         // Row 0 now reads "a": it stays in b, unmatched, and the groups'
         // figures change in place.
@@ -1195,15 +1195,15 @@ mod tests {
                 .chunks(2)
                 .all(|r| r[0] < r[1] && r[1] <= m.count(ROWS))
         );
-        assert_eq!(m.locate(ROWS, 0), vec![0.0, 4.0]);
+        assert_eq!(m.locate(ROWS, 0), vec![0.0, 6.0]);
         assert_eq!(m.unmatched(ROWS, &[0, 1, 2]), vec![1, 0, 0]);
 
-        assert_eq!(m.move_grouped(&[4], 1.0), 0);
-        assert_eq!(m.locate(ROWS, 4), vec![0.0, 1.0]);
-        assert_eq!(m.locate(ROWS, 1), vec![0.0, 2.0]);
-        assert_eq!(m.move_grouped(&[4], 5.0), 1, "into b");
+        assert_eq!(m.move_grouped(&[4], 3.0), 0);
+        assert_eq!(m.locate(ROWS, 4), vec![0.0, 3.0]);
+        assert_eq!(m.locate(ROWS, 1), vec![0.0, 4.0]);
+        assert_eq!(m.move_grouped(&[4], 7.0), 1, "into b");
         assert_eq!(m.move_grouped(&[GRAND_TOTAL.0], 1.0), 2);
-        assert_eq!(m.locate(ROWS, 4), vec![0.0, 1.0]);
+        assert_eq!(m.locate(ROWS, 4), vec![0.0, 3.0]);
     }
 
     #[test]

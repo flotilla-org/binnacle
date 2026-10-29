@@ -15,8 +15,7 @@ struct AxisOrder {
     /// The Key of each base item; `None` keys items by Logical Index.
     keys: Option<Vec<Key>>,
     /// Logical Indices in the order moves left them, which a sort starts
-    /// from (so ties keep it) and an empty Sort Spec restores; `None` is
-    /// Logical Index order.
+    /// from and an empty Sort Spec restores; `None` is Logical Index order.
     base: Option<Vec<u32>>,
     /// Logical Indices in sorted order; `None` is Logical Index order.
     sorted: Option<Vec<u32>>,
@@ -78,8 +77,8 @@ impl AxisOrder {
         self.rebuild();
     }
 
-    /// Sorts the items by `spec` from the base order, ties keeping it; an
-    /// empty spec restores the base order. Returns whether the items shown
+    /// Sorts the items by `spec`, ties broken on the item's Key; an empty
+    /// spec restores the base order. Returns whether the items shown
     /// moved.
     fn sort(&mut self, spec: &SortSpec, keys: &[SortKeys<'_>]) -> bool {
         check_sort_keys(spec, keys, self.len);
@@ -88,7 +87,7 @@ impl AxisOrder {
             self.set_sorted(self.base.clone());
         } else {
             let mut order = (self.base.clone()).unwrap_or_else(|| (0..self.len as u32).collect());
-            order.sort_by(|&a, &b| compare(spec, keys, a, b));
+            order.sort_by(|&a, &b| compare(spec, keys, a, b, |i| self.key(i)));
             self.set_sorted(Some(order));
         }
         // No Remap is Logical Index order.
@@ -264,7 +263,7 @@ impl AxisOrder {
         &mut self,
         n: usize,
         keys: &[Key],
-        place: impl FnOnce(&[u32], Vec<u32>) -> Vec<u32>,
+        place: impl FnOnce(&[u32], Vec<u32>, &dyn Fn(u32) -> Key) -> Vec<u32>,
         keep: &[bool],
     ) {
         let len = self.len + n;
@@ -291,8 +290,8 @@ impl AxisOrder {
         if let Some(base) = &mut self.base {
             base.extend(&new);
         }
-        if let Some(sorted) = &mut self.sorted {
-            *sorted = place(sorted, new);
+        if let Some(sorted) = self.sorted.take() {
+            self.sorted = Some(place(&sorted, new, &|i| self.key(i)));
             self.ranks = None;
         }
         if let Some(own) = &mut self.keep {
@@ -374,14 +373,22 @@ impl AxisOrder {
     }
 }
 
-/// Compares base items `a` and `b` by `spec`, as a tuple in spec order.
-fn compare(spec: &SortSpec, keys: &[SortKeys<'_>], a: u32, b: u32) -> Ordering {
+/// Compares base items `a` and `b` by `spec`, as a tuple in spec order, then
+/// by Key ascending whichever way the columns run.
+fn compare(
+    spec: &SortSpec,
+    keys: &[SortKeys<'_>],
+    a: u32,
+    b: u32,
+    key: impl Fn(u32) -> Key,
+) -> Ordering {
     spec.columns()
         .iter()
         .zip(keys)
         .map(|(column, keys)| keys.compare(a as usize, b as usize, column.direction))
         .find(|o| o.is_ne())
         .unwrap_or(Ordering::Equal)
+        .then_with(|| key(a).cmp(&key(b)))
 }
 
 /// Checks that `keys` holds one entry per `spec` item, each with one key
@@ -538,9 +545,9 @@ impl InMemoryTableSource {
     /// Sorts the items on `axis` by `spec`, which names items of the other
     /// axis (columns, for the rows), with `keys[i]` holding the sort keys of
     /// `spec.columns()[i]` for every base item of `axis`. Items compare as
-    /// tuples in spec order and ties keep base order (as moves left it). An
-    /// empty spec restores base order. Returns the Change Notice the axis
-    /// needs.
+    /// tuples in spec order and ties break on the item's Key, ascending in
+    /// either direction. An empty spec restores base order. Returns the
+    /// Change Notice the axis needs.
     ///
     /// # Panics
     ///
@@ -730,7 +737,7 @@ impl InMemoryTableSource {
 
     /// `n` rows were appended to the base data, keyed by `keys` if the rows
     /// have host Keys ([`InMemoryTableSource::with_keys`]; empty otherwise).
-    /// They take their place in the sort in force, after rows they tie with,
+    /// They take their place in the sort in force, after rows they tie with (equal Keys),
     /// and the filter in force drops those it rejects: `sort_keys` holds the
     /// sort keys of every base row, new ones included, as for
     /// [`InMemoryTableSource::apply_sort`] with the applied Sort Spec (empty
@@ -757,9 +764,9 @@ impl InMemoryTableSource {
         rows.append(
             n,
             keys,
-            |sorted, mut new| {
-                new.sort_by(|&a, &b| compare(spec, &sort_keys, a, b));
-                merge(sorted, &new, |&a, &b| compare(spec, &sort_keys, a, b))
+            |sorted, mut new, key| {
+                new.sort_by(|&a, &b| compare(spec, &sort_keys, a, b, key));
+                merge(sorted, &new, |&a, &b| compare(spec, &sort_keys, a, b, key))
             },
             keep,
         );
@@ -821,7 +828,7 @@ impl InMemoryTableSource {
 }
 
 /// Merges `new` into `sorted`, both ordered by `compare`; an item of `new`
-/// goes after the items of `sorted` it ties with.
+/// goes after the items of `sorted` it ties with (compare equal).
 fn merge(sorted: &[u32], new: &[u32], compare: impl Fn(&u32, &u32) -> Ordering) -> Vec<u32> {
     let mut merged = Vec::with_capacity(sorted.len() + new.len());
     let mut rest = sorted;

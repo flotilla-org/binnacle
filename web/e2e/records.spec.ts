@@ -49,7 +49,7 @@ const focus = (position: number, id: number, col: string, colPosition = 0) =>
 
 type Key = keyof RecordRow;
 
-/** Record indices in the order a stable sort by `spec` gives, nulls last either way. */
+/** Record indices in the order a sort by `spec` gives, nulls lowest and ties by index. */
 function sorted(spec: [Key, "asc" | "desc"][], keep: (r: RecordRow) => boolean = () => true): number[] {
   return rows
     .map((_, i) => i)
@@ -59,9 +59,7 @@ function sorted(spec: [Key, "asc" | "desc"][], keep: (r: RecordRow) => boolean =
         const a = rows[i]![key];
         const b = rows[j]![key];
         if (a === b) continue;
-        if (a === null) return 1;
-        if (b === null) return -1;
-        const c = a < b ? -1 : 1;
+        const c = a === null ? -1 : b === null ? 1 : a < b ? -1 : 1;
         return direction === "asc" ? c : -c;
       }
       return i - j;
@@ -99,7 +97,7 @@ test("a header click sorts, and focus follows its record through a re-sort", asy
   const descending = sorted([["weight", "desc"]]);
   const at = descending.indexOf(ascending[0]!);
   await expect(status(page)).toContainText(focus(at, ascending[0]!, "id"));
-  // Nulls stay last when descending.
+  // Nulls trail when descending.
   expect(rows[descending.at(-1)!]!.weight).toBeNull();
   await page.locator(".binnacle-scroller").evaluate((el) => (el.scrollTop = el.scrollHeight));
   await expect(status(page)).toContainText(`to ${rows.length.toLocaleString("en")} of`);

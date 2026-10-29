@@ -33,8 +33,9 @@ const groupsBy = (field: "region" | "crates") => new Set(shipments.map((s) => s[
 /** The rows grouped by region then port: each group's Group Item and Subtotal, and the Grand Total. */
 const nested = () => shipments.length + 2 * (groupsBy("region") + new Set(shipments.map((s) => `${s.region}/${s.port}`)).size) + 1;
 
-/** The regions in the order they show, the blank one last, and the ports of `region` in theirs. */
-const regions = () => [...REGIONS].sort();
+/** The regions in the order they show, the blank one first, and the ports of `region` in theirs. */
+const regions = (): (string | null)[] => [null, ...[...REGIONS].sort()];
+const label = (region: string | null | undefined) => region ?? "(blank)";
 const portsOf = (region: string | null) => [...new Set(shipments.filter((s) => s.region === region).map((s) => s.port))].sort();
 const shipped = (region: string | null, port: string) => shipments.filter((s) => s.region === region && s.port === port).length;
 
@@ -130,12 +131,12 @@ test("Ctrl/Cmd-C copies a group as shown: labels first, closed ports' figures, t
   const weight = (rows: typeof shipments) => String(Math.round(rows.reduce((w, s) => w + (s.weight ?? 0), 0) * 10) / 10);
   const inEast = shipments.filter((s) => s.region === east);
   expect(lines.map((l) => l.length)).toEqual(lines.map(() => 5));
-  expect(lines[0]).toEqual([`${east} (${inEast.length})`, "", "", "", ""]);
+  expect(lines[0]).toEqual([`${label(east)} (${inEast.length})`, "", "", "", ""]);
   for (const [i, port] of ports.entries()) {
     expect(lines[i + 1]![0]).toBe(`${port} (${shipped(east!, port)})`);
     expect(lines[i + 1]![3]).toBe(weight(inEast.filter((s) => s.port === port)));
   }
-  expect(lines.at(-1)![0]).toMatch(new RegExp(`^${east} total`));
+  expect(lines.at(-1)![0]?.startsWith(`${label(east)} total`)).toBe(true);
   expect(lines.at(-1)![3]).toBe(weight(inEast));
 });
 
@@ -144,10 +145,10 @@ test("Enter on a Summary Item's cell hands the demo its drill-down", async ({ pa
   const [first] = portsOf(east!);
   await click(page, 1, 2);
   await page.keyboard.press("Enter");
-  await expect(page.locator("#received")).toHaveText(`drill-down: region ${east}, port ${first}`);
+  await expect(page.locator("#received")).toHaveText(`drill-down: region ${label(east)}, port ${first}`);
   await click(page, 0, 2);
   await page.keyboard.press("Enter");
-  await expect(page.locator("#received")).toHaveText(`drill-down: region ${east}`);
+  await expect(page.locator("#received")).toHaveText(`drill-down: region ${label(east)}`);
 });
 
 test("the outline column's tree keys open and close groups, and Tab leaves it", async ({ page }) => {

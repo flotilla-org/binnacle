@@ -1,8 +1,8 @@
 //! Seam 2: `MemorySource<R>` sorts a host's rows through per-column closures.
 
 use binnacle_core::{
-    Axis, ChangeNotice, Condition, FilterSpec, Key, Located, Searched, SortColumn, SortDirection,
-    SortSpec, Support, TextQuery, TextSupport, Totals, ViewSpec,
+    Axis, ChangeNotice, Condition, DistinctQuery, FilterSpec, Key, Located, Searched, SortColumn,
+    SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, ViewSpec,
 };
 use binnacle_memory::{MemorySource, PumpSource, Unsortable, Viewed};
 
@@ -305,13 +305,14 @@ fn the_columns_sort_by_a_rows_values_with_columns_without_keys_last() {
     let notices = source.view(&rows, &cols_sorted(by(0, SortDirection::Ascending)));
     // The rows are left as they were.
     assert_eq!(notices, Ok(vec![(Axis::Cols, ChangeNotice::Reordered)]));
-    // Row 0 holds 5, -1.5, 3 and nothing for column 3.
-    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+    // Row 0 holds 5, -1.5, 3 and nothing for column 3: nulls lowest.
+    assert_eq!(columns(&source), [Key(3), Key(1), Key(2), Key(0)]);
     source
         .view(&rows, &cols_sorted(by(0, SortDirection::Descending)))
         .unwrap();
     assert_eq!(columns(&source), [Key(0), Key(2), Key(1), Key(3)]);
-    // Row 1 holds 2, 2.5, a null and nothing: nulls last, ties in base order.
+    // Row 1 holds 2, 2.5, a null and nothing: nulls lowest, so last
+    // descending, ties by Key.
     source
         .view(&rows, &cols_sorted(by(1, SortDirection::Descending)))
         .unwrap();
@@ -331,11 +332,11 @@ fn the_columns_sort_by_a_row_of_mixed_kinds_as_text() {
     let mut source = source(&rows);
     let by_row = |row| SortSpec::new(vec![SortColumn::ascending(Key(row))]);
     source.view(&rows, &cols_sorted(by_row(0))).unwrap();
-    // "eve", "10", "9" by code point, then column 3 with no keys.
-    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+    // Column 3 with no keys, then "10", "9", "eve" by code point.
+    assert_eq!(columns(&source), [Key(3), Key(1), Key(2), Key(0)]);
     source.view(&rows, &cols_sorted(by_row(1))).unwrap();
-    // "2", "0.5", "30".
-    assert_eq!(columns(&source), [Key(1), Key(0), Key(2), Key(3)]);
+    // Column 3, then "0.5", "2", "30".
+    assert_eq!(columns(&source), [Key(3), Key(1), Key(0), Key(2)]);
 }
 
 #[test]
@@ -397,7 +398,7 @@ fn a_change_to_the_row_the_columns_sort_by_sorts_them_again() {
     let mut source = nums(&rows);
     let by_row_0 = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
     source.view(&rows, &cols_sorted(by_row_0)).unwrap();
-    assert_eq!(columns(&source), [Key(0), Key(1), Key(2), Key(3)]);
+    assert_eq!(columns(&source), [Key(3), Key(0), Key(1), Key(2)]);
     rows[0].a = 4;
     assert_eq!(
         source.changed(&rows, 0, Key(0)),
@@ -406,13 +407,13 @@ fn a_change_to_the_row_the_columns_sort_by_sorts_them_again() {
             (Axis::Cols, ChangeNotice::Reordered)
         ]
     );
-    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+    assert_eq!(columns(&source), [Key(3), Key(1), Key(2), Key(0)]);
     rows[1].b = 0.0;
     assert_eq!(
         source.edited(&rows, 1, Key(1)),
         vec![(Axis::Rows, ChangeNotice::ContentChanged(1..2))]
     );
-    assert_eq!(columns(&source), [Key(1), Key(2), Key(0), Key(3)]);
+    assert_eq!(columns(&source), [Key(3), Key(1), Key(2), Key(0)]);
 }
 
 #[test]
@@ -450,7 +451,7 @@ fn replacing_the_rows_drops_the_rows_the_columns_sorted_by_that_left() {
     );
     let by_row_0 = SortSpec::new(vec![SortColumn::ascending(Key(0))]);
     assert_eq!(source.view_spec(), cols_sorted(by_row_0));
-    assert_eq!(columns(&source), [Key(2), Key(1), Key(0), Key(3)]);
+    assert_eq!(columns(&source), [Key(3), Key(2), Key(1), Key(0)]);
 }
 
 /// A View Spec with the rows' quick filter `query`.
@@ -646,4 +647,50 @@ fn query_error_gives_the_regex_crates_reason_in_one_line() {
     assert_eq!(binnacle_memory::query_error(&TextQuery::new("(ber")), None);
     let valid = TextQuery::new("^b.r").regex(true);
     assert_eq!(binnacle_memory::query_error(&valid), None);
+}
+
+fn distinct_texts(source: &mut MemorySource<Rec>, rows: &[Rec], column: Key) -> Vec<String> {
+    let found = source.distinct(rows, Axis::Rows, column, &DistinctQuery::new(10));
+    found.values.into_iter().map(|v| v.text).collect()
+}
+
+#[test]
+fn distinct_values_of_a_text_only_column_come_in_text_order() {
+    let rows = [
+        rec("zed", None, 0),
+        rec("amy", None, 0),
+        rec("bob", None, 0),
+    ];
+    let mut source =
+        MemorySource::<Rec>::new(3, 1).text_column(Key(0), |r: &Rec| Some(r.name.clone().into()));
+    assert_eq!(
+        distinct_texts(&mut source, &rows, Key(0)),
+        ["amy", "bob", "zed"]
+    );
+}
+
+#[test]
+fn distinct_values_tied_on_their_sort_key_come_in_the_key_order_of_their_first_rows() {
+    let rows = [
+        rec("zed", None, 5),
+        rec("amy", None, 5),
+        rec("bob", None, 1),
+    ];
+    let mut source = MemorySource::<Rec>::new(3, 1)
+        .i64_column(Key(0), |r| Some(r.qty))
+        .text_column(Key(0), |r: &Rec| Some(r.name.clone().into()));
+    assert_eq!(
+        distinct_texts(&mut source, &rows, Key(0)),
+        ["bob", "zed", "amy"]
+    );
+}
+
+#[test]
+fn a_distinct_value_is_placed_by_its_row_with_the_lowest_key_among_those_tied_on_the_sort_key() {
+    let rows = [rec("a", None, 1), rec("a", None, 1), rec("b", None, 1)];
+    let mut source = MemorySource::<Rec>::new(3, 1)
+        .with_keys(Axis::Rows, vec![Key(9), Key(5), Key(7)])
+        .i64_column(Key(0), |r| Some(r.qty))
+        .text_column(Key(0), |r: &Rec| Some(r.name.clone().into()));
+    assert_eq!(distinct_texts(&mut source, &rows, Key(0)), ["a", "b"]);
 }

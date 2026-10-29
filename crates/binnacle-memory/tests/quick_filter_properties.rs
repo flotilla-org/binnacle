@@ -222,9 +222,9 @@ fn model(
     min: Option<i64>,
     unmatched: &BTreeSet<usize>,
 ) -> Vec<u64> {
-    let rank = |_: usize, i: usize| rows[i].1.map_or((2, 0), |v| (0, i128::from(v)));
+    let rank = |_: usize, i: usize| rows[i].1.map_or((0, 0), |v| (1, i128::from(v)));
     let kept = |i: usize| unmatched.contains(&i) || kept(&rows[i], quick, conditions, min);
-    support::model(rows.len(), sort, rank, kept)
+    support::model(rows.len(), sort, rank, |i| i as u64, kept)
         .into_iter()
         .map(|i| i as u64)
         .collect()

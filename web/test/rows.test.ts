@@ -1,6 +1,6 @@
 // fromRows: the in-memory source over binnacle-memory in wasm, checked
-// against a sort written here from the spec (stable, multi-column, nulls last
-// both ways, NaN after every number, strings by code point), and a quick
+// against a sort written here from the spec (multi-column, nulls lowest, NaN
+// after every number, strings by code point, ties by Key), and a quick
 // filter and column conditions matched here cell by cell, and distinct
 // values counted here.
 
@@ -70,11 +70,11 @@ function codePoints(a: string, b: string): number {
   return x.length - y.length;
 }
 
-/** -1, 0 or 1 with nulls (and then NaN, for numbers) last whichever the direction. */
+/** -1, 0 or 1 with nulls lowest and NaN the greatest number; descending reverses all of it. */
 function compare(a: number | string | null, b: number | string | null, direction: SortDirection): number {
-  const rank = (v: number | string | null) => (v === null ? 2 : typeof v === "number" && Number.isNaN(v) ? 1 : 0);
-  if (rank(a) !== rank(b)) return rank(a) - rank(b);
-  if (rank(a) !== 0) return 0;
+  const rank = (v: number | string | null) => (v === null ? 0 : typeof v === "number" && Number.isNaN(v) ? 2 : 1);
+  if (rank(a) !== rank(b)) return direction === "ascending" ? rank(a) - rank(b) : rank(b) - rank(a);
+  if (rank(a) !== 1) return 0;
   const c = typeof a === "string" ? codePoints(a, b as string) : (a as number) - (b as number);
   const sign = Math.sign(c) || (Object.is(a, -0) && Object.is(b, 0) ? -1 : Object.is(a, 0) && Object.is(b, -0) ? 1 : 0);
   return direction === "ascending" ? sign : -sign;
@@ -614,8 +614,8 @@ describe("fromRows", () => {
       totals: { rows: 1, cols: 3 },
       grouping: null,
     });
-    // Row 0 holds 2, a null and 1: ascending, nulls last.
-    expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(["b", "n", "s"]);
+    // Row 0 holds 2, a null and 1: ascending, nulls lowest.
+    expect(source.cols.window(0, 3, new AbortController().signal)).toEqual(["s", "b", "n"]);
     source.destroy();
   });
 
@@ -693,14 +693,14 @@ describe("fromRows", () => {
       h.frame();
       h.drain();
       h.frame();
-      expect(h.snapshot.cols.strip.map((i) => h.feed.colId(i.key!))).toEqual(["n", "b", "s"]);
+      expect(h.snapshot.cols.strip.map((i) => h.feed.colId(i.key!))).toEqual(["s", "n", "b"]);
       expect(h.snapshot.rows.headers.map((r) => r.sort)).toEqual([
         { applied: null, pending: false },
         { applied: { direction: "ascending", index: 0 }, pending: false },
       ]);
       expect(h.values()).toEqual([
-        [3, 1, null],
-        [1, 2, null],
+        [null, 3, 1],
+        [null, 1, 2],
       ]);
     } finally {
       h.destroy();
@@ -726,10 +726,10 @@ describe("fromRows", () => {
       h.frame();
       h.drain();
       h.frame();
-      expect(h.values().map((r) => r[0])).toEqual([1, 2, 3, null]);
-      expect(h.snapshot.rows.focus?.position).toBe(2);
+      expect(h.values().map((r) => r[0])).toEqual([null, 1, 2, 3]);
+      expect(h.snapshot.rows.focus?.position).toBe(3);
       expect(h.feed.rowId(h.snapshot.rows.focus!.key!)).toBe(0);
-      // Descending keeps nulls last.
+      // Descending puts nulls last.
       h.click(BAND + COL_WIDTH / 2, HEADER / 2);
       h.frame();
       h.drain();
@@ -1248,9 +1248,8 @@ describe("fromRows's grouping", () => {
         groups.sort(([, a], [, b]) => {
           const [x, y] = [figures(a).sum, figures(b).sum];
           if (x === y) return 0;
-          if (x === null) return 1;
-          if (y === null) return -1;
-          return sumBy.direction === "ascending" ? x - y : y - x;
+          const up = x === null ? -1 : y === null ? 1 : x - y;
+          return sumBy.direction === "ascending" ? up : -up;
         });
       }
       return groups.flatMap(([value, group]) => {

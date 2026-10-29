@@ -1,7 +1,7 @@
 //! Seam 2 properties for base data changes: `MemorySource<R>` over random
 //! integer records, put through sorts, filters, appends, value edits and
-//! wholesale replacements, against a naive model (stable sort with nulls
-//! last, then skip what the filter drops). Each Change Notice must describe
+//! wholesale replacements, against a naive model (sort with nulls
+//! lowest and ties by Key, then skip what the filter drops). Each Change Notice must describe
 //! what happened to the visible order.
 
 mod support;
@@ -94,9 +94,9 @@ fn op(tc: &TestCase) -> Op {
 
 /// The model's visible order as Logical Indices.
 fn model(rows: &[Record], spec: &SortSpec, keep: Option<Keep>) -> Vec<u64> {
-    let rank = |c: usize, i: usize| rows[i][c].map_or((2, 0), |v| (0, i128::from(v)));
+    let rank = |c: usize, i: usize| rows[i][c].map_or((0, 0), |v| (1, i128::from(v)));
     let kept = |i: usize| keep.is_none_or(|k| k.keeps(&rows[i]));
-    support::model(rows.len(), spec, rank, kept)
+    support::model(rows.len(), spec, rank, |i| i as u64, kept)
         .into_iter()
         .map(|i| i as u64)
         .collect()

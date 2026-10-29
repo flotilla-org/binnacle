@@ -26,8 +26,8 @@ async function click(page: Page, x: number, y: number) {
 const cell = (page: Page, row: number, x: number) => click(page, x, HEADER + row * ROW + ROW / 2);
 
 
-/** The record first by weight, ascending (nulls last, ties in the records' order). */
-const lightest = rows.reduce((best, r) => (r.weight !== null && (best.weight === null || r.weight < best.weight) ? r : best)).id;
+/** The record first by weight, ascending (nulls lowest, ties by id). */
+const lightest = rows.find((r) => r.weight === null)!.id;
 
 test.describe("records", () => {
   test.beforeEach(async ({ page }) => {
