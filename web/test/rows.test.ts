@@ -1248,9 +1248,8 @@ describe("fromRows's grouping", () => {
         groups.sort(([, a], [, b]) => {
           const [x, y] = [figures(a).sum, figures(b).sum];
           if (x === y) return 0;
-          if (x === null) return 1;
-          if (y === null) return -1;
-          return sumBy.direction === "ascending" ? x - y : y - x;
+          const up = x === null ? -1 : y === null ? 1 : x - y;
+          return sumBy.direction === "ascending" ? up : -up;
         });
       }
       return groups.flatMap(([value, group]) => {

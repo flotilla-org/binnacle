@@ -86,9 +86,9 @@ type RowOf = string | null | undefined;
 /** A column of the pivot: a quarter (`undefined` for an All column) and the index of its value. */
 type ColOf = { quarter: string | undefined; value: number };
 
-/** Text order by code point, blanks last, as the groups order. */
+/** Text order by code point, blanks first, as the groups order. */
 const ascending = (a: string | null, b: string | null) =>
-  a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1;
+  a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1;
 
 /** Where a Grand Total placed `at` goes among `items`. */
 function placed<T>(items: T[], totals: T[], at: Placement): T[] {
@@ -298,7 +298,7 @@ describe("fromRows's pivot", () => {
     }
   });
 
-  test("whatever the data, the regions sorted by a quarter's column follow its figures, blanks last", () =>
+  test("whatever the data, the regions sorted by a quarter's column follow its figures, blanks lowest", () =>
     hegel.test((tc) => {
       const rows = tc.draw(ships.filter((r) => r.length > 0));
       const source = pivotSource(rows);
@@ -315,8 +315,8 @@ describe("fromRows's pivot", () => {
         const of = (region: RowOf) => figure(rows, g, region, { quarter, value: 0 });
         const want = [...unsorted.rows].sort((a, b) => {
           const [x, y] = [of(a), of(b)];
-          if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
-          return direction === "ascending" ? x - y : y - x;
+          const up = x === y ? 0 : x === null ? -1 : y === null ? 1 : x - y;
+          return direction === "ascending" ? up : -up;
         });
         expect(shown(source, g).rows).toEqual(want);
       } finally {

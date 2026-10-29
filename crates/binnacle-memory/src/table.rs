@@ -15,8 +15,7 @@ struct AxisOrder {
     /// The Key of each base item; `None` keys items by Logical Index.
     keys: Option<Vec<Key>>,
     /// Logical Indices in the order moves left them, which a sort starts
-    /// from and an empty Sort Spec restores; `None` is
-    /// Logical Index order.
+    /// from and an empty Sort Spec restores; `None` is Logical Index order.
     base: Option<Vec<u32>>,
     /// Logical Indices in sorted order; `None` is Logical Index order.
     sorted: Option<Vec<u32>>,

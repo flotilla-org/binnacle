@@ -402,7 +402,8 @@ impl<R> MemorySource<R> {
         self
     }
 
-    /// Makes the column with Key `column` sort by a float, NaN the greatest number; `None` is null, the lowest value.
+    /// Makes the column with Key `column` sort by a float, NaN the greatest
+    /// number; `None` is null, the lowest value.
     pub fn f64_column(mut self, column: Key, f: impl Fn(&R) -> Option<f64> + 'static) -> Self {
         self.columns.insert(column, Column::F64(Box::new(f)));
         self
@@ -594,8 +595,8 @@ impl<R> MemorySource<R> {
 
     /// The sort keys of `row` across the base columns, by which the columns
     /// sort: integers if every column with a closure has an integer one (all
-    /// signed or all unsigned),
-    /// numbers if every one is numeric, else text (bytes as they are,
+    /// signed or all unsigned), numbers if every one is numeric (a mix of
+    /// signed and unsigned falls here, exact only up to 2^53), else text (bytes as they are,
     /// numbers written with `Display`). A column without a closure is null.
     fn row_keys<'r>(&self, row: &'r R) -> SortKeys<'r> {
         let columns: Vec<Option<&Column<R>>> = (0..self.table.base_len(Axis::Cols))
