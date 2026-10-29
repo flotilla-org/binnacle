@@ -546,8 +546,8 @@ impl InMemoryTableSource {
     /// axis (columns, for the rows), with `keys[i]` holding the sort keys of
     /// `spec.columns()[i]` for every base item of `axis`. Items compare as
     /// tuples in spec order and ties break on the item's Key, ascending in
-    /// either direction. An empty spec restores base order. Returns the Change Notice the axis
-    /// needs.
+    /// either direction. An empty spec restores base order. Returns the
+    /// Change Notice the axis needs.
     ///
     /// # Panics
     ///
@@ -737,7 +737,7 @@ impl InMemoryTableSource {
 
     /// `n` rows were appended to the base data, keyed by `keys` if the rows
     /// have host Keys ([`InMemoryTableSource::with_keys`]; empty otherwise).
-    /// They take their place in the sort in force, after rows they tie with,
+    /// They take their place in the sort in force, after rows they tie with (equal Keys),
     /// and the filter in force drops those it rejects: `sort_keys` holds the
     /// sort keys of every base row, new ones included, as for
     /// [`InMemoryTableSource::apply_sort`] with the applied Sort Spec (empty
@@ -828,7 +828,7 @@ impl InMemoryTableSource {
 }
 
 /// Merges `new` into `sorted`, both ordered by `compare`; an item of `new`
-/// goes after the items of `sorted` it ties with.
+/// goes after the items of `sorted` it ties with (compare equal).
 fn merge(sorted: &[u32], new: &[u32], compare: impl Fn(&u32, &u32) -> Ordering) -> Vec<u32> {
     let mut merged = Vec::with_capacity(sorted.len() + new.len());
     let mut rest = sorted;

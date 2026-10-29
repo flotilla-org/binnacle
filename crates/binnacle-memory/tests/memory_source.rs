@@ -1,8 +1,8 @@
 //! Seam 2: `MemorySource<R>` sorts a host's rows through per-column closures.
 
 use binnacle_core::{
-    Axis, ChangeNotice, Condition, FilterSpec, Key, Located, Searched, SortColumn, SortDirection,
-    SortSpec, Support, TextQuery, TextSupport, Totals, ViewSpec,
+    Axis, ChangeNotice, Condition, DistinctQuery, FilterSpec, Key, Located, Searched, SortColumn,
+    SortDirection, SortSpec, Support, TextQuery, TextSupport, Totals, ViewSpec,
 };
 use binnacle_memory::{MemorySource, PumpSource, Unsortable, Viewed};
 
@@ -647,4 +647,50 @@ fn query_error_gives_the_regex_crates_reason_in_one_line() {
     assert_eq!(binnacle_memory::query_error(&TextQuery::new("(ber")), None);
     let valid = TextQuery::new("^b.r").regex(true);
     assert_eq!(binnacle_memory::query_error(&valid), None);
+}
+
+fn distinct_texts(source: &mut MemorySource<Rec>, rows: &[Rec], column: Key) -> Vec<String> {
+    let found = source.distinct(rows, Axis::Rows, column, &DistinctQuery::new(10));
+    found.values.into_iter().map(|v| v.text).collect()
+}
+
+#[test]
+fn distinct_values_of_a_text_only_column_come_in_text_order() {
+    let rows = [
+        rec("zed", None, 0),
+        rec("amy", None, 0),
+        rec("bob", None, 0),
+    ];
+    let mut source =
+        MemorySource::<Rec>::new(3, 1).text_column(Key(0), |r: &Rec| Some(r.name.clone().into()));
+    assert_eq!(
+        distinct_texts(&mut source, &rows, Key(0)),
+        ["amy", "bob", "zed"]
+    );
+}
+
+#[test]
+fn distinct_values_tied_on_their_sort_key_come_in_the_key_order_of_their_first_rows() {
+    let rows = [
+        rec("zed", None, 5),
+        rec("amy", None, 5),
+        rec("bob", None, 1),
+    ];
+    let mut source = MemorySource::<Rec>::new(3, 1)
+        .i64_column(Key(0), |r| Some(r.qty))
+        .text_column(Key(0), |r: &Rec| Some(r.name.clone().into()));
+    assert_eq!(
+        distinct_texts(&mut source, &rows, Key(0)),
+        ["bob", "zed", "amy"]
+    );
+}
+
+#[test]
+fn a_distinct_value_is_placed_by_its_row_with_the_lowest_key_among_those_tied_on_the_sort_key() {
+    let rows = [rec("a", None, 1), rec("a", None, 1), rec("b", None, 1)];
+    let mut source = MemorySource::<Rec>::new(3, 1)
+        .with_keys(Axis::Rows, vec![Key(9), Key(5), Key(7)])
+        .i64_column(Key(0), |r| Some(r.qty))
+        .text_column(Key(0), |r: &Rec| Some(r.name.clone().into()));
+    assert_eq!(distinct_texts(&mut source, &rows, Key(0)), ["a", "b"]);
 }

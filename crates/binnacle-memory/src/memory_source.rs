@@ -596,8 +596,8 @@ impl<R> MemorySource<R> {
     /// The sort keys of `row` across the base columns, by which the columns
     /// sort: integers if every column with a closure has an integer one (all
     /// signed or all unsigned), numbers if every one is numeric (a mix of
-    /// signed and unsigned falls here, exact only up to 2^53), else text (bytes as they are,
-    /// numbers written with `Display`). A column without a closure is null.
+    /// signed and unsigned falls here, exact only up to 2^53), else text
+    /// (bytes as they are, numbers written with `Display`). A column without a closure is null.
     fn row_keys<'r>(&self, row: &'r R) -> SortKeys<'r> {
         let columns: Vec<Option<&Column<R>>> = (0..self.table.base_len(Axis::Cols))
             .map(|c| self.columns.get(&self.table.base_key(Axis::Cols, c)))
@@ -779,7 +779,8 @@ impl<R> MemorySource<R> {
     /// limit. A part of `narrow` with an invalid regex is left out.
     ///
     /// On the rows, `key` is a column and the values come in its sort-key
-    /// order (ties, and columns with only a text closure, by text); on the
+    /// order (ties by the Key of each value's first row; a column with only
+    /// a text closure, by text); on the
     /// columns, `key` is a row and the values come in text order.
     ///
     /// # Panics
@@ -838,13 +839,12 @@ impl<R> MemorySource<R> {
         }
         let mut values: Vec<(Cow<'_, str>, (u64, usize))> = seen.into_iter().collect();
         values.sort_by(|(a, (_, i)), (b, (_, j))| {
+            let row_key = |r: usize| self.table.base_key(Axis::Rows, r);
             let by_key = keys.as_ref().map_or(Ordering::Equal, |k| {
                 k.compare(*i, *j, SortDirection::Ascending)
+                    .then_with(|| row_key(*i).cmp(&row_key(*j)))
             });
-            let row_key = |r: usize| self.table.base_key(Axis::Rows, r);
-            by_key
-                .then_with(|| row_key(*i).cmp(&row_key(*j)))
-                .then_with(|| a.cmp(b))
+            by_key.then_with(|| a.cmp(b))
         });
         let counted = values.into_iter().map(|(text, (count, _))| (text, count));
         distinct(counted, blanks, query)

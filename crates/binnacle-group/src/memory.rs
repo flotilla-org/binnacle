@@ -15,6 +15,7 @@ use binnacle_core::{
 };
 use binnacle_memory::{
     FindCount, FindStep, MemorySource, MovePolicy, Moved, PumpSource, TextMatcher, Viewed,
+    compare_f64,
 };
 
 use crate::layer::{GroupingLayer, SUMMARY_KEY_BIT, Summary, SummaryId, settle};
@@ -121,7 +122,7 @@ fn figure(
 /// reverses all of it.
 fn by_figure(a: Figure, b: Figure, direction: SortDirection) -> Ordering {
     let ascending = match (a.number(), b.number()) {
-        (Some(a), Some(b)) => a.total_cmp(&b),
+        (Some(a), Some(b)) => compare_f64(a, b),
         (Some(_), None) => Ordering::Greater,
         (None, Some(_)) => Ordering::Less,
         (None, None) => Ordering::Equal,
@@ -416,7 +417,7 @@ fn by_value(
     number: &impl Fn(Key, usize) -> Option<f64>,
 ) -> Ordering {
     match (number(field, a.first), number(field, b.first)) {
-        (Some(x), Some(y)) => x.total_cmp(&y),
+        (Some(x), Some(y)) => compare_f64(x, y),
         _ => match (&a.value, &b.value) {
             (Some(Value::Blank), Some(Value::Blank)) => Ordering::Equal,
             (Some(Value::Blank), _) => Ordering::Less,

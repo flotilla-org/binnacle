@@ -13,6 +13,7 @@ use binnacle_core::SortDirection;
 /// text is code-point order. Descending reverses the whole order, nulls
 /// included. Ties between rows are broken by the table on the item's Key.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum SortKeys<'a> {
     I64(Vec<Option<i64>>),
     U64(Vec<Option<u64>>),
@@ -69,11 +70,17 @@ impl PartialOrd for F64Key {
 
 impl Ord for F64Key {
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self.0.is_nan(), other.0.is_nan()) {
-            (true, true) => Ordering::Equal,
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-            (false, false) => self.0.total_cmp(&other.0),
-        }
+        compare_f64(self.0, other.0)
+    }
+}
+
+/// Floats in the sort order: IEEE total order, but every NaN equal and
+/// greater than every number.
+pub fn compare_f64(a: f64, b: f64) -> Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => a.total_cmp(&b),
     }
 }
