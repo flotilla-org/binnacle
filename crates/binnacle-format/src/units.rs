@@ -69,13 +69,14 @@ pub(crate) fn bytes(n: f64) -> String {
 
 /// A duration of `secs` seconds, which is `ms` milliseconds: `350 ms`,
 /// `4.2 s`, `1m 2s`, `1h 2m`, `2d 3h`. Each form reads the unit it came in,
-/// so `3.97 ms` does not pass through seconds and pick up float noise.
+/// so `3.97 ms` does not pass through seconds and pick up float noise, and
+/// milliseconds from seconds are rounded past the noise of the product.
 pub(crate) fn duration(secs: f64, ms: f64) -> String {
     if !secs.is_finite() {
         return format!("{} s", number(secs, 0));
     }
     let sign = if secs < 0.0 { "-" } else { "" };
-    let (s, ms) = (secs.abs(), ms.abs());
+    let (s, ms) = (secs.abs(), (ms.abs() * 1e6).round() / 1e6);
     // Each form is chosen by its rounded text, so 59.96 s is `1m 0s`.
     let ms = number(ms, fewest_decimals([ms]));
     if ms.parse::<f64>().is_ok_and(|r| r < 1000.0) {
@@ -85,7 +86,8 @@ pub(crate) fn duration(secs: f64, ms: f64) -> String {
     if secs.parse::<f64>().is_ok_and(|r| r < 60.0) {
         return format!("{sign}{secs} s");
     }
-    // Saturates for durations past u64 seconds, which still draw.
+    // Saturates for durations past u64 seconds, which still draw. Under 60
+    // here only when it rounded up to 60, as 59.96 s does: `1m 0s`.
     let whole = (s as u64).max(60);
     let (big, small, units) = match whole {
         0..3600 => (whole / 60, whole % 60, ["m", "s"]),
