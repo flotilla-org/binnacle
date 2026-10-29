@@ -221,18 +221,29 @@ fn scramble(tc: &TestCase, s: &mut Scenario<RecordTable>) {
     s.frame(V);
 }
 
+/// `s` scrolled to its first items, so the Snapshot draws every item and
+/// the order is read whatever a move left the scroll at (#314).
+fn top(s: &mut Scenario<RecordTable>) -> &mut Scenario<RecordTable> {
+    s.input(|g| {
+        g.scroll_to_item(Axis::Rows, 0);
+        g.scroll_to_item(Axis::Cols, 0);
+    });
+    s.frame(V);
+    s
+}
+
 #[hegel::test(test_cases = 150)]
 fn a_layout_read_from_one_grid_restores_onto_another_and_reads_back_the_same(tc: TestCase) {
     let (mut a, mut b) = (table(), table());
     scramble(&tc, &mut a);
     scramble(&tc, &mut b);
-    let saved = Layout::read(&mut a.grid, &ids());
+    let saved = Layout::read(&mut top(&mut a).grid, &ids());
     let copy = Layout::<String, String>::from_json(&saved.to_json()).unwrap();
     b.input(|g| {
         copy.restore(g, &ids());
     });
     b.frame(V);
-    assert_eq!(Layout::read(&mut b.grid, &ids()), saved);
+    assert_eq!(Layout::read(&mut top(&mut b).grid, &ids()), saved);
 }
 
 #[test]
