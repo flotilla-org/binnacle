@@ -1135,9 +1135,9 @@ impl Grid {
     }
 
     /// Every Key of `axis` the Grid keeps state on apart from its Windows:
-    /// its Size Overrides and pins (dormant ones too), and in the latest
-    /// View Spec its hidden Keys and the other axis's sort terms and
-    /// conditions naming its items. Each once, in no promised order: a host
+    /// its Size Overrides, pins (dormant ones too) and arrangement, and in
+    /// the latest View Spec its hidden Keys and the other axis's sort terms
+    /// and conditions naming its items. Each once, in no promised order: a host
     /// whose Table Source retires Keys asks which of these to
     /// [`Grid::forget`].
     pub fn held_keys(&self, axis: Axis) -> Vec<Key> {
@@ -1146,6 +1146,7 @@ impl Grid {
         let mut keys: Vec<Key> = (self.size_overrides(axis).map(|(k, _)| k))
             .chain(Edge::ALL.into_iter().flat_map(|e| self.pins(axis, e)))
             .chain(spec.axis(axis).hidden.iter().copied())
+            .chain(self.arranged(axis).iter().copied())
             .chain(across.sort.columns().iter().map(|c| c.key))
             .chain(across.filter.conditions.conditions().iter().map(|c| c.key))
             .collect();
@@ -1156,9 +1157,9 @@ impl Grid {
 
     /// The Table Source will never show the items `keys` of `axis` again,
     /// say path Keys whose paths no longer fit the levels: drops their Size
-    /// Overrides and pins, and from the latest View Spec the axis's hidden
-    /// Keys and the other axis's sort terms and conditions naming them, so
-    /// none of these is left not applied. Asks the source for nothing.
+    /// Overrides, pins and places in the arrangement, and from the latest
+    /// View Spec the axis's hidden Keys and the other axis's sort terms and
+    /// conditions naming them, so none of these is left not applied. Asks the source for nothing.
     pub fn forget(&mut self, axis: Axis, keys: &[Key]) {
         if keys.is_empty() {
             return;
@@ -1173,6 +1174,10 @@ impl Grid {
             {
                 self.unpin(axis, key);
             }
+        }
+        self.moves.arranged[axis.index()].retain(|k| !keys.contains(k));
+        if let Some(arranging) = self.moves.arranging.as_mut() {
+            arranging.retain(|k| !keys.contains(k));
         }
         self.view.totals_pinned[axis.index()].retain(|k| !keys.contains(k));
         let Some(requested) = self.view.requested.as_mut() else {

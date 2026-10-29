@@ -1,118 +1,94 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Layout",
-  "description": "How a table is presented, by the Table Source's IDs. A part left out is\nnot set: restoring leaves the Grid's own, and layering keeps the\ndefault's.",
-  "type": "object",
-  "properties": {
-    "bands": {
-      "description": "The thickness of the Header Band leading each axis: `rows` is the\ncolumn header band along the top, `cols` the row header band down\nthe left.",
-      "$ref": "#/$defs/Bands"
-    },
-    "order": {
-      "description": "The items to place first on each axis, in this order; the rest\nfollow in the Table Source's order.",
-      "$ref": "#/$defs/Order"
-    },
-    "pins": {
-      "$ref": "#/$defs/Pins"
-    },
-    "sizes": {
-      "description": "Size Overrides, as `[id, size]` pairs.",
-      "$ref": "#/$defs/Sizes"
-    },
-    "version": {
-      "$ref": "#/$defs/Version"
-    },
-    "view": {
-      "description": "The View Spec: each axis's filter, sort and hidden items, and the\ngrouping.",
-      "$ref": "#/$defs/ViewSpec"
-    }
-  },
-  "required": [
-    "version"
-  ],
   "$defs": {
     "AggregateValue": {
-      "description": "An aggregate over a base field, or over nothing (`null`) for a count,\nwith the parameters a declared aggregate takes, if any.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "An aggregate over a base field, or over nothing (`null`) for a count, with the parameters a declared aggregate takes, if any.",
       "properties": {
         "aggregate": {
           "type": "string"
         },
         "field": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "params": {
+          "items": {
+            "type": "string"
+          },
           "type": [
             "array",
             "null"
-          ],
-          "items": {
-            "type": "string"
-          }
+          ]
         }
       },
       "required": [
         "aggregate"
-      ]
+      ],
+      "type": "object"
     },
     "All": {
       "description": "The word `\"all\"`.",
-      "type": "string",
       "enum": [
         "all"
-      ]
+      ],
+      "type": "string"
     },
     "AxisView": {
-      "description": "One axis's part of a View Spec: its filter and sort, naming items of the\nother axis (`CrossId`), and its own items (`Id`) hidden.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "One axis's part of a View Spec: its filter and sort, naming items of the other axis (`CrossId`), and its own items (`Id`) hidden.",
       "properties": {
         "filter": {
           "$ref": "#/$defs/FilterSpec"
         },
         "hidden": {
-          "type": "array",
           "items": {
-            "type": "string"
-          }
+            "$ref": "#/$defs/Id"
+          },
+          "type": "array"
         },
         "sort": {
-          "type": "array",
           "items": {
             "$ref": "#/$defs/SortColumn"
-          }
+          },
+          "type": "array"
         }
-      }
+      },
+      "type": "object"
     },
     "Bands": {
+      "additionalProperties": false,
       "description": "The thickness of the Header Band leading each axis.",
-      "type": "object",
       "properties": {
         "cols": {
-          "type": "number",
-          "format": "double"
+          "format": "double",
+          "type": "number"
         },
         "rows": {
-          "type": "number",
-          "format": "double"
+          "format": "double",
+          "type": "number"
         }
       },
       "required": [
         "rows",
         "cols"
-      ]
+      ],
+      "type": "object"
     },
     "Comparison": {
       "description": "A comparison with a scalar, or between two, both included.",
       "oneOf": [
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "op": {
-              "type": "string",
-              "const": "equal"
+              "const": "equal",
+              "type": "string"
             },
             "value": {
               "$ref": "#/$defs/Scalar"
@@ -121,14 +97,15 @@
           "required": [
             "op",
             "value"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "op": {
-              "type": "string",
-              "const": "notEqual"
+              "const": "notEqual",
+              "type": "string"
             },
             "value": {
               "$ref": "#/$defs/Scalar"
@@ -137,14 +114,15 @@
           "required": [
             "op",
             "value"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "op": {
-              "type": "string",
-              "const": "less"
+              "const": "less",
+              "type": "string"
             },
             "value": {
               "$ref": "#/$defs/Scalar"
@@ -153,14 +131,15 @@
           "required": [
             "op",
             "value"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "op": {
-              "type": "string",
-              "const": "atMost"
+              "const": "atMost",
+              "type": "string"
             },
             "value": {
               "$ref": "#/$defs/Scalar"
@@ -169,14 +148,15 @@
           "required": [
             "op",
             "value"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "op": {
-              "type": "string",
-              "const": "greater"
+              "const": "greater",
+              "type": "string"
             },
             "value": {
               "$ref": "#/$defs/Scalar"
@@ -185,14 +165,15 @@
           "required": [
             "op",
             "value"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "op": {
-              "type": "string",
-              "const": "atLeast"
+              "const": "atLeast",
+              "type": "string"
             },
             "value": {
               "$ref": "#/$defs/Scalar"
@@ -201,10 +182,11 @@
           "required": [
             "op",
             "value"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "high": {
               "$ref": "#/$defs/Scalar"
@@ -213,24 +195,25 @@
               "$ref": "#/$defs/Scalar"
             },
             "op": {
-              "type": "string",
-              "const": "between"
+              "const": "between",
+              "type": "string"
             }
           },
           "required": [
             "op",
             "low",
             "high"
-          ]
+          ],
+          "type": "object"
         }
       ]
     },
     "Condition": {
+      "additionalProperties": false,
       "description": "One condition, read in item `id` of the other axis.",
-      "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "$ref": "#/$defs/Id"
         },
         "kind": {
           "$ref": "#/$defs/ConditionKind"
@@ -243,149 +226,156 @@
         "id",
         "kind",
         "not"
-      ]
+      ],
+      "type": "object"
     },
     "ConditionKind": {
-      "description": "What a condition asks of its item's values. A OneOf's values are text,\nor `null` for a blank.",
+      "description": "What a condition asks of its item's values. A OneOf's values are text, or `null` for a blank.",
       "oneOf": [
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "query": {
               "$ref": "#/$defs/TextMatch"
             },
             "type": {
-              "type": "string",
-              "const": "Text"
+              "const": "Text",
+              "type": "string"
             }
           },
           "required": [
             "type",
             "query"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "type": {
-              "type": "string",
-              "const": "OneOf"
+              "const": "OneOf",
+              "type": "string"
             },
             "values": {
-              "type": "array",
               "items": {
                 "type": [
                   "string",
                   "null"
                 ]
-              }
+              },
+              "type": "array"
             }
           },
           "required": [
             "type",
             "values"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "comparison": {
               "$ref": "#/$defs/Comparison"
             },
             "type": {
-              "type": "string",
-              "const": "Compare"
+              "const": "Compare",
+              "type": "string"
             }
           },
           "required": [
             "type",
             "comparison"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "text": {
               "type": "string"
             },
             "type": {
-              "type": "string",
-              "const": "Native"
+              "const": "Native",
+              "type": "string"
             }
           },
           "required": [
             "type",
             "text"
-          ]
+          ],
+          "type": "object"
         }
       ]
     },
     "Depth": {
-      "description": "How many levels are open: a number, or `\"all\"`.",
       "anyOf": [
         {
-          "type": "integer",
           "format": "uint32",
-          "minimum": 0
+          "minimum": 0,
+          "type": "integer"
         },
         {
           "$ref": "#/$defs/All"
         }
-      ]
+      ],
+      "description": "How many levels are open: a number, or `\"all\"`."
     },
     "Direction": {
-      "type": "string",
       "enum": [
         "ascending",
         "descending"
-      ]
+      ],
+      "type": "string"
     },
     "EdgePins": {
+      "additionalProperties": false,
       "description": "The items pinned to each edge of one axis, in pin order.",
-      "type": "object",
       "properties": {
         "leading": {
-          "type": "array",
           "items": {
-            "type": "string"
-          }
+            "$ref": "#/$defs/Id"
+          },
+          "type": "array"
         },
         "trailing": {
-          "type": "array",
           "items": {
-            "type": "string"
-          }
+            "$ref": "#/$defs/Id"
+          },
+          "type": "array"
         }
-      }
+      },
+      "type": "object"
     },
     "Expand": {
-      "description": "The groups open: the first `depth` levels, except the Group Items\n`except` names, which are the other way.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "The groups open: the first `depth` levels, except the Group Items `except` names, which are the other way.",
       "properties": {
         "depth": {
           "$ref": "#/$defs/Depth"
         },
         "except": {
-          "type": "array",
           "items": {
-            "type": "string"
-          }
+            "$ref": "#/$defs/Id"
+          },
+          "type": "array"
         }
       },
       "required": [
         "depth",
         "except"
-      ]
+      ],
+      "type": "object"
     },
     "FilterSpec": {
-      "description": "Which items of an axis to keep: the quick filter (`null` for none) and\nthe conditions, every one of which must keep an item.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "Which items of an axis to keep: the quick filter (`null` for none) and the conditions, every one of which must keep an item.",
       "properties": {
         "conditions": {
-          "type": "array",
           "items": {
             "$ref": "#/$defs/Condition"
-          }
+          },
+          "type": "array"
         },
         "quick": {
           "anyOf": [
@@ -397,18 +387,19 @@
             }
           ]
         }
-      }
+      },
+      "type": "object"
     },
     "Form": {
-      "type": "string",
       "enum": [
         "outline",
         "header"
-      ]
+      ],
+      "type": "string"
     },
     "GroupedAxis": {
+      "additionalProperties": false,
       "description": "How one grouped axis is laid out, and which groups are open.",
-      "type": "object",
       "properties": {
         "expand": {
           "$ref": "#/$defs/Expand"
@@ -424,41 +415,42 @@
         "grandTotal",
         "form",
         "expand"
-      ]
+      ],
+      "type": "object"
     },
     "Grouping": {
-      "description": "The whole-table grouping, naming base fields (`FieldId`, the column IDs\nof a records table).",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "The whole-table grouping, naming base fields (`FieldId`, the column IDs of a records table).",
       "properties": {
         "colAxis": {
           "$ref": "#/$defs/GroupedAxis"
         },
         "colLevels": {
-          "type": "array",
           "items": {
             "$ref": "#/$defs/Level"
-          }
+          },
+          "type": "array"
         },
         "rowAxis": {
           "$ref": "#/$defs/GroupedAxis"
         },
         "rowLevels": {
-          "type": "array",
           "items": {
             "$ref": "#/$defs/Level"
-          }
+          },
+          "type": "array"
         },
         "slicers": {
-          "type": "array",
           "items": {
             "$ref": "#/$defs/Condition"
-          }
+          },
+          "type": "array"
         },
         "values": {
-          "type": "array",
           "items": {
             "$ref": "#/$defs/AggregateValue"
-          }
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -468,16 +460,38 @@
         "slicers",
         "rowAxis",
         "colAxis"
-      ]
+      ],
+      "type": "object"
     },
-    "Level": {
-      "description": "One level of an axis's grouping: a field with its Subtotal's place, or\n`{ \"values\": true }` for the values pseudo-level.",
+    "Id": {
       "anyOf": [
         {
-          "type": "object",
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "items": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "type": "array"
+        }
+      ],
+      "description": "An item's ID: a string or a number, or an array of strings, numbers, booleans and nulls, such as the values of a primary key. A Group Item's or Summary Item's ID is whatever the Table Source names it by."
+    },
+    "Level": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
           "properties": {
             "field": {
-              "type": "string"
+              "$ref": "#/$defs/Id"
             },
             "subtotal": {
               "$ref": "#/$defs/Placement"
@@ -486,10 +500,11 @@
           "required": [
             "field",
             "subtotal"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "values": {
               "$ref": "#/$defs/True"
@@ -497,31 +512,34 @@
           },
           "required": [
             "values"
-          ]
+          ],
+          "type": "object"
         }
-      ]
+      ],
+      "description": "One level of an axis's grouping: a field with its Subtotal's place, or `{ \"values\": true }` for the values pseudo-level."
     },
     "Order": {
-      "description": "Per axis, the items to place first, in this order; an axis left out\nplaces none.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "Per axis, the items to place first, in this order; the rest follow in the Table Source's order. An axis left out is not set.",
       "properties": {
         "cols": {
-          "type": "array",
           "items": {
-            "type": "string"
-          }
+            "$ref": "#/$defs/Id"
+          },
+          "type": "array"
         },
         "rows": {
-          "type": "array",
           "items": {
-            "type": "string"
-          }
+            "$ref": "#/$defs/Id"
+          },
+          "type": "array"
         }
-      }
+      },
+      "type": "object"
     },
     "Pins": {
+      "additionalProperties": false,
       "description": "Per axis, each edge's pinned items in pin order.",
-      "type": "object",
       "properties": {
         "cols": {
           "$ref": "#/$defs/EdgePins"
@@ -529,135 +547,140 @@
         "rows": {
           "$ref": "#/$defs/EdgePins"
         }
-      }
+      },
+      "type": "object"
     },
     "Placement": {
-      "type": "string",
       "enum": [
         "before",
         "after",
         "off"
-      ]
+      ],
+      "type": "string"
     },
     "Scalar": {
       "description": "A number, or a date in milliseconds since the Unix epoch (UTC).",
       "oneOf": [
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "type": {
-              "type": "string",
-              "const": "number"
+              "const": "number",
+              "type": "string"
             },
             "value": {
-              "type": "number",
-              "format": "double"
+              "format": "double",
+              "type": "number"
             }
           },
           "required": [
             "type",
             "value"
-          ]
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
+          "additionalProperties": false,
           "properties": {
             "type": {
-              "type": "string",
-              "const": "date"
+              "const": "date",
+              "type": "string"
             },
             "value": {
-              "type": "number",
-              "format": "double"
+              "format": "double",
+              "type": "number"
             }
           },
           "required": [
             "type",
             "value"
-          ]
+          ],
+          "type": "object"
         }
       ]
     },
     "Searched": {
-      "description": "The items a Text Query searches: `\"shown\"`, or those listed.",
       "anyOf": [
         {
           "$ref": "#/$defs/Shown"
         },
         {
-          "type": "array",
           "items": {
-            "type": "string"
-          }
+            "$ref": "#/$defs/Id"
+          },
+          "type": "array"
         }
-      ]
+      ],
+      "description": "The items a Text Query searches: `\"shown\"`, or those listed."
     },
     "Shown": {
       "description": "The word `\"shown\"`.",
-      "type": "string",
       "enum": [
         "shown"
-      ]
+      ],
+      "type": "string"
     },
     "Sizes": {
+      "additionalProperties": false,
       "description": "Per axis, Size Overrides as `[id, size]` pairs.",
-      "type": "object",
       "properties": {
         "cols": {
-          "type": "array",
           "items": {
-            "type": "array",
             "maxItems": 2,
             "minItems": 2,
             "prefixItems": [
               {
-                "type": "string"
+                "$ref": "#/$defs/Id"
               },
               {
-                "type": "number",
-                "format": "double"
+                "format": "double",
+                "type": "number"
               }
-            ]
-          }
+            ],
+            "type": "array"
+          },
+          "type": "array"
         },
         "rows": {
-          "type": "array",
           "items": {
-            "type": "array",
             "maxItems": 2,
             "minItems": 2,
             "prefixItems": [
               {
-                "type": "string"
+                "$ref": "#/$defs/Id"
               },
               {
-                "type": "number",
-                "format": "double"
+                "format": "double",
+                "type": "number"
               }
-            ]
-          }
+            ],
+            "type": "array"
+          },
+          "type": "array"
         }
-      }
+      },
+      "type": "object"
     },
     "SortColumn": {
+      "additionalProperties": false,
       "description": "One item of the other axis to sort by, and which way.",
-      "type": "object",
       "properties": {
         "direction": {
           "$ref": "#/$defs/Direction"
         },
         "id": {
-          "type": "string"
+          "$ref": "#/$defs/Id"
         }
       },
       "required": [
         "id",
         "direction"
-      ]
+      ],
+      "type": "object"
     },
     "TextMatch": {
-      "description": "A Text condition's query: a Text Query without items to search, as it\nsearches its own.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "A Text condition's query: a Text Query without items to search, as it searches its own.",
       "properties": {
         "caseSensitive": {
           "type": "boolean"
@@ -673,11 +696,12 @@
         "text",
         "caseSensitive",
         "regex"
-      ]
+      ],
+      "type": "object"
     },
     "TextQuery": {
+      "additionalProperties": false,
       "description": "Text to look for in the items of the other axis it searches.",
-      "type": "object",
       "properties": {
         "caseSensitive": {
           "type": "boolean"
@@ -697,18 +721,22 @@
         "caseSensitive",
         "regex",
         "searches"
-      ]
+      ],
+      "type": "object"
     },
     "True": {
       "const": true
     },
     "Version": {
       "description": "The version the document is written as. Version 1, the same document less `order`, also reads.",
-      "const": 2
+      "enum": [
+        1,
+        2
+      ]
     },
     "ViewSpec": {
-      "description": "The declared view a Table Source should present, by IDs: one part per\naxis, and the whole-table grouping (`null` for a plain table). A part\nleft out of a document reads as empty.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "The declared view a Table Source should present, by IDs: one part per axis, and the whole-table grouping (`null` for a plain table). A part left out of a document reads as empty. The open groups name Group Items by their IDs on the axis, as [`crate::Layout`] says.",
       "properties": {
         "cols": {
           "$ref": "#/$defs/AxisView"
@@ -726,7 +754,40 @@
         "rows": {
           "$ref": "#/$defs/AxisView"
         }
-      }
+      },
+      "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "How a table is presented, by the Table Source's IDs. A part left out is not set: restoring leaves the Grid's own, and layering keeps the default's. A field the document does not define is an error.\n\n`RowId` and `ColId` name every item of their axis, as the Table Source does: a grouped or pivoted axis's Group Items and Summary Items too, which the View Spec's open groups (`expand.except`) name, and which may be pinned or sized like any item. A source whose leaves have keys of their own (a described table's primary keys) names its Group Items so that no leaf shares an ID with one.",
+  "properties": {
+    "bands": {
+      "$ref": "#/$defs/Bands",
+      "description": "The thickness of the Header Band leading each axis: `rows` is the column header band along the top, `cols` the row header band down the left."
+    },
+    "order": {
+      "$ref": "#/$defs/Order",
+      "description": "The items to place first on each axis, in this order; the rest follow in the Table Source's order."
+    },
+    "pins": {
+      "$ref": "#/$defs/Pins"
+    },
+    "sizes": {
+      "$ref": "#/$defs/Sizes",
+      "description": "Size Overrides, as `[id, size]` pairs."
+    },
+    "version": {
+      "$ref": "#/$defs/Version"
+    },
+    "view": {
+      "$ref": "#/$defs/ViewSpec",
+      "description": "The View Spec: each axis's filter, sort and hidden items, and the grouping."
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "title": "Layout",
+  "type": "object"
 }

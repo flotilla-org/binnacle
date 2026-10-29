@@ -6,7 +6,7 @@ mod support;
 
 use binnacle_core::{Key, Searched as KeySearched};
 use binnacle_layout::view::{Searched, ViewSpec};
-use binnacle_layout::{IdTable, Layout, Sizes};
+use binnacle_layout::{IdTable, JsonId, Layout, Sizes};
 use hegel::TestCase;
 
 #[hegel::test(test_cases = 300)]
@@ -85,7 +85,21 @@ fn a_part_the_user_sets_replaces_the_defaults_whole_and_an_unset_one_keeps_it(tc
     let user = support::layout(&tc);
     let layered = Layout::layered(default.clone(), user.clone());
     assert_eq!(layered.view, user.view.clone().or(default.view.clone()));
-    assert_eq!(layered.order, user.order.clone().or(default.order.clone()));
+    // The order layers per axis.
+    let axis = |l: &Layout<String, String>, rows: bool| {
+        (l.order.as_ref()).and_then(|o| if rows { o.rows.clone() } else { o.cols.clone() })
+    };
+    for rows in [true, false] {
+        assert_eq!(
+            axis(&layered, rows),
+            axis(&user, rows).or(axis(&default, rows)),
+            "rows {rows}"
+        );
+    }
+    assert_eq!(
+        layered.order.is_none(),
+        user.order.is_none() && default.order.is_none()
+    );
     assert_eq!(layered.pins, user.pins.clone().or(default.pins.clone()));
     assert_eq!(layered.bands, user.bands.or(default.bands));
     if user.sizes.is_none() || default.sizes.is_none() {
@@ -176,4 +190,38 @@ fn converting_to_keys_skips_unknown_ids_and_the_document_keeps_them(tc: TestCase
     // Back from Keys, the known parts read as the host names them.
     let known_only = ViewSpec::from_keys(&spec, &ids);
     assert_eq!(known_only.keys(&ids), spec);
+}
+
+#[test]
+fn a_field_the_document_does_not_define_is_an_error_at_any_depth() {
+    let typos: [&[u8]; 5] = [
+        br#"{"version":2,"oder":{"cols":["a"]}}"#,
+        br#"{"version":2,"view":{"rows":{"sorts":[]}}}"#,
+        br#"{"version":2,"order":{"columns":["a"]}}"#,
+        br#"{"version":2,"pins":{"cols":{"leading":[],"trailling":[]}}}"#,
+        br#"{"version":2,"view":{"rows":{"filter":{"conditions":[{"id":"a","kind":{"type":"Native","text":"x","extra":1},"not":false}]}}}}"#,
+    ];
+    for typo in typos {
+        let text = String::from_utf8_lossy(typo);
+        assert!(Layout::<String, String>::from_json(typo).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn ids_read_as_json_values_so_a_row_may_be_named_by_a_key_of_several_values() {
+    let doc = br#"{"version":2,"order":{"rows":[["ns","a"],["ns",2]],"cols":["name",7]}}"#;
+    let layout = Layout::<JsonId, JsonId>::from_json(doc).unwrap();
+    let order = layout.order.as_ref().unwrap();
+    assert_eq!(order.rows.as_ref().unwrap()[1].to_string(), r#"["ns",2]"#);
+    assert_eq!(layout.to_json(), doc);
+    for not_an_id in [&br#"{"a":1}"#[..], b"[[1]]", b"null", b"true"] {
+        let doc = format!(
+            r#"{{"version":2,"order":{{"cols":[{}]}}}}"#,
+            String::from_utf8_lossy(not_an_id)
+        );
+        assert!(
+            Layout::<JsonId, JsonId>::from_json(doc.as_bytes()).is_err(),
+            "{doc}"
+        );
+    }
 }

@@ -10,8 +10,10 @@ use crate::ids::IdMap;
 
 /// The declared view a Table Source should present, by IDs: one part per
 /// axis, and the whole-table grouping (`null` for a plain table). A part
-/// left out of a document reads as empty.
+/// left out of a document reads as empty. The open groups name Group Items
+/// by their IDs on the axis, as [`crate::Layout`] says.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(bound(
     serialize = "RowId: Serialize, ColId: Serialize",
     deserialize = "RowId: Deserialize<'de>, ColId: Deserialize<'de>"
@@ -38,6 +40,7 @@ impl<RowId, ColId> Default for ViewSpec<RowId, ColId> {
 /// One axis's part of a View Spec: its filter and sort, naming items of the
 /// other axis (`CrossId`), and its own items (`Id`) hidden.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(bound(
     serialize = "CrossId: Serialize, Id: Serialize",
     deserialize = "CrossId: Deserialize<'de>, Id: Deserialize<'de>"
@@ -63,6 +66,7 @@ impl<CrossId, Id> Default for AxisView<CrossId, Id> {
 
 /// One item of the other axis to sort by, and which way.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SortColumn<Id> {
     pub id: Id,
     pub direction: Direction,
@@ -78,6 +82,7 @@ pub enum Direction {
 /// Which items of an axis to keep: the quick filter (`null` for none) and
 /// the conditions, every one of which must keep an item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(bound(serialize = "Id: Serialize", deserialize = "Id: Deserialize<'de>"))]
 pub struct FilterSpec<Id> {
     #[serde(default)]
@@ -97,6 +102,7 @@ impl<Id> Default for FilterSpec<Id> {
 
 /// Text to look for in the items of the other axis it searches.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct TextQuery<Id> {
     pub text: String,
@@ -123,6 +129,7 @@ pub enum Shown {
 /// A Text condition's query: a Text Query without items to search, as it
 /// searches its own.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct TextMatch {
     pub text: String,
@@ -132,6 +139,7 @@ pub struct TextMatch {
 
 /// One condition, read in item `id` of the other axis.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Condition<Id> {
     pub id: Id,
     pub kind: ConditionKind,
@@ -141,6 +149,7 @@ pub struct Condition<Id> {
 /// What a condition asks of its item's values. A OneOf's values are text,
 /// or `null` for a blank.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "type")]
 pub enum ConditionKind {
     Text { query: TextMatch },
@@ -151,6 +160,7 @@ pub enum ConditionKind {
 
 /// A comparison with a scalar, or between two, both included.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Comparison {
     Equal { value: Scalar },
@@ -164,6 +174,7 @@ pub enum Comparison {
 
 /// A number, or a date in milliseconds since the Unix epoch (UTC).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Scalar {
     Number {
@@ -181,6 +192,7 @@ pub enum Scalar {
 /// The whole-table grouping, naming base fields (`FieldId`, the column IDs
 /// of a records table).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct Grouping<FieldId, RowId, ColId> {
     pub row_levels: Vec<Level<FieldId>>,
@@ -194,6 +206,7 @@ pub struct Grouping<FieldId, RowId, ColId> {
 /// One level of an axis's grouping: a field with its Subtotal's place, or
 /// `{ "values": true }` for the values pseudo-level.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum Level<FieldId> {
     Field { field: FieldId, subtotal: Placement },
@@ -235,6 +248,7 @@ pub enum Placement {
 /// An aggregate over a base field, or over nothing (`null`) for a count,
 /// with the parameters a declared aggregate takes, if any.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AggregateValue<FieldId> {
     pub field: Option<FieldId>,
     pub aggregate: String,
@@ -244,6 +258,7 @@ pub struct AggregateValue<FieldId> {
 
 /// How one grouped axis is laid out, and which groups are open.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupedAxis<Id> {
     pub grand_total: Placement,
@@ -261,6 +276,7 @@ pub enum Form {
 /// The groups open: the first `depth` levels, except the Group Items
 /// `except` names, which are the other way.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Expand<Id> {
     pub depth: Depth,
     pub except: Vec<Id>,

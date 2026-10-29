@@ -187,8 +187,8 @@ pub fn layout(tc: &TestCase) -> Layout<String, String> {
         version: Version,
         view: set().then(|| view(tc)),
         order: set().then(|| Order {
-            rows: ids(tc),
-            cols: ids(tc),
+            rows: set().then(|| ids(tc)),
+            cols: set().then(|| ids(tc)),
         }),
         pins: set().then(|| Pins {
             rows: edge_pins(tc),

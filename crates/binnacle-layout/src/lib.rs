@@ -9,9 +9,10 @@
 //! byte for byte: the same fields, and numbers written as JavaScript writes
 //! them. It reads and writes as CBOR too. Version 1, the same document
 //! without `order`, still reads. `layout.schema.json` beside this crate is
-//! its JSON Schema, with string IDs.
+//! its JSON Schema, with IDs as [`JsonId`] has them.
 
 mod grid;
+mod id;
 mod ids;
 mod num;
 pub mod view;
@@ -22,6 +23,7 @@ use schemars::JsonSchema;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub use id::JsonId;
 pub use ids::{IdMap, IdTable};
 pub use view::ViewSpec;
 
@@ -30,9 +32,17 @@ pub const LAYOUT_VERSION: u32 = 2;
 
 /// How a table is presented, by the Table Source's IDs. A part left out is
 /// not set: restoring leaves the Grid's own, and layering keeps the
-/// default's.
+/// default's. A field the document does not define is an error.
+///
+/// `RowId` and `ColId` name every item of their axis, as the Table Source
+/// does: a grouped or pivoted axis's Group Items and Summary Items too,
+/// which the View Spec's open groups (`expand.except`) name, and which may
+/// be pinned or sized like any item. A source whose leaves have keys of
+/// their own (a described table's primary keys) names its Group Items so
+/// that no leaf shares an ID with one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(title = "Layout")]
+#[serde(deny_unknown_fields)]
 #[serde(bound(
     serialize = "RowId: Serialize, ColId: Serialize",
     deserialize = "RowId: Deserialize<'de>, ColId: Deserialize<'de>"
@@ -80,6 +90,13 @@ impl<RowId, ColId> Default for Layout<RowId, ColId> {
 /// A part's schema as a document holds it: left out when not set, never
 /// `null`.
 fn absent_not_null(schema: &mut schemars::Schema) {
+    if let Some(serde_json::Value::Array(types)) = schema.get_mut("type") {
+        types.retain(|t| t != "null");
+        if let [only] = types.as_slice() {
+            let only = only.clone();
+            schema.insert("type".into(), only);
+        }
+    }
     let Some(any) = schema.remove("anyOf") else {
         return;
     };
@@ -148,42 +165,47 @@ impl JsonSchema for Version {
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "description": "The version the document is written as. Version 1, the same document less `order`, also reads.",
-            "const": LAYOUT_VERSION,
+            "enum": [1, LAYOUT_VERSION],
         })
     }
 }
 
-/// Per axis, the items to place first, in this order; an axis left out
-/// places none.
+/// Per axis, the items to place first, in this order; the rest follow in
+/// the Table Source's order. An axis left out is not set.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(bound(
     serialize = "RowId: Serialize, ColId: Serialize",
     deserialize = "RowId: Deserialize<'de>, ColId: Deserialize<'de>"
 ))]
 pub struct Order<RowId, ColId> {
-    #[serde(default)]
-    pub rows: Vec<RowId>,
-    #[serde(default)]
-    pub cols: Vec<ColId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(transform = absent_not_null)]
+    pub rows: Option<Vec<RowId>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(transform = absent_not_null)]
+    pub cols: Option<Vec<ColId>>,
 }
 
 impl<RowId, ColId> Default for Order<RowId, ColId> {
     fn default() -> Self {
         Order {
-            rows: Vec::new(),
-            cols: Vec::new(),
+            rows: None,
+            cols: None,
         }
     }
 }
 
 impl<RowId, ColId> Order<RowId, ColId> {
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty() && self.cols.is_empty()
+    /// Whether neither axis is set.
+    pub fn is_unset(&self) -> bool {
+        self.rows.is_none() && self.cols.is_none()
     }
 }
 
 /// Per axis, each edge's pinned items in pin order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(bound(
     serialize = "RowId: Serialize, ColId: Serialize",
     deserialize = "RowId: Deserialize<'de>, ColId: Deserialize<'de>"
@@ -206,6 +228,7 @@ impl<RowId, ColId> Default for Pins<RowId, ColId> {
 
 /// The items pinned to each edge of one axis, in pin order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[serde(bound(serialize = "Id: Serialize", deserialize = "Id: Deserialize<'de>"))]
 pub struct EdgePins<Id> {
     #[serde(default)]
@@ -225,6 +248,7 @@ impl<Id> Default for EdgePins<Id> {
 
 /// Per axis, Size Overrides as `[id, size]` pairs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(bound(
     serialize = "RowId: Serialize, ColId: Serialize",
     deserialize = "RowId: Deserialize<'de>, ColId: Deserialize<'de>"
@@ -257,12 +281,14 @@ impl<RowId: JsonSchema, ColId: JsonSchema> JsonSchema for Sizes<RowId, ColId> {
             "description": "Per axis, Size Overrides as `[id, size]` pairs.",
             "type": "object",
             "properties": { "rows": rows, "cols": cols },
+            "additionalProperties": false,
         })
     }
 }
 
 /// The thickness of the Header Band leading each axis.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Bands {
     #[serde(with = "num")]
     #[schemars(with = "f64")]
@@ -274,9 +300,10 @@ pub struct Bands {
 
 impl<RowId: PartialEq, ColId: PartialEq> Layout<RowId, ColId> {
     /// `user` laid over `default`: each part `user` sets (the View Spec,
-    /// the order, the pins, the bands) replaces the default's whole part,
-    /// and Size Overrides merge per ID, `user`'s winning, so one resized
-    /// column keeps the default widths of the others. A part `user` leaves
+    /// the pins, the bands) replaces the default's whole part, each axis
+    /// of the order `user` sets replaces the default's, and Size Overrides
+    /// merge per ID, `user`'s winning, so one resized column keeps the
+    /// default widths of the others. A part or order axis `user` leaves
     /// unset keeps the default's.
     pub fn layered(default: Self, user: Self) -> Self {
         let sizes = match (default.sizes, user.sizes) {
@@ -286,10 +313,17 @@ impl<RowId: PartialEq, ColId: PartialEq> Layout<RowId, ColId> {
             }),
             (d, u) => u.or(d),
         };
+        let order = match (default.order, user.order) {
+            (Some(d), Some(u)) => Some(Order {
+                rows: u.rows.or(d.rows),
+                cols: u.cols.or(d.cols),
+            }),
+            (d, u) => u.or(d),
+        };
         Layout {
             version: Version,
             view: user.view.or(default.view),
-            order: user.order.or(default.order),
+            order,
             pins: user.pins.or(default.pins),
             sizes,
             bands: user.bands.or(default.bands),
@@ -344,12 +378,36 @@ impl<RowId: for<'de> Deserialize<'de>, ColId: for<'de> Deserialize<'de>> Layout<
     }
 }
 
-/// The JSON Schema of a Layout whose IDs are strings, as checked in at
+/// The JSON Schema of a Layout whose IDs are [`JsonId`]s, as checked in at
 /// `crates/binnacle-layout/layout.schema.json`: pretty-printed, with a
-/// final newline.
+/// final newline, and each description one line per paragraph.
 pub fn schema_json() -> String {
-    let schema = schemars::schema_for!(Layout<String, String>);
+    let mut schema = serde_json::to_value(schemars::schema_for!(Layout<JsonId, JsonId>))
+        .expect("a schema is JSON");
+    unwrap_descriptions(&mut schema);
     let mut text = serde_json::to_string_pretty(&schema).expect("a schema writes as JSON");
     text.push('\n');
     text
+}
+
+/// Joins the lines a doc comment wraps within each paragraph of every
+/// description under `value`.
+fn unwrap_descriptions(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                match v {
+                    serde_json::Value::String(text) if key == "description" => {
+                        *text = (text.split("\n\n"))
+                            .map(|p| p.split('\n').collect::<Vec<_>>().join(" "))
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                    }
+                    _ => unwrap_descriptions(v),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(unwrap_descriptions),
+        _ => {}
+    }
 }

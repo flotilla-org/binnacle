@@ -38,7 +38,7 @@ export function layoutControls<R, C>(widget: GridWidget<R, C>, demo: string): { 
     state.textContent = unmoved ? `restored, ${unmoved} not moved` : "restored";
   };
   const unplaced = ({ rows, cols }: LayoutOrder<R, C>) => {
-    unmoved += rows.length + cols.length;
+    unmoved += (rows?.length ?? 0) + (cols?.length ?? 0);
     restored();
   };
   const put = (layout: Layout<R, C> | LayoutV1<R, C>): boolean => {

@@ -2,29 +2,36 @@
 //! [`IdMap`].
 
 use binnacle_core as core;
-use binnacle_core::{Axis, Edge, Grid, Key, Snapshot};
+use binnacle_core::{Axis, Edge, Grid, Key};
 
 use crate::view::{Level, Searched, ViewSpec};
 use crate::{Bands, EdgePins, IdMap, Layout, Order, Pins, Sizes, Version};
 
 impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
-    /// The layout of `grid` as it stands, every part set: the View Spec
-    /// last asked for (else the one applied), the pins, dormant or not,
-    /// every Size Override and the band thicknesses. An axis's order is
-    /// the IDs of its items in Position order, written while the Snapshot
-    /// draws every one of them and neither a sort nor a grouping orders
-    /// them, and empty otherwise. Whatever names a Key `ids` does not know
+    /// The layout of `grid` as it stands: the View Spec last asked for
+    /// (else the one applied), the pins, dormant or not, every Size
+    /// Override and the band thicknesses. An axis's order is the Grid's
+    /// arrangement ([`Grid::arranged`]: the items a restored order and the
+    /// moves since placed first), unset while there is none or a sort or
+    /// grouping orders the axis. Whatever names a Key `ids` does not know
     /// is left out; [`Layout::keeping`] puts back what a restored layout
     /// held for those.
     pub fn read(grid: &mut Grid, ids: &impl IdMap<RowId, ColId>) -> Self {
         let sizes = Axis::ALL.map(|axis| grid.size_overrides(axis).collect::<Vec<_>>());
+        let arranged = Axis::ALL.map(|axis| grid.arranged(axis).to_vec());
         let s = grid.snapshot();
         let spec = s.requested_view().unwrap_or(s.applied_view());
         let row = |k: Key| ids.row_id(k);
         let col = |k: Key| ids.col_id(k);
-        let order = |axis: Axis| match sorted_or_grouped(spec, axis) {
-            true => Vec::new(),
-            false => order_of(&s, axis).unwrap_or_default(),
+        let [rows_arranged, cols_arranged] = arranged;
+        let order = |axis: Axis, keys: Vec<Key>| (!sorted_or_grouped(spec, axis)).then_some(keys);
+        let order = Order {
+            rows: order(Axis::Rows, rows_arranged).map(|k| named(k, row)),
+            cols: order(Axis::Cols, cols_arranged).map(|k| named(k, col)),
+        };
+        let order = Order {
+            rows: order.rows.filter(|ids| !ids.is_empty()),
+            cols: order.cols.filter(|ids| !ids.is_empty()),
         };
         let pins = |axis: Axis| Edge::ALL.map(|edge| s.pins(axis, edge).collect::<Vec<_>>());
         let [rows_pins, cols_pins] = Axis::ALL.map(pins);
@@ -32,10 +39,7 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
         Layout {
             version: Version,
             view: Some(ViewSpec::from_keys(spec, ids)),
-            order: Some(Order {
-                rows: named(order(Axis::Rows), row),
-                cols: named(order(Axis::Cols), col),
-            }),
+            order: (!order.is_unset()).then_some(order),
             pins: Some(Pins {
                 rows: edge_pins(&rows_pins, row),
                 cols: edge_pins(&cols_pins, col),
@@ -54,9 +58,10 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
     /// Puts this layout back on `grid`, each part it sets: the pins and
     /// the band thicknesses at once, the Size Overrides at once (clearing
     /// those it does not list), the View Spec as an ordinary request, and
-    /// the order as a move of the listed items to the front, through the
-    /// Table Source's move path ([`Grid::request_move`]), unless they are
-    /// in place already. Whatever names an ID `ids` does not know is
+    /// each axis of the order as a move of the listed items to the front,
+    /// through the Table Source's move path ([`Grid::arrange`]),
+    /// unless they are in place already; either way they become the
+    /// axis's arrangement. Whatever names an ID `ids` does not know is
     /// skipped, and this document keeps it.
     ///
     /// Returns the IDs of the order it could not place: those `ids` does
@@ -95,8 +100,12 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
                 s.requested_view().unwrap_or(s.applied_view()).clone()
             }
         };
-        unplaced.rows = place(grid, &spec, Axis::Rows, &order.rows, row);
-        unplaced.cols = place(grid, &spec, Axis::Cols, &order.cols, col);
+        if let Some(rows) = &order.rows {
+            unplaced.rows = some(place(grid, &spec, Axis::Rows, rows, row));
+        }
+        if let Some(cols) = &order.cols {
+            unplaced.cols = some(place(grid, &spec, Axis::Cols, cols, col));
+        }
         unplaced
     }
 }
@@ -108,8 +117,9 @@ impl<RowId: Clone + PartialEq, ColId: Clone + PartialEq> Layout<RowId, ColId> {
     /// (a sort, the conditions, the hidden items, a quick filter's items,
     /// the levels, values, slicers and open groups, each edge's pins) comes
     /// back whole; one they changed stays as it is now. Sizes for unknown
-    /// IDs come back, and so do unknown IDs in an order that still starts
-    /// with the known ones `before` listed, or that is empty now.
+    /// IDs come back, and so do unknown IDs in an order axis that still
+    /// starts with the known ones `before` listed. An order axis unset now
+    /// (sorted, say, or its move refused) comes back as `before` set it.
     pub fn keeping(mut self, before: &Self, ids: &impl IdMap<RowId, ColId>) -> Self {
         let row = |id: &RowId| ids.row_key(id).is_some();
         let col = |id: &ColId| ids.col_key(id).is_some();
@@ -139,7 +149,8 @@ impl<RowId: Clone + PartialEq, ColId: Clone + PartialEq> Layout<RowId, ColId> {
                 );
             }
         }
-        if let (Some(now), Some(was)) = (&mut self.order, &before.order) {
+        if let Some(was) = &before.order {
+            let now = self.order.get_or_insert_with(Order::default);
             keep_order(&mut now.rows, &was.rows, row);
             keep_order(&mut now.cols, &was.cols, col);
         }
@@ -182,19 +193,8 @@ fn sorted_or_grouped(spec: &core::ViewSpec, axis: Axis) -> bool {
     grouped || !spec.axis(axis).sort.is_empty()
 }
 
-/// The Keys of every item of `axis` in Position order, if the Snapshot
-/// draws them all.
-fn order_of(s: &Snapshot, axis: Axis) -> Option<Vec<Key>> {
-    let mut drawn: Vec<(u64, Option<Key>)> = s.drawn(axis).map(|i| (i.position, i.key)).collect();
-    drawn.sort_by_key(|&(p, _)| p);
-    drawn.dedup_by_key(|&mut (p, _)| p);
-    let all = drawn.len() as u64 == s.count(axis)
-        && drawn.iter().enumerate().all(|(i, &(p, _))| p == i as u64);
-    all.then(|| drawn.into_iter().map(|(_, k)| k).collect())?
-}
-
-/// Moves the items `list` names to the front of `axis` unless they are
-/// there already, returning those it can't place.
+/// Moves the items `list` names to the front of `axis`, returning those it
+/// can't place.
 fn place<Id: Clone>(
     grid: &mut Grid,
     spec: &core::ViewSpec,
@@ -210,13 +210,7 @@ fn place<Id: Clone>(
         .filter(|id| key(id).is_none())
         .cloned()
         .collect();
-    let keys: Vec<Key> = list.iter().filter_map(key).collect();
-    let s = grid.snapshot();
-    let at = |p: u64| s.drawn(axis).find(|i| i.position == p).and_then(|i| i.key);
-    let in_place = (keys.iter().enumerate()).all(|(p, &k)| at(p as u64) == Some(k));
-    if !in_place {
-        grid.request_move(axis, keys, 0);
-    }
+    grid.arrange(axis, list.iter().filter_map(key).collect());
     unknown
 }
 
@@ -239,6 +233,10 @@ fn set_sizes<Id>(
     for (k, size) in listed {
         grid.set_size(axis, k, size);
     }
+}
+
+fn some<Id>(ids: Vec<Id>) -> Option<Vec<Id>> {
+    (!ids.is_empty()).then_some(ids)
 }
 
 fn keys<Id>(ids: &[Id], key: impl Fn(&Id) -> Option<Key>) -> Vec<Key> {
@@ -315,22 +313,26 @@ fn keep_sizes<Id: Clone + PartialEq>(
     }
 }
 
-/// `now`, an order read from the Grid, with `before`'s unknown IDs back:
-/// `before` itself while `now` is empty, else `before` followed by the
-/// rest of `now` while `now` starts with `before`'s known IDs.
+/// `now`, an order axis read from the Grid, with `before`'s back: `before`
+/// itself while `now` is unset (say a sort orders the axis now), else
+/// `before` followed by the rest of `now` while `now` starts with
+/// `before`'s known IDs, so its unknown ones come back.
 fn keep_order<Id: Clone + PartialEq>(
-    now: &mut Vec<Id>,
-    before: &[Id],
+    now: &mut Option<Vec<Id>>,
+    before: &Option<Vec<Id>>,
     known: impl Fn(&Id) -> bool,
 ) {
-    if now.is_empty() {
-        *now = before.to_vec();
+    let Some(before) = before else {
         return;
-    }
+    };
+    let Some(now) = now.as_mut() else {
+        *now = Some(before.clone());
+        return;
+    };
     let listed: Vec<&Id> = before.iter().filter(|id| known(id)).collect();
     if now.len() >= listed.len() && now.iter().zip(&listed).all(|(a, b)| a == *b) {
         let rest = now.split_off(listed.len());
-        *now = before.to_vec();
+        *now = before.clone();
         now.extend(rest);
     }
 }

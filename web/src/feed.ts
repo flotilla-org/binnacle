@@ -86,6 +86,8 @@ export interface Feed<RowId = unknown, ColId = unknown> {
    * it refused.
    */
   onMoved(axis: AxisName, keys: bigint[], then: (refusal: string | null) => void): void;
+  /** Asks the Table Source for the first `n` items of `axis` and calls `then` with their Keys; a failed request calls nothing. */
+  leading(axis: AxisName, n: number, then: (keys: bigint[]) => void): void;
   /** How the rows may be viewed by column `id`, as the source declares it with the defaults filled in. */
   columnSupport(id: ColId): ColumnSupport;
   /** How the columns may be viewed by row `id`, likewise; nothing without the source's `cols.support`. */
@@ -1341,6 +1343,12 @@ export function createFeed<RowId, ColId, V>(
     viewKeys,
     viewIds,
     onMoved: (axis, keys, then) => void moveWaiters.push({ axis, keys, then }),
+    leading: (axis, n, then) =>
+      void settle(
+        (signal) => axes[axis].source.window(0, n, signal),
+        (window) => then([...keysOf(axes[axis], windowIds(window))]),
+        { failed: () => {} },
+      ),
     columnSupport,
     rowSupport,
     conditionKey: (c, axis) => conditionKey(cross(axis ?? "rows"), c as Condition<unknown>),

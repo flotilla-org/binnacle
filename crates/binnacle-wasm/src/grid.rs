@@ -668,12 +668,19 @@ impl WebGrid {
         self.grid.set_movable(axis(a), movable);
     }
 
-    /// Asks the Table Source to move `keys`, in that order, to before
-    /// Position `to` on `a`, as a header drop does (see
-    /// [`binnacle_core::Grid::request_move`]).
-    pub fn request_move(&mut self, a: u8, keys: &[u64], to: f64) {
+    /// Places `keys` first on `a`, in that order, as a restored Layout's
+    /// order asks: their move to Position 0 unless the Window shows them in
+    /// place; returns whether it asks for one (see
+    /// [`binnacle_core::Grid::arrange`]).
+    pub fn arrange(&mut self, a: u8, keys: &[u64]) -> bool {
         let keys: Vec<Key> = keys.iter().map(|&k| Key(k)).collect();
-        self.grid.request_move(axis(a), keys, to as u64);
+        self.grid.arrange(axis(a), keys)
+    }
+
+    /// The Keys placed first on `a`, in order: a restored order and the
+    /// moves since (see [`binnacle_core::Grid::arranged`]).
+    pub fn arranged(&self, a: u8) -> Vec<u64> {
+        self.grid.arranged(axis(a)).iter().map(|k| k.0).collect()
     }
 
     /// The answer to a `MoveRequested`: `undefined` once the items moved,

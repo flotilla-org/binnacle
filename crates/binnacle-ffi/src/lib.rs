@@ -12,7 +12,7 @@ use std::slice;
 mod layer;
 pub use layer::*;
 
-use binnacle_layout::{IdTable, Layout};
+use binnacle_layout::{IdTable, JsonId, Layout};
 
 use binnacle_core::{
     Action, Aggregate, AggregateValue, Align, Axis, AxisConfig, AxisView, Button, ChangeNotice,
@@ -324,7 +324,7 @@ pub struct BinnacleGrid {
     corner_levels: [Vec<BinnacleCornerLevel>; 2],
     /// The Layout last loaded, whose IDs the host did not name a save
     /// keeps, and the last saved Layout's JSON.
-    loaded: Option<Layout<String, String>>,
+    loaded: Option<Layout<JsonId, JsonId>>,
     layout_json: Vec<u8>,
 }
 
@@ -2652,7 +2652,8 @@ pub unsafe extern "C" fn binnacle_grid_set_pins(
     }
 }
 
-/// A host's ID for an item, as UTF-8 text, and the Key it gives the item.
+/// A host's ID for an item, as the UTF-8 text of its JSON (`"name"`, `7`
+/// or `["ns","a"]`), and the Key it gives the item.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BinnacleNamedKey {
@@ -2685,21 +2686,21 @@ pub struct BinnacleNames {
 }
 
 /// The host's names as an ID table, or `None` for NULL or an ID that is not
-/// UTF-8.
+/// the JSON of an ID.
 ///
 /// # Safety
 /// `names` is NULL or valid for a read, each axis's `names` valid for
 /// `names_len` reads (or NULL with 0) and each ID's text for its length.
-unsafe fn id_table(names: *const BinnacleNames) -> Option<IdTable<String, String>> {
+unsafe fn id_table(names: *const BinnacleNames) -> Option<IdTable<JsonId, JsonId>> {
     // SAFETY: the caller's contract.
     let names = unsafe { names.as_ref() }?;
-    let axis = |a: BinnacleAxisNames| -> Option<Vec<(String, Key)>> {
+    let axis = |a: BinnacleAxisNames| -> Option<Vec<(JsonId, Key)>> {
         // SAFETY: the caller's contract.
         (unsafe { borrowed(a.names, a.names_len) }.iter())
             .map(|n| {
                 // SAFETY: the caller's contract.
-                let id = std::str::from_utf8(unsafe { borrowed(n.id.data, n.id.len) }).ok()?;
-                Some((id.to_owned(), Key(n.key)))
+                let text = unsafe { borrowed(n.id.data, n.id.len) };
+                Some((JsonId::from_json(text)?, Key(n.key)))
             })
             .collect()
     };
@@ -2722,7 +2723,7 @@ pub unsafe extern "C" fn binnacle_grid_load_layout(
         return 0;
     };
     // SAFETY: the caller's contract.
-    let Ok(layout) = Layout::<String, String>::from_json(unsafe { borrowed(json, len) }) else {
+    let Ok(layout) = Layout::<JsonId, JsonId>::from_json(unsafe { borrowed(json, len) }) else {
         return 0;
     };
     // SAFETY: the caller's contract.

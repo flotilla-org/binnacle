@@ -48,10 +48,12 @@ const field = gs.sampledFrom(FIELDS);
 const edge = gs.sampledFrom(["leading", "trailing"] as const);
 
 /**
- * Puts `h` into some state by the controls a user has: pins, sizes, band thicknesses and a View Spec.
+ * Puts `h` into some state by the controls a user has: an order of the columns, pins, sizes, band thicknesses and a View Spec.
  * Sizes and thicknesses are any number: the grid ignores or caps what it does not take.
  */
 function scramble(tc: hegel.TestCase, h: Harness<number, Field, unknown>): void {
+  const moved = tc.draw(gs.arrays(field, { maxSize: 3 }));
+  if (moved.length > 0) restore(h, { version: LAYOUT_VERSION, order: { cols: moved } });
   for (const [id, e] of tc.draw(gs.arrays(gs.tuples(field, edge), { maxSize: 3 }))) {
     h.grid.pin(AXIS_CODE.cols, EDGE_CODE[e], h.feed.colKey(id));
   }
@@ -98,7 +100,7 @@ const compared = gs.composite((tc): Condition<Field> => {
 });
 
 describe("a layout restored onto another grid over the same data reads back the same", () => {
-  test("property: View Spec, pins, sizes and band thickness, whatever the other grid held", () =>
+  test("property: View Spec, order, pins, sizes and band thickness, whatever the other grid held", () =>
     hegel.test(
       (tc) => {
         const a = harness();
@@ -113,11 +115,13 @@ describe("a layout restored onto another grid over the same data reads back the 
           // Plain: it survives JSON.
           const copy = JSON.parse(JSON.stringify(saved)) as Layout<number, Field>;
           expect(restore(b, copy)).toBe(true);
-          // An order is read only while every item is drawn, which the scroll
-          // and the sizes decide; the order's own tests are below.
-          const { order: _, ...rest } = read(b);
-          const { order: __, ...want } = saved;
+          // An order axis the save leaves unset leaves b's own.
+          const { order, ...rest } = read(b);
+          const { order: savedOrder, ...want } = saved;
           expect(rest).toEqual(want);
+          for (const axis of ["rows", "cols"] as const) {
+            if (savedOrder?.[axis]) expect(order?.[axis]).toEqual(savedOrder[axis]);
+          }
         } finally {
           a.destroy();
           b.destroy();
@@ -146,8 +150,7 @@ describe("a layout restored onto another grid over the same data reads back the 
           cols: { sort: [], filter: { quick: null, conditions: [] }, hidden: ["c"] },
           grouping: null,
         },
-        // Sorted, the rows have no order of their own; hidden, "c" is in no order.
-        order: { rows: [], cols: ["a", "b"] },
+        // Nothing arranged, there is no order.
         pins: { rows: { leading: [3], trailing: [] }, cols: { leading: ["b"], trailing: ["c"] } },
         sizes: { rows: [], cols: [["a", 150]] },
         bands: { rows: 24, cols: 70 },
@@ -277,7 +280,7 @@ test("restored before data loads: the View Spec shows pending, pins, sizes and b
     h.drain();
     s = h.settled();
     expect(s.viewPending).toBe(false);
-    expect(read(h)).toEqual({ ...layout, order: { rows: [], cols: ["c0", "c1", "c2"] } });
+    expect(read(h)).toEqual(layout);
   } finally {
     h.destroy();
   }
@@ -314,7 +317,7 @@ test("a missing item's pin or size keeps its ID through any number of Resets, un
     };
     restore(h, layout);
     resets();
-    expect(read(h)).toEqual({ ...layout, order: { rows: ids(10, "r"), cols: ids(3, "c") } });
+    expect(read(h)).toEqual(layout);
     // Unpinned, and its size reset, a missing column's ID goes like any other.
     const [gone, sized] = [h.feed.colKey("gone"), h.feed.colKey("sized")];
     h.grid.unpin(AXIS_CODE.cols, gone);
@@ -391,8 +394,8 @@ describe("version 2: the order, every part optional, and version 1 migrated", ()
       const saved = JSON.parse(JSON.stringify(V1)) as LayoutV1<number, Field>;
       expect(restore(h, saved)).toBe(true);
       const { version: _, ...parts } = V1;
-      // Sorted, the rows have no order; the columns keep theirs.
-      expect(read(h)).toEqual({ ...parts, version: 2, order: { rows: [], cols: ["a", "b", "c"] } });
+      // Nothing arranged, there is no order.
+      expect(read(h)).toEqual({ ...parts, version: 2 });
       expect(migrateLayout(saved)).toEqual({ ...V1, version: 2 });
     } finally {
       h.destroy();
@@ -425,17 +428,52 @@ describe("version 2: the order, every part optional, and version 1 migrated", ()
       const shown = () => h.snapshot.cols.strip.map((item) => h.feed.colId(item.key!));
       expect(shown()).toEqual(["id", "name", "weight", "crew", "port"]);
       const unplaced: LayoutOrder<number, DemoField>[] = [];
-      const order = { rows: [], cols: ["port", "weight"] as DemoField[] };
+      const order = { cols: ["port", "weight"] as DemoField[] };
       expect(restoreLayout({ version: LAYOUT_VERSION, order }, h, { unplaced: (o) => unplaced.push(o) })).toBe(true);
       h.drain();
       h.settled();
       expect(shown()).toEqual(["port", "weight", "id", "name", "crew"]);
       expect(unplaced).toEqual([]);
-      // Read back: the columns' order; not every row is drawn, so the rows have none.
-      expect(read(h).order).toEqual({ rows: [], cols: ["port", "weight", "id", "name", "crew"] });
+      // Read back: the columns' order, the rows having none.
+      expect(read(h).order).toEqual(order);
       // In place already, it asks for no move.
       expect(restoreLayout({ version: LAYOUT_VERSION, order }, h)).toBe(true);
       expect(h.grid.poll_effects()).toEqual([]);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("an ID the source lacks is reported as not placed once the move is made, and the next save keeps it", () => {
+    const h = new Harness(fromRows(DEMO_ROWS, DEMO_COLUMNS), 900, 300);
+    try {
+      h.settled();
+      const unplaced: LayoutOrder<number, DemoField>[] = [];
+      const order = { cols: ["port", "gone", "weight"] as DemoField[] };
+      expect(restoreLayout({ version: LAYOUT_VERSION, order }, h, { unplaced: (o) => unplaced.push(o) })).toBe(true);
+      h.drain();
+      h.settled();
+      expect(h.snapshot.cols.strip.map((item) => h.feed.colId(item.key!))).toEqual(["port", "weight", "id", "name", "crew"]);
+      expect(unplaced).toEqual([{ cols: ["gone"] }]);
+      expect(read(h).order).toEqual(order);
+    } finally {
+      h.destroy();
+    }
+  });
+
+  test("on a table wider than the grid, the order is saved wherever the columns are scrolled", () => {
+    const h = new Harness(fromRows(DEMO_ROWS, DEMO_COLUMNS), 260, 300);
+    try {
+      h.settled();
+      const order = { cols: ["crew", "id"] as DemoField[] };
+      expect(restore(h, { version: LAYOUT_VERSION, order })).toBe(true);
+      // A wide column and a scroll to the end leave the first columns off screen.
+      h.grid.set_size(AXIS_CODE.cols, h.feed.colKey("name"), 600);
+      h.grid.scroll_to_item(AXIS_CODE.cols, 4);
+      h.drain();
+      const shown = h.settled().cols.strip.map((item) => h.feed.colId(item.key!));
+      expect(shown).not.toContain("crew");
+      expect(read(h).order).toEqual(order);
     } finally {
       h.destroy();
     }
@@ -463,13 +501,13 @@ describe("version 2: the order, every part optional, and version 1 migrated", ()
       };
       restoreLayout(layout, h, { unplaced: (o) => unplaced.push(o) });
       // The sorted rows' order is not placed at once.
-      expect(unplaced).toEqual([{ rows: ["r3"], cols: [] }]);
+      expect(unplaced).toEqual([{ rows: ["r3"] }]);
       h.drain();
       h.settled();
-      expect(unplaced).toEqual([
-        { rows: ["r3"], cols: [] },
-        { rows: [], cols: ["c2", "c1"] },
-      ]);
+      expect(unplaced).toEqual([{ rows: ["r3"] }, { cols: ["c2", "c1"] }]);
+      // Neither placed, a save keeps the restored order.
+      expect(readLayout(h.snapshot, { grid: h.grid, feed: h.feed, restored: layout }).order).toEqual(layout.order);
+      expect(read(h).order).toBeUndefined();
       expect(h.snapshot.cols.strip.map((item) => h.feed.colId(item.key!))).toEqual(["c0", "c1", "c2"]);
       expect(h.snapshot.moveRefusal).toEqual({ axis: "cols", reason: "Not these" });
     } finally {

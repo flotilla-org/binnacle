@@ -17,3 +17,4 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 binnacle-memory.workspace = true
 binnacle-testkit.workspace = true
 hegeltest.workspace = true
+jsonschema = { version = "0.60", default-features = false }

@@ -1287,7 +1287,9 @@ int binnacle_grid_set_pins(BinnacleGrid *grid, uint32_t axis, uint32_t edge,
 int binnacle_grid_size_overrides(BinnacleGrid *grid, uint32_t axis,
                                  BinnacleSizeOverrides *out);
 
-/* A host's ID for an item, as UTF-8 text, and the Key it gives the item. */
+/* A host's ID for an item, as the UTF-8 text of its JSON ("name", 7 or
+ * ["ns","a"], as a Layout writes it), and the Key it gives the item. IDs
+ * are the same when their JSON values are. */
 typedef struct {
   BinnacleText id;
   uint64_t key;
@@ -1312,21 +1314,23 @@ typedef struct {
  * items as names does. Each part the layout sets is restored as
  * binnacle-layout's Layout::restore does: the pins, Size Overrides (others
  * cleared) and band thicknesses at once, the View Spec as a request, and
- * the order as a MOVE_REQUESTED of the listed items to Position 0 unless
- * they are in place already, queued behind a move waiting for its answer.
- * The Table Source may refuse the move, as any. Whatever names an ID names
- * does not list is skipped, as is the order of an axis the View Spec sorts
- * or groups; the handle keeps the layout, so the next save puts the
- * unknown IDs back. Returns 0, restoring nothing, for bytes that are not a
- * Layout of a known version, or an ID that is not UTF-8. Poll the Effects
- * afterwards. */
+ * each axis of the order as a MOVE_REQUESTED of the listed items to
+ * Position 0 unless they are in place already, queued behind a move
+ * waiting for its answer. The Table Source may refuse the move, as any.
+ * Whatever names an ID names does not list is skipped, as is the order of
+ * an axis the View Spec sorts or groups, and none of these is reported;
+ * the handle keeps the layout, so the next save puts them back. Returns 0,
+ * restoring nothing, for bytes that are not a Layout of a known version
+ * (a field it does not define included), or a name that is not an ID's
+ * JSON. Poll the Effects afterwards. */
 int binnacle_grid_load_layout(BinnacleGrid *grid, const BinnacleNames *names,
                               const uint8_t *json, size_t len);
 
 /* Saves the Grid's layout into out as JSON, naming items as names does,
- * valid until the next call of this function on grid: every part, as
- * binnacle-layout's Layout::read reads it (an axis's order only while the
- * last Snapshot drew every item and no sort or grouping orders it), with
+ * valid until the next call of this function on grid: each part as
+ * binnacle-layout's Layout::read reads it, with an axis's order the items
+ * the last load's order and the header moves since placed first (unset
+ * while there are none, or a sort or grouping orders the axis), and with
  * what the last loaded layout held for IDs names does not list put back. */
 int binnacle_grid_save_layout(BinnacleGrid *grid, const BinnacleNames *names,
                               BinnacleText *out);

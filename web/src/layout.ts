@@ -19,10 +19,10 @@ export interface LayoutPins<Id> {
   trailing: Id[];
 }
 
-/** Per axis, the items to place first, in this order; the rest follow in the Table Source's order. */
+/** Per axis, the items to place first, in this order; the rest follow in the Table Source's order. An axis left out is not set. */
 export interface LayoutOrder<RowId, ColId> {
-  rows: RowId[];
-  cols: ColId[];
+  rows?: RowId[];
+  cols?: ColId[];
 }
 
 /**
@@ -32,7 +32,9 @@ export interface LayoutOrder<RowId, ColId> {
  * Band leading each axis (`rows` is the column header band along the top,
  * `cols` the row-number band down the left). Each part is optional: one
  * left out is not set, and restoring leaves the grid's own. Plain data: it
- * survives `JSON.stringify` whenever the IDs do.
+ * survives `JSON.stringify` whenever the IDs do. The IDs name every item
+ * of their axis as the source does, Group Items included (the View Spec's
+ * open groups name them).
  */
 export interface Layout<RowId, ColId> {
   version: typeof LAYOUT_VERSION;
@@ -52,22 +54,28 @@ export interface LayoutV1<RowId, ColId> {
   bands: { rows: number; cols: number };
 }
 
+/** A layout as `readLayout` reads it: every part set but the order, which is set where the grid has one. */
+export type ReadLayout<RowId, ColId> = Required<Omit<Layout<RowId, ColId>, "order">> & Pick<Layout<RowId, ColId>, "order">;
+
 export interface LayoutParts<RowId, ColId> {
   readonly grid: WebGrid;
   readonly feed: Feed<RowId, ColId>;
   /** Whether the widget computed `size` for `key` itself (an initial fit or fill), which a layout leaves out. */
   computed?(axis: AxisName, key: bigint, size: number): boolean;
-  /** The last Snapshot drawn, if any: where an order's items sit now, and the View Spec in force. */
+  /** The last Snapshot drawn, if any: the View Spec in force. */
   readonly shown?: Snapshot | null | undefined;
+  /** The layout last restored, if any: an order axis the grid has none on (sorted, or its move refused) keeps its. */
+  readonly restored?: Layout<RowId, ColId> | undefined;
 }
 
 /** Where `restoreLayout` reports the items of an order it could not place. */
 export interface RestoreOptions<RowId, ColId> {
   /**
    * The items of the layout's order that were not placed: on an axis its
-   * View Spec sorts or groups (a move would undo that), and those of a move
-   * the Table Source refused, as it answers. Called once per such axis,
-   * with the other axis empty.
+   * View Spec sorts or groups (a move would undo that), those of a move
+   * the Table Source refused, as it answers, and those the source lacks,
+   * once it has made the move. Called once per such axis, with the other
+   * axis left out.
    */
   unplaced?(order: LayoutOrder<RowId, ColId>): void;
 }
@@ -85,28 +93,16 @@ function sortedOrGrouped(view: ViewSpec<unknown, unknown>, axis: AxisName): bool
   return grouped || view[axis].sort.length > 0;
 }
 
-/** The Keys of every item of `axis` in Position order, if the Snapshot draws them all. */
-function orderOf(s: Snapshot, axis: AxisName): bigint[] | undefined {
-  const byPosition = new Map(s[axis].strip.map((item) => [item.position, item.key]));
-  const keys: bigint[] = [];
-  for (let p = 0; p < s[axis].count; p++) {
-    const key = byPosition.get(p);
-    if (key === undefined || key === null) return undefined;
-    keys.push(key);
-  }
-  return keys;
-}
-
 /**
- * The layout as of Snapshot `s`, every part set: the View Spec last asked
- * for (else the one applied), the order, pins dormant or not, and Size
- * Overrides for items shown or not, less the sizes the widget computed
- * itself. An axis's order is its items' IDs in Position order while the
- * Snapshot draws every one of them and neither a sort nor a grouping
- * orders them, and empty otherwise. Anything whose ID the grid no longer
- * knows is left out.
+ * The layout as of Snapshot `s`: the View Spec last asked for (else the
+ * one applied), pins dormant or not, and Size Overrides for items shown or
+ * not, less the sizes the widget computed itself, each set; and an axis's
+ * order where the grid has arranged one, the items a restored order and
+ * the header moves since placed first, unless a sort or grouping orders
+ * the axis. An axis with none keeps the restored layout's order. Anything
+ * whose ID the grid no longer knows is left out.
  */
-export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed, computed }: LayoutParts<RowId, ColId>): Required<Layout<RowId, ColId>> {
+export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed, computed, restored }: LayoutParts<RowId, ColId>): ReadLayout<RowId, ColId> {
   const id = (axis: AxisName, key: bigint) => (axis === "rows" ? feed.rowId(key) : feed.colId(key));
   const ids = <Id>(axis: AxisName, keys: Iterable<bigint>): Id[] =>
     [...keys].flatMap((key) => {
@@ -127,11 +123,16 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed, computed }: 
     });
   };
   const view = feed.viewIds(s.requestedView ?? s.appliedView);
-  const order = <Id>(axis: AxisName): Id[] => (sortedOrGrouped(view, axis) ? [] : ids(axis, orderOf(s, axis) ?? []));
+  const order: LayoutOrder<RowId, ColId> = {};
+  for (const axis of AXES) {
+    const arranged = sortedOrGrouped(view, axis) ? [] : ids(axis, grid.arranged(AXIS_CODE[axis]));
+    const list = arranged.length > 0 ? arranged : restored?.order?.[axis];
+    if (list) (order as Record<AxisName, unknown[]>)[axis] = list;
+  }
   return {
     version: LAYOUT_VERSION,
     view,
-    order: { rows: order<RowId>("rows"), cols: order<ColId>("cols") },
+    ...(order.rows || order.cols ? { order } : {}),
     pins: { rows: pins<RowId>("rows"), cols: pins<ColId>("cols") },
     sizes: { rows: sizes<RowId>("rows"), cols: sizes<ColId>("cols") },
     bands: { rows: plain(s.rows.header), cols: plain(s.cols.header) },
@@ -152,9 +153,10 @@ export function migrateLayout<RowId, ColId>(layout: Layout<RowId, ColId> | Layou
  * Puts `layout` back, each part it sets: pins, Size Overrides and band
  * thicknesses at once (overrides it does not list are cleared, but for
  * sizes the widget computed itself), the View Spec as an ordinary request,
- * pending until the Table Source answers, and the order as a move of the
- * listed items to the front, through the source's `move` as a header drop
- * asks for one, unless the Snapshot shows them in place already. It never
+ * pending until the Table Source answers, and each axis of the order as a
+ * move of the listed items to the front, through the source's `move` as a
+ * header drop asks for one, unless the grid shows them in place already;
+ * they become the axis's arrangement, which `readLayout` reads. It never
  * fails on what the source lacks: a missing pinned item sleeps until it
  * appears, the source leaves hidden IDs it does not know out of its answer,
  * a condition on a missing item shows as not applied, and a size waits for
@@ -195,20 +197,27 @@ export function restoreLayout<RowId, ColId>(
     const spec = shown && (shown.requestedView ?? shown.appliedView);
     const inForce = view ?? (spec ? feed.viewIds(spec) : undefined);
     for (const axis of AXES) {
-      const ids: unknown[] = order[axis];
-      if (ids.length === 0) continue;
-      const report = () => unplaced?.(axis === "rows" ? { rows: ids as RowId[], cols: [] } : { rows: [], cols: ids as ColId[] });
+      const listed: unknown[] | undefined = order[axis];
+      if (!listed) continue;
+      const report = (ids: unknown[]) => unplaced?.(axis === "rows" ? { rows: ids as RowId[] } : { cols: ids as ColId[] });
       if (inForce && sortedOrGrouped(inForce, axis)) {
-        report();
+        if (listed.length > 0) report(listed);
         continue;
       }
-      const keys = ids.map((id) => key(axis, id));
-      const at = new Map(shown?.[axis].strip.map((item) => [item.position, item.key]));
-      if (keys.every((k, p) => at.get(p) === k)) continue;
+      const byKey = new Map(listed.map((id) => [key(axis, id), id]));
+      const keys = [...byKey.keys()];
+      if (!grid.arrange(AXIS_CODE[axis], BigUint64Array.from(keys))) continue;
+      const hidden: unknown[] = inForce?.[axis].hidden ?? [];
+      const shown = keys.filter((k) => !hidden.some((id) => key(axis, id) === k));
       feed.onMoved(axis, keys, (refusal) => {
-        if (refusal !== null) report();
+        if (refusal !== null) return report(listed);
+        // The source moves what it has: an item it shows that is missing from the front, it lacks.
+        feed.leading(axis, shown.length, (front) => {
+          const placed = new Set(front);
+          const missing = shown.filter((k) => !placed.has(k)).map((k) => byKey.get(k));
+          if (missing.length > 0) report(missing);
+        });
       });
-      grid.request_move(AXIS_CODE[axis], BigUint64Array.from(keys), 0);
     }
   }
   return true;
