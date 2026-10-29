@@ -1,0 +1,97 @@
+name: Claude Code Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "flotilla-crew"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Please review this pull request and provide feedback on:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Performance considerations
+            - Security concerns
+            - Test coverage
+
+            Use the repository's CONTEXT.md (the glossary: code, comments and TS identifiers should use its terms) and README.md for guidance on style and conventions. If the PR closes or names an issue, read that issue with `gh issue view`: its body is the brief, and the PR should meet its Contract and Tests. Comments and docs must not contain em-dashes. Be constructive and helpful in your feedback.
+            START by running `gh pr diff ${{ github.event.pull_request.number }}` (and
+            `gh pr view ${{ github.event.pull_request.number }}` for the description) to see
+            exactly what changed. These `gh` commands are allowed; the checkout is a
+            merge commit, so the working tree alone does not show the change.
+            Use Read, Glob, and Grep to inspect surrounding files. Shell commands other than
+            the allowed `gh` commands are not available in this review workflow.
+
+            You are a STATIC reviewer by design: the CI workflow runs fmt, clippy, the Rust
+            tests and the web gates on this PR, and their results are visible as checks. Do NOT
+            try to run builds, tests or linters, and do not apologise for not running them.
+
+            RE-REVIEWS: if this PR already has a review comment from you, this run is a
+            re-review of a new push. Converge instead of starting over:
+              * Use `gh pr view --json commits,comments` to find the head your last review
+                covered. Review only what changed since then, and check whether your earlier
+                findings and the implementor's replies resolve them.
+              * Raise a NEW finding on code your earlier review already covered only if it
+                is a correctness, security or data-loss defect. Put style, naming, extra
+                hardening and test ideas for already-reviewed code under "Optional"
+                and do not repeat them in later rounds.
+              * Label every finding Blocking, Should-fix or Optional. If nothing is Blocking
+                or Should-fix, say plainly that the PR has converged.
+
+            AFTER reviewing, 
+              * CHECK your findings against the existing comments and replies on the PR. e.g if followup issues are filed or the implementor pushed back, make sure that is 
+              correct: drop issues that are already addressed, repeat issues that still need to be dealt with with an explanation.
+              * ALWAYS Use `gh pr comment` with your Bash tool to leave your review as a SINGLE comment on the PR, properly formatted as markdown, even if just to say that you found no issues.
+              * Post with `gh pr comment ${{ github.event.pull_request.number }} --body-file -` and a quoted heredoc directly on that command. Do not use cat, command substitution, or a temporary file to construct the body.
+
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://docs.claude.com/en/docs/claude-code/cli-reference for available options
+          claude_args: '--allowed-tools "Read,Glob,Grep,Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
+      - name: Report review outcome
+        if: always() && steps.claude-review.outputs.execution_file != ''
+        env:
+          REVIEW_EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          python3 - <<'PY'
+          import collections
+          import json
+          import os
+          import uuid
+          from pathlib import Path
+
+          messages = json.loads(Path(os.environ['REVIEW_EXECUTION_FILE']).read_text())
+          # Model-authored text must not be interpreted as workflow commands.
+          marker = uuid.uuid4().hex
+          print(f'::stop-commands::{marker}')
+          for message in messages:
+              if message.get('type') == 'result':
+                  print(message.get('result', 'No final review text returned.'))
+                  denied = collections.Counter(item.get('tool_name', 'unknown')
+                      for item in message.get('permission_denials', []))
+                  print('Denied tool counts:', dict(denied))
+          print(f'::{marker}::')
+          PY
