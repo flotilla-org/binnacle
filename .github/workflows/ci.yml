@@ -91,10 +91,13 @@ jobs:
     # fonts measure differently.
     runs-on: macos-14
     needs: fmt
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        project: [chromium, firefox, webkit]
+        # WebKit on the macOS runners stalls for over an hour; it joins
+        # once the suite runs on Linux.
+        project: [chromium, firefox]
     defaults:
       run:
         working-directory: web
