@@ -263,6 +263,10 @@ impl Schema {
                 _ => Err(DecodeError::schema("a field is not an object")),
             })
             .collect::<Result<Vec<Field>, DecodeError>>()?;
+        let mut seen = std::collections::HashSet::new();
+        if !fields.iter().all(|f| seen.insert(f.name.as_str())) {
+            return Err(DecodeError::schema("a schema names a field twice"));
+        }
         let foreign_keys = (object
             .get("foreignKeys")
             .and_then(Json::as_array)

@@ -464,7 +464,9 @@ impl<R> MemorySource<R> {
     /// by the [`TypedKey`] `f` gives a row (nulls lowest, then invalid
     /// values, then typed ones) and compared as `compared` says: numbers
     /// by its integer and float keys, dates by its instants (to the
-    /// millisecond), nothing else. `None` is null.
+    /// millisecond), nothing else. `None` is null. The columns sort by a
+    /// row by typed keys only while every column with a closure is typed;
+    /// mixed with columns of other kinds, they sort by text.
     pub fn typed_column(
         mut self,
         column: Key,

@@ -170,3 +170,10 @@ fn any_message_decodes_the_same_from_json_and_cbor(tc: TestCase) {
     decoder.feed(rest);
     assert_eq!(decoder.next().unwrap().unwrap(), from_json);
 }
+
+#[test]
+fn a_schema_naming_a_field_twice_is_an_error() {
+    let schema =
+        json!({"fields": [{"name": "a", "type": "string"}, {"name": "a", "type": "integer"}]});
+    assert!(Schema::from_json(&schema).is_err());
+}
