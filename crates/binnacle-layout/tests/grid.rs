@@ -502,3 +502,17 @@ fn an_arrangement_asked_for_while_a_move_waits_is_made_after_it() {
     assert_eq!(order(&mut s, Axis::Cols), [0, 2, 1, 3]);
     assert_eq!(s.grid.arranged(Axis::Cols), [Key(0)]);
 }
+
+#[test]
+fn an_empty_arrangement_asked_for_while_a_move_waits_asks_no_move() {
+    let mut s = table();
+    s.input(|g| {
+        g.arrange(Axis::Cols, vec![Key(2)]);
+        g.arrange(Axis::Cols, vec![]);
+        g.arrange(Axis::Rows, vec![Key(3)]);
+    });
+    let effects = s.effects();
+    assert_eq!(moves(&effects), 2, "{effects:?}");
+    assert!(s.grid.arranged(Axis::Cols).is_empty());
+    assert_eq!(s.grid.arranged(Axis::Rows), [Key(3)]);
+}

@@ -63,8 +63,14 @@ impl Grid {
         }
         self.moves.refused = refusal.map(|reason| (axis, reason));
         self.pending_damage.selection = true;
-        if let Some((axis, keys)) = self.moves.queued.pop_front() {
+        // An arrangement left empty (asked so, or emptied by `forget`) asks nothing.
+        while let Some((axis, keys)) = self.moves.queued.pop_front() {
+            if keys.is_empty() {
+                self.moves.arranged[axis.index()] = keys;
+                continue;
+            }
             self.ask_move(axis, keys.clone(), 0, keys);
+            break;
         }
     }
 
