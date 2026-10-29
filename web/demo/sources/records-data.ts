@@ -6,7 +6,7 @@ import type { RowsOptions } from "../../src";
 export interface RecordRow {
   id: number;
   name: string;
-  /** Missing for every seventh record, to show nulls sorting last. */
+  /** Missing for every seventh record, to show nulls sorting lowest. */
   weight: number | null;
   crew: number;
   /** Missing for every eleventh record. */

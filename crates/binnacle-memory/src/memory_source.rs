@@ -38,6 +38,7 @@ type ExtractText<R> = Box<dyn for<'r> Fn(&'r R) -> Option<Cow<'r, str>>>;
 
 enum Column<R> {
     I64(Extract<R, i64>),
+    U64(Extract<R, u64>),
     F64(Extract<R, f64>),
     /// Milliseconds since the Unix epoch, sorting as integers.
     Date(Extract<R, i64>),
@@ -48,6 +49,7 @@ impl<R> Column<R> {
     fn extract<'r>(&self, rows: &'r [R]) -> SortKeys<'r> {
         match self {
             Column::I64(f) | Column::Date(f) => SortKeys::I64(rows.iter().map(f).collect()),
+            Column::U64(f) => SortKeys::U64(rows.iter().map(f).collect()),
             Column::F64(f) => SortKeys::F64(rows.iter().map(f).collect()),
             Column::Bytes(f) => SortKeys::Bytes(rows.iter().map(f).collect()),
         }
@@ -58,6 +60,7 @@ impl<R> Column<R> {
     fn scalar(&self, row: &R) -> Option<Scalar> {
         match self {
             Column::I64(f) => f(row).map(|v| Scalar::Number(v as f64)),
+            Column::U64(f) => f(row).map(|v| Scalar::Number(v as f64)),
             Column::F64(f) => f(row).map(Scalar::Number),
             Column::Date(f) => f(row).map(Scalar::Date),
             Column::Bytes(_) => None,
@@ -67,7 +70,7 @@ impl<R> Column<R> {
     /// The kind of value comparison conditions on the column compare.
     fn compared(&self) -> Option<Compared> {
         match self {
-            Column::I64(_) | Column::F64(_) => Some(Compared::Numbers),
+            Column::I64(_) | Column::U64(_) | Column::F64(_) => Some(Compared::Numbers),
             Column::Date(_) => Some(Compared::Dates),
             Column::Bytes(_) => None,
         }
@@ -77,6 +80,7 @@ impl<R> Column<R> {
     fn display<'r>(&self, row: &'r R) -> Option<Cow<'r, str>> {
         match self {
             Column::I64(f) => f(row).map(|v| v.to_string().into()),
+            Column::U64(f) => f(row).map(|v| v.to_string().into()),
             Column::F64(f) => f(row).map(|v| v.to_string().into()),
             Column::Date(f) => f(row).map(|v| Scalar::Date(v).to_string().into()),
             Column::Bytes(f) => f(row).map(|v| match v {
@@ -383,13 +387,22 @@ impl<R> MemorySource<R> {
         self
     }
 
-    /// Makes the column with Key `column` sort by an integer; `None` is null.
+    /// Makes the column with Key `column` sort by an integer, exactly; `None`
+    /// is null, the lowest value.
     pub fn i64_column(mut self, column: Key, f: impl Fn(&R) -> Option<i64> + 'static) -> Self {
         self.columns.insert(column, Column::I64(Box::new(f)));
         self
     }
 
-    /// Makes the column with Key `column` sort by a float; `None` is null.
+    /// Makes the column with Key `column` sort by an unsigned integer,
+    /// exactly (above `i64::MAX` and 2^53 too); `None` is null, the lowest
+    /// value.
+    pub fn u64_column(mut self, column: Key, f: impl Fn(&R) -> Option<u64> + 'static) -> Self {
+        self.columns.insert(column, Column::U64(Box::new(f)));
+        self
+    }
+
+    /// Makes the column with Key `column` sort by a float, NaN the greatest number; `None` is null, the lowest value.
     pub fn f64_column(mut self, column: Key, f: impl Fn(&R) -> Option<f64> + 'static) -> Self {
         self.columns.insert(column, Column::F64(Box::new(f)));
         self
@@ -405,7 +418,8 @@ impl<R> MemorySource<R> {
     }
 
     /// Makes the column with Key `column` sort by a byte string, borrowed from
-    /// the row or computed; `None` is null.
+    /// the row or computed, compared by bytes; `None` is null, the lowest
+    /// value.
     pub fn bytes_column(
         mut self,
         column: Key,
@@ -579,7 +593,8 @@ impl<R> MemorySource<R> {
     }
 
     /// The sort keys of `row` across the base columns, by which the columns
-    /// sort: integers if every column with a closure has an integer one,
+    /// sort: integers if every column with a closure has an integer one (all
+    /// signed or all unsigned),
     /// numbers if every one is numeric, else text (bytes as they are,
     /// numbers written with `Display`). A column without a closure is null.
     fn row_keys<'r>(&self, row: &'r R) -> SortKeys<'r> {
@@ -594,9 +609,17 @@ impl<R> MemorySource<R> {
             };
             return SortKeys::I64(columns.iter().map(key).collect());
         }
+        if (present.clone()).all(|c| matches!(c, Column::U64(_))) {
+            let key = |c: &Option<&Column<R>>| match c {
+                Some(Column::U64(f)) => f(row),
+                _ => None,
+            };
+            return SortKeys::U64(columns.iter().map(key).collect());
+        }
         if present.all(|c| !matches!(c, Column::Bytes(_))) {
             let key = |c: &Option<&Column<R>>| match c {
                 Some(Column::I64(f) | Column::Date(f)) => f(row).map(|v| v as f64),
+                Some(Column::U64(f)) => f(row).map(|v| v as f64),
                 Some(Column::F64(f)) => f(row),
                 _ => None,
             };
@@ -799,7 +822,15 @@ impl<R> MemorySource<R> {
             }
             let entry = seen.entry(text).or_insert((0, i));
             entry.0 += 1;
-            let less = |k: &SortKeys| k.compare(i, entry.1, SortDirection::Ascending).is_lt();
+            let less = |k: &SortKeys| {
+                k.compare(i, entry.1, SortDirection::Ascending)
+                    .then_with(|| {
+                        self.table
+                            .base_key(Axis::Rows, i)
+                            .cmp(&self.table.base_key(Axis::Rows, entry.1))
+                    })
+                    .is_lt()
+            };
             if keys.as_ref().is_some_and(less) {
                 entry.1 = i;
             }
@@ -809,7 +840,10 @@ impl<R> MemorySource<R> {
             let by_key = keys.as_ref().map_or(Ordering::Equal, |k| {
                 k.compare(*i, *j, SortDirection::Ascending)
             });
-            by_key.then_with(|| a.cmp(b))
+            let row_key = |r: usize| self.table.base_key(Axis::Rows, r);
+            by_key
+                .then_with(|| row_key(*i).cmp(&row_key(*j)))
+                .then_with(|| a.cmp(b))
         });
         let counted = values.into_iter().map(|(text, (count, _))| (text, count));
         distinct(counted, blanks, query)

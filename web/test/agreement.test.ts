@@ -480,7 +480,7 @@ describe("Grouping", () => {
       expect(memory.group(grouping, new BigUint64Array(), new Uint8Array(), [], new BigUint64Array(), new Uint8Array(), [])).toBe(12);
       type Item = { key: bigint; item: number | null; outline: Outline<bigint, bigint>; aggregates: (number | null)[] | null };
       const items = memory.grouped_window(0, 0, 12) as Item[];
-      const [a, b, blank] = [items[0]!.key, items[4]!.key, items[8]!.key];
+      const [blank, a, b] = [items[0]!.key, items[3]!.key, items[7]!.key];
       // Each item's place among its siblings: the top holds three groups and the Grand Total, each group its Leaves and Subtotal.
       const set = (index: number, size: number) => ({ index, size });
       const group = (value: string | null, index: number, span: number) => ({
@@ -509,32 +509,32 @@ describe("Grouping", () => {
         group: { field: 1n, value },
       });
       expect(items.map((i) => [i.item, i.outline])).toEqual([
-        [null, group("a", 0, 3)],
+        [null, group(null, 0, 2)],
+        [3, leaf(blank, null, 0, 2)],
+        [null, subtotal(blank, null, 2)],
+        [null, group("a", 1, 3)],
         [1, leaf(a, "a", 0, 3)],
         [4, leaf(a, "a", 1, 3)],
         [null, subtotal(a, "a", 3)],
-        [null, group("b", 1, 3)],
+        [null, group("b", 2, 3)],
         [0, leaf(b, "b", 0, 3)],
         [2, leaf(b, "b", 1, 3)],
         [null, subtotal(b, "b", 3)],
-        [null, group(null, 2, 2)],
-        [3, leaf(blank, null, 0, 2)],
-        [null, subtotal(blank, null, 2)],
         [null, { kind: "grandTotal", depth: 0, open: "cantOpen", ancestors: [], group: null, span: 0, path: [], set: set(3, 4) }],
       ]);
       expect(items.map((i) => i.aggregates)).toEqual([
-        [5, 2], null, null, [5, 2], [7, 2], null, null, [7, 2], [10, 1], null, [10, 1], [22, 5],
+        [10, 1], null, [10, 1], [5, 2], null, null, [5, 2], [7, 2], null, null, [7, 2], [22, 5],
       ]);
       expect(items[11]!.key).toBe(bridge().grand_total_key());
       expect(GRAND_TOTAL).toBe(bridge().grand_total_key());
-      expect(Array.from(memory.locate_summary(0, items[4]!.key))).toEqual([0, 4]);
+      expect(Array.from(memory.locate_summary(0, b))).toEqual([0, 7]);
       expect(Array.from(memory.locate_summary(0, GRAND_TOTAL))).toEqual([0, 11]);
-      expect(Array.from(memory.locate(0, 3))).toEqual([0, 9]);
+      expect(Array.from(memory.locate(0, 3))).toEqual([0, 1]);
       // In header form a group is a span, not an item: gone, suggested at its first item.
       stage();
       const header = { ...grouping, rowAxis: { ...grouping.rowAxis, form: "header" as const } };
       memory.group(header, new BigUint64Array(), new Uint8Array(), [], new BigUint64Array(), new Uint8Array(), []);
-      expect(Array.from(memory.locate_summary(0, b))).toEqual([1, 3]);
+      expect(Array.from(memory.locate_summary(0, b))).toEqual([1, 5]);
 
       // Sorted by the weight, heaviest first: the groups by their sum.
       memory.stage_strings(...region);

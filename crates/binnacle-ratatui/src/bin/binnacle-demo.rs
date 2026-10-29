@@ -259,7 +259,7 @@ const PORTS: [&str; 9] = [
 struct Record {
     id: i64,
     name: String,
-    /// Missing for every seventh record, to show nulls sorting last.
+    /// Missing for every seventh record, to show nulls sorting lowest.
     weight: Option<f64>,
     crew: i64,
     /// Missing for every eleventh record, to show blanks in its checklist.

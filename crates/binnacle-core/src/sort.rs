@@ -1,7 +1,7 @@
 use crate::types::{Key, Position};
 
-/// Which way one column of a Sort Spec orders its values. Nulls go last either
-/// way.
+/// Which way one column of a Sort Spec orders its values. Descending reverses
+/// the whole order, nulls included: they are the lowest value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SortDirection {
     Ascending,

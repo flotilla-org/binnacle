@@ -1,6 +1,6 @@
 //! Seam 2 properties: the In-Memory Table Source against a naive model of the
-//! spec's sort (tuple comparison in Sort Spec order, ties in base order, nulls
-//! and NaNs last in either direction) and filter (skip the rows the keep mask
+//! spec's sort (tuple comparison in Sort Spec order, ties by Key, nulls lowest and
+//! NaN the greatest number, descending reversing all of it) and filter (skip the rows the keep mask
 //! drops), over random tables and sequences of sorts and filters of either
 //! axis and moves of either axis (the drop Position read in the filtered
 //! order; a move on a sorted axis baked or refused).
@@ -119,6 +119,7 @@ impl Table {
             state.rows.clone(),
             &state.spec,
             |c, i| rank(&self.columns[c], i),
+            |i| self.key(i).0,
             keep,
         )
     }
@@ -140,32 +141,32 @@ impl Table {
             .map(|k| keys.iter().position(|c| c == k).unwrap())
             .collect();
         let rank = |r: usize, i: usize| rank(&self.by_rows[r], i);
-        (support::model_from(base, &state.col_spec, rank, |_| true).into_iter())
+        (support::model_from(base, &state.col_spec, rank, |i| keys[i].0, |_| true).into_iter())
             .map(|i| keys[i])
             .collect()
     }
 }
 
-/// Class 0 for a value, 1 for NaN, 2 for null; values rank by magnitude.
+/// Class 0 for null, 1 for a value, 2 for NaN; values rank by magnitude.
 fn rank(values: &Values, i: usize) -> (u8, i128) {
     match values {
-        Values::I64(v) => v[i].map_or((2, 0), |x| (0, x as i128)),
+        Values::I64(v) => v[i].map_or((0, 0), |x| (1, x as i128)),
         Values::F64(v) => match v[i] {
-            None => (2, 0),
-            Some(x) if x.is_nan() => (1, 0),
+            None => (0, 0),
+            Some(x) if x.is_nan() => (2, 0),
             // IEEE bits reordered so integer order is total float order.
             Some(x) => {
                 let bits = x.to_bits() as i64;
-                (0, (bits ^ (((bits >> 63) as u64) >> 1) as i64) as i128)
+                (1, (bits ^ (((bits >> 63) as u64) >> 1) as i64) as i128)
             }
         },
         Values::Bytes(v) => match &v[i] {
-            None => (2, 0),
+            None => (0, 0),
             Some(b) => {
                 let mut distinct: Vec<&Vec<u8>> = v.iter().flatten().collect();
                 distinct.sort();
                 distinct.dedup();
-                (0, distinct.binary_search(&b).unwrap() as i128)
+                (1, distinct.binary_search(&b).unwrap() as i128)
             }
         },
     }

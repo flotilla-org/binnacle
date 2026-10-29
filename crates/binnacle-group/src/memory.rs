@@ -117,16 +117,18 @@ fn figure(
     }
 }
 
-/// Orders `a` and `b` as a sort column does: blanks last either way.
+/// Orders `a` and `b` as a sort column does: blanks lowest, and descending
+/// reverses all of it.
 fn by_figure(a: Figure, b: Figure, direction: SortDirection) -> Ordering {
-    match (a.number(), b.number()) {
-        (Some(a), Some(b)) => match direction {
-            SortDirection::Ascending => a.total_cmp(&b),
-            SortDirection::Descending => b.total_cmp(&a),
-        },
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
+    let ascending = match (a.number(), b.number()) {
+        (Some(a), Some(b)) => a.total_cmp(&b),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
         (None, None) => Ordering::Equal,
+    };
+    match direction {
+        SortDirection::Ascending => ascending,
+        SortDirection::Descending => ascending.reverse(),
     }
 }
 
@@ -406,7 +408,7 @@ fn walk<'b>(root: &'b Bucket, path: &Path) -> Option<&'b Bucket> {
 
 /// Orders two groups' values as ascending typed values do: by the number
 /// `number` gives their first rows where both have one, else by text, with
-/// blanks last.
+/// blanks first.
 fn by_value(
     field: Key,
     a: &Bucket,
@@ -417,8 +419,8 @@ fn by_value(
         (Some(x), Some(y)) => x.total_cmp(&y),
         _ => match (&a.value, &b.value) {
             (Some(Value::Blank), Some(Value::Blank)) => Ordering::Equal,
-            (Some(Value::Blank), _) => Ordering::Greater,
-            (_, Some(Value::Blank)) => Ordering::Less,
+            (Some(Value::Blank), _) => Ordering::Less,
+            (_, Some(Value::Blank)) => Ordering::Greater,
             (x, y) => x.cmp(y),
         },
     }
@@ -521,15 +523,12 @@ fn finish_columns(
         })
         .collect();
     keyed.sort_by(|(fa, a), (fb, b)| {
-        let blank = |k: &Bucket| k.value == Some(Value::Blank);
         let mut figures = fa.iter().zip(fb);
         let sorted = sorts.iter().map(|(row, direction)| match row {
             Some(_) => {
                 let (x, y) = figures.next().expect("one per row sorted by");
                 by_figure(*x, *y, *direction)
             }
-            // Blanks last either way.
-            None if blank(a) || blank(b) => by_value(field, a, b, number),
             None => match direction {
                 SortDirection::Ascending => by_value(field, a, b, number),
                 SortDirection::Descending => by_value(field, a, b, number).reverse(),

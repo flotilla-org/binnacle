@@ -60,7 +60,7 @@ async function header(page: Page, col: number) {
 const focus = (position: number, id: number, col = "id") =>
   `focus row ${(position + 1).toLocaleString("en")}, column 1 (${id} / ${col})`;
 
-/** The records' indices by weight ascending, nulls last, ties by index. */
+/** The records' indices by weight ascending, nulls first, ties by index. */
 function byWeight(): number[] {
   const weight = (i: number) => rows[i]!.weight;
   return rows
@@ -69,8 +69,8 @@ function byWeight(): number[] {
       const a = weight(i);
       const b = weight(j);
       if (a === b) return i - j;
-      if (a === null) return 1;
-      if (b === null) return -1;
+      if (a === null) return -1;
+      if (b === null) return 1;
       return a - b;
     });
 }

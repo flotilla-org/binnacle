@@ -58,14 +58,14 @@ async function rowHeader(page: Page, row: number, shift = false) {
   if (shift) await page.keyboard.up("Shift");
 }
 
-/** The records' indices sorted by weight, nulls last and ties in base order. */
+/** The records' indices sorted by weight, nulls lowest and ties in base order. */
 function byWeight(direction: 1 | -1): number[] {
   return rows
     .map((_, i) => i)
     .sort((i, j) => {
       const [a, b] = [rows[i]!.weight, rows[j]!.weight];
-      if (a === null || b === null) return Number(a === null) - Number(b === null);
-      return direction * (a - b) || i - j;
+      const c = a === null ? (b === null ? 0 : -1) : b === null ? 1 : a - b;
+      return direction * c || i - j;
     });
 }
 

@@ -529,7 +529,7 @@ fn anchor_kept_or_stepped_off_a_pin(host: &mut Host, axis: Axis, then: ScrollAnc
 #[test]
 fn a_sort_moving_a_pin_onto_the_anchor_moves_the_anchor_off_it() {
     let mut host = Host::new(Table {
-        rows: vec![vec![None, None], vec![Some(0), None]],
+        rows: vec![vec![Some(0), None], vec![None, None]],
         cols: 2,
         sortable: vec![0],
         unsortable: vec![],

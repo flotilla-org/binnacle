@@ -6,12 +6,16 @@ use binnacle_core::SortDirection;
 /// One column's sort keys over every base row, extracted by the host. `None`
 /// is a null.
 ///
-/// `I64` and byte strings compare naturally (bytes lexicographically); `F64`
-/// uses the IEEE total order with every NaN after every number. Nulls and NaNs
-/// go last in either direction.
+/// Each column sorts by one total order: nulls are lowest (first ascending,
+/// last descending); `I64` and `U64` compare exactly; `F64` uses the IEEE
+/// total order with every NaN equal to the others and greater than every
+/// number; byte strings compare lexicographically by bytes, which for UTF-8
+/// text is code-point order. Descending reverses the whole order, nulls
+/// included. Ties between rows are broken by the table on the item's Key.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SortKeys<'a> {
     I64(Vec<Option<i64>>),
+    U64(Vec<Option<u64>>),
     F64(Vec<Option<f64>>),
     Bytes(Vec<Option<Cow<'a, [u8]>>>),
 }
@@ -20,6 +24,7 @@ impl SortKeys<'_> {
     pub fn len(&self) -> usize {
         match self {
             SortKeys::I64(v) => v.len(),
+            SortKeys::U64(v) => v.len(),
             SortKeys::F64(v) => v.len(),
             SortKeys::Bytes(v) => v.len(),
         }
@@ -31,31 +36,44 @@ impl SortKeys<'_> {
 
     /// Compares the keys of base rows `a` and `b`.
     pub(crate) fn compare(&self, a: usize, b: usize, direction: SortDirection) -> Ordering {
-        match self {
-            SortKeys::I64(v) => last_if_none(&v[a], &v[b], |x, y| directed(x.cmp(y), direction)),
-            SortKeys::F64(v) => last_if_none(&v[a], &v[b], |x, y| {
-                let x = (!x.is_nan()).then_some(x);
-                let y = (!y.is_nan()).then_some(y);
-                last_if_none(&x, &y, |x, y| directed(x.total_cmp(y), direction))
-            }),
-            SortKeys::Bytes(v) => last_if_none(&v[a], &v[b], |x, y| directed(x.cmp(y), direction)),
+        let ascending = match self {
+            SortKeys::I64(v) => v[a].cmp(&v[b]),
+            SortKeys::U64(v) => v[a].cmp(&v[b]),
+            SortKeys::F64(v) => v[a].map(F64Key).cmp(&v[b].map(F64Key)),
+            SortKeys::Bytes(v) => v[a].cmp(&v[b]),
+        };
+        match direction {
+            SortDirection::Ascending => ascending,
+            SortDirection::Descending => ascending.reverse(),
         }
     }
 }
 
-fn directed(ordering: Ordering, direction: SortDirection) -> Ordering {
-    match direction {
-        SortDirection::Ascending => ordering,
-        SortDirection::Descending => ordering.reverse(),
+/// A float in the sort order: IEEE total order, but every NaN equal.
+#[derive(Clone, Copy)]
+struct F64Key(f64);
+
+impl PartialEq for F64Key {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
     }
 }
 
-/// Orders `None` after every `Some`, whichever way `compare` runs.
-fn last_if_none<T>(a: &Option<T>, b: &Option<T>, compare: impl Fn(&T, &T) -> Ordering) -> Ordering {
-    match (a, b) {
-        (Some(a), Some(b)) => compare(a, b),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
+impl Eq for F64Key {}
+
+impl PartialOrd for F64Key {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for F64Key {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.0.is_nan(), other.0.is_nan()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => self.0.total_cmp(&other.0),
+        }
     }
 }

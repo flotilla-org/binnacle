@@ -88,7 +88,7 @@ const text = async (locator: Locator) => (await locator.textContent()) ?? "";
 const focus = (position: number, id: number) =>
   `focus row ${(position + 1).toLocaleString("en")}, column 1 (${id} / id)`;
 
-/** Record indices by weight, nulls last either way, ties by index. */
+/** Record indices by weight, nulls lowest (first ascending, last descending), ties by index. */
 function byWeight(direction: "asc" | "desc"): number[] {
   return rows
     .map((_, i) => i)
@@ -96,9 +96,8 @@ function byWeight(direction: "asc" | "desc"): number[] {
       const a = rows[i]!.weight;
       const b = rows[j]!.weight;
       if (a === b) return i - j;
-      if (a === null) return 1;
-      if (b === null) return -1;
-      return direction === "asc" ? a - b : b - a;
+      const c = a === null ? -1 : b === null ? 1 : a - b;
+      return direction === "asc" ? c : -c;
     });
 }
 

@@ -3,7 +3,7 @@
 //! a sum and a distinct count, Subtotals and the Grand Total placed before,
 //! after or nowhere. One sort rule orders siblings at every level: groups by
 //! the aggregate of the sorted column, or by their value when sorting by
-//! their own column, else in ascending order of their value (blanks last);
+//! their own column, else in ascending order of their value (blanks first);
 //! Leaves in source order or the user's sort within their group. Hidden
 //! rows are left out, and the grouped columns leave the columns. A slicer
 //! on any column, hidden or not, leaves rows out before aggregating; a
@@ -55,19 +55,18 @@ fn text(v: Option<i64>) -> Value {
     Value::of(v.map(|n| n.to_string()).as_deref())
 }
 
-/// Orders by `a` then `b` as a sort column does: nulls last either way.
+/// Orders `a` and `b` as a sort column does: nulls lowest, and descending
+/// reverses all of it.
 fn order<T: PartialOrd>(a: Option<T>, b: Option<T>, direction: SortDirection) -> Ordering {
-    match (a, b) {
-        (Some(a), Some(b)) => {
-            let o = a.partial_cmp(&b).unwrap();
-            match direction {
-                SortDirection::Ascending => o,
-                SortDirection::Descending => o.reverse(),
-            }
-        }
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
+    let o = match (a, b) {
+        (Some(a), Some(b)) => a.partial_cmp(&b).unwrap(),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
         (None, None) => Ordering::Equal,
+    };
+    match direction {
+        SortDirection::Ascending => o,
+        SortDirection::Descending => o.reverse(),
     }
 }
 
@@ -197,18 +196,23 @@ fn model(rows: &[Record], asked: &Asked, sort: &SortSpec, hidden: &[Key]) -> Vec
         let depth = path.len();
         let levels: Vec<usize> = asked.levels.iter().map(|l| l.0).collect();
         let Some(&(field, subtotal)) = asked.levels.get(depth) else {
-            // Leaves: the user's sort on columns that are not levels, else
-            // source order.
+            // Leaves: the user's sort on columns that are not levels (as the
+            // source sorts: nulls lowest, ties by Key), else source order.
             let mut leaves = kept;
             leaves.sort_by(|&a, &b| {
                 (sort.columns().iter())
                     .filter(|c| !levels.contains(&(c.key.0 as usize)))
                     .map(|c| {
                         let c0 = c.key.0 as usize;
-                        order(rows[a][c0], rows[b][c0], c.direction)
+                        let o = rows[a][c0].cmp(&rows[b][c0]);
+                        match c.direction {
+                            SortDirection::Ascending => o,
+                            SortDirection::Descending => o.reverse(),
+                        }
                     })
                     .find(|o| o.is_ne())
                     .unwrap_or(Ordering::Equal)
+                    .then(a.cmp(&b))
             });
             out.extend(leaves.into_iter().map(|r| Item::Leaf(Key(r as u64))));
             return;
@@ -1129,7 +1133,7 @@ fn a_leaf_moves_within_its_group_and_nowhere_else(tc: TestCase) {
 }
 
 /// A value's place among ascending values as the pivot orders column
-/// groups: numbers ascending, blanks last.
+/// groups: numbers ascending, nulls first.
 fn ascending(a: &Option<i64>, b: &Option<i64>) -> Ordering {
     order(*a, *b, SortDirection::Ascending)
 }
