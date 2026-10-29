@@ -87,7 +87,9 @@ jobs:
 
   e2e:
     name: E2E / ${{ matrix.project }}
-    runs-on: ubuntu-latest
+    # macOS: several tests place the pointer by measured text, and Linux
+    # fonts measure differently.
+    runs-on: macos-14
     needs: fmt
     strategy:
       fail-fast: false
@@ -116,9 +118,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps ${{ matrix.project }}
       - run: pnpm build
-      # The screenshot baselines are taken on macOS (*-darwin.png), so Linux
-      # runs every behaviour check but skips screenshot comparisons; they
-      # stay a local gate.
+      # Screenshot baselines come from a newer macOS than the runner's, so
+      # CI skips pixel comparisons; they stay a local gate.
       - run: pnpm exec playwright test --project ${{ matrix.project }} --ignore-snapshots
       - uses: actions/upload-artifact@v4
         if: failure()
