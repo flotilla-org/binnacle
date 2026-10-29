@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-described/tests/grid.rs
+expression: picture(&mut s)
+---
+rows 10 (of None), columns 7, synced true, partial false, count None, mismatches 3
+Name | Started | CPUs | Load | note | Host | Spec
+▸ (blank) (1 items, [Number(2.0), Number(1.25)])
+bravo | ∅ | 2 | 1.25% | ∅ | feta | {}
+▸ Done (1 items, [Number(1.8446744073709552e19), Number(2.0)])
+echo | 2026-10-29 10:00 | 18446744073709551615 | 2% | late | ∅ | {}
+▸ Running (3 items, [Number(12.0), Number(4.0)])
+alpha | 2026-10-29 10:00 | 4 | 0.5% |  | feta | {"image":"rust"}
+foxtrot | 2026-10-27 00:00 | 8 | high | ∅ | feta | {"image":"zig"}
+delta | 2026-10-28 09:00 | ∅ | 3.5% |  | brie | {}
+▸ Stalled (1 items, [Blank, Blank])
+charlie | soon | many | ∅ | check disk | brie | {}

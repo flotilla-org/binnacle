@@ -5,8 +5,8 @@
 mod support;
 
 use binnacle_core::{
-    Action, Axis, Blanks, DistinctQuery, DistinctValue, FilterSpec, FindQuery, Grouping, Key,
-    SortColumn, SortSpec, TextQuery, ViewSpec,
+    Action, AggregateValue, Axis, Blanks, DistinctQuery, DistinctValue, FilterSpec, FindQuery,
+    Grouping, Key, SortColumn, SortSpec, TextQuery, ViewSpec,
 };
 use binnacle_memory::PumpSource;
 use binnacle_testkit::Scenario;
@@ -166,5 +166,25 @@ fn the_rows_group_by_a_column() {
     assert!(s.source.support(Axis::Rows, phase).group);
     let spec = ViewSpec::default().with_grouping(Some(Grouping::rows_by(phase)));
     s.input(|g| g.request_view(spec));
+    insta::assert_snapshot!(picture(&mut s));
+}
+
+#[test]
+fn aggregates_take_numbers_from_integers_and_numbers_and_skip_invalid_values() {
+    let mut s = crews();
+    let (phase, cpus, load) = (key(&s, "phase"), key(&s, "cpus"), key(&s, "load"));
+    let names = |k| -> Vec<String> {
+        (s.source.0.aggregates(k).into_iter())
+            .map(|a| a.name)
+            .collect()
+    };
+    assert!(names(load).contains(&"sum".to_string()));
+    assert!(names(cpus).contains(&"sum".to_string()));
+    let mut grouping = Grouping::rows_by(phase);
+    grouping.values = vec![
+        AggregateValue::of(cpus, "sum"),
+        AggregateValue::of(load, "sum"),
+    ];
+    s.input(|g| g.request_view(ViewSpec::default().with_grouping(Some(grouping))));
     insta::assert_snapshot!(picture(&mut s));
 }
