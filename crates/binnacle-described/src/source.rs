@@ -157,7 +157,9 @@ pub struct Status {
 /// deterministic CBOR of its primary-key tuple and a column's from its
 /// field's name; the interner lives as long as the source, so a row or
 /// column that leaves and comes back keeps its Key, and as a Key is a hash
-/// of its identity, every source gives the same row the same Key.
+/// of its identity, every source gives the same row the same Key. A table
+/// with no primary key keys each row by where it came in the stream
+/// instead, so its Keys hold only within one source.
 ///
 /// Sorting is the Sort Order with an invalid tier between nulls and typed
 /// values; filters, find and Distinct Values read each value's Stable Text,

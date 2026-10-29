@@ -446,10 +446,18 @@ impl Encoding {
 
 /// An incremental decoder for a rows stream: the host feeds it bytes as
 /// they come, in pieces of any size, and takes each whole message out.
+/// Newline-delimited JSON is scanned once; a CBOR item cut short is parsed
+/// again from its start only when more bytes are fed.
 #[derive(Clone, Debug)]
 pub struct Decoder {
     encoding: Encoding,
     buffer: Vec<u8>,
+    /// Where the bytes not yet taken start.
+    start: usize,
+    /// Where the search for the next line break goes on from.
+    scanned: usize,
+    /// The CBOR item at `start` was cut short and nothing was fed since.
+    short: bool,
 }
 
 impl Decoder {
@@ -457,11 +465,20 @@ impl Decoder {
         Decoder {
             encoding,
             buffer: Vec::new(),
+            start: 0,
+            scanned: 0,
+            short: false,
         }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
+        if self.start > 0 && self.start * 2 >= self.buffer.len() {
+            self.buffer.drain(..self.start);
+            self.scanned = self.scanned.saturating_sub(self.start);
+            self.start = 0;
+        }
         self.buffer.extend_from_slice(bytes);
+        self.short = false;
     }
 
     /// The next whole message fed, `None` until one is. A message that
@@ -470,31 +487,38 @@ impl Decoder {
     pub fn next(&mut self) -> Option<Result<Message, DecodeError>> {
         match self.encoding {
             Encoding::Ndjson => loop {
-                let end = self.buffer.iter().position(|&b| b == b'\n')?;
-                let line: Vec<u8> = self.buffer.drain(..=end).collect();
+                let from = self.scanned.max(self.start);
+                let Some(at) = self.buffer[from..].iter().position(|&b| b == b'\n') else {
+                    self.scanned = self.buffer.len();
+                    return None;
+                };
+                let line = self.start..from + at;
+                self.start = from + at + 1;
+                self.scanned = self.start;
+                let line = &self.buffer[line];
                 if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-                return Some(decode_json_line(&line));
+                return Some(decode_json_line(line));
             },
             Encoding::CborSeq => {
-                if self.buffer.is_empty() {
+                if self.short || self.start == self.buffer.len() {
                     return None;
                 }
-                let mut reader = &self.buffer[..];
+                let mut reader = &self.buffer[self.start..];
                 match ciborium::from_reader::<Wire, _>(&mut reader) {
                     Ok(wire) => {
-                        let used = self.buffer.len() - reader.len();
-                        self.buffer.drain(..used);
+                        self.start = self.buffer.len() - reader.len();
                         Some(Message::from_wire(wire))
                     }
                     Err(ciborium::de::Error::Io(e))
                         if e.kind() == std::io::ErrorKind::UnexpectedEof =>
                     {
+                        self.short = true;
                         None
                     }
                     Err(e) => {
-                        self.buffer.clear();
+                        self.start = self.buffer.len();
                         Some(Err(DecodeError::cbor(e)))
                     }
                 }
@@ -505,7 +529,8 @@ impl Decoder {
     /// The stream ended: the last message, if one was left without its
     /// line break, or an error if the bytes left are not a whole message.
     pub fn finish(&mut self) -> Option<Result<Message, DecodeError>> {
-        let rest = std::mem::take(&mut self.buffer);
+        let rest = std::mem::take(&mut self.buffer).split_off(self.start);
+        (self.start, self.scanned, self.short) = (0, 0, false);
         if rest.iter().all(u8::is_ascii_whitespace) {
             return None;
         }
