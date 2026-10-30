@@ -504,6 +504,8 @@ impl DescribedSource {
                 (Axis::Rows, ChangeNotice::Reset(self.count(Axis::Rows))),
             ];
         };
+        // Even an unchanged table starts the pages again, so the first
+        // `rows` after it sets `partial`.
         if old == schema {
             self.schema = Some(old);
             return Vec::new();
@@ -824,8 +826,13 @@ impl DescribedSource {
         self.grouped.source_mut().appended(&self.rows, &added)
     }
 
-    /// Rows `gone` (base indices) leave, and the interner lets go of them.
+    /// Rows `gone` (base indices, each once) leave, and the interner lets
+    /// go of them.
     fn remove(&mut self, gone: &[usize]) -> Vec<(Axis, ChangeNotice)> {
+        debug_assert!(
+            gone.iter().collect::<HashSet<_>>().len() == gone.len(),
+            "each row once"
+        );
         if gone.is_empty() {
             return Vec::new();
         }

@@ -61,7 +61,7 @@ What a Described Table's rows are read within: a namespace, which every request 
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
 **Resync**:
-A Described Table source starting its rows again without showing the table empty: after a `resync` message, or when its stream ends and it asks to open the watch again, every row is unconfirmed; the `table`, `rows` and `synced` that follow replace the rows in place, each row that comes confirmed and keeping its Key, and `synced` removes those still unconfirmed. A `table` message once the columns are known is diffed by field name the same way.
+A Described Table source starting its rows again without showing the table empty: after a `resync` message, or when its stream ends and it asks to open the watch again, every row is unconfirmed; the `table`, `rows` and `synced` that follow replace the rows in place, each row that comes confirmed and keeping its Key, and `synced` removes those still unconfirmed. A page that changes more than 256 held rows at once applies as one Reset, so rows the user moved go back to the source's order. A `table` message once the columns are known is diffed by field name the same way.
 _Avoid_: Reload, refresh, reconnect (for the whole)
 
 **Fake Table Server**:
