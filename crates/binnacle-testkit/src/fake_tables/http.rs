@@ -7,7 +7,7 @@ use std::net::{SocketAddr, TcpStream};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Where a fake listens.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,12 +89,13 @@ impl Write for Conn {
 }
 
 /// A request the fake took: its method, target (path and query) and
-/// headers, names lowercased, in order.
+/// headers, names lowercased, in order, and when it came.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub method: String,
     pub target: String,
     pub headers: Vec<(String, String)>,
+    pub at: Instant,
 }
 
 impl Request {
@@ -189,6 +190,7 @@ pub(crate) fn read_request(conn: &mut Conn) -> io::Result<Request> {
         method,
         target,
         headers,
+        at: Instant::now(),
     })
 }
 

@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [dev-dependencies]
+binnacle-described-http.workspace = true
 binnacle-ratatui = { path = "../binnacle-ratatui" }
 binnacle-testkit.workspace = true
 hegeltest.workspace = true

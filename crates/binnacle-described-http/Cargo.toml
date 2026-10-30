@@ -1,0 +1,21 @@
+[package]
+name = "binnacle-described-http"
+description = "An optional HTTP transport for binnacle-described: serves a Described Table source's watch requests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+binnacle-described.workspace = true
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util"] }
+
+[dev-dependencies]
+binnacle-core.workspace = true
+binnacle-memory.workspace = true
+binnacle-testkit = { workspace = true, features = ["fake-tables"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util", "macros"] }

@@ -58,6 +58,8 @@ pub struct FakeTables {
     listen: Listen,
     page: usize,
     heartbeat: Duration,
+    fail: Vec<u16>,
+    answer_in: Option<Encoding>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +85,8 @@ impl FakeTables {
             listen: Listen::Tcp(SocketAddr::from(([127, 0, 0, 1], 0))),
             page: 200,
             heartbeat: Duration::from_secs(1),
+            fail: Vec::new(),
+            answer_in: None,
         }
     }
 
@@ -131,6 +135,19 @@ impl FakeTables {
         self
     }
 
+    /// Answers the first rows request with `status`, before any script
+    /// plays; called again, the next one too.
+    pub fn failing(mut self, status: u16) -> FakeTables {
+        self.fail.push(status);
+        self
+    }
+
+    /// Answers every rows request in `encoding`, whatever it accepts.
+    pub fn answer_in(mut self, encoding: Encoding) -> FakeTables {
+        self.answer_in = Some(encoding);
+        self
+    }
+
     pub fn start(self) -> io::Result<Running> {
         let (listener, addr) = match &self.listen {
             Listen::Tcp(addr) => {
@@ -157,7 +174,8 @@ impl FakeTables {
                 watchers: Vec::new(),
                 requests: Vec::new(),
                 sequence: 1,
-                fail: VecDeque::new(),
+                fail: self.fail.into(),
+                answer_in: self.answer_in,
                 page: self.page,
                 heartbeat: self.heartbeat,
                 next: 0,
@@ -313,6 +331,8 @@ struct State {
     sequence: u64,
     /// Statuses the next rows requests are answered with.
     fail: VecDeque<u16>,
+    /// The encoding every rows request is answered in, if not as asked.
+    answer_in: Option<Encoding>,
     page: usize,
     heartbeat: Duration,
     next: u64,
@@ -600,6 +620,7 @@ fn serve(mut conn: Conn, shared: Arc<Shared>) {
                 method: String::new(),
                 target: format!("?{p}"),
                 headers: Vec::new(),
+                at: Instant::now(),
             };
             request.query().pop().map(|(k, _)| k).unwrap_or_default()
         })
@@ -664,9 +685,13 @@ fn rows(
     let query = request.query();
     let param = |n: &str| query.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_str());
     let watch = param("watch").is_some();
-    let encoding = match accept.contains("application/cbor-seq") {
-        true => Encoding::CborSeq,
-        false => Encoding::Ndjson,
+    let encoding = match (
+        shared.lock().answer_in,
+        accept.contains("application/cbor-seq"),
+    ) {
+        (Some(encoding), _) => encoding,
+        (None, true) => Encoding::CborSeq,
+        (None, false) => Encoding::Ndjson,
     };
     let mut wheres = Vec::new();
     for (_, clause) in query.iter().filter(|(k, _)| k == "where") {
