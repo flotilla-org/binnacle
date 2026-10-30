@@ -312,7 +312,7 @@ impl Naive {
     fn shown(&self, view: &View) -> Vec<i64> {
         let mut ids: Vec<i64> = (self.order.iter().copied())
             .filter(
-                |id| match (&view.condition, self.kind(&POOL[view.condition_on()])) {
+                |id| match (&view.condition, self.kind(POOL[view.condition_on()])) {
                     (Some(c), Some(kind)) => {
                         let value = text(&read(kind, &self.rows[id][POOL[c.0]]));
                         let found =

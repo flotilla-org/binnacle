@@ -14,6 +14,8 @@ for t in hosts fulfilmentkinds repositories; do
   c rows-$t.ndjson -H 'Accept: application/x-ndjson' http://localhost/tables/$t/rows?namespace=flotilla
   c rows-$t.cborseq -H 'Accept: application/cbor-seq' http://localhost/tables/$t/rows?namespace=flotilla
 done
+# no namespace: flotillad reads `default`, which should answer 200 and no rows
+c rows-hosts-no-namespace.ndjson -H 'Accept: application/x-ndjson' http://localhost/tables/hosts/rows
 # convoys/vessels: no spec/status objects (they carry briefs and stall text)
 COLS='columns=metadata.name,metadata.namespace,metadata.creationTimestamp,metadata.deletionTimestamp,metadata.labels,status.phase'
 c rows-convoys-cols.ndjson -H 'Accept: application/x-ndjson' "http://localhost/tables/convoys/rows?namespace=flotilla&$COLS"

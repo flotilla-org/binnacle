@@ -180,7 +180,11 @@ name = "binnacle-testkit"
 version = "0.1.0"
 dependencies = [
  "binnacle-core",
+ "binnacle-described",
  "binnacle-memory",
+ "binnacle-testkit",
+ "ciborium",
+ "serde_json",
 ]
 
 [[package]]
