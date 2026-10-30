@@ -492,3 +492,20 @@ fn a_row_twice_in_one_page_counts_once_the_later_winning() {
         Some(&binnacle_format::Value::Number(8.0))
     );
 }
+
+#[test]
+fn an_upserted_place_past_any_count_neither_panics_nor_reuses_keys() {
+    let mut table = table_message();
+    table.schema.primary_key.clear();
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    source.receive(Message::Table(table));
+    let row = crews_rows(|_| {})[0].clone();
+    for place in [u64::MAX.into(), -1i128] {
+        source.receive(Message::Upsert {
+            key: vec![Wire::Int(place)],
+            row: row.clone(),
+        });
+    }
+    source.receive(rows(crews_rows(|_| {})));
+    assert_eq!(source.row_count(), 8, "every row its own Key");
+}

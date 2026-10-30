@@ -747,8 +747,11 @@ impl DescribedSource {
         }
         if let ([Wire::Int(n)], true) = (key, self.primary.is_empty()) {
             // A place the stream has not reached: the rows that come next
-            // start after it.
+            // start after it. A negative place moves nothing, and no place
+            // goes past the most rows a source holds, so the count never
+            // overflows.
             let next = u64::try_from(*n).map_or(0, |n| n.saturating_add(1));
+            let next = next.min(u64::from(u32::MAX));
             self.ordinal = self.ordinal.max(next);
         }
         let key = self.row_ids.intern(&identity(key));
