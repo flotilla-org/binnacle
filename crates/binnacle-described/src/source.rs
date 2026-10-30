@@ -174,7 +174,9 @@ const BULK: usize = 256;
 /// row's identity when the row goes, unless a collision gave it another
 /// Key. A table with no primary key keys each row by where it came in its
 /// stream instead (a resync's rows replace the held ones by place, not by
-/// identity), so its Keys hold only within one source.
+/// identity), so its Keys hold only within one source. Such a table has no
+/// key tuples for live changes: an `upsert` or `delete` naming `[n]` is
+/// taken to name the row at place `n` of the stream.
 ///
 /// Live changes apply in place: an `upsert` changes or adds one row, a
 /// `delete` removes one, and the sort, filters, moves and the Grid's state
