@@ -379,3 +379,40 @@ fn no_other_crate_reaches_tokio() {
         assert!(!tree.contains("tokio"), "{package} reaches tokio:\n{tree}");
     }
 }
+
+#[test]
+fn a_server_that_stalls_is_given_up_on_and_tried_again() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&accepted);
+    std::thread::spawn(move || {
+        // Takes each connection and never answers.
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            held.push(stream);
+        }
+    });
+    let backoff = Backoff {
+        initial: Duration::from_millis(20),
+        max: Duration::from_millis(40),
+    };
+    let options = Options::new(Endpoint::Tcp(url))
+        .backoff(backoff)
+        .timeout(Duration::from_millis(100));
+    let transport = Blocking::new(options).unwrap();
+    transport.open(source().poll_request().unwrap());
+    assert_eq!(transport.recv_timeout(Duration::from_millis(600)), None);
+    assert!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "tried again"
+    );
+}
+
+#[test]
+fn a_credential_never_shows_in_debug_output() {
+    let options = Options::new(Endpoint::Tcp("http://x".into())).auth(Auth::Bearer("t0k".into()));
+    assert!(!format!("{options:?}").contains("t0k"));
+    assert!(!format!("{:?}", Auth::Cookie("s=1".into())).contains("s=1"));
+}

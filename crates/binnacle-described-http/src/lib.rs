@@ -41,8 +41,9 @@ pub enum Endpoint {
     Unix(PathBuf),
 }
 
-/// The credential to send, exactly as given.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The credential to send, exactly as given. Its `Debug` leaves the secret
+/// out.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub enum Auth {
     #[default]
     None,
@@ -50,6 +51,16 @@ pub enum Auth {
     Bearer(String),
     /// `Cookie: {text}`.
     Cookie(String),
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Auth::None => "None",
+            Auth::Bearer(_) => "Bearer(..)",
+            Auth::Cookie(_) => "Cookie(..)",
+        })
+    }
 }
 
 /// How long to wait before opening a watch again: `initial`, doubling to
@@ -78,6 +89,10 @@ pub struct Options {
     /// The encoding to ask for (`Accept`); NDJSON by default.
     pub encoding: Encoding,
     pub backoff: Backoff,
+    /// How long connecting and the response's head (and a failure's body)
+    /// may take before the attempt is retried; 10 s by default. A watch's
+    /// stream is not bounded.
+    pub timeout: Duration,
 }
 
 impl Options {
@@ -87,6 +102,7 @@ impl Options {
             auth: Auth::None,
             encoding: Encoding::Ndjson,
             backoff: Backoff::default(),
+            timeout: Duration::from_secs(10),
         }
     }
 
@@ -102,6 +118,11 @@ impl Options {
 
     pub fn backoff(mut self, backoff: Backoff) -> Options {
         self.backoff = backoff;
+        self
+    }
+
+    pub fn timeout(mut self, timeout: Duration) -> Options {
+        self.timeout = timeout;
         self
     }
 }
@@ -214,12 +235,25 @@ impl Transport {
         let request = Request::get(path)
             .header(hyper::header::HOST, host.as_str())
             .header(hyper::header::ACCEPT, self.options.encoding.content_type());
+        let secret = |text: String| {
+            let mut value = hyper::header::HeaderValue::try_from(text).ok()?;
+            value.set_sensitive(true);
+            Some(value)
+        };
         let request = match &self.options.auth {
-            Auth::None => request,
-            Auth::Bearer(token) => {
-                request.header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
+            Auth::None => Some(request),
+            Auth::Bearer(token) => (secret(format!("Bearer {token}")))
+                .map(|v| request.header(hyper::header::AUTHORIZATION, v)),
+            Auth::Cookie(text) => {
+                (secret(text.clone())).map(|v| request.header(hyper::header::COOKIE, v))
             }
-            Auth::Cookie(text) => request.header(hyper::header::COOKIE, text.as_str()),
+        };
+        let Some(request) = request else {
+            emit(Event::Failed {
+                status: 0,
+                body: b"the credential is not a valid HTTP header value".to_vec(),
+            });
+            return Attempt::Done;
         };
         let Ok(request) = request.body(Empty::<Bytes>::new()) else {
             emit(Event::Failed {
@@ -228,26 +262,32 @@ impl Transport {
             });
             return Attempt::Done;
         };
-        let response = match &self.options.endpoint {
-            Endpoint::Tcp(_) => match tokio::net::TcpStream::connect(&host).await {
-                Ok(stream) => send(stream, request).await,
-                Err(_) => return Attempt::Retry,
-            },
-            #[cfg(unix)]
-            Endpoint::Unix(path) => match tokio::net::UnixStream::connect(path).await {
-                Ok(stream) => send(stream, request).await,
-                Err(_) => return Attempt::Retry,
-            },
-            #[cfg(not(unix))]
-            Endpoint::Unix(_) => {
-                emit(Event::Failed {
-                    status: 0,
-                    body: b"no Unix sockets here".to_vec(),
-                });
-                return Attempt::Done;
+        #[cfg(not(unix))]
+        if let Endpoint::Unix(_) = &self.options.endpoint {
+            emit(Event::Failed {
+                status: 0,
+                body: b"no Unix sockets here".to_vec(),
+            });
+            return Attempt::Done;
+        }
+        // Connecting and the response's head are bounded; the body, a
+        // watch's stream, is not.
+        let opened = tokio::time::timeout(self.options.timeout, async {
+            match &self.options.endpoint {
+                Endpoint::Tcp(_) => match tokio::net::TcpStream::connect(&host).await {
+                    Ok(stream) => send(stream, request).await.ok(),
+                    Err(_) => None,
+                },
+                #[cfg(unix)]
+                Endpoint::Unix(path) => match tokio::net::UnixStream::connect(path).await {
+                    Ok(stream) => send(stream, request).await.ok(),
+                    Err(_) => None,
+                },
+                #[cfg(not(unix))]
+                Endpoint::Unix(_) => None,
             }
-        };
-        let Ok(response) = response else {
+        });
+        let Ok(Some(response)) = opened.await else {
             return Attempt::Retry;
         };
         let status = response.status();
@@ -257,16 +297,20 @@ impl Transport {
         if !status.is_success() {
             let mut body = Vec::new();
             let mut incoming = response.into_body();
-            while body.len() < MAX_FAILED_BODY {
-                match incoming.frame().await {
-                    Some(Ok(frame)) => {
-                        if let Ok(data) = frame.into_data() {
-                            body.extend_from_slice(&data);
+            let read = async {
+                while body.len() < MAX_FAILED_BODY {
+                    match incoming.frame().await {
+                        Some(Ok(frame)) => {
+                            if let Ok(data) = frame.into_data() {
+                                body.extend_from_slice(&data);
+                            }
                         }
+                        _ => break,
                     }
-                    _ => break,
                 }
-            }
+            };
+            // What came in time is enough to say why.
+            let _ = tokio::time::timeout(self.options.timeout, read).await;
             body.truncate(MAX_FAILED_BODY);
             emit(Event::Failed {
                 status: status.as_u16(),
@@ -343,6 +387,7 @@ fn split(base: &str) -> Option<(String, String)> {
         Some(at) => (&rest[..at], rest[at..].trim_end_matches('/')),
         None => (rest, ""),
     };
+    let host = host.strip_suffix(':').unwrap_or(host);
     let port = match host.rfind(']') {
         Some(end) => host[end..].contains(':'),
         None => host.contains(':'),
@@ -355,8 +400,10 @@ fn split(base: &str) -> Option<(String, String)> {
 }
 
 /// A transport for a sync host: a thread of its own runs a current-thread
-/// tokio runtime, and events come back through a channel. Dropping it
-/// stops the thread.
+/// tokio runtime, and events come back through a channel. The channels are
+/// unbounded, so a host reads events each frame. Dropping it stops the
+/// thread and waits for its runtime to shut down, dropping any watch still
+/// open.
 pub struct Blocking {
     requests: Option<tokio::sync::mpsc::UnboundedSender<HostRequest>>,
     events: mpsc::Receiver<Event>,
@@ -446,6 +493,7 @@ mod tests {
             split("http://[::1]:7777/x"),
             ("[::1]:7777".into(), "/x".into())
         );
+        assert_eq!(split("http://host:"), ("host:80".into(), "".into()));
         assert_eq!(super::split("https://host"), None);
     }
 }
