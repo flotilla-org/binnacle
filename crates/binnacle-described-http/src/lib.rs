@@ -224,7 +224,7 @@ impl Transport {
         let Ok(request) = request.body(Empty::<Bytes>::new()) else {
             emit(Event::Failed {
                 status: 0,
-                body: b"a request that is not HTTP".to_vec(),
+                body: b"the credential or target is not a valid HTTP header or path".to_vec(),
             });
             return Attempt::Done;
         };
@@ -255,10 +255,19 @@ impl Transport {
             return Attempt::Retry;
         }
         if !status.is_success() {
-            let body = match response.into_body().collect().await {
-                Ok(body) => body.to_bytes().to_vec(),
-                Err(_) => Vec::new(),
-            };
+            let mut body = Vec::new();
+            let mut incoming = response.into_body();
+            while body.len() < MAX_FAILED_BODY {
+                match incoming.frame().await {
+                    Some(Ok(frame)) => {
+                        if let Ok(data) = frame.into_data() {
+                            body.extend_from_slice(&data);
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            body.truncate(MAX_FAILED_BODY);
             emit(Event::Failed {
                 status: status.as_u16(),
                 body,
@@ -323,14 +332,22 @@ where
     sender.send_request(request).await
 }
 
-/// `http://host:port/prefix` as `host:port` and `/prefix`.
+/// The most of a failed answer's body kept for [`Event::Failed`].
+const MAX_FAILED_BODY: usize = 64 << 10;
+
+/// `http://host:port/prefix` as `host:port` and `/prefix`, port 80 if none
+/// is given; an IPv6 host is bracketed, `http://[::1]:7777`.
 fn split(base: &str) -> Option<(String, String)> {
     let rest = base.strip_prefix("http://")?;
     let (host, prefix) = match rest.find('/') {
         Some(at) => (&rest[..at], rest[at..].trim_end_matches('/')),
         None => (rest, ""),
     };
-    let host = match host.contains(':') {
+    let port = match host.rfind(']') {
+        Some(end) => host[end..].contains(':'),
+        None => host.contains(':'),
+    };
+    let host = match port {
         true => host.to_owned(),
         false => format!("{host}:80"),
     };
@@ -409,5 +426,26 @@ impl Drop for Blocking {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split;
+
+    #[test]
+    fn a_base_url_splits_into_its_address_and_prefix() {
+        let split = |base| split(base).unwrap();
+        assert_eq!(
+            split("http://127.0.0.1:7777"),
+            ("127.0.0.1:7777".into(), "".into())
+        );
+        assert_eq!(split("http://host/api/"), ("host:80".into(), "/api".into()));
+        assert_eq!(split("http://[::1]"), ("[::1]:80".into(), "".into()));
+        assert_eq!(
+            split("http://[::1]:7777/x"),
+            ("[::1]:7777".into(), "/x".into())
+        );
+        assert_eq!(super::split("https://host"), None);
     }
 }

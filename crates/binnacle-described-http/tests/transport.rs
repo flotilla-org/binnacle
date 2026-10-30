@@ -215,8 +215,9 @@ fn a_reconnect_is_a_resync_after_the_backoff() {
     host(&transport, &mut source, synced);
     let gap = fake.requests()[2].at - ended;
     assert!(gap >= backoff.initial, "{gap:?}");
+    // Not doubled: a stale backoff would wait 600 ms.
     assert!(
-        gap < backoff.initial * 3 / 2,
+        gap < backoff.initial * 2,
         "{gap:?} after {:?}",
         ended - before
     );
@@ -294,6 +295,9 @@ fn a_404_fails_once_and_a_500_is_retried() {
 fn a_refused_connection_is_retried() {
     let fake = fake().start().unwrap();
     let url = fake.url().unwrap();
+    let binnacle_testkit::fake_tables::Addr::Tcp(addr) = fake.addr().clone() else {
+        unreachable!()
+    };
     drop(fake);
     let backoff = Backoff {
         initial: Duration::from_millis(20),
@@ -305,24 +309,48 @@ fn a_refused_connection_is_retried() {
     assert_eq!(
         transport.recv_timeout(Duration::from_millis(300)),
         None,
-        "it keeps trying"
+        "refused, quietly"
     );
+    // A server on that port at last: the transport, still trying, reads it.
+    let fake = FakeTables::new()
+        .fixture(crews())
+        .unwrap()
+        .tcp(addr)
+        .start()
+        .unwrap();
+    host(&transport, &mut source, synced);
+    assert_eq!(source.row_count(), 6);
+    assert_eq!(fake.requests().len(), 1);
 }
 
 #[cfg(unix)]
 #[test]
 fn a_table_reads_over_a_unix_socket() {
-    let dir = std::env::temp_dir().join(format!("described-http-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("tables.sock");
+    let dir = TempDir::new("described-http");
+    let path = dir.0.join("tables.sock");
     let fake = fake().unix(&path).start().unwrap();
     let transport = Blocking::new(Options::new(Endpoint::Unix(path.clone()))).unwrap();
     let mut source = source();
     host(&transport, &mut source, synced);
     assert_eq!(source.row_count(), 6);
     assert_eq!(fake.requests()[0].header("host"), Some("localhost"));
-    drop(fake);
-    let _ = std::fs::remove_dir(&dir);
+}
+
+/// A directory of its own, removed when dropped, assertions or not.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 #[test]
