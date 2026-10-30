@@ -82,6 +82,12 @@ impl Flags {
             match name.as_str() {
                 "--columns" => {
                     let list = names(&value("--columns")?, "--columns")?;
+                    if let Some(twice) = (list.iter().enumerate())
+                        .find(|(i, n)| list[..*i].contains(n))
+                        .map(|(_, n)| n)
+                    {
+                        return error(format!("--columns: `{twice}` twice"));
+                    }
                     flags.columns = Some(list);
                 }
                 "--sort" => {

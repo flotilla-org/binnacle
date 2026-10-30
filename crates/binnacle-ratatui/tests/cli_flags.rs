@@ -199,6 +199,7 @@ fn malformed_flags_are_errors() {
         vec!["--sort"],
         vec!["--sort", "-"],
         vec!["--columns", "a,,b"],
+        vec!["--columns", "a,b,a"],
         vec!["--where", "garbage"],
         vec!["--where", "==x"],
         vec!["--where", "cpus<many"],
