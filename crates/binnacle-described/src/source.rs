@@ -168,6 +168,8 @@ pub struct Status {
 /// of its identity, every source gives the same row the same Key, barring a
 /// hash collision. A table with no primary key keys each row by where it
 /// came in the stream instead, so its Keys hold only within one source.
+/// The host maps the row of an `Activated` Effect back to its primary key
+/// with [`DescribedSource::row_identity`].
 ///
 /// Sorting is the Sort Order with an invalid tier between nulls and typed
 /// values. Rows that tie on every term of a sort, or within a group, break

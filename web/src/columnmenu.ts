@@ -27,7 +27,10 @@
 // the row's values, with "Pin top" (or "Unpin"), "Pin bottom", "Freeze up
 // to here" and "Hide row" where the rows hide. "Show hidden ▸" opens a
 // flyout listing the hidden items to show again (with a search past eight
-// of them) and "Show all".
+// of them) and "Show all". A host can add Row Menu Items to it
+// (`ColumnMenuOptions.rowItems`): buttons after the built-in ones below a
+// separator, which close the menu and call `onRowItem` with their name and
+// the row. They are not in a column's menu or in slicer mode.
 
 import {
   columnConditions,
@@ -49,6 +52,7 @@ import type { FrameInfo, GridWidget, MenuAt } from "./widget";
 import { createPause } from "./pause";
 import { capHint, type HideOutcome } from "./choose";
 import { groupingItems } from "./groupmenu";
+import { hasRowItems, rowChoice, rowItemsFor, type ColumnMenuOptions } from "./rowitems";
 
 export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   /** The popover while it is open, else `null`. */
@@ -57,8 +61,8 @@ export interface ColumnMenu<ColId = unknown, RowId = unknown> {
   open(colId: ColId, anchor?: DOMRect, at?: MenuAt): boolean;
   /**
    * Opens the menu for row `rowId`, filtering the columns (see
-   * `GridWidget.openRowMenu`); `false` if they take no conditions on it and
-   * the rows do not hide.
+   * `GridWidget.openRowMenu`); `false` if they take no conditions on it, the
+   * rows do not hide and the host has no items for the row.
    */
   openRow(rowId: RowId, anchor?: DOMRect, at?: MenuAt): boolean;
   /**
@@ -121,7 +125,10 @@ const SEARCH_PAST = 8;
 /** Numbers each menu's error message, for `aria-describedby`. */
 let errors = 0;
 
-export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColId, V>): ColumnMenu<ColId, RowId> {
+export function createColumnMenu<RowId, ColId, V>(
+  widget: GridWidget<RowId, ColId, V>,
+  options?: ColumnMenuOptions<RowId>,
+): ColumnMenu<ColId, RowId> {
   type Id = RowId | ColId;
   let menu: { element: HTMLElement; close(): void } | null = null;
 
@@ -257,6 +264,18 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     showHidden.setAttribute("aria-expanded", "false");
     const actionsSeparator = el("div", "", SEPARATOR_STYLE);
     actionsSeparator.hidden = !filters;
+    // The host's items for a row, after the built-in ones.
+    const hostItems = rowItemsFor(options, axis, colId as RowId, slicing);
+    const hostButtons = hostItems.map((item) => {
+      const b = lit(menuItem(item.label, "binnacle-column-menu-row-item"));
+      b.dataset.name = item.name;
+      b.addEventListener("click", () => {
+        close();
+        options?.onRowItem?.(rowChoice(item, colId as RowId));
+      });
+      return b;
+    });
+    const hostSeparator = el("div", "binnacle-column-menu-row-items-separator", SEPARATOR_STYLE);
     actions.append(
       pinButton,
       pinTrailing,
@@ -269,6 +288,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
       ungroupButton,
       sliceButton,
       capped,
+      ...(hostItems.length > 0 ? [hostSeparator, ...hostButtons] : []),
       actionsSeparator,
     );
     /** Runs a hide on the chosen items around this one: closes the menu, unless it passed the cap. */
@@ -710,6 +730,7 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
         c.style.border = `1px solid ${t.border}`;
       }
       actionsSeparator.style.background = t.border;
+      hostSeparator.style.background = t.border;
       capped.style.color = t.error;
       markHidden();
       markChosen();
@@ -869,7 +890,10 @@ export function createColumnMenu<RowId, ColId, V>(widget: GridWidget<RowId, ColI
     latest = f;
   });
   const detach = widget.attachColumnMenu((colId, anchor, at) => open("rows", colId, anchor, at));
-  const detachRow = widget.attachRowMenu((rowId, anchor, at) => open("cols", rowId, anchor, at));
+  const detachRow = widget.attachRowMenu(
+    (rowId, anchor, at) => open("cols", rowId, anchor, at),
+    (rowId) => hasRowItems(options, rowId),
+  );
   const detachLevel = widget.attachLevelMenu(openLevel);
 
   return {
