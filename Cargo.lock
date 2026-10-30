@@ -89,6 +89,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "binnacle-described"
+version = "0.1.0"
+dependencies = [
+ "binnacle-core",
+ "binnacle-format",
+ "binnacle-group",
+ "binnacle-memory",
+ "binnacle-ratatui",
+ "binnacle-testkit",
+ "ciborium",
+ "hegeltest",
+ "insta",
+ "ratatui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "binnacle-ffi"
 version = "0.1.0"
 dependencies = [

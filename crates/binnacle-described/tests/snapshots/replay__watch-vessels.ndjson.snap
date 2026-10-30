@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-described/tests/replay.rs
+expression: picture(&mut scenario)
+---
+rows 10 (of Some(10)), columns 6, synced true, partial false, count None, mismatches 0
+Name | Namespace | Created | Deleted | metadata.labels | Phase
+convoy-1a56f818e07a4abfb | flotilla | 2026-10-24 18:51 | ∅ | {"flotilla.work/authorit | Ready
+convoy-1d35c5e7cd534cacb | flotilla | 2026-10-28 22:26 | ∅ | {"flotilla.work/authorit | Ready
+convoy-28011991c2514b29b | flotilla | 2026-10-24 18:51 | ∅ | {"flotilla.work/authorit | Ready
+convoy-468dc8bc08de40a49 | flotilla | 2026-10-28 22:26 | ∅ | {"flotilla.work/authorit | Ready
+convoy-7275b110af8a44ffa | flotilla | 2026-10-28 22:52 | ∅ | {"flotilla.work/authorit | Ready
+convoy-77eeb7d9f4094f129 | flotilla | 2026-10-28 22:26 | ∅ | {"flotilla.work/authorit | Ready
+convoy-98faa66af43b4dea8 | flotilla | 2026-10-28 22:52 | ∅ | {"flotilla.work/authorit | Ready
+convoy-b5ab7b5ad7434a00b | flotilla | 2026-10-28 22:52 | ∅ | {"flotilla.work/authorit | Ready
+convoy-d2c0c1767f37471b9 | flotilla | 2026-10-25 18:26 | ∅ | {"flotilla.work/authorit | Ready
+convoy-d4d5c125647249bda | flotilla | 2026-10-28 21:47 | ∅ | {"flotilla.work/authorit | Ready

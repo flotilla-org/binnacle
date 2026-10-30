@@ -694,3 +694,43 @@ fn a_distinct_value_is_placed_by_its_row_with_the_lowest_key_among_those_tied_on
         .text_column(Key(0), |r: &Rec| Some(r.name.clone().into()));
     assert_eq!(distinct_texts(&mut source, &rows, Key(0)), ["a", "b"]);
 }
+
+#[test]
+fn a_typed_column_compares_as_its_kind_and_its_invalid_values_never_pass() {
+    use binnacle_core::{Compared, Comparison, Scalar};
+    use binnacle_memory::TypedKey;
+    use std::borrow::Cow;
+
+    let rows: Vec<Result<i64, &str>> = vec![Ok(3), Err("lots"), Ok(9)];
+    let mut source = MemorySource::<Result<i64, &str>>::new(3, 1).typed_column(
+        Key(0),
+        Some(Compared::Numbers),
+        |r| {
+            Some(match r {
+                Ok(n) => TypedKey::I64(*n),
+                Err(text) => TypedKey::Invalid(Cow::Borrowed(text)),
+            })
+        },
+    );
+    assert_eq!(
+        source.support(Axis::Rows, Key(0)).compare,
+        Some(Compared::Numbers)
+    );
+    assert_eq!(
+        source.number(Key(0), &rows[1]),
+        None,
+        "an invalid value is no number"
+    );
+    assert_eq!(source.number(Key(0), &rows[2]), Some(9.0));
+    let condition = Condition::compare(Key(0), Comparison::AtMost(Scalar::Number(5.0)));
+    let filter = FilterSpec::default().with_conditions(vec![condition.not(true)].into());
+    source
+        .over(&rows)
+        .view(&ViewSpec::default().with_filter(Axis::Rows, filter));
+    assert_eq!(
+        source.window(Axis::Rows, 0..3),
+        [Key(1), Key(2)],
+        "not at most 5"
+    );
+    assert_eq!(source.text(Key(0), &rows[1]).as_deref(), Some("lots"));
+}

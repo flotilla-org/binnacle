@@ -1,0 +1,16 @@
+---
+source: crates/binnacle-described/tests/replay.rs
+expression: picture(&mut scenario)
+---
+rows 200 (of Some(200)), columns 6, synced true, partial true, count None, mismatches 0
+Name | Namespace | Created | Deleted | metadata.labels | Phase
+convoy-006d9804d5744c12b | flotilla | 2026-10-18 06:09 | ∅ | {"flotilla.work/generati | Landed
+convoy-01b7e1f230d944e58 | flotilla | 2026-10-26 02:45 | ∅ | {"flotilla.work/generati | Landed
+convoy-02a7d271df664cebb | flotilla | 2026-10-14 22:51 | ∅ | {"flotilla.work/generati | Landed
+convoy-04543641a34841cd9 | flotilla | 2026-10-19 22:00 | ∅ | {"flotilla.work/generati | Landed
+convoy-0534115a1f354c8da | flotilla | 2026-10-27 20:28 | ∅ | {"flotilla.work/generati | Landed
+convoy-07f0d1a965bd4d82b | flotilla | 2026-10-27 00:51 | ∅ | {"flotilla.work/generati | Landed
+convoy-08228b346f13497c9 | flotilla | 2026-10-11 16:21 | ∅ | {"flotilla.work/generati | Landed
+convoy-08def17fe9d64fb4b | flotilla | 2026-10-13 03:26 | ∅ | {"flotilla.work/generati | Landed
+convoy-0916519d8d08410bb | flotilla | 2026-10-27 00:47 | ∅ | {"flotilla.work/generati | Landed
+convoy-092d813082334db0b | flotilla | 2026-10-24 02:44 | ∅ | {"flotilla.work/generati | Abandoned

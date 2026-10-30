@@ -1,0 +1,9 @@
+---
+source: crates/binnacle-described/tests/replay.rs
+expression: picture(&mut scenario)
+---
+rows 3 (of Some(3)), columns 6, synced true, partial true, count Some((324, false)), mismatches 0
+Name | Namespace | Created | Deleted | metadata.labels | Phase
+convoy-006d9804d5744c12b | flotilla | 2026-10-18 06:09 | ∅ | {"flotilla.work/generati | Landed
+convoy-01b7e1f230d944e58 | flotilla | 2026-10-26 02:45 | ∅ | {"flotilla.work/generati | Landed
+convoy-02a7d271df664cebb | flotilla | 2026-10-14 22:51 | ∅ | {"flotilla.work/generati | Landed

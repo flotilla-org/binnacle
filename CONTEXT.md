@@ -50,6 +50,16 @@ _Avoid_: UTC offset (for the zone as a whole), timezone offset
 A Typed Value's text as search, filters, copy and assistive tech read it: the formatted text with every date absolute, so it never goes stale as time passes. `format_stable` in `binnacle-format`.
 _Avoid_: Plain text, display text
 
+### Described tables
+
+**Described Table**:
+A table its server describes on the wire: a `table` message carries a Frictionless-style schema (fields with a type, title, roles, unit, categories and constraints, a primary key and foreign keys), then rows come as maps from field name to value, as newline-delimited JSON or a CBOR sequence, with live changes after. Its Table Source (`DescribedSource` in `binnacle-described`) reads each value once, as it comes, as a Typed Value of its field's type, and keys each row by its primary key.
+_Avoid_: Remote table, schema table, dynamic table
+
+**Scope**:
+What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses. A Described Table source can't be built without one.
+_Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
+
 ### Axes and identity
 
 **Axis**:
@@ -109,7 +119,7 @@ The sort part of one axis of a View Spec: the ordered list of items on the other
 _Avoid_: Sort order, remap spec
 
 **Sort Order**:
-The one total order every In-Memory Table Source sorts each column by. Nulls are the lowest value: first ascending, last descending. NaN is the greatest number, and all NaNs are equal. Integers compare exactly, signed or unsigned. Byte strings and text compare lexicographically by bytes (for UTF-8, code-point order), with no locale or natural ordering. Descending reverses the whole order, nulls included. Items that tie on every Sort Spec column break the tie on their Key, ascending in both directions, whether sorted from scratch or merged in after a base change.
+The one total order every In-Memory Table Source sorts each column by. Nulls are the lowest value: first ascending, last descending. NaN is the greatest number, and all NaNs are equal. Integers compare exactly, signed or unsigned. Byte strings and text compare lexicographically by bytes (for UTF-8, code-point order), with no locale or natural ordering. In a column of Typed Values, invalid values sit between the nulls and the typed values, comparing as text among themselves. Descending reverses the whole order, nulls included. Items that tie on every Sort Spec column break the tie on their Key, ascending in both directions, whether sorted from scratch or merged in after a base change.
 _Avoid_: Collation
 
 **Filter Spec**:

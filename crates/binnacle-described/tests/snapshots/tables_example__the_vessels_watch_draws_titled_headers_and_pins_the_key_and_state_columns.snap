@@ -1,0 +1,15 @@
+---
+source: crates/binnacle-described/tests/tables_example.rs
+expression: lines(&buf)
+---
+      Name                                    │Phase│Namespace│Created│Deleted│
+1     convoy-1a56f818e07a4abfb1e430636beb407d… Ready║flotilla   4d ago ∅
+2     convoy-1d35c5e7cd534cacbf52ca9d0f4cb802… Ready║flotilla   1h ago ∅
+3     convoy-28011991c2514b29b34f6feb42c500b2… Ready║flotilla   4d ago ∅
+4     convoy-468dc8bc08de40a4932c496b79806101… Ready║flotilla   1h ago ∅
+5     convoy-7275b110af8a44ffad120bfaae8dc7a4… Ready║flotilla   1h ago ∅
+6     convoy-77eeb7d9f4094f129a963233eadb2287… Ready║flotilla   1h ago ∅
+7     convoy-98faa66af43b4dea8c19164adcb7b3a4… Ready║flotilla   1h ago ∅
+8     convoy-b5ab7b5ad7434a00b4c41bb4f220c406… Ready║flotilla   1h ago ∅
+9     convoy-d2c0c1767f37471b9af191e99c56f588… Ready║flotilla   3d ago ∅
+10    convoy-d4d5c125647249bda2e9ac90aaae9aa1… Ready║flotilla   2h ago ∅
