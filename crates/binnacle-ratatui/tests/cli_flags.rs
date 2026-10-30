@@ -256,3 +256,20 @@ fn the_mode_switch_decides_from_both_terminals_under_each_override() {
     assert_eq!(parsed(&["--interactive"]), Interactive::Always);
     assert_eq!(parsed(&["--no-interactive"]), Interactive::Never);
 }
+
+#[test]
+fn the_viewport_takes_what_the_rows_need_up_to_half_the_terminal() {
+    use binnacle_ratatui::cli::inline_height;
+    assert_eq!(
+        inline_height(4, 40, None),
+        7,
+        "header, rows, bar and status"
+    );
+    assert_eq!(inline_height(0, 40, None), 3);
+    assert_eq!(
+        inline_height(u64::MAX, 40, None),
+        20,
+        "a live table takes the most"
+    );
+    assert_eq!(inline_height(u64::MAX, 40, Some(12)), 12);
+}

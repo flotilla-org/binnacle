@@ -15,7 +15,9 @@
 //!        --format <format>  --interactive | --no-interactive
 //! ```
 //!
-//! `--where` filters here (`phase==Running`, `cpus>=4`, `name~al`);
+//! `--where` filters here (`phase==Running`, `cpus>=4`, `name~al`); the
+//! first operator ends the field, so a field whose name holds one can't
+//! be named;
 //! `--scope-where` passes a clause to the server, in its own syntax.
 //! `--interactive` opens the table even when stdout is not a terminal,
 //! writing the viewport's escape sequences there.

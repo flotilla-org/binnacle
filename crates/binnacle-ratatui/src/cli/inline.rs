@@ -65,6 +65,8 @@ pub fn inline_height(rows: u64, terminal_rows: u16, max: Option<u16>) -> u16 {
 
 /// Opens `source`, presented as `layout`, in an inline viewport below the
 /// prompt on this process's terminal, and returns what the user chose.
+/// The viewport is as tall as the rows need, up to its most; with a live
+/// feed, the most, since rows may still come.
 /// See [`run_inline_with`].
 pub fn run_inline<T: CliTable>(
     source: &mut T,
@@ -72,7 +74,12 @@ pub fn run_inline<T: CliTable>(
     options: InlineOptions<'_, T>,
 ) -> io::Result<Option<Selection>> {
     let (_, rows) = ratatui::crossterm::terminal::size()?;
-    let height = inline_height(source.count(Axis::Rows), rows, options.max_height);
+    // A live table may grow after the viewport opens: it takes the most.
+    let need = match options.live {
+        Some(_) => u64::MAX,
+        None => source.count(Axis::Rows),
+    };
+    let height = inline_height(need, rows, options.max_height);
     // Not `ratatui::init`: its restore leaves the alternate screen, which
     // puts the cursor back where it was saved, over the rows left behind.
     ratatui::crossterm::terminal::enable_raw_mode()?;
@@ -110,7 +117,8 @@ pub fn run_inline<T: CliTable>(
 /// does. Focus starts on the first row.
 ///
 /// - Enter returns the picked rows' Keys if any are picked (Space picks
-///   the focused row), else the focused row's.
+///   the focused row), else the focused row's; `None` when there is
+///   neither, as in an empty table.
 /// - Esc or `q` returns `None`, once no popup or bar is open to take it.
 ///
 /// On the way out it clears the viewport and writes the rows it showed as
@@ -322,7 +330,7 @@ impl Drop for RawMode {
     }
 }
 
-/// The picked rows if any, else the focused row.
+/// The picked rows if any, else the focused row; none in an empty table.
 fn chosen(grid: &mut Grid) -> Option<Selection> {
     let snapshot = grid.snapshot();
     let picked = snapshot.picked(Axis::Rows).to_vec();
@@ -334,7 +342,7 @@ fn chosen(grid: &mut Grid) -> Option<Selection> {
             .into_iter()
             .collect(),
     };
-    Some(Selection { rows })
+    (!rows.is_empty()).then_some(Selection { rows })
 }
 
 /// Focuses the first row's first shown column.

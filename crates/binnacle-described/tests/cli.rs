@@ -589,3 +589,17 @@ fn a_title_with_control_characters_prints_without_them() {
     let tsv = printed(&mut source, &Layout::default(), Format::Tsv);
     assert_eq!(tsv.lines().nth(1), Some("a\\x1b]52;c;bad\\x07"), "{tsv:?}");
 }
+
+#[test]
+fn enter_in_an_empty_table_chooses_nothing() {
+    let mut source = crews();
+    let flags = binnacle_ratatui::cli::Flags::parse(["--where", "name==nobody"]).unwrap();
+    let fields: Vec<String> = source
+        .columns()
+        .iter()
+        .map(|c| c.name().to_owned())
+        .collect();
+    let layout = flags.apply(&Layout::default(), &fields).unwrap();
+    let (_, chosen) = inline(&mut source, &layout, vec![key(KeyCode::Enter)], 100, 20);
+    assert_eq!(chosen, None);
+}

@@ -65,7 +65,7 @@ A Described Table source starting its rows again without showing the table empty
 _Avoid_: Reload, refresh, reconnect (for the whole)
 
 **Selection**:
-What the CLI's inline table hands back when the user presses Enter: the picked rows' Keys if any are picked, else the focused row's. Esc or `q` hands back none. `cli::Selection` in `binnacle-ratatui`.
+What the CLI's inline table hands back when the user presses Enter: the picked rows' Keys if any are picked, else the focused row's. Esc or `q` hands back none, as does Enter in an empty table. `cli::Selection` in `binnacle-ratatui`.
 _Avoid_: Choice, result, pick (for the whole)
 
 **Fake Table Server**:

@@ -58,7 +58,9 @@ impl Flags {
     }
 
     /// Parses the flags it knows from `args` and hands back the rest, in
-    /// order, for the host's own. A known flag without its value, or with a
+    /// order, for the host's own. It reads every argument as it comes, so a
+    /// host flag's value that is itself one of these flags (`--wide`) is
+    /// taken as that flag; pass such a value as `--flag=value`. A known flag without its value, or with a
     /// malformed one, is an error.
     pub fn parse_known<S: AsRef<str>>(
         args: impl IntoIterator<Item = S>,
@@ -268,6 +270,7 @@ pub fn parse_where(clause: &str) -> Result<Condition<JsonId>, FlagError> {
         _ => {
             let scalar = match (value.parse::<f64>(), Timestamp::parse_rfc3339(value)) {
                 (Ok(x), _) if x.is_finite() => Scalar::Number { value: x },
+                // A date is milliseconds since the Unix epoch.
                 (_, Some(at)) => Scalar::Date {
                     value: (at.unix_nanos() / 1_000_000) as f64,
                 },
