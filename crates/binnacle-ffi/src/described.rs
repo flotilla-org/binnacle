@@ -53,9 +53,7 @@ pub struct BinnacleDescribedSource {
     source: DescribedSource,
     now: Option<Timestamp>,
     offset: i32,
-    /// The bytes the last call's texts point into; each keeps its heap
-    /// buffer where it is as the list grows.
-    texts: Vec<Vec<u8>>,
+    texts: Texts,
     wheres: Vec<BinnacleText>,
     roles: Vec<BinnacleText>,
     categories: Vec<BinnacleCategory>,
@@ -356,41 +354,12 @@ unsafe fn sized<T>(out: *mut T) -> Option<u32> {
     (size as usize >= size_of::<T>()).then_some(size)
 }
 
-impl BinnacleDescribedSource {
-    /// A handle over `source`, its cells formatted with the system clock in
-    /// UTC. `Box::into_raw` gives the pointer C uses, as
-    /// [`binnacle_described_source_new`] returns it, freed by
-    /// [`binnacle_described_source_free`].
-    pub fn from_source(source: DescribedSource) -> Box<BinnacleDescribedSource> {
-        Box::new(BinnacleDescribedSource {
-            source,
-            now: None,
-            offset: 0,
-            texts: Vec::new(),
-            wheres: Vec::new(),
-            roles: Vec::new(),
-            categories: Vec::new(),
-            distinct: Vec::new(),
-        })
-    }
+/// The bytes the last call's texts point into; each keeps its heap buffer
+/// where it is as the list grows.
+#[derive(Default)]
+struct Texts(Vec<Vec<u8>>);
 
-    pub fn source(&self) -> &DescribedSource {
-        &self.source
-    }
-
-    pub fn source_mut(&mut self) -> &mut DescribedSource {
-        &mut self.source
-    }
-
-    /// Starts a call that fills pointers: the last call's are let go.
-    fn clear(&mut self) {
-        self.texts.clear();
-        self.wheres.clear();
-        self.roles.clear();
-        self.categories.clear();
-        self.distinct.clear();
-    }
-
+impl Texts {
     /// `bytes` kept until the next call, as C text.
     fn keep(&mut self, bytes: impl Into<Vec<u8>>) -> BinnacleText {
         let bytes = bytes.into();
@@ -398,7 +367,7 @@ impl BinnacleDescribedSource {
             data: bytes.as_ptr(),
             len: bytes.len(),
         };
-        self.texts.push(bytes);
+        self.0.push(bytes);
         text
     }
 
@@ -408,44 +377,6 @@ impl BinnacleDescribedSource {
             has_label: flag(label.is_some()),
             label: label.map_or_else(BinnacleText::default, |l| self.keep(l)),
         }
-    }
-
-    fn now(&self) -> Timestamp {
-        self.now.unwrap_or_else(|| {
-            let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-            Timestamp::from_unix_nanos(since.map_or(0, |d| d.as_nanos() as i128))
-        })
-    }
-
-    /// The cell where `row` meets `col`, formatted at `now`, its size
-    /// `size`.
-    fn cell(&mut self, row: Key, col: Key, now: Timestamp, size: u32) -> BinnacleCell {
-        let mut cell = BinnacleCell {
-            size,
-            ..BinnacleCell::default()
-        };
-        let (Some(value), Some(column)) = (self.source.cell(row, col), self.source.column(col))
-        else {
-            return cell;
-        };
-        let zone = FixedOffset(self.offset);
-        let ctx = FormatContext::new(now, &zone);
-        let formatted = format(
-            value,
-            column.unit(),
-            column.role(),
-            &FormatOptions::default(),
-            &ctx,
-        );
-        let value = value.clone();
-        cell.text = self.keep(formatted.text);
-        cell.align = match formatted.align {
-            Align::Start => BINNACLE_TEXT_ALIGN_START,
-            Align::End => BINNACLE_TEXT_ALIGN_END,
-        };
-        cell.style = style_bits(formatted.style);
-        cell.value = self.typed(&value);
-        cell
     }
 
     fn typed(&mut self, value: &Value) -> BinnacleTypedValue {
@@ -481,6 +412,85 @@ impl BinnacleDescribedSource {
         }
         c
     }
+}
+
+impl BinnacleDescribedSource {
+    /// A handle over `source`, its cells formatted with the system clock in
+    /// UTC. `Box::into_raw` gives the pointer C uses, as
+    /// [`binnacle_described_source_new`] returns it, freed by
+    /// [`binnacle_described_source_free`].
+    pub fn from_source(source: DescribedSource) -> Box<BinnacleDescribedSource> {
+        Box::new(BinnacleDescribedSource {
+            source,
+            now: None,
+            offset: 0,
+            texts: Texts::default(),
+            wheres: Vec::new(),
+            roles: Vec::new(),
+            categories: Vec::new(),
+            distinct: Vec::new(),
+        })
+    }
+
+    pub fn source(&self) -> &DescribedSource {
+        &self.source
+    }
+
+    pub fn source_mut(&mut self) -> &mut DescribedSource {
+        &mut self.source
+    }
+
+    /// Starts a call that fills pointers: the last call's are let go.
+    fn clear(&mut self) {
+        self.texts.0.clear();
+        self.wheres.clear();
+        self.roles.clear();
+        self.categories.clear();
+        self.distinct.clear();
+    }
+
+    /// `bytes` kept until the next call, as C text.
+    fn keep(&mut self, bytes: impl Into<Vec<u8>>) -> BinnacleText {
+        self.texts.keep(bytes)
+    }
+
+    fn now(&self) -> Timestamp {
+        self.now.unwrap_or_else(|| {
+            let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+            Timestamp::from_unix_nanos(since.map_or(0, |d| d.as_nanos() as i128))
+        })
+    }
+
+    /// The cell where `row` meets `col`, formatted at `now`, its size
+    /// `size`.
+    fn cell(&mut self, row: Key, col: Key, now: Timestamp, size: u32) -> BinnacleCell {
+        let mut cell = BinnacleCell {
+            size,
+            ..BinnacleCell::default()
+        };
+        let (Some(value), Some(column)) = (self.source.cell(row, col), self.source.column(col))
+        else {
+            return cell;
+        };
+        let zone = FixedOffset(self.offset);
+        let ctx = FormatContext::new(now, &zone);
+        let formatted = format(
+            value,
+            column.unit(),
+            column.role(),
+            &FormatOptions::default(),
+            &ctx,
+        );
+        cell.text = self.texts.keep(formatted.text);
+        cell.align = match formatted.align {
+            Align::Start => BINNACLE_TEXT_ALIGN_START,
+            Align::End => BINNACLE_TEXT_ALIGN_END,
+        };
+        cell.style = style_bits(formatted.style);
+        // The source and the texts are apart, so the value is not copied.
+        cell.value = self.texts.typed(value);
+        cell
+    }
 
     fn column_to_c(&mut self, column: &Column, size: u32) -> BinnacleColumnInfo {
         let roles: Vec<BinnacleText> = (column.roles().iter())
@@ -489,7 +499,7 @@ impl BinnacleDescribedSource {
         self.roles = roles;
         let categories: Vec<BinnacleCategory> = (column.categories().unwrap_or_default())
             .iter()
-            .map(|c| self.category(&c.value, c.label.as_deref()))
+            .map(|c| self.texts.category(&c.value, c.label.as_deref()))
             .collect();
         self.categories = categories;
         let reference = column.reference();

@@ -924,3 +924,27 @@ fn a_source_answers_distinct_values_as_its_pump_source_does() {
         binnacle_grid_free(grid);
     }
 }
+
+#[test]
+fn a_window_reaching_past_the_end_fills_only_what_there_is() {
+    let (src, grid) = fed("crews.ndjson");
+    let open = BinnacleWindowRequest {
+        requested: 1,
+        start: 0,
+        end: u64::MAX,
+    };
+    let requests = BinnacleWindowRequests { axes: [open; 2] };
+    // SAFETY: the handles are live; each borrow ends before the next call.
+    unsafe {
+        assert_eq!(binnacle_described_source_fill(src, grid, &requests), 1);
+        let phase = (*src).source().column_key("phase").unwrap();
+        (*grid).grid_mut().group_by(Axis::Rows, phase);
+        assert_eq!(binnacle_described_source_pump(src, grid), 1);
+        let mut n = 0;
+        assert_eq!(binnacle_described_source_count(src, 0, &mut n), 1);
+        assert!(n > 0 && n < 20);
+        assert_eq!(binnacle_described_source_fill(src, grid, &requests), 1);
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
+    }
+}
