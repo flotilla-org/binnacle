@@ -5,38 +5,32 @@
 import { expect, test, type Page } from "@playwright/test";
 import { shipments } from "../demo/sources/shipments-data";
 
-const status = (page: Page) => page.locator("#status");
+const HEADER = 28;
+const ROW = 24;
+const en = (n: number) => n.toLocaleString("en");
 
-/** The middle of the first body cell, past the row band and the header band. */
-async function firstCell(page: Page) {
-  const band = await page.locator(".binnacle-band-left").boundingBox();
-  const top = await page.locator(".binnacle-band-top").boundingBox();
-  if (!band || !top) throw new Error("no grid");
-  return { x: band.x + band.width + 10, y: top.y + top.height + 10 };
-}
+const status = (page: Page) => page.locator("#status");
+const bar = (page: Page) => page.getByRole("search");
 
 test.beforeEach(async ({ page }) => {
-  await page.setViewportSize({ width: 1200, height: 600 });
+  await page.setViewportSize({ width: 1000, height: 600 });
   await page.goto("/?source=shipments&theme=light");
-  await page.evaluate(() => localStorage.clear());
-  await page.reload();
-  await expect(status(page)).toContainText("columns 1 to 4 of 4");
-  // Ungrouped, the rows are shipments.
-  const at = await firstCell(page);
-  await page.mouse.click(at.x, at.y);
-  await page.keyboard.press("Alt+ArrowDown");
-  await page.getByRole("dialog").getByRole("button", { name: "Ungroup rows" }).click();
-  await expect(status(page)).toContainText("columns 1 to 6 of 6");
-  // The row band may have changed width.
-  const ungrouped = await firstCell(page);
-  await page.mouse.click(ungrouped.x, ungrouped.y);
+  // The demo opens grouped by region then port; ungroup through a column's menu.
+  await bar(page).getByRole("button", { name: "+ Filter" }).click();
+  await page.getByRole("menuitem", { name: "crates" }).click();
+  await page.getByRole("dialog", { name: "Filter crates" }).getByRole("button", { name: "Ungroup rows" }).click();
+  await expect(bar(page).locator(".binnacle-row-count")).toHaveText(`${en(shipments.length)} rows`);
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  // The id cell of the first shipment.
+  const b = await page.locator(".binnacle-layer").boundingBox();
+  if (!b) throw new Error("no grid");
+  await page.mouse.click(b.x + 230, b.y + HEADER + ROW / 2);
+  await expect(status(page)).toContainText("/ id)");
 });
 
 test("choosing Track on a row's menu closes the menu and notes the row's id", async ({ page }) => {
   await page.keyboard.press("Alt+ArrowRight");
-  const menu = page.getByRole("dialog");
-  const track = menu.getByRole("button", { name: "Track" });
+  const track = page.getByRole("dialog").getByRole("button", { name: "Track" });
   await expect(track).toBeVisible();
   await track.click();
   await expect(page.locator("#received")).toHaveText(`track: ${shipments[0]!.id}`);
