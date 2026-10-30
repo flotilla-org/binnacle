@@ -142,7 +142,8 @@ pub struct Status {
     pub synced: bool,
     /// The first `rows` message after the last `table` had a cursor: the
     /// table has more rows than [`ROW_CAP`], and only those that came are
-    /// shown ("10,000 of more").
+    /// shown ("10,000 of more"). Only a `table` starts it afresh, so a
+    /// resync whose server sends none keeps it.
     pub partial: bool,
     /// The table's row count, if a `count` message gave it, and whether it
     /// is an estimate.
@@ -171,8 +172,9 @@ const BULK: usize = 256;
 /// Key, and as a Key is a hash of its identity, every source gives the same
 /// row the same Key, barring a hash collision. The interner lets go of a
 /// row's identity when the row goes, unless a collision gave it another
-/// Key. A table with no primary key keys each row by where it came in the
-/// stream instead, so its Keys hold only within one source.
+/// Key. A table with no primary key keys each row by where it came in its
+/// stream instead (a resync's rows replace the held ones by place, not by
+/// identity), so its Keys hold only within one source.
 ///
 /// Live changes apply in place: an `upsert` changes or adds one row, a
 /// `delete` removes one, and the sort, filters, moves and the Grid's state
@@ -275,7 +277,11 @@ impl DescribedSource {
         self.requests.pop_front()
     }
 
+    /// Asks to open the watch, unless that is asked already.
     fn open_watch(&mut self) {
+        if (self.requests.iter()).any(|r| matches!(r, HostRequest::OpenWatch(_))) {
+            return;
+        }
         self.requests
             .push_back(HostRequest::OpenWatch(WatchRequest {
                 table: self.table.clone(),
@@ -320,6 +326,7 @@ impl DescribedSource {
     }
 
     /// The stream ended: the source asks its host to open the watch again
+    /// (once, however often it is called before the host polls)
     /// ([`DescribedSource::poll_request`]) and starts a resync, so the next
     /// stream's `table`, `rows` and `synced` replace the rows in place. The
     /// rows stay shown meanwhile, so it needs no Change Notices.
@@ -451,6 +458,9 @@ impl DescribedSource {
     /// Starts a resync: every row is unconfirmed until it comes again, and
     /// the rows are not synced.
     fn resync(&mut self) {
+        // A table with no primary key keys the rows of each stream by where
+        // they come in it, so a resync's rows match the held ones by place.
+        self.ordinal = 0;
         self.unconfirmed = Some(self.row_keys.iter().copied().collect());
         self.status.synced = false;
     }

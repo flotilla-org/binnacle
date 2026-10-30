@@ -255,6 +255,9 @@ impl Response {
     }
 }
 
+/// The biggest chunk the client takes.
+const MAX_CHUNK: usize = 64 << 20;
+
 /// A response whose body is still coming: chunk by chunk if chunked, else
 /// to the end of the connection.
 pub struct Stream {
@@ -298,7 +301,9 @@ impl Stream {
             return Ok(None);
         }
         let size = usize::from_str_radix(line.trim().split(';').next().unwrap_or(""), 16)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "a bad chunk size"))?;
+            .ok()
+            .filter(|&size| size <= MAX_CHUNK)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a bad chunk size"))?;
         let mut buf = vec![0; size + 2];
         self.reader.read_exact(&mut buf)?;
         buf.truncate(size);

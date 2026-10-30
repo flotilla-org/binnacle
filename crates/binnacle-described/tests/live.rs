@@ -419,3 +419,31 @@ fn a_table_with_no_primary_key_keys_rows_by_arrival_through_deletes() {
         "a fresh Key"
     );
 }
+
+#[test]
+fn a_resync_of_a_table_with_no_primary_key_replaces_its_rows_by_place() {
+    let mut table = table_message();
+    table.schema.primary_key.clear();
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    source.receive(Message::Table(table.clone()));
+    source.receive(rows(crews_rows(|_| {})));
+    let keys = source.row_keys().to_vec();
+    source.ended();
+    source.receive(Message::Table(table));
+    source.receive(rows(crews_rows(|_| {})[..5].to_vec()));
+    source.receive(Message::Synced { sequence: None });
+    assert_eq!(source.row_keys(), &keys[..5], "the same Keys, in place");
+    assert_eq!(source.interned_rows(), 5);
+}
+
+#[test]
+fn ending_twice_before_the_host_polls_asks_for_one_watch() {
+    let mut source = replay("crews.ndjson");
+    source.ended();
+    source.ended();
+    assert!(matches!(
+        source.poll_request(),
+        Some(HostRequest::OpenWatch(_))
+    ));
+    assert_eq!(source.poll_request(), None);
+}
