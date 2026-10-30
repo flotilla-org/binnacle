@@ -87,7 +87,9 @@ impl Timestamp {
 
     /// The instant in RFC 3339, in UTC with nanoseconds:
     /// `2026-10-29T14:03:00.000000000Z`. [`Timestamp::parse_rfc3339`]
-    /// reads it back.
+    /// reads it back for the years RFC 3339 has, 0000 to 9999; an instant
+    /// outside them writes its year as it is (`-001`, `10000`), which is
+    /// not RFC 3339.
     pub fn to_rfc3339(self) -> String {
         let (y, mo, d) = civil_from_days(self.secs.div_euclid(86_400));
         let s = self.secs.rem_euclid(86_400);
