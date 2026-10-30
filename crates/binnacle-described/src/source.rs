@@ -156,7 +156,9 @@ pub struct Status {
 }
 
 /// More changed rows than this in one `rows` message are applied at once,
-/// as the rows replaced, rather than value by value.
+/// as the rows replaced, rather than value by value: each changed value in
+/// a sorted column sorts the rows again, so a resync of a large sorted
+/// table would be quadratic. Below it, moves and unmatched rows survive.
 const BULK: usize = 256;
 
 /// The Described Table source. Built from a [`Scope`], it asks its host to
@@ -645,6 +647,7 @@ impl DescribedSource {
     /// The primary key changed: every row is keyed again from its own
     /// values, the later of two rows with one tuple taking its place.
     fn rekey(&mut self) {
+        self.ordinal = 0;
         let unconfirmed = self.unconfirmed.take();
         let old_keys = std::mem::take(&mut self.row_keys);
         for &key in &old_keys {
@@ -707,6 +710,7 @@ impl DescribedSource {
         }
         self.pages += 1;
         let mut known = Vec::new();
+        let mut known_at: HashMap<usize, usize> = HashMap::new();
         let mut fresh: Vec<(Key, Row)> = Vec::new();
         let mut fresh_at: HashMap<Key, usize> = HashMap::new();
         for row in message.rows {
@@ -715,7 +719,14 @@ impl DescribedSource {
                 unconfirmed.remove(&key);
             }
             if let Some(&at) = self.row_at.get(&key) {
-                known.push((at, row));
+                // A row twice in one page: the later takes its place.
+                match known_at.get(&at) {
+                    Some(&i) => known[i] = (at, row),
+                    None => {
+                        known_at.insert(at, known.len());
+                        known.push((at, row));
+                    }
+                }
             } else if let Some(&i) = fresh_at.get(&key) {
                 fresh[i].1 = row;
             } else {
@@ -733,6 +744,12 @@ impl DescribedSource {
     fn upsert(&mut self, key: &[Wire], row: Row) -> Vec<(Axis, ChangeNotice)> {
         if self.schema.is_none() {
             return Vec::new();
+        }
+        if let ([Wire::Int(n)], true) = (key, self.primary.is_empty()) {
+            // A place the stream has not reached: the rows that come next
+            // start after it.
+            let next = u64::try_from(*n).map_or(0, |n| n.saturating_add(1));
+            self.ordinal = self.ordinal.max(next);
         }
         let key = self.row_ids.intern(&identity(key));
         if let Some(unconfirmed) = &mut self.unconfirmed {

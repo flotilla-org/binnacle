@@ -154,8 +154,11 @@ fn decode(text: &str) -> String {
 }
 
 /// Reads a request's head from `conn`.
+/// The longest request head the fake reads.
+const MAX_HEAD: u64 = 64 << 10;
+
 pub(crate) fn read_request(conn: &mut Conn) -> io::Result<Request> {
-    let mut reader = BufReader::new(conn);
+    let mut reader = BufReader::new(conn.take(MAX_HEAD));
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut parts = line.split_whitespace();

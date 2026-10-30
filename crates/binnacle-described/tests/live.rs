@@ -447,3 +447,48 @@ fn ending_twice_before_the_host_polls_asks_for_one_watch() {
     ));
     assert_eq!(source.poll_request(), None);
 }
+
+#[test]
+fn a_table_with_no_primary_key_takes_an_upserted_place_as_reached() {
+    let mut table = table_message();
+    table.schema.primary_key.clear();
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    source.receive(Message::Table(table.clone()));
+    source.receive(rows(crews_rows(|_| {})[..2].to_vec()));
+    let row = crews_rows(|_| {})[5].clone();
+    source.receive(Message::Upsert {
+        key: vec![Wire::Int(5)],
+        row,
+    });
+    source.receive(rows(crews_rows(|_| {})[2..].to_vec()));
+    assert_eq!(source.row_count(), 7, "the rows after it are new rows");
+    // Keyed and back to none: the rows are keyed again from the start.
+    let mut source = DescribedSource::new("crews", Scope::new("flotilla"));
+    source.receive(Message::Table(table.clone()));
+    source.receive(rows(crews_rows(|_| {})));
+    let keys = source.row_keys().to_vec();
+    source.receive(Message::Table(table_message()));
+    assert!(source.row_keys().iter().all(|k| !keys.contains(k)));
+    source.receive(Message::Table(table));
+    assert_eq!(source.row_keys(), keys);
+}
+
+#[test]
+fn a_row_twice_in_one_page_counts_once_the_later_winning() {
+    let mut source = replay("crews.ndjson");
+    let alpha = |load: f64| {
+        let mut row = crews_rows(|_| {})[0].clone();
+        row.insert("load".into(), Wire::Float(load));
+        row
+    };
+    let Received::Applied(notices) = source.receive(rows(vec![alpha(7.0), alpha(8.0)])) else {
+        panic!()
+    };
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    let key = source.row_key(&[Wire::Text("alpha".into())]).unwrap();
+    let load = source.column_key("load").unwrap();
+    assert_eq!(
+        source.cell(key, load),
+        Some(&binnacle_format::Value::Number(8.0))
+    );
+}
