@@ -532,6 +532,7 @@ impl DescribedSource {
         self.grouped = GroupedMemory::new(source);
         if self.spec != ViewSpec::default() {
             let (spec, _) = self.tie_broken(&self.spec);
+            let spec = self.widened(&spec);
             self.grouped.view(&self.rows, &spec);
         }
     }
@@ -680,7 +681,9 @@ impl PumpSource for DescribedSource {
     fn view(&mut self, spec: &ViewSpec) -> Viewed {
         self.spec = spec.clone();
         let (tie_broken, added) = self.tie_broken(spec);
+        let tie_broken = self.widened(&tie_broken);
         let mut viewed = self.over().view(&tie_broken);
+        self.unwidened(spec, &mut viewed.applied);
         let rows = viewed.applied.axis_mut(Axis::Rows);
         let shown: Vec<SortColumn> = (rows.sort.columns().iter())
             .filter(|c| !added.contains(&c.key))
@@ -720,7 +723,8 @@ impl PumpSource for DescribedSource {
         from: Option<FindMatch>,
         direction: FindDirection,
     ) -> Option<FindStep> {
-        self.over().find_next(query, from, direction)
+        let query = self.widened_find(query, &self.spec.axis(Axis::Cols).hidden);
+        self.over().find_next(&query, from, direction)
     }
 
     fn ancestors(&mut self, axis: Axis, key: Key) -> Vec<Key> {
