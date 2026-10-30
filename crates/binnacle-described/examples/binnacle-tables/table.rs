@@ -8,6 +8,8 @@ use std::path::Path;
 use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key, ViewSpec, Viewport};
 use binnacle_described::{Decoder, DescribedSource, Encoding, Message, Received, Scope};
 use binnacle_format::{Timestamp, Value};
+use binnacle_layout::view::{AxisView, ViewSpec as LayoutView};
+use binnacle_layout::{EdgePins, JsonId, Layout, Pins};
 use binnacle_ratatui::{CellRenderer, Content, ValueRenderer, fit_width};
 
 /// The widest a column starts.
@@ -74,6 +76,36 @@ impl Tables {
             grid.notify(axis, notice);
         }
         first
+    }
+
+    /// The Layout the table starts from: the nested columns hidden and the
+    /// key, then state, columns pinned leading, by field name.
+    #[allow(dead_code)]
+    pub fn default_layout(&self) -> Layout<JsonId, JsonId> {
+        let columns = self.source.columns();
+        let name = |c: &binnacle_described::Column| JsonId::from(c.name());
+        let has = |c: &binnacle_described::Column, role: &str| c.field().has_role(role);
+        let leading = (columns.iter().filter(|c| has(c, "key")))
+            .chain(columns.iter().filter(|c| !has(c, "key") && has(c, "state")))
+            .map(name)
+            .collect();
+        Layout {
+            view: Some(LayoutView {
+                cols: AxisView {
+                    hidden: columns.iter().filter(|c| c.nested()).map(name).collect(),
+                    ..AxisView::default()
+                },
+                ..LayoutView::default()
+            }),
+            pins: Some(Pins {
+                cols: EdgePins {
+                    leading,
+                    ..EdgePins::default()
+                },
+                ..Pins::default()
+            }),
+            ..Layout::default()
+        }
     }
 
     /// A Grid over the table: each column as wide as its widest cell (up

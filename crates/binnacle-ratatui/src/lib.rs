@@ -7,6 +7,7 @@
 mod border;
 mod checklist;
 mod chooser;
+pub mod cli;
 mod compare;
 mod context;
 mod copy;

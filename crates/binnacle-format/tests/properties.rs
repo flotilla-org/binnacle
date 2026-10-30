@@ -113,3 +113,27 @@ fn formatting_never_panics_and_is_always_one_line(tc: TestCase) {
     let expected = format(&value, unit.as_deref(), role, &absolute, &ctx);
     assert_eq!(stable, expected, "{value:?}");
 }
+
+#[hegel::test(test_cases = 500)]
+fn an_instant_written_as_rfc_3339_reads_back_as_itself(tc: TestCase) {
+    let secs = tc.draw(
+        gs::integers::<i64>()
+            .min_value(-62_135_596_800)
+            .max_value(253_402_300_799),
+    );
+    let nanos = tc.draw(gs::integers::<i64>().min_value(0).max_value(999_999_999));
+    let at = Timestamp::from_unix_nanos(i128::from(secs) * 1_000_000_000 + i128::from(nanos));
+    let text = at.to_rfc3339();
+    assert!(text.ends_with('Z') && text.len() == 30, "{text}");
+    assert_eq!(Timestamp::parse_rfc3339(&text), Some(at));
+}
+
+#[test]
+fn rfc_3339_is_utc_with_nanoseconds() {
+    let at = Timestamp::from_unix_nanos(1_785_189_639_399_401_197);
+    assert_eq!(at.to_rfc3339(), "2026-07-27T22:00:39.399401197Z");
+    assert_eq!(
+        Timestamp::UNIX_EPOCH.to_rfc3339(),
+        "1970-01-01T00:00:00.000000000Z"
+    );
+}
