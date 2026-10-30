@@ -225,7 +225,7 @@ impl Transport {
                 None => {
                     emit(Event::Failed {
                         status: 0,
-                        body: format!("not an http:// URL: {base}").into_bytes(),
+                        body: format!("not an http:// URL without userinfo: {base}").into_bytes(),
                     });
                     return Attempt::Done;
                 }
@@ -380,13 +380,18 @@ where
 const MAX_FAILED_BODY: usize = 64 << 10;
 
 /// `http://host:port/prefix` as `host:port` and `/prefix`, port 80 if none
-/// is given; an IPv6 host is bracketed, `http://[::1]:7777`.
+/// is given; an IPv6 host is bracketed, `http://[::1]:7777`. A URL with
+/// userinfo is refused: credentials go in [`Auth`].
 fn split(base: &str) -> Option<(String, String)> {
     let rest = base.strip_prefix("http://")?;
     let (host, prefix) = match rest.find('/') {
         Some(at) => (&rest[..at], rest[at..].trim_end_matches('/')),
         None => (rest, ""),
     };
+    if host.contains('@') {
+        // Credentials go in `Auth`, never in the URL.
+        return None;
+    }
     let host = host.strip_suffix(':').unwrap_or(host);
     let port = match host.rfind(']') {
         Some(end) => host[end..].contains(':'),
@@ -495,5 +500,6 @@ mod tests {
         );
         assert_eq!(split("http://host:"), ("host:80".into(), "".into()));
         assert_eq!(super::split("https://host"), None);
+        assert_eq!(super::split("http://user@host"), None);
     }
 }
