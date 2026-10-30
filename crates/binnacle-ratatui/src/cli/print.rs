@@ -249,7 +249,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `text` with tabs, line breaks and backslashes escaped, for TSV.
+/// `text` with tabs, line breaks and backslashes escaped, for TSV, and any
+/// other control character as `\xNN` (or `\u{NNNN}` past ASCII), so none
+/// reaches a terminal.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -258,6 +260,8 @@ fn escape(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\\' => out.push_str("\\\\"),
+            c if c.is_ascii_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:04x}}}", c as u32)),
             c => out.push(c),
         }
     }

@@ -17,6 +17,8 @@
 //!
 //! `--where` filters here (`phase==Running`, `cpus>=4`, `name~al`);
 //! `--scope-where` passes a clause to the server, in its own syntax.
+//! `--interactive` opens the table even when stdout is not a terminal,
+//! writing the viewport's escape sequences there.
 //!
 //! Run it with
 //! `cargo run -p binnacle-described --example binnacle-tables -- crates/binnacle-described/tests/data/rows-hosts.ndjson`,

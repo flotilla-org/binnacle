@@ -214,6 +214,8 @@ const OPERATORS: [&str; 7] = ["==", "!=", "<=", ">=", "<", ">", "~"];
 /// - `field~text` keeps the rows whose value contains `text`.
 ///
 /// A leading `.` on the field is taken, as flotilla writes it.
+/// The first operator in the clause ends the field, so a field whose name
+/// holds `=`, `!`, `<`, `>` or `~` can't be named here.
 pub fn parse_where(clause: &str) -> Result<Condition<JsonId>, FlagError> {
     let found = (0..clause.len())
         .filter(|&i| clause.is_char_boundary(i))

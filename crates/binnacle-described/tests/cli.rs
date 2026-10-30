@@ -586,4 +586,6 @@ fn a_title_with_control_characters_prints_without_them() {
         "{text:?}"
     );
     assert!(text.starts_with("red"), "{text:?}");
+    let tsv = printed(&mut source, &Layout::default(), Format::Tsv);
+    assert_eq!(tsv.lines().nth(1), Some("a\\x1b]52;c;bad\\x07"), "{tsv:?}");
 }
