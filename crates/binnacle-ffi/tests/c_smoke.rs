@@ -54,6 +54,7 @@ fn the_c_smoke_program_round_trips_a_frame() {
     );
 
     let ran = Command::new(&program)
+        .arg(crate_dir.join("../binnacle-described/tests/data/rows-hosts.ndjson"))
         .output()
         .expect("run the smoke program");
     let stdout = String::from_utf8_lossy(&ran.stdout);
@@ -155,6 +156,17 @@ fn rust_layouts() -> Vec<Layout> {
         BinnacleGroupViewed { applied, totals, notices, notices_len }
         BinnacleGroupItem { key, outline }
         BinnacleGroupSummary { kind, path, path_len, children, figures, figures_len }
+        BinnacleBytes { data, len }
+        BinnacleCategory { value, has_label, label }
+        BinnacleInvalid { raw, expected }
+        BinnacleTypedValue { kind, data }
+        BinnacleTypedValueData { boolean, int64, uint64, number, text, bytes, datetime, category, nested, invalid }
+        BinnacleCell { size, text, align, style, value }
+        BinnacleWatchRequest { kind, table, path, query, target, namespace_name, wheres, wheres_len, limit }
+        BinnacleDescribedStatus { described, synced, partial, has_count, count, estimate, rows, mismatches }
+        BinnacleColumnInfo { size, key, name, has_title, title, header, type_name, value_kind, has_unit, unit, nullable, role_bits, roles, roles_len, has_categories, categories, categories_len, has_reference, has_resource, resource, reference_field, mismatches }
+        BinnacleDistinctValue { text, has_count, count }
+        BinnacleDistinct { values, values_len, has_blanks, blanks_counted, blanks, partial, narrowed }
     }
 }
 

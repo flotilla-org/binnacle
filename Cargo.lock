@@ -111,10 +111,14 @@ name = "binnacle-ffi"
 version = "0.1.0"
 dependencies = [
  "binnacle-core",
+ "binnacle-described",
+ "binnacle-format",
  "binnacle-group",
  "binnacle-layout",
  "binnacle-memory",
+ "ciborium",
  "hegeltest",
+ "serde_json",
 ]
 
 [[package]]

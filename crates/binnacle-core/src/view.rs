@@ -988,6 +988,12 @@ fn merged<T: Clone + PartialEq>(
 }
 
 impl Grid {
+    /// The View Spec the Table Source last applied, as
+    /// [`crate::Snapshot::applied_view`] gives it, without taking a Snapshot.
+    pub fn applied_view(&self) -> &ViewSpec {
+        &self.view.applied
+    }
+
     /// What the Table Source supports when viewing `axis` by `key`, an item
     /// of the other axis. Every item has [`Support::default`] until set
     /// otherwise.

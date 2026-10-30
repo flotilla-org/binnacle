@@ -60,6 +60,10 @@ _Avoid_: Remote table, schema table, dynamic table
 What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses. A Described Table source can't be built without one.
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
+**Described Source Handle**:
+A Described Table source behind the C API (`BinnacleDescribedSource` in `binnacle.h`): it takes the rows stream's messages, pumps and fills the Grid it drives, and gives a native renderer each cell's Typed Value and formatted text, each column's description, and Distinct Values. Like the source it holds, it is used from one thread. A Rust host builds one from its own source with `BinnacleDescribedSource::from_source`.
+_Avoid_: Described grid, table handle
+
 ### Axes and identity
 
 **Axis**:
