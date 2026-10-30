@@ -13,7 +13,9 @@ export interface ColumnMenuOptions<RowId = unknown> {
   /**
    * The items to add to row `rowId`'s menu, after the built-in ones. A row
    * header draws its button only where the columns take conditions on the
-   * row; a row with items alone opens by Alt+ArrowRight or `openRow`.
+   * row; a row with items alone opens by Alt+ArrowRight or `openRow`. It is
+   * called whenever a row's menu is checked or opened, so keep it cheap and
+   * pure.
    */
   rowItems?: (rowId: RowId) => readonly RowMenuItem[];
   /** Called with the item chosen and the row, once the menu has closed. */

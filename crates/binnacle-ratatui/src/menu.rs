@@ -238,7 +238,8 @@ pub struct RowChoice {
 }
 
 /// The keys the row menu's own lines and hidden-item numbers use. A host
-/// item's key that is one of these is ignored: the built-in wins.
+/// item's key that is one of these is ignored: the built-in wins. The test
+/// at the foot of this file guards the string; a new row line needs its key here.
 const ROW_MENU_KEYS: &str = "tbufghoca123456789";
 
 #[derive(Clone, Debug)]
@@ -564,7 +565,8 @@ impl HeaderMenu {
     /// They show only when the menu is open on a row, and the menu lists
     /// them even where no built-in line applies. An item's `key` picks it,
     /// unless it is a key a built-in line of the row menu uses (`t`, `b`,
-    /// `u`, `f`, `g`, `h`, `o`, `c`, `a` or a digit): the built-in wins.
+    /// `u`, `f`, `g`, `h`, `o`, `c`, `a` or a digit): the built-in wins. Of two
+    /// items with one key, the first wins.
     pub fn set_row_items(&mut self, items: Vec<RowItem>) {
         self.row_items = items;
     }
