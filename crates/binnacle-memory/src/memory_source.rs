@@ -1100,6 +1100,38 @@ impl<R> MemorySource<R> {
         notices
     }
 
+    /// Base rows `removed` (Logical Indices into the rows as they were)
+    /// left the host's base data, which is now `rows`: those after them take
+    /// Logical Indices that much lower. The sort, filters, hidden rows,
+    /// unmatched rows and the order moves left all stay, so the rows need
+    /// only the `Removed` notices returned (see
+    /// [`InMemoryTableSource::remove_rows`]), highest Position first. If the
+    /// columns sort by a row that left, it is dropped from their Sort Spec
+    /// and they are sorted again and need the `Reordered` after; then the
+    /// `Refiltered` if the columns' filter now keeps or drops columns.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` is not as long as the base rows less those removed.
+    pub fn removed(&mut self, rows: &[R], removed: &[usize]) -> Vec<(Axis, ChangeNotice)> {
+        let by = self.table.sort_spec(Axis::Cols).clone();
+        let mut notices: Vec<(Axis, ChangeNotice)> = (self.table.remove_rows(removed).into_iter())
+            .map(|n| (Axis::Rows, n))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            self.table.base_len(Axis::Rows),
+            "rows is the base data after the removal"
+        );
+        let spec = self.present(Axis::Rows, &by);
+        if spec != by {
+            let by_rows = self.sorting_rows(&spec);
+            notices.push((Axis::Cols, self.sort_columns(rows, &spec, &by_rows)));
+        }
+        notices.extend(self.recheck_columns(rows));
+        notices
+    }
+
     /// The keep flags of `rows` while a filter is in force, else none.
     fn keep_flags(&self, rows: &[R]) -> Vec<bool> {
         match self.filtered() {

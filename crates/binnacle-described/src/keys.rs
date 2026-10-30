@@ -44,6 +44,23 @@ impl StableKeys {
         Key(key)
     }
 
+    /// Lets go of `identity` if its Key is its own hash, so the interner
+    /// holds only what is in use and the Key comes back unchanged if the
+    /// identity returns. One that took a probed Key after a collision is
+    /// kept: let go, it might come back to a different Key.
+    pub fn forget(&mut self, identity: &[u8]) {
+        let own = Key((self.hash)(identity) & !SUMMARY_BIT);
+        if self.keys.get(identity) == Some(&own) {
+            self.keys.remove(identity);
+            self.identities.remove(&own);
+        }
+    }
+
+    /// How many identities it holds.
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
     pub fn key(&self, identity: &[u8]) -> Option<Key> {
         self.keys.get(identity).copied()
     }
@@ -81,5 +98,27 @@ mod tests {
         assert_eq!(keys.intern(b"a"), top, "and keep them");
         assert_eq!(keys.identity(Key(0)), Some(&b"b"[..]));
         assert_eq!(keys.key(b"c"), Some(Key(1)));
+    }
+
+    #[test]
+    fn forgetting_lets_go_of_own_hash_keys_and_keeps_probed_ones() {
+        let mut keys = StableKeys {
+            hash: |id| u64::from(id[0] == b'a' || id[0] == b'b'),
+            ..StableKeys::default()
+        };
+        assert_eq!(keys.intern(b"a"), Key(1));
+        assert_eq!(keys.intern(b"b"), Key(2), "b collided with a");
+        assert_eq!(keys.intern(b"c"), Key(0));
+        keys.forget(b"b");
+        assert_eq!(keys.key(b"b"), Some(Key(2)), "a probed Key is kept");
+        keys.forget(b"c");
+        keys.forget(b"a");
+        assert_eq!(keys.len(), 1);
+        assert_eq!((keys.key(b"a"), keys.identity(Key(1))), (None, None));
+        assert_eq!(keys.intern(b"c"), Key(0), "back to its own Key");
+        assert_eq!(keys.intern(b"a"), Key(1));
+        assert_eq!(keys.intern(b"b"), Key(2));
+        keys.forget(b"zzz");
+        assert_eq!(keys.len(), 3, "an identity it never held is no matter");
     }
 }

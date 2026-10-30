@@ -2,7 +2,7 @@
 //! table's stream carries, each parsed once against its field's type.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -118,8 +118,8 @@ impl Column {
 pub enum Received {
     /// Applied: the Grid needs these Change Notices, in order.
     Applied(Vec<(Axis, ChangeNotice)>),
-    /// Decoded but not yet handled by this source: live changes and
-    /// resyncs, and the stream's end. The source is as it was.
+    /// Decoded but of a type this source does not know. The source is as
+    /// it was.
     Unhandled(Unhandled),
 }
 
@@ -127,10 +127,8 @@ pub enum Received {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Unhandled {
-    /// An `upsert`, `delete`, `resync` or unknown message.
+    /// A message of a type this crate does not know ([`Message::Other`]).
     Message(Message),
-    /// The stream ended.
-    Ended,
 }
 
 /// How far the rows have come.
@@ -139,20 +137,26 @@ pub enum Unhandled {
 pub struct Status {
     /// The `table` message has come.
     pub described: bool,
-    /// A `synced` has come: the rows are the table as of then.
+    /// A `synced` has come and no resync began since: the rows are the
+    /// table as of then.
     pub synced: bool,
-    /// The first `rows` message had a cursor: the table has more rows than
-    /// [`ROW_CAP`], and only those that came are shown ("10,000 of more").
+    /// The first `rows` message after the last `table` had a cursor: the
+    /// table has more rows than [`ROW_CAP`], and only those that came are
+    /// shown ("10,000 of more").
     pub partial: bool,
     /// The table's row count, if a `count` message gave it, and whether it
     /// is an estimate.
     pub count: Option<(u64, bool)>,
-    /// Which life of the table the `table` message named: `durable` for
-    /// one that outlives the daemon.
+    /// Which life of the table the last `table` message named: `durable`
+    /// for one that outlives the daemon.
     pub incarnation: Option<String>,
-    /// The sequence the last `synced` gave.
+    /// The sequence the last `synced` or `progress` gave.
     pub sequence: Option<u64>,
 }
+
+/// More changed rows than this in one `rows` message are applied at once,
+/// as the rows replaced, rather than value by value.
+const BULK: usize = 256;
 
 /// The Described Table source. Built from a [`Scope`], it asks its host to
 /// open a watch ([`DescribedSource::poll_request`]), takes the messages
@@ -163,11 +167,20 @@ pub struct Status {
 /// Each row is parsed once, as it comes, into Typed Values in column order
 /// (see [`DescribedSource::cell`]). A row's Key is interned from the
 /// deterministic CBOR of its primary-key tuple and a column's from its
-/// field's name; the interner lives as long as the source, so a row or
-/// column that leaves and comes back keeps its Key, and as a Key is a hash
-/// of its identity, every source gives the same row the same Key, barring a
-/// hash collision. A table with no primary key keys each row by where it
-/// came in the stream instead, so its Keys hold only within one source.
+/// field's name, so a row or column that leaves and comes back keeps its
+/// Key, and as a Key is a hash of its identity, every source gives the same
+/// row the same Key, barring a hash collision. The interner lets go of a
+/// row's identity when the row goes, unless a collision gave it another
+/// Key. A table with no primary key keys each row by where it came in the
+/// stream instead, so its Keys hold only within one source.
+///
+/// Live changes apply in place: an `upsert` changes or adds one row, a
+/// `delete` removes one, and the sort, filters, moves and the Grid's state
+/// all stay. A `resync`, or the stream's end ([`DescribedSource::ended`]),
+/// starts a resync: the `table`, `rows` and `synced` that follow replace
+/// the rows in place, and `synced` removes those that did not come again.
+/// A `table` message once the columns are known is diffed by field name
+/// (see [`DescribedSource::poll_view`]).
 ///
 /// Sorting is the Sort Order with an invalid tier between nulls and typed
 /// values. Rows that tie on every term of a sort, or within a group, break
@@ -186,13 +199,22 @@ pub struct DescribedSource {
     /// The primary key's field names.
     primary: Vec<String>,
     rows: Vec<Values>,
+    /// Each row as it came, to read again when its field's type changes.
+    raw: Vec<Row>,
     row_keys: Vec<Key>,
     row_at: HashMap<Key, usize>,
     row_ids: StableKeys,
     column_ids: StableKeys,
+    /// The next ordinal a row of a table with no primary key is keyed by.
+    ordinal: u64,
     grouped: GroupedMemory<Values>,
     /// The View Spec last asked for, applied again when the rows change.
     spec: ViewSpec,
+    /// The View Spec applied since a `table` message changed the columns,
+    /// for the host to take.
+    viewed: Option<(ViewSpec, Totals)>,
+    /// While in a resync, the rows that have not come again since it began.
+    unconfirmed: Option<HashSet<Key>>,
     status: Status,
     /// How many `rows` messages came since the `table`.
     pages: u64,
@@ -203,32 +225,32 @@ impl DescribedSource {
     /// A source for the rows of `table` within `scope`, its dates' Stable
     /// Text in UTC until [`DescribedSource::zone`] sets another.
     pub fn new(table: impl Into<String>, scope: Scope) -> DescribedSource {
-        let table = table.into();
-        let request = WatchRequest {
-            table: table.clone(),
-            scope: scope.clone(),
-            limit: ROW_CAP,
-        };
-        DescribedSource {
-            table,
+        let mut source = DescribedSource {
+            table: table.into(),
             scope,
-            requests: VecDeque::from([HostRequest::OpenWatch(request)]),
+            requests: VecDeque::new(),
             zone: Rc::new(FixedOffset(0)),
             schema: None,
             columns: Vec::new(),
             column_at: HashMap::new(),
             primary: Vec::new(),
             rows: Vec::new(),
+            raw: Vec::new(),
             row_keys: Vec::new(),
             row_at: HashMap::new(),
             row_ids: StableKeys::default(),
             column_ids: StableKeys::default(),
+            ordinal: 0,
             grouped: GroupedMemory::new(MemorySource::new(0, 0)),
             spec: ViewSpec::default(),
+            viewed: None,
+            unconfirmed: None,
             status: Status::default(),
             pages: 0,
             mismatches: 0,
-        }
+        };
+        source.open_watch();
+        source
     }
 
     /// This source with its dates' Stable Text (what filters and find
@@ -248,37 +270,73 @@ impl DescribedSource {
     }
 
     /// The next thing the source asks of its host: first, to open the
-    /// watch.
+    /// watch, and again each time the stream ends.
     pub fn poll_request(&mut self) -> Option<HostRequest> {
         self.requests.pop_front()
     }
 
-    /// Takes one message from the stream.
+    fn open_watch(&mut self) {
+        self.requests
+            .push_back(HostRequest::OpenWatch(WatchRequest {
+                table: self.table.clone(),
+                scope: self.scope.clone(),
+                limit: ROW_CAP,
+            }));
+    }
+
+    /// Takes one message from the stream. Messages about rows before the
+    /// first `table` are dropped: there are no columns to read them by.
     pub fn receive(&mut self, message: Message) -> Received {
-        match message {
+        let notices = match message {
             Message::Table(table) => {
-                let notices = self.describe(table.schema);
                 self.status.incarnation = table.incarnation;
-                Received::Applied(notices)
+                self.describe(table.schema)
             }
-            Message::Rows(rows) => Received::Applied(self.take_rows(rows)),
+            Message::Rows(rows) => self.take_rows(rows),
             Message::Synced { sequence } => {
                 self.status.synced = true;
                 self.status.sequence = sequence;
-                Received::Applied(Vec::new())
+                self.confirm()
             }
-            Message::Progress { .. } => Received::Applied(Vec::new()),
+            Message::Progress { sequence } => {
+                if sequence.is_some() {
+                    self.status.sequence = sequence;
+                }
+                Vec::new()
+            }
             Message::Count { count, estimate } => {
                 self.status.count = Some((count, estimate));
-                Received::Applied(Vec::new())
+                Vec::new()
             }
-            other => Received::Unhandled(Unhandled::Message(other)),
-        }
+            Message::Upsert { key, row } => self.upsert(&key, row),
+            Message::Delete { key } => self.delete(&key),
+            Message::Resync => {
+                self.resync();
+                Vec::new()
+            }
+            other => return Received::Unhandled(Unhandled::Message(other)),
+        };
+        Received::Applied(notices)
     }
 
-    /// The stream ended.
+    /// The stream ended: the source asks its host to open the watch again
+    /// ([`DescribedSource::poll_request`]) and starts a resync, so the next
+    /// stream's `table`, `rows` and `synced` replace the rows in place. The
+    /// rows stay shown meanwhile, so it needs no Change Notices.
     pub fn ended(&mut self) -> Received {
-        Received::Unhandled(Unhandled::Ended)
+        self.open_watch();
+        self.resync();
+        Received::Applied(Vec::new())
+    }
+
+    /// After a `table` message changed the columns, the View Spec the
+    /// source applies now and each axis's unfiltered count, once, for the
+    /// host to hand the Grid ([`Grid::view_changed`]) with the Change
+    /// Notices. A removed column's sort terms and conditions are left out,
+    /// so the Grid shows them not applied; the source keeps the View Spec
+    /// last asked for, and they apply again if the field comes back.
+    pub fn poll_view(&mut self) -> Option<(ViewSpec, Totals)> {
+        self.viewed.take()
     }
 
     pub fn status(&self) -> &Status {
@@ -289,7 +347,8 @@ impl DescribedSource {
         self.schema.as_ref()
     }
 
-    /// The columns, in the schema's order.
+    /// The columns: the first `table` message's fields in its order, then
+    /// those a later one added.
     pub fn columns(&self) -> &[Column] {
         &self.columns
     }
@@ -310,7 +369,7 @@ impl DescribedSource {
         self.rows[r].get(c)
     }
 
-    /// How many rows came, filtered or not.
+    /// How many rows the source holds, filtered or not.
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
@@ -320,12 +379,19 @@ impl DescribedSource {
         &self.row_keys
     }
 
+    /// How many row identities the Key Interner holds: the rows held, and
+    /// any that left after a hash collision gave them another Key.
+    pub fn interned_rows(&self) -> usize {
+        self.row_ids.len()
+    }
+
     /// How many values did not match their field's type, in every column.
     pub fn mismatches(&self) -> u64 {
         self.mismatches
     }
 
-    /// The Key a primary-key tuple names, if a row with it came.
+    /// The Key a primary-key tuple names, if a row with it is held (or left
+    /// after a collision).
     pub fn row_key(&self, tuple: &[Wire]) -> Option<Key> {
         self.row_ids.key(&identity(tuple))
     }
@@ -382,9 +448,148 @@ impl DescribedSource {
         grid.set_find_support(self.find_support());
     }
 
-    /// A `table` message: the columns are its fields now, and the rows
-    /// start again.
+    /// Starts a resync: every row is unconfirmed until it comes again, and
+    /// the rows are not synced.
+    fn resync(&mut self) {
+        self.unconfirmed = Some(self.row_keys.iter().copied().collect());
+        self.status.synced = false;
+    }
+
+    /// A `synced`: a resync in progress ends, removing the rows that did not
+    /// come again, in one batch.
+    fn confirm(&mut self) -> Vec<(Axis, ChangeNotice)> {
+        let Some(unconfirmed) = self.unconfirmed.take() else {
+            return Vec::new();
+        };
+        let gone: Vec<usize> = (0..self.rows.len())
+            .filter(|&r| unconfirmed.contains(&self.row_keys[r]))
+            .collect();
+        let notices = self.remove(&gone);
+        self.regroup(notices)
+    }
+
+    /// A `table` message. The first sets the columns; a later one is diffed
+    /// by field name: an unchanged field keeps its column and values, a
+    /// removed field's column goes, an added field's comes at the end, and
+    /// a field whose type or categories changed is read again for every
+    /// row. A changed primary key keys every row again.
     fn describe(&mut self, schema: Schema) -> Vec<(Axis, ChangeNotice)> {
+        self.pages = 0;
+        self.status.described = true;
+        let Some(old) = self.schema.take() else {
+            self.columns = self.columns_for(&schema, schema.fields.iter().collect());
+            self.column_at = (self.columns.iter().enumerate())
+                .map(|(i, c)| (c.key, i))
+                .collect();
+            self.primary = schema.primary_key.clone();
+            self.schema = Some(schema);
+            self.rebuild();
+            self.viewed = self.applied();
+            return vec![
+                (Axis::Cols, ChangeNotice::Reset(self.count(Axis::Cols))),
+                (Axis::Rows, ChangeNotice::Reset(self.count(Axis::Rows))),
+            ];
+        };
+        if old == schema {
+            self.schema = Some(old);
+            return Vec::new();
+        }
+        let pivoted = self.grouped.grouped(Axis::Cols);
+        let shown_before = self.window(Axis::Cols, 0..self.count(Axis::Cols)).keys;
+        let field = |name: &str| schema.fields.iter().find(|f| f.name == name);
+        let removed: Vec<Key> = (self.columns.iter())
+            .filter(|c| field(c.name()).is_none())
+            .map(|c| c.key)
+            .collect();
+        let mut gone: Vec<Position> = (removed.iter())
+            .filter_map(|&k| match self.grouped.locate(&self.rows, Axis::Cols, k) {
+                Located::Found(p) => Some(p),
+                Located::Gone { .. } => None,
+            })
+            .collect();
+        gone.sort_unstable();
+        let mut order: Vec<&Field> = (self.columns.iter())
+            .filter_map(|c| field(c.name()))
+            .collect();
+        let added: Vec<&Field> = (schema.fields.iter())
+            .filter(|f| !self.columns.iter().any(|c| c.name() == f.name))
+            .collect();
+        order.extend(&added);
+        let columns = self.columns_for(&schema, order);
+        let added: Vec<String> = added.iter().map(|f| f.name.clone()).collect();
+        let changed = (columns.iter())
+            .filter(|c| !added.iter().any(|n| n == c.name()))
+            .any(|c| Some(&c.field) != self.column(c.key).map(|o| &o.field));
+        let reread: Vec<bool> = (columns.iter())
+            .map(|c| {
+                let old = self.column(c.key);
+                old.is_none_or(|o| o.field.field_type != c.field.field_type)
+                    || old.is_none_or(|o| o.field.categories != c.field.categories)
+            })
+            .collect();
+        let from: Vec<Option<usize>> = (columns.iter())
+            .map(|c| self.column_at.get(&c.key).copied())
+            .collect();
+        for (values, raw) in self.rows.iter_mut().zip(&self.raw) {
+            let null = Wire::Null;
+            *values = (columns.iter().enumerate())
+                .map(|(i, c)| match (reread[i], from[i]) {
+                    (false, Some(f)) => std::mem::replace(&mut values[f], Value::Null),
+                    _ => typed(&c.field, raw.get(&c.field.name).unwrap_or(&null)),
+                })
+                .collect();
+        }
+        self.columns = columns;
+        self.column_at = (self.columns.iter().enumerate())
+            .map(|(i, c)| (c.key, i))
+            .collect();
+        self.recount();
+        let rekeyed = self.primary != schema.primary_key;
+        self.primary = schema.primary_key.clone();
+        self.schema = Some(schema);
+        if rekeyed {
+            self.rekey();
+        }
+        self.rebuild();
+        self.viewed = self.applied();
+        let rows = (Axis::Rows, ChangeNotice::Reset(self.count(Axis::Rows)));
+        let count = self.count(Axis::Cols);
+        if rekeyed || pivoted {
+            return vec![(Axis::Cols, ChangeNotice::Reset(count)), rows];
+        }
+        let shown = self.window(Axis::Cols, 0..count).keys;
+        let kept: Vec<Key> = (shown_before.into_iter())
+            .filter(|k| !removed.contains(k))
+            .collect();
+        let (before, after) = shown.split_at(kept.len().min(shown.len()));
+        let appended = (after.iter()).all(|k| added.iter().any(|n| self.column_key(n) == Some(*k)));
+        if before != kept || !appended {
+            return vec![(Axis::Cols, ChangeNotice::Reset(count)), rows];
+        }
+        let mut notices = Vec::new();
+        for &p in gone.iter().rev() {
+            match notices.last_mut() {
+                Some((_, ChangeNotice::Removed { at, n })) if *at == p + 1 => {
+                    *at = p;
+                    *n += 1;
+                }
+                _ => notices.push((Axis::Cols, ChangeNotice::Removed { at: p, n: 1 })),
+            }
+        }
+        if !after.is_empty() {
+            let at = before.len() as u64;
+            let n = after.len() as u64;
+            notices.push((Axis::Cols, ChangeNotice::Inserted { at, n }));
+        }
+        if changed && count > 0 {
+            notices.push((Axis::Cols, ChangeNotice::ContentChanged(0..count)));
+        }
+        notices.push(rows);
+        notices
+    }
+
+    /// The columns for `fields` of `schema`, in that order.
+    fn columns_for(&mut self, schema: &Schema, fields: Vec<&Field>) -> Vec<Column> {
         let reference = |name: &str| {
             schema.foreign_keys.iter().find_map(|fk| {
                 let at = fk.fields.iter().position(|f| f == name)?;
@@ -394,7 +599,7 @@ impl DescribedSource {
                 })
             })
         };
-        self.columns = (schema.fields.iter())
+        (fields.into_iter())
             .map(|field| Column {
                 key: self.column_ids.intern(field.name.as_bytes()),
                 field: field.clone(),
@@ -406,60 +611,232 @@ impl DescribedSource {
                 reference: reference(&field.name),
                 mismatches: 0,
             })
-            .collect();
-        self.column_at = (self.columns.iter().enumerate())
-            .map(|(i, c)| (c.key, i))
-            .collect();
-        self.primary = schema.primary_key.clone();
-        self.schema = Some(schema);
-        self.rows.clear();
-        self.row_keys.clear();
-        self.row_at.clear();
-        self.mismatches = 0;
-        self.pages = 0;
-        self.status = Status {
-            described: true,
-            ..Status::default()
-        };
-        self.rebuild();
-        vec![
-            (Axis::Cols, ChangeNotice::Reset(self.count(Axis::Cols))),
-            (Axis::Rows, ChangeNotice::Reset(self.count(Axis::Rows))),
-        ]
+            .collect()
     }
 
-    /// A `rows` message: its rows join those that came, in place in the
-    /// sort and filter in force, and a row whose primary key came before
-    /// takes that row's place. A cursor on the first page means the table
-    /// is over the cap.
-    fn take_rows(&mut self, message: RowsMessage) -> Vec<(Axis, ChangeNotice)> {
-        if self.pages == 0 && message.cursor.is_some() {
-            self.status.partial = true;
+    /// Counts the invalid values again, in every column.
+    fn recount(&mut self) {
+        for column in &mut self.columns {
+            column.mismatches = 0;
         }
-        self.pages += 1;
-        let mut added = Vec::new();
-        let mut replaced = false;
-        for row in message.rows {
-            let (key, values) = self.parse(&row);
+        self.mismatches = 0;
+        for values in &self.rows {
+            for (column, value) in self.columns.iter_mut().zip(values) {
+                if matches!(value, Value::Invalid { .. }) {
+                    column.mismatches += 1;
+                    self.mismatches += 1;
+                }
+            }
+        }
+    }
+
+    /// The primary key changed: every row is keyed again from its own
+    /// values, the later of two rows with one tuple taking its place.
+    fn rekey(&mut self) {
+        let unconfirmed = self.unconfirmed.take();
+        let old_keys = std::mem::take(&mut self.row_keys);
+        for &key in &old_keys {
+            self.forget_row(key);
+        }
+        let (rows, raw) = (
+            std::mem::take(&mut self.rows),
+            std::mem::take(&mut self.raw),
+        );
+        self.row_at.clear();
+        let mut confirmed = HashSet::new();
+        for ((values, raw), old) in rows.into_iter().zip(raw).zip(old_keys) {
+            let key = self.key_of(&raw);
+            if unconfirmed.as_ref().is_some_and(|u| !u.contains(&old)) {
+                confirmed.insert(key);
+            }
             match self.row_at.get(&key) {
                 Some(&at) => {
-                    let old = std::mem::replace(&mut self.rows[at], values);
-                    self.forget_mismatches(&old);
-                    replaced = true;
+                    self.rows[at] = values;
+                    self.raw[at] = raw;
                 }
                 None => {
                     self.row_at.insert(key, self.rows.len());
                     self.row_keys.push(key);
                     self.rows.push(values);
-                    added.push(key);
+                    self.raw.push(raw);
                 }
             }
         }
-        let base = self.grouped.source_mut();
-        let notices = match replaced {
-            true => base.replaced(&self.rows, Some(self.row_keys.clone())),
-            false => base.appended(&self.rows, &added),
+        self.recount();
+        self.unconfirmed = unconfirmed.map(|_| {
+            (self.row_keys.iter())
+                .filter(|k| !confirmed.contains(k))
+                .copied()
+                .collect()
+        });
+    }
+
+    /// The View Spec the source applies and the totals, as the Grid should
+    /// hold them, if any was asked for.
+    fn applied(&mut self) -> Option<(ViewSpec, Totals)> {
+        if self.spec == ViewSpec::default() {
+            return None;
+        }
+        let spec = self.spec.clone();
+        let viewed = self.view(&spec);
+        Some((viewed.applied, viewed.totals))
+    }
+
+    /// A `rows` message: each row is upserted, in place in the sort and
+    /// filter in force; a row whose primary key is held takes that row's
+    /// place. A cursor on the first page after a `table` means the table
+    /// is over the cap.
+    fn take_rows(&mut self, message: RowsMessage) -> Vec<(Axis, ChangeNotice)> {
+        if self.schema.is_none() {
+            return Vec::new();
+        }
+        if self.pages == 0 {
+            self.status.partial = message.cursor.is_some();
+        }
+        self.pages += 1;
+        let mut known = Vec::new();
+        let mut fresh: Vec<(Key, Row)> = Vec::new();
+        let mut fresh_at: HashMap<Key, usize> = HashMap::new();
+        for row in message.rows {
+            let key = self.key_of(&row);
+            if let Some(unconfirmed) = &mut self.unconfirmed {
+                unconfirmed.remove(&key);
+            }
+            if let Some(&at) = self.row_at.get(&key) {
+                known.push((at, row));
+            } else if let Some(&i) = fresh_at.get(&key) {
+                fresh[i].1 = row;
+            } else {
+                fresh_at.insert(key, fresh.len());
+                fresh.push((key, row));
+            }
+        }
+        let mut notices = self.update(known);
+        notices.extend(self.append(fresh));
+        self.regroup(notices)
+    }
+
+    /// An `upsert`: the row its key tuple names changes in place, or joins
+    /// the rows.
+    fn upsert(&mut self, key: &[Wire], row: Row) -> Vec<(Axis, ChangeNotice)> {
+        if self.schema.is_none() {
+            return Vec::new();
+        }
+        let key = self.row_ids.intern(&identity(key));
+        if let Some(unconfirmed) = &mut self.unconfirmed {
+            unconfirmed.remove(&key);
+        }
+        let notices = match self.row_at.get(&key) {
+            Some(&at) => self.update(vec![(at, row)]),
+            None => self.append(vec![(key, row)]),
         };
+        self.regroup(notices)
+    }
+
+    /// A `delete`: the row its key tuple names goes. A row the source does
+    /// not hold is no matter.
+    fn delete(&mut self, key: &[Wire]) -> Vec<(Axis, ChangeNotice)> {
+        let at = (self.row_ids.key(&identity(key))).and_then(|k| self.row_at.get(&k).copied());
+        let Some(at) = at else {
+            return Vec::new();
+        };
+        let notices = self.remove(&[at]);
+        self.regroup(notices)
+    }
+
+    /// Rows `at` (base indices) take new values: each value that changed is
+    /// told to the In-Memory Table Source, or past [`BULK`] changed rows,
+    /// the rows are replaced at once.
+    fn update(&mut self, rows: Vec<(usize, Row)>) -> Vec<(Axis, ChangeNotice)> {
+        let mut changes: Vec<(usize, Vec<Key>)> = Vec::new();
+        for (at, row) in rows {
+            let values = self.parse(&row);
+            let old = std::mem::replace(&mut self.rows[at], values);
+            self.raw[at] = row;
+            self.forget_mismatches(&old);
+            let changed: Vec<Key> = (self.columns.iter().zip(old.iter().zip(&self.rows[at])))
+                .filter(|(_, (a, b))| a != b)
+                .map(|(c, _)| c.key)
+                .collect();
+            if !changed.is_empty() {
+                changes.push((at, changed));
+            }
+        }
+        let base = self.grouped.source_mut();
+        if changes.len() > BULK {
+            return base.replaced(&self.rows, Some(self.row_keys.clone()));
+        }
+        let mut notices = Vec::new();
+        for (at, columns) in changes {
+            for column in columns {
+                notices.extend(base.changed(&self.rows, at, column));
+            }
+        }
+        notices
+    }
+
+    /// New rows join the rows, in place in the sort and filter in force.
+    fn append(&mut self, rows: Vec<(Key, Row)>) -> Vec<(Axis, ChangeNotice)> {
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        let mut added = Vec::with_capacity(rows.len());
+        for (key, row) in rows {
+            let values = self.parse(&row);
+            self.row_at.insert(key, self.rows.len());
+            self.row_keys.push(key);
+            self.rows.push(values);
+            self.raw.push(row);
+            added.push(key);
+        }
+        self.grouped.source_mut().appended(&self.rows, &added)
+    }
+
+    /// Rows `gone` (base indices) leave, and the interner lets go of them.
+    fn remove(&mut self, gone: &[usize]) -> Vec<(Axis, ChangeNotice)> {
+        if gone.is_empty() {
+            return Vec::new();
+        }
+        let mut flags = vec![false; self.rows.len()];
+        for &at in gone {
+            flags[at] = true;
+        }
+        for &at in gone {
+            let values = std::mem::take(&mut self.rows[at]);
+            self.forget_mismatches(&values);
+            let key = self.row_keys[at];
+            self.forget_row(key);
+            if let Some(unconfirmed) = &mut self.unconfirmed {
+                unconfirmed.remove(&key);
+            }
+        }
+        let keep = |i: &mut usize| {
+            *i += 1;
+            !flags[*i - 1]
+        };
+        let mut i = 0;
+        self.rows.retain(|_| keep(&mut i));
+        let mut i = 0;
+        self.raw.retain(|_| keep(&mut i));
+        let mut i = 0;
+        self.row_keys.retain(|_| keep(&mut i));
+        self.row_at = (self.row_keys.iter().enumerate())
+            .map(|(i, &k)| (k, i))
+            .collect();
+        self.grouped.source_mut().removed(&self.rows, gone)
+    }
+
+    /// The interner lets go of row `key`'s identity.
+    fn forget_row(&mut self, key: Key) {
+        if let Some(identity) = self.row_ids.identity(key).map(<[u8]>::to_vec) {
+            self.row_ids.forget(&identity);
+        }
+    }
+
+    /// The notices for changes to the base rows: while an axis is grouped,
+    /// the groups are worked out again and it, and any other axis the
+    /// changes touched, is `Reset`.
+    fn regroup(&mut self, notices: Vec<(Axis, ChangeNotice)>) -> Vec<(Axis, ChangeNotice)> {
         let grouped = Axis::ALL.map(|axis| self.grouped.grouped(axis));
         if !grouped.contains(&true) {
             return notices;
@@ -481,18 +858,26 @@ impl DescribedSource {
         }
     }
 
-    /// `row`'s Key and its Typed Values, counting those that don't match
-    /// their type.
-    fn parse(&mut self, row: &Row) -> (Key, Values) {
+    /// The Key of `row`, by its primary-key tuple, or for a table with no
+    /// primary key, by the next ordinal.
+    fn key_of(&mut self, row: &Row) -> Key {
         let null = Wire::Null;
         let tuple: Vec<Wire> = match self.primary.is_empty() {
-            true => vec![Wire::Int(self.rows.len() as i128)],
+            true => {
+                self.ordinal += 1;
+                vec![Wire::Int(i128::from(self.ordinal - 1))]
+            }
             false => (self.primary.iter())
                 .map(|name| row.get(name).unwrap_or(&null).clone())
                 .collect(),
         };
-        let key = self.row_ids.intern(&identity(&tuple));
-        let values = (self.columns.iter_mut())
+        self.row_ids.intern(&identity(&tuple))
+    }
+
+    /// `row`'s Typed Values, counting those that don't match their type.
+    fn parse(&mut self, row: &Row) -> Values {
+        let null = Wire::Null;
+        (self.columns.iter_mut())
             .map(|column| {
                 let value = typed(&column.field, row.get(&column.field.name).unwrap_or(&null));
                 if matches!(value, Value::Invalid { .. }) {
@@ -501,8 +886,7 @@ impl DescribedSource {
                 }
                 value
             })
-            .collect();
-        (key, values)
+            .collect()
     }
 
     /// Builds the In-Memory Table Source over the rows anew, with the View

@@ -45,6 +45,9 @@ pub struct TableMessage {
     pub incarnation: Option<String>,
     /// The table's name, when the message gives it.
     pub table: Option<String>,
+    /// The sequence the table is described as of, when the message gives
+    /// it.
+    pub sequence: Option<u64>,
 }
 
 /// A `rows` message.
@@ -57,6 +60,8 @@ pub struct RowsMessage {
     /// This response is not the whole table (more pages, an offset or a
     /// cursor was given). Not a reason to fetch again.
     pub partial: bool,
+    /// The sequence the page is read as of, when the message gives it.
+    pub sequence: Option<u64>,
 }
 
 /// A Frictionless-style table schema.
@@ -291,6 +296,33 @@ impl Schema {
         })
     }
 
+    /// The schema as JSON, under the wire's names (`fields`, `primaryKey`,
+    /// `foreignKeys`), each field written from its properties, so those
+    /// this crate does not model survive.
+    pub fn to_json(&self) -> Json {
+        let fields = (self.fields.iter())
+            .map(|f| Json::Object(f.properties.clone()))
+            .collect();
+        let texts =
+            |names: &[String]| Json::Array(names.iter().cloned().map(Json::String).collect());
+        let foreign_keys = (self.foreign_keys.iter())
+            .map(|fk| {
+                serde_json::json!({
+                    "fields": texts(&fk.fields),
+                    "reference": {
+                        "resource": fk.resource.clone().unwrap_or_default(),
+                        "fields": texts(&fk.reference_fields),
+                    },
+                })
+            })
+            .collect();
+        let mut object = Map::new();
+        object.insert("fields".into(), Json::Array(fields));
+        object.insert("primaryKey".into(), texts(&self.primary_key));
+        object.insert("foreignKeys".into(), Json::Array(foreign_keys));
+        Json::Object(object)
+    }
+
     /// Reads a schema from JSON bytes, as `GET /tables/{t}` answers with
     /// `application/json`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Schema, DecodeError> {
@@ -335,6 +367,7 @@ impl Message {
                         .and_then(Wire::as_str)
                         .map(String::from),
                     table: map.get("table").and_then(Wire::as_str).map(String::from),
+                    sequence: sequence(&map),
                 })
             }
             "rows" => {
@@ -357,6 +390,7 @@ impl Message {
                     rows,
                     cursor,
                     partial: matches!(map.get("partial"), Some(Wire::Bool(true))),
+                    sequence: sequence(&map),
                 })
             }
             "synced" => Message::Synced {
@@ -391,6 +425,73 @@ impl Message {
         Ok(message)
     }
 
+    /// The message as a value, under the wire's names: what
+    /// [`Message::from_wire`] reads back.
+    pub fn to_wire(&self) -> Wire {
+        let mut map = BTreeMap::new();
+        let mut put = |name: &str, value: Wire| {
+            map.insert(name.to_owned(), value);
+        };
+        let kind = match self {
+            Message::Table(table) => {
+                put("schema", Wire::from_json(&table.schema.to_json()));
+                if let Some(incarnation) = &table.incarnation {
+                    put("incarnation", Wire::Text(incarnation.clone()));
+                }
+                if let Some(name) = &table.table {
+                    put("table", Wire::Text(name.clone()));
+                }
+                if let Some(sequence) = table.sequence {
+                    put("sequence", Wire::Int(sequence.into()));
+                }
+                "table"
+            }
+            Message::Rows(rows) => {
+                let page = rows.rows.iter().cloned().map(Wire::Map).collect();
+                put("rows", Wire::Array(page));
+                put("cursor", rows.cursor.clone().map_or(Wire::Null, Wire::Text));
+                put("partial", Wire::Bool(rows.partial));
+                if let Some(sequence) = rows.sequence {
+                    put("sequence", Wire::Int(sequence.into()));
+                }
+                "rows"
+            }
+            Message::Synced { sequence } | Message::Progress { sequence } => {
+                if let Some(sequence) = sequence {
+                    put("sequence", Wire::Int((*sequence).into()));
+                }
+                match self {
+                    Message::Synced { .. } => "synced",
+                    _ => "progress",
+                }
+            }
+            Message::Upsert { key, row } => {
+                put("key", Wire::Array(key.clone()));
+                put("row", Wire::Map(row.clone()));
+                "upsert"
+            }
+            Message::Delete { key } => {
+                put("key", Wire::Array(key.clone()));
+                "delete"
+            }
+            Message::Resync => "resync",
+            Message::Count { count, estimate } => {
+                put("count", Wire::Int((*count).into()));
+                put("estimate", Wire::Bool(*estimate));
+                "count"
+            }
+            Message::Other { kind, body } => {
+                match body {
+                    Wire::Map(body) => map.extend(body.clone()),
+                    other => put("body", other.clone()),
+                }
+                kind
+            }
+        };
+        map.insert("type".into(), Wire::Text(kind.to_owned()));
+        Wire::Map(map)
+    }
+
     /// Reads a message from JSON, as a host that decoded it already has it.
     pub fn from_json(json: &Json) -> Result<Message, DecodeError> {
         Message::from_wire(Wire::from_json(json))
@@ -402,6 +503,22 @@ impl Message {
 pub fn decode_json_line(line: &[u8]) -> Result<Message, DecodeError> {
     let wire: Wire = serde_json::from_slice(line).map_err(DecodeError::json)?;
     Message::from_wire(wire)
+}
+
+/// Encodes `message` as one line of an `application/x-ndjson` rows stream,
+/// its line break included. JSON has no byte strings, NaN or integers past
+/// `u64` and `i64`: such values are written as [`Wire::to_json`] writes
+/// them.
+pub fn encode_json_line(message: &Message) -> Vec<u8> {
+    let mut line = serde_json::to_vec(&message.to_wire().to_json()).expect("JSON");
+    line.push(b'\n');
+    line
+}
+
+/// Encodes `message` as one item of an `application/cbor-seq` rows stream,
+/// in deterministic CBOR.
+pub fn encode_cbor_item(message: &Message) -> Vec<u8> {
+    crate::wire::deterministic_cbor(&message.to_wire())
 }
 
 /// Decodes one item of an `application/cbor-seq` rows stream: `item` holds

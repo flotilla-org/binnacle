@@ -230,13 +230,27 @@ fn a_row_or_column_that_leaves_and_comes_back_keeps_its_key() {
         panic!("a table first");
     };
     let spec = table.schema.fields.pop().unwrap();
-    source.receive(Message::Table(table.clone()));
+    let notices = source.receive(Message::Table(table.clone()));
     assert_eq!(source.count(Axis::Cols), 7);
+    assert_eq!(source.row_count(), 6, "a table message is diffed");
+    assert!(
+        matches!(&notices, Received::Applied(n) if n.len() == 2),
+        "{notices:?}"
+    );
+    // A resync that brings no rows back empties the table.
+    source.receive(Message::Resync);
+    source.receive(Message::Table(table.clone()));
+    source.receive(Message::Synced { sequence: None });
     assert_eq!(source.row_count(), 0);
     table.schema.fields.push(spec);
+    source.receive(Message::Resync);
     let notices = source.receive(Message::Table(table));
-    assert!(matches!(notices, Received::Applied(n) if n.len() == 2));
+    assert!(
+        matches!(&notices, Received::Applied(n) if n.len() == 2),
+        "{notices:?}"
+    );
     source.receive(all[1].clone());
+    source.receive(Message::Synced { sequence: None });
     assert_eq!(source.row_keys(), rows);
     let again: Vec<_> = source.columns().iter().map(|c| c.key()).collect();
     assert_eq!(again, columns);
