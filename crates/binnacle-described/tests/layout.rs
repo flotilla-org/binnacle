@@ -6,12 +6,13 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use binnacle_core::{Axis, Condition, Edge, Key, SortDirection, TextQuery};
+use binnacle_core::{Axis, Condition, Edge, FilterSpec, Key, SortDirection, TextQuery, ViewSpec};
 use binnacle_described::{
     DescribedSource, Field, FieldType, Message, RowsMessage, Schema, Scope, TableMessage, Wire,
     deterministic_cbor,
 };
 use binnacle_layout::{EdgePins, IdMap, JsonId, Layout, Pins, Sizes};
+use binnacle_memory::PumpSource;
 use binnacle_testkit::Scenario;
 use hegel::TestCase;
 use hegel::generators as gs;
@@ -131,6 +132,22 @@ fn a_quick_filter_on_text_only_in_a_hidden_nested_column_keeps_that_row() {
         binnacle_core::Searched::Shown,
         "reported as asked"
     );
+}
+
+#[test]
+fn a_quick_filter_asked_before_the_columns_came_still_searches_the_nested_ones() {
+    let mut source = DescribedSource::new("crews", Scope::new("n"));
+    let spec = ViewSpec::default().with_filter(
+        Axis::Rows,
+        FilterSpec::default().with_quick(Some(TextQuery::new("rust"))),
+    );
+    source.view(&spec);
+    for message in support::messages("crews.ndjson") {
+        source.receive(message);
+    }
+    let window = source.window(Axis::Rows, 0..source.count(Axis::Rows));
+    let alpha = source.row_key(&[Wire::Text("alpha".into())]).unwrap();
+    assert_eq!(window.keys, [alpha]);
 }
 
 #[test]
