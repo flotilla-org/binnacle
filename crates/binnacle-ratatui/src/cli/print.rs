@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key};
 use binnacle_format::{
-    Align, FixedOffset, FormatContext, FormatOptions, TimeStyle, Timestamp, Value, format,
+    Align, FixedOffset, FormatContext, FormatOptions, Role, TimeStyle, Timestamp, Value, format,
 };
 use binnacle_layout::{JsonId, Layout};
 use serde_json::Value as Json;
@@ -152,8 +152,14 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
     };
     let zone = FixedOffset(0);
     let ctx = FormatContext::new(Timestamp::UNIX_EPOCH, &zone);
+    // A title is the server's text too: it goes through the formatter, so
+    // no control character reaches the terminal.
     let header: Vec<(String, Align)> = (cols.iter())
-        .map(|&c| (first_line(&source.header(c)).to_owned(), Align::Start))
+        .map(|&c| {
+            let title = Value::Text(first_line(&source.header(c)).to_owned());
+            let f = format(&title, None, Role::None, &options, &ctx);
+            (f.text, Align::Start)
+        })
         .collect();
     let mut lines: Vec<Vec<(String, Align)>> = vec![header];
     for &row in rows {

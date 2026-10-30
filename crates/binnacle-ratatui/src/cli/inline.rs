@@ -1,8 +1,8 @@
 //! The table inline below the prompt, with the full widget: keys and the
 //! mouse, sort, the header menu with grouping, the chooser, the quick and
 //! column filters and find. Enter hands back the focused or picked rows;
-//! Esc or `q` hands back nothing. Either way the rows shown stay behind as
-//! aligned text.
+//! Esc or `q` hands back nothing. Either way the rows visible in the
+//! viewport stay behind as aligned text.
 
 use std::io;
 use std::time::{Duration, Instant, SystemTime};
@@ -86,12 +86,19 @@ pub fn run_inline<T: CliTable>(
     )?;
     execute!(io::stdout(), EnableMouseCapture)?;
     let tick = options.tick;
-    let events = std::iter::from_fn(|| match event::poll(tick) {
-        Ok(true) => event::read().ok().map(Some),
-        Ok(false) => Some(None),
-        Err(_) => None,
+    let mut failed: Option<io::Error> = None;
+    let events = std::iter::from_fn(|| {
+        let read = match event::poll(tick) {
+            Ok(true) => event::read().map(Some),
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        };
+        read.map_err(|e| failed = Some(e)).ok()
     });
     let result = run_inline_with(&mut terminal, events, source, layout, options);
+    if let Some(e) = failed {
+        return Err(e);
+    }
     execute!(io::stdout(), DisableMouseCapture)?;
     drop(raw);
     result

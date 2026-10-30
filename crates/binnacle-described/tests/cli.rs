@@ -554,3 +554,36 @@ fn the_clap_group_converts_to_the_parsers_input() {
     assert_eq!(args.flags().unwrap(), want);
     assert_eq!(want.interactive, Interactive::Never);
 }
+
+#[test]
+fn a_title_with_control_characters_prints_without_them() {
+    use binnacle_described::{Field, RowsMessage, Scope, TableMessage};
+    let mut title = Field::new("x", binnacle_described::FieldType::String)
+        .properties()
+        .clone();
+    title.insert("title".into(), json!("red\u{1b}[31m title\u{7}"));
+    let mut source = DescribedSource::new("t", Scope::new("n"));
+    source.receive(Message::Table(TableMessage {
+        schema: binnacle_described::Schema {
+            fields: vec![Field::from_properties(title).unwrap()],
+            primary_key: vec!["x".into()],
+            foreign_keys: Vec::new(),
+        },
+        incarnation: None,
+        table: None,
+        sequence: None,
+    }));
+    let row = [("x".to_owned(), Wire::Text("a\u{1b}]52;c;bad\u{7}".into()))].into();
+    source.receive(Message::Rows(RowsMessage {
+        rows: vec![row],
+        cursor: None,
+        partial: false,
+        sequence: None,
+    }));
+    let text = printed(&mut source, &Layout::default(), Format::Aligned);
+    assert!(
+        !text.contains('\u{1b}') && !text.contains('\u{7}'),
+        "{text:?}"
+    );
+    assert!(text.starts_with("red"), "{text:?}");
+}

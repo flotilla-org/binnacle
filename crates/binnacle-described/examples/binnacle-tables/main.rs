@@ -22,6 +22,7 @@
 //! `cargo run -p binnacle-described --example binnacle-tables -- crates/binnacle-described/tests/data/rows-hosts.ndjson`,
 //! or against `fake-tables` with `-- --url http://127.0.0.1:7777 --table hosts`.
 
+// Shared with the render tests, which use the parts this CLI does not.
 #[allow(dead_code)]
 mod table;
 
