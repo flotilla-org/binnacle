@@ -225,7 +225,7 @@ impl Transport {
                 None => {
                     emit(Event::Failed {
                         status: 0,
-                        body: format!("not an http:// URL without userinfo: {base}").into_bytes(),
+                        body: b"the base URL must be http://host[:port][/prefix], with no userinfo (credentials go in Auth)".to_vec(),
                     });
                     return Attempt::Done;
                 }
@@ -388,7 +388,7 @@ fn split(base: &str) -> Option<(String, String)> {
         Some(at) => (&rest[..at], rest[at..].trim_end_matches('/')),
         None => (rest, ""),
     };
-    if host.contains('@') {
+    if host.contains('@') || host.is_empty() {
         // Credentials go in `Auth`, never in the URL.
         return None;
     }
@@ -501,5 +501,7 @@ mod tests {
         assert_eq!(split("http://host:"), ("host:80".into(), "".into()));
         assert_eq!(super::split("https://host"), None);
         assert_eq!(super::split("http://user@host"), None);
+        assert_eq!(super::split("http://"), None);
+        assert_eq!(super::split("http:///x"), None);
     }
 }
