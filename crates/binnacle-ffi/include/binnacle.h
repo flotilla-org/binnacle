@@ -2181,8 +2181,9 @@ void binnacle_described_source_free(BinnacleDescribedSource *src);
  * after a table message declares to grid what each column supports
  * (sorting, filters, grouping, aggregates), hiding and find. A message this
  * source does not handle yet is taken and changes nothing. 0, changing
- * nothing, for an unknown encoding or bytes that are not one message
- * (malformed, truncated, or more than one). */
+ * nothing, for an unknown encoding, NULL bytes (whatever len is), or bytes
+ * that are not one message (empty, malformed, truncated, or more than
+ * one). */
 int binnacle_described_source_receive(BinnacleDescribedSource *src, BinnacleGrid *grid,
                                       uint32_t encoding, const uint8_t *bytes, size_t len);
 

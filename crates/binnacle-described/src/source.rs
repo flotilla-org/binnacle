@@ -175,7 +175,8 @@ pub struct Status {
 /// Spec does not show; the Key is the last resort. Filters, find and
 /// Distinct Values read each value's Stable Text, never its drawn text; a
 /// null is a blank and an empty text is not.
-/// It is `!Send` (it holds an `Rc<dyn Zone>` and boxed closures): use it from one thread.
+/// It is `!Send` (it holds an `Rc<dyn Zone>` and boxed closures): use it
+/// from one thread.
 pub struct DescribedSource {
     table: String,
     scope: Scope,

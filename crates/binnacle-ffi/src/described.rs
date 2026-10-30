@@ -491,48 +491,54 @@ impl BinnacleDescribedSource {
         cell.value = self.texts.typed(value);
         cell
     }
+}
 
-    fn column_to_c(&mut self, column: &Column, size: u32) -> BinnacleColumnInfo {
-        let roles: Vec<BinnacleText> = (column.roles().iter())
-            .map(|r| self.keep(r.as_str()))
-            .collect();
-        self.roles = roles;
-        let categories: Vec<BinnacleCategory> = (column.categories().unwrap_or_default())
-            .iter()
-            .map(|c| self.texts.category(&c.value, c.label.as_deref()))
-            .collect();
-        self.categories = categories;
-        let reference = column.reference();
-        let resource = reference.and_then(|r| r.resource.as_deref());
-        BinnacleColumnInfo {
-            size,
-            key: column.key().0,
-            name: self.keep(column.name()),
-            has_title: flag(column.title().is_some()),
-            title: column
-                .title()
-                .map_or_else(BinnacleText::default, |t| self.keep(t)),
-            header: self.keep(column.header()),
-            type_name: self.keep(column.field_type().name()),
-            value_kind: kind_of(column.value_type()),
-            has_unit: flag(column.unit().is_some()),
-            unit: column
-                .unit()
-                .map_or_else(BinnacleText::default, |u| self.keep(u)),
-            nullable: flag(column.nullable()),
-            role_bits: role_bits(column.roles()),
-            roles: self.roles.as_ptr(),
-            roles_len: self.roles.len(),
-            has_categories: flag(column.categories().is_some()),
-            categories: self.categories.as_ptr(),
-            categories_len: self.categories.len(),
-            has_reference: flag(reference.is_some()),
-            has_resource: flag(resource.is_some()),
-            resource: resource.map_or_else(BinnacleText::default, |r| self.keep(r)),
-            reference_field: reference
-                .map_or_else(BinnacleText::default, |r| self.keep(r.field.as_str())),
-            mismatches: column.mismatches(),
-        }
+/// `column` in C form, its texts kept in `texts`, its roles in `roles` and
+/// its categories in `categories`.
+fn column_to_c(
+    column: &Column,
+    size: u32,
+    texts: &mut Texts,
+    roles: &mut Vec<BinnacleText>,
+    categories: &mut Vec<BinnacleCategory>,
+) -> BinnacleColumnInfo {
+    *roles = (column.roles().iter())
+        .map(|r| texts.keep(r.as_str()))
+        .collect();
+    *categories = (column.categories().unwrap_or_default())
+        .iter()
+        .map(|c| texts.category(&c.value, c.label.as_deref()))
+        .collect();
+    let reference = column.reference();
+    let resource = reference.and_then(|r| r.resource.as_deref());
+    BinnacleColumnInfo {
+        size,
+        key: column.key().0,
+        name: texts.keep(column.name()),
+        has_title: flag(column.title().is_some()),
+        title: column
+            .title()
+            .map_or_else(BinnacleText::default, |t| texts.keep(t)),
+        header: texts.keep(column.header()),
+        type_name: texts.keep(column.field_type().name()),
+        value_kind: kind_of(column.value_type()),
+        has_unit: flag(column.unit().is_some()),
+        unit: column
+            .unit()
+            .map_or_else(BinnacleText::default, |u| texts.keep(u)),
+        nullable: flag(column.nullable()),
+        role_bits: role_bits(column.roles()),
+        roles: roles.as_ptr(),
+        roles_len: roles.len(),
+        has_categories: flag(column.categories().is_some()),
+        categories: categories.as_ptr(),
+        categories_len: categories.len(),
+        has_reference: flag(reference.is_some()),
+        has_resource: flag(resource.is_some()),
+        resource: resource.map_or_else(BinnacleText::default, |r| texts.keep(r)),
+        reference_field: reference
+            .map_or_else(BinnacleText::default, |r| texts.keep(r.field.as_str())),
+        mismatches: column.mismatches(),
     }
 }
 
@@ -896,10 +902,9 @@ pub unsafe extern "C" fn binnacle_described_cells(
     // SAFETY: the caller's contract.
     let (rows, cols) = unsafe { (borrowed(rows, rows_len), borrowed(cols, cols_len)) };
     // SAFETY: the caller's contract.
-    let sizes: Option<Vec<u32>> = (0..n).map(|i| unsafe { sized(out.add(i)) }).collect();
-    let Some(sizes) = sizes else {
+    if !(0..n).all(|i| unsafe { sized(out.add(i)) }.is_some()) {
         return 0;
-    };
+    }
     // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
@@ -908,7 +913,8 @@ pub unsafe extern "C" fn binnacle_described_cells(
             for (r, &row) in rows.iter().enumerate() {
                 for (c, &col) in cols.iter().enumerate() {
                     let i = r * cols_len + c;
-                    let cell = h.cell(Key(row), Key(col), now, sizes[i]);
+                    let size = out.add(i).cast::<u32>().read();
+                    let cell = h.cell(Key(row), Key(col), now, size);
                     // `out` is not NULL and holds `n` cells, so this write
                     // cannot fail partway.
                     out.add(i).write(cell);
@@ -936,9 +942,17 @@ pub unsafe extern "C" fn binnacle_described_column(
     // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
-            let column = h.source.column(Key(col))?.clone();
+            h.source.column(Key(col))?;
             h.clear();
-            let c = h.column_to_c(&column, size);
+            let BinnacleDescribedSource {
+                source,
+                texts,
+                roles,
+                categories,
+                ..
+            } = h;
+            let column = source.column(Key(col))?;
+            let c = column_to_c(column, size, texts, roles, categories);
             write_out(out, c)
         })
     }
