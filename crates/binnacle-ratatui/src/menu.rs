@@ -222,7 +222,7 @@ pub struct HeaderMenu {
 
 /// An item a host adds to a row's menu ([`HeaderMenu::set_row_items`]): a
 /// name the host knows it by, a label, and a key that picks it while the
-/// menu is open.
+/// menu is open. A key that a built-in row line uses is silently ignored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowItem {
     pub name: String,

@@ -772,6 +772,7 @@ fn main() -> io::Result<()> {
                             chooser.open(&grid.snapshot(), axis);
                         }
                         if let Some(choice) = menu.take_row_choice() {
+                            // A Summary Item's Key carries SUMMARY_KEY_BIT, so it has no row.
                             let id = rows.get(choice.row.0 as usize).map(|s| s.id);
                             note = match id {
                                 Some(id) => format!("{}: {id}", choice.name),
