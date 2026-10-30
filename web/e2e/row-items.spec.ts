@@ -27,7 +27,10 @@ test.beforeEach(async ({ page }) => {
   await page.keyboard.press("Alt+ArrowDown");
   await page.getByRole("dialog").getByRole("button", { name: "Ungroup rows" }).click();
   await expect(status(page)).toContainText("columns 1 to 6 of 6");
-  await page.mouse.click(at.x, at.y);
+  // The row band may have changed width.
+  const ungrouped = await firstCell(page);
+  await page.mouse.click(ungrouped.x, ungrouped.y);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
 test("choosing Track on a row's menu closes the menu and notes the row's id", async ({ page }) => {
