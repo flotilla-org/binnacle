@@ -569,7 +569,8 @@ impl HeaderMenu {
         self.row_items = items;
     }
 
-    /// The host item the user chose on a row's menu, once.
+    /// The host item the user chose on a row's menu, once. A choice not taken
+    /// before the next is replaced by it.
     pub fn take_row_choice(&mut self) -> Option<RowChoice> {
         self.row_choice.take()
     }
@@ -1067,4 +1068,34 @@ fn capital(noun: &str) -> String {
         .next()
         .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reserved_keys_hold_every_key_a_row_menu_line_uses() {
+        let item = Some(Key(1));
+        let lines = [
+            Entry::Pin(Edge::Leading),
+            Entry::Pin(Edge::Trailing),
+            Entry::Unpin,
+            Entry::Freeze,
+            Entry::Ungroup,
+            Entry::Hide,
+            Entry::ShowOnly,
+            Entry::Choose,
+            Entry::Show(Key(2)),
+            Entry::ShowAll,
+        ];
+        for line in lines {
+            for ungroups in [false, true] {
+                if let Some(c) = line.key(Axis::Rows, item, ungroups) {
+                    assert!(ROW_MENU_KEYS.contains(c), "{line:?} uses {c}");
+                }
+            }
+        }
+        assert!(('1'..='9').all(|c| ROW_MENU_KEYS.contains(c)));
+    }
 }
