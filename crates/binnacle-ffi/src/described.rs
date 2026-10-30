@@ -743,7 +743,7 @@ pub unsafe extern "C" fn binnacle_described_source_fill(
     let Some(&requests) = (unsafe { requests.as_ref() }) else {
         return 0;
     };
-    if requests.axes.iter().any(|r| r.requested > 1) {
+    if (requests.axes.iter()).any(|r| r.requested > 1 || (r.requested == 1 && r.end < r.start)) {
         return 0;
     }
     // SAFETY: the caller's contract.
@@ -876,8 +876,8 @@ pub unsafe extern "C" fn binnacle_described_cells(
     out: *mut BinnacleCell,
     out_len: usize,
 ) -> i32 {
-    let null = |p: bool, len: usize| p && len > 0;
-    if out.is_null() || null(rows.is_null(), rows_len) || null(cols.is_null(), cols_len) {
+    let missing = |is_null: bool, len: usize| is_null && len > 0;
+    if out.is_null() || missing(rows.is_null(), rows_len) || missing(cols.is_null(), cols_len) {
         return 0;
     }
     let Some(n) = rows_len.checked_mul(cols_len).filter(|&n| n <= out_len) else {
@@ -899,7 +899,9 @@ pub unsafe extern "C" fn binnacle_described_cells(
                 for (c, &col) in cols.iter().enumerate() {
                     let i = r * cols_len + c;
                     let cell = h.cell(Key(row), Key(col), now, sizes[i]);
-                    write_out(out.add(i), cell)?;
+                    // `out` is not NULL and holds `n` cells, so this write
+                    // cannot fail partway.
+                    out.add(i).write(cell);
                 }
             }
             Some(())

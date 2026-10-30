@@ -707,6 +707,17 @@ fn every_call_refuses_null() {
             binnacle_described_distinct(src, grid, col, text(""), 10, &mut distinct),
         ];
         assert_eq!(done, [1; 11]);
+        // A Window ending before it starts, or an unknown flag, is refused.
+        let mut bad = requests;
+        bad.axes[0] = BinnacleWindowRequest {
+            requested: 1,
+            start: 5,
+            end: 2,
+        };
+        assert_eq!(binnacle_described_source_fill(src, grid, &bad), 0);
+        bad.axes[0].requested = 2;
+        bad.axes[0].end = 6;
+        assert_eq!(binnacle_described_source_fill(src, grid, &bad), 0);
         // The request was polled once, when there was one.
         assert_eq!(binnacle_described_source_poll_request(src, &mut request), 1);
         assert_eq!(binnacle_described_source_poll_request(src, &mut request), 0);

@@ -2203,8 +2203,9 @@ int binnacle_described_source_poll_request(BinnacleDescribedSource *src,
 int binnacle_described_source_pump(BinnacleDescribedSource *src, BinnacleGrid *grid);
 
 /* Answers what binnacle_grid_begin_frame asked for: each requested Window's
- * Keys, and on a grouped axis its outlines too. 0 for a requested flag that
- * is not 0 or 1. */
+ * Keys, and on a grouped axis its outlines too. 0, filling nothing, for a
+ * requested flag that is not 0 or 1, or a requested Window whose end is
+ * before its start. */
 int binnacle_described_source_fill(BinnacleDescribedSource *src, BinnacleGrid *grid,
                                    const BinnacleWindowRequests *requests);
 
