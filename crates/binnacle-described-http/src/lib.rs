@@ -143,7 +143,9 @@ pub enum Event {
     Failed { status: u16, body: Vec<u8> },
 }
 
-/// Serves a source's watch requests over HTTP.
+/// Serves a source's watch requests over HTTP. One transport paces all its
+/// watches with one backoff, so a `synced` on any resets it for all; give
+/// each watch its own transport to pace them apart.
 #[derive(Clone, Debug)]
 pub struct Transport {
     options: Options,
@@ -388,7 +390,8 @@ fn split(base: &str) -> Option<(String, String)> {
         Some(at) => (&rest[..at], rest[at..].trim_end_matches('/')),
         None => (rest, ""),
     };
-    if host.contains('@') || host.is_empty() {
+    let odd = |c: char| matches!(c, '@' | '?' | '#') || c.is_whitespace();
+    if host.contains(odd) || host.is_empty() {
         // Credentials go in `Auth`, never in the URL.
         return None;
     }
@@ -502,6 +505,9 @@ mod tests {
         assert_eq!(super::split("https://host"), None);
         assert_eq!(super::split("http://user@host"), None);
         assert_eq!(super::split("http://"), None);
+        assert_eq!(super::split("http://host?x=1"), None);
+        assert_eq!(super::split("http://host#frag"), None);
+        assert_eq!(super::split("http://ho st"), None);
         assert_eq!(super::split("http:///x"), None);
     }
 }
