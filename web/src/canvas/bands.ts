@@ -22,9 +22,18 @@ export function outlineInset(outline: KeyedOutline): number {
   return outline.depth * INDENT + (outline.kind === "grandTotal" ? 0 : DISCLOSURE);
 }
 
-/** Whether a header shows its menu's button: a menu is mounted for its band and its item can be filtered by. */
-export function hasFilterButton(filterButtons: boolean, h: HeaderPlacement): boolean {
-  return filterButtons && h.key !== null && (h.support.text !== null || h.support.compare !== null);
+/** Whether a header's item can be filtered by, so its menu's button draws a funnel. */
+function filters(h: HeaderPlacement): boolean {
+  return h.support.text !== null || h.support.compare !== null;
+}
+
+/**
+ * Whether a header shows its menu's button: a menu is mounted for its band
+ * and its item can be filtered by, or (on the rows) the menu has the host's
+ * items for it (`rowItems`).
+ */
+export function hasFilterButton(filterButtons: boolean, h: HeaderPlacement, rowItems?: ((key: bigint) => boolean) | null): boolean {
+  return filterButtons && h.key !== null && (filters(h) || (rowItems?.(h.key) ?? false));
 }
 
 /**
@@ -46,8 +55,8 @@ const MARK_ROOM = FUNNEL + 3;
  * label: the button's while hovered, if a row menu is mounted; else the
  * plain mark's, if the columns can be filtered by the row (or already are).
  */
-export function rowFilterRoom(filterButtons: boolean, h: HeaderPlacement): number {
-  if (hasFilterButton(filterButtons, h)) return Math.min(BUTTON, h.rect.height) + 3;
+export function rowFilterRoom(filterButtons: boolean, h: HeaderPlacement, rowItems?: ((key: bigint) => boolean) | null): number {
+  if (hasFilterButton(filterButtons, h, rowItems)) return Math.min(BUTTON, h.rect.height) + 3;
   const { filtered, notApplied, pending } = h.filter;
   const filterable = h.support.text !== null || h.support.oneOf;
   return filterable || filtered || notApplied || pending ? MARK_ROOM : 0;
@@ -79,6 +88,16 @@ function funnel(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: num
   ctx.closePath();
 }
 
+/** Three dots across the middle of `r`: the button of a row menu that only has the host's items. */
+function dots(ctx: CanvasRenderingContext2D, r: Rect): void {
+  const cy = r.y + r.height / 2;
+  ctx.beginPath();
+  for (const dx of [-4, 0, 4]) {
+    ctx.moveTo(r.x + r.width / 2 + dx + 1.5, cy);
+    ctx.arc(r.x + r.width / 2 + dx, cy, 1.5, 0, 2 * Math.PI);
+  }
+}
+
 /**
  * The column menu's button, or (with no menu mounted) a plain mark on a
  * filtered column. With a menu, an unfiltered column's funnel is a faint
@@ -92,7 +111,7 @@ function funnel(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: num
 function paintFilter(p: PaintContext, band: AxisName, h: HeaderPlacement): number {
   const { ctx, s, theme } = p;
   const mark = filterMark(s, band, h);
-  const button = hasFilterButton(p.filterButtons[band], h) && (band === "cols" || h.hovered);
+  const button = hasFilterButton(p.filterButtons[band], h, band === "rows" ? p.rowItems : null) && (band === "cols" || h.hovered);
   if (!button && !mark.filtered) return 0;
   const r = filterButtonRect(band, h);
   // A row header's plain mark hugs its left edge.
@@ -114,6 +133,10 @@ function paintFilter(p: PaintContext, band: AxisName, h: HeaderPlacement): numbe
     ctx.fill();
     ctx.globalAlpha /= 0.16;
     funnel(ctx, cx, cy, FUNNEL);
+    ctx.fill();
+  } else if (!filters(h)) {
+    ctx.fillStyle = h.hovered ? theme.headerHovered.color : theme.loading;
+    dots(ctx, r);
     ctx.fill();
   } else {
     ctx.strokeStyle = h.hovered ? theme.headerHovered.color : theme.loading;
@@ -326,7 +349,7 @@ function underOwnSpan(s: Snapshot, position: number, outline: KeyedOutline): boo
 function paintSummary(p: PaintContext, h: HeaderPlacement, text: string, color: string, y: number): void {
   const { ctx, theme, measure } = p;
   const { rect } = h;
-  const inset = rowFilterRoom(p.filterButtons.rows, h);
+  const inset = rowFilterRoom(p.filterButtons.rows, h, p.rowItems);
   ctx.save();
   ctx.textAlign = "left";
   ctx.font = theme.headerFont;

@@ -12,13 +12,17 @@ export interface RowMenuItem {
 export interface ColumnMenuOptions<RowId = unknown> {
   /**
    * The items to add to row `rowId`'s menu, after the built-in ones. A row
-   * header draws its button only where the columns take conditions on the
-   * row; a row with items alone opens by Alt+ArrowRight or `openRow`. It is
-   * called whenever a row's menu is checked or opened, so keep it cheap and
-   * pure.
+   * with items has a menu even where the columns take no conditions on it
+   * and the rows do not hide: its header draws the menu's button while
+   * hovered, and Alt+ArrowRight and `openRow` open it. Summary Items are
+   * asked too: under `fromRows` or `groupedSource` a Group Item's, a
+   * Subtotal's or the Grand Total's row ID is negative and a row's is its
+   * index (0 or more), so `rowId < 0` picks them out; another Table Source
+   * gives its own IDs. It is called whenever a row's menu is checked or
+   * opened and for each row header drawn, so keep it cheap and pure.
    */
   rowItems?: (rowId: RowId) => readonly RowMenuItem[];
-  /** Called with the item chosen and the row, once the menu has closed. */
+  /** Called with the item chosen and the row whose menu it is (never the chosen set), once the menu has closed. */
   onRowItem?: (choice: { name: string; rowId: RowId }) => void;
 }
 
