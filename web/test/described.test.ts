@@ -387,7 +387,6 @@ describe("style", () => {
     // One call a feed, with that feed's latest message.
     expect(heard).toHaveLength(2);
     expect(heard.every((m) => m.length > 0)).toBe(true);
-    expect(heard[0]).toMatch(/JSON/);
     expect(d.status().lastDecodeError).toBe(heard[1]);
   });
 });

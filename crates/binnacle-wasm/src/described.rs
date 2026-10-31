@@ -664,7 +664,7 @@ impl Fed {
         let message = match message {
             Ok(m) => m,
             Err(e) => {
-                self.errors += 1;
+                self.errors = self.errors.saturating_add(1);
                 self.latest_error = Some(e.to_string());
                 return;
             }
