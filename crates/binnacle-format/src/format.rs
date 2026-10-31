@@ -102,6 +102,14 @@ impl Role {
             _ => Role::None,
         }
     }
+
+    /// The role's name, as [`Role::from_name`] reads it: `"none"` for none.
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::None => "none",
+            Role::Time => "time",
+        }
+    }
 }
 
 /// How a column's dates draw, whatever its role.

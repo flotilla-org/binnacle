@@ -275,8 +275,10 @@ name = "binnacle-wasm"
 version = "0.1.0"
 dependencies = [
  "binnacle-core",
+ "binnacle-described",
  "binnacle-format",
  "binnacle-group",
+ "binnacle-layout",
  "binnacle-memory",
  "console_error_panic_hook",
  "js-sys",

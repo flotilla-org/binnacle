@@ -132,7 +132,7 @@ fn wire(f: Formatted) -> JsValue {
 /// A zone from JavaScript: a function from ms since the Unix epoch to
 /// seconds east of UTC, or the runtime's local zone. A function that throws
 /// or gives no number counts as UTC.
-struct JsZone(Option<js_sys::Function>);
+pub(crate) struct JsZone(pub(crate) Option<js_sys::Function>);
 
 impl Zone for JsZone {
     fn offset_at(&self, at: Timestamp) -> i32 {

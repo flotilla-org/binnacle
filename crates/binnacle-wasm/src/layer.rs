@@ -10,7 +10,7 @@ use binnacle_group::{
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::codes::position;
+use crate::codes::{encode_notice, position};
 use crate::effect::{WireCondition, WireFilter, WireSortColumn, WireTextQuery, sort_columns};
 use crate::grid::to_js;
 use crate::grouping::{WireAggregateValue, WireOutline};
@@ -215,25 +215,11 @@ impl From<WireAnswer> for Answer<Figure> {
 }
 
 /// The spec the layer applied, with the rows' Change Notices as
-/// `[code, a, b]` (as `codes::notice` reads them).
+/// `[code, a, b]` ([`encode_notice`]).
 #[derive(Serialize)]
 struct WireViewed {
     applied: crate::effect::WireViewSpec,
     notices: Vec<[f64; 3]>,
-}
-
-fn notice(n: &ChangeNotice) -> [f64; 3] {
-    let p = |n: u64| n as f64;
-    match *n {
-        ChangeNotice::Reordered => [0.0, f64::NAN, f64::NAN],
-        ChangeNotice::Reset(c) => [1.0, p(c), f64::NAN],
-        ChangeNotice::Inserted { at, n } => [2.0, p(at), p(n)],
-        ChangeNotice::Removed { at, n } => [3.0, p(at), p(n)],
-        ChangeNotice::ContentChanged(ref r) => [4.0, p(r.start), p(r.end)],
-        ChangeNotice::Refiltered(c) => [5.0, p(c), f64::NAN],
-        ChangeNotice::Collapsed { at, n } => [6.0, p(at), p(n)],
-        ChangeNotice::Expanded { at, n } => [7.0, p(at), p(n)],
-    }
 }
 
 #[derive(Serialize)]
@@ -340,7 +326,11 @@ impl WebGroupingLayer {
         match self.layer.poll_viewed() {
             Some(viewed) => to_js(&WireViewed {
                 applied: (&viewed.applied).into(),
-                notices: viewed.notices.iter().map(|(_, n)| notice(n)).collect(),
+                notices: viewed
+                    .notices
+                    .iter()
+                    .map(|(_, n)| encode_notice(n))
+                    .collect(),
             }),
             None => JsValue::NULL,
         }
