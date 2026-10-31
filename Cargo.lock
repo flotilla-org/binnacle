@@ -95,6 +95,7 @@ dependencies = [
  "binnacle-core",
  "binnacle-format",
  "binnacle-group",
+ "binnacle-layout",
  "binnacle-memory",
  "binnacle-ratatui",
  "binnacle-testkit",

@@ -110,6 +110,10 @@ _Avoid_: View change, view event, view command
 The portable, versioned document of how a table is presented, by the Table Source's IDs: its View Spec, a partial order of its items per axis (those listed first, the rest in the source's order), its pins, its Size Overrides and its Header Band thicknesses, each part optional. A source ships one as its default view and a user's saved layout is another, laid over it part by part: each part the user's sets replaces the default's, but the order layers per axis and Size Overrides merge per item. Its IDs name every item of their axis, Group Items included. It reads and writes as JSON (the web's and the Rust crate's alike) or CBOR.
 _Avoid_: Saved layout (as a term), view state, preset, profile
 
+**Default View**:
+The Layout a source or server ships for a table, which a user's Layout sits on. A Described Table has a generic one (its Nested columns hidden, its key and state columns pinned leading), then flotilla's for that table, then the user's, each laid over the last part by part. It names columns by field name and rows by primary-key tuple, so it loads onto any table that has them and skips the names it lacks.
+_Avoid_: Preset, template, saved view
+
 **Arrangement**:
 The items placed first on an axis, in order, as a restored Layout's order and the header moves the Table Source made since leave them, whether or not they are in view: what a Layout saves as the axis's order.
 _Avoid_: Column order (the source's whole order), user order
