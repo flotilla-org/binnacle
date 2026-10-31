@@ -19,7 +19,7 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 [dev-dependencies]
 binnacle-described-http.workspace = true
 binnacle-ratatui = { path = "../binnacle-ratatui", features = ["described", "clap"] }
-binnacle-testkit.workspace = true
+binnacle-testkit = { workspace = true, features = ["fake-tables"] }
 hegeltest.workspace = true
 insta.workspace = true
 ratatui.workspace = true

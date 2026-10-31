@@ -25,6 +25,12 @@
 //! `--interactive` opens the table even when stdout is not a terminal,
 //! writing the viewport's escape sequences there.
 //!
+//! A table over the row cap prints the rows that came and then says so on
+//! stderr, still exiting 0, so stdout holds only the table; the viewport's
+//! status line says "10,000 of more rows". Ctrl-C, or SIGINT, SIGTERM or
+//! SIGHUP, leaves the viewport choosing nothing and exits 128 and the
+//! signal's number (130 for Ctrl-C).
+//!
 //! Run it with
 //! `cargo run -p binnacle-described --example binnacle-tables -- crates/binnacle-described/tests/data/rows-hosts.ndjson`,
 //! or against `fake-tables` with `-- --url http://127.0.0.1:7777 --table hosts`.
@@ -43,7 +49,7 @@ use binnacle_described::{DescribedSource, Received, Scope};
 use binnacle_described_http::{Auth, Blocking, Endpoint, Event as Wire, Options};
 use binnacle_format::Timestamp;
 use binnacle_layout::IdMap;
-use binnacle_ratatui::cli::{Flags, InlineOptions, Live, print, run_inline};
+use binnacle_ratatui::cli::{Exit, Flags, InlineOptions, Live, print, run_inline};
 
 use table::Tables;
 
@@ -125,15 +131,16 @@ fn rows(args: Vec<String>) -> Rows {
     }
 }
 
-/// The most events [`drain`] takes at once, so a burst of changes still
-/// lets frames draw and keys work between its parts.
-const BURST: usize = 256;
+/// The longest [`drain`] takes events at once, so a burst of changes still
+/// lets frames draw and keys work between its parts; while changes keep
+/// coming, the viewport doesn't wait for input between frames.
+const BUDGET: Duration = Duration::from_millis(30);
 
 /// How many failed attempts in a row a print (not a terminal) retries
 /// before it gives up: about 4 s with the default backoff.
 const PRINT_RETRIES: u32 = 4;
 
-/// Feeds `source` the events waiting on `transport`, up to [`BURST`],
+/// Feeds `source` the events waiting on `transport`, for up to [`BUDGET`],
 /// opening the watch again after an end, and keeps `note` saying whether
 /// the transport is reconnecting; returns the Change Notices, or the
 /// server's answer if it refused the watch or the retries ran out.
@@ -143,7 +150,8 @@ fn drain(
     note: &RefCell<Option<String>>,
 ) -> Result<Vec<(Axis, ChangeNotice)>, String> {
     let mut notices = Vec::new();
-    for _ in 0..BURST {
+    let until = Instant::now() + BUDGET;
+    while Instant::now() < until {
         let Some(event) = transport.try_recv() else {
             break;
         };
@@ -160,9 +168,13 @@ fn drain(
                 status,
                 body,
             } => {
-                let why = match status {
-                    Some(status) => status.to_string(),
-                    None => String::from_utf8_lossy(&body).into_owned(),
+                // The body's first line says why, when the server gave one.
+                let body = String::from_utf8_lossy(&body);
+                let body = body.lines().map(str::trim).find(|l| !l.is_empty());
+                let why = match (status, body) {
+                    (Some(status), Some(body)) => format!("{status} {body}"),
+                    (Some(status), None) => status.to_string(),
+                    (None, body) => body.unwrap_or_default().to_owned(),
                 };
                 let wait = wait.as_millis();
                 *note.borrow_mut() = Some(format!(
@@ -235,18 +247,20 @@ fn main() -> io::Result<()> {
     };
     // No flotilla default view or saved user Layout here: the generic one.
     let base = tables.source.presentation(None, None);
-    let fields: Vec<String> = (tables.source.columns().iter())
-        .map(|c| c.name().to_owned())
-        .collect();
     let views = |name: &str| (name == "default").then(|| base.clone());
     let layout = flags
-        .apply_with(&base, &fields, views)
+        .apply_to(&mut tables.source, &base, views)
         .unwrap_or_else(|e| fail(&e.to_string()));
     if !interactive {
         let mut out = io::stdout().lock();
         let format = flags.format.unwrap_or_default();
-        return match print(&mut tables.source, &layout, format, &mut out).and_then(|()| out.flush())
-        {
+        let mut note = Vec::new();
+        let printed = print(&mut tables.source, &layout, format, &mut out, &mut note)
+            .and_then(|()| out.flush());
+        for line in String::from_utf8_lossy(&note).lines() {
+            eprintln!("binnacle-tables: {line}");
+        }
+        return match printed {
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
             other => other,
         };
@@ -269,11 +283,14 @@ fn main() -> io::Result<()> {
         origin: Some(origin),
         ..InlineOptions::default()
     };
-    let chosen = run_inline(&mut tables.source, &layout, options)?;
+    let exit = run_inline(&mut tables.source, &layout, options)?;
     if let Some(e) = failed.take() {
         fail(&e);
     }
-    if let Some(selection) = chosen {
+    if let Some(status) = exit.status() {
+        std::process::exit(status);
+    }
+    if let Exit::Chosen(selection) = exit {
         for row in selection.rows {
             if let Some(id) = IdMap::row_id(&tables.source, row) {
                 println!("{id}");

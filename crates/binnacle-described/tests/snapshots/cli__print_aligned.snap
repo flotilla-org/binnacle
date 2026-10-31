@@ -2,7 +2,7 @@
 source: crates/binnacle-described/tests/cli.rs
 expression: text
 ---
-Name        Phase    Started           CPUs                  Load   note        Host  Spec
+Name        Phase             Started                  CPUs   Load  note        Host  Spec
 alpha       Running  2026-10-29 10:00                     4   0.5%              feta  {"image":"rust"}
 bravo       -        -                                    2  1.25%  -           feta  {}
 charlie     Stalled  soon              many                  -      check disk  brie  {}

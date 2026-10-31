@@ -50,18 +50,35 @@ impl FromStr for Format {
 /// Prints `source` as `layout` presents it: a headless Grid declares the
 /// source, restores the Layout and pumps until no Effect remains; then
 /// every row, in the source's order, under the columns the Grid draws
-/// (leading pins, the rest, trailing pins), less the hidden.
+/// (leading pins, the rest, trailing pins), less the hidden. A partial
+/// table ([`CliTable::partial`]) prints the rows that came, then a line
+/// saying so ([`partial_note`]) to `note`, the host's stderr, so `out`
+/// stays the table's alone.
 pub fn print<T: CliTable>(
     source: &mut T,
     layout: &Layout<JsonId, JsonId>,
     format: Format,
     out: &mut impl Write,
+    note: &mut impl Write,
 ) -> io::Result<()> {
     let grid = headless(source, layout);
     let count = source.count(Axis::Rows);
     let rows = source.window(Axis::Rows, 0..count).keys;
     let cols = columns(source, &grid);
-    print_rows(source, &rows, &cols, format, out)
+    print_rows(source, &rows, &cols, format, out)?;
+    if let Some(came) = source.partial() {
+        out.flush()?;
+        writeln!(note, "{}", partial_note(came))?;
+    }
+    Ok(())
+}
+
+/// What [`print`] says of a partial table of which `came` rows came.
+pub fn partial_note(came: u64) -> String {
+    format!(
+        "showing the first {} rows; the table has more (narrow it with --where)",
+        super::thousands(came)
+    )
 }
 
 /// A Grid over `source` with `layout` restored and every Effect answered.
@@ -154,16 +171,7 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
     };
     let zone = FixedOffset(0);
     let ctx = FormatContext::new(Timestamp::UNIX_EPOCH, &zone);
-    // A title is the server's text too: it goes through the formatter, so
-    // no control character reaches the terminal.
-    let header: Vec<(String, Align)> = (cols.iter())
-        .map(|&c| {
-            let title = Value::Text(first_line(&source.header(c)).to_owned());
-            let f = format(&title, None, Role::None, &options, &ctx);
-            (f.text, Align::Start)
-        })
-        .collect();
-    let mut lines: Vec<Vec<(String, Align)>> = vec![header];
+    let mut lines: Vec<Vec<(String, Align)>> = Vec::new();
     for &row in rows {
         lines.push(
             (cols.iter())
@@ -176,6 +184,30 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
                 .collect(),
         );
     }
+    // A title is the server's text too: it goes through the formatter, so
+    // no control character reaches the terminal. It aligns as most of its
+    // column's cells do, ignoring nulls.
+    let header: Vec<(String, Align)> = (cols.iter().enumerate())
+        .map(|(i, &c)| {
+            let title = Value::Text(first_line(&source.header(c)).to_owned());
+            let f = format(&title, None, Role::None, &options, &ctx);
+            let (mut end, mut start) = (0, 0);
+            for (&row, line) in rows.iter().zip(&lines) {
+                match (source.value(row, c), line[i].1) {
+                    (Value::Null, _) => {}
+                    (_, Align::End) => end += 1,
+                    (_, Align::Start) => start += 1,
+                }
+            }
+            let align = if end > start {
+                Align::End
+            } else {
+                Align::Start
+            };
+            (f.text, align)
+        })
+        .collect();
+    lines.insert(0, header);
     let widths: Vec<usize> = (0..cols.len())
         .map(|i| lines.iter().map(|l| l[i].0.width()).max().unwrap_or(0))
         .collect();
