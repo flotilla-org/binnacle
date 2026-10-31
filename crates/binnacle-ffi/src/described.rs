@@ -466,7 +466,8 @@ impl BinnacleDescribedSource {
     /// Dates draw, and their Stable Text is, in `zone` from now on
     /// ([`DescribedSource::set_zone`]), with the Change Notices that brings
     /// sent to `grid`. `false`, changing nothing, for a Grid other than the
-    /// one this source drives.
+    /// one this source drives; given the first Grid of any call, it drives
+    /// that one from now on.
     pub fn set_zone(&mut self, grid: &mut BinnacleGrid, zone: impl Zone + 'static) -> bool {
         if !self.drives(grid) {
             return false;
