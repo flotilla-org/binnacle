@@ -92,6 +92,7 @@ export {
 export {
   fromDescribed,
   type DescribedColumn,
+  type DescribedJson,
   type DescribedOptions,
   type DescribedRequest,
   type DescribedScope,

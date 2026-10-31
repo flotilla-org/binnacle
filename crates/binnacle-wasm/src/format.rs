@@ -163,6 +163,60 @@ fn millis(ms: f64) -> Timestamp {
     })
 }
 
+/// A JavaScript value as JSON reads it, as `JSON.stringify` would write it
+/// but for a `bigint`, which is an exact integer: `None` for one past
+/// `i64::MIN..=u64::MAX`, or for anything JSON has no form for.
+fn js_to_json(value: &JsValue) -> Option<serde_json::Value> {
+    use serde_json::Value as Json;
+    if value.is_null() {
+        return Some(Json::Null);
+    }
+    if let Some(b) = value.as_bool() {
+        return Some(Json::Bool(b));
+    }
+    if let Some(s) = value.as_string() {
+        return Some(Json::String(s));
+    }
+    if let Some(x) = value.as_f64() {
+        // A number JSON cannot hold is null, as `JSON.stringify` writes it.
+        return Some(match x.is_finite() {
+            false => Json::Null,
+            true if x.fract() == 0.0 && x.abs() < 9.007_199_254_740_992e15 => Json::from(x as i64),
+            true => serde_json::Number::from_f64(x).map_or(Json::Null, Json::Number),
+        });
+    }
+    if value.is_bigint() {
+        let big = js_sys::BigInt::from(value.clone());
+        let text = String::from(big.to_string(10).ok()?);
+        return match (text.parse::<i64>(), text.parse::<u64>()) {
+            (Ok(i), _) => Some(Json::from(i)),
+            (_, Ok(u)) => Some(Json::from(u)),
+            _ => None,
+        };
+    }
+    if let Some(items) = value.dyn_ref::<js_sys::Array>() {
+        return (items.iter())
+            .map(|item| match item.is_undefined() || item.is_function() {
+                true => Some(Json::Null),
+                false => js_to_json(&item),
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(Json::Array);
+    }
+    if value.is_object() && !value.is_function() {
+        let mut fields = serde_json::Map::new();
+        for key in js_sys::Object::keys(value.unchecked_ref::<js_sys::Object>()).iter() {
+            let item = js_sys::Reflect::get(value, &key).ok()?;
+            if item.is_undefined() || item.is_function() {
+                continue;
+            }
+            fields.insert(key.as_string()?, js_to_json(&item)?);
+        }
+        return Some(Json::Object(fields));
+    }
+    None
+}
+
 fn field(object: &JsValue, key: &str) -> Option<JsValue> {
     let key = JsValue::from_str(key);
     js_sys::Reflect::has(object, &key)
@@ -235,12 +289,9 @@ fn decode(value: &JsValue) -> Value {
         };
     }
     if let Some(nested) = field(value, "nested") {
-        let json = js_sys::JSON::stringify(&nested)
-            .ok()
-            .and_then(|s| s.as_string());
-        return match json.as_deref().map(serde_json::from_str) {
-            Some(Ok(json)) => Value::Nested(json),
-            _ => invalid(&nested, ValueType::Nested),
+        return match js_to_json(&nested) {
+            Some(json) => Value::Nested(json),
+            None => invalid(&nested, ValueType::Nested),
         };
     }
     if let Some(raw) = field(value, "invalid").and_then(|r| r.as_string()) {

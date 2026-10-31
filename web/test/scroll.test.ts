@@ -308,3 +308,25 @@ test("a move the Grid made itself, not the scroller, is written back to where th
     tc.note(`fraction ${fraction}, offset ${h.offset} of ${h.max()}`);
     expect(Math.abs(h.offset - fraction * h.max())).toBeLessThanOrEqual(1);
   }));
+
+/** A scroller with no clamping, as the mapping may meet one before its sizer catches up with a resize. */
+function unclamped(size: number) {
+  const calls: [number, number][] = [];
+  const port = { scrollTop: 0, scrollLeft: 0, clientWidth: size, clientHeight: size, setSize() {} };
+  const target = { scroll() {}, scroll_to: (axis: number, fraction: number) => void calls.push([axis, fraction]) };
+  return { port, target, calls };
+}
+
+test("a forward move on an axis that cannot scroll goes to the start, not the end", () => {
+  // The sizer is not sized yet (0), so the travel (max) is 0 or less.
+  for (const axis of ["rows", "cols"] as const) {
+    for (const view of [0, 100]) {
+      const { port, target, calls } = unclamped(view);
+      const mapping = createScrollMapping(port);
+      if (axis === "rows") port.scrollTop = 1;
+      else port.scrollLeft = 1;
+      expect(mapping.take(target)).toBe(true);
+      expect(calls).toEqual([[AXIS_CODE[axis], 0]]);
+    }
+  }
+});
