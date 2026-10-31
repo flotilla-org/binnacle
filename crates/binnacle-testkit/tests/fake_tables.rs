@@ -673,3 +673,65 @@ fn a_table_with_no_primary_key_takes_upserts_and_deletes_by_place() {
         vec!["d", "g"],
     );
 }
+
+#[test]
+fn the_binary_takes_steps_from_standard_input_skipping_bad_lines() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fake-tables"))
+        .args(["--listen", "127.0.0.1:0", "--generate", "t:3", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    let addr = line
+        .trim()
+        .strip_prefix("fake-tables listening on http://")
+        .unwrap_or_else(|| panic!("{line}"));
+    let addr = binnacle_testkit::fake_tables::Addr::Tcp(addr.parse().unwrap());
+    let mut source = DescribedSource::new("t", Scope::new("flotilla"));
+    let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
+        panic!("a watch first")
+    };
+    let mut stream = open(&addr, &request.target(), &[("accept", NDJSON)]).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut decoder = Decoder::new(Encoding::Ndjson);
+    feed(&mut stream, &mut decoder, &mut source, |s| {
+        s.status().synced
+    });
+    assert_eq!(source.row_count(), 3);
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(
+        stdin,
+        "# a comment, then a blank line and a bad one\n\n{{not a step"
+    )
+    .unwrap();
+    writeln!(
+        stdin,
+        r#"{{"step": "upsert", "table": "t", "row": {{"id": 99, "name": "new"}}}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+    // The fake's heartbeats keep the watch alive, so wait no longer than this.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let (_, ended) = feed(&mut stream, &mut decoder, &mut source, |s| {
+        s.row_count() == 4 || std::time::Instant::now() > deadline
+    });
+    assert!(!ended, "the watch stays open");
+    assert_eq!(source.row_count(), 4, "the upsert arrives");
+    drop(stdin);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the end of the input does not stop the server"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
