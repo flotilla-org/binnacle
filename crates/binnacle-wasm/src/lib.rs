@@ -8,6 +8,7 @@
 //! and View Specs' grouping and Window items' outlines likewise ([`grouping`]).
 
 pub mod codes;
+mod described;
 pub mod effect;
 mod format;
 mod grid;
@@ -17,6 +18,7 @@ mod memory;
 pub mod snapshot;
 pub mod testing;
 
+pub use described::WebDescribed;
 pub use format::{WebColumnFormat, fewest_decimals};
 pub use grid::{WebAxis, WebGrid, debug_every_effect, debug_notice, debug_scenarios};
 pub use layer::WebGroupingLayer;

@@ -378,6 +378,9 @@ fn a_column_takes_the_fewest_decimals_that_show_all_its_numbers() {
 fn unknown_roles_are_none_and_types_round_trip_their_names() {
     assert_eq!(Role::from_name("time"), Role::Time);
     assert_eq!(Role::from_name("money"), Role::None);
+    for role in [Role::None, Role::Time] {
+        assert_eq!(Role::from_name(role.name()), role);
+    }
     for t in ValueType::ALL {
         assert_eq!(ValueType::from_name(t.name()), Some(t));
         assert_eq!(ValueType::from_code(t.code()), Some(t));

@@ -16,7 +16,7 @@ use binnacle_format::{
     format_stable,
 };
 use binnacle_group::{GroupedMemory, Summary, Window};
-use binnacle_memory::{FindStep, MemorySource, Moved, PumpSource, TypedKey, Viewed};
+use binnacle_memory::{FindCount, FindStep, MemorySource, Moved, PumpSource, TypedKey, Viewed};
 
 use crate::keys::StableKeys;
 use crate::message::{Category, Field, FieldType, Message, Row, RowsMessage, Schema};
@@ -490,6 +490,21 @@ impl DescribedSource {
             grid.set_quick_filter_support(axis, self.quick_filter(axis));
         }
         grid.set_find_support(self.find_support());
+    }
+
+    /// Which cells of the block `rows` by `cols` match `query`, row by row,
+    /// searching what [`PumpSource::find_next`] steps through: the shown
+    /// columns and the Nested ones.
+    pub fn find_marks(&mut self, rows: &[Key], cols: &[Key], query: &FindQuery) -> Vec<bool> {
+        let query = self.widened_find(query, &self.spec.axis(Axis::Cols).hidden);
+        self.grouped.find_marks(&self.rows, rows, cols, &query)
+    }
+
+    /// How many cells match `query`, among those [`PumpSource::find_next`]
+    /// steps through.
+    pub fn find_count(&mut self, query: &FindQuery) -> FindCount {
+        let query = self.widened_find(query, &self.spec.axis(Axis::Cols).hidden);
+        self.grouped.find_count(&self.rows, &query)
     }
 
     /// Starts a resync: every row is unconfirmed until it comes again, and

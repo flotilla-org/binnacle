@@ -5,8 +5,8 @@
 mod support;
 
 use binnacle_core::{
-    Action, AggregateValue, Axis, Blanks, DistinctQuery, DistinctValue, FilterSpec, FindQuery,
-    Grouping, Key, SortColumn, SortSpec, TextQuery, ViewSpec,
+    Action, AggregateValue, Axis, Blanks, DistinctQuery, DistinctValue, FilterSpec, FindDirection,
+    FindQuery, Grouping, Key, SortColumn, SortSpec, TextQuery, ViewSpec,
 };
 use binnacle_memory::PumpSource;
 use binnacle_testkit::Scenario;
@@ -211,4 +211,67 @@ fn rows_that_tie_break_on_the_primary_key_ascending_both_ways() {
         SortSpec::new(vec![SortColumn::descending(note)]),
         "the primary key's term stays hidden"
     );
+}
+
+#[test]
+fn find_counts_and_marks_a_match_in_a_nested_column_only_while_find_reaches_it() {
+    let mut source = replay("crews.ndjson");
+    let (name, spec) = (key_of(&source, "name"), key_of(&source, "spec"));
+    let query = FindQuery::new(TextQuery::new("rust"));
+    let alpha = (source.row_keys().iter().copied())
+        .find(|&r| support::text(&source, r, name) == "alpha")
+        .unwrap();
+    assert_eq!(source.find_count(&query).total, 1);
+    assert_eq!(
+        source.find_marks(&[alpha], &[name, spec], &query),
+        [false, true]
+    );
+    let step = source.find_next(&query, None, FindDirection::Next).unwrap();
+    assert_eq!((step.at.row, step.at.col), (alpha, spec));
+    // Hidden, the In-Memory Table Source searches only the columns shown,
+    // so find can't step to it, and neither marks nor counts it.
+    source.view(&ViewSpec::default().with_hidden(Axis::Cols, vec![spec]));
+    assert_eq!(source.find_next(&query, None, FindDirection::Next), None);
+    assert_eq!(source.find_count(&query).total, 0);
+    assert_eq!(
+        source.find_marks(&[alpha], &[name, spec], &query),
+        [false, false]
+    );
+}
+
+#[test]
+fn find_marks_every_cell_find_steps_through_before_it_wraps() {
+    let mut source = replay("crews.ndjson");
+    let spec_key = source.column_key("spec").unwrap();
+    source.view(&ViewSpec::default().with_hidden(Axis::Cols, vec![spec_key]));
+    for text in ["e", "r", "2026", "check"] {
+        let query = FindQuery::new(TextQuery::new(text));
+        let mut stepped = std::collections::BTreeSet::new();
+        let mut from = None;
+        while let Some(step) = source.find_next(&query, from, FindDirection::Next) {
+            if step.wrapped || !stepped.insert((step.at.row, step.at.col)) {
+                break;
+            }
+            from = Some(step.at);
+        }
+        let rows = source.window(Axis::Rows, 0..source.count(Axis::Rows)).keys;
+        let cols: Vec<Key> = source.columns().iter().map(|c| c.key()).collect();
+        let marks = source.find_marks(&rows, &cols, &query);
+        let marked: std::collections::BTreeSet<(Key, Key)> = (rows.iter())
+            .flat_map(|&r| cols.iter().map(move |&c| (r, c)))
+            .zip(marks)
+            .filter_map(|(cell, marked)| marked.then_some(cell))
+            .collect();
+        assert!(!stepped.is_empty(), "{text}");
+        assert_eq!(marked, stepped, "{text}");
+        assert_eq!(
+            source.find_count(&query).total,
+            stepped.len() as u64,
+            "{text}"
+        );
+    }
+}
+
+fn key_of(source: &binnacle_described::DescribedSource, name: &str) -> Key {
+    source.column_key(name).unwrap()
 }

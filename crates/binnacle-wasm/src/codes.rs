@@ -171,6 +171,31 @@ pub fn notice(code: u8, a: f64, b: f64) -> ChangeNotice {
     }
 }
 
+/// A Change Notice as `[code, a, b]`, as [`notice`] reads it.
+pub fn encode_notice(n: &ChangeNotice) -> [f64; 3] {
+    let p = |n: u64| n as f64;
+    match *n {
+        ChangeNotice::Reordered => [0.0, f64::NAN, f64::NAN],
+        ChangeNotice::Reset(c) => [1.0, p(c), f64::NAN],
+        ChangeNotice::Inserted { at, n } => [2.0, p(at), p(n)],
+        ChangeNotice::Removed { at, n } => [3.0, p(at), p(n)],
+        ChangeNotice::ContentChanged(ref r) => [4.0, p(r.start), p(r.end)],
+        ChangeNotice::Refiltered(c) => [5.0, p(c), f64::NAN],
+        ChangeNotice::Collapsed { at, n } => [6.0, p(at), p(n)],
+        ChangeNotice::Expanded { at, n } => [7.0, p(at), p(n)],
+    }
+}
+
+/// Change Notices on either axis as `[axis, code, a, b]` quads, end to end.
+pub fn encode_notices(notices: &[(Axis, ChangeNotice)]) -> Vec<f64> {
+    (notices.iter())
+        .flat_map(|(a, n)| {
+            let [code, x, y] = encode_notice(n);
+            [a.index() as f64, code, x, y]
+        })
+        .collect()
+}
+
 /// A `Locate` answer: Found 0 (at `position`) or Gone 1 (suggesting
 /// `position`, where the Key would sit among the items left, which may be
 /// the count; `NaN` for no suggestion).
@@ -310,6 +335,27 @@ mod tests {
         assert_eq!(notice(5, 6.0, f64::NAN), ChangeNotice::Refiltered(6));
         assert_eq!(notice(6, 3.0, 4.0), ChangeNotice::Collapsed { at: 3, n: 4 });
         assert_eq!(notice(7, 3.0, 4.0), ChangeNotice::Expanded { at: 3, n: 4 });
+    }
+
+    #[test]
+    fn notices_encode_as_they_decode() {
+        let notices = [
+            ChangeNotice::Reordered,
+            ChangeNotice::Reset(12),
+            ChangeNotice::Inserted { at: 3, n: 4 },
+            ChangeNotice::Removed { at: 3, n: 4 },
+            ChangeNotice::ContentChanged(3..7),
+            ChangeNotice::Refiltered(6),
+            ChangeNotice::Collapsed { at: 3, n: 4 },
+            ChangeNotice::Expanded { at: 3, n: 4 },
+        ];
+        for n in notices {
+            let [code, a, b] = encode_notice(&n);
+            assert_eq!(notice(code as u8, a, b), n);
+        }
+        let quads = encode_notices(&[(Axis::Cols, ChangeNotice::Reset(2))]);
+        assert_eq!(quads[..3], [1.0, 1.0, 2.0]);
+        assert!(quads[3].is_nan());
     }
 
     #[test]

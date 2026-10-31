@@ -90,6 +90,15 @@ export {
   type RowsSource,
 } from "./rows";
 export {
+  fromDescribed,
+  type DescribedColumn,
+  type DescribedOptions,
+  type DescribedRequest,
+  type DescribedScope,
+  type DescribedStatus,
+  type DescribedTable,
+} from "./described";
+export {
   groupedSource,
   type AggregateAnswer,
   type AggregateBackend,
