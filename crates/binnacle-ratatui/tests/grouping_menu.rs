@@ -4,17 +4,20 @@
 //! the grouped table), collapses to it or expands through it, and removes
 //! or adds values; a column's menu groups by its column and adds values
 //! over it; a pivot column's menu acts on its column level; the column
-//! chooser lists the columns the rows group by as "grouped".
+//! chooser lists the columns the rows group by as "grouped"; the host's
+//! Row Menu Items reach the rows they are set for.
 
 use std::borrow::Cow;
 
 use binnacle_core::{
-    AggregateValue, Axis, AxisConfig, Depth, Grid, Grouping, Key, Level, ViewSpec, Viewport,
+    AggregateValue, Axis, AxisConfig, Depth, Edge, Grid, Grouping, ItemKind, Key, Level, Placement,
+    ViewSpec, Viewport,
 };
 use binnacle_group::{Figure, GroupedMemory};
 use binnacle_memory::{MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    Chooser, Content, HeaderMenu, RenderContext, Theme, begin_frame, render_with,
+    Chooser, Content, HeaderMenu, RenderContext, RowItem, RowTarget, Theme, begin_frame,
+    render_with,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -141,6 +144,25 @@ impl Table {
         let event = KeyEvent::new(code, KeyModifiers::NONE);
         assert!(self.menu.key(&event, &mut self.grid, |_, _| Vec::new()));
         self.settle();
+    }
+
+    /// Every row shown, pinned or not, with what it is.
+    fn rows(&mut self) -> Vec<(Key, ItemKind)> {
+        let snapshot = self.grid.snapshot();
+        let pinned = Edge::ALL
+            .into_iter()
+            .map(|e| snapshot.pinned(Axis::Rows, e));
+        let items = pinned.flatten().chain(snapshot.strip(Axis::Rows));
+        let kind = |p| snapshot.outline(Axis::Rows, p).expect("grouped").kind;
+        items.map(|i| (i.key.unwrap(), kind(i.position))).collect()
+    }
+
+    /// Opens the menu on the row `key` and draws it.
+    fn row_menu(&mut self, key: Key) -> String {
+        self.grid.set_focus(key, WEIGHT);
+        self.settle();
+        assert!(self.menu.open(&self.grid.snapshot(), Axis::Rows));
+        self.draw()
     }
 
     /// The table with the menu over it, each line between bars.
@@ -348,4 +370,67 @@ fn the_chooser_lists_the_columns_the_rows_group_by_as_grouped_with_no_tick() {
         assert!(chooser.key(&KeyEvent::new(code, KeyModifiers::NONE), &mut t.grid));
     }
     assert!(t.grid.snapshot().hidden(Axis::Cols).is_empty());
+}
+
+/// The rows by region, a Subtotal after each region and the Grand Total
+/// after them all.
+fn by_region_with_totals() -> Grouping {
+    let mut grouping = Grouping::rows_by(REGION);
+    grouping.row_levels = vec![Level::Field {
+        field: REGION,
+        subtotal: Placement::After,
+    }];
+    grouping.rows.grand_total = Placement::After;
+    grouping
+}
+
+#[test]
+fn row_items_set_for_every_row_reach_the_leaves_and_no_summary_item() {
+    let mut t = Table::new(by_region_with_totals());
+    t.menu
+        .set_row_items(vec![RowItem::new("track", "Track").key('k')]);
+    let rows = t.rows();
+    for kind in [
+        ItemKind::Leaf,
+        ItemKind::Group,
+        ItemKind::Subtotal,
+        ItemKind::GrandTotal,
+    ] {
+        assert!(rows.iter().any(|r| r.1 == kind), "{kind:?} in {rows:?}");
+    }
+    for (key, kind) in rows {
+        let out = t.row_menu(key);
+        assert_eq!(
+            out.contains("k Track"),
+            kind == ItemKind::Leaf,
+            "{kind:?}\n{out}"
+        );
+        t.press(KeyCode::Char('k'));
+        let chosen = t.menu.take_row_choice().map(|c| c.row);
+        assert_eq!(chosen, (kind == ItemKind::Leaf).then_some(key), "{kind:?}");
+        t.menu.close();
+    }
+}
+
+#[test]
+fn row_items_asked_per_row_know_a_leaf_from_each_summary_item() {
+    let mut t = Table::new(by_region_with_totals());
+    t.menu.set_row_items_fn(|target| {
+        let label = match target {
+            RowTarget::Row(_) => "Track".to_string(),
+            RowTarget::Summary(_, kind) => format!("Explain {kind:?}"),
+            _ => unreachable!(),
+        };
+        vec![RowItem::new("item", label).key('k')]
+    });
+    for (key, kind) in t.rows() {
+        let out = t.row_menu(key);
+        let label = match kind {
+            ItemKind::Leaf => "k Track".to_string(),
+            kind => format!("k Explain {kind:?}"),
+        };
+        assert!(out.contains(&label), "{label}\n{out}");
+        t.press(KeyCode::Char('k'));
+        assert_eq!(t.menu.take_row_choice().map(|c| c.row), Some(key));
+    }
 }

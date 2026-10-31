@@ -653,16 +653,8 @@ fn on_a_column_major_table_the_chooser_and_show_only_act_on_its_records() {
 
 fn row_items() -> Vec<RowItem> {
     vec![
-        RowItem {
-            name: "track".into(),
-            label: "Track shipment".into(),
-            key: Some('k'),
-        },
-        RowItem {
-            name: "notes".into(),
-            label: "Open notes".into(),
-            key: Some('t'),
-        },
+        RowItem::new("track", "Track shipment").key('k'),
+        RowItem::new("notes", "Open notes").key('t'),
     ]
 }
 
@@ -704,23 +696,18 @@ fn choosing_a_host_item_closes_the_menu_and_queues_its_name_and_row_once() {
     }
     t.press(&mut menu, KeyCode::Enter);
     assert!(!menu.is_open());
+    let chosen = |c: RowChoice| (c.name, c.row);
     assert_eq!(
-        menu.take_row_choice(),
-        Some(RowChoice {
-            name: "notes".into(),
-            row: Key(2)
-        })
+        menu.take_row_choice().map(chosen),
+        Some(("notes".into(), Key(2)))
     );
     assert_eq!(menu.take_row_choice(), None);
     assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
     t.press(&mut menu, KeyCode::Char('k'));
     assert!(!menu.is_open());
     assert_eq!(
-        menu.take_row_choice(),
-        Some(RowChoice {
-            name: "track".into(),
-            row: Key(2)
-        })
+        menu.take_row_choice().map(chosen),
+        Some(("track".into(), Key(2)))
     );
     assert_eq!(menu.take_row_choice(), None);
 }
@@ -740,12 +727,17 @@ fn a_row_menu_without_hiding_still_opens_with_the_host_items() {
 }
 
 #[test]
-fn a_host_key_that_a_built_in_uses_is_ignored() {
+fn a_host_key_that_a_built_in_uses_is_ignored_and_not_drawn() {
     let mut t = Table::new(true);
     let mut menu = HeaderMenu::new();
     menu.set_row_items(row_items());
     t.focus(2, 0);
     assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    let out = t.screen(&menu);
+    let notes = out.lines().find(|l| l.contains("Open notes"));
+    let notes = notes.unwrap_or_else(|| panic!("{out}"));
+    assert!(!notes.contains("t Open notes"), "{out}");
+    assert!(out.contains("k Track shipment"), "{out}");
     t.press(&mut menu, KeyCode::Char('t'));
     assert_eq!(t.pinned(Axis::Rows, Edge::Leading), [2], "Pin top");
     assert_eq!(menu.take_row_choice(), None);

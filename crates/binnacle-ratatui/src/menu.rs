@@ -8,10 +8,13 @@
 //! Show only act on the picks or the selection as well as the focused item,
 //! and past the axis's hide cap suggest a filter.
 
+use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use binnacle_core::{
-    AggregateValue, Axis, Depth, Edge, Grid, Grouping, Key, Position, Snapshot, VALUES_FIELD,
+    AggregateValue, Axis, Depth, Edge, Grid, Grouping, ItemKind, Key, Position, Snapshot,
+    VALUES_FIELD,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
@@ -202,9 +205,9 @@ pub fn cap_hint(axis: Axis, cap: usize) -> String {
 /// grouping change close it; showing and opening a list leave it open, and
 /// so does a hide past the cap, which says to filter instead.
 ///
-/// The host may add [`RowItem`]s to a row's menu ([`HeaderMenu::set_row_items`]);
-/// choosing one queues a [`RowChoice`] for the host
-/// ([`HeaderMenu::take_row_choice`]).
+/// The host may add [`RowItem`]s to a row's menu ([`HeaderMenu::set_row_items`],
+/// or per row [`HeaderMenu::set_row_items_fn`]); choosing one queues a
+/// [`RowChoice`] for the host ([`HeaderMenu::take_row_choice`]).
 #[derive(Clone, Debug, Default)]
 pub struct HeaderMenu {
     open: Option<Open>,
@@ -214,27 +217,87 @@ pub struct HeaderMenu {
     slicer: Option<Key>,
     /// The base fields the grouping may use, as the host lists them.
     fields: Vec<Key>,
-    /// The items the host adds to a row's menu.
-    row_items: Vec<RowItem>,
+    /// The items the host adds to a row's menu, asked per row.
+    row_items: RowItems,
     /// The host item the user chose, until the host takes it.
     row_choice: Option<RowChoice>,
 }
 
 /// An item a host adds to a row's menu ([`HeaderMenu::set_row_items`]): a
 /// name the host knows it by, a label, and a key that picks it while the
-/// menu is open. A key that a built-in row line uses is silently ignored.
+/// menu is open. A key that a built-in row line uses is silently ignored,
+/// and not drawn. Built with [`RowItem::new`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RowItem {
     pub name: String,
     pub label: String,
     pub key: Option<char>,
 }
 
-/// The host item the user chose on a row's menu: its name and the row's Key.
+impl RowItem {
+    /// An item named `name` and drawn as `label`, with no key.
+    pub fn new(name: impl Into<String>, label: impl Into<String>) -> Self {
+        RowItem {
+            name: name.into(),
+            label: label.into(),
+            key: None,
+        }
+    }
+
+    /// The item, picked by `key` while the menu is open.
+    pub fn key(mut self, key: char) -> Self {
+        self.key = Some(key);
+        self
+    }
+}
+
+/// The host item the user chose on a row's menu: its name and the Key of
+/// the row whose menu it is (never the chosen set's).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RowChoice {
     pub name: String,
     pub row: Key,
+}
+
+/// The row a row's menu is open on, as [`HeaderMenu::set_row_items_fn`]
+/// asks for its items: a plain row, or on a grouped axis a Leaf, or a
+/// Summary Item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RowTarget {
+    /// A row of the data, by its Key.
+    Row(Key),
+    /// A Group Item, a Subtotal or the Grand Total, by its Key.
+    Summary(Key, ItemKind),
+}
+
+impl RowTarget {
+    /// The row's Key, whatever it is.
+    pub fn key(self) -> Key {
+        match self {
+            RowTarget::Row(key) | RowTarget::Summary(key, _) => key,
+        }
+    }
+}
+
+type RowItemsFn = dyn Fn(RowTarget) -> Vec<RowItem> + Send + Sync;
+
+/// The host's items per row; none until it sets them.
+#[derive(Clone)]
+struct RowItems(Arc<RowItemsFn>);
+
+impl Default for RowItems {
+    fn default() -> Self {
+        RowItems(Arc::new(|_| Vec::new()))
+    }
+}
+
+impl fmt::Debug for RowItems {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RowItems(..)")
+    }
 }
 
 /// The keys the row menu's own lines and hidden-item numbers use. A host
@@ -273,8 +336,8 @@ impl Open {
 /// What a menu is for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Target {
-    /// An item of the axis, by its Key.
-    Item(Key),
+    /// An item of the axis, by its Key, and on the rows what it is.
+    Item(Key, Option<RowTarget>),
     /// A level of the axis, by its field (`None` for the values
     /// pseudo-level).
     Level(Option<Key>),
@@ -306,7 +369,7 @@ enum Entry {
     Choose,
     Show(Key),
     ShowAll,
-    /// The host's item at this index in [`HeaderMenu::set_row_items`].
+    /// The host's item at this index in the row's items.
     Host(usize),
 }
 
@@ -400,7 +463,7 @@ fn entries(snapshot: &Snapshot, open: &Open, fields: &[Key]) -> Vec<Entry> {
     // Whether the level's lines follow, and the level they are for: none
     // for a pivot's Grand Total, the values pseudo-level's `None`.
     let (lines, level) = match open.target {
-        Target::Item(key) => {
+        Target::Item(key, _) => {
             let pinned_at = |edge| (snapshot.pinned(axis, edge).iter()).any(|i| i.key == Some(key));
             let trailing = pinned_at(Edge::Trailing);
             match pinned_at(Edge::Leading) || trailing {
@@ -502,7 +565,7 @@ fn entries(snapshot: &Snapshot, open: &Open, fields: &[Key]) -> Vec<Entry> {
             }
         }
     }
-    if let Target::Item(key) = open.target {
+    if let Target::Item(key, _) = open.target {
         if grouping.is_some_and(|g| !g.levels(Axis::Rows).is_empty()) {
             entries.push(Entry::Ungroup);
         }
@@ -561,14 +624,29 @@ impl HeaderMenu {
         }
     }
 
-    /// Sets the items a row's menu lists after its own, below a separator.
-    /// They show only when the menu is open on a row, and the menu lists
-    /// them even where no built-in line applies. An item's `key` picks it,
-    /// unless it is a key a built-in line of the row menu uses (`t`, `b`,
-    /// `u`, `f`, `g`, `h`, `o`, `c`, `a` or a digit): the built-in wins. Of two
-    /// items with one key, the first wins.
+    /// Sets the items a plain row's menu lists after its own, below a
+    /// separator: [`HeaderMenu::set_row_items_fn`] with `items` for a
+    /// [`RowTarget::Row`] and none for a Summary Item.
     pub fn set_row_items(&mut self, items: Vec<RowItem>) {
-        self.row_items = items;
+        self.set_row_items_fn(move |target| match target {
+            RowTarget::Row(_) => items.clone(),
+            _ => Vec::new(),
+        });
+    }
+
+    /// Sets the items a row's menu lists after its own, below a separator,
+    /// asked of `items` for the row the menu is open on whenever the menu
+    /// draws or takes a key. They show only when the menu is open on a row,
+    /// and the menu lists them even where no built-in line applies. An
+    /// item's `key` picks it, unless it is a key a built-in line of the row
+    /// menu uses (`t`, `b`, `u`, `f`, `g`, `h`, `o`, `c`, `a` or a digit):
+    /// the built-in wins, and the item is drawn without it. Of two items
+    /// with one key, the first wins.
+    pub fn set_row_items_fn(
+        &mut self,
+        items: impl Fn(RowTarget) -> Vec<RowItem> + Send + Sync + 'static,
+    ) {
+        self.row_items = RowItems(Arc::new(items));
     }
 
     /// The host item the user chose on a row's menu, once. A choice not taken
@@ -578,20 +656,29 @@ impl HeaderMenu {
     }
 
     /// The host items `open` lists: those of a row's menu.
-    fn hosts(&self, open: &Open) -> usize {
-        match (open.axis, open.target) {
-            (Axis::Rows, Target::Item(_)) => self.row_items.len(),
-            _ => 0,
+    fn hosts(&self, open: &Open) -> Vec<RowItem> {
+        match open.target {
+            Target::Item(_, Some(row)) => (self.row_items.0)(row),
+            _ => Vec::new(),
         }
     }
 
     /// Opens the menu of the focused item of `axis` (`Axis::Cols` for the
     /// focused column's): `false` if nothing there is focused.
     pub fn open(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
-        let Some(key) = snapshot.focus(axis).and_then(|f| f.key) else {
+        let Some(focus) = snapshot.focus(axis) else {
             return false;
         };
-        self.open = Some(Open::new(axis, Target::Item(key)));
+        let Some(key) = focus.key else {
+            return false;
+        };
+        let row = (axis == Axis::Rows).then(|| {
+            match snapshot.outline(axis, focus.position).map(|o| o.kind) {
+                None | Some(ItemKind::Leaf) => RowTarget::Row(key),
+                Some(kind) => RowTarget::Summary(key, kind),
+            }
+        });
+        self.open = Some(Open::new(axis, Target::Item(key, row)));
         true
     }
 
@@ -660,10 +747,11 @@ impl HeaderMenu {
         let snapshot = grid.snapshot();
         let fields = self.fields(&snapshot);
         let mut entries = entries(&snapshot, &open, &fields);
-        entries.extend((0..self.hosts(&open)).map(Entry::Host));
+        let hosts = self.hosts(&open);
+        entries.extend((0..hosts.len()).map(Entry::Host));
         let Open { axis, cursor, .. } = open;
         let item = match open.target {
-            Target::Item(key) => Some(key),
+            Target::Item(key, _) => Some(key),
             Target::Level(_) => None,
         };
         let hidden: Vec<Key> = snapshot.hidden(axis).to_vec();
@@ -695,7 +783,7 @@ impl HeaderMenu {
                         (entries.iter())
                             .find(|e| match e {
                                 Entry::Host(i) => {
-                                    let key = self.row_items[*i].key;
+                                    let key = hosts[*i].key;
                                     key == Some(c) && !ROW_MENU_KEYS.contains(c)
                                 }
                                 _ => false,
@@ -796,7 +884,7 @@ impl HeaderMenu {
                 None
             }
             Some(Entry::Host(i)) => {
-                if let (Some(row), Some(chosen)) = (item, self.row_items.get(i)) {
+                if let (Some(row), Some(chosen)) = (item, hosts.get(i)) {
                     self.row_choice = Some(RowChoice {
                         name: chosen.name.clone(),
                         row,
@@ -855,7 +943,7 @@ impl HeaderMenu {
         let entries = entries(snapshot, o, &self.fields(snapshot));
         let hosts = self.hosts(o);
         let item = match o.target {
-            Target::Item(key) => Some(key),
+            Target::Item(key, _) => Some(key),
             Target::Level(_) => None,
         };
         let hides = entries.contains(&Entry::Hide);
@@ -891,7 +979,7 @@ impl HeaderMenu {
             + list as u16
             + u16::from(!hidden.is_empty())
             + u16::from(o.hint.is_some())
-            + if hosts > 0 { 1 + hosts as u16 } else { 0 }
+            + (1 + hosts.len() as u16) * u16::from(!hosts.is_empty())
             + 1;
         // The lines above the heading that fit, scrolled to the cursor.
         let room = usize::from(area.height.saturating_sub(rest)).max(1);
@@ -933,8 +1021,8 @@ impl HeaderMenu {
                 };
                 format!(" {level} {} ", content.column_header(field))
             }
-            (Target::Item(key), 1) => format!(" {} {} ", capital(noun), name(key)),
-            (Target::Item(_), n) => format!(" {} {nouns} chosen ", grouped(n)),
+            (Target::Item(key, _), 1) => format!(" {} {} ", capital(noun), name(key)),
+            (Target::Item(..), n) => format!(" {} {nouns} chosen ", grouped(n)),
         };
         let title = fit(&title, u32::try_from(inner.saturating_sub(1)).unwrap_or(0));
         let rule = inner.saturating_sub(char_count(&title) as usize + 1);
@@ -1038,10 +1126,10 @@ impl HeaderMenu {
             line(row, &format!("{mark}a Show all"), style);
             row += 1;
         }
-        if hosts > 0 {
+        if !hosts.is_empty() {
             line(row, &"─".repeat(inner), border);
             row += 1;
-            for (j, item) in self.row_items.iter().enumerate() {
+            for (j, item) in hosts.iter().enumerate() {
                 let (mark, style) = at(entries.len() + j);
                 let key = item.key.filter(|c| !ROW_MENU_KEYS.contains(*c));
                 line(

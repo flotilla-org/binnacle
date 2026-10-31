@@ -296,7 +296,7 @@ In header form, where a group has no Group Item, a match on its label lands on t
 _Avoid_: Collapsed match, buried match
 
 **Row Menu Item**:
-An item a host adds to a row's menu in an adapter: a name and a label. Choosing one reports the name and the row back to the host (`RowChoice` in ratatui, `onRowItem` on the web); there is no Effect, so the C and wasm boundaries do not carry it. A hook until the host-defined row actions of #289 resolve.
+An item a host adds to a row's menu in an adapter: a name and a label, given per row, so a host can leave them off Summary Items (`RowTarget` in ratatui, the row ID on the web). Choosing one reports the name and the row back to the host (`RowChoice` in ratatui, `onRowItem` on the web); there is no Effect, so the C and wasm boundaries do not carry it. A hook until the host-defined row actions of #289 resolve.
 _Avoid_: Row action, context-menu entry
 
 **Refused Drop**:

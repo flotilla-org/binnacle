@@ -20,6 +20,8 @@ export interface SizingParts {
   headerHeight: number;
   /** Whether a row menu is mounted, so a hovered row header shows its button. */
   rowMenu: boolean;
+  /** Whether the row menu has the host's items for row `key`, which shows the button too. */
+  rowItems?: ((key: bigint) => boolean) | null;
   renderer: RendererChoice<unknown, unknown, unknown>;
 }
 
@@ -80,7 +82,7 @@ export function bandWidth(
   // Room for a sort marker while a row shown sorts the columns, or will.
   const marked = sorts || s.rows.headers.some((h) => h.sort.applied !== null || h.sort.pending);
   // Room for the row menu's button or a filter mark, at the label's left.
-  const filters = Math.max(0, ...s.rows.headers.map((h) => rowFilterRoom(parts.rowMenu, h)));
+  const filters = Math.max(0, ...s.rows.headers.map((h) => rowFilterRoom(parts.rowMenu, h, parts.rowItems)));
   return width + 2 * PAD + (marked ? MARKED : 0) + filters;
 }
 

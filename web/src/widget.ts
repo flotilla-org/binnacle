@@ -1037,20 +1037,27 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * on draw its button while hovered or filtering, and a press on one,
    * Alt+ArrowRight, or `openRowMenu` calls `open` with the row and a
    * rectangle to place the menu beside. `hasItems` says whether the menu has
-   * items of its own for a row, so that it opens on rows the columns take no
-   * conditions on. Returns how to unmount it; one menu is mounted at a
-   * time.
+   * items of its own for a row, so that it opens, and its header draws the
+   * button, on rows the columns take no conditions on. Returns how to
+   * unmount it; one menu is mounted at a time.
    */
   attachRowMenu(open: (rowId: RowId, anchor: DOMRect, at: MenuAt) => void, hasItems?: (rowId: RowId) => boolean): () => void {
     this.rowMenu = open;
     this.rowMenuItems = hasItems ?? null;
     this.painter.filterButtons.rows = true;
+    this.painter.rowItems = hasItems
+      ? (key) => {
+          const rowId = this.feed.rowId(key);
+          return rowId !== undefined && hasItems(rowId);
+        }
+      : null;
     this.invalidate();
     return () => {
       if (this.rowMenu !== open) return;
       this.rowMenu = null;
       this.rowMenuItems = null;
       this.painter.filterButtons.rows = false;
+      this.painter.rowItems = null;
       this.invalidate();
     };
   }
@@ -1469,7 +1476,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       width = Math.max(width, start + measure.width(content.label("rows", row), font));
     }
     // Room for the row menu's button or a filter mark, at a label's left.
-    const filters = Math.max(0, ...s.rows.headers.map((h) => rowFilterRoom(this.painter.filterButtons.rows, h)));
+    const filters = Math.max(0, ...s.rows.headers.map((h) => rowFilterRoom(this.painter.filterButtons.rows, h, this.painter.rowItems)));
     width = Math.ceil(width + 2 * PAD + filters);
     if (width <= s.cols.header) return false;
     this.grid.set_header(AXIS_CODE.cols, width);
@@ -1610,7 +1617,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       y < s.rows.header && x >= s.cols.header ? "cols" : x < s.cols.header && y >= s.rows.header ? "rows" : null;
     if (!band || !(band === "cols" ? this.columnMenu : this.rowMenu)) return undefined;
     for (const h of s[band].headers) {
-      if (!hasFilterButton(true, h) || !this.inView(band, h)) continue;
+      if (!hasFilterButton(true, h, band === "rows" ? this.painter.rowItems : null) || !this.inView(band, h)) continue;
       const r = filterButtonRect(band, h);
       if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) {
         const id = band === "cols" ? this.feed.colId(h.key!) : this.feed.rowId(h.key!);
@@ -1965,6 +1972,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
       theme: this.painter.theme,
       headerHeight: this.options.headerHeight ?? HEADER_HEIGHT,
       rowMenu: this.painter.filterButtons.rows,
+      rowItems: this.painter.rowItems,
       renderer: this.painter.renderer,
     };
   }

@@ -38,6 +38,8 @@ export interface CanvasPainter extends Painter {
   readonly due: number;
   /** Whether a column (and a row) menu is mounted, so filterable headers in that band draw its button. */
   filterButtons: { cols: boolean; rows: boolean };
+  /** Whether the mounted row menu has the host's items for row `key`, so its header draws the button too; `null` for none. */
+  rowItems: ((key: bigint) => boolean) | null;
 }
 
 export function createCanvasPainter(theme: Theme): CanvasPainter {
@@ -66,6 +68,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
     flashes: createFlashes(),
     empty: "No rows",
     filterButtons: { cols: false, rows: false },
+    rowItems: null,
     get due() {
       return due;
     },
@@ -106,6 +109,7 @@ export function createCanvasPainter(theme: Theme): CanvasPainter {
         now,
         motion: painter.motion,
         filterButtons: { ...painter.filterButtons },
+        rowItems: painter.rowItems,
         markPending: (key) => marks.pending(key, now),
       };
       const body = paintBody(p);
