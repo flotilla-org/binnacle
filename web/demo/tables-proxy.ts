@@ -3,10 +3,13 @@
 // `X-Binnacle-Server` header names (else `fallback`), streaming the answer
 // back as it comes. A browser can't reach a Unix socket, and `fake-tables`
 // sends no CORS headers. Only loopback and Unix sockets are allowed: the
-// dev server must never be an open proxy.
+// dev server must never be an open proxy. A `unix:` server may name any
+// socket the user can reach: only same-origin script can set the header,
+// and the plugin runs in the dev server alone (`apply: "serve"`).
 
 import { request, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Plugin } from "vite";
 
 /** Where a request goes: a loopback host and port, or a Unix socket. */
@@ -26,7 +29,7 @@ export function upstreamOf(header: string | undefined, fallback: string, home: s
   const server = header?.trim() || fallback;
   if (server.startsWith("unix:")) {
     const path = server.slice("unix:".length);
-    const socketPath = path.startsWith("~/") ? `${home}/${path.slice(2)}` : path;
+    const socketPath = path.startsWith("~/") ? join(home, path.slice(2)) : path;
     return socketPath.startsWith("/") ? { socketPath } : null;
   }
   let url: URL;
@@ -73,7 +76,8 @@ function forward(req: IncomingMessage, res: ServerResponse, fallback: string): v
     if (res.headersSent) res.destroy();
     else refuse(res, 502, "upstream", e.message);
   });
-  // The browser closed the watch: drop the upstream one too.
+  // The browser closed the watch: drop the upstream one too. After a normal
+  // end this destroys a request already done, which does nothing.
   res.on("close", () => out.destroy());
   req.pipe(out);
 }

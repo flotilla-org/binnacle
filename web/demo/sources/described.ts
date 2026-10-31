@@ -100,6 +100,8 @@ export const described: DemoSource = {
     let border: BorderStyle = look.border;
     let shown: Shown | null = null;
     let destroyed = false;
+    /** Bumped by each `show`: a mount that a later one overtook while it awaited tears itself down. */
+    let generation = 0;
 
     const say = (state: string, text: string, data: Record<string, string> = {}) => {
       status.dataset.state = state;
@@ -108,6 +110,7 @@ export const described: DemoSource = {
     };
 
     const show = async (name: string) => {
+      const mine = ++generation;
       shown?.destroy();
       shown = null;
       const url = new URL(location.href);
@@ -139,6 +142,12 @@ export const described: DemoSource = {
           look.onSelectionChange(change);
         },
       });
+      if (mine !== generation || destroyed) {
+        widget.destroy();
+        table.destroy();
+        gridBox.remove();
+        return;
+      }
       const columnMenu = createColumnMenu(widget);
       const chooser = createChooser(widget);
       const bar = createFilterBar(widget, { columnMenu });
@@ -203,7 +212,6 @@ export const described: DemoSource = {
           gridBox.remove();
         },
       };
-      if (destroyed) shown.destroy();
     };
 
     picker.addEventListener("change", () => void show(picker.value));

@@ -486,4 +486,5 @@ and a short script of live changes to `crews`), then `pnpm dev` in another,
 and open `http://127.0.0.1:5754/?source=described&table=crews`. With
 `&server=unix:~/.config/flotilla/run/flotilla.sock` it reads a real
 flotillad instead; the proxy forwards only to loopback servers and Unix
-sockets.
+sockets. A 4xx from the server stops the page's watch; reload to try
+again.

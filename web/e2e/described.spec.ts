@@ -58,6 +58,23 @@ test("the picker lists the server's tables and remembers the one chosen", async 
   await expect(status(page)).toHaveAttribute("data-state", "synced");
 });
 
+test("tables picked one after another while mounting leave one grid, the last", async ({ page }) => {
+  await crews(page);
+  // Two picks in one task: the first is still mounting when the second comes.
+  await page.evaluate(() => {
+    const picker = document.querySelector<HTMLSelectElement>('select[aria-label="Table"]')!;
+    for (const name of ["hosts", "big", "crews", "hosts"]) {
+      picker.value = name;
+      picker.dispatchEvent(new Event("change"));
+    }
+  });
+  await expect(grid(page, "hosts")).toBeVisible();
+  await expect(status(page)).toHaveAttribute("data-state", "synced");
+  await expect(page.getByRole("grid")).toHaveCount(1);
+  await expect(page.locator(".grid-box")).toHaveCount(1);
+  await expect(page.locator(".binnacle-row-count")).toHaveCount(1);
+});
+
 for (const encoding of ["ndjson", "cbor"]) {
   test(`the crews table draws each Typed Value's Stable Text, read as ${encoding}`, async ({ page }) => {
     await crews(page, `&encoding=${encoding}`);
