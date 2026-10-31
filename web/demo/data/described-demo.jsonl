@@ -1,0 +1,14 @@
+# The demo's live changes to crews, for `pnpm fake-tables`: they play once,
+# from the first watch's `synced`, so the page visibly changes.
+{"step": "sleep", "ms": 4000}
+{"step": "upsert", "table": "crews", "row": {"name": "alpha", "phase": "Running", "started": "2026-10-29T10:00:00.000000002Z", "cpus": 6, "load": 0.75, "note": "", "host": "feta", "spec": {"image": "rust"}}}
+{"step": "sleep", "ms": 4000}
+{"step": "upsert", "table": "crews", "row": {"name": "golf", "phase": "Pending", "started": null, "cpus": 2, "load": null, "note": "new", "host": "brie", "spec": {}}}
+{"step": "sleep", "ms": 4000}
+{"step": "upsert", "table": "crews", "row": {"name": "bravo", "phase": "Running", "started": "2026-10-29T12:00:00Z", "cpus": 2, "load": 1.5, "note": null, "host": "feta", "spec": {}}}
+{"step": "sleep", "ms": 4000}
+{"step": "resync", "table": "crews"}
+{"step": "sleep", "ms": 4000}
+{"step": "add-field", "table": "crews", "field": {"name": "zone", "type": "string", "title": "Zone"}, "value": "eu"}
+{"step": "sleep", "ms": 4000}
+{"step": "upsert", "table": "crews", "row": {"name": "charlie", "phase": "Running", "started": "2026-10-29T13:00:00Z", "cpus": 4, "load": 0.25, "note": "check disk", "host": "brie", "spec": {}, "zone": "us"}}

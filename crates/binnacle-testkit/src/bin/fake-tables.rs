@@ -3,12 +3,18 @@
 //! ```text
 //! fake-tables [--fixture <path>]... [--generate <name>:<rows>]...
 //!             [--script <path>] [--listen <addr>] [--socket <path>]
-//!             [--page <rows>] [--heartbeat <ms>]
+//!             [--page <rows>] [--heartbeat <ms>] [--stdin]
 //! ```
+//!
+//! With `--stdin` it also reads script steps from standard input, one JSON
+//! line each (blank and `#` lines skipped), and adds each to the script as
+//! it comes. A bad line is reported and skipped; the end of the input stops
+//! the reading, not the server.
 
+use std::io::BufRead;
 use std::time::Duration;
 
-use binnacle_testkit::fake_tables::{FakeTables, parse_script};
+use binnacle_testkit::fake_tables::{FakeTables, Step, parse_script};
 
 fn main() {
     if let Err(message) = run() {
@@ -19,6 +25,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let mut fake = FakeTables::new().tcp(([127, 0, 0, 1], 7777).into());
+    let mut stdin = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -47,9 +54,13 @@ fn run() -> Result<(), String> {
                 let ms = value()?.parse().map_err(|e| format!("--heartbeat: {e}"))?;
                 fake.heartbeat(Duration::from_millis(ms))
             }
+            "--stdin" => {
+                stdin = true;
+                fake
+            }
             "-h" | "--help" => {
                 println!(
-                    "fake-tables [--fixture <path>]... [--generate <name>:<rows>]... [--script <path>] [--listen <addr>] [--socket <path>] [--page <rows>] [--heartbeat <ms>]"
+                    "fake-tables [--fixture <path>]... [--generate <name>:<rows>]... [--script <path>] [--listen <addr>] [--socket <path>] [--page <rows>] [--heartbeat <ms>] [--stdin]"
                 );
                 return Ok(());
             }
@@ -58,6 +69,19 @@ fn run() -> Result<(), String> {
     }
     let running = fake.start().map_err(|e| e.to_string())?;
     println!("fake-tables listening on {}", running.addr());
+    if stdin {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match Step::from_json_line(line) {
+                Ok(step) => running.push(step),
+                Err(e) => eprintln!("fake-tables: {e}"),
+            }
+        }
+    }
     loop {
         std::thread::park();
     }
