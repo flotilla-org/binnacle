@@ -4,11 +4,17 @@
 
 mod support;
 
+#[path = "../examples/binnacle-tables/feed.rs"]
+mod feed;
+
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
+use std::time::Duration;
 
 use binnacle_core::{Axis, Key};
-use binnacle_described::{DescribedSource, Message, Received, Wire};
+use binnacle_described::{Decoder, DescribedSource, Encoding, Message, Received, Wire};
+use binnacle_described_http::Event as Wired;
 use binnacle_format::Timestamp;
 use binnacle_layout::view::{
     AxisView, Condition, ConditionKind, Direction, FilterSpec, SortColumn, ViewSpec,
@@ -53,7 +59,7 @@ fn printed(
 ) -> String {
     let mut out = Vec::new();
     let mut note = Vec::new();
-    print(source, layout, format, &mut out, &mut note).unwrap();
+    print(source, layout, format, &mut out, &mut note, None).unwrap();
     assert!(note.is_empty(), "a complete table has no note");
     String::from_utf8(out).unwrap()
 }
@@ -740,27 +746,66 @@ fn partial_crews() -> DescribedSource {
     source
 }
 
+/// What `print` writes to stdout and to the note for `source` as `layout`
+/// presents it, with the host's `hint`.
+fn printed_partial(
+    source: &mut DescribedSource,
+    layout: &Layout<JsonId, JsonId>,
+    hint: Option<&str>,
+) -> (String, String) {
+    let (mut out, mut note) = (Vec::new(), Vec::new());
+    print(source, layout, Format::Jsonl, &mut out, &mut note, hint).unwrap();
+    (
+        String::from_utf8(out).unwrap(),
+        String::from_utf8(note).unwrap(),
+    )
+}
+
+/// The partial crews table filtered to the Running phase: its layout, and
+/// how many rows that leaves of the 6 that came.
+fn running_of_partial() -> (DescribedSource, Layout<JsonId, JsonId>, usize) {
+    let mut source = partial_crews();
+    let base = source.presentation(None, None);
+    let flags = binnacle_ratatui::cli::Flags::parse(["--where", "phase==Running"]).unwrap();
+    let layout = flags.apply_to(&mut source, &base, |_| None).unwrap();
+    let shown = printed_partial(&mut source, &layout, None)
+        .0
+        .lines()
+        .count();
+    assert!(0 < shown && shown < 6, "the filter drops some: {shown}");
+    (source, layout, shown)
+}
+
 #[test]
 fn a_partial_table_prints_its_rows_then_says_so_apart() {
-    let mut source = partial_crews();
-    let (mut out, mut note) = (Vec::new(), Vec::new());
-    print(
-        &mut source,
-        &Layout::default(),
-        Format::Jsonl,
-        &mut out,
-        &mut note,
-    )
-    .unwrap();
-    assert_eq!(String::from_utf8(out).unwrap().lines().count(), 6);
+    let (out, note) = printed_partial(&mut partial_crews(), &Layout::default(), None);
+    assert_eq!(out.lines().count(), 6);
+    assert_eq!(note, "showing 6 rows read; the table has more\n");
+}
+
+#[test]
+fn the_partial_note_takes_the_hosts_hint_and_never_suggests_where() {
+    let hint = "narrow the server's read with --scope-where";
+    let (_, note) = printed_partial(&mut partial_crews(), &Layout::default(), Some(hint));
     assert_eq!(
-        String::from_utf8(note).unwrap(),
-        "showing the first 6 rows; the table has more (narrow it with --where)\n"
+        note,
+        format!("showing 6 rows read; the table has more; {hint}\n")
     );
+    let (_, bare) = printed_partial(&mut partial_crews(), &Layout::default(), None);
+    assert!(!bare.contains("--where"), "{bare}");
+}
+
+#[test]
+fn under_a_filter_the_partial_note_says_both_numbers() {
+    let (mut source, layout, shown) = running_of_partial();
+    let hint = "narrow the server's read with --scope-where";
+    let (out, note) = printed_partial(&mut source, &layout, Some(hint));
+    assert_eq!(out.lines().count(), shown);
     assert_eq!(
-        binnacle_ratatui::cli::partial_note(10_000),
-        "showing the first 10,000 rows; the table has more (narrow it with --where)"
+        note,
+        format!("showing {shown} of 6 rows read; the table has more; {hint}\n")
     );
+    assert!(!note.contains("--where"), "{note}");
 }
 
 #[test]
@@ -778,6 +823,10 @@ fn the_viewport_of_a_partial_table_says_of_more() {
         "{}",
         frames[0]
     );
+    let (mut source, layout, shown) = running_of_partial();
+    let (frames, _) = inline(&mut source, &layout, vec![key(KeyCode::Esc)], 100, 20);
+    let want = format!("{shown} shown of 6 read, more on the server | Enter");
+    assert!(frames[0].contains(&want), "{}", frames[0]);
     let (frames, _) = inline(
         &mut crews(),
         &Layout::default(),
@@ -788,27 +837,25 @@ fn the_viewport_of_a_partial_table_says_of_more() {
     assert!(!frames[0].contains("of more"), "{}", frames[0]);
 }
 
-/// The binnacle-tables example, built: by `cargo test` with the rest, or
-/// here when a run builds only this test.
+/// The binnacle-tables example, built now: a run of this test alone must
+/// not use a binary an earlier build left. Cargo does nothing when it is
+/// fresh.
 fn example() -> std::path::PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let built = std::process::Command::new(cargo)
+        .args([
+            "build",
+            "-p",
+            "binnacle-described",
+            "--example",
+            "binnacle-tables",
+        ])
+        .status()
+        .unwrap();
+    assert!(built.success());
     let deps = std::env::current_exe().unwrap();
     let examples = deps.parent().unwrap().parent().unwrap().join("examples");
-    let path = examples.join(format!("binnacle-tables{}", std::env::consts::EXE_SUFFIX));
-    if !path.exists() {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let built = std::process::Command::new(cargo)
-            .args([
-                "build",
-                "-p",
-                "binnacle-described",
-                "--example",
-                "binnacle-tables",
-            ])
-            .status()
-            .unwrap();
-        assert!(built.success());
-    }
-    path
+    examples.join(format!("binnacle-tables{}", std::env::consts::EXE_SUFFIX))
 }
 
 #[test]
@@ -833,7 +880,7 @@ fn binnacle_tables_over_the_row_cap_prints_the_rows_and_notes_it_on_stderr() {
     assert_eq!(String::from_utf8_lossy(&big.stdout).lines().count(), 10_000);
     assert_eq!(
         stderr,
-        "binnacle-tables: showing the first 10,000 rows; the table has more (narrow it with --where)\n"
+        "binnacle-tables: showing 10,000 rows read; the table has more; narrow the server's read with --scope-where\n"
     );
     let small = run("small");
     assert_eq!(small.status.code(), Some(0));
@@ -1101,5 +1148,273 @@ fn a_title_aligns_as_its_columns_cells() {
         start(lines[0], "Phase"),
         start(echo, "Done"),
         "a text column's, left"
+    );
+}
+
+/// A terminal `width`×`height` with the viewport on its last lines, the
+/// inline table run on it, then a shell writing `SHELL$` where the cursor
+/// stands, as a shell's next output does. Returns the terminal's lines
+/// (the scrollback before them is not included).
+fn inline_then_shell(
+    source: &mut DescribedSource,
+    layout: &Layout<JsonId, JsonId>,
+    width: u16,
+    height: u16,
+) -> Vec<String> {
+    let options = InlineOptions {
+        origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
+        ..InlineOptions::default()
+    };
+    let frames = Rc::new(RefCell::new(Vec::new()));
+    let mut backend = Recording {
+        inner: TestBackend::new(width, height),
+        frames: Rc::clone(&frames),
+    };
+    backend.set_cursor_position((0, 2)).unwrap();
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(12),
+        },
+    )
+    .unwrap();
+    run_inline_with(
+        &mut terminal,
+        vec![key(KeyCode::Esc)],
+        source,
+        layout,
+        options,
+    )
+    .unwrap();
+    let backend = terminal.backend_mut();
+    let at = backend.get_cursor_position().unwrap();
+    let cells: Vec<Cell> = (("SHELL$").chars())
+        .map(|c| {
+            let mut cell = Cell::default();
+            cell.set_char(c);
+            cell
+        })
+        .collect();
+    backend
+        .draw(
+            cells
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (at.x + i as u16, at.y, c)),
+        )
+        .unwrap();
+    backend.flush().unwrap();
+    text(frames.borrow().last().unwrap())
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `line` in pieces at most `width` columns wide, as the rows left behind
+/// wrap.
+fn wrapped(line: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let (mut pieces, mut piece, mut used) = (Vec::new(), String::new(), 0);
+    for c in line.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width && !piece.is_empty() {
+            pieces.push(std::mem::take(&mut piece).trim_end().to_owned());
+            used = 0;
+        }
+        piece.push(c);
+        used += w;
+    }
+    pieces.push(piece.trim_end().to_owned());
+    pieces
+}
+
+#[test]
+fn the_shells_next_output_leaves_the_rows_left_behind_whole() {
+    let flags = binnacle_ratatui::cli::Flags::parse(["--wide"]).unwrap();
+    let wide = crews();
+    let fields: Vec<String> = (wide.columns().iter())
+        .map(|c| c.name().to_owned())
+        .collect();
+    let wide_layout = flags.apply(&Layout::default(), &fields).unwrap();
+    for (layout, width) in [
+        (&wide_layout, 40),
+        (&wide_layout, 50),
+        (&Layout::default(), 60),
+    ] {
+        // The terminal ends at the viewport's last line (14) and beyond it,
+        // so the wrapped rows reach the bottom for some heights.
+        for height in 14..=30 {
+            let mut source = crews();
+            let expected: Vec<String> = printed(&mut source, layout, Format::Aligned)
+                .lines()
+                .flat_map(|l| wrapped(l, width.into()))
+                .collect();
+            let lines = inline_then_shell(&mut source, layout, width, height);
+            let shell = lines.iter().position(|l| l == "SHELL$").unwrap_or_else(|| {
+                panic!("{width}x{height}: the shell's line was not written alone:\n{lines:#?}")
+            });
+            let above = &lines[..shell];
+            let k = above.len().min(expected.len());
+            assert_eq!(
+                above[above.len() - k..],
+                expected[expected.len() - k..],
+                "{width}x{height}"
+            );
+            assert!(
+                lines[shell + 1..].iter().all(String::is_empty),
+                "{width}x{height}: {lines:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_viewports_headers_line_up_with_their_cells() {
+    let (frames, _) = inline(
+        &mut crews(),
+        &Layout::default(),
+        vec![key(KeyCode::Esc)],
+        140,
+        20,
+    );
+    let frame = &frames[0];
+    let lines: Vec<&str> = frame.lines().collect();
+    let header = lines.iter().find(|l| l.contains("CPUs")).unwrap();
+    let alpha = lines.iter().find(|l| l.contains("alpha")).unwrap();
+    // Columns, not bytes: the header holds multi-byte borders.
+    let column = |line: &str, at: &str| line[..line.find(at).unwrap()].chars().count();
+    let end = column(header, "CPUs") + "CPUs".len();
+    assert_eq!(
+        alpha.chars().nth(end - 1),
+        Some('4'),
+        "CPUs ends over alpha's 4:\n{frame}"
+    );
+    let phase = column(header, "Phase");
+    let under: String = alpha.chars().skip(phase).collect();
+    assert!(under.starts_with("Running"), "{frame}");
+}
+
+/// The error a corrupted live message decodes to.
+fn corrupted() -> binnacle_described::DecodeError {
+    let mut decoder = Decoder::new(Encoding::Ndjson);
+    decoder.feed(b"{\"type\": nonsense\n");
+    decoder.next().unwrap().unwrap_err()
+}
+
+/// Runs `drain` over `events` for a generous budget.
+fn drained(source: &mut DescribedSource, events: Vec<Wired>, notes: &mut feed::Notes) {
+    let mut events: VecDeque<Wired> = events.into();
+    let fed = feed::drain(
+        source,
+        || events.pop_front(),
+        |_| {},
+        notes,
+        Duration::from_secs(5),
+    );
+    assert_eq!(fed, Ok(Vec::new()));
+}
+
+#[test]
+fn the_retrying_note_shows_the_status_and_the_bodys_first_line() {
+    let retry = |status, body: &str| Wired::Retrying {
+        attempt: 2,
+        wait: Duration::from_millis(500),
+        status,
+        body: body.as_bytes().to_vec(),
+    };
+    let mut notes = feed::Notes::default();
+    let body = "\n  upstream is down  \nsecond line";
+    drained(&mut crews(), vec![retry(Some(503), body)], &mut notes);
+    assert_eq!(
+        notes.line().as_deref(),
+        Some("reconnecting (503 upstream is down), retry 2 in 500 ms")
+    );
+    drained(&mut crews(), vec![retry(None, "refused")], &mut notes);
+    assert_eq!(
+        notes.line().as_deref(),
+        Some("reconnecting (refused), retry 2 in 500 ms")
+    );
+}
+
+#[test]
+fn a_corrupted_live_message_shows_on_the_status_line_with_a_count() {
+    let mut source = crews();
+    let mut notes = feed::Notes::default();
+    drained(
+        &mut source,
+        vec![Wired::Undecodable(corrupted())],
+        &mut notes,
+    );
+    let one = notes.line().unwrap();
+    assert!(
+        one.starts_with("a live message could not be decoded: "),
+        "{one}"
+    );
+    drained(
+        &mut source,
+        vec![
+            Wired::Undecodable(corrupted()),
+            Wired::Undecodable(corrupted()),
+        ],
+        &mut notes,
+    );
+    let three = notes.line().unwrap();
+    assert!(
+        three.starts_with("3 live messages could not be decoded, the latest: "),
+        "{three}"
+    );
+    // The viewport shows it, as `binnacle-tables` hands it over.
+    let shared = RefCell::new(notes);
+    let options = InlineOptions {
+        note: Some(Box::new(|| shared.borrow().line())),
+        origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
+        ..InlineOptions::default()
+    };
+    let (frames, _) = inline_with(
+        &mut source,
+        &Layout::default(),
+        vec![key(KeyCode::Esc)],
+        160,
+        20,
+        options,
+    );
+    assert!(
+        frames[0].contains("3 live messages could not be decoded"),
+        "{}",
+        frames[0]
+    );
+}
+
+#[test]
+fn a_burst_of_changes_yields_to_a_key_press_between_frames() {
+    let mut source = crews();
+    let queued = Rc::new(RefCell::new(100_000u32));
+    let left = Rc::clone(&queued);
+    let live = Box::new(move |source: &mut DescribedSource| {
+        let mut notes = feed::Notes::default();
+        let next = || {
+            let mut left = left.borrow_mut();
+            *left = left.checked_sub(1)?;
+            let name = format!("burst-{left}");
+            let row = [("name".to_owned(), Wire::Text(name.clone()))].into();
+            let key = vec![Wire::Text(name)];
+            Some(Wired::Message(Message::Upsert { key, row }))
+        };
+        feed::drain(source, next, |_| {}, &mut notes, Duration::from_millis(5)).ok()
+    });
+    let options = InlineOptions {
+        live: Some(live),
+        origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
+        ..InlineOptions::default()
+    };
+    // The key press comes with the second frame; the burst is far from over.
+    let events = vec![None, key(KeyCode::Esc)];
+    let (frames, exit) = inline_with(&mut source, &Layout::default(), events, 100, 20, options);
+    assert_eq!(exit, Exit::Left);
+    assert!(frames.len() >= 3, "frames drew between the burst's parts");
+    let left = *queued.borrow();
+    assert!(
+        0 < left && left < 100_000,
+        "each frame took some of the burst and left the rest: {left}"
     );
 }

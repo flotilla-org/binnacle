@@ -129,6 +129,19 @@ pub(crate) fn thousands(n: u64) -> String {
     out
 }
 
+/// The viewport's count for a partial table of which `read` rows came and
+/// `shown` show: both numbers once a filter has dropped some.
+pub(crate) fn partial_status(shown: u64, read: u64) -> String {
+    match shown == read {
+        true => format!("{} of more rows", thousands(read)),
+        false => format!(
+            "{} shown of {} read, more on the server",
+            thousands(shown),
+            thousands(read)
+        ),
+    }
+}
+
 /// Whether the CLI opens the table inline or prints it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Interactive {

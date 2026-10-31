@@ -89,6 +89,13 @@ pub trait Content {
     fn cell(&self, row: Key, col: Key) -> String;
     fn column_header(&self, col: Key) -> String;
 
+    /// Which side column `col`'s header lines up on, over its cells:
+    /// start unless overridden.
+    fn column_align(&self, col: Key) -> binnacle_format::Align {
+        let _ = col;
+        binnacle_format::Align::Start
+    }
+
     /// The row header label for the row with Key `row` at `position`:
     /// Position plus one unless overridden. A row whose Key the Table
     /// Source has not filled yet always shows Position plus one.
@@ -351,6 +358,10 @@ pub fn render_with(
         let style = band(theme.header, &h);
         let clip = (span.start, end.min(span.end), 0.0, f32::INFINITY);
         let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
+        let label = match h.key.map(|k| content.column_align(k)) {
+            Some(binnacle_format::Align::End) => format!("{label:>room$}").into(),
+            _ => label,
+        };
         // In header form a header starts past the tiers its spans take,
         // and fills the lines down to its own row.
         let y = h.rect.y;

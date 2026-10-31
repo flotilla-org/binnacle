@@ -6,14 +6,14 @@
 //! aligned text.
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use binnacle_core::{Axis, ChangeNotice, Grid, Key, Viewport};
-use binnacle_format::{Timestamp, Value};
+use binnacle_format::{Align, Timestamp, Value};
 use binnacle_layout::{JsonId, Layout};
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{
@@ -24,7 +24,8 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions};
 
-use super::{CliTable, Exit, Selection, notify, print, thousands};
+use super::print::title_aligns;
+use super::{CliTable, Exit, Selection, notify, partial_status, print, thousands};
 use crate::{
     CellRenderer, Chooser, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     HeaderMenu, Keymap, Mouse, Preset, QuickFilter, RenderContext, Theme, ValueRenderer,
@@ -76,6 +77,9 @@ pub fn inline_height(rows: u64, terminal_rows: u16, max: Option<u16>) -> u16 {
     let need = u16::try_from(rows.saturating_add(3)).unwrap_or(u16::MAX);
     need.min(max.unwrap_or(terminal_rows / 2)).max(3)
 }
+
+/// How many rows decide which side a header lines up on.
+const SAMPLE: u64 = 64;
 
 /// SIGINT, the signal Ctrl-C is taken as.
 const SIGINT: i32 = 2;
@@ -231,9 +235,15 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
             let listed = (chooser.axis())
                 .map(|axis| source.window(axis, 0..snapshot.count(axis)).keys)
                 .unwrap_or_default();
+            // A header lines up with the side most of its cells do, among
+            // the first rows.
+            let sample = source.window(Axis::Rows, 0..snapshot.count(Axis::Rows).min(SAMPLE));
+            let cols = source.columns();
+            let aligns = title_aligns(&*source, &sample.keys, &cols);
             let view = View {
                 source: &*source,
                 origin,
+                aligns: cols.into_iter().zip(aligns).collect(),
             };
             let buf = frame.buffer_mut();
             render_with(&snapshot, &view, &ctx, area, buf);
@@ -256,9 +266,10 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
             let status = crate::status(&snapshot);
             let status = match status.is_empty() {
                 true => {
+                    let shown = snapshot.count(Axis::Rows);
                     let rows = match source.partial() {
-                        Some(came) => format!("{} of more rows", thousands(came)),
-                        None => format!("{} rows", thousands(snapshot.count(Axis::Rows))),
+                        Some(came) => partial_status(shown, came),
+                        None => format!("{} rows", thousands(shown)),
                     };
                     format!(
                         "{rows} | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  Esc quit"
@@ -412,7 +423,14 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
         }
         end = end.max(area.y);
     })?;
-    terminal.set_cursor_position((0, end))?;
+    // The shell writes where the cursor is: with the rows down to the
+    // screen's last line, a line scrolls in below them for it.
+    let bottom = terminal.size()?.height.saturating_sub(1);
+    if end > bottom {
+        terminal.set_cursor_position((0, bottom))?;
+        terminal.backend_mut().append_lines(1)?;
+    }
+    terminal.set_cursor_position((0, end.min(bottom)))?;
     terminal.show_cursor()?;
     Ok(chosen)
 }
@@ -454,10 +472,16 @@ type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'sta
 /// is set again.
 struct RawMode {
     previous: Option<Arc<PanicHook>>,
+    restore: fn(),
 }
 
 impl RawMode {
     fn new() -> RawMode {
+        RawMode::restoring(restore)
+    }
+
+    /// As [`RawMode::new`], leaving the terminal by `restore`.
+    fn restoring(restore: fn()) -> RawMode {
         let previous = Arc::new(std::panic::take_hook());
         let hook = Arc::clone(&previous);
         std::panic::set_hook(Box::new(move |info| {
@@ -466,13 +490,14 @@ impl RawMode {
         }));
         RawMode {
             previous: Some(previous),
+            restore,
         }
     }
 }
 
 impl Drop for RawMode {
     fn drop(&mut self) {
-        restore();
+        (self.restore)();
         // Not while panicking: the hook has run, and setting one then
         // aborts.
         if std::thread::panicking() {
@@ -558,6 +583,35 @@ impl Drop for Signals {
     }
 }
 
+#[cfg(test)]
+mod panic_tests {
+    use std::sync::Mutex;
+
+    use super::RawMode;
+
+    static ORDER: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+
+    #[test]
+    fn a_panic_restores_the_terminal_before_the_previous_hook_runs() {
+        // The hook is process-wide: it only records this test's own thread.
+        let mine = std::thread::current().id();
+        let original = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |_| {
+            if std::thread::current().id() == mine {
+                ORDER.lock().unwrap().push("previous hook");
+            }
+        }));
+        let mode = RawMode::restoring(|| ORDER.lock().unwrap().push("restore"));
+        let panicked = std::panic::catch_unwind(|| panic!("the viewport failed"));
+        assert!(panicked.is_err());
+        drop(mode);
+        std::panic::set_hook(original);
+        let order = ORDER.lock().unwrap();
+        // The drop restores once more, after the panic's own.
+        assert_eq!(order[..2], ["restore", "previous hook"], "{order:?}");
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::Signals;
@@ -626,6 +680,7 @@ fn fill<T: CliTable>(grid: &mut Grid, source: &mut T, viewport: Viewport) {
 struct View<'a, T> {
     source: &'a T,
     origin: Timestamp,
+    aligns: HashMap<Key, Align>,
 }
 
 impl<T: CliTable> View<'_, T> {
@@ -646,6 +701,10 @@ impl<T: CliTable> Content for View<'_, T> {
 
     fn column_header(&self, col: Key) -> String {
         self.source.header(col)
+    }
+
+    fn column_align(&self, col: Key) -> Align {
+        self.aligns.get(&col).copied().unwrap_or(Align::Start)
     }
 
     fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
