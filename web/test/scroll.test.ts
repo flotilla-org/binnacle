@@ -191,6 +191,20 @@ test("dragging to either end reaches the first and last items", () =>
     expect(h.offset).toBe(0);
   }));
 
+test("an offset within a pixel of the last end, reached by moving forward, is the end", () =>
+  hegel.test((tc) => {
+    const h = Harness.draw(tc);
+    tc.assume(h.frame()[h.axis].thumb.size < 1);
+    const max = h.max();
+    tc.assume(max >= 4);
+    h.offset = Math.round(max / 2);
+    h.frame();
+    // An animated scroll arriving a pixel short of the end, as WebKit's does.
+    h.offset = max - 1;
+    const s = h.frame();
+    expect(s[h.axis].strip.at(-1)?.position).toBe(h.count - 1);
+  }));
+
 test("a scroll offset that changed before the frame is never overwritten unread", () =>
   hegel.test((tc) => {
     const h = Harness.draw(tc, gs.integers({ minValue: 10_000, maxValue: Number.MAX_SAFE_INTEGER }));
