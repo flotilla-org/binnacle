@@ -30,6 +30,7 @@
 #[allow(dead_code)]
 mod table;
 
+use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -53,9 +54,20 @@ enum Rows {
     },
 }
 
+const USAGE: &str = "usage: binnacle-tables <fixture.ndjson|fixture.cborseq> [flags]
+       binnacle-tables (--url <base> | --socket <path>) --table <name>
+           [--namespace <ns>] [--scope-where <clause>]... [--token <t> | --cookie <c>] [flags]
+flags: --columns a,b  --sort [-]field  --where <cond>  --view default  --wide
+       --format aligned|tsv|json|jsonl  --interactive | --no-interactive";
+
 fn fail(message: &str) -> ! {
     eprintln!("binnacle-tables: {message}");
     std::process::exit(2);
+}
+
+/// `fail` for a malformed command line, with the usage.
+fn usage(message: &str) -> ! {
+    fail(&format!("{message}\n{USAGE}"))
 }
 
 fn rows(args: Vec<String>) -> Rows {
@@ -66,7 +78,7 @@ fn rows(args: Vec<String>) -> Rows {
     while let Some(arg) = args.next() {
         let mut value = || {
             args.next()
-                .unwrap_or_else(|| fail(&format!("{arg} needs a value")))
+                .unwrap_or_else(|| usage(&format!("{arg} needs a value")))
         };
         match arg.as_str() {
             "--url" => endpoint = Some(Endpoint::Tcp(value())),
@@ -76,7 +88,11 @@ fn rows(args: Vec<String>) -> Rows {
             "--scope-where" => wheres.push(value()),
             "--token" => auth = Auth::Bearer(value()),
             "--cookie" => auth = Auth::Cookie(value()),
-            flag if flag.starts_with("--") => fail(&format!("unknown flag {flag}")),
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
+            flag if flag.starts_with("--") => usage(&format!("unknown flag {flag}")),
             path => fixture = Some(PathBuf::from(path)),
         }
     }
@@ -90,14 +106,18 @@ fn rows(args: Vec<String>) -> Rows {
                 scope,
             }
         }
-        (None, Some(_), None) => fail("--table is needed"),
-        _ => fail("a fixture, or --url or --socket with --table"),
+        (None, Some(_), None) => usage("--table is needed"),
+        _ => usage("a fixture, or --url or --socket with --table"),
     }
 }
 
 /// Feeds `source` every event waiting on `transport`, opening the watch
-/// again after an end; returns the Change Notices.
-fn drain(source: &mut DescribedSource, transport: &Blocking) -> Vec<(Axis, ChangeNotice)> {
+/// again after an end; returns the Change Notices, or the server's answer
+/// if it refused the watch.
+fn drain(
+    source: &mut DescribedSource,
+    transport: &Blocking,
+) -> Result<Vec<(Axis, ChangeNotice)>, String> {
     let mut notices = Vec::new();
     while let Some(event) = transport.try_recv() {
         match event {
@@ -110,7 +130,7 @@ fn drain(source: &mut DescribedSource, transport: &Blocking) -> Vec<(Axis, Chang
                 source.ended();
             }
             Wire::Failed { status, body } => {
-                fail(&format!("{status} {}", String::from_utf8_lossy(&body)));
+                return Err(format!("{status} {}", String::from_utf8_lossy(&body)));
             }
             _ => {}
         }
@@ -118,12 +138,12 @@ fn drain(source: &mut DescribedSource, transport: &Blocking) -> Vec<(Axis, Chang
             transport.open(request);
         }
     }
-    notices
+    Ok(notices)
 }
 
 fn main() -> io::Result<()> {
     let (flags, rest) =
-        Flags::parse_known(std::env::args().skip(1)).unwrap_or_else(|e| fail(&e.to_string()));
+        Flags::parse_known(std::env::args().skip(1)).unwrap_or_else(|e| usage(&e.to_string()));
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
     let origin = Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128));
     let (mut tables, transport) = match rows(rest) {
@@ -143,7 +163,7 @@ fn main() -> io::Result<()> {
                 if let Some(request) = tables.source.poll_request() {
                     transport.open(request);
                 }
-                drain(&mut tables.source, &transport);
+                drain(&mut tables.source, &transport).unwrap_or_else(|e| fail(&e));
                 if Instant::now() > deadline {
                     fail("no table within 30 s");
                 }
@@ -170,8 +190,16 @@ fn main() -> io::Result<()> {
             other => other,
         };
     }
+    // A failure mid-session ends it; it is reported once the terminal is
+    // restored, as exiting in raw mode would leave the shell in it.
+    let failed = RefCell::new(None);
+    let failed_ref = &failed;
     let live = transport.map(|transport| -> Live<'_, DescribedSource> {
-        Box::new(move |source: &mut DescribedSource| drain(source, &transport))
+        Box::new(move |source: &mut DescribedSource| {
+            drain(source, &transport)
+                .map_err(|e| *failed_ref.borrow_mut() = Some(e))
+                .ok()
+        })
     });
     let options = InlineOptions {
         live,
@@ -179,6 +207,9 @@ fn main() -> io::Result<()> {
         ..InlineOptions::default()
     };
     let chosen = run_inline(&mut tables.source, &layout, options)?;
+    if let Some(e) = failed.take() {
+        fail(&e);
+    }
     if let Some(selection) = chosen {
         for row in selection.rows {
             if let Some(id) = IdMap::row_id(&tables.source, row) {

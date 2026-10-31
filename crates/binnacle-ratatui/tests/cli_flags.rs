@@ -240,6 +240,16 @@ fn where_reads_flotillas_leading_dot_and_dates() {
             }
         }
     );
+    // Before 1970, a part of a millisecond floors, as a row's date does.
+    let early = parse_where("started<1969-12-31T23:59:59.9995Z").unwrap();
+    assert_eq!(
+        early.kind,
+        ConditionKind::Compare {
+            comparison: Comparison::Less {
+                value: Scalar::Date { value: -1.0 }
+            }
+        }
+    );
 }
 
 #[test]

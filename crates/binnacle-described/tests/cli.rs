@@ -445,7 +445,7 @@ fn a_change_notice_from_the_live_feed_shows_in_the_next_frame() {
     let live = Box::new(move |source: &mut DescribedSource| {
         *counted.borrow_mut() += 1;
         if *counted.borrow() != 2 {
-            return Vec::new();
+            return Some(Vec::new());
         }
         let row = [("name".to_owned(), Wire::Text("alfa-zulu".into()))].into();
         let upsert = Message::Upsert {
@@ -453,7 +453,7 @@ fn a_change_notice_from_the_live_feed_shows_in_the_next_frame() {
             row,
         };
         match source.receive(upsert) {
-            Received::Applied(notices) => notices,
+            Received::Applied(notices) => Some(notices),
             other => panic!("{other:?}"),
         }
     });
@@ -467,6 +467,28 @@ fn a_change_notice_from_the_live_feed_shows_in_the_next_frame() {
     assert!(!frames[0].contains("alfa-zulu"));
     assert!(frames[1].contains("alfa-zulu"), "{}", frames[1]);
     assert!(*calls.borrow() >= 2);
+}
+
+#[test]
+fn a_live_feed_that_ends_closes_the_viewport_choosing_nothing() {
+    let mut source = crews();
+    let calls = Rc::new(RefCell::new(0));
+    let counted = Rc::clone(&calls);
+    let live = Box::new(move |_: &mut DescribedSource| {
+        *counted.borrow_mut() += 1;
+        (*counted.borrow() < 2).then(Vec::new)
+    });
+    let options = InlineOptions {
+        live: Some(live),
+        origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
+        ..InlineOptions::default()
+    };
+    // Enter would choose alpha, had the feed not ended first.
+    let events = vec![None, key(KeyCode::Enter)];
+    let (frames, chosen) = inline_with(&mut source, &Layout::default(), events, 100, 20, options);
+    assert_eq!(chosen, None);
+    assert_eq!(*calls.borrow(), 2);
+    assert!(frames.last().unwrap().contains("alpha"), "the rows stay");
 }
 
 #[test]

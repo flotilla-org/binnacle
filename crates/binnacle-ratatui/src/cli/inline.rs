@@ -27,8 +27,10 @@ use crate::{
 };
 
 /// A host's live feed: called between frames, it may feed the source and
-/// returns the Change Notices to apply.
-pub type Live<'a, T> = Box<dyn FnMut(&mut T) -> Vec<(Axis, ChangeNotice)> + 'a>;
+/// returns the Change Notices to apply, or `None` to end the session as
+/// Esc does (the feed failed, say). The terminal is restored before
+/// [`run_inline`] returns, so the host reports why after that.
+pub type Live<'a, T> = Box<dyn FnMut(&mut T) -> Option<Vec<(Axis, ChangeNotice)>> + 'a>;
 
 /// How [`run_inline`] runs.
 pub struct InlineOptions<'a, T> {
@@ -117,7 +119,7 @@ pub fn run_inline<T: CliTable>(
 /// Runs the inline table on `terminal` (its viewport inline, or any other
 /// for tests), taking input from `events`: `None` is a frame with no input
 /// (when the live feed is read), and the end of `events` leaves as Esc
-/// does. Focus starts on the first row.
+/// does, as does the live feed ending. Focus starts on the first row.
 ///
 /// - Enter returns the picked rows' Keys if any are picked (Space picks
 ///   the focused row), else the focused row's; `None` when there is
@@ -155,7 +157,9 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
     let mut events = events.into_iter();
     let chosen = loop {
         if let Some(live) = options.live.as_mut() {
-            let notices = live(source);
+            let Some(notices) = live(source) else {
+                break None;
+            };
             notify(&mut grid, source, notices);
         }
         let now = Instant::now();

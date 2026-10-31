@@ -60,8 +60,10 @@ impl Flags {
     /// Parses the flags it knows from `args` and hands back the rest, in
     /// order, for the host's own. It reads every argument as it comes, so a
     /// host flag's value that is itself one of these flags (`--wide`) is
-    /// taken as that flag; pass such a value as `--flag=value`. A known flag without its value, or with a
-    /// malformed one, is an error.
+    /// taken as that flag; pass such a value as `--flag=value`. A known
+    /// flag takes the next argument as its value, whatever it is
+    /// (`--columns --wide` names a column `--wide`). A known flag without
+    /// its value, or with a malformed one, is an error.
     pub fn parse_known<S: AsRef<str>>(
         args: impl IntoIterator<Item = S>,
     ) -> Result<(Flags, Vec<String>), FlagError> {
@@ -146,8 +148,9 @@ impl Flags {
     /// empties the columns' hidden, `--columns a,b` sets the columns'
     /// order to `[a, b]` and hides every other field, `--sort` sets the
     /// rows' sort and `--where` adds conditions to the rows' filter. Each
-    /// leaves every other part of the base as it was. A field the table
-    /// lacks, or a view not found, is an error.
+    /// leaves every other part of the base as it was. With both `--wide`
+    /// and `--columns`, `--columns` wins, in either order. A field the
+    /// table lacks, or a view not found, is an error.
     pub fn apply_with(
         &self,
         base: &Layout<JsonId, JsonId>,
@@ -270,9 +273,10 @@ pub fn parse_where(clause: &str) -> Result<Condition<JsonId>, FlagError> {
         _ => {
             let scalar = match (value.parse::<f64>(), Timestamp::parse_rfc3339(value)) {
                 (Ok(x), _) if x.is_finite() => Scalar::Number { value: x },
-                // A date is milliseconds since the Unix epoch.
+                // A date is milliseconds since the Unix epoch, floored as
+                // In-Memory Table Sources floor a row's instant.
                 (_, Some(at)) => Scalar::Date {
-                    value: (at.unix_nanos() / 1_000_000) as f64,
+                    value: at.unix_nanos().div_euclid(1_000_000) as f64,
                 },
                 _ => {
                     return error(format!(
