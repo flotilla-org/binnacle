@@ -170,18 +170,27 @@ impl Flags {
             let Some(&(col, _)) = columns.iter().find(|(_, f)| f == field) else {
                 continue;
             };
-            let (Comparison::Equal { value }
-            | Comparison::NotEqual { value }
-            | Comparison::Less { value }
-            | Comparison::AtMost { value }
-            | Comparison::Greater { value }
-            | Comparison::AtLeast { value }
-            | Comparison::Between { low: value, .. }) = comparison;
-            let wanted = match value {
-                Scalar::Number { .. } => Compared::Numbers,
-                Scalar::Date { .. } => Compared::Dates,
+            // Each scalar must be of the kind the column compares; a
+            // Between's two are checked alike, though `parse_where` makes
+            // none.
+            let values = match *comparison {
+                Comparison::Equal { value }
+                | Comparison::NotEqual { value }
+                | Comparison::Less { value }
+                | Comparison::AtMost { value }
+                | Comparison::Greater { value }
+                | Comparison::AtLeast { value } => vec![value],
+                Comparison::Between { low, high } => vec![low, high],
             };
-            if source.support(Axis::Rows, col).compare != Some(wanted) {
+            let compared = source.support(Axis::Rows, col).compare;
+            let unapplied = values.iter().find_map(|value| {
+                let wanted = match value {
+                    Scalar::Number { .. } => Compared::Numbers,
+                    Scalar::Date { .. } => Compared::Dates,
+                };
+                (compared != Some(wanted)).then_some(wanted)
+            });
+            if let Some(wanted) = unapplied {
                 let what = match wanted {
                     Compared::Numbers => "a number",
                     Compared::Dates => "a date",

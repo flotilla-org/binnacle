@@ -6,6 +6,7 @@
 //! aligned text.
 
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::io;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -85,6 +86,8 @@ const SIGINT: i32 = 2;
 /// feed, the most, since rows may still come. While it is open, SIGINT,
 /// SIGTERM and SIGHUP close it as [`Exit::Interrupted`], and a panic
 /// restores the terminal before the panic hook that was set runs.
+/// A signal caught before the viewport has closed wins, even over an
+/// Enter already pressed: the process is being told to stop.
 /// While the live feed keeps bringing changes, the next frame doesn't wait
 /// for input. See [`run_inline_with`].
 pub fn run_inline<'a, T: CliTable + 'a>(
@@ -583,13 +586,9 @@ fn chosen<T: CliTable>(grid: &mut Grid, source: &mut T) -> Option<Selection> {
         false => {
             let count = source.count(Axis::Rows);
             let shown = source.window(Axis::Rows, 0..count).keys;
-            let mut rows: Vec<Key> = (shown.into_iter()).filter(|k| picked.contains(k)).collect();
-            rows.extend(
-                picked
-                    .iter()
-                    .filter(|k| !rows.contains(k))
-                    .collect::<Vec<_>>(),
-            );
+            let mut left: HashSet<Key> = picked.iter().copied().collect();
+            let mut rows: Vec<Key> = (shown.into_iter()).filter(|k| left.remove(k)).collect();
+            rows.extend(picked.iter().filter(|k| left.contains(k)));
             rows
         }
         true => snapshot
