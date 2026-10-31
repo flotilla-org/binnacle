@@ -2174,8 +2174,9 @@ typedef struct {
  * server's syntax passed on unchanged. Its first request opens the watch.
  * NULL for an empty table or namespace, text that is not UTF-8, or a NULL
  * wheres with a nonzero wheres_len. Its cells format with the system clock
- * in UTC until set otherwise. Free it with binnacle_described_source_free. A Rust host
- * builds one with BinnacleDescribedSource::from_source instead. */
+ * in UTC until set otherwise. Free it with binnacle_described_source_free.
+ * A Rust host builds one with BinnacleDescribedSource::from_source
+ * instead. */
 BinnacleDescribedSource *binnacle_described_source_new(BinnacleText table,
                                                        BinnacleText namespace_name,
                                                        const BinnacleText *wheres,
