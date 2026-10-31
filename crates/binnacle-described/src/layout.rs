@@ -12,10 +12,10 @@ use crate::wire::Wire;
 /// A row is named by its primary-key tuple as a JSON array, a column by its
 /// field's name as a JSON string. Group Items and Summary Items have no ID
 /// here, so a saved Layout leaves them out. Nor do the rows of a table with
-/// no primary key, whose Keys name only where each row came in its stream,
-/// or a row whose tuple JSON can't carry exactly (a NaN or infinity, or an
-/// integer past `i64` and `u64`), as its ID would name nothing, or another
-/// row.
+/// no primary key, whose Keys name only where each row came in its stream.
+/// A row whose tuple JSON can't carry exactly (a NaN or infinity, or an
+/// integer past `i64` and `u64`) has none either, as its ID would name
+/// nothing, or another row.
 impl IdMap<JsonId, JsonId> for DescribedSource {
     fn row_key(&self, id: &JsonId) -> Option<Key> {
         let Json::Array(items) = id.value() else {
