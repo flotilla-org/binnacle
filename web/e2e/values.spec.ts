@@ -49,6 +49,9 @@ test("the demo's banner keeps its height however many sources it lists, so the g
     await page.setViewportSize({ width, height: 600 });
     await page.goto("/?source=records");
     const banner = page.locator("header");
+    // The records source adds its last toolbar button once the grid has mounted, and that button is
+    // taller than the rest, so the banner only reaches its final height then. Measure after.
+    await expect(page.locator("#tools").getByRole("button", { name: "Find" })).toBeVisible();
     const height = (await banner.boundingBox())!.height;
     await page.evaluate(() => {
       const sources = document.querySelector("#sources")!;

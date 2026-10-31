@@ -76,9 +76,12 @@ export function createScrollMapping(port: ScrollPort, options: ScrollOptions = {
         const max = size[axis] - view(axis);
         const moved = now - known[axis];
         // Reaching an end goes to it; a step away from one, maybe of 1 px, is a move.
-        const end = (now <= 0 && moved < 0) || (now >= max - 1 && moved > 0);
-        if (max <= 0 || end || Math.abs(moved) > view(axis) * jump) {
-          grid.scroll_to(AXIS_CODE[axis], max > 0 ? Math.min(1, Math.max(0, now / max)) : 0);
+        const start = now <= 0 && moved < 0;
+        const finish = now >= max - 1 && moved > 0;
+        if (max <= 0 || start || finish || Math.abs(moved) > view(axis) * jump) {
+          // Within a pixel of the last end is the end itself: on a capped sizer a pixel is many rows.
+          const fraction = finish ? 1 : max > 0 ? Math.min(1, Math.max(0, now / max)) : 0;
+          grid.scroll_to(AXIS_CODE[axis], fraction);
           fed[axis] = null;
         } else {
           delta[axis] = moved;
