@@ -103,6 +103,9 @@ pub fn run_inline<T: CliTable>(
         read.map_err(|e| failed = Some(e)).ok()
     });
     let result = run_inline_with(&mut terminal, events, source, layout, options);
+    // A read error ended the events, so whatever `run_inline_with` made of
+    // that end (a choice of nothing, or a draw error after it) is not the
+    // cause: the read error wins.
     if let Some(e) = failed {
         return Err(e);
     }

@@ -23,9 +23,11 @@ pub enum Format {
     Aligned,
     /// A header of field names, then raw values separated by tabs.
     Tsv,
-    /// One JSON array of objects keyed by field name.
+    /// One JSON array of objects keyed by field name. A number JSON can't
+    /// hold is a string: `"NaN"`, `"inf"` or `"-inf"`, so a numeric
+    /// column may hold strings.
     Json,
-    /// One JSON object per line.
+    /// One JSON object per line, written as [`Format::Json`] writes each.
     Jsonl,
 }
 
@@ -184,7 +186,7 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
                 if i > 0 {
                     line.push_str("  ");
                 }
-                let pad = " ".repeat(widths[i] - text.width());
+                let pad = " ".repeat(widths[i].saturating_sub(text.width()));
                 match align {
                     Align::End => line.push_str(&format!("{pad}{text}")),
                     Align::Start => line.push_str(&format!("{text}{pad}")),
