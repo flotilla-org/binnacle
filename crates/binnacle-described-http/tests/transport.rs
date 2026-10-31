@@ -278,8 +278,30 @@ fn a_404_fails_once_and_a_500_is_retried() {
     let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
     let mut source = source();
     let events = host(&transport, &mut source, synced);
+    let retries: Vec<(u32, Duration, Option<u16>)> = (events.iter())
+        .filter_map(|e| match e {
+            Event::Retrying {
+                attempt,
+                wait,
+                status,
+                body,
+            } => {
+                assert!(String::from_utf8_lossy(body).contains("failed"), "{e:?}");
+                Some((*attempt, *wait, *status))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        retries,
+        [
+            (1, backoff.initial, Some(500)),
+            (2, backoff.initial * 2, Some(503))
+        ],
+        "each retry says why and how long"
+    );
     assert!(
-        events.iter().all(|e| matches!(e, Event::Message(_))),
+        (events[2..].iter()).all(|e| matches!(e, Event::Message(_))),
         "{events:?}"
     );
     let requests = fake.requests();
@@ -306,11 +328,16 @@ fn a_refused_connection_is_retried() {
     let transport = Blocking::new(Options::new(Endpoint::Tcp(url)).backoff(backoff)).unwrap();
     let mut source = source();
     transport.open(source.poll_request().unwrap());
-    assert_eq!(
-        transport.recv_timeout(Duration::from_millis(300)),
-        None,
-        "refused, quietly"
-    );
+    let Some(Event::Retrying {
+        attempt: 1,
+        status: None,
+        body,
+        ..
+    }) = transport.recv_timeout(Duration::from_millis(300))
+    else {
+        panic!("a retry, with no status")
+    };
+    assert!(String::from_utf8_lossy(&body).contains("connecting to"));
     // A server on that port at last: the transport, still trying, reads it.
     let fake = FakeTables::new()
         .fixture(crews())
@@ -318,9 +345,78 @@ fn a_refused_connection_is_retried() {
         .tcp(addr)
         .start()
         .unwrap();
-    host(&transport, &mut source, synced);
+    let events = host(&transport, &mut source, synced);
+    assert!(events.iter().any(|e| matches!(e, Event::Message(_))));
     assert_eq!(source.row_count(), 6);
     assert_eq!(fake.requests().len(), 1);
+}
+
+#[test]
+fn the_backoff_doubles_up_to_its_most() {
+    let backoff = Backoff {
+        initial: Duration::from_millis(10),
+        max: Duration::from_millis(30),
+    };
+    let fake = (0..5).fold(fake(), |f, _| f.failing(503)).start().unwrap();
+    let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
+    let mut source = source();
+    let events = host(&transport, &mut source, synced);
+    let waits: Vec<Duration> = (events.iter())
+        .filter_map(|e| match e {
+            Event::Retrying { wait, .. } => Some(*wait),
+            _ => None,
+        })
+        .collect();
+    let ms = Duration::from_millis;
+    assert_eq!(waits, [ms(10), ms(20), ms(30), ms(30), ms(30)]);
+    let requests = fake.requests();
+    let last = requests[5].at - requests[4].at;
+    assert!(last >= ms(30) && last < ms(60) * 4, "{last:?}");
+}
+
+#[test]
+fn a_retry_limit_turns_a_server_down_or_failing_into_failed() {
+    // A port nothing listens on.
+    let url = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    };
+    let backoff = Backoff {
+        initial: Duration::from_millis(5),
+        max: Duration::from_millis(10),
+    };
+    let down = Options::new(Endpoint::Tcp(url))
+        .backoff(backoff)
+        .retries(Some(2));
+    let transport = Blocking::new(down).unwrap();
+    let mut source = source();
+    let events = host(&transport, &mut source, |_, e| {
+        matches!(e, Event::Failed { .. })
+    });
+    assert!(
+        matches!(
+            &events[..],
+            [
+                Event::Retrying { attempt: 1, .. },
+                Event::Retrying { attempt: 2, .. },
+                Event::Failed { status: 0, .. }
+            ]
+        ),
+        "{events:?}"
+    );
+
+    let fake = (0..3).fold(fake(), |f, _| f.failing(503)).start().unwrap();
+    let failing = options(&fake).backoff(backoff).retries(Some(1));
+    let transport = Blocking::new(failing).unwrap();
+    let events = host(&transport, &mut self::source(), |_, e| {
+        matches!(e, Event::Failed { .. })
+    });
+    let Some(Event::Failed { status, body }) = events.last() else {
+        panic!("{events:?}")
+    };
+    assert_eq!(*status, 503);
+    assert!(String::from_utf8_lossy(body).contains("failed"));
+    assert_eq!(fake.requests().len(), 2, "one try, one retry");
 }
 
 #[cfg(unix)]
@@ -356,18 +452,23 @@ impl Drop for TempDir {
 #[test]
 fn no_other_crate_reaches_tokio() {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    // On every target, so a target-specific dependency (wasm's) counts.
     let tree = |package: &str| {
         let output = std::process::Command::new(&cargo)
-            .args(["tree", "-e", "normal", "-i", "tokio", "-p", package])
+            .args(["tree", "-e", "normal", "-i", "tokio", "--target", "all"])
+            .args(["-p", package])
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
             .unwrap();
-        String::from_utf8_lossy(&output.stdout).into_owned()
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        (
+            output.status.success(),
+            text(&output.stdout),
+            text(&output.stderr),
+        )
     };
-    assert!(
-        tree("binnacle-described-http").contains("tokio v"),
-        "the check can see it"
-    );
+    let (ok, stdout, _) = tree("binnacle-described-http");
+    assert!(ok && stdout.contains("tokio v"), "the check can see it");
     for package in [
         "binnacle-core",
         "binnacle-memory",
@@ -375,8 +476,18 @@ fn no_other_crate_reaches_tokio() {
         "binnacle-ffi",
         "binnacle-described",
     ] {
-        let tree = tree(package);
-        assert!(!tree.contains("tokio"), "{package} reaches tokio:\n{tree}");
+        // Only cargo's two ways of saying no path passes: a tree is tokio
+        // reached (or `package` gone, which prints the whole workspace's),
+        // and any other error is the check not running.
+        let (ok, stdout, stderr) = tree(package);
+        let none = match ok {
+            false => stderr.contains("`tokio` did not match any packages"),
+            true => stderr.contains("nothing to print"),
+        };
+        assert!(
+            none && stdout.is_empty(),
+            "{package} reaches tokio, or the check failed:\n{stdout}{stderr}"
+        );
     }
 }
 
@@ -403,7 +514,15 @@ fn a_server_that_stalls_is_given_up_on_and_tried_again() {
         .timeout(Duration::from_millis(100));
     let transport = Blocking::new(options).unwrap();
     transport.open(source().poll_request().unwrap());
-    assert_eq!(transport.recv_timeout(Duration::from_millis(600)), None);
+    let Some(Event::Retrying {
+        status: None, body, ..
+    }) = transport.recv_timeout(Duration::from_millis(600))
+    else {
+        panic!("a retry, with no status")
+    };
+    assert!(String::from_utf8_lossy(&body).contains("no answer within"));
+    let again = transport.recv_timeout(Duration::from_millis(600));
+    assert!(matches!(again, Some(Event::Retrying { attempt: 2, .. })));
     assert!(
         accepted.load(std::sync::atomic::Ordering::SeqCst) >= 2,
         "tried again"

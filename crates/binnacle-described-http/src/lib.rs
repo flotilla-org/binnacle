@@ -93,6 +93,10 @@ pub struct Options {
     /// may take before the attempt is retried; 10 s by default. A watch's
     /// stream is not bounded.
     pub timeout: Duration,
+    /// How many failed attempts in a row a watch retries before it gives
+    /// up with [`Event::Failed`]; `None`, by default, retries for ever. A
+    /// one-shot reader sets it so a wrong port or a server down fails.
+    pub retries: Option<u32>,
 }
 
 impl Options {
@@ -103,6 +107,7 @@ impl Options {
             encoding: Encoding::Ndjson,
             backoff: Backoff::default(),
             timeout: Duration::from_secs(10),
+            retries: None,
         }
     }
 
@@ -125,6 +130,11 @@ impl Options {
         self.timeout = timeout;
         self
     }
+
+    pub fn retries(mut self, retries: Option<u32>) -> Options {
+        self.retries = retries;
+        self
+    }
 }
 
 /// What a watch brings, for the host to feed its source.
@@ -138,8 +148,20 @@ pub enum Event {
     /// The stream ended, cleanly or with an I/O error after the headers:
     /// call `source.ended()`, and serve the request it makes.
     Ended,
+    /// An attempt did not open the stream, and the next goes after `wait`:
+    /// the `attempt`th failure in a row. `status` is the server's 5xx and
+    /// `body` the start of its answer; with no `status`, the connection was
+    /// refused or timed out, and `body` says which.
+    Retrying {
+        attempt: u32,
+        wait: Duration,
+        status: Option<u16>,
+        body: Vec<u8>,
+    },
     /// The server answered with a status that is not a success (and not
-    /// one retried): the watch is not open, and is not opened again.
+    /// one retried), or the attempts ran out ([`Options::retries`], with
+    /// the last failure's status, 0 if it had none, and body): the watch is
+    /// not open, and is not opened again.
     Failed { status: u16, body: Vec<u8> },
 }
 
@@ -163,8 +185,9 @@ struct Pace {
 
 /// Why an attempt did not open a stream.
 enum Attempt {
-    /// Try again after the backoff: refused, or a 5xx.
-    Retry,
+    /// Try again after the backoff: refused or timed out (no status), or a
+    /// 5xx, with the start of its body.
+    Retry { status: Option<u16>, body: Vec<u8> },
     /// Give up: the host has been told.
     Done,
 }
@@ -184,13 +207,15 @@ impl Transport {
 
     /// Serves `request`: `GET {WatchRequest::target()}`, after the backoff
     /// if the last stream ended or failed, retrying a refused connection or
-    /// a 5xx with backoff. Each event goes to `emit`, ending with
+    /// a 5xx with backoff ([`Event::Retrying`] each time), up to
+    /// [`Options::retries`]. Each event goes to `emit`, ending with
     /// [`Event::Ended`] or [`Event::Failed`].
     pub async fn watch(&self, request: &HostRequest, mut emit: impl FnMut(Event)) {
         let HostRequest::OpenWatch(watch) = request else {
             return;
         };
         let target = watch.target();
+        let mut failures = 0;
         loop {
             let wait = {
                 let mut pace = self.pace();
@@ -202,10 +227,26 @@ impl Transport {
             if let Some(wait) = wait {
                 tokio::time::sleep(wait).await;
             }
-            match self.attempt(&target, &mut emit).await {
-                Attempt::Retry => self.pace().wait = true,
-                Attempt::Done => return,
+            let Attempt::Retry { status, body } = self.attempt(&target, &mut emit).await else {
+                return;
+            };
+            failures += 1;
+            if self.options.retries.is_some_and(|most| failures > most) {
+                self.pace().wait = true;
+                emit(Event::Failed {
+                    status: status.unwrap_or(0),
+                    body,
+                });
+                return;
             }
+            let wait = self.grow(&mut self.pace());
+            emit(Event::Retrying {
+                attempt: failures,
+                wait,
+                status,
+                body,
+            });
+            tokio::time::sleep(wait).await;
         }
     }
 
@@ -275,45 +316,45 @@ impl Transport {
         // Connecting and the response's head are bounded; the body, a
         // watch's stream, is not.
         let opened = tokio::time::timeout(self.options.timeout, async {
-            match &self.options.endpoint {
+            let sent = match &self.options.endpoint {
                 Endpoint::Tcp(_) => match tokio::net::TcpStream::connect(&host).await {
-                    Ok(stream) => send(stream, request).await.ok(),
-                    Err(_) => None,
+                    Ok(stream) => send(stream, request).await,
+                    Err(e) => return Err(format!("connecting to {host}: {e}")),
                 },
                 #[cfg(unix)]
                 Endpoint::Unix(path) => match tokio::net::UnixStream::connect(path).await {
-                    Ok(stream) => send(stream, request).await.ok(),
-                    Err(_) => None,
+                    Ok(stream) => send(stream, request).await,
+                    Err(e) => return Err(format!("connecting to {}: {e}", path.display())),
                 },
                 #[cfg(not(unix))]
-                Endpoint::Unix(_) => None,
-            }
+                Endpoint::Unix(_) => return Err("no Unix sockets here".to_owned()),
+            };
+            sent.map_err(|e| format!("sending the request: {e}"))
         });
-        let Ok(Some(response)) = opened.await else {
-            return Attempt::Retry;
+        let response = match opened.await {
+            Ok(Ok(response)) => response,
+            Ok(Err(why)) => {
+                return Attempt::Retry {
+                    status: None,
+                    body: why.into_bytes(),
+                };
+            }
+            Err(_) => {
+                return Attempt::Retry {
+                    status: None,
+                    body: format!("no answer within {:?}", self.options.timeout).into_bytes(),
+                };
+            }
         };
         let status = response.status();
         if status.is_server_error() {
-            return Attempt::Retry;
+            return Attempt::Retry {
+                status: Some(status.as_u16()),
+                body: self.body(response, MAX_RETRY_BODY).await,
+            };
         }
         if !status.is_success() {
-            let mut body = Vec::new();
-            let mut incoming = response.into_body();
-            let read = async {
-                while body.len() < MAX_FAILED_BODY {
-                    match incoming.frame().await {
-                        Some(Ok(frame)) => {
-                            if let Ok(data) = frame.into_data() {
-                                body.extend_from_slice(&data);
-                            }
-                        }
-                        _ => break,
-                    }
-                }
-            };
-            // What came in time is enough to say why.
-            let _ = tokio::time::timeout(self.options.timeout, read).await;
-            body.truncate(MAX_FAILED_BODY);
+            let body = self.body(response, MAX_FAILED_BODY).await;
             emit(Event::Failed {
                 status: status.as_u16(),
                 body,
@@ -349,6 +390,28 @@ impl Transport {
         Attempt::Done
     }
 
+    /// Up to `most` bytes of `response`'s body: what comes within the
+    /// timeout, which is enough to say why.
+    async fn body(&self, response: hyper::Response<hyper::body::Incoming>, most: usize) -> Vec<u8> {
+        let mut body = Vec::new();
+        let mut incoming = response.into_body();
+        let read = async {
+            while body.len() < most {
+                match incoming.frame().await {
+                    Some(Ok(frame)) => {
+                        if let Ok(data) = frame.into_data() {
+                            body.extend_from_slice(&data);
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        };
+        let _ = tokio::time::timeout(self.options.timeout, read).await;
+        body.truncate(most);
+        body
+    }
+
     /// Hands on one decoded message; a `synced` resets the backoff.
     fn emit(&self, message: Result<Message, DecodeError>, emit: &mut dyn FnMut(Event)) {
         match message {
@@ -380,6 +443,9 @@ where
 
 /// The most of a failed answer's body kept for [`Event::Failed`].
 const MAX_FAILED_BODY: usize = 64 << 10;
+
+/// The most of a retried answer's body kept for [`Event::Retrying`].
+const MAX_RETRY_BODY: usize = 1 << 10;
 
 /// `http://host:port/prefix` as `host:port` and `/prefix`, port 80 if none
 /// is given; an IPv6 host is bracketed, `http://[::1]:7777`. A URL with

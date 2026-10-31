@@ -19,6 +19,9 @@
 //! first operator ends the field, so a field whose name holds one can't
 //! be named;
 //! `--scope-where` passes a clause to the server, in its own syntax.
+//! `--token` shows in the process list (`ps`); `BINNACLE_TOKEN` in the
+//! environment is the bearer token without it, when neither `--token` nor
+//! `--cookie` is given.
 //! `--interactive` opens the table even when stdout is not a terminal,
 //! writing the viewport's escape sequences there.
 //!
@@ -57,6 +60,7 @@ enum Rows {
 const USAGE: &str = "usage: binnacle-tables <fixture.ndjson|fixture.cborseq> [flags]
        binnacle-tables (--url <base> | --socket <path>) --table <name>
            [--namespace <ns>] [--scope-where <clause>]... [--token <t> | --cookie <c>] [flags]
+       (--token shows in ps; BINNACLE_TOKEN in the environment does not)
 flags: --columns a,b  --sort [-]field  --where <cond>  --view default  --wide
        --format aligned|tsv|json|jsonl  --interactive | --no-interactive";
 
@@ -96,6 +100,16 @@ fn rows(args: Vec<String>) -> Rows {
             path => fixture = Some(PathBuf::from(path)),
         }
     }
+    if namespace.is_empty() {
+        usage("--namespace can't be empty");
+    }
+    if auth == Auth::None
+        && let Some(token) = std::env::var("BINNACLE_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty())
+    {
+        auth = Auth::Bearer(token);
+    }
     match (fixture, endpoint, table) {
         (Some(path), None, None) => Rows::Fixture(path),
         (None, Some(endpoint), Some(table)) => {
@@ -111,26 +125,59 @@ fn rows(args: Vec<String>) -> Rows {
     }
 }
 
-/// Feeds `source` every event waiting on `transport`, opening the watch
-/// again after an end; returns the Change Notices, or the server's answer
-/// if it refused the watch.
+/// The most events [`drain`] takes at once, so a burst of changes still
+/// lets frames draw and keys work between its parts.
+const BURST: usize = 256;
+
+/// How many failed attempts in a row a print (not a terminal) retries
+/// before it gives up: about 4 s with the default backoff.
+const PRINT_RETRIES: u32 = 4;
+
+/// Feeds `source` the events waiting on `transport`, up to [`BURST`],
+/// opening the watch again after an end, and keeps `note` saying whether
+/// the transport is reconnecting; returns the Change Notices, or the
+/// server's answer if it refused the watch or the retries ran out.
 fn drain(
     source: &mut DescribedSource,
     transport: &Blocking,
+    note: &RefCell<Option<String>>,
 ) -> Result<Vec<(Axis, ChangeNotice)>, String> {
     let mut notices = Vec::new();
-    while let Some(event) = transport.try_recv() {
+    for _ in 0..BURST {
+        let Some(event) = transport.try_recv() else {
+            break;
+        };
         match event {
             Wire::Message(message) => {
+                note.take();
                 if let Received::Applied(n) = source.receive(message) {
                     notices.extend(n);
                 }
+            }
+            Wire::Retrying {
+                attempt,
+                wait,
+                status,
+                body,
+            } => {
+                let why = match status {
+                    Some(status) => status.to_string(),
+                    None => String::from_utf8_lossy(&body).into_owned(),
+                };
+                let wait = wait.as_millis();
+                *note.borrow_mut() = Some(format!(
+                    "reconnecting ({why}), retry {attempt} in {wait} ms"
+                ));
             }
             Wire::Ended => {
                 source.ended();
             }
             Wire::Failed { status, body } => {
-                return Err(format!("{status} {}", String::from_utf8_lossy(&body)));
+                let body = String::from_utf8_lossy(&body);
+                return Err(match status {
+                    0 => body.into_owned(),
+                    status => format!("{status} {body}"),
+                });
             }
             _ => {}
         }
@@ -146,6 +193,8 @@ fn main() -> io::Result<()> {
         Flags::parse_known(std::env::args().skip(1)).unwrap_or_else(|e| usage(&e.to_string()));
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
     let origin = Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128));
+    let interactive = flags.interactive.now();
+    let note = RefCell::new(None);
     let (mut tables, transport) = match rows(rest) {
         Rows::Fixture(path) => {
             let tables = Tables::load(&path, origin).unwrap_or_else(|e| fail(&e));
@@ -156,14 +205,26 @@ fn main() -> io::Result<()> {
             table,
             scope,
         } => {
+            // A print fails on a server down or a wrong port; a terminal
+            // keeps trying, saying so.
+            let options = match interactive {
+                true => options,
+                false => options.retries(Some(PRINT_RETRIES)),
+            };
             let transport = Blocking::new(options)?;
             let mut tables = Tables::live(&table, scope, origin);
             let deadline = Instant::now() + Duration::from_secs(30);
+            let mut said = None;
             while !tables.source.status().synced {
                 if let Some(request) = tables.source.poll_request() {
                     transport.open(request);
                 }
-                drain(&mut tables.source, &transport).unwrap_or_else(|e| fail(&e));
+                drain(&mut tables.source, &transport, &note).unwrap_or_else(|e| fail(&e));
+                let now = note.borrow().clone();
+                if now.is_some() && now != said {
+                    eprintln!("binnacle-tables: {}", now.as_deref().unwrap_or_default());
+                }
+                said = now;
                 if Instant::now() > deadline {
                     fail("no table within 30 s");
                 }
@@ -181,7 +242,7 @@ fn main() -> io::Result<()> {
     let layout = flags
         .apply_with(&base, &fields, views)
         .unwrap_or_else(|e| fail(&e.to_string()));
-    if !flags.interactive.now() {
+    if !interactive {
         let mut out = io::stdout().lock();
         let format = flags.format.unwrap_or_default();
         return match print(&mut tables.source, &layout, format, &mut out).and_then(|()| out.flush())
@@ -194,15 +255,17 @@ fn main() -> io::Result<()> {
     // restored, as exiting in raw mode would leave the shell in it.
     let failed = RefCell::new(None);
     let failed_ref = &failed;
+    let note = &note;
     let live = transport.map(|transport| -> Live<'_, DescribedSource> {
         Box::new(move |source: &mut DescribedSource| {
-            drain(source, &transport)
+            drain(source, &transport, note)
                 .map_err(|e| *failed_ref.borrow_mut() = Some(e))
                 .ok()
         })
     });
     let options = InlineOptions {
         live,
+        note: Some(Box::new(|| note.borrow().clone())),
         origin: Some(origin),
         ..InlineOptions::default()
     };

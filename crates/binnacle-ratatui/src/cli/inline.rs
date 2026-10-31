@@ -32,12 +32,18 @@ use crate::{
 /// [`run_inline`] returns, so the host reports why after that.
 pub type Live<'a, T> = Box<dyn FnMut(&mut T) -> Option<Vec<(Axis, ChangeNotice)>> + 'a>;
 
+/// A host's note for the status line, asked each frame: the state of its
+/// feed, say "reconnecting". `None` shows nothing.
+pub type Note<'a> = Box<dyn FnMut() -> Option<String> + 'a>;
+
 /// How [`run_inline`] runs.
 pub struct InlineOptions<'a, T> {
     /// The most lines the viewport takes; half the terminal by default.
     pub max_height: Option<u16>,
     /// Called between frames while the viewport is open.
     pub live: Option<Live<'a, T>>,
+    /// Asked each frame; what it gives leads the status line.
+    pub note: Option<Note<'a>>,
     pub theme: Theme,
     /// How long to wait for input before the next frame.
     pub tick: Duration,
@@ -50,6 +56,7 @@ impl<T> Default for InlineOptions<'_, T> {
         InlineOptions {
             max_height: None,
             live: None,
+            note: None,
             theme: Theme::classic(),
             tick: Duration::from_millis(100),
             origin: None,
@@ -162,6 +169,7 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
             };
             notify(&mut grid, source, notices);
         }
+        let note = options.note.as_mut().and_then(|note| note());
         let now = Instant::now();
         popup.tick(&mut grid, now);
         quick.tick(&mut grid, now);
@@ -214,6 +222,10 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
                     snapshot.count(Axis::Rows)
                 ),
                 false => status,
+            };
+            let status = match &note {
+                Some(note) => format!("{note} | {status}"),
+                None => status,
             };
             let rect = line();
             Line::from(status).render_to(rect, buf);

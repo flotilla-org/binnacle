@@ -469,6 +469,100 @@ fn a_change_notice_from_the_live_feed_shows_in_the_next_frame() {
     assert!(*calls.borrow() >= 2);
 }
 
+/// The rows chosen and the last frame after focus moves down twice in a
+/// view sorted by CPUs, the live feed sending `resyncs` after the moves:
+/// each a `resync` or a stream end, then, a frame later, the table again,
+/// so the source is unsynced in between, as over a network.
+fn chosen_after(resyncs: &[bool]) -> (Option<Selection>, String) {
+    let mut source = replay("crews.ndjson");
+    let fields: Vec<String> = (source.columns().iter())
+        .map(|c| c.name().to_owned())
+        .collect();
+    let flags = binnacle_ratatui::cli::Flags::parse(["--sort", "-cpus"]).unwrap();
+    let layout = flags.apply(&Layout::default(), &fields).unwrap();
+    // Each resync is two steps: its start (`Some(stream_end)`), then the
+    // table again (`None`).
+    let mut steps: Vec<Option<bool>> = (resyncs.iter())
+        .flat_map(|&end| [Some(end), None])
+        .rev()
+        .collect();
+    let frames = Rc::new(RefCell::new(0));
+    let counted = Rc::clone(&frames);
+    let live = Box::new(move |source: &mut DescribedSource| {
+        *counted.borrow_mut() += 1;
+        // The first three frames: the table, then each move.
+        if *counted.borrow() <= 3 {
+            return Some(Vec::new());
+        }
+        let received: Vec<Received> = match steps.pop() {
+            None => Vec::new(),
+            Some(Some(true)) => vec![source.ended()],
+            Some(Some(false)) => vec![source.receive(Message::Resync)],
+            Some(None) => (support::messages("crews.ndjson").into_iter())
+                .map(|m| source.receive(m))
+                .collect(),
+        };
+        let mut notices = Vec::new();
+        for received in received {
+            if let Received::Applied(n) = received {
+                notices.extend(n);
+            }
+        }
+        Some(notices)
+    });
+    let options = InlineOptions {
+        live: Some(live),
+        origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
+        ..InlineOptions::default()
+    };
+    let mut events = vec![None, key(KeyCode::Down), key(KeyCode::Down)];
+    events.extend(resyncs.iter().flat_map(|_| [None, None]));
+    events.push(key(KeyCode::Enter));
+    let (frames, chosen) = inline_with(&mut source, &layout, events, 100, 20, options);
+    (chosen, frames[frames.len() - 2].clone())
+}
+
+#[test]
+fn a_resync_and_a_reconnect_keep_the_sort_and_the_focus() {
+    let mut source = replay("crews.ndjson");
+    let flags = binnacle_ratatui::cli::Flags::parse(["--sort", "-cpus"]).unwrap();
+    let fields: Vec<String> = (source.columns().iter())
+        .map(|c| c.name().to_owned())
+        .collect();
+    let layout = flags.apply(&Layout::default(), &fields).unwrap();
+    let jsonl = printed(&mut source, &layout, Format::Jsonl);
+    let third: serde_json::Value = serde_json::from_str(jsonl.lines().nth(2).unwrap()).unwrap();
+    let third = row(&source, third["name"].as_str().unwrap());
+
+    let (chosen, frame) = chosen_after(&[false, true]);
+    assert_eq!(chosen, Some(Selection { rows: vec![third] }));
+    assert_eq!((chosen, frame), chosen_after(&[]));
+}
+
+#[test]
+fn the_hosts_note_leads_the_status_line_while_it_has_one() {
+    let mut source = crews();
+    let frames = Rc::new(RefCell::new(0));
+    let counted = Rc::clone(&frames);
+    let note = Box::new(move || {
+        *counted.borrow_mut() += 1;
+        (*counted.borrow() == 1).then(|| "reconnecting (503)".to_owned())
+    });
+    let options = InlineOptions {
+        note: Some(note),
+        origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
+        ..InlineOptions::default()
+    };
+    let events = vec![None, key(KeyCode::Esc)];
+    let (frames, _) = inline_with(&mut source, &Layout::default(), events, 100, 20, options);
+    assert!(
+        frames[0].contains("reconnecting (503) | 9 rows"),
+        "{}",
+        frames[0]
+    );
+    assert!(!frames[1].contains("reconnecting"), "{}", frames[1]);
+}
+
 #[test]
 fn a_live_feed_that_ends_closes_the_viewport_choosing_nothing() {
     let mut source = crews();
