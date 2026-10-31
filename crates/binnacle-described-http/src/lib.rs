@@ -143,7 +143,9 @@ impl Options {
 pub enum Event {
     /// A message: give it to `source.receive`.
     Message(Message),
-    /// Bytes that are not a message; the stream goes on.
+    /// Bytes that are not a message; the stream goes on. A live change
+    /// they carried is lost, so the source may differ from the server
+    /// until its next Resync: show the host's user, or count it.
     Undecodable(DecodeError),
     /// The stream ended, cleanly or with an I/O error after the headers:
     /// call `source.ended()`, and serve the request it makes.

@@ -344,6 +344,16 @@ struct Watcher {
     table: String,
     view: View,
     tx: Sender<Vec<Out>>,
+    /// For a table with no primary key, the place this watch's stream gave
+    /// each of the table's rows (`None` for one it was not sent), and the
+    /// next place.
+    places: Places,
+}
+
+#[derive(Default)]
+struct Places {
+    of: Vec<Option<u64>>,
+    next: u64,
 }
 
 /// What a request reads of a table: its namespace, `where` clauses and
@@ -362,6 +372,22 @@ impl View {
 
     fn rows<'a>(&'a self, table: &'a FakeTable) -> impl Iterator<Item = &'a Row> + 'a {
         table.rows.iter().filter(|r| self.keeps(table, r))
+    }
+
+    /// The places a stream that sends `table` whole ([`State::whole`])
+    /// gives its rows, for a table with no primary key: those it keeps, up
+    /// to the limit, in order.
+    fn places(&self, table: &FakeTable) -> Places {
+        let mut places = Places::default();
+        if table.keyed() {
+            return places;
+        }
+        for row in &table.rows {
+            let sent = self.keeps(table, row) && places.next < self.limit as u64;
+            places.of.push(sent.then_some(places.next));
+            places.next += u64::from(sent);
+        }
+        places
     }
 }
 
@@ -430,6 +456,31 @@ impl State {
                 let Some(i) = self.index(&table) else {
                     return;
                 };
+                if !self.tables[i].keyed() {
+                    self.tables[i].upsert(row.clone());
+                    self.sequence += 1;
+                    let t = &self.tables[i];
+                    self.watchers.retain_mut(|w| {
+                        if w.table != t.name {
+                            return true;
+                        }
+                        // As on the keyed path, a live change ignores the
+                        // watch's limit, which caps only the first read.
+                        let sent = w.view.keeps(t, &row);
+                        w.places.of.push(sent.then_some(w.places.next));
+                        if !sent {
+                            return true;
+                        }
+                        let key = vec![Wire::Int(w.places.next.into())];
+                        w.places.next += 1;
+                        let upsert = Message::Upsert {
+                            key,
+                            row: row.clone(),
+                        };
+                        w.tx.send(vec![Out::Message(upsert)]).is_ok()
+                    });
+                    return;
+                }
                 let old = self.tables[i].upsert(row.clone());
                 self.sequence += 1;
                 self.tell(&table, |t, view| {
@@ -451,10 +502,33 @@ impl State {
                 let Some(i) = self.index(&table) else {
                     return;
                 };
-                let Some(old) = self.tables[i].delete(&key) else {
+                // Not `FakeTable::delete`: a keyless table's watches need
+                // the place the row had.
+                let Some(at) = self.tables[i].find(&key) else {
                     return;
                 };
+                let old = self.tables[i].rows.remove(at);
                 self.sequence += 1;
+                if !self.tables[i].keyed() {
+                    let name = self.tables[i].name.clone();
+                    self.watchers.retain_mut(|w| {
+                        if w.table != name {
+                            return true;
+                        }
+                        // `of` has a place per row, set on open and on a
+                        // resync; a row it lacks was never sent.
+                        if at >= w.places.of.len() {
+                            return true;
+                        }
+                        let Some(place) = w.places.of.remove(at) else {
+                            return true;
+                        };
+                        let key = vec![Wire::Int(place.into())];
+                        w.tx.send(vec![Out::Message(Message::Delete { key })])
+                            .is_ok()
+                    });
+                    return;
+                }
                 self.tell(&table, |t, view| match view.keeps(t, &old) {
                     true => vec![Out::Message(Message::Delete { key: key.clone() })],
                     false => Vec::new(),
@@ -469,6 +543,12 @@ impl State {
                 };
                 let messages: Vec<(u64, Vec<Out>)> = self.for_watchers(&table, whole);
                 self.send(messages);
+                if let Some(i) = self.index(&table) {
+                    let t = &self.tables[i];
+                    for w in self.watchers.iter_mut().filter(|w| w.table == t.name) {
+                        w.places = w.view.places(t);
+                    }
+                }
             }
             Step::AddField {
                 table,
@@ -761,6 +841,7 @@ fn rows(
                 ]
             }
         };
+        let places = view.places(table);
         let table = table.name.clone();
         state.next += 1;
         let id = state.next;
@@ -770,6 +851,7 @@ fn rows(
                 table,
                 view,
                 tx,
+                places,
             });
         }
         (id, messages, state.heartbeat)

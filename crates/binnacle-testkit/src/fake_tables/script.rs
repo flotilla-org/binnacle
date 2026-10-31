@@ -13,9 +13,14 @@ use serde_json::Value as Json;
 #[allow(clippy::large_enum_variant)]
 pub enum Step {
     /// A row added or changed: watches get an `upsert`, or a `delete` if
-    /// it left their `where` clauses.
+    /// it left their `where` clauses. A table with no primary key has no
+    /// row to change, so the row is added, and each watch's `upsert` names
+    /// it `[n]`, the next place of that watch's stream.
     Upsert { table: String, row: Row },
-    /// A row gone, by its primary-key tuple: watches get a `delete`.
+    /// A row gone, by its primary-key tuple: watches get a `delete`. In a
+    /// table with no primary key, `[n]` names the row at place `n` of the
+    /// table, and each watch's `delete` names the place its stream gave
+    /// that row.
     Delete { table: String, key: Vec<Wire> },
     /// Watches get a `resync`, then the table again: `table`, `rows`,
     /// `synced`.
