@@ -1955,8 +1955,9 @@ uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
  *
  * A source is not thread-safe: it is !Send in Rust (it holds an Rc and boxed
  * closures), so a handle, and the Grid it drives, are used from one thread
- * only. A source drives the first Grid a call gives it, and refuses every
- * call given another.
+ * only. A source drives the first Grid a call gives it, even a call it then
+ * refuses, and refuses every call given another. The check is by address:
+ * free the source with its Grid, not the Grid alone.
  *
  * Every pointer a call fills, and every pointer inside what it fills, stays
  * valid until the next call on the same source, or

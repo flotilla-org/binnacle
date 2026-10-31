@@ -63,7 +63,8 @@ pub const BINNACLE_ROLE_STATE: u32 = 4;
 pub struct BinnacleDescribedSource {
     source: DescribedSource,
     now: Option<Timestamp>,
-    /// The address of the Grid it drives: the first any call gave it.
+    /// The address of the Grid it drives: the first any call gave it, even
+    /// one that call then refused.
     driven: Option<usize>,
     /// A call panicked, so its state may be half-changed: every call after
     /// is refused.
