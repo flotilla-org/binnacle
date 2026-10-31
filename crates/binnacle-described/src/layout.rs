@@ -98,6 +98,10 @@ impl DescribedSource {
     /// lead, they lead its order; set `pins` (empty to unpin) to take the
     /// leading edge.
     ///
+    /// The rows of a table with no primary key have no IDs, so a Layout
+    /// read from the Grid has no row pins for them, and row pins in a
+    /// default view or a user's Layout pin none of its rows.
+    ///
     /// A default view names columns by field name, so it loads as it is
     /// written; names the table lacks are skipped on restore, and stay in
     /// the document for [`Layout::keeping`] to put back on save:

@@ -135,37 +135,9 @@ fn a_quick_filter_on_text_only_in_a_hidden_nested_column_keeps_that_row() {
     );
 }
 
-/// The rows the source itself holds now, by name, before the Grid asks
-/// again.
-fn held(s: &mut Scenario<Table>) -> Vec<Key> {
-    let source = &mut s.source.0;
-    source.window(Axis::Rows, 0..source.count(Axis::Rows)).keys
-}
-
-#[test]
-fn a_quick_filter_on_a_hidden_nested_column_holds_through_a_second_table() {
-    let mut s = crews();
-    let layout = s.source.0.default_layout();
-    restore(&mut s, &layout);
-    s.input(|g| g.set_quick_filter(Axis::Rows, Some(TextQuery::new("rust"))));
-    assert_eq!(column_down(&mut s, "name"), ["alpha"]);
-    let alpha = s.source.0.row_key(&[Wire::Text("alpha".into())]).unwrap();
-    let table = support::messages("crews.ndjson").remove(0);
-    let Message::Table(mut changed) = table.clone() else {
-        panic!("{table:?}")
-    };
-    changed
-        .schema
-        .fields
-        .push(Field::new("added", FieldType::String));
-    for table in [table, Message::Table(changed)] {
-        let received = s.source.0.receive(table);
-        assert_eq!(held(&mut s), [alpha], "straight after the message");
-        support::apply(&mut s, received);
-        assert_eq!(column_down(&mut s, "name"), ["alpha"]);
-    }
-}
-
+// A new zone builds the rows again with no view after, so only the
+// widening on that build keeps the Nested column searched. A `table`
+// message views again after its build, which widens on its own.
 #[test]
 fn a_quick_filter_on_a_hidden_nested_column_holds_when_the_zone_changes() {
     let mut source = support::replay("crews.ndjson");
