@@ -11,12 +11,19 @@ use crate::wire::Wire;
 
 /// A row is named by its primary-key tuple as a JSON array, a column by its
 /// field's name as a JSON string. Group Items and Summary Items have no ID
-/// here, so a saved Layout leaves them out.
+/// here, so a saved Layout leaves them out. Nor do the rows of a table with
+/// no primary key, whose Keys name only where each row came in its stream,
+/// or a row whose tuple JSON can't carry exactly (a NaN or infinity, or an
+/// integer past `i64` and `u64`), as its ID would name nothing, or another
+/// row.
 impl IdMap<JsonId, JsonId> for DescribedSource {
     fn row_key(&self, id: &JsonId) -> Option<Key> {
         let Json::Array(items) = id.value() else {
             return None;
         };
+        if !self.keyed() {
+            return None;
+        }
         let tuple: Vec<Wire> = items.iter().map(Wire::from_json).collect();
         DescribedSource::row_key(self, &tuple)
     }
@@ -26,8 +33,12 @@ impl IdMap<JsonId, JsonId> for DescribedSource {
     }
 
     fn row_id(&self, key: Key) -> Option<JsonId> {
+        if !self.keyed() {
+            return None;
+        }
         let wire: Wire = ciborium::from_reader(self.row_identity(key)?).ok()?;
-        JsonId::new(wire.to_json())
+        let id = JsonId::new(wire.to_json())?;
+        (IdMap::row_key(self, &id) == Some(key)).then_some(id)
     }
 
     fn col_id(&self, key: Key) -> Option<JsonId> {
@@ -36,6 +47,11 @@ impl IdMap<JsonId, JsonId> for DescribedSource {
 }
 
 impl DescribedSource {
+    /// Whether the table has a primary key, so its rows have IDs.
+    fn keyed(&self) -> bool {
+        self.schema().is_some_and(|s| !s.primary_key.is_empty())
+    }
+
     /// The Layout every Described Table starts from: the Nested columns
     /// (`object` and `array` fields) hidden, in schema order, and the
     /// columns with role `key`, then those with role `state`, pinned
@@ -70,22 +86,43 @@ impl DescribedSource {
     }
 
     /// How the table is presented: the generic [`default_layout`], then
-    /// flotilla's `default_view` for it, then the `user`'s Layout, each
+    /// the server's `default_view` for it, then the `user`'s Layout, each
     /// laid over the last with [`Layout::layered`]. A part a later Layout
     /// sets replaces the earlier one whole, Size Overrides merge per
     /// column, and the order layers per axis.
     ///
     /// A default view that sets `view` replaces the generic hidden columns,
     /// so it should list the Nested columns it wants hidden. One that sets
-    /// `pins` replaces the generic pins the same way.
+    /// `pins` replaces the generic pins the same way. A view that sets
+    /// `order` but not `pins` keeps the generic pins, and as pinned columns
+    /// lead, they lead its order; set `pins` (empty to unpin) to take the
+    /// leading edge.
     ///
     /// A default view names columns by field name, so it loads as it is
     /// written; names the table lacks are skipped on restore, and stay in
     /// the document for [`Layout::keeping`] to put back on save:
     ///
-    /// ```ignore
-    /// let view = Layout::<JsonId, JsonId>::from_json(&bytes)?;
+    /// ```
+    /// # use binnacle_core::{Axis, AxisConfig, Grid};
+    /// # use binnacle_described::{DescribedSource, Field, FieldType, Message, Schema, Scope, TableMessage};
+    /// # use binnacle_layout::{JsonId, Layout};
+    /// # let mut source = DescribedSource::new("hosts", Scope::new("lab"));
+    /// # source.receive(Message::Table(TableMessage {
+    /// #     schema: Schema {
+    /// #         fields: vec![Field::new("name", FieldType::String), Field::new("spec", FieldType::Object)],
+    /// #         primary_key: vec!["name".into()],
+    /// #         foreign_keys: Vec::new(),
+    /// #     },
+    /// #     incarnation: None,
+    /// #     table: None,
+    /// #     sequence: None,
+    /// # }));
+    /// # let mut grid = Grid::new(AxisConfig::new(0, 1.0), AxisConfig::new(2, 10.0));
+    /// # let user: Option<Layout<JsonId, JsonId>> = None;
+    /// let bytes = br#"{"version":2,"order":{"cols":["spec","nosuch","name"]}}"#;
+    /// let view = Layout::<JsonId, JsonId>::from_json(bytes)?;
     /// source.presentation(Some(&view), user.as_ref()).restore(&mut grid, &source);
+    /// # Ok::<(), serde_json::Error>(())
     /// ```
     ///
     /// [`default_layout`]: DescribedSource::default_layout

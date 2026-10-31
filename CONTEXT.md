@@ -123,7 +123,7 @@ The portable, versioned document of how a table is presented, by the Table Sourc
 _Avoid_: Saved layout (as a term), view state, preset, profile
 
 **Default View**:
-The Layout a source or server ships for a table, which a user's Layout sits on. A Described Table has a generic one (its Nested columns hidden, its key and state columns pinned leading), then flotilla's for that table, then the user's, each laid over the last part by part. It names columns by field name and rows by primary-key tuple, so it loads onto any table that has them and skips the names it lacks.
+The Layout a server or host ships for a table, which a user's Layout sits on. Under it a Described Table has its generic default Layout (`default_layout`: its Nested columns hidden, its key and state columns pinned leading), which is not a Default View; the server's Default View lays over that, and the user's Layout over both, part by part. A Default View names columns by field name and rows by primary-key tuple, when the table has one, so it loads onto any table that has them and skips the names it lacks.
 _Avoid_: Preset, template, saved view
 
 **Arrangement**:

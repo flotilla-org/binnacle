@@ -135,19 +135,50 @@ fn a_quick_filter_on_text_only_in_a_hidden_nested_column_keeps_that_row() {
     );
 }
 
+/// The rows the source itself holds now, by name, before the Grid asks
+/// again.
+fn held(s: &mut Scenario<Table>) -> Vec<Key> {
+    let source = &mut s.source.0;
+    source.window(Axis::Rows, 0..source.count(Axis::Rows)).keys
+}
+
 #[test]
-fn a_quick_filter_asked_before_the_columns_came_still_searches_the_nested_ones() {
-    let mut source = DescribedSource::new("crews", Scope::new("n"));
-    let spec = ViewSpec::default().with_filter(
+fn a_quick_filter_on_a_hidden_nested_column_holds_through_a_second_table() {
+    let mut s = crews();
+    let layout = s.source.0.default_layout();
+    restore(&mut s, &layout);
+    s.input(|g| g.set_quick_filter(Axis::Rows, Some(TextQuery::new("rust"))));
+    assert_eq!(column_down(&mut s, "name"), ["alpha"]);
+    let alpha = s.source.0.row_key(&[Wire::Text("alpha".into())]).unwrap();
+    let table = support::messages("crews.ndjson").remove(0);
+    let Message::Table(mut changed) = table.clone() else {
+        panic!("{table:?}")
+    };
+    changed
+        .schema
+        .fields
+        .push(Field::new("added", FieldType::String));
+    for table in [table, Message::Table(changed)] {
+        let received = s.source.0.receive(table);
+        assert_eq!(held(&mut s), [alpha], "straight after the message");
+        support::apply(&mut s, received);
+        assert_eq!(column_down(&mut s, "name"), ["alpha"]);
+    }
+}
+
+#[test]
+fn a_quick_filter_on_a_hidden_nested_column_holds_when_the_zone_changes() {
+    let mut source = support::replay("crews.ndjson");
+    let spec = source.column_key("spec").unwrap();
+    let mut asked = ViewSpec::default().with_filter(
         Axis::Rows,
         FilterSpec::default().with_quick(Some(TextQuery::new("rust"))),
     );
-    source.view(&spec);
-    for message in support::messages("crews.ndjson") {
-        source.receive(message);
-    }
-    let window = source.window(Axis::Rows, 0..source.count(Axis::Rows));
+    asked.axis_mut(Axis::Cols).hidden = vec![spec];
+    source.view(&asked);
     let alpha = source.row_key(&[Wire::Text("alpha".into())]).unwrap();
+    let mut source = source.zone(binnacle_format::FixedOffset(3600));
+    let window = source.window(Axis::Rows, 0..source.count(Axis::Rows));
     assert_eq!(window.keys, [alpha]);
 }
 
@@ -280,7 +311,8 @@ fn a_default_view_naming_unknown_columns_loads_and_keeps_them_on_save() {
     assert!(saved.order.unwrap().cols.unwrap().contains(&id("nosuch")));
 }
 
-/// A table with a primary key of `kinds`, one part each, the rows' tuples.
+/// A table with a primary key of `parts` (an integer field for each true,
+/// else a string), its rows keyed by `tuples`.
 fn keyed(parts: &[bool], tuples: &[Vec<Wire>]) -> DescribedSource {
     let mut source = DescribedSource::new("t", Scope::new("n"));
     let name = |i: usize| format!("k{i}");
@@ -323,38 +355,89 @@ fn keyed(parts: &[bool], tuples: &[Vec<Wire>]) -> DescribedSource {
     source
 }
 
+/// One primary-key part: often from a few values, so rows share them and
+/// a drawn tuple is sometimes held, else any float (NaN and infinities
+/// among them) or any integer CBOR can carry.
+fn part(tc: &TestCase) -> Wire {
+    match tc.draw(gs::integers::<u8>().max_value(5)) {
+        0 => Wire::Float(tc.draw(gs::floats::<f64>())),
+        1 => Wire::Int(tc.draw(gs::integers::<i128>())),
+        2 => Wire::Int(tc.draw(gs::sampled_from(vec![
+            i128::from(u64::MAX),
+            i128::from(u64::MAX) + 1,
+            i128::from(i64::MIN),
+            i128::from(i64::MIN) - 1,
+        ]))),
+        3 => Wire::Float(tc.draw(gs::sampled_from(vec![f64::NAN, f64::INFINITY, 1.5]))),
+        4 => Wire::Int(i128::from(
+            tc.draw(gs::integers::<i8>().min_value(-2).max_value(2)),
+        )),
+        _ => tc.draw(gs::sampled_from(vec![
+            Wire::Null,
+            Wire::Bool(true),
+            Wire::Text("a".into()),
+            Wire::Text("b".into()),
+        ])),
+    }
+}
+
+/// Whether JSON carries `part` exactly, so an ID made of it reads back as
+/// it.
+fn carried(part: &Wire) -> bool {
+    match part {
+        Wire::Int(i) => i64::try_from(*i).is_ok() || u64::try_from(*i).is_ok(),
+        Wire::Float(x) => x.is_finite(),
+        _ => true,
+    }
+}
+
+fn json_id(tuple: &[Wire]) -> JsonId {
+    JsonId::new(serde_json::Value::Array(
+        tuple.iter().map(Wire::to_json).collect(),
+    ))
+    .unwrap()
+}
+
 #[hegel::test(test_cases = 300)]
 fn row_and_column_ids_round_trip_and_unknown_ids_name_nothing(tc: TestCase) {
     let parts = tc.draw(gs::vecs(gs::booleans()).min_size(1).max_size(3));
-    let tuples = tc.draw(
-        gs::vecs(
-            hegel::generators::vecs(gs::integers::<u64>())
-                .min_size(parts.len())
-                .max_size(parts.len()),
-        )
-        .max_size(6),
-    );
-    let tuples: Vec<Vec<Wire>> = (tuples.iter())
-        .map(|raw| {
-            (parts.iter().zip(raw))
-                .map(|(&int, &n)| match (int, n % 3) {
-                    (true, 0) => Wire::Int(i128::from(u64::MAX - n % 5)),
-                    (true, _) => Wire::Int(i128::from(n as i64)),
-                    (false, _) => Wire::Text(format!("t{}", n % 7)),
-                })
-                .collect()
+    let rows = tc.draw(gs::integers::<usize>().max_value(6));
+    let tuple = |tc: &TestCase| (0..parts.len()).map(|_| part(tc)).collect::<Vec<_>>();
+    let tuples: Vec<Vec<Wire>> = (0..rows).map(|_| tuple(&tc)).collect();
+    let source = keyed(&parts, &tuples);
+    let held: BTreeMap<Vec<u8>, Key> = (tuples.iter())
+        .map(|t| {
+            let key = source.row_key(t).unwrap();
+            (deterministic_cbor(&Wire::Array(t.clone())), key)
         })
         .collect();
-    let source = keyed(&parts, &tuples);
     for tuple in &tuples {
-        let json = JsonId::new(serde_json::Value::Array(
-            tuple.iter().map(Wire::to_json).collect(),
-        ))
-        .unwrap();
-        let key = IdMap::row_key(&source, &json).unwrap();
-        assert_eq!(IdMap::row_id(&source, key), Some(json));
+        let key = source.row_key(tuple).unwrap();
         let cbor = deterministic_cbor(&Wire::Array(tuple.clone()));
         assert_eq!(source.row_identity(key), Some(&cbor[..]));
+        let id = IdMap::row_id(&source, key);
+        if tuple.iter().all(carried) {
+            assert_eq!(id, Some(json_id(tuple)));
+            assert_eq!(IdMap::row_key(&source, &json_id(tuple)), Some(key));
+        } else {
+            assert_eq!(id, None, "{tuple:?} has no ID that names it");
+        }
+    }
+    for tuple in &tuples {
+        // The same arity, one part a value no row has.
+        let mut lacking = tuple.clone();
+        let at = tc.draw(gs::integers::<usize>().max_value(parts.len() - 1));
+        lacking[at] = Wire::Text("nosuch".into());
+        assert_eq!(IdMap::row_key(&source, &json_id(&lacking)), None);
+    }
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        let id = json_id(&tuple(&tc));
+        let serde_json::Value::Array(read) = id.value() else {
+            unreachable!()
+        };
+        let read: Vec<Wire> = read.iter().map(Wire::from_json).collect();
+        let want = held.get(&deterministic_cbor(&Wire::Array(read))).copied();
+        assert_eq!(IdMap::row_key(&source, &id), want);
     }
     for column in source.columns() {
         let name = id(column.name());
@@ -364,12 +447,32 @@ fn row_and_column_ids_round_trip_and_unknown_ids_name_nothing(tc: TestCase) {
     }
     let lacking = JsonId::from("nosuch");
     assert_eq!(source.col_key(&lacking), None);
-    let stranger = JsonId::new(serde_json::json!(["no", "such", "row", 1, 2, 3, 4])).unwrap();
-    assert_eq!(IdMap::row_key(&source, &stranger), None);
     assert_eq!(
         source.col_key(&JsonId::new(serde_json::json!(3)).unwrap()),
         None
     );
     assert_eq!(source.col_id(Key(u64::MAX >> 1)), None);
     assert_eq!(IdMap::row_id(&source, Key(u64::MAX >> 1)), None);
+}
+
+#[test]
+fn the_rows_of_a_table_with_no_primary_key_have_no_ids_so_a_layout_pins_none() {
+    let mut s = scenario(keyed(&[], &[vec![], vec![], vec![]]));
+    let keys = s.source.0.row_keys().to_vec();
+    assert_eq!(keys.len(), 3);
+    s.input(|g| g.pin(Axis::Rows, Edge::Leading, keys[2]));
+    let pinned: Vec<Key> = (s.frame(support::VIEWPORT))
+        .pins(Axis::Rows, Edge::Leading)
+        .collect();
+    assert_eq!(pinned, [keys[2]], "the Grid pins it");
+    for &key in &keys {
+        assert_eq!(IdMap::row_id(&s.source.0, key), None);
+    }
+    for n in 0..3 {
+        let ordinal = JsonId::new(serde_json::json!([n])).unwrap();
+        assert_eq!(IdMap::row_key(&s.source.0, &ordinal), None);
+    }
+    let saved = Doc::read(&mut s.grid, &s.source.0);
+    let pins = saved.pins.unwrap_or_default();
+    assert!(pins.rows.leading.is_empty() && pins.rows.trailing.is_empty());
 }
