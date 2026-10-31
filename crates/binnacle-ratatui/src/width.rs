@@ -49,7 +49,8 @@ pub(crate) fn fit(text: &str, width: u32) -> Cow<'_, str> {
 
 /// `text` padded on the right with spaces to `width` columns.
 pub(crate) fn pad(text: &str, width: usize) -> String {
-    let blank = width.saturating_sub(self::width(text) as usize);
+    let used = usize::try_from(self::width(text)).unwrap_or(usize::MAX);
+    let blank = width.saturating_sub(used);
     format!("{text}{}", " ".repeat(blank))
 }
 
@@ -70,7 +71,7 @@ pub(crate) fn tail(text: &str, width: u32) -> &str {
 /// its width, into the columns `min..max` only, and returns the column after
 /// the last grapheme. A zero-width grapheme joins the cell before it. A wide
 /// grapheme that is not wholly inside `min..max` draws a space in the columns
-/// that are.
+/// that are. A zero-width grapheme with no cell before it is dropped.
 pub(crate) fn write(
     buf: &mut Buffer,
     (x, y): (i64, u16),
