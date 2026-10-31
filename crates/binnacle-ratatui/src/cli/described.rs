@@ -51,6 +51,15 @@ impl CliTable for DescribedSource {
         self.column(col).map(|c| c.role()).unwrap_or_default()
     }
 
+    fn type_name(&self, col: Key) -> String {
+        self.column(col)
+            .map_or_else(String::new, |c| c.field_type().name().to_owned())
+    }
+
+    fn partial(&self) -> Option<u64> {
+        self.status().partial.then(|| self.row_count() as u64)
+    }
+
     fn view_changed(&mut self) -> Option<(ViewSpec, Totals)> {
         self.poll_view()
     }

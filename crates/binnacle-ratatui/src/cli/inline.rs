@@ -1,10 +1,14 @@
 //! The table inline below the prompt, with the full widget: keys and the
 //! mouse, sort, the header menu with grouping, the chooser, the quick and
 //! column filters and find. Enter hands back the focused or picked rows;
-//! Esc or `q` hands back nothing. Either way the rows visible in the
-//! viewport stay behind as aligned text.
+//! Esc or `q` hands back nothing, and Ctrl-C or a signal says it was
+//! interrupted. Either way the rows visible in the viewport stay behind as
+//! aligned text.
 
+use std::cell::Cell;
 use std::io;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use binnacle_core::{Axis, ChangeNotice, Grid, Key, Viewport};
@@ -19,7 +23,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions};
 
-use super::{CliTable, Selection, notify, print};
+use super::{CliTable, Exit, Selection, notify, print, thousands};
 use crate::{
     CellRenderer, Chooser, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     HeaderMenu, Keymap, Mouse, Preset, QuickFilter, RenderContext, Theme, ValueRenderer,
@@ -72,16 +76,22 @@ pub fn inline_height(rows: u64, terminal_rows: u16, max: Option<u16>) -> u16 {
     need.min(max.unwrap_or(terminal_rows / 2)).max(3)
 }
 
+/// SIGINT, the signal Ctrl-C is taken as.
+const SIGINT: i32 = 2;
+
 /// Opens `source`, presented as `layout`, in an inline viewport below the
-/// prompt on this process's terminal, and returns what the user chose.
+/// prompt on this process's terminal, and returns how it ended.
 /// The viewport is as tall as the rows need, up to its most; with a live
-/// feed, the most, since rows may still come.
-/// See [`run_inline_with`].
-pub fn run_inline<T: CliTable>(
+/// feed, the most, since rows may still come. While it is open, SIGINT,
+/// SIGTERM and SIGHUP close it as [`Exit::Interrupted`], and a panic
+/// restores the terminal before the panic hook that was set runs.
+/// While the live feed keeps bringing changes, the next frame doesn't wait
+/// for input. See [`run_inline_with`].
+pub fn run_inline<'a, T: CliTable + 'a>(
     source: &mut T,
     layout: &Layout<JsonId, JsonId>,
-    options: InlineOptions<'_, T>,
-) -> io::Result<Option<Selection>> {
+    mut options: InlineOptions<'a, T>,
+) -> io::Result<Exit> {
     let (_, rows) = ratatui::crossterm::terminal::size()?;
     // A live table may grow after the viewport opens: it takes the most.
     let need = match options.live {
@@ -89,10 +99,20 @@ pub fn run_inline<T: CliTable>(
         None => source.count(Axis::Rows),
     };
     let height = inline_height(need, rows, options.max_height);
+    let signals = Signals::watch()?;
+    let busy = Rc::new(Cell::new(false));
+    if let Some(mut live) = options.live.take() {
+        let busy = Rc::clone(&busy);
+        options.live = Some(Box::new(move |source: &mut T| {
+            let fed = live(source);
+            busy.set(fed.as_ref().is_some_and(|n| !n.is_empty()));
+            fed
+        }));
+    }
     // Not `ratatui::init`: its restore leaves the alternate screen, which
     // puts the cursor back where it was saved, over the rows left behind.
     ratatui::crossterm::terminal::enable_raw_mode()?;
-    let raw = RawMode;
+    let raw = RawMode::new();
     let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::with_options(
         backend,
@@ -104,9 +124,15 @@ pub fn run_inline<T: CliTable>(
     let tick = options.tick;
     let mut failed: Option<io::Error> = None;
     let events = std::iter::from_fn(|| {
-        let read = match event::poll(tick) {
+        // A signal ends the events, so the rows stay behind as on Esc.
+        if signals.caught().is_some() {
+            return None;
+        }
+        let wait = if busy.get() { Duration::ZERO } else { tick };
+        let read = match event::poll(wait) {
             Ok(true) => event::read().map(Some),
             Ok(false) => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(None),
             Err(e) => Err(e),
         };
         read.map_err(|e| failed = Some(e)).ok()
@@ -120,7 +146,10 @@ pub fn run_inline<T: CliTable>(
     }
     execute!(io::stdout(), DisableMouseCapture)?;
     drop(raw);
-    result
+    match signals.caught() {
+        Some(signal) => result.map(|_| Exit::Interrupted { signal }),
+        None => result,
+    }
 }
 
 /// Runs the inline table on `terminal` (its viewport inline, or any other
@@ -129,19 +158,25 @@ pub fn run_inline<T: CliTable>(
 /// does, as does the live feed ending. Focus starts on the first row.
 ///
 /// - Enter returns the picked rows' Keys if any are picked (Space picks
-///   the focused row), else the focused row's; `None` when there is
-///   neither, as in an empty table.
-/// - Esc or `q` returns `None`, once no popup or bar is open to take it.
+///   the focused row), in the order they show, else the focused row's;
+///   [`Exit::Left`] when there is neither, as in an empty table.
+/// - Esc or `q` returns [`Exit::Left`], once no popup or bar is open to
+///   take it.
+/// - Ctrl-C returns [`Exit::Interrupted`] with SIGINT, whatever is open.
+/// - `s` cycles the sort by the focused column: ascending, descending,
+///   none.
 ///
 /// On the way out it clears the viewport and writes the rows it showed as
-/// aligned text ([`super::print`]'s), so they stay in the scrollback.
+/// aligned text ([`super::print`]'s), whole: a line wider than the
+/// terminal wraps, so no value is cut off, and the rows stay in the
+/// scrollback.
 pub fn run_inline_with<T: CliTable, B: Backend>(
     terminal: &mut Terminal<B>,
     events: impl IntoIterator<Item = Option<Event>>,
     source: &mut T,
     layout: &Layout<JsonId, JsonId>,
     mut options: InlineOptions<'_, T>,
-) -> Result<Option<Selection>, B::Error> {
+) -> Result<Exit, B::Error> {
     let origin = options.origin.unwrap_or_else(|| {
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
         Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128))
@@ -165,7 +200,7 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
     let chosen = loop {
         if let Some(live) = options.live.as_mut() {
             let Some(notices) = live(source) else {
-                break None;
+                break Exit::Left;
             };
             notify(&mut grid, source, notices);
         }
@@ -217,10 +252,15 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
             }
             let status = crate::status(&snapshot);
             let status = match status.is_empty() {
-                true => format!(
-                    "{} rows | Enter choose  Space pick  m menu  ^F find  ^L filter  Esc quit",
-                    snapshot.count(Axis::Rows)
-                ),
+                true => {
+                    let rows = match source.partial() {
+                        Some(came) => format!("{} of more rows", thousands(came)),
+                        None => format!("{} rows", thousands(snapshot.count(Axis::Rows))),
+                    };
+                    format!(
+                        "{rows} | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  Esc quit"
+                    )
+                }
                 false => status,
             };
             let status = match &note {
@@ -235,12 +275,19 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
             chooser.render(&snapshot, &theme, bars.grid, buf);
         })?;
         let Some(input) = events.next() else {
-            break None;
+            break Exit::Left;
         };
         let Some(event) = input else {
             continue;
         };
         match event {
+            Event::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key.code == KeyCode::Char('c')
+                    && key.modifiers == KeyModifiers::CONTROL =>
+            {
+                break Exit::Interrupted { signal: SIGINT };
+            }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if popup.key(&key, &mut grid) || chooser.key(&key, &mut grid) {
                     continue;
@@ -285,9 +332,18 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
                 }
                 let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
                 match key.code {
-                    KeyCode::Enter if plain => break chosen(&mut grid),
-                    KeyCode::Esc => break None,
-                    KeyCode::Char('q') if plain => break None,
+                    KeyCode::Enter if plain => match chosen(&mut grid, source) {
+                        Some(selection) => break Exit::Chosen(selection),
+                        None => break Exit::Left,
+                    },
+                    KeyCode::Esc => break Exit::Left,
+                    KeyCode::Char('q') if plain => break Exit::Left,
+                    KeyCode::Char('s') if key.modifiers.is_empty() => {
+                        let focused = grid.snapshot().focus(Axis::Cols).and_then(|f| f.key);
+                        if let Some(col) = focused {
+                            grid.cycle_sort(Axis::Rows, col, false);
+                        }
+                    }
                     KeyCode::Char(' ') if plain => {
                         let snapshot = grid.snapshot();
                         if let Some(row) = snapshot.focus(Axis::Rows).and_then(|f| f.key) {
@@ -320,16 +376,35 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
     let cols = print::columns(source, &grid);
     let text = print::aligned(&*source, &shown, &cols);
     terminal.clear()?;
+    let area = terminal.get_frame().area();
+    let lines: Vec<&str> = (text.iter())
+        .flat_map(|line| wrap(line, area.width.into()))
+        .collect();
+    // What the viewport can't hold goes above it, into the scrollback.
+    let over = lines.len().saturating_sub(area.height.into());
+    if over > 0 {
+        let height = u16::try_from(over).unwrap_or(u16::MAX);
+        terminal.insert_before(height, |buf| {
+            for (i, line) in lines[..over].iter().enumerate().take(height.into()) {
+                let rect = Rect {
+                    y: buf.area.y + i as u16,
+                    height: 1,
+                    ..buf.area
+                };
+                Line::from(*line).render_to(rect, buf);
+            }
+        })?;
+    }
     let mut end = 0;
     terminal.draw(|frame| {
         let area = frame.area();
-        for (i, line) in text.iter().enumerate().take(area.height.into()) {
+        for (i, line) in lines[over..].iter().enumerate().take(area.height.into()) {
             let rect = Rect {
                 y: area.y + i as u16,
                 height: 1,
                 ..area
             };
-            Line::from(line.as_str()).render_to(rect, frame.buffer_mut());
+            Line::from(*line).render_to(rect, frame.buffer_mut());
             end = rect.bottom();
         }
         end = end.max(area.y);
@@ -339,22 +414,184 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
     Ok(chosen)
 }
 
-/// Raw mode, left when dropped, on the way out or by a panic.
-struct RawMode;
+/// `line` in pieces at most `width` columns wide, by display width, each
+/// without trailing spaces; one piece, empty, for an empty line.
+fn wrap(line: &str, width: usize) -> Vec<&str> {
+    use unicode_width::UnicodeWidthChar;
+    let mut pieces = Vec::new();
+    let (mut start, mut used) = (0, 0);
+    for (at, c) in line.char_indices() {
+        let w = c.width().unwrap_or(0);
+        if used + w > width.max(1) && at > start {
+            pieces.push(line[start..at].trim_end());
+            (start, used) = (at, 0);
+        }
+        used += w;
+    }
+    pieces.push(line[start..].trim_end());
+    pieces
+}
 
-impl Drop for RawMode {
-    fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableMouseCapture);
-        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+/// Leaves raw mode and mouse capture and shows the cursor, as on the way
+/// out; safe to call more than once.
+fn restore() {
+    let _ = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        ratatui::crossterm::cursor::Show
+    );
+    let _ = ratatui::crossterm::terminal::disable_raw_mode();
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
+
+/// Raw mode, left when dropped, on the way out or by a panic. While held,
+/// a panic restores the terminal first, then runs the panic hook that was
+/// set before, so its message prints on a sane terminal; dropped, that hook
+/// is set again.
+struct RawMode {
+    previous: Option<Arc<PanicHook>>,
+}
+
+impl RawMode {
+    fn new() -> RawMode {
+        let previous = Arc::new(std::panic::take_hook());
+        let hook = Arc::clone(&previous);
+        std::panic::set_hook(Box::new(move |info| {
+            restore();
+            hook(info);
+        }));
+        RawMode {
+            previous: Some(previous),
+        }
     }
 }
 
-/// The picked rows if any, else the focused row; none in an empty table.
-fn chosen(grid: &mut Grid) -> Option<Selection> {
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        restore();
+        // Not while panicking: the hook has run, and setting one then
+        // aborts.
+        if std::thread::panicking() {
+            return;
+        }
+        drop(std::panic::take_hook());
+        if let Some(previous) = self.previous.take() {
+            match Arc::try_unwrap(previous) {
+                Ok(previous) => std::panic::set_hook(previous),
+                Err(previous) => std::panic::set_hook(Box::new(move |info| previous(info))),
+            }
+        }
+    }
+}
+
+/// SIGINT, SIGTERM and SIGHUP, caught while held instead of ending the
+/// process, so the terminal can be restored; the last caught is kept.
+/// The handlers are installed once per process: with no viewport open, a
+/// signal does what it would by default.
+struct Signals {
+    #[cfg(unix)]
+    watch: &'static Watch,
+}
+
+/// The signal caught (0 for none), and whether no viewport is open.
+#[cfg(unix)]
+struct Watch {
+    caught: Arc<std::sync::atomic::AtomicUsize>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Signals {
+    #[cfg(unix)]
+    fn watch() -> io::Result<Signals> {
+        use std::sync::OnceLock;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+        static WATCH: OnceLock<Result<Watch, String>> = OnceLock::new();
+        let watch = WATCH.get_or_init(|| {
+            let watch = Watch {
+                caught: Arc::new(AtomicUsize::new(0)),
+                closed: Arc::new(AtomicBool::new(true)),
+            };
+            for signal in [SIGINT, SIGTERM, SIGHUP] {
+                let caught = Arc::clone(&watch.caught);
+                signal_hook::flag::register_usize(signal, caught, signal as usize)
+                    .and_then(|_| {
+                        let closed = Arc::clone(&watch.closed);
+                        signal_hook::flag::register_conditional_default(signal, closed)
+                    })
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(watch)
+        });
+        let watch = watch.as_ref().map_err(|e| io::Error::other(e.clone()))?;
+        watch.caught.store(0, Ordering::SeqCst);
+        watch.closed.store(false, Ordering::SeqCst);
+        Ok(Signals { watch })
+    }
+
+    #[cfg(not(unix))]
+    fn watch() -> io::Result<Signals> {
+        Ok(Signals {})
+    }
+
+    /// The signal caught, if any.
+    fn caught(&self) -> Option<i32> {
+        #[cfg(unix)]
+        match self.watch.caught.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => None,
+            signal => Some(signal as i32),
+        }
+        #[cfg(not(unix))]
+        None
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Signals {
+    fn drop(&mut self) {
+        (self.watch.closed).store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::Signals;
+
+    #[test]
+    fn a_signal_while_watched_is_caught_not_fatal() {
+        use signal_hook::consts::{SIGHUP, SIGTERM};
+        let signals = Signals::watch().unwrap();
+        assert_eq!(signals.caught(), None);
+        signal_hook::low_level::raise(SIGHUP).unwrap();
+        signal_hook::low_level::raise(SIGTERM).unwrap();
+        assert_eq!(signals.caught(), Some(SIGTERM), "the last caught");
+        drop(signals);
+        let again = Signals::watch().unwrap();
+        assert_eq!(again.caught(), None, "a new watch starts clear");
+    }
+}
+
+/// The picked rows if any, in the order the rows show (picks the view
+/// leaves out after them, in Key order), else the focused row; none in an
+/// empty table.
+fn chosen<T: CliTable>(grid: &mut Grid, source: &mut T) -> Option<Selection> {
     let snapshot = grid.snapshot();
     let picked = snapshot.picked(Axis::Rows).to_vec();
     let rows = match picked.is_empty() {
-        false => picked,
+        false => {
+            let count = source.count(Axis::Rows);
+            let shown = source.window(Axis::Rows, 0..count).keys;
+            let mut rows: Vec<Key> = (shown.into_iter()).filter(|k| picked.contains(k)).collect();
+            rows.extend(
+                picked
+                    .iter()
+                    .filter(|k| !rows.contains(k))
+                    .collect::<Vec<_>>(),
+            );
+            rows
+        }
         true => snapshot
             .focus(Axis::Rows)
             .and_then(|f| f.key)

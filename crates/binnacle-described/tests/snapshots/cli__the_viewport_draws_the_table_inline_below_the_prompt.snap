@@ -15,4 +15,4 @@ expression: "frames[0]"
 8india 🚢   Done       ∅                   3 ∅          🚢 ok      ∅          {"a":[1]}            █
 9juliet     ∅          ∅          ∅          ∅          ∅          ∅          {}                   █
                                                                                                    █
-9 rows | Enter choose  Space pick  m menu  ^F find  ^L filter  Esc quit
+9 rows | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  Esc quit

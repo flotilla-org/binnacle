@@ -24,7 +24,7 @@ use binnacle_memory::PumpSource;
 pub use flags::FlagArgs;
 pub use flags::{FlagError, Flags, parse_where};
 pub use inline::{InlineOptions, Live, inline_height, run_inline, run_inline_with};
-pub use print::{Format, print, print_rows};
+pub use print::{Format, partial_note, print, print_rows};
 
 /// What a table gives the CLI host, over the Table Source the Grid pumps.
 /// Rows and columns are named by JSON IDs ([`IdMap`]), as a Layout names
@@ -58,6 +58,16 @@ pub trait CliTable: PumpSource + IdMap<JsonId, JsonId> {
     /// The role column `col`'s values draw with.
     fn role(&self, col: Key) -> Role;
 
+    /// Column `col`'s type, as an error names it: `string`, say.
+    fn type_name(&self, col: Key) -> String;
+
+    /// How many rows came, when the table has more than came (a source
+    /// over its row cap): what prints and shows is only those. `None`, the
+    /// default, when every row came.
+    fn partial(&self) -> Option<u64> {
+        None
+    }
+
     /// The View Spec the source applies now and the totals, once, if a
     /// change in its data changed it (a column that left, say), for the
     /// Grid to hold. None unless overridden.
@@ -67,10 +77,56 @@ pub trait CliTable: PumpSource + IdMap<JsonId, JsonId> {
 }
 
 /// What the user chose in the inline table: the picked rows' Keys if any
-/// were picked, else the focused row's.
+/// were picked, in the order they show (any picked rows the view leaves
+/// out follow, in Key order), else the focused row's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     pub rows: Vec<Key>,
+}
+
+/// How the inline table ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// Enter, with a row to choose.
+    Chosen(Selection),
+    /// Esc or `q`, the end of the events or of the live feed, or Enter
+    /// with no row to choose: nothing chosen.
+    Left,
+    /// Ctrl-C (taken as SIGINT), or SIGINT, SIGTERM or SIGHUP while the
+    /// viewport was open: nothing chosen, the terminal restored.
+    Interrupted { signal: i32 },
+}
+
+impl Exit {
+    /// What the user chose, if anything.
+    pub fn selection(self) -> Option<Selection> {
+        match self {
+            Exit::Chosen(selection) => Some(selection),
+            _ => None,
+        }
+    }
+
+    /// The status a CLI exits with after an interrupt, 128 and the
+    /// signal's number (130 after Ctrl-C); `None` otherwise.
+    pub fn status(&self) -> Option<i32> {
+        match self {
+            Exit::Interrupted { signal } => Some(128 + signal),
+            _ => None,
+        }
+    }
+}
+
+/// `n` with a comma between each three digits.
+pub(crate) fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Whether the CLI opens the table inline or prints it.

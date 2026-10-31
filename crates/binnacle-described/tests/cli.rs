@@ -15,7 +15,7 @@ use binnacle_layout::view::{
 };
 use binnacle_layout::{JsonId, Layout, Order};
 use binnacle_ratatui::cli::{
-    CliTable, Format, InlineOptions, Selection, print, print_rows, run_inline_with,
+    CliTable, Exit, Format, InlineOptions, Selection, print, print_rows, run_inline_with,
 };
 use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::buffer::{Buffer, Cell};
@@ -52,7 +52,9 @@ fn printed(
     format: Format,
 ) -> String {
     let mut out = Vec::new();
-    print(source, layout, format, &mut out).unwrap();
+    let mut note = Vec::new();
+    print(source, layout, format, &mut out, &mut note).unwrap();
+    assert!(note.is_empty(), "a complete table has no note");
     String::from_utf8(out).unwrap()
 }
 
@@ -301,7 +303,7 @@ fn inline(
     events: Vec<Option<Event>>,
     width: u16,
     height: u16,
-) -> (Vec<String>, Option<Selection>) {
+) -> (Vec<String>, Exit) {
     let options = InlineOptions {
         origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
         ..InlineOptions::default()
@@ -316,7 +318,7 @@ fn inline_with(
     width: u16,
     height: u16,
     options: InlineOptions<'_, DescribedSource>,
-) -> (Vec<String>, Option<Selection>) {
+) -> (Vec<String>, Exit) {
     let frames = Rc::new(RefCell::new(Vec::new()));
     let mut backend = Recording {
         inner: TestBackend::new(width, height),
@@ -379,7 +381,7 @@ fn enter_chooses_the_focused_row_and_with_picks_the_picks() {
     );
     assert_eq!(
         chosen,
-        Some(Selection {
+        Exit::Chosen(Selection {
             rows: vec![row(&source, "alpha")]
         })
     );
@@ -387,7 +389,7 @@ fn enter_chooses_the_focused_row_and_with_picks_the_picks() {
     let (_, chosen) = inline(&mut source, &Layout::default(), events, 100, 20);
     assert_eq!(
         chosen,
-        Some(Selection {
+        Exit::Chosen(Selection {
             rows: vec![row(&source, "bravo")]
         })
     );
@@ -400,11 +402,10 @@ fn enter_chooses_the_focused_row_and_with_picks_the_picks() {
         key(KeyCode::Enter),
     ];
     let (_, chosen) = inline(&mut source, &Layout::default(), events, 100, 20);
-    let mut want = vec![row(&source, "alpha"), row(&source, "charlie")];
-    want.sort();
+    let want = vec![row(&source, "alpha"), row(&source, "charlie")];
     assert_eq!(
         chosen,
-        Some(Selection { rows: want }),
+        Exit::Chosen(Selection { rows: want }),
         "the picks, not the focus"
     );
 }
@@ -414,7 +415,7 @@ fn esc_and_q_choose_nothing() {
     let mut source = crews();
     for code in [KeyCode::Esc, KeyCode::Char('q')] {
         let (_, chosen) = inline(&mut source, &Layout::default(), vec![key(code)], 100, 20);
-        assert_eq!(chosen, None);
+        assert_eq!(chosen, Exit::Left);
     }
 }
 
@@ -473,7 +474,7 @@ fn a_change_notice_from_the_live_feed_shows_in_the_next_frame() {
 /// view sorted by CPUs, the live feed sending `resyncs` after the moves:
 /// each a `resync` or a stream end, then, a frame later, the table again,
 /// so the source is unsynced in between, as over a network.
-fn chosen_after(resyncs: &[bool]) -> (Option<Selection>, String) {
+fn chosen_after(resyncs: &[bool]) -> (Exit, String) {
     let mut source = replay("crews.ndjson");
     let fields: Vec<String> = (source.columns().iter())
         .map(|c| c.name().to_owned())
@@ -535,7 +536,7 @@ fn a_resync_and_a_reconnect_keep_the_sort_and_the_focus() {
     let third = row(&source, third["name"].as_str().unwrap());
 
     let (chosen, frame) = chosen_after(&[false, true]);
-    assert_eq!(chosen, Some(Selection { rows: vec![third] }));
+    assert_eq!(chosen, Exit::Chosen(Selection { rows: vec![third] }));
     assert_eq!((chosen, frame), chosen_after(&[]));
 }
 
@@ -580,7 +581,7 @@ fn a_live_feed_that_ends_closes_the_viewport_choosing_nothing() {
     // Enter would choose alpha, had the feed not ended first.
     let events = vec![None, key(KeyCode::Enter)];
     let (frames, chosen) = inline_with(&mut source, &Layout::default(), events, 100, 20, options);
-    assert_eq!(chosen, None);
+    assert_eq!(chosen, Exit::Left);
     assert_eq!(*calls.borrow(), 2);
     assert!(frames.last().unwrap().contains("alpha"), "the rows stay");
 }
@@ -717,5 +718,388 @@ fn enter_in_an_empty_table_chooses_nothing() {
         .collect();
     let layout = flags.apply(&Layout::default(), &fields).unwrap();
     let (_, chosen) = inline(&mut source, &layout, vec![key(KeyCode::Enter)], 100, 20);
-    assert_eq!(chosen, None);
+    assert_eq!(chosen, Exit::Left);
+}
+
+/// The crews table as a server over its row cap sends it: the first page
+/// with a cursor to more.
+fn partial_crews() -> DescribedSource {
+    let mut source = DescribedSource::new("crews", binnacle_described::Scope::new("flotilla"));
+    let _ = source.poll_request();
+    for message in support::messages("crews.ndjson") {
+        let message = match message {
+            Message::Rows(mut rows) => {
+                rows.cursor = Some("page-2".into());
+                Message::Rows(rows)
+            }
+            other => other,
+        };
+        source.receive(message);
+    }
+    assert!(source.status().partial);
+    source
+}
+
+#[test]
+fn a_partial_table_prints_its_rows_then_says_so_apart() {
+    let mut source = partial_crews();
+    let (mut out, mut note) = (Vec::new(), Vec::new());
+    print(
+        &mut source,
+        &Layout::default(),
+        Format::Jsonl,
+        &mut out,
+        &mut note,
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap().lines().count(), 6);
+    assert_eq!(
+        String::from_utf8(note).unwrap(),
+        "showing the first 6 rows; the table has more (narrow it with --where)\n"
+    );
+    assert_eq!(
+        binnacle_ratatui::cli::partial_note(10_000),
+        "showing the first 10,000 rows; the table has more (narrow it with --where)"
+    );
+}
+
+#[test]
+fn the_viewport_of_a_partial_table_says_of_more() {
+    let mut source = partial_crews();
+    let (frames, _) = inline(
+        &mut source,
+        &Layout::default(),
+        vec![key(KeyCode::Esc)],
+        100,
+        20,
+    );
+    assert!(
+        frames[0].contains("6 of more rows | Enter"),
+        "{}",
+        frames[0]
+    );
+    let (frames, _) = inline(
+        &mut crews(),
+        &Layout::default(),
+        vec![key(KeyCode::Esc)],
+        100,
+        20,
+    );
+    assert!(!frames[0].contains("of more"), "{}", frames[0]);
+}
+
+/// The binnacle-tables example, built: by `cargo test` with the rest, or
+/// here when a run builds only this test.
+fn example() -> std::path::PathBuf {
+    let deps = std::env::current_exe().unwrap();
+    let examples = deps.parent().unwrap().parent().unwrap().join("examples");
+    let path = examples.join(format!("binnacle-tables{}", std::env::consts::EXE_SUFFIX));
+    if !path.exists() {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let built = std::process::Command::new(cargo)
+            .args([
+                "build",
+                "-p",
+                "binnacle-described",
+                "--example",
+                "binnacle-tables",
+            ])
+            .status()
+            .unwrap();
+        assert!(built.success());
+    }
+    path
+}
+
+#[test]
+fn binnacle_tables_over_the_row_cap_prints_the_rows_and_notes_it_on_stderr() {
+    use binnacle_testkit::fake_tables::FakeTables;
+    let fake = FakeTables::new()
+        .generate("big", 10_500)
+        .generate("small", 50)
+        .start()
+        .unwrap();
+    let url = fake.url().unwrap();
+    let run = |table: &str| {
+        std::process::Command::new(example())
+            .args(["--url", &url, "--table", table, "--format", "jsonl"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let big = run("big");
+    let stderr = String::from_utf8_lossy(&big.stderr);
+    assert_eq!(big.status.code(), Some(0), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&big.stdout).lines().count(), 10_000);
+    assert_eq!(
+        stderr,
+        "binnacle-tables: showing the first 10,000 rows; the table has more (narrow it with --where)\n"
+    );
+    let small = run("small");
+    assert_eq!(small.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&small.stdout).lines().count(), 50);
+    assert!(
+        small.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&small.stderr)
+    );
+}
+
+/// The crews table with the generic default Layout, which pins the key
+/// (name) and state (phase) columns leading, patched with `args`.
+fn pinned_with(args: &[&str]) -> (DescribedSource, Layout<JsonId, JsonId>) {
+    let mut source = replay("crews.ndjson");
+    let base = source.presentation(None, None);
+    let pins = base.pins.as_ref().unwrap();
+    assert_eq!(
+        pins.cols.leading,
+        [id("name"), id("phase")],
+        "the base pins"
+    );
+    let flags = binnacle_ratatui::cli::Flags::parse(args).unwrap();
+    let layout = flags.apply_to(&mut source, &base, |_| None).unwrap();
+    (source, layout)
+}
+
+#[test]
+fn columns_sets_the_order_over_the_bases_pins() {
+    let (mut source, layout) = pinned_with(&["--columns", "host,phase,name"]);
+    let aligned = printed(&mut source, &layout, Format::Aligned);
+    let titles: Vec<&str> = aligned.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(titles, ["Host", "Phase", "Name"]);
+    let tsv = printed(&mut source, &layout, Format::Tsv);
+    assert_eq!(tsv.lines().next(), Some("host\tphase\tname"));
+    let jsonl = printed(&mut source, &layout, Format::Jsonl);
+    let first = jsonl.lines().next().unwrap();
+    let at = |f: &str| first.find(&format!("\"{f}\"")).unwrap();
+    assert!(
+        at("host") < at("phase") && at("phase") < at("name"),
+        "{first}"
+    );
+    // The base pinned two of the named: the list's first two are pinned.
+    let pins = layout.pins.as_ref().unwrap();
+    assert_eq!(pins.cols.leading, [id("host"), id("phase")]);
+    // A pin on a column the list leaves out goes.
+    let (mut source, layout) = pinned_with(&["--columns", "cpus,name"]);
+    assert_eq!(layout.pins.as_ref().unwrap().cols.leading, [id("cpus")]);
+    let tsv = printed(&mut source, &layout, Format::Tsv);
+    assert_eq!(tsv.lines().next(), Some("cpus\tname"));
+    // In the viewport too.
+    let (frames, _) = inline(&mut source, &layout, vec![key(KeyCode::Esc)], 100, 20);
+    let header = frames[0].lines().find(|l| l.contains("Name")).unwrap();
+    assert!(header.find("CPUs") < header.find("Name"), "{header}");
+}
+
+#[test]
+fn a_comparison_the_column_cant_apply_is_an_error() {
+    let mut source = replay("crews.ndjson");
+    let base = Layout::default();
+    let apply = |source: &mut DescribedSource, clause: &str| {
+        let flags = binnacle_ratatui::cli::Flags::parse(["--where", clause]).unwrap();
+        flags.apply_to(source, &base, |_| None)
+    };
+    let error = apply(&mut source, "phase>3").unwrap_err().to_string();
+    assert!(
+        error.contains("`phase`") && error.contains("string"),
+        "names the column and its type: {error}"
+    );
+    let error = apply(&mut source, "cpus>2026-10-29T00:00:00Z").unwrap_err();
+    assert!(error.to_string().contains("integer"), "{error}");
+    assert!(apply(&mut source, "cpus>3").is_ok());
+    assert!(apply(&mut source, "started>2026-10-29T00:00:00Z").is_ok());
+    assert!(apply(&mut source, "phase==Running").is_ok());
+}
+
+/// A key press with `modifiers`.
+fn chord(code: KeyCode, modifiers: KeyModifiers) -> Option<Event> {
+    Some(Event::Key(KeyEvent::new(code, modifiers)))
+}
+
+#[test]
+fn ctrl_c_leaves_choosing_nothing_and_says_it_was_interrupted() {
+    let mut source = crews();
+    let ctrl_c = chord(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    // Over picks, and with the find bar open, as well.
+    let events = vec![
+        key(KeyCode::Char(' ')),
+        chord(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        ctrl_c,
+        key(KeyCode::Enter),
+    ];
+    let (frames, exit) = inline(&mut source, &Layout::default(), events, 100, 20);
+    assert_eq!(exit, Exit::Interrupted { signal: 2 });
+    assert_eq!(exit.status(), Some(130));
+    assert_eq!(exit.selection(), None);
+    assert!(frames.last().unwrap().contains("alpha"), "the rows stay");
+}
+
+/// The names in the first frame after `events`, in the order they show.
+fn names_after(events: Vec<Option<Event>>) -> (Vec<&'static str>, String) {
+    let mut events = events;
+    events.push(key(KeyCode::Esc));
+    let count = events.len();
+    let (frames, _) = inline(&mut crews(), &Layout::default(), events, 100, 20);
+    let frame = frames[count - 1].clone();
+    (names_in(&frame), frame)
+}
+
+#[test]
+fn s_cycles_the_focused_columns_sort() {
+    // Focus starts on Name; Right moves it to Phase, then Started, CPUs.
+    let right = || key(KeyCode::Right);
+    let s = || key(KeyCode::Char('s'));
+    let on_cpus = || vec![right(), right(), right()];
+    let (unsorted, _) = names_after(on_cpus());
+    let (up, frame) = names_after([on_cpus(), vec![s()]].concat());
+    assert!(frame.contains('▲'), "{frame}");
+    let (down, frame) = names_after([on_cpus(), vec![s(), s()]].concat());
+    assert!(frame.contains('▼'), "{frame}");
+    let (off, _) = names_after([on_cpus(), vec![s(), s(), s()]].concat());
+    // By CPUs: 2 bravo, 3 india, 4 alpha, 8 foxtrot, 16 hotel, then the
+    // huge echo, with the nulls and charlie's invalid value apart.
+    let by_cpus = [
+        "bravo",
+        "india 🚢",
+        "alpha",
+        "foxtrot",
+        "hotel 日本",
+        "echo",
+    ];
+    let numbered = |names: &[&str]| -> Vec<String> {
+        (names.iter())
+            .filter(|n| by_cpus.contains(n))
+            .map(|n| n.to_string())
+            .collect()
+    };
+    assert_eq!(numbered(&up), by_cpus, "ascending: {up:?}");
+    let mut reversed = by_cpus;
+    reversed.reverse();
+    assert_eq!(numbered(&down), reversed, "descending: {down:?}");
+    assert_ne!(up, unsorted);
+    assert_eq!(off, unsorted, "then none");
+}
+
+#[test]
+fn picks_come_back_in_the_order_they_show() {
+    let fields: Vec<String> = (crews().columns().iter())
+        .map(|c| c.name().to_owned())
+        .collect();
+    // By name descending, echo is the 5th row and charlie the 7th; one way
+    // or the other, Key order is not the order shown.
+    for (sort, (charlie, echo), want) in [
+        ("-name", (6, 4), ["echo", "charlie"]),
+        ("name", (2, 4), ["charlie", "echo"]),
+    ] {
+        let mut source = crews();
+        let flags = binnacle_ratatui::cli::Flags::parse(["--sort", sort]).unwrap();
+        let layout = flags.apply(&Layout::default(), &fields).unwrap();
+        // Pick charlie, then echo.
+        let mut events = vec![key(KeyCode::Down); charlie];
+        events.push(key(KeyCode::Char(' ')));
+        let (from, to, step) = match echo > charlie {
+            true => (charlie, echo, KeyCode::Down),
+            false => (echo, charlie, KeyCode::Up),
+        };
+        events.extend(vec![key(step); to - from]);
+        events.push(key(KeyCode::Char(' ')));
+        events.push(key(KeyCode::Enter));
+        let (_, exit) = inline(&mut source, &layout, events, 100, 20);
+        let want: Vec<Key> = want.iter().map(|n| row(&source, n)).collect();
+        assert_eq!(
+            exit,
+            Exit::Chosen(Selection { rows: want }),
+            "sorted {sort}"
+        );
+    }
+}
+
+#[test]
+fn the_rows_left_behind_wrap_rather_than_cut_at_a_narrow_terminal() {
+    let mut source = crews();
+    let flags = binnacle_ratatui::cli::Flags::parse(["--wide"]).unwrap();
+    let fields: Vec<String> = (source.columns().iter())
+        .map(|c| c.name().to_owned())
+        .collect();
+    let layout = flags.apply(&Layout::default(), &fields).unwrap();
+    let (frames, _) = inline(&mut source, &layout, vec![key(KeyCode::Esc)], 50, 40);
+    let last = frames.last().unwrap();
+    assert!(
+        last.lines()
+            .all(|l| unicode_width::UnicodeWidthStr::width(l) <= 50),
+        "{last}"
+    );
+    // Every value of the right-aligned CPUs column is there, whole, under
+    // its header.
+    let joined: String = last.lines().collect::<Vec<_>>().concat();
+    assert!(joined.contains("CPUs"), "{last}");
+    for cpus in ["18446744073709551615", "many"] {
+        assert!(joined.contains(cpus), "{cpus}: {last}");
+    }
+    let alpha = last.lines().position(|l| l.starts_with("alpha")).unwrap();
+    let bravo = last.lines().position(|l| l.starts_with("bravo")).unwrap();
+    let alpha_row: String = last.lines().skip(alpha).take(bravo - alpha).collect();
+    assert!(alpha_row.contains(" 4 "), "alpha's 4: {alpha_row}");
+}
+
+#[test]
+fn wide_characters_end_their_column_at_the_same_display_column() {
+    use unicode_width::UnicodeWidthStr;
+    let text = printed(&mut crews(), &Layout::default(), Format::Aligned);
+    let lines: Vec<&str> = text.lines().collect();
+    // Where the column after `column` starts: one past its widest cell and
+    // the two spaces, by display width.
+    let next = |line: &str, after: &str| {
+        let end = line.find(after).unwrap() + after.len();
+        let rest = &line[end..];
+        UnicodeWidthStr::width(&line[..end]) + (rest.len() - rest.trim_start().len())
+    };
+    let hotel = lines.iter().find(|l| l.starts_with("hotel")).unwrap();
+    let india = lines.iter().find(|l| l.starts_with("india")).unwrap();
+    let alpha = lines.iter().find(|l| l.starts_with("alpha")).unwrap();
+    let phase = next(hotel, "hotel 日本");
+    assert_eq!(
+        phase,
+        "hotel 日本".width() + 2,
+        "the widest name sets the width"
+    );
+    assert_eq!(next(india, "india 🚢"), phase);
+    assert_eq!(next(alpha, "alpha"), phase);
+    // The Host column after its widest, 東京, and 🚢🚢 ok in note.
+    let host_at = |line: &str, value: &str| {
+        let byte = line.rfind(value).unwrap();
+        UnicodeWidthStr::width(&line[..byte])
+    };
+    assert_eq!(
+        host_at(hotel, "東京"),
+        host_at(alpha, "feta"),
+        "after first line"
+    );
+    let spec_at = |line: &str| host_at(line, "{");
+    assert_eq!(spec_at(hotel), spec_at(alpha), "after 東京");
+    assert_eq!(spec_at(india), spec_at(alpha), "after 🚢🚢 ok");
+}
+
+#[test]
+fn a_title_aligns_as_its_columns_cells() {
+    use unicode_width::UnicodeWidthStr;
+    let text = printed(&mut crews(), &Layout::default(), Format::Aligned);
+    let lines: Vec<&str> = text.lines().collect();
+    let end = |line: &str, value: &str| {
+        let byte = line.find(value).unwrap() + value.len();
+        UnicodeWidthStr::width(&line[..byte])
+    };
+    let start =
+        |line: &str, value: &str| UnicodeWidthStr::width(&line[..line.find(value).unwrap()]);
+    let echo = lines.iter().find(|l| l.starts_with("echo")).unwrap();
+    assert_eq!(
+        end(lines[0], "CPUs"),
+        end(echo, "18446744073709551615"),
+        "a number column's, right"
+    );
+    assert_eq!(end(lines[0], "Load"), end(echo, "2%"));
+    assert_eq!(
+        start(lines[0], "Phase"),
+        start(echo, "Done"),
+        "a text column's, left"
+    );
 }

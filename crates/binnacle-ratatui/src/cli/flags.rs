@@ -4,14 +4,15 @@
 
 use std::fmt;
 
+use binnacle_core::{Axis, Compared, Key};
 use binnacle_format::Timestamp;
 use binnacle_layout::view::{
     Comparison, Condition, ConditionKind, Direction, Scalar, SortColumn, TextMatch,
 };
 use binnacle_layout::{JsonId, Layout};
 
-use super::Interactive;
 use super::print::Format;
+use super::{CliTable, Interactive};
 
 /// A flag the parser could not take: unknown, without its value, or with a
 /// malformed one.
@@ -143,14 +144,71 @@ impl Flags {
         self.apply_with(base, fields, |_| None)
     }
 
+    /// `base` patched with these flags for `source`
+    /// ([`Flags::apply_with`] with its fields), each `--where` comparison
+    /// checked against the column it names: one the column can't apply
+    /// (`phase>3` on a string column, or a date on a number column) is an
+    /// error naming the column and its type, as the source would leave it
+    /// not applied.
+    pub fn apply_to<T: CliTable>(
+        &self,
+        source: &mut T,
+        base: &Layout<JsonId, JsonId>,
+        views: impl Fn(&str) -> Option<Layout<JsonId, JsonId>>,
+    ) -> Result<Layout<JsonId, JsonId>, FlagError> {
+        let columns: Vec<(Key, String)> = (source.columns().into_iter())
+            .map(|c| (c, source.field(c)))
+            .collect();
+        let fields: Vec<String> = columns.iter().map(|(_, f)| f.clone()).collect();
+        let layout = self.apply_with(base, &fields, views)?;
+        for clause in &self.wheres {
+            let condition = parse_where(clause)?;
+            let ConditionKind::Compare { comparison } = &condition.kind else {
+                continue;
+            };
+            let field = condition.id.value().as_str().unwrap_or_default();
+            let Some(&(col, _)) = columns.iter().find(|(_, f)| f == field) else {
+                continue;
+            };
+            let (Comparison::Equal { value }
+            | Comparison::NotEqual { value }
+            | Comparison::Less { value }
+            | Comparison::AtMost { value }
+            | Comparison::Greater { value }
+            | Comparison::AtLeast { value }
+            | Comparison::Between { low: value, .. }) = comparison;
+            let wanted = match value {
+                Scalar::Number { .. } => Compared::Numbers,
+                Scalar::Date { .. } => Compared::Dates,
+            };
+            if source.support(Axis::Rows, col).compare != Some(wanted) {
+                let what = match wanted {
+                    Compared::Numbers => "a number",
+                    Compared::Dates => "a date",
+                };
+                return error(format!(
+                    "--where: `{field}` is a {} column, which can't be compared with {what} in `{clause}`",
+                    source.type_name(col)
+                ));
+            }
+        }
+        Ok(layout)
+    }
+
     /// `base` patched with these flags, the table having `fields`:
     /// `--view` swaps the base for the view `views` finds by name, `--wide`
     /// empties the columns' hidden, `--columns a,b` sets the columns'
-    /// order to `[a, b]` and hides every other field, `--sort` sets the
+    /// order to `[a, b]` and hides every other field (and the pins follow
+    /// it: see below), `--sort` sets the
     /// rows' sort and `--where` adds conditions to the rows' filter. Each
     /// leaves every other part of the base as it was. With both `--wide`
-    /// and `--columns`, `--columns` wins, in either order. A field the
-    /// table lacks, or a view not found, is an error.
+    /// and `--columns`, `--columns` wins, in either order. With
+    /// `--columns`, the columns draw in exactly its order: the base's
+    /// column pins on fields it leaves out go, and those on fields it names
+    /// move to its first (leading) or last (trailing) fields, as many as
+    /// there were. A field the table lacks, or a view not found, is an
+    /// error. Comparisons are not checked against the column's type here;
+    /// [`Flags::apply_to`] does.
     pub fn apply_with(
         &self,
         base: &Layout<JsonId, JsonId>,
@@ -180,6 +238,17 @@ impl Flags {
                 .filter(|f| !columns.contains(f))
                 .map(|f| JsonId::from(f.as_str()))
                 .collect();
+            // The list's order wins: as many of its first columns are pinned
+            // leading as the base pinned leading among those it names, and
+            // likewise its last trailing, so pinned columns, which draw
+            // first and last, still draw in its order.
+            if let Some(pins) = layout.pins.as_mut() {
+                let named = |pinned: &[JsonId]| pinned.iter().filter(|p| order.contains(p)).count();
+                let leading = named(&pins.cols.leading);
+                let trailing = named(&pins.cols.trailing).min(order.len() - leading);
+                pins.cols.leading = order[..leading].to_vec();
+                pins.cols.trailing = order[order.len() - trailing..].to_vec();
+            }
             let mut set = layout.order.take().unwrap_or_default();
             set.cols = Some(order);
             layout.order = Some(set);

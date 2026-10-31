@@ -25,6 +25,10 @@ ratatui.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# Restores the terminal on SIGINT, SIGTERM and SIGHUP in the inline table.
+signal-hook = "0.3"
+
 [dev-dependencies]
 binnacle-testkit.workspace = true
 hegeltest.workspace = true

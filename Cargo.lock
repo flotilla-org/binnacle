@@ -255,6 +255,7 @@ dependencies = [
  "ratatui",
  "regex",
  "serde_json",
+ "signal-hook",
  "unicode-width",
 ]
 
