@@ -37,6 +37,7 @@ export type TypedValue =
   | Uint8Array
   | { instant: bigint }
   | { category: string; label?: string }
+  /** A JSON tree; an integer in it past 2^53 is a `bigint` (see `DescribedJson`). */
   | { nested: unknown }
   | { invalid: string; expected: ValueType };
 

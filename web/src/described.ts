@@ -36,9 +36,17 @@ export interface DescribedScope {
   wheres?: string[];
 }
 
+/**
+ * JSON as the wasm side hands it over: an integer past 2^53 (up to `u64::MAX`, down to
+ * `i64::MIN`) is a `bigint`, so it is exact; any other number is a `number`.
+ */
+export type DescribedJson = null | boolean | number | bigint | string | DescribedJson[] | { [key: string]: DescribedJson };
+
 export interface DescribedOptions {
   /** The zone its dates draw in, and filters and find match them in; the runtime's local zone by default. */
   zone?: Zone;
+  /** Called after a `feed` or `ended` that met messages which did not decode, with the latest one's text. */
+  onError?: (message: string) => void;
 }
 
 /** The watch a Described Table asks its host to open: `GET {target}`. */
@@ -98,6 +106,8 @@ export interface DescribedStatus {
   reconnects: number;
   /** How many messages did not decode, and were skipped. */
   decodeErrors: number;
+  /** The text of the latest message that did not decode, or `null`. */
+  lastDecodeError: string | null;
 }
 
 /** A Described Table: its Table Source, and what its host feeds it. */
@@ -114,9 +124,9 @@ export interface DescribedTable {
   status(): DescribedStatus;
   columns(): DescribedColumn[];
   /** Property `name` of `field` as the schema sent it, or `undefined`. */
-  property(field: string, name: string): unknown;
-  /** The primary-key tuple of the row with this ID, or `undefined`. */
-  rowKey(rowId: bigint): unknown[] | undefined;
+  property(field: string, name: string): DescribedJson | undefined;
+  /** The primary-key tuple of the row with this ID, or `undefined`. A part past 2^53 is a `bigint`. */
+  rowKey(rowId: bigint): DescribedJson[] | undefined;
   /** The Layout every Described Table starts from: Nested columns hidden, key and state columns pinned leading. */
   defaultLayout(): Layout<bigint, string>;
   /** Called after each `feed` and `ended`; returns how to unsubscribe. */
@@ -131,10 +141,11 @@ interface Fed {
   view: { spec: KeyedViewSpec; totals: Totals } | null;
   columnsChanged: boolean;
   resyncs: number;
-  errors: string[];
+  errors: number;
+  latestError: string | null;
 }
 
-type WasmStatus = Omit<DescribedStatus, "resyncs" | "reconnects" | "decodeErrors">;
+type WasmStatus = Omit<DescribedStatus, "resyncs" | "reconnects" | "decodeErrors" | "lastDecodeError">;
 
 const AXIS_NAMES: readonly AxisName[] = ["rows", "cols"];
 
@@ -217,7 +228,7 @@ const located = ([code, position]: Float64Array): Located =>
  * column's unit and role. An empty namespace throws.
  */
 export function fromDescribed(table: string, scope: DescribedScope, options: DescribedOptions = {}): DescribedTable {
-  const { zone } = options;
+  const { zone, onError } = options;
   let wasm: WebDescribed | undefined = new (bridge().WebDescribed)(table, scope.namespace, scope.wheres ?? [], zone);
   const live = (): WebDescribed => {
     if (!wasm) throw new Error("binnacle: this described table was destroyed");
@@ -228,7 +239,7 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
   let byKey = new Map<bigint, DescribedColumn>();
   /** One renderer per column, made again only when its type, unit or roles change. */
   const renderers = new Map<string, { made: string; renderer: CellRenderer<TypedValue> }>();
-  const counts = { resyncs: 0, reconnects: 0, decodeErrors: 0 };
+  const counts = { resyncs: 0, reconnects: 0, decodeErrors: 0, lastDecodeError: null as string | null };
   const sinks = new Set<TableSink<bigint, string>>();
   /** The View Spec applied last and its totals, which change as rows come and go. */
   let applied: { spec: KeyedViewSpec; totals: Totals } | null = null;
@@ -336,8 +347,13 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
 
   const fed = (r: Fed) => {
     counts.resyncs += r.resyncs;
-    counts.decodeErrors += r.errors.length;
+    counts.decodeErrors += r.errors;
     const calls: (() => void)[] = [];
+    if (r.latestError !== null) {
+      const message = r.latestError;
+      counts.lastDecodeError = message;
+      if (onError) calls.push(() => onError(message));
+    }
     if (r.columnsChanged) {
       // The names and Keys are rebuilt before any notice or View Spec is told,
       // so nothing below drops a column the new schema has.
@@ -476,9 +492,9 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
     columns: () => live().columns() as DescribedColumn[],
     property(field, name) {
       const key = colKey(field);
-      return key === undefined ? undefined : (live().property(key, name) as unknown);
+      return key === undefined ? undefined : (live().property(key, name) as DescribedJson | undefined);
     },
-    rowKey: (rowId) => live().rowTuple(rowId) as unknown[] | undefined,
+    rowKey: (rowId) => live().rowTuple(rowId) as DescribedJson[] | undefined,
     defaultLayout: () => live().defaultLayout() as Layout<bigint, string>,
     onChange(listener) {
       listeners.add(listener);

@@ -65,7 +65,10 @@ struct WireFed {
     view: Option<WireView>,
     columns_changed: bool,
     resyncs: u32,
-    errors: Vec<String>,
+    /// How many messages did not decode.
+    errors: u32,
+    /// The text of the latest that did not.
+    latest_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -227,11 +230,36 @@ fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsError> {
     serde_wasm_bindgen::from_value(value).map_err(js_error)
 }
 
+/// The largest integer a JavaScript number holds exactly.
+const MAX_SAFE: u64 = (1 << 53) - 1;
+
 /// JSON as JavaScript reads it: objects, not maps, and every number a
-/// number.
+/// number but an integer past 2^53, which is a `bigint`, so it crosses
+/// exactly.
 fn json_to_js(json: &serde_json::Value) -> JsValue {
-    json.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .unwrap_or(JsValue::UNDEFINED)
+    use serde_json::Value as Json;
+    match json {
+        Json::Null => JsValue::NULL,
+        Json::Bool(b) => JsValue::from_bool(*b),
+        Json::Number(n) => match (n.as_i64(), n.as_u64()) {
+            (Some(i), _) if i.unsigned_abs() > MAX_SAFE => JsValue::from(i),
+            (_, Some(u)) if u > MAX_SAFE => JsValue::from(u),
+            _ => JsValue::from_f64(n.as_f64().unwrap_or(f64::NAN)),
+        },
+        Json::String(s) => JsValue::from_str(s),
+        Json::Array(items) => items
+            .iter()
+            .map(json_to_js)
+            .collect::<js_sys::Array>()
+            .into(),
+        Json::Object(fields) => {
+            let o = js_sys::Object::new();
+            for (k, v) in fields {
+                set(&o, k, &json_to_js(v));
+            }
+            o.into()
+        }
+    }
 }
 
 fn set(object: &js_sys::Object, key: &str, value: &JsValue) {
@@ -623,7 +651,8 @@ struct Fed {
     notices: Vec<(Axis, binnacle_core::ChangeNotice)>,
     columns_changed: bool,
     resyncs: u32,
-    errors: Vec<String>,
+    errors: u32,
+    latest_error: Option<String>,
 }
 
 impl Fed {
@@ -634,7 +663,11 @@ impl Fed {
     ) {
         let message = match message {
             Ok(m) => m,
-            Err(e) => return self.errors.push(e.to_string()),
+            Err(e) => {
+                self.errors = self.errors.saturating_add(1);
+                self.latest_error = Some(e.to_string());
+                return;
+            }
         };
         match &message {
             Message::Table(_) => self.columns_changed = true,
@@ -660,6 +693,7 @@ impl Fed {
             columns_changed: self.columns_changed,
             resyncs: self.resyncs,
             errors: self.errors,
+            latest_error: self.latest_error,
         });
         let mut notices = self.notices;
         notices.extend(more);
