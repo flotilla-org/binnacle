@@ -1,0 +1,14 @@
+---
+source: crates/binnacle-described/tests/cli.rs
+expression: text
+---
+name	phase	started	cpus	load	note	host	spec
+alpha	Running	2026-10-29T10:00:00.000000002Z	4	0.5		feta	{"image":"rust"}
+bravo			2	1.25		feta	{}
+charlie	Stalled	soon	many		check disk	brie	{}
+delta	Running	2026-10-28T09:00:00.000000000Z		3.5		brie	{}
+echo	Done	2026-10-29T10:00:00.000000001Z	18446744073709551615	2	late		{}
+foxtrot	Running	2026-10-27T00:00:00.000000000Z	8	high		feta	{"image":"zig"}
+hotel 日本	Running		16	12.5	first line\nsecond line	東京	{}
+india 🚢	Done		3		🚢🚢 ok		{"a":[1]}
+juliet							{}

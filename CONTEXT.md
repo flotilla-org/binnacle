@@ -68,6 +68,10 @@ _Avoid_: Described grid, table handle
 A Described Table source starting its rows again without showing the table empty: after a `resync` message, or when its stream ends and it asks to open the watch again, every row is unconfirmed; the `table`, `rows` and `synced` that follow replace the rows in place, each row that comes confirmed and keeping its Key, and `synced` removes those still unconfirmed. A page that changes more than 256 held rows at once applies as one Reset, so rows the user moved go back to the source's order. A `table` message once the columns are known is diffed by field name the same way.
 _Avoid_: Reload, refresh, reconnect (for the whole)
 
+**Selection**:
+What the CLI's inline table hands back when the user presses Enter: the picked rows' Keys if any are picked, else the focused row's. Esc or `q` hands back none, as does Enter in an empty table. `cli::Selection` in `binnacle-ratatui`.
+_Avoid_: Choice, result, pick (for the whole)
+
 **Fake Table Server**:
 `fake-tables` in `binnacle-testkit` (behind the feature of that name): a stand-in for flotillad's table API, serving recorded fixtures or generated tables, and playing a script of live changes (upserts, deletes, resyncs, schema changes, stream ends, slowness and errors) to its watches, for tests in process and for demos as a binary.
 _Avoid_: Mock server, stub, test server

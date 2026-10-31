@@ -85,6 +85,23 @@ impl Timestamp {
         Timestamp::from_unix_nanos(self.unix_nanos().saturating_add(d))
     }
 
+    /// The instant in RFC 3339, in UTC with nanoseconds:
+    /// `2026-10-29T14:03:00.000000000Z`. [`Timestamp::parse_rfc3339`]
+    /// reads it back for the years RFC 3339 has, 0000 to 9999; an instant
+    /// outside them writes its year as it is (`-001`, `10000`), which is
+    /// not RFC 3339.
+    pub fn to_rfc3339(self) -> String {
+        let (y, mo, d) = civil_from_days(self.secs.div_euclid(86_400));
+        let s = self.secs.rem_euclid(86_400);
+        format!(
+            "{y:04}-{mo:02}-{d:02}T{:02}:{:02}:{:02}.{:09}Z",
+            s / 3600,
+            s / 60 % 60,
+            s % 60,
+            self.nanos
+        )
+    }
+
     /// Reads an RFC 3339 instant: `2026-10-29T14:03:00Z`, with optional
     /// fractional seconds and a `Z` or `±HH:MM` offset.
     pub fn parse_rfc3339(s: &str) -> Option<Timestamp> {

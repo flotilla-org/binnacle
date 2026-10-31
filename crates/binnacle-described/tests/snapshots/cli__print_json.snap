@@ -1,0 +1,15 @@
+---
+source: crates/binnacle-described/tests/cli.rs
+expression: text
+---
+[
+{"name":"alpha","phase":"Running","started":"2026-10-29T10:00:00.000000002Z","cpus":4,"load":0.5,"note":"","host":"feta","spec":{"image":"rust"}},
+{"name":"bravo","phase":null,"started":null,"cpus":2,"load":1.25,"note":null,"host":"feta","spec":{}},
+{"name":"charlie","phase":"Stalled","started":"soon","cpus":"many","load":null,"note":"check disk","host":"brie","spec":{}},
+{"name":"delta","phase":"Running","started":"2026-10-28T09:00:00.000000000Z","cpus":null,"load":3.5,"note":"","host":"brie","spec":{}},
+{"name":"echo","phase":"Done","started":"2026-10-29T10:00:00.000000001Z","cpus":18446744073709551615,"load":2.0,"note":"late","host":null,"spec":{}},
+{"name":"foxtrot","phase":"Running","started":"2026-10-27T00:00:00.000000000Z","cpus":8,"load":"high","note":null,"host":"feta","spec":{"image":"zig"}},
+{"name":"hotel 日本","phase":"Running","started":null,"cpus":16,"load":12.5,"note":"first line\nsecond line","host":"東京","spec":{}},
+{"name":"india 🚢","phase":"Done","started":null,"cpus":3,"load":null,"note":"🚢🚢 ok","host":null,"spec":{"a":[1]}},
+{"name":"juliet","phase":null,"started":null,"cpus":null,"load":null,"note":null,"host":null,"spec":{}}
+]
