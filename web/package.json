@@ -29,7 +29,8 @@
     "typecheck": "pnpm wasm && tsc --noEmit",
     "test": "pnpm wasm && vitest run && pnpm test:wasm",
     "test:wasm": "wasm-pack test --node ../crates/binnacle-wasm",
-    "e2e": "pnpm build && playwright test"
+    "e2e": "pnpm build && playwright test",
+    "fake-tables": "cargo run -p binnacle-testkit --features fake-tables --bin fake-tables -- --fixture ../crates/binnacle-described/tests/fixtures/crews.ndjson --fixture ../crates/binnacle-described/tests/data/rows-hosts.ndjson --fixture ../crates/binnacle-described/tests/data/rows-repositories.ndjson --fixture ../crates/binnacle-described/tests/data/watch-vessels.ndjson --generate big:10050 --script demo/data/described-demo.jsonl"
   },
   "peerDependencies": {
     "react": ">=18"
