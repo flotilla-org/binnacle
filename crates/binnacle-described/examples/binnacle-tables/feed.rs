@@ -65,7 +65,7 @@ pub fn drain(
                 }
             }
             Wire::Undecodable(e) => {
-                notes.undecodable += 1;
+                notes.undecodable = notes.undecodable.saturating_add(1);
                 notes.latest = Some(e.to_string());
             }
             Wire::Retrying {

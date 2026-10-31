@@ -359,7 +359,11 @@ pub fn render_with(
         let clip = (span.start, end.min(span.end), 0.0, f32::INFINITY);
         let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
         let label = match h.key.map(|k| content.column_align(k)) {
-            Some(binnacle_format::Align::End) => format!("{label:>room$}").into(),
+            Some(binnacle_format::Align::End) => {
+                use unicode_width::UnicodeWidthStr;
+                let blank = room.saturating_sub(label.width());
+                format!("{}{label}", " ".repeat(blank)).into()
+            }
             _ => label,
         };
         // In header form a header starts past the tiers its spans take,

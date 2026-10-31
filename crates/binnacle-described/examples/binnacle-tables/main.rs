@@ -29,9 +29,9 @@
 //! stderr, still exiting 0, so stdout holds only the table; the viewport's
 //! status line says "10,000 of more rows" (or, under a filter,
 //! "90 shown of 10,000 read, more on the server"). A live message that
-//! can't be decoded shows on the status line, or on stderr when piped. Ctrl-C, or SIGINT, SIGTERM or
-//! SIGHUP, leaves the viewport choosing nothing and exits 128 and the
-//! signal's number (130 for Ctrl-C).
+//! can't be decoded shows on the status line, or on stderr when piped.
+//! Ctrl-C, or SIGINT, SIGTERM or SIGHUP, leaves the viewport choosing
+//! nothing and exits 128 and the signal's number (130 for Ctrl-C).
 //!
 //! Run it with
 //! `cargo run -p binnacle-described --example binnacle-tables -- crates/binnacle-described/tests/data/rows-hosts.ndjson`,

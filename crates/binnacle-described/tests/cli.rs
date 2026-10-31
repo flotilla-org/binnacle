@@ -842,9 +842,16 @@ fn the_viewport_of_a_partial_table_says_of_more() {
 /// fresh.
 fn example() -> std::path::PathBuf {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    // The binary is looked up beside this test's, so in its profile.
+    let profile = if cfg!(debug_assertions) {
+        "--profile=dev"
+    } else {
+        "--release"
+    };
     let built = std::process::Command::new(cargo)
         .args([
             "build",
+            profile,
             "-p",
             "binnacle-described",
             "--example",
