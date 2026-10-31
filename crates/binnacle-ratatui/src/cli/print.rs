@@ -52,14 +52,15 @@ impl FromStr for Format {
 /// every row, in the source's order, under the columns the Grid draws
 /// (leading pins, the rest, trailing pins), less the hidden. A partial
 /// table ([`CliTable::partial`]) prints the rows that came, then a line
-/// saying so ([`partial_note`]) to `note`, the host's stderr, so `out`
-/// stays the table's alone.
+/// saying so ([`partial_note`], with the host's `hint`) to `note`, the
+/// host's stderr, so `out` stays the table's alone.
 pub fn print<T: CliTable>(
     source: &mut T,
     layout: &Layout<JsonId, JsonId>,
     format: Format,
     out: &mut impl Write,
     note: &mut impl Write,
+    hint: Option<&str>,
 ) -> io::Result<()> {
     let grid = headless(source, layout);
     let count = source.count(Axis::Rows);
@@ -68,17 +69,28 @@ pub fn print<T: CliTable>(
     print_rows(source, &rows, &cols, format, out)?;
     if let Some(came) = source.partial() {
         out.flush()?;
-        writeln!(note, "{}", partial_note(came))?;
+        writeln!(note, "{}", partial_note(count, came, hint))?;
     }
     Ok(())
 }
 
-/// What [`print`] says of a partial table of which `came` rows came.
-pub fn partial_note(came: u64) -> String {
-    format!(
-        "showing the first {} rows; the table has more (narrow it with --where)",
-        super::thousands(came)
-    )
+/// What [`print`] says of a partial table of which `read` rows came and
+/// `shown` show (fewer under a filter). The library doesn't know the host's
+/// flags, so the advice on reading more is the host's `hint`, if it has
+/// one, added after the note.
+pub fn partial_note(shown: u64, read: u64, hint: Option<&str>) -> String {
+    let rows = match shown == read {
+        true => format!("showing {} rows read", super::thousands(read)),
+        false => format!(
+            "showing {} of {} rows read",
+            super::thousands(shown),
+            super::thousands(read)
+        ),
+    };
+    match hint {
+        Some(hint) => format!("{rows}; the table has more; {hint}"),
+        None => format!("{rows}; the table has more"),
+    }
 }
 
 /// A Grid over `source` with `layout` restored and every Effect answered.
@@ -191,19 +203,9 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
         .map(|(i, &c)| {
             let title = Value::Text(first_line(&source.header(c)).to_owned());
             let f = format(&title, None, Role::None, &options, &ctx);
-            let (mut end, mut start) = (0, 0);
-            for (&row, line) in rows.iter().zip(&lines) {
-                match (source.value(row, c), line[i].1) {
-                    (Value::Null, _) => {}
-                    (_, Align::End) => end += 1,
-                    (_, Align::Start) => start += 1,
-                }
-            }
-            let align = if end > start {
-                Align::End
-            } else {
-                Align::Start
-            };
+            let cells =
+                (rows.iter().zip(&lines)).map(|(&row, line)| (source.value(row, c), line[i].1));
+            let align = majority(cells);
             (f.text, align)
         })
         .collect();
@@ -225,6 +227,45 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
                 }
             }
             line.trim_end().to_owned()
+        })
+        .collect()
+}
+
+/// Which side a column's title aligns on: the side most of its non-null
+/// cells do, start on a tie. `cells` are the values and their alignments.
+fn majority(cells: impl IntoIterator<Item = (Value, Align)>) -> Align {
+    let (mut end, mut start) = (0, 0);
+    for (value, align) in cells {
+        match (value, align) {
+            (Value::Null, _) => {}
+            (_, Align::End) => end += 1,
+            (_, Align::Start) => start += 1,
+        }
+    }
+    if end > start {
+        Align::End
+    } else {
+        Align::Start
+    }
+}
+
+/// The alignment of each of `cols`' titles over `rows`, as [`aligned`]'s.
+pub(crate) fn title_aligns<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Vec<Align> {
+    let options = FormatOptions {
+        plain: true,
+        time: Some(TimeStyle::Absolute),
+        ..FormatOptions::default()
+    };
+    let zone = FixedOffset(0);
+    let ctx = FormatContext::new(Timestamp::UNIX_EPOCH, &zone);
+    (cols.iter())
+        .map(|&c| {
+            let unit = source.unit(c);
+            majority(rows.iter().map(|&row| {
+                let value = cut(source.value(row, c));
+                let f = format(&value, unit.as_deref(), source.role(c), &options, &ctx);
+                (source.value(row, c), f.align)
+            }))
         })
         .collect()
 }

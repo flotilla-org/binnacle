@@ -4,7 +4,7 @@ expression: "frames[0]"
 ---
 
 
- Name      │Phase     │Started   │CPUs      │Load      │note      │Host      │Spec      │
+ Name      │Phase     │   Started│      CPUs│      Load│note      │Host      │Spec      │
 1alpha      Running         in 9h          4       0.5%            feta       {"image":…           █
 2bravo      ∅          ∅                   2      1.25% ∅          feta       {}                   █
 3charlie    Stalled    !soon      !many      ∅          check disk brie       {}                   █

@@ -27,9 +27,11 @@
 //!
 //! A table over the row cap prints the rows that came and then says so on
 //! stderr, still exiting 0, so stdout holds only the table; the viewport's
-//! status line says "10,000 of more rows". Ctrl-C, or SIGINT, SIGTERM or
-//! SIGHUP, leaves the viewport choosing nothing and exits 128 and the
-//! signal's number (130 for Ctrl-C).
+//! status line says "10,000 of more rows" (or, under a filter,
+//! "90 shown of 10,000 read, more on the server"). A live message that
+//! can't be decoded shows on the status line, or on stderr when piped.
+//! Ctrl-C, or SIGINT, SIGTERM or SIGHUP, leaves the viewport choosing
+//! nothing and exits 128 and the signal's number (130 for Ctrl-C).
 //!
 //! Run it with
 //! `cargo run -p binnacle-described --example binnacle-tables -- crates/binnacle-described/tests/data/rows-hosts.ndjson`,
@@ -39,18 +41,20 @@
 #[allow(dead_code)]
 mod table;
 
+mod feed;
+
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use binnacle_core::{Axis, ChangeNotice};
-use binnacle_described::{DescribedSource, Received, Scope};
-use binnacle_described_http::{Auth, Blocking, Endpoint, Event as Wire, Options};
+use binnacle_described::{DescribedSource, Scope};
+use binnacle_described_http::{Auth, Blocking, Endpoint, Options};
 use binnacle_format::Timestamp;
 use binnacle_layout::IdMap;
 use binnacle_ratatui::cli::{Exit, Flags, InlineOptions, Live, print, run_inline};
 
+use feed::{Notes, drain};
 use table::Tables;
 
 /// Where the rows come from.
@@ -136,69 +140,13 @@ fn rows(args: Vec<String>) -> Rows {
 /// coming, the viewport doesn't wait for input between frames.
 const BUDGET: Duration = Duration::from_millis(30);
 
+/// What a partial table's note adds: `--where` only filters the rows
+/// already read, so the way to more of them is the server's own read.
+const PARTIAL_HINT: &str = "narrow the server's read with --scope-where";
+
 /// How many failed attempts in a row a print (not a terminal) retries
 /// before it gives up: about 4 s with the default backoff.
 const PRINT_RETRIES: u32 = 4;
-
-/// Feeds `source` the events waiting on `transport`, for up to [`BUDGET`],
-/// opening the watch again after an end, and keeps `note` saying whether
-/// the transport is reconnecting; returns the Change Notices, or the
-/// server's answer if it refused the watch or the retries ran out.
-fn drain(
-    source: &mut DescribedSource,
-    transport: &Blocking,
-    note: &RefCell<Option<String>>,
-) -> Result<Vec<(Axis, ChangeNotice)>, String> {
-    let mut notices = Vec::new();
-    let until = Instant::now() + BUDGET;
-    while Instant::now() < until {
-        let Some(event) = transport.try_recv() else {
-            break;
-        };
-        match event {
-            Wire::Message(message) => {
-                note.take();
-                if let Received::Applied(n) = source.receive(message) {
-                    notices.extend(n);
-                }
-            }
-            Wire::Retrying {
-                attempt,
-                wait,
-                status,
-                body,
-            } => {
-                // The body's first line says why, when the server gave one.
-                let body = String::from_utf8_lossy(&body);
-                let body = body.lines().map(str::trim).find(|l| !l.is_empty());
-                let why = match (status, body) {
-                    (Some(status), Some(body)) => format!("{status} {body}"),
-                    (Some(status), None) => status.to_string(),
-                    (None, body) => body.unwrap_or_default().to_owned(),
-                };
-                let wait = wait.as_millis();
-                *note.borrow_mut() = Some(format!(
-                    "reconnecting ({why}), retry {attempt} in {wait} ms"
-                ));
-            }
-            Wire::Ended => {
-                source.ended();
-            }
-            Wire::Failed { status, body } => {
-                let body = String::from_utf8_lossy(&body);
-                return Err(match status {
-                    0 => body.into_owned(),
-                    status => format!("{status} {body}"),
-                });
-            }
-            _ => {}
-        }
-        if let Some(request) = source.poll_request() {
-            transport.open(request);
-        }
-    }
-    Ok(notices)
-}
 
 fn main() -> io::Result<()> {
     let (flags, rest) =
@@ -206,7 +154,7 @@ fn main() -> io::Result<()> {
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
     let origin = Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128));
     let interactive = flags.interactive.now();
-    let note = RefCell::new(None);
+    let notes = RefCell::new(Notes::default());
     let (mut tables, transport) = match rows(rest) {
         Rows::Fixture(path) => {
             let tables = Tables::load(&path, origin).unwrap_or_else(|e| fail(&e));
@@ -231,8 +179,15 @@ fn main() -> io::Result<()> {
                 if let Some(request) = tables.source.poll_request() {
                     transport.open(request);
                 }
-                drain(&mut tables.source, &transport, &note).unwrap_or_else(|e| fail(&e));
-                let now = note.borrow().clone();
+                let fed = drain(
+                    &mut tables.source,
+                    || transport.try_recv(),
+                    |request| transport.open(request),
+                    &mut notes.borrow_mut(),
+                    BUDGET,
+                );
+                fed.unwrap_or_else(|e| fail(&e));
+                let now = notes.borrow().reconnecting.clone();
                 if now.is_some() && now != said {
                     eprintln!("binnacle-tables: {}", now.as_deref().unwrap_or_default());
                 }
@@ -255,9 +210,19 @@ fn main() -> io::Result<()> {
         let mut out = io::stdout().lock();
         let format = flags.format.unwrap_or_default();
         let mut note = Vec::new();
-        let printed = print(&mut tables.source, &layout, format, &mut out, &mut note)
-            .and_then(|()| out.flush());
+        let printed = print(
+            &mut tables.source,
+            &layout,
+            format,
+            &mut out,
+            &mut note,
+            Some(PARTIAL_HINT),
+        )
+        .and_then(|()| out.flush());
         for line in String::from_utf8_lossy(&note).lines() {
+            eprintln!("binnacle-tables: {line}");
+        }
+        if let Some(line) = notes.borrow().corrupted() {
             eprintln!("binnacle-tables: {line}");
         }
         return match printed {
@@ -269,17 +234,23 @@ fn main() -> io::Result<()> {
     // restored, as exiting in raw mode would leave the shell in it.
     let failed = RefCell::new(None);
     let failed_ref = &failed;
-    let note = &note;
+    let notes = &notes;
     let live = transport.map(|transport| -> Live<'_, DescribedSource> {
         Box::new(move |source: &mut DescribedSource| {
-            drain(source, &transport, note)
-                .map_err(|e| *failed_ref.borrow_mut() = Some(e))
-                .ok()
+            drain(
+                source,
+                || transport.try_recv(),
+                |request| transport.open(request),
+                &mut notes.borrow_mut(),
+                BUDGET,
+            )
+            .map_err(|e| *failed_ref.borrow_mut() = Some(e))
+            .ok()
         })
     });
     let options = InlineOptions {
         live,
-        note: Some(Box::new(|| note.borrow().clone())),
+        note: Some(Box::new(|| notes.borrow().line())),
         origin: Some(origin),
         ..InlineOptions::default()
     };
