@@ -6,6 +6,8 @@
 // Text, and the watch's state through `#described-status`'s data
 // attributes, never through font metrics.
 
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures/fake-tables";
 
@@ -170,6 +172,49 @@ test("an added field comes last, and the sort and focus hold", async ({ page, fa
   await expect(cpus).toHaveAttribute("aria-sort", "ascending");
   await expect(row(page, "alpha").last()).toHaveText("eu");
   await expect(status(page)).toHaveAttribute("data-focus", '["delta"]');
+});
+
+test("a server that dies mid-stream ends the watch through the proxy, and the page reconnects", async ({ page, fake }) => {
+  await crews(page, `&server=${fake.url}`);
+  fake.kill();
+  await expect(status(page)).toHaveAttribute("data-reconnects", "1");
+  await expect(status(page)).toHaveAttribute("data-state", "reconnecting");
+  // The rows already read stay.
+  await expect(count(page)).toHaveText("6 rows");
+});
+
+test("a loopback server that is not a table server stops the watch with the reason", async ({ page }) => {
+  // It lists a table, then answers its watch with a page, not a rows stream.
+  const server = createServer((req, res) => {
+    if (req.url === "/tables") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ kinds: [{ tables: ["crews"] }] }));
+    } else {
+      res.setHeader("Content-Type", "text/html");
+      res.end("<html></html>");
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    await page.goto(`/?source=described&table=crews&server=http://127.0.0.1:${port}`);
+    await expect(status(page)).toHaveAttribute("data-state", "error");
+    await expect(status(page)).toContainText("error 200: no rows stream is text/html");
+  } finally {
+    server.close();
+  }
+});
+
+test("a long status is cut to fit, never pushing the source names out of the banner", async ({ page, fake }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await crews(page, `&server=${fake.url}`);
+  fake.push({ step: "resync", table: "crews" });
+  await cell(page, 0);
+  await expect(status(page)).toHaveAttribute("data-resyncs", "1");
+  await expect(status(page)).toHaveAttribute("title", /reconnects 0 · focus \["alpha"\]$/);
+  const sources = page.getByRole("navigation", { name: "Source" });
+  const [scroll, client] = await sources.evaluate((n) => [n.scrollWidth, n.clientWidth]);
+  expect(scroll).toBeLessThanOrEqual(client!);
 });
 
 test("the proxy refuses a server that is not loopback", async ({ page }) => {

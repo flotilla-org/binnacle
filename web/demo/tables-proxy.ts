@@ -4,12 +4,15 @@
 // back as it comes. A browser can't reach a Unix socket, and `fake-tables`
 // sends no CORS headers. Only loopback and Unix sockets are allowed: the
 // dev server must never be an open proxy. A `unix:` server may name any
-// socket the user can reach: only same-origin script can set the header,
-// and the plugin runs in the dev server alone (`apply: "serve"`).
+// socket the user can reach. Vite's CORS lets any local origin
+// (`localhost` or `127.0.0.1`, any port) through, so script on any local
+// origin can set the header; the plugin runs in the dev server alone
+// (`apply: "serve"`).
 
 import { request, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pipeline } from "node:stream";
 import type { Plugin } from "vite";
 
 /** Where a request goes: a loopback host and port, or a Unix socket. */
@@ -52,8 +55,12 @@ function refuse(res: ServerResponse, status: number, code: string, message: stri
   res.end(JSON.stringify({ code, message }));
 }
 
-/** Forwards one request under `/tables`, streaming the answer back unbuffered. */
-function forward(req: IncomingMessage, res: ServerResponse, fallback: string): void {
+/**
+ * Forwards one request under `/tables`, streaming the answer back
+ * unbuffered. An answer that breaks off (the server died mid-stream) breaks
+ * off the response too, so the page sees its watch end.
+ */
+export function forward(req: IncomingMessage, res: ServerResponse, fallback: string): void {
   const named = req.headers["x-binnacle-server"];
   const upstream = upstreamOf(typeof named === "string" ? named : undefined, fallback);
   if (!upstream) return refuse(res, 400, "bad_server", BAD_SERVER);
@@ -70,7 +77,9 @@ function forward(req: IncomingMessage, res: ServerResponse, fallback: string): v
     if (type) res.setHeader("Content-Type", type);
     res.setHeader("Cache-Control", "no-store");
     res.flushHeaders();
-    answer.pipe(res);
+    pipeline(answer, res, (e) => {
+      if (e) res.destroy();
+    });
   });
   out.on("error", (e) => {
     if (res.headersSent) res.destroy();

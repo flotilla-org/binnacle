@@ -21,7 +21,6 @@ import {
   createFindBar,
   fromDescribed,
   GridWidget,
-  light,
   loadBinnacle,
   type BorderStyle,
   type DescribedTable,
@@ -30,7 +29,7 @@ import {
   type TypedValue,
 } from "../../src";
 import type { DemoSource, Look } from "./demo-source";
-import { errorMessage, watch, type WatchError, type WatchPhase } from "./described-watch";
+import { errorMessage, errorText, watch, type WatchError, type WatchPhase } from "./described-watch";
 
 const number = new Intl.NumberFormat("en");
 
@@ -107,6 +106,8 @@ export const described: DemoSource = {
       status.dataset.state = state;
       for (const [k, v] of Object.entries(data)) status.dataset[k] = v;
       status.textContent = text;
+      // The text is cut to fit the banner; the whole of it shows on hover.
+      status.title = text;
     };
 
     const show = async (name: string) => {
@@ -168,7 +169,7 @@ export const described: DemoSource = {
         if (s.partial) parts.push(`${number.format(s.rows)} of more`);
         parts.push(`${number.format(s.mismatches)} mismatches`, `resyncs ${s.resyncs}`, `reconnects ${s.reconnects}`);
         if (focus) parts.push(`focus ${JSON.stringify(focus)}`);
-        if (failure) parts.push(`error ${failure.status}: ${failure.message}`);
+        if (failure) parts.push(errorText(failure));
         say(state(), parts.join(" · "), {
           rows: String(s.rows),
           partial: String(s.partial),
@@ -224,13 +225,13 @@ export const described: DemoSource = {
       else say("error", "the server lists no tables");
     } catch (e) {
       const failure = e as Partial<WatchError>;
-      const text = failure.status ? `error ${failure.status}: ${failure.message}` : `error: ${String(e)}`;
-      say("error", text);
+      say("error", failure.status ? errorText({ status: failure.status, message: failure.message ?? "" }) : `error: ${String(e)}`);
     }
 
     return {
       get theme() {
-        return shown?.widget.theme ?? light;
+        if (shown) return shown.widget.theme;
+        return typeof theme === "function" ? theme(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : theme;
       },
       set theme(choice) {
         theme = choice;

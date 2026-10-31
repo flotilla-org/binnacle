@@ -324,3 +324,15 @@ footer {
 #layout { display: flex; align-items: center; gap: 6px; }
 #layout:empty { display: none; }
 #layout .layout-state { font-size: 12px; }
+
+/* The described source's watch status: cut to fit, so it never pushes the
+   source names out of the banner (the whole text is its title). */
+#described-status {
+  align-self: center;
+  max-width: 24em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

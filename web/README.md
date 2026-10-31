@@ -486,5 +486,7 @@ and a short script of live changes to `crews`), then `pnpm dev` in another,
 and open `http://127.0.0.1:5754/?source=described&table=crews`. With
 `&server=unix:~/.config/flotilla/run/flotilla.sock` it reads a real
 flotillad instead; the proxy forwards only to loopback servers and Unix
-sockets. A 4xx from the server stops the page's watch; reload to try
-again.
+sockets. A server that goes away mid-stream ends the watch, and the page
+reconnects. A 4xx, an answer that is not a rows stream, or an error from
+the grid itself stops the watch, with the reason in the status; reload to
+try again.

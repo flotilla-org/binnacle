@@ -8,10 +8,12 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test as base } from "@playwright/test";
 
-/** A running fake: its base URL, and how to add a step to its script. */
+/** A running fake: its base URL, how to add a step to its script, and how to kill it. */
 export interface Fake {
   url: string;
   push(step: object): void;
+  /** Kills the server at once, as a crash would, mid-stream. */
+  kill(): void;
 }
 
 const CREWS = "../crates/binnacle-described/tests/fixtures/crews.ndjson";
@@ -37,7 +39,11 @@ export const test = base.extend<{ fake: Fake }, { fakeBinary: string }>({
       child.on("error", reject);
       child.on("exit", (code) => reject(new Error(`fake-tables exited with ${code}`)));
     });
-    await use({ url, push: (step) => child.stdin!.write(`${JSON.stringify(step)}\n`) });
+    await use({
+      url,
+      push: (step) => child.stdin!.write(`${JSON.stringify(step)}\n`),
+      kill: () => child.kill("SIGKILL"),
+    });
     child.kill();
   },
 });

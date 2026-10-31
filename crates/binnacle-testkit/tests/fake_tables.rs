@@ -677,16 +677,27 @@ fn a_table_with_no_primary_key_takes_upserts_and_deletes_by_place() {
 #[test]
 fn the_binary_takes_steps_from_standard_input_skipping_bad_lines() {
     use std::io::{BufRead, BufReader, Write};
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, Stdio};
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fake-tables"))
-        .args(["--listen", "127.0.0.1:0", "--generate", "t:3", "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    /// Kills the server however the test ends, a failed assertion too.
+    struct Killed(Child);
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let mut child = Killed(
+        Command::new(env!("CARGO_BIN_EXE_fake-tables"))
+            .args(["--listen", "127.0.0.1:0", "--generate", "t:3", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdout = BufReader::new(child.0.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     let addr = line
@@ -707,7 +718,7 @@ fn the_binary_takes_steps_from_standard_input_skipping_bad_lines() {
         s.status().synced
     });
     assert_eq!(source.row_count(), 3);
-    let mut stdin = child.stdin.take().unwrap();
+    let mut stdin = child.0.stdin.take().unwrap();
     writeln!(
         stdin,
         "# a comment, then a blank line and a bad one\n\n{{not a step"
@@ -729,9 +740,7 @@ fn the_binary_takes_steps_from_standard_input_skipping_bad_lines() {
     drop(stdin);
     std::thread::sleep(Duration::from_millis(100));
     assert!(
-        child.try_wait().unwrap().is_none(),
+        child.0.try_wait().unwrap().is_none(),
         "the end of the input does not stop the server"
     );
-    child.kill().unwrap();
-    child.wait().unwrap();
 }
