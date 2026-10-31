@@ -269,7 +269,8 @@ fn typed(value: &Value) -> JsValue {
             ("invalid", JsValue::from_str(raw)),
             ("expected", JsValue::from_str(expected.name())),
         ]),
-        // A kind this build does not know draws as its text.
+        // A kind this build does not know yet: its Debug text, for debugging
+        // only, as it is not a stable form.
         #[allow(unreachable_patterns)]
         other => JsValue::from_str(&format!("{other:?}")),
     }
@@ -371,16 +372,12 @@ impl WebDescribed {
     /// The next bytes of the body: every whole message is taken. A message
     /// that does not decode is skipped and its error listed.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<JsValue, JsError> {
-        let mut decoder = self
-            .decoder
-            .take()
-            .ok_or_else(|| JsError::new("open a body first"))?;
+        let decoder = (self.decoder.as_mut()).ok_or_else(|| JsError::new("open a body first"))?;
         decoder.feed(bytes);
         let mut fed = Fed::default();
         while let Some(message) = decoder.next() {
             fed.take(&mut self.source, message);
         }
-        self.decoder = Some(decoder);
         Ok(fed.finish(&mut self.source, Vec::new()))
     }
 
@@ -392,8 +389,9 @@ impl WebDescribed {
             fed.take(&mut self.source, message);
         }
         self.decoder = None;
-        let Received::Applied(notices) = self.source.ended() else {
-            unreachable!("ended applies");
+        let notices = match self.source.ended() {
+            Received::Applied(notices) => notices,
+            _ => Vec::new(),
         };
         fed.finish(&mut self.source, notices)
     }
@@ -412,6 +410,11 @@ impl WebDescribed {
                     .collect::<js_sys::Array>()
             })
             .collect()
+    }
+
+    /// Each axis's count before any filter: `{ rows, cols }`.
+    pub fn totals(&self) -> JsValue {
+        to_js(&WireTotals::from(self.source.totals()))
     }
 
     /// Every column, in order.

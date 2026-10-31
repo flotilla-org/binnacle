@@ -213,6 +213,8 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
   const renderers = new Map<string, { made: string; renderer: CellRenderer<TypedValue> }>();
   const counts = { resyncs: 0, reconnects: 0, decodeErrors: 0 };
   const sinks = new Set<TableSink<bigint, string>>();
+  /** The View Spec applied last and its totals, which change as rows come and go. */
+  let applied: { spec: KeyedViewSpec; totals: Totals } | null = null;
   const listeners = new Set<() => void>();
 
   const clock = zone && ((frameNow: number) => ({ now: performance.timeOrigin + frameNow, zone }));
@@ -320,10 +322,18 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
       for (const s of sinks) s.rows.supportChanged();
     }
     if (r.view) {
+      applied = r.view;
       const view = specIds(r.view.spec, r.view.totals);
       for (const s of sinks) s.viewChanged(view);
     }
     tell(r.notices);
+    // New totals for the View Spec in force, so a filter's count reads "of" the rows held now.
+    const totals = live().totals() as Totals;
+    if (applied && (totals.rows !== applied.totals.rows || totals.cols !== applied.totals.cols)) {
+      applied = { spec: applied.spec, totals };
+      const view = specIds(applied.spec, totals);
+      for (const s of sinks) s.viewChanged(view);
+    }
     for (const listener of [...listeners]) listener();
   };
 
@@ -383,6 +393,7 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
     },
     view(spec) {
       const viewed = live().view(specKeys(spec)) as { applied: KeyedViewSpec; totals: Totals; notices: Float64Array };
+      applied = { spec: viewed.applied, totals: viewed.totals };
       tell(viewed.notices);
       return specIds(viewed.applied, viewed.totals);
     },
@@ -397,6 +408,7 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
     },
     renderer: byColumn((name: string) => renderers.get(name)?.renderer),
     find: {
+      // The In-Memory Table Source finds the same way whatever the schema, so this is asked once.
       regex: (live().findSupport() as { regex: boolean } | null)?.regex ?? false,
       marks(rowIds, colIds, query) {
         const { at, keys: ks } = colKeys(colIds);

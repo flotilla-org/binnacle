@@ -215,12 +215,15 @@ describe("through the widget", () => {
   }
 
   test("the crews rows come in, and an upsert adds a row", () => {
-    const { d, h, told } = widget();
+    const { d, h, told, views } = widget();
     expect(h.frame().rows.count).toBe(6);
+    d.source.view!({ ...plain, cols: { ...plain.cols, hidden: ["spec"] } }, signal);
     told.length = 0;
     d.feed(line({ type: "upsert", key: ["golf"], row: { name: "golf", phase: "Running", cpus: 1, spec: {} } }));
     expect(h.frame().rows.count).toBe(7);
     expect(told).toContainEqual(["rows", { type: "Inserted", at: 6, n: 1 }]);
+    // The View Spec in force counts the new row in its totals.
+    expect(views.at(-1)).toMatchObject({ cols: { hidden: ["spec"] }, totals: { rows: 7 } });
     h.destroy();
   });
 
