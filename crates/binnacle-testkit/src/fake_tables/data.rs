@@ -125,6 +125,11 @@ impl FakeTable {
         FakeTable::new(name, schema).with_rows(rows)
     }
 
+    /// Whether the table has a primary key.
+    pub fn keyed(&self) -> bool {
+        !self.schema.primary_key.is_empty()
+    }
+
     /// The primary-key tuple of `row`.
     pub fn key(&self, row: &Row) -> Vec<Wire> {
         (self.schema.primary_key.iter())
@@ -132,15 +137,27 @@ impl FakeTable {
             .collect()
     }
 
-    /// Where the row with key tuple `key` is, if the table has it.
+    /// Where the row with key tuple `key` is, if the table has it. In a
+    /// table with no primary key, `[n]` names the row at place `n`.
     pub fn find(&self, key: &[Wire]) -> Option<usize> {
+        if !self.keyed() {
+            let [Wire::Int(n)] = key else {
+                return None;
+            };
+            return usize::try_from(*n).ok().filter(|&n| n < self.rows.len());
+        }
         self.rows.iter().position(|r| self.key(r) == key)
     }
 
     /// Sets `row` in place of the row with its key, or adds it at the end.
-    /// Returns the row it replaced.
+    /// Returns the row it replaced. A table with no primary key has no row
+    /// to replace, so `row` is added.
     pub fn upsert(&mut self, row: Row) -> Option<Row> {
-        match self.find(&self.key(&row)) {
+        let found = match self.keyed() {
+            true => self.find(&self.key(&row)),
+            false => None,
+        };
+        match found {
             Some(at) => Some(std::mem::replace(&mut self.rows[at], row)),
             None => {
                 self.rows.push(row);
@@ -149,7 +166,8 @@ impl FakeTable {
         }
     }
 
-    /// Removes the row with key tuple `key`, returning it.
+    /// Removes the row with key tuple `key` (in a table with no primary
+    /// key, `[n]` for the row at place `n`), returning it.
     pub fn delete(&mut self, key: &[Wire]) -> Option<Row> {
         self.find(key).map(|at| self.rows.remove(at))
     }

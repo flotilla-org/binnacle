@@ -524,3 +524,152 @@ fn a_script_reads_from_json_lines() {
     );
     assert!(binnacle_testkit::fake_tables::parse_script(r#"{"step": "dance"}"#).is_err());
 }
+
+/// Feeds `source` what `stream` sends up to the first item that doesn't
+/// decode.
+fn until_garbage(stream: &mut Stream, decoder: &mut Decoder, source: &mut DescribedSource) {
+    loop {
+        while let Some(message) = decoder.next() {
+            match message {
+                Ok(message) => {
+                    source.receive(message);
+                }
+                Err(_) => return,
+            }
+        }
+        let chunk = stream
+            .next_chunk()
+            .unwrap()
+            .expect("the garbage before the end");
+        decoder.feed(&chunk);
+    }
+}
+
+/// `source`'s rows are `rows`, each value as its field reads it. In any
+/// order: a resync matches rows by place, so it can leave the source's
+/// rows in another order than the server's.
+fn holds(source: &DescribedSource, rows: &[binnacle_described::Row], what: &str) {
+    let read = |row: &binnacle_described::Row| -> String {
+        let values: Vec<_> = (source.columns().iter())
+            .map(|c| {
+                let wire = row.get(c.name()).cloned().unwrap_or(Wire::Null);
+                binnacle_described::typed(c.field(), &wire)
+            })
+            .collect();
+        format!("{values:?}")
+    };
+    let mut want: Vec<String> = rows.iter().map(read).collect();
+    let mut held: Vec<String> = (source.row_keys().iter())
+        .map(|&k| {
+            let values: Vec<_> = (source.columns().iter())
+                .map(|c| source.cell(k, c.key()).cloned())
+                .collect();
+            format!("{:?}", values.into_iter().flatten().collect::<Vec<_>>())
+        })
+        .collect();
+    want.sort();
+    held.sort();
+    assert_eq!(held, want, "{what}");
+}
+
+// A table with no primary key has rows by place, as the source keys them:
+// an upsert adds a row and tells each watch the next place of its stream,
+// and a delete names a place in the table and tells each watch the place
+// its stream gave that row. So a watch, with a `where` clause or none,
+// holds the fake's rows through upserts, deletes, a resync and a fresh
+// watch.
+#[test]
+fn a_table_with_no_primary_key_takes_upserts_and_deletes_by_place() {
+    let row = |body: &str, tag: &str| -> binnacle_described::Row {
+        [
+            ("body".to_owned(), Wire::Text(body.into())),
+            ("tag".to_owned(), Wire::Text(tag.into())),
+        ]
+        .into()
+    };
+    let schema = binnacle_described::Schema {
+        fields: vec![
+            Field::new("body", FieldType::String),
+            Field::new("tag", FieldType::String),
+        ],
+        primary_key: Vec::new(),
+        foreign_keys: Vec::new(),
+    };
+    let notes = FakeTable::new("notes", schema).with_rows(vec![
+        row("a", "x"),
+        row("b", "y"),
+        row("c", "x"),
+    ]);
+    let fake = FakeTables::new().table(notes).start().unwrap();
+    let scopes = [
+        Scope::new("flotilla"),
+        Scope::new("flotilla").with_where(".tag == x"),
+    ];
+    let mut sources = scopes.map(|scope| DescribedSource::new("notes", scope));
+    let check = |sources: &mut [DescribedSource; 2], steps: Vec<Step>, what: &str, after| {
+        let mut watches: Vec<(Stream, Decoder)> = (sources.iter_mut())
+            .map(|s| watch(&fake, s, NDJSON))
+            .collect();
+        for ((stream, decoder), source) in watches.iter_mut().zip(sources.iter_mut()) {
+            feed(stream, decoder, source, |s| s.status().synced);
+        }
+        for step in steps {
+            let what = format!("{what}: {step:?}");
+            // Every watch gets the garbage after the step's messages.
+            fake.push(step);
+            fake.push(Step::Garbage {
+                table: "notes".into(),
+            });
+            for ((stream, decoder), source) in watches.iter_mut().zip(sources.iter_mut()) {
+                until_garbage(stream, decoder, source);
+            }
+            let rows = fake.table("notes").unwrap().rows;
+            holds(&sources[0], &rows, &what);
+            let x: Vec<_> = (rows.into_iter())
+                .filter(|r| r["tag"] == Wire::Text("x".into()))
+                .collect();
+            holds(&sources[1], &x, &what);
+        }
+        fake.push(Step::End);
+        for ((stream, decoder), source) in watches.iter_mut().zip(sources.iter_mut()) {
+            assert_eq!(feed(stream, decoder, source, |_| false), (0, true));
+            source.ended();
+        }
+        let bodies: Vec<Wire> = (fake.table("notes").unwrap().rows.iter())
+            .map(|r| r["body"].clone())
+            .collect();
+        let after: Vec<Wire> = (after as Vec<&str>)
+            .into_iter()
+            .map(|b| Wire::Text(b.into()))
+            .collect();
+        assert_eq!(bodies, after, "{what}");
+    };
+    let upsert = |row| Step::Upsert {
+        table: "notes".into(),
+        row,
+    };
+    let delete = |n: i128| Step::Delete {
+        table: "notes".into(),
+        key: vec![Wire::Int(n)],
+    };
+    let steps = vec![
+        delete(1),
+        upsert(row("d", "x")),
+        delete(1),
+        upsert(row("e", "y")),
+        delete(9),
+        upsert(row("f", "x")),
+        delete(2),
+    ];
+    check(&mut sources, steps, "live", vec!["a", "d", "f"]);
+    let resync = Step::Resync {
+        table: "notes".into(),
+    };
+    let steps = vec![delete(0), resync, upsert(row("g", "x")), delete(1)];
+    check(
+        &mut sources,
+        steps,
+        "a fresh watch and a resync",
+        vec!["d", "g"],
+    );
+}
