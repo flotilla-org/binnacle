@@ -13,6 +13,8 @@ pub struct Notes {
     /// Why the transport is reconnecting, while it is.
     pub reconnecting: Option<String>,
     /// How many live messages could not be decoded, and the latest's text.
+    /// Unlike `reconnecting`, these stay for the session: a corrupted
+    /// message is a signal the user should not lose to the next good one.
     pub undecodable: u32,
     pub latest: Option<String>,
 }
@@ -23,7 +25,7 @@ impl Notes {
     pub fn corrupted(&self) -> Option<String> {
         let latest = self.latest.as_deref()?;
         Some(match self.undecodable {
-            0 | 1 => format!("a live message could not be decoded: {latest}"),
+            1 => format!("a live message could not be decoded: {latest}"),
             n => format!("{n} live messages could not be decoded, the latest: {latest}"),
         })
     }
@@ -60,6 +62,7 @@ pub fn drain(
         match event {
             Wire::Message(message) => {
                 notes.reconnecting = None;
+                // Unhandled (a type this source does not know) changes nothing.
                 if let Received::Applied(n) = source.receive(message) {
                     notices.extend(n);
                 }
