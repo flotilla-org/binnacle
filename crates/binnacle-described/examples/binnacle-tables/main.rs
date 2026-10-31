@@ -152,7 +152,8 @@ fn main() -> io::Result<()> {
             (tables, Some(transport))
         }
     };
-    let base = tables.default_layout();
+    // No flotilla default view or saved user Layout here: the generic one.
+    let base = tables.source.presentation(None, None);
     let fields: Vec<String> = (tables.source.columns().iter())
         .map(|c| c.name().to_owned())
         .collect();

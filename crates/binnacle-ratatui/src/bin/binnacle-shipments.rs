@@ -7,7 +7,8 @@
 //! and port columns leave the body while the rows group by them. A Subtotal
 //! follows each group with its weight, so an open Group Item stays blank
 //! apart from its label, and the Grand Total is pinned at the bottom (`r`
-//! on it opens the row menu, which unpins it). Press `m` for the focused column's menu:
+//! on it opens the row menu, which unpins it; its "Track" item, `k`, puts
+//! `track: <id>` on the status line). Press `m` for the focused column's menu:
 //! "Ungroup rows" brings back the plain table, on the crew or quarter
 //! column "Group rows by this column" adds a level and "Add as a column
 //! level" makes a pivot, and "Add a value" lists the values to add over
@@ -77,8 +78,8 @@ use binnacle_group::{Figure, GroupedMemory, SUMMARY_KEY_BIT};
 use binnacle_memory::{FindStep, MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
     Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, CopiedRow, FindBar,
-    FindStatus, HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, Theme,
-    begin_frame, column_disclosure_at, copy_text, corner_level_at, disclosure_at,
+    FindStatus, HeaderMenu, Keymap, Layout, Mouse, PendingMarks, Preset, RenderContext, RowItem,
+    Theme, begin_frame, column_disclosure_at, copy_text, corner_level_at, disclosure_at,
     render_conditions, render_editor, render_with, status, wheel,
 };
 use ratatui::crossterm::event::{
@@ -543,6 +544,11 @@ fn main() -> io::Result<()> {
     let mut editor: Option<Editor> = None;
     let mut menu = HeaderMenu::new();
     menu.set_fields((0..HEADERS.len() as u64).map(Key).collect());
+    menu.set_row_items(vec![RowItem {
+        name: "track".into(),
+        label: "Track".into(),
+        key: Some('k'),
+    }]);
     let mut chooser = Chooser::new();
     // The column tiers last fitted to the grouping applied.
     let mut tiers: Vec<f32> = Vec::new();
@@ -764,6 +770,14 @@ fn main() -> io::Result<()> {
                         }
                         if let Some(axis) = menu.take_chooser() {
                             chooser.open(&grid.snapshot(), axis);
+                        }
+                        if let Some(choice) = menu.take_row_choice() {
+                            // A Summary Item's Key carries SUMMARY_KEY_BIT, so it has no row.
+                            let id = rows.get(choice.row.0 as usize).map(|s| s.id);
+                            note = match id {
+                                Some(id) => format!("{}: {id}", choice.name),
+                                None => format!("{}: a group", choice.name),
+                            };
                         }
                         continue;
                     }

@@ -5,11 +5,9 @@
 
 use std::path::Path;
 
-use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key, ViewSpec, Viewport};
+use binnacle_core::{Axis, AxisConfig, Grid, Key, Viewport};
 use binnacle_described::{Decoder, DescribedSource, Encoding, Message, Received, Scope};
 use binnacle_format::{Timestamp, Value};
-use binnacle_layout::view::{AxisView, ViewSpec as LayoutView};
-use binnacle_layout::{EdgePins, JsonId, Layout, Pins};
 use binnacle_ratatui::{CellRenderer, Content, ValueRenderer, fit_width};
 
 /// The widest a column starts.
@@ -78,36 +76,6 @@ impl Tables {
         first
     }
 
-    /// The Layout the table starts from: the nested columns hidden and the
-    /// key, then state, columns pinned leading, by field name.
-    #[allow(dead_code)]
-    pub fn default_layout(&self) -> Layout<JsonId, JsonId> {
-        let columns = self.source.columns();
-        let name = |c: &binnacle_described::Column| JsonId::from(c.name());
-        let has = |c: &binnacle_described::Column, role: &str| c.field().has_role(role);
-        let leading = (columns.iter().filter(|c| has(c, "key")))
-            .chain(columns.iter().filter(|c| !has(c, "key") && has(c, "state")))
-            .map(name)
-            .collect();
-        Layout {
-            view: Some(LayoutView {
-                cols: AxisView {
-                    hidden: columns.iter().filter(|c| c.nested()).map(name).collect(),
-                    ..AxisView::default()
-                },
-                ..LayoutView::default()
-            }),
-            pins: Some(Pins {
-                cols: EdgePins {
-                    leading,
-                    ..EdgePins::default()
-                },
-                ..Pins::default()
-            }),
-            ..Layout::default()
-        }
-    }
-
     /// A Grid over the table: each column as wide as its widest cell (up
     /// to 40), the nested columns hidden and the key and state columns
     /// pinned leading.
@@ -125,16 +93,9 @@ impl Tables {
             let width = fit_width(self, &rows, col).clamp(4, MAX_WIDTH);
             grid.set_size(Axis::Cols, col, width as f32);
         }
-        let column = |key| self.source.column(key).unwrap();
-        let pinned: Vec<Key> = (columns.iter().copied())
-            .filter(|&c| column(c).field().has_role("key"))
-            .chain((columns.iter().copied()).filter(|&c| column(c).field().has_role("state")))
-            .collect();
-        grid.set_pins(Axis::Cols, Edge::Leading, &pinned);
-        let nested: Vec<Key> = (columns.iter().copied())
-            .filter(|&c| column(c).nested())
-            .collect();
-        grid.request_view(ViewSpec::default().with_hidden(Axis::Cols, nested));
+        self.source
+            .default_layout()
+            .restore(&mut grid, &self.source);
         grid
     }
 

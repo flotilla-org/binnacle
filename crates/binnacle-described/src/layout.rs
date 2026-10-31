@@ -1,10 +1,12 @@
-//! A Described Table's Layout: its IDs.
+//! A Described Table's Layout: its IDs, its default presentation, and the
+//! search that keeps Nested columns in reach of filters and find.
 
-use binnacle_core::Key;
-use binnacle_layout::{IdMap, JsonId};
+use binnacle_core::{Axis, FindQuery, Key, Searched, ViewSpec};
+use binnacle_layout::view::AxisView;
+use binnacle_layout::{EdgePins, IdMap, JsonId, Layout, Pins, ViewSpec as LayoutView};
 use serde_json::Value as Json;
 
-use crate::source::DescribedSource;
+use crate::source::{Column, DescribedSource};
 use crate::wire::Wire;
 
 /// A row is named by its primary-key tuple as a JSON array, a column by its
@@ -30,5 +32,114 @@ impl IdMap<JsonId, JsonId> for DescribedSource {
 
     fn col_id(&self, key: Key) -> Option<JsonId> {
         Some(JsonId::from(self.column(key)?.name()))
+    }
+}
+
+impl DescribedSource {
+    /// The Layout every Described Table starts from: the Nested columns
+    /// (`object` and `array` fields) hidden, in schema order, and the
+    /// columns with role `key`, then those with role `state`, pinned
+    /// leading. A hidden column stays in the chooser and still feeds
+    /// filters and find.
+    pub fn default_layout(&self) -> Layout<JsonId, JsonId> {
+        let name = |c: &Column| JsonId::from(c.name());
+        let has = |c: &Column, role: &str| c.field().has_role(role);
+        let columns = self.columns();
+        let hidden = (columns.iter()).filter(|c| c.nested()).map(name).collect();
+        let leading = (columns.iter().filter(|c| has(c, "key")))
+            .chain(columns.iter().filter(|c| !has(c, "key") && has(c, "state")))
+            .map(name)
+            .collect();
+        Layout {
+            view: Some(LayoutView {
+                cols: AxisView {
+                    hidden,
+                    ..AxisView::default()
+                },
+                ..LayoutView::default()
+            }),
+            pins: Some(Pins {
+                cols: EdgePins {
+                    leading,
+                    ..EdgePins::default()
+                },
+                ..Pins::default()
+            }),
+            ..Layout::default()
+        }
+    }
+
+    /// How the table is presented: the generic [`default_layout`], then
+    /// flotilla's `default_view` for it, then the `user`'s Layout, each
+    /// laid over the last with [`Layout::layered`]. A part a later Layout
+    /// sets replaces the earlier one whole, Size Overrides merge per
+    /// column, and the order layers per axis.
+    ///
+    /// A default view that sets `view` replaces the generic hidden columns,
+    /// so it should list the Nested columns it wants hidden. One that sets
+    /// `pins` replaces the generic pins the same way.
+    ///
+    /// A default view names columns by field name, so it loads as it is
+    /// written; names the table lacks are skipped on restore, and stay in
+    /// the document for [`Layout::keeping`] to put back on save:
+    ///
+    /// ```ignore
+    /// let view = Layout::<JsonId, JsonId>::from_json(&bytes)?;
+    /// source.presentation(Some(&view), user.as_ref()).restore(&mut grid, &source);
+    /// ```
+    ///
+    /// [`default_layout`]: DescribedSource::default_layout
+    pub fn presentation(
+        &self,
+        default_view: Option<&Layout<JsonId, JsonId>>,
+        user: Option<&Layout<JsonId, JsonId>>,
+    ) -> Layout<JsonId, JsonId> {
+        let layered = |under, over: Option<&Layout<JsonId, JsonId>>| match over {
+            Some(over) => Layout::layered(under, over.clone()),
+            None => under,
+        };
+        layered(layered(self.default_layout(), default_view), user)
+    }
+
+    /// `spec` with a quick filter on the rows that searches `Shown` made
+    /// to search `Keys`: the columns shown and the Nested ones, hidden or
+    /// not.
+    pub(crate) fn widened(&self, spec: &ViewSpec) -> ViewSpec {
+        let mut spec = spec.clone();
+        let hidden = spec.axis(Axis::Cols).hidden.clone();
+        if let Some(quick) = &mut spec.axis_mut(Axis::Rows).filter.quick
+            && quick.searches == Searched::Shown
+        {
+            quick.searches = Searched::Keys(self.searched_keys(&hidden));
+        }
+        spec
+    }
+
+    /// `query` made to search the Nested columns as well as the shown.
+    pub(crate) fn widened_find(&self, query: &FindQuery, hidden: &[Key]) -> FindQuery {
+        let mut query = query.clone();
+        if query.query.searches == Searched::Shown {
+            query.query.searches = Searched::Keys(self.searched_keys(hidden));
+        }
+        query
+    }
+
+    fn searched_keys(&self, hidden: &[Key]) -> Vec<Key> {
+        (self.columns().iter())
+            .filter(|c| c.nested() || !hidden.contains(&c.key()))
+            .map(Column::key)
+            .collect()
+    }
+
+    /// `applied` with the quick filter as `asked` had it, where the source
+    /// widened what it searches.
+    pub(crate) fn unwidened(&self, asked: &ViewSpec, applied: &mut ViewSpec) {
+        let asked = &asked.axis(Axis::Rows).filter.quick;
+        let kept = &mut applied.axis_mut(Axis::Rows).filter.quick;
+        if let (Some(asked), Some(kept)) = (asked, kept)
+            && asked.searches == Searched::Shown
+        {
+            kept.searches = Searched::Shown;
+        }
     }
 }

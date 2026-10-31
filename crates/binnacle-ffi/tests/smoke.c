@@ -369,7 +369,168 @@ static void by_key(void) {
   binnacle_grid_free(grid);
 }
 
-int main(void) {
+static BinnacleText ctext(const char *s) {
+  BinnacleText t = {(const uint8_t *)s, strlen(s)};
+  return t;
+}
+
+static int text_is(BinnacleText t, const char *s) {
+  return t.len == strlen(s) && memcmp(t.data, s, t.len) == 0;
+}
+
+/* A copy of a cell's text and what it says of its value, to compare once
+ * the next call has let its pointers go. */
+typedef struct {
+  char text[128];
+  uint32_t align, style, kind;
+} Drawn;
+
+static Drawn drawn(const BinnacleCell *cell) {
+  Drawn d = {.align = cell->align, .style = cell->style, .kind = cell->value.kind};
+  CHECK(cell->text.len < sizeof d.text);
+  memcpy(d.text, cell->text.data, cell->text.len);
+  return d;
+}
+
+static int same_drawn(Drawn a, Drawn b) {
+  return strcmp(a.text, b.text) == 0 && a.align == b.align && a.style == b.style &&
+         a.kind == b.kind;
+}
+
+/* A Described Table fed a recorded rows stream through C, as a native
+ * renderer draws it. */
+static void described(const char *path) {
+  BinnacleText table = ctext("hosts");
+  CHECK(binnacle_described_source_new(table, ctext(""), NULL, 0) == NULL);
+  BinnacleDescribedSource *src = binnacle_described_source_new(table, ctext("flotilla"), NULL, 0);
+  CHECK(src != NULL);
+  BinnacleWatchRequest request;
+  CHECK(binnacle_described_source_poll_request(src, &request));
+  CHECK(request.kind == BINNACLE_REQUEST_OPEN_WATCH && request.limit == 10000);
+  const char *prefix = "/tables/hosts/rows?watch&limit=10000&namespace=flotilla";
+  CHECK(request.target.len >= strlen(prefix));
+  CHECK(memcmp(request.target.data, prefix, strlen(prefix)) == 0);
+  CHECK(text_is(request.namespace_name, "flotilla") && request.wheres_len == 0);
+  CHECK(!binnacle_described_source_poll_request(src, &request));
+
+  BinnacleAxisConfig rows = {.count = 0, .default_size = 1, .header = 1, .gap = 0};
+  BinnacleAxisConfig cols = {.count = 0, .default_size = 10, .header = 1, .gap = 0};
+  BinnacleGrid *grid = binnacle_grid_new(rows, cols);
+  CHECK(grid != NULL);
+
+  FILE *f = fopen(path, "rb");
+  CHECK(f != NULL);
+  CHECK(fseek(f, 0, SEEK_END) == 0);
+  long size = ftell(f);
+  CHECK(size > 0);
+  CHECK(fseek(f, 0, SEEK_SET) == 0);
+  uint8_t *bytes = malloc((size_t)size);
+  CHECK(bytes != NULL && fread(bytes, 1, (size_t)size, f) == (size_t)size);
+  fclose(f);
+  BinnacleWindowRequests requests;
+  BinnacleSnapshot snap;
+  for (size_t start = 0, i = 0; i <= (size_t)size; i++) {
+    if (i < (size_t)size && bytes[i] != '\n') continue;
+    if (i > start) CHECK(binnacle_described_source_receive(src, grid, BINNACLE_ENCODING_NDJSON,
+                                                           bytes + start, i - start));
+    start = i + 1;
+    CHECK(binnacle_described_source_pump(src, grid));
+    CHECK(binnacle_grid_begin_frame(grid, 1000, 20, &requests));
+    CHECK(binnacle_described_source_fill(src, grid, &requests));
+  }
+  free(bytes);
+  CHECK(binnacle_grid_snapshot(grid, &snap));
+
+  BinnacleDescribedStatus status;
+  CHECK(binnacle_described_source_status(src, &status));
+  CHECK(status.described && status.synced && !status.partial && status.rows == 1);
+  uint64_t n;
+  CHECK(binnacle_described_source_count(src, BINNACLE_ROWS, &n) && n == 1);
+  CHECK(binnacle_described_source_count(src, BINNACLE_COLS, &n) && n == 11);
+  CHECK(!binnacle_described_source_count(src, 2, &n));
+
+  /* The only row, and the columns by their fields' names. */
+  const BinnacleAxisSnapshot *r = &snap.axes[BINNACLE_ROWS];
+  const BinnacleAxisSnapshot *c = &snap.axes[BINNACLE_COLS];
+  CHECK(r->strip_len == 1 && r->strip[0].has_key);
+  uint64_t row = r->strip[0].key;
+  CHECK(c->strip_len == 11);
+  uint64_t name = 0, deleted = 0, created = 0;
+  BinnacleColumnInfo info = {.size = sizeof info};
+  for (size_t i = 0; i < c->strip_len; i++) {
+    CHECK(binnacle_described_column(src, c->strip[i].key, &info));
+    if (text_is(info.name, "metadata.name")) name = info.key;
+    if (text_is(info.name, "metadata.deletionTimestamp")) deleted = info.key;
+    if (text_is(info.name, "metadata.creationTimestamp")) created = info.key;
+  }
+  CHECK(name && deleted && created);
+
+  BinnacleCell cell = {.size = sizeof cell};
+  CHECK(binnacle_described_cell(src, row, name, &cell));
+  CHECK(text_is(cell.text, "d783f8a7-6b6f-44a9-bd04-5e6e2d43f878"));
+  CHECK(cell.value.kind == BINNACLE_TYPED_TEXT && cell.style == 0);
+  CHECK(text_is(cell.value.data.text, "d783f8a7-6b6f-44a9-bd04-5e6e2d43f878"));
+  Drawn drawn_name = drawn(&cell);
+  CHECK(binnacle_described_cell(src, row, deleted, &cell));
+  CHECK(cell.value.kind == BINNACLE_TYPED_NULL && cell.style == BINNACLE_STYLE_DIM);
+  Drawn drawn_deleted = drawn(&cell);
+  CHECK(binnacle_described_cell(src, row, created, &cell));
+  CHECK(cell.value.kind == BINNACLE_TYPED_DATETIME);
+  Drawn drawn_created = drawn(&cell);
+  /* A Key no row or column has: no such cell. */
+  CHECK(binnacle_described_cell(src, row ^ 1, name, &cell) && cell.value.kind == BINNACLE_TYPED_NONE);
+  CHECK(binnacle_described_cell(src, row, 7, &cell) && cell.value.kind == BINNACLE_TYPED_NONE);
+
+  CHECK(binnacle_described_column(src, name, &info));
+  CHECK(info.has_title && text_is(info.title, "Name") && text_is(info.header, "Name"));
+  CHECK((info.role_bits & BINNACLE_ROLE_KEY) && info.roles_len == 1 && text_is(info.roles[0], "key"));
+  CHECK(text_is(info.type_name, "string") && info.value_kind == BINNACLE_TYPED_TEXT);
+  CHECK(!info.nullable && !info.has_unit && !info.has_reference);
+  CHECK(!binnacle_described_column(src, 7, &info));
+
+  BinnacleText json;
+  CHECK(binnacle_described_property(src, name, ctext("whereOperators"), &json));
+  CHECK(text_is(json, "[\"==\"]"));
+  CHECK(!binnacle_described_property(src, name, ctext("noSuchProperty"), &json));
+
+  /* The one row by three columns at once reads as each cell alone. */
+  uint64_t row_keys[] = {row};
+  uint64_t col_keys[] = {name, deleted, created};
+  BinnacleCell cells[3];
+  for (size_t i = 0; i < 3; i++) cells[i].size = sizeof cells[i];
+  CHECK(binnacle_described_cells(src, row_keys, 1, col_keys, 3, cells, 3));
+  CHECK(same_drawn(drawn(&cells[0]), drawn_name));
+  CHECK(same_drawn(drawn(&cells[1]), drawn_deleted));
+  CHECK(same_drawn(drawn(&cells[2]), drawn_created));
+  CHECK(!binnacle_described_cells(src, row_keys, 1, col_keys, 3, cells, 2));
+
+  /* Refusals change nothing. */
+  const char *malformed = "{\"type\":\"rows\",\"rows\":[";
+  CHECK(!binnacle_described_source_receive(src, grid, BINNACLE_ENCODING_NDJSON,
+                                           (const uint8_t *)malformed, strlen(malformed)));
+  const char *synced = "{\"type\":\"synced\"}";
+  CHECK(!binnacle_described_source_receive(src, grid, 99, (const uint8_t *)synced, strlen(synced)));
+  CHECK(!binnacle_described_source_receive(NULL, grid, BINNACLE_ENCODING_NDJSON,
+                                           (const uint8_t *)synced, strlen(synced)));
+  CHECK(!binnacle_described_source_receive(src, NULL, BINNACLE_ENCODING_NDJSON,
+                                           (const uint8_t *)synced, strlen(synced)));
+  cell.size = sizeof cell - 1;
+  CHECK(!binnacle_described_cell(src, row, name, &cell));
+  cells[1].size = sizeof cells[1] - 1;
+  CHECK(!binnacle_described_cells(src, row_keys, 1, col_keys, 3, cells, 3));
+  info.size = sizeof info - 1;
+  CHECK(!binnacle_described_column(src, name, &info));
+  CHECK(!binnacle_described_cell(src, row, name, NULL));
+  CHECK(binnacle_described_source_count(src, BINNACLE_ROWS, &n) && n == 1);
+
+  CHECK(binnacle_described_source_ended(src, grid));
+  binnacle_described_source_free(src);
+  binnacle_described_source_free(NULL);
+  binnacle_grid_free(grid);
+}
+
+int main(int argc, char **argv) {
+  CHECK(argc == 2);
   CHECK(binnacle_abi_version() == BINNACLE_ABI_VERSION);
 
   BinnacleAxisConfig bad = {.count = 1, .default_size = 0, .header = 0, .gap = 0};
@@ -930,6 +1091,7 @@ int main(void) {
   group_layer();
   by_key();
   layout();
+  described(argv[1]);
   printf("ok\n");
   return 0;
 }
