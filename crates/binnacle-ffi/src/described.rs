@@ -5,17 +5,23 @@
 //! pointer a call fills points into buffers the [`BinnacleDescribedSource`]
 //! handle owns, valid until the next call on it.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use binnacle_core::{Axis, Blanks, Condition, DistinctQuery, Effect, FilterSpec, Key};
 use binnacle_described::{
     Column, DescribedSource, HostRequest, Message, Received, Scope, decode_cbor_item,
     decode_json_line,
 };
 use binnacle_format::{
-    Align, FixedOffset, FormatContext, FormatOptions, Style, Timestamp, Value, ValueType, format,
+    Align, FixedOffset, FormatContext, FormatOptions, Style, Timestamp, Value, ValueType, Zone,
+    format,
 };
 use binnacle_memory::{PumpSource, pump};
 
-use crate::{BinnacleGrid, BinnacleText, BinnacleWindowRequests, axis, borrowed, flag, write_out};
+use crate::{
+    BinnacleGrid, BinnacleText, BinnacleWindowRequest, BinnacleWindowRequests, axis, borrowed,
+    flag, write_out,
+};
 
 pub const BINNACLE_ENCODING_NDJSON: u32 = 1;
 pub const BINNACLE_ENCODING_CBOR_SEQ: u32 = 2;
@@ -47,12 +53,22 @@ pub const BINNACLE_ROLE_KEY: u32 = 1;
 pub const BINNACLE_ROLE_TIME: u32 = 2;
 pub const BINNACLE_ROLE_STATE: u32 = 4;
 
-/// The opaque handle: a Described Table source plus the clock and offset
-/// its cells format with, and the buffers its C-shaped answers point into.
+/// The opaque handle: a Described Table source plus the clock its cells
+/// format with, the Grid it drives, and the buffers its C-shaped answers
+/// point into. Its cells draw dates in the source's Zone, the one their
+/// Stable Text is in.
+///
+/// It is `!Send`, as the [`DescribedSource`] it holds is: use it, and the
+/// Grid it drives, from one thread.
 pub struct BinnacleDescribedSource {
     source: DescribedSource,
     now: Option<Timestamp>,
-    offset: i32,
+    /// The address of the Grid it drives: the first any call gave it, even
+    /// one that call then refused.
+    driven: Option<usize>,
+    /// A call panicked, so its state may be half-changed: every call after
+    /// is refused.
+    poisoned: bool,
     texts: Texts,
     wheres: Vec<BinnacleText>,
     roles: Vec<BinnacleText>,
@@ -416,14 +432,15 @@ impl Texts {
 
 impl BinnacleDescribedSource {
     /// A handle over `source`, its cells formatted with the system clock in
-    /// UTC. `Box::into_raw` gives the pointer C uses, as
+    /// the source's Zone. `Box::into_raw` gives the pointer C uses, as
     /// [`binnacle_described_source_new`] returns it, freed by
     /// [`binnacle_described_source_free`].
     pub fn from_source(source: DescribedSource) -> Box<BinnacleDescribedSource> {
         Box::new(BinnacleDescribedSource {
             source,
             now: None,
-            offset: 0,
+            driven: None,
+            poisoned: false,
             texts: Texts::default(),
             wheres: Vec::new(),
             roles: Vec::new(),
@@ -438,6 +455,33 @@ impl BinnacleDescribedSource {
 
     pub fn source_mut(&mut self) -> &mut DescribedSource {
         &mut self.source
+    }
+
+    /// The clock relative dates count from, or `None` for the system clock
+    /// read at each call.
+    pub fn set_now(&mut self, now: Option<Timestamp>) {
+        self.now = now;
+    }
+
+    /// Dates draw, and their Stable Text is, in `zone` from now on
+    /// ([`DescribedSource::set_zone`]), with the Change Notices that brings
+    /// sent to `grid`. `false`, changing nothing, for a Grid other than the
+    /// one this source drives; given the first Grid of any call, it drives
+    /// that one from now on.
+    pub fn set_zone(&mut self, grid: &mut BinnacleGrid, zone: impl Zone + 'static) -> bool {
+        if !self.drives(grid) {
+            return false;
+        }
+        for (axis, notice) in self.source.set_zone(zone) {
+            grid.grid.notify(axis, notice);
+        }
+        true
+    }
+
+    /// Whether this source drives `grid`: the first Grid it is given.
+    fn drives(&mut self, grid: &BinnacleGrid) -> bool {
+        let at = std::ptr::from_ref(grid) as usize;
+        *self.driven.get_or_insert(at) == at
     }
 
     /// Starts a call that fills pointers: the last call's are let go.
@@ -472,8 +516,7 @@ impl BinnacleDescribedSource {
         else {
             return cell;
         };
-        let zone = FixedOffset(self.offset);
-        let ctx = FormatContext::new(now, &zone);
+        let ctx = FormatContext::new(now, self.source.time_zone());
         let formatted = format(
             value,
             column.unit(),
@@ -553,7 +596,32 @@ fn apply(received: Received, grid: &mut BinnacleGrid) {
     }
 }
 
-/// Runs `f` on the handle; 0 for NULL or if `f` gives `None`, else 1.
+#[cfg(test)]
+thread_local! {
+    /// In tests, a panic the next guarded call raises, to show it is caught.
+    static PANIC_NEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Panics if a test armed [`PANIC_NEXT`]; nothing otherwise.
+fn probe() {
+    #[cfg(test)]
+    if PANIC_NEXT.take() {
+        panic!("a probe panic");
+    }
+}
+
+/// Runs `f`, catching a panic: `None` for one.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    catch_unwind(AssertUnwindSafe(|| {
+        probe();
+        f()
+    }))
+    .ok()
+}
+
+/// Runs `f` on a usable handle, 1 if it gives `Some`. 0 if it gives
+/// `None`, for NULL or a poisoned handle, or if `f` panics, which poisons
+/// the handle.
 ///
 /// # Safety
 /// `src` is NULL or a live handle.
@@ -565,11 +633,20 @@ unsafe fn with_source(
     let Some(h) = (unsafe { src.as_mut() }) else {
         return 0;
     };
-    f(h).is_some().into()
+    if h.poisoned {
+        return 0;
+    }
+    match guarded(|| f(&mut *h)) {
+        Some(done) => done.is_some().into(),
+        None => {
+            h.poisoned = true;
+            0
+        }
+    }
 }
 
-/// Runs `f` on the source and the Grid; 0 if either is NULL or if `f`
-/// gives `None`, else 1.
+/// Runs `f` on the source and the Grid it drives, as [`with_source`]
+/// does; 0 too if `grid` is NULL or another Grid.
 ///
 /// # Safety
 /// `src` and `grid` are each NULL or a live handle.
@@ -579,15 +656,16 @@ unsafe fn with_both(
     f: impl FnOnce(&mut BinnacleDescribedSource, &mut BinnacleGrid) -> Option<()>,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let (Some(h), Some(g)) = (unsafe { src.as_mut() }, unsafe { grid.as_mut() }) else {
+    let Some(g) = (unsafe { grid.as_mut() }) else {
         return 0;
     };
-    f(h, g).is_some().into()
+    // SAFETY: the caller's contract.
+    unsafe { with_source(src, |h| h.drives(g).then(|| f(h, g))?) }
 }
 
 /// A new source for the rows of `table` within `namespace_name`, narrowed
-/// by `wheres`; NULL for an empty namespace or text that is not UTF-8.
-/// Free it with [`binnacle_described_source_free`].
+/// by `wheres`; NULL for an empty table or namespace, or text that is not
+/// UTF-8. Free it with [`binnacle_described_source_free`].
 ///
 /// # Safety
 /// Each text's non-NULL `data` is valid for its `len` reads; a non-NULL
@@ -599,27 +677,22 @@ pub unsafe extern "C" fn binnacle_described_source_new(
     wheres: *const BinnacleText,
     wheres_len: usize,
 ) -> *mut BinnacleDescribedSource {
-    // SAFETY: the caller's contract.
-    let (Some(table), Some(namespace)) = (unsafe { text_in(table) }, unsafe {
-        text_in(namespace_name)
-    }) else {
-        return std::ptr::null_mut();
-    };
-    if namespace.is_empty() || (wheres.is_null() && wheres_len > 0) {
-        return std::ptr::null_mut();
-    }
-    let mut scope = Scope::new(namespace);
-    // SAFETY: the caller's contract.
-    for &clause in unsafe { borrowed(wheres, wheres_len) } {
+    let made = guarded(|| {
         // SAFETY: the caller's contract.
-        let Some(clause) = (unsafe { text_in(clause) }) else {
-            return std::ptr::null_mut();
-        };
-        scope = scope.with_where(clause);
-    }
-    Box::into_raw(BinnacleDescribedSource::from_source(DescribedSource::new(
-        table, scope,
-    )))
+        let (table, namespace) = unsafe { (text_in(table)?, text_in(namespace_name)?) };
+        if table.is_empty() || namespace.is_empty() || (wheres.is_null() && wheres_len > 0) {
+            return None;
+        }
+        let mut scope = Scope::new(namespace);
+        // SAFETY: the caller's contract.
+        for &clause in unsafe { borrowed(wheres, wheres_len) } {
+            // SAFETY: the caller's contract.
+            scope = scope.with_where(unsafe { text_in(clause) }?);
+        }
+        let source = DescribedSource::new(table, scope);
+        Some(Box::into_raw(BinnacleDescribedSource::from_source(source)))
+    });
+    made.flatten().unwrap_or(std::ptr::null_mut())
 }
 
 /// # Safety
@@ -627,8 +700,9 @@ pub unsafe extern "C" fn binnacle_described_source_new(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_described_source_free(src: *mut BinnacleDescribedSource) {
     if !src.is_null() {
+        // A panic while dropping leaks what was left.
         // SAFETY: the caller's contract.
-        drop(unsafe { Box::from_raw(src) });
+        let _ = guarded(|| drop(unsafe { Box::from_raw(src) }));
     }
 }
 
@@ -643,14 +717,14 @@ pub unsafe extern "C" fn binnacle_described_source_receive(
     bytes: *const u8,
     len: usize,
 ) -> i32 {
-    if bytes.is_null() {
-        return 0;
-    }
-    // SAFETY: the caller's contract.
-    let bytes = unsafe { borrowed(bytes, len) };
     // SAFETY: the caller's contract.
     unsafe {
         with_both(src, grid, |h, g| {
+            if bytes.is_null() {
+                return None;
+            }
+            // SAFETY: the caller's contract.
+            let bytes = borrowed(bytes, len);
             let message = match encoding {
                 BINNACLE_ENCODING_NDJSON => decode_json_line(bytes),
                 BINNACLE_ENCODING_CBOR_SEQ => decode_cbor_item(bytes),
@@ -693,12 +767,12 @@ pub unsafe extern "C" fn binnacle_described_source_poll_request(
     src: *mut BinnacleDescribedSource,
     out: *mut BinnacleWatchRequest,
 ) -> i32 {
-    if out.is_null() {
-        return 0;
-    }
     // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
+            if out.is_null() {
+                return None;
+            }
             let request = h.source.poll_request()?;
             h.clear();
             let c = match request {
@@ -759,15 +833,16 @@ pub unsafe extern "C" fn binnacle_described_source_fill(
     requests: *const BinnacleWindowRequests,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let Some(&requests) = (unsafe { requests.as_ref() }) else {
-        return 0;
-    };
-    if (requests.axes.iter()).any(|r| r.requested > 1 || (r.requested == 1 && r.end < r.start)) {
-        return 0;
-    }
-    // SAFETY: the caller's contract.
     unsafe {
         with_both(src, grid, |h, g| {
+            // SAFETY: the caller's contract.
+            let &requests = requests.as_ref()?;
+            let bad = |r: &BinnacleWindowRequest| {
+                r.requested > 1 || (r.requested == 1 && r.end < r.start)
+            };
+            if requests.axes.iter().any(bad) {
+                return None;
+            }
             for axis in Axis::ALL {
                 let r = requests.axes[axis.index()];
                 if r.requested == 0 {
@@ -834,24 +909,24 @@ pub unsafe extern "C" fn binnacle_described_source_set_now(
     // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
-            h.now = Some(Timestamp::from_unix_nanos(i128::from(unix_nanos)));
+            h.set_now(Some(Timestamp::from_unix_nanos(i128::from(unix_nanos))));
             Some(())
         })
     }
 }
 
 /// # Safety
-/// `src` is NULL or a live handle.
+/// `src` and `grid` are NULL or live handles.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_described_source_set_utc_offset(
     src: *mut BinnacleDescribedSource,
+    grid: *mut BinnacleGrid,
     seconds_east: i32,
 ) -> i32 {
     // SAFETY: the caller's contract.
     unsafe {
-        with_source(src, |h| {
-            h.offset = seconds_east;
-            Some(())
+        with_both(src, grid, |h, g| {
+            h.set_zone(g, FixedOffset(seconds_east)).then_some(())
         })
     }
 }
@@ -867,12 +942,10 @@ pub unsafe extern "C" fn binnacle_described_cell(
     out: *mut BinnacleCell,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let Some(size) = (unsafe { sized(out) }) else {
-        return 0;
-    };
-    // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
+            // SAFETY: the caller's contract.
+            let size = sized(out)?;
             h.clear();
             let now = h.now();
             let cell = h.cell(Key(row), Key(col), now, size);
@@ -895,22 +968,23 @@ pub unsafe extern "C" fn binnacle_described_cells(
     out: *mut BinnacleCell,
     out_len: usize,
 ) -> i32 {
-    let missing = |is_null: bool, len: usize| is_null && len > 0;
-    if out.is_null() || missing(rows.is_null(), rows_len) || missing(cols.is_null(), cols_len) {
-        return 0;
-    }
-    let Some(n) = rows_len.checked_mul(cols_len).filter(|&n| n <= out_len) else {
-        return 0;
-    };
-    // SAFETY: the caller's contract.
-    let (rows, cols) = unsafe { (borrowed(rows, rows_len), borrowed(cols, cols_len)) };
-    // SAFETY: the caller's contract.
-    if !(0..n).all(|i| unsafe { sized(out.add(i)) }.is_some()) {
-        return 0;
-    }
     // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
+            let missing = |is_null: bool, len: usize| is_null && len > 0;
+            if out.is_null()
+                || missing(rows.is_null(), rows_len)
+                || missing(cols.is_null(), cols_len)
+            {
+                return None;
+            }
+            let n = rows_len.checked_mul(cols_len).filter(|&n| n <= out_len)?;
+            // SAFETY: the caller's contract.
+            let (rows, cols) = (borrowed(rows, rows_len), borrowed(cols, cols_len));
+            // SAFETY: the caller's contract.
+            if !(0..n).all(|i| sized(out.add(i)).is_some()) {
+                return None;
+            }
             h.clear();
             let now = h.now();
             for (r, &row) in rows.iter().enumerate() {
@@ -939,12 +1013,10 @@ pub unsafe extern "C" fn binnacle_described_column(
     out: *mut BinnacleColumnInfo,
 ) -> i32 {
     // SAFETY: the caller's contract.
-    let Some(size) = (unsafe { sized(out) }) else {
-        return 0;
-    };
-    // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
+            // SAFETY: the caller's contract.
+            let size = sized(out)?;
             h.source.column(Key(col))?;
             h.clear();
             let BinnacleDescribedSource {
@@ -971,16 +1043,14 @@ pub unsafe extern "C" fn binnacle_described_property(
     name: BinnacleText,
     json_out: *mut BinnacleText,
 ) -> i32 {
-    if json_out.is_null() {
-        return 0;
-    }
-    // SAFETY: the caller's contract.
-    let Some(name) = (unsafe { text_in(name) }) else {
-        return 0;
-    };
     // SAFETY: the caller's contract.
     unsafe {
         with_source(src, |h| {
+            if json_out.is_null() {
+                return None;
+            }
+            // SAFETY: the caller's contract.
+            let name = text_in(name)?;
             let json = serde_json::to_vec(h.source.property(Key(col), name)?).ok()?;
             h.clear();
             let text = h.keep(json);
@@ -1001,16 +1071,14 @@ pub unsafe extern "C" fn binnacle_described_distinct(
     limit: usize,
     out: *mut BinnacleDistinct,
 ) -> i32 {
-    if out.is_null() {
-        return 0;
-    }
-    // SAFETY: the caller's contract.
-    let Some(search) = (unsafe { text_in(search) }) else {
-        return 0;
-    };
     // SAFETY: the caller's contract.
     unsafe {
         with_both(src, grid, |h, g| {
+            if out.is_null() {
+                return None;
+            }
+            // SAFETY: the caller's contract.
+            let search = text_in(search)?;
             let col = Key(col);
             h.source.column(col)?;
             let applied = &g.grid.applied_view().axis(Axis::Rows).filter;
@@ -1054,7 +1122,174 @@ pub unsafe extern "C" fn binnacle_described_distinct(
 
 #[cfg(test)]
 mod tests {
+    use binnacle_core::{AxisConfig, Grid};
+
     use super::*;
+    use crate::BinnacleWindowRequests;
+
+    fn text(s: &str) -> BinnacleText {
+        BinnacleText {
+            data: s.as_ptr(),
+            len: s.len(),
+        }
+    }
+
+    type Src = *mut BinnacleDescribedSource;
+    type Call = Box<dyn Fn(Src, *mut BinnacleGrid) -> i32>;
+
+    /// A source told of a one-column table, and the Grid it drives.
+    fn described() -> (Src, *mut BinnacleGrid) {
+        let table = r#"{"type":"table","table":"t","schema":{"fields":[{"name":"x","type":"integer"}],"primaryKey":["x"]}}"#;
+        let grid = Box::into_raw(BinnacleGrid::from_grid(Grid::new(
+            AxisConfig::new(0, 1.0),
+            AxisConfig::new(0, 8.0),
+        )));
+        // SAFETY: the texts outlive the calls; the handles are live.
+        unsafe {
+            let src = binnacle_described_source_new(text("t"), text("ns"), std::ptr::null(), 0);
+            let ok = binnacle_described_source_receive(src, grid, 1, table.as_ptr(), table.len());
+            assert_eq!(ok, 1);
+            (src, grid)
+        }
+    }
+
+    /// Every call that takes a source, each given what makes it succeed
+    /// once on a source from [`described`].
+    fn calls() -> Vec<(&'static str, Call)> {
+        let col = |src: Src| unsafe { (*src).source().column_key("x").unwrap().0 };
+        let synced = b"{\"type\":\"synced\"}";
+        // SAFETY (each): the handles are live and every output writable.
+        vec![
+            (
+                "receive",
+                Box::new(move |s, g| unsafe {
+                    binnacle_described_source_receive(s, g, 1, synced.as_ptr(), synced.len())
+                }),
+            ),
+            (
+                "ended",
+                Box::new(|s, g| unsafe { binnacle_described_source_ended(s, g) }),
+            ),
+            (
+                "poll_request",
+                Box::new(|s, _| unsafe {
+                    binnacle_described_source_poll_request(s, &mut BinnacleWatchRequest::default())
+                }),
+            ),
+            (
+                "pump",
+                Box::new(|s, g| unsafe { binnacle_described_source_pump(s, g) }),
+            ),
+            (
+                "fill",
+                Box::new(|s, g| unsafe {
+                    binnacle_described_source_fill(s, g, &BinnacleWindowRequests::default())
+                }),
+            ),
+            (
+                "count",
+                Box::new(|s, _| unsafe { binnacle_described_source_count(s, 0, &mut 0) }),
+            ),
+            (
+                "status",
+                Box::new(|s, _| unsafe {
+                    binnacle_described_source_status(s, &mut BinnacleDescribedStatus::default())
+                }),
+            ),
+            (
+                "set_now",
+                Box::new(|s, _| unsafe { binnacle_described_source_set_now(s, 0) }),
+            ),
+            (
+                "set_utc_offset",
+                Box::new(|s, g| unsafe { binnacle_described_source_set_utc_offset(s, g, 3600) }),
+            ),
+            (
+                "cell",
+                Box::new(move |s, _| unsafe {
+                    binnacle_described_cell(s, 1, col(s), &mut BinnacleCell::default())
+                }),
+            ),
+            (
+                "cells",
+                Box::new(move |s, _| unsafe {
+                    let mut out = BinnacleCell::default();
+                    binnacle_described_cells(s, &1, 1, &col(s), 1, &mut out, 1)
+                }),
+            ),
+            (
+                "column",
+                Box::new(move |s, _| unsafe {
+                    binnacle_described_column(s, col(s), &mut BinnacleColumnInfo::default())
+                }),
+            ),
+            (
+                "property",
+                Box::new(move |s, _| unsafe {
+                    binnacle_described_property(
+                        s,
+                        col(s),
+                        text("type"),
+                        &mut BinnacleText::default(),
+                    )
+                }),
+            ),
+            (
+                "distinct",
+                Box::new(move |s, g| unsafe {
+                    let mut out = BinnacleDistinct::default();
+                    binnacle_described_distinct(s, g, col(s), text(""), 10, &mut out)
+                }),
+            ),
+        ]
+    }
+
+    /// # Safety
+    /// Each handle is live and not used again.
+    unsafe fn free(src: Src, grid: *mut BinnacleGrid) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            binnacle_described_source_free(src);
+            crate::binnacle_grid_free(grid);
+        }
+    }
+
+    // No panic leaves a call: one inside any call makes it return 0 and
+    // poisons the source, so every call after on it returns 0 too, where
+    // each returns 1 on a source that did not panic. Making a source and
+    // freeing one catch theirs as well.
+    #[test]
+    fn a_panic_in_a_call_is_caught_and_poisons_the_source() {
+        let calls = calls();
+        let (src, grid) = described();
+        for (name, call) in &calls {
+            assert_eq!(call(src, grid), 1, "{name} on a sound source");
+        }
+        // SAFETY: as named.
+        unsafe { free(src, grid) };
+        for (name, call) in &calls {
+            let (src, grid) = described();
+            PANIC_NEXT.set(true);
+            assert_eq!(call(src, grid), 0, "{name} panicking");
+            assert!(!PANIC_NEXT.get(), "{name} did not run guarded");
+            for (after, call) in &calls {
+                assert_eq!(call(src, grid), 0, "{after} after {name} panicked");
+            }
+            // SAFETY: as named.
+            unsafe { free(src, grid) };
+        }
+        PANIC_NEXT.set(true);
+        // SAFETY: the texts outlive the call.
+        let made =
+            unsafe { binnacle_described_source_new(text("t"), text("ns"), std::ptr::null(), 0) };
+        assert!(made.is_null());
+        assert!(!PANIC_NEXT.get());
+        let (src, grid) = described();
+        PANIC_NEXT.set(true);
+        // SAFETY: as named.
+        unsafe { free(src, grid) };
+        assert!(!PANIC_NEXT.get());
+    }
 
     #[test]
     fn each_kind_is_its_value_types_code() {

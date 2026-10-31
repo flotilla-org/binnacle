@@ -227,15 +227,19 @@ impl Pair {
             binnacle_described_source_new(text(table), text("flotilla"), std::ptr::null(), 0)
         };
         assert!(!src.is_null());
-        // SAFETY: `src` is live.
+        let c_grid = Box::into_raw(grid());
+        // SAFETY: the handles are live.
         unsafe {
             assert_eq!(binnacle_described_source_set_now(src, NOW), 1);
-            assert_eq!(binnacle_described_source_set_utc_offset(src, offset), 1);
+            assert_eq!(
+                binnacle_described_source_set_utc_offset(src, c_grid, offset),
+                1
+            );
         }
         Pair {
             src,
-            c_grid: Box::into_raw(grid()),
-            rust: DescribedSource::new(table, Scope::new("flotilla")),
+            c_grid,
+            rust: DescribedSource::new(table, Scope::new("flotilla")).zone(FixedOffset(offset)),
             rust_grid: Box::into_raw(grid()),
             offset,
         }
@@ -668,7 +672,8 @@ fn every_call_refuses_null() {
             binnacle_described_source_status(null_src, &mut status),
             binnacle_described_source_status(src, std::ptr::null_mut()),
             binnacle_described_source_set_now(null_src, NOW),
-            binnacle_described_source_set_utc_offset(null_src, 0),
+            binnacle_described_source_set_utc_offset(null_src, grid, 0),
+            binnacle_described_source_set_utc_offset(src, null_grid, 0),
             binnacle_described_cell(null_src, row, col, &mut cell),
             binnacle_described_cell(src, row, col, std::ptr::null_mut()),
             binnacle_described_cells(null_src, keys.as_ptr(), 1, cols.as_ptr(), 1, &mut cell, 1),
@@ -691,7 +696,7 @@ fn every_call_refuses_null() {
             binnacle_described_distinct(src, null_grid, col, text(""), 10, &mut distinct),
             binnacle_described_distinct(src, grid, col, text(""), 10, std::ptr::null_mut()),
         ];
-        assert_eq!(refused, [0; 31]);
+        assert_eq!(refused, [0; 32]);
         // Each succeeds given every pointer.
         let done = [
             binnacle_described_source_receive(src, grid, 1, line.as_ptr(), line.len()),
@@ -700,13 +705,15 @@ fn every_call_refuses_null() {
             binnacle_described_source_fill(src, grid, &requests),
             binnacle_described_source_count(src, 0, &mut n),
             binnacle_described_source_status(src, &mut status),
+            binnacle_described_source_set_now(src, NOW),
+            binnacle_described_source_set_utc_offset(src, grid, 0),
             binnacle_described_cell(src, row, col, &mut cell),
             binnacle_described_cells(src, keys.as_ptr(), 1, cols.as_ptr(), 1, &mut cell, 1),
             binnacle_described_column(src, col, &mut info),
             binnacle_described_property(src, col, text("type"), &mut json),
             binnacle_described_distinct(src, grid, col, text(""), 10, &mut distinct),
         ];
-        assert_eq!(done, [1; 11]);
+        assert_eq!(done, [1; 13]);
         // A Window ending before it starts, or an unknown flag, is refused.
         let mut bad = requests;
         bad.axes[0] = BinnacleWindowRequest {
@@ -723,6 +730,7 @@ fn every_call_refuses_null() {
         assert_eq!(binnacle_described_source_poll_request(src, &mut request), 0);
         let wheres = [text("x")];
         assert!(binnacle_described_source_new(text("t"), text(""), std::ptr::null(), 0).is_null());
+        assert!(binnacle_described_source_new(text(""), text("ns"), std::ptr::null(), 0).is_null());
         assert!(
             binnacle_described_source_new(text("t"), text("ns"), std::ptr::null(), 1).is_null()
         );
@@ -991,5 +999,358 @@ fn a_window_reaching_past_the_end_fills_only_what_there_is() {
         assert_eq!(binnacle_described_source_fill(src, grid, &requests), 1);
         binnacle_described_source_free(src);
         binnacle_grid_free(grid);
+    }
+}
+
+/// A source receives `line` through C, with `grid`.
+fn receive(src: *mut BinnacleDescribedSource, grid: *mut BinnacleGrid, line: &str) -> i32 {
+    // SAFETY: the handles are live; `line` outlives the call.
+    unsafe { binnacle_described_source_receive(src, grid, 1, line.as_ptr(), line.len()) }
+}
+
+/// One frame through C: pump, begin it, fill it. The rows shown after.
+fn frame(src: *mut BinnacleDescribedSource, grid: *mut BinnacleGrid) -> Vec<Key> {
+    let mut requests = BinnacleWindowRequests::default();
+    // SAFETY: the handles are live.
+    unsafe {
+        assert_eq!(binnacle_described_source_pump(src, grid), 1);
+        assert_eq!(
+            binnacle_grid_begin_frame(grid, VIEWPORT.0, VIEWPORT.1, &mut requests),
+            1
+        );
+        assert_eq!(binnacle_described_source_fill(src, grid, &requests), 1);
+        let snapshot = (*grid).grid_mut().snapshot();
+        snapshot.drawn(Axis::Rows).filter_map(|i| i.key).collect()
+    }
+}
+
+/// An `events` table whose `at` is a datetime with no role, so it draws
+/// absolute, in the zone.
+const EVENTS: &str = r#"{"type":"table","table":"events","schema":{"fields":[{"name":"name","type":"string","roles":["key"],"constraints":{"required":true}},{"name":"at","type":"datetime","constraints":{"required":false}}],"primaryKey":["name"]}}"#;
+
+/// How a host sets the zone.
+#[derive(Clone, Copy, Debug)]
+enum SetZone {
+    /// `binnacle_described_source_set_utc_offset`, before the table.
+    CFirst,
+    /// The same, once the rows came.
+    CAfterRows,
+    /// The same, while a quick filter applies.
+    CWhileFiltered,
+    /// `BinnacleDescribedSource::set_zone`, once the rows came.
+    RustHandle,
+    /// `DescribedSource::zone`, before `from_source`.
+    RustBuilder,
+}
+
+// One zone draws a date and matches it: whichever way and whenever the host
+// sets the offset, the text a datetime cell draws is the text the quick
+// filter keeps it by, find finds it by, and Distinct Values list. The `at`
+// column has no `time` role, so its dates draw absolute. Dates fall on
+// whole minutes across a few days, so an offset (east, west, half-hour,
+// over twelve hours) moves the hour and often the day.
+#[hegel::test(test_cases = 100)]
+fn one_zone_draws_a_date_and_matches_it(tc: TestCase) {
+    let offset = tc.draw(gs::sampled_from(vec![
+        0, 3600, -3600, -18_000, 19_800, 45_900, -43_200,
+    ]));
+    let how = tc.draw(gs::sampled_from(vec![
+        SetZone::CFirst,
+        SetZone::CAfterRows,
+        SetZone::CWhileFiltered,
+        SetZone::RustHandle,
+        SetZone::RustBuilder,
+    ]));
+    let dates: Vec<Option<(u8, u8, u8)>> = tc.draw(
+        gs::vecs(gs::optional(hegel::tuples!(
+            gs::integers::<u8>().min_value(26).max_value(28),
+            gs::integers::<u8>().max_value(23),
+            gs::integers::<u8>().max_value(59),
+        )))
+        .min_size(1)
+        .max_size(6),
+    );
+    let rows: Vec<String> = (dates.iter().enumerate())
+        .map(|(i, at)| match at {
+            Some((d, h, m)) => {
+                format!(r#"{{"name":"r{i}","at":"2026-07-{d:02}T{h:02}:{m:02}:00Z"}}"#)
+            }
+            None => format!(r#"{{"name":"r{i}","at":null}}"#),
+        })
+        .collect();
+    let rows = format!(r#"{{"type":"rows","rows":[{}]}}"#, rows.join(","));
+
+    let mut source = DescribedSource::new("events", Scope::new("flotilla"));
+    if let SetZone::RustBuilder = how {
+        source = source.zone(FixedOffset(offset));
+    }
+    let src = wrapped(source);
+    let grid = Box::into_raw(grid());
+    let set_offset = |src, grid| {
+        // SAFETY: the handles are live.
+        let ok = unsafe { binnacle_described_source_set_utc_offset(src, grid, offset) };
+        assert_eq!(ok, 1);
+    };
+    if let SetZone::CFirst = how {
+        set_offset(src, grid);
+    }
+    for line in [EVENTS, &rows, r#"{"type":"synced"}"#] {
+        assert_eq!(receive(src, grid, line), 1);
+        frame(src, grid);
+    }
+    let at = unsafe { (*src).source().column_key("at").unwrap() };
+    match how {
+        SetZone::CAfterRows => set_offset(src, grid),
+        SetZone::CWhileFiltered => {
+            // Filtered on a date's text in UTC, then the filter keeps the
+            // rows whose date draws so in the zone, and the Grid shows them.
+            let keys = frame(src, grid);
+            let utc = (drawn_c(src, &keys, &[at]).into_iter())
+                .map(|d| d.0)
+                .find(|t| t != "∅")
+                .unwrap_or_default();
+            let quick = |t: &str| {
+                let quick = FilterSpec::default().with_quick(Some(TextQuery::new(t)));
+                ViewSpec::default().with_filter(Axis::Rows, quick)
+            };
+            // SAFETY: the Grid is live; each borrow ends before the C calls.
+            unsafe { &mut *grid }.grid_mut().request_view(quick(&utc));
+            frame(src, grid);
+            set_offset(src, grid);
+            let mut kept = frame(src, grid);
+            let mut count = 0;
+            // SAFETY: the handles are live.
+            unsafe { binnacle_described_source_count(src, 0, &mut count) };
+            let shown = unsafe { &mut *grid }
+                .grid_mut()
+                .snapshot()
+                .count(Axis::Rows);
+            assert_eq!(shown, count);
+            let mut drawn_so: Vec<Key> = (keys.iter().zip(drawn_c(src, &keys, &[at])))
+                // An empty quick filter, with every date null, keeps all.
+                .filter(|(_, d)| utc.is_empty() || (d.0.contains(&utc) && d.0 != "∅"))
+                .map(|(&k, _)| k)
+                .collect();
+            kept.sort();
+            drawn_so.sort();
+            assert_eq!(kept, drawn_so);
+            unsafe { &mut *grid }
+                .grid_mut()
+                .request_view(ViewSpec::default());
+        }
+        // SAFETY: the handles are live, and neither is borrowed elsewhere.
+        SetZone::RustHandle => assert!(unsafe { (*src).set_zone(&mut *grid, FixedOffset(offset)) }),
+        SetZone::CFirst | SetZone::RustBuilder => {}
+    }
+    let keys = frame(src, grid);
+    assert_eq!(keys.len(), dates.len());
+
+    // What each row's date draws, beside a reference formatted in `offset`.
+    let texts: Vec<(Key, String)> = (keys.iter())
+        .zip(drawn_c(src, &keys, &[at]))
+        .map(|(&k, (text, ..))| (k, text))
+        .collect();
+    for (key, text) in &texts {
+        // SAFETY: `src` is live; the borrow ends here.
+        let reference = drawn(unsafe { (*src).source() }, *key, at, offset).0;
+        assert_eq!(*text, reference);
+    }
+    let mut listed: Vec<String> = (texts.iter())
+        .filter(|(_, t)| !t.is_empty() && t != "∅")
+        .map(|(_, t)| t.clone())
+        .collect();
+    listed.sort();
+    listed.dedup();
+    let (mut values, _, _) = distinct(src, grid, at);
+    values.sort();
+    assert_eq!(values, listed);
+    let Some(picked) = listed.first().cloned() else {
+        unsafe {
+            binnacle_described_source_free(src);
+            binnacle_grid_free(grid);
+        }
+        return;
+    };
+    let matching: Vec<Key> = (texts.iter())
+        .filter(|(_, t)| t.contains(&picked))
+        .map(|(k, _)| *k)
+        .collect();
+
+    // SAFETY: the Grid is live; each borrow ends before the C calls.
+    let g = || unsafe { &mut *grid }.grid_mut();
+    g().set_find(Some(FindQuery::new(TextQuery::new(&picked))));
+    g().action(Action::FindNext);
+    frame(src, grid);
+    let found = g().snapshot().find_match().map(|m| (m.row, m.col));
+    assert!(found.is_some_and(|(row, col)| matching.contains(&row) && col == at));
+
+    let quick = FilterSpec::default().with_quick(Some(TextQuery::new(&picked)));
+    g().request_view(ViewSpec::default().with_filter(Axis::Rows, quick));
+    let mut kept = frame(src, grid);
+    kept.sort();
+    let mut matching = matching;
+    matching.sort();
+    assert_eq!(kept, matching);
+    // SAFETY: each handle is live and not used again.
+    unsafe {
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
+    }
+}
+
+/// Valid messages a stream should not send where they come: a `table` of
+/// each shape, pages that clash with it, and every other kind.
+fn misplaced() -> Vec<String> {
+    let (_, crews) = items("crews.ndjson");
+    let mut lines: Vec<String> = (crews.iter())
+        .map(|l| String::from_utf8(l.clone()).unwrap())
+        .collect();
+    let table = lines[0].clone();
+    lines.extend([
+        table.replace(r#""primaryKey":["name"]"#, r#""primaryKey":["phase"]"#),
+        table.replace(r#""primaryKey":["name"]"#, r#""primaryKey":[]"#),
+        table.replace(r#""name":"cpus","type":"integer""#, r#""name":"cpus","type":"string""#),
+        table.replace(r#"{"name":"note","type":"string","constraints":{"required":false}},"#, ""),
+        r#"{"type":"table","table":"crews","schema":{"fields":[{"name":"x","type":"integer"}],"primaryKey":["x"]}}"#.into(),
+        r#"{"type":"table","table":"crews","schema":{"fields":[]}}"#.into(),
+        r#"{"type":"rows","rows":[{"name":"alpha","cpus":"x","started":5,"load":"y","spec":7}]}"#.into(),
+        r#"{"type":"rows","rows":[{"name":"alpha"},{"name":"alpha","cpus":9}]}"#.into(),
+        r#"{"type":"rows","rows":[{"x":1},{"x":1},{"zzz":true}]}"#.into(),
+        r#"{"type":"rows","rows":[],"cursor":"next"}"#.into(),
+        r#"{"type":"rows","rows":[]}"#.into(),
+        r#"{"type":"synced"}"#.into(),
+        r#"{"type":"synced","sequence":3}"#.into(),
+        r#"{"type":"progress","sequence":2}"#.into(),
+        r#"{"type":"count","count":12,"estimate":true}"#.into(),
+        r#"{"type":"error","code":"gone","message":"the table went"}"#.into(),
+        r#"{"type":"resync"}"#.into(),
+        r#"{"type":"upsert","key":["alpha"],"row":{"name":"alpha","phase":"Done"}}"#.into(),
+        r#"{"type":"upsert","key":[0],"row":{"name":"zulu"}}"#.into(),
+        r#"{"type":"upsert","key":[1,2],"row":{}}"#.into(),
+        r#"{"type":"delete","key":["alpha"]}"#.into(),
+        r#"{"type":"delete","key":[0]}"#.into(),
+        r#"{"type":"later","x":1}"#.into(),
+    ]);
+    let n = crews.len();
+    assert!(lines[n..n + 4].iter().all(|l| *l != table));
+    lines
+}
+
+#[derive(Clone, Debug)]
+enum Step {
+    Message(usize),
+    Ended,
+    /// The rows sorted by a column (an index, wrapped) and grouped by
+    /// another if set, the quick filter on this text.
+    View(usize, Option<usize>, Option<String>),
+    Offset(i32),
+}
+
+#[hegel::composite]
+fn step(tc: &TestCase) -> Step {
+    let index = || gs::integers::<usize>().max_value(20);
+    match tc.draw(gs::integers::<u8>().max_value(9)) {
+        0 => Step::Ended,
+        1 => Step::View(
+            tc.draw(index()),
+            tc.draw(gs::optional(index())),
+            tc.draw(gs::optional(word())),
+        ),
+        2 => Step::Offset(tc.draw(gs::sampled_from(vec![0, 3600, -18_000]))),
+        _ => Step::Message(tc.draw(gs::integers::<usize>())),
+    }
+}
+
+// Valid messages in an order no stream should send (rows before their
+// table, a second table of another shape mid-page, `synced` first, live
+// changes naming rows that are not there), between views and offsets, are
+// each taken, and nothing aborts: after every step the source pumps and
+// fills its Grid, reads every cell it holds and says how far it came.
+#[hegel::test(test_cases = 300)]
+fn valid_messages_in_any_order_are_taken_and_the_source_stays_readable(tc: TestCase) {
+    let lines = misplaced();
+    let src = unsafe {
+        binnacle_described_source_new(text("crews"), text("flotilla"), std::ptr::null(), 0)
+    };
+    let grid = Box::into_raw(grid());
+    for step in tc.draw(gs::vecs(step()).max_size(12)) {
+        match step {
+            Step::Message(i) => assert_eq!(receive(src, grid, &lines[i % lines.len()]), 1),
+            // SAFETY: the handles are live.
+            Step::Ended => assert_eq!(unsafe { binnacle_described_source_ended(src, grid) }, 1),
+            Step::View(sort, group, quick) => {
+                let columns: Vec<Key> =
+                    unsafe { (*src).source().columns().iter().map(|c| c.key()).collect() };
+                if columns.is_empty() {
+                    continue;
+                }
+                let col = |i: usize| columns[i % columns.len()];
+                let spec = ViewSpec::default()
+                    .with_sort(
+                        Axis::Rows,
+                        SortSpec::new(vec![SortColumn::ascending(col(sort))]),
+                    )
+                    .with_filter(
+                        Axis::Rows,
+                        FilterSpec::default().with_quick(quick.map(TextQuery::new)),
+                    );
+                // SAFETY: the Grid is live; the borrow ends here.
+                let g = unsafe { &mut *grid }.grid_mut();
+                g.request_view(spec);
+                if let Some(i) = group {
+                    g.group_by(Axis::Rows, col(i));
+                }
+            }
+            Step::Offset(seconds) => {
+                // SAFETY: the handles are live.
+                let ok = unsafe { binnacle_described_source_set_utc_offset(src, grid, seconds) };
+                assert_eq!(ok, 1);
+            }
+        }
+        frame(src, grid);
+        every_cell(src);
+        let mut status = BinnacleDescribedStatus::default();
+        // SAFETY: the handle is live and `status` writable.
+        assert_eq!(
+            unsafe { binnacle_described_source_status(src, &mut status) },
+            1
+        );
+    }
+    // SAFETY: each handle is live and not used again.
+    unsafe {
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
+    }
+}
+
+// A source drives the first Grid a call gives it: every call given another
+// is refused and changes nothing, and the first still works.
+#[test]
+fn a_source_refuses_a_grid_it_does_not_drive() {
+    let (src, grid) = fed("crews.ndjson");
+    let other = Box::into_raw(self::grid());
+    let line = r#"{"type":"delete","key":["alpha"]}"#;
+    let requests = BinnacleWindowRequests::default();
+    let mut distinct = BinnacleDistinct::default();
+    let col = unsafe { (*src).source().column_key("phase").unwrap().0 };
+    let before = every_cell(src);
+    // SAFETY: the handles are live.
+    unsafe {
+        let refused = [
+            receive(src, other, line),
+            binnacle_described_source_ended(src, other),
+            binnacle_described_source_pump(src, other),
+            binnacle_described_source_fill(src, other, &requests),
+            binnacle_described_source_set_utc_offset(src, other, 3600),
+            binnacle_described_distinct(src, other, col, text(""), 10, &mut distinct),
+            i32::from((*src).set_zone(&mut *other, FixedOffset(3600))),
+        ];
+        assert_eq!(refused, [0; 7]);
+        assert_eq!(every_cell(src), before);
+        assert_eq!(receive(src, grid, line), 1);
+        assert_eq!(binnacle_described_source_pump(src, grid), 1);
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
+        binnacle_grid_free(other);
     }
 }
