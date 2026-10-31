@@ -1,6 +1,6 @@
 //! Seam 2 properties for base data changes: `MemorySource<R>` over random
-//! integer records, put through sorts, filters, appends, value edits and
-//! wholesale replacements, against a naive model (sort with nulls
+//! integer records, put through sorts, filters, appends, value edits,
+//! removals and wholesale replacements, against a naive model (sort with nulls
 //! lowest and ties by Key, then skip what the filter drops). Each Change Notice must describe
 //! what happened to the visible order.
 
@@ -40,6 +40,8 @@ enum Op {
         value: Option<i64>,
     },
     Replace(Vec<Record>),
+    /// Removes base rows, each `% len`.
+    Remove(Vec<usize>),
 }
 
 #[hegel::composite]
@@ -89,6 +91,9 @@ fn op(tc: &TestCase) -> Op {
         edit(),
         edit(),
         gs::vecs(record()).max_size(12).map(Op::Replace),
+        gs::vecs(gs::integers::<usize>())
+            .max_size(4)
+            .map(Op::Remove),
     ))
 }
 
@@ -132,6 +137,8 @@ struct Step<'a> {
     rows: &'a [Record],
     ordered: bool,
     notice: Option<ChangeNotice>,
+    /// A removal's notices, highest Position first.
+    removed: Vec<ChangeNotice>,
     /// The visible order before and after, as Logical Indices.
     before: Vec<u64>,
     after: Vec<u64>,
@@ -159,6 +166,13 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
     let (mut spec, mut keep) = (SortSpec::unsorted(), None);
     for op in tc.draw(gs::vecs(op()).max_size(10)) {
         let before = visible(&source, keys.as_deref());
+        let mut removed = Vec::new();
+        let op = match op {
+            Op::Remove(at) if !rows.is_empty() => {
+                Op::Remove(at.iter().map(|i| i % rows.len()).collect())
+            }
+            op => op,
+        };
         let notice = match op.clone() {
             Op::Sort(s) => {
                 spec = s;
@@ -194,6 +208,27 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
                 keys = keys.map(|_| fresh(rows.len()));
                 rows_only(source.replaced(&rows, keys.clone()))
             }
+            Op::Remove(at) => {
+                if rows.is_empty() {
+                    continue;
+                }
+                let mut i = 0;
+                rows.retain(|_| {
+                    i += 1;
+                    !at.contains(&(i - 1))
+                });
+                if let Some(keys) = &mut keys {
+                    let mut i = 0;
+                    keys.retain(|_| {
+                        i += 1;
+                        !at.contains(&(i - 1))
+                    });
+                }
+                let notices = source.removed(&rows, &at);
+                assert!(notices.iter().all(|(axis, _)| *axis == Axis::Rows));
+                removed = notices.into_iter().map(|(_, n)| n).collect();
+                None
+            }
         };
         let op = match op {
             Op::Edit { row, col, value } => Op::Edit {
@@ -208,6 +243,7 @@ fn ops(tc: &TestCase, mut check: impl FnMut(&Step)) {
             rows: &rows,
             ordered: !spec.is_empty() || keep.is_some(),
             notice,
+            removed,
             before,
             after: visible(&source, keys.as_deref()),
             model: model(&rows, &spec, keep),
@@ -228,6 +264,36 @@ fn each_change_notice_describes_what_happened_to_the_visible_order(tc: TestCase)
         let Step {
             op, before, after, ..
         } = step;
+        if let Op::Remove(_) = op {
+            // Each Removed in turn takes its run out of what was shown, and
+            // what is left is shown as it was, renumbered.
+            let mut shown = before.clone();
+            let mut last = u64::MAX;
+            for notice in &step.removed {
+                let ChangeNotice::Removed { at, n } = *notice else {
+                    panic!("{notice:?}")
+                };
+                assert!(n > 0 && at + n <= shown.len() as u64, "{notice:?}");
+                assert!(
+                    at + n < last,
+                    "highest first, runs apart: {:?}",
+                    step.removed
+                );
+                last = at;
+                shown.drain(at as usize..(at + n) as usize);
+            }
+            let Op::Remove(at) = op else { unreachable!() };
+            let renumbered: Vec<u64> = (shown.iter())
+                .map(|&i| {
+                    assert!(!at.contains(&(i as usize)), "{i} was removed");
+                    let below = (0..i as usize).filter(|j| at.contains(j)).count();
+                    i - below as u64
+                })
+                .collect();
+            assert_eq!(&renumbered, after, "{:?}", step.removed);
+            assert!(step.notice.is_none());
+            return;
+        }
         match &step.notice {
             Some(ChangeNotice::Inserted { at, n }) => {
                 let Op::Append(records) = op else {

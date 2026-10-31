@@ -111,6 +111,7 @@ fn the_default_layout_lists_a_field_with_both_roles_once() {
         },
         incarnation: None,
         table: None,
+        sequence: None,
     }));
     let layout = source.default_layout();
     assert_eq!(layout.pins.unwrap().cols.leading, ids(&["a", "c", "b"]));
@@ -302,6 +303,7 @@ fn keyed(parts: &[bool], tuples: &[Vec<Wire>]) -> DescribedSource {
         },
         incarnation: None,
         table: None,
+        sequence: None,
     }));
     let rows = (tuples.iter())
         .map(|t| {
@@ -316,6 +318,7 @@ fn keyed(parts: &[bool], tuples: &[Vec<Wire>]) -> DescribedSource {
         rows,
         cursor: None,
         partial: false,
+        sequence: None,
     }));
     source
 }

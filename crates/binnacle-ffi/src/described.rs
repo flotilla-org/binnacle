@@ -662,6 +662,9 @@ pub unsafe extern "C" fn binnacle_described_source_receive(
             if described {
                 h.source.declare(&mut g.grid);
             }
+            if let Some((spec, totals)) = h.source.poll_view() {
+                g.grid.view_changed(spec, totals);
+            }
             Some(())
         })
     }

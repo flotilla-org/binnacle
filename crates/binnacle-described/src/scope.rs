@@ -58,7 +58,8 @@ pub const ROW_CAP: u64 = 10_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HostRequest {
-    /// Open the rows stream and feed each message back.
+    /// Open the rows stream, or reopen it after it ended, and feed each
+    /// message back.
     OpenWatch(WatchRequest),
 }
 

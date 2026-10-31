@@ -9,7 +9,12 @@
 //!
 //! Run it with
 //! `cargo run -p binnacle-described --example binnacle-tables -- <fixture.ndjson|.cborseq>`,
-//! say `crates/binnacle-described/tests/data/rows-hosts.ndjson`.
+//! say `crates/binnacle-described/tests/data/rows-hosts.ndjson`, or live
+//! against a table server with
+//! `-- --url http://127.0.0.1:7777 --table hosts` (or `--socket <path>`),
+//! with `--namespace` (default `flotilla`), `--where <clause>` (repeated)
+//! and `--token` or `--cookie`. Live, the rows update as they change, and a
+//! stream that ends is opened again.
 
 mod table;
 
@@ -18,6 +23,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use binnacle_core::{Axis, Grouping, ViewSpec};
+use binnacle_described::Scope;
+use binnacle_described_http::{Auth, Blocking, Endpoint, Event as Wire, Options};
 use binnacle_format::Timestamp;
 use binnacle_ratatui::{
     ColorSupport, Keymap, Mouse, NextFrame, Preset, RenderContext, Theme, animating, begin_frame,
@@ -30,18 +37,83 @@ use ratatui::crossterm::execute;
 
 use table::Tables;
 
+const USAGE: &str = "usage: binnacle-tables <fixture.ndjson|fixture.cborseq>\n       binnacle-tables (--url <base> | --socket <path>) --table <name> [--namespace <ns>] [--where <clause>]... [--token <t> | --cookie <c>]";
+
+/// Where the rows come from.
+enum Rows {
+    Fixture(PathBuf),
+    Live {
+        options: Options,
+        table: String,
+        scope: Scope,
+    },
+}
+
+fn usage(message: &str) -> ! {
+    eprintln!("binnacle-tables: {message}\n{USAGE}");
+    std::process::exit(2);
+}
+
+fn args() -> Rows {
+    let mut args = std::env::args().skip(1);
+    let (mut endpoint, mut table, mut namespace) = (None, None, "flotilla".to_owned());
+    let (mut wheres, mut auth) = (Vec::new(), Auth::None);
+    let mut fixture = None;
+    while let Some(arg) = args.next() {
+        let mut value = || {
+            args.next()
+                .unwrap_or_else(|| usage(&format!("{arg} needs a value")))
+        };
+        match arg.as_str() {
+            "--url" => endpoint = Some(Endpoint::Tcp(value())),
+            "--socket" => endpoint = Some(Endpoint::Unix(value().into())),
+            "--table" => table = Some(value()),
+            "--namespace" => namespace = value(),
+            "--where" => wheres.push(value()),
+            "--token" => auth = Auth::Bearer(value()),
+            "--cookie" => auth = Auth::Cookie(value()),
+            "-h" | "--help" => usage("help"),
+            flag if flag.starts_with("--") => usage(&format!("unknown flag {flag}")),
+            path => fixture = Some(PathBuf::from(path)),
+        }
+    }
+    match (fixture, endpoint, table) {
+        (Some(path), None, None) => Rows::Fixture(path),
+        (None, Some(endpoint), Some(table)) => {
+            let scope = (wheres.into_iter()).fold(Scope::new(namespace), Scope::with_where);
+            Rows::Live {
+                options: Options::new(endpoint).auth(auth),
+                table,
+                scope,
+            }
+        }
+        (None, Some(_), None) => usage("--table is needed"),
+        _ => usage("a fixture, or --url or --socket"),
+    }
+}
+
 fn main() -> io::Result<()> {
-    let Some(path) = std::env::args_os().nth(1).map(PathBuf::from) else {
-        eprintln!("usage: binnacle-tables <fixture.ndjson|fixture.cborseq>");
-        std::process::exit(2);
-    };
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
     let origin = Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128));
-    let mut tables = Tables::load(&path, origin).unwrap_or_else(|e| {
-        eprintln!("{e}");
-        std::process::exit(1);
-    });
+    let (mut tables, transport) = match args() {
+        Rows::Fixture(path) => {
+            let tables = Tables::load(&path, origin).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
+            (tables, None)
+        }
+        Rows::Live {
+            options,
+            table,
+            scope,
+        } => (
+            Tables::live(&table, scope, origin),
+            Some(Blocking::new(options)?),
+        ),
+    };
     let mut grid = tables.grid();
+    let mut failed: Option<String> = None;
     let keymap = Keymap::preset(Preset::Chords);
     let start = Instant::now();
     let themes = Theme::presets();
@@ -55,6 +127,31 @@ fn main() -> io::Result<()> {
     execute!(io::stdout(), EnableMouseCapture)?;
     let result = (|| {
         loop {
+            if let Some(transport) = &transport {
+                if let Some(request) = tables.source.poll_request() {
+                    transport.open(request);
+                }
+                while let Some(event) = transport.try_recv() {
+                    match event {
+                        Wire::Message(message) => {
+                            if tables.apply(&mut grid, message) {
+                                grid = tables.grid();
+                            }
+                        }
+                        Wire::Ended => {
+                            tables.source.ended();
+                        }
+                        Wire::Failed { status, body } => {
+                            let body = String::from_utf8_lossy(&body).into_owned();
+                            failed = Some(format!("{status} {body}"));
+                        }
+                        _ => {}
+                    }
+                    if let Some(request) = tables.source.poll_request() {
+                        transport.open(request);
+                    }
+                }
+            }
             terminal.draw(|frame| {
                 let full = frame.area();
                 let mut area = full;
@@ -72,10 +169,11 @@ fn main() -> io::Result<()> {
                     height: 1,
                     ..full
                 };
+                let status = failed.clone().unwrap_or_else(|| tables.status());
                 let text = format!(
                     "{} | {} | s sort  g group  t theme  q quit | {}",
                     tables.source.table(),
-                    tables.status(),
+                    status,
                     themes[theme].name
                 );
                 frame.render_widget(ratatui::text::Line::from(text), line);
@@ -84,6 +182,11 @@ fn main() -> io::Result<()> {
                 _ if animating(&grid.snapshot()) => Duration::from_millis(50),
                 Some(due) => due.saturating_sub(start.elapsed()),
                 None => Duration::from_secs(60),
+            };
+            // Live rows are applied between frames.
+            let wait = match transport {
+                Some(_) => wait.min(Duration::from_millis(50)),
+                None => wait,
             };
             if !event::poll(wait)? {
                 continue;

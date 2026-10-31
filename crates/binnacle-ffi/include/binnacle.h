@@ -2179,7 +2179,9 @@ void binnacle_described_source_free(BinnacleDescribedSource *src);
 /* Takes one message of the rows stream: len bytes, one JSON line or one CBOR
  * item as encoding says. It sends the Change Notices it brings to grid, and
  * after a table message declares to grid what each column supports
- * (sorting, filters, grouping, aggregates), hiding and find. A message this
+ * (sorting, filters, grouping, aggregates), hiding and find; when a later
+ * table message removed a column the View Spec used, it hands grid the View
+ * Spec the source applies now, which leaves that column out. A message this
  * source does not handle yet is taken and changes nothing. 0, changing
  * nothing, for an unknown encoding, NULL bytes (whatever len is), or bytes
  * that are not one message (empty, malformed, truncated, or more than

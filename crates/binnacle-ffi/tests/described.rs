@@ -899,6 +899,51 @@ fn distinct_values_list_a_null_apart_from_an_empty_text_narrowed_by_the_other_fi
 }
 
 #[test]
+fn a_table_message_without_a_filtered_field_shows_the_condition_not_applied() {
+    let (src, grid) = fed("crews.ndjson");
+    let note = unsafe { (*src).source().column_key("note").unwrap() };
+    let late = Condition::one_of(note, vec![CoreValue::Text("late".into())]);
+    let filter = FilterSpec::default().with_conditions(vec![late].into());
+    // SAFETY: `grid` is live; the borrow ends before the C calls.
+    unsafe { &mut *grid }
+        .grid_mut()
+        .request_view(ViewSpec::default().with_filter(Axis::Rows, filter));
+    // SAFETY: the handles are live.
+    assert_eq!(unsafe { binnacle_described_source_pump(src, grid) }, 1);
+    let conditions = |grid: *mut BinnacleGrid| {
+        // SAFETY: `grid` is live.
+        let view = unsafe { &mut *grid }.grid_mut().applied_view().clone();
+        view.axis(Axis::Rows).filter.conditions.conditions().len()
+    };
+    assert_eq!(conditions(grid), 1);
+
+    // The same table again, less `note`.
+    let (_, messages) = items("crews.ndjson");
+    let Some(Message::Table(mut table)) = decode(BINNACLE_ENCODING_NDJSON, &messages[0]) else {
+        panic!("crews.ndjson starts with its table");
+    };
+    table.schema.fields.retain(|f| f.name != "note");
+    let bytes = binnacle_described::encode_json_line(&Message::Table(table));
+    // SAFETY: the handles are live.
+    let ok = unsafe {
+        binnacle_described_source_receive(
+            src,
+            grid,
+            BINNACLE_ENCODING_NDJSON,
+            bytes.as_ptr(),
+            bytes.len(),
+        )
+    };
+    assert_eq!(ok, 1);
+    assert_eq!(conditions(grid), 0);
+    // SAFETY: the handles are live.
+    unsafe {
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
+    }
+}
+
+#[test]
 fn a_source_answers_distinct_values_as_its_pump_source_does() {
     // The same values the Rust source lists, unnarrowed.
     let (src, grid) = fed("crews.ndjson");

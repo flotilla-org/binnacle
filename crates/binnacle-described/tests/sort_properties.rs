@@ -321,6 +321,7 @@ fn the_rows_sort_as_the_naive_total_order_with_the_invalid_tier(tc: TestCase) {
         schema,
         incarnation: None,
         table: None,
+        sequence: None,
     }));
     let rows = (table.rows.iter())
         .map(|(id, cells)| {
@@ -335,6 +336,7 @@ fn the_rows_sort_as_the_naive_total_order_with_the_invalid_tier(tc: TestCase) {
         rows,
         cursor: None,
         partial: false,
+        sequence: None,
     }));
     let terms = tc.draw(
         gs::vecs(hegel::tuples!(

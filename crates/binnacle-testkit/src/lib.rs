@@ -4,6 +4,8 @@
 //! and renders each Snapshot as text with [`render`], for `insta` snapshots and
 //! Hegel properties alike. See `decisions.md` in the build notes for usage.
 
+#[cfg(feature = "fake-tables")]
+pub mod fake_tables;
 mod pivot;
 mod render;
 mod scenario;

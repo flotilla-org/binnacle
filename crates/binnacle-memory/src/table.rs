@@ -303,6 +303,59 @@ impl AxisOrder {
         self.rebuild();
     }
 
+    /// Removes the base items `gone` marks, by Logical Index; those after
+    /// them take Logical Indices `n` lower. Returns the Positions the
+    /// removed items were shown at, ascending.
+    fn remove(&mut self, gone: &[bool]) -> Vec<Position> {
+        assert_eq!(gone.len(), self.len, "one flag per base item");
+        let mut shown: Vec<Position> = (0..self.len)
+            .filter(|&i| gone[i])
+            .filter_map(|i| self.position(i))
+            .collect();
+        shown.sort_unstable();
+        let mut renumber = vec![None; self.len];
+        let mut next = 0u32;
+        for (i, slot) in renumber.iter_mut().enumerate() {
+            if !gone[i] {
+                *slot = Some(next);
+                next += 1;
+            }
+        }
+        let map = |list: &Vec<u32>| -> Vec<u32> {
+            list.iter().filter_map(|&i| renumber[i as usize]).collect()
+        };
+        let retain = |flags: &mut Vec<bool>| {
+            let mut i = 0;
+            flags.retain(|_| {
+                i += 1;
+                !gone[i - 1]
+            });
+        };
+        if let Some(keys) = &mut self.keys {
+            let mut i = 0;
+            keys.retain(|_| {
+                i += 1;
+                !gone[i - 1]
+            });
+        }
+        self.base = self.base.as_ref().map(map);
+        self.sorted = self.sorted.as_ref().map(map);
+        if let Some(keep) = &mut self.keep {
+            retain(keep);
+        }
+        if let Some(hidden) = &mut self.hidden {
+            retain(hidden);
+        }
+        self.unmatched = (self.unmatched.iter())
+            .filter_map(|&i| renumber[i as usize])
+            .collect();
+        self.len = next as usize;
+        self.logical = None;
+        self.ranks = None;
+        self.rebuild();
+        shown
+    }
+
     /// The Position of the item with Logical Index `logical`, if it is kept.
     fn position(&mut self, logical: usize) -> Option<Position> {
         if logical >= self.len {
@@ -781,6 +834,50 @@ impl InMemoryTableSource {
         } else {
             ChangeNotice::Reset(rows.count())
         }
+    }
+
+    /// Base rows `removed` (Logical Indices, in any order; repeats and
+    /// indices past the last are skipped) left the base data, and those after
+    /// them take Logical Indices that much lower. Everything else stays as
+    /// it was: the sort, the filter, hidden rows, unmatched rows and the
+    /// order moves left. Hidden Keys no row has any more are dropped.
+    /// Returns a `Removed` for each run of removed rows that were shown,
+    /// highest Position first, so the Grid can apply them one after
+    /// another; rows that were filtered out or hidden give none.
+    pub fn remove_rows(&mut self, removed: &[usize]) -> Vec<ChangeNotice> {
+        let rows = &mut self.axes[Axis::Rows.index()];
+        let mut gone = vec![false; rows.len];
+        for &i in removed {
+            if let Some(flag) = gone.get_mut(i) {
+                *flag = true;
+            }
+        }
+        if !gone.contains(&true) {
+            return Vec::new();
+        }
+        let hidden: Vec<(Key, u32)> = (self.hides[Axis::Rows.index()].iter())
+            .filter_map(|&k| rows.logical(k).map(|i| (k, i)))
+            .filter(|&(_, i)| !gone[i as usize])
+            .collect();
+        let shown = rows.remove(&gone);
+        let below = |i: u32| gone[..i as usize].iter().filter(|&&g| g).count() as u32;
+        self.hides[Axis::Rows.index()] = (hidden.into_iter())
+            .map(|(k, i)| match rows.keys {
+                Some(_) => k,
+                None => Key(u64::from(i - below(i))),
+            })
+            .collect();
+        let mut notices = Vec::new();
+        for &p in shown.iter().rev() {
+            match notices.last_mut() {
+                Some(ChangeNotice::Removed { at, n }) if *at == p + 1 => {
+                    *at = p;
+                    *n += 1;
+                }
+                _ => notices.push(ChangeNotice::Removed { at: p, n: 1 }),
+            }
+        }
+        notices
     }
 
     /// The base rows changed in some other way: there are now `len`, keyed

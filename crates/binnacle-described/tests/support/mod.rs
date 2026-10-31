@@ -8,8 +8,8 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use binnacle_core::{
-    Axis, AxisConfig, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery, Grid, Key,
-    Located, Outline, Position, Support, TextSupport, ViewSpec, Viewport,
+    Axis, AxisConfig, ChangeNotice, Distinct, DistinctQuery, FindDirection, FindMatch, FindQuery,
+    Grid, Key, Located, Outline, Position, Support, TextSupport, ViewSpec, Viewport,
 };
 use binnacle_described::{
     Decoder, DescribedSource, Encoding, HostRequest, Message, Received, Scope,
@@ -159,6 +159,31 @@ impl PumpSource for Table {
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
         self.0.move_items(axis, keys, to)
     }
+}
+
+/// Feeds `message` to the scenario's source, then tells the Grid what
+/// changed, as a host does, and runs a frame.
+pub fn feed(scenario: &mut Scenario<Table>, message: Message) -> Vec<(Axis, ChangeNotice)> {
+    let received = scenario.source.0.receive(message);
+    apply(scenario, received)
+}
+
+/// Tells the Grid what `received` changed: the columns' support, any View
+/// Spec the source applies now, then the Change Notices. Runs a frame.
+pub fn apply(scenario: &mut Scenario<Table>, received: Received) -> Vec<(Axis, ChangeNotice)> {
+    let Received::Applied(notices) = received else {
+        panic!("{received:?}")
+    };
+    let Scenario { grid, source, .. } = scenario;
+    source.0.declare(grid);
+    if let Some((spec, totals)) = source.0.poll_view() {
+        grid.view_changed(spec, totals);
+    }
+    for (axis, notice) in &notices {
+        grid.notify(*axis, notice.clone());
+    }
+    scenario.frame(VIEWPORT);
+    notices
 }
 
 /// A viewport showing up to 10 rows of 12 columns.

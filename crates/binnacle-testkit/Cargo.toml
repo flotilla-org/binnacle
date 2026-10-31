@@ -7,6 +7,21 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# The fake described-table server, as a library module and a binary.
+fake-tables = ["dep:binnacle-described", "dep:serde_json"]
+
 [dependencies]
 binnacle-core.workspace = true
+binnacle-described = { workspace = true, optional = true }
 binnacle-memory.workspace = true
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Its own tests run the fake.
+binnacle-testkit = { path = ".", features = ["fake-tables"] }
+ciborium = "0.2"
+
+[[bin]]
+name = "fake-tables"
+required-features = ["fake-tables"]

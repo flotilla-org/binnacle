@@ -14,6 +14,7 @@ Each file `X` has a sibling `X.headers` holding the HTTP status and response hea
 | `desc-{hosts,fulfilmentkinds,repositories,convoys,vessels}.{json,cbor}` | `GET /tables/{t}` with `Accept: application/json` or `application/cbor` |
 | `desc-hosts.md` | `?format=markdown` |
 | `rows-{hosts,fulfilmentkinds,repositories}.{ndjson,cborseq}` | full rows, `application/x-ndjson` or `application/cbor-seq` |
+| `rows-hosts-no-namespace.ndjson` | full rows with no `namespace`: expected 200 and no rows. **Not captured yet**: `capture.sh` asks for it since binnacle#299, and the operator runs it on a flotillad host |
 | `rows-convoys-cols.ndjson` | `columns=` a projection (all 324 convoys) |
 | `rows-convoys-sort-where.{ndjson,cborseq}` | `sort=-metadata.creationTimestamp&where=.status.phase == Running`. This returned 0 rows; see below |
 | `rows-vessels-page1.ndjson`, `rows-vessels-page2.ndjson` | `sort=metadata.name&limit=5`, then `&cursor=` from page 1 |
@@ -22,6 +23,8 @@ Each file `X` has a sibling `X.headers` holding the HTTP status and response hea
 | `error-unknown-table.json`, `error-bad-where.json` | a 404 and a 400 body |
 
 Convoy and vessel rows are restricted with `columns=` to metadata and `status.phase`, because their `spec` and `status` carry crew briefs and stall text. Host, FulfilmentKind and Repository rows are complete.
+
+The fake table server (`binnacle_testkit::fake_tables`, binnacle#299) is checked against these: each `rows-*` table it serves has the same message types and keys, in both encodings.
 
 ## Notes for a table source
 

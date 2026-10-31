@@ -64,6 +64,14 @@ _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 A Described Table source behind the C API (`BinnacleDescribedSource` in `binnacle.h`): it takes the rows stream's messages, pumps and fills the Grid it drives, and gives a native renderer each cell's Typed Value and formatted text, each column's description, and Distinct Values. Like the source it holds, it is used from one thread. A Rust host builds one from its own source with `BinnacleDescribedSource::from_source`.
 _Avoid_: Described grid, table handle
 
+**Resync**:
+A Described Table source starting its rows again without showing the table empty: after a `resync` message, or when its stream ends and it asks to open the watch again, every row is unconfirmed; the `table`, `rows` and `synced` that follow replace the rows in place, each row that comes confirmed and keeping its Key, and `synced` removes those still unconfirmed. A page that changes more than 256 held rows at once applies as one Reset, so rows the user moved go back to the source's order. A `table` message once the columns are known is diffed by field name the same way.
+_Avoid_: Reload, refresh, reconnect (for the whole)
+
+**Fake Table Server**:
+`fake-tables` in `binnacle-testkit` (behind the feature of that name): a stand-in for flotillad's table API, serving recorded fixtures or generated tables, and playing a script of live changes (upserts, deletes, resyncs, schema changes, stream ends, slowness and errors) to its watches, for tests in process and for demos as a binary.
+_Avoid_: Mock server, stub, test server
+
 ### Axes and identity
 
 **Axis**:

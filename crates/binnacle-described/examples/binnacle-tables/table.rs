@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use binnacle_core::{Axis, AxisConfig, Grid, Key, Viewport};
-use binnacle_described::{Decoder, DescribedSource, Encoding, Scope};
+use binnacle_described::{Decoder, DescribedSource, Encoding, Message, Received, Scope};
 use binnacle_format::{Timestamp, Value};
 use binnacle_ratatui::{CellRenderer, Content, ValueRenderer, fit_width};
 
@@ -41,6 +41,39 @@ impl Tables {
             let _ = source.receive(message);
         }
         Ok(Tables { source, origin })
+    }
+
+    /// A live table: a source over `table` in `scope`, its rows still to
+    /// come, as its host feeds them ([`Tables::apply`]).
+    #[allow(dead_code)]
+    pub fn live(table: &str, scope: Scope, origin: Timestamp) -> Tables {
+        Tables {
+            source: DescribedSource::new(table, scope),
+            origin,
+        }
+    }
+
+    /// Feeds `message` to the source and tells `grid` what changed: the
+    /// columns' support, any View Spec the source applies now, and the
+    /// Change Notices. Returns whether it was the first `synced`, when the
+    /// host lays the Grid out afresh ([`Tables::grid`]).
+    #[allow(dead_code)]
+    pub fn apply(&mut self, grid: &mut Grid, message: Message) -> bool {
+        let first = !self.source.status().synced && matches!(message, Message::Synced { .. });
+        let described = matches!(message, Message::Table(_));
+        let Received::Applied(notices) = self.source.receive(message) else {
+            return false;
+        };
+        if described {
+            self.source.declare(grid);
+        }
+        if let Some((spec, totals)) = self.source.poll_view() {
+            grid.view_changed(spec, totals);
+        }
+        for (axis, notice) in notices {
+            grid.notify(axis, notice);
+        }
+        first
     }
 
     /// A Grid over the table: each column as wide as its widest cell (up
