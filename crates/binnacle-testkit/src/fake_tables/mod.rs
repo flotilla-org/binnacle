@@ -464,6 +464,8 @@ impl State {
                         if w.table != t.name {
                             return true;
                         }
+                        // As on the keyed path, a live change ignores the
+                        // watch's limit, which caps only the first read.
                         let sent = w.view.keeps(t, &row);
                         w.places.of.push(sent.then_some(w.places.next));
                         if !sent {
@@ -500,6 +502,8 @@ impl State {
                 let Some(i) = self.index(&table) else {
                     return;
                 };
+                // Not `FakeTable::delete`: a keyless table's watches need
+                // the place the row had.
                 let Some(at) = self.tables[i].find(&key) else {
                     return;
                 };
@@ -509,6 +513,11 @@ impl State {
                     let name = self.tables[i].name.clone();
                     self.watchers.retain_mut(|w| {
                         if w.table != name {
+                            return true;
+                        }
+                        // `of` has a place per row, set on open and on a
+                        // resync; a row it lacks was never sent.
+                        if at >= w.places.of.len() {
                             return true;
                         }
                         let Some(place) = w.places.of.remove(at) else {
