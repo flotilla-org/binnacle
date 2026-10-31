@@ -182,6 +182,101 @@ fn a_schema_change_keeps_focus_picks_and_pins() {
     assert_eq!(s.source.0.columns()[7].header(), "Zone", "added at the end");
 }
 
+// The columns' `Removed` notices go highest Position first, so the Grid
+// can apply them in turn: dropping two columns apart, one before the
+// focused column, keeps column focus and leaves the Grid's columns the
+// source's.
+#[test]
+fn a_schema_change_that_drops_two_columns_apart_keeps_column_focus() {
+    let mut s = scenario(replay("crews.ndjson"));
+    let (charlie, spec) = (row(&s, "charlie"), col(&s, "spec"));
+    s.input(|g| g.set_focus(charlie, spec));
+    s.frame(VIEWPORT);
+    let mut table = table_message();
+    (table.schema.fields).retain(|f| f.name != "phase" && f.name != "host");
+    let notices = feed(&mut s, Message::Table(table));
+    assert!(
+        (notices.iter()).all(|n| !matches!(n, (Axis::Cols, ChangeNotice::Reset(_)))),
+        "told by Position: {notices:?}"
+    );
+    let snapshot = s.frame(VIEWPORT);
+    let focus = snapshot.focus(Axis::Cols).and_then(|f| f.key);
+    let drawn: Vec<Key> = snapshot.drawn(Axis::Cols).filter_map(|i| i.key).collect();
+    let count = s.source.0.count(Axis::Cols);
+    assert_eq!(drawn, s.source.0.window(Axis::Cols, 0..count).keys);
+    assert_eq!(focus, Some(spec));
+}
+
+/// A table of `n` rows keyed by `id`, each `load` given by `load(id)`.
+fn numbered(n: i64, load: impl Fn(i64) -> i64) -> (Message, Message) {
+    let table = Message::Table(TableMessage {
+        schema: binnacle_described::Schema {
+            fields: vec![
+                Field::new("id", FieldType::Integer),
+                Field::new("load", FieldType::Integer),
+            ],
+            primary_key: vec!["id".into()],
+            foreign_keys: Vec::new(),
+        },
+        incarnation: Some("durable".into()),
+        table: None,
+        sequence: None,
+    });
+    let page = (0..n)
+        .map(|id| {
+            [
+                ("id".to_owned(), Wire::Int(id.into())),
+                ("load".to_owned(), Wire::Int(load(id).into())),
+            ]
+            .into()
+        })
+        .collect();
+    (table, rows(page))
+}
+
+// A resync that changes more rows than the bulk threshold applies as one
+// Reset, and still keeps every row's Key: the sort shows the new values,
+// and focus and the pick stay on their rows.
+#[test]
+fn a_resync_of_a_thousand_changed_rows_keeps_their_keys_focus_and_picks() {
+    let (table, page) = numbered(1000, |id| id);
+    let mut source = DescribedSource::new("t", Scope::new("n"));
+    source.receive(table.clone());
+    source.receive(page);
+    source.receive(Message::Synced { sequence: None });
+    let mut s = scenario(source);
+    let key = |s: &Scenario<Table>, id: i64| s.source.0.row_key(&[Wire::Int(id.into())]).unwrap();
+    let load = col(&s, "load");
+    let spec =
+        ViewSpec::default().with_sort(Axis::Rows, SortSpec::new(vec![SortColumn::ascending(load)]));
+    s.input(|g| g.request_view(spec));
+    s.frame(VIEWPORT);
+    let (forty_two, seven) = (key(&s, 42), key(&s, 7));
+    s.input(|g| {
+        g.set_focus(forty_two, load);
+        g.pick(Axis::Rows, seven);
+    });
+    s.frame(VIEWPORT);
+    let keys = s.source.0.row_keys().to_vec();
+    feed(&mut s, Message::Resync);
+    feed(&mut s, table);
+    // Every load changes, and the sort turns the rows around.
+    let (_, page) = numbered(1000, |id| 5000 - id);
+    let notices = feed(&mut s, page);
+    assert_eq!(notices, [(Axis::Rows, ChangeNotice::Reset(1000))]);
+    feed(&mut s, Message::Synced { sequence: None });
+    assert_eq!(s.source.0.row_keys(), keys);
+    let shown = s.source.0.window(Axis::Rows, 0..1000).keys;
+    let want: Vec<Key> = (0..1000).rev().map(|id| key(&s, id)).collect();
+    assert_eq!(shown, want);
+    let snapshot = s.frame(VIEWPORT);
+    assert_eq!(
+        snapshot.focus(Axis::Rows).and_then(|f| f.key),
+        Some(forty_two)
+    );
+    assert_eq!(snapshot.picked(Axis::Rows), [seven]);
+}
+
 #[test]
 fn a_retyped_field_is_read_again_for_every_row() {
     let mut source = replay("crews.ndjson");
