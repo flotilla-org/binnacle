@@ -283,6 +283,10 @@ A find match inside a closed group: counted with the others and named apart ("3 
 In header form, where a group has no Group Item, a match on its label lands on the row that carries the label in the band: the first row of its span when it is open (past its own Subtotal placed before, which sits outside the span), or its Subtotal standing in for it when it is closed. Each label is counted once, and find never answers with an item that cannot be shown: the groups the source names above a match are those that must open to show it, so a Subtotal standing in names only the groups above its own. Focus takes the label in its level's Tier.
 _Avoid_: Collapsed match, buried match
 
+**Row Menu Item**:
+An item a host adds to a row's menu in an adapter: a name and a label. Choosing one reports the name and the row back to the host (`RowChoice` in ratatui, `onRowItem` on the web); there is no Effect, so the C and wasm boundaries do not carry it. A hook until the host-defined row actions of #289 resolve.
+_Avoid_: Row action, context-menu entry
+
 **Refused Drop**:
 A drop target the source turns down as the user drags, with why: between groups (a Leaf moves only within its own group) or a Summary Item (Group Items and totals never move). The adapters draw the drop line in the error colour with a caption, and nothing moves on release. Editing a Summary Item's figures is refused the same way, the edit cancelled.
 _Avoid_: Invalid drop, blocked move

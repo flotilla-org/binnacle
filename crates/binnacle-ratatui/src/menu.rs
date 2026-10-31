@@ -201,6 +201,10 @@ pub fn cap_hint(axis: Axis, cap: usize) -> String {
 /// each listed under it. Pinning, unpinning, freezing, hiding and each
 /// grouping change close it; showing and opening a list leave it open, and
 /// so does a hide past the cap, which says to filter instead.
+///
+/// The host may add [`RowItem`]s to a row's menu ([`HeaderMenu::set_row_items`]);
+/// choosing one queues a [`RowChoice`] for the host
+/// ([`HeaderMenu::take_row_choice`]).
 #[derive(Clone, Debug, Default)]
 pub struct HeaderMenu {
     open: Option<Open>,
@@ -210,7 +214,33 @@ pub struct HeaderMenu {
     slicer: Option<Key>,
     /// The base fields the grouping may use, as the host lists them.
     fields: Vec<Key>,
+    /// The items the host adds to a row's menu.
+    row_items: Vec<RowItem>,
+    /// The host item the user chose, until the host takes it.
+    row_choice: Option<RowChoice>,
 }
+
+/// An item a host adds to a row's menu ([`HeaderMenu::set_row_items`]): a
+/// name the host knows it by, a label, and a key that picks it while the
+/// menu is open. A key that a built-in row line uses is silently ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowItem {
+    pub name: String,
+    pub label: String,
+    pub key: Option<char>,
+}
+
+/// The host item the user chose on a row's menu: its name and the row's Key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowChoice {
+    pub name: String,
+    pub row: Key,
+}
+
+/// The keys the row menu's own lines and hidden-item numbers use. A host
+/// item's key that is one of these is ignored: the built-in wins. The test
+/// at the foot of this file guards the string; a new row line needs its key here.
+const ROW_MENU_KEYS: &str = "tbufghoca123456789";
 
 #[derive(Clone, Debug)]
 struct Open {
@@ -276,6 +306,8 @@ enum Entry {
     Choose,
     Show(Key),
     ShowAll,
+    /// The host's item at this index in [`HeaderMenu::set_row_items`].
+    Host(usize),
 }
 
 impl Entry {
@@ -529,6 +561,30 @@ impl HeaderMenu {
         }
     }
 
+    /// Sets the items a row's menu lists after its own, below a separator.
+    /// They show only when the menu is open on a row, and the menu lists
+    /// them even where no built-in line applies. An item's `key` picks it,
+    /// unless it is a key a built-in line of the row menu uses (`t`, `b`,
+    /// `u`, `f`, `g`, `h`, `o`, `c`, `a` or a digit): the built-in wins. Of two
+    /// items with one key, the first wins.
+    pub fn set_row_items(&mut self, items: Vec<RowItem>) {
+        self.row_items = items;
+    }
+
+    /// The host item the user chose on a row's menu, once. A choice not taken
+    /// before the next is replaced by it.
+    pub fn take_row_choice(&mut self) -> Option<RowChoice> {
+        self.row_choice.take()
+    }
+
+    /// The host items `open` lists: those of a row's menu.
+    fn hosts(&self, open: &Open) -> usize {
+        match (open.axis, open.target) {
+            (Axis::Rows, Target::Item(_)) => self.row_items.len(),
+            _ => 0,
+        }
+    }
+
     /// Opens the menu of the focused item of `axis` (`Axis::Cols` for the
     /// focused column's): `false` if nothing there is focused.
     pub fn open(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
@@ -603,7 +659,8 @@ impl HeaderMenu {
         }
         let snapshot = grid.snapshot();
         let fields = self.fields(&snapshot);
-        let entries = entries(&snapshot, &open, &fields);
+        let mut entries = entries(&snapshot, &open, &fields);
+        entries.extend((0..self.hosts(&open)).map(Entry::Host));
         let Open { axis, cursor, .. } = open;
         let item = match open.target {
             Target::Item(key) => Some(key),
@@ -633,7 +690,18 @@ impl HeaderMenu {
                     .find(|e| {
                         !matches!(e, Entry::Show(_)) && e.key(axis, item, ungroups) == Some(c)
                     })
-                    .cloned();
+                    .cloned()
+                    .or_else(|| {
+                        (entries.iter())
+                            .find(|e| match e {
+                                Entry::Host(i) => {
+                                    let key = self.row_items[*i].key;
+                                    key == Some(c) && !ROW_MENU_KEYS.contains(c)
+                                }
+                                _ => false,
+                            })
+                            .cloned()
+                    });
             }
             _ => {}
         }
@@ -727,6 +795,15 @@ impl HeaderMenu {
                 grid.show(axis, &hidden);
                 None
             }
+            Some(Entry::Host(i)) => {
+                if let (Some(row), Some(chosen)) = (item, self.row_items.get(i)) {
+                    self.row_choice = Some(RowChoice {
+                        name: chosen.name.clone(),
+                        row,
+                    });
+                }
+                None
+            }
             None => {
                 closes = false;
                 None
@@ -776,6 +853,7 @@ impl HeaderMenu {
             Axis::Rows => ("row", "rows"),
         };
         let entries = entries(snapshot, o, &self.fields(snapshot));
+        let hosts = self.hosts(o);
         let item = match o.target {
             Target::Item(key) => Some(key),
             Target::Level(_) => None,
@@ -813,6 +891,7 @@ impl HeaderMenu {
             + list as u16
             + u16::from(!hidden.is_empty())
             + u16::from(o.hint.is_some())
+            + if hosts > 0 { 1 + hosts as u16 } else { 0 }
             + 1;
         // The lines above the heading that fit, scrolled to the cursor.
         let room = usize::from(area.height.saturating_sub(rest)).max(1);
@@ -919,7 +998,7 @@ impl HeaderMenu {
                 },
                 Entry::ShowOnly => format!("Show only {these}"),
                 Entry::Choose => format!("Choose {nouns}…"),
-                Entry::Show(_) | Entry::ShowAll => continue,
+                Entry::Show(_) | Entry::ShowAll | Entry::Host(_) => continue,
             };
             let (mark, style) = at(i);
             let key = entry.key(o.axis, item, ungroups).unwrap_or(' ');
@@ -959,6 +1038,20 @@ impl HeaderMenu {
             line(row, &format!("{mark}a Show all"), style);
             row += 1;
         }
+        if hosts > 0 {
+            line(row, &"─".repeat(inner), border);
+            row += 1;
+            for (j, item) in self.row_items.iter().enumerate() {
+                let (mark, style) = at(entries.len() + j);
+                let key = item.key.filter(|c| !ROW_MENU_KEYS.contains(*c));
+                line(
+                    row,
+                    &format!("{mark}{} {}", key.unwrap_or(' '), item.label),
+                    style,
+                );
+                row += 1;
+            }
+        }
         if let Some(hint) = &o.hint {
             line(row, &format!(" {hint}"), theme.body.patch(theme.error));
             row += 1;
@@ -977,4 +1070,34 @@ fn capital(noun: &str) -> String {
         .next()
         .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reserved_keys_hold_every_key_a_row_menu_line_uses() {
+        let item = Some(Key(1));
+        let lines = [
+            Entry::Pin(Edge::Leading),
+            Entry::Pin(Edge::Trailing),
+            Entry::Unpin,
+            Entry::Freeze,
+            Entry::Ungroup,
+            Entry::Hide,
+            Entry::ShowOnly,
+            Entry::Choose,
+            Entry::Show(Key(2)),
+            Entry::ShowAll,
+        ];
+        for line in lines {
+            for ungroups in [false, true] {
+                if let Some(c) = line.key(Axis::Rows, item, ungroups) {
+                    assert!(ROW_MENU_KEYS.contains(c), "{line:?} uses {c}");
+                }
+            }
+        }
+        assert!(('1'..='9').all(|c| ROW_MENU_KEYS.contains(c)));
+    }
 }

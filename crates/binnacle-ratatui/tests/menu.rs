@@ -7,8 +7,8 @@ use binnacle_core::{
 };
 use binnacle_memory::{MemorySource, PumpSource, pump};
 use binnacle_ratatui::{
-    Chooser, Content, Control, Controls, HeaderMenu, Hid, Preset, RenderContext, Theme,
-    hide_chosen, hide_focused, render_with, show_only_chosen,
+    Chooser, Content, Control, Controls, HeaderMenu, Hid, Preset, RenderContext, RowChoice,
+    RowItem, Theme, hide_chosen, hide_focused, render_with, show_only_chosen,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -649,4 +649,110 @@ fn on_a_column_major_table_the_chooser_and_show_only_act_on_its_records() {
         source.window(Axis::Rows, 0..source.count(Axis::Rows)),
         [Key(0), Key(2)]
     );
+}
+
+fn row_items() -> Vec<RowItem> {
+    vec![
+        RowItem {
+            name: "track".into(),
+            label: "Track shipment".into(),
+            key: Some('k'),
+        },
+        RowItem {
+            name: "notes".into(),
+            label: "Open notes".into(),
+            key: Some('t'),
+        },
+    ]
+}
+
+#[test]
+fn a_row_menu_lists_host_items_after_the_built_ins_and_a_column_menu_does_not() {
+    let mut t = Table::new(true);
+    let mut menu = HeaderMenu::new();
+    menu.set_row_items(row_items());
+    t.focus(2, 0);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    let out = t.screen(&menu);
+    let at = |needle: &str| {
+        out.find(needle)
+            .unwrap_or_else(|| panic!("{needle}\n{out}"))
+    };
+    assert!(at("Choose rows") < at("Track shipment"), "{out}");
+    assert!(at("Track shipment") < at("Open notes"), "{out}");
+    assert!(menu.close());
+    assert!(menu.open(&t.grid.snapshot(), Axis::Cols));
+    let out = t.screen(&menu);
+    assert!(
+        !out.contains("Track shipment") && !out.contains("Open notes"),
+        "{out}"
+    );
+}
+
+#[test]
+fn choosing_a_host_item_closes_the_menu_and_queues_its_name_and_row_once() {
+    let mut t = Table::new(true);
+    let mut menu = HeaderMenu::new();
+    menu.set_row_items(row_items());
+    t.focus(2, 0);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    let built_ins = t.screen(&menu);
+    assert!(built_ins.contains("Track shipment"));
+    // Six built-ins (Pin top, Pin bottom, Freeze, Hide, Show only, Choose), then the items.
+    for _ in 0..7 {
+        t.press(&mut menu, KeyCode::Down);
+    }
+    t.press(&mut menu, KeyCode::Enter);
+    assert!(!menu.is_open());
+    assert_eq!(
+        menu.take_row_choice(),
+        Some(RowChoice {
+            name: "notes".into(),
+            row: Key(2)
+        })
+    );
+    assert_eq!(menu.take_row_choice(), None);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    t.press(&mut menu, KeyCode::Char('k'));
+    assert!(!menu.is_open());
+    assert_eq!(
+        menu.take_row_choice(),
+        Some(RowChoice {
+            name: "track".into(),
+            row: Key(2)
+        })
+    );
+    assert_eq!(menu.take_row_choice(), None);
+}
+
+#[test]
+fn a_row_menu_without_hiding_still_opens_with_the_host_items() {
+    let mut t = Table::new(false);
+    let mut menu = HeaderMenu::new();
+    menu.set_row_items(row_items());
+    t.focus(2, 0);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    let out = t.screen(&menu);
+    assert!(!out.contains("Hide"), "{out}");
+    assert!(out.contains("Track shipment"), "{out}");
+    t.press(&mut menu, KeyCode::Char('k'));
+    assert_eq!(menu.take_row_choice().map(|c| c.name), Some("track".into()));
+}
+
+#[test]
+fn a_host_key_that_a_built_in_uses_is_ignored() {
+    let mut t = Table::new(true);
+    let mut menu = HeaderMenu::new();
+    menu.set_row_items(row_items());
+    t.focus(2, 0);
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    t.press(&mut menu, KeyCode::Char('t'));
+    assert_eq!(t.pinned(Axis::Rows, Edge::Leading), [2], "Pin top");
+    assert_eq!(menu.take_row_choice(), None);
+    assert!(!menu.is_open());
+    // Pin top is not offered on a row pinned top, yet its key stays the built-in's.
+    assert!(menu.open(&t.grid.snapshot(), Axis::Rows));
+    t.press(&mut menu, KeyCode::Char('t'));
+    assert_eq!(menu.take_row_choice(), None);
+    assert!(menu.is_open());
 }
