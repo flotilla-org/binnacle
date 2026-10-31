@@ -78,7 +78,8 @@ pub fn inline_height(rows: u64, terminal_rows: u16, max: Option<u16>) -> u16 {
     need.min(max.unwrap_or(terminal_rows / 2)).max(3)
 }
 
-/// How many rows decide which side a header lines up on.
+/// How many rows decide which side a header lines up on: the first ones in
+/// display order, not only the visible ones.
 const SAMPLE: u64 = 64;
 
 /// SIGINT, the signal Ctrl-C is taken as.
