@@ -13,7 +13,8 @@
  * unknown tag or flag bit, does nothing and returns 0; otherwise calls return
  * 1. Nothing a call fills needs releasing: output arrays point into buffers
  * the Grid owns. Nothing calls back into the host: Effects are polled. A
- * panic aborts the process.
+ * panic aborts the process, except in the Described Table calls, which
+ * catch theirs (see there).
  */
 
 #ifndef BINNACLE_H
@@ -32,7 +33,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 20u
+#define BINNACLE_ABI_VERSION 21u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -1954,7 +1955,8 @@ uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
  *
  * A source is not thread-safe: it is !Send in Rust (it holds an Rc and boxed
  * closures), so a handle, and the Grid it drives, are used from one thread
- * only. Calls taking a Grid take the one this source drives.
+ * only. A source drives the first Grid a call gives it, and refuses every
+ * call given another.
  *
  * Every pointer a call fills, and every pointer inside what it fills, stays
  * valid until the next call on the same source, or
@@ -1964,6 +1966,11 @@ uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
  * Each call returns 1 on success and 0 on refusal, changing nothing: a NULL
  * source, Grid or output, an unknown axis, encoding or flag, text that is not
  * UTF-8, or an unknown Key, unless a call says otherwise.
+ *
+ * No panic leaves these calls. One a call catches makes it return 0 (NULL
+ * from binnacle_described_source_new) and poisons the source: it may be
+ * half-changed, so every later call on it returns 0 too, and the host frees
+ * it and builds another. The Grid it drives may be half-changed as well.
  */
 typedef struct BinnacleDescribedSource BinnacleDescribedSource;
 
@@ -2055,7 +2062,8 @@ typedef struct {
  * header has it, and the call fills the rest, leaving size as it is. text is
  * the formatter's, with the column's unit and role and default options, its
  * dates relative to the source's clock (binnacle_described_source_set_now)
- * and absolute in its offset (binnacle_described_source_set_utc_offset).
+ * and absolute in its offset (binnacle_described_source_set_utc_offset), the
+ * one quick filters, find and Distinct Values read them in too.
  * align is a BINNACLE_TEXT_ALIGN_*, style BINNACLE_STYLE_* bits. A cell that
  * is not there has value.kind BINNACLE_TYPED_NONE and empty text. */
 typedef struct {
@@ -2163,8 +2171,8 @@ typedef struct {
 /* A new source for the rows of table within namespace_name (flotilla's own
  * records are in "flotilla"), narrowed by wheres, each a where clause in the
  * server's syntax passed on unchanged. Its first request opens the watch.
- * NULL for an empty namespace, text that is not UTF-8, or a NULL wheres with
- * a nonzero wheres_len. Its cells format with the system clock in UTC until
+ * NULL for an empty table or namespace, text that is not UTF-8, or a NULL
+ * wheres with a nonzero wheres_len. Its cells format with the system clock in UTC until
  * set otherwise. Free it with binnacle_described_source_free. A Rust host
  * builds one with BinnacleDescribedSource::from_source instead. */
 BinnacleDescribedSource *binnacle_described_source_new(BinnacleText table,
@@ -2222,9 +2230,13 @@ int binnacle_described_source_status(BinnacleDescribedSource *src, BinnacleDescr
  * every cell after, in place of the system clock read at each call. */
 int binnacle_described_source_set_now(BinnacleDescribedSource *src, int64_t unix_nanos);
 
-/* The offset from UTC, in seconds east, absolute dates draw in: 0 until
- * set. */
-int binnacle_described_source_set_utc_offset(BinnacleDescribedSource *src, int32_t seconds_east);
+/* The offset from UTC, in seconds east, absolute dates draw in, and the one
+ * quick filters, find and Distinct Values match them in: 0 until set. The
+ * rows, their Keys and the View Spec stay; it sends grid the Change Notices
+ * a filter, find or grouping matching other rows brings. A Rust host sets a
+ * Zone instead, with BinnacleDescribedSource::set_zone. */
+int binnacle_described_source_set_utc_offset(BinnacleDescribedSource *src, BinnacleGrid *grid,
+                                             int32_t seconds_east);
 
 /* The cell where the row with Key row meets the column with Key col, into
  * out. 1 for a cell that is not there too, with kind BINNACLE_TYPED_NONE.
@@ -2235,7 +2247,8 @@ int binnacle_described_cell(BinnacleDescribedSource *src, uint64_t row, uint64_t
 /* The cells of a Window rectangle, row by row: out[r * cols_len + c] is
  * where rows[r] meets cols[c], each as binnacle_described_cell fills it.
  * The caller sets each out[i].size. 0, writing nothing, if out_len is less
- * than rows_len * cols_len or any of those cells' size is too small. */
+ * than rows_len * cols_len or any of those cells' size is too small. out
+ * must not overlap rows or cols. */
 int binnacle_described_cells(BinnacleDescribedSource *src, const uint64_t *rows, size_t rows_len,
                              const uint64_t *cols, size_t cols_len, BinnacleCell *out,
                              size_t out_len);

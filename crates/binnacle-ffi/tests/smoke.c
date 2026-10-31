@@ -529,6 +529,82 @@ static void described(const char *path) {
   binnacle_grid_free(grid);
 }
 
+/* One frame of a Described Table: pump, begin, fill. */
+static void described_frame(BinnacleDescribedSource *src, BinnacleGrid *grid) {
+  BinnacleWindowRequests requests;
+  CHECK(binnacle_described_source_pump(src, grid));
+  CHECK(binnacle_grid_begin_frame(grid, 1000, 20, &requests));
+  CHECK(binnacle_described_source_fill(src, grid, &requests));
+}
+
+static void described_line(BinnacleDescribedSource *src, BinnacleGrid *grid, const char *line) {
+  CHECK(binnacle_described_source_receive(src, grid, BINNACLE_ENCODING_NDJSON,
+                                          (const uint8_t *)line, strlen(line)));
+  described_frame(src, grid);
+}
+
+/* How many rows the quick filter on text keeps. */
+static uint64_t kept_by(BinnacleDescribedSource *src, BinnacleGrid *grid, const char *text) {
+  BinnacleTextQuery query = {.text = ctext(text), .searched = BINNACLE_SEARCHED_SHOWN};
+  CHECK(binnacle_grid_set_quick_filter(grid, BINNACLE_ROWS, &query));
+  described_frame(src, grid);
+  uint64_t n;
+  CHECK(binnacle_described_source_count(src, BINNACLE_ROWS, &n));
+  return n;
+}
+
+/* One offset draws a date and matches it: a datetime with no time role,
+ * 22:30 UTC, draws 23:30 at +3600, the quick filter keeps it by 23:30 and
+ * not 22:30, and its Distinct Value reads 23:30. */
+static void described_zone(void) {
+  BinnacleDescribedSource *src =
+      binnacle_described_source_new(ctext("events"), ctext("flotilla"), NULL, 0);
+  CHECK(src != NULL);
+  CHECK(binnacle_described_source_new(ctext(""), ctext("flotilla"), NULL, 0) == NULL);
+  BinnacleAxisConfig rows = {.count = 0, .default_size = 1, .header = 1, .gap = 0};
+  BinnacleAxisConfig cols = {.count = 0, .default_size = 10, .header = 1, .gap = 0};
+  BinnacleGrid *grid = binnacle_grid_new(rows, cols);
+  BinnacleGrid *other = binnacle_grid_new(rows, cols);
+  CHECK(grid != NULL && other != NULL);
+  described_line(src, grid,
+                 "{\"type\":\"table\",\"table\":\"events\",\"schema\":{\"fields\":["
+                 "{\"name\":\"name\",\"type\":\"string\",\"roles\":[\"key\"]},"
+                 "{\"name\":\"at\",\"type\":\"datetime\"}],\"primaryKey\":[\"name\"]}}");
+  described_line(src, grid,
+                 "{\"type\":\"rows\",\"rows\":[{\"name\":\"a\",\"at\":\"2026-07-27T22:30:00Z\"}]}");
+  described_line(src, grid, "{\"type\":\"synced\"}");
+  /* Only the Grid this source drives. */
+  CHECK(!binnacle_described_source_set_utc_offset(src, other, 3600));
+  CHECK(!binnacle_described_source_pump(src, other));
+  CHECK(binnacle_described_source_set_utc_offset(src, grid, 3600));
+  described_frame(src, grid);
+
+  BinnacleSnapshot snap;
+  CHECK(binnacle_grid_snapshot(grid, &snap));
+  const BinnacleAxisSnapshot *r = &snap.axes[BINNACLE_ROWS];
+  const BinnacleAxisSnapshot *c = &snap.axes[BINNACLE_COLS];
+  CHECK(r->strip_len == 1 && c->strip_len == 2);
+  uint64_t row = r->strip[0].key, at = 0;
+  BinnacleColumnInfo info = {.size = sizeof info};
+  for (size_t i = 0; i < c->strip_len; i++) {
+    CHECK(binnacle_described_column(src, c->strip[i].key, &info));
+    if (text_is(info.name, "at")) at = info.key;
+  }
+  CHECK(at && info.role_bits == 0);
+  BinnacleCell cell = {.size = sizeof cell};
+  CHECK(binnacle_described_cell(src, row, at, &cell));
+  CHECK(text_is(cell.text, "2026-07-27 23:30"));
+  BinnacleDistinct distinct;
+  CHECK(binnacle_described_distinct(src, grid, at, ctext(""), 10, &distinct));
+  CHECK(distinct.values_len == 1 && text_is(distinct.values[0].text, "2026-07-27 23:30"));
+  CHECK(kept_by(src, grid, "23:30") == 1);
+  CHECK(kept_by(src, grid, "22:30") == 0);
+
+  binnacle_described_source_free(src);
+  binnacle_grid_free(grid);
+  binnacle_grid_free(other);
+}
+
 int main(int argc, char **argv) {
   CHECK(argc == 2);
   CHECK(binnacle_abi_version() == BINNACLE_ABI_VERSION);
@@ -1092,6 +1168,7 @@ int main(int argc, char **argv) {
   by_key();
   layout();
   described(argv[1]);
+  described_zone();
   printf("ok\n");
   return 0;
 }

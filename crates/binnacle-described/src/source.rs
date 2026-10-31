@@ -266,9 +266,38 @@ impl DescribedSource {
     /// This source with its dates' Stable Text (what filters and find
     /// match) in `zone`, as the host draws them.
     pub fn zone(mut self, zone: impl Zone + 'static) -> DescribedSource {
-        self.zone = Rc::new(zone);
-        self.rebuild();
+        let _ = self.set_zone(zone);
         self
+    }
+
+    /// Its dates' Stable Text in `zone` from now on, as the host draws them
+    /// now. The rows, their Keys and the View Spec stay; the Grid needs the
+    /// Change Notices returned, as filters, find and groups may now match
+    /// other rows: the rows are `Reset` while a View Spec applies (and the
+    /// columns too while grouped), and otherwise their content changed.
+    pub fn set_zone(&mut self, zone: impl Zone + 'static) -> Vec<(Axis, ChangeNotice)> {
+        self.zone = Rc::new(zone);
+        if self.schema.is_none() {
+            return Vec::new();
+        }
+        self.rebuild();
+        let rows = self.count(Axis::Rows);
+        if self.spec == ViewSpec::default() {
+            return match rows {
+                0 => Vec::new(),
+                _ => vec![(Axis::Rows, ChangeNotice::ContentChanged(0..rows))],
+            };
+        }
+        let mut notices = vec![(Axis::Rows, ChangeNotice::Reset(rows))];
+        if self.grouped.grouped(Axis::Cols) {
+            notices.push((Axis::Cols, ChangeNotice::Reset(self.count(Axis::Cols))));
+        }
+        notices
+    }
+
+    /// The zone its dates' Stable Text is in, which the host draws them in.
+    pub fn time_zone(&self) -> &dyn Zone {
+        &*self.zone
     }
 
     pub fn table(&self) -> &str {
