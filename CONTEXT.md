@@ -60,6 +60,10 @@ _Avoid_: Remote table, schema table, dynamic table
 What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses. A Described Table source can't be built without one.
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
+**Described Source Handle**:
+A Described Table source behind the C API (`BinnacleDescribedSource` in `binnacle.h`): it takes the rows stream's messages, pumps and fills the Grid it drives, and gives a native renderer each cell's Typed Value and formatted text, each column's description, and Distinct Values. Like the source it holds, it is used from one thread. A Rust host builds one from its own source with `BinnacleDescribedSource::from_source`.
+_Avoid_: Described grid, table handle
+
 **Resync**:
 A Described Table source starting its rows again without showing the table empty: after a `resync` message, or when its stream ends and it asks to open the watch again, every row is unconfirmed; the `table`, `rows` and `synced` that follow replace the rows in place, each row that comes confirmed and keeping its Key, and `synced` removes those still unconfirmed. A page that changes more than 256 held rows at once applies as one Reset, so rows the user moved go back to the source's order. A `table` message once the columns are known is diffed by field name the same way.
 _Avoid_: Reload, refresh, reconnect (for the whole)
@@ -117,6 +121,10 @@ _Avoid_: View change, view event, view command
 **Layout**:
 The portable, versioned document of how a table is presented, by the Table Source's IDs: its View Spec, a partial order of its items per axis (those listed first, the rest in the source's order), its pins, its Size Overrides and its Header Band thicknesses, each part optional. A source ships one as its default view and a user's saved layout is another, laid over it part by part: each part the user's sets replaces the default's, but the order layers per axis and Size Overrides merge per item. Its IDs name every item of their axis, Group Items included. It reads and writes as JSON (the web's and the Rust crate's alike) or CBOR.
 _Avoid_: Saved layout (as a term), view state, preset, profile
+
+**Default View**:
+The Layout a source or server ships for a table, which a user's Layout sits on. A Described Table has a generic one (its Nested columns hidden, its key and state columns pinned leading), then flotilla's for that table, then the user's, each laid over the last part by part. It names columns by field name and rows by primary-key tuple, so it loads onto any table that has them and skips the names it lacks.
+_Avoid_: Preset, template, saved view
 
 **Arrangement**:
 The items placed first on an axis, in order, as a restored Layout's order and the header moves the Table Source made since leave them, whether or not they are in view: what a Layout saves as the axis's order.
@@ -286,6 +294,10 @@ _Avoid_: Detail query, drill-through
 A find match inside a closed group: counted with the others and named apart ("3 of 12, 5 in collapsed groups"), and stepped to as if every group were open. The source answers the step with the match's closed ancestors, and the Grid opens each with an Expand (the Keys staying as ordinary `except` entries) before focusing it. Find matches a Group Item's label, at its level's field, and never the figures, unless the source says it searches them.
 In header form, where a group has no Group Item, a match on its label lands on the row that carries the label in the band: the first row of its span when it is open (past its own Subtotal placed before, which sits outside the span), or its Subtotal standing in for it when it is closed. Each label is counted once, and find never answers with an item that cannot be shown: the groups the source names above a match are those that must open to show it, so a Subtotal standing in names only the groups above its own. Focus takes the label in its level's Tier.
 _Avoid_: Collapsed match, buried match
+
+**Row Menu Item**:
+An item a host adds to a row's menu in an adapter: a name and a label. Choosing one reports the name and the row back to the host (`RowChoice` in ratatui, `onRowItem` on the web); there is no Effect, so the C and wasm boundaries do not carry it. A hook until the host-defined row actions of #289 resolve.
+_Avoid_: Row action, context-menu entry
 
 **Refused Drop**:
 A drop target the source turns down as the user drags, with why: between groups (a Leaf moves only within its own group) or a Summary Item (Group Items and totals never move). The adapters draw the drop line in the error colour with a caption, and nothing moves on release. Editing a Summary Item's figures is refused the same way, the edit cancelled.

@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key, ViewSpec, Viewport};
+use binnacle_core::{Axis, AxisConfig, Grid, Key, Viewport};
 use binnacle_described::{Decoder, DescribedSource, Encoding, Message, Received, Scope};
 use binnacle_format::{Timestamp, Value};
 use binnacle_ratatui::{CellRenderer, Content, ValueRenderer, fit_width};
@@ -93,16 +93,9 @@ impl Tables {
             let width = fit_width(self, &rows, col).clamp(4, MAX_WIDTH);
             grid.set_size(Axis::Cols, col, width as f32);
         }
-        let column = |key| self.source.column(key).unwrap();
-        let pinned: Vec<Key> = (columns.iter().copied())
-            .filter(|&c| column(c).field().has_role("key"))
-            .chain((columns.iter().copied()).filter(|&c| column(c).field().has_role("state")))
-            .collect();
-        grid.set_pins(Axis::Cols, Edge::Leading, &pinned);
-        let nested: Vec<Key> = (columns.iter().copied())
-            .filter(|&c| column(c).nested())
-            .collect();
-        grid.request_view(ViewSpec::default().with_hidden(Axis::Cols, nested));
+        self.source
+            .default_layout()
+            .restore(&mut grid, &self.source);
         grid
     }
 

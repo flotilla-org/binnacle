@@ -226,7 +226,10 @@ export const shipmentsDemo: DemoSource = {
     const form = askedForm() === null ? null : formSelect(widget);
     if (form) toolbar.append(form);
     const layout = layoutControls(widget, "shipments");
-    const columnMenu = createColumnMenu(widget);
+    const columnMenu = createColumnMenu(widget, {
+      rowItems: (rowId) => (rowId >= 0 && rowId < shipments.length ? [{ name: "track", label: "Track" }] : []),
+      onRowItem: ({ name, rowId }) => note(`${name}: ${table.row(rowId)?.id ?? rowId}`),
+    });
     const chooser = createChooser(widget);
     const bar = createFilterBar(widget, { columnMenu });
     const findBar = createFindBar(widget);

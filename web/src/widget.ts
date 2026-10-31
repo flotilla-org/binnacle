@@ -396,6 +396,7 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   private levelMenu: ((axis: AxisName, field: ColId | null, anchor: DOMRect) => void) | null = null;
   /** The mounted row menu's opener, if one is mounted. */
   private rowMenu: ((rowId: RowId, anchor: DOMRect, at: MenuAt) => void) | null = null;
+  private rowMenuItems: ((rowId: RowId) => boolean) | null = null;
   /** The mounted find bar's opener, if one is mounted. */
   private findBar: (() => void) | null = null;
   private chooser: ((axis: AxisName, anchor?: DOMRect) => void) | null = null;
@@ -1035,16 +1036,20 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
    * `createColumnMenu`): row headers whose row the columns take conditions
    * on draw its button while hovered or filtering, and a press on one,
    * Alt+ArrowRight, or `openRowMenu` calls `open` with the row and a
-   * rectangle to place the menu beside. Returns how to unmount it; one menu
-   * is mounted at a time.
+   * rectangle to place the menu beside. `hasItems` says whether the menu has
+   * items of its own for a row, so that it opens on rows the columns take no
+   * conditions on. Returns how to unmount it; one menu is mounted at a
+   * time.
    */
-  attachRowMenu(open: (rowId: RowId, anchor: DOMRect, at: MenuAt) => void): () => void {
+  attachRowMenu(open: (rowId: RowId, anchor: DOMRect, at: MenuAt) => void, hasItems?: (rowId: RowId) => boolean): () => void {
     this.rowMenu = open;
+    this.rowMenuItems = hasItems ?? null;
     this.painter.filterButtons.rows = true;
     this.invalidate();
     return () => {
       if (this.rowMenu !== open) return;
       this.rowMenu = null;
+      this.rowMenuItems = null;
       this.painter.filterButtons.rows = false;
       this.invalidate();
     };
@@ -1105,13 +1110,13 @@ export class GridWidget<RowId = unknown, ColId = unknown, V = unknown> {
   /**
    * Opens the mounted row menu for `rowId`, beside its header if it is in
    * view, else at `anchor` (or the grid's top left), at `at`. `false` if no
-   * menu is mounted, or the columns cannot be filtered by the row and the
-   * rows do not hide.
+   * menu is mounted, or the columns cannot be filtered by the row, the
+   * rows do not hide and the menu has no items of its own for it.
    */
   openRowMenu(rowId: RowId, anchor?: DOMRect, at: MenuAt = "top"): boolean {
     const open = this.rowMenu;
     const support = this.feed.rowSupport(rowId);
-    if (!open || this.destroyed || (!support.text && !support.oneOf && !support.compare && !this.canHide("rows"))) return false;
+    if (!open || this.destroyed || (!support.text && !support.oneOf && !support.compare && !this.canHide("rows") && !this.rowMenuItems?.(rowId))) return false;
     const key = this.feed.rowKey(rowId);
     const header = this.last?.rows.headers.find((h) => h.key === key && this.inView("rows", h));
     open(rowId, header ? this.clientRect(header.rect) : (anchor ?? this.clientRect({ x: 0, y: 0, width: 0, height: 0 })), at);

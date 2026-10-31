@@ -13,6 +13,7 @@
 //! [`encode_cbor_item`] write messages, as a server (or a fake one) does.
 
 mod keys;
+mod layout;
 mod message;
 mod scope;
 mod source;
