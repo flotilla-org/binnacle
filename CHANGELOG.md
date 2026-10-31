@@ -116,6 +116,7 @@
 
 ### Fixed
 
+- **described:** a saved Layout no longer names the rows of a table with no primary key, or rows whose primary-key tuple JSON can't carry exactly (a NaN, an infinity, an integer past `i64` and `u64`): `IdMap::row_id` gives them no ID ([#338](https://github.com/flotilla-org/binnacle/issues/338)). Before, a keyless row was named by where it came in its stream, so a saved pin, order or Size Override restored onto whichever row came at that place; such entries in Layouts saved before are now skipped on restore.
 - **group, web:** an edit under a pivot refigures its cells and its columns' totals at once with the row Subtotals and the Grand Total, in the In-Memory Table Source (`GroupedMemory`, `fromRows`) and over a backend; they were stale until the next View Spec. Rows under the values pseudo-level are refigured and redrawn too ([#239](https://github.com/flotilla-org/binnacle/issues/239)).
 - **web:** a grouped Leaf an edit stops matching a slicer stays as an Unmatched Row, drawn dimmed, as one the filter drops: `fromRows` tests a grouped edit against the slicers (and no longer against a comparison on an aggregated column, which filters groups), and `groupedSource` gives its base the slicers with the filter ([#270](https://github.com/flotilla-org/binnacle/issues/270)).
 - **web:** the widget asks for Summary Items' cells apart from the Leaves', so an edited Leaf over an async grouped source draws its new cells at once instead of loading with its group's pending figures ([#260](https://github.com/flotilla-org/binnacle/issues/260)).
