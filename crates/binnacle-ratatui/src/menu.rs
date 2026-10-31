@@ -666,17 +666,15 @@ impl HeaderMenu {
     /// Opens the menu of the focused item of `axis` (`Axis::Cols` for the
     /// focused column's): `false` if nothing there is focused.
     pub fn open(&mut self, snapshot: &Snapshot, axis: Axis) -> bool {
-        let Some(focus) = snapshot.focus(axis) else {
+        let Some((key, at)) = snapshot
+            .focus(axis)
+            .and_then(|f| Some((f.key?, f.position)))
+        else {
             return false;
         };
-        let Some(key) = focus.key else {
-            return false;
-        };
-        let row = (axis == Axis::Rows).then(|| {
-            match snapshot.outline(axis, focus.position).map(|o| o.kind) {
-                None | Some(ItemKind::Leaf) => RowTarget::Row(key),
-                Some(kind) => RowTarget::Summary(key, kind),
-            }
+        let row = (axis == Axis::Rows).then(|| match snapshot.outline(axis, at).map(|o| o.kind) {
+            None | Some(ItemKind::Leaf) => RowTarget::Row(key),
+            Some(kind) => RowTarget::Summary(key, kind),
         });
         self.open = Some(Open::new(axis, Target::Item(key, row)));
         true
