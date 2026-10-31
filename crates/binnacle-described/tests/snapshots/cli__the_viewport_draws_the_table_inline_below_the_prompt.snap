@@ -11,8 +11,8 @@ expression: "frames[0]"
 4delta      Running       15h ago ∅                3.5%            brie       {}                   █
 5echo       Done            in 9h 184467440…         2% late       ∅          {}                   █
 6foxtrot    Running        2d ago          8 !high      ∅          feta       {"image":…           █
-7hotel 日   Running    ∅                  16      12.5% first lin… 東         {}                   █
-8india 🚢   Done       ∅                   3 ∅          🚢 ok      ∅          {"a":[1]}            █
+7hotel 日本 Running    ∅                  16      12.5% first lin… 東京       {}                   █
+8india 🚢   Done       ∅                   3 ∅          🚢🚢 ok    ∅          {"a":[1]}            █
 9juliet     ∅          ∅          ∅          ∅          ∅          ∅          {}                   █
                                                                                                    █
 9 rows | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  Esc quit

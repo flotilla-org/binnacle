@@ -15,7 +15,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::checklist::{Column, Shown};
 use crate::compare::{self, BETWEEN, STEPS};
-use crate::renderer::{char_count, fit};
+use crate::width::{fit, pad as pad_to, put_text, tail, width as text_width};
 use crate::{Content, Theme};
 
 /// A find, filter, pinning or hiding control a key reaches, outside the
@@ -693,18 +693,12 @@ impl QuickFilter {
         };
         let right: usize = toggles.iter().map(|(t, _)| t.len() + 1).sum::<usize>()
             + 1
-            + char_count(&message) as usize;
-        let room = width.saturating_sub(char_count(label) as usize + right + 1);
+            + text_width(&message) as usize;
+        let room = width.saturating_sub(text_width(label) as usize + right + 1);
         let blank = Style::default();
         let mut x = area.x;
         let mut put = |x: &mut u16, text: &str, style: Style| {
-            for ch in text.chars() {
-                if *x >= area.right() {
-                    return;
-                }
-                buf[(*x, area.y)].set_char(ch).set_style(style);
-                *x += 1;
-            }
+            put_text(buf, x, area.y, area.right(), text, style);
         };
         put(&mut x, &" ".repeat(width), theme.body);
         x = area.x;
@@ -713,11 +707,11 @@ impl QuickFilter {
         let field = theme.body.add_modifier(Modifier::UNDERLINED);
         let shown = if self.focused() {
             // Shows the end of a long text, then the caret.
-            let chars: Vec<char> = self.query.text.chars().collect();
-            let tail: String = chars[chars.len().saturating_sub(room.saturating_sub(1))..]
-                .iter()
-                .collect();
-            format!("{tail}▏")
+            let end = tail(
+                &self.query.text,
+                u32::try_from(room.saturating_sub(1)).unwrap_or(0),
+            );
+            format!("{end}▏")
         } else if query.text.is_empty() {
             self.placeholder.clone()
         } else {
@@ -733,7 +727,7 @@ impl QuickFilter {
             }
         };
         let shown = fit(&shown, u32::try_from(room).unwrap_or(u32::MAX));
-        let pad = room.saturating_sub(char_count(&shown) as usize);
+        let pad = room.saturating_sub(text_width(&shown) as usize);
         put(&mut x, &shown, style);
         put(
             &mut x,
@@ -1421,13 +1415,7 @@ impl ColumnFilter {
             if row >= popup.height {
                 return;
             }
-            for ch in text.chars() {
-                if *x >= popup.right() {
-                    return;
-                }
-                buf[(*x, popup.y + row)].set_char(ch).set_style(style);
-                *x += 1;
-            }
+            put_text(buf, x, popup.y + row, popup.right(), text, style);
         };
         let title = match o.axis {
             Axis::Rows if o.column.slicing => {
@@ -1437,7 +1425,7 @@ impl ColumnFilter {
             Axis::Cols => format!(" Filter columns by {} ", label(content, o.axis, o.key)),
         };
         let title = fit(&title, u32::try_from(inner).unwrap_or(0));
-        let rule = inner.saturating_sub(char_count(&title) as usize + 1);
+        let rule = inner.saturating_sub(text_width(&title) as usize + 1);
         let mut x = popup.x;
         put(0, &mut x, "┌─", border);
         put(0, &mut x, &title, theme.body.add_modifier(Modifier::BOLD));
@@ -1455,7 +1443,7 @@ impl ColumnFilter {
                 toggles.push((".*", o.query.regex));
             }
             let right: usize = toggles.iter().map(|(t, _)| t.len() + 1).sum();
-            let room = inner.saturating_sub(char_count(how) as usize + right + 2);
+            let room = inner.saturating_sub(text_width(how) as usize + right + 2);
             let field = field_text(&o.query.text, room, focused && o.zone == Zone::Text);
             let mut x = popup.x;
             put(row, &mut x, "│ ", border);
@@ -1481,7 +1469,7 @@ impl ColumnFilter {
                     u32::try_from(inner - 1).unwrap_or(0),
                 )
                 .into_owned();
-                let pad = (inner - 1).saturating_sub(char_count(&message) as usize);
+                let pad = (inner - 1).saturating_sub(text_width(&message) as usize);
                 let mut x = popup.x;
                 put(row, &mut x, "│ ", border);
                 put(row, &mut x, &message, theme.body.patch(theme.error));
@@ -1503,7 +1491,7 @@ impl ColumnFilter {
                 Compared::Numbers => "number",
                 Compared::Dates => "YYYY-MM-DD",
             };
-            let room = inner.saturating_sub(char_count(&step) as usize + 2);
+            let room = inner.saturating_sub(text_width(&step) as usize + 2);
             let mut x = popup.x;
             put(row, &mut x, "│ ", border);
             let on = focused && matches!(o.zone, Zone::Compare | Zone::High);
@@ -1517,7 +1505,7 @@ impl ColumnFilter {
             let field = |text: &str, room: usize, zone: Zone| {
                 let typing = focused && o.zone == zone;
                 if text.is_empty() && !typing {
-                    let shown = format!("{placeholder:<room$}");
+                    let shown = pad_to(placeholder, room);
                     let shown = fit(&shown, u32::try_from(room).unwrap_or(0)).into_owned();
                     (shown, underlined.patch(theme.loading))
                 } else {
@@ -1548,7 +1536,7 @@ impl ColumnFilter {
                     u32::try_from(inner - 1).unwrap_or(0),
                 )
                 .into_owned();
-                let pad = (inner - 1).saturating_sub(char_count(&message) as usize);
+                let pad = (inner - 1).saturating_sub(text_width(&message) as usize);
                 let mut x = popup.x;
                 put(row, &mut x, "│ ", border);
                 put(row, &mut x, &message, theme.body.patch(theme.error));
@@ -1560,7 +1548,7 @@ impl ColumnFilter {
 
         if o.one_of {
             let label = "Search ";
-            let room = inner.saturating_sub(char_count(label) as usize + 2);
+            let room = inner.saturating_sub(text_width(label) as usize + 2);
             let field = field_text(&o.search, room, focused && o.zone == Zone::Search);
             let mut x = popup.x;
             put(row, &mut x, "│ ", border);
@@ -1583,7 +1571,7 @@ impl ColumnFilter {
             let mut x = popup.x;
             put(row, &mut x, "├─", border);
             put(row, &mut x, &count, theme.body.patch(theme.loading));
-            let rest = inner.saturating_sub(1 + char_count(&count) as usize);
+            let rest = inner.saturating_sub(1 + text_width(&count) as usize);
             put(row, &mut x, &format!("{}┤", "─".repeat(rest)), border);
             row += 1;
 
@@ -1616,7 +1604,7 @@ impl ColumnFilter {
             put(
                 row,
                 &mut x,
-                &format!("{note:<width$}"),
+                &pad_to(note, width),
                 theme.body.patch(theme.loading),
             );
             put(row, &mut x, " │", border);
@@ -1636,7 +1624,7 @@ impl ColumnFilter {
             let hint = fit(hint, u32::try_from(inner - 1).unwrap_or(0));
             let mut x = popup.x;
             put(row, &mut x, "│ ", border);
-            let pad = (inner - 1).saturating_sub(char_count(&hint) as usize);
+            let pad = (inner - 1).saturating_sub(text_width(&hint) as usize);
             put(row, &mut x, &hint, theme.body.patch(theme.loading));
             put(row, &mut x, &" ".repeat(pad), theme.body);
             put(row, &mut x, "│", border);
@@ -1750,17 +1738,11 @@ fn render_empty(label: &str, noun: &str, theme: &Theme, area: Rect, buf: &mut Bu
     let border = theme.body.patch(theme.border);
     let inner = usize::from(area.width - 2);
     let mut put = |row: u16, x: &mut u16, text: &str, style: Style| {
-        for ch in text.chars() {
-            if *x >= area.right() {
-                return;
-            }
-            buf[(*x, area.y + row)].set_char(ch).set_style(style);
-            *x += 1;
-        }
+        put_text(buf, x, area.y + row, area.right(), text, style);
     };
     let title = format!(" Filter {label} ");
     let title = fit(&title, u32::try_from(inner).unwrap_or(0));
-    let rule = inner.saturating_sub(char_count(&title) as usize + 1);
+    let rule = inner.saturating_sub(text_width(&title) as usize + 1);
     let mut x = area.x;
     put(0, &mut x, "┌─", border);
     put(0, &mut x, &title, theme.body.add_modifier(Modifier::BOLD));
@@ -1776,7 +1758,7 @@ fn render_empty(label: &str, noun: &str, theme: &Theme, area: Rect, buf: &mut Bu
         put(
             row,
             &mut x,
-            &format!("{note:<w$}", w = inner - 1),
+            &pad_to(&note, inner - 1),
             theme.body.patch(theme.loading),
         );
         put(row, &mut x, "│", border);
@@ -1793,16 +1775,13 @@ fn render_empty(label: &str, noun: &str, theme: &Theme, area: Rect, buf: &mut Bu
 /// A field's text in `room` cells: the end of a long text then a caret
 /// while focused, padded.
 pub(crate) fn field_text(text: &str, room: usize, focused: bool) -> String {
-    let chars: Vec<char> = text.chars().collect();
     let shown: String = if focused {
-        let tail: String = chars[chars.len().saturating_sub(room.saturating_sub(1))..]
-            .iter()
-            .collect();
-        format!("{tail}▏")
+        let end = tail(text, u32::try_from(room.saturating_sub(1)).unwrap_or(0));
+        format!("{end}▏")
     } else {
         fit(text, u32::try_from(room).unwrap_or(0)).into_owned()
     };
-    let pad = room.saturating_sub(char_count(&shown) as usize);
+    let pad = room.saturating_sub(text_width(&shown) as usize);
     format!("{shown}{}", " ".repeat(pad))
 }
 
@@ -1872,10 +1851,10 @@ impl Open {
             return (" ".repeat(width), theme.body);
         };
         let count = count.map(grouped).unwrap_or_default();
-        let room = width.saturating_sub(4 + char_count(&count) as usize + 1);
+        let room = width.saturating_sub(4 + text_width(&count) as usize + 1);
         let label = fit(&label, u32::try_from(room).unwrap_or(0));
         let pad =
-            width.saturating_sub(4 + char_count(&label) as usize + char_count(&count) as usize);
+            width.saturating_sub(4 + text_width(&label) as usize + text_width(&count) as usize);
         (format!("{mark} {label}{}{count}", " ".repeat(pad)), style)
     }
 
@@ -2072,13 +2051,7 @@ pub fn render_conditions(
     }
     let mut x = area.x;
     let mut put = |x: &mut u16, text: &str, style: Style| {
-        for ch in text.chars() {
-            if *x >= area.right() {
-                return;
-            }
-            buf[(*x, area.y)].set_char(ch).set_style(style);
-            *x += 1;
-        }
+        put_text(buf, x, area.y, area.right(), text, style);
     };
     put(&mut x, &" ".repeat(usize::from(area.width)), theme.body);
     x = area.x;

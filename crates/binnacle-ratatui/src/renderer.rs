@@ -1,7 +1,6 @@
 //! Cell Renderers: per-cell drawing into a canvas clipped to the cell's
 //! visible part.
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::ops::Range;
 use std::time::Duration;
@@ -11,6 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
+use crate::width::{fit, width, write};
 use crate::{ColorSupport, Content, NextFrame, Theme};
 
 /// Draws cells. [`Content::renderer`] picks one per cell (by column unless
@@ -138,14 +138,27 @@ impl<'a> CellCanvas<'a> {
         }
     }
 
-    /// Writes `text` from `(x, y)` rightwards, one character a cell.
+    /// Writes `text` from `(x, y)` rightwards, a grapheme at a time, each
+    /// advancing by its width in columns. A zero-width grapheme joins the cell
+    /// before it; a wide one that would straddle the cell's right edge or the
+    /// visible part draws a space instead.
     pub fn print(&mut self, x: u32, y: u32, text: &str, style: Style) {
-        for (i, ch) in text.chars().enumerate() {
-            let Some(cx) = u32::try_from(i).ok().and_then(|i| x.checked_add(i)) else {
-                return;
-            };
-            self.set(cx, y, ch, style);
+        let (Some(bx), Some(by)) = (
+            self.origin.0.checked_add(i64::from(x)),
+            self.origin.1.checked_add(i64::from(y)),
+        ) else {
+            return;
+        };
+        let Ok(by) = u16::try_from(by) else {
+            return;
+        };
+        let v = self.visible;
+        if y >= self.size.1 || !(v.top()..v.bottom()).contains(&by) {
+            return;
         }
+        let edge = self.origin.0.saturating_add(i64::from(self.size.0));
+        let max = edge.min(i64::from(v.right()));
+        write(self.buf, (bx, by), (i64::from(v.left()), max), text, style);
     }
 
     /// Patches `style` over every visible cell, leaving the characters.
@@ -216,7 +229,7 @@ impl<F: Fn(Key, Key) -> String> CellRenderer for TextRenderer<F> {
     fn draw(&self, row: Key, col: Key, canvas: &mut CellCanvas) {
         let text = (self.text)(row, col);
         let text = fit(&text, canvas.width());
-        let room = canvas.width().saturating_sub(char_count(&text));
+        let room = canvas.width().saturating_sub(width(&text));
         let x = match self.align {
             Align::Left => 0,
             Align::Right => room,
@@ -227,25 +240,8 @@ impl<F: Fn(Key, Key) -> String> CellRenderer for TextRenderer<F> {
     }
 
     fn preferred_width(&self, row: Key, col: Key) -> u32 {
-        char_count(&(self.text)(row, col))
+        width(&(self.text)(row, col))
     }
-}
-
-/// `text` cut to `width` characters, ending in `…` when cut.
-pub(crate) fn fit(text: &str, width: u32) -> Cow<'_, str> {
-    if char_count(text) <= width {
-        return Cow::Borrowed(text);
-    }
-    let kept = usize::try_from(width.saturating_sub(1)).unwrap_or(usize::MAX);
-    let mut cut: String = text.chars().take(kept).collect();
-    if width > 0 {
-        cut.push('…');
-    }
-    Cow::Owned(cut)
-}
-
-pub(crate) fn char_count(text: &str) -> u32 {
-    u32::try_from(text.chars().count()).unwrap_or(u32::MAX)
 }
 
 /// The eight levels a sparkline draws, lowest first.
@@ -392,7 +388,7 @@ impl<F: Fn(Key, Key) -> f64> CellRenderer for BarRenderer<F> {
 pub fn fit_width(content: &impl Content, rows: &[Key], col: Key) -> u32 {
     rows.iter()
         .map(|&row| content.renderer(row, col).preferred_width(row, col))
-        .chain([char_count(&content.column_header(col))])
+        .chain([width(&content.column_header(col))])
         .max()
         .unwrap_or(0)
 }

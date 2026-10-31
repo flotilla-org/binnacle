@@ -201,6 +201,7 @@ version = "0.1.0"
 dependencies = [
  "hegeltest",
  "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -256,6 +257,7 @@ dependencies = [
  "regex",
  "serde_json",
  "signal-hook",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

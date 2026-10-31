@@ -22,7 +22,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::filter::{grouped, label};
-use crate::renderer::{char_count, fit};
+use crate::width::{fit, put_text, width as text_width};
 use crate::{Content, Theme};
 
 const WIDTH: u16 = 40;
@@ -1001,13 +1001,7 @@ impl HeaderMenu {
             if row >= popup.height {
                 return;
             }
-            for ch in text.chars() {
-                if *x >= popup.right() {
-                    return;
-                }
-                buf[(*x, popup.y + row)].set_char(ch).set_style(style);
-                *x += 1;
-            }
+            put_text(buf, x, popup.y + row, popup.right(), text, style);
         };
         let chosen = Chosen::of(snapshot, o.axis).map_or(1, |c| c.len());
         let title = match (o.target, chosen) {
@@ -1023,7 +1017,7 @@ impl HeaderMenu {
             (Target::Item(..), n) => format!(" {} {nouns} chosen ", grouped(n)),
         };
         let title = fit(&title, u32::try_from(inner.saturating_sub(1)).unwrap_or(0));
-        let rule = inner.saturating_sub(char_count(&title) as usize + 1);
+        let rule = inner.saturating_sub(text_width(&title) as usize + 1);
         let mut x = popup.x;
         put(0, &mut x, "┌─", border);
         put(0, &mut x, &title, theme.body.add_modifier(Modifier::BOLD));
@@ -1033,7 +1027,7 @@ impl HeaderMenu {
             let mut x = popup.x;
             put(row, &mut x, "│", border);
             let text = fit(text, u32::try_from(inner).unwrap_or(0));
-            let pad = inner.saturating_sub(char_count(&text) as usize);
+            let pad = inner.saturating_sub(text_width(&text) as usize);
             put(row, &mut x, &format!("{text}{}", " ".repeat(pad)), style);
             put(row, &mut x, "│", border);
         };

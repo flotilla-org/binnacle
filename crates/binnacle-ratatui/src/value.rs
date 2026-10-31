@@ -10,7 +10,7 @@ use binnacle_format::{
 };
 use ratatui::style::Style;
 
-use crate::renderer::{char_count, fit};
+use crate::width::{fit, width as text_width};
 use crate::{CellCanvas, CellRenderer, Theme};
 
 /// What starts an invalid value, in the Theme's `warning` style.
@@ -112,7 +112,7 @@ impl<F: Fn(Key, Key) -> Value> CellRenderer for ValueRenderer<F> {
         let text = fit(&f.text, canvas.width());
         let x = match f.align {
             Align::Start => 0,
-            Align::End => canvas.width().saturating_sub(char_count(&text)),
+            Align::End => canvas.width().saturating_sub(text_width(&text)),
         };
         let y = canvas.visible_y().start;
         let style = hint_style(canvas.theme(), f.style);
@@ -123,6 +123,6 @@ impl<F: Fn(Key, Key) -> Value> CellRenderer for ValueRenderer<F> {
     }
 
     fn preferred_width(&self, row: Key, col: Key) -> u32 {
-        char_count(&self.formatted(&(self.value)(row, col), Duration::ZERO).text)
+        text_width(&self.formatted(&(self.value)(row, col), Duration::ZERO).text)
     }
 }
