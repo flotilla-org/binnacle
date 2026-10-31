@@ -269,10 +269,6 @@ fn typed(value: &Value) -> JsValue {
             ("invalid", JsValue::from_str(raw)),
             ("expected", JsValue::from_str(expected.name())),
         ]),
-        // A kind this build does not know yet: its Debug text, for debugging
-        // only, as it is not a stable form.
-        #[allow(unreachable_patterns)]
-        other => JsValue::from_str(&format!("{other:?}")),
     }
 }
 

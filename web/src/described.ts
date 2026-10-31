@@ -187,6 +187,23 @@ function batch(told: [AxisName, ChangeNotice][]): [AxisName, ChangeNotice][] {
   return [...kept, ...wholes.flatMap(([axis, n]) => (n ? [[axis, n] as [AxisName, ChangeNotice]] : []))];
 }
 
+/**
+ * Calls each of `calls`, all of them though one throws, then rethrows the
+ * first error: a host's sink or listener that throws can't keep the news
+ * from the others.
+ */
+function all(calls: (() => void)[]): void {
+  let failed: { error: unknown } | undefined;
+  for (const call of calls) {
+    try {
+      call();
+    } catch (error) {
+      failed ??= { error };
+    }
+  }
+  if (failed) throw failed.error;
+}
+
 const located = ([code, position]: Float64Array): Located =>
   code === 0
     ? { type: "Found", position: position! }
@@ -310,31 +327,38 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
     return { rows, cols, grouping: null, totals };
   };
 
-  const tell = (quads: Float64Array) => {
-    for (const [axis, n] of batch(notices(quads))) for (const s of sinks) s[axis].notify(n);
+  /** Each sink's calls to tell `quads`. */
+  const telling = (quads: Float64Array) => {
+    const told = batch(notices(quads));
+    return [...sinks].map((s) => () => told.forEach(([axis, n]) => s[axis].notify(n)));
   };
+  const toSinks = (call: (s: TableSink<bigint, string>) => void) => [...sinks].map((s) => () => call(s));
 
   const fed = (r: Fed) => {
     counts.resyncs += r.resyncs;
     counts.decodeErrors += r.errors.length;
+    const calls: (() => void)[] = [];
     if (r.columnsChanged) {
+      // The names and Keys are rebuilt before any notice or View Spec is told,
+      // so nothing below drops a column the new schema has.
       recolumn();
-      for (const s of sinks) s.rows.supportChanged();
+      calls.push(...toSinks((s) => s.rows.supportChanged()));
     }
     if (r.view) {
       applied = r.view;
       const view = specIds(r.view.spec, r.view.totals);
-      for (const s of sinks) s.viewChanged(view);
+      calls.push(...toSinks((s) => s.viewChanged(view)));
     }
-    tell(r.notices);
+    calls.push(...telling(r.notices));
     // New totals for the View Spec in force, so a filter's count reads "of" the rows held now.
     const totals = live().totals() as Totals;
     if (applied && (totals.rows !== applied.totals.rows || totals.cols !== applied.totals.cols)) {
       applied = { spec: applied.spec, totals };
       const view = specIds(applied.spec, totals);
-      for (const s of sinks) s.viewChanged(view);
+      calls.push(...toSinks((s) => s.viewChanged(view)));
     }
-    for (const listener of [...listeners]) listener();
+    calls.push(...[...listeners].map((listener) => () => listener()));
+    all(calls);
   };
 
   const findKeys = (q: FindQuery<string>) => ({ query: queryKeys(q.query), by: q.by });
@@ -394,7 +418,7 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
     view(spec) {
       const viewed = live().view(specKeys(spec)) as { applied: KeyedViewSpec; totals: Totals; notices: Float64Array };
       applied = { spec: viewed.applied, totals: viewed.totals };
-      tell(viewed.notices);
+      all(telling(viewed.notices));
       return specIds(viewed.applied, viewed.totals);
     },
     cells(rowIds, colIds) {

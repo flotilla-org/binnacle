@@ -93,6 +93,7 @@ describe("requests", () => {
   test("an empty namespace throws, and so does a body that is not a rows stream", () => {
     expect(() => fromDescribed("crews", { namespace: "" })).toThrow(/namespace/);
     expect(() => described().open("text/html")).toThrow(/text\/html/);
+    expect(() => described().feed(CREWS)).toThrow(/open a body first/);
   });
 });
 
@@ -128,6 +129,33 @@ describe("decoding", () => {
     expect(json.status().rows).toBeGreaterThan(0);
     expect(cbor.columns()).toEqual(json.columns());
     expect(cells(cbor)).toEqual(cells(json));
+  });
+
+  test("a sink or listener that throws leaves the others told, then the error comes", () => {
+    const d = described();
+    const heard: string[] = [];
+    const ignore = () => {};
+    const sink = (name: string, fails: boolean): TableSink<bigint, string> => ({
+      rows: {
+        notify: () => {
+          heard.push(name);
+          if (fails) throw new Error(name);
+        },
+        supportChanged: ignore,
+        movableChanged: ignore,
+      },
+      cols: { notify: ignore, supportChanged: ignore, movableChanged: ignore },
+      viewChanged: ignore,
+      findCounted: ignore,
+    });
+    d.source.attach?.(sink("first", true));
+    d.source.attach?.(sink("second", false));
+    d.onChange(() => heard.push("listener"));
+    d.pollRequest();
+    d.open(NDJSON);
+    expect(() => d.feed(CREWS)).toThrow("first");
+    expect(heard).toEqual(["first", "second", "listener"]);
+    expect(d.status().rows).toBe(6);
   });
 
   test("a line that does not decode is skipped and counted", () => {
