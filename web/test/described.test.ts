@@ -371,4 +371,78 @@ describe("style", () => {
     expect(at(2, "cpus").style & WARNING).toBe(WARNING);
     expect(at(1, "phase").style & DIM).toBe(DIM);
   });
+
+  test("a decode error's message reaches the host, with the count", () => {
+    const heard: string[] = [];
+    const d = fromDescribed("crews", { namespace: "flotilla" }, { zone: fixedZone(0), onError: (m) => heard.push(m) });
+    made.push(d);
+    d.pollRequest();
+    d.open(NDJSON);
+    d.feed(CREWS);
+    expect(heard).toEqual([]);
+    expect(d.status().lastDecodeError).toBeNull();
+    d.feed(new TextEncoder().encode("{not json\n"));
+    d.feed(new TextEncoder().encode("{\"type\": nonsense}\n{also not json\n"));
+    expect(d.status()).toMatchObject({ rows: 6, decodeErrors: 3 });
+    // One call a feed, with that feed's latest message.
+    expect(heard).toHaveLength(2);
+    expect(heard.every((m) => m.length > 0)).toBe(true);
+    expect(heard[0]).toMatch(/JSON/);
+    expect(d.status().lastDecodeError).toBe(heard[1]);
+  });
+});
+
+describe("integers past 2^53", () => {
+  const U64_MAX = 18446744073709551615n;
+  const I64_MIN = -9223372036854775808n;
+  const SAFE = 9007199254740991;
+  const BIG = new TextEncoder().encode(
+    [
+      `{"type":"table","table":"big","incarnation":"durable","sequence":1,"schema":{"fields":[` +
+        `{"name":"id","type":"integer","title":"ID","x-big":{"max":18446744073709551615,"min":-9223372036854775808,"safe":9007199254740991,"half":1.5},"constraints":{"required":true}},` +
+        `{"name":"seq","type":"integer","constraints":{"required":true}},` +
+        `{"name":"tree","type":"object","constraints":{"required":false}}],"primaryKey":["id","seq"]}}`,
+      `{"type":"rows","rows":[` +
+        `{"id":18446744073709551615,"seq":-9223372036854775808,"tree":{"big":[18446744073709551615,-9223372036854775808,9007199254740991,9007199254740992,1.5],"deep":{"n":18446744073709551615}}},` +
+        `{"id":9007199254740991,"seq":-9007199254740991,"tree":null},` +
+        `{"id":9007199254740992,"seq":-9007199254740992,"tree":null}]}`,
+      `{"type":"synced","sequence":1}`,
+    ].join("\n") + "\n",
+  );
+
+  test("a primary-key tuple crosses exactly: past 2^53 a bigint, within it a number", () => {
+    const d = described("big", BIG);
+    expect(d.status().rows).toBe(3);
+    expect(rowIds(d).map((id) => d.rowKey(id))).toEqual([
+      [U64_MAX, I64_MIN],
+      [SAFE, -SAFE],
+      [2n ** 53n, -(2n ** 53n)],
+    ]);
+  });
+
+  test("a field's property crosses exactly", () => {
+    const d = described("big", BIG);
+    const property = d.property("id", "x-big");
+    expect(property).toEqual({ max: U64_MAX, min: I64_MIN, safe: SAFE, half: 1.5 });
+    expect(typeof (property as { safe: unknown }).safe).toBe("number");
+  });
+
+  test("a Nested value crosses exactly, and formats with its digits", () => {
+    const d = described("big", BIG);
+    const columns = d.columns();
+    const rows = cells(d);
+    const at = (name: string) => columns.findIndex((c) => c.name === name);
+    expect(rows[0]![at("tree")]).toEqual({
+      nested: { big: [U64_MAX, I64_MIN, SAFE, 2n ** 53n, 1.5], deep: { n: U64_MAX } },
+    });
+    const text = columnFormatter({ role: "none" }).format(rows[0]![at("tree")]!, { now: 0, zone: fixedZone(0) }).text;
+    expect(text).toContain("18446744073709551615");
+    expect(text).toContain("-9223372036854775808");
+  });
+
+  test("integer cells stay exact", () => {
+    const d = described("big", BIG);
+    const rows = cells(d);
+    expect(rows[0]!.slice(0, 2)).toEqual([U64_MAX, I64_MIN]);
+  });
 });
