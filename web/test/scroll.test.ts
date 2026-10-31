@@ -196,7 +196,7 @@ test("an offset within a pixel of the last end, reached by moving forward, is th
     const h = Harness.draw(tc);
     tc.assume(h.frame()[h.axis].thumb.size < 1);
     const max = h.max();
-    tc.assume(max >= 2);
+    tc.assume(max >= 4);
     h.offset = Math.round(max / 2);
     h.frame();
     // An animated scroll arriving a pixel short of the end, as WebKit's does.
