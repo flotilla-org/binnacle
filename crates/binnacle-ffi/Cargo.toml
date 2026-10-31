@@ -9,12 +9,16 @@ publish = false
 
 [dependencies]
 binnacle-core.workspace = true
+binnacle-described.workspace = true
+binnacle-format.workspace = true
 binnacle-group.workspace = true
 binnacle-layout.workspace = true
+binnacle-memory.workspace = true
+serde_json.workspace = true
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dev-dependencies]
-binnacle-memory.workspace = true
+ciborium = "0.2"
 hegeltest.workspace = true

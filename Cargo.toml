@@ -10,6 +10,7 @@ repository = "https://github.com/flotilla-org/binnacle"
 
 [workspace.dependencies]
 binnacle-core = { path = "crates/binnacle-core" }
+binnacle-described = { path = "crates/binnacle-described" }
 binnacle-format = { path = "crates/binnacle-format" }
 binnacle-group = { path = "crates/binnacle-group" }
 binnacle-layout = { path = "crates/binnacle-layout" }

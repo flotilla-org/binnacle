@@ -32,7 +32,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 19u
+#define BINNACLE_ABI_VERSION 20u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -1937,6 +1937,324 @@ int binnacle_group_layer_fits(const BinnacleGroupLayer *layer, uint32_t axis, ui
 
 /* How many groups and Leaves the layer holds; 0 for NULL. */
 uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
+
+/*
+ * The Described Table source (binnacle-described) for a native renderer: a
+ * table whose schema comes on the wire, its rows held, sorted, filtered,
+ * found and grouped by binnacle, each cell given its Typed Value and its
+ * text from the shared formatter (binnacle-format), so a host draws a
+ * Described Table without rebuilding any of it.
+ *
+ * The host does all I/O. It polls the request to open the watch
+ * (binnacle_described_source_poll_request), feeds back each message it reads
+ * (binnacle_described_source_receive), and each frame pumps the Grid
+ * (binnacle_described_source_pump), fills the Windows binnacle_grid_begin_frame
+ * asks for (binnacle_described_source_fill), then draws each shown cell
+ * (binnacle_described_cell or binnacle_described_cells).
+ *
+ * A source is not thread-safe: it is !Send in Rust (it holds an Rc and boxed
+ * closures), so a handle, and the Grid it drives, are used from one thread
+ * only. Calls taking a Grid take the one this source drives.
+ *
+ * Every pointer a call fills, and every pointer inside what it fills, stays
+ * valid until the next call on the same source, or
+ * binnacle_described_source_free. Copy what must last longer. Texts are UTF-8
+ * and not NUL-terminated.
+ *
+ * Each call returns 1 on success and 0 on refusal, changing nothing: a NULL
+ * source, Grid or output, an unknown axis, encoding or flag, text that is not
+ * UTF-8, or an unknown Key, unless a call says otherwise.
+ */
+typedef struct BinnacleDescribedSource BinnacleDescribedSource;
+
+/* binnacle_described_source_receive's encoding: one JSON line of an
+ * application/x-ndjson stream (its line break left off or not), or one item
+ * of an application/cbor-seq stream. */
+#define BINNACLE_ENCODING_NDJSON 1
+#define BINNACLE_ENCODING_CBOR_SEQ 2
+
+/* BinnacleWatchRequest.kind: a request this header does not know (its other
+ * fields empty), or to open the rows stream and feed each message back. */
+#define BINNACLE_REQUEST_OTHER 0
+#define BINNACLE_REQUEST_OPEN_WATCH 1
+
+/* BinnacleCell.align: where the text sits in its cell. Not BINNACLE_ALIGN_*,
+ * which is for binnacle_grid_reveal. */
+#define BINNACLE_TEXT_ALIGN_START 0
+#define BINNACLE_TEXT_ALIGN_END 1
+
+/* BinnacleCell.style bits, as binnacle-format's Style has them: hints each
+ * host maps to its own theme: DIM draws quietly (a null), WARNING with a
+ * visible mark (an invalid value), PENDING as not settled yet. */
+#define BINNACLE_STYLE_DIM 1u
+#define BINNACLE_STYLE_WARNING 2u
+#define BINNACLE_STYLE_PENDING 4u
+
+/* BinnacleTypedValue.kind, stable and never 0 for a value: NONE is no such
+ * cell (a Summary Item's, or an unknown Key). */
+#define BINNACLE_TYPED_NONE 0
+#define BINNACLE_TYPED_NULL 1
+#define BINNACLE_TYPED_BOOL 2
+#define BINNACLE_TYPED_INT 3
+#define BINNACLE_TYPED_UINT 4
+#define BINNACLE_TYPED_NUMBER 5
+#define BINNACLE_TYPED_TEXT 6
+#define BINNACLE_TYPED_BYTES 7
+#define BINNACLE_TYPED_DATETIME 8
+#define BINNACLE_TYPED_CATEGORY 9
+#define BINNACLE_TYPED_NESTED 10
+#define BINNACLE_TYPED_INVALID 11
+
+/* BinnacleColumnInfo.role_bits: the roles this header knows. The roles
+ * array lists every role by name, these included. */
+#define BINNACLE_ROLE_KEY 1u
+#define BINNACLE_ROLE_TIME 2u
+#define BINNACLE_ROLE_STATE 4u
+
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+} BinnacleBytes;
+
+/* One of a known set: value is what compares, label (if has_label) what
+ * shows. */
+typedef struct {
+  BinnacleText value;
+  uint32_t has_label;
+  BinnacleText label;
+} BinnacleCategory;
+
+/* A value the source could not read as its column's kind: raw is what it
+ * got, expected the kind (BINNACLE_TYPED_*) it wanted. */
+typedef struct {
+  BinnacleText raw;
+  uint32_t expected;
+} BinnacleInvalid;
+
+/* A Typed Value: its kind, and the part of data that kind names. BOOL is 0
+ * or 1; DATETIME is nanoseconds since the Unix epoch, UTC, exact from 1677
+ * to 2262 and saturating outside; NESTED is the JSON tree as compact JSON
+ * text. NULL and NONE use no part. */
+typedef struct {
+  uint32_t kind;
+  union {
+    uint32_t boolean;
+    int64_t int64;
+    uint64_t uint64;
+    double number;
+    BinnacleText text;
+    BinnacleBytes bytes;
+    int64_t datetime;
+    BinnacleCategory category;
+    BinnacleText nested;
+    BinnacleInvalid invalid;
+  } data;
+} BinnacleTypedValue;
+
+/* One cell, to draw: the caller sets size to sizeof(BinnacleCell) as its
+ * header has it, and the call fills the rest, leaving size as it is. text is
+ * the formatter's, with the column's unit and role and default options, its
+ * dates relative to the source's clock (binnacle_described_source_set_now)
+ * and absolute in its offset (binnacle_described_source_set_utc_offset).
+ * align is a BINNACLE_TEXT_ALIGN_*, style BINNACLE_STYLE_* bits. A cell that
+ * is not there has value.kind BINNACLE_TYPED_NONE and empty text. */
+typedef struct {
+  uint32_t size;
+  BinnacleText text;
+  uint32_t align;
+  uint32_t style;
+  BinnacleTypedValue value;
+} BinnacleCell;
+
+/* A request for the host to carry out. OPEN_WATCH: GET target, which is path
+ * ("/tables/{table}/rows") and query ("watch&limit=...&namespace=...", then a
+ * "where=" for each clause, each percent-encoded) joined by "?", and feed
+ * each message the stream carries to binnacle_described_source_receive.
+ * table, namespace_name, the where clauses and limit are what target
+ * encodes. */
+typedef struct {
+  uint32_t kind;
+  BinnacleText table;
+  BinnacleText path;
+  BinnacleText query;
+  BinnacleText target;
+  BinnacleText namespace_name;
+  const BinnacleText *wheres;
+  size_t wheres_len;
+  uint64_t limit;
+} BinnacleWatchRequest;
+
+/* How far the rows have come. described: the table message came; synced: a
+ * synced message came, so the rows are the table as of then; partial: the
+ * table has more rows than the watch's limit and only rows came, which a
+ * host shows as "10,000 of more". has_count: a count message gave count, an
+ * estimate if estimate is 1. rows: how many rows came, filtered or not.
+ * mismatches: how many values, in every column, did not match their type. */
+typedef struct {
+  uint32_t described;
+  uint32_t synced;
+  uint32_t partial;
+  uint32_t has_count;
+  uint64_t count;
+  uint32_t estimate;
+  uint64_t rows;
+  uint64_t mismatches;
+} BinnacleDescribedStatus;
+
+/* One column, as the schema describes its field. The caller sets size as
+ * for BinnacleCell. key is its Key on the column axis, name the field's
+ * name, header what its header shows (the title, else the name). type_name
+ * is the field's type as the schema names it ("string", "datetime", or one
+ * this library does not know), value_kind the BINNACLE_TYPED_* its cells
+ * take. nullable is 1 unless the field is required. role_bits has
+ * BINNACLE_ROLE_* bits; roles lists every role by name. categories, if
+ * has_categories, are the values its cells may take. A reference (from the
+ * schema's foreignKeys) names reference_field of the table resource, or of
+ * this table without has_resource. mismatches: how many of its values did
+ * not match its type. */
+typedef struct {
+  uint32_t size;
+  uint64_t key;
+  BinnacleText name;
+  uint32_t has_title;
+  BinnacleText title;
+  BinnacleText header;
+  BinnacleText type_name;
+  uint32_t value_kind;
+  uint32_t has_unit;
+  BinnacleText unit;
+  uint32_t nullable;
+  uint32_t role_bits;
+  const BinnacleText *roles;
+  size_t roles_len;
+  uint32_t has_categories;
+  const BinnacleCategory *categories;
+  size_t categories_len;
+  uint32_t has_reference;
+  uint32_t has_resource;
+  BinnacleText resource;
+  BinnacleText reference_field;
+  uint64_t mismatches;
+} BinnacleColumnInfo;
+
+/* One distinct value's Stable Text, and how many rows have it if
+ * has_count. */
+typedef struct {
+  BinnacleText text;
+  uint32_t has_count;
+  uint64_t count;
+} BinnacleDistinctValue;
+
+/* A column's Distinct Values, in its natural order (numbers numerically,
+ * dates chronologically). has_blanks: some rows are blank (null) there, and
+ * blanks counts them if blanks_counted; an empty text is a value, not a
+ * blank. partial: there were more values than the limit. narrowed: only
+ * the rows the other columns' filters keep were read. */
+typedef struct {
+  const BinnacleDistinctValue *values;
+  size_t values_len;
+  uint32_t has_blanks;
+  uint32_t blanks_counted;
+  uint64_t blanks;
+  uint32_t partial;
+  uint32_t narrowed;
+} BinnacleDistinct;
+
+/* A new source for the rows of table within namespace_name (flotilla's own
+ * records are in "flotilla"), narrowed by wheres, each a where clause in the
+ * server's syntax passed on unchanged. Its first request opens the watch.
+ * NULL for an empty namespace, text that is not UTF-8, or a NULL wheres with
+ * a nonzero wheres_len. Its cells format with the system clock in UTC until
+ * set otherwise. Free it with binnacle_described_source_free. A Rust host
+ * builds one with BinnacleDescribedSource::from_source instead. */
+BinnacleDescribedSource *binnacle_described_source_new(BinnacleText table,
+                                                       BinnacleText namespace_name,
+                                                       const BinnacleText *wheres,
+                                                       size_t wheres_len);
+
+/* Frees the source, and with it every pointer its calls filled. The Grid is
+ * the host's to free. */
+void binnacle_described_source_free(BinnacleDescribedSource *src);
+
+/* Takes one message of the rows stream: len bytes, one JSON line or one CBOR
+ * item as encoding says. It sends the Change Notices it brings to grid, and
+ * after a table message declares to grid what each column supports
+ * (sorting, filters, grouping, aggregates), hiding and find. A message this
+ * source does not handle yet is taken and changes nothing. 0, changing
+ * nothing, for an unknown encoding, NULL bytes (whatever len is), or bytes
+ * that are not one message (empty, malformed, truncated, or more than
+ * one). */
+int binnacle_described_source_receive(BinnacleDescribedSource *src, BinnacleGrid *grid,
+                                      uint32_t encoding, const uint8_t *bytes, size_t len);
+
+/* The stream ended. */
+int binnacle_described_source_ended(BinnacleDescribedSource *src, BinnacleGrid *grid);
+
+/* Takes the source's next request for its host into out: 1 if there was
+ * one, 0 when none is queued. The first opens the watch. */
+int binnacle_described_source_poll_request(BinnacleDescribedSource *src,
+                                           BinnacleWatchRequest *out);
+
+/* Answers grid's Effects as the source's Table Source: VIEW_REQUESTED,
+ * LOCATE, MOVE_REQUESTED and FIND_STEP_REQUESTED, so sorting, filters, find
+ * steps, hiding and grouping work. Every other Effect (FIND_REQUESTED among
+ * them) is passed on, in order, for binnacle_grid_poll_effect to return
+ * before any newer one. Call it each frame before binnacle_grid_begin_frame,
+ * and after any call that may raise an Effect. */
+int binnacle_described_source_pump(BinnacleDescribedSource *src, BinnacleGrid *grid);
+
+/* Answers what binnacle_grid_begin_frame asked for: each requested Window's
+ * Keys, and on a grouped axis its outlines too. 0, filling nothing, for a
+ * requested flag that is not 0 or 1, or a requested Window whose end is
+ * before its start. */
+int binnacle_described_source_fill(BinnacleDescribedSource *src, BinnacleGrid *grid,
+                                   const BinnacleWindowRequests *requests);
+
+/* How many items axis shows now, into out. */
+int binnacle_described_source_count(BinnacleDescribedSource *src, uint32_t axis, uint64_t *out);
+
+/* How far the rows have come, into out. */
+int binnacle_described_source_status(BinnacleDescribedSource *src, BinnacleDescribedStatus *out);
+
+/* The clock relative dates count from: unix_nanos since the Unix epoch, for
+ * every cell after, in place of the system clock read at each call. */
+int binnacle_described_source_set_now(BinnacleDescribedSource *src, int64_t unix_nanos);
+
+/* The offset from UTC, in seconds east, absolute dates draw in: 0 until
+ * set. */
+int binnacle_described_source_set_utc_offset(BinnacleDescribedSource *src, int32_t seconds_east);
+
+/* The cell where the row with Key row meets the column with Key col, into
+ * out. 1 for a cell that is not there too, with kind BINNACLE_TYPED_NONE.
+ * 0 if out->size is less than sizeof(BinnacleCell). */
+int binnacle_described_cell(BinnacleDescribedSource *src, uint64_t row, uint64_t col,
+                            BinnacleCell *out);
+
+/* The cells of a Window rectangle, row by row: out[r * cols_len + c] is
+ * where rows[r] meets cols[c], each as binnacle_described_cell fills it.
+ * The caller sets each out[i].size. 0, writing nothing, if out_len is less
+ * than rows_len * cols_len or any of those cells' size is too small. */
+int binnacle_described_cells(BinnacleDescribedSource *src, const uint64_t *rows, size_t rows_len,
+                             const uint64_t *cols, size_t cols_len, BinnacleCell *out,
+                             size_t out_len);
+
+/* The column with Key col, into out. 0 for a Key no column has, or if
+ * out->size is less than sizeof(BinnacleColumnInfo). */
+int binnacle_described_column(BinnacleDescribedSource *src, uint64_t col, BinnacleColumnInfo *out);
+
+/* The property name of column col's field, as the schema sent it, into
+ * *json_out as compact JSON text. 0 if the field has no such property or
+ * there is no column col. */
+int binnacle_described_property(BinnacleDescribedSource *src, uint64_t col, BinnacleText name,
+                                BinnacleText *json_out);
+
+/* Column col's Distinct Values, for a one-of filter, into out: at most limit
+ * of them, those containing search ignoring case (all when it is empty, and
+ * a search lists no blanks), in the rows grid's applied filter keeps less
+ * col's own conditions. A host call, not an Effect. 0 for a Key no column
+ * has, or a column the source lists no values for. */
+int binnacle_described_distinct(BinnacleDescribedSource *src, BinnacleGrid *grid, uint64_t col,
+                                BinnacleText search, size_t limit, BinnacleDistinct *out);
 
 #ifdef __cplusplus
 }

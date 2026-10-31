@@ -9,7 +9,9 @@
 use std::collections::VecDeque;
 use std::slice;
 
+mod described;
 mod layer;
+pub use described::*;
 pub use layer::*;
 
 use binnacle_layout::{IdTable, JsonId, Layout};
@@ -27,7 +29,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 19;
+pub const BINNACLE_ABI_VERSION: u32 = 20;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
