@@ -72,6 +72,10 @@ _Avoid_: Reload, refresh, reconnect (for the whole)
 What the CLI's inline table hands back when the user presses Enter: the picked rows' Keys if any are picked, in the order the rows show (not the order picked, nor Key order; picks the view leaves out follow, in Key order), else the focused row's. Esc or `q` hands back none, as does Enter in an empty table; Ctrl-C or a signal hands back none and says the table was interrupted, so the CLI exits 130 (128 and the signal's number). `cli::Selection` in `binnacle-ratatui`, inside `cli::Exit`.
 _Avoid_: Choice, result, pick (for the whole)
 
+**Presentation**:
+Where the CLI's live table session shows: inline, in a viewport below the prompt at most its height, or full screen, on the alternate screen at the terminal's size. `f` switches between them while it runs, and both show the one Grid, so rows, focus, picks, sort, filters, find and the Layout carry over; back inline it takes the same lines below the prompt. Whichever it ends in, the rows the inline viewport would show stay behind as aligned text. `cli::Presentation` in `binnacle-ratatui`.
+_Avoid_: Mode (the Grid's input state), screen, runner (for full screen)
+
 **Fake Table Server**:
 `fake-tables` in `binnacle-testkit` (behind the feature of that name): a stand-in for flotillad's table API, serving recorded fixtures or generated tables, and playing a script of live changes (upserts, deletes, resyncs, schema changes, stream ends, slowness and errors) to its watches, for tests in process and for demos as a binary.
 _Avoid_: Mock server, stub, test server

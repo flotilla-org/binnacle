@@ -1,26 +1,29 @@
-//! The table inline below the prompt, with the full widget: keys and the
-//! mouse, sort, the header menu with grouping, the chooser, the quick and
-//! column filters and find. Enter hands back the focused or picked rows;
-//! Esc or `q` hands back nothing, and Ctrl-C or a signal says it was
-//! interrupted. Either way the rows visible in the viewport stay behind as
-//! aligned text.
+//! The table inline below the prompt or full screen, `f` switching
+//! between them, with the full widget: keys and the mouse, sort, the header
+//! menu with grouping, the chooser, the quick and column filters and find.
+//! Enter hands back the focused or picked rows; Esc or `q` hands back
+//! nothing, and Ctrl-C or a signal says it was interrupted. Either way the
+//! rows the inline viewport shows stay behind as aligned text.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::io;
+use std::io::{self, Write};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use binnacle_core::{Axis, ChangeNotice, Grid, Key, Viewport};
 use binnacle_format::{Align, Timestamp, Value};
 use binnacle_layout::{JsonId, Layout};
 use ratatui::backend::Backend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
-use ratatui::crossterm::execute;
-use ratatui::layout::Rect;
+use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::crossterm::{execute, queue};
+use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions};
 
@@ -42,10 +45,36 @@ pub type Live<'a, T> = Box<dyn FnMut(&mut T) -> Option<Vec<(Axis, ChangeNotice)>
 /// feed, say "reconnecting". `None` shows nothing.
 pub type Note<'a> = Box<dyn FnMut() -> Option<String> + 'a>;
 
+/// How the live table session shows: inline below the prompt, or on the
+/// alternate screen at the terminal's full size. `f` switches between
+/// them while it runs; it is one Grid either way, so rows, focus, picks,
+/// sort, filters and find stay as they were.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Presentation {
+    /// Below the prompt, at most [`InlineOptions::max_height`] lines.
+    #[default]
+    Inline,
+    /// On the alternate screen, over the whole terminal.
+    FullScreen,
+}
+
+impl Presentation {
+    /// The other presentation, which `f` switches to.
+    pub fn other(self) -> Presentation {
+        match self {
+            Presentation::Inline => Presentation::FullScreen,
+            Presentation::FullScreen => Presentation::Inline,
+        }
+    }
+}
+
 /// How [`run_inline`] runs.
 pub struct InlineOptions<'a, T> {
-    /// The most lines the viewport takes; half the terminal by default.
+    /// The most lines the inline viewport takes; half the terminal by
+    /// default.
     pub max_height: Option<u16>,
+    /// The presentation the session starts in; inline by default.
+    pub presentation: Presentation,
     /// Called between frames while the viewport is open.
     pub live: Option<Live<'a, T>>,
     /// Asked each frame; what it gives leads the status line.
@@ -61,6 +90,7 @@ impl<T> Default for InlineOptions<'_, T> {
     fn default() -> Self {
         InlineOptions {
             max_height: None,
+            presentation: Presentation::Inline,
             live: None,
             note: None,
             theme: Theme::classic(),
@@ -88,9 +118,12 @@ const SIGINT: i32 = 2;
 /// Opens `source`, presented as `layout`, in an inline viewport below the
 /// prompt on this process's terminal, and returns how it ended.
 /// The viewport is as tall as the rows need, up to its most; with a live
-/// feed, the most, since rows may still come. While it is open, SIGINT,
+/// feed, the most, since rows may still come. The session starts in
+/// `options.presentation`; full screen is the alternate screen, and the
+/// inline viewport keeps its lines meanwhile. While it is open, SIGINT,
 /// SIGTERM and SIGHUP close it as [`Exit::Interrupted`], and a panic
-/// restores the terminal before the panic hook that was set runs.
+/// restores the terminal, leaving the alternate screen, before the panic
+/// hook that was set runs.
 /// A signal caught before the viewport has closed wins, even over an
 /// Enter already pressed: the process is being told to stop.
 /// While the live feed keeps bringing changes, the next frame doesn't wait
@@ -145,7 +178,7 @@ pub fn run_inline<'a, T: CliTable + 'a>(
         };
         read.map_err(|e| failed = Some(e)).ok()
     });
-    let result = run_inline_with(&mut terminal, events, source, layout, options);
+    let result = run(&mut terminal, events, source, layout, options, screen);
     // A read error ended the events, so whatever `run_inline_with` made of
     // that end (a choice of nothing, or a draw error after it) is not the
     // cause: the read error wins.
@@ -173,128 +206,115 @@ pub fn run_inline<'a, T: CliTable + 'a>(
 /// - Ctrl-C returns [`Exit::Interrupted`] with SIGINT, whatever is open.
 /// - `s` cycles the sort by the focused column: ascending, descending,
 ///   none.
+/// - `f` switches the [`Presentation`], unless a text field has focus.
+///
+/// The session starts in `options.presentation`. Full screen draws over
+/// the whole backend, and back inline it draws in `terminal`'s viewport
+/// again; this form switches no alternate screen, which [`run_inline`]
+/// does.
 ///
 /// On the way out it clears the viewport and writes the rows it showed as
 /// aligned text ([`super::print`]'s), whole: a line wider than the
 /// terminal wraps, so no value is cut off, and the rows stay in the
-/// scrollback.
+/// scrollback. Leaving from full screen it goes back inline first, and
+/// writes the rows the inline viewport would show.
 pub fn run_inline_with<T: CliTable, B: Backend>(
     terminal: &mut Terminal<B>,
     events: impl IntoIterator<Item = Option<Event>>,
     source: &mut T,
     layout: &Layout<JsonId, JsonId>,
+    options: InlineOptions<'_, T>,
+) -> Result<Exit, B::Error> {
+    run(terminal, events, source, layout, options, |_, _| Ok(()))
+}
+
+/// [`run_inline_with`], calling `screen` with the backend and the
+/// Presentation being switched to as the session goes full screen (after
+/// the inline viewport is cleared) and back inline (before it is drawn
+/// again): [`run_inline`] enters and leaves the alternate screen there.
+fn run<T: CliTable, B: Backend>(
+    terminal: &mut Terminal<B>,
+    events: impl IntoIterator<Item = Option<Event>>,
+    source: &mut T,
+    layout: &Layout<JsonId, JsonId>,
     mut options: InlineOptions<'_, T>,
+    mut screen: impl FnMut(&mut B, Presentation) -> Result<(), B::Error>,
 ) -> Result<Exit, B::Error> {
     let origin = options.origin.unwrap_or_else(|| {
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
         Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128))
     });
-    let theme = options.theme.clone();
     let mut grid = print::headless(source, layout);
     focus_first(&mut grid, source);
-    let keymap = Keymap::preset(Preset::Chords);
-    let controls = Controls::preset(Preset::Chords);
     let mut menu = HeaderMenu::new();
     menu.set_fields(source.columns());
-    let mut chooser = Chooser::new();
-    let mut popup = ColumnFilter::new();
-    let mut quick = QuickFilter::new();
-    let mut find = FindBar::new();
+    let mut session = Session {
+        grid,
+        menu,
+        chooser: Chooser::new(),
+        popup: ColumnFilter::new(),
+        quick: QuickFilter::new(),
+        find: FindBar::new(),
+        bars: crate::Layout::default(),
+        shown: Vec::new(),
+        theme: options.theme.clone(),
+        origin,
+        start: Instant::now(),
+    };
+    let keymap = Keymap::preset(Preset::Chords);
+    let controls = Controls::preset(Preset::Chords);
     let mut mouse = Mouse::default();
-    let mut bars = crate::Layout::default();
-    let start = Instant::now();
-    let mut shown: Vec<Key> = Vec::new();
+    let mut presentation = Presentation::Inline;
+    let mut full = FullScreen::default();
+    if options.presentation == Presentation::FullScreen {
+        presentation = switch(terminal, &mut full, presentation, &mut screen)?;
+    }
     let mut events = events.into_iter();
     let chosen = loop {
         if let Some(live) = options.live.as_mut() {
             let Some(notices) = live(source) else {
                 break Exit::Left;
             };
-            notify(&mut grid, source, notices);
+            notify(&mut session.grid, source, notices);
         }
         let note = options.note.as_mut().and_then(|note| note());
         let now = Instant::now();
-        popup.tick(&mut grid, now);
-        quick.tick(&mut grid, now);
-        find.tick(&mut grid, now);
-        terminal.draw(|frame| {
-            let full = frame.area();
-            let lines = 1 + u16::from(find.is_open()) + u16::from(quick.focused());
-            let area = Rect {
-                height: full.height.saturating_sub(lines),
-                ..full
-            };
-            let ctx = RenderContext::new(&theme).at(start.elapsed());
-            bars = begin_frame(&mut grid, &ctx, area, |grid, viewport| {
-                fill(grid, source, viewport)
-            });
-            let snapshot = grid.snapshot();
-            shown = snapshot.drawn(Axis::Rows).filter_map(|i| i.key).collect();
-            popup.fetch(&snapshot, |axis, key, query| {
-                source.distinct(axis, key, query)
-            });
-            let listed = (chooser.axis())
-                .map(|axis| source.window(axis, 0..snapshot.count(axis)).keys)
-                .unwrap_or_default();
-            // A header lines up with the side most of its cells do, among
-            // the first rows.
-            let sample = source.window(Axis::Rows, 0..snapshot.count(Axis::Rows).min(SAMPLE));
-            let cols = source.columns();
-            let aligns = title_aligns(&*source, &sample.keys, &cols);
-            let view = View {
-                source: &*source,
-                origin,
-                aligns: cols.into_iter().zip(aligns).collect(),
-            };
-            let buf = frame.buffer_mut();
-            render_with(&snapshot, &view, &ctx, area, buf);
-            let mut y = area.bottom();
-            let mut line = || {
-                let rect = Rect {
-                    y,
-                    height: 1,
-                    ..full
-                };
-                y += 1;
-                rect
-            };
-            if find.is_open() {
-                find.render(&snapshot, &FindStatus::default(), &theme, line(), buf);
+        session.popup.tick(&mut session.grid, now);
+        session.quick.tick(&mut session.grid, now);
+        session.find.tick(&mut session.grid, now);
+        let status = Status {
+            note: note.as_deref(),
+            presentation,
+        };
+        match presentation {
+            Presentation::Inline => {
+                terminal.draw(|frame| {
+                    let area = frame.area();
+                    session.draw(source, &status, area, frame.buffer_mut());
+                })?;
             }
-            if quick.focused() {
-                quick.render(&snapshot, &theme, line(), buf);
+            Presentation::FullScreen => {
+                full.draw(terminal.backend_mut(), |area, buf| {
+                    session.draw(source, &status, area, buf)
+                })?;
             }
-            let status = crate::status(&snapshot);
-            let status = match status.is_empty() {
-                true => {
-                    let shown = snapshot.count(Axis::Rows);
-                    let rows = match source.partial() {
-                        Some(came) => partial_status(shown, came),
-                        None => format!("{} rows", thousands(shown)),
-                    };
-                    format!(
-                        "{rows} | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  Esc quit"
-                    )
-                }
-                false => status,
-            };
-            let status = match &note {
-                Some(note) => format!("{note} | {status}"),
-                None => status,
-            };
-            let rect = line();
-            Line::from(status).render_to(rect, buf);
-            popup.render(&snapshot, &view, &theme, bars.grid, buf);
-            menu.render(&snapshot, &view, &theme, bars.grid, buf);
-            chooser.fetch(&snapshot, &view, |_, _| listed);
-            chooser.render(&snapshot, &theme, bars.grid, buf);
-        })?;
+        }
         let Some(input) = events.next() else {
             break Exit::Left;
         };
         let Some(event) = input else {
             continue;
         };
+        let Session {
+            grid,
+            menu,
+            chooser,
+            popup,
+            quick,
+            find,
+            bars,
+            ..
+        } = &mut session;
         match event {
             Event::Key(key)
                 if key.kind == KeyEventKind::Press
@@ -304,12 +324,10 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
                 break Exit::Interrupted { signal: SIGINT };
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if popup.key(&key, &mut grid) || chooser.key(&key, &mut grid) {
+                if popup.key(&key, grid) || chooser.key(&key, grid) {
                     continue;
                 }
-                if menu.key(&key, &mut grid, |axis, range| {
-                    source.window(axis, range).keys
-                }) {
+                if menu.key(&key, grid, |axis, range| source.window(axis, range).keys) {
                     if let Some(key) = menu.take_slicer() {
                         popup.open_slicer(&grid.snapshot(), key);
                     }
@@ -318,7 +336,7 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
                     }
                     continue;
                 }
-                if find.key(&key, &mut grid) || quick.key(&key, &mut grid) {
+                if find.key(&key, grid) || quick.key(&key, grid) {
                     continue;
                 }
                 let snapshot = grid.snapshot();
@@ -328,14 +346,14 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
                     Some(Control::RowFilter) => popup.open_row(&snapshot),
                     Some(Control::Find) => {
                         if find.open(&snapshot) {
-                            find.apply(&mut grid);
+                            find.apply(grid);
                         }
                         true
                     }
-                    Some(Control::FindNext) => find.repeat(false, &mut grid),
-                    Some(Control::FindPrevious) => find.repeat(true, &mut grid),
+                    Some(Control::FindNext) => find.repeat(false, grid),
+                    Some(Control::FindPrevious) => find.repeat(true, grid),
                     Some(Control::Close) if find.is_open() => {
-                        find.close(&mut grid);
+                        find.close(grid);
                         true
                     }
                     Some(Control::Menu { axis }) => menu.open(&snapshot, axis),
@@ -347,7 +365,7 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
                 }
                 let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
                 match key.code {
-                    KeyCode::Enter if plain => match chosen(&mut grid, source) {
+                    KeyCode::Enter if plain => match chosen(grid, source) {
                         Some(selection) => break Exit::Chosen(selection),
                         None => break Exit::Left,
                     },
@@ -358,6 +376,9 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
                         if let Some(col) = focused {
                             grid.cycle_sort(Axis::Rows, col, false);
                         }
+                    }
+                    KeyCode::Char('f') if key.modifiers.is_empty() => {
+                        presentation = switch(terminal, &mut full, presentation, &mut screen)?;
                     }
                     KeyCode::Char(' ') if plain => {
                         let snapshot = grid.snapshot();
@@ -388,6 +409,18 @@ pub fn run_inline_with<T: CliTable, B: Backend>(
             _ => {}
         }
     };
+    if presentation == Presentation::FullScreen {
+        switch(terminal, &mut full, presentation, &mut screen)?;
+        // What the inline viewport would show, so the rows left behind are
+        // the same whichever presentation the session ended in.
+        let area = terminal.get_frame().area();
+        let status = Status {
+            note: None,
+            presentation: Presentation::Inline,
+        };
+        session.draw(source, &status, area, &mut Buffer::empty(area));
+    }
+    let Session { grid, shown, .. } = session;
     let cols = print::columns(source, &grid);
     let text = print::aligned(&*source, &shown, &cols);
     terminal.clear()?;
@@ -454,15 +487,41 @@ fn wrap(line: &str, width: usize) -> Vec<&str> {
     pieces
 }
 
-/// Leaves raw mode and mouse capture and shows the cursor, as on the way
-/// out; safe to call more than once.
+/// Whether the full-screen presentation has the terminal on the alternate
+/// screen.
+static ALTERNATE: AtomicBool = AtomicBool::new(false);
+
+/// Enters the alternate screen for the full-screen presentation, or leaves
+/// it for the inline one.
+fn screen(out: &mut impl Write, to: Presentation) -> io::Result<()> {
+    match to {
+        Presentation::FullScreen => {
+            ALTERNATE.store(true, Ordering::SeqCst);
+            execute!(out, EnterAlternateScreen)
+        }
+        Presentation::Inline => {
+            execute!(out, LeaveAlternateScreen)?;
+            ALTERNATE.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+}
+
+/// Leaves the alternate screen, raw mode and mouse capture and shows the
+/// cursor, as on the way out; safe to call more than once.
 fn restore() {
-    let _ = execute!(
-        io::stdout(),
-        DisableMouseCapture,
-        ratatui::crossterm::cursor::Show
-    );
+    let _ = leave(&mut io::stdout());
     let _ = ratatui::crossterm::terminal::disable_raw_mode();
+}
+
+/// Writes to `out` what leaves the alternate screen if it shows (leaving it
+/// when it doesn't would put the cursor back where it was last saved, over
+/// the rows left behind) and mouse capture, and shows the cursor.
+fn leave(out: &mut impl Write) -> io::Result<()> {
+    if ALTERNATE.swap(false, Ordering::SeqCst) {
+        queue!(out, LeaveAlternateScreen)?;
+    }
+    execute!(out, DisableMouseCapture, ratatui::crossterm::cursor::Show)
 }
 
 type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
@@ -588,12 +647,27 @@ impl Drop for Signals {
 mod panic_tests {
     use std::sync::Mutex;
 
-    use super::RawMode;
+    use super::{Presentation, RawMode, leave, screen};
 
     static ORDER: Mutex<Vec<&str>> = Mutex::new(Vec::new());
 
+    /// What the restore wrote, as the terminal would read it.
+    static WRITTEN: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+    /// Held by each test here, as whether the alternate screen shows is
+    /// process-wide.
+    static SCREEN: Mutex<()> = Mutex::new(());
+
+    const LEAVE_ALTERNATE: &str = "\x1b[?1049l";
+
+    fn written() -> String {
+        String::from_utf8(std::mem::take(&mut *WRITTEN.lock().unwrap())).unwrap()
+    }
+
+    // One test for the guard, since the panic hook is process-wide.
     #[test]
-    fn a_panic_restores_the_terminal_before_the_previous_hook_runs() {
+    fn a_panic_or_a_drop_restores_the_terminal_and_a_panic_before_the_previous_hook_runs() {
+        let _screen = SCREEN.lock().unwrap_or_else(|e| e.into_inner());
         // The hook is process-wide: it only records this test's own thread.
         let mine = std::thread::current().id();
         let original = std::panic::take_hook();
@@ -602,14 +676,41 @@ mod panic_tests {
                 ORDER.lock().unwrap().push("previous hook");
             }
         }));
-        let mode = RawMode::restoring(|| ORDER.lock().unwrap().push("restore"));
+        let mode = RawMode::restoring(|| {
+            ORDER.lock().unwrap().push("restore");
+            leave(&mut *WRITTEN.lock().unwrap()).unwrap();
+        });
+        screen(&mut Vec::new(), Presentation::FullScreen).unwrap();
         let panicked = std::panic::catch_unwind(|| panic!("the viewport failed"));
         assert!(panicked.is_err());
+        assert!(
+            written().contains(LEAVE_ALTERNATE),
+            "a panic leaves full screen"
+        );
+        screen(&mut Vec::new(), Presentation::FullScreen).unwrap();
         drop(mode);
         std::panic::set_hook(original);
+        assert!(
+            written().contains(LEAVE_ALTERNATE),
+            "a drop leaves full screen"
+        );
         let order = ORDER.lock().unwrap();
         // The drop restores once more, after the panic's own.
-        assert_eq!(order[..2], ["restore", "previous hook"], "{order:?}");
+        assert_eq!(
+            order[..],
+            ["restore", "previous hook", "restore"],
+            "{order:?}"
+        );
+    }
+
+    #[test]
+    fn the_restore_leaves_the_alternate_screen_only_when_it_shows() {
+        let _screen = SCREEN.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        leave(&mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains(LEAVE_ALTERNATE), "{out:?}");
+        assert!(out.contains("\x1b[?25h"), "the cursor shows: {out:?}");
     }
 }
 
@@ -723,4 +824,166 @@ impl RenderTo for Line<'_> {
         use ratatui::widgets::Widget;
         self.render(area.intersection(buf.area), buf);
     }
+}
+
+/// The live table session: the Grid and the widgets over it, drawn in
+/// either presentation.
+struct Session {
+    grid: Grid,
+    menu: HeaderMenu,
+    chooser: Chooser,
+    popup: ColumnFilter,
+    quick: QuickFilter,
+    find: FindBar,
+    bars: crate::Layout,
+    /// The rows the last frame drew.
+    shown: Vec<Key>,
+    theme: Theme,
+    origin: Timestamp,
+    start: Instant,
+}
+
+/// What the status line says besides the table's own state.
+struct Status<'a> {
+    note: Option<&'a str>,
+    presentation: Presentation,
+}
+
+impl Session {
+    /// Draws the table, its bars and popups and the status line in `full`.
+    fn draw<T: CliTable>(&mut self, source: &mut T, status: &Status, full: Rect, buf: &mut Buffer) {
+        let theme = &self.theme;
+        let (find, quick) = (&mut self.find, &mut self.quick);
+        let lines = 1 + u16::from(find.is_open()) + u16::from(quick.focused());
+        let area = Rect {
+            height: full.height.saturating_sub(lines),
+            ..full
+        };
+        let ctx = RenderContext::new(theme).at(self.start.elapsed());
+        self.bars = begin_frame(&mut self.grid, &ctx, area, |grid, viewport| {
+            fill(grid, source, viewport)
+        });
+        let snapshot = self.grid.snapshot();
+        self.shown = snapshot.drawn(Axis::Rows).filter_map(|i| i.key).collect();
+        self.popup.fetch(&snapshot, |axis, key, query| {
+            source.distinct(axis, key, query)
+        });
+        let listed = (self.chooser.axis())
+            .map(|axis| source.window(axis, 0..snapshot.count(axis)).keys)
+            .unwrap_or_default();
+        // A header lines up with the side most of its cells do, among the
+        // first rows.
+        let sample = source.window(Axis::Rows, 0..snapshot.count(Axis::Rows).min(SAMPLE));
+        let cols = source.columns();
+        let aligns = title_aligns(&*source, &sample.keys, &cols);
+        let view = View {
+            source: &*source,
+            origin: self.origin,
+            aligns: cols.into_iter().zip(aligns).collect(),
+        };
+        render_with(&snapshot, &view, &ctx, area, buf);
+        let mut y = area.bottom();
+        let mut line = || {
+            let rect = Rect {
+                y,
+                height: 1,
+                ..full
+            };
+            y += 1;
+            rect
+        };
+        if find.is_open() {
+            find.render(&snapshot, &FindStatus::default(), theme, line(), buf);
+        }
+        if quick.focused() {
+            quick.render(&snapshot, theme, line(), buf);
+        }
+        let text = crate::status(&snapshot);
+        let text = match text.is_empty() {
+            true => {
+                let shown = snapshot.count(Axis::Rows);
+                let rows = match source.partial() {
+                    Some(came) => partial_status(shown, came),
+                    None => format!("{} rows", thousands(shown)),
+                };
+                let switch = match status.presentation {
+                    Presentation::Inline => "f full screen",
+                    Presentation::FullScreen => "f inline",
+                };
+                format!(
+                    "{rows} | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  {switch}  Esc quit"
+                )
+            }
+            false => text,
+        };
+        let text = match status.note {
+            Some(note) => format!("{note} | {text}"),
+            None => text,
+        };
+        Line::from(text).render_to(line(), buf);
+        self.popup
+            .render(&snapshot, &view, theme, self.bars.grid, buf);
+        self.menu
+            .render(&snapshot, &view, theme, self.bars.grid, buf);
+        self.chooser.fetch(&snapshot, &view, |_, _| listed);
+        self.chooser.render(&snapshot, theme, self.bars.grid, buf);
+    }
+}
+
+/// Draws the full-screen presentation straight to the backend, as a
+/// `Terminal` would, since a `Terminal`'s viewport is fixed when it is made:
+/// only the cells that changed since the last frame, all of them after a
+/// resize.
+#[derive(Default)]
+struct FullScreen {
+    last: Buffer,
+}
+
+impl FullScreen {
+    fn draw<B: Backend>(
+        &mut self,
+        backend: &mut B,
+        render: impl FnOnce(Rect, &mut Buffer),
+    ) -> Result<(), B::Error> {
+        let area = Rect::from((Position::ORIGIN, backend.size()?));
+        if area != self.last.area {
+            backend.hide_cursor()?;
+            backend.clear()?;
+            self.last = Buffer::empty(area);
+        }
+        let mut next = Buffer::empty(area);
+        render(area, &mut next);
+        backend.draw(self.last.diff(&next).into_iter())?;
+        backend.flush()?;
+        self.last = next;
+        Ok(())
+    }
+}
+
+/// Switches the session from `from` to the other presentation and returns
+/// it. Going full screen clears the inline viewport first; coming back, the
+/// cursor goes to the viewport's top before it is cleared and drawn again,
+/// so it takes the same lines however often the session switches.
+fn switch<B: Backend>(
+    terminal: &mut Terminal<B>,
+    full: &mut FullScreen,
+    from: Presentation,
+    screen: &mut impl FnMut(&mut B, Presentation) -> Result<(), B::Error>,
+) -> Result<Presentation, B::Error> {
+    let to = from.other();
+    let top = terminal.get_frame().area().as_position();
+    match to {
+        Presentation::FullScreen => {
+            terminal.clear()?;
+            terminal.set_cursor_position(top)?;
+            screen(terminal.backend_mut(), to)?;
+            *full = FullScreen::default();
+        }
+        Presentation::Inline => {
+            screen(terminal.backend_mut(), to)?;
+            terminal.set_cursor_position(top)?;
+            terminal.clear()?;
+        }
+    }
+    Ok(to)
 }

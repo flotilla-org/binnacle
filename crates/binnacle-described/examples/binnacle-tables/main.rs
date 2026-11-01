@@ -4,7 +4,8 @@
 //! terminal it opens the table inline below the prompt, live, with the
 //! full widget (sort, the header menu with grouping on `m`, the chooser,
 //! filters on Ctrl+L and Alt+Down, find on Ctrl+F), and on Enter prints the
-//! chosen rows' primary keys, Space picking rows. The nested columns start
+//! chosen rows' primary keys, Space picking rows. `f` switches it to full
+//! screen and back; `--full-screen` starts it there. The nested columns start
 //! hidden and the key and state columns pinned leading.
 //!
 //! ```text
@@ -12,7 +13,7 @@
 //! binnacle-tables (--url <base> | --socket <path>) --table <name>
 //!     [--namespace <ns>] [--scope-where <clause>]... [--token <t> | --cookie <c>] [flags]
 //! flags: --columns a,b  --sort [-]field  --where <cond>  --view default  --wide
-//!        --format <format>  --interactive | --no-interactive
+//!        --format <format>  --interactive | --no-interactive  --full-screen
 //! ```
 //!
 //! `--where` filters here (`phase==Running`, `cpus>=4`, `name~al`); the
@@ -52,10 +53,17 @@ use binnacle_described::{DescribedSource, Scope};
 use binnacle_described_http::{Auth, Blocking, Endpoint, Options};
 use binnacle_format::Timestamp;
 use binnacle_layout::IdMap;
-use binnacle_ratatui::cli::{Exit, Flags, InlineOptions, Live, print, run_inline};
+use binnacle_ratatui::cli::{Exit, Flags, InlineOptions, Live, Presentation, print, run_inline};
 
 use feed::{Notes, drain};
 use table::Tables;
+
+/// The command line past the shared flags: where the rows come from, and
+/// whether the table starts full screen.
+struct Args {
+    rows: Rows,
+    presentation: Presentation,
+}
 
 /// Where the rows come from.
 enum Rows {
@@ -72,7 +80,8 @@ const USAGE: &str = "usage: binnacle-tables <fixture.ndjson|fixture.cborseq> [fl
            [--namespace <ns>] [--scope-where <clause>]... [--token <t> | --cookie <c>] [flags]
        (--token shows in ps; BINNACLE_TOKEN in the environment does not)
 flags: --columns a,b  --sort [-]field  --where <cond>  --view default  --wide
-       --format aligned|tsv|json|jsonl  --interactive | --no-interactive";
+       --format aligned|tsv|json|jsonl  --interactive | --no-interactive
+       --full-screen";
 
 fn fail(message: &str) -> ! {
     eprintln!("binnacle-tables: {message}");
@@ -84,8 +93,9 @@ fn usage(message: &str) -> ! {
     fail(&format!("{message}\n{USAGE}"))
 }
 
-fn rows(args: Vec<String>) -> Rows {
+fn args(args: Vec<String>) -> Args {
     let mut args = args.into_iter();
+    let mut presentation = Presentation::Inline;
     let (mut endpoint, mut table, mut namespace) = (None, None, "flotilla".to_owned());
     let (mut wheres, mut auth) = (Vec::new(), Auth::None);
     let mut fixture = None;
@@ -102,6 +112,7 @@ fn rows(args: Vec<String>) -> Rows {
             "--scope-where" => wheres.push(value()),
             "--token" => auth = Auth::Bearer(value()),
             "--cookie" => auth = Auth::Cookie(value()),
+            "--full-screen" => presentation = Presentation::FullScreen,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -120,7 +131,7 @@ fn rows(args: Vec<String>) -> Rows {
     {
         auth = Auth::Bearer(token);
     }
-    match (fixture, endpoint, table) {
+    let rows = match (fixture, endpoint, table) {
         (Some(path), None, None) => Rows::Fixture(path),
         (None, Some(endpoint), Some(table)) => {
             let scope = (wheres.into_iter()).fold(Scope::new(namespace), Scope::with_where);
@@ -132,7 +143,8 @@ fn rows(args: Vec<String>) -> Rows {
         }
         (None, Some(_), None) => usage("--table is needed"),
         _ => usage("a fixture, or --url or --socket with --table"),
-    }
+    };
+    Args { rows, presentation }
 }
 
 /// The longest [`drain`] takes events at once, so a burst of changes still
@@ -155,7 +167,8 @@ fn main() -> io::Result<()> {
     let origin = Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128));
     let interactive = flags.interactive.now();
     let notes = RefCell::new(Notes::default());
-    let (mut tables, transport) = match rows(rest) {
+    let Args { rows, presentation } = args(rest);
+    let (mut tables, transport) = match rows {
         Rows::Fixture(path) => {
             let tables = Tables::load(&path, origin).unwrap_or_else(|e| fail(&e));
             (tables, None)
@@ -252,6 +265,7 @@ fn main() -> io::Result<()> {
         live,
         note: Some(Box::new(|| notes.borrow().line())),
         origin: Some(origin),
+        presentation,
         ..InlineOptions::default()
     };
     let exit = run_inline(&mut tables.source, &layout, options)?;
