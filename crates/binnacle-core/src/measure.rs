@@ -131,6 +131,20 @@ impl AxisMeasure {
         self.gap
     }
 
+    /// Sets the default size, clamped into the size range. A size that is
+    /// not positive and finite is ignored. Returns whether it changed.
+    pub fn set_default_size(&mut self, size: f32) -> bool {
+        let Some(size) = self.in_range(size) else {
+            return false;
+        };
+        if size == self.default_size {
+            return false;
+        }
+        self.default_size = size;
+        self.rebuild();
+        true
+    }
+
     /// Sets the Gap, capped at `max_size`. A Gap that is not finite and
     /// non-negative is ignored. Returns whether it changed.
     pub fn set_gap(&mut self, gap: f32) -> bool {

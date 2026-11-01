@@ -476,6 +476,23 @@ impl Grid {
         self.axis(axis).header
     }
 
+    /// Sets the default size of `axis`'s items, the size of those with no
+    /// Size Override or content size, as a host does when its text size
+    /// changes. The Scroll Anchor's item stays first, scrolled past by the
+    /// same share of its size, unless the end clamp pulls the view back.
+    /// Clamped into the axis's size range; sizes that are not positive and
+    /// finite are ignored.
+    pub fn set_default_size(&mut self, axis: Axis, size: f32) {
+        if self.axis_mut(axis).set_default_size(size) {
+            self.pending_damage.layout = true;
+        }
+    }
+
+    /// The default size of `axis`'s items.
+    pub fn default_size(&self, axis: Axis) -> f32 {
+        self.axis(axis).measure.default_size()
+    }
+
     /// Sets the Gap between items on `axis`, keeping the Scroll Anchor's item
     /// where it is in the viewport unless the end clamp pulls the view back.
     /// Capped at the axis's `max_size`; values that are not finite and

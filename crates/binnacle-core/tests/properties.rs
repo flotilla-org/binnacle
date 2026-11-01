@@ -2599,6 +2599,65 @@ fn set_gap_keeps_the_scroll_anchors_item_at_its_offset(tc: TestCase) {
     );
 }
 
+/// `set_default_size` resizes every item to the new default (nothing set
+/// others) and keeps the Scroll Anchor's item first, scrolled past by the
+/// same share of it. Only two things move it: an anchor in the Gap past where
+/// the item's new stride ends is pulled inside it, and the end clamp pulls
+/// the view back to show the last item (or holds it there). The other axis is
+/// untouched. A changed default is layout damage; a size that is not
+/// positive and finite changes nothing.
+#[hegel::test(test_cases = 2000)]
+fn set_default_size_keeps_the_scroll_anchors_item_and_its_share(tc: TestCase) {
+    let [rows, cols] = [0, 1].map(|_| tc.draw(axis_with_borders()));
+    let viewport = Viewport::new(cols.1, rows.1);
+    let mut s = Scenario::identity(rows.0, cols.0);
+    s.frame(viewport);
+    for axis in Axis::ALL {
+        let fraction = tc.draw(gs::floats::<f64>().min_value(0.0).max_value(1.0));
+        s.input(|g| g.action(Action::ScrollTo { axis, fraction }));
+    }
+    let axis = tc.draw(axis());
+    let (before, other) = {
+        let snap = s.frame(viewport);
+        (snap.scroll_anchor(axis), snap.scroll_anchor(axis.other()))
+    };
+    let config = [rows.0, cols.0][axis.index()];
+    let size = tc.draw(hegel::one_of!(
+        gs::sampled_from(vec![-1.0f32, 0.0, f32::NAN, f32::INFINITY]),
+        gs::just(config.default_size),
+        gs::floats::<f32>().min_value(0.5).max_value(40.0)
+    ));
+    s.input(|g| g.set_default_size(axis, size));
+    let snap = s.frame(viewport);
+    let old = config.default_size.clamp(config.min_size, config.max_size);
+    let new = if size.is_finite() && size > 0.0 {
+        size.clamp(config.min_size, config.max_size)
+    } else {
+        old
+    };
+    assert_eq!(snap.damage().layout, new != old);
+    assert!(snap.strip(axis).iter().all(|i| i.size == new));
+    assert_eq!(snap.scroll_anchor(axis.other()), other);
+    let after = snap.scroll_anchor(axis);
+    let scaled = before.offset * (new / old);
+    if after.position == before.position && after.offset == scaled {
+        tc.event("anchor kept");
+        return;
+    }
+    let thumb = snap.thumb(axis);
+    if thumb.fraction == 1.0 || (thumb.size >= 1.0 && after == ScrollAnchor::default()) {
+        tc.event("end clamp");
+        return;
+    }
+    tc.event("pulled inside the stride");
+    assert!(
+        after.position == before.position
+            && after.offset < scaled
+            && scaled >= new + snap.gap(axis),
+        "{before:?} moved to {after:?} with the default size {old} -> {new}"
+    );
+}
+
 /// A table for the reveal properties: whole-number sizes and Gaps, so f32
 /// layout is exact, a viewport with a body, the axis under test, where it is
 /// scrolled to (a thumb fraction, then whole units past that item's start),

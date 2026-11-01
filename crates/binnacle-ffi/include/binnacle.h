@@ -33,7 +33,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 21u
+#define BINNACLE_ABI_VERSION 22u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -1236,6 +1236,13 @@ int binnacle_grid_set_form(BinnacleGrid *grid, uint32_t axis, uint32_t form);
  * item slides its Strip to show it. Values that are not finite and
  * non-negative are ignored. */
 int binnacle_grid_set_min_scrolling(BinnacleGrid *grid, uint32_t axis, float length);
+
+/* The size of axis's items that have no Size Override or content size, as
+ * a host sets it when its text size changes. The Scroll Anchor's item stays
+ * first, scrolled past by the same share of its size, unless the end clamp
+ * pulls the view back. Clamped into the axis's size range; values that are
+ * not positive and finite are ignored. */
+int binnacle_grid_set_default_size(BinnacleGrid *grid, uint32_t axis, float size);
 
 /* The End Gap on axis (0 at first): the room kept past the last item when
  * scrolled to the end, where a closing line is drawn. The end clamp stops the

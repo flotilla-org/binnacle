@@ -66,6 +66,7 @@ enum Op {
     SetPinZone(Axis, f32),
     SetMinScrolling(Axis, f32),
     SetEndGap(Axis, f32),
+    SetDefaultSize(Axis, f32),
     Pin(Axis, Edge, u64),
     SetPins(Axis, Edge, Vec<u64>),
     Unpin(Axis, u64),
@@ -704,7 +705,7 @@ fn answer(tc: &TestCase) -> Op {
 fn op(tc: &TestCase) -> Op {
     let coord = || gs::floats::<f32>().min_value(0.0).max_value(40.0);
     // The last value is the unknown tags', so new ops go before it.
-    match tc.draw(gs::integers::<u8>().max_value(43)) {
+    match tc.draw(gs::integers::<u8>().max_value(44)) {
         42 => {
             let axis = tc.draw(axes());
             Op::Pick(
@@ -797,6 +798,13 @@ fn op(tc: &TestCase) -> Op {
                 Op::EditEnded(tc.draw(gs::sampled_from(vec![EditEnd::Commit, EditEnd::Cancel])))
             }
         },
+        43 => Op::SetDefaultSize(
+            tc.draw(axes()),
+            tc.draw(hegel::one_of!(
+                gs::sampled_from(vec![-1.0f32, 0.0, f32::NAN, f32::INFINITY]),
+                gs::floats::<f32>().min_value(0.5).max_value(12.0),
+            )),
+        ),
         28 => Op::SetEndGap(
             tc.draw(axes()),
             tc.draw(hegel::one_of!(
@@ -926,7 +934,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(110))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(111))),
     }
 }
 
@@ -1442,6 +1450,7 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 };
                 binnacle_grid_action(h, &c)
             }
+            110 => binnacle_grid_set_default_size(h, 2, 1.0),
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -3032,6 +3041,10 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 Op::SetEndGap(axis, gap) => {
                     grid.set_end_gap(axis, gap);
                     binnacle_grid_set_end_gap(h, tag(axis), gap)
+                }
+                Op::SetDefaultSize(axis, size) => {
+                    grid.set_default_size(axis, size);
+                    binnacle_grid_set_default_size(h, tag(axis), size)
                 }
                 Op::Pin(axis, edge, key) => {
                     let key = key + 5000 * u64::from(axis == Axis::Cols);

@@ -460,6 +460,21 @@ impl AxisState {
         true
     }
 
+    /// Sets the default size, keeping the anchor's Position and the share of
+    /// its item scrolled past, as far as the end clamp allows. An anchor
+    /// following the end keeps following it. Returns whether anything
+    /// changed.
+    pub fn set_default_size(&mut self, size: f32) -> bool {
+        let old = self.measure.size_at(self.anchor.position);
+        if !self.measure.set_default_size(size) {
+            return false;
+        }
+        let new = self.measure.size_at(self.anchor.position);
+        self.anchor.offset *= new / old;
+        self.clamp_anchor();
+        true
+    }
+
     /// The item a body's length before or after the start of item `p`, at
     /// least one item away and inside the axis.
     pub fn page_from(&self, p: Position, forward: bool) -> Position {

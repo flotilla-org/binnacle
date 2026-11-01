@@ -29,7 +29,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 21;
+pub const BINNACLE_ABI_VERSION: u32 = 22;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -2927,6 +2927,22 @@ pub unsafe extern "C" fn binnacle_grid_set_min_scrolling(
     unsafe {
         with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_min_scrolling(axis, length))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_default_size(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    size: f32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.set_default_size(axis, size))
         })
     }
 }
