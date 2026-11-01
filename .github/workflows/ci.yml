@@ -46,6 +46,7 @@ jobs:
             web:
               - "**"
               - "!crates/binnacle-ratatui/**"
+              - "!crates/binnacle-cli/**"
               - "!crates/binnacle-ffi/**"
               - "!docs/**"
               - "!**/*.md"
