@@ -1,9 +1,10 @@
 //! A CLI host for any Table Source ([`CliTable`]), described tables first:
 //! print a table as aligned text, TSV, JSON or JSON lines ([`print`]), take
 //! the usual flags ([`Flags`]), or open the full widget inline below the
-//! prompt and hand back what the user picked ([`run_inline`]). Each applies
-//! a [`binnacle_layout::Layout`] (`binnacle_ratatui::Layout` is the
-//! scrollbar layout) through a Grid, so a table prints as it shows.
+//! prompt, or full screen ([`Presentation`]), and hand back what the user
+//! picked ([`run_inline`]). Each applies a [`binnacle_layout::Layout`]
+//! (`binnacle_ratatui::Layout` is the scrollbar layout) through a Grid, so
+//! a table prints as it shows.
 
 mod flags;
 mod inline;
@@ -23,7 +24,7 @@ use binnacle_memory::PumpSource;
 #[cfg(feature = "clap")]
 pub use flags::FlagArgs;
 pub use flags::{FlagError, Flags, parse_where};
-pub use inline::{InlineOptions, Live, inline_height, run_inline, run_inline_with};
+pub use inline::{InlineOptions, Live, Presentation, inline_height, run_inline, run_inline_with};
 pub use print::{Format, partial_note, print, print_rows};
 
 /// What a table gives the CLI host, over the Table Source the Grid pumps.
