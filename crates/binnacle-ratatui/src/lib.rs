@@ -25,6 +25,7 @@ mod scrollbar;
 mod shimmer;
 mod theme;
 mod value;
+mod width;
 
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
@@ -49,11 +50,11 @@ pub use renderer::{
     Align, BAR, BarRenderer, CellCanvas, CellRenderer, CellStatus, FLASH, SPARK, SparklineRenderer,
     TextRenderer, fit_width, flashing,
 };
-use renderer::{char_count, fit};
 pub use scrollbar::{BarEvent, Layout, MIN_SCROLLING, begin_frame, layout};
 pub use shimmer::Shimmer;
 pub use theme::{ColorSupport, Theme};
 pub use value::{ValueRenderer, WARNING_MARK, hint_style};
+use width::{fit, pad as pad_to, tail, width as text_width, write};
 
 use binnacle_core::{
     Action, AggregateValue, Axis, Cursor, DropTarget, Edge, GRAND_TOTAL, Grouping, HeaderPlacement,
@@ -313,7 +314,7 @@ pub fn render_with(
     let area = bars.grid;
     let (top, left) = (snapshot.header(Axis::Rows), snapshot.header(Axis::Cols));
     // Pads `text` so a style fills its item; `put` clips it.
-    let pad = |text: String| format!("{text:<width$}", width = usize::from(area.width));
+    let pad = |text: String| pad_to(&text, usize::from(area.width));
     let band = |style: Style, h: &HeaderPlacement| {
         let mut style = if theme.invert_headers {
             style.add_modifier(Modifier::REVERSED)
@@ -354,14 +355,13 @@ pub fn render_with(
         // The marker keeps the header's last cells; the label gets the rest.
         let (start, end) = (h.rect.x, h.rect.x + h.rect.width);
         let width = usize::try_from(cell(end).saturating_sub(cell(start))).unwrap_or(0);
-        let room = width.saturating_sub(marker.chars().count());
+        let room = width.saturating_sub(text_width(&marker) as usize);
         let style = band(theme.header, &h);
         let clip = (span.start, end.min(span.end), 0.0, f32::INFINITY);
         let label = fit(&label, u32::try_from(room).unwrap_or(u32::MAX));
         let label = match h.key.map(|k| content.column_align(k)) {
             Some(binnacle_format::Align::End) => {
-                use unicode_width::UnicodeWidthStr;
-                let blank = room.saturating_sub(label.width());
+                let blank = room.saturating_sub(text_width(&label) as usize);
                 format!("{}{label}", " ".repeat(blank)).into()
             }
             _ => label,
@@ -383,7 +383,7 @@ pub fn render_with(
         if marker.is_empty() {
             put(buf, area, (start, y), clip, &pad(label.into_owned()), style);
         } else {
-            let label = format!("{label:<room$}");
+            let label = pad_to(&label, room);
             put(buf, area, (start, y), clip, &label, style);
             let at = start + room as f32;
             let style = style.patch(if h.filter.not_applied {
@@ -503,8 +503,8 @@ pub fn render_with(
             false => h.rect.x.min(left),
         };
         let width = usize::try_from(cell(left) - cell(x0)).unwrap_or(0);
-        let room = width.saturating_sub(marker.chars().count());
-        let lead = indent.chars().count() + mark.chars().count();
+        let room = width.saturating_sub(text_width(&marker) as usize);
+        let lead = (text_width(&indent) + text_width(mark)) as usize;
         let label_room = room.saturating_sub(lead);
         let number = fit(&number, u32::try_from(label_room).unwrap_or(u32::MAX));
         let mut style = band(theme.row_number, &h);
@@ -544,11 +544,11 @@ pub fn render_with(
             area,
             (x0, r.offset),
             clip,
-            &pad(format!("{indent}{mark}{number:<label_room$}")),
+            &pad(format!("{indent}{mark}{}", pad_to(&number, label_room))),
             style,
         );
         if !mark.trim().is_empty() {
-            let at = indent.chars().count() as f32;
+            let at = text_width(&indent) as f32;
             let style = style.patch(theme.disclosure);
             put(buf, area, (at, r.offset), clip, mark.trim_end(), style);
         }
@@ -984,11 +984,10 @@ pub fn render_editor(snapshot: &Snapshot, text: &str, area: Rect, buf: &mut Buff
     if width == 0 || y < cell(rows.start) || y >= cell(rows.end).min(i64::from(area.height)) {
         return;
     }
-    let chars: Vec<char> = text.chars().collect();
-    let shown = &chars[chars.len().saturating_sub(width - 1)..];
-    let line: String = shown.iter().chain(['▏'].iter()).collect();
+    let shown = tail(text, u32::try_from(width - 1).unwrap_or(0));
+    let line = format!("{shown}▏");
     let style = Style::default().fg(Color::Black).bg(Color::Yellow);
-    let line = format!("{line:<width$}");
+    let line = pad_to(&line, width);
     let clip = (cols.start, cols.end, rows.start, rows.end);
     put(buf, area, (rect.x, rect.y), clip, &line, style);
 }
@@ -1036,7 +1035,7 @@ fn empty(message: &str, theme: &Theme, (left, top): (f32, f32), area: Rect, buf:
         return;
     }
     let message = fit(message, u32::try_from(width).unwrap_or(u32::MAX));
-    let room = width - i64::from(char_count(&message));
+    let room = width - i64::from(text_width(&message));
     let at = ((x0 + room / 2) as f32, (y0 + (height - 1) / 2) as f32);
     let style = theme.body.patch(theme.loading);
     put(
@@ -1085,19 +1084,12 @@ pub(crate) fn put(
     if y >= cell(y_end).min(i64::from(area.height)) {
         return;
     }
-    for (i, ch) in text.chars().enumerate() {
-        let cx = x.saturating_add(i as i64);
-        if cx >= x_end {
-            break;
-        }
-        if cx < x_min.max(0) {
-            continue;
-        }
-        let (cx, cy) = (area.x + cx as u16, area.y + y as u16);
-        if let Some(c) = buf.cell_mut((cx, cy)) {
-            c.set_char(ch).set_style(style);
-        }
-    }
+    let Ok(row) = u16::try_from(area.y as i64 + y) else {
+        return;
+    };
+    let origin = i64::from(area.x);
+    let (min, max) = (x_min.max(0) + origin, x_end + origin);
+    write(buf, (x + origin, row), (min, max), text, style);
 }
 
 /// A status line for `snapshot`: the gesture in progress, else why the

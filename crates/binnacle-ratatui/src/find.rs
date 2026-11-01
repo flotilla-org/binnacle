@@ -12,7 +12,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::Theme;
 use crate::filter::{Pause, toggle_style};
-use crate::renderer::{char_count, fit};
+use crate::width::{fit, put_text, tail, width as text_width};
 
 /// What the Table Source last said about the Find Query in force, which the
 /// host keeps (the Grid holds only the query and the current match): the
@@ -300,13 +300,7 @@ impl FindBar {
         }
         let mut x = area.x;
         let mut put = |x: &mut u16, text: &str, style: Style| {
-            for ch in text.chars() {
-                if *x >= area.right() {
-                    return;
-                }
-                buf[(*x, area.y)].set_char(ch).set_style(style);
-                *x += 1;
-            }
+            put_text(buf, x, area.y, area.right(), text, style);
         };
         let width = usize::from(area.width);
         put(&mut x, &" ".repeat(width), theme.body);
@@ -321,16 +315,16 @@ impl FindBar {
         let room = 24.min(width.saturating_sub(8));
         let shown = if self.focused {
             // Shows the end of a long text, then the caret.
-            let chars: Vec<char> = self.text.chars().collect();
-            let tail: String = chars[chars.len().saturating_sub(room.saturating_sub(1))..]
-                .iter()
-                .collect();
-            format!("{tail}▏")
+            let end = tail(
+                &self.text,
+                u32::try_from(room.saturating_sub(1)).unwrap_or(0),
+            );
+            format!("{end}▏")
         } else {
             self.text.clone()
         };
         let shown = fit(&shown, u32::try_from(room).unwrap_or(u32::MAX));
-        let pad = room.saturating_sub(char_count(&shown) as usize);
+        let pad = room.saturating_sub(text_width(&shown) as usize);
         let text = match self.selected && self.focused {
             true => field.add_modifier(Modifier::REVERSED),
             false => field,

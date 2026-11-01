@@ -14,7 +14,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::filter::{count, field_text, grouped, label};
 use crate::menu::cap_hint;
-use crate::renderer::{char_count, fit};
+use crate::width::{fit, put_text, width as text_width};
 use crate::{Content, Theme};
 
 /// The popup's width in cells, borders included.
@@ -253,16 +253,10 @@ impl Chooser {
             if row >= popup.height {
                 return;
             }
-            for ch in text.chars() {
-                if *x >= popup.right() {
-                    return;
-                }
-                buf[(*x, popup.y + row)].set_char(ch).set_style(style);
-                *x += 1;
-            }
+            put_text(buf, x, popup.y + row, popup.right(), text, style);
         };
         let title = format!(" Choose {nouns} ");
-        let rule = inner.saturating_sub(char_count(&title) as usize + 1);
+        let rule = inner.saturating_sub(text_width(&title) as usize + 1);
         let mut x = popup.x;
         put(0, &mut x, "┌─", border);
         put(0, &mut x, &title, theme.body.add_modifier(Modifier::BOLD));
@@ -272,7 +266,7 @@ impl Chooser {
         let search = "Search ";
         let field = field_text(
             &o.search,
-            inner.saturating_sub(char_count(search) as usize + 2),
+            inner.saturating_sub(text_width(search) as usize + 2),
             true,
         );
         let mut x = popup.x;
@@ -298,7 +292,7 @@ impl Chooser {
         let mut x = popup.x;
         put(row, &mut x, "├─", border);
         put(row, &mut x, &listed, theme.body.patch(theme.loading));
-        let rest = inner.saturating_sub(1 + char_count(&listed) as usize);
+        let rest = inner.saturating_sub(1 + text_width(&listed) as usize);
         put(row, &mut x, &format!("{}┤", "─".repeat(rest)), border);
         row += 1;
 
@@ -341,9 +335,9 @@ impl Chooser {
             } else {
                 ("   ", String::new(), "", theme.body)
             };
-            let room = width.saturating_sub(4 + char_count(tag) as usize);
+            let room = width.saturating_sub(4 + text_width(tag) as usize);
             let text = fit(&text, u32::try_from(room).unwrap_or(0));
-            let pad = room.saturating_sub(char_count(&text) as usize);
+            let pad = room.saturating_sub(text_width(&text) as usize);
             let style = match i == o.cursor {
                 true => style.add_modifier(Modifier::REVERSED),
                 false => style,
@@ -367,7 +361,7 @@ impl Chooser {
         lines.push((keys, theme.body.patch(theme.row_number)));
         for (text, style) in lines {
             let text = fit(&text, u32::try_from(inner - 1).unwrap_or(0));
-            let pad = (inner - 1).saturating_sub(char_count(&text) as usize);
+            let pad = (inner - 1).saturating_sub(text_width(&text) as usize);
             let mut x = popup.x;
             put(row, &mut x, "│ ", border);
             put(row, &mut x, &text, style);

@@ -4,6 +4,8 @@
 use std::borrow::Cow;
 use std::ops::{BitOr, BitOrAssign};
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::time::{Zone, absolute, relative};
 use crate::units::{Num, bytes, with_unit};
 use crate::{Timestamp, Value};
@@ -360,12 +362,30 @@ fn json_prefix(json: &serde_json::Value, chars: usize) -> String {
     }
 }
 
-/// `text` cut to `max` characters, ending in `…` when cut.
+/// `text` cut to `max` graphemes, ending in `…` when cut. The limit counts
+/// graphemes, not display width: the web measures in pixels, so the cut
+/// cannot know columns. It never splits a grapheme.
 fn cut(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
+    let mut graphemes = text.graphemes(true);
+    let kept: String = graphemes.by_ref().take(max).collect();
+    if graphemes.next().is_none() {
+        return kept;
     }
-    let mut out: String = text.chars().take(max - 1).collect();
+    let mut out: String = kept.graphemes(true).take(max.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cut;
+
+    #[test]
+    fn cut_never_splits_a_grapheme() {
+        let text = "ae\u{301}e\u{301}e\u{301}";
+        assert_eq!(cut(text, 4), text);
+        assert_eq!(cut(text, 3), "ae\u{301}…");
+        assert_eq!(cut("👩‍💻👩‍💻", 1), "…");
+        assert_eq!(cut("abc", 3), "abc");
+    }
 }

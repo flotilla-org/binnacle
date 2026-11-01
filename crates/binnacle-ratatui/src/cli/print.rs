@@ -4,13 +4,13 @@
 use std::io::{self, Write};
 use std::str::FromStr;
 
+use crate::width::width;
 use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key};
 use binnacle_format::{
     Align, FixedOffset, FormatContext, FormatOptions, Role, TimeStyle, Timestamp, Value, format,
 };
 use binnacle_layout::{JsonId, Layout};
 use serde_json::Value as Json;
-use unicode_width::UnicodeWidthStr;
 
 use super::CliTable;
 
@@ -211,7 +211,13 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
         .collect();
     lines.insert(0, header);
     let widths: Vec<usize> = (0..cols.len())
-        .map(|i| lines.iter().map(|l| l[i].0.width()).max().unwrap_or(0))
+        .map(|i| {
+            lines
+                .iter()
+                .map(|l| width(&l[i].0) as usize)
+                .max()
+                .unwrap_or(0)
+        })
         .collect();
     (lines.into_iter())
         .map(|cells| {
@@ -220,10 +226,10 @@ pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Ve
                 if i > 0 {
                     line.push_str("  ");
                 }
-                let pad = " ".repeat(widths[i].saturating_sub(text.width()));
+                let blank = " ".repeat(widths[i].saturating_sub(width(&text) as usize));
                 match align {
-                    Align::End => line.push_str(&format!("{pad}{text}")),
-                    Align::Start => line.push_str(&format!("{text}{pad}")),
+                    Align::End => line.push_str(&format!("{blank}{text}")),
+                    Align::Start => line.push_str(&format!("{text}{blank}")),
                 }
             }
             line.trim_end().to_owned()

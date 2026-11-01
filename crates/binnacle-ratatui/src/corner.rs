@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use crate::renderer::char_count;
+use crate::width::width as text_width;
 use crate::{Content, Theme, cell, put};
 
 /// What a piece of corner text is.
@@ -33,7 +33,7 @@ struct Piece {
 
 impl Piece {
     fn width(&self) -> f32 {
-        char_count(&self.text) as f32
+        text_width(&self.text) as f32
     }
 }
 
@@ -74,14 +74,14 @@ fn lay(
     (from, to): (f32, f32),
     right: bool,
 ) {
-    let total: f32 = pieces.iter().map(|(_, t)| char_count(t) as f32).sum();
+    let total: f32 = pieces.iter().map(|(_, t)| text_width(t) as f32).sum();
     // Right-aligned text keeps a cell clear before the band's edge.
     let mut x = match right {
         true => (to - 1.0 - total).max(from),
         false => from,
     };
     for (kind, text) in pieces {
-        let width = char_count(&text) as f32;
+        let width = text_width(&text) as f32;
         out.push(Piece {
             kind,
             text,
@@ -163,7 +163,7 @@ fn lay_out(snapshot: &Snapshot, content: &impl Content) -> Vec<Piece> {
         if bottom == 0 {
             // Only where it fits whole: the row names come first.
             let after = on_top.map(|p| p.x + p.width() + 2.0).fold(left, f32::max);
-            let width: f32 = head.iter().map(|(_, t)| char_count(t) as f32).sum();
+            let width: f32 = head.iter().map(|(_, t)| text_width(t) as f32).sum();
             if after + width < right {
                 lay(&mut out, top, head, (after, right), true);
             }
