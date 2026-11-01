@@ -69,7 +69,7 @@ A Described Table source starting its rows again without showing the table empty
 _Avoid_: Reload, refresh, reconnect (for the whole)
 
 **Selection**:
-What the CLI's inline table hands back when the user presses Enter: the picked rows' Keys if any are picked, in the order the rows show (not the order picked, nor Key order; picks the view leaves out follow, in Key order), else the focused row's. Esc or `q` hands back none, as does Enter in an empty table; Ctrl-C or a signal hands back none and says the table was interrupted, so the CLI exits 130 (128 and the signal's number). `cli::Selection` in `binnacle-ratatui`, inside `cli::Exit`.
+What the CLI's inline table hands back when the user presses Enter: the picked rows' Keys if any are picked, in the order the rows show (not the order picked, nor Key order; picks the view leaves out follow, in Key order), else the focused row's. Esc or `q` hands back none, as does Enter in an empty table; Ctrl-C or a signal hands back none and says the table was interrupted, so the CLI exits 130 (128 and the signal's number). `cli::Selection` in `binnacle-cli` (re-exported by `binnacle-ratatui`), inside `cli::Exit`.
 _Avoid_: Choice, result, pick (for the whole)
 
 **Presentation**:

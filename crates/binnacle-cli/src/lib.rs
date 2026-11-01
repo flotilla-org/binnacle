@@ -1,0 +1,225 @@
+//! The CLI surface of a binnacle table that needs no terminal library: the
+//! flags ([`Flags`], and with the `clap` feature [`FlagArgs`]), the printer
+//! ([`print`], [`Format`]) and the table a CLI host gives them
+//! ([`CliTable`]). Nothing here depends on ratatui or crossterm, so a CLI
+//! outside `binnacle-ratatui` can take the same flags and print the same
+//! output. The inline viewport (`run_inline`) stays in `binnacle-ratatui`,
+//! which re-exports all of this as `binnacle_ratatui::cli`.
+//!
+//! ```ignore
+//! use binnacle_cli::{FlagArgs, Format, print};
+//! use binnacle_layout::Layout;
+//!
+//! #[derive(clap::Parser)]
+//! struct Table {
+//!     #[command(flatten)]
+//!     table: FlagArgs,
+//!     #[arg(long, value_enum, default_value = "aligned")]
+//!     format: Format,
+//! }
+//!
+//! let args = Table::parse();
+//! let flags = args.table.flags()?;
+//! let layout = flags.apply_to(&mut source, &Layout::default(), |_| None)?;
+//! print(
+//!     &mut source,
+//!     &layout,
+//!     args.format,
+//!     &mut std::io::stdout(),
+//!     &mut std::io::stderr(),
+//!     None,
+//! )?;
+//! ```
+
+mod flags;
+mod print;
+pub mod width;
+
+#[cfg(feature = "described")]
+mod described;
+
+use std::ops::Range;
+
+use binnacle_core::{Axis, ChangeNotice, Grid, Key, Position, Totals, ViewSpec};
+use binnacle_format::{Role, Value};
+use binnacle_group::Window;
+use binnacle_layout::{IdMap, JsonId};
+use binnacle_memory::PumpSource;
+
+#[cfg(feature = "clap")]
+pub use flags::FlagArgs;
+pub use flags::{FlagError, Flags, parse_where};
+/// The printer's steps, for `binnacle-ratatui`'s viewport to leave its rows
+/// as the printer would print them.
+#[doc(hidden)]
+pub mod viewport {
+    pub use crate::print::{aligned, columns, headless, title_aligns};
+}
+pub use print::{Format, partial_note, print, print_rows};
+
+/// What a table gives the CLI host, over the Table Source the Grid pumps.
+/// Rows and columns are named by JSON IDs ([`IdMap`]), as a Layout names
+/// them.
+pub trait CliTable: PumpSource + IdMap<JsonId, JsonId> {
+    /// How many items `axis` shows now.
+    fn count(&self, axis: Axis) -> u64;
+
+    /// The Keys at `range` on `axis`, and their outlines if it is grouped.
+    fn window(&mut self, axis: Axis, range: Range<Position>) -> Window;
+
+    /// Declares to `grid` what each column supports.
+    fn declare(&mut self, grid: &mut Grid);
+
+    /// Every column's Key, shown or hidden, in the source's order.
+    fn columns(&self) -> Vec<Key>;
+
+    /// Column `col`'s header: its title.
+    fn header(&self, col: Key) -> String;
+
+    /// Column `col`'s field name, as flags and machine output name it.
+    fn field(&self, col: Key) -> String;
+
+    /// The Typed Value where row `row` meets column `col`; a Summary Item's
+    /// cells are null.
+    fn value(&self, row: Key, col: Key) -> Value;
+
+    /// Column `col`'s unit, if any.
+    fn unit(&self, col: Key) -> Option<String>;
+
+    /// The role column `col`'s values draw with.
+    fn role(&self, col: Key) -> Role;
+
+    /// Column `col`'s type, as an error names it: `string`, say.
+    fn type_name(&self, col: Key) -> String;
+
+    /// How many rows came, when the table has more than came (a source
+    /// over its row cap): what prints and shows is only those. `None`, the
+    /// default, when every row came.
+    fn partial(&self) -> Option<u64> {
+        None
+    }
+
+    /// The View Spec the source applies now and the totals, once, if a
+    /// change in its data changed it (a column that left, say), for the
+    /// Grid to hold. None unless overridden.
+    fn view_changed(&mut self) -> Option<(ViewSpec, Totals)> {
+        None
+    }
+}
+
+/// What the user chose in the inline table: the picked rows' Keys if any
+/// were picked, in the order they show (any picked rows the view leaves
+/// out follow, in Key order), else the focused row's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Selection {
+    pub rows: Vec<Key>,
+}
+
+/// How the inline table ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// Enter, with a row to choose.
+    Chosen(Selection),
+    /// Esc or `q`, the end of the events or of the live feed, or Enter
+    /// with no row to choose: nothing chosen.
+    Left,
+    /// Ctrl-C (taken as SIGINT), or SIGINT, SIGTERM or SIGHUP while the
+    /// viewport was open: nothing chosen, the terminal restored.
+    Interrupted { signal: i32 },
+}
+
+impl Exit {
+    /// What the user chose, if anything.
+    pub fn selection(self) -> Option<Selection> {
+        match self {
+            Exit::Chosen(selection) => Some(selection),
+            _ => None,
+        }
+    }
+
+    /// The status a CLI exits with after an interrupt, 128 and the
+    /// signal's number (130 after Ctrl-C); `None` otherwise.
+    pub fn status(&self) -> Option<i32> {
+        match self {
+            Exit::Interrupted { signal } => Some(128 + signal),
+            _ => None,
+        }
+    }
+}
+
+/// `n` with a comma between each three digits.
+#[doc(hidden)]
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The viewport's count for a partial table of which `read` rows came and
+/// `shown` show: both numbers once a filter has dropped some.
+#[doc(hidden)]
+pub fn partial_status(shown: u64, read: u64) -> String {
+    match shown == read {
+        true => format!("{} of more rows", thousands(read)),
+        false => format!(
+            "{} shown of {} read, more on the server",
+            thousands(shown),
+            thousands(read)
+        ),
+    }
+}
+
+/// Whether the CLI opens the table inline or prints it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Interactive {
+    /// Inline when stdin and stdout are both terminals.
+    #[default]
+    Auto,
+    /// `--interactive`.
+    Always,
+    /// `--no-interactive`.
+    Never,
+}
+
+impl Interactive {
+    /// Whether to open inline, given whether stdin and stdout are
+    /// terminals.
+    pub fn decide(self, stdin_terminal: bool, stdout_terminal: bool) -> bool {
+        match self {
+            Interactive::Auto => stdin_terminal && stdout_terminal,
+            Interactive::Always => true,
+            Interactive::Never => false,
+        }
+    }
+
+    /// [`Interactive::decide`] for this process's stdin and stdout.
+    pub fn now(self) -> bool {
+        use std::io::IsTerminal;
+        self.decide(
+            std::io::stdin().is_terminal(),
+            std::io::stdout().is_terminal(),
+        )
+    }
+}
+
+/// Applies `notices` from the source to `grid`, after the columns' support
+/// and any View Spec the source applies now.
+#[doc(hidden)]
+pub fn notify(grid: &mut Grid, source: &mut impl CliTable, notices: Vec<(Axis, ChangeNotice)>) {
+    if notices.is_empty() {
+        return;
+    }
+    source.declare(grid);
+    if let Some((spec, totals)) = source.view_changed() {
+        grid.view_changed(spec, totals);
+    }
+    for (axis, notice) in notices {
+        grid.notify(axis, notice);
+    }
+}

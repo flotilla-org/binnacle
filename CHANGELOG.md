@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **cli:** the new `binnacle-cli` crate holds the CLI's flags, printer and `CliTable` (`Flags`, `FlagArgs`, `FlagError`, `parse_where`, `Format`, `print`, `print_rows`, `partial_note`, `Interactive`, `Selection`, `Exit`, and the `width` module) with no ratatui or crossterm in its tree, so a CLI host outside `binnacle-ratatui` takes the same flags and prints the same output. Its `described` feature adds `CliTable` for `DescribedSource`; its `clap` feature adds `FlagArgs` and `clap::ValueEnum` for `Format`. `FlagArgs::flags` converts straight through the struct and shares `Flags::parse`'s checks. `FlagArgs` no longer has a `--format` flag (its `format` field stays, skipped by `clap`): a host flattening it takes its own `--format` as a `Format`. `binnacle_ratatui::cli` re-exports it all and keeps the viewport, so existing paths compile unchanged ([#361](https://github.com/flotilla-org/binnacle/issues/361)).
+
 ### Breaking
 
 - **ratatui:** `cli::InlineOptions` gains `presentation` ([#362](https://github.com/flotilla-org/binnacle/issues/362)), so options built field by field name it (or take `..InlineOptions::default()`). The inline table's status line names `f` (full screen, or inline), and `f` no longer types into the Grid outside a text field.

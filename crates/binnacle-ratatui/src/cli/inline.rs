@@ -27,8 +27,8 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions};
 
-use super::print::title_aligns;
-use super::{CliTable, Exit, Selection, notify, partial_status, print, thousands};
+use super::viewport::{aligned, columns, headless, title_aligns};
+use super::{CliTable, Exit, Selection, notify, partial_status, thousands};
 use crate::{
     CellRenderer, Chooser, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     HeaderMenu, Keymap, Mouse, Preset, QuickFilter, RenderContext, Theme, ValueRenderer,
@@ -244,7 +244,12 @@ fn run<T: CliTable, B: Backend>(
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
         Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128))
     });
+<<<<<<< HEAD
     let mut grid = print::headless(source, layout);
+=======
+    let theme = options.theme.clone();
+    let mut grid = headless(source, layout);
+>>>>>>> d88bd7d (Move the CLI flags and printer into binnacle-cli, without ratatui (#361))
     focus_first(&mut grid, source);
     let mut menu = HeaderMenu::new();
     menu.set_fields(source.columns());
@@ -409,6 +414,7 @@ fn run<T: CliTable, B: Backend>(
             _ => {}
         }
     };
+<<<<<<< HEAD
     if presentation == Presentation::FullScreen {
         switch(terminal, &mut full, presentation, &mut screen)?;
         // What the inline viewport would show, so the rows left behind are
@@ -423,6 +429,10 @@ fn run<T: CliTable, B: Backend>(
     let Session { grid, shown, .. } = session;
     let cols = print::columns(source, &grid);
     let text = print::aligned(&*source, &shown, &cols);
+=======
+    let cols = columns(source, &grid);
+    let text = aligned(&*source, &shown, &cols);
+>>>>>>> d88bd7d (Move the CLI flags and printer into binnacle-cli, without ratatui (#361))
     terminal.clear()?;
     let area = terminal.get_frame().area();
     let lines: Vec<&str> = (text.iter())
@@ -759,7 +769,7 @@ fn chosen<T: CliTable>(grid: &mut Grid, source: &mut T) -> Option<Selection> {
 /// Focuses the first row's first shown column.
 fn focus_first<T: CliTable>(grid: &mut Grid, source: &mut T) {
     let row = source.window(Axis::Rows, 0..1).keys.first().copied();
-    let col = print::columns(source, grid).first().copied();
+    let col = columns(source, grid).first().copied();
     if let (Some(row), Some(col)) = (row, col) {
         grid.set_focus(row, col);
     }

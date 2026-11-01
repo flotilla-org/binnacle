@@ -4,7 +4,6 @@
 use std::io::{self, Write};
 use std::str::FromStr;
 
-use crate::width::width;
 use binnacle_core::{Axis, AxisConfig, Edge, Grid, Key};
 use binnacle_format::{
     Align, FixedOffset, FormatContext, FormatOptions, Role, TimeStyle, Timestamp, Value, format,
@@ -12,10 +11,12 @@ use binnacle_format::{
 use binnacle_layout::{JsonId, Layout};
 use serde_json::Value as Json;
 
-use super::CliTable;
+use crate::CliTable;
+use crate::width::width;
 
 /// How [`print`] writes a table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 pub enum Format {
     /// Columns under their titles, aligned by display width, two spaces
     /// apart.
@@ -94,7 +95,7 @@ pub fn partial_note(shown: u64, read: u64, hint: Option<&str>) -> String {
 }
 
 /// A Grid over `source` with `layout` restored and every Effect answered.
-pub(crate) fn headless<T: CliTable>(source: &mut T, layout: &Layout<JsonId, JsonId>) -> Grid {
+pub fn headless<T: CliTable>(source: &mut T, layout: &Layout<JsonId, JsonId>) -> Grid {
     let mut grid = Grid::new(
         AxisConfig::new(source.count(Axis::Rows), 1.0).header(1.0),
         AxisConfig::new(source.count(Axis::Cols), 10.0)
@@ -110,7 +111,7 @@ pub(crate) fn headless<T: CliTable>(source: &mut T, layout: &Layout<JsonId, Json
 /// The columns `grid` draws over `source`, in drawn order: the leading
 /// pins, the rest in the source's order, the trailing pins; the hidden
 /// left out.
-pub(crate) fn columns<T: CliTable>(source: &mut T, grid: &Grid) -> Vec<Key> {
+pub fn columns<T: CliTable>(source: &mut T, grid: &Grid) -> Vec<Key> {
     let count = source.count(Axis::Cols);
     let shown = source.window(Axis::Cols, 0..count).keys;
     let pinned = |edge| -> Vec<Key> {
@@ -175,7 +176,7 @@ pub fn print_rows<T: CliTable>(
 /// break, widths by display width, columns two spaces apart, an end-aligned
 /// cell to the right, and no trailing spaces. Dates are absolute, in UTC,
 /// so what stays in the scrollback never goes stale.
-pub(crate) fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Vec<String> {
+pub fn aligned<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Vec<String> {
     let options = FormatOptions {
         plain: true,
         time: Some(TimeStyle::Absolute),
@@ -256,7 +257,7 @@ fn majority(cells: impl IntoIterator<Item = (Value, Align)>) -> Align {
 }
 
 /// The alignment of each of `cols`' titles over `rows`, as [`aligned`]'s.
-pub(crate) fn title_aligns<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Vec<Align> {
+pub fn title_aligns<T: CliTable>(source: &T, rows: &[Key], cols: &[Key]) -> Vec<Align> {
     let options = FormatOptions {
         plain: true,
         time: Some(TimeStyle::Absolute),
