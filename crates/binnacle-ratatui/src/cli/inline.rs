@@ -244,12 +244,7 @@ fn run<T: CliTable, B: Backend>(
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
         Timestamp::from_unix_nanos(now.map_or(0, |d| d.as_nanos() as i128))
     });
-<<<<<<< HEAD
-    let mut grid = print::headless(source, layout);
-=======
-    let theme = options.theme.clone();
     let mut grid = headless(source, layout);
->>>>>>> d88bd7d (Move the CLI flags and printer into binnacle-cli, without ratatui (#361))
     focus_first(&mut grid, source);
     let mut menu = HeaderMenu::new();
     menu.set_fields(source.columns());
@@ -414,7 +409,6 @@ fn run<T: CliTable, B: Backend>(
             _ => {}
         }
     };
-<<<<<<< HEAD
     if presentation == Presentation::FullScreen {
         switch(terminal, &mut full, presentation, &mut screen)?;
         // What the inline viewport would show, so the rows left behind are
@@ -427,12 +421,8 @@ fn run<T: CliTable, B: Backend>(
         session.draw(source, &status, area, &mut Buffer::empty(area));
     }
     let Session { grid, shown, .. } = session;
-    let cols = print::columns(source, &grid);
-    let text = print::aligned(&*source, &shown, &cols);
-=======
     let cols = columns(source, &grid);
     let text = aligned(&*source, &shown, &cols);
->>>>>>> d88bd7d (Move the CLI flags and printer into binnacle-cli, without ratatui (#361))
     terminal.clear()?;
     let area = terminal.get_frame().area();
     let lines: Vec<&str> = (text.iter())
