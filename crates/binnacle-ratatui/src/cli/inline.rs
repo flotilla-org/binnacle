@@ -488,7 +488,7 @@ fn wrap(line: &str, width: usize) -> Vec<&str> {
 }
 
 /// Whether the full-screen presentation has the terminal on the alternate
-/// screen.
+/// screen. Process-wide, as the terminal is: one [`run_inline`] at a time.
 static ALTERNATE: AtomicBool = AtomicBool::new(false);
 
 /// Enters the alternate screen for the full-screen presentation, or leaves

@@ -307,14 +307,16 @@ fn leaving_from_full_screen_leaves_the_rows_inline_would() {
 }
 
 #[test]
-fn f_in_the_filter_bar_types_an_f() {
-    let (frames, _) = Run::new().events(vec![ctrl('l'), char('f'), key(KeyCode::Esc)]);
-    let after = &frames[2];
-    let inline = inline_lines(after, 12);
-    let bar = inline.iter().find(|l| l.contains("Filter")).unwrap();
-    let typed = bar.trim_start().strip_prefix("Filter").unwrap();
-    assert!(typed.trim_start().starts_with("f▏"), "{bar}");
-    assert!(lines(after)[..PROMPT as usize].iter().all(|l| l.is_empty()));
+fn f_in_the_filter_bar_or_find_types_an_f() {
+    for (open, field) in [(ctrl('l'), "Filter"), (ctrl('f'), "Find")] {
+        let (frames, _) = Run::new().events(vec![open, char('f'), key(KeyCode::Esc)]);
+        let after = &frames[2];
+        let inline = inline_lines(after, 12);
+        let bar = inline.iter().find(|l| l.trim_start().starts_with(field));
+        let typed = bar.unwrap().trim_start().strip_prefix(field).unwrap();
+        assert!(typed.trim_start().starts_with("f▏"), "{bar:?}");
+        assert!(lines(after)[..PROMPT as usize].iter().all(|l| l.is_empty()));
+    }
 }
 
 #[test]
