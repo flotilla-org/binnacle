@@ -228,6 +228,13 @@ impl WebGrid {
         self.grid.set_form(axis(a), form);
     }
 
+    /// The size of axis `a`'s items with no Size Override or content size,
+    /// keeping the Scroll Anchor's item first. Clamped into the axis's size
+    /// range; sizes that are not positive and finite are ignored.
+    pub fn set_default_size(&mut self, a: u8, size: f32) {
+        self.grid.set_default_size(axis(a), size);
+    }
+
     pub fn set_gap(&mut self, a: u8, gap: f32) {
         self.grid.set_gap(axis(a), gap);
     }

@@ -762,3 +762,45 @@ fn an_anchor_waiting_at_the_end_keeps_its_offset_inside_its_item() {
     let anchor = grid.snapshot().scroll_anchor(Axis::Rows);
     assert!(anchor.offset < 1.0, "{anchor:?}");
 }
+
+/// A new default size keeps the Scroll Anchor's item first, scrolled past by
+/// the same share of it: half of row 5 before, half of row 5 after.
+#[test]
+fn a_new_default_size_keeps_the_anchors_item_and_its_share() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 4.0);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 5.5 }));
+    s.frame(v);
+    s.input(|g| g.set_default_size(Axis::Rows, 2.0));
+    let snap = s.frame(v);
+    assert_eq!(
+        snap.scroll_anchor(Axis::Rows),
+        ScrollAnchor {
+            position: 5,
+            offset: 1.0
+        }
+    );
+    assert_eq!(snap.rows().first().map(|r| r.size), Some(2.0));
+}
+
+/// An anchor following the end keeps following it through a new default
+/// size, larger or smaller: the last row still ends the viewport.
+#[test]
+fn an_anchor_at_the_end_follows_it_through_a_new_default_size() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 4.0);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 100.0 }));
+    assert_eq!(
+        s.frame(v).rows().last().map(|r| (r.position, r.end())),
+        Some((19, 4.0))
+    );
+    for size in [2.0, 0.5] {
+        s.input(|g| g.set_default_size(Axis::Rows, size));
+        let snap = s.frame(v);
+        assert_eq!(
+            snap.rows().last().map(|r| (r.position, r.size, r.end())),
+            Some((19, size.max(1.0), 4.0)),
+            "at the default size {size}"
+        );
+    }
+}
