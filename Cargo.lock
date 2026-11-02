@@ -135,6 +135,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "binnacle-cli"
+version = "0.1.0"
+dependencies = [
+ "binnacle-core",
+ "binnacle-described",
+ "binnacle-format",
+ "binnacle-group",
+ "binnacle-layout",
+ "binnacle-memory",
+ "binnacle-testkit",
+ "clap",
+ "hegeltest",
+ "serde_json",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "binnacle-core"
 version = "0.1.0"
 dependencies = [
@@ -243,14 +261,13 @@ dependencies = [
 name = "binnacle-ratatui"
 version = "0.1.0"
 dependencies = [
+ "binnacle-cli",
  "binnacle-core",
- "binnacle-described",
  "binnacle-format",
  "binnacle-group",
  "binnacle-layout",
  "binnacle-memory",
  "binnacle-testkit",
- "clap",
  "hegeltest",
  "insta",
  "ratatui",

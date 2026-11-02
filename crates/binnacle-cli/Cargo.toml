@@ -1,0 +1,34 @@
+[package]
+name = "binnacle-cli"
+description = "The CLI flags and printer for a binnacle table, without a terminal library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# `CliTable` for a Described Table.
+described = ["dep:binnacle-described"]
+# `FlagArgs`, a ready-made `clap` argument group, and `ValueEnum` for `Format`.
+clap = ["dep:clap"]
+
+[dependencies]
+binnacle-core.workspace = true
+binnacle-described = { workspace = true, optional = true }
+binnacle-format.workspace = true
+binnacle-group.workspace = true
+binnacle-layout.workspace = true
+binnacle-memory.workspace = true
+clap = { version = "4", features = ["derive"], optional = true }
+serde_json.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+binnacle-testkit.workspace = true
+hegeltest.workspace = true
+binnacle-described.workspace = true
+
+[[test]]
+name = "flatten"
+required-features = ["clap", "described"]

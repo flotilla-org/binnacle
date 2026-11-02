@@ -11,8 +11,8 @@ use binnacle_layout::view::{
 };
 use binnacle_layout::{JsonId, Layout};
 
-use super::print::Format;
-use super::{CliTable, Interactive};
+use crate::print::Format;
+use crate::{CliTable, Interactive};
 
 /// A flag the parser could not take: unknown, without its value, or with a
 /// malformed one.
@@ -86,30 +86,10 @@ impl Flags {
             };
             match name.as_str() {
                 "--columns" => {
-                    let list = names(&value("--columns")?, "--columns")?;
-                    if let Some(twice) = (list.iter().enumerate())
-                        .find(|(i, n)| list[..*i].contains(n))
-                        .map(|(_, n)| n)
-                    {
-                        return error(format!("--columns: `{twice}` twice"));
-                    }
-                    flags.columns = Some(list);
+                    flags.columns = Some(columns(&value("--columns")?)?);
                 }
                 "--sort" => {
-                    for term in names(&value("--sort")?, "--sort")? {
-                        let (field, direction) = match term.strip_prefix('-') {
-                            Some(field) => (field, Direction::Descending),
-                            None => (
-                                term.strip_prefix('+').unwrap_or(&term),
-                                Direction::Ascending,
-                            ),
-                        };
-                        let field = field.strip_prefix('.').unwrap_or(field);
-                        if field.is_empty() {
-                            return error(format!("--sort: no field in `{term}`"));
-                        }
-                        flags.sort.push((field.to_owned(), direction));
-                    }
+                    flags.sort.extend(sorts(&value("--sort")?)?);
                 }
                 "--where" => {
                     let clause = value("--where")?;
@@ -282,6 +262,40 @@ impl Flags {
     }
 }
 
+/// The `--columns` list: names, none empty, none twice.
+fn columns(list: &str) -> Result<Vec<String>, FlagError> {
+    let list = names(list, "--columns")?;
+    if let Some(twice) = (list.iter().enumerate())
+        .find(|(i, n)| list[..*i].contains(n))
+        .map(|(_, n)| n)
+    {
+        return error(format!("--columns: `{twice}` twice"));
+    }
+    Ok(list)
+}
+
+/// The `--sort` terms of a comma-separated list, each a field and its
+/// direction.
+fn sorts(list: &str) -> Result<Vec<(String, Direction)>, FlagError> {
+    names(list, "--sort")?
+        .into_iter()
+        .map(|term| {
+            let (field, direction) = match term.strip_prefix('-') {
+                Some(field) => (field, Direction::Descending),
+                None => (
+                    term.strip_prefix('+').unwrap_or(&term),
+                    Direction::Ascending,
+                ),
+            };
+            let field = field.strip_prefix('.').unwrap_or(field);
+            match field.is_empty() {
+                true => error(format!("--sort: no field in `{term}`")),
+                false => Ok((field.to_owned(), direction)),
+            }
+        })
+        .collect()
+}
+
 /// A comma-separated list of names, none empty.
 fn names(list: &str, flag: &str) -> Result<Vec<String>, FlagError> {
     let names: Vec<String> = list.split(',').map(|n| n.trim().to_owned()).collect();
@@ -374,7 +388,9 @@ pub fn parse_where(clause: &str) -> Result<Condition<JsonId>, FlagError> {
 }
 
 /// The flags as a ready-made `clap` argument group, to flatten into a
-/// host's own parser; [`FlagArgs::flags`] gives the parser's input.
+/// host's own parser; [`FlagArgs::flags`] gives the parser's input. It has
+/// no `--format` flag: the host takes its own, as a [`Format`] (a
+/// `clap::ValueEnum`), and sets it on the [`Flags`].
 #[cfg(feature = "clap")]
 #[derive(Clone, Debug, Default, clap::Args)]
 pub struct FlagArgs {
@@ -395,8 +411,9 @@ pub struct FlagArgs {
     /// Show the hidden columns too.
     #[arg(long)]
     pub wide: bool,
-    /// aligned, tsv, json or jsonl.
-    #[arg(long)]
+    /// Not a flag: a format name (aligned, tsv, json or jsonl) the host may
+    /// set for [`FlagArgs::flags`] to check and carry.
+    #[arg(skip)]
     pub format: Option<String>,
     /// Open the table inline even when not in a terminal.
     #[arg(long, conflicts_with = "no_interactive")]
@@ -408,33 +425,30 @@ pub struct FlagArgs {
 
 #[cfg(feature = "clap")]
 impl FlagArgs {
-    /// The flags as [`Flags::parse`] reads them.
+    /// The flags, checked as [`Flags::parse`] checks them (it shares these
+    /// checks), without going through arguments.
     pub fn flags(&self) -> Result<Flags, FlagError> {
-        let mut args: Vec<String> = Vec::new();
-        if let Some(columns) = &self.columns {
-            args.extend(["--columns".into(), columns.join(",")]);
+        let mut flags = Flags::default();
+        if let Some(list) = &self.columns {
+            flags.columns = Some(columns(&list.join(","))?);
         }
         for term in &self.sort {
-            args.push(format!("--sort={term}"));
+            flags.sort.extend(sorts(term)?);
         }
         for clause in &self.wheres {
-            args.extend(["--where".into(), clause.clone()]);
+            parse_where(clause)?;
+            flags.wheres.push(clause.clone());
         }
-        if let Some(view) = &self.view {
-            args.extend(["--view".into(), view.clone()]);
-        }
-        if self.wide {
-            args.push("--wide".into());
-        }
+        flags.view = self.view.clone();
+        flags.wide = self.wide;
         if let Some(format) = &self.format {
-            args.extend(["--format".into(), format.clone()]);
+            flags.format = Some(format.parse().map_err(FlagError)?);
         }
-        if self.interactive {
-            args.push("--interactive".into());
-        }
-        if self.no_interactive {
-            args.push("--no-interactive".into());
-        }
-        Flags::parse(args)
+        flags.interactive = match (self.interactive, self.no_interactive) {
+            (true, _) => Interactive::Always,
+            (_, true) => Interactive::Never,
+            _ => Interactive::Auto,
+        };
+        Ok(flags)
     }
 }
