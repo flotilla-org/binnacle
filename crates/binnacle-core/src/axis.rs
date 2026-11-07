@@ -229,10 +229,13 @@ impl AxisState {
         let first_size = f64::from(size_at(first));
         // An anchor in the Gap after its item starts at the next item, placed
         // straight from the anchor so a tiny item cannot stall the stepping.
+        // What is left of the item is taken first: it is exact, where adding
+        // a tiny Gap to the item's size first rounds by more than the Gap's
+        // own f32 step.
         let start = if off >= first_size {
             (
                 first + 1,
-                f64::from(header) + first_size + f64::from(gap) - off,
+                f64::from(header) + (first_size - off) + f64::from(gap),
             )
         } else {
             (first, f64::from(header) - off)
