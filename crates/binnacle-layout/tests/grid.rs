@@ -175,8 +175,8 @@ fn a_move_the_source_refuses_leaves_the_order_and_the_snapshot_says_why() {
     assert_eq!(saved.order, ordered(&[], &["c2"]).order);
 }
 
-/// Pins, sizes, bands, a View Spec and a column order, as a user might
-/// leave them.
+/// Pins, sizes, bands, a View Spec and a row and column order, as a user
+/// might leave them.
 fn scramble(tc: &TestCase, s: &mut Scenario<RecordTable>) {
     let col = || gs::integers::<u64>().max_value(COLS - 1);
     let row = || gs::integers::<u64>().max_value(ROWS - 1);
@@ -202,6 +202,8 @@ fn scramble(tc: &TestCase, s: &mut Scenario<RecordTable>) {
     }
     let moved = tc.draw(gs::vecs(col()).max_size(3));
     let moved: Vec<String> = moved.iter().map(|c| format!("c{c}")).collect();
+    let moved_rows = tc.draw(gs::vecs(row()).max_size(3));
+    let moved_rows: Vec<String> = moved_rows.iter().map(|r| format!("r{r}")).collect();
     let mut view = ViewSpec::default();
     if tc.draw(gs::booleans()) {
         view.rows.sort = vec![SortColumn {
@@ -217,7 +219,7 @@ fn scramble(tc: &TestCase, s: &mut Scenario<RecordTable>) {
     let layout = Layout {
         view: Some(view),
         order: Some(Order {
-            rows: None,
+            rows: (!moved_rows.is_empty()).then_some(moved_rows),
             cols: (!moved.is_empty()).then_some(moved),
         }),
         ..Layout::default()
@@ -515,4 +517,69 @@ fn an_empty_arrangement_asked_for_while_a_move_waits_asks_no_move() {
     assert_eq!(moves(&effects), 2, "{effects:?}");
     assert!(s.grid.arranged(Axis::Cols).is_empty());
     assert_eq!(s.grid.arranged(Axis::Rows), [Key(3)]);
+}
+
+/// The Positions of the rows drawn, in drawn order, and the rows' Scroll
+/// Anchor.
+fn drawn_rows<S: binnacle_testkit::ScenarioSource>(
+    s: &mut Scenario<S>,
+) -> (Vec<u64>, binnacle_core::ScrollAnchor) {
+    let snap = s.frame(V);
+    let drawn = snap.drawn(Axis::Rows).map(|i| i.position).collect();
+    (drawn, snap.scroll_anchor(Axis::Rows))
+}
+
+/// [`table`] showing `r1` to `r5`: a restored View Spec hides `r0`.
+fn without_r0() -> Scenario<RecordTable> {
+    let mut s = table();
+    let mut view = ViewSpec::default();
+    view.rows.hidden = strings(&["r0"]);
+    let layout = Layout {
+        view: Some(view),
+        ..Layout::default()
+    };
+    s.input(|g| {
+        layout.restore(g, &ids());
+    });
+    s.frame(V);
+    s
+}
+
+/// Found by #309's read, restore and read property (#314). With `r0`
+/// shown again and `r4` to `r0` moved first, `r5` is last and pinned, and
+/// the view follows `r1`, the top row, to Position 3. Every row fits, so
+/// the end clamp brings the anchor back to the start.
+#[test]
+fn a_move_answered_with_a_view_change_and_a_pin_draws_every_row_that_fits() {
+    let mut s = without_r0();
+    s.input(|g| {
+        g.pin(Axis::Rows, Edge::Leading, Key(5));
+        g.request_view(binnacle_core::ViewSpec::default());
+        g.arrange(Axis::Rows, vec![Key(4), Key(3), Key(2), Key(1), Key(0)]);
+    });
+    let (drawn, anchor) = drawn_rows(&mut s);
+    assert_eq!(anchor, binnacle_core::ScrollAnchor::default());
+    assert_eq!(drawn, [5, 0, 1, 2, 3, 4]);
+}
+
+/// A header drag sends the same `MoveRequested`, and hit this too: `r1`,
+/// the top row, dropped below the last goes to Position 4, the view with
+/// it.
+#[test]
+fn a_header_drag_answered_with_a_view_change_and_a_pin_draws_every_row_that_fits() {
+    let mut s = without_r0();
+    s.input(|g| g.set_pin_zone(Axis::Rows, 0.0));
+    // r1 (y 2..3, after r5 pinned) dropped below r4, the last (y 5..6).
+    s.input(|g| {
+        g.pin(Axis::Rows, Edge::Leading, Key(5));
+        g.request_view(binnacle_core::ViewSpec::default());
+        g.pointer(PointerEvent::down(2.0, 2.5));
+        g.pointer(PointerEvent::moved(2.0, 6.5));
+        g.pointer(PointerEvent::up(2.0, 6.5));
+    });
+    assert_eq!(moves(&s.effects()), 1);
+    let (drawn, anchor) = drawn_rows(&mut s);
+    assert_eq!(anchor, binnacle_core::ScrollAnchor::default());
+    assert_eq!(drawn, [5, 0, 1, 2, 3, 4]);
+    assert_eq!(order(&mut s, Axis::Rows), [0, 2, 3, 4, 1, 5]);
 }
