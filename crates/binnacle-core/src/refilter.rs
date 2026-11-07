@@ -77,7 +77,8 @@ pub(crate) struct Refiltering {
     /// item whose Key the Window did not hold: the Position it was pulled in
     /// to and the Key that left. A corner still without a Key at the next
     /// `Refiltered` is placed again from where that Key would be, rather
-    /// than the range lost.
+    /// than the range lost. An entry holds only while the corner is still
+    /// at that Position.
     pub(crate) left: [[Option<(Position, Key)>; 2]; 2],
 }
 

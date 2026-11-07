@@ -791,11 +791,8 @@ impl Host {
         // can change the last item the scrolling Strip shows, and the end
         // clamp then moves the anchor once the next frame's Window reaches
         // the end, whatever the Gap. Each frame finds more or asks nothing.
-        for _ in 0..8 {
-            if !self.frame_and_check() {
-                break;
-            }
-        }
+        let settled = (0..8).any(|_| !self.frame_and_check());
+        assert!(settled, "the Grid still wants Windows after 8 frames");
         let before = anchors(&mut self.grid);
         let pinned_before = pinned(&mut self.grid);
         self.grid.set_gap(axis, gap);
