@@ -178,7 +178,10 @@ impl AxisState {
     ///
     /// When the last item can show, the end clamp may pull the anchor back once
     /// the Window's sizes are known, so the Window also reaches back a body's
-    /// length of smallest items from the end. Both ends reach one Position
+    /// length of smallest items from the end. The last item is the last one
+    /// the scrolling Strip shows: pinned items after it are drawn apart, and
+    /// counting them would leave the anchor waiting for a Window that never
+    /// reaches the end. Both ends reach one Position
     /// further per pin, since the scrolling Strip skips pinned Keys it holds,
     /// wherever a pin still waiting for `Locate` turns out to be.
     pub fn needed(&self) -> Range<Position> {
@@ -186,7 +189,7 @@ impl AxisState {
         let visible_end = self.visible_end();
         let pins = self.pins.iter().flatten().count() as u64;
         let mut first = self.anchor.position;
-        if visible_end == count {
+        if self.last_shown().is_none_or(|last| visible_end > last) {
             let stride = f64::from(self.measure.smallest_size()) + f64::from(self.measure.gap());
             let back = (self.body() / stride).ceil() as u64;
             first = first.min(count.saturating_sub(back.saturating_add(1 + pins)));

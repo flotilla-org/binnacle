@@ -50,6 +50,9 @@ struct Toggled {
 #[derive(Clone, Copy, Debug)]
 struct Corner {
     key: Key,
+    /// The corner's Key in the range: `key`, or none for a corner placed
+    /// from the Key that left it (see [`Refiltering::left`]).
+    held: Option<Key>,
     due: u32,
     answer: Option<Located>,
 }
@@ -70,6 +73,12 @@ pub(crate) struct Refiltering {
     /// Per axis, picked Keys not yet known to be still there.
     picks: [Vec<Asked>; 2],
     pub(crate) corners: [Option<Corners>; 2],
+    /// Per axis, for the range's anchor and head, a corner pulled in to an
+    /// item whose Key the Window did not hold: the Position it was pulled in
+    /// to and the Key that left. A corner still without a Key at the next
+    /// `Refiltered` is placed again from where that Key would be, rather
+    /// than the range lost.
+    pub(crate) left: [[Option<(Position, Key)>; 2]; 2],
 }
 
 impl Refiltering {
@@ -179,6 +188,7 @@ impl Grid {
     /// A `Reset` on `axis` makes no promise about Keys: nothing waits on a
     /// `Refiltered` there any more.
     pub(crate) fn refilter_forget(&mut self, axis: Axis) {
+        self.refiltering.left[axis.index()] = [None; 2];
         self.refiltering.shown[axis.index()] = None;
         self.refiltering.picks[axis.index()].clear();
         self.refiltering.corners[axis.index()] = None;
@@ -294,26 +304,32 @@ impl Grid {
     }
 
     /// A range not whole on `axis` is kept through a `Refiltered` only if
-    /// both its corners there have Keys to locate; it waits for their
-    /// answers (asked with the other Keys).
+    /// both its corners there have Keys to locate: their own, or for one
+    /// pulled in where the Window held no Key, the Key that left it. It
+    /// waits for their answers (asked with the other Keys).
     fn track_corners(&mut self, axis: Axis) {
         let i = axis.index();
+        let left = std::mem::take(&mut self.refiltering.left[i]);
         let Some(span) = self.selection.span.filter(|s| !s.whole[i]) else {
             return;
         };
         let (anchor, head) = (span.anchor[i], span.head[i]);
-        let (Some(a), Some(h)) = (anchor.key, head.key) else {
+        let corner = |end: FocusEnd, left: Option<(Position, Key)>| {
+            let left = left.filter(|&(p, _)| p == end.position).map(|(_, k)| k);
+            Some(Corner {
+                key: end.key.or(left)?,
+                held: end.key,
+                due: 0,
+                answer: None,
+            })
+        };
+        let (Some(a), Some(h)) = (corner(anchor, left[0]), corner(head, left[1])) else {
             return self.set_span(None);
         };
         let st = self.axis(axis);
         let drawn = |end| st.drawn_index(st.slot_of(end));
-        let corner = |key| Corner {
-            key,
-            due: 0,
-            answer: None,
-        };
         self.refiltering.corners[i].get_or_insert(Corners {
-            ends: [corner(a), corner(h)],
+            ends: [a, h],
             anchor_first: drawn(anchor) <= drawn(head),
         });
         self.pending_damage.selection = true;
@@ -372,7 +388,7 @@ impl Grid {
         }
         let drawn = |end| st.drawn_index(st.slot_of(end));
         // A notice since may have moved a corner to another item.
-        let same = [span.anchor[i].key, span.head[i].key] == corners.ends.map(|e| Some(e.key));
+        let same = [span.anchor[i].key, span.head[i].key] == corners.ends.map(|e| e.held);
         let span = match placed {
             [Some(a), Some(h)] if same && drawn([a, h][first]) <= drawn([a, h][1 - first]) => {
                 span.anchor[i] = a;
@@ -381,7 +397,18 @@ impl Grid {
             }
             _ => None,
         };
+        // A corner pulled in where the Window holds no Key yet keeps the Key
+        // that left, until the Window brings its own.
+        let left = |n: usize, end: Option<FocusEnd>| {
+            let end = end.filter(|e| e.key.is_none())?;
+            Some((end.position, corners.ends[n].key))
+        };
+        let left = [left(0, placed[0]), left(1, placed[1])];
+        let kept = span.is_some();
         self.set_span(span);
+        if kept {
+            self.refiltering.left[i] = left;
+        }
     }
 
     /// Drops `key` from the picks of `axis`, and from those a press would
