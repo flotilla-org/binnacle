@@ -311,18 +311,33 @@ fn a_scrolled_cell_draws_no_part_of_a_character_outside_its_visible_columns(tc: 
     ]));
     let (buf, line) = draw_scrolled(&text, align, width, left, view);
     let (empty, _) = draw_scrolled("", align, width, left, view);
-    let right = HEADER + (width - left).min(view);
-    for x in 0..buf.area.right() {
-        let symbol = buf[(x, line)].symbol();
-        if x < HEADER {
-            assert_eq!(symbol, empty[(x, line)].symbol(), "({x},{line}) row header");
-        } else if !symbol.trim().is_empty() {
-            let drawn = u16::try_from(symbol.width()).unwrap_or(2).min(2);
-            assert!(
-                x + drawn <= right,
-                "{symbol:?} at ({x},{line}) draws past column {right}: {text:?} \
-                 {align:?} width {width} scrolled {left} view {view}"
-            );
+    let (whole, _) = draw_scrolled(&text, align, width, 0, width);
+    let visible = (width - left).min(view);
+    for x in 0..HEADER {
+        assert_eq!(
+            buf[(x, line)].symbol(),
+            empty[(x, line)].symbol(),
+            "({x},{line}) row header"
+        );
+    }
+    // The cell scrolled is the whole cell's columns from `left` on, except
+    // that a wide character not wholly visible is a space in its columns.
+    let at = |buf: &Buffer, c: u16| buf[(HEADER + c, line)].symbol().to_owned();
+    let width_of = |s: &str| u16::try_from(s.width()).unwrap_or(2).min(2);
+    for c in 0..visible {
+        let mut expected = at(&whole, left + c);
+        let cut_left = c == 0 && left > 0 && width_of(&at(&whole, left - 1)) == 2;
+        let cut_right = width_of(&expected) == 2 && c + 1 >= visible;
+        if cut_left || cut_right {
+            expected = " ".to_owned();
         }
+        assert_eq!(
+            at(&buf, c),
+            expected,
+            "column {c}: {text:?} {align:?} width {width} scrolled {left} view {view}"
+        );
+    }
+    for c in visible..view {
+        assert_eq!(at(&buf, c), " ", "column {c} past the cell");
     }
 }
