@@ -21,6 +21,7 @@ pub enum Format {
     /// Columns under their titles, aligned by display width, two spaces
     /// apart.
     #[default]
+    #[cfg_attr(feature = "clap", value(alias = "text", alias = "table"))]
     Aligned,
     /// A header of field names, then raw values separated by tabs.
     Tsv,
@@ -29,6 +30,7 @@ pub enum Format {
     /// column may hold strings.
     Json,
     /// One JSON object per line, written as [`Format::Json`] writes each.
+    #[cfg_attr(feature = "clap", value(alias = "ndjson"))]
     Jsonl,
 }
 

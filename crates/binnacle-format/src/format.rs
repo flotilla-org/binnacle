@@ -364,8 +364,12 @@ fn json_prefix(json: &serde_json::Value, chars: usize) -> String {
 
 /// `text` cut to `max` graphemes, ending in `…` when cut. The limit counts
 /// graphemes, not display width: the web measures in pixels, so the cut
-/// cannot know columns. It never splits a grapheme.
+/// cannot know columns. It never splits a grapheme, and shows nothing at a
+/// limit of zero.
 fn cut(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
     let mut graphemes = text.graphemes(true);
     let kept: String = graphemes.by_ref().take(max).collect();
     if graphemes.next().is_none() {
@@ -387,5 +391,7 @@ mod tests {
         assert_eq!(cut(text, 3), "ae\u{301}…");
         assert_eq!(cut("👩‍💻👩‍💻", 1), "…");
         assert_eq!(cut("abc", 3), "abc");
+        assert_eq!(cut("abc", 0), "");
+        assert_eq!(cut("", 0), "");
     }
 }

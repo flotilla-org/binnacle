@@ -1209,7 +1209,7 @@ fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
                 || r.position.saturating_add(1).to_string(),
                 |k| content.row_header(k, r.position),
             );
-            unicode_width::UnicodeWidthStr::width(label.as_str())
+            binnacle_cli::width::width(label.as_str()) as usize
         })
         .max()?;
     Some(widest as f32 + 1.0)

@@ -24,10 +24,11 @@ fn the_tree_holds_no_terminal_library() {
         .lines()
         .filter_map(|l| l.split_whitespace().next())
         .collect();
-    for banned in ["ratatui", "crossterm"] {
+    for banned in ["ratatui", "crossterm", "termion", "termwiz"] {
+        let found: Vec<&&str> = names.iter().filter(|n| n.starts_with(banned)).collect();
         assert!(
-            !names.contains(&banned),
-            "{banned} is in the tree:\n{stdout}"
+            found.is_empty(),
+            "{found:?} is in the tree, a {banned} crate:\n{stdout}"
         );
     }
 }
