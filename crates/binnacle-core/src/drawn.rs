@@ -53,6 +53,18 @@ impl AxisState {
         Slot::Scrolling(end.position.min(self.measure.count().saturating_sub(1)))
     }
 
+    /// `end` at the Position of its pin if its Key is drawn pinned, as
+    /// [`AxisState::slot_of`] places it.
+    pub fn placed(&self, end: FocusEnd) -> FocusEnd {
+        let mut pinned = Edge::ALL
+            .into_iter()
+            .flat_map(|edge| self.trusted_pins(edge));
+        match pinned.find(|&(k, _)| Some(k) == end.key) {
+            Some((_, position)) => FocusEnd { position, ..end },
+            None => end,
+        }
+    }
+
     /// The index of `slot` in drawn order.
     pub fn drawn_index(&self, slot: Slot) -> u64 {
         let leading = self.pinned_len(Edge::Leading);

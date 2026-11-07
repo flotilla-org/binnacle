@@ -804,6 +804,12 @@ fn shift_span(mut span: Span, axis: Axis, shift: Shift, st: &AxisState) -> Optio
         }
         Shift::Removed { at, n } | Shift::Collapsed { at, n, .. } => (at, n),
     };
+    // A corner on a pinned Key is drawn on its pin, wherever its Position
+    // was last seen (a `Reordered` keeps a whole range's corners as they
+    // were), so it moves from there.
+    for corner in [&mut span.anchor, &mut span.head] {
+        corner[i] = st.placed(corner[i]);
+    }
     let drawn = [span.anchor[i], span.head[i]].map(|e| st.drawn_index(st.slot_of(e)));
     let (lo, hi) = (drawn[0].min(drawn[1]), drawn[0].max(drawn[1]));
     let inside = lo..hi + 1;
