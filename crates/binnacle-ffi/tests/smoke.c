@@ -1095,6 +1095,13 @@ int main(int argc, char **argv) {
   CHECK(effect.axis == BINNACLE_COLS);
   CHECK(binnacle_grid_set_header(grid, BINNACLE_COLS, 0));
   CHECK(!binnacle_grid_set_header(grid, 2, 3));
+  float default_size = 0;
+  CHECK(binnacle_grid_default_size(grid, BINNACLE_ROWS, &default_size) && default_size == 1);
+  CHECK(binnacle_grid_set_default_size(grid, BINNACLE_ROWS, 2));
+  CHECK(binnacle_grid_default_size(grid, BINNACLE_ROWS, &default_size) && default_size == 2);
+  CHECK(!binnacle_grid_default_size(grid, 2, &default_size));
+  CHECK(!binnacle_grid_default_size(grid, BINNACLE_ROWS, NULL));
+  CHECK(binnacle_grid_set_default_size(grid, BINNACLE_ROWS, 1));
   /* Tiers and forms only show while the rows are grouped in header form. */
   const float tiers[] = {4.0f, 6.0f};
   CHECK(binnacle_grid_set_tiers(grid, BINNACLE_ROWS, tiers, 2));

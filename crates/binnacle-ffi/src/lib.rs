@@ -29,7 +29,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 22;
+pub const BINNACLE_ABI_VERSION: u32 = 23;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -2943,6 +2943,23 @@ pub unsafe extern "C" fn binnacle_grid_set_default_size(
     unsafe {
         with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_default_size(axis, size))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle; `out` is NULL or valid for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_default_size(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    out: *mut f32,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            let size = h.grid.default_size(axis(axis_tag)?);
+            write_out(out, size)
         })
     }
 }

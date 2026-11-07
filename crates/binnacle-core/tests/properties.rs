@@ -2659,6 +2659,68 @@ fn set_default_size_keeps_the_scroll_anchors_item_and_its_share(tc: TestCase) {
     );
 }
 
+/// Any sequence of size changes (a Size Override set or cleared on any item,
+/// the anchor's own included, and a new default size, in any order, as
+/// Wheelhouse's zoom sends them) keeps the Scroll Anchor at the same share of
+/// its item for as long as the item stays the anchor. It stops being the
+/// anchor only when the end clamp pulls the view back. Rows with no Gap, of
+/// whole-number sizes, scrolled to a drawn share of a drawn item.
+#[hegel::test(test_cases = 1000)]
+fn size_changes_keep_the_scroll_anchor_at_the_same_share_of_its_item(tc: TestCase) {
+    let default = tc.draw(gs::integers::<u32>().min_value(1).max_value(6)) as f32;
+    let mut s = Scenario::identity(
+        AxisConfig::new(30, default).header(1.0),
+        AxisConfig::new(3, 6.0).header(4.0),
+    );
+    let viewport = Viewport::new(
+        22.0,
+        tc.draw(gs::integers::<u32>().min_value(2).max_value(20)) as f32,
+    );
+    let size_at = |snap: &binnacle_core::Snapshot<'_>, position: u64| {
+        snap.strip(Axis::Rows)
+            .iter()
+            .find(|i| i.position == position)
+            .map(|i| i.size)
+    };
+    s.frame(viewport);
+    // Start by whole items, then a share of the item reached.
+    let item = tc.draw(gs::integers::<u64>().min_value(0).max_value(10));
+    let share = tc.draw(gs::floats::<f32>().min_value(0.0).max_value(0.99));
+    s.input(|g| g.scroll_to_item(Axis::Rows, item));
+    let start = size_at(&s.frame(viewport), item).unwrap_or(default);
+    s.input(|g| {
+        g.action(Action::Scroll {
+            dx: 0.0,
+            dy: share * start,
+        })
+    });
+    let before = s.frame(viewport).scroll_anchor(Axis::Rows);
+    let size = size_at(&s.frame(viewport), before.position).unwrap();
+    let share = before.offset / size;
+    for _ in 0..tc.draw(gs::integers::<u32>().min_value(1).max_value(6)) {
+        let size = tc.draw(gs::integers::<u32>().min_value(1).max_value(12)) as f32;
+        // Keys 0..12 include the anchor's item often (it is among the first).
+        let key = Key(tc.draw(gs::integers::<u64>().min_value(0).max_value(12)));
+        match tc.draw(gs::integers::<u8>().min_value(0).max_value(2)) {
+            0 => s.input(|g| g.set_size(Axis::Rows, key, size)),
+            1 => s.input(|g| g.clear_size(Axis::Rows, key)),
+            _ => s.input(|g| g.set_default_size(Axis::Rows, size)),
+        }
+        let snap = s.frame(viewport);
+        let after = snap.scroll_anchor(Axis::Rows);
+        if after.position != before.position || snap.thumb(Axis::Rows).fraction == 1.0 {
+            tc.event("end clamp");
+            return;
+        }
+        let item = size_at(&snap, after.position).unwrap();
+        assert!(
+            (after.offset / item - share).abs() < 1e-4,
+            "{before:?} (share {share}) became {after:?} in an item of {item}"
+        );
+        tc.event("share kept");
+    }
+}
+
 /// A table for the reveal properties: whole-number sizes and Gaps, so f32
 /// layout is exact, a viewport with a body, the axis under test, where it is
 /// scrolled to (a thumb fraction, then whole units past that item's start),
