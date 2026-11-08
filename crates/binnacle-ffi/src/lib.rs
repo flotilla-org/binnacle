@@ -18,8 +18,8 @@ use binnacle_layout::{IdTable, JsonId, Layout};
 
 use binnacle_core::{
     Action, Aggregate, AggregateValue, Align, Axis, AxisConfig, AxisView, Button, ChangeNotice,
-    Compared, Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge,
-    EditEnd, Effect, ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery,
+    Compared, Comparison, Condition, ConditionKind, ConditionState, Cursor, Depth, DropTarget,
+    Edge, EditEnd, Effect, ExceptCapped, Expand, FilterSpec, FindDirection, FindMatch, FindQuery,
     FocusEnd, FocusStep, Form, Grid, GroupOf, Grouping, HeaderClick, HeaderPlacement, ItemKind,
     Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline, Placement, Placements,
     PointerEvent, PointerKind, Rect, Scalar, Searched, SelectionUnit, SetPosition, SortColumn,
@@ -29,7 +29,7 @@ use binnacle_core::{
 
 /// The version of the ABI `binnacle.h` describes; see the header for when it
 /// changes.
-pub const BINNACLE_ABI_VERSION: u32 = 23;
+pub const BINNACLE_ABI_VERSION: u32 = 24;
 
 pub const BINNACLE_EDGE_LEADING: u32 = 0;
 pub const BINNACLE_EDGE_TRAILING: u32 = 1;
@@ -64,6 +64,12 @@ pub const BINNACLE_MODE_DRAGGING_SELECTION: u32 = 2;
 pub const BINNACLE_MODE_RESIZING_BAND: u32 = 3;
 pub const BINNACLE_MODE_MOVING_HEADERS: u32 = 4;
 pub const BINNACLE_MODE_EDITING: u32 = 5;
+pub const BINNACLE_MODE_RESIZING: u32 = 6;
+
+pub const BINNACLE_CURSOR_DEFAULT: u32 = 0;
+pub const BINNACLE_CURSOR_RESIZE_COLS: u32 = 1;
+pub const BINNACLE_CURSOR_RESIZE_ROWS: u32 = 2;
+pub const BINNACLE_CURSOR_MOVE: u32 = 3;
 
 pub const BINNACLE_DROP_MOVE: u32 = 0;
 pub const BINNACLE_DROP_UNPIN: u32 = 1;
@@ -998,6 +1004,19 @@ pub struct BinnacleSnapshot {
     pub edit_col: u64,
     pub has_editor_rect: u32,
     pub editor_rect: BinnacleRect,
+    pub cursor: u32,
+    pub has_resize_guide: u32,
+    pub resize_guide: BinnacleResizeGuide,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BinnacleResizeGuide {
+    pub axis: u32,
+    pub has_key: u32,
+    pub key: u64,
+    pub offset: f32,
+    pub size: f32,
 }
 
 #[repr(C)]
@@ -2429,6 +2448,19 @@ pub unsafe extern "C" fn binnacle_grid_set_header_click(
 /// # Safety
 /// `grid` is NULL or a live handle.
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_set_border_grab(grid: *mut BinnacleGrid, grab: f32) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            h.grid.set_border_grab(grab);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn binnacle_grid_set_drag_threshold(
     grid: *mut BinnacleGrid,
     threshold: f32,
@@ -2560,6 +2592,22 @@ pub unsafe extern "C" fn binnacle_grid_set_size(
     unsafe {
         with_handle(grid, |h| {
             axis(axis_tag).map(|axis| h.grid.set_size(axis, Key(key), size))
+        })
+    }
+}
+
+/// # Safety
+/// `grid` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_grid_clear_size(
+    grid: *mut BinnacleGrid,
+    axis_tag: u32,
+    key: u64,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_handle(grid, |h| {
+            axis(axis_tag).map(|axis| h.grid.clear_size(axis, Key(key)))
         })
     }
 }
@@ -3349,6 +3397,7 @@ impl BinnacleGrid {
             Mode::ResizingBand { .. } => BINNACLE_MODE_RESIZING_BAND,
             Mode::MovingHeaders { .. } => BINNACLE_MODE_MOVING_HEADERS,
             Mode::Editing { .. } => BINNACLE_MODE_EDITING,
+            Mode::Resizing { .. } => BINNACLE_MODE_RESIZING,
             _ => BINNACLE_MODE_OTHER,
         };
         let edited = match snap.mode() {
@@ -3356,6 +3405,14 @@ impl BinnacleGrid {
             _ => (0, 0),
         };
         let editor_rect = snap.editor_rect();
+        #[allow(unreachable_patterns)] // Cursors added to the Grid later are DEFAULT.
+        let cursor = match snap.cursor() {
+            Cursor::ResizeCol => BINNACLE_CURSOR_RESIZE_COLS,
+            Cursor::ResizeRow => BINNACLE_CURSOR_RESIZE_ROWS,
+            Cursor::Move => BINNACLE_CURSOR_MOVE,
+            _ => BINNACLE_CURSOR_DEFAULT,
+        };
+        let resize_guide = snap.resize_guide();
         let drop = snap.drop_indicator();
         let mut drop_refusal = BINNACLE_MOVE_REFUSAL_OTHER;
         let (target, position, unpin, edge, before, reorder) = match drop.map(|d| d.target) {
@@ -3449,6 +3506,17 @@ impl BinnacleGrid {
             edit_col: edited.1,
             has_editor_rect: flag(editor_rect.is_some()),
             editor_rect: editor_rect.map(BinnacleRect::from).unwrap_or_default(),
+            cursor,
+            has_resize_guide: flag(resize_guide.is_some()),
+            resize_guide: resize_guide
+                .map(|g| BinnacleResizeGuide {
+                    axis: axis_tag(g.axis),
+                    has_key: flag(g.key.is_some()),
+                    key: g.key.map_or(0, |k| k.0),
+                    offset: g.offset,
+                    size: g.size,
+                })
+                .unwrap_or_default(),
         }
     }
 

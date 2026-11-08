@@ -8,12 +8,12 @@ use std::slice;
 
 use binnacle_core::{
     Action, Aggregate, AggregateValue, Align, Axis, AxisConfig, Button, ChangeNotice, Compared,
-    Comparison, Condition, ConditionKind, ConditionState, Depth, DropTarget, Edge, EditEnd, Effect,
-    FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf, Grouping,
-    HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState, Outline,
-    PinZone, Placement, Placements, PointerEvent, PointerKind, Scalar, Searched, SelectionUnit,
-    SetPosition, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery, TextSupport,
-    Totals, VALUES_FIELD, Value, ViewEdit, ViewSpec, Viewport,
+    Comparison, Condition, ConditionKind, ConditionState, Cursor, Depth, DropTarget, Edge, EditEnd,
+    Effect, FilterSpec, FindDirection, FindMatch, FindQuery, FocusStep, Form, Grid, GroupOf,
+    Grouping, HeaderClick, ItemKind, Key, Level, Located, Mode, Modifiers, MoveRefusal, OpenState,
+    Outline, PinZone, Placement, Placements, PointerEvent, PointerKind, Scalar, Searched,
+    SelectionUnit, SetPosition, Snapshot, SortColumn, SortDirection, SortSpec, Support, TextQuery,
+    TextSupport, Totals, VALUES_FIELD, Value, ViewEdit, ViewSpec, Viewport,
 };
 use binnacle_ffi::*;
 use hegel::Generator;
@@ -1765,9 +1765,36 @@ unsafe fn check_snapshot(c: &BinnacleSnapshot, rust: &Snapshot<'_>) {
         Mode::ResizingBand { .. } => 3,
         Mode::MovingHeaders { .. } => 4,
         Mode::Editing { .. } => 5,
+        Mode::Resizing { .. } => 6,
         _ => 0,
     };
     assert_eq!(c.mode, mode);
+    #[allow(unreachable_patterns)] // Cursors added to the Grid later read as DEFAULT.
+    let cursor = match rust.cursor() {
+        Cursor::ResizeCol => BINNACLE_CURSOR_RESIZE_COLS,
+        Cursor::ResizeRow => BINNACLE_CURSOR_RESIZE_ROWS,
+        Cursor::Move => BINNACLE_CURSOR_MOVE,
+        _ => BINNACLE_CURSOR_DEFAULT,
+    };
+    assert_eq!(c.cursor, cursor, "cursor");
+    let guide = (c.has_resize_guide != 0).then(|| {
+        let g = &c.resize_guide;
+        let axis = if g.axis == BINNACLE_ROWS {
+            Axis::Rows
+        } else {
+            Axis::Cols
+        };
+        (
+            axis,
+            (g.has_key != 0).then_some(Key(g.key)),
+            g.offset,
+            g.size,
+        )
+    });
+    let want = rust
+        .resize_guide()
+        .map(|g| (g.axis, g.key, g.offset, g.size));
+    assert_eq!(guide, want, "resize guide");
     let edited = match rust.mode() {
         Mode::Editing { row, col } => Some((row.0, col.0)),
         _ => None,
@@ -3704,14 +3731,23 @@ enum CellOp {
     /// The host opened its editor on the cell at these Positions.
     EditStarted(u64, u64),
     EditEnded(EditEnd),
+    /// A border grab (negative ones are ignored).
+    BorderGrab(f32),
+    /// Dropping the Size Override of the item with this Key, if any.
+    ClearSize(Axis, u64),
 }
 
 #[hegel::composite]
 fn cell_op(tc: &TestCase) -> CellOp {
     let index = || gs::integers::<usize>().max_value(12);
     let clicks = || gs::integers::<u32>().min_value(1).max_value(2);
-    match tc.draw(gs::integers::<u8>().max_value(6)) {
+    match tc.draw(gs::integers::<u8>().max_value(8)) {
         0 => CellOp::Frame,
+        7 => CellOp::BorderGrab(tc.draw(gs::floats::<f32>().min_value(-1.0).max_value(3.0))),
+        8 => CellOp::ClearSize(
+            tc.draw(axes()),
+            tc.draw(gs::integers::<u64>().max_value(12)),
+        ),
         1 => CellOp::Click(tc.draw(index()), tc.draw(index()), tc.draw(clicks())),
         2 => CellOp::Border {
             axis: tc.draw(axes()),
@@ -3809,6 +3845,14 @@ fn cell_gestures_through_the_c_api_mirror_the_grid(tc: TestCase) {
                 CellOp::EditEnded(end) => {
                     grid.edit_ended(end);
                     binnacle_grid_edit_ended(h, u32::from(end == EditEnd::Cancel))
+                }
+                CellOp::BorderGrab(grab) => {
+                    grid.set_border_grab(grab);
+                    binnacle_grid_set_border_grab(h, grab)
+                }
+                CellOp::ClearSize(axis, key) => {
+                    grid.clear_size(axis, Key(key));
+                    binnacle_grid_clear_size(h, tag(axis), key)
                 }
             };
             assert_eq!(ok, 1);

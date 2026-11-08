@@ -33,7 +33,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 23u
+#define BINNACLE_ABI_VERSION 24u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -99,6 +99,19 @@ uint32_t binnacle_abi_version(void);
 /* The host's editor is open on the cell with edit_row and edit_col
  * (binnacle_grid_edit_started): place it over editor_rect. */
 #define BINNACLE_MODE_EDITING 5
+/* An item's border is being dragged: see resize_guide. */
+#define BINNACLE_MODE_RESIZING 6
+
+/* BinnacleSnapshot.cursor: the pointer's shape. */
+#define BINNACLE_CURSOR_DEFAULT 0
+/* Over a column header border or the row-number band's edge, or resizing a
+ * column or that band. */
+#define BINNACLE_CURSOR_RESIZE_COLS 1
+/* Over a row header border or the column header band's edge, or resizing a
+ * row or that band. */
+#define BINNACLE_CURSOR_RESIZE_ROWS 2
+/* Moving headers. */
+#define BINNACLE_CURSOR_MOVE 3
 
 /* BinnacleSnapshot.drop_target: what releasing the dragged headers would do.
  * MOVE: request a move to before drop_position (the count for the end),
@@ -817,6 +830,20 @@ typedef struct {
   uint32_t hot;
 } BinnacleZone;
 
+/* Where a resize in progress puts the resized item's moving edge: a line
+ * across the viewport at offset along axis (viewport-relative, like Strip
+ * offsets), with the item's Key and its size as it follows the pointer. That
+ * is its trailing edge, or its leading edge in the trailing pinned Strip.
+ * Resizing the Header Band leading axis, has_key is 0 and size is the
+ * band's thickness. */
+typedef struct {
+  uint32_t axis;
+  uint32_t has_key;
+  uint64_t key;
+  float offset;
+  float size;
+} BinnacleResizeGuide;
+
 typedef struct {
   uint64_t generation;
   /* BINNACLE_DAMAGE_* bits: what changed since the previous Snapshot. */
@@ -904,6 +931,14 @@ typedef struct {
   uint64_t edit_col;
   uint32_t has_editor_rect;
   BinnacleRect editor_rect;
+  /* BINNACLE_CURSOR_*: a resize shape while resizing an item or band, or
+   * while idle over a border or band edge; the move shape while moving
+   * headers. */
+  uint32_t cursor;
+  /* The guide for a resize in progress, while the resized item is in the
+   * Window, or for a band resize. */
+  uint32_t has_resize_guide;
+  BinnacleResizeGuide resize_guide;
 } BinnacleSnapshot;
 
 /* One column of a Sort Spec: the column's Key and BINNACLE_SORT_*. */
@@ -1170,6 +1205,13 @@ int binnacle_grid_set_header_click(BinnacleGrid *grid, uint32_t axis, uint32_t c
  * finite and non-negative are ignored. */
 int binnacle_grid_set_drag_threshold(BinnacleGrid *grid, float threshold);
 
+/* How far either side of the Gap between two headers a press grabs their
+ * border, and either side of a Header Band's edge; default 0, only the Gap.
+ * With Gap 0 nothing can be resized until this is set: a pixel host usually
+ * wants a few pixels. Values that are not finite and non-negative are
+ * ignored. */
+int binnacle_grid_set_border_grab(BinnacleGrid *grid, float grab);
+
 /* Whether the Table Source can move the items of axis now (1) or not (0),
  * which it may change at any time. Header drags move items only on a movable
  * axis; withdrawing it ends a move being dragged there. No axis is movable
@@ -1200,6 +1242,11 @@ int binnacle_grid_set_window_sized(BinnacleGrid *grid, uint32_t axis, uint64_t s
 /* The Size Override for the item with key on axis. Sizes that are not positive
  * and finite are ignored. */
 int binnacle_grid_set_size(BinnacleGrid *grid, uint32_t axis, uint64_t key, float size);
+
+/* Drops the Size Override for the item with key on axis: it takes its
+ * content size, or the axis's default. A row's answer to
+ * AUTO_SIZE_REQUESTED where rows hold one line. */
+int binnacle_grid_clear_size(BinnacleGrid *grid, uint32_t axis, uint64_t key);
 
 /* The thickness of the Header Band leading axis: ROWS for the column header
  * band, COLS for the row-number band. 0 hides the band. Values that are not

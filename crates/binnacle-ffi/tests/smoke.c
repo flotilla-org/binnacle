@@ -1073,6 +1073,36 @@ int main(int argc, char **argv) {
   CHECK(binnacle_grid_snapshot(grid, &snap));
   CHECK(r->strip[0].size == 2 && r->strip[1].offset == 3);
 
+  /* Rows have no Gap, so their borders are grabbed only once a border grab
+   * is set. Then the pointer over row 1's border (y 3, the rows refilled at
+   * the default size) in the row-number band shows a row resize, a drag
+   * resizes the row with its guide at the moving edge, and clearing its size
+   * puts it back to the default. */
+  drain(grid, &focus);
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 2, 3, 0)));
+  frame(grid, &snap);
+  CHECK(snap.cursor == BINNACLE_CURSOR_DEFAULT);
+  CHECK(binnacle_grid_set_border_grab(grid, 0.5f));
+  frame(grid, &snap);
+  CHECK(snap.cursor == BINNACLE_CURSOR_RESIZE_ROWS && !snap.has_resize_guide);
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_DOWN, 2, 3, 0)));
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 2, 5, 0)));
+  frame(grid, &snap);
+  CHECK(snap.mode == BINNACLE_MODE_RESIZING && snap.cursor == BINNACLE_CURSOR_RESIZE_ROWS);
+  CHECK(snap.has_resize_guide && snap.resize_guide.axis == BINNACLE_ROWS && snap.resize_guide.has_key);
+  CHECK(snap.resize_guide.key == r->strip[1].key && snap.resize_guide.offset == 5 && snap.resize_guide.size == 3);
+  CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_UP, 2, 5, 0)));
+  CHECK(binnacle_grid_poll_effect(grid, &effect));
+  CHECK(effect.kind == BINNACLE_EFFECT_SIZE_CHANGED && effect.axis == BINNACLE_ROWS && effect.size == 3);
+  frame(grid, &snap);
+  CHECK(r->strip[1].size == 3 && !snap.has_resize_guide);
+  CHECK(binnacle_grid_clear_size(grid, BINNACLE_ROWS, r->strip[1].key));
+  CHECK(!binnacle_grid_clear_size(grid, 2, r->strip[1].key));
+  frame(grid, &snap);
+  CHECK(r->strip[1].size == 1);
+  CHECK(binnacle_grid_set_border_grab(grid, 0));
+  drain(grid, &focus);
+
   /* The row-number band's edge is its last Gap's width, x 3..4, in the column
    * header band: dragging it resizes the band, reported on release. */
   drain(grid, &focus);
