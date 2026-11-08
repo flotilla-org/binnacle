@@ -301,11 +301,15 @@ impl Grid {
         if count == 0 {
             selection.span = None;
         }
-        // Corners a `Refiltered` still locates are asked about again.
+        // Corners a `Refiltered` still locates are asked about again, and
+        // those pulled in without a Key move with their items.
         let corners = self.refiltering.corners;
+        let mut left = self.refiltering.left;
+        left[i] = left[i].map(|l| l.and_then(|(p, key)| Some((shift.map(p)?, key))));
         self.set_selection(selection);
         if self.selection.span.is_some() {
             self.refiltering.corners = corners;
+            self.refiltering.left = left;
         }
         let whereabouts = &mut self.locating.whereabouts[i];
         if let Some(w) = whereabouts {
@@ -804,6 +808,12 @@ fn shift_span(mut span: Span, axis: Axis, shift: Shift, st: &AxisState) -> Optio
         }
         Shift::Removed { at, n } | Shift::Collapsed { at, n, .. } => (at, n),
     };
+    // A corner on a pinned Key is drawn on its pin, wherever its Position
+    // was last seen (a `Reordered` keeps a whole range's corners as they
+    // were), so it moves from there.
+    for corner in [&mut span.anchor, &mut span.head] {
+        corner[i] = st.placed(corner[i]);
+    }
     let drawn = [span.anchor[i], span.head[i]].map(|e| st.drawn_index(st.slot_of(e)));
     let (lo, hi) = (drawn[0].min(drawn[1]), drawn[0].max(drawn[1]));
     let inside = lo..hi + 1;

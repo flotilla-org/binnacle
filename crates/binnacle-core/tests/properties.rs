@@ -848,8 +848,9 @@ fn strips_are_ordered_separated_by_the_gap_and_cover_the_viewport(tc: TestCase) 
                 // The item after the anchor's Gap starts at the header plus what
                 // remains of the Gap; after a sliver, the Strip steps from the
                 // rounded sliver end, up to one f32 step later.
-                let next_start = (f64::from(start) + f64::from(anchor_size) + f64::from(gap)
-                    - f64::from(anchor.offset)) as f32;
+                let next_start = (f64::from(start)
+                    + (f64::from(anchor_size) - f64::from(anchor.offset))
+                    + f64::from(gap)) as f32;
                 let rounding = if sliver { next_f32(end) - end } else { 0.0 };
                 assert!(
                     count == 0

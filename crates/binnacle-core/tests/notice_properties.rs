@@ -561,3 +561,88 @@ fn positional_notices_near_the_largest_count_keep_everything_in_bounds(tc: TestC
         }
     }
 }
+
+/// Four rows 2 tall under a 1-tall header, in a viewport 7 tall: a press at
+/// `y` 2, 4 or 6 lands on the first, second or third row drawn, or on a
+/// trailing pinned row drawn last at the bottom.
+fn four_rows() -> Scenario<KeyedTable> {
+    Scenario::new(
+        Grid::new(
+            AxisConfig::new(4, 2.0).header(1.0),
+            AxisConfig::new(1, 1.0).header(ROW_HEADER),
+        ),
+        KeyedTable::new(4, 1),
+    )
+}
+
+const FOUR_ROWS: Viewport = Viewport {
+    width: 4.0,
+    height: 7.0,
+};
+
+/// Selects everything, reverses the rows and shift-clicks at `y`, all in
+/// one input, so the press lands on the last frame's layout. Returns the
+/// rows the range covers once the frame has answered.
+fn select_all_reverse_and_extend(s: &mut Scenario<KeyedTable>, y: f32) -> Vec<u64> {
+    let n = s.source.reverse(Axis::Rows);
+    s.input(|g| {
+        g.action(Action::SelectAll);
+        g.notify(Axis::Rows, n);
+        g.pointer(PointerEvent::down(0.0, y).modifiers(Modifiers::SHIFT));
+        g.pointer(PointerEvent::up(0.0, y));
+    });
+    covered_rows(s)
+}
+
+/// Removes row Position `at` and returns the rows the range covers after a
+/// frame.
+fn remove_row(s: &mut Scenario<KeyedTable>, at: u64) -> Vec<u64> {
+    let n = s.source.remove(Axis::Rows, at, 1);
+    s.input(|g| g.notify(Axis::Rows, n));
+    covered_rows(s)
+}
+
+fn covered_rows(s: &mut Scenario<KeyedTable>) -> Vec<u64> {
+    let snap = s.frame(FOUR_ROWS);
+    let range = snap.selection_range().expect("a range");
+    range.span(Axis::Rows).iter().cloned().flatten().collect()
+}
+
+/// Found by Hegel (#336). `SelectAll` takes the focused Key 3 as its
+/// corner, and a `Reordered` keeps that corner's Position as it was, while
+/// the pin takes Key 3 to Position 0. A shift-click makes a range from
+/// Key 3, drawn first on its pin, to Key 2. Removing Position 0 takes Key 3:
+/// what is left is Key 2 alone, now at Position 0, and Key 1 (at Key 3's
+/// old Position) does not join it.
+#[test]
+fn a_range_cornered_on_a_removed_leading_pin_keeps_only_what_was_between() {
+    let mut s = four_rows();
+    s.input(|g| {
+        g.pin(Axis::Rows, Edge::Leading, Key(0));
+        g.pin(Axis::Rows, Edge::Leading, Key(3));
+    });
+    s.frame(FOUR_ROWS);
+    // Focus Key 3, drawn second.
+    s.click(0.0, 4.0, Modifiers::SHIFT);
+    s.frame(FOUR_ROWS);
+    remove_row(&mut s, 0);
+    assert_eq!(s.source.axes[0], [Key(1), Key(2), Key(3)]);
+    // The press lands where the last frame drew Position 1, Key 2 before
+    // and after the reversal. Key 3 on its pin, Key 2, Key 1: from the pin
+    // to Key 2.
+    assert_eq!(select_all_reverse_and_extend(&mut s, 6.0), [0, 1]);
+    assert_eq!(remove_row(&mut s, 0), [0]);
+}
+
+/// The same with the corner pinned trailing: `SelectAll` with no focus
+/// takes Position 0, Key 0, which the reversal takes to the end.
+#[test]
+fn a_range_cornered_on_a_removed_trailing_pin_keeps_only_what_was_between() {
+    let mut s = four_rows();
+    s.input(|g| g.pin(Axis::Rows, Edge::Trailing, Key(0)));
+    s.frame(FOUR_ROWS);
+    // The press lands where the last frame drew Position 1, now Key 2.
+    // Key 3, Key 2, Key 1, then Key 0 on its pin: from Key 2 to the pin.
+    assert_eq!(select_all_reverse_and_extend(&mut s, 2.0), [1, 2, 3]);
+    assert_eq!(remove_row(&mut s, 3), [1, 2]);
+}

@@ -219,10 +219,11 @@ impl Host {
     }
 
     /// A host frame: fills the requested Windows from the model, then checks
-    /// the Snapshot against it.
-    fn frame_and_check(&mut self) {
+    /// the Snapshot against it. Returns whether it filled a Window.
+    fn frame_and_check(&mut self) -> bool {
         self.collect();
         let requests: Vec<_> = self.grid.begin_frame(self.viewport).into_iter().collect();
+        let filled = !requests.is_empty();
         for (axis, range) in requests {
             let keys = &self.keys[axis.index()];
             let end = (range.end as usize).min(keys.len());
@@ -428,6 +429,7 @@ impl Host {
             (_, Some(guide)) => assert!(guide.key.is_some(), "band guide while not resizing one"),
             _ => {}
         }
+        filled
     }
 
     /// `spec` with some of the rows' conditions, or its quick filter, left
@@ -785,7 +787,12 @@ impl Host {
                 .flat_map(|(a, e)| snap.pinned(a, e).iter().map(|i| i.key))
                 .collect()
         };
-        self.frame_and_check();
+        // Frames until no Window is wanted. A Window that finds pinned Keys
+        // can change the last item the scrolling Strip shows, and the end
+        // clamp then moves the anchor once the next frame's Window reaches
+        // the end, whatever the Gap. Each frame finds more or asks nothing.
+        let settled = (0..8).any(|_| !self.frame_and_check());
+        assert!(settled, "the Grid still wants Windows after 8 frames");
         let before = anchors(&mut self.grid);
         let pinned_before = pinned(&mut self.grid);
         self.grid.set_gap(axis, gap);

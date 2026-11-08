@@ -804,3 +804,72 @@ fn an_anchor_at_the_end_follows_it_through_a_new_default_size() {
         );
     }
 }
+
+/// Rows whose content is 1 tall (also the minimum-size hint).
+struct UnitRows;
+
+impl PumpSource for UnitRows {}
+
+impl ScenarioSource for UnitRows {
+    fn window(&mut self, _axis: Axis, range: Range<Position>) -> Vec<Key> {
+        range.map(Key).collect()
+    }
+
+    fn sizes(&mut self, axis: Axis, keys: &[Key]) -> Option<(Vec<f32>, f32)> {
+        (axis == Axis::Rows).then(|| (vec![1.0; keys.len()], 1.0))
+    }
+}
+
+/// The item after a Scroll Anchor in the Gap starts where the rest of the
+/// Gap ends: `gap` past the body's start when the anchor is at its item's end.
+/// Summing the item's size and a tiny Gap first rounds in f64 by more than the
+/// Gap's own f32 step, which put the item one step late.
+fn after_the_gap(snap: &binnacle_core::Snapshot, axis: Axis, gap: f32) {
+    let anchor = snap.scroll_anchor(axis);
+    assert_eq!(anchor.offset, 1.0, "{axis:?}: the anchor is not in the Gap");
+    let first = snap.strip(axis)[0];
+    assert_eq!(first.position, anchor.position + 1);
+    assert_eq!(first.offset, gap, "{axis:?}: {first:?}");
+}
+
+/// Found by Hegel (#294): a scroll of one unit on a ~1e15-column axis.
+#[test]
+fn the_item_after_an_anchor_in_a_tiny_gap_starts_at_the_gap_on_a_huge_axis() {
+    let gap = 1.749_868_1e-9;
+    let mut s = Scenario::identity(
+        AxisConfig::new(0, 1.0),
+        AxisConfig::new(999_999_999_999_000, 1.0).gap(gap),
+    );
+    s.input(|g| g.action(Action::Scroll { dx: 1.0, dy: 0.0 }));
+    after_the_gap(&s.frame(Viewport::new(1.0, 0.0)), Axis::Cols, gap);
+}
+
+/// Found by Hegel (#294): rows whose content sizes are far below the default,
+/// scrolled halfway down.
+#[test]
+fn the_item_after_an_anchor_in_a_tiny_gap_starts_at_the_gap_with_content_sizes() {
+    let gap = 1.818_989_7e-9;
+    let grid = Grid::new(
+        AxisConfig::new(999_999_999_999_001, 1_048_576.0).gap(gap),
+        AxisConfig::new(0, 1.0),
+    );
+    let mut s = Scenario::new(grid, UnitRows);
+    s.frame(Viewport::new(0.0, 0.0));
+    s.input(|g| {
+        g.action(Action::ScrollTo {
+            axis: Axis::Rows,
+            fraction: 0.5,
+        })
+    });
+    after_the_gap(&s.frame(Viewport::new(0.0, 1.0)), Axis::Rows, gap);
+}
+
+/// The huge count is not needed: a unit scroll on a small axis puts the
+/// anchor in the Gap too.
+#[test]
+fn the_item_after_an_anchor_in_a_tiny_gap_starts_at_the_gap_on_a_small_axis() {
+    let gap = 1.749_868_1e-9;
+    let mut s = Scenario::identity(AxisConfig::new(0, 1.0), AxisConfig::new(3, 1.0).gap(gap));
+    s.input(|g| g.action(Action::Scroll { dx: 1.0, dy: 0.0 }));
+    after_the_gap(&s.frame(Viewport::new(1.0, 0.0)), Axis::Cols, gap);
+}

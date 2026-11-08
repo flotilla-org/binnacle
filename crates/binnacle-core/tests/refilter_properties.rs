@@ -285,3 +285,90 @@ fn a_range_covers_the_items_still_shown_drawn_between_its_corners(tc: TestCase) 
         assert_eq!(covered, expected, "after {step:?}: shown {shown:?}");
     }
 }
+
+/// Eleven rows 1 tall, the last pinned trailing, all shown, with a range
+/// from row 0 to row 7.
+fn eleven_rows_ranged() -> (Scenario<RecordTable>, Viewport) {
+    let rows = (0..11).map(|r| vec![Some(r)]).collect();
+    let grid = Grid::new(
+        AxisConfig::new(11, 1.0).header(1.0),
+        AxisConfig::new(1, 4.0).header(3.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 1, [0]));
+    let view = Viewport::new(7.0, 12.0);
+    s.input(|g| g.pin(Axis::Rows, Edge::Trailing, Key(10)));
+    s.frame(view);
+    s.click(5.0, 1.5, Modifiers::NONE);
+    s.click(5.0, 8.5, Modifiers::SHIFT);
+    s.frame(view);
+    (s, view)
+}
+
+/// Keeps the rows in `keep` and returns the rows the range covers once
+/// every answer is in.
+fn filter_to(s: &mut Scenario<RecordTable>, view: Viewport, keep: &[i64]) -> Option<Vec<u64>> {
+    let keep = keep.to_vec();
+    let notice = s.source.filter(move |r| keep.contains(&r[0].unwrap()));
+    s.input(|g| g.notify(Axis::Rows, notice));
+    let snap = s.frame(view);
+    (snap.selection_range()).map(|r| r.span(Axis::Rows).iter().cloned().flatten().collect())
+}
+
+/// Found by Hegel (#317). The second filter pulls the range's first corner
+/// (row 3, gone) in to row 4 at Position 0. The view keeps row 7 on top,
+/// at Position 3, but every row fits, so the end clamp draws them all, and
+/// the frame's Window gives the corner its Key. The third filter keeps
+/// only row 7, the range's other corner, so the range covers it.
+#[test]
+fn a_range_survives_a_second_refilter_after_a_corner_was_pulled_in() {
+    let (mut s, view) = eleven_rows_ranged();
+    assert_eq!(filter_to(&mut s, view, &[3, 7]), Some(vec![0, 1]));
+    assert_eq!(
+        filter_to(&mut s, view, &[4, 5, 6, 7, 10]),
+        Some(vec![0, 1, 2, 3])
+    );
+    let snap = s.frame(view);
+    let drawn: Vec<u64> = snap.drawn(Axis::Rows).map(|i| i.position).collect();
+    assert_eq!(drawn, [0, 1, 2, 3, 4], "rows 4 to 7, then row 10 pinned");
+    assert_eq!(filter_to(&mut s, view, &[7]), Some(vec![0]));
+}
+
+/// The same with the frame between the two filters showing other rows:
+/// thirty rows, six shown, a range from row 0 to row 20 scrolled to show
+/// row 20. The first filter pulls the corner on row 0 in to row 1, which
+/// no Window holds, so the Grid never learns its Key. The second filter
+/// still finds it, from where row 0 would be.
+#[test]
+fn a_range_survives_a_second_refilter_after_a_corner_was_pulled_in_off_screen() {
+    let rows = (0..30).map(|r| vec![Some(r)]).collect();
+    let grid = Grid::new(
+        AxisConfig::new(30, 1.0).header(1.0),
+        AxisConfig::new(1, 4.0).header(3.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 1, [0]));
+    let view = Viewport::new(7.0, 7.0);
+    s.frame(view);
+    s.click(5.0, 1.5, Modifiers::NONE);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 15.0 }));
+    s.frame(view);
+    s.click(5.0, 6.5, Modifiers::SHIFT);
+    s.frame(view);
+    let range = s.frame(view).selection_range().cloned();
+    let covered = range.map(|r| r.span(Axis::Rows).iter().cloned().flatten().collect());
+    assert_eq!(covered, Some((0..21).collect::<Vec<u64>>()));
+    let everything_but = |gone: i64| (0..30).filter(|&r| r > gone).collect::<Vec<_>>();
+    // Row 1 is now Position 0.
+    assert_eq!(
+        filter_to(&mut s, view, &everything_but(0)),
+        Some((0..20).collect())
+    );
+    assert!(
+        s.frame(view).strip(Axis::Rows)[0].position > 2,
+        "row 1 is off screen"
+    );
+    // Rows 2 to 20 are now Positions 0 to 18.
+    assert_eq!(
+        filter_to(&mut s, view, &everything_but(1)),
+        Some((0..19).collect())
+    );
+}
