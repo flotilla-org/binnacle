@@ -783,6 +783,61 @@ fn a_new_default_size_keeps_the_anchors_item_and_its_share() {
     assert_eq!(snap.rows().first().map(|r| r.size), Some(2.0));
 }
 
+/// Wheelhouse zooms by resizing its user-set sizes, then the default size.
+/// Resizing the anchor's own item keeps its share too, so after both the
+/// anchor is still half-way through row 5.
+#[test]
+fn zooming_keeps_the_share_of_an_anchor_on_a_user_sized_item() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 6.0);
+    s.input(|g| g.set_size(Axis::Rows, Key(5), 4.0));
+    s.frame(v);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 7.0 }));
+    assert_eq!(
+        s.frame(v).scroll_anchor(Axis::Rows),
+        ScrollAnchor {
+            position: 5,
+            offset: 2.0
+        }
+    );
+    s.input(|g| {
+        g.set_size(Axis::Rows, Key(5), 8.0);
+        g.set_default_size(Axis::Rows, 2.0);
+    });
+    assert_eq!(
+        s.frame(v).scroll_anchor(Axis::Rows),
+        ScrollAnchor {
+            position: 5,
+            offset: 4.0
+        }
+    );
+}
+
+/// The end clamp applies after a default size change: with 20 rows of 2 under
+/// a header of 1 in a body of 4, scrolled to the end, shrinking the rows to 1
+/// while scrolling up by 1 in the same input leaves the view one row short of
+/// the end (anchor 15), not at the stale anchor 16.
+#[test]
+fn a_new_default_size_re_clamps_the_anchor_before_the_next_scroll() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(20, 2.0).header(1.0),
+        AxisConfig::new(5, 6.0).header(4.0),
+    );
+    let v = Viewport::new(22.0, 5.0);
+    s.input(|g| {
+        g.action(Action::Scroll {
+            dx: 0.0,
+            dy: 1000.0,
+        })
+    });
+    s.frame(v);
+    s.input(|g| {
+        g.set_default_size(Axis::Rows, 1.0);
+        g.action(Action::Scroll { dx: 0.0, dy: -1.0 });
+    });
+    assert_eq!(s.frame(v).scroll_anchor(Axis::Rows).position, 15);
+}
+
 /// An anchor following the end keeps following it through a new default
 /// size, larger or smaller: the last row still ends the viewport.
 #[test]

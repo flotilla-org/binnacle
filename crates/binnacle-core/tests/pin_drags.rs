@@ -256,6 +256,25 @@ fn only_empty_pin_zones_light_up_and_only_while_dragging() {
     );
 }
 
+// The default pin zone is a quarter of the default size and follows a new
+// default size, until the host sets the zone itself.
+#[test]
+fn the_default_pin_zone_follows_the_default_size_until_the_host_sets_it() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(4, 1.0).header(1.0),
+        AxisConfig::new(10, 8.0).header(4.0).gap(1.0),
+    );
+    // Held mid-drag so the zones stay lit while the sizes change.
+    drag_header(&mut s, 20.0, 5.0);
+    let zone = |s: &mut Scenario<IdentityTable>| s.frame(V).pin_zones()[0].size;
+    assert_eq!(zone(&mut s), 2.0);
+    s.input(|g| g.set_default_size(Axis::Cols, 12.0));
+    assert_eq!(zone(&mut s), 3.0);
+    s.input(|g| g.set_pin_zone(Axis::Cols, 1.0));
+    s.input(|g| g.set_default_size(Axis::Cols, 16.0));
+    assert_eq!(zone(&mut s), 1.0);
+}
+
 #[test]
 fn row_headers_drag_into_and_out_of_the_top_strip() {
     let mut s = table();

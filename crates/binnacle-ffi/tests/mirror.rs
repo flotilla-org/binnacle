@@ -934,7 +934,7 @@ fn op(tc: &TestCase) -> Op {
             tc.draw(axes()),
             tc.draw(gs::sampled_from(vec![Form::Outline, Form::Header])),
         ),
-        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(111))),
+        _ => Op::BadTag(tc.draw(gs::integers::<u32>().max_value(112))),
     }
 }
 
@@ -1451,6 +1451,10 @@ unsafe fn send_bad_tag(h: *mut BinnacleGrid, which: u32) -> i32 {
                 binnacle_grid_action(h, &c)
             }
             110 => binnacle_grid_set_default_size(h, 2, 1.0),
+            111 => {
+                let mut size = 0.0;
+                binnacle_grid_default_size(h, 2, &mut size)
+            }
             _ => binnacle_grid_set_quick_filter(h, 2, std::ptr::null()),
         }
     }
@@ -3044,7 +3048,11 @@ fn the_c_api_mirrors_the_grid(tc: TestCase) {
                 }
                 Op::SetDefaultSize(axis, size) => {
                     grid.set_default_size(axis, size);
-                    binnacle_grid_set_default_size(h, tag(axis), size)
+                    let set = binnacle_grid_set_default_size(h, tag(axis), size);
+                    let mut read = f32::NAN;
+                    assert_eq!(binnacle_grid_default_size(h, tag(axis), &mut read), 1);
+                    assert!(same_f32(read, grid.default_size(axis)));
+                    set
                 }
                 Op::Pin(axis, edge, key) => {
                     let key = key + 5000 * u64::from(axis == Axis::Cols);

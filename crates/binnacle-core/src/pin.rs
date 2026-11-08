@@ -367,8 +367,9 @@ impl Grid {
     /// Header Band or beyond the viewport, pins to that edge when its pinned
     /// Strip is empty; 0 turns that off. Default a quarter of the axis's
     /// default item size, which leaves the first item's first half room to
-    /// drop before it. Values that are not finite and non-negative are
-    /// ignored.
+    /// drop before it; it follows `set_default_size` until the host sets a
+    /// zone of another size (one set to exactly that quarter still follows).
+    /// Values that are not finite and non-negative are ignored.
     pub fn set_pin_zone(&mut self, axis: Axis, size: f32) {
         let zone = &mut self.axis_mut(axis).pin_zone;
         if size.is_finite() && size >= 0.0 && *zone != size {

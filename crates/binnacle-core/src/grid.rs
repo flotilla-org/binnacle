@@ -416,16 +416,19 @@ impl Grid {
 
     /// Sets the Size Override for the item with `key` on `axis`, which follows
     /// that item wherever it moves, clamped into the axis's size range. Sizes
-    /// that are not positive and finite are ignored.
+    /// that are not positive and finite are ignored. Resizing the Scroll
+    /// Anchor's item keeps the share of it scrolled past, as
+    /// [`Grid::set_default_size`] does, unless the Window does not hold the
+    /// item (see there).
     pub fn set_size(&mut self, axis: Axis, key: Key, size: f32) {
-        self.axis_mut(axis).measure.set_size(key, size);
+        self.axis_mut(axis).set_size(key, size);
         self.pending_damage.layout = true;
     }
 
     /// Removes the Size Override for the item with `key` on `axis`, so its
     /// content size or the default applies again.
     pub fn clear_size(&mut self, axis: Axis, key: Key) {
-        self.axis_mut(axis).measure.clear_size(key);
+        self.axis_mut(axis).clear_size(key);
         self.pending_damage.layout = true;
     }
 
@@ -482,6 +485,22 @@ impl Grid {
     /// same share of its size, unless the end clamp pulls the view back.
     /// Clamped into the axis's size range; sizes that are not positive and
     /// finite are ignored.
+    ///
+    /// A host zooming (Wheelhouse) calls [`Grid::set_size`] on its user-set
+    /// sizes, then this; each keeps the anchor's share of its item, so the
+    /// order does not matter. The default pin zone, a quarter of the default
+    /// size, follows the new size unless the host set it with
+    /// [`Grid::set_pin_zone`]. Limits:
+    ///
+    /// - The Scroll Anchor holds a Position, not a Key. While the Window does
+    ///   not hold its item (after a `Reset` until the host re-sends the
+    ///   Window), its size is only the default, so a resized item's offset is
+    ///   scaled by the wrong ratio and the next frame clamps it into the
+    ///   item. Zoom after the Window is back to avoid this.
+    /// - An anchor inside the Gap after its item has only its item part
+    ///   scaled; the clamp pulls it inside the new stride.
+    /// - Content sizes ([`Grid::set_keys_sized`]) are not refreshed: re-send
+    ///   the Window with sizes measured at the new text size.
     pub fn set_default_size(&mut self, axis: Axis, size: f32) {
         if self.axis_mut(axis).set_default_size(size) {
             self.pending_damage.layout = true;

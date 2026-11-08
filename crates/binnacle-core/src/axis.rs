@@ -468,17 +468,49 @@ impl AxisState {
 
     /// Sets the default size, keeping the anchor's Position and the share of
     /// its item scrolled past, as far as the end clamp allows. An anchor
-    /// following the end keeps following it. Returns whether anything
-    /// changed.
+    /// following the end keeps following it. The default pin zone (a quarter
+    /// of the default size) follows the size if the host never set it.
+    /// Returns whether anything changed.
     pub fn set_default_size(&mut self, size: f32) -> bool {
+        let old_default = self.measure.default_size();
         let old = self.measure.size_at(self.anchor.position);
         if !self.measure.set_default_size(size) {
             return false;
+        }
+        if self.pin_zone == old_default / 4.0 {
+            self.pin_zone = self.measure.default_size() / 4.0;
         }
         let new = self.measure.size_at(self.anchor.position);
         self.anchor.offset *= new / old;
         self.clamp_anchor();
         true
+    }
+
+    /// Sets the Size Override for `key`, keeping the share of the anchor's
+    /// item scrolled past if it is the item resized, as
+    /// [`Self::set_default_size`] does.
+    pub fn set_size(&mut self, key: Key, size: f32) {
+        self.resizing(|m| m.set_size(key, size));
+    }
+
+    /// Removes the Size Override for `key`, keeping the anchor's share as
+    /// [`Self::set_size`] does.
+    pub fn clear_size(&mut self, key: Key) {
+        self.resizing(|m| m.clear_size(key));
+    }
+
+    /// Runs a change to the measure's sizes, then scales the anchor's offset
+    /// by the change in its item's size and re-applies the anchor's bounds.
+    /// A change that leaves the anchor item's size alone leaves the anchor
+    /// alone.
+    fn resizing(&mut self, change: impl FnOnce(&mut AxisMeasure)) {
+        let old = self.measure.size_at(self.anchor.position);
+        change(&mut self.measure);
+        let new = self.measure.size_at(self.anchor.position);
+        if new != old {
+            self.anchor.offset *= new / old;
+            self.clamp_anchor();
+        }
     }
 
     /// The item a body's length before or after the start of item `p`, at
