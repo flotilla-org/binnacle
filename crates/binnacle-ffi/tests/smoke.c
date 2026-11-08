@@ -1,5 +1,6 @@
 /* Drives one Grid through the C API the way wheelhouse does. */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1085,6 +1086,11 @@ int main(int argc, char **argv) {
   CHECK(binnacle_grid_set_border_grab(grid, 0.5f));
   frame(grid, &snap);
   CHECK(snap.cursor == BINNACLE_CURSOR_RESIZE_ROWS && !snap.has_resize_guide);
+  /* A grab that is not finite and non-negative is ignored. */
+  CHECK(binnacle_grid_set_border_grab(grid, NAN));
+  CHECK(binnacle_grid_set_border_grab(grid, -1));
+  frame(grid, &snap);
+  CHECK(snap.cursor == BINNACLE_CURSOR_RESIZE_ROWS);
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_DOWN, 2, 3, 0)));
   CHECK(binnacle_grid_pointer(grid, at(BINNACLE_POINTER_MOVE, 2, 5, 0)));
   frame(grid, &snap);

@@ -834,8 +834,8 @@ typedef struct {
  * across the viewport at offset along axis (viewport-relative, like Strip
  * offsets), with the item's Key and its size as it follows the pointer. That
  * is its trailing edge, or its leading edge in the trailing pinned Strip.
- * Resizing the Header Band leading axis, has_key is 0 and size is the
- * band's thickness. */
+ * While the Header Band leading axis is resized, has_key is 0 and size is
+ * the band's thickness. */
 typedef struct {
   uint32_t axis;
   uint32_t has_key;
