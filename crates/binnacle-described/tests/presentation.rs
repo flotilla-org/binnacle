@@ -307,6 +307,51 @@ fn leaving_from_full_screen_leaves_the_rows_inline_would() {
 }
 
 #[test]
+fn coming_back_inline_keeps_the_focused_row_in_view() {
+    // Three rows show inline, so the last row is off screen until focus
+    // moves there; full screen shows from the top.
+    let small = Run {
+        inline: 6,
+        ..Run::new()
+    };
+    for leave in [key(KeyCode::Enter), key(KeyCode::Esc)] {
+        let end = || vec![key(KeyCode::End)];
+        let mut plain = end();
+        plain.push(leave.clone());
+        let (plain, plain_exit) = small.events(plain);
+        let mut toggled = end();
+        toggled.extend([char('f'), char('f')]);
+        let back = toggled.len() - 1;
+        toggled.push(leave.clone());
+        let (toggled, toggled_exit) = small.events(toggled);
+        assert_eq!(toggled_exit, plain_exit);
+        let shown = |frames: &[Buffer], at: usize| inline_lines(&frames[at], 6);
+        assert_eq!(
+            shown(&toggled, back + 1),
+            shown(&plain, 1),
+            "the same inline frame"
+        );
+        assert!(
+            shown(&toggled, back + 1).join("\n").contains("foxtrot"),
+            "the focused last row is in view"
+        );
+        let left = |frames: &[Buffer]| lines(&frames[frames.len() - 1]);
+        assert_eq!(
+            left(&toggled)[PROMPT as usize..],
+            left(&plain)[PROMPT as usize..]
+        );
+    }
+    // Leaving from full screen prints what leaving from inline does.
+    let (plain, _) = small.events(vec![key(KeyCode::End), key(KeyCode::Enter)]);
+    let (full, _) = small.events(vec![key(KeyCode::End), char('f'), key(KeyCode::Enter)]);
+    let left = |frames: &[Buffer]| lines(&frames[frames.len() - 1]);
+    assert_eq!(
+        left(&full)[PROMPT as usize..],
+        left(&plain)[PROMPT as usize..]
+    );
+}
+
+#[test]
 fn f_in_the_filter_bar_or_find_types_an_f() {
     for (open, field) in [(ctrl('l'), "Filter"), (ctrl('f'), "Find")] {
         let (frames, _) = Run::new().events(vec![open, char('f'), key(KeyCode::Esc)]);

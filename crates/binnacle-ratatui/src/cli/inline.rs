@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
+use binnacle_cli::width::grapheme_width;
 use binnacle_core::{Axis, ChangeNotice, Grid, Key, Viewport};
 use binnacle_format::{Align, Timestamp, Value};
 use binnacle_layout::{JsonId, Layout};
@@ -26,6 +27,7 @@ use ratatui::crossterm::{execute, queue};
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::{Terminal, TerminalOptions};
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::viewport::{aligned, columns, headless, title_aligns};
 use super::{CliTable, Exit, Selection, notify, partial_status, thousands};
@@ -256,6 +258,7 @@ fn run<T: CliTable, B: Backend>(
         quick: QuickFilter::new(),
         find: FindBar::new(),
         bars: crate::Layout::default(),
+        reveal: false,
         shown: Vec::new(),
         theme: options.theme.clone(),
         origin,
@@ -313,6 +316,7 @@ fn run<T: CliTable, B: Backend>(
             quick,
             find,
             bars,
+            reveal,
             ..
         } = &mut session;
         match event {
@@ -379,6 +383,7 @@ fn run<T: CliTable, B: Backend>(
                     }
                     KeyCode::Char('f') if key.modifiers.is_empty() => {
                         presentation = switch(terminal, &mut full, presentation, &mut screen)?;
+                        *reveal = presentation == Presentation::Inline;
                     }
                     KeyCode::Char(' ') if plain => {
                         let snapshot = grid.snapshot();
@@ -411,6 +416,7 @@ fn run<T: CliTable, B: Backend>(
     };
     if presentation == Presentation::FullScreen {
         switch(terminal, &mut full, presentation, &mut screen)?;
+        session.reveal = true;
         // What the inline viewport would show, so the rows left behind are
         // the same whichever presentation the session ended in.
         let area = terminal.get_frame().area();
@@ -472,11 +478,10 @@ fn run<T: CliTable, B: Backend>(
 /// `line` in pieces at most `width` columns wide, by display width, each
 /// without trailing spaces; one piece, empty, for an empty line.
 fn wrap(line: &str, width: usize) -> Vec<&str> {
-    use unicode_width::UnicodeWidthChar;
     let mut pieces = Vec::new();
     let (mut start, mut used) = (0, 0);
-    for (at, c) in line.char_indices() {
-        let w = c.width().unwrap_or(0);
+    for (at, g) in line.grapheme_indices(true) {
+        let w = grapheme_width(g) as usize;
         if used + w > width.max(1) && at > start {
             pieces.push(line[start..at].trim_end());
             (start, used) = (at, 0);
@@ -485,6 +490,14 @@ fn wrap(line: &str, width: usize) -> Vec<&str> {
     }
     pieces.push(line[start..].trim_end());
     pieces
+}
+
+/// Scrolls the focused row into view.
+fn reveal_focus(grid: &mut Grid) {
+    let focused = grid.snapshot().focus(Axis::Rows).and_then(|f| f.key);
+    if let Some(key) = focused {
+        grid.reveal_key(Axis::Rows, key, binnacle_core::Align::Nearest);
+    }
 }
 
 /// Whether the full-screen presentation has the terminal on the alternate
@@ -836,6 +849,9 @@ struct Session {
     quick: QuickFilter,
     find: FindBar,
     bars: crate::Layout,
+    /// Whether the next frame scrolls the focused row into view: set on
+    /// coming back inline, whose viewport is shorter than the full screen's.
+    reveal: bool,
     /// The rows the last frame drew.
     shown: Vec<Key>,
     theme: Theme,
@@ -860,8 +876,13 @@ impl Session {
             ..full
         };
         let ctx = RenderContext::new(theme).at(self.start.elapsed());
+        let reveal = std::mem::take(&mut self.reveal);
         self.bars = begin_frame(&mut self.grid, &ctx, area, |grid, viewport| {
-            fill(grid, source, viewport)
+            fill(grid, source, viewport);
+            if reveal {
+                reveal_focus(grid);
+                fill(grid, source, viewport);
+            }
         });
         let snapshot = self.grid.snapshot();
         self.shown = snapshot.drawn(Axis::Rows).filter_map(|i| i.key).collect();
@@ -986,4 +1007,45 @@ fn switch<B: Backend>(
         }
     }
     Ok(to)
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::wrap;
+    use binnacle_cli::width::width;
+    use hegel::TestCase;
+    use hegel::generators as gs;
+    use unicode_segmentation::UnicodeSegmentation;
+
+    #[test]
+    fn a_full_width_line_with_a_zwj_emoji_is_one_piece() {
+        assert_eq!(wrap("ab👩‍💻", 4), ["ab👩‍💻"]);
+    }
+
+    #[test]
+    fn a_break_never_splits_a_zwj_emoji_or_a_wide_character() {
+        assert_eq!(wrap("ab👩‍💻cd", 4), ["ab👩‍💻", "cd"]);
+        assert_eq!(wrap("日本語", 5), ["日本", "語"]);
+        assert_eq!(wrap("a👩‍💻👩‍💻", 4), ["a👩‍💻", "👩‍💻"]);
+    }
+
+    #[hegel::test(test_cases = 300)]
+    fn pieces_fit_and_are_whole_graphemes_in_order(tc: TestCase) {
+        let pieces = ["a", "Z", " ", "日", "本", "e\u{301}", "👩‍💻", "🇬🇧", "🚢"];
+        let line = tc
+            .draw(gs::vecs(gs::sampled_from(pieces.to_vec())).max_size(30))
+            .concat();
+        let max = tc.draw(gs::integers::<usize>().min_value(2).max_value(12));
+        let out = wrap(&line, max);
+        for piece in &out {
+            assert!(width(piece) as usize <= max, "{piece:?} wider than {max}");
+        }
+        let theirs: Vec<&str> = line.graphemes(true).filter(|g| *g != " ").collect();
+        let ours: Vec<&str> = out
+            .iter()
+            .flat_map(|p| p.graphemes(true))
+            .filter(|g| *g != " ")
+            .collect();
+        assert_eq!(ours, theirs, "the graphemes survive whole and in order");
+    }
 }

@@ -87,3 +87,27 @@ fn the_hosts_format_is_a_value_enum() {
     assert!(run(&["--format", "yaml"]).is_err());
     assert!(run(&["--format", "jsonl"]).unwrap().starts_with('{'));
 }
+
+#[test]
+fn clap_and_the_text_parser_take_the_same_format_names() {
+    use std::str::FromStr;
+    let names = [
+        ("aligned", Format::Aligned),
+        ("text", Format::Aligned),
+        ("table", Format::Aligned),
+        ("tsv", Format::Tsv),
+        ("json", Format::Json),
+        ("jsonl", Format::Jsonl),
+        ("ndjson", Format::Jsonl),
+    ];
+    for (name, format) in names {
+        assert_eq!(Format::from_str(name), Ok(format), "FromStr {name}");
+        assert_eq!(
+            <Format as clap::ValueEnum>::from_str(name, false),
+            Ok(format),
+            "clap {name}"
+        );
+        let host = Host::try_parse_from(["host", "--format", name]).unwrap();
+        assert_eq!(host.format, format, "the host's --format {name}");
+    }
+}

@@ -194,23 +194,150 @@ fn nothing_draws_outside_the_cell_and_what_draws_is_a_prefix_of_the_text(tc: Tes
     // A combining mark with no letter before it has no cell to join.
     tc.assume(text.graphemes(true).next().is_none_or(|g| g.width() > 0));
     let width = tc.draw(gs::integers::<u16>().min_value(1).max_value(20));
-    let (buf, line) = draw(&text, Align::Left, width);
-    let a = buf.area;
-    for y in a.top()..a.bottom() {
-        for x in a.left()..a.right() {
-            let inside = y == line && (HEADER..HEADER + width).contains(&x);
-            if !inside && y == line && x >= HEADER + width {
-                assert_eq!(buf[(x, y)].symbol(), " ", "({x},{y}) past the cell");
-            }
+    let align = tc.draw(gs::sampled_from(vec![
+        Align::Left,
+        Align::Center,
+        Align::Right,
+    ]));
+    let (buf, line) = draw(&text, align, width);
+    let (empty, _) = draw("", align, width);
+    for x in 0..buf.area.right() {
+        let symbol = buf[(x, line)].symbol();
+        if x < HEADER {
+            assert_eq!(symbol, empty[(x, line)].symbol(), "({x},{line}) row header");
+        } else if symbol.trim().is_empty() {
+            continue;
+        } else {
+            // A wide character is stored in its first column and draws over
+            // the next, so both must lie in the cell.
+            let drawn = u16::try_from(symbol.width()).unwrap_or(2).min(2);
+            assert!(
+                x + drawn <= HEADER + width,
+                "{symbol:?} at ({x},{line}) draws past the cell of {width} in {align:?}"
+            );
         }
     }
     let shown = symbols(&buf, line, HEADER, HEADER + width).concat();
     let shown = shown.trim_end();
     let shown = shown.strip_suffix('…').unwrap_or(shown);
+    let (shown, text) = match align {
+        Align::Left => (shown, text.as_str()),
+        _ => (shown.trim_start(), text.trim_start()),
+    };
     let ours: Vec<&str> = shown.graphemes(true).collect();
     let theirs: Vec<&str> = text.graphemes(true).collect();
     assert!(
-        theirs.starts_with(&ours),
+        theirs.starts_with(&ours) || theirs.ends_with(&ours),
         "{shown:?} is not a prefix of {text:?} at {width}"
     );
+}
+
+/// Draws `text` in the first of two columns, `width` wide, scrolled `left`
+/// columns, in a viewport showing `view` columns of the body.
+fn draw_scrolled(text: &str, align: Align, width: u16, left: u16, view: u16) -> (Buffer, u16) {
+    struct Two(String, Align);
+
+    impl Content for Two {
+        fn cell(&self, _row: Key, _col: Key) -> String {
+            String::new()
+        }
+
+        fn column_header(&self, _col: Key) -> String {
+            "h".to_owned()
+        }
+
+        fn column_renderer(&self, col: Key) -> Box<dyn CellRenderer + '_> {
+            let text = if col == Key(0) {
+                self.0.clone()
+            } else {
+                String::new()
+            };
+            Box::new(TextRenderer::new(move |_, _| text.clone()).align(self.1))
+        }
+    }
+
+    let area = Rect::new(0, 0, HEADER + view, 2);
+    let mut grid = Grid::new(
+        AxisConfig::new(1, 1.0).header(1.0),
+        AxisConfig::new(2, f32::from(width)).header(f32::from(HEADER)),
+    );
+    // The second column is wide, so there is body to scroll across.
+    grid.set_size(binnacle_core::Axis::Cols, Key(1), 40.0);
+    for (axis, range) in grid.begin_frame(Viewport::new(area.width.into(), area.height.into())) {
+        let n = if axis == binnacle_core::Axis::Rows {
+            1
+        } else {
+            2
+        };
+        let keys = IdentitySource::new(n).window(range.start..range.end.min(n));
+        grid.set_window(axis, range.start, &keys);
+    }
+    grid.action(binnacle_core::Action::Scroll {
+        dx: f32::from(left),
+        dy: 0.0,
+    });
+    for (axis, range) in grid.begin_frame(Viewport::new(area.width.into(), area.height.into())) {
+        let n = if axis == binnacle_core::Axis::Rows {
+            1
+        } else {
+            2
+        };
+        let keys = IdentitySource::new(n).window(range.start..range.end.min(n));
+        grid.set_window(axis, range.start, &keys);
+    }
+    let theme = Theme::classic();
+    let mut buf = Buffer::empty(area);
+    render_with(
+        &grid.snapshot(),
+        &Two(text.to_owned(), align),
+        &RenderContext::new(&theme).scrollbars(false),
+        area,
+        &mut buf,
+    );
+    (buf, 1)
+}
+
+#[hegel::test(test_cases = 500)]
+fn a_scrolled_cell_draws_no_part_of_a_character_outside_its_visible_columns(tc: TestCase) {
+    let text = mixed(&tc);
+    tc.assume(text.graphemes(true).next().is_none_or(|g| g.width() > 0));
+    let width = tc.draw(gs::integers::<u16>().min_value(2).max_value(20));
+    let left = tc.draw(gs::integers::<u16>().max_value(width - 1));
+    let view = tc.draw(gs::integers::<u16>().min_value(1).max_value(20));
+    let align = tc.draw(gs::sampled_from(vec![
+        Align::Left,
+        Align::Center,
+        Align::Right,
+    ]));
+    let (buf, line) = draw_scrolled(&text, align, width, left, view);
+    let (empty, _) = draw_scrolled("", align, width, left, view);
+    let (whole, _) = draw_scrolled(&text, align, width, 0, width);
+    let visible = (width - left).min(view);
+    for x in 0..HEADER {
+        assert_eq!(
+            buf[(x, line)].symbol(),
+            empty[(x, line)].symbol(),
+            "({x},{line}) row header"
+        );
+    }
+    // The cell scrolled is the whole cell's columns from `left` on, except
+    // that a wide character not wholly visible is a space in its columns.
+    let at = |buf: &Buffer, c: u16| buf[(HEADER + c, line)].symbol().to_owned();
+    let width_of = |s: &str| u16::try_from(s.width()).unwrap_or(2).min(2);
+    for c in 0..visible {
+        let mut expected = at(&whole, left + c);
+        let cut_left = c == 0 && left > 0 && width_of(&at(&whole, left - 1)) == 2;
+        let cut_right = width_of(&expected) == 2 && c + 1 >= visible;
+        if cut_left || cut_right {
+            expected = " ".to_owned();
+        }
+        assert_eq!(
+            at(&buf, c),
+            expected,
+            "column {c}: {text:?} {align:?} width {width} scrolled {left} view {view}"
+        );
+    }
+    for c in visible..view {
+        assert_eq!(at(&buf, c), " ", "column {c} past the cell");
+    }
 }
