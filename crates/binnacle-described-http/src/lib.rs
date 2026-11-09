@@ -551,6 +551,7 @@ impl Blocking {
 
     /// The next event of the latest watch, waiting up to `timeout`.
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
+        // Stale events skipped count against the same deadline.
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
