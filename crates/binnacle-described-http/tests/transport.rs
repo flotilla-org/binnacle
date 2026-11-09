@@ -224,6 +224,48 @@ fn a_reconnect_is_a_resync_after_the_backoff() {
 }
 
 #[test]
+fn a_new_request_replaces_the_watch_and_drops_its_unread_events() {
+    let fake = fake().start().unwrap();
+    let transport = Blocking::new(options(&fake)).unwrap();
+    let mut source = source();
+    host(&transport, &mut source, synced);
+    // The open watch carries an upsert the host has not read when it opens
+    // another, narrowed to alpha.
+    let row = [("name".to_owned(), Wire::Text("golf".into()))].into();
+    fake.push(Step::Upsert {
+        table: "crews".into(),
+        row,
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let alpha = Scope::new("flotilla").with_where(r#"name == "alpha""#);
+    let request = DescribedSource::new("crews", alpha).poll_request().unwrap();
+    transport.open(request);
+    let mut events = Vec::new();
+    while !events
+        .iter()
+        .any(|e| matches!(e, Event::Message(Message::Synced { .. })))
+    {
+        events.push(
+            transport
+                .recv_timeout(WAIT)
+                .expect("the new watch's messages"),
+        );
+    }
+    let rows: Vec<&Wire> = (events.iter())
+        .filter_map(|e| match e {
+            Event::Message(Message::Rows(rows)) => Some(rows.rows.iter().map(|r| &r["name"])),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(rows, [&Wire::Text("alpha".into())], "{events:?}");
+    assert!(
+        matches!(events[0], Event::Message(Message::Table(_))),
+        "nothing of the old watch: {events:?}"
+    );
+}
+
+#[test]
 fn credentials_are_sent_exactly_as_given() {
     let fake = fake().start().unwrap();
     let credentials = [

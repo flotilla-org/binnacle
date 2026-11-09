@@ -5,7 +5,10 @@
 // never shorter, so a stream that ends at once can't spin. A 5xx or a
 // network error tries again after the same wait. A 4xx, a 200 that is not a
 // rows stream, and an error from the table itself (a throwing sink or
-// listener) stop the loop: trying again would only fail the same way.
+// listener) stop the loop: trying again would only fail the same way. When
+// a filter changes the `where` clauses the table sends, the table asks for
+// its watch while the stream is open: the loop aborts the stream, feeds
+// none of its bytes from then on, and opens the new watch at once.
 
 import type { DescribedTable } from "../../src";
 
@@ -73,15 +76,29 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
     options.onPhase("error", error);
   };
 
+  let request = table.pollRequest();
+  /** The table asked for its watch in place of the stream: abort it, and wake a wait. */
+  const unrequest = table.onRequest(() => {
+    request = table.pollRequest();
+    controller?.abort();
+    controller = null;
+    wake?.();
+  });
+
   const run = async () => {
-    let request = table.pollRequest();
     while (!stopped) {
       if (request) {
         options.onPhase("connecting");
-        controller = new AbortController();
+        const target = request.target;
+        request = undefined;
+        const mine = new AbortController();
+        controller = mine;
+        /** A newer watch replaced this one. */
+        const replaced = () => controller !== mine;
         let opened = false;
         try {
-          const response = await fetch(request.target, { headers: options.headers, signal: controller.signal });
+          const response = await fetch(target, { headers: options.headers, signal: mine.signal });
+          if (replaced()) continue;
           if (response.status >= 400 && response.status < 500) {
             return fail({ status: response.status, message: await errorMessage(response) });
           }
@@ -98,13 +115,13 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
             const reader = response.body.getReader();
             for (;;) {
               const { done, value } = await reader.read();
-              if (done || stopped) break;
+              if (done || stopped || replaced()) break;
               try {
                 table.feed(value);
               } catch (e) {
                 // A sink or listener threw: a bug, not the stream's end.
                 console.error(e);
-                controller.abort();
+                mine.abort();
                 return fail({ message: messageOf(e) });
               }
               if (table.status().synced) wait = FIRST_WAIT;
@@ -115,6 +132,8 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
           if (!(e instanceof DOMException && e.name === "AbortError") && !(e instanceof TypeError)) console.error(e);
         }
         if (stopped) return;
+        // Replaced: the new watch opens at once, and this one's end is no news.
+        if (replaced()) continue;
         // The body ended (or broke off), or a 5xx came: the table asks for its watch again.
         if (opened) {
           table.ended();
@@ -132,6 +151,7 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
   return {
     destroy() {
       stopped = true;
+      unrequest();
       controller?.abort();
       wake?.();
     },

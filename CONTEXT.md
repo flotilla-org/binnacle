@@ -57,7 +57,7 @@ A table its server describes on the wire: a `table` message carries a Frictionle
 _Avoid_: Remote table, schema table, dynamic table
 
 **Scope**:
-What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses. A Described Table source can't be built without one.
+What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses in the condition language flotillad speaks (`rigging-condition`). A Described Table source can't be built without one. The source sends its rows' Conditions and Slicers after them, each as a `where` clause where one keeps exactly the rows its filter keeps and the field's `whereOperators` allow it, and asks for the watch again when those clauses change; it filters every row that comes again, so what shows never depends on the server's filter.
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
 **Described Source Handle**:
@@ -65,7 +65,7 @@ A Described Table source behind the C API (`BinnacleDescribedSource` in `binnacl
 _Avoid_: Described grid, table handle
 
 **Resync**:
-A Described Table source starting its rows again without showing the table empty: after a `resync` message, or when its stream ends and it asks to open the watch again, every row is unconfirmed; the `table`, `rows` and `synced` that follow replace the rows in place, each row that comes confirmed and keeping its Key, and `synced` removes those still unconfirmed. A page that changes more than 256 held rows at once applies as one Reset, so rows the user moved go back to the source's order. A `table` message once the columns are known is diffed by field name the same way.
+A Described Table source starting its rows again without showing the table empty: after a `resync` message, or when its stream ends or its filter changes the `where` clauses it sends and it asks to open the watch again, every row is unconfirmed; the `table`, `rows` and `synced` that follow replace the rows in place, each row that comes confirmed and keeping its Key, and `synced` removes those still unconfirmed. A page that changes more than 256 held rows at once applies as one Reset, so rows the user moved go back to the source's order. A `table` message once the columns are known is diffed by field name the same way.
 _Avoid_: Reload, refresh, reconnect (for the whole)
 
 **Selection**:

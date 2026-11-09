@@ -7,9 +7,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use binnacle_core::{
-    Aggregate, Axis, ChangeNotice, Compared, Distinct, DistinctQuery, FindDirection, FindMatch,
-    FindQuery, Grid, Key, Located, Position, SortColumn, SortSpec, Support, TextSupport, Totals,
-    ViewSpec,
+    Aggregate, Axis, ChangeNotice, Compared, Condition, ConditionTree, Distinct, DistinctQuery,
+    FindDirection, FindMatch, FindQuery, Grid, Key, Located, Position, SortColumn, SortSpec,
+    Support, TextSupport, Totals, ViewSpec,
 };
 use binnacle_format::{
     FixedOffset, FormatContext, FormatOptions, Role, Timestamp, Value, ValueType, Zone,
@@ -18,6 +18,7 @@ use binnacle_format::{
 use binnacle_group::{GroupedMemory, Summary, Window};
 use binnacle_memory::{FindCount, FindStep, MemorySource, Moved, PumpSource, TypedKey, Viewed};
 
+use crate::clause::{clauses, native_sent};
 use crate::keys::StableKeys;
 use crate::message::{Category, Field, FieldType, Message, Row, RowsMessage, Schema};
 use crate::scope::{HostRequest, ROW_CAP, Scope, WatchRequest};
@@ -201,7 +202,13 @@ const BULK: usize = 256;
 pub struct DescribedSource {
     table: String,
     scope: Scope,
+    /// The `where` clauses the rows' conditions are sent as.
+    wheres: Vec<String>,
     requests: VecDeque<HostRequest>,
+    /// The filter changed the clauses and the host has not yet taken the
+    /// request to open the watch again: messages still coming are from the
+    /// stream it replaces.
+    reopening: bool,
     zone: Rc<dyn Zone>,
     schema: Option<Schema>,
     columns: Vec<Column>,
@@ -238,7 +245,9 @@ impl DescribedSource {
         let mut source = DescribedSource {
             table: table.into(),
             scope,
+            wheres: Vec::new(),
             requests: VecDeque::new(),
+            reopening: false,
             zone: Rc::new(FixedOffset(0)),
             schema: None,
             columns: Vec::new(),
@@ -309,27 +318,75 @@ impl DescribedSource {
     }
 
     /// The next thing the source asks of its host: first, to open the
-    /// watch, and again each time the stream ends.
+    /// watch, and again each time the stream ends or the filter changes
+    /// the `where` clauses it sends. A host opening the watch again drops
+    /// the stream open before it feeds the new one's messages.
     pub fn poll_request(&mut self) -> Option<HostRequest> {
-        self.requests.pop_front()
+        let request = self.requests.pop_front();
+        if matches!(request, Some(HostRequest::OpenWatch(_))) {
+            self.reopening = false;
+        }
+        request
     }
 
-    /// Asks to open the watch, unless that is asked already.
+    /// Whether a request waits for the host to take it
+    /// ([`DescribedSource::poll_request`]): a host that reads its stream
+    /// without polling between messages asks this after a View Spec
+    /// applies, to drop the stream for a new one.
+    pub fn has_request(&self) -> bool {
+        !self.requests.is_empty()
+    }
+
+    /// The `where` clauses the rows' conditions are sent as, after the
+    /// Scope's, in the condition language: each condition of the rows'
+    /// Filter Spec (and each Slicer) that has one, in order. Every row
+    /// that comes is filtered again, so what shows never depends on them.
+    pub fn wheres(&self) -> &[String] {
+        &self.wheres
+    }
+
+    /// Asks to open the watch with the clauses in force, replacing a
+    /// request not yet taken.
     fn open_watch(&mut self) {
-        if (self.requests.iter()).any(|r| matches!(r, HostRequest::OpenWatch(_))) {
-            return;
-        }
+        self.requests
+            .retain(|r| !matches!(r, HostRequest::OpenWatch(_)));
         self.requests
             .push_back(HostRequest::OpenWatch(WatchRequest {
                 table: self.table.clone(),
                 scope: self.scope.clone(),
+                wheres: self.wheres.clone(),
                 limit: ROW_CAP,
             }));
     }
 
+    /// The clauses `spec` sends, once the columns are known. When they
+    /// are not the set sent, the source asks to open the watch again and
+    /// starts a resync, so the new stream's rows replace the held ones in
+    /// place.
+    fn rewhere(&mut self, spec: &ViewSpec) {
+        if self.schema.is_none() {
+            return;
+        }
+        let wheres = clauses(&self.columns, spec);
+        let set = |w: &[String]| w.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+        let changed = set(&wheres) != set(&self.wheres);
+        self.wheres = wheres;
+        if changed {
+            self.open_watch();
+            self.resync();
+            self.reopening = true;
+        }
+    }
+
     /// Takes one message from the stream. Messages about rows before the
     /// first `table` are dropped: there are no columns to read them by.
+    /// So are those that come after the filter asked to open the watch
+    /// again, until the host takes that request: they are from the stream
+    /// it replaces.
     pub fn receive(&mut self, message: Message) -> Received {
+        if self.reopening && !matches!(message, Message::Other { .. }) {
+            return Received::Applied(Vec::new());
+        }
         let notices = match message {
             Message::Table(table) => {
                 self.status.incarnation = table.incarnation;
@@ -1002,10 +1059,32 @@ impl DescribedSource {
         }
         self.grouped = GroupedMemory::new(source);
         if self.spec != ViewSpec::default() {
-            let (spec, _) = self.tie_broken(&self.spec);
-            let spec = self.widened(&spec);
+            let (spec, _) = self.inner(&self.spec);
             self.grouped.view(&self.rows, &spec);
         }
+    }
+
+    /// `spec` as the In-Memory Table Source over the rows takes it: its
+    /// rows' sort ending on the primary key ([`DescribedSource::tie_broken`]),
+    /// the quick filter widened, and each Native condition the source
+    /// sends standing in as one that keeps every row (`not` OneOf nothing),
+    /// as the server did the narrowing.
+    fn inner(&self, spec: &ViewSpec) -> (ViewSpec, Vec<Key>) {
+        let (spec, added) = self.tie_broken(spec);
+        let mut spec = self.widened(&spec);
+        let stand_in = |c: &mut Condition| {
+            if self.column(c.key).is_some() && native_sent(c) {
+                *c = Condition::one_of(c.key, Vec::new()).not(true);
+            }
+        };
+        let rows = &mut spec.rows.filter.conditions;
+        let mut conditions = rows.conditions().to_vec();
+        conditions.iter_mut().for_each(stand_in);
+        *rows = ConditionTree::All(conditions);
+        if let Some(grouping) = &mut spec.grouping {
+            grouping.slicers.iter_mut().for_each(stand_in);
+        }
+        (spec, added)
     }
 
     /// `spec` with the primary key's columns, ascending, ending the rows'
@@ -1029,6 +1108,20 @@ impl DescribedSource {
     fn over(&mut self) -> impl PumpSource + '_ {
         self.grouped.over(&self.rows)
     }
+}
+
+/// The conditions `asked` that the In-Memory Table Source applied, given it
+/// was `sent` them (one for one, Native ones standing in) and applied the
+/// ordered part `applied`.
+fn restored(asked: &[Condition], sent: &[Condition], applied: &[Condition]) -> Vec<Condition> {
+    if asked == sent {
+        return applied.to_vec();
+    }
+    let mut applied = applied.iter().peekable();
+    (asked.iter().zip(sent))
+        .filter(|(_, s)| applied.next_if(|a| a == s).is_some())
+        .map(|(a, _)| a.clone())
+        .collect()
 }
 
 /// A primary-key tuple's identity: its deterministic CBOR.
@@ -1132,7 +1225,7 @@ fn sort_key(value: &Value) -> Option<TypedKey<'_>> {
 }
 
 /// A Typed Value's Stable Text: `None` for a null, a blank.
-fn stable_text(
+pub(crate) fn stable_text(
     value: &Value,
     unit: Option<&str>,
     role: Role,
@@ -1151,21 +1244,36 @@ fn stable_text(
 impl PumpSource for DescribedSource {
     fn view(&mut self, spec: &ViewSpec) -> Viewed {
         self.spec = spec.clone();
-        let (tie_broken, added) = self.tie_broken(spec);
-        let tie_broken = self.widened(&tie_broken);
-        let mut viewed = self.over().view(&tie_broken);
+        let (inner, added) = self.inner(spec);
+        let mut viewed = self.over().view(&inner);
         self.unwidened(spec, &mut viewed.applied);
-        let rows = viewed.applied.axis_mut(Axis::Rows);
+        let applied = &mut viewed.applied;
+        let rows = applied.axis_mut(Axis::Rows);
         let shown: Vec<SortColumn> = (rows.sort.columns().iter())
             .filter(|c| !added.contains(&c.key))
             .copied()
             .collect();
         rows.sort = SortSpec::new(shown);
+        rows.filter.conditions = ConditionTree::All(restored(
+            spec.rows.filter.conditions.conditions(),
+            inner.rows.filter.conditions.conditions(),
+            rows.filter.conditions.conditions(),
+        ));
+        if let (Some(asked), Some(sent), Some(grouping)) =
+            (&spec.grouping, &inner.grouping, &mut applied.grouping)
+        {
+            grouping.slicers = restored(&asked.slicers, &sent.slicers, &grouping.slicers);
+        }
+        let applied = viewed.applied.clone();
+        self.rewhere(&applied);
         viewed
     }
 
     fn support(&mut self, axis: Axis, key: Key) -> Support {
-        self.over().support(axis, key)
+        let support = self.over().support(axis, key);
+        // Native conditions go to the server as they are.
+        let native = axis == Axis::Rows && self.column(key).is_some();
+        support.with_native(support.native || native)
     }
 
     fn quick_filter(&mut self, axis: Axis) -> Option<TextSupport> {

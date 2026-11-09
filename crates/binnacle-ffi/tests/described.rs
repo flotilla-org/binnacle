@@ -751,7 +751,7 @@ fn every_call_refuses_null() {
 
 #[test]
 fn the_watch_request_names_the_scope() {
-    let wheres = [text(".status.phase == Active"), text("x=y")];
+    let wheres = [text(r#"status.phase == "Active""#), text(r#"x == "y""#)];
     // SAFETY: the texts outlive the calls, and `src` is live until freed.
     unsafe {
         let src =
@@ -763,7 +763,7 @@ fn the_watch_request_names_the_scope() {
         assert_eq!(read_text(r.path), "/tables/hosts/rows");
         assert_eq!(
             read_text(r.query),
-            "watch&limit=10000&namespace=flotilla&where=.status.phase%20%3D%3D%20Active&where=x%3Dy"
+            "watch&limit=10000&namespace=flotilla&where=status.phase%20%3D%3D%20%22Active%22&where=x%20%3D%3D%20%22y%22"
         );
         assert_eq!(
             read_text(r.target),
@@ -774,9 +774,92 @@ fn the_watch_request_names_the_scope() {
             .iter()
             .map(|&t| read_text(t))
             .collect();
-        assert_eq!(clauses, [".status.phase == Active", "x=y"]);
+        assert_eq!(clauses, [r#"status.phase == "Active""#, r#"x == "y""#]);
         assert_eq!(r.limit, 10_000);
         binnacle_described_source_free(src);
+    }
+}
+
+#[test]
+fn a_filter_the_server_takes_opens_the_watch_again_in_place_of_the_stream() {
+    let table = r#"{"type":"table","schema":{"fields":[{"name":"name","type":"string","whereOperators":["==","in","has"]},{"name":"phase","type":"string","whereOperators":["==","in","has"]}],"primaryKey":["name"]}}"#;
+    let rows = |names: &[(&str, &str)]| {
+        let rows: Vec<String> = (names.iter())
+            .map(|(n, p)| format!(r#"{{"name":"{n}","phase":"{p}"}}"#))
+            .collect();
+        format!(
+            r#"{{"type":"rows","rows":[{}],"cursor":null}}"#,
+            rows.join(",")
+        )
+    };
+    let synced = r#"{"type":"synced"}"#;
+    let src = unsafe {
+        binnacle_described_source_new(text("crews"), text("flotilla"), std::ptr::null(), 0)
+    };
+    let grid = Box::into_raw(grid());
+    let feed = move |line: &str| unsafe {
+        binnacle_described_source_receive(src, grid, 1, line.as_ptr(), line.len())
+    };
+    let held = move || unsafe {
+        let mut status = BinnacleDescribedStatus::default();
+        assert_eq!(binnacle_described_source_status(src, &mut status), 1);
+        status.rows
+    };
+    let poll = move || unsafe {
+        let mut r = BinnacleWatchRequest::default();
+        (binnacle_described_source_poll_request(src, &mut r) == 1).then(|| {
+            let wheres: Vec<String> = std::slice::from_raw_parts(r.wheres, r.wheres_len)
+                .iter()
+                .map(|&t| read_text(t))
+                .collect();
+            (read_text(r.query), wheres)
+        })
+    };
+    assert!(poll().is_some());
+    for line in [
+        table,
+        &rows(&[("a", "Running"), ("b", "Done"), ("c", "Running")]),
+        synced,
+    ] {
+        assert_eq!(feed(line), 1);
+    }
+    assert_eq!(held(), 3);
+    let phase = unsafe { (*src).source().column_key("phase").unwrap() };
+    let running = Condition::one_of(phase, vec![CoreValue::Text("Running".into())]);
+    let filter = FilterSpec::default().with_conditions(vec![running].into());
+    unsafe { &mut *grid }
+        .grid_mut()
+        .request_view(ViewSpec::default().with_filter(Axis::Rows, filter));
+    assert_eq!(unsafe { binnacle_described_source_pump(src, grid) }, 1);
+    // The old stream's messages before the host takes the request are
+    // dropped.
+    let late = r#"{"type":"upsert","key":["d"],"row":{"name":"d","phase":"Done"}}"#;
+    assert_eq!(feed(late), 1);
+    assert_eq!(held(), 3, "the old stream's upsert is dropped");
+    let (query, wheres) = poll().expect("the watch again");
+    assert_eq!(wheres, [r#"phase in ["Running"]"#]);
+    assert!(
+        query.ends_with("&where=phase%20in%20%5B%22Running%22%5D"),
+        "{query}"
+    );
+    assert_eq!(poll(), None, "once");
+    for line in [table, &rows(&[("a", "Running"), ("c", "Running")]), synced] {
+        assert_eq!(feed(line), 1);
+    }
+    assert_eq!(held(), 2, "the new stream's rows replace the held ones");
+    // A quick filter is never sent.
+    unsafe { &mut *grid }
+        .grid_mut()
+        .request_view(ViewSpec::default().with_filter(
+            Axis::Rows,
+            FilterSpec::default().with_quick(Some(TextQuery::new("a"))),
+        ));
+    assert_eq!(unsafe { binnacle_described_source_pump(src, grid) }, 1);
+    let (_, wheres) = poll().expect("the watch again, the slicer gone");
+    assert!(wheres.is_empty());
+    unsafe {
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
     }
 }
 

@@ -178,6 +178,7 @@ dependencies = [
  "hegeltest",
  "insta",
  "ratatui",
+ "rigging-condition",
  "serde",
  "serde_json",
  "unicode-width",
@@ -287,6 +288,7 @@ dependencies = [
  "binnacle-memory",
  "binnacle-testkit",
  "ciborium",
+ "rigging-condition",
  "serde_json",
 ]
 
@@ -1907,6 +1909,15 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rigging-condition"
+version = "0.1.0"
+source = "git+https://github.com/flotilla-org/rigging?rev=e68289c27fe50e112b659e9039a88b489667532b#e68289c27fe50e112b659e9039a88b489667532b"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "rustc_version"

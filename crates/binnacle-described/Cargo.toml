@@ -13,6 +13,7 @@ binnacle-group.workspace = true
 binnacle-layout.workspace = true
 binnacle-memory.workspace = true
 ciborium = "0.2"
+rigging-condition.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 

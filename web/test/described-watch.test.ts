@@ -21,6 +21,7 @@ function table(parts: { open?(type: string): void; feed?(bytes: Uint8Array): voi
       calls.ended++;
     },
     status: () => ({ synced: false }),
+    onRequest: () => () => {},
   };
   return { table: stub as unknown as DescribedTable, calls };
 }
@@ -95,4 +96,84 @@ test("a stream that ends is told to the table, which asks again", async () => {
   const { phases } = await runUntil(t, "waiting");
   expect(phases).toEqual(["connecting", "open", "waiting"]);
   expect(calls).toEqual({ opened: 1, fed: 1, ended: 1 });
+});
+
+const encode = (text: string) => new TextEncoder().encode(text);
+const ndjson = { "Content-Type": "application/x-ndjson" };
+
+/**
+ * A table that asks for `/one`, then for `/two` in place of the stream when `ask` is called, keeping the text of
+ * each `feed`; `onFeed` runs after each.
+ */
+function replacing(onFeed: (fed: string[], ask: () => void) => void) {
+  const fed: string[] = [];
+  const calls = { ended: 0 };
+  const requests = [{ target: "/one" }, { target: "/two" }];
+  let listener = () => {};
+  const ask = () => listener();
+  const stub = {
+    pollRequest: () => requests.shift(),
+    onRequest(l: () => void) {
+      listener = l;
+      return () => {};
+    },
+    open() {},
+    feed(bytes: Uint8Array) {
+      fed.push(new TextDecoder().decode(bytes));
+      onFeed(fed, ask);
+    },
+    ended() {
+      calls.ended++;
+    },
+    status: () => ({ synced: false }),
+  };
+  return { table: stub as unknown as DescribedTable, fed, calls };
+}
+
+/**
+ * `/one` sends `one`, then `late` when read again, and errors once aborted if `aborts`; `/two` sends `two` and
+ * ends.
+ */
+function serving(aborts: boolean) {
+  return vi.fn(async (target: string, init?: RequestInit) => {
+    if (target !== "/one") return new Response("two\n", { headers: ndjson });
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(encode("one\n"));
+        if (aborts) init?.signal?.addEventListener("abort", () => c.error(new DOMException("aborted", "AbortError")));
+      },
+      pull(c) {
+        if (reads++ === 0) c.enqueue(encode("late\n"));
+        return new Promise<void>(() => {});
+      },
+    });
+    return new Response(body, { headers: ndjson });
+  });
+}
+
+test("a watch asked for while the stream is open replaces it at once, and the old stream's end is no news", async () => {
+  const fetch = serving(true);
+  vi.stubGlobal("fetch", fetch);
+  // The filter changes while the loop waits on the open stream.
+  const { table: t, fed, calls } = replacing((fed, ask) => {
+    if (fed.length === 1) setTimeout(ask, 5);
+  });
+  const { phases } = await runUntil(t, "waiting");
+  expect(fetch.mock.calls.map(([target]) => target)).toEqual(["/one", "/two"]);
+  expect(fed[fed.length - 1]).toBe("two\n");
+  expect(phases).toEqual(["connecting", "open", "connecting", "open", "waiting"]);
+  expect(calls.ended).toBe(1);
+});
+
+test("no bytes of a replaced stream are fed once the table asks for another watch", async () => {
+  // A body that has bytes buffered still gives them after the abort.
+  const fetch = serving(false);
+  vi.stubGlobal("fetch", fetch);
+  // The filter changes as the table takes a message of the open stream.
+  const { table: t, fed } = replacing((fed, ask) => {
+    if (fed.length === 1) ask();
+  });
+  await runUntil(t, "waiting");
+  expect(fed).toEqual(["one\n", "two\n"]);
 });
