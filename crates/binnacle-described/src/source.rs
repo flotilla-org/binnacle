@@ -1118,10 +1118,15 @@ fn restored(asked: &[Condition], sent: &[Condition], applied: &[Condition]) -> V
         return applied.to_vec();
     }
     let mut applied = applied.iter().peekable();
-    (asked.iter().zip(sent))
+    let kept = (asked.iter().zip(sent))
         .filter(|(_, s)| applied.next_if(|a| a == s).is_some())
         .map(|(a, _)| a.clone())
-        .collect()
+        .collect();
+    debug_assert!(
+        applied.next().is_none(),
+        "the In-Memory Table Source applies an ordered part of what it is sent"
+    );
+    kept
 }
 
 /// A primary-key tuple's identity: its deterministic CBOR.
