@@ -322,3 +322,32 @@ fn the_new_watch_replaces_the_rows_in_place_and_the_old_streams_messages_are_dro
     assert_eq!(s.source.0.row_keys(), &keys[..2], "the same Keys");
     assert_eq!(support::column_down(&mut s, "name"), ["a", "b"]);
 }
+
+#[test]
+fn a_spec_asked_for_before_the_table_is_sent_once_the_table_comes_and_again_when_its_operators_change()
+ {
+    let mut source = DescribedSource::new("convoys", Scope::new("flotilla"));
+    assert!(source.poll_request().is_some());
+    let messages = convoys();
+    // The Key of a column is its field name's, so a saved spec names it
+    // before the table comes.
+    let probe = self::source();
+    let phase = key(&probe, "phase");
+    let running = Condition::one_of(phase, texts(&["Running"]));
+    let filter = FilterSpec::default().with_conditions(vec![running].into());
+    source.view(&ViewSpec::default().with_filter(Axis::Rows, filter));
+    assert_eq!(source.poll_request(), None, "no columns to send by yet");
+    source.receive(messages[0].clone());
+    let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
+        panic!("the watch again, once the table came")
+    };
+    assert_eq!(request.wheres, [r#"phase in ["Running"]"#]);
+    // A table whose phase is no longer filterable takes the clause back.
+    let mut table = messages[0].to_wire().to_json();
+    table["schema"]["fields"][1]["whereOperators"] = json!([]);
+    source.receive(Message::from_json(&table).unwrap());
+    let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
+        panic!("the watch again, the operators changed")
+    };
+    assert_eq!(request.wheres, [] as [String; 0]);
+}

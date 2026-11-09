@@ -562,7 +562,9 @@ impl Blocking {
         }
     }
 
-    /// The next event of the latest watch, if one is waiting.
+    /// The next event of the latest watch, if one is waiting. An aborted
+    /// watch sends nothing more, but what it sent before is still queued:
+    /// its events, its `Ended` among them, are skipped.
     pub fn try_recv(&self) -> Option<Event> {
         loop {
             match self.events.try_recv().ok()? {

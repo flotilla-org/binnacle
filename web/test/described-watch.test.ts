@@ -177,3 +177,39 @@ test("no bytes of a replaced stream are fed once the table asks for another watc
   await runUntil(t, "waiting");
   expect(fed).toEqual(["one\n", "two\n"]);
 });
+
+test("a watch asked for while the loop waits to reconnect opens at once", async () => {
+  const started = Date.now();
+  const fetch = vi.fn(async (target: string) =>
+    target === "/one" ? new Response("down", { status: 503 }) : new Response("two\n", { headers: ndjson }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const { table: t, fed, calls } = replacing(() => {});
+  // The loop's first wait.
+  const FIRST_WAIT = 500;
+  let ask!: () => void;
+  const asking = t.onRequest;
+  t.onRequest = (listener) => {
+    ask = listener;
+    return asking(listener);
+  };
+  const phases: WatchPhase[] = [];
+  let reached!: () => void;
+  const done = new Promise<void>((resolve) => (reached = resolve));
+  const w = watch(t, {
+    headers: {},
+    onPhase(next) {
+      phases.push(next);
+      // The first wait is the 5xx's backoff: the filter changes during it.
+      if (next === "waiting" && phases.filter((p) => p === "waiting").length === 1) ask();
+      if (fed.length > 0) reached();
+    },
+  });
+  await done;
+  w.destroy();
+  expect(fetch.mock.calls.map(([target]) => target)).toEqual(["/one", "/two"]);
+  expect(fed).toEqual(["two\n"]);
+  expect(phases.slice(0, 4)).toEqual(["connecting", "waiting", "connecting", "open"]);
+  expect(calls.ended).toBe(1);
+  expect(Date.now() - started).toBeLessThan(FIRST_WAIT);
+});

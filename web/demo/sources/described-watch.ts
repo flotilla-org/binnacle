@@ -59,6 +59,8 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
   let stopped = false;
   let controller: AbortController | null = null;
   let wake: (() => void) | null = null;
+  /** The table asked for another watch: the next wait is skipped. */
+  let asked = false;
   let wait = FIRST_WAIT;
 
   const sleep = (ms: number) =>
@@ -82,6 +84,7 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
     request = table.pollRequest();
     controller?.abort();
     controller = null;
+    asked = true;
     wake?.();
   });
 
@@ -91,6 +94,7 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
         options.onPhase("connecting");
         const target = request.target;
         request = undefined;
+        asked = false;
         const mine = new AbortController();
         controller = mine;
         /** A newer watch replaced this one. */
@@ -141,7 +145,8 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
         }
       }
       options.onPhase("waiting");
-      await sleep(wait);
+      if (!asked) await sleep(wait);
+      asked = false;
       wait = Math.min(wait * 2, LAST_WAIT);
       if (!request) request = table.pollRequest();
     }
