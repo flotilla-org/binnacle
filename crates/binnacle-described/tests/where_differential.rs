@@ -101,19 +101,19 @@ impl Fixture {
 
 /// Filters `fixture` by `condition` in the source and, if it sends a
 /// clause, in the server; the two keep the same rows, among those the
-/// server can hold.
-fn compare(fixture: &Fixture, condition: &Condition) {
+/// server can hold. Whether a clause was sent.
+fn compare(fixture: &Fixture, condition: &Condition) -> bool {
     let mut source = fixture.source();
     let filter = FilterSpec::default().with_conditions(vec![condition.clone()].into());
     let viewed = source.view(&ViewSpec::default().with_filter(Axis::Rows, filter));
     let applied = viewed.applied.rows.filter.conditions.conditions();
     if applied.is_empty() {
         assert_eq!(source.wheres(), [] as [String; 0], "{condition:?}");
-        return;
+        return false;
     }
     let [clause] = source.wheres() else {
         assert_eq!(source.wheres(), [] as [String; 0], "{condition:?}");
-        return;
+        return false;
     };
     let clause = clause.clone();
     let server = Where::parse(&clause, &fixture.schema)
@@ -136,6 +136,30 @@ fn compare(fixture: &Fixture, condition: &Condition) {
         "{condition:?} as `{clause}` on {}",
         fixture.name
     );
+    true
+}
+
+/// The cases the drawn conditions rarely reach: a blank listed, and an
+/// integer compared with a fraction, which a clause must round.
+#[test]
+fn a_blank_or_a_fraction_sent_keeps_the_rows_the_filter_keeps() {
+    let crews = fixture("crews.ndjson");
+    let source = crews.source();
+    let (phase, cpus) = (
+        source.column_key("phase").unwrap(),
+        source.column_key("cpus").unwrap(),
+    );
+    let running = vec![Listed::Blank, Listed::Text("Running".into())];
+    let half = Scalar::Number(4.5);
+    let cases = [
+        Condition::one_of(phase, running.clone()),
+        Condition::one_of(phase, running).not(true),
+        Condition::compare(cpus, Comparison::Less(half)),
+        Condition::compare(cpus, Comparison::AtMost(half)),
+    ];
+    for condition in cases {
+        assert!(compare(&crews, &condition), "{condition:?} is sent");
+    }
 }
 
 #[hegel::composite]
