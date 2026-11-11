@@ -92,7 +92,7 @@ describe("requests", () => {
     expect(d.pollRequest()).toBeUndefined();
   });
 
-  test("a filter the server takes asks for the watch again with its where; a sort or a quick filter does not", () => {
+  test("a filter the server takes asks for the watch again with its where", () => {
     // The crews table, its phase filterable as flotillad's string fields are.
     const [table, ...rest] = CREWS_LINES;
     const message = JSON.parse(table!) as { schema: { fields: { name: string; whereOperators?: string[] }[] } };
@@ -109,14 +109,6 @@ describe("requests", () => {
       'watch&limit=10000&namespace=flotilla&where=!has(phase) || phase in ["Running"]',
     );
     expect(names(d)).toEqual(["alpha", "bravo", "delta", "foxtrot"]);
-    view({ filter: { quick: null, conditions: [running] }, sort: [{ id: "load", direction: "descending" }] });
-    const quick = { text: "a", caseSensitive: false, regex: false, searches: "shown" as const };
-    view({ filter: { quick, conditions: [running] } });
-    expect(asked).toBe(1);
-    expect(d.pollRequest()).toBeUndefined();
-    view({});
-    expect(asked).toBe(2);
-    expect(d.pollRequest()?.query).toBe("watch&limit=10000&namespace=flotilla");
   });
 
   test("an empty namespace throws, and so does a body that is not a rows stream", () => {

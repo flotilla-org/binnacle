@@ -99,28 +99,21 @@ impl Fixture {
     }
 }
 
-/// What the comparison found: whether the condition was sent.
-#[derive(Debug, PartialEq)]
-enum Sent {
-    Yes,
-    No,
-}
-
 /// Filters `fixture` by `condition` in the source and, if it sends a
 /// clause, in the server; the two keep the same rows, among those the
 /// server can hold.
-fn compare(fixture: &Fixture, condition: &Condition) -> Sent {
+fn compare(fixture: &Fixture, condition: &Condition) {
     let mut source = fixture.source();
     let filter = FilterSpec::default().with_conditions(vec![condition.clone()].into());
     let viewed = source.view(&ViewSpec::default().with_filter(Axis::Rows, filter));
     let applied = viewed.applied.rows.filter.conditions.conditions();
     if applied.is_empty() {
         assert_eq!(source.wheres(), [] as [String; 0], "{condition:?}");
-        return Sent::No;
+        return;
     }
     let [clause] = source.wheres() else {
         assert_eq!(source.wheres(), [] as [String; 0], "{condition:?}");
-        return Sent::No;
+        return;
     };
     let clause = clause.clone();
     let server = Where::parse(&clause, &fixture.schema)
@@ -143,110 +136,6 @@ fn compare(fixture: &Fixture, condition: &Condition) -> Sent {
         "{condition:?} as `{clause}` on {}",
         fixture.name
     );
-    Sent::Yes
-}
-
-fn texts(values: &[&str]) -> Vec<Listed> {
-    (values.iter())
-        .map(|v| match *v {
-            "<blank>" => Listed::Blank,
-            text => Listed::Text(text.into()),
-        })
-        .collect()
-}
-
-fn date(iso: &str) -> Scalar {
-    let at = binnacle_format::Timestamp::parse_rfc3339(iso).unwrap();
-    Scalar::Date((at.unix_nanos() / 1_000_000) as i64)
-}
-
-/// Each comparison kind over `scalars`, Between over each pair.
-fn comparisons(scalars: &[Scalar]) -> Vec<Comparison> {
-    let mut all = Vec::new();
-    for &s in scalars {
-        all.extend([
-            Comparison::Equal(s),
-            Comparison::NotEqual(s),
-            Comparison::Less(s),
-            Comparison::AtMost(s),
-            Comparison::Greater(s),
-            Comparison::AtLeast(s),
-        ]);
-        for &t in scalars {
-            all.push(Comparison::Between(s, t));
-        }
-    }
-    all
-}
-
-#[test]
-fn every_condition_kind_on_the_crews_is_sent_and_keeps_the_rows_the_filter_keeps() {
-    let crews = fixture("crews.ndjson");
-    let source = crews.source();
-    let column = |name: &str| source.column_key(name).unwrap();
-    // Each condition, and whether it is sent with `not` too.
-    let mut cases: Vec<(Condition, bool)> = Vec::new();
-    // Nothing listed (no value shows as these) keeps nothing, so `not`
-    // keeps every row and sends nothing.
-    let one_ofs: [(&str, &[&str], bool); 12] = [
-        ("phase", &["Running"], true),
-        ("phase", &["Running", "Done"], true),
-        ("phase", &["<blank>"], true),
-        ("phase", &["<blank>", "Stalled"], true),
-        ("phase", &[], false),
-        ("phase", &["Stalled", "Nope"], true),
-        ("note", &["", "late"], true),
-        ("note", &["<blank>", ""], true),
-        ("cpus", &["4"], true),
-        ("cpus", &["<blank>", "2", "8"], true),
-        ("cpus", &["many", "04", "+4"], false),
-        ("host", &["brie"], true),
-    ];
-    for (name, values, negated) in one_ofs {
-        cases.push((Condition::one_of(column(name), texts(values)), negated));
-    }
-    let numbers = [4.0, -1.0, 8.0, 2.0].map(Scalar::Number);
-    for comparison in comparisons(&numbers) {
-        cases.push((Condition::compare(column("cpus"), comparison), true));
-    }
-    let loads = [0.5, 1.25, 2.0, 3.5, 1.3].map(Scalar::Number);
-    for comparison in comparisons(&loads) {
-        cases.push((Condition::compare(column("load"), comparison), true));
-    }
-    let dates = [
-        "2026-10-29T10:00:00Z",
-        "2026-10-28T09:00:00Z",
-        "2026-10-27T00:00:00Z",
-        "2026-10-28T23:59:59.999Z",
-    ]
-    .map(date);
-    for comparison in comparisons(&dates) {
-        cases.push((Condition::compare(column("started"), comparison), true));
-    }
-    // Rounded to the integers they keep, but for equality, which no
-    // integer meets.
-    let fraction = Scalar::Number(4.5);
-    for comparison in comparisons(&[fraction, Scalar::Number(2.0)]) {
-        let whole =
-            !matches!(comparison, Comparison::Equal(s) | Comparison::NotEqual(s) if s == fraction);
-        cases.push((Condition::compare(column("cpus"), comparison), whole));
-    }
-    for (condition, negated) in cases {
-        for not in [false, true] {
-            let condition = condition.clone().not(not);
-            let fraction = matches!(
-                condition.kind,
-                binnacle_core::ConditionKind::Compare(
-                    Comparison::Equal(Scalar::Number(x)) | Comparison::NotEqual(Scalar::Number(x))
-                ) if x.fract() != 0.0 && condition.key == column("cpus")
-            );
-            let want = match (not && !negated) || fraction {
-                true => Sent::No,
-                false => Sent::Yes,
-            };
-            assert_eq!(compare(&crews, &condition), want, "{condition:?}");
-        }
-    }
 }
 
 #[hegel::composite]

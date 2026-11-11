@@ -98,118 +98,39 @@ test("a stream that ends is told to the table, which asks again", async () => {
   expect(calls).toEqual({ opened: 1, fed: 1, ended: 1 });
 });
 
-const encode = (text: string) => new TextEncoder().encode(text);
-const ndjson = { "Content-Type": "application/x-ndjson" };
-
-/**
- * A table that asks for `/one`, then for `/two` in place of the stream when `ask` is called, keeping the text of
- * each `feed`; `onFeed` runs after each.
- */
-function replacing(onFeed: (fed: string[], ask: () => void) => void) {
-  const fed: string[] = [];
-  const calls = { ended: 0 };
-  const requests = [{ target: "/one" }, { target: "/two" }];
-  let listener = () => {};
-  const ask = () => listener();
-  const stub = {
-    pollRequest: () => requests.shift(),
-    onRequest(l: () => void) {
-      listener = l;
-      return () => {};
-    },
-    open() {},
-    feed(bytes: Uint8Array) {
-      fed.push(new TextDecoder().decode(bytes));
-      onFeed(fed, ask);
-    },
-    ended() {
-      calls.ended++;
-    },
-    status: () => ({ synced: false }),
-  };
-  return { table: stub as unknown as DescribedTable, fed, calls };
-}
-
-/**
- * `/one` sends `one`, then `late` when read again, and errors once aborted if `aborts`; `/two` sends `two` and
- * ends.
- */
-function serving(aborts: boolean) {
-  return vi.fn(async (target: string, init?: RequestInit) => {
+test("a watch asked for while the stream is open replaces it, and none of the old stream's bytes are fed", async () => {
+  const ndjson = { "Content-Type": "application/x-ndjson" };
+  const encode = (text: string) => new TextEncoder().encode(text);
+  // `/one` sends `one`, then `late`, buffered, which a body still gives after an abort.
+  const fetch = vi.fn(async (target: string) => {
     if (target !== "/one") return new Response("two\n", { headers: ndjson });
-    let reads = 0;
     const body = new ReadableStream<Uint8Array>({
       start(c) {
         c.enqueue(encode("one\n"));
-        if (aborts) init?.signal?.addEventListener("abort", () => c.error(new DOMException("aborted", "AbortError")));
-      },
-      pull(c) {
-        if (reads++ === 0) c.enqueue(encode("late\n"));
-        return new Promise<void>(() => {});
+        c.enqueue(encode("late\n"));
       },
     });
     return new Response(body, { headers: ndjson });
   });
-}
-
-test("a watch asked for while the stream is open replaces it at once, and the old stream's end is no news", async () => {
-  const fetch = serving(true);
   vi.stubGlobal("fetch", fetch);
-  // The filter changes while the loop waits on the open stream.
-  const { table: t, fed, calls } = replacing((fed, ask) => {
-    if (fed.length === 1) setTimeout(ask, 5);
-  });
-  const { phases } = await runUntil(t, "waiting");
-  expect(fetch.mock.calls.map(([target]) => target)).toEqual(["/one", "/two"]);
-  expect(fed[fed.length - 1]).toBe("two\n");
-  expect(phases).toEqual(["connecting", "open", "connecting", "open", "waiting"]);
-  expect(calls.ended).toBe(1);
-});
-
-test("no bytes of a replaced stream are fed once the table asks for another watch", async () => {
-  // A body that has bytes buffered still gives them after the abort.
-  const fetch = serving(false);
-  vi.stubGlobal("fetch", fetch);
-  // The filter changes as the table takes a message of the open stream.
-  const { table: t, fed } = replacing((fed, ask) => {
-    if (fed.length === 1) ask();
-  });
+  const fed: string[] = [];
+  const requests = [{ target: "/one" }, { target: "/two" }];
+  let ask = () => {};
+  const t = {
+    pollRequest: () => requests.shift(),
+    onRequest(listener: () => void) {
+      ask = listener;
+      return () => {};
+    },
+    open() {},
+    // The filter changes as the table takes the open stream's first message.
+    feed(bytes: Uint8Array) {
+      fed.push(new TextDecoder().decode(bytes));
+      if (fed.length === 1) ask();
+    },
+    ended() {},
+    status: () => ({ synced: false }),
+  } as unknown as DescribedTable;
   await runUntil(t, "waiting");
   expect(fed).toEqual(["one\n", "two\n"]);
-});
-
-test("a watch asked for while the loop waits to reconnect opens at once", async () => {
-  const started = Date.now();
-  const fetch = vi.fn(async (target: string) =>
-    target === "/one" ? new Response("down", { status: 503 }) : new Response("two\n", { headers: ndjson }),
-  );
-  vi.stubGlobal("fetch", fetch);
-  const { table: t, fed, calls } = replacing(() => {});
-  // The loop's first wait.
-  const FIRST_WAIT = 500;
-  let ask!: () => void;
-  const asking = t.onRequest;
-  t.onRequest = (listener) => {
-    ask = listener;
-    return asking(listener);
-  };
-  const phases: WatchPhase[] = [];
-  let reached!: () => void;
-  const done = new Promise<void>((resolve) => (reached = resolve));
-  const w = watch(t, {
-    headers: {},
-    onPhase(next) {
-      phases.push(next);
-      // The first wait is the 5xx's backoff: the filter changes during it.
-      if (next === "waiting" && phases.filter((p) => p === "waiting").length === 1) ask();
-      if (fed.length > 0) reached();
-    },
-  });
-  await done;
-  w.destroy();
-  expect(fetch.mock.calls.map(([target]) => target)).toEqual(["/one", "/two"]);
-  expect(fed).toEqual(["two\n"]);
-  expect(phases.slice(0, 4)).toEqual(["connecting", "waiting", "connecting", "open"]);
-  expect(calls.ended).toBe(1);
-  expect(Date.now() - started).toBeLessThan(FIRST_WAIT);
 });

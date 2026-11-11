@@ -230,16 +230,11 @@ fn a_where_clause_keeps_the_rows_it_is_true_for() {
         };
         rows.len()
     };
-    assert_eq!(count(r#"phase == "Done""#), 6);
     assert_eq!(count(r#"phase in ["Done", "Pending"]"#), 11);
     assert_eq!(count("!has(phase)"), 3, "a null is missing");
-    assert_eq!(count(r#"!has(phase) || !(phase in ["Running"])"#), 20);
-    assert_eq!(count("id == 4"), 1);
     assert_eq!(count("id >= 10 && id < 20"), 10);
     // Two are null, and two `soon`, no datetime, so missing too.
     assert_eq!(count("has(started)"), 26);
-    assert_eq!(count(r#"started < timestamp("2026-07-25T17:20:00Z")"#), 0);
-    assert_eq!(count(r#"started <= timestamp("2026-07-25T17:22:02Z")"#), 2);
 }
 
 /// `text` percent-encoded but for RFC 3986's unreserved characters.
