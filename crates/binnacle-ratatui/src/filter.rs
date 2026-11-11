@@ -8,13 +8,13 @@ use binnacle_core::{
     Edge, FilterSpec, Grid, Key, Level, Placement, Snapshot, SortColumn, SortDirection, TextQuery,
     TextSupport, Value,
 };
+use binnacle_memory::column_filter::compare::{self, BETWEEN, STEPS};
+use binnacle_memory::column_filter::{Column, Shown, chip_text};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use crate::checklist::{Column, Shown};
-use crate::compare::{self, BETWEEN, STEPS};
 use crate::width::{fit, pad as pad_to, put_text, tail, width as text_width};
 use crate::{Content, Theme};
 
@@ -2142,50 +2142,6 @@ fn chips(
         };
         put(x, &format!(" {chip} "), style);
     }
-}
-
-/// A chip's text: `label: text`, with `not ` before the text, the text in
-/// slashes for a regex, and ` Aa` when it matches case.
-fn chip_text(label: &str, c: &Condition) -> String {
-    let not = if c.not { "not " } else { "" };
-    match &c.kind {
-        ConditionKind::Text(q) => {
-            let text = if q.regex {
-                format!("/{}/", q.text)
-            } else {
-                q.text.clone()
-            };
-            let case = if q.case_sensitive { " Aa" } else { "" };
-            format!("{label}: {not}{text}{case}")
-        }
-        ConditionKind::OneOf(values) => format!("{label}: {not}{}", listed_text(values)),
-        ConditionKind::Compare(c) => format!("{label}: {not}{}", compare::text(c)),
-        // The source's own language, passed through as typed.
-        ConditionKind::Native(text) => format!("{label}: {not}‹{text}›"),
-        _ => format!("{label}: …"),
-    }
-}
-
-/// A OneOf's values for its chip: the first three, then how many more;
-/// "nothing" for none.
-fn listed_text(values: &[Value]) -> String {
-    if values.is_empty() {
-        return "nothing".to_string();
-    }
-    let named: Vec<&str> = (values.iter().take(3))
-        .map(|v| match v {
-            Value::Blank => "(Blanks)",
-            Value::Text(t) if t.is_empty() => "\"\"",
-            Value::Text(t) => t,
-        })
-        .collect();
-    let more = values.len() - named.len();
-    let more = if more > 0 {
-        format!(" +{more}")
-    } else {
-        String::new()
-    };
-    named.join(", ") + &more
 }
 
 /// The row count for a status line: "1,204 of 5,001 rows" when the Table

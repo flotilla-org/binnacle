@@ -6,18 +6,19 @@
 //! ticks are read back from the conditions against the values shown.
 //!
 //! The checklist owns a column's first Text condition and its first OneOf;
-//! the popup's comparison row owns its first comparison; any others stay as
-//! they are. A value a Text condition rejects can't be
-//! ticked: the popup shows it dimmed. A column read from the grouping's
+//! the [comparison row](super::compare) owns its first comparison; any
+//! others stay as they are. A value a Text condition rejects can't be
+//! ticked: a menu shows it dimmed. A column read from the grouping's
 //! slicers writes the same changes as slicer edits.
 
 use binnacle_core::{Axis, Condition, ConditionKind, Grid, Key, TextQuery, Value};
-use regex::RegexBuilder;
+
+use crate::TextMatcher;
 
 /// The conditions on one column the checklist reads and writes: on the
 /// rows, or on a row filtering the columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Column {
+pub struct Column {
     /// The axis the conditions filter.
     pub axis: Axis,
     pub key: Key,
@@ -36,7 +37,7 @@ pub(crate) struct Column {
 
 /// The values the checklist shows: the blank first if listed, whether there
 /// were more, and the search they answer.
-pub(crate) struct Shown<'a> {
+pub struct Shown<'a> {
     pub values: &'a [Value],
     pub partial: bool,
     pub search: &'a str,
@@ -219,21 +220,11 @@ fn search_condition(key: Key, search: &str) -> Condition {
 fn keeps(condition: &Condition, value: &Value) -> bool {
     let matched = match (&condition.kind, value) {
         (ConditionKind::OneOf(values), _) => values.contains(value),
-        (ConditionKind::Text(q), value) => {
-            let pattern = if q.regex {
-                q.text.clone()
-            } else {
-                regex::escape(&q.text)
-            };
-            let built = RegexBuilder::new(&pattern)
-                .case_insensitive(!q.case_sensitive)
-                .build();
-            match (built, value) {
-                (Err(_), _) => return true,
-                (Ok(regex), Value::Text(t)) => regex.is_match(t),
-                (Ok(_), Value::Blank) => false,
-            }
-        }
+        (ConditionKind::Text(q), value) => match (TextMatcher::new(q), value) {
+            (None, _) => return true,
+            (Some(matcher), Value::Text(t)) => matcher.is_match(t),
+            (Some(_), Value::Blank) => false,
+        },
         _ => return true,
     };
     matched != condition.not

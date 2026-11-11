@@ -1,4 +1,4 @@
-//! The column filter popup's comparison row: its steps from "Any value"
+//! A column filter's comparison row: its steps from "Any value"
 //! through "Between", the comparison its fields hold, and a comparison
 //! written for its fields or its chip.
 
@@ -6,7 +6,7 @@ use binnacle_core::{Compared, Comparison, Scalar};
 
 /// The row's steps, Left and Right moving between them: none, then each
 /// comparison.
-pub(crate) const STEPS: [&str; 8] = [
+pub const STEPS: [&str; 8] = [
     "Any value",
     "Equal to",
     "Not equal to",
@@ -18,16 +18,11 @@ pub(crate) const STEPS: [&str; 8] = [
 ];
 
 /// The step `between` is.
-pub(crate) const BETWEEN: usize = 7;
+pub const BETWEEN: usize = 7;
 
 /// The comparison step `step` asks for with `low` (and `high`, for
 /// Between) typed in, or none while a field holds no `compared` value.
-pub(crate) fn comparison(
-    step: usize,
-    compared: Compared,
-    low: &str,
-    high: &str,
-) -> Option<Comparison> {
+pub fn comparison(step: usize, compared: Compared, low: &str, high: &str) -> Option<Comparison> {
     let a = scalar(compared, low);
     Some(match step {
         1 => Comparison::Equal(a?),
@@ -42,7 +37,7 @@ pub(crate) fn comparison(
 }
 
 /// The step, low and high fields that show `c`.
-pub(crate) fn fields(c: &Comparison) -> (usize, String, String) {
+pub fn fields(c: &Comparison) -> (usize, String, String) {
     let (step, low) = match c {
         Comparison::Equal(s) => (1, s),
         Comparison::NotEqual(s) => (2, s),
@@ -58,7 +53,7 @@ pub(crate) fn fields(c: &Comparison) -> (usize, String, String) {
 }
 
 /// A comparison for a chip: `> 100`, `≤ 2024-03-01`, or `between 1 and 5`.
-pub(crate) fn text(c: &Comparison) -> String {
+pub fn text(c: &Comparison) -> String {
     let (sign, s) = match c {
         Comparison::Equal(s) => ("=", s),
         Comparison::NotEqual(s) => ("≠", s),
@@ -74,7 +69,7 @@ pub(crate) fn text(c: &Comparison) -> String {
 /// The `compared` value `text` writes: a finite number, or a date as
 /// `YYYY-MM-DD`, with `THH:MM`, seconds and milliseconds and `Z` (UTC)
 /// optional.
-pub(crate) fn scalar(compared: Compared, text: &str) -> Option<Scalar> {
+pub fn scalar(compared: Compared, text: &str) -> Option<Scalar> {
     match compared {
         Compared::Numbers => text
             .trim()
