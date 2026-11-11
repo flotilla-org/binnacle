@@ -187,6 +187,14 @@ fn headers_and_conditions_show_what_is_applied_and_what_is_pending() {
     // Swap the condition on column 0 for one on column 1, unanswered.
     s.input(|g| g.replace_condition(Axis::Rows, &a, b.clone()));
     let _ = std::iter::from_fn(|| s.grid.poll_effect()).count();
+    // The Grid lists them as the Snapshot will, without taking one.
+    assert_eq!(
+        s.grid.conditions(Axis::Rows),
+        vec![
+            (b.clone(), ConditionState::Adding),
+            (a.clone(), ConditionState::Removing),
+        ]
+    );
     s.grid.begin_frame(V);
     let snap = s.grid.snapshot();
     assert_eq!(
@@ -263,6 +271,13 @@ fn support_declares_text_with_contains_by_default_and_the_snapshot_shows_it() {
             .with_text(Some(TextSupport::new(true)))
     );
     assert_eq!(snap.support(Axis::Cols, Key(1)), Support::default());
+    // The Grid gives the same without taking a Snapshot.
+    for key in [Key(0), Key(1)] {
+        assert_eq!(
+            s.grid.support(Axis::Rows, key),
+            s.frame(V).support(Axis::Rows, key)
+        );
+    }
 }
 
 fn one_of(key: u64, values: &[Option<&str>]) -> Condition {

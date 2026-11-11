@@ -994,6 +994,18 @@ impl Grid {
         &self.view.applied
     }
 
+    /// The conditions of `axis`, as [`crate::Snapshot::conditions`] lists
+    /// them, without taking a Snapshot.
+    pub fn conditions(&self, axis: Axis) -> Vec<(Condition, ConditionState)> {
+        self.view.conditions(axis)
+    }
+
+    /// What the Table Source supports when viewing `axis` by `key`, as
+    /// [`crate::Snapshot::support`] gives it, without taking a Snapshot.
+    pub fn support(&self, axis: Axis, key: Key) -> Support {
+        self.view.support(axis, key)
+    }
+
     /// What the Table Source supports when viewing `axis` by `key`, an item
     /// of the other axis. Every item has [`Support::default`] until set
     /// otherwise.

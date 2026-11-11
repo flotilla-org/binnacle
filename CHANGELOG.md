@@ -9,6 +9,8 @@
 
 ### Added
 
+- **core:** `Grid::conditions` and `Grid::support` read an axis's conditions and an item's support as `Snapshot::conditions` and `Snapshot::support` do, without taking a Snapshot (beside `Grid::applied_view`), so a host can read them between frames without taking the damage the next Snapshot reports.
+
 - **memory:** the column filter's rules are public in `binnacle_memory::column_filter`, so every host writes and names the same conditions: the list-of-values checklist (`Column`, `Shown`), the comparison row (`compare`) and `chip_text`. They moved from binnacle-ratatui, which uses them from there and no longer depends on `regex`. A Text condition reads through `TextMatcher`, as the In-Memory Table Source reads it.
 
 - **cli:** the new `binnacle-cli` crate holds the CLI's flags, printer and `CliTable` (`Flags`, `FlagArgs`, `FlagError`, `parse_where`, `Format`, `print`, `print_rows`, `partial_note`, `Interactive`, `Selection`, `Exit`, and the `width` module) with no ratatui or crossterm in its tree, so a CLI host outside `binnacle-ratatui` takes the same flags and prints the same output. Its `described` feature adds `CliTable` for `DescribedSource`; its `clap` feature adds `FlagArgs` and `clap::ValueEnum` for `Format`. `FlagArgs::flags` converts straight through the struct and shares `Flags::parse`'s checks. `Format`'s `clap::ValueEnum` takes every name `FromStr` does (`text` and `table` for `aligned`, `ndjson` for `jsonl`). `binnacle_ratatui::cli` re-exports it all and keeps the viewport, so existing paths compile unchanged ([#361](https://github.com/flotilla-org/binnacle/issues/361)).
