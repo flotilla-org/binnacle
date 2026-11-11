@@ -195,6 +195,7 @@ fn headers_and_conditions_show_what_is_applied_and_what_is_pending() {
             (a.clone(), ConditionState::Removing),
         ]
     );
+    assert_eq!(s.grid.conditions(Axis::Cols), vec![]);
     s.grid.begin_frame(V);
     let snap = s.grid.snapshot();
     assert_eq!(
@@ -272,11 +273,12 @@ fn support_declares_text_with_contains_by_default_and_the_snapshot_shows_it() {
     );
     assert_eq!(snap.support(Axis::Cols, Key(1)), Support::default());
     // The Grid gives the same without taking a Snapshot.
-    for key in [Key(0), Key(1)] {
-        assert_eq!(
-            s.grid.support(Axis::Rows, key),
-            s.frame(V).support(Axis::Rows, key)
-        );
+    for (axis, key) in [
+        (Axis::Rows, Key(0)),
+        (Axis::Rows, Key(1)),
+        (Axis::Cols, Key(1)),
+    ] {
+        assert_eq!(s.grid.support(axis, key), s.frame(V).support(axis, key));
     }
 }
 

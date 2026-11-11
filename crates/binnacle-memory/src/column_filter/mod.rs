@@ -5,7 +5,7 @@
 pub mod checklist;
 pub mod compare;
 
-pub use checklist::{Column, Shown};
+pub use checklist::{Column, Shown, Tick};
 
 use binnacle_core::{Condition, ConditionKind, Value};
 

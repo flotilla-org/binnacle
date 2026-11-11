@@ -7,7 +7,7 @@ use binnacle_core::{
     Axis, AxisConfig, Compared, Comparison, Condition, Grid, Key, Scalar, Support, TextQuery,
     TextSupport, Value,
 };
-use binnacle_memory::column_filter::{Column, Shown, chip_text, compare};
+use binnacle_memory::column_filter::{Column, Shown, Tick, chip_text, compare};
 use hegel::TestCase;
 use hegel::generators as gs;
 
@@ -144,6 +144,30 @@ fn ticks_on_a_whole_list_follow_a_model_of_ticked_values(tc: TestCase) {
 }
 
 #[test]
+fn ticks_read_each_value_as_ticked_and_excluded_do() {
+    let values = values();
+    let conditions = [
+        Condition::text(PORT, TextQuery::new("E")),
+        Condition::one_of(PORT, vec![values[1].clone()]).not(true),
+    ];
+    let column = Column::of(&conditions, Axis::Rows, PORT);
+    let each: Vec<Tick> = (values.iter())
+        .map(|v| Tick {
+            ticked: column.ticked(v),
+            excluded: column.excluded(v),
+        })
+        .collect();
+    assert_eq!(column.ticks(&values), each);
+    // Aberdeen is kept; Bergen contains "e" but is unticked; Cádiz and the
+    // blank don't contain it.
+    let ticked: Vec<(bool, bool)> = each.iter().map(|t| (t.ticked, t.excluded)).collect();
+    assert_eq!(
+        ticked,
+        [(true, false), (false, false), (false, true), (false, true)]
+    );
+}
+
+#[test]
 fn the_comparison_row_reads_back_what_it_writes() {
     let between = compare::comparison(
         compare::BETWEEN,
@@ -173,4 +197,8 @@ fn chips_name_the_condition_on_their_column() {
     assert_eq!(chip_text("weight", &over), "weight: > 100");
     let pattern = Condition::text(PORT, TextQuery::new("^B").regex(true));
     assert_eq!(chip_text("port", &pattern), "port: /^B/");
+    let cased = Condition::text(PORT, TextQuery::new("Ber").case_sensitive(true)).not(true);
+    assert_eq!(chip_text("port", &cased), "port: not Ber Aa");
+    let native = Condition::native(PORT, "port ~ 'B%'");
+    assert_eq!(chip_text("port", &native), "port: ‹port ~ 'B%'›");
 }

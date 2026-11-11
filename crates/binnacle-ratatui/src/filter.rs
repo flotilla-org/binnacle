@@ -1814,7 +1814,7 @@ impl Open {
         let shown = self.shown();
         let (mark, label, count, style) = if i == 0 {
             let on = self.column.head_ticked(&shown);
-            let some = listed.values.iter().any(|v| self.column.ticked(v));
+            let some = self.column.ticks(&listed.values).iter().any(|t| t.ticked);
             let mark = match (on, some && shown.search.is_empty()) {
                 (true, _) => "[x]",
                 (false, true) => "[-]",

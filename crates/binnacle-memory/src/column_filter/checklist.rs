@@ -35,6 +35,14 @@ pub struct Column {
     pub slicing: bool,
 }
 
+/// How the checklist shows a value: ticked, and whether a Text condition
+/// rejects it, so it can't be ticked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tick {
+    pub ticked: bool,
+    pub excluded: bool,
+}
+
 /// The values the checklist shows: the blank first if listed, whether there
 /// were more, and the search they answer.
 pub struct Shown<'a> {
@@ -76,12 +84,25 @@ impl Column {
 
     /// Whether the column's Text conditions reject `value`, so it can't be ticked.
     pub fn excluded(&self, value: &Value) -> bool {
-        (self.all.iter()).any(|c| matches!(c.kind, ConditionKind::Text(_)) && !keeps(c, value))
+        Keepers::of(self).excluded(value)
     }
 
     /// Whether `value` is ticked: every condition on the column keeps it.
     pub fn ticked(&self, value: &Value) -> bool {
-        self.all.iter().all(|c| keeps(c, value))
+        Keepers::of(self).ticked(value)
+    }
+
+    /// How each of `values` shows, as [`ticked`](Column::ticked) and
+    /// [`excluded`](Column::excluded) say, with each Text condition's
+    /// matcher built once for the list.
+    pub fn ticks(&self, values: &[Value]) -> Vec<Tick> {
+        let keepers = Keepers::of(self);
+        (values.iter())
+            .map(|v| Tick {
+                ticked: keepers.ticked(v),
+                excluded: keepers.excluded(v),
+            })
+            .collect()
     }
 
     /// The column with `text` and `one_of` in place of its Text condition
@@ -167,7 +188,8 @@ impl Column {
             listed.push(value.clone());
         }
         let whole = !shown.partial && shown.search.is_empty();
-        let all = (shown.values.iter()).all(|v| self.excluded(v) || listed.contains(v));
+        let keepers = Keepers::of(self);
+        let all = (shown.values.iter()).all(|v| keepers.excluded(v) || listed.contains(v));
         if (*not && listed.is_empty()) || (!*not && whole && all) {
             return self.write(grid, text, None);
         }
@@ -187,8 +209,11 @@ impl Column {
                 .is_some_and(|c| c.kind == search_condition(c.key, shown.search).kind && !c.not);
             return searched && self.one_of.is_none();
         }
-        let mut open = shown.values.iter().filter(|v| !self.excluded(v)).peekable();
-        open.peek().is_some() && open.all(|v| self.ticked(v))
+        let keepers = Keepers::of(self);
+        let mut open = (shown.values.iter())
+            .filter(|v| !keepers.excluded(v))
+            .peekable();
+        open.peek().is_some() && open.all(|v| keepers.ticked(v))
     }
 
     /// Ticks (`on`) or unticks the head. Without a search, ticking removes
@@ -214,13 +239,37 @@ fn search_condition(key: Key, search: &str) -> Condition {
     Condition::text(key, TextQuery::new(search))
 }
 
-/// Whether `condition` keeps an item whose value is `value`, read here as
-/// the In-Memory Table Source reads it. A pattern the `regex` crate rejects,
-/// which no source applies, keeps everything.
-fn keeps(condition: &Condition, value: &Value) -> bool {
+/// A column's conditions read against values, each Text condition's
+/// matcher built once.
+struct Keepers<'c>(Vec<(&'c Condition, Option<TextMatcher>)>);
+
+impl<'c> Keepers<'c> {
+    fn of(column: &'c Column) -> Self {
+        let matcher = |c: &Condition| match &c.kind {
+            ConditionKind::Text(q) => TextMatcher::new(q),
+            _ => None,
+        };
+        Keepers(column.all.iter().map(|c| (c, matcher(c))).collect())
+    }
+
+    fn excluded(&self, value: &Value) -> bool {
+        (self.0.iter())
+            .any(|(c, m)| matches!(c.kind, ConditionKind::Text(_)) && !keeps(c, m, value))
+    }
+
+    fn ticked(&self, value: &Value) -> bool {
+        self.0.iter().all(|(c, m)| keeps(c, m, value))
+    }
+}
+
+/// Whether `condition` (with `matcher`, its Text matcher) keeps an item
+/// whose value is `value`, read here as the In-Memory Table Source reads
+/// it. A pattern the `regex` crate rejects, which no source applies, keeps
+/// everything.
+fn keeps(condition: &Condition, matcher: &Option<TextMatcher>, value: &Value) -> bool {
     let matched = match (&condition.kind, value) {
         (ConditionKind::OneOf(values), _) => values.contains(value),
-        (ConditionKind::Text(q), value) => match (TextMatcher::new(q), value) {
+        (ConditionKind::Text(_), value) => match (matcher, value) {
             (None, _) => return true,
             (Some(matcher), Value::Text(t)) => matcher.is_match(t),
             (Some(_), Value::Blank) => false,
