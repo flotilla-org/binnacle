@@ -21,6 +21,7 @@ function table(parts: { open?(type: string): void; feed?(bytes: Uint8Array): voi
       calls.ended++;
     },
     status: () => ({ synced: false }),
+    onRequest: () => () => {},
   };
   return { table: stub as unknown as DescribedTable, calls };
 }
@@ -95,4 +96,41 @@ test("a stream that ends is told to the table, which asks again", async () => {
   const { phases } = await runUntil(t, "waiting");
   expect(phases).toEqual(["connecting", "open", "waiting"]);
   expect(calls).toEqual({ opened: 1, fed: 1, ended: 1 });
+});
+
+test("a watch asked for while the stream is open replaces it, and none of the old stream's bytes are fed", async () => {
+  const ndjson = { "Content-Type": "application/x-ndjson" };
+  const encode = (text: string) => new TextEncoder().encode(text);
+  // `/one` sends `one`, then `late`, buffered, which a body still gives after an abort.
+  const fetch = vi.fn(async (target: string) => {
+    if (target !== "/one") return new Response("two\n", { headers: ndjson });
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(encode("one\n"));
+        c.enqueue(encode("late\n"));
+      },
+    });
+    return new Response(body, { headers: ndjson });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const fed: string[] = [];
+  const requests = [{ target: "/one" }, { target: "/two" }];
+  let ask = () => {};
+  const t = {
+    pollRequest: () => requests.shift(),
+    onRequest(listener: () => void) {
+      ask = listener;
+      return () => {};
+    },
+    open() {},
+    // The filter changes as the table takes the open stream's first message.
+    feed(bytes: Uint8Array) {
+      fed.push(new TextDecoder().decode(bytes));
+      if (fed.length === 1) ask();
+    },
+    ended() {},
+    status: () => ({ synced: false }),
+  } as unknown as DescribedTable;
+  await runUntil(t, "waiting");
+  expect(fed).toEqual(["one\n", "two\n"]);
 });

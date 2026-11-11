@@ -201,12 +201,13 @@ fn an_unknown_table_is_a_404_and_a_bad_where_a_400_shaped_as_recorded() {
     )
     .unwrap();
     assert_eq!(bad.status, 400);
+    // The recording predates the condition language: the shape holds, the
+    // message is the fake's own.
     let recorded = std::fs::read(data("error-bad-where.json")).unwrap();
     assert_eq!(body_keys(&bad.body), body_keys(&recorded));
-    assert_eq!(bad.body, recorded, "flotillad's very message");
     let good = fetch(
         fake.addr(),
-        "/tables/hosts/rows?namespace=flotilla&where=.metadata.name%20%3D%3D%20nobody",
+        "/tables/hosts/rows?namespace=flotilla&where=metadata.name%20%3D%3D%20%22nobody%22",
         &[],
     )
     .unwrap();
@@ -214,12 +215,12 @@ fn an_unknown_table_is_a_404_and_a_bad_where_a_400_shaped_as_recorded() {
 }
 
 #[test]
-fn a_where_clause_reads_a_field_or_into_an_object() {
+fn a_where_clause_keeps_the_rows_it_is_true_for() {
     let fake = FakeTables::new().generate("big", 30).start().unwrap();
     let count = |clause: &str| {
         let target = format!(
             "/tables/big/rows?namespace=flotilla&where={}",
-            clause.replace(' ', "%20").replace('=', "%3D")
+            encode(clause)
         );
         let response = fetch(fake.addr(), &target, &[]).unwrap();
         assert_eq!(response.status, 200, "{clause}");
@@ -229,10 +230,23 @@ fn a_where_clause_reads_a_field_or_into_an_object() {
         };
         rows.len()
     };
-    assert_eq!(count(".phase == Done"), 6);
-    assert_eq!(count(".spec.image == zig"), 10);
-    assert_eq!(count(".spec.replicas == 3"), 7);
-    assert_eq!(count(".id == 4"), 1);
+    assert_eq!(count(r#"phase in ["Done", "Pending"]"#), 11);
+    assert_eq!(count("!has(phase)"), 3, "a null is missing");
+    assert_eq!(count("id >= 10 && id < 20"), 10);
+    // Two are null, and two `soon`, no datetime, so missing too.
+    assert_eq!(count("has(started)"), 26);
+}
+
+/// `text` percent-encoded but for RFC 3986's unreserved characters.
+fn encode(text: &str) -> String {
+    (text.bytes())
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 #[test]
@@ -603,7 +617,7 @@ fn a_table_with_no_primary_key_takes_upserts_and_deletes_by_place() {
     let fake = FakeTables::new().table(notes).start().unwrap();
     let scopes = [
         Scope::new("flotilla"),
-        Scope::new("flotilla").with_where(".tag == x"),
+        Scope::new("flotilla").with_where(r#"tag == "x""#),
     ];
     let mut sources = scopes.map(|scope| DescribedSource::new("notes", scope));
     let check = |sources: &mut [DescribedSource; 2], steps: Vec<Step>, what: &str, after| {

@@ -33,7 +33,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 24u
+#define BINNACLE_ABI_VERSION 25u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -2013,6 +2013,14 @@ uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
  * asks for (binnacle_described_source_fill), then draws each shown cell
  * (binnacle_described_cell or binnacle_described_cells).
  *
+ * The source asks for its watch again when the stream ends, and when a
+ * filter changes the where clauses it sends the server (its conditions in
+ * the condition language), so the host polls after each pump as well as
+ * after an end. A new OPEN_WATCH replaces the stream open: the host closes
+ * it and feeds only the new one's messages. Until the host takes the
+ * request, the source drops the messages it is fed. Every row that comes
+ * is filtered again, so what shows never depends on the server's filter.
+ *
  * A source is not thread-safe: it is !Send in Rust (it holds an Rc and boxed
  * closures), so a handle, and the Grid it drives, are used from one thread
  * only. A source drives the first Grid a call gives it, even a call it then
@@ -2139,8 +2147,8 @@ typedef struct {
  * ("/tables/{table}/rows") and query ("watch&limit=...&namespace=...", then a
  * "where=" for each clause, each percent-encoded) joined by "?", and feed
  * each message the stream carries to binnacle_described_source_receive.
- * table, namespace_name, the where clauses and limit are what target
- * encodes. */
+ * table, namespace_name, the where clauses (the scope's, then those the
+ * filter sends) and limit are what target encodes. */
 typedef struct {
   uint32_t kind;
   BinnacleText table;
@@ -2263,7 +2271,9 @@ int binnacle_described_source_receive(BinnacleDescribedSource *src, BinnacleGrid
 int binnacle_described_source_ended(BinnacleDescribedSource *src, BinnacleGrid *grid);
 
 /* Takes the source's next request for its host into out: 1 if there was
- * one, 0 when none is queued. The first opens the watch. */
+ * one, 0 when none is queued. The first opens the watch; a later one opens
+ * it again, after the stream ended or with other where clauses, in place of
+ * the stream open. */
 int binnacle_described_source_poll_request(BinnacleDescribedSource *src,
                                            BinnacleWatchRequest *out);
 

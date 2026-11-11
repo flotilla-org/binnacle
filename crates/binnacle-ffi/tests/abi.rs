@@ -10,7 +10,7 @@ use binnacle_ffi::binnacle_abi_version;
 /// pinned at. A change to the header outside its comments changes the
 /// fingerprint: bump `BINNACLE_ABI_VERSION` (in the header and `lib.rs`) as
 /// the header says, then pin the new pair here.
-const PINNED: (u32, u64) = (24, 0xd987_c19f_c47e_0eef);
+const PINNED: (u32, u64) = (25, 0x72ae_05e2_017f_6b32);
 
 fn header() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("include/binnacle.h");

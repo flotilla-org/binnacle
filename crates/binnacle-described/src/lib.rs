@@ -12,6 +12,7 @@
 //! comes back [`Received::Unhandled`]. [`encode_json_line`] and
 //! [`encode_cbor_item`] write messages, as a server (or a fake one) does.
 
+mod clause;
 mod keys;
 mod layout;
 mod message;

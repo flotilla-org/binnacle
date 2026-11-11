@@ -751,7 +751,7 @@ fn every_call_refuses_null() {
 
 #[test]
 fn the_watch_request_names_the_scope() {
-    let wheres = [text(".status.phase == Active"), text("x=y")];
+    let wheres = [text(r#"status.phase == "Active""#), text(r#"x == "y""#)];
     // SAFETY: the texts outlive the calls, and `src` is live until freed.
     unsafe {
         let src =
@@ -763,7 +763,7 @@ fn the_watch_request_names_the_scope() {
         assert_eq!(read_text(r.path), "/tables/hosts/rows");
         assert_eq!(
             read_text(r.query),
-            "watch&limit=10000&namespace=flotilla&where=.status.phase%20%3D%3D%20Active&where=x%3Dy"
+            "watch&limit=10000&namespace=flotilla&where=status.phase%20%3D%3D%20%22Active%22&where=x%20%3D%3D%20%22y%22"
         );
         assert_eq!(
             read_text(r.target),
@@ -774,9 +774,44 @@ fn the_watch_request_names_the_scope() {
             .iter()
             .map(|&t| read_text(t))
             .collect();
-        assert_eq!(clauses, [".status.phase == Active", "x=y"]);
+        assert_eq!(clauses, [r#"status.phase == "Active""#, r#"x == "y""#]);
         assert_eq!(r.limit, 10_000);
         binnacle_described_source_free(src);
+    }
+}
+
+#[test]
+fn a_filter_the_server_takes_asks_for_the_watch_again_with_its_where() {
+    let table = r#"{"type":"table","schema":{"fields":[{"name":"name","type":"string"},{"name":"phase","type":"string","whereOperators":["in"]}],"primaryKey":["name"]}}"#;
+    let src = unsafe {
+        binnacle_described_source_new(text("crews"), text("flotilla"), std::ptr::null(), 0)
+    };
+    let grid = Box::into_raw(grid());
+    let poll = move || unsafe {
+        let mut r = BinnacleWatchRequest::default();
+        (binnacle_described_source_poll_request(src, &mut r) == 1).then(|| {
+            (std::slice::from_raw_parts(r.wheres, r.wheres_len).iter())
+                .map(|&t| read_text(t))
+                .collect::<Vec<_>>()
+        })
+    };
+    assert!(poll().is_some());
+    for line in [table, r#"{"type":"synced"}"#] {
+        let fed =
+            unsafe { binnacle_described_source_receive(src, grid, 1, line.as_ptr(), line.len()) };
+        assert_eq!(fed, 1);
+    }
+    let phase = unsafe { (*src).source().column_key("phase").unwrap() };
+    let running = Condition::one_of(phase, vec![CoreValue::Text("Running".into())]);
+    let filter = FilterSpec::default().with_conditions(vec![running].into());
+    unsafe { &mut *grid }
+        .grid_mut()
+        .request_view(ViewSpec::default().with_filter(Axis::Rows, filter));
+    assert_eq!(unsafe { binnacle_described_source_pump(src, grid) }, 1);
+    assert_eq!(poll(), Some(vec![r#"phase in ["Running"]"#.to_owned()]));
+    unsafe {
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
     }
 }
 

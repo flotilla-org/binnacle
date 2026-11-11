@@ -16,8 +16,14 @@
 //!
 //! Reconnecting is the source's: after [`Event::Ended`] the host calls
 //! `source.ended()`, which asks to open the watch again, and the transport
-//! waits out its backoff before that request.
+//! waits out its backoff before that request. A source also asks again
+//! when its filter changes the `where` clauses it sends, while the stream
+//! is open: the new watch replaces the old, whose messages must stop.
+//! [`Blocking`] drops the old watch and any of its events not yet read; an
+//! async host drops the future of [`Transport::watch`] serving the old
+//! request before it feeds the new one's events.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -477,12 +483,17 @@ fn split(base: &str) -> Option<(String, String)> {
 
 /// A transport for a sync host: a thread of its own runs a current-thread
 /// tokio runtime, and events come back through a channel. The channels are
-/// unbounded, so a host reads events each frame. Dropping it stops the
-/// thread and waits for its runtime to shut down, dropping any watch still
-/// open.
+/// unbounded, so a host reads events each frame. It serves one watch at a
+/// time: each request it opens replaces the watch before, which is dropped
+/// with any of its events not yet read, so a source never takes messages of
+/// two streams. Dropping it stops the thread and waits for its runtime to
+/// shut down, dropping any watch still open.
 pub struct Blocking {
-    requests: Option<tokio::sync::mpsc::UnboundedSender<HostRequest>>,
-    events: mpsc::Receiver<Event>,
+    requests: Option<tokio::sync::mpsc::UnboundedSender<(u64, HostRequest)>>,
+    /// Each event with the request it is for.
+    events: mpsc::Receiver<(u64, Event)>,
+    /// How many requests were opened: the latest's number.
+    opened: Cell<u64>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -491,7 +502,7 @@ impl Blocking {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let (requests, mut incoming) = tokio::sync::mpsc::unbounded_channel::<HostRequest>();
+        let (requests, mut incoming) = tokio::sync::mpsc::unbounded_channel::<(u64, HostRequest)>();
         let (events, outgoing) = mpsc::channel();
         let transport = Transport::new(options);
         let thread = thread::Builder::new()
@@ -501,16 +512,20 @@ impl Blocking {
                     let local = tokio::task::LocalSet::new();
                     local
                         .run_until(async move {
-                            while let Some(request) = incoming.recv().await {
+                            let mut serving: Option<tokio::task::JoinHandle<()>> = None;
+                            while let Some((number, request)) = incoming.recv().await {
+                                if let Some(old) = serving.take() {
+                                    old.abort();
+                                }
                                 let transport = transport.clone();
                                 let events = events.clone();
-                                tokio::task::spawn_local(async move {
+                                serving = Some(tokio::task::spawn_local(async move {
                                     transport
                                         .watch(&request, |event| {
-                                            let _ = events.send(event);
+                                            let _ = events.send((number, event));
                                         })
                                         .await;
-                                });
+                                }));
                             }
                         })
                         .await;
@@ -519,25 +534,44 @@ impl Blocking {
         Ok(Blocking {
             requests: Some(requests),
             events: outgoing,
+            opened: Cell::new(0),
             thread: Some(thread),
         })
     }
 
-    /// Serves `request`, as [`Transport::watch`] does.
+    /// Serves `request`, as [`Transport::watch`] does, in place of the
+    /// watch served before: from now on, only its events come.
     pub fn open(&self, request: HostRequest) {
         if let Some(requests) = &self.requests {
-            let _ = requests.send(request);
+            let number = self.opened.get() + 1;
+            self.opened.set(number);
+            let _ = requests.send((number, request));
         }
     }
 
-    /// The next event, waiting up to `timeout`.
+    /// The next event of the latest watch, waiting up to `timeout`.
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
-        self.events.recv_timeout(timeout).ok()
+        // Stale events skipped count against the same deadline.
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.events.recv_timeout(left).ok()? {
+                (number, event) if number == self.opened.get() => return Some(event),
+                _ => {}
+            }
+        }
     }
 
-    /// The next event, if one is waiting.
+    /// The next event of the latest watch, if one is waiting. An aborted
+    /// watch sends nothing more, but what it sent before is still queued:
+    /// its events, its `Ended` among them, are skipped.
     pub fn try_recv(&self) -> Option<Event> {
-        self.events.try_recv().ok()
+        loop {
+            match self.events.try_recv().ok()? {
+                (number, event) if number == self.opened.get() => return Some(event),
+                _ => {}
+            }
+        }
     }
 }
 

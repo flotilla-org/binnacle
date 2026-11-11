@@ -35,8 +35,9 @@ impl Scope {
         }
     }
 
-    /// This scope narrowed by a `where` clause in the server's own syntax,
-    /// such as `.status.phase == Active`, passed on unchanged.
+    /// This scope narrowed by a `where` clause in the condition language
+    /// flotillad speaks (a strict subset of CEL, `rigging-condition`), such
+    /// as `status.phase == "Active"`, passed on unchanged.
     pub fn with_where(mut self, clause: impl Into<String>) -> Scope {
         self.wheres.push(clause.into());
         self
@@ -58,8 +59,9 @@ pub const ROW_CAP: u64 = 10_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HostRequest {
-    /// Open the rows stream, or reopen it after it ended, and feed each
-    /// message back.
+    /// Open the rows stream, or open it again after it ended or with other
+    /// `where` clauses, and feed each message back. A host opening it again
+    /// drops the stream open before it feeds the new one's messages.
     OpenWatch(WatchRequest),
 }
 
@@ -69,6 +71,8 @@ pub enum HostRequest {
 pub struct WatchRequest {
     pub table: String,
     pub scope: Scope,
+    /// The clauses the rows' conditions are sent as, after the Scope's.
+    pub wheres: Vec<String>,
     pub limit: u64,
 }
 
@@ -79,14 +83,15 @@ impl WatchRequest {
     }
 
     /// `watch&limit=10000&namespace=…`, then a `where=…` for each clause,
-    /// each value percent-encoded.
+    /// the Scope's then the filter's, each value percent-encoded. The
+    /// server keeps the rows every clause keeps.
     pub fn query(&self) -> String {
         let mut query = format!(
             "watch&limit={}&namespace={}",
             self.limit,
             encode(self.scope.namespace())
         );
-        for clause in self.scope.wheres() {
+        for clause in self.scope.wheres().iter().chain(&self.wheres) {
             query.push_str("&where=");
             query.push_str(&encode(clause));
         }
