@@ -168,6 +168,18 @@ fn ticks_read_each_value_as_ticked_and_excluded_do() {
 }
 
 #[test]
+fn a_pattern_no_source_applies_keeps_every_value() {
+    let values = values();
+    let invalid = [Condition::text(PORT, TextQuery::new("(").regex(true))];
+    let column = Column::of(&invalid, Axis::Rows, PORT);
+    let kept = Tick {
+        ticked: true,
+        excluded: false,
+    };
+    assert_eq!(column.ticks(&values), vec![kept; values.len()]);
+}
+
+#[test]
 fn the_comparison_row_reads_back_what_it_writes() {
     let between = compare::comparison(
         compare::BETWEEN,
