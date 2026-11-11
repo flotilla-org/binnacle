@@ -39,7 +39,9 @@ pub struct Column {
 /// rejects it, so it can't be ticked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tick {
+    /// Every condition on the column keeps the value.
     pub ticked: bool,
+    /// A Text condition on the column rejects it.
     pub excluded: bool,
 }
 
@@ -82,12 +84,16 @@ impl Column {
         }
     }
 
-    /// Whether the column's Text conditions reject `value`, so it can't be ticked.
+    /// Whether the column's Text conditions reject `value`, so it can't be
+    /// ticked. A list reads through [`ticks`](Column::ticks), which builds
+    /// the matchers once.
     pub fn excluded(&self, value: &Value) -> bool {
         Keepers::of(self).excluded(value)
     }
 
     /// Whether `value` is ticked: every condition on the column keeps it.
+    /// A list reads through [`ticks`](Column::ticks), which builds the
+    /// matchers once.
     pub fn ticked(&self, value: &Value) -> bool {
         Keepers::of(self).ticked(value)
     }
@@ -254,11 +260,11 @@ impl<'c> Keepers<'c> {
 
     fn excluded(&self, value: &Value) -> bool {
         (self.0.iter())
-            .any(|(c, m)| matches!(c.kind, ConditionKind::Text(_)) && !keeps(c, m, value))
+            .any(|(c, m)| matches!(c.kind, ConditionKind::Text(_)) && !keeps(c, m.as_ref(), value))
     }
 
     fn ticked(&self, value: &Value) -> bool {
-        self.0.iter().all(|(c, m)| keeps(c, m, value))
+        self.0.iter().all(|(c, m)| keeps(c, m.as_ref(), value))
     }
 }
 
@@ -266,7 +272,7 @@ impl<'c> Keepers<'c> {
 /// whose value is `value`, read here as the In-Memory Table Source reads
 /// it. A pattern the `regex` crate rejects, which no source applies, keeps
 /// everything.
-fn keeps(condition: &Condition, matcher: &Option<TextMatcher>, value: &Value) -> bool {
+fn keeps(condition: &Condition, matcher: Option<&TextMatcher>, value: &Value) -> bool {
     let matched = match (&condition.kind, value) {
         (ConditionKind::OneOf(values), _) => values.contains(value),
         (ConditionKind::Text(_), value) => match (matcher, value) {
