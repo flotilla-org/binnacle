@@ -48,8 +48,11 @@ pub struct Tick {
 /// The values the checklist shows: the blank first if listed, whether there
 /// were more, and the search they answer.
 pub struct Shown<'a> {
+    /// The values listed, the blank first if any.
     pub values: &'a [Value],
+    /// Whether the source had more than it listed.
     pub partial: bool,
+    /// The search the list answers; empty for none.
     pub search: &'a str,
 }
 
