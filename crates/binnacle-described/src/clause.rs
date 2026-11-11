@@ -43,29 +43,33 @@ pub(crate) fn clauses(columns: &[Column], spec: &ViewSpec) -> Vec<String> {
     clauses
 }
 
-/// Whether the source applies Native condition `condition`: it has text,
-/// and with `not`, canonical text to negate.
+/// Whether the source applies Native condition `condition`: its text parses
+/// in some CEL spelling of the subset. Text that does not is never sent, so a
+/// typo is not a 400 that stops the watch.
 pub(crate) fn native_sent(condition: &Condition) -> bool {
-    match &condition.kind {
-        ConditionKind::Native(text) => {
-            !text.is_empty() && (!condition.not || Clause::parse_strict(text).is_ok())
-        }
-        _ => false,
-    }
+    native(condition).is_some()
+}
+
+/// The clause for Native condition `condition`: its text's canonical print,
+/// negated with `not`.
+fn native(condition: &Condition) -> Option<String> {
+    let ConditionKind::Native(text) = &condition.kind else {
+        return None;
+    };
+    let parsed = Clause::parse_lenient(text).ok()?;
+    printed(match condition.not {
+        false => parsed,
+        true => Clause::Not(Box::new(parsed)),
+    })
 }
 
 /// The clause for `condition`, if one keeps exactly what it keeps and its
-/// field allows every operator in it. Native text goes as it is.
+/// field allows every operator in it. Native text goes in its canonical
+/// spelling.
 pub(crate) fn clause(columns: &[Column], condition: &Condition) -> Option<String> {
     let column = columns.iter().find(|c| c.key() == condition.key)?;
-    if let ConditionKind::Native(text) = &condition.kind {
-        if !native_sent(condition) {
-            return None;
-        }
-        return match condition.not {
-            false => Some(text.clone()),
-            true => printed(Clause::Not(Box::new(Clause::parse_strict(text).ok()?))),
-        };
+    if let ConditionKind::Native(_) = &condition.kind {
+        return native(condition);
     }
     let ops = Ops(&column.field().where_operators);
     let field = Named::new(path(columns, column)?);

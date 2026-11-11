@@ -1276,7 +1276,7 @@ impl PumpSource for DescribedSource {
 
     fn support(&mut self, axis: Axis, key: Key) -> Support {
         let support = self.over().support(axis, key);
-        // Native conditions go to the server as they are.
+        // Native conditions go to the server, in their canonical spelling.
         let native = axis == Axis::Rows && self.column(key).is_some();
         support.with_native(support.native || native)
     }

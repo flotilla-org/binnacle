@@ -5,7 +5,8 @@
 mod support;
 
 use binnacle_core::{
-    Axis, Comparison, Condition, FilterSpec, Key, Scalar, Value as Listed, ViewSpec,
+    AggregateValue, Axis, Comparison, Condition, FilterSpec, Grouping, Key, Scalar,
+    Value as Listed, ViewSpec,
 };
 use binnacle_described::{DescribedSource, HostRequest, Message, Scope};
 use binnacle_memory::PumpSource;
@@ -14,14 +15,17 @@ use support::scenario;
 
 const ORDERED: [&str; 8] = ["==", "!=", "<", "<=", ">", ">=", "in", "has"];
 
-/// A convoys table: `note` filterable by nothing, `state` by `==` alone.
+/// A convoys table: `note` filterable by nothing, `state` by `==` alone,
+/// and `reference.home` beside a filterable `reference`.
 fn convoys() -> Vec<Message> {
     let table = json!({"type": "table", "schema": {"primaryKey": ["name"], "fields": [
         {"name": "name", "type": "string", "whereOperators": ORDERED},
         {"name": "phase", "type": "string", "whereOperators": ORDERED},
         {"name": "retries", "type": "integer", "whereOperators": ORDERED},
         {"name": "note", "type": "string", "whereOperators": []},
-        {"name": "state", "type": "string", "whereOperators": ["=="]}
+        {"name": "state", "type": "string", "whereOperators": ["=="]},
+        {"name": "reference", "type": "string", "whereOperators": ORDERED},
+        {"name": "reference.home", "type": "string", "whereOperators": ORDERED}
     ]}});
     let row = |name: &str, phase: Option<&str>, retries: Option<i64>| json!({"name": name, "phase": phase, "retries": retries, "note": "", "state": "open"});
     let rows = json!({"type": "rows", "cursor": null, "rows": [
@@ -85,6 +89,45 @@ fn a_condition_whose_field_lacks_its_operator_is_not_sent() {
     let less = Comparison::Less(Scalar::Number(1.0));
     let state = sent(|s| vec![Condition::compare(key(s, "state"), less)]);
     assert_eq!(state, [] as [String; 0]);
+}
+
+#[test]
+fn a_dotted_name_is_one_segment_where_its_prefix_is_a_field_too() {
+    let home = sent(|s| vec![Condition::one_of(key(s, "reference.home"), texts(&["x"]))]);
+    assert_eq!(home, [r#"`reference.home` in ["x"]"#]);
+}
+
+#[test]
+fn a_comparison_a_grouped_axis_reads_after_aggregating_is_not_sent() {
+    let mut source = source();
+    let (phase, retries) = (key(&source, "phase"), key(&source, "retries"));
+    let mut grouping = Grouping::rows_by(phase);
+    (grouping.values).push(AggregateValue::new(Some(retries), "sum"));
+    let having = Condition::compare(retries, Comparison::Greater(Scalar::Number(1.0)));
+    let filter = FilterSpec::default().with_conditions(vec![having].into());
+    let spec = (ViewSpec::default().with_filter(Axis::Rows, filter)).with_grouping(Some(grouping));
+    source.view(&spec);
+    assert_eq!(source.wheres(), [] as [String; 0]);
+}
+
+#[test]
+fn native_text_goes_in_its_canonical_spelling_and_text_that_does_not_parse_is_not_applied() {
+    let mut source = source();
+    let phase = key(&source, "phase");
+    let natives = |texts: &[&str]| {
+        let conditions: Vec<_> = texts.iter().map(|t| Condition::native(phase, *t)).collect();
+        ViewSpec::default().with_filter(
+            Axis::Rows,
+            FilterSpec::default().with_conditions(conditions.into()),
+        )
+    };
+    let viewed = source.view(&natives(&["phase=='Done'", "phase =="]));
+    assert_eq!(source.wheres(), [r#"phase == "Done""#]);
+    let applied = viewed.applied.rows.filter.conditions;
+    assert_eq!(
+        applied.conditions(),
+        [Condition::native(phase, "phase=='Done'")]
+    );
 }
 
 #[test]
