@@ -19,7 +19,6 @@ binnacle-format.workspace = true
 binnacle-group.workspace = true
 binnacle-layout.workspace = true
 binnacle-memory.workspace = true
-regex.workspace = true
 ratatui.workspace = true
 serde_json.workspace = true
 unicode-segmentation.workspace = true
