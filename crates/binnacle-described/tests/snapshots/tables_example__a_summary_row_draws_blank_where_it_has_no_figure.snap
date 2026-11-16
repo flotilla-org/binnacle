@@ -3,7 +3,7 @@ source: crates/binnacle-described/tests/tables_example.rs
 expression: text
 ---
 Phase Name   │Started│CPUs                │Load (%)│note      │Host│
-▾ (bl…       ║
+▾ (nu…       ║
     2 bravo  ║∅                          2    1.25% ∅          feta
 ▾ Done       ║
     4 echo   ║ in 10h 18446744073709551615       2% late       ∅

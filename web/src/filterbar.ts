@@ -21,6 +21,7 @@
 // is given.
 
 import { rowCount } from "./aria";
+import { valueLabel } from "./labels";
 import { AXES, type AxisName } from "./codes";
 import { comparisonText } from "./compare";
 import type { ColumnMenu } from "./columnmenu";
@@ -515,10 +516,10 @@ function chipText<ColId>(label: string, c: Condition<ColId>): string {
   return `${label}: ${not}${text}${q.caseSensitive ? " (Aa)" : ""}`;
 }
 
-/** A OneOf's values for a chip: up to three, then how many more; "(Blanks)" for a blank, "nothing" for none. */
+/** A OneOf's values for a chip: up to three, then how many more; "(null)" for a null, "(empty)" for an empty string, "nothing" for none. */
 export function listedText(values: (string | null)[]): string {
   if (values.length === 0) return "nothing";
-  const named = values.slice(0, 3).map((v) => (v === null ? "(Blanks)" : v === "" ? '""' : v));
+  const named = values.slice(0, 3).map(valueLabel);
   const more = values.length - named.length;
   return named.join(", ") + (more > 0 ? ` +${more}` : "");
 }

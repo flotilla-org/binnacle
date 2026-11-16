@@ -163,7 +163,7 @@ A Condition holding text in the Table Source's own query language, passed to it 
 _Avoid_: Raw filter, SQL condition, custom condition
 
 **Distinct Values**:
-The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more.
+The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more. A null reads `(null)` and an empty string `(empty)`, apart, in the list, in a chip and in a group's label (the null one dim, as a null cell is).
 _Avoid_: Unique values, facets
 
 **Text Query**:

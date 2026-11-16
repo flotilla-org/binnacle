@@ -2,6 +2,7 @@
 // and the corner where they meet.
 
 import { VALUES_FIELD, type AxisName } from "../codes";
+import type { Outline } from "../source";
 import { itemSpan, type HeaderPlacement, type KeyedOutline, type Rect, type Snapshot, type SortDirection } from "../snapshot";
 import { PAD, clip, summaryStyle, type PaintContext } from "./context";
 import { markBeat, paintShimmer } from "./pending";
@@ -203,6 +204,10 @@ function paintMarker(
   ctx.restore();
 }
 
+/** Whether `outline` is of a group whose value is null: its label draws dim, as a null cell does. */
+const nullGroup = (outline: Outline<unknown, unknown> | null): boolean =>
+  outline !== null && outline.kind !== "leaf" && !!outline.group && outline.group.field !== VALUES_FIELD && outline.group.value === null;
+
 export function paintColumnHeaders(p: PaintContext): void {
   const { ctx, s, theme, measure, left, top } = p;
   if (top <= 0) return;
@@ -229,7 +234,7 @@ export function paintColumnHeaders(p: PaintContext): void {
     const mark = marker(s, h, "rows");
     const inset = paintFilter(p, "cols", h);
     const room = h.rect.width - 2 * PAD - (mark ? MARKED : 0) - inset;
-    const color = h.hovered ? theme.headerHovered.color : (role?.color ?? theme.header.color);
+    const color = h.hovered ? theme.headerHovered.color : nullGroup(outline) ? theme.dim : (role?.color ?? theme.header.color);
     ctx.fillStyle = loading ? theme.loading : color;
     // In header form a header starts past the tiers its spans take.
     ctx.fillText(measure.fit(text, theme.headerFont, room), h.rect.x + PAD, h.rect.y + h.rect.height / 2);
@@ -276,7 +281,7 @@ export function paintRowNumbers(p: PaintContext): void {
     // A row the columns sort by ends in its marker, as a column header does.
     const mark = marker(s, h, "cols");
     const room = left - 2 * PAD - (mark ? MARKED : 0) - inset;
-    const color = loading ? theme.loading : h.hovered ? theme.headerHovered.color : (role?.color ?? theme.rowNumber.color);
+    const color = loading ? theme.loading : h.hovered ? theme.headerHovered.color : nullGroup(outline) ? theme.dim : (role?.color ?? theme.rowNumber.color);
     const y = h.rect.y + h.rect.height / 2;
     // In header form the spans stand for the groups: a Summary Item's label
     // starts where its header does, past them.

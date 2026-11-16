@@ -48,6 +48,7 @@ import type {
   Totals,
   ViewSpec,
 } from "./source";
+import { valueLabel } from "./labels";
 import { summaryLabel, valueName } from "./source";
 import type { WebGrid } from "./wasm";
 
@@ -1218,7 +1219,7 @@ export function createFeed<RowId, ColId, V>(
           i.outline?.kind === "subtotal" && i.outline.ancestors.at(-1) === span.key && i.outline.group?.field !== VALUES_FIELD,
       );
       const value = total?.outline?.group?.value;
-      return value === undefined ? "" : (value ?? "(blank)");
+      return value === undefined ? "" : valueLabel(value);
     },
     id: (axis, item) => (item.key === null ? undefined : axes[axis].interner.id(item.key)),
     marked: (i, j) => {

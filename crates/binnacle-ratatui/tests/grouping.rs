@@ -85,7 +85,7 @@ impl Content for Shipments {
     fn group_label(&self, _: Key, outline: &Outline) -> String {
         match &outline.group.as_ref().unwrap().value {
             Value::Text(t) => format!("{t} (3)"),
-            Value::Blank => "(blank) (3)".into(),
+            Value::Blank => "(null) (3)".into(),
         }
     }
 }

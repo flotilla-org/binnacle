@@ -1058,8 +1058,9 @@ impl Grid {
         let wanted = self.latest_view().clone();
         for axis in Axis::ALL {
             // The pin goes with a Grand Total placed after: the pin was
-            // decided when it was requested, and an unpin stays while it
-            // stays after. One per value is pinned as Windows bring it.
+            // decided when it was requested (see `request`), and an unpin
+            // stays while it stays after. One per value is pinned as
+            // Windows bring it.
             let i = axis.index();
             if after(&self.view.applied, axis) && !after(&spec, axis) {
                 for key in std::mem::take(&mut self.view.totals_pinned[i]) {
@@ -1069,6 +1070,15 @@ impl Grid {
             if single(&self.view.applied, axis) && !single(&spec, axis) {
                 self.unpin(axis, GRAND_TOTAL);
                 self.view.totals_pinned[i].retain(|&k| k != GRAND_TOTAL);
+            }
+            // The source's own news, with no request of the user's, is where
+            // the default pin is decided for a Grand Total it places.
+            if self.view.requested.is_none()
+                && !single(&self.view.applied, axis)
+                && single(&spec, axis)
+            {
+                self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
+                self.view.totals_pinned[i].push(GRAND_TOTAL);
             }
         }
         self.view.applied = spec;

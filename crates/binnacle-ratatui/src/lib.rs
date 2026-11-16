@@ -25,6 +25,7 @@ mod theme;
 mod value;
 mod width;
 
+pub use binnacle_memory::column_filter::{EMPTY_LABEL, NULL_LABEL, value_label};
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
 pub use context::{NextFrame, RenderContext};
@@ -112,8 +113,7 @@ pub trait Content {
     fn group_label(&self, row: Key, outline: &Outline) -> String {
         let _ = row;
         let value = match outline.group.as_ref().map(|g| &g.value) {
-            Some(Value::Text(t)) => t.clone(),
-            Some(Value::Blank) => "(blank)".into(),
+            Some(value) => value_label(value).to_string(),
             None => String::new(),
         };
         match outline.kind {
@@ -545,6 +545,21 @@ pub fn render_with(
             &pad(format!("{indent}{mark}{}", pad_to(&number, label_room))),
             style,
         );
+        // A null group's label reads dim, as a null cell does.
+        let null = outline
+            .and_then(|o| o.group.as_ref())
+            .is_some_and(|g| g.value == Value::Blank);
+        if null {
+            let at = x0 + lead as f32;
+            dim_null(
+                buf,
+                area,
+                (at, r.offset),
+                clip,
+                &number,
+                style.patch(theme.dim),
+            );
+        }
         if !mark.trim().is_empty() {
             let at = text_width(&indent) as f32;
             let style = style.patch(theme.disclosure);
@@ -811,6 +826,14 @@ fn draw_spans(
                 let room = width.saturating_sub(3 + usize::from(span.cut_before));
                 let label = fit(&label, u32::try_from(room).unwrap_or(0));
                 put(buf, area, (x + 3.0, y), clip, &label, style);
+                dim_null(
+                    buf,
+                    area,
+                    (x + 3.0, y),
+                    clip,
+                    &label,
+                    style.patch(theme.dim),
+                );
                 put(
                     buf,
                     area,
@@ -928,6 +951,14 @@ fn draw_column_spans(
             style.patch(theme.disclosure),
         );
         put(buf, area, (at + 2.0, y), clip, &label, style);
+        dim_null(
+            buf,
+            area,
+            (at + 2.0, y),
+            clip,
+            &label,
+            style.patch(theme.dim),
+        );
         let loading = style.patch(theme.loading);
         if span.cut_before {
             put(buf, area, (v.x, y), clip, "‹", loading);
@@ -935,6 +966,21 @@ fn draw_column_spans(
         if span.cut_after {
             put(buf, area, (v.x + v.width - 1.0, y), clip, "›", loading);
         }
+    }
+}
+
+/// Draws over the start of a group's label `dim`ly if it reads [`NULL_LABEL`]:
+/// a null group, which a host's label may follow with more (a count).
+fn dim_null(
+    buf: &mut Buffer,
+    area: Rect,
+    at: (f32, f32),
+    clip: (f32, f32, f32, f32),
+    label: &str,
+    dim: Style,
+) {
+    if label.starts_with(NULL_LABEL) {
+        put(buf, area, at, clip, NULL_LABEL, dim);
     }
 }
 

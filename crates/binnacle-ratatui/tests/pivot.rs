@@ -110,7 +110,7 @@ impl Content for Text<'_> {
                 .value_of(t)
                 .map_or_else(|| t.clone(), |(_, v)| self.value_name(v)),
             Value::Text(t) => t.clone(),
-            Value::Blank => "(blank)".into(),
+            Value::Blank => "(null)".into(),
         });
         names.collect::<Vec<_>>().join(" ")
     }

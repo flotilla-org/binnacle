@@ -11,7 +11,7 @@ expression: text(&buf)
     │ Search                                   │               █
     ├─ 4 values ───────────────────────────────┤               █
     │ [x] (Select all)                         │               █
-    │ [ ] (Blanks)                           2 │               █
+    │ [ ] (null)                             2 │               █
     │ [x] Aberdeen                           1 │               █
     │ [x] Bergen                             2 │               █
     │ [ ] Cádiz                              1 │               █

@@ -8,7 +8,7 @@
 // that compares numbers or dates a comparison ("Equal to" to "Between")
 // with a number or date field (two for between), then the
 // checklist of the column's values (where it takes OneOf conditions) with a
-// search, counts, "(Blanks)" and a note on whether the list is capped and
+// search, counts, "(null)", "(empty)" and a note on whether the list is capped and
 // narrowed, and Clear. A column that takes only OneOf shows just the
 // checklist. Each change edits the column's conditions at once, the
 // checklist's by the rules in `checklist.ts`, typing in the text field once
@@ -45,6 +45,7 @@ import {
   type Written,
   writes,
 } from "./checklist";
+import { valueLabel } from "./labels";
 import type { AxisName, PinEdge } from "./codes";
 import { OP_NAMES, scalarText } from "./compare";
 import type { CompareOp, Comparison, Condition, Distinct, ListedValue, Scalar, TextMatch } from "./source";
@@ -629,7 +630,7 @@ export function createColumnMenu<RowId, ColId, V>(
       const counts = new Map<ListedValue, number | undefined>(answer.values.map((v) => [v.text, v.count]));
       if (answer.blanks) counts.set(null, answer.blanks === true ? undefined : answer.blanks);
       for (const value of now.values) {
-        const text = value === null ? "(Blanks)" : value === "" ? '""' : value;
+        const text = valueLabel(value);
         const row = item(text, ticked(column, value), counts.get(value), (on) =>
           write(tick(column, colId, value, on, now)),
         );

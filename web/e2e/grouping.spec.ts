@@ -35,7 +35,7 @@ const nested = () => shipments.length + 2 * (groupsBy("region") + new Set(shipme
 
 /** The regions in the order they show, the blank one first, and the ports of `region` in theirs. */
 const regions = (): (string | null)[] => [null, ...[...REGIONS].sort()];
-const label = (region: string | null | undefined) => region ?? "(blank)";
+const label = (region: string | null | undefined) => region ?? "(null)";
 const portsOf = (region: string | null) => [...new Set(shipments.filter((s) => s.region === region).map((s) => s.port))].sort();
 const shipped = (region: string | null, port: string) => shipments.filter((s) => s.region === region && s.port === port).length;
 
