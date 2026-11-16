@@ -61,6 +61,10 @@ fn running(s: &Scenario<Table>) -> Condition {
 fn a_sent_clause_asks_for_the_count_read_once_and_its_count_is_the_rows_totals() {
     let mut s = scenario(source());
     assert_eq!(status(&mut s), "12 rows");
+    // A count before any clause is sent is no count read's.
+    feed_count(&mut s, count(340, false));
+    assert_eq!(s.source.0.totals().rows, Some(12));
+    assert_eq!(s.source.0.poll_view(), None);
     let running = running(&s);
     s.input(|g| g.add_slicer(running.clone()));
     s.frame(VIEWPORT);

@@ -2158,7 +2158,9 @@ typedef struct {
  * in place of any count read open, and feed each of its messages to
  * binnacle_described_source_receive_count, never to
  * binnacle_described_source_receive; its count message gives the rows'
- * Totals. CLOSE_COUNT: drop the count read's stream. */
+ * Totals. CLOSE_COUNT: drop the count read's stream. Like every pointer a
+ * call fills, its texts and wheres last only until the next call on the
+ * source: a host polling the next request copies this one's first. */
 typedef struct {
   uint32_t kind;
   BinnacleText table;

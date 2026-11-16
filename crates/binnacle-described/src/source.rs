@@ -338,11 +338,12 @@ impl DescribedSource {
         request
     }
 
-    /// Whether a request waits for the host to take it
+    /// Whether a request of any kind waits for the host to take it
     /// ([`DescribedSource::poll_request`]): a host that reads its stream
     /// without polling between messages asks this after a View Spec
-    /// applies, to drop the stream for a new one (when the request is to
-    /// open the watch).
+    /// applies, then polls, and drops the stream for a new one only when a
+    /// request is [`HostRequest::OpenWatch`]; one to open or close the
+    /// count read leaves the stream as it is.
     pub fn has_request(&self) -> bool {
         !self.requests.is_empty()
     }
@@ -432,6 +433,9 @@ impl DescribedSource {
             return;
         }
         *counted = Some(count);
+        // Counting begins only in `view`, which sets the spec applied, and
+        // `move_items` keeps it; every other change to the applied spec
+        // comes through `view` too.
         let Some(spec) = self.applied_spec.clone() else {
             return;
         };
