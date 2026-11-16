@@ -1071,7 +1071,6 @@ impl Grid {
         // A range set anew no longer waits on a `Refiltered`.
         if selection.span != self.selection.span {
             self.refiltering.corners = [None, None];
-            self.refiltering.left = Default::default();
         }
         self.selection = selection;
         self.announce_selection();

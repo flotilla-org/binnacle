@@ -301,15 +301,11 @@ impl Grid {
         if count == 0 {
             selection.span = None;
         }
-        // Corners a `Refiltered` still locates are asked about again, and
-        // those pulled in without a Key move with their items.
+        // Corners a `Refiltered` still locates are asked about again.
         let corners = self.refiltering.corners;
-        let mut left = self.refiltering.left;
-        left[i] = left[i].map(|l| l.and_then(|(p, key)| Some((shift.map(p)?, key))));
         self.set_selection(selection);
         if self.selection.span.is_some() {
             self.refiltering.corners = corners;
-            self.refiltering.left = left;
         }
         let whereabouts = &mut self.locating.whereabouts[i];
         if let Some(w) = whereabouts {
