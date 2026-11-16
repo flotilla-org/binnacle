@@ -303,6 +303,12 @@ impl WebGrid {
         }
     }
 
+    /// Pins the Grand Total of axis `a`, or unpins it (see
+    /// [`binnacle_core::Grid::set_grand_total_pinned`]).
+    pub fn set_grand_total_pinned(&mut self, a: u8, pinned: bool) {
+        self.grid.set_grand_total_pinned(axis(a), pinned);
+    }
+
     /// The Keys pinned to edge `edge` of axis `a`, in pin order, dormant
     /// pins included, without laying out a frame; none for a bad edge.
     pub fn pin_keys(&self, a: u8, edge: u8) -> Vec<u64> {

@@ -5115,10 +5115,12 @@ fn layout(tc: &TestCase) -> binnacle_layout::Layout<JsonId, JsonId> {
             rows: EdgePins {
                 leading: some(2, &row),
                 trailing: vec![],
+                grand_total: set().then(set),
             },
             cols: EdgePins {
                 leading: some(2, &col),
                 trailing: some(1, &col),
+                grand_total: None,
             },
         }),
         sizes: set().then(|| Sizes {

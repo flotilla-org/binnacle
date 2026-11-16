@@ -5,6 +5,8 @@ expression: out
 --- 1. region, then port, Subtotals after: the Grand Total is pinned at the bottom, outside the Window
 window Rows 0..6
 window Cols 0..3
+effect (gen 1): Locate { axis: Rows, key: Key(9223372036854775808) }
+  locate Rows Key(9223372036854775808): Gone { suggest: None }
 effect (gen 1): ViewRequested unsorted group 1/after,2/after values count(-) total Rows after by Replace
   view: applied unsorted group 1/after,2/after values count(-) total Rows after, notices [(Rows, Refiltered(17)), (Cols, Refiltered(2))]
 effect (gen 1): Locate { axis: Rows, key: Key(9223372036854775808) }

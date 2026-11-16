@@ -4,7 +4,7 @@
 // `binnacle-layout` crate reads and writes the same JSON, and
 // `crates/binnacle-layout/layout.schema.json` is its schema.
 
-import { AXES, AXIS_CODE, EDGE_CODE, type AxisName, type PinEdge } from "./codes";
+import { AXES, AXIS_CODE, EDGE_CODE, GRAND_TOTAL, type AxisName, type PinEdge } from "./codes";
 import type { Feed } from "./feed";
 import type { Snapshot } from "./snapshot";
 import type { ViewSpec } from "./source";
@@ -13,10 +13,16 @@ import type { WebGrid } from "./wasm";
 /** The format `layout()` writes; `restoreLayout` restores it and version 1, nothing of another. */
 export const LAYOUT_VERSION = 2;
 
-/** Each edge's pinned items, in pin order. */
+/**
+ * Each edge's pinned items, in pin order, and whether the axis's Grand Total
+ * is pinned, said while its grouping places it after (a source with no ID for it never names it among the items). A
+ * layout that does not say restores it pinned by default, as a grouping
+ * placing it after does.
+ */
 export interface LayoutPins<Id> {
   leading: Id[];
   trailing: Id[];
+  grandTotal?: boolean;
 }
 
 /** Per axis, the items to place first, in this order; the rest follow in the Table Source's order. An axis left out is not set. */
@@ -93,6 +99,15 @@ function sortedOrGrouped(view: ViewSpec<unknown, unknown>, axis: AxisName): bool
   return grouped || view[axis].sort.length > 0;
 }
 
+/** Whether the View Spec places the one Grand Total of `axis` after: the pin is said only then. */
+function placedAfter(view: ViewSpec<unknown, unknown>, axis: AxisName): boolean {
+  const g = view.grouping;
+  if (!g) return false;
+  const levels = axis === "rows" ? g.rowLevels : g.colLevels;
+  const placement = axis === "rows" ? g.rowAxis.grandTotal : g.colAxis.grandTotal;
+  return levels.length > 0 && placement === "after" && !levels.some((l) => "values" in l);
+}
+
 /**
  * The layout as of Snapshot `s`: the View Spec last asked for (else the
  * one applied), pins dormant or not, and Size Overrides for items shown or
@@ -109,9 +124,11 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed, computed, re
       const known = id(axis, key);
       return known === undefined ? [] : [known as Id];
     });
+  const view = feed.viewIds(s.requestedView ?? s.appliedView);
   const pins = <Id>(axis: AxisName): LayoutPins<Id> => ({
     leading: ids(axis, s[axis].pins.leading),
     trailing: ids(axis, s[axis].pins.trailing),
+    ...(placedAfter(view, axis) ? { grandTotal: s[axis].pins.trailing.includes(GRAND_TOTAL) } : {}),
   });
   const sizes = <Id>(axis: AxisName): [Id, number][] => {
     const keys = grid.size_override_keys(AXIS_CODE[axis]);
@@ -122,7 +139,6 @@ export function readLayout<RowId, ColId>(s: Snapshot, { grid, feed, computed, re
       return known === undefined || computed?.(axis, key, size) ? [] : [[known as Id, plain(size)]];
     });
   };
-  const view = feed.viewIds(s.requestedView ?? s.appliedView);
   const order: LayoutOrder<RowId, ColId> = {};
   for (const axis of AXES) {
     const arranged = sortedOrGrouped(view, axis) ? [] : ids(axis, grid.arranged(AXIS_CODE[axis]));
@@ -193,6 +209,13 @@ export function restoreLayout<RowId, ColId>(
     if (bands) grid.set_header(code, bands[axis]);
   }
   if (view) grid.request_view(feed.viewKeys(view));
+  // After the view request, whose default pin the saved one overrides.
+  if (pins) {
+    for (const axis of AXES) {
+      const grandTotal = pins[axis].grandTotal;
+      if (grandTotal !== undefined) grid.set_grand_total_pinned(AXIS_CODE[axis], grandTotal);
+    }
+  }
   if (order) {
     const spec = shown && (shown.requestedView ?? shown.appliedView);
     const inForce = view ?? (spec ? feed.viewIds(spec) : undefined);

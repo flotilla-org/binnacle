@@ -443,6 +443,7 @@ fn what_the_host_does_not_name_is_skipped_on_restore_and_kept_on_the_next_save()
             cols: EdgePins {
                 leading: strings(&["gone", "c1"]),
                 trailing: vec![],
+                grand_total: None,
             },
         }),
         sizes: Some(Sizes {

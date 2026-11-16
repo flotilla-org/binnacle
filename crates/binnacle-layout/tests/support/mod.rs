@@ -173,6 +173,7 @@ fn edge_pins(tc: &TestCase) -> EdgePins<String> {
     EdgePins {
         leading: ids(tc),
         trailing: ids(tc),
+        grand_total: tc.draw(gs::optional(gs::booleans())),
     }
 }
 

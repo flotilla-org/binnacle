@@ -5,10 +5,12 @@ use crate::axis::AxisState;
 use crate::effect::Effect;
 use crate::focus::FocusEnd;
 use crate::grid::Grid;
+use crate::grouping::GRAND_TOTAL;
 use crate::notice::placement;
 use crate::snapshot::{ScrollAnchor, StripItem};
 use crate::sort::Located;
 use crate::types::{Axis, Edge, Key, Position};
+use crate::view::single;
 use std::ops::Range;
 
 /// A pinned Key and what the Grid knows of its Position.
@@ -429,6 +431,27 @@ impl Grid {
                 self.resume_focus();
             }
             self.announce_pins(axis, before);
+        }
+    }
+
+    /// Pins the Grand Total of `axis` at the trailing edge, or unpins it:
+    /// say to restore a saved layout after its View Spec is requested,
+    /// which pins a Grand Total placed after by default. Pinning does
+    /// nothing unless the latest View Spec places the one Grand Total after.
+    pub fn set_grand_total_pinned(&mut self, axis: Axis, pinned: bool) {
+        let i = axis.index();
+        if !pinned {
+            self.unpin(axis, GRAND_TOTAL);
+            if single(self.latest_view(), axis)
+                && !self.view.totals_pinned[i].contains(&GRAND_TOTAL)
+            {
+                self.view.totals_pinned[i].push(GRAND_TOTAL);
+            }
+        } else if single(self.latest_view(), axis) {
+            self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
+            if !self.view.totals_pinned[i].contains(&GRAND_TOTAL) {
+                self.view.totals_pinned[i].push(GRAND_TOTAL);
+            }
         }
     }
 
