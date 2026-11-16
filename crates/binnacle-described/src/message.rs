@@ -30,8 +30,24 @@ pub enum Message {
     Progress { sequence: Option<u64> },
     /// Start again: a fresh `table`, `rows` and `synced` follow.
     Resync,
-    /// How many rows the table has, or about how many.
-    Count { count: u64, estimate: bool },
+    /// How many rows match the Scope and the `where` clauses (`count`),
+    /// or about how many, and how many the Scope alone (`total`), which an
+    /// older server leaves out.
+    Count {
+        count: u64,
+        total: Option<u64>,
+        estimate: bool,
+    },
+    /// A field's most frequent values with how many rows hold each, a null
+    /// for an absent one, over the Scope and the `where` clauses that read
+    /// another field. A watch sends again only the entries that changed, a
+    /// count of 0 for one gone. `more`: there are more values than these.
+    Values {
+        field: String,
+        values: Vec<(Wire, u64)>,
+        more: bool,
+        sequence: Option<u64>,
+    },
     /// A message of a type this crate does not know, kept whole.
     Other { kind: String, body: Wire },
 }
@@ -415,8 +431,40 @@ impl Message {
                     Some(Wire::Int(n)) => u64::try_from(*n).unwrap_or(0),
                     _ => return Err(DecodeError::message("a count message has no count")),
                 },
+                total: match map.get("total") {
+                    Some(Wire::Int(n)) => Some(u64::try_from(*n).unwrap_or(0)),
+                    _ => None,
+                },
                 estimate: matches!(map.get("estimate"), Some(Wire::Bool(true))),
             },
+            "values" => {
+                let field = match map.get("field") {
+                    Some(Wire::Text(field)) => field.clone(),
+                    _ => return Err(DecodeError::message("a values message has no field")),
+                };
+                let values = match map.remove("values") {
+                    Some(Wire::Array(values)) => values,
+                    _ => return Err(DecodeError::message("a values message has no values")),
+                };
+                let values = (values.into_iter())
+                    .map(|entry| {
+                        let Wire::Map(mut entry) = entry else {
+                            return Err(DecodeError::message("a value is not an object"));
+                        };
+                        let count = match entry.get("count") {
+                            Some(Wire::Int(n)) => u64::try_from(*n).unwrap_or(0),
+                            _ => return Err(DecodeError::message("a value has no count")),
+                        };
+                        Ok((entry.remove("value").unwrap_or(Wire::Null), count))
+                    })
+                    .collect::<Result<Vec<_>, DecodeError>>()?;
+                Message::Values {
+                    field,
+                    values,
+                    more: matches!(map.get("more"), Some(Wire::Bool(true))),
+                    sequence: sequence(&map),
+                }
+            }
             _ => Message::Other {
                 kind,
                 body: Wire::Map(map),
@@ -475,10 +523,39 @@ impl Message {
                 "delete"
             }
             Message::Resync => "resync",
-            Message::Count { count, estimate } => {
+            Message::Count {
+                count,
+                total,
+                estimate,
+            } => {
                 put("count", Wire::Int((*count).into()));
+                if let Some(total) = total {
+                    put("total", Wire::Int((*total).into()));
+                }
                 put("estimate", Wire::Bool(*estimate));
                 "count"
+            }
+            Message::Values {
+                field,
+                values,
+                more,
+                sequence,
+            } => {
+                put("field", Wire::Text(field.clone()));
+                let values = (values.iter())
+                    .map(|(value, count)| {
+                        let mut entry = BTreeMap::new();
+                        entry.insert("value".to_owned(), value.clone());
+                        entry.insert("count".to_owned(), Wire::Int((*count).into()));
+                        Wire::Map(entry)
+                    })
+                    .collect();
+                put("values", Wire::Array(values));
+                put("more", Wire::Bool(*more));
+                if let Some(sequence) = sequence {
+                    put("sequence", Wire::Int((*sequence).into()));
+                }
+                "values"
             }
             Message::Other { kind, body } => {
                 match body {

@@ -763,7 +763,7 @@ fn the_watch_request_names_the_scope() {
         assert_eq!(read_text(r.path), "/tables/hosts/rows");
         assert_eq!(
             read_text(r.query),
-            "watch&limit=10000&namespace=flotilla&where=status.phase%20%3D%3D%20%22Active%22&where=x%20%3D%3D%20%22y%22"
+            "watch&limit=10000&namespace=flotilla&count=exact&scope=status.phase%20%3D%3D%20%22Active%22&scope=x%20%3D%3D%20%22y%22"
         );
         assert_eq!(
             read_text(r.target),

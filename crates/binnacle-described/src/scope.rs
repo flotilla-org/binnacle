@@ -37,7 +37,8 @@ impl Scope {
 
     /// This scope narrowed by a `where` clause in the condition language
     /// flotillad speaks (a strict subset of CEL, `rigging-condition`), such
-    /// as `status.phase == "Active"`, passed on unchanged.
+    /// as `status.phase == "Active"`, passed on unchanged as a `scope`
+    /// clause: the rows' Totals count within it.
     pub fn with_where(mut self, clause: impl Into<String>) -> Scope {
         self.wheres.push(clause.into());
         self
@@ -59,9 +60,10 @@ pub const ROW_CAP: u64 = 10_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HostRequest {
-    /// Open the rows stream, or open it again after it ended or with other
-    /// `where` clauses, and feed each message back. A host opening it again
-    /// drops the stream open before it feeds the new one's messages.
+    /// Open the rows stream, or open it again after it ended, with other
+    /// `where` clauses or for other columns' Distinct Values, and feed each
+    /// message back. A host opening it again drops the stream open before
+    /// it feeds the new one's messages.
     OpenWatch(WatchRequest),
 }
 
@@ -71,8 +73,11 @@ pub enum HostRequest {
 pub struct WatchRequest {
     pub table: String,
     pub scope: Scope,
-    /// The clauses the rows' conditions are sent as, after the Scope's.
+    /// The clauses the rows' conditions are sent as.
     pub wheres: Vec<String>,
+    /// The fields whose Distinct Values the server sends: those that allow
+    /// `in`.
+    pub values: Vec<String>,
     pub limit: u64,
 }
 
@@ -82,18 +87,22 @@ impl WatchRequest {
         format!("/tables/{}/rows", encode(&self.table))
     }
 
-    /// `watch&limit=10000&namespace=…`, then a `where=…` for each clause,
-    /// the Scope's then the filter's, each value percent-encoded. The
-    /// server keeps the rows every clause keeps.
+    /// `watch&limit=10000&namespace=…&count=exact`, then a `values=…` for
+    /// each field, a `scope=…` for each of the Scope's clauses and a
+    /// `where=…` for each of the filter's, each value percent-encoded. The
+    /// server keeps the rows every clause keeps, and counts the total over
+    /// the `scope` clauses alone.
     pub fn query(&self) -> String {
         let mut query = format!(
-            "watch&limit={}&namespace={}",
+            "watch&limit={}&namespace={}&count=exact",
             self.limit,
             encode(self.scope.namespace())
         );
-        for clause in self.scope.wheres().iter().chain(&self.wheres) {
-            query.push_str("&where=");
-            query.push_str(&encode(clause));
+        let params = (self.values.iter().map(|v| ("values", v)))
+            .chain(self.scope.wheres().iter().map(|c| ("scope", c)))
+            .chain(self.wheres.iter().map(|c| ("where", c)));
+        for (name, value) in params {
+            query.push_str(&format!("&{name}={}", encode(value)));
         }
         query
     }

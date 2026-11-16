@@ -253,6 +253,9 @@ pub struct Where {
     checked: Checked<Clause>,
     /// The fields a clause may read, by path.
     fields: Vec<(ConditionPath, Field)>,
+    /// The names of the fields it reads; `None` for a form this doesn't
+    /// know.
+    reads: Option<Vec<String>>,
 }
 
 /// Why a clause was refused with a 400: its error code and message.
@@ -283,7 +286,23 @@ impl Where {
             };
             (code, e.to_string())
         })?;
-        Ok(Where { checked, fields })
+        let reads = reads(&checked).map(|paths| {
+            (fields.iter())
+                .filter(|(p, _)| paths.contains(p))
+                .map(|(_, f)| f.name.clone())
+                .collect()
+        });
+        Ok(Where {
+            checked,
+            fields,
+            reads,
+        })
+    }
+
+    /// Whether the clause reads field `name` and no other, so it does not
+    /// narrow that field's Distinct Values.
+    pub fn only(&self, name: &str) -> bool {
+        (self.reads.as_ref()).is_some_and(|r| !r.is_empty() && r.iter().all(|n| n == name))
     }
 
     /// Whether the clause is true for `row`. A value that does not match
@@ -294,6 +313,37 @@ impl Where {
             fields: &self.fields,
         };
         self.checked.evaluate(&cells).is_true()
+    }
+}
+
+/// The paths `clause` reads; `None` for a form this doesn't know.
+fn reads(clause: &Clause) -> Option<Vec<ConditionPath>> {
+    let mut found = Vec::new();
+    let mut stack = vec![clause];
+    while let Some(clause) = stack.pop() {
+        match clause {
+            Clause::And(all) | Clause::Or(all) => stack.extend(all),
+            Clause::Not(inner) => stack.push(inner),
+            Clause::Has(path) => found.push(path.clone()),
+            Clause::Compare { field, .. }
+            | Clause::In { field, .. }
+            | Clause::Member { field, .. }
+            | Clause::Under { field, .. }
+            | Clause::Field(field) => found.push(field.path.clone()),
+            Clause::Bool(_) => {}
+            _ => return None,
+        }
+    }
+    Some(found)
+}
+
+/// `field`'s value in `row` as a typed store holds it: null where the
+/// value does not match the field's type, as a clause reads it missing.
+pub(crate) fn held(field: &Field, row: &Row) -> Wire {
+    let value = row.get(&field.name);
+    match (value, value.and_then(|v| condition_value(field, v))) {
+        (Some(value), Some(_)) => value.clone(),
+        _ => Wire::Null,
     }
 }
 
@@ -361,6 +411,21 @@ fn micros(text: &str) -> Option<Timestamp> {
     Timestamp::parse_rfc3339(&cut).ok()
 }
 
+/// `wire` as a clause reads `field`'s value: `None` for one missing.
+fn condition_value(field: &Field, wire: &Wire) -> Option<ConditionValue> {
+    match (&field.field_type, wire) {
+        (FieldType::Integer, Wire::Int(i)) => i64::try_from(*i).ok().map(ConditionValue::Int),
+        (FieldType::Number, Wire::Float(x)) => Some(ConditionValue::Number(*x)),
+        (FieldType::Number, Wire::Int(i)) => Some(ConditionValue::Number(*i as f64)),
+        (FieldType::Boolean, Wire::Bool(b)) => Some(ConditionValue::Bool(*b)),
+        (FieldType::Datetime, Wire::Text(text)) => micros(text).map(ConditionValue::Timestamp),
+        (FieldType::String | FieldType::Other(_), Wire::Text(text)) => {
+            Some(ConditionValue::String(text.clone()))
+        }
+        _ => None,
+    }
+}
+
 /// One row as a clause reads it.
 struct Cells<'a> {
     row: &'a Row,
@@ -372,22 +437,11 @@ impl ConditionRow for Cells<'_> {
         let Some((_, field)) = self.fields.iter().find(|(p, _)| p == path) else {
             return Lookup::Absent;
         };
-        let value = match (&field.field_type, self.row.get(&field.name)) {
-            (FieldType::Integer, Some(Wire::Int(i))) => {
-                i64::try_from(*i).ok().map(ConditionValue::Int)
-            }
-            (FieldType::Number, Some(Wire::Float(x))) => Some(ConditionValue::Number(*x)),
-            (FieldType::Number, Some(Wire::Int(i))) => Some(ConditionValue::Number(*i as f64)),
-            (FieldType::Boolean, Some(Wire::Bool(b))) => Some(ConditionValue::Bool(*b)),
-            (FieldType::Datetime, Some(Wire::Text(text))) => {
-                micros(text).map(ConditionValue::Timestamp)
-            }
-            (FieldType::String | FieldType::Other(_), Some(Wire::Text(text))) => {
-                Some(ConditionValue::String(text.clone()))
-            }
-            _ => None,
-        };
-        match value {
+        match self
+            .row
+            .get(&field.name)
+            .and_then(|v| condition_value(field, v))
+        {
             Some(value) => Lookup::Present(Cow::Owned(value)),
             None => Lookup::Absent,
         }

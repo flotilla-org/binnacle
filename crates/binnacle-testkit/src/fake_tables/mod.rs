@@ -16,7 +16,13 @@
 //!   text (`rigging-condition`): a row is kept when every clause is true
 //!   for it. A clause that does not parse, or names a field the table
 //!   lacks or a literal of the wrong type, is a 400. An unknown table is a
-//!   404.
+//!   404. `scope` clauses keep rows as `where` clauses do, and name the
+//!   rows `total` counts and values are drawn from.
+//! - `count=exact` adds a `count` (the rows kept, and the `total` the
+//!   `scope` clauses keep) after `table`, and `values=a,b` a `values` for
+//!   each filterable field: its 100 most frequent values over the `scope`
+//!   and every `where` clause but those reading only it. A watch sends
+//!   them again as they change, `values` only the entries that changed.
 //!
 //! The script starts playing once a watch has synced; [`Running::push`]
 //! adds steps to it as a test goes.
@@ -25,7 +31,7 @@ mod data;
 mod http;
 mod script;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 #[cfg(unix)]
@@ -39,8 +45,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use binnacle_described::{
-    Encoding, Message, Row, RowsMessage, TableMessage, Wire, deterministic_cbor, encode_cbor_item,
-    encode_json_line,
+    Encoding, Message, Row, RowsMessage, Schema, TableMessage, Wire, deterministic_cbor,
+    encode_cbor_item, encode_json_line,
 };
 use serde_json::json;
 
@@ -49,6 +55,9 @@ pub use http::{Addr, Request, Response, Stream, fetch, open};
 pub use script::{Step, parse_script};
 
 use http::Conn;
+
+/// The most values a `values` message lists, as flotillad's.
+const VALUES: usize = 100;
 
 /// How often waiting threads look up to see whether the fake stopped.
 const TICK: Duration = Duration::from_millis(20);
@@ -351,6 +360,8 @@ struct Watcher {
     /// each of the table's rows (`None` for one it was not sent), and the
     /// next place.
     places: Places,
+    /// The count and values last sent.
+    figures: Figures,
 }
 
 #[derive(Default)]
@@ -359,18 +370,64 @@ struct Places {
     next: u64,
 }
 
-/// What a request reads of a table: its namespace, `where` clauses and
-/// limit.
+/// What a request reads of a table: its namespace, `scope` and `where`
+/// clauses, limit, and the figures it asks for.
 #[derive(Clone)]
 struct View {
     namespace: String,
+    scope: Vec<Where>,
     wheres: Vec<Where>,
     limit: usize,
+    count: bool,
+    values: Vec<String>,
+}
+
+/// A watch's `count` (the rows kept, and those the scope keeps) and each
+/// field's values (by their CBOR) and whether there are more.
+#[derive(Clone, Default)]
+struct Figures {
+    count: Option<(u64, u64)>,
+    values: BTreeMap<String, (BTreeMap<Vec<u8>, (Wire, u64)>, bool)>,
 }
 
 impl View {
+    fn scoped(&self, table: &FakeTable, row: &Row) -> bool {
+        self.namespace == table.namespace && self.scope.iter().all(|w| w.keeps(row))
+    }
+
     fn keeps(&self, table: &FakeTable, row: &Row) -> bool {
-        self.namespace == table.namespace && self.wheres.iter().all(|w| w.keeps(row))
+        self.scoped(table, row) && self.wheres.iter().all(|w| w.keeps(row))
+    }
+
+    fn figures(&self, table: &FakeTable) -> Figures {
+        let count = self.count.then(|| {
+            let kept = table.rows.iter().filter(|r| self.keeps(table, r)).count();
+            let total = table.rows.iter().filter(|r| self.scoped(table, r)).count();
+            (kept as u64, total as u64)
+        });
+        let mut values = BTreeMap::new();
+        for name in &self.values {
+            let Some(field) = table.schema.fields.iter().find(|f| &f.name == name) else {
+                continue;
+            };
+            let wheres: Vec<&Where> = self.wheres.iter().filter(|w| !w.only(name)).collect();
+            let mut counted: BTreeMap<Vec<u8>, (Wire, u64)> = BTreeMap::new();
+            for row in &table.rows {
+                if self.scoped(table, row) && wheres.iter().all(|w| w.keeps(row)) {
+                    let value = data::held(field, row);
+                    counted
+                        .entry(deterministic_cbor(&value))
+                        .or_insert((value, 0))
+                        .1 += 1;
+                }
+            }
+            let mut ranked: Vec<(Vec<u8>, (Wire, u64))> = counted.into_iter().collect();
+            ranked.sort_by(|(a, (_, m)), (b, (_, n))| n.cmp(m).then_with(|| a.cmp(b)));
+            let more = ranked.len() > VALUES;
+            ranked.truncate(VALUES);
+            values.insert(name.clone(), (ranked.into_iter().collect(), more));
+        }
+        Figures { count, values }
     }
 
     fn rows<'a>(&'a self, table: &'a FakeTable) -> impl Iterator<Item = &'a Row> + 'a {
@@ -418,13 +475,74 @@ impl State {
         })
     }
 
-    /// `table`, a `rows` of up to `view.limit` rows, and `synced`.
+    /// The `count` and `values` messages for `new`, given `old` was sent:
+    /// a `count` that changed, and each field's entries that changed, a
+    /// count of 0 for one gone.
+    fn figure_messages(&self, old: &Figures, new: &Figures) -> Vec<Message> {
+        let mut messages = Vec::new();
+        if let Some((count, total)) = new.count.filter(|_| old.count != new.count) {
+            messages.push(Message::Count {
+                count,
+                total: Some(total),
+                estimate: false,
+            });
+        }
+        for (field, (values, more)) in &new.values {
+            let was = old.values.get(field);
+            let mut changed: Vec<(Wire, u64)> = (values.iter())
+                .filter(|(k, (_, n))| was.and_then(|w| w.0.get(*k)).is_none_or(|o| o.1 != *n))
+                .map(|(_, entry)| entry.clone())
+                .collect();
+            changed.extend(
+                (was.into_iter().flat_map(|w| &w.0))
+                    .filter(|(k, _)| !values.contains_key(*k))
+                    .map(|(_, (value, _))| (value.clone(), 0)),
+            );
+            if was.is_none_or(|w| w.1 != *more) || !changed.is_empty() {
+                messages.push(Message::Values {
+                    field: field.clone(),
+                    values: changed,
+                    more: *more,
+                    sequence: Some(self.sequence),
+                });
+            }
+        }
+        messages
+    }
+
+    /// Works out each watch's figures on `table` again, and with `send`,
+    /// sends those that changed.
+    fn refigure(&mut self, table: &str, send: bool) {
+        let Some(i) = self.index(table) else {
+            return;
+        };
+        let t = &self.tables[i];
+        let mut sent = Vec::new();
+        for w in self.watchers.iter_mut().filter(|w| w.table == t.name) {
+            let figures = w.view.figures(t);
+            let old = std::mem::replace(&mut w.figures, figures);
+            sent.push((w.id, old, w.figures.clone()));
+        }
+        let messages = (sent.into_iter())
+            .map(|(id, old, new)| {
+                let outs = self.figure_messages(&old, &new);
+                (id, outs.into_iter().map(Out::Message).collect())
+            })
+            .collect();
+        if send {
+            self.send(messages);
+        }
+    }
+
+    /// `table`, its figures, a `rows` of up to `view.limit` rows, and
+    /// `synced`.
     fn whole(&self, table: &FakeTable, view: &View) -> Vec<Message> {
         let mut rows = view.rows(table);
         let page: Vec<Row> = rows.by_ref().take(view.limit).cloned().collect();
         let more = rows.next().is_some();
-        vec![
-            self.table_message(table),
+        let mut messages = vec![self.table_message(table)];
+        messages.extend(self.figure_messages(&Figures::default(), &view.figures(table)));
+        messages.extend([
             Message::Rows(RowsMessage {
                 rows: page,
                 cursor: more.then(|| format!("o{}", view.limit)),
@@ -434,7 +552,8 @@ impl State {
             Message::Synced {
                 sequence: Some(self.sequence),
             },
-        ]
+        ]);
+        messages
     }
 
     /// Sends `out(watcher)` to each watch on `table`, dropping those gone.
@@ -453,7 +572,23 @@ impl State {
         });
     }
 
+    /// Plays `step`, then sends each watch its figures that changed: a
+    /// step that sends the table whole sent them already.
     fn apply(&mut self, step: Step) {
+        let (table, send) = match &step {
+            Step::Upsert { table, .. } | Step::Delete { table, .. } => (Some(table.clone()), true),
+            Step::Resync { table }
+            | Step::AddField { table, .. }
+            | Step::RemoveField { table, .. } => (Some(table.clone()), false),
+            _ => (None, false),
+        };
+        self.change(step);
+        if let Some(table) = table {
+            self.refigure(&table, send);
+        }
+    }
+
+    fn change(&mut self, step: Step) {
         match step {
             Step::Upsert { table, row } => {
                 let Some(i) = self.index(&table) else {
@@ -776,9 +911,16 @@ fn rows(
         (None, true) => Encoding::CborSeq,
         (None, false) => Encoding::Ndjson,
     };
-    let clauses: Vec<&str> = (query.iter())
-        .filter(|(k, _)| k == "where")
-        .map(|(_, clause)| clause.as_str())
+    let all = |name: &str| -> Vec<&str> {
+        (query.iter())
+            .filter(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    };
+    let (scope, clauses) = (all("scope"), all("where"));
+    let values: Vec<String> = (all("values").into_iter())
+        .flat_map(|v| v.split(','))
+        .map(String::from)
         .collect();
     let offset = match param("cursor") {
         None => 0,
@@ -811,8 +953,17 @@ fn rows(
             return http::respond(&mut conn, 404, json, &error("not_found", "unknown table"));
         };
         let schema = &state.tables[i].schema;
-        let wheres = match clauses.iter().map(|c| Where::parse(c, schema)).collect() {
-            Ok(wheres) => wheres,
+        let parsed = (|| {
+            let parse = |clauses: &[&str]| -> Result<Vec<Where>, Refused> {
+                clauses.iter().map(|c| Where::parse(c, schema)).collect()
+            };
+            if let Some(name) = values.iter().find(|v| !filterable(schema, v)) {
+                return Err(("unknown_column", format!("{name} is not filterable")));
+            }
+            Ok((parse(&scope)?, parse(&clauses)?))
+        })();
+        let (scope, wheres) = match parsed {
+            Ok(parsed) => parsed,
             Err((code, message)) => {
                 drop(state);
                 return http::respond(&mut conn, 400, json, &error(code, &message));
@@ -823,8 +974,11 @@ fn rows(
             .unwrap_or(state.page);
         let view = View {
             namespace: param("namespace").unwrap_or("default").to_owned(),
+            scope,
             wheres,
             limit,
+            count: param("count") == Some("exact"),
+            values,
         };
         let table = &state.tables[i];
         let messages = match watch {
@@ -833,8 +987,9 @@ fn rows(
                 let mut rows = view.rows(table).skip(offset);
                 let page: Vec<Row> = rows.by_ref().take(limit).cloned().collect();
                 let more = rows.next().is_some();
-                vec![
-                    state.table_message(table),
+                let mut messages = vec![state.table_message(table)];
+                messages.extend(state.figure_messages(&Figures::default(), &view.figures(table)));
+                messages.extend([
                     Message::Rows(RowsMessage {
                         rows: page,
                         cursor: more.then(|| format!("o{}", offset + limit)),
@@ -844,10 +999,12 @@ fn rows(
                     Message::Synced {
                         sequence: Some(state.sequence),
                     },
-                ]
+                ]);
+                messages
             }
         };
         let places = view.places(table);
+        let figures = view.figures(table);
         let table = table.name.clone();
         state.next += 1;
         let id = state.next;
@@ -858,6 +1015,7 @@ fn rows(
                 view,
                 tx,
                 places,
+                figures,
             });
         }
         (id, messages, state.heartbeat)
@@ -913,6 +1071,11 @@ fn rows(
     })();
     shared.lock().watchers.retain(|w| w.id != id);
     result
+}
+
+/// Whether `schema` has a field `name` with `whereOperators`.
+fn filterable(schema: &Schema, name: &str) -> bool {
+    (schema.fields.iter()).any(|f| f.name == name && !f.where_operators.is_empty())
 }
 
 fn encode(encoding: Encoding, message: &Message) -> Vec<u8> {

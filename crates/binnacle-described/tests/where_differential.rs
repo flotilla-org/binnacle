@@ -140,8 +140,10 @@ impl Fixture {
             source.poll_request(),
             Some(HostRequest::OpenWatch(_))
         ));
+        // The table asks for the watch again, with its columns' values.
         for message in &self.messages {
             source.receive(message.clone());
+            source.poll_request();
         }
         source
     }

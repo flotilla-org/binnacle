@@ -293,6 +293,8 @@ fn a_generated_table_has_nulls_empty_text_invalid_values_datetimes_and_objects()
         table: None,
         sequence: None,
     }));
+    // The table asks for the watch again, for its columns' values.
+    assert!(source.poll_request().is_some());
     source.receive(Message::Rows(binnacle_described::RowsMessage {
         rows: table.rows.clone(),
         cursor: None,
@@ -720,14 +722,20 @@ fn the_binary_takes_steps_from_standard_input_skipping_bad_lines() {
         .unwrap_or_else(|| panic!("{line}"));
     let addr = binnacle_testkit::fake_tables::Addr::Tcp(addr.parse().unwrap());
     let mut source = DescribedSource::new("t", Scope::new("flotilla"));
-    let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
-        panic!("a watch first")
+    let watch = |source: &mut DescribedSource| {
+        let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
+            panic!("a watch")
+        };
+        let stream = open(&addr, &request.target(), &[("accept", NDJSON)]).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        (stream, Decoder::new(Encoding::Ndjson))
     };
-    let mut stream = open(&addr, &request.target(), &[("accept", NDJSON)]).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let mut decoder = Decoder::new(Encoding::Ndjson);
+    // The table asks for the watch again, for its columns' values.
+    let (mut stream, mut decoder) = watch(&mut source);
+    feed(&mut stream, &mut decoder, &mut source, |s| s.has_request());
+    let (mut stream, mut decoder) = watch(&mut source);
     feed(&mut stream, &mut decoder, &mut source, |s| {
         s.status().synced
     });

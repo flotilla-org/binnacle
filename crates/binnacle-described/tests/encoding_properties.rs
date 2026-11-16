@@ -91,7 +91,7 @@ fn field(tc: &TestCase, name: String) -> Field {
 fn message(tc: &TestCase, cbor: bool) -> Message {
     let key = || gs::vecs(scalar(cbor)).min_size(1).max_size(2);
     let sequence = || gs::optional(gs::integers::<u64>());
-    match tc.draw(gs::integers::<u8>().max_value(8)) {
+    match tc.draw(gs::integers::<u8>().max_value(9)) {
         0 => {
             let n = tc.draw(gs::integers::<usize>().max_value(3));
             let fields: Vec<Field> = (0..n).map(|i| tc.draw(field(format!("f{i}")))).collect();
@@ -137,7 +137,15 @@ fn message(tc: &TestCase, cbor: bool) -> Message {
         6 => Message::Resync,
         7 => Message::Count {
             count: tc.draw(gs::integers::<u64>()),
+            total: tc.draw(gs::optional(gs::integers::<u64>())),
             estimate: tc.draw(gs::booleans()),
+        },
+        8 => Message::Values {
+            field: tc.draw(gs::text().max_size(4)),
+            values: tc
+                .draw(gs::vecs(hegel::tuples!(value(cbor), gs::integers::<u64>())).max_size(3)),
+            more: tc.draw(gs::booleans()),
+            sequence: tc.draw(sequence()),
         },
         _ => {
             // Kept whole, its `type` included.
@@ -188,9 +196,17 @@ fn messages_are_written_under_the_wires_own_names() {
     assert_eq!(line(&rows), "cursor,partial,rows,type");
     let count = Message::Count {
         count: 3,
+        total: Some(340),
         estimate: true,
     };
-    assert_eq!(line(&count), "count,estimate,type");
+    assert_eq!(line(&count), "count,estimate,total,type");
+    let values = Message::Values {
+        field: "status.phase".into(),
+        values: vec![(Wire::Null, 2)],
+        more: false,
+        sequence: Some(41),
+    };
+    assert_eq!(line(&values), "field,more,sequence,type,values");
     let table = Message::Table(TableMessage {
         schema: Schema {
             fields: Vec::new(),
