@@ -137,9 +137,9 @@ fn a_range_covers_the_items_still_shown_drawn_between_its_corners(tc: TestCase) 
 
 /// The same on a slow host, which may draw before the `Locate` answers come
 /// or answer without drawing, so a corner pulled in has no Key yet at the
-/// next step. Each step only narrows what shows: a corner that kept no Key
-/// is placed again from the Key that left it, which a step showing items
-/// again could place apart from the item it was pulled in to (#377).
+/// next step, and on a viewport that may be smaller and scrolled once the
+/// range is made, so the item a corner is pulled in to may be off screen
+/// (#377).
 #[hegel::test(test_cases = 1000)]
 fn a_range_covers_the_items_still_shown_with_windows_before_answers(tc: TestCase) {
     range_through_refilters(tc, true);
@@ -243,22 +243,57 @@ fn range_through_refilters(tc: TestCase, slow: bool) {
     }
     s.frame(view);
     assert!(s.grid.snapshot().selection_range().is_some());
+    let full = !(slow && tc.draw(gs::booleans()));
+    let view = if !full {
+        let smaller = match axis {
+            Axis::Rows => Viewport::new(
+                view.width,
+                tc.draw(
+                    gs::integers::<u32>()
+                        .min_value(2)
+                        .max_value((n as u32).max(2)),
+                ) as f32,
+            ),
+            Axis::Cols => Viewport::new(
+                tc.draw(
+                    gs::integers::<u32>()
+                        .min_value(4)
+                        .max_value(3 + 4 * m as u32),
+                ) as f32,
+                view.height,
+            ),
+        };
+        let by = tc.draw(gs::integers::<u32>().max_value(4 * len as u32)) as f32;
+        let (dx, dy) = match axis {
+            Axis::Rows => (0.0, by),
+            Axis::Cols => (by, 0.0),
+        };
+        s.input(|g| g.action(Action::Scroll { dx, dy }));
+        s.frame(smaller);
+        smaller
+    } else {
+        view
+    };
 
     // Corners as indices into `drawn`.
     let mut corners = Some((anchor.min(head), anchor.max(head)));
+    // Whether each corner has a Key. One pulled in to an item no Window has
+    // given yet has none, and drops the range at the next step (#377). Off
+    // a full viewport the test can't always tell.
+    let mut keyed = [Keyed::Yes; 2];
+    // Whether a step not yet drawn may have dropped the range.
+    let mut unseen = false;
+    let is_pin = |d: usize| d < pinned[0].len() || d >= len - pinned[1].len();
     let mut kept = vec![true; len];
     let mut hidden = vec![false; len];
     let keys = || gs::vecs(gs::integers::<u64>().max_value(len as u64 - 1)).max_size(len);
     let most = if slow { 6 } else { 4 };
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(most));
     for done in 1..=steps {
+        let was: Vec<bool> = (0..len).map(|k| kept[k] && !hidden[k]).collect();
         let step = if axis == Axis::Rows && tc.draw(gs::booleans()) {
-            let mut keep = tc.draw(gs::vecs(gs::booleans()).min_size(len).max_size(len));
-            if slow {
-                keep.iter_mut().zip(&kept).for_each(|(k, &was)| *k &= was);
-            }
-            Refilter::Filter(keep)
-        } else if slow || tc.draw(gs::booleans()) {
+            Refilter::Filter(tc.draw(gs::vecs(gs::booleans()).min_size(len).max_size(len)))
+        } else if tc.draw(gs::booleans()) {
             Refilter::Hide(tc.draw(keys()))
         } else {
             Refilter::Show(tc.draw(keys()))
@@ -282,24 +317,55 @@ fn range_through_refilters(tc: TestCase, slow: bool) {
             }
         }
         let is_shown = |k: usize| kept[k] && !hidden[k];
+        // A slow host may answer without drawing, so the next step's notice
+        // comes before any Window gives a pulled-in corner its Key, or may
+        // draw before the answers come.
+        let pace = if slow {
+            tc.draw(gs::integers::<u8>().max_value(2))
+        } else {
+            2
+        };
+        let drained = pace == 0 && done < steps;
+        // A step that shows the same items may send no `Refiltered`.
+        let changed = (0..len).any(|k| is_shown(k) != was[k]);
+        // Hiding and showing ask for a View Spec the pump answers, so a
+        // frame drawn before the answers brings a Window first.
+        if pace == 1 && !matches!(step, Refilter::Filter(_)) {
+            for k in keyed.iter_mut().filter(|k| **k == Keyed::No) {
+                *k = if full { Keyed::Yes } else { Keyed::Maybe };
+            }
+        }
+        let mut unsure = unseen || keyed.contains(&Keyed::Maybe);
+        if keyed.contains(&Keyed::No) {
+            match changed {
+                true => corners = None,
+                false => unsure = true,
+            }
+        }
+        let before = corners;
         corners = corners.and_then(|(lo, hi)| {
             let inside: Vec<usize> = (lo..=hi).filter(|&d| is_shown(drawn[d])).collect();
             Some((*inside.first()?, *inside.last()?))
         });
-        // A slow host may answer without drawing, so the next step's notice
-        // comes before any Window gives a pulled-in corner its Key, or may
-        // draw before the answers come.
-        if slow {
-            match tc.draw(gs::integers::<u8>().max_value(2)) {
-                0 if done < steps => {
-                    s.effects();
-                    continue;
+        if let (Some((lo, hi)), Some((was_lo, was_hi))) = (corners, before) {
+            for (n, (now, was)) in [(lo, was_lo), (hi, was_hi)].into_iter().enumerate() {
+                if now != was && !is_pin(now) {
+                    keyed[n] = match (drained, full) {
+                        (true, _) => Keyed::No,
+                        (false, true) => Keyed::Yes,
+                        (false, false) => Keyed::Maybe,
+                    };
                 }
-                1 => {
-                    s.step_waiting("the Locates unanswered", view);
-                }
-                _ => {}
             }
+        }
+        if drained {
+            s.effects();
+            unseen = unsure;
+            continue;
+        }
+        unseen = false;
+        if pace == 1 {
+            s.step_waiting("the Locates unanswered", view);
         }
         s.frame(view);
         // A Position is the rank among the shown Keys in `order`.
@@ -316,8 +382,38 @@ fn range_through_refilters(tc: TestCase, slow: bool) {
         let snap = s.grid.snapshot();
         let covered = (snap.selection_range())
             .map(|r| r.span(axis).iter().cloned().flatten().collect::<Vec<u64>>());
+        if unsure && covered.is_none() {
+            tc.event("dropped with a corner maybe keyless");
+            corners = None;
+            continue;
+        }
         assert_eq!(covered, expected, "after {step:?}: shown {shown:?}");
+        // The frame's Window may reach a keyless corner past what shows; a
+        // corner drawn in the Strip has its Key from it.
+        for k in keyed.iter_mut().filter(|k| **k == Keyed::No) {
+            *k = if full { Keyed::Yes } else { Keyed::Maybe };
+        }
+        if let Some((lo, hi)) = corners {
+            for (n, d) in [lo, hi].into_iter().enumerate() {
+                let p = position(drawn[d]);
+                let strip = snap.strip(axis).iter();
+                if strip
+                    .into_iter()
+                    .any(|i| i.position == p && i.key.is_some())
+                {
+                    keyed[n] = Keyed::Yes;
+                }
+            }
+        }
     }
+}
+
+/// Whether a range corner has a Key, as the model knows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Keyed {
+    Yes,
+    Maybe,
+    No,
 }
 
 /// Eleven rows 1 tall, the last pinned trailing, all shown, with a range
@@ -367,13 +463,36 @@ fn a_range_survives_a_second_refilter_after_a_corner_was_pulled_in() {
     assert_eq!(filter_to(&mut s, view, &[7]), Some(vec![0]));
 }
 
-/// The same with the frame between the two filters showing other rows:
-/// thirty rows, six shown, a range from row 0 to row 20 scrolled to show
-/// row 20. The first filter pulls the corner on row 0 in to row 1, which
-/// no Window holds, so the Grid never learns its Key. The second filter
-/// still finds it, from where row 0 would be.
+/// #377: twelve rows 1 tall, all shown, with a range from row 0 to row 7.
+/// Filtering to row 7 pulls the corner on row 0 in to row 7, and the host
+/// answers without drawing, so no Window gives that corner a Key. Filtering
+/// to row 6 then drops the range: placed from where row 0 would be, it would
+/// cover row 6, which it never covered.
 #[test]
-fn a_range_survives_a_second_refilter_after_a_corner_was_pulled_in_off_screen() {
+fn a_corner_still_keyless_at_the_next_refilter_drops_the_range() {
+    let rows = (0..12).map(|r| vec![Some(r)]).collect();
+    let grid = Grid::new(
+        AxisConfig::new(12, 1.0).header(1.0),
+        AxisConfig::new(1, 4.0).header(3.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 1, [0]));
+    let view = Viewport::new(7.0, 13.0);
+    s.frame(view);
+    s.click(5.0, 1.5, Modifiers::NONE);
+    s.click(5.0, 8.5, Modifiers::SHIFT);
+    s.frame(view);
+    let notice = s.source.filter(|r| r[0] == Some(7));
+    s.input(|g| g.notify(Axis::Rows, notice));
+    s.effects();
+    assert_eq!(filter_to(&mut s, view, &[6]), None);
+}
+
+/// #377 with frames between, on thirty rows, six shown, a range from row 0
+/// to row 20 scrolled to show row 20. Filtering out rows 0 to 2 pulls the
+/// corner on row 0 in to row 3, which no Window holds. Letting every row
+/// back then drops the range rather than cover rows 0 to 2 again.
+#[test]
+fn a_corner_keyless_off_screen_drops_the_range_at_the_next_refilter() {
     let rows = (0..30).map(|r| vec![Some(r)]).collect();
     let grid = Grid::new(
         AxisConfig::new(30, 1.0).header(1.0),
@@ -387,84 +506,13 @@ fn a_range_survives_a_second_refilter_after_a_corner_was_pulled_in_off_screen() 
     s.frame(view);
     s.click(5.0, 6.5, Modifiers::SHIFT);
     s.frame(view);
-    let range = s.frame(view).selection_range().cloned();
-    let covered = range.map(|r| r.span(Axis::Rows).iter().cloned().flatten().collect());
-    assert_eq!(covered, Some((0..21).collect::<Vec<u64>>()));
-    let everything_but = |gone: i64| (0..30).filter(|&r| r > gone).collect::<Vec<_>>();
-    // Row 1 is now Position 0.
-    assert_eq!(
-        filter_to(&mut s, view, &everything_but(0)),
-        Some((0..20).collect())
-    );
+    // Rows 3 to 20 are now Positions 0 to 17.
+    let from_3: Vec<i64> = (3..30).collect();
+    assert_eq!(filter_to(&mut s, view, &from_3), Some((0..18).collect()));
     assert!(
         s.frame(view).strip(Axis::Rows)[0].position > 2,
-        "row 1 is off screen"
+        "row 3 is off screen"
     );
-    // Rows 2 to 20 are now Positions 0 to 18.
-    assert_eq!(
-        filter_to(&mut s, view, &everything_but(1)),
-        Some((0..19).collect())
-    );
-}
-
-/// The off-screen corner again, with the frame after the next filter
-/// filling its Window before the `Locate` answers come: the corner is still
-/// keyless at Position 0, and the Window must not give it the Key there
-/// while the refilter waits to place it.
-#[test]
-fn a_keyless_corner_keeps_the_range_when_a_window_comes_before_its_locate() {
-    let rows = (0..30).map(|r| vec![Some(r)]).collect();
-    let grid = Grid::new(
-        AxisConfig::new(30, 1.0).header(1.0),
-        AxisConfig::new(1, 4.0).header(3.0),
-    );
-    let mut s = Scenario::new(grid, RecordTable::new(rows, 1, [0]));
-    let view = Viewport::new(7.0, 7.0);
-    s.frame(view);
-    s.click(5.0, 1.5, Modifiers::NONE);
-    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 15.0 }));
-    s.frame(view);
-    s.click(5.0, 6.5, Modifiers::SHIFT);
-    s.frame(view);
-    let everything_but_0: Vec<i64> = (1..30).collect();
-    assert_eq!(
-        filter_to(&mut s, view, &everything_but_0),
-        Some((0..20).collect())
-    );
-    let notice = s.source.filter(|r| [2, 3, 20].contains(&r[0].unwrap()));
-    s.input(|g| g.notify(Axis::Rows, notice));
-    s.step_waiting("filtered, the Locates unanswered", view);
-    let snap = s.frame(view);
-    let covered = (snap.selection_range()).map(|r| {
-        r.span(Axis::Rows)
-            .iter()
-            .cloned()
-            .flatten()
-            .collect::<Vec<u64>>()
-    });
-    assert_eq!(covered, Some(vec![0, 1, 2]));
-}
-
-/// Found by Hegel. Ten rows, row 4 pinned trailing, a range from row 9
-/// back to row 8, then a viewport with room for the pin alone. The first
-/// filter takes row 9 out: its corner is pulled in to row 8, which no Window
-/// holds, so it has no Key and is drawn level with the other corner. The
-/// second filter places it again from row 9, which still comes after row 8.
-#[test]
-fn a_corner_pulled_in_onto_the_other_keeps_its_side() {
-    let rows = (0..10).map(|r| vec![Some(r)]).collect();
-    let grid = Grid::new(
-        AxisConfig::new(10, 1.0).header(1.0),
-        AxisConfig::new(1, 4.0).header(3.0),
-    );
-    let mut s = Scenario::new(grid, RecordTable::new(rows, 1, [0]));
-    let view = Viewport::new(7.0, 11.0);
-    s.input(|g| g.pin(Axis::Rows, Edge::Trailing, Key(4)));
-    s.frame(view);
-    s.click(5.0, 9.5, Modifiers::NONE);
-    s.click(5.0, 8.5, Modifiers::SHIFT);
-    let view = Viewport::new(7.0, 2.0);
-    s.frame(view);
-    assert_eq!(filter_to(&mut s, view, &[3, 4, 6, 7, 8]), Some(vec![4]));
-    assert_eq!(filter_to(&mut s, view, &[8]), Some(vec![0]));
+    let every: Vec<i64> = (0..30).collect();
+    assert_eq!(filter_to(&mut s, view, &every), None);
 }
