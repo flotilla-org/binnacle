@@ -134,3 +134,105 @@ test("a watch asked for while the stream is open replaces it, and none of the ol
   await runUntil(t, "waiting");
   expect(fed).toEqual(["one\n", "two\n"]);
 });
+
+/** A table whose request the test changes: `ask(target)` is the table asking for another watch. */
+function askingTable(first: string, parts: { feed?(): void } = {}) {
+  let next: { target: string } | undefined = { target: first };
+  const listeners = new Set<() => void>();
+  const t = {
+    pollRequest() {
+      const r = next;
+      next = undefined;
+      return r;
+    },
+    onRequest(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    open() {},
+    feed: () => parts.feed?.(),
+    ended() {},
+    status: () => ({ synced: false }),
+  } as unknown as DescribedTable;
+  return {
+    table: t,
+    ask(target: string) {
+      next = { target };
+      for (const l of [...listeners]) l();
+    },
+  };
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+/** Starts the loop on `t`; the phases it reports. */
+function start(t: DescribedTable) {
+  const phases: WatchPhase[] = [];
+  const w = watch(t, { headers: {}, onPhase: (p) => phases.push(p) });
+  return { w, phases };
+}
+
+/** `/bad` answers 400; any other target is a rows stream. */
+const fetchBadThenRows = () =>
+  vi.fn(async (target: string) =>
+    target === "/bad"
+      ? new Response('{"message":"no"}', { status: 400 })
+      : new Response("{}\n", { headers: { "Content-Type": "application/x-ndjson" } }),
+  );
+
+test("a 4xx stops the loop until the table asks for a different watch, which opens in connecting", async () => {
+  const fetch = fetchBadThenRows();
+  vi.stubGlobal("fetch", fetch);
+  const { table: t, ask } = askingTable("/bad");
+  const { w, phases } = start(t);
+  await settle();
+  expect(phases).toEqual(["connecting", "error"]);
+  ask("/good");
+  await settle();
+  w.destroy();
+  expect(fetch.mock.calls.map((c) => c[0])).toEqual(["/bad", "/good"]);
+  expect(phases.slice(2, 4)).toEqual(["connecting", "open"]);
+});
+
+test("a 4xx asked for again with the same target fetches nothing", async () => {
+  const fetch = fetchBadThenRows();
+  vi.stubGlobal("fetch", fetch);
+  const { table: t, ask } = askingTable("/bad");
+  const { w, phases } = start(t);
+  await settle();
+  ask("/bad");
+  await settle();
+  w.destroy();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(phases).toEqual(["connecting", "error"]);
+});
+
+test("after the host's destroy, a new request fetches nothing", async () => {
+  const fetch = fetchBadThenRows();
+  vi.stubGlobal("fetch", fetch);
+  const { table: t, ask } = askingTable("/bad");
+  const { w } = start(t);
+  await settle();
+  w.destroy();
+  ask("/good");
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test("after a throwing sink, a new request fetches nothing", async () => {
+  const fetch = fetchBadThenRows();
+  vi.stubGlobal("fetch", fetch);
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const { table: t, ask } = askingTable("/good", {
+    feed() {
+      throw new Error("a listener threw");
+    },
+  });
+  const { w, phases } = start(t);
+  await settle();
+  expect(phases).toEqual(["connecting", "open", "error"]);
+  ask("/other");
+  await settle();
+  w.destroy();
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
