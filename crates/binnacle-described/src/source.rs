@@ -417,9 +417,11 @@ impl DescribedSource {
 
     /// Takes one message from the stream. Messages about rows before the
     /// first `table` are dropped: there are no columns to read them by.
-    /// So are those that come after the filter asked to open the watch
-    /// again, until the host takes that request: they are from the stream
-    /// it replaces.
+    /// So are those that come after the source asked to open the watch
+    /// again (for new clauses, or the first `table`'s columns' Distinct
+    /// Values), until the host takes that request: they are from the stream
+    /// it replaces, whose `table`, `count`, `values` and rows the new one
+    /// sends afresh. A host slow to poll reads them twice.
     pub fn receive(&mut self, message: Message) -> Received {
         if self.reopening && !matches!(message, Message::Other { .. }) {
             return Received::Applied(Vec::new());
@@ -465,7 +467,10 @@ impl DescribedSource {
             } => {
                 let (list, more_held) = self.lists.entry(field).or_default();
                 for (value, count) in values {
-                    match (list.iter().position(|(v, _)| *v == value), count) {
+                    // By identity, so a NaN matches itself.
+                    let id = deterministic_cbor(&value);
+                    let at = list.iter().position(|(v, _)| deterministic_cbor(v) == id);
+                    match (at, count) {
                         (Some(at), 0) => {
                             list.remove(at);
                         }

@@ -112,6 +112,16 @@ fn a_filtered_columns_distinct_values_are_the_servers_with_its_counts() {
     assert_eq!(listed.values, [value("Landing", 2), value("Running", 7)]);
     assert_eq!(listed.blanks, Some(Blanks::Counted(1)));
     assert!(!listed.partial);
+    let searched = DistinctQuery::new(10).search("land");
+    let listed = s.source.distinct(Axis::Rows, phase, &searched).unwrap();
+    assert_eq!(listed.values, [value("Landing", 2)]);
+    assert_eq!(listed.blanks, None, "a search lists no blanks");
+    let listed = s
+        .source
+        .distinct(Axis::Rows, phase, &DistinctQuery::new(1))
+        .unwrap();
+    assert_eq!(listed.values, [value("Landing", 2)]);
+    assert!(listed.partial, "the cap");
     feed(&mut s, values(&[(Some("Landing"), 0)], true));
     let listed = s.source.distinct(Axis::Rows, phase, &query).unwrap();
     assert_eq!(listed.values, [value("Running", 7)]);
