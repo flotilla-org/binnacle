@@ -393,7 +393,11 @@ impl Grid {
         self.finish_freeze(axis);
         self.pending_damage.positions |= change.keys;
         self.pending_damage.layout |= change.sizes;
-        if let Some(span) = &mut self.selection.span {
+        // A corner the refilter is still locating is placed by its answer.
+        let locating = self.refiltering.corners[axis.index()].is_some();
+        if let Some(span) = &mut self.selection.span
+            && !locating
+        {
             let st = &self.axes[axis.index()];
             for end in [&mut span.anchor, &mut span.head] {
                 let end = &mut end[axis.index()];
@@ -419,7 +423,8 @@ impl Grid {
     /// that are not positive and finite are ignored. Resizing the Scroll
     /// Anchor's item keeps the share of it scrolled past, as
     /// [`Grid::set_default_size`] does, unless the Window does not hold the
-    /// item (see there).
+    /// item (see there): what a zoom wants. A drag of the item's border keeps
+    /// the length scrolled past instead, so the border follows the pointer.
     pub fn set_size(&mut self, axis: Axis, key: Key, size: f32) {
         self.axis_mut(axis).set_size(key, size);
         self.pending_damage.layout = true;
@@ -497,8 +502,9 @@ impl Grid {
     ///   Window), its size is only the default, so a resized item's offset is
     ///   scaled by the wrong ratio and the next frame clamps it into the
     ///   item. Zoom after the Window is back to avoid this.
-    /// - An anchor inside the Gap after its item has only its item part
-    ///   scaled; the clamp pulls it inside the new stride.
+    /// - An anchor inside the Gap after its item keeps its place in the Gap:
+    ///   only the item part of its offset is scaled, so the item stays
+    ///   scrolled past whether it grows or shrinks.
     /// - Content sizes ([`Grid::set_keys_sized`]) are not refreshed: re-send
     ///   the Window with sizes measured at the new text size.
     pub fn set_default_size(&mut self, axis: Axis, size: f32) {

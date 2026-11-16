@@ -467,7 +467,8 @@ impl AxisState {
     }
 
     /// Sets the default size, keeping the anchor's Position and the share of
-    /// its item scrolled past, as far as the end clamp allows. An anchor
+    /// its item scrolled past (or its place in the Gap after the item), as
+    /// far as the end clamp allows. An anchor
     /// following the end keeps following it. The default pin zone (a quarter
     /// of the default size) follows the size if the host never set it.
     /// Returns whether anything changed.
@@ -481,34 +482,58 @@ impl AxisState {
             self.pin_zone = self.measure.default_size() / 4.0;
         }
         let new = self.measure.size_at(self.anchor.position);
-        self.anchor.offset *= new / old;
+        self.scale_anchor(old, new);
         self.clamp_anchor();
         true
+    }
+
+    /// Scales the part of the anchor's offset inside its item by the item's
+    /// change in size from `old` to `new`. An anchor in the Gap after its
+    /// item keeps its place in the Gap, which no size change scales.
+    fn scale_anchor(&mut self, old: f32, new: f32) {
+        let offset = self.anchor.offset;
+        self.anchor.offset = if offset > old {
+            new + (offset - old)
+        } else {
+            offset * (new / old)
+        };
     }
 
     /// Sets the Size Override for `key`, keeping the share of the anchor's
     /// item scrolled past if it is the item resized, as
     /// [`Self::set_default_size`] does.
     pub fn set_size(&mut self, key: Key, size: f32) {
-        self.resizing(|m| m.set_size(key, size));
+        self.resizing(true, |m| m.set_size(key, size));
     }
 
     /// Removes the Size Override for `key`, keeping the anchor's share as
     /// [`Self::set_size`] does.
     pub fn clear_size(&mut self, key: Key) {
-        self.resizing(|m| m.clear_size(key));
+        self.resizing(true, |m| m.clear_size(key));
     }
 
-    /// Runs a change to the measure's sizes, then scales the anchor's offset
-    /// by the change in its item's size and re-applies the anchor's bounds.
-    /// A change that leaves the anchor item's size alone leaves the anchor
-    /// alone.
-    fn resizing(&mut self, change: impl FnOnce(&mut AxisMeasure)) {
+    /// Sets the Size Override for `key` as a drag of its border does, or
+    /// removes it (`None`): the anchor's offset stays, so the length of its
+    /// item scrolled past does, and the border moves with the pointer.
+    pub fn drag_size(&mut self, key: Key, size: Option<f32>) {
+        self.resizing(false, |m| match size {
+            Some(size) => m.set_size(key, size),
+            None => m.clear_size(key),
+        });
+    }
+
+    /// Runs a change to the measure's sizes, then, if `scale`, scales the
+    /// anchor's offset as [`Self::set_default_size`] does, and re-applies the
+    /// anchor's bounds. A change that leaves the anchor item's size alone
+    /// leaves the anchor alone.
+    fn resizing(&mut self, scale: bool, change: impl FnOnce(&mut AxisMeasure)) {
         let old = self.measure.size_at(self.anchor.position);
         change(&mut self.measure);
         let new = self.measure.size_at(self.anchor.position);
         if new != old {
-            self.anchor.offset *= new / old;
+            if scale {
+                self.scale_anchor(old, new);
+            }
             self.clamp_anchor();
         }
     }

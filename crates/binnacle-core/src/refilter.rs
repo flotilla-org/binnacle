@@ -3,6 +3,8 @@
 //! the picks that left can be dropped, the range can shrink around the items
 //! that left and the view can keep its place.
 
+use std::cmp::Ordering;
+
 use crate::focus::FocusEnd;
 use crate::grid::Grid;
 use crate::notice::placement;
@@ -80,6 +82,10 @@ pub(crate) struct Refiltering {
     /// than the range lost. An entry holds only while the corner is still
     /// at that Position.
     pub(crate) left: [[Option<(Position, Key)>; 2]; 2],
+    /// Per axis, whether the anchor came first when `left` was set: a corner
+    /// pulled in onto the other's item is drawn level with it, but stands
+    /// for a Key on its own side.
+    pub(crate) left_anchor_first: [bool; 2],
 }
 
 impl Refiltering {
@@ -315,6 +321,10 @@ impl Grid {
             return;
         };
         let (anchor, head) = (span.anchor[i], span.head[i]);
+        let from_left = |end: FocusEnd, left: Option<(Position, Key)>| {
+            end.key.is_none() && left.is_some_and(|(p, _)| p == end.position)
+        };
+        let pulled_in = from_left(anchor, left[0]) || from_left(head, left[1]);
         let corner = |end: FocusEnd, left: Option<(Position, Key)>| {
             let left = left.filter(|&(p, _)| p == end.position).map(|(_, k)| k);
             Some(Corner {
@@ -329,9 +339,13 @@ impl Grid {
         };
         let st = self.axis(axis);
         let drawn = |end| st.drawn_index(st.slot_of(end));
+        let anchor_first = match drawn(anchor).cmp(&drawn(head)) {
+            Ordering::Equal if pulled_in => self.refiltering.left_anchor_first[i],
+            order => order.is_le(),
+        };
         self.refiltering.corners[i].get_or_insert(Corners {
             ends: [a, h],
-            anchor_first: drawn(anchor) <= drawn(head),
+            anchor_first,
         });
         self.pending_damage.selection = true;
     }
@@ -409,6 +423,7 @@ impl Grid {
         self.set_span(span);
         if kept {
             self.refiltering.left[i] = left;
+            self.refiltering.left_anchor_first[i] = corners.anchor_first;
         }
     }
 

@@ -330,9 +330,9 @@ impl Grid {
                     .clamp(f64::from(m.min_size()), f64::from(m.max_size()))
                     as f32;
                 if size == start_size {
-                    self.restore_size(axis, key, start_override);
+                    self.drag_size(axis, key, start_override);
                 } else {
-                    self.set_size(axis, key, size);
+                    self.drag_size(axis, key, Some(size));
                 }
             }
             &mut Gesture::ResizingBand {
@@ -373,12 +373,13 @@ impl Grid {
         }
     }
 
-    /// Puts back the Size Override `size` (or none) for `key` on `axis`.
-    fn restore_size(&mut self, axis: Axis, key: Key, size: Option<f32>) {
-        match size {
-            Some(size) => self.set_size(axis, key, size),
-            None => self.clear_size(axis, key),
-        }
+    /// Sets or removes the Size Override for `key` on `axis` as a drag of
+    /// its border does: unlike [`Grid::set_size`], the length of the Scroll
+    /// Anchor's item scrolled past stays, so the border stays under the
+    /// pointer.
+    fn drag_size(&mut self, axis: Axis, key: Key, size: Option<f32>) {
+        self.axis_mut(axis).drag_size(key, size);
+        self.pending_damage.layout = true;
     }
 
     /// Ends a resize in progress where it is, reporting the new size if it
@@ -684,7 +685,7 @@ impl Grid {
                 ..
             } => {
                 self.pending_damage.selection = true;
-                self.restore_size(axis, key, start_override);
+                self.drag_size(axis, key, start_override);
                 return;
             }
             Gesture::ResizingBand {

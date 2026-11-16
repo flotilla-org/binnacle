@@ -51,6 +51,41 @@ fn row_borders_resize_rows() {
     insta::assert_snapshot!(out);
 }
 
+/// Rows of 4 with a Gap of 1, scrolled 2 into row 0: a drag of row 0's
+/// border keeps the 2 scrolled past, so the border and row 1 move as far as
+/// the pointer, not by the share of row 0 still showing.
+#[test]
+fn dragging_the_border_of_a_partly_scrolled_top_row_follows_the_pointer() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(20, 4.0).header(1.0).gap(1.0),
+        AxisConfig::new(5, 6.0).header(4.0).gap(1.0),
+    );
+    let v = Viewport::new(30.0, 20.0);
+    s.frame(v);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 2.0 }));
+    let snap = s.frame(v);
+    let anchor = snap.scroll_anchor(Axis::Rows);
+    assert_eq!((anchor.position, anchor.offset), (0, 2.0));
+    let row1 = |s: &mut Scenario<IdentityTable>| {
+        let snap = s.frame(v);
+        let strip = snap.strip(Axis::Rows);
+        (strip[0].end(), strip[1].offset)
+    };
+    assert_eq!(
+        row1(&mut s),
+        (3.0, 4.0),
+        "row 0 ends at 3, row 1 starts at 4"
+    );
+    s.input(|g| {
+        g.pointer(PointerEvent::down(1.0, 3.5));
+        g.pointer(PointerEvent::moved(1.0, 7.5));
+    });
+    assert_eq!(s.grid.size_override(Axis::Rows, Key(0)), Some(8.0));
+    assert_eq!(row1(&mut s), (7.0, 8.0), "both moved the pointer's 4");
+    let anchor = s.grid.snapshot().scroll_anchor(Axis::Rows);
+    assert_eq!((anchor.position, anchor.offset), (0, 2.0));
+}
+
 #[test]
 fn cancel_restores_the_start_size_and_reports_nothing() {
     let mut s = table();

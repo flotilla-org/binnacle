@@ -1869,10 +1869,15 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
             .filter(|i| i.end() >= start && i.end() < stop)
             .copied()
             .collect();
-        let strip = if ending.is_empty() || tc.draw(gs::weighted_booleans(0.2)) {
-            snap.strip(axis).to_vec()
-        } else {
-            ending
+        // Sometimes the Scroll Anchor's item, partly scrolled past.
+        let anchor = snap.scroll_anchor(axis).position;
+        let anchored = (ending.iter()).find(|i| i.position == anchor).copied();
+        let strip = match anchored {
+            Some(item) if tc.draw(gs::weighted_booleans(0.3)) => vec![item],
+            _ if ending.is_empty() || tc.draw(gs::weighted_booleans(0.2)) => {
+                snap.strip(axis).to_vec()
+            }
+            _ => ending,
         };
         tc.assume(!strip.is_empty());
         let item = strip[tc.draw(gs::integers::<usize>().max_value(strip.len() - 1))];
@@ -1927,8 +1932,19 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
         "press at {x0},{y0} on the border of {item:?}"
     );
     assert!(snap.capturing());
+    // A view at the end stays there as an item grows, moving what is before.
+    let anchor = snap.scroll_anchor(axis);
+    let at_end = (anchor.position, anchor.offset) != (0, 0.0)
+        && (snap.strip(axis).iter()).any(|i| i.position + 1 == snap.count(axis));
+    if anchor.position == item.position {
+        tc.event("anchor's item");
+    }
+    let pressed = (snap.strip(axis).iter())
+        .find(|i| i.key == Some(key))
+        .copied();
     let start = item.size;
     let mut size = start;
+    let mut shrunk = false;
     for travel in tc.draw(
         gs::vecs(hegel::one_of!(
             gs::floats::<f32>().min_value(-50.0).max_value(50.0),
@@ -1954,7 +1970,27 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
         s.input(|g| g.pointer(PointerEvent::moved(x, y)));
         let expected = (size != start).then_some(size);
         assert_eq!(s.grid.size_override(axis, key), expected, "after {travel}");
-        check_resize_feedback(&tc, &s.frame(viewport), axis, key);
+        let snap = s.frame(viewport);
+        check_resize_feedback(&tc, &snap, axis, key);
+        // A growing item's border follows the pointer: the length scrolled
+        // past of the anchor's item stays, even if it is the one dragged. A
+        // shrink may pull the anchor into its item, for good.
+        shrunk |= size < start;
+        if let Some(pressed) = pressed
+            && !shrunk
+            && !at_end
+        {
+            let border = f64::from(pressed.end()) + (f64::from(size) - f64::from(start));
+            let drawn = (snap.strip(axis).iter()).find(|i| i.key == Some(key));
+            let drawn = drawn.expect("a growing item stays drawn");
+            let reach = (snap.extent(axis)).max(border.abs() as f32);
+            let drift = (snap.strip(axis).len() as f32 + 4.0) * (next_f32(reach) - reach);
+            assert!(
+                (f64::from(drawn.end()) - border).abs() <= f64::from(drift),
+                "after {travel}: {pressed:?} grew to {size} and ends at {}, not {border}",
+                drawn.end()
+            );
+        }
     }
     if tc.draw(gs::booleans()) {
         s.input(|g| g.pointer(PointerEvent::up(x0, y0)));
@@ -2602,9 +2638,9 @@ fn set_gap_keeps_the_scroll_anchors_item_at_its_offset(tc: TestCase) {
 
 /// `set_default_size` resizes every item to the new default (nothing set
 /// others) and keeps the Scroll Anchor's item first, scrolled past by the
-/// same share of it. Only two things move it: an anchor in the Gap past where
-/// the item's new stride ends is pulled inside it, and the end clamp pulls
-/// the view back to show the last item (or holds it there). The other axis is
+/// same share of it, or an anchor in the Gap after it at the same place in
+/// the Gap. Only the end clamp moves it, pulling the view back to show the
+/// last item (or holding it there). The other axis is
 /// untouched. A changed default is layout damage; a size that is not
 /// positive and finite changes nothing.
 #[hegel::test(test_cases = 2000)]
@@ -2640,23 +2676,26 @@ fn set_default_size_keeps_the_scroll_anchors_item_and_its_share(tc: TestCase) {
     assert!(snap.strip(axis).iter().all(|i| i.size == new));
     assert_eq!(snap.scroll_anchor(axis.other()), other);
     let after = snap.scroll_anchor(axis);
-    let scaled = before.offset * (new / old);
+    let in_gap = before.offset > old;
+    let scaled = if in_gap {
+        new + (before.offset - old)
+    } else {
+        before.offset * (new / old)
+    };
     if after.position == before.position && after.offset == scaled {
-        tc.event("anchor kept");
+        tc.event(if in_gap {
+            "kept in the Gap"
+        } else {
+            "anchor kept"
+        });
         return;
     }
     let thumb = snap.thumb(axis);
-    if thumb.fraction == 1.0 || (thumb.size >= 1.0 && after == ScrollAnchor::default()) {
-        tc.event("end clamp");
-        return;
-    }
-    tc.event("pulled inside the stride");
     assert!(
-        after.position == before.position
-            && after.offset < scaled
-            && scaled >= new + snap.gap(axis),
+        thumb.fraction == 1.0 || (thumb.size >= 1.0 && after == ScrollAnchor::default()),
         "{before:?} moved to {after:?} with the default size {old} -> {new}"
     );
+    tc.event("end clamp");
 }
 
 /// Any sequence of size changes (a Size Override set or cleared on any item,
