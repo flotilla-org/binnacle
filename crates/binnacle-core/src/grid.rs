@@ -389,6 +389,7 @@ impl Grid {
 
     fn window_changed(&mut self, axis: Axis, change: WindowChange) {
         self.axis_mut(axis).outlines.clear();
+        self.axis_mut(axis).scale_deferred();
         self.axis_mut(axis).sync_pins();
         self.finish_freeze(axis);
         self.pending_damage.positions |= change.keys;
@@ -422,9 +423,9 @@ impl Grid {
     /// that item wherever it moves, clamped into the axis's size range. Sizes
     /// that are not positive and finite are ignored. Resizing the Scroll
     /// Anchor's item keeps the share of it scrolled past, as
-    /// [`Grid::set_default_size`] does, unless the Window does not hold the
-    /// item (see there): what a zoom wants. A drag of the item's border keeps
-    /// the length scrolled past instead, so the border follows the pointer.
+    /// [`Grid::set_default_size`] does: what a zoom wants. A drag of the
+    /// item's border keeps the length scrolled past instead, so the border
+    /// follows the pointer.
     pub fn set_size(&mut self, axis: Axis, key: Key, size: f32) {
         self.axis_mut(axis).set_size(key, size);
         self.pending_damage.layout = true;
@@ -497,11 +498,9 @@ impl Grid {
     /// size, follows the new size unless the host set it with
     /// [`Grid::set_pin_zone`]. Limits:
     ///
-    /// - The Scroll Anchor holds a Position, not a Key. While the Window does
-    ///   not hold its item (after a `Reset` until the host re-sends the
-    ///   Window), its size is only the default, so a resized item's offset is
-    ///   scaled by the wrong ratio and the next frame clamps it into the
-    ///   item. Zoom after the Window is back to avoid this.
+    /// - While the Window does not hold the anchor's item (after a `Reset`
+    ///   until the host re-sends the Window), its size is not known yet: the
+    ///   anchor is scaled once the Window gives the item.
     /// - An anchor inside the Gap after its item keeps its place in the Gap:
     ///   only the item part of its offset is scaled, so the item stays
     ///   scrolled past whether it grows or shrinks.

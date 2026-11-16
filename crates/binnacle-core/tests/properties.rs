@@ -8,9 +8,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, Cursor, DropTarget, Effect, FocusEnd,
-    FocusStep, Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent, PointerKind, Position,
-    ScrollAnchor, SelectionUnit, Snapshot, Viewport,
+    Action, Axis, AxisConfig, AxisMeasure, Button, CellRange, ChangeNotice, Cursor, DropTarget,
+    Effect, FocusEnd, FocusStep, Grid, HeaderClick, Key, Mode, Modifiers, PointerEvent,
+    PointerKind, Position, ScrollAnchor, SelectionUnit, Snapshot, Viewport,
 };
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
@@ -2718,7 +2718,8 @@ fn set_default_size_keeps_the_scroll_anchors_item_and_its_share(tc: TestCase) {
 /// Wheelhouse's zoom sends them) keeps the Scroll Anchor at the same share of
 /// its item for as long as the item stays the anchor. It stops being the
 /// anchor only when the end clamp pulls the view back. Rows with no Gap, of
-/// whole-number sizes, scrolled to a drawn share of a drawn item.
+/// whole-number sizes, scrolled to a drawn share of a drawn item. After a
+/// `Reset` the changes all come before the Window is back (#371).
 #[hegel::test(test_cases = 1000)]
 fn size_changes_keep_the_scroll_anchor_at_the_same_share_of_its_item(tc: TestCase) {
     let default = tc.draw(gs::integers::<u32>().min_value(1).max_value(6)) as f32;
@@ -2751,7 +2752,12 @@ fn size_changes_keep_the_scroll_anchor_at_the_same_share_of_its_item(tc: TestCas
     let before = s.frame(viewport).scroll_anchor(Axis::Rows);
     let size = size_at(&s.frame(viewport), before.position).unwrap();
     let share = before.offset / size;
-    for _ in 0..tc.draw(gs::integers::<u32>().min_value(1).max_value(6)) {
+    let reset = tc.draw(gs::booleans());
+    if reset {
+        s.input(|g| g.notify(Axis::Rows, ChangeNotice::Reset(30)));
+    }
+    let changes = tc.draw(gs::integers::<u32>().min_value(1).max_value(6));
+    for n in 1..=changes {
         let size = tc.draw(gs::integers::<u32>().min_value(1).max_value(12)) as f32;
         // Keys 0..12 include the anchor's item often (it is among the first).
         let key = Key(tc.draw(gs::integers::<u64>().min_value(0).max_value(12)));
@@ -2759,6 +2765,10 @@ fn size_changes_keep_the_scroll_anchor_at_the_same_share_of_its_item(tc: TestCas
             0 => s.input(|g| g.set_size(Axis::Rows, key, size)),
             1 => s.input(|g| g.clear_size(Axis::Rows, key)),
             _ => s.input(|g| g.set_default_size(Axis::Rows, size)),
+        }
+        // The Window is back only once a frame is drawn.
+        if reset && n < changes {
+            continue;
         }
         let snap = s.frame(viewport);
         let after = snap.scroll_anchor(Axis::Rows);

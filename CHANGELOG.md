@@ -11,6 +11,7 @@
 - **ratatui:** coming back inline from full screen scrolls the focused row into view, and the rows printed on exit wrap by display width, never inside a grapheme ([#368](https://github.com/flotilla-org/binnacle/issues/368)).
 - **format:** `cut` shows nothing at a limit of zero, not `…`.
 - **core:** dragging the border of the Scroll Anchor's item, partly scrolled past, keeps the border under the pointer: a drag keeps the length scrolled past, where since #370 it kept the share, so the border moved only by the share still showing ([#374](https://github.com/flotilla-org/binnacle/issues/374)). `Grid::set_size` still keeps the share, for zoom. An anchor inside the Gap after its item keeps its place in the Gap through `set_default_size`, `set_size` and `clear_size`: only the item part of its offset is scaled, so a shrinking item no longer comes back into view. A range corner with no Key yet keeps the range when a Window arrives before its `Locate` answer, and a corner pulled in onto the other corner's item keeps its side at the next `Refiltered`.
+- **core:** zooming (`Grid::set_default_size`, `set_size`, `clear_size`) while the Window lacks the Scroll Anchor's item, after a `Reset` and before the host re-sends the Window, keeps the share of the item scrolled past: the anchor is scaled once the Window gives the item, so a user-sized item no longer jumps ([#371](https://github.com/flotilla-org/binnacle/issues/371)).
 
 ### Added
 

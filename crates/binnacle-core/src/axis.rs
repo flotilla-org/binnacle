@@ -55,6 +55,21 @@ pub(crate) struct AxisState {
     /// The sizes of the tiers of the Header Band heading this axis's items
     /// in header form, as the host set them (see [`crate::Grid::set_tiers`]).
     pub tier_sizes: Vec<f32>,
+    /// Size changes made while the Window lacked the anchor's item, to be
+    /// scaled into the anchor once the Window gives it.
+    unscaled: Option<Unscaled>,
+}
+
+/// The sizes as they were when the Window last held the anchor's item, as
+/// far as they changed since: the anchor's offset is a share of its item at
+/// these sizes.
+#[derive(Clone, Debug)]
+struct Unscaled {
+    /// The anchor they hold for; one moved since no longer waits.
+    anchor: ScrollAnchor,
+    default: f32,
+    /// Each Key whose Size Override changed, with the one it had.
+    overrides: Vec<(Key, Option<f32>)>,
 }
 
 impl AxisState {
@@ -79,6 +94,7 @@ impl AxisState {
             regions: [0.0..0.0, 0.0..0.0],
             outlines: HashMap::new(),
             tier_sizes: Vec::new(),
+            unscaled: None,
         }
     }
 
@@ -475,16 +491,73 @@ impl AxisState {
     pub fn set_default_size(&mut self, size: f32) -> bool {
         let old_default = self.measure.default_size();
         let old = self.measure.size_at(self.anchor.position);
+        let unscaled = self.unscaled.clone();
+        let deferred = self.defer_scale(None);
         if !self.measure.set_default_size(size) {
+            self.unscaled = unscaled;
             return false;
         }
         if self.pin_zone == old_default / 4.0 {
             self.pin_zone = self.measure.default_size() / 4.0;
         }
         let new = self.measure.size_at(self.anchor.position);
-        self.scale_anchor(old, new);
+        if !deferred {
+            self.scale_anchor(old, new);
+        }
         self.clamp_anchor();
         true
+    }
+
+    /// Before a size change: if the Window lacks the anchor's item, notes the
+    /// sizes as they are (for `changed`, its Size Override), so that the
+    /// anchor is scaled once the Window gives the item. Returns whether it
+    /// did.
+    fn defer_scale(&mut self, changed: Option<Key>) -> bool {
+        let p = self.anchor.position;
+        if self.window_covers(&(p..p + 1)) {
+            return false;
+        }
+        let anchor = self.anchor;
+        let m = &self.measure;
+        let unscaled = (self.unscaled.take())
+            .filter(|u| u.anchor == anchor)
+            .unwrap_or_else(|| Unscaled {
+                anchor,
+                default: m.default_size(),
+                overrides: Vec::new(),
+            });
+        let unscaled = self.unscaled.insert(unscaled);
+        if let Some(key) = changed
+            && !unscaled.overrides.iter().any(|&(k, _)| k == key)
+        {
+            unscaled.overrides.push((key, m.size_override(key)));
+        }
+        true
+    }
+
+    /// Scales the anchor by the size changes made while the Window lacked
+    /// its item, once the Window holds it, unless the anchor moved since.
+    /// A Window without the item leaves the note waiting. An anchor moved
+    /// away and back to the same Position and offset is taken as unmoved.
+    pub fn scale_deferred(&mut self) {
+        let p = self.anchor.position;
+        let m = &self.measure;
+        let Some(key) = m.key_at(p) else { return };
+        let Some(unscaled) = self.unscaled.take() else {
+            return;
+        };
+        if unscaled.anchor != self.anchor {
+            return;
+        }
+        let set = unscaled.overrides.iter().find(|&&(k, _)| k == key);
+        let old = (set.map_or_else(|| m.size_override(key), |&(_, s)| s))
+            .or_else(|| m.content_at(p))
+            .unwrap_or(unscaled.default);
+        let new = m.size_at(p);
+        if new != old {
+            self.scale_anchor(old, new);
+            self.clamp_anchor();
+        }
     }
 
     /// Scales the part of the anchor's offset inside its item by the item's
@@ -504,13 +577,15 @@ impl AxisState {
     /// item scrolled past if it is the item resized, as
     /// [`Self::set_default_size`] does.
     pub fn set_size(&mut self, key: Key, size: f32) {
-        self.resizing(true, |m| m.set_size(key, size));
+        let scale = !self.defer_scale(Some(key));
+        self.resizing(scale, |m| m.set_size(key, size));
     }
 
     /// Removes the Size Override for `key`, keeping the anchor's share as
     /// [`Self::set_size`] does.
     pub fn clear_size(&mut self, key: Key) {
-        self.resizing(true, |m| m.clear_size(key));
+        let scale = !self.defer_scale(Some(key));
+        self.resizing(scale, |m| m.clear_size(key));
     }
 
     /// Sets the Size Override for `key` as a drag of its border does, or

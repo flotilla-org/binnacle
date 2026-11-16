@@ -397,6 +397,12 @@ impl AxisMeasure {
         self.index(pos).map(|i| self.keys[i])
     }
 
+    /// The content size of the item at `pos`, if the Window holds it with one.
+    pub fn content_at(&self, pos: Position) -> Option<f32> {
+        let i = self.index(pos)?;
+        self.content.get(i).copied().filter(|s| !s.is_nan())
+    }
+
     /// The size of the item at `pos`: its Size Override, else its content size,
     /// else the default.
     pub fn size_at(&self, pos: Position) -> f32 {
