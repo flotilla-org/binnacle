@@ -119,8 +119,8 @@ function countRead(table: DescribedTable, headers: Record<string, string>, poll:
     waiting = mine;
     table.countEnded();
     await new Promise((resolve) => setTimeout(resolve, wait));
-    wait = Math.min(wait * 2, LAST_WAIT);
     if (!current()) return;
+    wait = Math.min(wait * 2, LAST_WAIT);
     waiting = null;
     const next = deferred;
     deferred = null;
