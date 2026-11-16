@@ -519,9 +519,10 @@ impl DescribedSource {
     /// source applies now and each axis's unfiltered count, once, for the
     /// host to hand the Grid ([`Grid::view_changed`]) with the Change
     /// Notices; after the count read's `count` changed the Totals, the View
-    /// Spec applied with them. A removed column's sort terms and conditions are left out,
-    /// so the Grid shows them not applied; the source keeps the View Spec
-    /// last asked for, and they apply again if the field comes back.
+    /// Spec applied with them. A removed column's sort terms and
+    /// conditions are left out, so the Grid shows them not applied; the
+    /// source keeps the View Spec last asked for, and they apply again if
+    /// the field comes back.
     pub fn poll_view(&mut self) -> Option<(ViewSpec, Totals)> {
         self.viewed.take()
     }
