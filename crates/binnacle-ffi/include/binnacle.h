@@ -2293,7 +2293,9 @@ int binnacle_described_source_receive_count(BinnacleDescribedSource *src, Binnac
                                             size_t len);
 
 /* The count read's stream ended: while the filter sends where clauses, the
- * source asks to open it again. */
+ * source asks to open it again, at once. The host paces that request as it
+ * paces opening the watch again, so a server that ends the count read at
+ * once is not asked in a loop. */
 int binnacle_described_source_count_ended(BinnacleDescribedSource *src);
 
 /* Takes the source's next request for its host into out: 1 if there was

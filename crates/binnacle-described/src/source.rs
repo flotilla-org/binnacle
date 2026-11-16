@@ -436,6 +436,7 @@ impl DescribedSource {
         // Counting begins only in `view`, which sets the spec applied, and
         // `move_items` keeps it; every other change to the applied spec
         // comes through `view` too.
+        debug_assert!(self.applied_spec.is_some(), "counting with no spec applied");
         let Some(spec) = self.applied_spec.clone() else {
             return;
         };
@@ -447,7 +448,10 @@ impl DescribedSource {
     }
 
     /// The count read ended: while any clause is sent, the source asks to
-    /// open it again. The Totals it gave stand until its next `count`.
+    /// open it again, at once; the host paces it, as it paces the watch
+    /// after [`DescribedSource::ended`], so a server that ends it at once
+    /// is not asked again in a loop. The Totals it gave stand until its next
+    /// `count`.
     pub fn count_ended(&mut self) {
         if self.counting.is_some() {
             self.open_count();

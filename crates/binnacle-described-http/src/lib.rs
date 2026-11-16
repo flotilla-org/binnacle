@@ -509,8 +509,9 @@ pub struct Blocking {
     events: mpsc::Receiver<(u64, Event)>,
     /// Each event of the count read with the request it is for.
     count_events: mpsc::Receiver<(u64, Event)>,
-    /// How many requests were opened, and closed, on each stream: the
-    /// latest's number.
+    /// How many requests were sent for each stream (a `CloseCount` counts
+    /// for the count read): the latest's number, whose events alone are
+    /// read.
     opened: [Cell<u64>; 2],
     thread: Option<thread::JoinHandle<()>>,
 }
