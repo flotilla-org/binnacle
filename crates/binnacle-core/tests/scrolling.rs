@@ -813,6 +813,31 @@ fn zooming_keeps_the_share_of_an_anchor_on_a_user_sized_item() {
     );
 }
 
+/// The same zoom while the Window lacks row 5, after a `Reset` and before
+/// the next frame (#371): the anchor is scaled once the Window gives row 5,
+/// so it ends where zooming with the Window present puts it.
+#[test]
+fn zooming_before_the_window_is_back_keeps_the_share_of_a_user_sized_item() {
+    let mut s = table();
+    let v = Viewport::new(22.0, 6.0);
+    s.input(|g| g.set_size(Axis::Rows, Key(5), 4.0));
+    s.frame(v);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 7.0 }));
+    s.frame(v);
+    s.input(|g| {
+        g.notify(Axis::Rows, ChangeNotice::Reset(20));
+        g.set_size(Axis::Rows, Key(5), 8.0);
+        g.set_default_size(Axis::Rows, 2.0);
+    });
+    assert_eq!(
+        s.frame(v).scroll_anchor(Axis::Rows),
+        ScrollAnchor {
+            position: 5,
+            offset: 4.0
+        }
+    );
+}
+
 /// The end clamp applies after a default size change: with 20 rows of 2 under
 /// a header of 1 in a body of 4, scrolled to the end, shrinking the rows to 1
 /// while scrolling up by 1 in the same input leaves the view one row short of
