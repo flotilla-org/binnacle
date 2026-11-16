@@ -271,7 +271,6 @@ dependencies = [
  "hegeltest",
  "insta",
  "ratatui",
- "regex",
  "serde_json",
  "signal-hook",
  "unicode-segmentation",
