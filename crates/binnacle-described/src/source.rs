@@ -215,9 +215,9 @@ pub struct DescribedSource {
     /// whether it has more.
     lists: HashMap<String, (Vec<(Wire, u64)>, bool)>,
     requests: VecDeque<HostRequest>,
-    /// The filter changed the clauses and the host has not yet taken the
-    /// request to open the watch again: messages still coming are from the
-    /// stream it replaces.
+    /// The clauses or the fields asked for changed and the host has not
+    /// yet taken the request to open the watch again: messages still
+    /// coming are from the stream it replaces.
     reopening: bool,
     zone: Rc<dyn Zone>,
     schema: Option<Schema>,
@@ -335,8 +335,8 @@ impl DescribedSource {
     /// The next thing the source asks of its host: first, to open the
     /// watch, and again each time the stream ends, the filter changes the
     /// `where` clauses it sends or the columns change which fields' Distinct
-    /// Values it asks for. A host opening the watch again drops
-    /// the stream open before it feeds the new one's messages.
+    /// Values it asks for. A host opening the watch again drops the stream
+    /// open before it feeds the new one's messages.
     pub fn poll_request(&mut self) -> Option<HostRequest> {
         let request = self.requests.pop_front();
         if matches!(request, Some(HostRequest::OpenWatch(_))) {
