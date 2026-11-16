@@ -94,16 +94,8 @@ impl WatchRequest {
     /// the Scope's then the filter's, each value percent-encoded. The
     /// server keeps the rows every clause keeps.
     pub fn query(&self) -> String {
-        let mut query = format!(
-            "watch&limit={}&namespace={}",
-            self.limit,
-            encode(self.scope.namespace())
-        );
-        for clause in self.scope.wheres().iter().chain(&self.wheres) {
-            query.push_str("&where=");
-            query.push_str(&encode(clause));
-        }
-        query
+        let head = format!("watch&limit={}", self.limit);
+        scoped(&head, &self.scope, &self.wheres)
     }
 
     /// The path and query together.
@@ -130,21 +122,24 @@ impl CountRequest {
     /// `watch&count=exact&limit=1&namespace=…`, then a `where=…` for each
     /// of the Scope's clauses, each value percent-encoded.
     pub fn query(&self) -> String {
-        let mut query = format!(
-            "watch&count=exact&limit=1&namespace={}",
-            encode(self.scope.namespace())
-        );
-        for clause in self.scope.wheres() {
-            query.push_str("&where=");
-            query.push_str(&encode(clause));
-        }
-        query
+        scoped("watch&count=exact&limit=1", &self.scope, &[])
     }
 
     /// The path and query together.
     pub fn target(&self) -> String {
         format!("{}?{}", self.path(), self.query())
     }
+}
+
+/// `head`, then `&namespace=…` and a `&where=…` for each of the Scope's
+/// clauses and then `wheres`, each value percent-encoded.
+fn scoped(head: &str, scope: &Scope, wheres: &[String]) -> String {
+    let mut query = format!("{head}&namespace={}", encode(scope.namespace()));
+    for clause in scope.wheres().iter().chain(wheres) {
+        query.push_str("&where=");
+        query.push_str(&encode(clause));
+    }
+    query
 }
 
 /// `text` percent-encoded but for RFC 3986's unreserved characters.
