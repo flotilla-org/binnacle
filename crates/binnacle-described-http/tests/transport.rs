@@ -343,6 +343,46 @@ fn the_count_reads_events_come_apart_from_the_watchs_and_closing_it_drops_its_st
     assert_eq!(transport.try_recv_count(), None);
 }
 
+#[test]
+fn a_count_read_that_ends_at_once_is_opened_again_after_the_backoff() {
+    let backoff = Backoff {
+        initial: Duration::from_millis(300),
+        max: Duration::from_secs(5),
+    };
+    let fake = fake().start().unwrap();
+    let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
+    let mut source = source();
+    host(&transport, &mut source, synced);
+    let read = |transport: &Blocking| loop {
+        match transport.recv_count_timeout(WAIT).expect("the count read") {
+            Event::Message(Message::Count { .. }) => return,
+            Event::Message(_) => {}
+            other => panic!("{other:?}"),
+        }
+    };
+    let ends = |transport: &Blocking| loop {
+        if transport.recv_count_timeout(WAIT) == Some(Event::Ended) {
+            return Instant::now();
+        }
+    };
+    transport.open(count_read());
+    read(&transport);
+    // The server ends it twice running; each time the host opens it again
+    // at once, as the source asks, and the transport waits.
+    let mut gaps = Vec::new();
+    for _ in 0..2 {
+        fake.push(Step::End);
+        let ended = ends(&transport);
+        transport.open(count_read());
+        read(&transport);
+        let opened = (fake.requests().into_iter())
+            .rfind(|r| r.target.contains("count="))
+            .unwrap();
+        gaps.push(opened.at - ended);
+    }
+    assert!(gaps.iter().all(|&gap| gap >= backoff.initial), "{gaps:?}");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn the_async_transport_serves_the_count_read_and_nothing_for_closing_it() {
     let fake = fake().start().unwrap();

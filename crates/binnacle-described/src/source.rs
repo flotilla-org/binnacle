@@ -441,6 +441,8 @@ impl DescribedSource {
             return;
         };
         let totals = self.totals();
+        // A View Spec still waiting for the host keeps its spec, which is
+        // the one applied; only its Totals are new.
         match &mut self.viewed {
             Some((_, viewed)) => *viewed = totals,
             None => self.viewed = Some((spec, totals)),
