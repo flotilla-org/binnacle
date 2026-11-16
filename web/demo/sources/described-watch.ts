@@ -86,7 +86,6 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
 
   /** Stops until the table asks for a target other than `target`. */
   const halt = async (target: string) => {
-    if (stopped) return;
     haltedOn = target;
     await new Promise<void>((resolve) => (resume = resolve));
     resume = null;
