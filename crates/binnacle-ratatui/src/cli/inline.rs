@@ -260,7 +260,8 @@ fn run<T: CliTable, B: Backend>(
         bars: crate::Layout::default(),
         reveal: false,
         shown: Vec::new(),
-        fit_rows: true,
+        // A Layout that sets the bands keeps its thickness, until an auto-size.
+        fit_rows: layout.bands.is_none(),
         theme: options.theme.clone(),
         origin,
         start: Instant::now(),

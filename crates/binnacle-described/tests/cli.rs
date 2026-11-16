@@ -1491,3 +1491,14 @@ fn the_row_band_widens_so_a_two_digit_number_keeps_a_blank_cell_before_the_first
     }
     insta::assert_snapshot!(frames[0]);
 }
+
+#[test]
+fn a_layout_that_sets_the_bands_keeps_the_row_band_it_saved() {
+    let mut source = crews();
+    let layout = Layout::from_json(br#"{"version":2,"bands":{"rows":1,"cols":12}}"#).unwrap();
+    let (frames, _) = inline(&mut source, &layout, vec![key(KeyCode::Esc)], 100, 20);
+    let lines: Vec<&str> = frames[0].lines().collect();
+    // The numbers would fit a band of 2; the saved 12 puts the names further out.
+    let alpha = lines.iter().find(|l| l.contains("alpha")).unwrap();
+    assert_eq!(alpha.find("alpha"), Some(12), "{}", frames[0]);
+}

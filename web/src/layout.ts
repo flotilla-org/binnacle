@@ -212,8 +212,8 @@ export function restoreLayout<RowId, ColId>(
   // After the view request, whose default pin the saved one overrides.
   if (pins) {
     for (const axis of AXES) {
-      const grandTotal = pins[axis].grandTotal;
-      if (grandTotal !== undefined) grid.set_grand_total_pinned(AXIS_CODE[axis], grandTotal);
+      // Not said: pinned by default, though the pins set above let go of it.
+      grid.set_grand_total_pinned(AXIS_CODE[axis], pins[axis].grandTotal ?? true);
     }
   }
   if (order) {

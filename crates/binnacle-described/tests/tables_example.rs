@@ -109,6 +109,8 @@ fn a_table_over_the_cap_says_so() {
 #[test]
 fn a_summary_row_draws_blank_where_it_has_no_figure() {
     let (mut tables, mut grid) = load("crews.ndjson");
+    // A band wide enough for the labels, which the snapshot reads.
+    grid.set_header(Axis::Cols, 12.0);
     draw(&mut tables, &mut grid);
     let phase = tables.source.column_key("phase").unwrap();
     let spec = binnacle_core::ViewSpec::default()

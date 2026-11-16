@@ -101,12 +101,9 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
         }
         // After the view request, whose default pin the saved one overrides.
         if let Some(pins) = &self.pins {
-            if let Some(pinned) = pins.rows.grand_total {
-                grid.set_grand_total_pinned(Axis::Rows, pinned);
-            }
-            if let Some(pinned) = pins.cols.grand_total {
-                grid.set_grand_total_pinned(Axis::Cols, pinned);
-            }
+            // Not said: pinned by default, though the pins set above let go of it.
+            grid.set_grand_total_pinned(Axis::Rows, pins.rows.grand_total.unwrap_or(true));
+            grid.set_grand_total_pinned(Axis::Cols, pins.cols.grand_total.unwrap_or(true));
         }
         let mut unplaced = Order::default();
         let Some(order) = &self.order else {

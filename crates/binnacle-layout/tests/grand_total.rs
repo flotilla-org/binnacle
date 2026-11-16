@@ -106,3 +106,16 @@ fn a_layout_that_says_nothing_of_the_grand_total_restores_it_pinned() {
     assert_eq!(layout.pins.as_ref().unwrap().rows.grand_total, None);
     assert_eq!(restored(&layout), vec![GRAND_TOTAL]);
 }
+
+#[test]
+fn an_old_layout_restored_over_a_grouped_grid_leaves_the_grand_total_pinned() {
+    let mut old = saved(true);
+    old.pins.as_mut().unwrap().rows.grand_total = None;
+    let mut s = table();
+    s.input(|g| g.request_view(by_region()));
+    assert_eq!(trailing(&mut s), vec![GRAND_TOTAL]);
+    s.input(|g| {
+        old.restore(g, &ids());
+    });
+    assert_eq!(trailing(&mut s), vec![GRAND_TOTAL]);
+}

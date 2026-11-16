@@ -585,6 +585,21 @@ describe("version 2: the order, every part optional, and version 1 migrated", ()
       expect(restoredTrailing(layout)).toEqual([GRAND_TOTAL]);
     });
 
+    test("a layout that says nothing, restored over a grouped grid, leaves it pinned", () => {
+      const layout = saved(true);
+      delete layout.pins!.rows.grandTotal;
+      const h = harness();
+      try {
+        h.settled();
+        restore(h, { version: LAYOUT_VERSION, view: grouped() });
+        expect(trailing(h)).toEqual([GRAND_TOTAL]);
+        restore(h, layout);
+        expect(trailing(h)).toEqual([GRAND_TOTAL]);
+      } finally {
+        h.destroy();
+      }
+    });
+
     test("a layout without a grouping says nothing of it", () => {
       const h = harness();
       try {
