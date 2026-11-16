@@ -464,7 +464,7 @@ impl DescribedSource {
                 values,
                 more,
                 ..
-            } => {
+            } if self.values.contains(&field) => {
                 let (list, more_held) = self.lists.entry(field).or_default();
                 for (value, count) in values {
                     // By identity, so a NaN matches itself.
@@ -482,6 +482,8 @@ impl DescribedSource {
                 *more_held = more;
                 Vec::new()
             }
+            // A field the watch did not ask for: no list reads it.
+            Message::Values { .. } => Vec::new(),
             Message::Upsert { key, row } => self.upsert(&key, row),
             Message::Delete { key } => self.delete(&key),
             Message::Resync => {
@@ -507,9 +509,10 @@ impl DescribedSource {
     /// After a `table` message changed the columns, or a `count` the
     /// Totals, the View Spec the source applies now and each axis's
     /// unfiltered count, once, for the host to hand the Grid
-    /// ([`Grid::view_changed`]) with the Change Notices. A removed column's sort terms and conditions are left out,
-    /// so the Grid shows them not applied; the source keeps the View Spec
-    /// last asked for, and they apply again if the field comes back.
+    /// ([`Grid::view_changed`]) with the Change Notices. A removed column's
+    /// sort terms and conditions are left out, so the Grid shows them not
+    /// applied; the source keeps the View Spec last asked for, and they
+    /// apply again if the field comes back.
     pub fn poll_view(&mut self) -> Option<(ViewSpec, Totals)> {
         self.viewed.take()
     }

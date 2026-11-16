@@ -254,8 +254,12 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
   let applied: { spec: KeyedViewSpec; totals: Totals } | null = null;
   const listeners = new Set<() => void>();
   const requestListeners = new Set<() => void>();
-  /** Each request listener's call, while a watch waits to be opened in place of the stream. */
-  const asking = () => (live().hasRequest() ? [...requestListeners].map((listener) => () => listener()) : []);
+  /**
+   * Each request listener's call, while a watch waits to be opened in place of the stream. Each checks again when
+   * it runs: a listener called earlier in the same batch (a View Spec a sink applied while fed) may have taken it.
+   */
+  const asking = () =>
+    live().hasRequest() ? [...requestListeners].map((listener) => () => live().hasRequest() && listener()) : [];
 
   const clock = zone && ((frameNow: number) => ({ now: performance.timeOrigin + frameNow, zone }));
   const renderOf = (c: DescribedColumn) => JSON.stringify([c.valueType, c.type, c.unit, c.roles]);
