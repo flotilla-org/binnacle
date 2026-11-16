@@ -493,3 +493,96 @@ test("after an edit the edited Leaf draws its new cells at once, while its group
     source.destroy();
   }
 });
+
+/**
+ * Group, let the figures land, then filter the rows and then slice: the
+ * figures drawn on the Summary Items are those of grouping at once, and while
+ * a late backend has not answered they draw pending, never the old.
+ */
+for (const late of [true, false]) {
+  test(`after a filter or a slicer over ${late ? "an async backend" : "a sync source"} the Summary Items draw pending or their new figures, never the old`, async () => {
+  const rows: Rec[] = Array.from({ length: 12 }, (_, i) => ({ s: "abc"[i % 3]!, t: "xy"[i % 2]!, n: i + 1 }));
+  // Answered at once until the test holds the answers back.
+  let held: (() => void)[] | null = null;
+  const base = fromRows(rows, COLUMNS);
+  const source = late
+    ? groupedSource({
+        base,
+        backend: {
+          answer(batch, reply) {
+            for (const q of batch.queries) {
+              const send = () => reply(compute(rows, batch, q));
+              if (held) held.push(send);
+              else send();
+            }
+          },
+        },
+      })
+    : base;
+  const h = new Harness(source);
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+      h.frame();
+      h.drain();
+    }
+  };
+  /** The group a Summary Item totals: its value, or "total" for the Grand Total. */
+  const groupOf = (id: number): ListedValue | undefined => {
+    const g = late ? (source as GroupedSource<Field, unknown>).summary(id) : base.group(id);
+    if (g?.kind === "grandTotal") return "total";
+    if (g?.kind !== "group") return undefined;
+    return "path" in g ? g.path[0]!.value : g.value;
+  };
+  /** The summed `n` drawn on each group's row, by its value: `undefined` while pending. */
+  const sums = () => {
+    const s = h.frame();
+    const j = s.cols.strip.findIndex((item) => h.content?.id("cols", item) === "n");
+    const out = new Map<ListedValue, unknown>();
+    s.rows.strip.forEach((item, i) => {
+      const id = h.content?.id("rows", item) as number | null | undefined;
+      const value = id !== null && id !== undefined && id < 0 ? groupOf(id) : undefined;
+      if (value !== undefined) out.set(value, h.content?.value(i, j));
+    });
+    return out;
+  };
+  const sumsOf = (kept: (r: Rec) => boolean) => {
+    const out = new Map<ListedValue, number>();
+    for (const r of rows.filter(kept)) out.set(r.s, (out.get(r.s) ?? 0) + r.n);
+    out.set("total", rows.filter(kept).reduce((sum, r) => sum + r.n, 0));
+    return out;
+  };
+  const view = (conditions: Condition<Field>[], slicers: Condition<Field>[]) => {
+    const by = rowsBy<Field>("s");
+    const grouping: Grouping<Field, number, Field> = { ...by, values: [{ field: "n", aggregate: "sum" }], slicers, rowAxis: { ...by.rowAxis, grandTotal: "after", expand: { depth: 0, except: [] } } };
+    h.grid.request_view(h.feed.viewKeys(viewOf(grouping, [], conditions) as AppliedView<number, Field>));
+    h.drain();
+  };
+  const only = (field: Field, value: string): Condition<Field> => ({ id: field, kind: { type: "OneOf", values: [value] }, not: false });
+  try {
+    h.frame();
+    view([], []);
+    await settle();
+    expect(sums()).toEqual(sumsOf(() => true));
+    for (const [conditions, slicers, kept] of [
+      [[only("t", "x")], [], (r: Rec) => r.t === "x"],
+      [[only("t", "x")], [only("s", "a")], (r: Rec) => r.t === "x" && r.s === "a"],
+    ] as const) {
+      held = late ? [] : null;
+      view([...conditions], [...slicers]);
+      await settle();
+      const old = sums();
+      const fresh = sumsOf(kept);
+      for (const [value, figure] of old) expect([undefined, fresh.get(value)], `${String(value)} before the answers`).toContain(figure);
+      const answers = held ?? [];
+      held = null;
+      answers.forEach((send) => send());
+      await settle();
+      expect(sums()).toEqual(fresh);
+    }
+  } finally {
+    h.destroy();
+    source.destroy();
+  }
+  });
+}

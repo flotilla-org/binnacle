@@ -400,13 +400,16 @@ export function createFeed<RowId, ColId, V>(
       case "Refiltered":
         // The same IDs, so values follow their Keys, unless the Keys are
         // Positions. Only the items shown keep theirs: one out of view may
-        // have changed while filtered out, with no Position to say so.
+        // have changed while filtered out, with no Position to say so. A
+        // Summary Item's figures follow the filter, not its Key, so it
+        // keeps none.
         if (position) {
           cache.clear();
           edits.clear();
         } else {
           const { all } = visibleAt(axis, 0, 0);
-          cache.retain(axis, (k) => all.has(k));
+          const summaries = new Set((shown?.[axis].strip ?? []).flatMap((i) => (i.key !== null && i.outline && i.outline.kind !== "leaf" ? [i.key] : [])));
+          cache.retain(axis, (k) => all.has(k) && !summaries.has(k));
         }
         settle(() => axes[axis].source.count(), (count) => reset(axis, count, "Refiltered"), {
           fresh: true,
