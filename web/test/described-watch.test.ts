@@ -236,3 +236,29 @@ test("after a throwing sink, a new request fetches nothing", async () => {
   w.destroy();
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+test("a watch asked for while a 4xx's body is still being read opens", async () => {
+  let finish = () => {};
+  const fetch = vi.fn(async (target: string) => {
+    if (target !== "/bad") return new Response("{}\n", { headers: { "Content-Type": "application/x-ndjson" } });
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        finish = () => {
+          c.enqueue(new TextEncoder().encode("no"));
+          c.close();
+        };
+      },
+    });
+    return new Response(body, { status: 400 });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const { table: t, ask } = askingTable("/bad");
+  const { w, phases } = start(t);
+  await settle();
+  ask("/good");
+  finish();
+  await settle();
+  w.destroy();
+  expect(fetch.mock.calls.map((c) => c[0])).toEqual(["/bad", "/good"]);
+  expect(phases).toEqual(["connecting", "connecting", "open", "waiting"]);
+});

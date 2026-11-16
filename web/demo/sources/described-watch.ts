@@ -125,7 +125,10 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
           const response = await fetch(target, { headers: options.headers, signal: mine.signal });
           if (replaced()) continue;
           if (response.status >= 400 && response.status < 500) {
-            fail({ status: response.status, message: await errorMessage(response) }, true);
+            const message = await errorMessage(response);
+            // The table asked for another watch while the body was read: that one opens.
+            if (replaced()) continue;
+            fail({ status: response.status, message }, true);
             await halt(target);
             continue;
           }
