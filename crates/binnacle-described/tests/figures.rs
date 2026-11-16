@@ -4,7 +4,8 @@
 mod support;
 
 use binnacle_core::{
-    Axis, Blanks, Condition, DistinctQuery, DistinctValue, FilterSpec, Value as Listed, ViewSpec,
+    Axis, Blanks, Condition, ConditionState, DistinctQuery, DistinctValue, FilterSpec,
+    Value as Listed, ViewSpec,
 };
 use binnacle_described::{DescribedSource, Message, Scope, Wire};
 use binnacle_memory::PumpSource;
@@ -67,11 +68,51 @@ fn values(entries: &[(Option<&str>, u64)], more: bool) -> Message {
 #[test]
 fn the_rows_totals_are_the_total_a_count_gives() {
     let mut s = fed(12);
+    // A total the host has not yet handed the Grid gives way to the next.
+    let _ = s.source.0.receive(count(12, Some(100)));
     feed(&mut s, count(12, Some(340)));
     assert_eq!(s.source.0.totals().rows, Some(340));
     let snapshot = s.frame(VIEWPORT);
     assert_eq!(snapshot.total(Axis::Rows), Some(340));
     assert_eq!(binnacle_ratatui::row_count(&snapshot), "12 of 340 rows");
+    let phase = s.source.0.column_key("phase").unwrap();
+    let running = Condition::one_of(phase, vec![Listed::Text("Running".into())]);
+    s.input(|g| g.add_slicer(running));
+    let snapshot = s.frame(VIEWPORT);
+    assert_eq!(binnacle_ratatui::row_count(&snapshot), "12 of 340 rows");
+    s.source.0.poll_request();
+    feed(&mut s, count(12, Some(341)));
+    let snapshot = s.frame(VIEWPORT);
+    assert_eq!(binnacle_ratatui::row_count(&snapshot), "12 of 341 rows");
+    assert_eq!(snapshot.slicers()[0].1, ConditionState::Applied, "kept");
+}
+
+#[test]
+fn a_new_table_forgets_the_last_total_and_distinct_values() {
+    let mut s = fed(3);
+    feed(&mut s, count(3, Some(340)));
+    feed(&mut s, values(&[(Some("Landing"), 2)], false));
+    stream(&mut s, convoys(3));
+    let snapshot = s.frame(VIEWPORT);
+    assert_eq!(binnacle_ratatui::row_count(&snapshot), "3 rows");
+    let phase = s.source.0.column_key("phase").unwrap();
+    let listed = (s
+        .source
+        .distinct(Axis::Rows, phase, &DistinctQuery::new(10)))
+    .unwrap();
+    let texts: Vec<_> = listed.values.iter().map(|v| v.text.as_str()).collect();
+    assert_eq!(texts, ["Running"], "from the rows held");
+}
+
+#[test]
+fn the_rows_after_the_first_table_wait_for_the_watch_that_asks_for_values() {
+    let mut s = scenario(DescribedSource::new("convoys", Scope::new("flotilla")));
+    s.source.0.poll_request();
+    for message in convoys(3) {
+        feed(&mut s, message);
+    }
+    assert!(s.source.0.has_request());
+    assert_eq!(s.source.0.row_count(), 0, "the old stream's rows");
 }
 
 #[test]
@@ -112,6 +153,9 @@ fn a_filtered_columns_distinct_values_are_the_servers_with_its_counts() {
     assert_eq!(listed.values, [value("Landing", 2), value("Running", 7)]);
     assert_eq!(listed.blanks, Some(Blanks::Counted(1)));
     assert!(!listed.partial);
+    assert!(listed.narrowed);
+    let cols = s.source.distinct(Axis::Cols, phase, &query);
+    assert_ne!(cols.map(|d| d.values), Some(listed.values), "not a field's");
     let searched = DistinctQuery::new(10).search("land");
     let listed = s.source.distinct(Axis::Rows, phase, &searched).unwrap();
     assert_eq!(listed.values, [value("Landing", 2)]);
@@ -122,8 +166,18 @@ fn a_filtered_columns_distinct_values_are_the_servers_with_its_counts() {
         .unwrap();
     assert_eq!(listed.values, [value("Landing", 2)]);
     assert!(listed.partial, "the cap");
-    feed(&mut s, values(&[(Some("Landing"), 0)], true));
+    feed(
+        &mut s,
+        values(&[(Some("Landing"), 0), (Some("Running"), 9)], true),
+    );
     let listed = s.source.distinct(Axis::Rows, phase, &query).unwrap();
-    assert_eq!(listed.values, [value("Running", 7)]);
+    assert_eq!(listed.values, [value("Running", 9)]);
     assert!(listed.partial, "there were more");
+    feed(&mut s, values(&[], false));
+    assert!(
+        !s.source
+            .distinct(Axis::Rows, phase, &query)
+            .unwrap()
+            .partial
+    );
 }

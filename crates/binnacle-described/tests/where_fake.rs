@@ -52,6 +52,11 @@ fn a_slicer_on_a_table_past_the_cap_ends_with_every_matching_row() {
     until_synced(&mut s, &transport);
     assert!(s.source.0.status().partial);
     assert_eq!(s.source.0.row_count(), 10_000);
+    let snapshot = s.frame(support::VIEWPORT);
+    assert_eq!(
+        binnacle_ratatui::row_count(&snapshot),
+        "10,000 of 10,050 rows"
+    );
     let phase = s.source.0.column_key("phase").unwrap();
     let slicer = Condition::one_of(phase, vec![Listed::Text("Done".into())]);
     s.input(|g| g.add_slicer(slicer));
@@ -69,6 +74,9 @@ fn a_slicer_on_a_table_past_the_cap_ends_with_every_matching_row() {
     assert_eq!(s.source.0.row_count(), done.len(), "only they are held");
     let shown = s.source.0.count(binnacle_core::Axis::Rows) as usize;
     assert_eq!(shown, done.len());
+    let snapshot = s.frame(support::VIEWPORT);
+    let counted = binnacle_ratatui::row_count(&snapshot);
+    assert!(counted.ends_with(" of 10,050 rows"), "{counted}");
     for id in &done {
         assert!(
             s.source.0.row_key(std::slice::from_ref(id)).is_some(),

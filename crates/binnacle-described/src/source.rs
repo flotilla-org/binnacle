@@ -432,6 +432,10 @@ impl DescribedSource {
                 // The Distinct Values that follow a `table` are whole.
                 self.lists.clear();
                 let notices = self.describe(table.schema);
+                // As is the total: a server that sends no `count` gives none.
+                if self.status.total.take().is_some() {
+                    self.retotal();
+                }
                 self.revalue();
                 notices
             }
