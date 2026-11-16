@@ -279,7 +279,14 @@ fn range_through_refilters(tc: TestCase, slow: bool) {
     let mut corners = Some((anchor.min(head), anchor.max(head)));
     // Whether each corner has a Key. One pulled in to an item no Window has
     // given yet has none, and drops the range at the next step (#377). Off
-    // a full viewport the test can't always tell.
+    // a full viewport the test can't always tell. A corner pulled in to a
+    // scrolling item becomes `No` if the step is answered without a frame
+    // (`drained`), else `Yes` on a full viewport and `Maybe` off one. A
+    // frame, or one drawn before a View Spec's answers (`pace` 1), turns
+    // `No` into `Yes` or `Maybe` the same way, and a corner drawn in the
+    // Strip is `Yes`. At a step, `No` drops the range; `Maybe`, a step
+    // that may send no `Refiltered`, or an unsure step not yet drawn
+    // (`unseen`) only lets the range be dropped (`unsure`).
     let mut keyed = [Keyed::Yes; 2];
     // Whether a step not yet drawn may have dropped the range.
     let mut unseen = false;
