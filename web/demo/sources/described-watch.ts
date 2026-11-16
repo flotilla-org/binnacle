@@ -70,14 +70,26 @@ interface CountRead {
 /**
  * Reads the count read `table` asks for, feeding it to the table's count read calls. When a read ends or fails, the
  * table is told, and after a wait (doubling from 500 ms to 5 s, as the watch's, and starting again once a read
- * brings bytes), `poll` takes the read it asks for again. A 4xx or a body that is not a rows stream leaves it closed.
+ * brings bytes), `poll` takes the read it asks for again. A read the table asks for during that wait, taken with
+ * the watch's requests, opens only when the wait ends. A 4xx or a body that is not a rows stream leaves it closed.
  */
 function countRead(table: DescribedTable, headers: Record<string, string>, poll: () => void): CountRead {
   let controller: AbortController | null = null;
   let wait = FIRST_WAIT;
+  /** The read whose end is being waited out, and the target asked for meanwhile. */
+  let waiting: AbortController | null = null;
+  let deferred: string | null = null;
   const close = () => {
     controller?.abort();
     controller = null;
+    waiting = null;
+    deferred = null;
+  };
+  const start = (target: string) => {
+    controller?.abort();
+    const mine = new AbortController();
+    controller = mine;
+    void read(target, mine);
   };
   const read = async (target: string, mine: AbortController) => {
     const current = () => controller === mine;
@@ -104,17 +116,24 @@ function countRead(table: DescribedTable, headers: Record<string, string>, poll:
       if (!(e instanceof DOMException && e.name === "AbortError") && !(e instanceof TypeError)) console.error(e);
     }
     if (!current()) return;
+    waiting = mine;
     table.countEnded();
     await new Promise((resolve) => setTimeout(resolve, wait));
     wait = Math.min(wait * 2, LAST_WAIT);
-    if (current()) poll();
+    if (!current()) return;
+    waiting = null;
+    const next = deferred;
+    deferred = null;
+    if (next === null) poll();
+    else start(next);
   };
   return {
     open(target) {
-      controller?.abort();
-      const mine = new AbortController();
-      controller = mine;
-      void read(target, mine);
+      if (waiting !== null && waiting === controller) {
+        deferred = target;
+        return;
+      }
+      start(target);
     },
     close() {
       close();

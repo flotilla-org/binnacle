@@ -224,3 +224,38 @@ test("a count read that ends is told to the table, which asks for it again after
   await vi.waitFor(() => expect(calls.opened).toBe(2), { timeout: 2000 });
   w.destroy();
 });
+
+test("a count read asked for again during its wait, with the watch's requests, opens only when the wait ends", async () => {
+  const opened: number[] = [];
+  vi.stubGlobal("fetch", async (target: string) => {
+    if (target !== "/count") return new Promise<Response>(() => {});
+    opened.push(Date.now());
+    return new Response("count\n", { headers: { "Content-Type": "application/x-ndjson" } });
+  });
+  const requests: unknown[] = [
+    { kind: "watch", target: "/rows" },
+    { kind: "count", target: "/count" },
+  ];
+  let ask = () => {};
+  const ended: number[] = [];
+  const t = {
+    pollRequest: () => requests.shift(),
+    onRequest(listener: () => void) {
+      ask = listener;
+      return () => {};
+    },
+    openCount() {},
+    feedCount() {},
+    // The count read ended, and the table asks for it again; a watch event takes that request at once.
+    countEnded() {
+      ended.push(Date.now());
+      requests.push({ kind: "count", target: "/count" });
+      ask();
+    },
+    status: () => ({ synced: false }),
+  } as unknown as DescribedTable;
+  const w = watch(t, { headers: {}, onPhase() {} });
+  await vi.waitFor(() => expect(opened.length).toBe(2), { timeout: 2000 });
+  expect(opened[1]! - ended[0]!).toBeGreaterThanOrEqual(450);
+  w.destroy();
+});
