@@ -383,12 +383,15 @@ struct View {
 }
 
 /// A watch's `count` (the rows kept, and those the scope keeps) and each
-/// field's values (by their CBOR) and whether there are more.
+/// field's values and whether there are more.
 #[derive(Clone, Default)]
 struct Figures {
     count: Option<(u64, u64)>,
-    values: BTreeMap<String, (BTreeMap<Vec<u8>, (Wire, u64)>, bool)>,
+    values: BTreeMap<String, (Counted, bool)>,
 }
+
+/// Values with how many rows hold each, by their CBOR.
+type Counted = BTreeMap<Vec<u8>, (Wire, u64)>;
 
 impl View {
     fn scoped(&self, table: &FakeTable, row: &Row) -> bool {
@@ -411,7 +414,7 @@ impl View {
                 continue;
             };
             let wheres: Vec<&Where> = self.wheres.iter().filter(|w| !w.only(name)).collect();
-            let mut counted: BTreeMap<Vec<u8>, (Wire, u64)> = BTreeMap::new();
+            let mut counted = Counted::new();
             for row in &table.rows {
                 if self.scoped(table, row) && wheres.iter().all(|w| w.keeps(row)) {
                     let value = data::held(field, row);

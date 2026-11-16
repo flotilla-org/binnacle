@@ -57,7 +57,7 @@ A table its server describes on the wire: a `table` message carries a Frictionle
 _Avoid_: Remote table, schema table, dynamic table
 
 **Scope**:
-What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses in the condition language flotillad speaks (`rigging-condition`). A Described Table source can't be built without one. The source sends its rows' Conditions and Slicers after them, each as a `where` clause where one keeps every row the Condition keeps and the field's `whereOperators` allow it, and asks for the watch again when those clauses change; it filters every row that comes again, so what shows never depends on the `where` clauses.
+What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed clauses in the condition language flotillad speaks (`rigging-condition`), sent as `scope` clauses. A Described Table source can't be built without one. The source sends its rows' Conditions and Slicers as `where` clauses, each where one keeps every row the Condition keeps and the field's `whereOperators` allow it, and asks for the watch again when those clauses change; it filters every row that comes again, so what shows never depends on the `where` clauses. The watch's `count` message gives the rows' Totals (the rows the `scope` clauses keep), and its `values` messages the Distinct Values of each column that allows `in`, so the source asks for the watch again once the columns are known.
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
 **Described Source Handle**:
@@ -163,7 +163,7 @@ A Condition holding text in the Table Source's own query language, passed to it 
 _Avoid_: Raw filter, SQL condition, custom condition
 
 **Distinct Values**:
-The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more. A null reads `(null)` and an empty string `(empty)`, apart, in the list, in a chip and in a group's label (the null one dim, as a null cell is).
+The values one item of the other axis holds across an axis (a column's values, for the rows), as a Table Source lists them for a checklist: in the item's natural order, each with how many items hold it, blanks apart, narrowed by the filter in force less the item's own Conditions, and capped, saying when there were more. A Described Table lists a column whose values its server sends from them: the server counts them over the `where` clauses that read another field, so while a Condition kept client-side only (a Text Condition, the quick filter, one with no clause) is in force on another item, a count can exceed the rows shown. A null reads `(null)` and an empty string `(empty)`, apart, in the list, in a chip and in a group's label (the null one dim, as a null cell is).
 _Avoid_: Unique values, facets
 
 **Text Query**:

@@ -114,7 +114,7 @@ test("a table over the watch's cap shows partial", async ({ page }) => {
   await expect(status(page)).toHaveAttribute("data-state", "synced", { timeout: 30_000 });
   await expect(status(page)).toHaveAttribute("data-partial", "true");
   await expect(status(page)).toContainText("10,000 of more");
-  await expect(count(page)).toHaveText("10,000 rows");
+  await expect(count(page)).toHaveText("10,000 of 10,050 rows");
 });
 
 test("upserts arrive live", async ({ page, fake }) => {

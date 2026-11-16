@@ -78,17 +78,17 @@ const plain: ViewSpec<bigint, string> = {
 describe("requests", () => {
   test("the watch carries the scope, once, and again after the stream ends", () => {
     const d = described("crews", undefined, NDJSON, { namespace: "flotilla", wheres: ['status.phase == "Active"'] });
-    const where = "where=status.phase%20%3D%3D%20%22Active%22";
+    const query = "watch&limit=10000&namespace=flotilla&count=exact&scope=status.phase%20%3D%3D%20%22Active%22";
     expect(d.pollRequest()).toEqual({
       table: "crews",
       path: "/tables/crews/rows",
-      query: `watch&limit=10000&namespace=flotilla&${where}`,
-      target: `/tables/crews/rows?watch&limit=10000&namespace=flotilla&${where}`,
+      query,
+      target: `/tables/crews/rows?${query}`,
       limit: 10000,
     });
     expect(d.pollRequest()).toBeUndefined();
     d.ended();
-    expect(d.pollRequest()?.target).toBe(`/tables/crews/rows?watch&limit=10000&namespace=flotilla&${where}`);
+    expect(d.pollRequest()?.target).toBe(`/tables/crews/rows?${query}`);
     expect(d.pollRequest()).toBeUndefined();
   });
 
@@ -97,7 +97,13 @@ describe("requests", () => {
     const [table, ...rest] = CREWS_LINES;
     const message = JSON.parse(table!) as { schema: { fields: { name: string; whereOperators?: string[] }[] } };
     for (const f of message.schema.fields) if (f.name === "phase") f.whereOperators = ["==", "in", "has"];
-    const d = described("crews", encode([JSON.stringify(message), ...rest]));
+    const body = encode([JSON.stringify(message), ...rest]);
+    const d = described("crews", body);
+    // The table asks for the watch again, for the values of phase, which allows `in`.
+    const base = "watch&limit=10000&namespace=flotilla&count=exact&values=phase";
+    expect(d.pollRequest()?.query).toBe(base);
+    d.open(NDJSON);
+    d.feed(body);
     let asked = 0;
     d.onRequest(() => asked++);
     const view = (rows: Partial<ViewSpec<bigint, string>["rows"]>) =>
@@ -106,7 +112,7 @@ describe("requests", () => {
     view({ filter: { quick: null, conditions: [running] } });
     expect(asked).toBe(1);
     expect(decodeURIComponent(d.pollRequest()!.query)).toBe(
-      'watch&limit=10000&namespace=flotilla&where=!has(phase) || phase in ["Running"]',
+      `${base}&where=!has(phase) || phase in ["Running"]`,
     );
     expect(names(d)).toEqual(["alpha", "bravo", "delta", "foxtrot"]);
     view({ filter: { quick: null, conditions: [running] }, sort: [{ id: "load", direction: "descending" }] });
@@ -116,7 +122,7 @@ describe("requests", () => {
     expect(d.pollRequest()).toBeUndefined();
     view({});
     expect(asked).toBe(2);
-    expect(d.pollRequest()?.query).toBe("watch&limit=10000&namespace=flotilla");
+    expect(d.pollRequest()?.query).toBe(base);
   });
 
   test("an empty namespace throws, and so does a body that is not a rows stream", () => {
