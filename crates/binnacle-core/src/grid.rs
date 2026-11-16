@@ -423,8 +423,9 @@ impl Grid {
     /// that item wherever it moves, clamped into the axis's size range. Sizes
     /// that are not positive and finite are ignored. Resizing the Scroll
     /// Anchor's item keeps the share of it scrolled past, as
-    /// [`Grid::set_default_size`] does: what a zoom wants. A drag of the item's border keeps
-    /// the length scrolled past instead, so the border follows the pointer.
+    /// [`Grid::set_default_size`] does: what a zoom wants. A drag of the
+    /// item's border keeps the length scrolled past instead, so the border
+    /// follows the pointer.
     pub fn set_size(&mut self, axis: Axis, key: Key, size: f32) {
         self.axis_mut(axis).set_size(key, size);
         self.pending_damage.layout = true;

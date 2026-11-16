@@ -2766,6 +2766,7 @@ fn size_changes_keep_the_scroll_anchor_at_the_same_share_of_its_item(tc: TestCas
             1 => s.input(|g| g.clear_size(Axis::Rows, key)),
             _ => s.input(|g| g.set_default_size(Axis::Rows, size)),
         }
+        // The Window is back only once a frame is drawn.
         if reset && n < changes {
             continue;
         }

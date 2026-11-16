@@ -491,8 +491,10 @@ impl AxisState {
     pub fn set_default_size(&mut self, size: f32) -> bool {
         let old_default = self.measure.default_size();
         let old = self.measure.size_at(self.anchor.position);
+        let unscaled = self.unscaled.clone();
         let deferred = self.defer_scale(None);
         if !self.measure.set_default_size(size) {
+            self.unscaled = unscaled;
             return false;
         }
         if self.pin_zone == old_default / 4.0 {
@@ -535,6 +537,8 @@ impl AxisState {
 
     /// Scales the anchor by the size changes made while the Window lacked
     /// its item, once the Window holds it, unless the anchor moved since.
+    /// A Window without the item leaves the note waiting. An anchor moved
+    /// away and back to the same Position and offset is taken as unmoved.
     pub fn scale_deferred(&mut self) {
         let p = self.anchor.position;
         let m = &self.measure;
