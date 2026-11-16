@@ -132,6 +132,20 @@ enum Refilter {
 /// neither reaches a filtered out or hidden item.)
 #[hegel::test(test_cases = 1000)]
 fn a_range_covers_the_items_still_shown_drawn_between_its_corners(tc: TestCase) {
+    range_through_refilters(tc, false);
+}
+
+/// The same on a slow host, which may draw before the `Locate` answers come
+/// or answer without drawing, so a corner pulled in has no Key yet at the
+/// next step. Each step only narrows what shows: a corner that kept no Key
+/// is placed again from the Key that left it, which a step showing items
+/// again could place apart from the item it was pulled in to (#377).
+#[hegel::test(test_cases = 1000)]
+fn a_range_covers_the_items_still_shown_with_windows_before_answers(tc: TestCase) {
+    range_through_refilters(tc, true);
+}
+
+fn range_through_refilters(tc: TestCase, slow: bool) {
     let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
     let m = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
     let axis = tc.draw(gs::sampled_from(vec![Axis::Rows, Axis::Cols]));
@@ -235,11 +249,16 @@ fn a_range_covers_the_items_still_shown_drawn_between_its_corners(tc: TestCase) 
     let mut kept = vec![true; len];
     let mut hidden = vec![false; len];
     let keys = || gs::vecs(gs::integers::<u64>().max_value(len as u64 - 1)).max_size(len);
-    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
-    for _ in 0..steps {
+    let most = if slow { 6 } else { 4 };
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(most));
+    for done in 1..=steps {
         let step = if axis == Axis::Rows && tc.draw(gs::booleans()) {
-            Refilter::Filter(tc.draw(gs::vecs(gs::booleans()).min_size(len).max_size(len)))
-        } else if tc.draw(gs::booleans()) {
+            let mut keep = tc.draw(gs::vecs(gs::booleans()).min_size(len).max_size(len));
+            if slow {
+                keep.iter_mut().zip(&kept).for_each(|(k, &was)| *k &= was);
+            }
+            Refilter::Filter(keep)
+        } else if slow || tc.draw(gs::booleans()) {
             Refilter::Hide(tc.draw(keys()))
         } else {
             Refilter::Show(tc.draw(keys()))
@@ -262,12 +281,27 @@ fn a_range_covers_the_items_still_shown_drawn_between_its_corners(tc: TestCase) 
                 s.input(|g| g.show(axis, &keys));
             }
         }
-        s.frame(view);
         let is_shown = |k: usize| kept[k] && !hidden[k];
         corners = corners.and_then(|(lo, hi)| {
             let inside: Vec<usize> = (lo..=hi).filter(|&d| is_shown(drawn[d])).collect();
             Some((*inside.first()?, *inside.last()?))
         });
+        // A slow host may answer without drawing, so the next step's notice
+        // comes before any Window gives a pulled-in corner its Key, or may
+        // draw before the answers come.
+        if slow {
+            match tc.draw(gs::integers::<u8>().max_value(2)) {
+                0 if done < steps => {
+                    s.effects();
+                    continue;
+                }
+                1 => {
+                    s.step_waiting("the Locates unanswered", view);
+                }
+                _ => {}
+            }
+        }
+        s.frame(view);
         // A Position is the rank among the shown Keys in `order`.
         let shown: Vec<usize> = order.iter().copied().filter(|&k| is_shown(k)).collect();
         let position = |k: usize| shown.iter().position(|&j| j == k).unwrap() as u64;
@@ -371,4 +405,66 @@ fn a_range_survives_a_second_refilter_after_a_corner_was_pulled_in_off_screen() 
         filter_to(&mut s, view, &everything_but(1)),
         Some((0..19).collect())
     );
+}
+
+/// The off-screen corner again, with the frame after the next filter
+/// filling its Window before the `Locate` answers come: the corner is still
+/// keyless at Position 0, and the Window must not give it the Key there
+/// while the refilter waits to place it.
+#[test]
+fn a_keyless_corner_keeps_the_range_when_a_window_comes_before_its_locate() {
+    let rows = (0..30).map(|r| vec![Some(r)]).collect();
+    let grid = Grid::new(
+        AxisConfig::new(30, 1.0).header(1.0),
+        AxisConfig::new(1, 4.0).header(3.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 1, [0]));
+    let view = Viewport::new(7.0, 7.0);
+    s.frame(view);
+    s.click(5.0, 1.5, Modifiers::NONE);
+    s.input(|g| g.action(Action::Scroll { dx: 0.0, dy: 15.0 }));
+    s.frame(view);
+    s.click(5.0, 6.5, Modifiers::SHIFT);
+    s.frame(view);
+    let everything_but_0: Vec<i64> = (1..30).collect();
+    assert_eq!(
+        filter_to(&mut s, view, &everything_but_0),
+        Some((0..20).collect())
+    );
+    let notice = s.source.filter(|r| [2, 3, 20].contains(&r[0].unwrap()));
+    s.input(|g| g.notify(Axis::Rows, notice));
+    s.step_waiting("filtered, the Locates unanswered", view);
+    let snap = s.frame(view);
+    let covered = (snap.selection_range()).map(|r| {
+        r.span(Axis::Rows)
+            .iter()
+            .cloned()
+            .flatten()
+            .collect::<Vec<u64>>()
+    });
+    assert_eq!(covered, Some(vec![0, 1, 2]));
+}
+
+/// Found by Hegel. Ten rows, row 4 pinned trailing, a range from row 9
+/// back to row 8, then a viewport with room for the pin alone. The first
+/// filter takes row 9 out: its corner is pulled in to row 8, which no Window
+/// holds, so it has no Key and is drawn level with the other corner. The
+/// second filter places it again from row 9, which still comes after row 8.
+#[test]
+fn a_corner_pulled_in_onto_the_other_keeps_its_side() {
+    let rows = (0..10).map(|r| vec![Some(r)]).collect();
+    let grid = Grid::new(
+        AxisConfig::new(10, 1.0).header(1.0),
+        AxisConfig::new(1, 4.0).header(3.0),
+    );
+    let mut s = Scenario::new(grid, RecordTable::new(rows, 1, [0]));
+    let view = Viewport::new(7.0, 11.0);
+    s.input(|g| g.pin(Axis::Rows, Edge::Trailing, Key(4)));
+    s.frame(view);
+    s.click(5.0, 9.5, Modifiers::NONE);
+    s.click(5.0, 8.5, Modifiers::SHIFT);
+    let view = Viewport::new(7.0, 2.0);
+    s.frame(view);
+    assert_eq!(filter_to(&mut s, view, &[3, 4, 6, 7, 8]), Some(vec![4]));
+    assert_eq!(filter_to(&mut s, view, &[8]), Some(vec![0]));
 }

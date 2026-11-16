@@ -227,7 +227,7 @@ fn nothing_draws_outside_the_cell_and_what_draws_is_a_prefix_of_the_text(tc: Tes
     let ours: Vec<&str> = shown.graphemes(true).collect();
     let theirs: Vec<&str> = text.graphemes(true).collect();
     assert!(
-        theirs.starts_with(&ours) || theirs.ends_with(&ours),
+        theirs.starts_with(&ours),
         "{shown:?} is not a prefix of {text:?} at {width}"
     );
 }
