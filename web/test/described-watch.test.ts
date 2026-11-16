@@ -262,3 +262,28 @@ test("a watch asked for while a 4xx's body is still being read opens", async () 
   expect(fetch.mock.calls.map((c) => c[0])).toEqual(["/bad", "/good"]);
   expect(phases).toEqual(["connecting", "connecting", "open", "waiting"]);
 });
+
+test("destroy while a 4xx's body is being read ends the loop without an error", async () => {
+  let finish = () => {};
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          finish = () => {
+            c.enqueue(new TextEncoder().encode("no"));
+            c.close();
+          };
+        },
+      });
+      return new Response(body, { status: 400 });
+    }),
+  );
+  const { table: t } = askingTable("/bad");
+  const { w, phases } = start(t);
+  await settle();
+  w.destroy();
+  finish();
+  await settle();
+  expect(phases).toEqual(["connecting"]);
+});

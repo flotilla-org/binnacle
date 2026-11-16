@@ -86,6 +86,7 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
 
   /** Stops until the table asks for a target other than `target`. */
   const halt = async (target: string) => {
+    if (stopped) return;
     haltedOn = target;
     await new Promise<void>((resolve) => (resume = resolve));
     resume = null;
@@ -99,8 +100,10 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
     request = table.pollRequest();
     if (haltedOn !== null) {
       // The same watch again would fail the same way.
-      if (request && request.target !== haltedOn) resume?.();
-      else request = undefined;
+      if (request && request.target !== haltedOn) {
+        haltedOn = null;
+        resume?.();
+      } else request = undefined;
       return;
     }
     controller?.abort();
@@ -127,6 +130,7 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
           if (response.status >= 400 && response.status < 500) {
             const message = await errorMessage(response);
             // The table asked for another watch while the body was read: that one opens.
+            if (stopped) return;
             if (replaced()) continue;
             fail({ status: response.status, message }, true);
             await halt(target);
