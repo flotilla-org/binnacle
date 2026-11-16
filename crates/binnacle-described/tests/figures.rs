@@ -123,6 +123,14 @@ fn a_count_from_an_older_server_without_a_total_leaves_the_totals_as_the_rows_he
     assert_eq!(s.source.0.totals().rows, Some(12));
     let snapshot = s.frame(VIEWPORT);
     assert_eq!(binnacle_ratatui::row_count(&snapshot), "12 rows");
+    feed(&mut s, count(12, Some(340)));
+    let negative = json!({"type": "count", "count": 12, "total": -1});
+    feed(&mut s, Message::from_json(&negative).unwrap());
+    assert_eq!(
+        s.source.0.totals().rows,
+        Some(12),
+        "a negative total is none"
+    );
 }
 
 #[test]

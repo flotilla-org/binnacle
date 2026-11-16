@@ -432,7 +432,8 @@ impl Message {
                     _ => return Err(DecodeError::message("a count message has no count")),
                 },
                 total: match map.get("total") {
-                    Some(Wire::Int(n)) => Some(u64::try_from(*n).unwrap_or(0)),
+                    // A negative total is none: the Totals fall back to the rows held.
+                    Some(Wire::Int(n)) => u64::try_from(*n).ok(),
                     _ => None,
                 },
                 estimate: matches!(map.get("estimate"), Some(Wire::Bool(true))),
