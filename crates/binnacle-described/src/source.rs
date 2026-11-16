@@ -1073,7 +1073,7 @@ impl DescribedSource {
         let (spec, added) = self.tie_broken(spec);
         let mut spec = self.widened(&spec);
         let stand_in = |c: &mut Condition| {
-            if self.column(c.key).is_some() && native_sent(c) {
+            if self.column(c.key).is_some() && native_sent(&self.columns, c) {
                 *c = Condition::one_of(c.key, Vec::new()).not(true);
             }
         };

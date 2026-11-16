@@ -2014,12 +2014,12 @@ uint64_t binnacle_group_layer_held(const BinnacleGroupLayer *layer);
  * (binnacle_described_cell or binnacle_described_cells).
  *
  * The source asks for its watch again when the stream ends, and when a
- * filter changes the where clauses it sends the server (its conditions in
- * the condition language), so the host polls after each pump as well as
- * after an end. A new OPEN_WATCH replaces the stream open: the host closes
- * it and feeds only the new one's messages. Until the host takes the
+ * View Spec changes the where clauses it sends the server (its row
+ * Conditions in the condition language), so the host polls after each
+ * pump as well as after an end. A new OPEN_WATCH replaces the stream open:
+ * the host closes it and feeds only the new one's messages. Until the host takes the
  * request, the source drops the messages it is fed. Every row that comes
- * is filtered again, so what shows never depends on the server's filter.
+ * is filtered again, so what shows never depends on the where clauses.
  *
  * A source is not thread-safe: it is !Send in Rust (it holds an Rc and boxed
  * closures), so a handle, and the Grid it drives, are used from one thread

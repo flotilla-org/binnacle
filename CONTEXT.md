@@ -57,7 +57,7 @@ A table its server describes on the wire: a `table` message carries a Frictionle
 _Avoid_: Remote table, schema table, dynamic table
 
 **Scope**:
-What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses in the condition language flotillad speaks (`rigging-condition`). A Described Table source can't be built without one. The source sends its rows' Conditions and Slicers after them, each as a `where` clause where one keeps exactly the rows its filter keeps and the field's `whereOperators` allow it, and asks for the watch again when those clauses change; it filters every row that comes again, so what shows never depends on the server's filter.
+What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses in the condition language flotillad speaks (`rigging-condition`). A Described Table source can't be built without one. The source sends its rows' Conditions and Slicers after them, each as a `where` clause where one keeps every row the Condition keeps and the field's `whereOperators` allow it, and asks for the watch again when those clauses change; it filters every row that comes again, so what shows never depends on the `where` clauses.
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
 **Described Source Handle**:
