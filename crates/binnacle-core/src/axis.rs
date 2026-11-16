@@ -491,6 +491,7 @@ impl AxisState {
     /// change in size from `old` to `new`. An anchor in the Gap after its
     /// item keeps its place in the Gap, which no size change scales.
     fn scale_anchor(&mut self, old: f32, new: f32) {
+        debug_assert!(old > 0.0, "item sizes are clamped positive");
         let offset = self.anchor.offset;
         self.anchor.offset = if offset > old {
             new + (offset - old)

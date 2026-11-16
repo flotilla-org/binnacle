@@ -1974,7 +1974,9 @@ fn dragging_a_header_border_resizes_its_item_by_the_pointer_travel(tc: TestCase)
         check_resize_feedback(&tc, &snap, axis, key);
         // A growing item's border follows the pointer: the length scrolled
         // past of the anchor's item stays, even if it is the one dragged. A
-        // shrink may pull the anchor into its item, for good.
+        // shrink below the anchor's offset pulls the offset into the new
+        // stride (`clamp_anchor`), and growing back does not restore it, so
+        // the press-time border is no longer the reference after one.
         shrunk |= size < start;
         if let Some(pressed) = pressed
             && !shrunk
@@ -2677,7 +2679,9 @@ fn set_default_size_keeps_the_scroll_anchors_item_and_its_share(tc: TestCase) {
     assert_eq!(snap.scroll_anchor(axis.other()), other);
     let after = snap.scroll_anchor(axis);
     let in_gap = before.offset > old;
-    let scaled = if in_gap {
+    let scaled = if new == old {
+        before.offset
+    } else if in_gap {
         new + (before.offset - old)
     } else {
         before.offset * (new / old)
@@ -2688,6 +2692,17 @@ fn set_default_size_keeps_the_scroll_anchors_item_and_its_share(tc: TestCase) {
         } else {
             "anchor kept"
         });
+        return;
+    }
+    // At the very end of the Gap, rounding can put the sum on the next
+    // item: the clamp holds it a few steps inside the stride.
+    let stride = new + snap.gap(axis);
+    if in_gap
+        && after.position == before.position
+        && after.offset < scaled
+        && scaled - after.offset <= 4.0 * (next_f32(stride) - stride)
+    {
+        tc.event("held inside the stride");
         return;
     }
     let thumb = snap.thumb(axis);
