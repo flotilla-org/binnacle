@@ -807,10 +807,10 @@ impl Query {
 /// asked for once each field holds one. Where it takes OneOf conditions, the
 /// checklist of its values: a search, "(Select all)" (or "(Select all
 /// matching …)" while searching), each value with its count, "(null)"
-/// first ("(empty)" for an empty string), and notes on whether the list is capped and narrowed. Each change
-/// edits the column's conditions at once, the checklist's by the rules of
-/// the list-of-values filter (#107); the host hands it the values with
-/// [`ColumnFilter::fetch`].
+/// first ("(empty)" for an empty string), and notes on whether the list is
+/// capped and narrowed. Each change edits the column's conditions at once,
+/// the checklist's by the rules of the list-of-values filter (#107); the
+/// host hands it the values with [`ColumnFilter::fetch`].
 ///
 /// Opened on a row ([`ColumnFilter::open_row`]), the same popup filters the
 /// columns by that row's values, dropped beside the row header.
