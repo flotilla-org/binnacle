@@ -96,7 +96,7 @@ const HEADER = 28;
 /** A drill-down's condition as the toolbar shows it. */
 function described({ id, kind, not }: Condition<RowsColId<Shipment>>): string {
   const what =
-    kind.type === "OneOf" ? `${not ? "not " : ""}${kind.values.map((v) => v ?? "(blank)").join(" or ")}` : `${not ? "not " : ""}${JSON.stringify(kind)}`;
+    kind.type === "OneOf" ? `${not ? "not " : ""}${kind.values.map((v) => v ?? "(null)").join(" or ")}` : `${not ? "not " : ""}${JSON.stringify(kind)}`;
   return `${id} ${what}`;
 }
 

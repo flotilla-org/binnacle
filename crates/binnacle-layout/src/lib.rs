@@ -226,7 +226,11 @@ impl<RowId, ColId> Default for Pins<RowId, ColId> {
     }
 }
 
-/// The items pinned to each edge of one axis, in pin order.
+/// The items pinned to each edge of one axis, in pin order, and, while
+/// the view places its one Grand Total after, whether it is pinned: it has
+/// no ID of the host's, so it is not among the items. A Layout that does
+/// not say restores it pinned by default, as a grouping placing it after
+/// does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[serde(bound(serialize = "Id: Serialize", deserialize = "Id: Deserialize<'de>"))]
@@ -235,6 +239,13 @@ pub struct EdgePins<Id> {
     pub leading: Vec<Id>,
     #[serde(default)]
     pub trailing: Vec<Id>,
+    #[serde(
+        default,
+        rename = "grandTotal",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(transform = absent_not_null)]
+    pub grand_total: Option<bool>,
 }
 
 impl<Id> Default for EdgePins<Id> {
@@ -242,6 +253,7 @@ impl<Id> Default for EdgePins<Id> {
         EdgePins {
             leading: Vec::new(),
             trailing: Vec::new(),
+            grand_total: None,
         }
     }
 }

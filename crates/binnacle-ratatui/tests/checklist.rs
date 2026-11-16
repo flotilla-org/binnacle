@@ -214,7 +214,7 @@ fn unticking_from_all_writes_not_one_of_and_ticking_back_removes_it() {
     let mut grid = grid();
     let mut popup = open(&mut grid, 1);
     fetch(&mut popup, &mut grid);
-    // Tab past the search to the list: the head, (Blanks), Aberdeen, Bergen.
+    // Tab past the search to the list: the head, (null), Aberdeen, Bergen.
     for key in [press(KeyCode::Tab), press(KeyCode::Tab)] {
         popup.key(&key, &mut grid);
     }
@@ -329,7 +329,7 @@ fn the_checklist_draws_ticks_counts_and_dims_the_values_the_text_condition_rejec
         buf[(x, y)].modifier.contains(Modifier::DIM),
         "rejected by en"
     );
-    let (x, y) = row("(Blanks)");
+    let (x, y) = row("(null)");
     assert!(
         buf[(x, y)].modifier.contains(Modifier::REVERSED),
         "the cursor"
@@ -598,4 +598,27 @@ fn a_rows_popup_filters_the_columns_by_its_values() {
         "2 of 3 columns"
     );
     insta::assert_snapshot!(text(&buf));
+}
+
+#[test]
+fn a_null_and_an_empty_string_are_listed_apart_as_null_and_empty() {
+    let mut grid = grid();
+    let mut popup = open(&mut grid, 1);
+    popup.fetch(&snapshot(&mut grid), |_, _, _| {
+        let value = |text: &str| DistinctValue {
+            text: text.into(),
+            count: Some(1),
+        };
+        Some(Distinct {
+            values: vec![value(""), value("Aberdeen")],
+            blanks: Some(Blanks::Counted(2)),
+            partial: false,
+            narrowed: true,
+        })
+    });
+    let lines = text(&screen(&popup, &mut grid));
+    for label in ["] (null) ", "] (empty) ", "] Aberdeen "] {
+        assert!(lines.contains(label), "{label} in\n{lines}");
+    }
+    insta::assert_snapshot!(lines);
 }

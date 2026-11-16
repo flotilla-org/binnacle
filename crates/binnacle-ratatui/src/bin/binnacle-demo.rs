@@ -1199,22 +1199,6 @@ fn fill(grid: &mut Grid, table: &Table, viewport: Viewport) {
     }
 }
 
-/// The row-number band's width for `snapshot`: the widest row header label
-/// shown, and a cell after it for the band rule (or a blank when none is
-/// drawn).
-fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
-    let widest = (snapshot.drawn(Axis::Rows))
-        .map(|r| {
-            let label = r.key.map_or_else(
-                || r.position.saturating_add(1).to_string(),
-                |k| content.row_header(k, r.position),
-            );
-            binnacle_cli::width::width(label.as_str()) as usize
-        })
-        .max()?;
-    Some(widest as f32 + 1.0)
-}
-
 /// What the status line says of the selection: the picks on each axis and
 /// what a click selects, unless it is the cell; empty otherwise, else ending
 /// in a separator.
@@ -1518,7 +1502,7 @@ fn main() -> io::Result<()> {
                 if app.fit_rows {
                     // Fit to the rows this frame shows, then lay it out again.
                     let snapshot = grid.snapshot();
-                    let fit = row_band_fit(&snapshot, &table.text())
+                    let fit = binnacle_ratatui::row_band_fit(&snapshot, &table.text())
                         .filter(|_| !matches!(snapshot.mode(), Mode::ResizingBand { .. }));
                     if let Some(width) = fit.filter(|&w| w != snapshot.header(Axis::Cols)) {
                         grid.set_header(Axis::Cols, width);

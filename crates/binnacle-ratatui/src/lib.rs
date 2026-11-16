@@ -25,6 +25,7 @@ mod theme;
 mod value;
 mod width;
 
+pub use binnacle_memory::column_filter::{EMPTY_LABEL, NULL_LABEL, value_label};
 pub use border::{BorderExtent, BorderStyle, BorderWeight};
 pub use chooser::Chooser;
 pub use context::{NextFrame, RenderContext};
@@ -112,8 +113,7 @@ pub trait Content {
     fn group_label(&self, row: Key, outline: &Outline) -> String {
         let _ = row;
         let value = match outline.group.as_ref().map(|g| &g.value) {
-            Some(Value::Text(t)) => t.clone(),
-            Some(Value::Blank) => "(blank)".into(),
+            Some(value) => value_label(value).to_string(),
             None => String::new(),
         };
         match outline.kind {
@@ -501,7 +501,11 @@ pub fn render_with(
             false => h.rect.x.min(left),
         };
         let width = usize::try_from(cell(left) - cell(x0)).unwrap_or(0);
-        let room = width.saturating_sub(text_width(&marker) as usize);
+        // The band keeps its last cell blank, so a label never runs into the
+        // body, unless it has only the one cell.
+        let room = width
+            .saturating_sub(usize::from(width > 1))
+            .saturating_sub(text_width(&marker) as usize);
         let lead = (text_width(&indent) + text_width(mark)) as usize;
         let label_room = room.saturating_sub(lead);
         let number = fit(&number, u32::try_from(label_room).unwrap_or(u32::MAX));
@@ -545,6 +549,21 @@ pub fn render_with(
             &pad(format!("{indent}{mark}{}", pad_to(&number, label_room))),
             style,
         );
+        // A null group's label reads dim, as a null cell does.
+        let null = outline
+            .and_then(|o| o.group.as_ref())
+            .is_some_and(|g| g.value == Value::Blank);
+        if null {
+            let at = x0 + lead as f32;
+            dim_null(
+                buf,
+                area,
+                (at, r.offset),
+                clip,
+                &number,
+                style.patch(theme.dim),
+            );
+        }
         if !mark.trim().is_empty() {
             let at = text_width(&indent) as f32;
             let style = style.patch(theme.disclosure);
@@ -811,6 +830,14 @@ fn draw_spans(
                 let room = width.saturating_sub(3 + usize::from(span.cut_before));
                 let label = fit(&label, u32::try_from(room).unwrap_or(0));
                 put(buf, area, (x + 3.0, y), clip, &label, style);
+                dim_null(
+                    buf,
+                    area,
+                    (x + 3.0, y),
+                    clip,
+                    &label,
+                    style.patch(theme.dim),
+                );
                 put(
                     buf,
                     area,
@@ -876,6 +903,39 @@ fn value_of<'a>(grouping: Option<&'a Grouping>, outline: &Outline) -> Option<&'a
     grouping?.value_of(identity).map(|(_, v)| v)
 }
 
+/// The width the row Header Band needs for the rows `snapshot` draws: the
+/// widest label with its indent and disclosure mark, and a blank cell after
+/// it so the label never runs into the body. `None` with no rows, or in
+/// header form, where the spans' tiers lead the band.
+pub fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
+    if !snapshot.tiers(Axis::Rows).is_empty() {
+        return None;
+    }
+    let grouping = snapshot.applied_view().grouping.as_ref();
+    let widest = snapshot
+        .drawn(Axis::Rows)
+        .map(|r| {
+            let outline = snapshot.outline(Axis::Rows, r.position);
+            let label = r.key.map_or_else(
+                || r.position.saturating_add(1).to_string(),
+                |k| match outline {
+                    Some(o) if o.kind.is_summary() => {
+                        content.summary_label(Axis::Rows, k, o, value_of(grouping, o))
+                    }
+                    _ => content.row_header(k, r.position),
+                },
+            );
+            let lead = match outline {
+                Some(o) if o.kind == ItemKind::GrandTotal => 0,
+                Some(o) => 2 * o.depth as usize + 2,
+                None => 0,
+            };
+            lead + text_width(&label) as usize
+        })
+        .max()?;
+    Some(widest as f32 + 1.0)
+}
+
 /// Draws the columns' spans in header form, a pivot's: each group one cell
 /// over its columns in its tier of the column Header Band, its disclosure
 /// mark (`⋯` once a toggle has waited a while for its answer) and label
@@ -928,6 +988,14 @@ fn draw_column_spans(
             style.patch(theme.disclosure),
         );
         put(buf, area, (at + 2.0, y), clip, &label, style);
+        dim_null(
+            buf,
+            area,
+            (at + 2.0, y),
+            clip,
+            &label,
+            style.patch(theme.dim),
+        );
         let loading = style.patch(theme.loading);
         if span.cut_before {
             put(buf, area, (v.x, y), clip, "‹", loading);
@@ -935,6 +1003,22 @@ fn draw_column_spans(
         if span.cut_after {
             put(buf, area, (v.x + v.width - 1.0, y), clip, "›", loading);
         }
+    }
+}
+
+/// Draws over the start of a group's label `dim`ly if it reads [`NULL_LABEL`]:
+/// a null group, which a host's label may follow with more (a count). A span
+/// label is only text, so one for a value spelled `(null)` draws dim too.
+fn dim_null(
+    buf: &mut Buffer,
+    area: Rect,
+    at: (f32, f32),
+    clip: (f32, f32, f32, f32),
+    label: &str,
+    dim: Style,
+) {
+    if label.starts_with(NULL_LABEL) {
+        put(buf, area, at, clip, NULL_LABEL, dim);
     }
 }
 

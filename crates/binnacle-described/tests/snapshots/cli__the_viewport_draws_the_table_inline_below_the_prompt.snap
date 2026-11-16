@@ -4,15 +4,15 @@ expression: "frames[0]"
 ---
 
 
- Name      │Phase     │   Started│      CPUs│      Load│note      │Host      │Spec      │
-1alpha      Running         in 9h          4       0.5%            feta       {"image":…           █
-2bravo      ∅          ∅                   2      1.25% ∅          feta       {}                   █
-3charlie    Stalled    !soon      !many      ∅          check disk brie       {}                   █
-4delta      Running       15h ago ∅                3.5%            brie       {}                   █
-5echo       Done            in 9h 184467440…         2% late       ∅          {}                   █
-6foxtrot    Running        2d ago          8 !high      ∅          feta       {"image":…           █
-7hotel 日本 Running    ∅                  16      12.5% first lin… 東京       {}                   █
-8india 🚢   Done       ∅                   3 ∅          🚢🚢 ok    ∅          {"a":[1]}            █
-9juliet     ∅          ∅          ∅          ∅          ∅          ∅          {}                   █
+  Name      │Phase     │   Started│      CPUs│      Load│note      │Host      │Spec      │
+1 alpha      Running         in 9h          4       0.5%            feta       {"image":…          █
+2 bravo      ∅          ∅                   2      1.25% ∅          feta       {}                  █
+3 charlie    Stalled    !soon      !many      ∅          check disk brie       {}                  █
+4 delta      Running       15h ago ∅                3.5%            brie       {}                  █
+5 echo       Done            in 9h 184467440…         2% late       ∅          {}                  █
+6 foxtrot    Running        2d ago          8 !high      ∅          feta       {"image":…          █
+7 hotel 日本 Running    ∅                  16      12.5% first lin… 東京       {}                  █
+8 india 🚢   Done       ∅                   3 ∅          🚢🚢 ok    ∅          {"a":[1]}           █
+9 juliet     ∅          ∅          ∅          ∅          ∅          ∅          {}                  █
                                                                                                    █
 9 rows | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  f full screen  Esc quit

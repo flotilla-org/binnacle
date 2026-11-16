@@ -1,0 +1,13 @@
+---
+source: crates/binnacle-ratatui/tests/null_groups.rs
+expression: "lines.iter().map(|l| l.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
+---
+region      count id
+▸ (null)                               █
+  (null) total                         █
+▸ (empty)                              █
+  (empty) total                        █
+▸ North                                █
+                                       █
+                                       █
+                                       █

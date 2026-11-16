@@ -636,5 +636,5 @@ fn header_text_too_long_for_its_header_ends_in_an_ellipsis() {
     render_with(&grid.snapshot(), &Long, &ctx, area, &mut buf);
     let lines: Vec<String> = text(&buf).lines().map(String::from).collect();
     assert_eq!(lines[0], "    column …│column…▲│");
-    assert_eq!(lines[1], "row…r0c0     r0c1");
+    assert_eq!(lines[1], "ro… r0c0     r0c1");
 }

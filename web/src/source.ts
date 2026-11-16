@@ -5,6 +5,7 @@
 // defaults: no View Spec applied, every Locate `Gone`, nothing movable.
 
 import type { Primitive } from "./interner";
+import { valueLabel } from "./labels";
 import type { RendererChoice } from "./renderer";
 import type { SortDirection } from "./snapshot";
 
@@ -625,13 +626,13 @@ export interface TableSource<RowId, ColId, V = unknown> {
 
 /**
  * A Summary Item's header text when the source gives none: a Group Item's
- * value ("(blank)" for a blank), the value and "total" on a Subtotal
+ * value ("(null)" for a null, "(empty)" for an empty string), the value and "total" on a Subtotal
  * ("Bergen total"), or "Grand total".
  */
 export function summaryLabel(outline: Outline<unknown, unknown>): string {
   if (outline.kind === "grandTotal") return "Grand total";
   const value = outline.group?.value;
-  const label = value === undefined ? "" : (value ?? "(blank)");
+  const label = value === undefined ? "" : valueLabel(value);
   return outline.kind === "subtotal" ? `${label} total` : label;
 }
 

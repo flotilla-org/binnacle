@@ -210,7 +210,7 @@ fn the_drawer_draws_at_the_right_following_focus_and_lit_only_while_focused() {
             && text(&focused)
                 .lines()
                 .nth(y as usize)
-                .is_some_and(|l| l.contains("(Blanks)"))
+                .is_some_and(|l| l.contains("(null)"))
     });
     assert!(cursor, "the list's cursor is lit");
     drawer.key(&press(KeyCode::Esc), &mut grid);

@@ -1439,3 +1439,66 @@ fn a_burst_of_changes_yields_to_a_key_press_between_frames() {
         "each frame took some of the burst and left the rest: {left}"
     );
 }
+
+/// The crews, one more than nine so that row numbers reach two digits, as
+/// a Layout groups them by phase with every group open.
+fn grouped_by_phase() -> (DescribedSource, Layout<JsonId, JsonId>) {
+    let mut source = crews();
+    let row = json!({"name": "kilo", "phase": "Running", "cpus": 2, "load": 1.5, "spec": {}});
+    let key = vec![Wire::from_json(&row["name"])];
+    let Wire::Map(row) = Wire::from_json(&row) else {
+        unreachable!()
+    };
+    source.receive(Message::Upsert { key, row });
+    let none = json!({"filter": {"quick": null, "conditions": []}, "sort": [], "hidden": []});
+    let layout = json!({
+        "version": 2,
+        "view": {
+            "rows": none,
+            "cols": none,
+            "grouping": {
+                "rowLevels": [{"field": "phase", "subtotal": "off"}],
+                "colLevels": [],
+                "values": [{"field": null, "aggregate": "count"}],
+                "slicers": [],
+                "rowAxis": {"grandTotal": "off", "form": "outline", "expand": {"depth": "all", "except": []}},
+                "colAxis": {"grandTotal": "off", "form": "header", "expand": {"depth": "all", "except": []}}
+            }
+        }
+    });
+    let layout = Layout::from_json(layout.to_string().as_bytes()).unwrap();
+    (source, layout)
+}
+
+#[test]
+fn the_row_band_widens_so_a_two_digit_number_keeps_a_blank_cell_before_the_first_cell() {
+    let (mut source, layout) = grouped_by_phase();
+    let (frames, _) = inline(&mut source, &layout, vec![key(KeyCode::Esc)], 100, 20);
+    let lines: Vec<&str> = frames[0].lines().collect();
+    let leaf = |n: &str| {
+        lines
+            .iter()
+            .find(|l| l.trim_start().starts_with(n) && l.contains(" ") && l.starts_with("    "))
+            .unwrap_or_else(|| panic!("row {n} in\n{}", frames[0]))
+    };
+    for n in ["9", "10"] {
+        let line = leaf(n);
+        let at = line.find(n).unwrap() + n.len();
+        assert!(
+            line[at..].starts_with(' '),
+            "{n} is followed by a blank: {line}"
+        );
+    }
+    insta::assert_snapshot!(frames[0]);
+}
+
+#[test]
+fn a_layout_that_sets_the_bands_keeps_the_row_band_it_saved() {
+    let mut source = crews();
+    let layout = Layout::from_json(br#"{"version":2,"bands":{"rows":1,"cols":12}}"#).unwrap();
+    let (frames, _) = inline(&mut source, &layout, vec![key(KeyCode::Esc)], 100, 20);
+    let lines: Vec<&str> = frames[0].lines().collect();
+    // The numbers would fit a band of 2; the saved 12 puts the names further out.
+    let alpha = lines.iter().find(|l| l.contains("alpha")).unwrap();
+    assert_eq!(alpha.find("alpha"), Some(12), "{}", frames[0]);
+}

@@ -1056,33 +1056,28 @@ impl Grid {
     /// new spec leaves out stays, shown as not applied.
     pub fn view_changed(&mut self, spec: ViewSpec, totals: Totals) {
         let wanted = self.latest_view().clone();
-        let after = |spec: &ViewSpec, axis| {
-            (spec.grouping.as_ref()).is_some_and(|g| g.grand_total_after(axis))
-        };
-        // The one Grand Total, as opposed to one per value.
-        let single = |spec: &ViewSpec, axis| {
-            after(spec, axis) && !(spec.grouping.as_ref()).is_some_and(|g| g.splits_values(axis))
-        };
         for axis in Axis::ALL {
-            // A Grand Total placed after is pinned when it comes, and the
-            // pin goes with it; unpinned, it stays so while it stays after.
-            // One per value is pinned as Windows bring it.
+            // The pin goes with a Grand Total placed after: the pin was
+            // decided when it was requested (see `request`), and an unpin
+            // stays while it stays after. One per value is pinned as
+            // Windows bring it.
             let i = axis.index();
             if after(&self.view.applied, axis) && !after(&spec, axis) {
                 for key in std::mem::take(&mut self.view.totals_pinned[i]) {
                     self.unpin(axis, key);
                 }
             }
-            match (single(&self.view.applied, axis), single(&spec, axis)) {
-                (false, true) => {
-                    self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
-                    self.view.totals_pinned[i].push(GRAND_TOTAL);
-                }
-                (true, false) => {
-                    self.unpin(axis, GRAND_TOTAL);
-                    self.view.totals_pinned[i].retain(|&k| k != GRAND_TOTAL);
-                }
-                _ => {}
+            if single(&self.view.applied, axis) && !single(&spec, axis) {
+                self.unpin(axis, GRAND_TOTAL);
+                self.view.totals_pinned[i].retain(|&k| k != GRAND_TOTAL);
+            }
+            // A Grand Total the source places with no request of the user's
+            // (or one whose default pin a refusal took back) is pinned here.
+            if !single(&self.view.applied, axis)
+                && single(&spec, axis)
+                && !self.view.totals_pinned[i].contains(&GRAND_TOTAL)
+            {
+                self.pin_grand_total(axis);
             }
         }
         self.view.applied = spec;
@@ -1090,6 +1085,16 @@ impl Grid {
         if self.view.due == 0 {
             let kept = kept(wanted, &self.view.applied);
             self.view.requested = (kept != self.view.applied).then_some(kept);
+            // A request the source left unapplied takes its default pin back.
+            for axis in Axis::ALL {
+                let i = axis.index();
+                if !single(&self.view.applied, axis)
+                    && self.view.totals_pinned[i].contains(&GRAND_TOTAL)
+                {
+                    self.unpin(axis, GRAND_TOTAL);
+                    self.view.totals_pinned[i].retain(|&k| k != GRAND_TOTAL);
+                }
+            }
         }
         self.pending_damage.selection = true;
     }
@@ -1566,6 +1571,14 @@ impl Grid {
     }
 
     pub(crate) fn request(&mut self, spec: ViewSpec, edit: ViewEdit) {
+        // A user's request turning the one Grand Total to after pins it by
+        // default; a restored Layout then puts the pin as saved.
+        for axis in Axis::ALL {
+            if single(&spec, axis) && !self.view.totals_pinned[axis.index()].contains(&GRAND_TOTAL)
+            {
+                self.pin_grand_total(axis);
+            }
+        }
         self.view.requested = Some(spec.clone());
         self.view.due += 1;
         self.pending_damage.selection = true;
@@ -1587,4 +1600,14 @@ impl Grid {
         };
         self.cycle_sort(axis.other(), key, modifiers.shift);
     }
+}
+
+/// Whether `spec` places the axis's Grand Total after.
+fn after(spec: &ViewSpec, axis: Axis) -> bool {
+    (spec.grouping.as_ref()).is_some_and(|g| g.grand_total_after(axis))
+}
+
+/// Whether `spec` has the one Grand Total after, as opposed to one per value.
+pub(crate) fn single(spec: &ViewSpec, axis: Axis) -> bool {
+    after(spec, axis) && !(spec.grouping.as_ref()).is_some_and(|g| g.splits_values(axis))
 }

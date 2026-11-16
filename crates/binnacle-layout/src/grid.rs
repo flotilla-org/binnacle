@@ -2,7 +2,7 @@
 //! [`IdMap`].
 
 use binnacle_core as core;
-use binnacle_core::{Axis, Edge, Grid, Key};
+use binnacle_core::{Axis, Edge, GRAND_TOTAL, Grid, Key};
 
 use crate::view::{Level, Searched, ViewSpec};
 use crate::{Bands, EdgePins, IdMap, Layout, Order, Pins, Sizes, Version};
@@ -36,14 +36,22 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
         };
         let pins = |axis: Axis| Edge::ALL.map(|edge| s.pins(axis, edge).collect::<Vec<_>>());
         let [rows_pins, cols_pins] = Axis::ALL.map(pins);
+        // Said only while the view places the one Grand Total after.
+        let total = |axis: Axis| {
+            let single = spec
+                .grouping
+                .as_ref()
+                .is_some_and(|g| g.grand_total_after(axis) && !g.splits_values(axis));
+            single.then(|| s.pins(axis, Edge::Trailing).any(|k| k == GRAND_TOTAL))
+        };
         let [rows_sizes, cols_sizes] = sizes;
         Layout {
             version: Version,
             view: Some(ViewSpec::from_keys(spec, ids)),
             order: (!order.is_unset()).then_some(order),
             pins: Some(Pins {
-                rows: edge_pins(&rows_pins, row),
-                cols: edge_pins(&cols_pins, col),
+                rows: edge_pins(&rows_pins, row, total(Axis::Rows)),
+                cols: edge_pins(&cols_pins, col, total(Axis::Cols)),
             }),
             sizes: Some(Sizes {
                 rows: sized(&rows_sizes, row),
@@ -56,7 +64,8 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
         }
     }
 
-    /// Puts this layout back on `grid`, each part it sets: the pins and
+    /// Puts this layout back on `grid`, each part it sets: the pins (the
+    /// Grand Total's put as saved once the view is requested) and
     /// the band thicknesses at once, the Size Overrides at once (clearing
     /// those it does not list), the View Spec as an ordinary request, and
     /// each axis of the order as a move of the listed items to the front,
@@ -89,6 +98,12 @@ impl<RowId: Clone, ColId: Clone> Layout<RowId, ColId> {
         }
         if let Some(view) = &self.view {
             grid.request_view(view.keys(ids));
+        }
+        // After the view request, whose default pin the saved one overrides.
+        if let Some(pins) = &self.pins {
+            // Not said: pinned by default, though the pins set above let go of it.
+            grid.set_grand_total_pinned(Axis::Rows, pins.rows.grand_total.unwrap_or(true));
+            grid.set_grand_total_pinned(Axis::Cols, pins.cols.grand_total.unwrap_or(true));
         }
         let mut unplaced = Order::default();
         let Some(order) = &self.order else {
@@ -248,11 +263,16 @@ fn named<Id>(keys: Vec<Key>, id: impl Fn(Key) -> Option<Id>) -> Vec<Id> {
     keys.into_iter().filter_map(id).collect()
 }
 
-fn edge_pins<Id>(pins: &[Vec<Key>; 2], id: impl Fn(Key) -> Option<Id> + Copy) -> EdgePins<Id> {
+fn edge_pins<Id>(
+    pins: &[Vec<Key>; 2],
+    id: impl Fn(Key) -> Option<Id> + Copy,
+    grand_total: Option<bool>,
+) -> EdgePins<Id> {
     let [leading, trailing] = pins.clone();
     EdgePins {
         leading: named(leading, id),
         trailing: named(trailing, id),
+        grand_total,
     }
 }
 

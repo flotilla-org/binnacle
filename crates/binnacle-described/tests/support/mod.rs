@@ -255,7 +255,7 @@ pub fn picture(scenario: &mut Scenario<Table>) -> String {
         if let Some(group) = outline.as_ref().and_then(|o| o.group.as_ref()) {
             let label = match &group.value {
                 binnacle_core::Value::Text(t) => t.as_str(),
-                binnacle_core::Value::Blank => "(blank)",
+                binnacle_core::Value::Blank => "(null)",
             };
             let count = source
                 .summary(key)

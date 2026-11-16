@@ -1,5 +1,5 @@
 // The list-of-values checklist end to end, in the records demo's column
-// menu: the port column's values with counts and "(Blanks)", narrowed by the
+// menu: the port column's values with counts and "(null)", narrowed by the
 // other filters; unticking from all, ticking from none, ticking everything
 // again, and "select all matching" each write the exact condition, shown as
 // a chip and reflected in the rows; reopening shows the ticks in force; a
@@ -36,7 +36,7 @@ async function listed(page: Page, label: string): Promise<string[]> {
     .evaluateAll((labels) => labels.map((l) => (l as HTMLElement).innerText.replace(/\s+/g, " ").trim()));
 }
 
-/** The port checklist's rows for the records `keep` accepts: "(Blanks) n", then each port in order with its count. */
+/** The port checklist's rows for the records `keep` accepts: "(null) n", then each port in order with its count. */
 function ports(keep: (r: (typeof rows)[number]) => boolean = () => true): string[] {
   const kept = rows.filter(keep);
   const blanks = kept.filter((r) => r.port === null).length;
@@ -45,7 +45,7 @@ function ports(keep: (r: (typeof rows)[number]) => boolean = () => true): string
     .map((p) => [p, kept.filter((r) => r.port === p).length] as const)
     .filter(([, n]) => n > 0)
     .map(([p, n]) => `${p} ${en(n)}`);
-  return [...(blanks ? [`(Blanks) ${en(blanks)}`] : []), ...named];
+  return [...(blanks ? [`(null) ${en(blanks)}`] : []), ...named];
 }
 
 test.describe("records", () => {
@@ -55,7 +55,7 @@ test.describe("records", () => {
     await expect(shown(page)).toHaveText(`${en(rows.length)} rows`);
   });
 
-  test("the port checklist lists values with counts and (Blanks), narrowed by the other filters", async ({ page }) => {
+  test("the port checklist lists values with counts and (null), narrowed by the other filters", async ({ page }) => {
     await openMenu(page, "port");
     await expect.poll(() => listed(page, "port")).toEqual(["(Select all)", ...ports()]);
     await expect(notice(page, "port")).toHaveText("Narrowed by the other filters");
@@ -71,14 +71,14 @@ test.describe("records", () => {
   test("unticking from all excludes those values, and ticking them again removes the condition", async ({ page }) => {
     await openMenu(page, "port");
     await box(page, "port", "Bergen").uncheck();
-    await box(page, "port", "(Blanks)").uncheck();
-    await expect(chips(page)).toHaveText(["port: not Bergen, (Blanks)×"]);
+    await box(page, "port", "(null)").uncheck();
+    await expect(chips(page)).toHaveText(["port: not Bergen, (null)×"]);
     const kept = rows.filter((r) => r.port !== null && r.port !== "Bergen").length;
     await expect(shown(page)).toHaveText(`${en(kept)} of ${en(rows.length)}`);
     await expect(box(page, "port", "(Select all)")).not.toBeChecked();
 
     await box(page, "port", "Bergen").check();
-    await box(page, "port", "(Blanks)").check();
+    await box(page, "port", "(null)").check();
     await expect(chips(page)).toHaveCount(0);
     await expect(shown(page)).toHaveText(`${en(rows.length)} rows`);
     await expect(box(page, "port", "(Select all)")).toBeChecked();
@@ -100,7 +100,7 @@ test.describe("records", () => {
     await expect(box(page, "port", "Cádiz")).toBeChecked();
     await expect(box(page, "port", "Halifax")).toBeChecked();
     await expect(box(page, "port", "Bergen")).not.toBeChecked();
-    await expect(box(page, "port", "(Blanks)")).not.toBeChecked();
+    await expect(box(page, "port", "(null)")).not.toBeChecked();
   });
 
   test("select all matching a search writes a Text condition, and later unticks AND a not OneOf", async ({ page }) => {
@@ -149,8 +149,8 @@ test.describe("records", () => {
     test("the port checklist with values unticked", async ({ page }) => {
       await openMenu(page, "port");
       await box(page, "port", "Bergen").uncheck();
-      await box(page, "port", "(Blanks)").uncheck();
-      await expect(chips(page)).toHaveText(["port: not Bergen, (Blanks)×"]);
+      await box(page, "port", "(null)").uncheck();
+      await expect(chips(page)).toHaveText(["port: not Bergen, (null)×"]);
       await page.mouse.move(0, 0);
       await expect(page).toHaveScreenshot("checklist.png");
     });

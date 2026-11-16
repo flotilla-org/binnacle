@@ -7,12 +7,12 @@
 import * as hegel from "@hegeldev/hegel";
 import * as gs from "@hegeldev/hegel/generators";
 import { beforeAll, describe, expect, test } from "vitest";
-import { AXIS_CODE, EDGE_CODE } from "../src/codes";
+import { AXIS_CODE, EDGE_CODE, GRAND_TOTAL } from "../src/codes";
 import { readFileSync } from "node:fs";
 import { migrateLayout, readLayout, restoreLayout, LAYOUT_VERSION, type Layout, type LayoutOrder, type LayoutV1 } from "../src/layout";
 import { rows as DEMO_ROWS } from "../demo/sources/records-data";
 import { fromRows } from "../src/rows";
-import type { AppliedView, Comparison, Condition, Scalar, TableSink, TableSource, ViewSpec } from "../src/source";
+import { rowsBy, type AppliedView, type Comparison, type Condition, type Scalar, type TableSink, type TableSource, type ViewSpec } from "../src/source";
 import { Harness } from "./harness";
 import { loadForTests } from "./wasm";
 
@@ -535,5 +535,79 @@ describe("version 2: the order, every part optional, and version 1 migrated", ()
     } finally {
       h.destroy();
     }
+  });
+  describe("the Grand Total's pin", () => {
+    const filter = { quick: null, conditions: [] };
+    const grouped = (): ViewSpec<number, Field> => {
+      const by = rowsBy<Field>("b");
+      return {
+        rows: { filter, sort: [], hidden: [] },
+        cols: { filter, sort: [], hidden: [] },
+        grouping: { ...by, rowAxis: { ...by.rowAxis, grandTotal: "after" } },
+      };
+    };
+    const trailing = (h: Harness<number, Field, unknown>) => [...h.snapshot.rows.pins.trailing];
+
+    /** A layout saved from a grouping with its Grand Total after, pinned or as the user unpinned it. */
+    const saved = (pinned: boolean) => {
+      const h = harness();
+      try {
+        h.settled();
+        restore(h, { version: LAYOUT_VERSION, view: grouped() });
+        if (!pinned) h.grid.unpin(AXIS_CODE.rows, GRAND_TOTAL);
+        h.settled();
+        const layout = read(h);
+        expect(layout.pins.rows.grandTotal).toBe(pinned);
+        return JSON.parse(JSON.stringify(layout)) as Layout<number, Field>;
+      } finally {
+        h.destroy();
+      }
+    };
+    const restoredTrailing = (layout: Layout<number, Field>) => {
+      const h = harness();
+      try {
+        h.settled();
+        restore(h, layout);
+        return trailing(h);
+      } finally {
+        h.destroy();
+      }
+    };
+
+    test("an unpinned Grand Total stays unpinned and a pinned one pinned", () => {
+      expect(restoredTrailing(saved(false))).toEqual([]);
+      expect(restoredTrailing(saved(true))).toEqual([GRAND_TOTAL]);
+    });
+
+    test("a layout that says nothing of it restores it pinned", () => {
+      const layout = saved(false);
+      delete layout.pins!.rows.grandTotal;
+      expect(restoredTrailing(layout)).toEqual([GRAND_TOTAL]);
+    });
+
+    test("a layout that says nothing, restored over a grouped grid, leaves it pinned", () => {
+      const layout = saved(true);
+      delete layout.pins!.rows.grandTotal;
+      const h = harness();
+      try {
+        h.settled();
+        restore(h, { version: LAYOUT_VERSION, view: grouped() });
+        expect(trailing(h)).toEqual([GRAND_TOTAL]);
+        restore(h, layout);
+        expect(trailing(h)).toEqual([GRAND_TOTAL]);
+      } finally {
+        h.destroy();
+      }
+    });
+
+    test("a layout without a grouping says nothing of it", () => {
+      const h = harness();
+      try {
+        h.settled();
+        expect(read(h).pins.rows).not.toHaveProperty("grandTotal");
+      } finally {
+        h.destroy();
+      }
+    });
   });
 });

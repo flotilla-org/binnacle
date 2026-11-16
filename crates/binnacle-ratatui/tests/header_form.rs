@@ -109,7 +109,7 @@ impl Content for Shipments {
     fn group_label(&self, _: Key, outline: &Outline) -> String {
         let value = match &outline.group.as_ref().unwrap().value {
             Value::Text(t) => t.clone(),
-            Value::Blank => "(blank)".into(),
+            Value::Blank => "(null)".into(),
         };
         match outline.kind {
             ItemKind::Subtotal => format!("{value} total"),

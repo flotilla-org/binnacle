@@ -3,6 +3,7 @@
 // spanning cell over its items, labelled at the start of the part in view,
 // and faded where it goes on out of view, after its disclosure mark.
 
+import { NULL_LABEL } from "../labels";
 import type { HeaderSpan, Rect, Snapshot } from "../snapshot";
 import { PAD, clip, type PaintContext } from "./context";
 import { markBeat } from "./pending";
@@ -62,13 +63,15 @@ function paintRowSpans(p: PaintContext): void {
     const room = v.width - 2 * PAD - DISCLOSURE;
     ctx.font = theme.headerFont;
     ctx.textAlign = "left";
-    ctx.fillStyle = theme.groupItem.color;
-    ctx.fillText(measure.fit(p.content.spanLabel("rows", span), theme.headerFont, room), v.x + PAD + DISCLOSURE, y);
+    const label = p.content.spanLabel("rows", span);
+    ctx.fillStyle = label.startsWith(NULL_LABEL) ? theme.dim : theme.groupItem.color;
+    ctx.fillText(measure.fit(label, theme.headerFont, room), v.x + PAD + DISCLOSURE, y);
     ctx.restore();
   }
   ctx.restore();
 }
 
+// A span label is only text: one for a value spelled "(null)" draws dim too.
 function paintColumnSpans(p: PaintContext): void {
   const { ctx, s, theme, measure, left, top } = p;
   if (s.cols.spans.length === 0) return;
@@ -87,9 +90,10 @@ function paintColumnSpans(p: PaintContext): void {
     paintMark(p, span, v.x + PAD, y);
     ctx.font = theme.headerFont;
     ctx.textAlign = "left";
-    ctx.fillStyle = theme.groupItem.color;
+    const named = p.content.spanLabel("cols", span);
+    ctx.fillStyle = named.startsWith(NULL_LABEL) ? theme.dim : theme.groupItem.color;
     const room = v.width - 2 * PAD - DISCLOSURE;
-    const label = measure.fit(p.content.spanLabel("cols", span), theme.headerFont, room);
+    const label = measure.fit(named, theme.headerFont, room);
     ctx.fillText(label, v.x + PAD + DISCLOSURE, y);
     ctx.restore();
   }

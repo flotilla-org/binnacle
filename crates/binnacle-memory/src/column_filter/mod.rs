@@ -9,6 +9,23 @@ pub use checklist::{Column, Shown, Tick};
 
 use binnacle_core::{Condition, ConditionKind, Value};
 
+/// How a null reads where a value is named: a group's label, a Distinct
+/// Value, a chip. A null is not an empty string, which reads [`EMPTY_LABEL`].
+pub const NULL_LABEL: &str = "(null)";
+
+/// How an empty string reads where a value is named.
+pub const EMPTY_LABEL: &str = "(empty)";
+
+/// How `value` reads where it is named: its text, [`EMPTY_LABEL`] for an
+/// empty string and [`NULL_LABEL`] for a null.
+pub fn value_label(value: &Value) -> &str {
+    match value {
+        Value::Blank => NULL_LABEL,
+        Value::Text(t) if t.is_empty() => EMPTY_LABEL,
+        Value::Text(t) => t,
+    }
+}
+
 /// A chip's text: `label: text`, with `not ` before the text, the text in
 /// slashes for a regex, and ` Aa` when it matches case.
 pub fn chip_text(label: &str, c: &Condition) -> String {
@@ -37,13 +54,7 @@ fn listed_text(values: &[Value]) -> String {
     if values.is_empty() {
         return "nothing".to_string();
     }
-    let named: Vec<&str> = (values.iter().take(3))
-        .map(|v| match v {
-            Value::Blank => "(Blanks)",
-            Value::Text(t) if t.is_empty() => "\"\"",
-            Value::Text(t) => t,
-        })
-        .collect();
+    let named: Vec<&str> = values.iter().take(3).map(value_label).collect();
     let more = values.len() - named.len();
     let more = if more > 0 {
         format!(" +{more}")

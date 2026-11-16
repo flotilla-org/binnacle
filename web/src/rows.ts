@@ -98,6 +98,7 @@ import type {
   TextQuery,
   ViewSpec,
 } from "./source";
+import { valueLabel as named } from "./labels";
 import { summaryLabel, valueName } from "./source";
 import { bridge } from "./wasm";
 
@@ -893,7 +894,7 @@ export function fromRows<R extends object>(
     const parent = outline.ancestors.at(-1);
     const ofValue = outline.kind === "subtotal" && outline.group?.field === null && typeof parent === "number";
     const up = ofValue ? summaryOf(parent, axis) : undefined;
-    if (up && up.field !== null) return `${up.value ?? "(blank)"} ${value}`;
+    if (up && up.field !== null) return `${named(up.value)} ${value}`;
     return summaryLabel({ ...outline, group: outline.group ? { ...outline.group, value } : null });
   };
 
@@ -1132,7 +1133,7 @@ export function fromRows<R extends object>(
       spanLabel: (id) => {
         const group = summaryOf(id);
         if (!group) return "";
-        const label = group.value ?? "(blank)";
+        const label = named(group.value);
         return counted() < 0 ? label : `${label} (${group.count})`;
       },
       groupLabel: (id, outline) => {
@@ -1188,7 +1189,7 @@ export function fromRows<R extends object>(
         }
         return label;
       },
-      spanLabel: (id) => (typeof id === "number" ? summaryOf(id, COLS)?.value : undefined) ?? "(blank)",
+      spanLabel: (id) => named((typeof id === "number" ? summaryOf(id, COLS)?.value : undefined) ?? null),
       fits: (id) => typeof id !== "number" || memory().fits(COLS, summaryKey(id)),
       grandTotal: -1,
     },

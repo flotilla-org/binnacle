@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use binnacle_cli::width::grapheme_width;
-use binnacle_core::{Axis, ChangeNotice, Grid, Key, Viewport};
+use binnacle_core::{Axis, ChangeNotice, Effect, Grid, Key, Mode, Viewport};
 use binnacle_format::{Align, Timestamp, Value};
 use binnacle_layout::{JsonId, Layout};
 use ratatui::backend::Backend;
@@ -34,7 +34,7 @@ use super::{CliTable, Exit, Selection, notify, partial_status, thousands};
 use crate::{
     CellRenderer, Chooser, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     HeaderMenu, Keymap, Mouse, Preset, QuickFilter, RenderContext, Theme, ValueRenderer,
-    begin_frame, render_with, wheel,
+    begin_frame, render_with, row_band_fit, wheel,
 };
 
 /// A host's live feed: called between frames, it may feed the source and
@@ -260,6 +260,8 @@ fn run<T: CliTable, B: Backend>(
         bars: crate::Layout::default(),
         reveal: false,
         shown: Vec::new(),
+        // A Layout that sets the bands keeps its thickness, until an auto-size.
+        fit_rows: layout.bands.is_none(),
         theme: options.theme.clone(),
         origin,
         start: Instant::now(),
@@ -778,9 +780,34 @@ fn focus_first<T: CliTable>(grid: &mut Grid, source: &mut T) {
     }
 }
 
+/// Lays out the Grid in `area`, filling its Windows (twice, the second after
+/// scrolling the focused row into view, if `reveal`).
+fn lay_out<T: CliTable>(
+    grid: &mut Grid,
+    source: &mut T,
+    ctx: &RenderContext,
+    area: Rect,
+    reveal: bool,
+    fit: &mut bool,
+) -> crate::Layout {
+    begin_frame(grid, ctx, area, |grid, viewport| {
+        fill(grid, source, viewport, fit);
+        if reveal {
+            reveal_focus(grid);
+            fill(grid, source, viewport, fit);
+        }
+    })
+}
+
 /// Answers the Grid's Effects, then fills its Windows, outlines and all.
-fn fill<T: CliTable>(grid: &mut Grid, source: &mut T, viewport: Viewport) {
-    binnacle_memory::pump(grid, source, |_, _| {});
+fn fill<T: CliTable>(grid: &mut Grid, source: &mut T, viewport: Viewport, fit: &mut bool) {
+    binnacle_memory::pump(grid, source, |_, stamped| match stamped.effect {
+        Effect::BandAutoSizeRequested { axis: Axis::Cols } => *fit = true,
+        Effect::BandSizeChanged {
+            axis: Axis::Cols, ..
+        } => *fit = false,
+        _ => {}
+    });
     for (axis, range) in grid.begin_frame(viewport) {
         let window = source.window(axis, range.clone());
         grid.set_window(axis, range.start, &window.keys);
@@ -854,6 +881,9 @@ struct Session {
     reveal: bool,
     /// The rows the last frame drew.
     shown: Vec<Key>,
+    /// Whether the row Header Band fits the labels the rows show: until the
+    /// user sets its thickness, and again on an auto-size.
+    fit_rows: bool,
     theme: Theme,
     origin: Timestamp,
     start: Instant,
@@ -877,13 +907,25 @@ impl Session {
         };
         let ctx = RenderContext::new(theme).at(self.start.elapsed());
         let reveal = std::mem::take(&mut self.reveal);
-        self.bars = begin_frame(&mut self.grid, &ctx, area, |grid, viewport| {
-            fill(grid, source, viewport);
-            if reveal {
-                reveal_focus(grid);
-                fill(grid, source, viewport);
+        let mut fit = self.fit_rows;
+        self.bars = lay_out(&mut self.grid, source, &ctx, area, reveal, &mut fit);
+        if fit {
+            // Fit to the rows this frame shows, then lay it out again.
+            let snapshot = self.grid.snapshot();
+            let plain = View {
+                source: &*source,
+                origin: self.origin,
+                aligns: HashMap::new(),
+            };
+            let width = row_band_fit(&snapshot, &plain)
+                .filter(|_| !matches!(snapshot.mode(), Mode::ResizingBand { .. }))
+                .filter(|&w| w != snapshot.header(Axis::Cols));
+            if let Some(width) = width {
+                self.grid.set_header(Axis::Cols, width);
+                self.bars = lay_out(&mut self.grid, source, &ctx, area, reveal, &mut fit);
             }
-        });
+        }
+        self.fit_rows = fit;
         let snapshot = self.grid.snapshot();
         self.shown = snapshot.drawn(Axis::Rows).filter_map(|i| i.key).collect();
         self.popup.fetch(&snapshot, |axis, key, query| {

@@ -174,7 +174,7 @@ grid, opens a popover under the header: "Contains" or "Does not contain",
 the text with match case and (when the column supports them) regex toggles,
 and Clear. Below it, where the column takes OneOf conditions, a checklist of
 its values with their counts: a search, "(Select all)" (or "(Select all
-matching …)" while searching), "(Blanks)", and a note when the list stops at
+matching …)" while searching), "(null)" and "(empty)" for a null and an empty string, and a note when the list stops at
 1,000 values and whether the other filters narrowed it. Each change edits
 the column's first Text condition and first OneOf at once, writing whichever
 condition is exact: unticking from all excludes the values unticked, ticking

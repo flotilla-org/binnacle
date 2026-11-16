@@ -73,7 +73,7 @@ test.describe("transposed", () => {
     const b = (await page.locator(".binnacle-layer").boundingBox())!;
     await page.mouse.click(b.x + 12, b.y + HEADER + 2 * ROW + ROW / 2);
     const values = page.getByRole("dialog", { name: "Filter columns by weight" }).getByRole("group", { name: "weight values" });
-    await values.getByRole("checkbox", { name: /^\(Blanks\)/ }).uncheck();
+    await values.getByRole("checkbox", { name: /^\(null\)/ }).uncheck();
     await page.keyboard.press("Escape");
     await expect(page.locator(".binnacle-filter-bar").getByRole("list", { name: /^Filters on the / })).toBeVisible();
     await forget(page);

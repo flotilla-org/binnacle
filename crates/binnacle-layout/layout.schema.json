@@ -330,8 +330,11 @@
     },
     "EdgePins": {
       "additionalProperties": false,
-      "description": "The items pinned to each edge of one axis, in pin order.",
+      "description": "The items pinned to each edge of one axis, in pin order, and, while the view places its one Grand Total after, whether it is pinned: it has no ID of the host's, so it is not among the items. A Layout that does not say restores it pinned by default, as a grouping placing it after does.",
       "properties": {
+        "grandTotal": {
+          "type": "boolean"
+        },
         "leading": {
           "items": {
             "$ref": "#/$defs/Id"

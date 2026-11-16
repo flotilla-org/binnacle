@@ -39,7 +39,7 @@ const FIRST = null;
 /** The ports shown under `region`, in order. */
 async function portsUnder(page: Page, region: string | null): Promise<string[]> {
   const rows = await rowHeaders(page);
-  const at = rows.findIndex((r) => r.level === "1" && r.header === (region ?? "(blank)"));
+  const at = rows.findIndex((r) => r.level === "1" && r.header === (region ?? "(null)"));
   const end = rows.findIndex((r, i) => i > at && r.level === "1");
   return rows.slice(at + 1, end < 0 ? undefined : end).map((r) => r.header);
 }

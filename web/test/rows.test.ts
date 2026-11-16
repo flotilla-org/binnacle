@@ -58,6 +58,9 @@ const fields = {
 
 const records = gs.arrays(gs.record(fields), { maxSize: 40 });
 
+/** How a group value reads: a null and an empty string apart. */
+const named = (value: string | null | undefined) => (value === null || value === undefined ? "(null)" : value === "" ? "(empty)" : value);
+
 const specs = gs.arrays(
   gs.tuples(gs.sampledFrom<"n" | "s" | "b">(["n", "s", "b"]), gs.sampledFrom<SortDirection>(["ascending", "descending"])),
   { maxSize: 3 },
@@ -1165,7 +1168,7 @@ describe("fromRows's grouping", () => {
       expect(outline).toEqual({ kind: "group", depth: 0, open: "open", ancestors: [], group: { field, value: group.value }, span: group.count, path: [], set });
       path = [{ field, value: group.value }];
       expect(group.field).toBe(field);
-      expect(source.rows.groupLabel!(id, outline)).toBe(`${group.value ?? "(blank)"} (${group.count})`);
+      expect(source.rows.groupLabel!(id, outline)).toBe(`${named(group.value)} (${group.count})`);
       expect(source.rows.locate!(id, signal)).toEqual({ type: "Found", position: i });
       return { group: group.value, count: group.count };
     });
@@ -1310,7 +1313,7 @@ describe("fromRows's grouping", () => {
           expect(group.kind).toBe(outline.kind);
           const [sum, count] = grouping.values[0]!.field === "b" ? group.aggregates : [...group.aggregates].reverse();
           expect(source.cells([id], ["b", "n"], signal)).toEqual([[sum, null]]);
-          const label = { group: group.value ?? "(blank)", subtotal: `${group.value ?? "(blank)"} total`, grandTotal: "Grand total" };
+          const label = { group: named(group.value), subtotal: `${named(group.value)} total`, grandTotal: "Grand total" };
           expect(source.rows.groupLabel!(id, outline)).toBe(`${label[group.kind]} (${count})`);
           if (group.kind === "grandTotal") expect(id).toBe(source.rows.grandTotal);
           return { kind: group.kind, value: group.value, sum: sum ?? null, count: count! };

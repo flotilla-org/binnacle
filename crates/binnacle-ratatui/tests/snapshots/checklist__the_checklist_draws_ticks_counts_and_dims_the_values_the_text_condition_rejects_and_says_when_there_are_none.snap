@@ -8,7 +8,7 @@ expression: "out.join(\"\\n\\n\")"
 3   r2c0         │ Search                                   │  █
 4   r3c0         ├─ 4 values ───────────────────────────────┤  █
 5   r4c0         │ [-] (Select all)                         │  █
-                 │ [ ] (Blanks)                           2 │  █
+                 │ [ ] (null)                             2 │  █
                  │ [x] Aberdeen                           1 │  █
                  │ [ ] Bergen                             2 │  █
                  │ [ ] Cádiz                              1 │  █

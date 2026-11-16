@@ -204,7 +204,7 @@ fn the_comparison_row_reads_back_what_it_writes() {
 fn chips_name_the_condition_on_their_column() {
     let not_bergen =
         Condition::one_of(PORT, vec![Value::of(Some("Bergen")), Value::Blank]).not(true);
-    assert_eq!(chip_text("port", &not_bergen), "port: not Bergen, (Blanks)");
+    assert_eq!(chip_text("port", &not_bergen), "port: not Bergen, (null)");
     let over = Condition::compare(Key(2), Comparison::Greater(Scalar::Number(100.0)));
     assert_eq!(chip_text("weight", &over), "weight: > 100");
     let pattern = Condition::text(PORT, TextQuery::new("^B").regex(true));
