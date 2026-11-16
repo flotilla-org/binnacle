@@ -71,6 +71,7 @@ function paintRowSpans(p: PaintContext): void {
   ctx.restore();
 }
 
+// A span label is only text: one for a value spelled "(null)" draws dim too.
 function paintColumnSpans(p: PaintContext): void {
   const { ctx, s, theme, measure, left, top } = p;
   if (s.cols.spans.length === 0) return;

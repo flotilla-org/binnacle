@@ -1007,7 +1007,8 @@ fn draw_column_spans(
 }
 
 /// Draws over the start of a group's label `dim`ly if it reads [`NULL_LABEL`]:
-/// a null group, which a host's label may follow with more (a count).
+/// a null group, which a host's label may follow with more (a count). A span
+/// label is only text, so one for a value spelled `(null)` draws dim too.
 fn dim_null(
     buf: &mut Buffer,
     area: Rect,

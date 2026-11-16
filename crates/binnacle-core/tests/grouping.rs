@@ -298,3 +298,25 @@ fn the_default_pin_is_decided_when_the_grouping_is_requested_so_a_restore_can_un
         "nothing to pin while it is off"
     );
 }
+
+#[test]
+fn a_request_the_source_does_not_apply_leaves_no_default_pin_behind() {
+    let mut grid = Grid::new(
+        AxisConfig::new(2, 1.0).header(1.0),
+        AxisConfig::new(3, 5.0).header(3.0),
+    );
+    grid.request_view(by_region_and_port(Placement::After));
+    assert_eq!(
+        grid.pins(Axis::Rows, Edge::Trailing).count(),
+        1,
+        "asked for"
+    );
+    grid.view_applied(ViewSpec::default(), binnacle_core::Totals::unknown());
+    assert_eq!(grid.pins(Axis::Rows, Edge::Trailing).count(), 0, "refused");
+    grid.request_view(by_region_and_port(Placement::After));
+    assert_eq!(
+        grid.pins(Axis::Rows, Edge::Trailing).count(),
+        1,
+        "asked again"
+    );
+}

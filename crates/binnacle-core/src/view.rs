@@ -1071,11 +1071,11 @@ impl Grid {
                 self.unpin(axis, GRAND_TOTAL);
                 self.view.totals_pinned[i].retain(|&k| k != GRAND_TOTAL);
             }
-            // The source's own news, with no request of the user's, is where
-            // the default pin is decided for a Grand Total it places.
-            if self.view.requested.is_none()
-                && !single(&self.view.applied, axis)
+            // A Grand Total the source places with no request of the user's
+            // (or one whose default pin a refusal took back) is pinned here.
+            if !single(&self.view.applied, axis)
                 && single(&spec, axis)
+                && !self.view.totals_pinned[i].contains(&GRAND_TOTAL)
             {
                 self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
                 self.view.totals_pinned[i].push(GRAND_TOTAL);
@@ -1086,6 +1086,16 @@ impl Grid {
         if self.view.due == 0 {
             let kept = kept(wanted, &self.view.applied);
             self.view.requested = (kept != self.view.applied).then_some(kept);
+            // A request the source left unapplied takes its default pin back.
+            for axis in Axis::ALL {
+                let i = axis.index();
+                if !single(&self.view.applied, axis)
+                    && self.view.totals_pinned[i].contains(&GRAND_TOTAL)
+                {
+                    self.unpin(axis, GRAND_TOTAL);
+                    self.view.totals_pinned[i].retain(|&k| k != GRAND_TOTAL);
+                }
+            }
         }
         self.pending_damage.selection = true;
     }
@@ -1565,7 +1575,8 @@ impl Grid {
         // A user's request turning the one Grand Total to after pins it by
         // default; a restored Layout then puts the pin as saved.
         for axis in Axis::ALL {
-            if !single(self.latest_view(), axis) && single(&spec, axis) {
+            if single(&spec, axis) && !self.view.totals_pinned[axis.index()].contains(&GRAND_TOTAL)
+            {
                 self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
                 let pinned = &mut self.view.totals_pinned[axis.index()];
                 if !pinned.contains(&GRAND_TOTAL) {
