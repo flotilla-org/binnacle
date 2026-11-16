@@ -1,0 +1,3 @@
+{"type":"table","schema":{"primaryKey":["name"],"fields":[{"name":"name","type":"string"},{"name":"done","type":"boolean"},{"name":"kind","type":"string","categories":["feat",{"value":"fix","label":"Fix"}]},{"name":"tier","type":"string","constraints":{"enum":["gold","silver"]}},{"name":"count","type":"integer"}]}}
+{"type":"rows","rows":[{"name":"a","done":true,"kind":"feat","tier":"gold","count":5},{"name":"b","done":false,"kind":"fix","tier":"silver","count":9007199254740993},{"name":"c","done":null,"kind":null,"tier":null,"count":null},{"name":"d","done":true,"kind":"fix","tier":"gold","count":9007199254740992}],"cursor":null}
+{"type":"synced","sequence":1}

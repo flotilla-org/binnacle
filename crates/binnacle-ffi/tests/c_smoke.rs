@@ -24,12 +24,41 @@ const NATIVE_LIBS: &[&str] = if cfg!(target_os = "macos") {
     ]
 };
 
+/// The static library, built now so cargo puts it in the profile's
+/// directory (`target/debug`): a test's own dependencies, since Rust 1.100,
+/// sit under `build` in a directory per hash. Cargo does nothing when it is
+/// fresh.
+#[cfg(unix)]
+fn staticlib() -> std::path::PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let profile = if cfg!(debug_assertions) {
+        "--profile=dev"
+    } else {
+        "--release"
+    };
+    let built = Command::new(cargo)
+        .args(["build", profile, "-p", "binnacle-ffi", "--lib"])
+        .status()
+        .unwrap();
+    assert!(built.success());
+    // Above this test's binary, which cargo puts in `deps` or, since Rust
+    // 1.100, under `build`.
+    let exe = std::env::current_exe().unwrap();
+    let under = exe
+        .ancestors()
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .unwrap_or_else(|| panic!("no deps or build directory above {}", exe.display()));
+    under.parent().unwrap().join("libbinnacle_ffi.a")
+}
+
 #[cfg(unix)]
 #[test]
 fn the_c_smoke_program_round_trips_a_frame() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let exe = std::env::current_exe().unwrap();
-    let staticlib = exe.with_file_name("libbinnacle_ffi.a");
+    let staticlib = staticlib();
     assert!(
         staticlib.exists(),
         "no static library at {}",

@@ -385,6 +385,14 @@ impl WebDescribed {
         }
     }
 
+    /// Whether a request waits for `pollRequest`: after a View Spec whose
+    /// filter changed the `where` clauses sent, the watch to open in place
+    /// of the stream open.
+    #[wasm_bindgen(js_name = hasRequest)]
+    pub fn has_request(&self) -> bool {
+        self.source.has_request()
+    }
+
     /// A new response body begins, of `content_type`; an unknown type throws.
     pub fn open(&mut self, content_type: &str) -> Result<(), JsError> {
         let encoding = Encoding::from_content_type(content_type)

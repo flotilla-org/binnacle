@@ -12,8 +12,11 @@
 //! - Rows live in a namespace, `flotilla` by default. A request without
 //!   `namespace` reads `default`: an empty table, and no error, as
 //!   flotillad does.
-//! - `where` takes `.field.path == value`; anything else is a 400. An
-//!   unknown table is a 404.
+//! - `where` speaks the condition language flotillad does, in canonical
+//!   text (`rigging-condition`): a row is kept when every clause is true
+//!   for it. A clause that does not parse, or names a field the table
+//!   lacks or a literal of the wrong type, is a 400. An unknown table is a
+//!   404.
 //!
 //! The script starts playing once a watch has synced; [`Running::push`]
 //! adds steps to it as a test goes.
@@ -41,7 +44,7 @@ use binnacle_described::{
 };
 use serde_json::json;
 
-pub use data::{FakeTable, Where};
+pub use data::{FakeTable, ORDERED, Refused, Where};
 pub use http::{Addr, Request, Response, Stream, fetch, open};
 pub use script::{Step, parse_script};
 
@@ -773,15 +776,10 @@ fn rows(
         (None, true) => Encoding::CborSeq,
         (None, false) => Encoding::Ndjson,
     };
-    let mut wheres = Vec::new();
-    for (_, clause) in query.iter().filter(|(k, _)| k == "where") {
-        match Where::parse(clause) {
-            Ok(w) => wheres.push(w),
-            Err(message) => {
-                return http::respond(&mut conn, 400, json, &error("invalid_filter", &message));
-            }
-        }
-    }
+    let clauses: Vec<&str> = (query.iter())
+        .filter(|(k, _)| k == "where")
+        .map(|(_, clause)| clause.as_str())
+        .collect();
     let offset = match param("cursor") {
         None => 0,
         Some(cursor) => match cursor.strip_prefix('o').and_then(|n| n.parse().ok()) {
@@ -811,6 +809,14 @@ fn rows(
         let Some(i) = state.index(name).filter(|_| !name.is_empty()) else {
             drop(state);
             return http::respond(&mut conn, 404, json, &error("not_found", "unknown table"));
+        };
+        let schema = &state.tables[i].schema;
+        let wheres = match clauses.iter().map(|c| Where::parse(c, schema)).collect() {
+            Ok(wheres) => wheres,
+            Err((code, message)) => {
+                drop(state);
+                return http::respond(&mut conn, 400, json, &error(code, &message));
+            }
         };
         let limit = param("limit")
             .and_then(|l| l.parse().ok())

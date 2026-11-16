@@ -1,11 +1,20 @@
 //! A fake table's data: its schema and rows by namespace, from a recorded
 //! fixture or generated, and the `where` clauses that narrow them.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use binnacle_described::{Decoder, Encoding, Field, Message, Row, Schema, Wire};
+use binnacle_described::{Decoder, Encoding, Field, FieldType, Message, Row, Schema, Wire};
+use rigging_condition::{
+    CheckError, Checked, Condition as Clause, Lookup, Path as ConditionPath, Row as ConditionRow,
+    Schema as ConditionSchema, Timestamp, Type, Value as ConditionValue,
+};
 use serde_json::json;
+
+/// The `whereOperators` flotillad lists for an integer, number, string or
+/// datetime field.
+pub const ORDERED: [&str; 8] = ["==", "!=", "<", "<=", ">", ">=", "in", "has"];
 
 /// One table the fake serves: its schema and its rows, which live in one
 /// namespace (`flotilla` unless set).
@@ -104,18 +113,20 @@ impl FakeTable {
         let schema = Schema {
             fields: vec![
                 field(
-                    json!({"name": "id", "type": "integer", "title": "ID", "roles": ["key"], "sortable": true, "constraints": {"required": true}}),
+                    json!({"name": "id", "type": "integer", "title": "ID", "roles": ["key"], "sortable": true, "constraints": {"required": true}, "whereOperators": ORDERED}),
                 ),
                 field(
-                    json!({"name": "name", "type": "string", "title": "Name", "sortable": true, "whereOperators": ["=="]}),
+                    json!({"name": "name", "type": "string", "title": "Name", "sortable": true, "whereOperators": ORDERED}),
                 ),
                 field(
-                    json!({"name": "phase", "type": "string", "title": "Phase", "roles": ["state"], "whereOperators": ["=="]}),
+                    json!({"name": "phase", "type": "string", "title": "Phase", "roles": ["state"], "whereOperators": ORDERED}),
                 ),
                 field(
-                    json!({"name": "started", "type": "datetime", "title": "Started", "roles": ["time"]}),
+                    json!({"name": "started", "type": "datetime", "title": "Started", "roles": ["time"], "whereOperators": ORDERED}),
                 ),
-                field(json!({"name": "load", "type": "number", "title": "Load", "unit": "%"})),
+                field(
+                    json!({"name": "load", "type": "number", "title": "Load", "unit": "%", "whereOperators": ORDERED}),
+                ),
                 field(json!({"name": "spec", "type": "object", "title": "Spec"})),
             ],
             primary_key: vec!["id".into()],
@@ -234,64 +245,151 @@ fn rfc3339(secs: i64, nanos: u32) -> String {
     )
 }
 
-/// A `where` clause the fake understands: `.field.path == value`.
-#[derive(Clone, Debug, PartialEq)]
+/// A `where` clause in the condition language flotillad speaks
+/// (`rigging-condition`), checked against a table's fields: the rows it
+/// keeps are those it is true for.
+#[derive(Clone, Debug)]
 pub struct Where {
-    path: String,
-    value: String,
+    checked: Checked<Clause>,
+    /// The fields a clause may read, by path.
+    fields: Vec<(ConditionPath, Field)>,
 }
 
+/// Why a clause was refused with a 400: its error code and message.
+pub type Refused = (&'static str, String);
+
 impl Where {
-    /// Reads a clause, or says why it can't, as flotillad's 400 does.
-    pub fn parse(clause: &str) -> Result<Where, String> {
-        let at = clause.len() - clause.trim_start().len();
-        let rest = clause.trim_start();
-        let Some(rest) = rest.strip_prefix('.') else {
-            return Err(format!(
-                "expected a field path starting with `.` at byte {} of `$row {clause}`",
-                at + 5
-            ));
-        };
-        let Some((path, value)) = rest.split_once("==") else {
-            return Err(format!("expected `==` in `$row {clause}`"));
-        };
-        let path = path.trim();
-        let value = value.trim();
-        let value = (value.strip_prefix('"').and_then(|v| v.strip_suffix('"'))).unwrap_or(value);
-        if path.is_empty() || path.contains(char::is_whitespace) || value.contains("==") {
-            return Err(format!("expected `.field == value` in `$row {clause}`"));
+    /// Reads canonical clause text against `schema`'s fields, or says why
+    /// it can't, as flotillad's 400 does: `invalid_filter` for text that
+    /// does not parse, `unknown_column` or `type_mismatch` for a clause
+    /// that does not check.
+    pub fn parse(clause: &str, schema: &Schema) -> Result<Where, Refused> {
+        let parsed = Clause::parse_strict(clause).map_err(|e| ("invalid_filter", e.to_string()))?;
+        let fields = declared(schema);
+        let mut declared = ConditionSchema::new();
+        for (path, field) in &fields {
+            if let Some(ty) = condition_type(field) {
+                // A field that conflicts with another is left out.
+                let _ = declared.insert_field(path.clone(), ty, field.nullable());
+            }
         }
-        Ok(Where {
-            path: path.to_owned(),
-            value: value.to_owned(),
-        })
+        let checked = Checked::new(parsed, &declared).map_err(|e| {
+            let code = match e {
+                CheckError::UnknownField(_) => "unknown_column",
+                CheckError::TypeMismatch { .. }
+                | CheckError::OrderingNotAllowed { .. }
+                | CheckError::InvalidLiteral { .. } => "type_mismatch",
+                _ => "invalid_filter",
+            };
+            (code, e.to_string())
+        })?;
+        Ok(Where { checked, fields })
     }
 
-    /// Whether `row` has the value at the path: a field by its whole name,
-    /// else the longest field the path starts with, then into its object.
+    /// Whether the clause is true for `row`. A value that does not match
+    /// its field's type is missing, as a typed store can't hold it.
     pub fn keeps(&self, row: &Row) -> bool {
-        let found = row.get(&self.path).or_else(|| {
-            let mut best: Option<(&String, &Wire)> = None;
-            for (name, value) in row {
-                let inside = self.path.starts_with(name.as_str())
-                    && self.path[name.len()..].starts_with('.');
-                if inside && best.is_none_or(|(b, _)| name.len() > b.len()) {
-                    best = Some((name, value));
-                }
-            }
-            let (name, mut value) = best?;
-            for part in self.path[name.len() + 1..].split('.') {
-                value = value.as_map()?.get(part)?;
-            }
-            Some(value)
+        let cells = Cells {
+            row,
+            fields: &self.fields,
+        };
+        self.checked.evaluate(&cells).is_true()
+    }
+}
+
+/// The fields of `schema` a clause may read, by path: each of a type a
+/// condition reads, named by its name split at each dot, or as one segment
+/// where another such field's name is a dotted prefix of it.
+fn declared(schema: &Schema) -> Vec<(ConditionPath, Field)> {
+    let readable: Vec<&Field> = (schema.fields.iter())
+        .filter(|f| condition_type(f).is_some())
+        .collect();
+    let mut fields = Vec::new();
+    for field in &readable {
+        let name = field.name.as_str();
+        let prefixed = (readable.iter()).any(|o| {
+            name.strip_prefix(o.name.as_str())
+                .is_some_and(|r| r.starts_with('.'))
         });
-        match found {
-            Some(Wire::Text(text)) => *text == self.value,
-            Some(Wire::Null) | None => false,
-            Some(other) => {
-                let text = other.to_json().to_string();
-                text == self.value
+        let path = match prefixed {
+            true => ConditionPath::new([name]),
+            false => ConditionPath::new(name.split('.')),
+        };
+        if let Ok(path) = path {
+            fields.push((path, (*field).clone()));
+        }
+    }
+    fields
+}
+
+/// The condition type of `field`'s values: a string with categories or
+/// `constraints.enum` is an enum. `None` for one a condition can't read.
+fn condition_type(field: &Field) -> Option<Type> {
+    let listed = (field.property("constraints"))
+        .and_then(|c| c.get("enum"))
+        .and_then(serde_json::Value::as_array)
+        .map(|values| values.iter().filter_map(|v| v.as_str().map(String::from)));
+    Some(match field.field_type {
+        FieldType::String => match (&field.categories, listed) {
+            (Some(categories), _) => Type::enumeration(categories.iter().map(|c| c.value.clone())),
+            (None, Some(listed)) => Type::enumeration(listed),
+            (None, None) => Type::String,
+        },
+        FieldType::Other(ref name) if name == "address" => Type::String,
+        FieldType::Integer => Type::Int,
+        FieldType::Number => Type::Number,
+        FieldType::Boolean => Type::Bool,
+        FieldType::Datetime => Type::Timestamp,
+        _ => return None,
+    })
+}
+
+/// An RFC 3339 datetime to the microsecond it falls in, as a store holds it:
+/// a fraction past six digits is cut.
+fn micros(text: &str) -> Option<Timestamp> {
+    let cut = match text.find('.') {
+        Some(dot) => {
+            let digits = text[dot + 1..]
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            let kept = digits.min(6);
+            format!("{}{}", &text[..dot + 1 + kept], &text[dot + 1 + digits..])
+        }
+        None => text.to_owned(),
+    };
+    Timestamp::parse_rfc3339(&cut).ok()
+}
+
+/// One row as a clause reads it.
+struct Cells<'a> {
+    row: &'a Row,
+    fields: &'a [(ConditionPath, Field)],
+}
+
+impl ConditionRow for Cells<'_> {
+    fn get(&self, path: &ConditionPath) -> Lookup<'_> {
+        let Some((_, field)) = self.fields.iter().find(|(p, _)| p == path) else {
+            return Lookup::Absent;
+        };
+        let value = match (&field.field_type, self.row.get(&field.name)) {
+            (FieldType::Integer, Some(Wire::Int(i))) => {
+                i64::try_from(*i).ok().map(ConditionValue::Int)
             }
+            (FieldType::Number, Some(Wire::Float(x))) => Some(ConditionValue::Number(*x)),
+            (FieldType::Number, Some(Wire::Int(i))) => Some(ConditionValue::Number(*i as f64)),
+            (FieldType::Boolean, Some(Wire::Bool(b))) => Some(ConditionValue::Bool(*b)),
+            (FieldType::Datetime, Some(Wire::Text(text))) => {
+                micros(text).map(ConditionValue::Timestamp)
+            }
+            (FieldType::String | FieldType::Other(_), Some(Wire::Text(text))) => {
+                Some(ConditionValue::String(text.clone()))
+            }
+            _ => None,
+        };
+        match value {
+            Some(value) => Lookup::Present(Cow::Owned(value)),
+            None => Lookup::Absent,
         }
     }
 }

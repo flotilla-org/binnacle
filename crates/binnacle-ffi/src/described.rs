@@ -778,6 +778,7 @@ pub unsafe extern "C" fn binnacle_described_source_poll_request(
             let c = match request {
                 HostRequest::OpenWatch(w) => {
                     let wheres: Vec<BinnacleText> = (w.scope.wheres().iter())
+                        .chain(&w.wheres)
                         .map(|clause| h.keep(clause.as_str()))
                         .collect();
                     h.wheres = wheres;

@@ -15,11 +15,12 @@ use support::{messages, replay};
 
 #[test]
 fn a_source_first_asks_its_host_to_open_a_watch_on_its_scope() {
-    let scope = Scope::new("flotilla").with_where(".status.phase == Active");
+    let scope = Scope::new("flotilla").with_where(r#"status.phase == "Active""#);
     let mut source = DescribedSource::new("vessels", scope.clone());
     let want = WatchRequest {
         table: "vessels".into(),
         scope,
+        wheres: Vec::new(),
         limit: 10_000,
     };
     assert_eq!(
@@ -29,7 +30,7 @@ fn a_source_first_asks_its_host_to_open_a_watch_on_its_scope() {
     assert_eq!(source.poll_request(), None, "once");
     assert_eq!(
         want.target(),
-        "/tables/vessels/rows?watch&limit=10000&namespace=flotilla&where=.status.phase%20%3D%3D%20Active"
+        "/tables/vessels/rows?watch&limit=10000&namespace=flotilla&where=status.phase%20%3D%3D%20%22Active%22"
     );
 }
 

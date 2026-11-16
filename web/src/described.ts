@@ -113,7 +113,10 @@ export interface DescribedStatus {
 /** A Described Table: its Table Source, and what its host feeds it. */
 export interface DescribedTable {
   readonly source: TableSource<bigint, string, TypedValue>;
-  /** The watch to open next, or `undefined`: first, and again after each `ended`. */
+  /**
+   * The watch to open next, or `undefined`: first, again after each `ended`, and when a filter changes the `where`
+   * clauses the table sends (see `onRequest`).
+   */
   pollRequest(): DescribedRequest | undefined;
   /** A response body begins, of its `Content-Type`; a type that is not a rows stream throws. */
   open(contentType: string): void;
@@ -131,6 +134,12 @@ export interface DescribedTable {
   defaultLayout(): Layout<bigint, string>;
   /** Called after each `feed` and `ended`; returns how to unsubscribe. */
   onChange(listener: () => void): () => void;
+  /**
+   * Called when the table asks for its watch while the stream is open: a filter changed the `where` clauses it sends.
+   * The host drops the stream open and opens the one `pollRequest` gives; until it polls, `feed` drops what it is
+   * given. Returns how to unsubscribe.
+   */
+  onRequest(listener: () => void): () => void;
   /** Frees the wasm side. */
   destroy(): void;
 }
@@ -244,6 +253,9 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
   /** The View Spec applied last and its totals, which change as rows come and go. */
   let applied: { spec: KeyedViewSpec; totals: Totals } | null = null;
   const listeners = new Set<() => void>();
+  const requestListeners = new Set<() => void>();
+  /** Each request listener's call, while a watch waits to be opened in place of the stream. */
+  const asking = () => (live().hasRequest() ? [...requestListeners].map((listener) => () => listener()) : []);
 
   const clock = zone && ((frameNow: number) => ({ now: performance.timeOrigin + frameNow, zone }));
   const renderOf = (c: DescribedColumn) => JSON.stringify([c.valueType, c.type, c.unit, c.roles]);
@@ -434,7 +446,7 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
     view(spec) {
       const viewed = live().view(specKeys(spec)) as { applied: KeyedViewSpec; totals: Totals; notices: Float64Array };
       applied = { spec: viewed.applied, totals: viewed.totals };
-      all(telling(viewed.notices));
+      all([...telling(viewed.notices), ...asking()]);
       return specIds(viewed.applied, viewed.totals);
     },
     cells(rowIds, colIds) {
@@ -483,7 +495,10 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
     source,
     pollRequest: () => (live().pollRequest() as DescribedRequest | undefined) ?? undefined,
     open: (contentType) => live().open(contentType),
-    feed: (bytes) => fed(live().feed(bytes) as Fed),
+    feed(bytes) {
+      const r = live().feed(bytes) as Fed;
+      all([() => fed(r), ...asking()]);
+    },
     ended() {
       counts.reconnects++;
       fed(live().ended() as Fed);
@@ -500,11 +515,16 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    onRequest(listener) {
+      requestListeners.add(listener);
+      return () => requestListeners.delete(listener);
+    },
     destroy() {
       wasm?.free();
       wasm = undefined;
       sinks.clear();
       listeners.clear();
+      requestListeners.clear();
     },
   };
 }

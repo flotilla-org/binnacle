@@ -860,9 +860,23 @@ fn example() -> std::path::PathBuf {
         .status()
         .unwrap();
     assert!(built.success());
-    let deps = std::env::current_exe().unwrap();
-    let examples = deps.parent().unwrap().parent().unwrap().join("examples");
-    examples.join(format!("binnacle-tables{}", std::env::consts::EXE_SUFFIX))
+    profile_dir()
+        .join("examples")
+        .join(format!("binnacle-tables{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// The profile's directory (`target/debug`): above this test's binary, which
+/// cargo puts in its `deps` or, since Rust 1.100, under its `build`.
+fn profile_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let under = exe
+        .ancestors()
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "deps" || name == "build")
+        })
+        .unwrap_or_else(|| panic!("no deps or build directory above {}", exe.display()));
+    under.parent().unwrap().to_path_buf()
 }
 
 #[test]
