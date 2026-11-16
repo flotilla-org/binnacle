@@ -5,7 +5,7 @@ expression: text(&buf)
     name        │port        │
 1   r0c0         r0c1                                          █
 2   r1c0         r1c1                                          █
-3  ▿r2c0         r2c1                                          █
+3 ▿ r2c0         r2c1                                          █
 4   ┌─ Filter columns by 3 ────────────────────┐               █
 5   │ Contains en▏                          Aa │               █
     │ Search                                   │               █

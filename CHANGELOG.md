@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **core/layout/web:** restoring a Layout keeps the Grand Total as it was saved ([#218](https://github.com/flotilla-org/binnacle/issues/218)). The Grid pins a Grand Total by default when a request (a View Edit or `request_view`) turns it to after, not when the source applies the spec, and a Layout's `pins.rows` and `pins.cols` gain an optional `grandTotal` (said while the view places the one Grand Total after) that `Layout::restore` and `restoreLayout` put back through `Grid::set_grand_total_pinned` once the view is requested. A Layout that says nothing restores it pinned, as before. One Grand Total per value (a pivot's) is still pinned as Windows bring it, restore included.
+- **web:** a Summary Item's cached figures no longer survive a `Refiltered`, so a filter or slicer over an async backend shows pending or the new figures, never the old ([#280](https://github.com/flotilla-org/binnacle/issues/280)).
+- **ratatui/web:** a null group is labelled `(null)` (dim, as a null cell is) and an empty one `(empty)`, in group labels, Distinct Values and chips, where it was `(blank)` and `(Blanks)` and an empty string drew nothing or `""` ([#323](https://github.com/flotilla-org/binnacle/issues/323)). `binnacle_memory::column_filter` gains `NULL_LABEL`, `EMPTY_LABEL` and `value_label`, re-exported by `binnacle_ratatui`.
+- **ratatui:** the row Header Band keeps its last cell blank (unless it has only the one), so a label never runs into the first cell, and the inline and full-screen tables size the band to the widest label drawn with its indent and mark, as `row_band_fit` says, until the user sets it ([#322](https://github.com/flotilla-org/binnacle/issues/322)).
 - **ratatui:** coming back inline from full screen scrolls the focused row into view, and the rows printed on exit wrap by display width, never inside a grapheme ([#368](https://github.com/flotilla-org/binnacle/issues/368)).
 - **format:** `cut` shows nothing at a limit of zero, not `…`.
 

@@ -9,5 +9,5 @@ expression: "screen(&mut grid, &source, &ctx)"
 |                                                   ║                   █|
 |                                                   ║                   █|
 |              ═════════════════════════════════════╬═══════════════════█|
-|Grand total  ▿25        3                          ║31        5        █|
+|Grand total ▿ 25        3                          ║31        5        █|
 | Columns where   Grand total: > 10                                      |

@@ -501,7 +501,11 @@ pub fn render_with(
             false => h.rect.x.min(left),
         };
         let width = usize::try_from(cell(left) - cell(x0)).unwrap_or(0);
-        let room = width.saturating_sub(text_width(&marker) as usize);
+        // The band keeps its last cell blank, so a label never runs into the
+        // body, unless it has only the one cell.
+        let room = width
+            .saturating_sub(usize::from(width > 1))
+            .saturating_sub(text_width(&marker) as usize);
         let lead = (text_width(&indent) + text_width(mark)) as usize;
         let label_room = room.saturating_sub(lead);
         let number = fit(&number, u32::try_from(label_room).unwrap_or(u32::MAX));
@@ -897,6 +901,39 @@ fn value_of<'a>(grouping: Option<&'a Grouping>, outline: &Outline) -> Option<&'a
         return None;
     };
     grouping?.value_of(identity).map(|(_, v)| v)
+}
+
+/// The width the row Header Band needs for the rows `snapshot` draws: the
+/// widest label with its indent and disclosure mark, and a blank cell after
+/// it so the label never runs into the body. `None` with no rows, or in
+/// header form, where the spans' tiers lead the band.
+pub fn row_band_fit(snapshot: &Snapshot, content: &impl Content) -> Option<f32> {
+    if !snapshot.tiers(Axis::Rows).is_empty() {
+        return None;
+    }
+    let grouping = snapshot.applied_view().grouping.as_ref();
+    let widest = snapshot
+        .drawn(Axis::Rows)
+        .map(|r| {
+            let outline = snapshot.outline(Axis::Rows, r.position);
+            let label = r.key.map_or_else(
+                || r.position.saturating_add(1).to_string(),
+                |k| match outline {
+                    Some(o) if o.kind.is_summary() => {
+                        content.summary_label(Axis::Rows, k, o, value_of(grouping, o))
+                    }
+                    _ => content.row_header(k, r.position),
+                },
+            );
+            let lead = match outline {
+                Some(o) if o.kind == ItemKind::GrandTotal => 0,
+                Some(o) => 2 * o.depth as usize + 2,
+                None => 0,
+            };
+            lead + text_width(&label) as usize
+        })
+        .max()?;
+    Some(widest as f32 + 1.0)
 }
 
 /// Draws the columns' spans in header form, a pivot's: each group one cell

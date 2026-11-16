@@ -1,0 +1,18 @@
+---
+source: crates/binnacle-described/tests/cli.rs
+expression: "frames[0]"
+---
+
+
+Phase     Name      │   Started│      CPUs│      Load│note      │Host      │Spec      │
+▾ (null)  ∅          ∅          ∅          ∅          ∅          ∅          ∅                      █
+    2     bravo      ∅                   2      1.25% ∅          feta       {}                     █
+    3     juliet     ∅          ∅          ∅          ∅          ∅          {}                     █
+▾ Done    ∅          ∅          ∅          ∅          ∅          ∅          ∅                      █
+    5     echo            in 9h 184467440…         2% late       ∅          {}                     █
+    6     india 🚢   ∅                   3 ∅          🚢🚢 ok    ∅          {"a":[1]}              █
+▾ Running ∅          ∅          ∅          ∅          ∅          ∅          ∅                      █
+    8     alpha           in 9h          4       0.5%            feta       {"image":…             │
+    9     delta         15h ago ∅                3.5%            brie       {}                     │
+    10    foxtrot        2d ago          8 !high      ∅          feta       {"image":…             │
+14 rows | Enter choose  Space pick  s sort  m menu  ^F find  ^L filter  f full screen  Esc quit

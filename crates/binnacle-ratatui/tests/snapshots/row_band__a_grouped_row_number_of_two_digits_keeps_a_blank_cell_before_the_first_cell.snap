@@ -1,0 +1,19 @@
+---
+source: crates/binnacle-ratatui/tests/row_band.rs
+expression: text
+---
+region id
+▾ N    r9223…                █
+    2  r0c0                  █
+    3  r1c0                  █
+    4  r2c0                  █
+    5  r3c0                  █
+    6  r4c0                  █
+    7  r5c0                  █
+    8  r6c0                  █
+    9  r7c0                  █
+    10 r8c0                  █
+    11 r9c0                  █
+    12 r10c0                 █
+    13 r11c0                 █
+                             █
