@@ -448,10 +448,17 @@ impl Grid {
                 self.view.totals_pinned[i].push(GRAND_TOTAL);
             }
         } else if single(self.latest_view(), axis) {
-            self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
-            if !self.view.totals_pinned[i].contains(&GRAND_TOTAL) {
-                self.view.totals_pinned[i].push(GRAND_TOTAL);
-            }
+            self.pin_grand_total(axis);
+        }
+    }
+
+    /// Pins the Grand Total of `axis` at the trailing edge, recorded as
+    /// pinned by default so that an unpin of the user's sticks.
+    pub(crate) fn pin_grand_total(&mut self, axis: Axis) {
+        self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
+        let pinned = &mut self.view.totals_pinned[axis.index()];
+        if !pinned.contains(&GRAND_TOTAL) {
+            pinned.push(GRAND_TOTAL);
         }
     }
 

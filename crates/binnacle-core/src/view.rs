@@ -1077,8 +1077,7 @@ impl Grid {
                 && single(&spec, axis)
                 && !self.view.totals_pinned[i].contains(&GRAND_TOTAL)
             {
-                self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
-                self.view.totals_pinned[i].push(GRAND_TOTAL);
+                self.pin_grand_total(axis);
             }
         }
         self.view.applied = spec;
@@ -1577,11 +1576,7 @@ impl Grid {
         for axis in Axis::ALL {
             if single(&spec, axis) && !self.view.totals_pinned[axis.index()].contains(&GRAND_TOTAL)
             {
-                self.pin_before(axis, Edge::Trailing, &[GRAND_TOTAL], None);
-                let pinned = &mut self.view.totals_pinned[axis.index()];
-                if !pinned.contains(&GRAND_TOTAL) {
-                    pinned.push(GRAND_TOTAL);
-                }
+                self.pin_grand_total(axis);
             }
         }
         self.view.requested = Some(spec.clone());
