@@ -469,6 +469,8 @@ impl DescribedSource {
                 more,
                 ..
             } if self.values.contains(&field) => {
+                // Deltas apply in stream order, which the one stream keeps:
+                // the `sequence` is not needed for them.
                 let (list, more_held) = self.lists.entry(field).or_default();
                 for (value, count) in values {
                     // By identity, so a NaN matches itself.
@@ -606,11 +608,12 @@ impl DescribedSource {
     }
 
     /// Each axis's count before any filter: the rows' is the `total` the
-    /// last `count` message gave, if it gave one, else the rows held.
+    /// last `count` message gave, if it gave one, else the rows held; never
+    /// fewer than the rows held, should a `count` lag an upsert.
     pub fn totals(&self) -> Totals {
         let mut totals = self.grouped.totals();
-        if let (Some(_), Some(total)) = (totals.rows, self.status.total) {
-            totals.rows = Some(total);
+        if let (Some(held), Some(total)) = (totals.rows, self.status.total) {
+            totals.rows = Some(total.max(held));
         }
         totals
     }
