@@ -3,9 +3,12 @@
 // ends tells the table, waits and opens it again. The wait starts at
 // 500 ms and doubles to 5 s, starting again once the rows are synced; it is
 // never shorter, so a stream that ends at once can't spin. A 5xx or a
-// network error tries again after the same wait. A 4xx, a 200 that is not a
-// rows stream, and an error from the table itself (a throwing sink or
-// listener) stop the loop: trying again would only fail the same way. When
+// network error tries again after the same wait. A 4xx and a 200 that is not
+// a rows stream stop the loop until the table asks for a different watch (a
+// request with another target): the same request would only fail the same
+// way, but a changed `where` might not. The new watch starts in `connecting`
+// with the wait reset. An error from the table itself (a throwing sink or
+// listener) and the host's `destroy` stop it for good. When
 // a filter changes the `where` clauses the table sends, the table asks for
 // its watch while the stream is open: the loop aborts the stream, feeds
 // none of its bytes from then on, and opens the new watch at once.
@@ -62,6 +65,9 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
   /** The table asked for another watch: the next wait is skipped. */
   let asked = false;
   let wait = FIRST_WAIT;
+  /** The target a 4xx (or a non-rows 200) stopped the loop on, while it waits for a different one. */
+  let haltedOn: string | null = null;
+  let resume: (() => void) | null = null;
 
   const sleep = (ms: number) =>
     new Promise<void>((resolve) => {
@@ -72,16 +78,33 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
       };
     });
 
-  /** Stops the loop with `error`. */
-  const fail = (error: WatchError) => {
-    stopped = true;
+  /** Reports `error`; the loop stops for good unless `halted`, which a different watch ends. */
+  const fail = (error: WatchError, halted = false) => {
+    if (!halted) stopped = true;
     options.onPhase("error", error);
+  };
+
+  /** Stops until the table asks for a target other than `target`. */
+  const halt = async (target: string) => {
+    haltedOn = target;
+    await new Promise<void>((resolve) => (resume = resolve));
+    resume = null;
+    haltedOn = null;
+    wait = FIRST_WAIT;
   };
 
   let request = table.pollRequest();
   /** The table asked for its watch in place of the stream: abort it, and wake a wait. */
   const unrequest = table.onRequest(() => {
     request = table.pollRequest();
+    if (haltedOn !== null) {
+      // The same watch again would fail the same way.
+      if (request && request.target !== haltedOn) {
+        haltedOn = null;
+        resume?.();
+      } else request = undefined;
+      return;
+    }
     controller?.abort();
     controller = null;
     asked = true;
@@ -104,7 +127,13 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
           const response = await fetch(target, { headers: options.headers, signal: mine.signal });
           if (replaced()) continue;
           if (response.status >= 400 && response.status < 500) {
-            return fail({ status: response.status, message: await errorMessage(response) });
+            const message = await errorMessage(response);
+            // The table asked for another watch while the body was read: that one opens.
+            if (stopped) return;
+            if (replaced()) continue;
+            fail({ status: response.status, message }, true);
+            await halt(target);
+            continue;
           }
           if (response.ok && response.body) {
             try {
@@ -112,7 +141,9 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
             } catch (e) {
               // Not a rows stream: not a table server, and it won't become one.
               void response.body.cancel();
-              return fail({ status: response.status, message: messageOf(e) });
+              fail({ status: response.status, message: messageOf(e) }, true);
+              await halt(target);
+              continue;
             }
             opened = true;
             options.onPhase("open");
@@ -158,6 +189,7 @@ export function watch(table: DescribedTable, options: WatchOptions): Watch {
       stopped = true;
       unrequest();
       controller?.abort();
+      resume?.();
       wake?.();
     },
   };
