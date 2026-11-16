@@ -22,6 +22,14 @@
 //! [`Blocking`] drops the old watch and any of its events not yet read; an
 //! async host drops the future of [`Transport::watch`] serving the old
 //! request before it feeds the new one's events.
+//!
+//! While its filter sends `where` clauses, a source asks for a count read
+//! as well ([`HostRequest::OpenCount`]), a second stream whose messages go
+//! to `source.receive_count`, never `source.receive`, and whose end goes to
+//! `source.count_ended()`. [`Blocking`] serves it beside the watch, with
+//! its events apart ([`Blocking::try_recv_count`]), and drops it on
+//! [`HostRequest::CloseCount`]; an async host serves it with
+//! [`Transport::watch`] too, and drops that future to close it.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -213,16 +221,21 @@ impl Transport {
         &self.options
     }
 
-    /// Serves `request`: `GET {WatchRequest::target()}`, after the backoff
-    /// if the last stream ended or failed, retrying a refused connection or
-    /// a 5xx with backoff ([`Event::Retrying`] each time), up to
+    /// Serves `request`: `GET {WatchRequest::target()}`, or
+    /// `{CountRequest::target()}` for the count read, after the backoff if
+    /// the last stream ended or failed, retrying a refused connection or a
+    /// 5xx with backoff ([`Event::Retrying`] each time), up to
     /// [`Options::retries`]. Each event goes to `emit`, ending with
-    /// [`Event::Ended`] or [`Event::Failed`].
+    /// [`Event::Ended`] or [`Event::Failed`]. Any other request returns at
+    /// once.
+    ///
+    /// [`CountRequest::target()`]: binnacle_described::CountRequest::target
     pub async fn watch(&self, request: &HostRequest, mut emit: impl FnMut(Event)) {
-        let HostRequest::OpenWatch(watch) = request else {
-            return;
+        let target = match request {
+            HostRequest::OpenWatch(watch) => watch.target(),
+            HostRequest::OpenCount(count) => count.target(),
+            _ => return,
         };
-        let target = watch.target();
         let mut failures = 0;
         loop {
             let wait = {
@@ -486,15 +499,27 @@ fn split(base: &str) -> Option<(String, String)> {
 /// unbounded, so a host reads events each frame. It serves one watch at a
 /// time: each request it opens replaces the watch before, which is dropped
 /// with any of its events not yet read, so a source never takes messages of
-/// two streams. Dropping it stops the thread and waits for its runtime to
-/// shut down, dropping any watch still open.
+/// two streams. Beside it, it serves one count read at a time the same way,
+/// on a transport of its own (so the two are paced apart), its events read
+/// apart ([`Blocking::try_recv_count`]). Dropping it stops the thread and
+/// waits for its runtime to shut down, dropping any stream still open.
 pub struct Blocking {
-    requests: Option<tokio::sync::mpsc::UnboundedSender<(u64, HostRequest)>>,
-    /// Each event with the request it is for.
+    requests: Option<tokio::sync::mpsc::UnboundedSender<(Stream, u64, Option<HostRequest>)>>,
+    /// Each event of the watch with the request it is for.
     events: mpsc::Receiver<(u64, Event)>,
-    /// How many requests were opened: the latest's number.
-    opened: Cell<u64>,
+    /// Each event of the count read with the request it is for.
+    count_events: mpsc::Receiver<(u64, Event)>,
+    /// How many requests were opened, and closed, on each stream: the
+    /// latest's number.
+    opened: [Cell<u64>; 2],
     thread: Option<thread::JoinHandle<()>>,
+}
+
+/// Which of its two streams a [`Blocking`] request is for.
+#[derive(Clone, Copy)]
+enum Stream {
+    Rows = 0,
+    Count = 1,
 }
 
 impl Blocking {
@@ -502,9 +527,11 @@ impl Blocking {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let (requests, mut incoming) = tokio::sync::mpsc::unbounded_channel::<(u64, HostRequest)>();
+        let (requests, mut incoming) =
+            tokio::sync::mpsc::unbounded_channel::<(Stream, u64, Option<HostRequest>)>();
         let (events, outgoing) = mpsc::channel();
-        let transport = Transport::new(options);
+        let (count_events, count_outgoing) = mpsc::channel();
+        let transports = [Transport::new(options.clone()), Transport::new(options)];
         let thread = thread::Builder::new()
             .name("binnacle-described-http".into())
             .spawn(move || {
@@ -512,20 +539,28 @@ impl Blocking {
                     let local = tokio::task::LocalSet::new();
                     local
                         .run_until(async move {
-                            let mut serving: Option<tokio::task::JoinHandle<()>> = None;
-                            while let Some((number, request)) = incoming.recv().await {
-                                if let Some(old) = serving.take() {
+                            let mut serving: [Option<tokio::task::JoinHandle<()>>; 2] =
+                                [None, None];
+                            while let Some((stream, number, request)) = incoming.recv().await {
+                                if let Some(old) = serving[stream as usize].take() {
                                     old.abort();
                                 }
-                                let transport = transport.clone();
-                                let events = events.clone();
-                                serving = Some(tokio::task::spawn_local(async move {
-                                    transport
-                                        .watch(&request, |event| {
-                                            let _ = events.send((number, event));
-                                        })
-                                        .await;
-                                }));
+                                let Some(request) = request else {
+                                    continue;
+                                };
+                                let transport = transports[stream as usize].clone();
+                                let events = match stream {
+                                    Stream::Rows => events.clone(),
+                                    Stream::Count => count_events.clone(),
+                                };
+                                serving[stream as usize] =
+                                    Some(tokio::task::spawn_local(async move {
+                                        transport
+                                            .watch(&request, |event| {
+                                                let _ = events.send((number, event));
+                                            })
+                                            .await;
+                                    }));
                             }
                         })
                         .await;
@@ -534,41 +569,75 @@ impl Blocking {
         Ok(Blocking {
             requests: Some(requests),
             events: outgoing,
-            opened: Cell::new(0),
+            count_events: count_outgoing,
+            opened: [Cell::new(0), Cell::new(0)],
             thread: Some(thread),
         })
     }
 
-    /// Serves `request`, as [`Transport::watch`] does, in place of the
-    /// watch served before: from now on, only its events come.
+    /// Serves `request`, as [`Transport::watch`] does. A watch replaces the
+    /// watch served before: from now on, only its events come from
+    /// [`Blocking::try_recv`]. A count read replaces the count read before
+    /// in the same way, its events coming from [`Blocking::try_recv_count`],
+    /// and [`HostRequest::CloseCount`] drops it, with any of its events not
+    /// yet read.
     pub fn open(&self, request: HostRequest) {
+        let (stream, request) = match request {
+            HostRequest::OpenWatch(_) => (Stream::Rows, Some(request)),
+            HostRequest::OpenCount(_) => (Stream::Count, Some(request)),
+            HostRequest::CloseCount => (Stream::Count, None),
+            _ => return,
+        };
         if let Some(requests) = &self.requests {
-            let number = self.opened.get() + 1;
-            self.opened.set(number);
-            let _ = requests.send((number, request));
+            let opened = &self.opened[stream as usize];
+            let number = opened.get() + 1;
+            opened.set(number);
+            let _ = requests.send((stream, number, request));
         }
     }
 
     /// The next event of the latest watch, waiting up to `timeout`.
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Event> {
-        // Stale events skipped count against the same deadline.
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            match self.events.recv_timeout(left).ok()? {
-                (number, event) if number == self.opened.get() => return Some(event),
-                _ => {}
-            }
-        }
+        self.next_within(Stream::Rows, timeout)
     }
 
     /// The next event of the latest watch, if one is waiting. An aborted
     /// watch sends nothing more, but what it sent before is still queued:
     /// its events, its `Ended` among them, are skipped.
     pub fn try_recv(&self) -> Option<Event> {
+        self.next_within(Stream::Rows, Duration::ZERO)
+    }
+
+    /// The next event of the latest count read, waiting up to `timeout`.
+    pub fn recv_count_timeout(&self, timeout: Duration) -> Option<Event> {
+        self.next_within(Stream::Count, timeout)
+    }
+
+    /// The next event of the latest count read, if one is waiting, as
+    /// [`Blocking::try_recv`] gives the watch's: none once it is closed.
+    pub fn try_recv_count(&self) -> Option<Event> {
+        self.next_within(Stream::Count, Duration::ZERO)
+    }
+
+    /// The next event of the latest request on `stream`, waiting up to
+    /// `timeout`, skipping those of requests it replaced.
+    fn next_within(&self, stream: Stream, timeout: Duration) -> Option<Event> {
+        let events = match stream {
+            Stream::Rows => &self.events,
+            Stream::Count => &self.count_events,
+        };
+        // Stale events skipped count against the same deadline.
+        let deadline = std::time::Instant::now() + timeout;
         loop {
-            match self.events.try_recv().ok()? {
-                (number, event) if number == self.opened.get() => return Some(event),
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let next = match left.is_zero() {
+                true => events.try_recv().ok()?,
+                false => events.recv_timeout(left).ok()?,
+            };
+            match next {
+                (number, event) if number == self.opened[stream as usize].get() => {
+                    return Some(event);
+                }
                 _ => {}
             }
         }

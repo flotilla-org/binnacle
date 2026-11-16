@@ -21,7 +21,7 @@ use binnacle_memory::{FindCount, FindStep, MemorySource, Moved, PumpSource, Type
 use crate::clause::{clauses, native_sent};
 use crate::keys::StableKeys;
 use crate::message::{Category, Field, FieldType, Message, Row, RowsMessage, Schema};
-use crate::scope::{HostRequest, ROW_CAP, Scope, WatchRequest};
+use crate::scope::{CountRequest, HostRequest, ROW_CAP, Scope, WatchRequest};
 use crate::wire::{Wire, deterministic_cbor};
 
 /// One row's Typed Values, in column order.
@@ -209,6 +209,11 @@ pub struct DescribedSource {
     /// request to open the watch again: messages still coming are from the
     /// stream it replaces.
     reopening: bool,
+    /// While any clause is sent, the count read is asked for: the rows'
+    /// Totals, once its `count` came.
+    counting: Option<Option<u64>>,
+    /// The View Spec applied last, which new Totals go with.
+    applied_spec: Option<ViewSpec>,
     zone: Rc<dyn Zone>,
     schema: Option<Schema>,
     columns: Vec<Column>,
@@ -248,6 +253,8 @@ impl DescribedSource {
             wheres: Vec::new(),
             requests: VecDeque::new(),
             reopening: false,
+            counting: None,
+            applied_spec: None,
             zone: Rc::new(FixedOffset(0)),
             schema: None,
             columns: Vec::new(),
@@ -320,7 +327,9 @@ impl DescribedSource {
     /// The next thing the source asks of its host: first, to open the
     /// watch, and again each time the stream ends or the filter changes
     /// the `where` clauses it sends. A host opening the watch again drops
-    /// the stream open before it feeds the new one's messages.
+    /// the stream open before it feeds the new one's messages. When the
+    /// first clause is sent, it asks to open the count read as well
+    /// ([`HostRequest::OpenCount`]), and when the last goes, to close it.
     pub fn poll_request(&mut self) -> Option<HostRequest> {
         let request = self.requests.pop_front();
         if matches!(request, Some(HostRequest::OpenWatch(_))) {
@@ -332,7 +341,8 @@ impl DescribedSource {
     /// Whether a request waits for the host to take it
     /// ([`DescribedSource::poll_request`]): a host that reads its stream
     /// without polling between messages asks this after a View Spec
-    /// applies, to drop the stream for a new one.
+    /// applies, to drop the stream for a new one (when the request is to
+    /// open the watch).
     pub fn has_request(&self) -> bool {
         !self.requests.is_empty()
     }
@@ -376,6 +386,77 @@ impl DescribedSource {
             self.resync();
             self.reopening = true;
         }
+        match (self.wheres.is_empty(), self.counting.is_some()) {
+            (false, false) => {
+                self.counting = Some(None);
+                self.open_count();
+            }
+            (true, true) => {
+                self.counting = None;
+                // A count read the host has not yet opened needs no close.
+                if !self.unask_count() {
+                    self.requests.push_back(HostRequest::CloseCount);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Asks to open the count read, replacing a request not yet taken.
+    fn open_count(&mut self) {
+        self.unask_count();
+        self.requests
+            .push_back(HostRequest::OpenCount(CountRequest {
+                table: self.table.clone(),
+                scope: self.scope.clone(),
+            }));
+    }
+
+    /// Takes back a request to open the count read not yet taken, if any.
+    fn unask_count(&mut self) -> bool {
+        let before = self.requests.len();
+        (self.requests).retain(|r| !matches!(r, HostRequest::OpenCount(_)));
+        self.requests.len() < before
+    }
+
+    /// Takes one message of the count read ([`HostRequest::OpenCount`]):
+    /// its `count` gives the rows' Totals, an estimate as much as an exact
+    /// one, while any clause is sent. Every other message, and any that
+    /// comes after the last clause went, changes nothing. New Totals come
+    /// with the View Spec applied from [`DescribedSource::poll_view`].
+    pub fn receive_count(&mut self, message: Message) {
+        let (Message::Count { count, .. }, Some(counted)) = (message, &mut self.counting) else {
+            return;
+        };
+        if *counted == Some(count) {
+            return;
+        }
+        *counted = Some(count);
+        let Some(spec) = self.applied_spec.clone() else {
+            return;
+        };
+        let totals = self.totals();
+        match &mut self.viewed {
+            Some((_, viewed)) => *viewed = totals,
+            None => self.viewed = Some((spec, totals)),
+        }
+    }
+
+    /// The count read ended: while any clause is sent, the source asks to
+    /// open it again. The Totals it gave stand until its next `count`.
+    pub fn count_ended(&mut self) {
+        if self.counting.is_some() {
+            self.open_count();
+        }
+    }
+
+    /// `totals` with the rows' from the count read while it is asked for:
+    /// unknown until its `count` comes.
+    fn counted(&self, mut totals: Totals) -> Totals {
+        if let (Some(counted), Some(_)) = (self.counting, totals.rows) {
+            totals.rows = counted;
+        }
+        totals
     }
 
     /// Takes one message from the stream. Messages about rows before the
@@ -433,7 +514,8 @@ impl DescribedSource {
     /// After a `table` message changed the columns, the View Spec the
     /// source applies now and each axis's unfiltered count, once, for the
     /// host to hand the Grid ([`Grid::view_changed`]) with the Change
-    /// Notices. A removed column's sort terms and conditions are left out,
+    /// Notices; after the count read's `count` changed the Totals, the View
+    /// Spec applied with them. A removed column's sort terms and conditions are left out,
     /// so the Grid shows them not applied; the source keeps the View Spec
     /// last asked for, and they apply again if the field comes back.
     pub fn poll_view(&mut self) -> Option<(ViewSpec, Totals)> {
@@ -524,9 +606,10 @@ impl DescribedSource {
         self.grouped.summary(key)
     }
 
-    /// Each axis's count before any filter.
+    /// Each axis's count before any filter: the rows held, or while any
+    /// clause is sent, the count read's `count`, unknown until it comes.
     pub fn totals(&self) -> Totals {
-        self.grouped.totals()
+        self.counted(self.grouped.totals())
     }
 
     /// The aggregates a value over column `col` may take while grouped.
@@ -1271,6 +1354,8 @@ impl PumpSource for DescribedSource {
         }
         let applied = viewed.applied.clone();
         self.rewhere(&applied);
+        self.applied_spec = Some(applied);
+        viewed.totals = self.counted(viewed.totals);
         viewed
     }
 
@@ -1324,6 +1409,11 @@ impl PumpSource for DescribedSource {
     }
 
     fn move_items(&mut self, axis: Axis, keys: &[Key], to: Position) -> Result<Moved, String> {
-        self.over().move_items(axis, keys, to)
+        let mut moved = self.over().move_items(axis, keys, to)?;
+        if let Some((spec, totals)) = &mut moved.view {
+            self.applied_spec = Some(spec.clone());
+            *totals = self.counted(*totals);
+        }
+        Ok(moved)
     }
 }

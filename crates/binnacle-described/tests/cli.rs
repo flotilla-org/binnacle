@@ -476,6 +476,66 @@ fn a_change_notice_from_the_live_feed_shows_in_the_next_frame() {
     assert!(*calls.borrow() >= 2);
 }
 
+#[test]
+fn the_status_line_reads_the_rows_of_the_count_reads_totals_as_they_come() {
+    let mut source = DescribedSource::new("t", binnacle_described::Scope::new("flotilla"));
+    let table = json!({"type": "table", "schema": {"primaryKey": ["name"], "fields": [
+        {"name": "name", "type": "string"},
+        {"name": "phase", "type": "string", "whereOperators": ["==", "in"]}
+    ]}});
+    let rows = json!({"type": "rows", "cursor": null, "rows": [
+        {"name": "a", "phase": "Running"}, {"name": "b", "phase": "Done"}, {"name": "c", "phase": "Running"}
+    ]});
+    for message in [table, rows, json!({"type": "synced"})] {
+        source.receive(Message::from_json(&message).unwrap());
+    }
+    let layout = Layout {
+        view: Some(ViewSpec {
+            rows: AxisView {
+                filter: FilterSpec {
+                    quick: None,
+                    conditions: vec![Condition {
+                        id: id("phase"),
+                        kind: ConditionKind::OneOf {
+                            values: vec![Some("Running".into())],
+                        },
+                        not: false,
+                    }],
+                },
+                ..AxisView::default()
+            },
+            ..ViewSpec::default()
+        }),
+        ..Layout::default()
+    };
+    let calls = Rc::new(RefCell::new(0));
+    let counted = Rc::clone(&calls);
+    // The count read's count comes alone, with no Change Notice.
+    let live = Box::new(move |source: &mut DescribedSource| {
+        *counted.borrow_mut() += 1;
+        if *counted.borrow() == 2 {
+            source.receive_count(Message::Count {
+                count: 340,
+                estimate: false,
+            });
+        }
+        Some(Vec::new())
+    });
+    let options = InlineOptions {
+        live: Some(live),
+        origin: Some(Timestamp::from_unix_secs(1_793_232_000)),
+        ..InlineOptions::default()
+    };
+    let events = vec![None, None, key(KeyCode::Esc)];
+    let (frames, _) = inline_with(&mut source, &layout, events, 120, 20, options);
+    assert!(
+        frames[0].contains("2 rows | Enter"),
+        "unknown: {}",
+        frames[0]
+    );
+    assert!(frames[1].contains("2 of 340 rows | Enter"), "{}", frames[1]);
+}
+
 /// The rows chosen and the last frame after focus moves down twice in a
 /// view sorted by CPUs, the live feed sending `resyncs` after the moves:
 /// each a `resync` or a stream end, then, a frame later, the table again,
@@ -1333,6 +1393,46 @@ fn drained(source: &mut DescribedSource, events: Vec<Wired>, notes: &mut feed::N
         Duration::from_secs(5),
     );
     assert_eq!(fed, Ok(Vec::new()));
+}
+
+#[test]
+fn the_count_reads_events_give_the_totals_and_a_count_on_the_rows_stream_never_does() {
+    let mut source = DescribedSource::new("t", binnacle_described::Scope::new("flotilla"));
+    let table = json!({"type": "table", "schema": {"primaryKey": ["name"], "fields": [
+        {"name": "name", "type": "string"},
+        {"name": "phase", "type": "string", "whereOperators": ["==", "in"]}
+    ]}});
+    let rows = json!({"type": "rows", "cursor": null, "rows": [
+        {"name": "a", "phase": "Running"}, {"name": "b", "phase": "Done"}
+    ]});
+    for message in [table, rows, json!({"type": "synced"})] {
+        source.receive(Message::from_json(&message).unwrap());
+    }
+    let phase = source.column_key("phase").unwrap();
+    let running =
+        binnacle_core::Condition::one_of(phase, vec![binnacle_core::Value::Text("Running".into())]);
+    let filter = binnacle_core::FilterSpec::default().with_conditions(vec![running].into());
+    binnacle_memory::PumpSource::view(
+        &mut source,
+        &binnacle_core::ViewSpec::default().with_filter(Axis::Rows, filter),
+    );
+    while source.poll_request().is_some() {}
+    let count = |count| {
+        Wired::Message(Message::Count {
+            count,
+            estimate: false,
+        })
+    };
+    let mut notes = feed::Notes::default();
+    drained(&mut source, vec![count(9)], &mut notes);
+    assert_eq!(source.totals().rows, None, "not the count read's");
+    let mut events: VecDeque<Wired> = vec![count(340), Wired::Ended].into();
+    feed::drain_count(&mut source, || events.pop_front());
+    assert_eq!(source.totals().rows, Some(340));
+    assert!(matches!(
+        source.poll_request(),
+        Some(binnacle_described::HostRequest::OpenCount(_))
+    ));
 }
 
 #[test]

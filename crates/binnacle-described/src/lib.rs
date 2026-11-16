@@ -9,8 +9,11 @@
 //! answers the Grid as an In-Memory Table Source over the rows. Live
 //! changes (`upsert`, `delete`), resyncs, schema changes and the stream's
 //! end apply in place; only a message of a type this crate does not know
-//! comes back [`Received::Unhandled`]. [`encode_json_line`] and
-//! [`encode_cbor_item`] write messages, as a server (or a fake one) does.
+//! comes back [`Received::Unhandled`]. While the rows' conditions are sent
+//! as `where` clauses, the source also asks for a count read
+//! ([`HostRequest::OpenCount`]), whose `count` gives the rows' Totals.
+//! [`encode_json_line`] and [`encode_cbor_item`] write messages, as a server
+//! (or a fake one) does.
 
 mod clause;
 mod keys;
@@ -25,6 +28,6 @@ pub use message::{
     RowsMessage, Schema, TableMessage, decode_cbor_item, decode_json_line, encode_cbor_item,
     encode_json_line,
 };
-pub use scope::{HostRequest, ROW_CAP, Scope, WatchRequest};
+pub use scope::{CountRequest, HostRequest, ROW_CAP, Scope, WatchRequest};
 pub use source::{Column, DescribedSource, Received, Reference, Status, Unhandled, Values, typed};
 pub use wire::{Wire, deterministic_cbor};

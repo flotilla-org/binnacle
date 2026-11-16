@@ -33,7 +33,7 @@ extern "C" {
  * a struct's fields or layout, a constant's value, a function's signature,
  * or a declaration added or removed. binnacle-ffi's tests/abi.rs fails until
  * the version is bumped and the new header pinned. */
-#define BINNACLE_ABI_VERSION 25u
+#define BINNACLE_ABI_VERSION 26u
 
 /* The BINNACLE_ABI_VERSION of the header the library was built with. */
 uint32_t binnacle_abi_version(void);
@@ -2050,9 +2050,13 @@ typedef struct BinnacleDescribedSource BinnacleDescribedSource;
 #define BINNACLE_ENCODING_CBOR_SEQ 2
 
 /* BinnacleWatchRequest.kind: a request this header does not know (its other
- * fields empty), or to open the rows stream and feed each message back. */
+ * fields empty), to open the rows stream and feed each message back, to
+ * open the count read and feed each of its messages back apart, or to close
+ * the count read (its other fields empty). */
 #define BINNACLE_REQUEST_OTHER 0
 #define BINNACLE_REQUEST_OPEN_WATCH 1
+#define BINNACLE_REQUEST_OPEN_COUNT 2
+#define BINNACLE_REQUEST_CLOSE_COUNT 3
 
 /* BinnacleCell.align: where the text sits in its cell. Not BINNACLE_ALIGN_*,
  * which is for binnacle_grid_reveal. */
@@ -2148,7 +2152,13 @@ typedef struct {
  * "where=" for each clause, each percent-encoded) joined by "?", and feed
  * each message the stream carries to binnacle_described_source_receive.
  * table, namespace_name, the where clauses (the scope's, then those the
- * filter sends) and limit are what target encodes. */
+ * filter sends) and limit are what target encodes. OPEN_COUNT, while the
+ * filter sends where clauses: GET target ("watch&count=exact&limit=1&..."
+ * with the scope's clauses only), a second stream beside the rows stream,
+ * in place of any count read open, and feed each of its messages to
+ * binnacle_described_source_receive_count, never to
+ * binnacle_described_source_receive; its count message gives the rows'
+ * Totals. CLOSE_COUNT: drop the count read's stream. */
 typedef struct {
   uint32_t kind;
   BinnacleText table;
@@ -2270,10 +2280,24 @@ int binnacle_described_source_receive(BinnacleDescribedSource *src, BinnacleGrid
 /* The stream ended. */
 int binnacle_described_source_ended(BinnacleDescribedSource *src, BinnacleGrid *grid);
 
+/* Takes one message of the count read (BINNACLE_REQUEST_OPEN_COUNT), as
+ * binnacle_described_source_receive takes the rows stream's: a count message
+ * hands grid the View Spec applied with the rows' new Totals (an estimate
+ * as much as an exact count); any other message, or one after the count
+ * read was closed, changes nothing. 0 as for
+ * binnacle_described_source_receive. */
+int binnacle_described_source_receive_count(BinnacleDescribedSource *src, BinnacleGrid *grid,
+                                            uint32_t encoding, const uint8_t *bytes,
+                                            size_t len);
+
+/* The count read's stream ended: while the filter sends where clauses, the
+ * source asks to open it again. */
+int binnacle_described_source_count_ended(BinnacleDescribedSource *src);
+
 /* Takes the source's next request for its host into out: 1 if there was
  * one, 0 when none is queued. The first opens the watch; a later one opens
  * it again, after the stream ended or with other where clauses, in place of
- * the stream open. */
+ * the stream open, or opens or closes the count read. */
 int binnacle_described_source_poll_request(BinnacleDescribedSource *src,
                                            BinnacleWatchRequest *out);
 

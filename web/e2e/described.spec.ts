@@ -117,6 +117,18 @@ test("a table over the watch's cap shows partial", async ({ page }) => {
   await expect(count(page)).toHaveText("10,000 rows");
 });
 
+test("a filter the server takes shows its rows of every row the server counts", async ({ page }) => {
+  await page.goto("/?source=described&table=big");
+  await expect(status(page)).toHaveAttribute("data-state", "synced", { timeout: 30_000 });
+  await page.getByRole("search").getByRole("button", { name: "+ Filter" }).click();
+  await page.getByRole("menu", { name: "Filter column" }).getByRole("menuitem", { name: "Phase" }).click();
+  const values = page.getByRole("dialog", { name: "Filter Phase" }).getByRole("group", { name: "Phase values" });
+  await values.getByRole("checkbox", { name: /^\(Select all\)/ }).uncheck();
+  await values.getByRole("checkbox", { name: /^Running( [\d,]+)?$/ }).check();
+  // Every Running row of the generated table comes, of the 10,050 the count read counts.
+  await expect(count(page)).toHaveText("3,654 of 10,050", { timeout: 30_000 });
+});
+
 test("upserts arrive live", async ({ page, fake }) => {
   await crews(page, `&server=${fake.url}`);
   fake.push({ step: "upsert", table: "crews", row: { name: "alpha", phase: "Running", cpus: 16, spec: {} } });

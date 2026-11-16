@@ -22,14 +22,26 @@ use crate::effect::{WireCondition, WireFilter, WireFindMatch, WireFindQuery, Wir
 use crate::format::JsZone;
 use crate::grid::to_js;
 
-/// What a watch asks for: `GET {target}`, the path and query apart too.
+/// What the source asks of its host, by `kind`: to open the watch or the
+/// count read, `GET {target}` (the path and query apart too), or to close
+/// the count read.
 #[derive(Serialize)]
-struct WireRequest {
-    table: String,
-    path: String,
-    query: String,
-    target: String,
-    limit: f64,
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum WireRequest {
+    Watch {
+        table: String,
+        path: String,
+        query: String,
+        target: String,
+        limit: f64,
+    },
+    Count {
+        table: String,
+        path: String,
+        query: String,
+        target: String,
+    },
+    CloseCount,
 }
 
 /// Each axis's unfiltered count, where known.
@@ -344,6 +356,8 @@ fn located(l: Located) -> Vec<f64> {
 pub struct WebDescribed {
     source: DescribedSource,
     decoder: Option<Decoder>,
+    /// The count read's body's decoder.
+    count_decoder: Option<Decoder>,
 }
 
 #[wasm_bindgen]
@@ -366,21 +380,31 @@ impl WebDescribed {
         Ok(WebDescribed {
             source,
             decoder: None,
+            count_decoder: None,
         })
     }
 
-    /// The watch to open next, `{ table, path, query, target, limit }`, or
-    /// `undefined`.
+    /// The next request, or `undefined`: the watch to open, `{ kind:
+    /// "watch", table, path, query, target, limit }`; the count read to
+    /// open, `{ kind: "count", table, path, query, target }`; or `{ kind:
+    /// "closeCount" }`.
     #[wasm_bindgen(js_name = pollRequest)]
     pub fn poll_request(&mut self) -> JsValue {
         match self.source.poll_request() {
-            Some(HostRequest::OpenWatch(w)) => to_js(&WireRequest {
+            Some(HostRequest::OpenWatch(w)) => to_js(&WireRequest::Watch {
                 table: w.table.clone(),
                 path: w.path(),
                 query: w.query(),
                 target: w.target(),
                 limit: w.limit as f64,
             }),
+            Some(HostRequest::OpenCount(c)) => to_js(&WireRequest::Count {
+                table: c.table.clone(),
+                path: c.path(),
+                query: c.query(),
+                target: c.target(),
+            }),
+            Some(HostRequest::CloseCount) => to_js(&WireRequest::CloseCount),
             _ => JsValue::UNDEFINED,
         }
     }
@@ -426,6 +450,43 @@ impl WebDescribed {
             _ => Vec::new(),
         };
         fed.finish(&mut self.source, notices)
+    }
+
+    /// A count read's body begins, of `content_type`; an unknown type
+    /// throws.
+    #[wasm_bindgen(js_name = openCount)]
+    pub fn open_count(&mut self, content_type: &str) -> Result<(), JsError> {
+        let encoding = Encoding::from_content_type(content_type)
+            .ok_or_else(|| JsError::new(&format!("no rows stream is {content_type}")))?;
+        self.count_decoder = Some(Decoder::new(encoding));
+        Ok(())
+    }
+
+    /// The next bytes of the count read's body: its `count` gives the rows'
+    /// Totals, in the `view` returned; its other messages change nothing.
+    #[wasm_bindgen(js_name = feedCount)]
+    pub fn feed_count(&mut self, bytes: &[u8]) -> Result<JsValue, JsError> {
+        let decoder =
+            (self.count_decoder.as_mut()).ok_or_else(|| JsError::new("open a count read first"))?;
+        decoder.feed(bytes);
+        let mut fed = Fed::default();
+        while let Some(message) = decoder.next() {
+            fed.take_count(&mut self.source, message);
+        }
+        Ok(fed.finish(&mut self.source, Vec::new()))
+    }
+
+    /// The count read's body ended: the source asks to open it again while
+    /// it sends `where` clauses.
+    #[wasm_bindgen(js_name = countEnded)]
+    pub fn count_ended(&mut self) -> JsValue {
+        let mut fed = Fed::default();
+        if let Some(message) = self.count_decoder.as_mut().and_then(Decoder::finish) {
+            fed.take_count(&mut self.source, message);
+        }
+        self.count_decoder = None;
+        self.source.count_ended();
+        fed.finish(&mut self.source, Vec::new())
     }
 
     /// The Typed Values where `row_keys` and `col_keys` cross, one array per
@@ -684,6 +745,21 @@ impl Fed {
         }
         if let Received::Applied(notices) = source.receive(message) {
             self.notices.extend(notices);
+        }
+    }
+
+    /// One message of the count read.
+    fn take_count(
+        &mut self,
+        source: &mut DescribedSource,
+        message: Result<Message, binnacle_described::DecodeError>,
+    ) {
+        match message {
+            Ok(message) => source.receive_count(message),
+            Err(e) => {
+                self.errors = self.errors.saturating_add(1);
+                self.latest_error = Some(e.to_string());
+            }
         }
     }
 

@@ -28,6 +28,8 @@ pub const BINNACLE_ENCODING_CBOR_SEQ: u32 = 2;
 
 pub const BINNACLE_REQUEST_OTHER: u32 = 0;
 pub const BINNACLE_REQUEST_OPEN_WATCH: u32 = 1;
+pub const BINNACLE_REQUEST_OPEN_COUNT: u32 = 2;
+pub const BINNACLE_REQUEST_CLOSE_COUNT: u32 = 3;
 
 pub const BINNACLE_TEXT_ALIGN_START: u32 = 0;
 pub const BINNACLE_TEXT_ALIGN_END: u32 = 1;
@@ -706,6 +708,24 @@ pub unsafe extern "C" fn binnacle_described_source_free(src: *mut BinnacleDescri
     }
 }
 
+/// One message, `len` bytes as `encoding` says.
+///
+/// # Safety
+/// A non-NULL `bytes` is valid for `len` reads.
+unsafe fn message_in(encoding: u32, bytes: *const u8, len: usize) -> Option<Message> {
+    if bytes.is_null() {
+        return None;
+    }
+    // SAFETY: the caller's contract.
+    let bytes = unsafe { borrowed(bytes, len) };
+    match encoding {
+        BINNACLE_ENCODING_NDJSON => decode_json_line(bytes),
+        BINNACLE_ENCODING_CBOR_SEQ => decode_cbor_item(bytes),
+        _ => return None,
+    }
+    .ok()
+}
+
 /// # Safety
 /// `src` and `grid` are NULL or live handles; a non-NULL `bytes` is valid
 /// for `len` reads.
@@ -720,17 +740,8 @@ pub unsafe extern "C" fn binnacle_described_source_receive(
     // SAFETY: the caller's contract.
     unsafe {
         with_both(src, grid, |h, g| {
-            if bytes.is_null() {
-                return None;
-            }
             // SAFETY: the caller's contract.
-            let bytes = borrowed(bytes, len);
-            let message = match encoding {
-                BINNACLE_ENCODING_NDJSON => decode_json_line(bytes),
-                BINNACLE_ENCODING_CBOR_SEQ => decode_cbor_item(bytes),
-                _ => return None,
-            }
-            .ok()?;
+            let message = message_in(encoding, bytes, len)?;
             let described = matches!(message, Message::Table(_));
             apply(h.source.receive(message), g);
             if described {
@@ -755,6 +766,46 @@ pub unsafe extern "C" fn binnacle_described_source_ended(
     unsafe {
         with_both(src, grid, |h, g| {
             apply(h.source.ended(), g);
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `src` and `grid` are NULL or live handles; a non-NULL `bytes` is valid
+/// for `len` reads.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_described_source_receive_count(
+    src: *mut BinnacleDescribedSource,
+    grid: *mut BinnacleGrid,
+    encoding: u32,
+    bytes: *const u8,
+    len: usize,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_both(src, grid, |h, g| {
+            // SAFETY: the caller's contract.
+            let message = message_in(encoding, bytes, len)?;
+            h.source.receive_count(message);
+            if let Some((spec, totals)) = h.source.poll_view() {
+                g.grid.view_changed(spec, totals);
+            }
+            Some(())
+        })
+    }
+}
+
+/// # Safety
+/// `src` is NULL or a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn binnacle_described_source_count_ended(
+    src: *mut BinnacleDescribedSource,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_source(src, |h| {
+            h.source.count_ended();
             Some(())
         })
     }
@@ -794,6 +845,27 @@ pub unsafe extern "C" fn binnacle_described_source_poll_request(
                         limit: w.limit,
                     }
                 }
+                HostRequest::OpenCount(c) => {
+                    let wheres: Vec<BinnacleText> = (c.scope.wheres().iter())
+                        .map(|clause| h.keep(clause.as_str()))
+                        .collect();
+                    h.wheres = wheres;
+                    BinnacleWatchRequest {
+                        kind: BINNACLE_REQUEST_OPEN_COUNT,
+                        table: h.keep(c.table.as_str()),
+                        path: h.keep(c.path()),
+                        query: h.keep(c.query()),
+                        target: h.keep(c.target()),
+                        namespace_name: h.keep(c.scope.namespace()),
+                        wheres: h.wheres.as_ptr(),
+                        wheres_len: h.wheres.len(),
+                        limit: 1,
+                    }
+                }
+                HostRequest::CloseCount => BinnacleWatchRequest {
+                    kind: BINNACLE_REQUEST_CLOSE_COUNT,
+                    ..BinnacleWatchRequest::default()
+                },
                 _ => BinnacleWatchRequest::default(),
             };
             write_out(out, c)
@@ -1170,6 +1242,16 @@ mod tests {
             (
                 "ended",
                 Box::new(|s, g| unsafe { binnacle_described_source_ended(s, g) }),
+            ),
+            (
+                "receive_count",
+                Box::new(move |s, g| unsafe {
+                    binnacle_described_source_receive_count(s, g, 1, synced.as_ptr(), synced.len())
+                }),
+            ),
+            (
+                "count_ended",
+                Box::new(|s, _| unsafe { binnacle_described_source_count_ended(s) }),
             ),
             (
                 "poll_request",

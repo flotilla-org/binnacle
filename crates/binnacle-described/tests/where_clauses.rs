@@ -161,7 +161,7 @@ fn a_slicer_change_asks_for_the_watch_once_and_the_old_streams_messages_are_drop
     support::feed(&mut s, Message::from_json(&late).unwrap());
     assert_eq!(s.source.0.row_count(), 4, "dropped");
     let asked: Vec<_> = std::iter::from_fn(|| s.source.0.poll_request()).collect();
-    let [HostRequest::OpenWatch(request)] = asked.as_slice() else {
+    let [HostRequest::OpenWatch(request), HostRequest::OpenCount(_)] = asked.as_slice() else {
         panic!("{asked:?}")
     };
     assert_eq!(request.wheres, [r#"phase in ["Running", "Landing"]"#]);
@@ -211,7 +211,7 @@ fn adding_or_removing_a_slicer_asks_for_the_watch_once_and_a_sort_move_or_quick_
     s.input(|g| g.add_slicer(running.clone()));
     s.frame(support::VIEWPORT);
     let asked = requests(&mut s);
-    let [HostRequest::OpenWatch(request)] = asked.as_slice() else {
+    let [HostRequest::OpenWatch(request), HostRequest::OpenCount(_)] = asked.as_slice() else {
         panic!("{asked:?}")
     };
     assert_eq!(request.wheres, [r#"phase in ["Running", "Landing"]"#]);
@@ -227,7 +227,7 @@ fn adding_or_removing_a_slicer_asks_for_the_watch_once_and_a_sort_move_or_quick_
     s.input(|g| g.remove_slicer(&running));
     s.frame(support::VIEWPORT);
     let asked = requests(&mut s);
-    let [HostRequest::OpenWatch(request)] = asked.as_slice() else {
+    let [HostRequest::OpenWatch(request), HostRequest::CloseCount] = asked.as_slice() else {
         panic!("{asked:?}")
     };
     assert_eq!(request.wheres, [] as [String; 0]);
@@ -256,10 +256,11 @@ fn a_spec_asked_for_before_the_table_is_sent_once_the_table_comes_and_follows_la
     assert_eq!(source.poll_request(), None, "no columns to send by yet");
     let asked = |source: &mut DescribedSource, table: &serde_json::Value| {
         source.receive(Message::from_json(table).unwrap());
-        let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
-            panic!("the watch again: {table}")
-        };
-        request.wheres
+        let watch = std::iter::from_fn(|| source.poll_request()).find_map(|r| match r {
+            HostRequest::OpenWatch(request) => Some(request),
+            _ => None,
+        });
+        watch.expect("the watch again").wheres
     };
     let table = messages[0].to_wire().to_json();
     let both = [r#"phase in ["Running"]"#, "retries < 5"];

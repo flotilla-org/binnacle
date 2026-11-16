@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use binnacle_core::{Axis, AxisConfig, Grid, Viewport};
-use binnacle_described::{DescribedSource, Encoding, Message, Received, Scope, Wire};
+use binnacle_described::{
+    CountRequest, DescribedSource, Encoding, HostRequest, Message, Received, Scope, Wire,
+};
 use binnacle_described_http::{Auth, Backoff, Blocking, Endpoint, Event, Options, Transport};
 use binnacle_testkit::fake_tables::{FakeTables, Running, Step};
 
@@ -262,6 +264,101 @@ fn a_new_request_replaces_the_watch_and_drops_its_unread_events() {
     assert!(
         matches!(events[0], Event::Message(Message::Table(_))),
         "nothing of the old watch: {events:?}"
+    );
+}
+
+/// The count read of the crews.
+fn count_read() -> HostRequest {
+    HostRequest::OpenCount(CountRequest {
+        table: "crews".into(),
+        scope: Scope::new("flotilla"),
+    })
+}
+
+/// Every event waiting on one of a transport's streams, after `wait`.
+fn waiting(wait: Duration, mut next: impl FnMut() -> Option<Event>) -> Vec<Event> {
+    std::thread::sleep(wait);
+    std::iter::from_fn(&mut next).collect()
+}
+
+fn counts(events: &[Event]) -> Vec<u64> {
+    (events.iter())
+        .filter_map(|e| match e {
+            Event::Message(Message::Count { count, .. }) => Some(*count),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_count_reads_events_come_apart_from_the_watchs_and_closing_it_drops_its_stream() {
+    let fake = fake().heartbeat(Duration::from_millis(20)).start().unwrap();
+    let transport = Blocking::new(options(&fake)).unwrap();
+    let mut source = source();
+    host(&transport, &mut source, synced);
+    transport.open(count_read());
+    let mut read = Vec::new();
+    while !read
+        .iter()
+        .any(|e| matches!(e, Event::Message(Message::Synced { .. })))
+    {
+        read.push(transport.recv_count_timeout(WAIT).expect("the count read"));
+    }
+    let held = source.row_count() as u64;
+    assert_eq!(counts(&read), [held], "{read:?}");
+    assert_eq!(fake.watches(), 2);
+
+    let row = [("name".to_owned(), Wire::Text("golf".into()))].into();
+    fake.push(Step::Upsert {
+        table: "crews".into(),
+        row,
+    });
+    assert!(fake.settle(WAIT));
+    let rows = waiting(Duration::from_millis(300), || transport.try_recv());
+    assert!(
+        (rows.iter()).any(|e| matches!(e, Event::Message(Message::Upsert { .. }))),
+        "{rows:?}"
+    );
+    assert_eq!(counts(&rows), [] as [u64; 0], "{rows:?}");
+    let read = waiting(Duration::ZERO, || transport.try_recv_count());
+    assert_eq!(counts(&read), [held + 1], "{read:?}");
+
+    transport.open(HostRequest::CloseCount);
+    let deadline = Instant::now() + WAIT;
+    while fake.watches() > 1 {
+        assert!(Instant::now() < deadline, "the count read is dropped");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let row = [("name".to_owned(), Wire::Text("hotel".into()))].into();
+    fake.push(Step::Upsert {
+        table: "crews".into(),
+        row,
+    });
+    assert!(fake.settle(WAIT));
+    let rows = waiting(Duration::from_millis(300), || transport.try_recv());
+    assert!(
+        (rows.iter()).any(|e| matches!(e, Event::Message(Message::Upsert { .. }))),
+        "the watch goes on: {rows:?}"
+    );
+    assert_eq!(transport.try_recv_count(), None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_async_transport_serves_the_count_read_and_nothing_for_closing_it() {
+    let fake = fake().start().unwrap();
+    let transport = Transport::new(options(&fake));
+    let mut events = Vec::new();
+    transport
+        .watch(&HostRequest::CloseCount, |e| events.push(e))
+        .await;
+    assert_eq!(events, []);
+    let read = async { transport.watch(&count_read(), |e| events.push(e)).await };
+    let _ = tokio::time::timeout(Duration::from_millis(500), read).await;
+    assert_eq!(counts(&events), [6], "{events:?}");
+    let last = fake.requests().pop().unwrap();
+    assert_eq!(
+        last.target,
+        "/tables/crews/rows?watch&count=exact&limit=1&namespace=flotilla"
     );
 }
 

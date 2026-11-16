@@ -9,6 +9,9 @@
 //!   true` while more remain), `synced`, then ends.
 //! - A watch sends `table`, one `rows` of up to `limit`, `synced`, then the
 //!   script's changes as they play, with `progress` heartbeats.
+//! - `count=exact` (or `count=estimate`, marked an estimate) adds a `count`
+//!   of every row the `where` clauses keep after `table`, as flotillad
+//!   does, and a watch sends it again after each live change it passes on.
 //! - Rows live in a namespace, `flotilla` by default. A request without
 //!   `namespace` reads `default`: an empty table, and no error, as
 //!   flotillad does.
@@ -360,12 +363,14 @@ struct Places {
 }
 
 /// What a request reads of a table: its namespace, `where` clauses and
-/// limit.
+/// limit, and whether it asked for a `count` (`count=estimate` for one
+/// marked an estimate).
 #[derive(Clone)]
 struct View {
     namespace: String,
     wheres: Vec<Where>,
     limit: usize,
+    count: Option<bool>,
 }
 
 impl View {
@@ -375,6 +380,23 @@ impl View {
 
     fn rows<'a>(&'a self, table: &'a FakeTable) -> impl Iterator<Item = &'a Row> + 'a {
         table.rows.iter().filter(|r| self.keeps(table, r))
+    }
+
+    /// A `count` of every row it keeps, if it asked for one.
+    fn count(&self, table: &FakeTable) -> Option<Message> {
+        self.count.map(|estimate| Message::Count {
+            count: self.rows(table).count() as u64,
+            estimate,
+        })
+    }
+
+    /// `outs`, then a `count` if it asked for one and they are not empty:
+    /// a live change keeps its count current.
+    fn counted(&self, table: &FakeTable, mut outs: Vec<Out>) -> Vec<Out> {
+        if !outs.is_empty() {
+            outs.extend(self.count(table).map(Out::Message));
+        }
+        outs
     }
 
     /// The places a stream that sends `table` whole ([`State::whole`])
@@ -418,23 +440,24 @@ impl State {
         })
     }
 
-    /// `table`, a `rows` of up to `view.limit` rows, and `synced`.
+    /// `table`, a `count` if asked, a `rows` of up to `view.limit` rows,
+    /// and `synced`.
     fn whole(&self, table: &FakeTable, view: &View) -> Vec<Message> {
         let mut rows = view.rows(table);
         let page: Vec<Row> = rows.by_ref().take(view.limit).cloned().collect();
         let more = rows.next().is_some();
-        vec![
-            self.table_message(table),
-            Message::Rows(RowsMessage {
-                rows: page,
-                cursor: more.then(|| format!("o{}", view.limit)),
-                partial: more,
-                sequence: Some(self.sequence),
-            }),
-            Message::Synced {
-                sequence: Some(self.sequence),
-            },
-        ]
+        let mut messages = vec![self.table_message(table)];
+        messages.extend(view.count(table));
+        messages.push(Message::Rows(RowsMessage {
+            rows: page,
+            cursor: more.then(|| format!("o{}", view.limit)),
+            partial: more,
+            sequence: Some(self.sequence),
+        }));
+        messages.push(Message::Synced {
+            sequence: Some(self.sequence),
+        });
+        messages
     }
 
     /// Sends `out(watcher)` to each watch on `table`, dropping those gone.
@@ -480,7 +503,8 @@ impl State {
                             key,
                             row: row.clone(),
                         };
-                        w.tx.send(vec![Out::Message(upsert)]).is_ok()
+                        let outs = w.view.counted(t, vec![Out::Message(upsert)]);
+                        w.tx.send(outs).is_ok()
                     });
                     return;
                 }
@@ -488,7 +512,7 @@ impl State {
                 self.sequence += 1;
                 self.tell(&table, |t, view| {
                     let key = t.key(&row);
-                    match (
+                    let outs = match (
                         view.keeps(t, &row),
                         old.as_ref().is_some_and(|o| view.keeps(t, o)),
                     ) {
@@ -498,7 +522,8 @@ impl State {
                         })],
                         (false, true) => vec![Out::Message(Message::Delete { key })],
                         (false, false) => Vec::new(),
-                    }
+                    };
+                    view.counted(t, outs)
                 });
             }
             Step::Delete { table, key } => {
@@ -527,13 +552,18 @@ impl State {
                             return true;
                         };
                         let key = vec![Wire::Int(place.into())];
-                        w.tx.send(vec![Out::Message(Message::Delete { key })])
-                            .is_ok()
+                        let t = &self.tables[i];
+                        let outs = w
+                            .view
+                            .counted(t, vec![Out::Message(Message::Delete { key })]);
+                        w.tx.send(outs).is_ok()
                     });
                     return;
                 }
                 self.tell(&table, |t, view| match view.keeps(t, &old) {
-                    true => vec![Out::Message(Message::Delete { key: key.clone() })],
+                    true => {
+                        view.counted(t, vec![Out::Message(Message::Delete { key: key.clone() })])
+                    }
                     false => Vec::new(),
                 });
             }
@@ -821,10 +851,25 @@ fn rows(
         let limit = param("limit")
             .and_then(|l| l.parse().ok())
             .unwrap_or(state.page);
+        let count = match param("count") {
+            None => None,
+            Some("exact") => Some(false),
+            Some("estimate") => Some(true),
+            Some(_) => {
+                drop(state);
+                return http::respond(
+                    &mut conn,
+                    400,
+                    json,
+                    &error("invalid_count", "count is exact or estimate"),
+                );
+            }
+        };
         let view = View {
             namespace: param("namespace").unwrap_or("default").to_owned(),
             wheres,
             limit,
+            count,
         };
         let table = &state.tables[i];
         let messages = match watch {
@@ -833,18 +878,18 @@ fn rows(
                 let mut rows = view.rows(table).skip(offset);
                 let page: Vec<Row> = rows.by_ref().take(limit).cloned().collect();
                 let more = rows.next().is_some();
-                vec![
-                    state.table_message(table),
-                    Message::Rows(RowsMessage {
-                        rows: page,
-                        cursor: more.then(|| format!("o{}", offset + limit)),
-                        partial: more || offset > 0,
-                        sequence: Some(state.sequence),
-                    }),
-                    Message::Synced {
-                        sequence: Some(state.sequence),
-                    },
-                ]
+                let mut messages = vec![state.table_message(table)];
+                messages.extend(view.count(table));
+                messages.push(Message::Rows(RowsMessage {
+                    rows: page,
+                    cursor: more.then(|| format!("o{}", offset + limit)),
+                    partial: more || offset > 0,
+                    sequence: Some(state.sequence),
+                }));
+                messages.push(Message::Synced {
+                    sequence: Some(state.sequence),
+                });
+                messages
             }
         };
         let places = view.places(table);

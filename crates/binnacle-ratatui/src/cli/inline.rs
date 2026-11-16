@@ -30,7 +30,7 @@ use ratatui::{Terminal, TerminalOptions};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::viewport::{aligned, columns, headless, title_aligns};
-use super::{CliTable, Exit, Selection, notify, partial_status, thousands};
+use super::{CliTable, Exit, Selection, notify, partial_status};
 use crate::{
     CellRenderer, Chooser, ColumnFilter, Content, Control, Controls, FindBar, FindStatus,
     HeaderMenu, Keymap, Mouse, Preset, QuickFilter, RenderContext, Theme, ValueRenderer,
@@ -925,7 +925,7 @@ impl Session {
                 let shown = snapshot.count(Axis::Rows);
                 let rows = match source.partial() {
                     Some(came) => partial_status(shown, came),
-                    None => format!("{} rows", thousands(shown)),
+                    None => crate::row_count(&snapshot),
                 };
                 let switch = match status.presentation {
                     Presentation::Inline => "f full screen",

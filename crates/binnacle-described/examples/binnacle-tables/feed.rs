@@ -108,3 +108,17 @@ pub fn drain(
     }
     Ok(notices)
 }
+
+/// Feeds `source` the count read's events `next` gives while it has any:
+/// its `count` gives the rows' Totals, and its end asks for it again. A
+/// count read that fails leaves the Totals unknown, which the status line
+/// shows as the rows alone, so it says nothing more.
+pub fn drain_count(source: &mut DescribedSource, mut next: impl FnMut() -> Option<Wire>) {
+    while let Some(event) = next() {
+        match event {
+            Wire::Message(message) => source.receive_count(message),
+            Wire::Ended => source.count_ended(),
+            _ => {}
+        }
+    }
+}

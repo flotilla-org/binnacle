@@ -515,6 +515,14 @@ static void described(const char *path) {
                                            (const uint8_t *)synced, strlen(synced)));
   CHECK(!binnacle_described_source_receive(src, NULL, BINNACLE_ENCODING_NDJSON,
                                            (const uint8_t *)synced, strlen(synced)));
+  /* With no where clause sent there is no count read: its count changes
+   * nothing, and its end asks for nothing. */
+  const char *count = "{\"type\":\"count\",\"count\":340,\"estimate\":false}";
+  CHECK(binnacle_described_source_receive_count(src, grid, BINNACLE_ENCODING_NDJSON,
+                                                (const uint8_t *)count, strlen(count)));
+  CHECK(binnacle_described_source_count_ended(src));
+  CHECK(!binnacle_described_source_poll_request(src, &request));
+  CHECK(BINNACLE_REQUEST_OPEN_COUNT == 2 && BINNACLE_REQUEST_CLOSE_COUNT == 3);
   cell.size = sizeof cell - 1;
   CHECK(!binnacle_described_cell(src, row, name, &cell));
   cells[1].size = sizeof cells[1] - 1;

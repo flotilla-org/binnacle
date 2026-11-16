@@ -13,6 +13,7 @@ import {
   WARNING,
   type AppliedView,
   type ChangeNotice,
+  type Condition,
   type DescribedTable,
   type TableSink,
   type TypedValue,
@@ -70,6 +71,23 @@ const cells = (d: DescribedTable) =>
 const names = (d: DescribedTable) => rowIds(d).map((id) => d.rowKey(id)?.[0]);
 const ns = (iso: string, extra = 0n) => BigInt(Date.parse(iso)) * 1_000_000n + extra;
 
+/** The crews table, its phase filterable as flotillad's string fields are. */
+function filterableCrews(): Uint8Array {
+  const [table, ...rest] = CREWS_LINES;
+  const message = JSON.parse(table!) as { schema: { fields: { name: string; whereOperators?: string[] }[] } };
+  for (const f of message.schema.fields) if (f.name === "phase") f.whereOperators = ["==", "in", "has"];
+  return encode([JSON.stringify(message), ...rest]);
+}
+
+/** Every request `d` has, by kind and, for those that open a stream, query. */
+function requests(d: DescribedTable): string[] {
+  const out: string[] = [];
+  for (let r = d.pollRequest(); r; r = d.pollRequest()) {
+    out.push(r.kind === "closeCount" ? r.kind : `${r.kind} ${decodeURIComponent(r.query)}`);
+  }
+  return out;
+}
+
 const plain: ViewSpec<bigint, string> = {
   rows: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
   cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] },
@@ -80,6 +98,7 @@ describe("requests", () => {
     const d = described("crews", undefined, NDJSON, { namespace: "flotilla", wheres: ['status.phase == "Active"'] });
     const where = "where=status.phase%20%3D%3D%20%22Active%22";
     expect(d.pollRequest()).toEqual({
+      kind: "watch",
       table: "crews",
       path: "/tables/crews/rows",
       query: `watch&limit=10000&namespace=flotilla&${where}`,
@@ -88,16 +107,15 @@ describe("requests", () => {
     });
     expect(d.pollRequest()).toBeUndefined();
     d.ended();
-    expect(d.pollRequest()?.target).toBe(`/tables/crews/rows?watch&limit=10000&namespace=flotilla&${where}`);
+    expect(d.pollRequest()).toMatchObject({
+      kind: "watch",
+      target: `/tables/crews/rows?watch&limit=10000&namespace=flotilla&${where}`,
+    });
     expect(d.pollRequest()).toBeUndefined();
   });
 
   test("a filter the server takes asks for the watch again with its where; a sort or a quick filter does not", () => {
-    // The crews table, its phase filterable as flotillad's string fields are.
-    const [table, ...rest] = CREWS_LINES;
-    const message = JSON.parse(table!) as { schema: { fields: { name: string; whereOperators?: string[] }[] } };
-    for (const f of message.schema.fields) if (f.name === "phase") f.whereOperators = ["==", "in", "has"];
-    const d = described("crews", encode([JSON.stringify(message), ...rest]));
+    const d = described("crews", filterableCrews());
     let asked = 0;
     d.onRequest(() => asked++);
     const view = (rows: Partial<ViewSpec<bigint, string>["rows"]>) =>
@@ -105,9 +123,10 @@ describe("requests", () => {
     const running = { id: "phase", kind: { type: "OneOf" as const, values: ["Running", null] }, not: false };
     view({ filter: { quick: null, conditions: [running] } });
     expect(asked).toBe(1);
-    expect(decodeURIComponent(d.pollRequest()!.query)).toBe(
-      'watch&limit=10000&namespace=flotilla&where=!has(phase) || phase in ["Running"]',
-    );
+    expect(requests(d)).toEqual([
+      'watch watch&limit=10000&namespace=flotilla&where=!has(phase) || phase in ["Running"]',
+      "count watch&count=exact&limit=1&namespace=flotilla",
+    ]);
     expect(names(d)).toEqual(["alpha", "bravo", "delta", "foxtrot"]);
     view({ filter: { quick: null, conditions: [running] }, sort: [{ id: "load", direction: "descending" }] });
     const quick = { text: "a", caseSensitive: false, regex: false, searches: "shown" as const };
@@ -116,7 +135,7 @@ describe("requests", () => {
     expect(d.pollRequest()).toBeUndefined();
     view({});
     expect(asked).toBe(2);
-    expect(d.pollRequest()?.query).toBe("watch&limit=10000&namespace=flotilla");
+    expect(requests(d)).toEqual(["watch watch&limit=10000&namespace=flotilla", "closeCount"]);
   });
 
   test("an empty namespace throws, and so does a body that is not a rows stream", () => {
@@ -281,6 +300,40 @@ describe("through the widget", () => {
     expect(told).toContainEqual(["rows", { type: "Inserted", at: 6, n: 1 }]);
     // The View Spec in force counts the new row in its totals.
     expect(views.at(-1)).toMatchObject({ cols: { hidden: ["spec"] }, totals: { rows: 7 } });
+    h.destroy();
+  });
+
+  test("while a clause is sent, the count read's count is the rows' Totals, unknown until it comes", () => {
+    const d = described("crews", filterableCrews());
+    const h = new Harness(d.source, 2000, 300);
+    const total = () => h.frame().rows.total;
+    const running = { id: "phase", kind: { type: "OneOf" as const, values: ["Running"] }, not: false };
+    const request = (conditions: Condition<string>[]) => {
+      const rows = { ...plain.rows, filter: { quick: null, conditions } };
+      h.grid.request_view(h.feed.viewKeys({ ...plain, rows, grouping: null } as AppliedView<bigint, string>));
+      h.drain();
+    };
+    request([running]);
+    expect(requests(d).map((r) => r.split(" ")[0])).toEqual(["watch", "count"]);
+    expect(h.frame().rows.count).toBe(3);
+    expect(total()).toBeNull();
+    d.openCount(NDJSON);
+    d.feedCount(line({ type: "rows", cursor: null, rows: [{ name: "zulu", phase: "Running" }] }));
+    expect(h.frame().rows.count).toBe(3);
+    d.feedCount(line({ type: "count", count: 340, estimate: false }));
+    expect(total()).toBe(340);
+    // Live, and an estimate all the same; a count on the rows stream is not the Totals.
+    d.feedCount(line({ type: "count", count: 400, estimate: true }));
+    expect(total()).toBe(400);
+    d.feed(line({ type: "count", count: 9, estimate: false }));
+    expect(total()).toBe(400);
+    // Its end asks for it again.
+    d.countEnded();
+    expect(requests(d)).toEqual(["count watch&count=exact&limit=1&namespace=flotilla"]);
+    request([]);
+    expect(requests(d)).toEqual(["watch watch&limit=10000&namespace=flotilla", "closeCount"]);
+    expect(total()).toBe(6);
+    expect(() => d.feedCount(CREWS)).toThrow(/open a count read first/);
     h.destroy();
   });
 

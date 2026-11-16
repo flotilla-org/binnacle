@@ -63,6 +63,14 @@ pub enum HostRequest {
     /// `where` clauses, and feed each message back. A host opening it again
     /// drops the stream open before it feeds the new one's messages.
     OpenWatch(WatchRequest),
+    /// Open the count read, a second stream beside the rows stream, while
+    /// the rows' conditions are sent as `where` clauses: its `count`
+    /// messages give the rows' Totals. Feed them back to
+    /// `DescribedSource::receive_count`, never to `receive`. Opening it
+    /// again drops the one open before.
+    OpenCount(CountRequest),
+    /// Close the count read and drop its stream: no clause is sent now.
+    CloseCount,
 }
 
 /// A request for a table's rows and their changes as they come: `GET
@@ -92,6 +100,41 @@ impl WatchRequest {
             encode(self.scope.namespace())
         );
         for clause in self.scope.wheres().iter().chain(&self.wheres) {
+            query.push_str("&where=");
+            query.push_str(&encode(clause));
+        }
+        query
+    }
+
+    /// The path and query together.
+    pub fn target(&self) -> String {
+        format!("{}?{}", self.path(), self.query())
+    }
+}
+
+/// A count-only read of the rows within the Scope: `GET {path}?{query}`.
+/// Its `count` message counts every row the Scope's own clauses keep, and
+/// its watch keeps that count current; the one row it reads is not held.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountRequest {
+    pub table: String,
+    pub scope: Scope,
+}
+
+impl CountRequest {
+    /// `/tables/{table}/rows`, the table's name percent-encoded.
+    pub fn path(&self) -> String {
+        format!("/tables/{}/rows", encode(&self.table))
+    }
+
+    /// `watch&count=exact&limit=1&namespace=…`, then a `where=…` for each
+    /// of the Scope's clauses, each value percent-encoded.
+    pub fn query(&self) -> String {
+        let mut query = format!(
+            "watch&count=exact&limit=1&namespace={}",
+            encode(self.scope.namespace())
+        );
+        for clause in self.scope.wheres() {
             query.push_str("&where=");
             query.push_str(&encode(clause));
         }

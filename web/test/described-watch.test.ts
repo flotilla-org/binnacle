@@ -4,11 +4,16 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { DescribedTable } from "../src";
 import { watch, type WatchError, type WatchPhase } from "../demo/sources/described-watch";
 
-/** A table that asks for one watch and does what `open` and `feed` say. */
+/** A table that asks for its watch, and again after each end, and does what `open` and `feed` say. */
 function table(parts: { open?(type: string): void; feed?(bytes: Uint8Array): void }) {
   const calls = { opened: 0, fed: 0, ended: 0 };
+  let asking = true;
   const stub = {
-    pollRequest: () => ({ table: "t", target: "/tables/t/rows" }),
+    pollRequest() {
+      if (!asking) return undefined;
+      asking = false;
+      return { kind: "watch", table: "t", target: "/tables/t/rows" };
+    },
     open(type: string) {
       calls.opened++;
       parts.open?.(type);
@@ -19,6 +24,7 @@ function table(parts: { open?(type: string): void; feed?(bytes: Uint8Array): voi
     },
     ended() {
       calls.ended++;
+      asking = true;
     },
     status: () => ({ synced: false }),
     onRequest: () => () => {},
@@ -114,7 +120,7 @@ test("a watch asked for while the stream is open replaces it, and none of the ol
   });
   vi.stubGlobal("fetch", fetch);
   const fed: string[] = [];
-  const requests = [{ target: "/one" }, { target: "/two" }];
+  const requests = [{ kind: "watch", target: "/one" }];
   let ask = () => {};
   const t = {
     pollRequest: () => requests.shift(),
@@ -126,11 +132,95 @@ test("a watch asked for while the stream is open replaces it, and none of the ol
     // The filter changes as the table takes the open stream's first message.
     feed(bytes: Uint8Array) {
       fed.push(new TextDecoder().decode(bytes));
-      if (fed.length === 1) ask();
+      if (fed.length === 1) {
+        requests.push({ kind: "watch", target: "/two" });
+        ask();
+      }
     },
     ended() {},
     status: () => ({ synced: false }),
   } as unknown as DescribedTable;
   await runUntil(t, "waiting");
   expect(fed).toEqual(["one\n", "two\n"]);
+});
+
+test("the count read opens beside the watch, its bytes go only to the count read, and closing it aborts it", async () => {
+  const ndjson = { "Content-Type": "application/x-ndjson" };
+  const encode = (text: string) => new TextEncoder().encode(text);
+  let aborted = false;
+  // The watch sends `rows` and stays open; the count read sends `count` and stays open until aborted.
+  const fetch = vi.fn(async (target: string, init?: RequestInit) => {
+    const sent = target === "/count" ? "count\n" : "rows\n";
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(encode(sent));
+        init?.signal?.addEventListener("abort", () => {
+          if (target === "/count") aborted = true;
+          c.error(new DOMException("aborted", "AbortError"));
+        });
+      },
+    });
+    return new Response(body, { headers: ndjson });
+  });
+  vi.stubGlobal("fetch", fetch);
+  const fed: string[] = [];
+  const counted: string[] = [];
+  const requests: unknown[] = [
+    { kind: "watch", target: "/rows" },
+    { kind: "count", target: "/count" },
+  ];
+  let ask = () => {};
+  const t = {
+    pollRequest: () => requests.shift(),
+    onRequest(listener: () => void) {
+      ask = listener;
+      return () => {};
+    },
+    open() {},
+    feed: (bytes: Uint8Array) => void fed.push(new TextDecoder().decode(bytes)),
+    ended() {},
+    openCount() {},
+    feedCount: (bytes: Uint8Array) => void counted.push(new TextDecoder().decode(bytes)),
+    countEnded() {},
+    status: () => ({ synced: false }),
+  } as unknown as DescribedTable;
+  const w = watch(t, { headers: {}, onPhase() {} });
+  await vi.waitFor(() => expect(counted).toEqual(["count\n"]));
+  await vi.waitFor(() => expect(fed).toEqual(["rows\n"]));
+  expect(fetch.mock.calls.map(([target]) => target)).toEqual(["/count", "/rows"]);
+  requests.push({ kind: "closeCount" });
+  ask();
+  await vi.waitFor(() => expect(aborted).toBe(true));
+  // The watch goes on: closing the count read is no news to it.
+  expect(fetch).toHaveBeenCalledTimes(2);
+  w.destroy();
+});
+
+test("a count read that ends is told to the table, which asks for it again after a wait", async () => {
+  vi.stubGlobal("fetch", async (target: string) =>
+    target === "/count"
+      ? new Response("count\n", { headers: { "Content-Type": "application/x-ndjson" } })
+      : new Promise<Response>(() => {}),
+  );
+  const calls = { countEnded: 0, opened: 0 };
+  const requests: unknown[] = [
+    { kind: "watch", target: "/rows" },
+    { kind: "count", target: "/count" },
+  ];
+  const t = {
+    pollRequest: () => requests.shift(),
+    onRequest: () => () => {},
+    openCount: () => void calls.opened++,
+    feedCount() {},
+    countEnded() {
+      calls.countEnded++;
+      requests.push({ kind: "count", target: "/count" });
+    },
+    status: () => ({ synced: false }),
+  } as unknown as DescribedTable;
+  const w = watch(t, { headers: {}, onPhase() {} });
+  await vi.waitFor(() => expect(calls.countEnded).toBe(1));
+  expect(calls.opened).toBe(1);
+  await vi.waitFor(() => expect(calls.opened).toBe(2), { timeout: 2000 });
+  w.destroy();
 });

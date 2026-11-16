@@ -50,13 +50,30 @@ export interface DescribedOptions {
 }
 
 /** The watch a Described Table asks its host to open: `GET {target}`. */
-export interface DescribedRequest {
+export interface DescribedWatchRequest {
+  kind: "watch";
   table: string;
   path: string;
   query: string;
   target: string;
   limit: number;
 }
+
+/**
+ * The count read a Described Table asks its host to open while it sends `where` clauses: `GET {target}`, a second
+ * stream beside the watch, whose bytes go to `openCount`, `feedCount` and `countEnded`. Its `count` gives the rows'
+ * Totals.
+ */
+export interface DescribedCountRequest {
+  kind: "count";
+  table: string;
+  path: string;
+  query: string;
+  target: string;
+}
+
+/** What a Described Table asks its host to do: open the watch, open the count read, or close the count read. */
+export type DescribedRequest = DescribedWatchRequest | DescribedCountRequest | { kind: "closeCount" };
 
 /** One column of a Described Table, as its field describes it. */
 export interface DescribedColumn {
@@ -114,8 +131,9 @@ export interface DescribedStatus {
 export interface DescribedTable {
   readonly source: TableSource<bigint, string, TypedValue>;
   /**
-   * The watch to open next, or `undefined`: first, again after each `ended`, and when a filter changes the `where`
-   * clauses the table sends (see `onRequest`).
+   * The next request, or `undefined`. The watch to open: first, again after each `ended`, and when a filter changes
+   * the `where` clauses the table sends (see `onRequest`). The count read to open when the first clause is sent, and
+   * again after each `countEnded`; and to close it when the last clause goes.
    */
   pollRequest(): DescribedRequest | undefined;
   /** A response body begins, of its `Content-Type`; a type that is not a rows stream throws. */
@@ -124,6 +142,12 @@ export interface DescribedTable {
   feed(bytes: Uint8Array): void;
   /** The body ended: the source asks for its watch again, and the next one's rows replace these in place. */
   ended(): void;
+  /** The count read's body begins, of its `Content-Type`; a type that is not a rows stream throws. */
+  openCount(contentType: string): void;
+  /** The count read's body's next bytes: its `count` gives the rows' Totals, an estimate as much as an exact one. */
+  feedCount(bytes: Uint8Array): void;
+  /** The count read's body ended: while the table sends `where` clauses, it asks for the count read again. */
+  countEnded(): void;
   status(): DescribedStatus;
   columns(): DescribedColumn[];
   /** Property `name` of `field` as the schema sent it, or `undefined`. */
@@ -137,14 +161,14 @@ export interface DescribedTable {
   /**
    * Called when the table asks for its watch while the stream is open: a filter changed the `where` clauses it sends.
    * The host drops the stream open and opens the one `pollRequest` gives; until it polls, `feed` drops what it is
-   * given. Returns how to unsubscribe.
+   * given. The count read's requests come with it. Returns how to unsubscribe.
    */
   onRequest(listener: () => void): () => void;
   /** Frees the wasm side. */
   destroy(): void;
 }
 
-/** What `feed` and `ended` return across the wasm boundary. */
+/** What `feed`, `ended` and the count read's calls return across the wasm boundary. */
 interface Fed {
   notices: Float64Array;
   view: { spec: KeyedViewSpec; totals: Totals } | null;
@@ -503,6 +527,9 @@ export function fromDescribed(table: string, scope: DescribedScope, options: Des
       counts.reconnects++;
       fed(live().ended() as Fed);
     },
+    openCount: (contentType) => live().openCount(contentType),
+    feedCount: (bytes) => fed(live().feedCount(bytes) as Fed),
+    countEnded: () => fed(live().countEnded() as Fed),
     status: () => ({ ...(live().status() as WasmStatus), ...counts }),
     columns: () => live().columns() as DescribedColumn[],
     property(field, name) {

@@ -660,6 +660,11 @@ fn every_call_refuses_null() {
             binnacle_described_source_receive(src, grid, 1, std::ptr::null(), 0),
             binnacle_described_source_ended(null_src, grid),
             binnacle_described_source_ended(src, null_grid),
+            binnacle_described_source_receive_count(null_src, grid, 1, line.as_ptr(), line.len()),
+            binnacle_described_source_receive_count(src, null_grid, 1, line.as_ptr(), line.len()),
+            binnacle_described_source_receive_count(src, grid, 1, std::ptr::null(), 0),
+            binnacle_described_source_receive_count(src, grid, 9, line.as_ptr(), line.len()),
+            binnacle_described_source_count_ended(null_src),
             binnacle_described_source_poll_request(null_src, &mut request),
             binnacle_described_source_poll_request(src, std::ptr::null_mut()),
             binnacle_described_source_pump(null_src, grid),
@@ -696,11 +701,13 @@ fn every_call_refuses_null() {
             binnacle_described_distinct(src, null_grid, col, text(""), 10, &mut distinct),
             binnacle_described_distinct(src, grid, col, text(""), 10, std::ptr::null_mut()),
         ];
-        assert_eq!(refused, [0; 32]);
+        assert_eq!(refused, [0; 37]);
         // Each succeeds given every pointer.
         let done = [
             binnacle_described_source_receive(src, grid, 1, line.as_ptr(), line.len()),
             binnacle_described_source_ended(src, grid),
+            binnacle_described_source_receive_count(src, grid, 1, line.as_ptr(), line.len()),
+            binnacle_described_source_count_ended(src),
             binnacle_described_source_pump(src, grid),
             binnacle_described_source_fill(src, grid, &requests),
             binnacle_described_source_count(src, 0, &mut n),
@@ -713,7 +720,7 @@ fn every_call_refuses_null() {
             binnacle_described_property(src, col, text("type"), &mut json),
             binnacle_described_distinct(src, grid, col, text(""), 10, &mut distinct),
         ];
-        assert_eq!(done, [1; 13]);
+        assert_eq!(done, [1; 15]);
         // A Window ending before it starts, or an unknown flag, is refused.
         let mut bad = requests;
         bad.axes[0] = BinnacleWindowRequest {
@@ -809,6 +816,86 @@ fn a_filter_the_server_takes_asks_for_the_watch_again_with_its_where() {
         .request_view(ViewSpec::default().with_filter(Axis::Rows, filter));
     assert_eq!(unsafe { binnacle_described_source_pump(src, grid) }, 1);
     assert_eq!(poll(), Some(vec![r#"phase in ["Running"]"#.to_owned()]));
+    unsafe {
+        binnacle_described_source_free(src);
+        binnacle_grid_free(grid);
+    }
+}
+
+#[test]
+fn the_count_read_gives_the_totals_apart_from_the_rows_stream() {
+    let table = r#"{"type":"table","schema":{"fields":[{"name":"name","type":"string"},{"name":"phase","type":"string","whereOperators":["in"]}],"primaryKey":["name"]}}"#;
+    let rows = r#"{"type":"rows","cursor":null,"rows":[{"name":"a","phase":"Running"},{"name":"b","phase":"Running"}]}"#;
+    let scope = [text(r#"name != "z""#)];
+    let src = unsafe {
+        binnacle_described_source_new(text("crews"), text("flotilla"), scope.as_ptr(), 1)
+    };
+    let grid = Box::into_raw(grid());
+    let poll = move || unsafe {
+        let mut r = BinnacleWatchRequest::default();
+        (binnacle_described_source_poll_request(src, &mut r) == 1).then(|| {
+            let wheres = match r.wheres.is_null() {
+                true => &[][..],
+                false => std::slice::from_raw_parts(r.wheres, r.wheres_len),
+            };
+            let wheres = wheres.iter().map(|&t| read_text(t)).collect::<Vec<_>>();
+            (r.kind, read_text(r.target), wheres, r.limit)
+        })
+    };
+    let count = |n: u64| format!(r#"{{"type":"count","count":{n},"estimate":false}}"#);
+    let receive_count = move |line: &str| unsafe {
+        binnacle_described_source_receive_count(src, grid, 1, line.as_ptr(), line.len())
+    };
+    let total = move || unsafe { (*grid).grid_mut().snapshot().total(Axis::Rows) };
+    assert!(poll().is_some());
+    for line in [table, rows, r#"{"type":"synced"}"#] {
+        assert_eq!(receive(src, grid, line), 1);
+    }
+    let phase = unsafe { (*src).source().column_key("phase").unwrap() };
+    let running = Condition::one_of(phase, vec![CoreValue::Text("Running".into())]);
+    let filter = FilterSpec::default().with_conditions(vec![running].into());
+    unsafe { &mut *grid }
+        .grid_mut()
+        .request_view(ViewSpec::default().with_filter(Axis::Rows, filter));
+    frame(src, grid);
+    assert!(matches!(poll(), Some((BINNACLE_REQUEST_OPEN_WATCH, ..))));
+    assert_eq!(
+        poll(),
+        Some((
+            BINNACLE_REQUEST_OPEN_COUNT,
+            "/tables/crews/rows?watch&count=exact&limit=1&namespace=flotilla&where=name%20%21%3D%20%22z%22".to_owned(),
+            vec![r#"name != "z""#.to_owned()],
+            1
+        )),
+        "the scope's clauses only"
+    );
+    assert_eq!(total(), None, "unknown until counted");
+    // A count on the rows stream is not the count read's, nor its rows the
+    // rows stream's.
+    assert_eq!(receive(src, grid, &count(9)), 1);
+    assert_eq!(total(), None);
+    let other = r#"{"type":"rows","cursor":null,"rows":[{"name":"c","phase":"Running"}]}"#;
+    assert_eq!(receive_count(other), 1);
+    assert_eq!(frame(src, grid).len(), 2);
+    assert_eq!(receive_count(&count(340)), 1);
+    assert_eq!(total(), Some(340));
+    assert_eq!(receive_count(&count(341)), 1);
+    assert_eq!(total(), Some(341), "kept current");
+    assert_eq!(unsafe { binnacle_described_source_count_ended(src) }, 1);
+    assert!(matches!(poll(), Some((BINNACLE_REQUEST_OPEN_COUNT, ..))));
+
+    unsafe { &mut *grid }
+        .grid_mut()
+        .request_view(ViewSpec::default());
+    frame(src, grid);
+    assert!(matches!(poll(), Some((BINNACLE_REQUEST_OPEN_WATCH, ..))));
+    assert_eq!(
+        poll(),
+        Some((BINNACLE_REQUEST_CLOSE_COUNT, String::new(), Vec::new(), 0))
+    );
+    assert_eq!(total(), Some(2), "the held rows again");
+    assert_eq!(receive_count(&count(340)), 1);
+    assert_eq!(total(), Some(2));
     unsafe {
         binnacle_described_source_free(src);
         binnacle_grid_free(grid);

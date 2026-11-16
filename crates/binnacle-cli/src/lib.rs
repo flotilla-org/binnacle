@@ -100,8 +100,8 @@ pub trait CliTable: PumpSource + IdMap<JsonId, JsonId> {
     }
 
     /// The View Spec the source applies now and the totals, once, if a
-    /// change in its data changed it (a column that left, say), for the
-    /// Grid to hold. None unless overridden.
+    /// change in its data changed it (a column that left, say) or its
+    /// totals, for the Grid to hold. None unless overridden.
     fn view_changed(&mut self) -> Option<(ViewSpec, Totals)> {
         None
     }
@@ -209,14 +209,16 @@ impl Interactive {
 }
 
 /// Applies `notices` from the source to `grid`, after the columns' support
-/// and any View Spec the source applies now.
+/// and any View Spec the source applies now, which may come alone, with new
+/// Totals.
 #[doc(hidden)]
 pub fn notify(grid: &mut Grid, source: &mut impl CliTable, notices: Vec<(Axis, ChangeNotice)>) {
-    if notices.is_empty() {
+    let view = source.view_changed();
+    if notices.is_empty() && view.is_none() {
         return;
     }
     source.declare(grid);
-    if let Some((spec, totals)) = source.view_changed() {
+    if let Some((spec, totals)) = view {
         grid.view_changed(spec, totals);
     }
     for (axis, notice) in notices {

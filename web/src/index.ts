@@ -94,10 +94,12 @@ export {
   type DescribedColumn,
   type DescribedJson,
   type DescribedOptions,
+  type DescribedCountRequest,
   type DescribedRequest,
   type DescribedScope,
   type DescribedStatus,
   type DescribedTable,
+  type DescribedWatchRequest,
 } from "./described";
 export {
   groupedSource,

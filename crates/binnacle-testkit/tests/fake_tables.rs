@@ -237,6 +237,101 @@ fn a_where_clause_keeps_the_rows_it_is_true_for() {
     assert_eq!(count("has(started)"), 26);
 }
 
+#[test]
+fn count_exact_counts_every_row_the_where_clauses_keep_and_a_watch_keeps_it_current() {
+    let fake = FakeTables::new().generate("big", 30).start().unwrap();
+    let base = format!(
+        "/tables/big/rows?count=exact&limit=1&namespace=flotilla&where={}",
+        encode(r#"phase in ["Done", "Pending"]"#)
+    );
+    let counts = |messages: &[Message]| -> Vec<(u64, bool)> {
+        (messages.iter())
+            .filter_map(|m| match m {
+                Message::Count { count, estimate } => Some((*count, *estimate)),
+                _ => None,
+            })
+            .collect()
+    };
+    let decode = |bytes: &[u8]| {
+        let mut decoder = Decoder::new(Encoding::Ndjson);
+        decoder.feed(bytes);
+        std::iter::from_fn(|| decoder.next())
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    // A read counts past its page, after `table` as flotillad does.
+    let response = fetch(fake.addr(), &base, &[]).unwrap();
+    let read = decode(&response.body);
+    assert_eq!(counts(&read), [(11, false)]);
+    assert!(matches!(read[1], Message::Count { .. }), "{read:?}");
+    assert!(
+        matches!(&read[2], Message::Rows(r) if r.rows.len() == 1),
+        "{read:?}"
+    );
+    let estimate = base.replace("count=exact", "count=estimate");
+    let response = fetch(fake.addr(), &estimate, &[]).unwrap();
+    assert_eq!(counts(&decode(&response.body)), [(11, true)]);
+    let response = fetch(fake.addr(), &base.replace("exact", "lots"), &[]).unwrap();
+    assert_eq!(response.status, 400);
+
+    let mut stream = open(fake.addr(), &format!("{base}&watch"), &[]).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut decoder = Decoder::new(Encoding::Ndjson);
+    let mut next = || loop {
+        if let Some(message) = decoder.next() {
+            return message.unwrap();
+        }
+        decoder.feed(&stream.next_chunk().unwrap().unwrap());
+    };
+    let first: Vec<Message> = std::iter::from_fn(|| match next() {
+        Message::Synced { .. } => None,
+        m => Some(m),
+    })
+    .collect();
+    assert_eq!(counts(&first), [(11, false)]);
+    let row = |id: i64, phase: &str| {
+        let mut row = binnacle_described::Row::new();
+        row.insert("id".into(), Wire::Int(id.into()));
+        row.insert("phase".into(), Wire::Text(phase.into()));
+        row
+    };
+    for step in [
+        Step::Upsert {
+            table: "big".into(),
+            row: row(100, "Running"),
+        },
+        Step::Upsert {
+            table: "big".into(),
+            row: row(101, "Done"),
+        },
+        Step::Delete {
+            table: "big".into(),
+            key: vec![Wire::Int(2.into())],
+        },
+    ] {
+        fake.push(step);
+    }
+    // The row the clauses don't keep brings nothing.
+    assert!(matches!(next(), Message::Upsert { .. }));
+    assert_eq!(
+        next(),
+        Message::Count {
+            count: 12,
+            estimate: false
+        }
+    );
+    assert!(matches!(next(), Message::Delete { .. }));
+    assert_eq!(
+        next(),
+        Message::Count {
+            count: 11,
+            estimate: false
+        }
+    );
+}
+
 /// `text` percent-encoded but for RFC 3986's unreserved characters.
 fn encode(text: &str) -> String {
     (text.bytes())

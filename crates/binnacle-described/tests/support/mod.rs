@@ -168,6 +168,17 @@ pub fn feed(scenario: &mut Scenario<Table>, message: Message) -> Vec<(Axis, Chan
     apply(scenario, received)
 }
 
+/// Feeds `message` of the count read to the scenario's source, then hands
+/// the Grid any new Totals, as a host does, and runs a frame.
+pub fn feed_count(scenario: &mut Scenario<Table>, message: Message) {
+    let Scenario { grid, source, .. } = scenario;
+    source.0.receive_count(message);
+    if let Some((spec, totals)) = source.0.poll_view() {
+        grid.view_changed(spec, totals);
+    }
+    scenario.frame(VIEWPORT);
+}
+
 /// Tells the Grid what `received` changed: the columns' support, any View
 /// Spec the source applies now, then the Change Notices. Runs a frame.
 pub fn apply(scenario: &mut Scenario<Table>, received: Received) -> Vec<(Axis, ChangeNotice)> {

@@ -60,6 +60,10 @@ _Avoid_: Remote table, schema table, dynamic table
 What a Described Table's rows are read within: a namespace, which every request needs (one without gets no rows, and no error), and fixed `where` clauses in the condition language flotillad speaks (`rigging-condition`). A Described Table source can't be built without one. The source sends its rows' Conditions and Slicers after them, each as a `where` clause where one keeps every row the Condition keeps and the field's `whereOperators` allow it, and asks for the watch again when those clauses change; it filters every row that comes again, so what shows never depends on the `where` clauses.
 _Avoid_: Namespace (for the whole), query, filter (for the `where` clauses)
 
+**Count Read**:
+A Described Table source's second, count-only read of its Scope (`count=exact&limit=1&watch`, the Scope's own clauses only), which it asks its host for while it sends any `where` clause of its own, since the rows it holds then are no longer every row: its `count` gives the rows' Totals, an estimate as much as an exact one, kept current as the watch goes, and the Totals are unknown until it comes. Its rows are not held, and its messages go to the source apart from the rows stream's (`receive_count`). It opens with the first clause sent and closes when the last goes. `HostRequest::OpenCount` in `binnacle-described`.
+_Avoid_: Count query, total request
+
 **Described Source Handle**:
 A Described Table source behind the C API (`BinnacleDescribedSource` in `binnacle.h`): it takes the rows stream's messages, pumps and fills the Grid it drives, and gives a native renderer each cell's Typed Value and formatted text, each column's description, and Distinct Values. Like the source it holds, it is used from one thread. A Rust host builds one from its own source with `BinnacleDescribedSource::from_source`.
 _Avoid_: Described grid, table handle

@@ -6,9 +6,10 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use binnacle_core::{Condition, Value as Listed};
+use binnacle_core::{Axis, Condition, Value as Listed};
 use binnacle_described::{DescribedSource, Scope, Wire};
 use binnacle_described_http::{Blocking, Endpoint, Event, Options};
+use binnacle_ratatui::row_count;
 use binnacle_testkit::Scenario;
 use binnacle_testkit::fake_tables::{FakeTable, FakeTables};
 use support::{Table, scenario};
@@ -56,7 +57,9 @@ fn a_slicer_on_a_table_past_the_cap_ends_with_every_matching_row() {
     s.input(|g| g.add_slicer(slicer));
     s.frame(support::VIEWPORT);
     until_synced(&mut s, &transport);
-    let last = fake.requests().pop().unwrap();
+    let last = (fake.requests().into_iter())
+        .rfind(|r| !r.target.contains("count="))
+        .unwrap();
     assert!(
         last.target
             .ends_with("&where=phase%20in%20%5B%22Done%22%5D"),
@@ -74,4 +77,46 @@ fn a_slicer_on_a_table_past_the_cap_ends_with_every_matching_row() {
             "{id:?}"
         );
     }
+}
+
+/// Feeds the scenario's source what `transport` brings on the count read
+/// until its Totals are known.
+fn until_counted(s: &mut Scenario<Table>, transport: &Blocking) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while s.source.0.totals().rows.is_none() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match transport.recv_count_timeout(left).expect("a count in time") {
+            Event::Message(message) => support::feed_count(s, message),
+            Event::Ended => s.source.0.count_ended(),
+            other => panic!("{other:?}"),
+        }
+        if let Some(request) = s.source.0.poll_request() {
+            transport.open(request);
+        }
+    }
+}
+
+#[test]
+fn a_slicer_shows_its_rows_of_every_row_the_server_counts() {
+    const ROWS: usize = 300;
+    let running = (FakeTable::generated("t", ROWS).rows.iter())
+        .filter(|r| r["phase"] == Wire::Text("Running".into()))
+        .count();
+    let fake = FakeTables::new().generate("t", ROWS).start().unwrap();
+    let transport = Blocking::new(Options::new(Endpoint::Tcp(fake.url().unwrap()))).unwrap();
+    let mut s = scenario(DescribedSource::new("t", Scope::new("flotilla")));
+    until_synced(&mut s, &transport);
+    assert_eq!(row_count(&s.frame(support::VIEWPORT)), "300 rows");
+    let phase = s.source.0.column_key("phase").unwrap();
+    let slicer = Condition::one_of(phase, vec![Listed::Text("Running".into())]);
+    s.input(|g| g.add_slicer(slicer));
+    s.frame(support::VIEWPORT);
+    until_synced(&mut s, &transport);
+    until_counted(&mut s, &transport);
+    assert_eq!(s.source.0.row_count(), running, "only they are held");
+    assert_eq!(s.source.0.count(Axis::Rows) as usize, running);
+    assert_eq!(
+        row_count(&s.frame(support::VIEWPORT)),
+        format!("{running} of {ROWS} rows")
+    );
 }

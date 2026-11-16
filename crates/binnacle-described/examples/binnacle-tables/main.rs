@@ -55,7 +55,7 @@ use binnacle_format::Timestamp;
 use binnacle_layout::IdMap;
 use binnacle_ratatui::cli::{Exit, Flags, InlineOptions, Live, Presentation, print, run_inline};
 
-use feed::{Notes, drain};
+use feed::{Notes, drain, drain_count};
 use table::Tables;
 
 /// The command line past the shared flags: where the rows come from, and
@@ -250,15 +250,18 @@ fn main() -> io::Result<()> {
     let notes = &notes;
     let live = transport.map(|transport| -> Live<'_, DescribedSource> {
         Box::new(move |source: &mut DescribedSource| {
-            drain(
+            drain_count(source, || transport.try_recv_count());
+            let fed = drain(
                 source,
                 || transport.try_recv(),
                 |request| transport.open(request),
                 &mut notes.borrow_mut(),
                 BUDGET,
-            )
-            .map_err(|e| *failed_ref.borrow_mut() = Some(e))
-            .ok()
+            );
+            while let Some(request) = source.poll_request() {
+                transport.open(request);
+            }
+            fed.map_err(|e| *failed_ref.borrow_mut() = Some(e)).ok()
         })
     });
     let options = InlineOptions {
