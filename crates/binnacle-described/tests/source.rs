@@ -3,7 +3,9 @@
 
 mod support;
 
-use binnacle_core::{Axis, ChangeNotice, SortColumn, SortSpec, ViewSpec};
+use binnacle_core::{
+    Axis, ChangeNotice, Comparison, Condition, FilterSpec, Scalar, SortColumn, SortSpec, ViewSpec,
+};
 use binnacle_described::{
     DescribedSource, Field, FieldType, HostRequest, Message, Received, Reference, Scope,
     WatchRequest, Wire, deterministic_cbor, typed,
@@ -21,6 +23,7 @@ fn a_source_first_asks_its_host_to_open_a_watch_on_its_scope() {
         table: "vessels".into(),
         scope,
         wheres: Vec::new(),
+        values: Vec::new(),
         limit: 10_000,
     };
     assert_eq!(
@@ -30,7 +33,38 @@ fn a_source_first_asks_its_host_to_open_a_watch_on_its_scope() {
     assert_eq!(source.poll_request(), None, "once");
     assert_eq!(
         want.target(),
-        "/tables/vessels/rows?watch&limit=10000&namespace=flotilla&where=status.phase%20%3D%3D%20%22Active%22"
+        "/tables/vessels/rows?watch&limit=10000&namespace=flotilla&count=exact&scope=status.phase%20%3D%3D%20%22Active%22"
+    );
+}
+
+#[test]
+fn a_watch_sends_the_scope_as_scope_the_filter_as_where_and_asks_values_of_the_columns_allowing_in()
+{
+    let scope = Scope::new("flotilla").with_where(r#"status.phase == "Active""#);
+    let mut source = DescribedSource::new("vessels", scope);
+    assert!(source.poll_request().is_some());
+    let table = json!({"type": "table", "schema": {"primaryKey": ["name"], "fields": [
+        {"name": "name", "type": "string", "whereOperators": ["==", "in"]},
+        {"name": "status.phase", "type": "string", "whereOperators": ["==", "!=", "in", "has"]},
+        {"name": "cpus", "type": "integer", "whereOperators": ["==", "<"]},
+        {"name": "note", "type": "string"}
+    ]}});
+    source.receive(Message::from_json(&table).unwrap());
+    let query = |source: &mut DescribedSource| match source.poll_request() {
+        Some(HostRequest::OpenWatch(request)) => request.query(),
+        other => panic!("{other:?}"),
+    };
+    let scope = "scope=status.phase%20%3D%3D%20%22Active%22";
+    let values = "values=name&values=status.phase";
+    let base = "watch&limit=10000&namespace=flotilla&count=exact";
+    assert_eq!(query(&mut source), format!("{base}&{values}&{scope}"));
+    let cpus = source.column_key("cpus").unwrap();
+    let few = Condition::compare(cpus, Comparison::Less(Scalar::Number(4.0)));
+    let filter = FilterSpec::default().with_conditions(vec![few].into());
+    source.view(&ViewSpec::default().with_filter(Axis::Rows, filter));
+    assert_eq!(
+        query(&mut source),
+        format!("{base}&{values}&{scope}&where=cpus%20%3C%204")
     );
 }
 

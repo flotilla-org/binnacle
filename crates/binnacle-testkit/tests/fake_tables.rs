@@ -237,6 +237,37 @@ fn a_where_clause_keeps_the_rows_it_is_true_for() {
     assert_eq!(count("has(started)"), 26);
 }
 
+#[test]
+fn values_count_each_field_over_the_wheres_on_others_and_more_marks_a_cut() {
+    let fake = FakeTables::new().generate("big", 150).start().unwrap();
+    let target = format!(
+        "/tables/big/rows?namespace=flotilla&values=phase,id&where={}",
+        encode("id < 110")
+    );
+    let response = fetch(fake.addr(), &target, &[]).unwrap();
+    let items = items(Encoding::Ndjson, &response.body);
+    let lists: Vec<_> = (items.iter().filter_map(Wire::as_map))
+        .filter(|m| m["type"] == Wire::Text("values".into()))
+        .collect();
+    let [id, phase] = lists[..] else {
+        panic!("{lists:?}")
+    };
+    let Wire::Array(counted) = &phase["values"] else {
+        panic!()
+    };
+    let sum: i128 = (counted.iter())
+        .map(|v| match v.as_map().unwrap()["count"] {
+            Wire::Int(n) => n,
+            _ => panic!(),
+        })
+        .sum();
+    assert_eq!(sum, 110, "the rows with id < 110");
+    assert_eq!(phase["more"], Wire::Bool(false));
+    assert_eq!(id["more"], Wire::Bool(true), "150 ids, a where on id aside");
+    let unfilterable = "/tables/big/rows?namespace=flotilla&values=spec";
+    assert_eq!(fetch(fake.addr(), unfilterable, &[]).unwrap().status, 400);
+}
+
 /// `text` percent-encoded but for RFC 3986's unreserved characters.
 fn encode(text: &str) -> String {
     (text.bytes())
@@ -293,6 +324,8 @@ fn a_generated_table_has_nulls_empty_text_invalid_values_datetimes_and_objects()
         table: None,
         sequence: None,
     }));
+    // The table asks for the watch again, for its columns' values.
+    assert!(source.poll_request().is_some());
     source.receive(Message::Rows(binnacle_described::RowsMessage {
         rows: table.rows.clone(),
         cursor: None,
@@ -720,14 +753,20 @@ fn the_binary_takes_steps_from_standard_input_skipping_bad_lines() {
         .unwrap_or_else(|| panic!("{line}"));
     let addr = binnacle_testkit::fake_tables::Addr::Tcp(addr.parse().unwrap());
     let mut source = DescribedSource::new("t", Scope::new("flotilla"));
-    let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
-        panic!("a watch first")
+    let watch = |source: &mut DescribedSource| {
+        let Some(HostRequest::OpenWatch(request)) = source.poll_request() else {
+            panic!("a watch")
+        };
+        let stream = open(&addr, &request.target(), &[("accept", NDJSON)]).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        (stream, Decoder::new(Encoding::Ndjson))
     };
-    let mut stream = open(&addr, &request.target(), &[("accept", NDJSON)]).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let mut decoder = Decoder::new(Encoding::Ndjson);
+    // The table asks for the watch again, for its columns' values.
+    let (mut stream, mut decoder) = watch(&mut source);
+    feed(&mut stream, &mut decoder, &mut source, |s| s.has_request());
+    let (mut stream, mut decoder) = watch(&mut source);
     feed(&mut stream, &mut decoder, &mut source, |s| {
         s.status().synced
     });

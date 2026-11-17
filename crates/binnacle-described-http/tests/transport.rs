@@ -93,11 +93,17 @@ async fn the_same_table_as_ndjson_and_cbor_gives_equal_messages() {
             Event::Message(Message::Rows(_)) => "rows",
             Event::Message(Message::Synced { .. }) => "synced",
             Event::Message(Message::Upsert { .. }) => "upsert",
+            Event::Message(Message::Count { .. }) => "count",
             Event::Ended => "ended",
             other => panic!("{other:?}"),
         })
         .collect();
-    assert_eq!(types, ["table", "rows", "synced", "upsert", "ended"]);
+    assert_eq!(
+        types,
+        [
+            "table", "count", "rows", "synced", "upsert", "count", "ended"
+        ]
+    );
     assert_eq!(accepted, ["application/x-ndjson", "application/cbor-seq"]);
     assert_eq!(sequences[0], sequences[1]);
 }

@@ -40,12 +40,14 @@ fn convoys() -> Vec<Message> {
         .collect()
 }
 
-/// A source fed the convoys, its first request taken.
+/// A source fed the convoys, its requests taken: the first, and the one
+/// the table makes for its columns' values.
 fn source() -> DescribedSource {
     let mut source = DescribedSource::new("convoys", Scope::new("flotilla"));
     assert!(source.poll_request().is_some());
     for message in convoys() {
         source.receive(message);
+        source.poll_request();
     }
     source
 }

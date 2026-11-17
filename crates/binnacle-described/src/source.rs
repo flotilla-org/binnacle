@@ -7,16 +7,18 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use binnacle_core::{
-    Aggregate, Axis, ChangeNotice, Compared, Condition, ConditionTree, Distinct, DistinctQuery,
-    FindDirection, FindMatch, FindQuery, Grid, Key, Located, Position, SortColumn, SortSpec,
-    Support, TextSupport, Totals, ViewSpec,
+    Aggregate, Axis, Blanks, ChangeNotice, Compared, Condition, ConditionTree, Distinct,
+    DistinctQuery, DistinctValue, FindDirection, FindMatch, FindQuery, Grid, Key, Located,
+    Position, SortColumn, SortSpec, Support, TextQuery, TextSupport, Totals, ViewSpec,
 };
 use binnacle_format::{
     FixedOffset, FormatContext, FormatOptions, Role, Timestamp, Value, ValueType, Zone,
     format_stable,
 };
 use binnacle_group::{GroupedMemory, Summary, Window};
-use binnacle_memory::{FindCount, FindStep, MemorySource, Moved, PumpSource, TypedKey, Viewed};
+use binnacle_memory::{
+    FindCount, FindStep, MemorySource, Moved, PumpSource, TextMatcher, TypedKey, Viewed,
+};
 
 use crate::clause::{clauses, native_sent};
 use crate::keys::StableKeys;
@@ -146,9 +148,12 @@ pub struct Status {
     /// shown ("10,000 of more"). Only a `table` starts it afresh, so a
     /// resync whose server sends none keeps it.
     pub partial: bool,
-    /// The table's row count, if a `count` message gave it, and whether it
-    /// is an estimate.
+    /// How many rows match the Scope and the `where` clauses, if a `count`
+    /// message gave it, and whether it is an estimate.
     pub count: Option<(u64, bool)>,
+    /// How many rows match the Scope alone, if the last `count` message
+    /// gave it: the rows' Totals.
+    pub total: Option<u64>,
     /// Which life of the table the last `table` message named: `durable`
     /// for one that outlives the daemon.
     pub incarnation: Option<String>,
@@ -204,10 +209,15 @@ pub struct DescribedSource {
     scope: Scope,
     /// The `where` clauses the rows' conditions are sent as.
     wheres: Vec<String>,
+    /// The fields whose Distinct Values the watch asks for.
+    values: Vec<String>,
+    /// Each field's Distinct Values as the server last sent them, and
+    /// whether it has more.
+    lists: HashMap<String, (Vec<(Wire, u64)>, bool)>,
     requests: VecDeque<HostRequest>,
-    /// The filter changed the clauses and the host has not yet taken the
-    /// request to open the watch again: messages still coming are from the
-    /// stream it replaces.
+    /// The clauses or the fields asked for changed and the host has not
+    /// yet taken the request to open the watch again: messages still
+    /// coming are from the stream it replaces.
     reopening: bool,
     zone: Rc<dyn Zone>,
     schema: Option<Schema>,
@@ -227,6 +237,8 @@ pub struct DescribedSource {
     grouped: GroupedMemory<Values>,
     /// The View Spec last asked for, applied again when the rows change.
     spec: ViewSpec,
+    /// The View Spec last applied.
+    applied: ViewSpec,
     /// The View Spec applied since a `table` message changed the columns,
     /// for the host to take.
     viewed: Option<(ViewSpec, Totals)>,
@@ -246,6 +258,8 @@ impl DescribedSource {
             table: table.into(),
             scope,
             wheres: Vec::new(),
+            values: Vec::new(),
+            lists: HashMap::new(),
             requests: VecDeque::new(),
             reopening: false,
             zone: Rc::new(FixedOffset(0)),
@@ -262,6 +276,7 @@ impl DescribedSource {
             ordinal: 0,
             grouped: GroupedMemory::new(MemorySource::new(0, 0)),
             spec: ViewSpec::default(),
+            applied: ViewSpec::default(),
             viewed: None,
             unconfirmed: None,
             status: Status::default(),
@@ -318,9 +333,10 @@ impl DescribedSource {
     }
 
     /// The next thing the source asks of its host: first, to open the
-    /// watch, and again each time the stream ends or the filter changes
-    /// the `where` clauses it sends. A host opening the watch again drops
-    /// the stream open before it feeds the new one's messages.
+    /// watch, and again each time the stream ends, the filter changes the
+    /// `where` clauses it sends or the columns change which fields' Distinct
+    /// Values it asks for. A host opening the watch again drops the stream
+    /// open before it feeds the new one's messages.
     pub fn poll_request(&mut self) -> Option<HostRequest> {
         let request = self.requests.pop_front();
         if matches!(request, Some(HostRequest::OpenWatch(_))) {
@@ -355,6 +371,7 @@ impl DescribedSource {
                 table: self.table.clone(),
                 scope: self.scope.clone(),
                 wheres: self.wheres.clone(),
+                values: self.values.clone(),
                 limit: ROW_CAP,
             }));
     }
@@ -372,17 +389,39 @@ impl DescribedSource {
         let changed = set(&wheres) != set(&self.wheres);
         self.wheres = wheres;
         if changed {
-            self.open_watch();
-            self.resync();
-            self.reopening = true;
+            self.reopen();
         }
+    }
+
+    /// The fields whose Distinct Values the watch asks for: those that
+    /// allow `in`. When they are not the set asked for, the source opens
+    /// the watch again, as for new clauses.
+    fn revalue(&mut self) {
+        let values: Vec<String> = (self.columns.iter())
+            .filter(|c| c.field.where_operators.iter().any(|o| o == "in"))
+            .map(|c| c.name().to_owned())
+            .collect();
+        if values != self.values {
+            self.values = values;
+            self.reopen();
+        }
+    }
+
+    /// Asks to open the watch again and starts a resync, so the new
+    /// stream's rows replace the held ones in place.
+    fn reopen(&mut self) {
+        self.open_watch();
+        self.resync();
+        self.reopening = true;
     }
 
     /// Takes one message from the stream. Messages about rows before the
     /// first `table` are dropped: there are no columns to read them by.
-    /// So are those that come after the filter asked to open the watch
-    /// again, until the host takes that request: they are from the stream
-    /// it replaces.
+    /// So are those that come after the source asked to open the watch
+    /// again (for new clauses, or the first `table`'s columns' Distinct
+    /// Values), until the host takes that request: they are from the stream
+    /// it replaces, whose `table`, `count`, `values` and rows the new one
+    /// sends afresh. A host slow to poll reads them twice.
     pub fn receive(&mut self, message: Message) -> Received {
         if self.reopening && !matches!(message, Message::Other { .. }) {
             return Received::Applied(Vec::new());
@@ -390,7 +429,15 @@ impl DescribedSource {
         let notices = match message {
             Message::Table(table) => {
                 self.status.incarnation = table.incarnation;
-                self.describe(table.schema)
+                // The Distinct Values that follow a `table` are whole.
+                self.lists.clear();
+                let notices = self.describe(table.schema);
+                // As is the total: a server that sends no `count` gives none.
+                if self.status.total.take().is_some() {
+                    self.retotal();
+                }
+                self.revalue();
+                notices
             }
             Message::Rows(rows) => self.take_rows(rows),
             Message::Synced { sequence } => {
@@ -404,10 +451,45 @@ impl DescribedSource {
                 }
                 Vec::new()
             }
-            Message::Count { count, estimate } => {
+            Message::Count {
+                count,
+                total,
+                estimate,
+            } => {
                 self.status.count = Some((count, estimate));
+                if total != self.status.total {
+                    self.status.total = total;
+                    self.retotal();
+                }
                 Vec::new()
             }
+            Message::Values {
+                field,
+                values,
+                more,
+                ..
+            } if self.values.contains(&field) => {
+                // Deltas apply in stream order, which the one stream keeps:
+                // the `sequence` is not needed for them.
+                let (list, more_held) = self.lists.entry(field).or_default();
+                for (value, count) in values {
+                    // By identity, so a NaN matches itself.
+                    let id = deterministic_cbor(&value);
+                    let at = list.iter().position(|(v, _)| deterministic_cbor(v) == id);
+                    match (at, count) {
+                        (Some(at), 0) => {
+                            list.remove(at);
+                        }
+                        (Some(at), _) => list[at].1 = count,
+                        (None, 0) => {}
+                        (None, _) => list.push((value, count)),
+                    }
+                }
+                *more_held = more;
+                Vec::new()
+            }
+            // A field the watch did not ask for: no list reads it.
+            Message::Values { .. } => Vec::new(),
             Message::Upsert { key, row } => self.upsert(&key, row),
             Message::Delete { key } => self.delete(&key),
             Message::Resync => {
@@ -430,12 +512,13 @@ impl DescribedSource {
         Received::Applied(Vec::new())
     }
 
-    /// After a `table` message changed the columns, the View Spec the
-    /// source applies now and each axis's unfiltered count, once, for the
-    /// host to hand the Grid ([`Grid::view_changed`]) with the Change
-    /// Notices. A removed column's sort terms and conditions are left out,
-    /// so the Grid shows them not applied; the source keeps the View Spec
-    /// last asked for, and they apply again if the field comes back.
+    /// After a `table` message changed the columns, or a `count` the
+    /// Totals, the View Spec the source applies now and each axis's
+    /// unfiltered count, once, for the host to hand the Grid
+    /// ([`Grid::view_changed`]) with the Change Notices. A removed column's
+    /// sort terms and conditions are left out, so the Grid shows them not
+    /// applied; the source keeps the View Spec last asked for, and they
+    /// apply again if the field comes back.
     pub fn poll_view(&mut self) -> Option<(ViewSpec, Totals)> {
         self.viewed.take()
     }
@@ -524,9 +607,28 @@ impl DescribedSource {
         self.grouped.summary(key)
     }
 
-    /// Each axis's count before any filter.
+    /// Each axis's count before any filter: the rows' is the `total` the
+    /// last `count` message gave, if it gave one, else the rows held; never
+    /// fewer than the rows held, should a `count` lag an upsert.
     pub fn totals(&self) -> Totals {
-        self.grouped.totals()
+        let mut totals = self.grouped.totals();
+        if let (Some(held), Some(total)) = (totals.rows, self.status.total) {
+            totals.rows = Some(total.max(held));
+        }
+        totals
+    }
+
+    /// The Totals changed: the host hands them to the Grid with the View
+    /// Spec applied ([`DescribedSource::poll_view`]).
+    fn retotal(&mut self) {
+        if self.schema.is_none() {
+            return;
+        }
+        let totals = self.totals();
+        match &mut self.viewed {
+            Some((_, held)) => *held = totals,
+            None => self.viewed = Some((self.applied.clone(), totals)),
+        }
     }
 
     /// The aggregates a value over column `col` may take while grouped.
@@ -1229,6 +1331,57 @@ fn sort_key(value: &Value) -> Option<TypedKey<'_>> {
     })
 }
 
+/// `column`'s Distinct Values from the server's `list`, as the In-Memory
+/// Table Source answers `query` from the rows: each value read as the
+/// column's Typed Value, a null a blank, in the column's natural order.
+///
+/// The server's counts know nothing of the conditions kept client-side
+/// only (a Text condition, the quick filter, one with no clause): while
+/// one is in force on another item, a count can exceed the rows shown.
+fn listed(
+    column: &Column,
+    list: &[(Wire, u64)],
+    more: bool,
+    zone: &dyn Zone,
+    query: &DistinctQuery,
+) -> Distinct {
+    let search = (!query.search.is_empty())
+        .then(|| TextMatcher::new(&TextQuery::new(query.search.clone())))
+        .flatten();
+    let options = FormatOptions::default();
+    let mut blanks = 0;
+    let mut values: Vec<(Value, String, u64)> = Vec::new();
+    for (wire, count) in list {
+        let value = typed(&column.field, wire);
+        let Some(text) = stable_text(&value, column.unit(), column.role, &options, zone) else {
+            blanks += count;
+            continue;
+        };
+        if search.as_ref().is_some_and(|m| !m.is_match(&text)) {
+            continue;
+        }
+        match values.iter_mut().find(|(_, t, _)| *t == text) {
+            Some((_, _, n)) => *n += count,
+            None => values.push((value, text.into_owned(), *count)),
+        }
+    }
+    values.sort_by(|(a, s, _), (b, t, _)| sort_key(a).cmp(&sort_key(b)).then_with(|| s.cmp(t)));
+    let partial = more || values.len() > query.limit;
+    values.truncate(query.limit);
+    let listed = query.search.is_empty() && blanks > 0;
+    Distinct {
+        values: (values.into_iter())
+            .map(|(_, text, count)| DistinctValue {
+                text,
+                count: Some(count),
+            })
+            .collect(),
+        blanks: listed.then_some(Blanks::Counted(blanks)),
+        partial,
+        narrowed: true,
+    }
+}
+
 /// A Typed Value's Stable Text: `None` for a null, a blank.
 pub(crate) fn stable_text(
     value: &Value,
@@ -1269,6 +1422,8 @@ impl PumpSource for DescribedSource {
         {
             grouping.slicers = restored(&asked.slicers, &sent.slicers, &grouping.slicers);
         }
+        viewed.totals = self.totals();
+        self.applied = viewed.applied.clone();
         let applied = viewed.applied.clone();
         self.rewhere(&applied);
         viewed
@@ -1289,7 +1444,15 @@ impl PumpSource for DescribedSource {
         self.over().hide_support(axis)
     }
 
+    /// A column whose Distinct Values the server sent answers from them, as
+    /// the server counts them; any other from the rows held.
     fn distinct(&mut self, axis: Axis, key: Key, query: &DistinctQuery) -> Option<Distinct> {
+        let column = self.column(key).filter(|_| axis == Axis::Rows);
+        if let Some((column, (list, more))) =
+            column.and_then(|c| Some((c, self.lists.get(c.name())?)))
+        {
+            return Some(listed(column, list, *more, &*self.zone, query));
+        }
         self.over().distinct(axis, key, query)
     }
 
