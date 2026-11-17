@@ -3014,3 +3014,141 @@ fn scrolled_to_the_end_the_last_item_ends_the_end_gap_short(tc: TestCase) {
         trailing.first().map(|it| it.position)
     );
 }
+
+/// 1000 test cases, or `HEGEL_TEST_CASES` to soak.
+fn soak() -> hegel::Settings {
+    let cases = std::env::var("HEGEL_TEST_CASES").ok();
+    hegel::Settings::new().test_cases(cases.and_then(|n| n.parse().ok()).unwrap_or(1000))
+}
+
+/// One host frame on an axis whose items have content sizes: each Window
+/// asked for is answered whole, or with `partial` maybe in part (any run
+/// of it) or not yet. Returns where the axis's last item ends, if it is
+/// drawn.
+fn frame_in_parts(
+    tc: &TestCase,
+    grid: &mut Grid,
+    viewport: Viewport,
+    (axis, sizes): (Axis, &[f32]),
+    partial: bool,
+) -> Option<f32> {
+    for (a, range) in grid.begin_frame(viewport) {
+        let (mut start, mut end) = (range.start, range.end);
+        if partial && tc.draw(gs::booleans()) {
+            if tc.draw(gs::weighted_booleans(0.3)) {
+                continue;
+            }
+            start = tc.draw(gs::integers::<u64>().min_value(start).max_value(end));
+            end = tc.draw(gs::integers::<u64>().min_value(start).max_value(end));
+        }
+        let keys: Vec<Key> = (start..end).map(Key).collect();
+        if a == axis {
+            let content: Vec<f32> = (start..end)
+                .map(|p| sizes[p as usize % sizes.len()])
+                .collect();
+            let hint = sizes.iter().copied().fold(f32::INFINITY, f32::min);
+            grid.set_window_sized(a, start, &keys, &content, hint);
+        } else {
+            grid.set_window(a, start, &keys);
+        }
+    }
+    let snap = grid.snapshot();
+    let count = snap.count(axis);
+    (snap.strip(axis).last())
+        .filter(|last| last.position + 1 == count && last.key.is_some())
+        .map(|last| last.end())
+}
+
+/// However the host answers the Windows on the way (late, in parts, or
+/// leaving sizes to estimates), once it fills each Window it is asked for,
+/// a scroll to the end ends the last item the End Gap short of the
+/// viewport's end within one frame, and keeps it there: an overscroll
+/// shows for one frame at most. Sizes are whole quarters, so every sum is
+/// exact.
+#[hegel::test(soak())]
+fn once_the_window_fills_a_scroll_to_the_end_leaves_no_lasting_overscroll(tc: TestCase) {
+    let quarters = |lo, hi| tc.draw(gs::integers::<u16>().min_value(lo).max_value(hi)) as f32 / 4.0;
+    let axis = tc.draw(axis());
+    let count = tc.draw(gs::integers::<u64>().min_value(1).max_value(120));
+    let (size, gap, header) = (quarters(4, 24), quarters(0, 8), quarters(0, 12));
+    let sizes = tc.draw(
+        gs::vecs(gs::integers::<u16>().min_value(4).max_value(48))
+            .min_size(1)
+            .max_size(6),
+    );
+    let sizes: Vec<f32> = sizes.into_iter().map(|q| q as f32 / 4.0).collect();
+    let end_gap = quarters(0, 12);
+    let config = AxisConfig::new(count, size).header(header).gap(gap);
+    let other = AxisConfig::new(3, 2.0);
+    let extent = quarters(0, 240);
+    let viewport = match axis {
+        Axis::Rows => Viewport::new(10.0, extent),
+        Axis::Cols => Viewport::new(extent, 10.0),
+    };
+    let mut grid = match axis {
+        Axis::Rows => Grid::new(config, other),
+        Axis::Cols => Grid::new(other, config),
+    };
+    grid.set_end_gap(axis, end_gap);
+    let content = (axis, &sizes[..]);
+    // The user scrolls once a frame has drawn the viewport.
+    for _ in 0..tc.draw(gs::integers::<u8>().min_value(1).max_value(4)) {
+        frame_in_parts(&tc, &mut grid, viewport, content, true);
+    }
+    let way = tc.draw(gs::integers::<u8>().max_value(3));
+    match way {
+        0 => grid.action(Action::Scroll {
+            dx: 1.0e6,
+            dy: 1.0e6,
+        }),
+        1 => grid.action(Action::ScrollTo {
+            axis,
+            fraction: 1.0,
+        }),
+        2 => grid.action(Action::ScrollBy {
+            axis,
+            items: i64::MAX,
+        }),
+        _ => {
+            // Focus goes on a Key the Window holds.
+            frame_in_parts(&tc, &mut grid, viewport, content, false);
+            grid.set_focus(Key(0), Key(0));
+            grid.action(Action::MoveFocus {
+                axis,
+                by: FocusStep::Edge,
+                forward: true,
+                extend: false,
+            });
+        }
+    }
+    // The sizes known when the user scrolled may have left nothing to
+    // scroll; then the view stays at the start.
+    let scrolled = grid.snapshot().scroll_anchor(axis) != ScrollAnchor::default();
+    for _ in 0..tc.draw(gs::integers::<u8>().max_value(4)) {
+        frame_in_parts(&tc, &mut grid, viewport, content, true);
+    }
+    let size_of = |p: u64| sizes[p as usize % sizes.len()];
+    let length = (0..count).map(size_of).sum::<f32>() + (count - 1) as f32 * gap;
+    let start = header.min(extent);
+    let end = (extent - end_gap).max(start);
+    if end <= start || length <= end - start {
+        return;
+    }
+    let ends: Vec<Option<f32>> = (0..4)
+        .map(|_| frame_in_parts(&tc, &mut grid, viewport, content, false))
+        .collect();
+    // A scroll by items or a focus move shows the last item's start, or
+    // all of it with the least scroll, which may leave it in the End Gap;
+    // a scroll to the end ends it there exactly.
+    for (frame, last) in ends.iter().enumerate().skip(1) {
+        let meets = match (way, *last) {
+            (0 | 1, last) if scrolled => last == Some(end),
+            (_, Some(last)) => last >= end,
+            (_, None) => true,
+        };
+        assert!(
+            meets,
+            "frame {frame} of a filled Window, the last item's end in {ends:?}, not {end}"
+        );
+    }
+}

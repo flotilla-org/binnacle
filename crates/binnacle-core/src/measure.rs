@@ -422,12 +422,13 @@ impl AxisMeasure {
     /// scrolling ones. [`AxisMeasure::distance`] and [`AxisMeasure::locate`]
     /// step over them and [`AxisMeasure::extent`] leaves them out. Replaces
     /// the Positions left out before; the caller keeps them up to date as
-    /// the count and order change.
-    pub fn set_skipped(&mut self, positions: impl IntoIterator<Item = Position>) {
-        self.skipped.clear();
+    /// the count and order change. Returns whether they changed.
+    pub fn set_skipped(&mut self, positions: impl IntoIterator<Item = Position>) -> bool {
+        let old = std::mem::take(&mut self.skipped);
         self.skipped.extend(positions);
         self.skipped.sort_unstable();
         self.skipped.dedup();
+        old != self.skipped
     }
 
     /// Whether the item at `p` is left out of the axis's length.

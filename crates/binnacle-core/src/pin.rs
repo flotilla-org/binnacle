@@ -118,8 +118,8 @@ impl AxisState {
     /// Brings the pins up to date with the Window, which counts as an
     /// answer for any pinned Key it holds, and tells the measure which
     /// Positions the scrolling Strip skips: a pin's, unless the Window
-    /// shows another Key there.
-    pub fn sync_pins(&mut self) {
+    /// shows another Key there. Returns whether those Positions changed.
+    pub fn sync_pins(&mut self) -> bool {
         let m = &self.measure;
         for pin in self.pins.iter_mut().flatten() {
             if let Some(p) = m.position_of(pin.key) {
@@ -129,7 +129,7 @@ impl AxisState {
         let skipped: Vec<Position> = (self.pins.iter().flatten())
             .filter_map(|pin| self.trusted(pin))
             .collect();
-        self.measure.set_skipped(skipped);
+        self.measure.set_skipped(skipped)
     }
 
     /// The pins of `edge` that are drawn, in pin order: dormant pins are

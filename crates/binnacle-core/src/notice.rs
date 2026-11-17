@@ -12,7 +12,7 @@ use crate::grouping::ItemKind;
 use crate::selection::Span;
 use crate::snapshot::ScrollAnchor;
 use crate::sort::Located;
-use crate::types::{Axis, Key, Position};
+use crate::types::{Axis, Edge, Key, Position};
 
 /// A message from the Table Source telling the Grid how an axis changed.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -427,14 +427,22 @@ impl Grid {
     }
 
     /// The content of the items at `range` on `axis` changed: any of them in
-    /// the Window are fetched again, with their content sizes.
+    /// the Window are fetched again, with their content sizes, and any drawn
+    /// pinned are drawn again.
     fn content_changed(&mut self, axis: Axis, range: Range<Position>) {
+        let st = self.axis(axis);
+        if (Edge::ALL.into_iter()).any(|e| st.drawn_pins(e).any(|(_, p)| range.contains(&p))) {
+            self.pending_damage.positions = true;
+        }
         let m = &self.axis(axis).measure;
         let start = m.window_start();
         let end = start + m.window_len() as u64;
         if range.start < end && start < range.end {
-            self.axis_mut(axis).measure.set_keys(0, &[]);
-            self.axis_mut(axis).sync_pins();
+            // Without the Window, sizes known by Key fall back to the
+            // default, and a pin waiting for `Locate` is no longer skipped.
+            let change = self.axis_mut(axis).measure.set_keys(0, &[]);
+            let skipped = self.axis_mut(axis).sync_pins();
+            self.pending_damage.layout |= change.sizes || skipped;
             self.pending_damage.positions = true;
         }
     }
