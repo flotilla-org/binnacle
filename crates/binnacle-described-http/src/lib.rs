@@ -222,7 +222,7 @@ pub enum Unserved {
     Endpoint,
     /// The credential is not a valid HTTP header value.
     Auth,
-    /// A Unix socket, where there are none.
+    /// A Unix socket, where there are none: never on a Unix platform.
     Unix,
 }
 
@@ -553,7 +553,7 @@ fn splitmix(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D4_9BB4_1331_11EB);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
 
@@ -697,6 +697,17 @@ impl Drop for Blocking {
 #[cfg(test)]
 mod tests {
     use super::split;
+
+    #[test]
+    fn the_jitter_draws_splitmix64() {
+        // The reference sequence from seed 0.
+        let mut state = 0;
+        let draws: Vec<u64> = (0..3).map(|_| super::splitmix(&mut state)).collect();
+        assert_eq!(
+            draws,
+            [0xE220A8397B1DCDAF, 0x6E789E6AA1B965F4, 0x06C45D188009454F]
+        );
+    }
 
     #[test]
     fn a_base_url_splits_into_its_address_and_prefix() {

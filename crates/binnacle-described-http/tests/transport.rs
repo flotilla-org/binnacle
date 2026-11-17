@@ -192,7 +192,10 @@ fn a_reconnect_is_a_resync_after_the_backoff() {
         settle: Duration::from_millis(200),
     };
     let fake = fake().start().unwrap();
-    let transport = Blocking::new(options(&fake).backoff(backoff)).unwrap();
+    // Seed 3 draws waits of about 151 ms and 156 ms, well clear of the
+    // stale backoff's 300 ms least.
+    let options = options(&fake).backoff(backoff).seed(Some(3));
+    let transport = Blocking::new(options).unwrap();
     let mut source = source();
     host(&transport, &mut source, synced);
     let keys = source.row_keys().to_vec();
