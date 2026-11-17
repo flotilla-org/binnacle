@@ -657,10 +657,10 @@ const MAX_DEPTH: usize = 1024;
 /// item's heads are walked once, keeping its place across feeds, before
 /// the whole item is decoded once.
 ///
-/// An item, a line or a CBOR item, longer than the maximum
-/// ([`DEFAULT_MAX_ITEM`] unless [`Decoder::with_max_item`] sets it) is an
-/// error, and the rest of the stream is dropped: a CBOR head that declares
-/// a length past it fails at once.
+/// A line or CBOR item longer than the maximum ([`DEFAULT_MAX_ITEM`]
+/// unless [`Decoder::with_max_item`] sets it) is an error, and the rest of
+/// the stream is dropped until [`Decoder::finish`]: a CBOR head that
+/// declares a length past it fails at once.
 #[derive(Clone, Debug)]
 pub struct Decoder {
     encoding: Encoding,
@@ -710,6 +710,7 @@ impl Decoder {
         self
     }
 
+    /// The longest item the decoder holds.
     pub fn max_item(&self) -> usize {
         self.max_item
     }
@@ -832,6 +833,8 @@ impl Decoder {
                 },
                 (0 | 1 | 7, false) => (true, 0, 0),
                 (2 | 3, false) => (true, u128::from(argument), 0),
+                // The chunks of an indefinite string are walked as items;
+                // ciborium refuses one of another type when it decodes.
                 (2..=5, true) => {
                     self.open.push(None);
                     (false, 0, 0)
@@ -893,6 +896,7 @@ impl Decoder {
 
     /// The stream ended: the last message, if one was left without its
     /// line break, or an error if the bytes left are not a whole message.
+    /// The decoder is then ready for a new stream, past the maximum or not.
     pub fn finish(&mut self) -> Option<Result<Message, DecodeError>> {
         let rest = std::mem::take(&mut self.buffer).split_off(self.start);
         self.restart(0);

@@ -420,6 +420,40 @@ fn a_cbor_head_declaring_a_length_past_the_maximum_is_an_error_at_once() {
 }
 
 #[test]
+fn a_malformed_cbor_item_is_an_error_and_the_stream_goes_on() {
+    let nested = vec![0x81; 1025];
+    let items: [&[u8]; 5] = [
+        // A reserved head.
+        &[0x1c],
+        // A break outside an indefinite item.
+        &[0x82, 0x01, 0xff],
+        // An indefinite integer, and an indefinite tag.
+        &[0x1f],
+        &[0xdf, 0x00],
+        // Arrays nested past the walk's depth, failing before they end.
+        &nested,
+    ];
+    for item in items {
+        let mut decoder = Decoder::new(Encoding::CborSeq);
+        decoder.feed(item);
+        assert!(matches!(decoder.next(), Some(Err(_))), "{item:x?}");
+        decoder.feed(&encode_cbor_item(&Message::Resync));
+        assert_eq!(decoder.next(), Some(Ok(Message::Resync)), "{item:x?}");
+    }
+}
+
+#[test]
+fn a_decoder_past_the_maximum_decodes_again_after_the_stream_ends() {
+    let mut decoder = Decoder::new(Encoding::Ndjson).with_max_item(8);
+    decoder.feed(b"{\"type\":\"resync\"}\n");
+    assert!(matches!(decoder.next(), Some(Err(_))));
+    assert_eq!(decoder.finish(), None);
+    let mut decoder = decoder.with_max_item(64);
+    decoder.feed(b"{\"type\":\"resync\"}\n");
+    assert_eq!(decoder.next(), Some(Ok(Message::Resync)));
+}
+
+#[test]
 fn a_large_item_fed_a_byte_at_a_time_is_read_in_linear_work() {
     let rows: Vec<Json> = (0..5_000)
         .map(|i| json!({"id": i, "name": format!("row-{i}"), "load": i as f64 / 3.0, "spec": {"tags": [i, "x"]}}))
