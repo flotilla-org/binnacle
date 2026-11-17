@@ -48,7 +48,6 @@ jobs:
               - "!crates/binnacle-ratatui/**"
               - "!crates/binnacle-cli/**"
               - "!crates/binnacle-ffi/**"
-              - "!crates/binnacle-described-http/**"
               - "!docs/**"
               - "!**/*.md"
       - id: plan
