@@ -259,3 +259,30 @@ fn the_modes_and_bare_keys_presets_select_the_row_with_a_bare_key_too() {
     let typed = chords.action(&press(KeyCode::Char('q'), KeyModifiers::NONE));
     assert_eq!(typed, Some(Action::TypeText("q".into())));
 }
+
+#[test]
+fn ctrl_shift_a_selects_all_as_ctrl_a_does() {
+    let keys = Keymap::default();
+    // crossterm reports the shifted character's case with Shift held.
+    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('A'), ctrl_shift)),
+        Some(Action::SelectAll)
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('a'), ctrl_shift)),
+        Some(Action::SelectAll)
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('C'), ctrl_shift)),
+        Some(Action::Copy)
+    );
+    assert_eq!(
+        keys.action(&press(KeyCode::Char('B'), ctrl_shift)),
+        None,
+        "an unbound control character still does not type"
+    );
+    let mut unbound = Keymap::default();
+    unbound.unbind(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(unbound.action(&press(KeyCode::Char('A'), ctrl_shift)), None);
+}

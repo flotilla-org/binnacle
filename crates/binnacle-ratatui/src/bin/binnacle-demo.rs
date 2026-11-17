@@ -199,11 +199,11 @@ use binnacle_memory::{
 use binnacle_ratatui::{
     Align, BarEvent, BarRenderer, BorderExtent, BorderStyle, BorderWeight, CellCanvas,
     CellRenderer, Chooser, ColorSupport, ColumnFilter, Content, Control, Controls, FindBar,
-    FindStatus, HeaderMenu, Hid, Keymap, Layout, Mouse, Preset, QuickFilter, RenderContext,
-    SavedLayout, SparklineRenderer, TextRenderer, Theme, animating, begin_frame, cap_hint,
-    clear_filters, count, fit_width, freeze_focused, hide_chosen, keep_value, remove_conditions,
-    render_conditions, render_editor, render_with, restore_layout, row_count, save_layout, status,
-    toggle_pin, unpin_focused, wheel,
+    FindStatus, HeaderMenu, Hid, InitialSize, InitialSizes, Keymap, Layout, Mouse, Preset,
+    QuickFilter, RenderContext, SavedLayout, SparklineRenderer, TextRenderer, Theme, animating,
+    begin_frame, cap_hint, clear_filters, count, fit_width, freeze_focused, hide_chosen,
+    keep_value, remove_conditions, render_conditions, render_editor, render_with, restore_layout,
+    row_count, save_layout, status, toggle_pin, unpin_focused, wheel,
 };
 
 /// The most records the demo's source hides, fewer than the Grid's own cap.
@@ -1305,6 +1305,8 @@ fn transposed() -> (Table, Grid) {
 fn main() -> io::Result<()> {
     let preset = preset().map_err(io::Error::other)?;
     let live = std::env::args().any(|a| a == "--live");
+    // The records' columns start fitted, fixed or filling.
+    let mut sizes: Option<InitialSizes> = None;
     let (mut table, mut grid) = if std::env::args().any(|a| a == "--transposed") {
         transposed()
     } else if live {
@@ -1362,6 +1364,12 @@ fn main() -> io::Result<()> {
             .with_one_of(false)
             .with_compare(None);
         grid.set_support(Axis::Rows, Key(0), id);
+        sizes = Some(InitialSizes::new().columns(|key| match key.0 {
+            0 | 5 => InitialSize::Fit,
+            1 => InitialSize::Fill,
+            2 => InitialSize::Cells(8.0),
+            _ => InitialSize::Default,
+        }));
         let source = Box::new(source);
         let slow = std::env::args().any(|a| a == "--slow");
         let table = Table::Records {
@@ -1499,6 +1507,16 @@ fn main() -> io::Result<()> {
                     .empty(table.empty(!quick.text().is_empty()));
                 let fill = |grid: &mut Grid, viewport| fill(grid, &table, viewport);
                 layout = begin_frame(&mut grid, &ctx, area, fill);
+                // Seed the sizes the frame makes possible, then lay it out again.
+                for _ in 0..4 {
+                    let changed = sizes
+                        .as_mut()
+                        .is_some_and(|sizes| sizes.settle(&mut grid, &table.text()));
+                    if !changed {
+                        break;
+                    }
+                    layout = begin_frame(&mut grid, &ctx, area, fill);
+                }
                 if app.fit_rows {
                     // Fit to the rows this frame shows, then lay it out again.
                     let snapshot = grid.snapshot();

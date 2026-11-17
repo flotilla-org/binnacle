@@ -22,7 +22,8 @@ use crate::Preset;
 /// `TypeText` whatever the typing) open everything under it or the rows to
 /// that depth, and Tab leaves for the body. A character
 /// typed with Shift and bound only without it takes that binding, since its
-/// case carries Shift.
+/// case carries Shift; with Ctrl or Alt held, so does its lower case, so
+/// Ctrl+Shift+A (reported as `A`) is Ctrl+A.
 #[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: HashMap<(KeyCode, KeyModifiers), Action>,
@@ -103,9 +104,21 @@ impl Keymap {
         if let Some(action) = self.bindings.get(&(event.code, event.modifiers)) {
             return Some(action.clone());
         }
-        if let KeyCode::Char(_) = event.code {
+        if let KeyCode::Char(c) = event.code {
             let unshifted = event.modifiers - KeyModifiers::SHIFT;
             if let Some(action) = self.bindings.get(&(event.code, unshifted)) {
+                return Some(action.clone());
+            }
+            // With Ctrl or Alt held, Shift's case is not a different key:
+            // Ctrl+Shift+A arrives as `A` and takes Ctrl+A's binding.
+            let chord = KeyModifiers::CONTROL | KeyModifiers::ALT;
+            let mut lower = c.to_lowercase();
+            if let (true, Some(l), None) = (
+                event.modifiers.intersects(chord),
+                lower.next(),
+                lower.next(),
+            ) && let Some(action) = self.bindings.get(&(KeyCode::Char(l), unshifted))
+            {
                 return Some(action.clone());
             }
         }

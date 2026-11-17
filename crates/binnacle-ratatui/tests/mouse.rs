@@ -96,3 +96,28 @@ fn quick_presses_on_the_same_cell_with_the_same_button_count_up() {
     assert_eq!(press(left, 6, ms(700)), Some(1));
     assert_eq!(press(left, 6, ms(1200)), Some(1), "too slow");
 }
+
+#[test]
+fn a_drag_between_two_presses_on_one_cell_breaks_the_double_click() {
+    let mut mouse = Mouse::default();
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let none = KeyModifiers::NONE;
+    let mut at = |kind, column, after| {
+        mouse
+            .event(&event(kind, column, 3, none), AREA, t0 + ms(after))
+            .map(|e| e.clicks)
+    };
+    let left = MouseEventKind::Down(MouseButton::Left);
+    assert_eq!(at(left, 5, 0), Some(1));
+    at(MouseEventKind::Drag(MouseButton::Left), 8, 50);
+    at(MouseEventKind::Up(MouseButton::Left), 8, 100);
+    assert_eq!(at(left, 5, 150), Some(1), "a drag elsewhere in between");
+    assert_eq!(at(left, 5, 250), Some(2), "but a quick press after counts");
+    at(MouseEventKind::Moved, 9, 300);
+    assert_eq!(
+        at(left, 5, 350),
+        Some(3),
+        "moving without a button is not a drag"
+    );
+}
