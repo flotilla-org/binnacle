@@ -289,7 +289,7 @@ function encoded(texts: (string | null)[]): SortKeys & { type: "strings" } {
 }
 
 /** Stages `k` as the next sort item's keys. */
-function stage(m: WebMemory, k: SortKeys) {
+function stageKeys(m: WebMemory, k: SortKeys) {
   if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
   else if (k.type === "unsigned") m.stage_unsigned(k.values, k.nulls);
   else m.stage_strings(k.bytes, k.ends, k.nulls);
@@ -769,7 +769,7 @@ export function fromRows<R extends object>(
     for (const { id } of by) {
       let k = keys.get(id);
       if (!k) keys.set(id, (k = extract(rows.map((r) => r[id]))));
-      stage(m, k);
+      stageKeys(m, k);
     }
     const moved = m.sort(
       ROWS,
@@ -967,7 +967,7 @@ export function fromRows<R extends object>(
     for (const { id } of spec) {
       let k = rowKeys.get(id);
       if (!k) rowKeys.set(id, (k = extract(columns.map((c) => rows[id]![c.key]))));
-      stage(m, k);
+      stageKeys(m, k);
     }
     const moved = m.sort(
       COLS,
