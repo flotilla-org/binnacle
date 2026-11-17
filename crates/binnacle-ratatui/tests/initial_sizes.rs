@@ -128,7 +128,7 @@ fn fills_share_the_room_equally() {
     host.frame();
     let share = host.width(1);
     assert_eq!(share, host.width(2));
-    assert!(share > Some(6.0));
+    assert_eq!(share, Some(15.0), "31 cells left, floored");
 }
 
 #[test]

@@ -8,8 +8,8 @@ use crate::scrollbar::{self, BarEvent, Held, Layout};
 
 /// Turns crossterm mouse events into Grid pointer events relative to the
 /// Grid's area. crossterm reports no click count, so this counts presses of
-/// the same button on the same cell within [`Mouse::interval`] of each other, a drag between
-/// them starting the count over.
+/// the same button on the same cell within [`Mouse::interval`] of each other,
+/// a drag between them starting the count over.
 /// The wheel is left to [`crate::wheel`], and [`Mouse::scrollbar`] takes
 /// what lands on the scrollbars.
 #[derive(Clone, Debug)]
