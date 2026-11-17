@@ -3144,7 +3144,8 @@ fn once_the_window_fills_a_scroll_to_the_end_leaves_no_lasting_overscroll(tc: Te
         let meets = match (way, *last) {
             (0 | 1, last) if scrolled => last == Some(end),
             (_, Some(last)) => last >= end,
-            (_, None) => true,
+            // Unscrolled, the last item may lie past the viewport.
+            (_, None) => !scrolled,
         };
         assert!(
             meets,
