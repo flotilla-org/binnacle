@@ -420,7 +420,7 @@ fn a_cbor_head_declaring_a_length_past_the_maximum_is_an_error_at_once() {
 }
 
 #[test]
-fn a_large_cbor_item_fed_a_byte_at_a_time_is_read_in_linear_work() {
+fn a_large_item_fed_a_byte_at_a_time_is_read_in_linear_work() {
     let rows: Vec<Json> = (0..5_000)
         .map(|i| json!({"id": i, "name": format!("row-{i}"), "load": i as f64 / 3.0, "spec": {"tags": [i, "x"]}}))
         .collect();
