@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use binnacle_core::{Axis, Key};
 use binnacle_described::{Decoder, DescribedSource, Encoding, Message, Received, Wire};
-use binnacle_described_http::Event as Wired;
+use binnacle_described_http::{Event as Wired, Unserved};
 use binnacle_format::Timestamp;
 use binnacle_layout::view::{
     AxisView, Condition, ConditionKind, Direction, FilterSpec, SortColumn, ViewSpec,
@@ -1355,6 +1355,30 @@ fn the_retrying_note_shows_the_status_and_the_bodys_first_line() {
         notes.line().as_deref(),
         Some("reconnecting (refused), retry 2 in 500 ms")
     );
+}
+
+#[test]
+fn a_watch_that_cannot_open_says_why() {
+    let fails = |event| {
+        let mut events = VecDeque::from([event]);
+        let mut notes = feed::Notes::default();
+        let fed = feed::drain(
+            &mut crews(),
+            || events.pop_front(),
+            |_| {},
+            &mut notes,
+            Duration::from_secs(5),
+        );
+        fed.unwrap_err()
+    };
+    let failed = |status| Wired::Failed {
+        status,
+        body: b"why".to_vec(),
+    };
+    assert_eq!(fails(failed(Some(404))), "404 why");
+    assert_eq!(fails(failed(None)), "why");
+    let unserved = fails(Wired::Unserved(Unserved::Auth));
+    assert_eq!(unserved, "the credential is not a valid HTTP header value");
 }
 
 #[test]

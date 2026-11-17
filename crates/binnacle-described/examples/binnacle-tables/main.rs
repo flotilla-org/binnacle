@@ -69,7 +69,7 @@ struct Args {
 enum Rows {
     Fixture(PathBuf),
     Live {
-        options: Options,
+        options: Box<Options>,
         table: String,
         scope: Scope,
     },
@@ -136,7 +136,7 @@ fn args(args: Vec<String>) -> Args {
         (None, Some(endpoint), Some(table)) => {
             let scope = (wheres.into_iter()).fold(Scope::new(namespace), Scope::with_where);
             Rows::Live {
-                options: Options::new(endpoint).auth(auth),
+                options: Box::new(Options::new(endpoint).auth(auth)),
                 table,
                 scope,
             }
@@ -181,8 +181,8 @@ fn main() -> io::Result<()> {
             // A print fails on a server down or a wrong port; a terminal
             // keeps trying, saying so.
             let options = match interactive {
-                true => options,
-                false => options.retries(Some(PRINT_RETRIES)),
+                true => *options,
+                false => (*options).retries(Some(PRINT_RETRIES)),
             };
             let transport = Blocking::new(options)?;
             let mut tables = Tables::live(&table, scope, origin);

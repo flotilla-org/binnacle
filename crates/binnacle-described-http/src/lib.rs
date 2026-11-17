@@ -16,7 +16,10 @@
 //!
 //! Reconnecting is the source's: after [`Event::Ended`] the host calls
 //! `source.ended()`, which asks to open the watch again, and the transport
-//! waits out its backoff before that request. A source also asks again
+//! waits out its backoff before that request. An optional idle timeout
+//! ([`Options::idle`]) ends a stream that has gone silent, so a server
+//! host that vanished without closing the connection is reconnected too.
+//! A source also asks again
 //! when its filter changes the `where` clauses it sends, while the stream
 //! is open: the new watch replaces the old, whose messages must stop.
 //! [`Blocking`] drops the old watch and any of its events not yet read; an
@@ -24,6 +27,7 @@
 //! request before it feeds the new one's events.
 
 use std::cell::Cell;
+use std::hash::{BuildHasher, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -36,6 +40,7 @@ use hyper::Request;
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::time::Instant;
 
 /// Where the table server is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,20 +74,28 @@ impl std::fmt::Debug for Auth {
     }
 }
 
-/// How long to wait before opening a watch again: `initial`, doubling to
-/// `max`, back to `initial` once a stream delivers `synced`.
+/// How long to wait before opening a watch again: a delay of `initial`,
+/// doubling to `max`, back to `initial` once a stream has stayed open for
+/// `settle` after its `synced`. Each wait is drawn evenly from the upper
+/// half of the delay, `[delay / 2, delay]` (equal jitter), so clients that
+/// lost the same server do not all come back at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Backoff {
     pub initial: Duration,
     pub max: Duration,
+    /// How long a stream stays open after `synced` before the delay goes
+    /// back to `initial`, so a server that fails right after it syncs is
+    /// not reloaded at the shortest wait for ever.
+    pub settle: Duration,
 }
 
 impl Default for Backoff {
-    /// 250 ms doubling to 10 s.
+    /// 250 ms doubling to 10 s, back to 250 ms after 10 s synced.
     fn default() -> Self {
         Backoff {
             initial: Duration::from_millis(250),
             max: Duration::from_secs(10),
+            settle: Duration::from_secs(10),
         }
     }
 }
@@ -99,10 +112,19 @@ pub struct Options {
     /// may take before the attempt is retried; 10 s by default. A watch's
     /// stream is not bounded.
     pub timeout: Duration,
+    /// How long an open stream may bring no bytes before it ends as
+    /// [`Event::Ended`]; `None`, by default, waits for ever. flotillad sends
+    /// a `progress` heartbeat while a watch is quiet, so about three of its
+    /// periods is a good value: it catches a server host that vanished
+    /// without closing the connection.
+    pub idle: Option<Duration>,
     /// How many failed attempts in a row a watch retries before it gives
     /// up with [`Event::Failed`]; `None`, by default, retries for ever. A
     /// one-shot reader sets it so a wrong port or a server down fails.
     pub retries: Option<u32>,
+    /// Seeds the backoff's jitter, so its waits repeat; `None`, by
+    /// default, seeds it differently for each transport.
+    pub seed: Option<u64>,
 }
 
 impl Options {
@@ -113,7 +135,9 @@ impl Options {
             encoding: Encoding::Ndjson,
             backoff: Backoff::default(),
             timeout: Duration::from_secs(10),
+            idle: None,
             retries: None,
+            seed: None,
         }
     }
 
@@ -137,8 +161,18 @@ impl Options {
         self
     }
 
+    pub fn idle(mut self, idle: Option<Duration>) -> Options {
+        self.idle = idle;
+        self
+    }
+
     pub fn retries(mut self, retries: Option<u32>) -> Options {
         self.retries = retries;
+        self
+    }
+
+    pub fn seed(mut self, seed: Option<u64>) -> Options {
+        self.seed = seed;
         self
     }
 }
@@ -153,8 +187,9 @@ pub enum Event {
     /// they carried is lost, so the source may differ from the server
     /// until its next Resync: show the host's user, or count it.
     Undecodable(DecodeError),
-    /// The stream ended, cleanly or with an I/O error after the headers:
-    /// call `source.ended()`, and serve the request it makes.
+    /// The stream ended, cleanly, with an I/O error after the headers or
+    /// silent for [`Options::idle`]: call `source.ended()`, and serve the
+    /// request it makes.
     Ended,
     /// An attempt did not open the stream, and the next goes after `wait`:
     /// the `attempt`th failure in a row. `status` is the server's 5xx and
@@ -168,14 +203,45 @@ pub enum Event {
     },
     /// The server answered with a status that is not a success (and not
     /// one retried), or the attempts ran out ([`Options::retries`], with
-    /// the last failure's status, 0 if it had none, and body): the watch is
-    /// not open, and is not opened again.
-    Failed { status: u16, body: Vec<u8> },
+    /// the last failure's status, `None` if it had none, and body): the
+    /// watch is not open, and is not opened again.
+    Failed { status: Option<u16>, body: Vec<u8> },
+    /// The transport sent nothing, and will not: the request is not one it
+    /// serves, or the options cannot make it.
+    Unserved(Unserved),
+}
+
+/// Why the transport did not send a request.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum Unserved {
+    /// A request this transport does not serve, handed back.
+    Request(HostRequest),
+    /// The base URL is not `http://host[:port][/prefix]`, or has userinfo
+    /// (credentials go in [`Auth`]), or its prefix is not a valid path.
+    Endpoint,
+    /// The credential is not a valid HTTP header value.
+    Auth,
+    /// A Unix socket, where there are none.
+    Unix,
+}
+
+impl std::fmt::Display for Unserved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unserved::Request(request) => write!(f, "the transport does not serve {request:?}"),
+            Unserved::Endpoint => f.write_str(
+                "the base URL must be http://host[:port][/prefix], with no userinfo (credentials go in Auth)",
+            ),
+            Unserved::Auth => f.write_str("the credential is not a valid HTTP header value"),
+            Unserved::Unix => f.write_str("no Unix sockets here"),
+        }
+    }
 }
 
 /// Serves a source's watch requests over HTTP. One transport paces all its
-/// watches with one backoff, so a `synced` on any resets it for all; give
-/// each watch its own transport to pace them apart.
+/// watches with one backoff, so a stream settled on any resets it for all;
+/// give each watch its own transport to pace them apart.
 #[derive(Clone, Debug)]
 pub struct Transport {
     options: Options,
@@ -187,8 +253,10 @@ pub struct Transport {
 struct Pace {
     /// The wait before the next attempt after a failure or an end.
     delay: Duration,
-    /// A stream ended or failed: the next request waits `delay` first.
+    /// A stream ended or failed: the next request waits first.
     wait: bool,
+    /// The jitter's random state.
+    random: u64,
 }
 
 /// Why an attempt did not open a stream.
@@ -203,9 +271,19 @@ enum Attempt {
 impl Transport {
     pub fn new(options: Options) -> Transport {
         let delay = options.backoff.initial;
+        let random = (options.seed).unwrap_or_else(|| {
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        });
+        let pace = Pace {
+            delay,
+            wait: false,
+            random,
+        };
         Transport {
             options,
-            state: Arc::new(Mutex::new(Pace { delay, wait: false })),
+            state: Arc::new(Mutex::new(pace)),
         }
     }
 
@@ -217,9 +295,10 @@ impl Transport {
     /// if the last stream ended or failed, retrying a refused connection or
     /// a 5xx with backoff ([`Event::Retrying`] each time), up to
     /// [`Options::retries`]. Each event goes to `emit`, ending with
-    /// [`Event::Ended`] or [`Event::Failed`].
+    /// [`Event::Ended`], [`Event::Failed`] or [`Event::Unserved`].
     pub async fn watch(&self, request: &HostRequest, mut emit: impl FnMut(Event)) {
         let HostRequest::OpenWatch(watch) = request else {
+            emit(Event::Unserved(Unserved::Request(request.clone())));
             return;
         };
         let target = watch.target();
@@ -241,10 +320,7 @@ impl Transport {
             failures += 1;
             if self.options.retries.is_some_and(|most| failures > most) {
                 self.pace().wait = true;
-                emit(Event::Failed {
-                    status: status.unwrap_or(0),
-                    body,
-                });
+                emit(Event::Failed { status, body });
                 return;
             }
             let wait = self.grow(&mut self.pace());
@@ -262,11 +338,15 @@ impl Transport {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The wait due now, doubling the next, up to the most.
+    /// The wait due now, drawn from `[delay / 2, delay]`, doubling the
+    /// delay, up to the most.
     fn grow(&self, pace: &mut Pace) -> Duration {
-        let wait = pace.delay;
+        let delay = pace.delay;
         pace.delay = (pace.delay * 2).min(self.options.backoff.max);
-        wait
+        let half = delay / 2;
+        let span = (delay - half).as_nanos().min(u64::MAX as u128) as u64;
+        let draw = splitmix(&mut pace.random) % span.saturating_add(1);
+        half + Duration::from_nanos(draw)
     }
 
     async fn attempt(&self, target: &str, emit: &mut impl FnMut(Event)) -> Attempt {
@@ -274,10 +354,7 @@ impl Transport {
             Endpoint::Tcp(base) => match split(base) {
                 Some((host, prefix)) => (host, format!("{prefix}{target}")),
                 None => {
-                    emit(Event::Failed {
-                        status: 0,
-                        body: b"the base URL must be http://host[:port][/prefix], with no userinfo (credentials go in Auth)".to_vec(),
-                    });
+                    emit(Event::Unserved(Unserved::Endpoint));
                     return Attempt::Done;
                 }
             },
@@ -300,25 +377,18 @@ impl Transport {
             }
         };
         let Some(request) = request else {
-            emit(Event::Failed {
-                status: 0,
-                body: b"the credential is not a valid HTTP header value".to_vec(),
-            });
+            emit(Event::Unserved(Unserved::Auth));
             return Attempt::Done;
         };
+        // The credential is checked above and the target is encoded, so
+        // what is left to be invalid is the base URL's prefix.
         let Ok(request) = request.body(Empty::<Bytes>::new()) else {
-            emit(Event::Failed {
-                status: 0,
-                body: b"the credential or target is not a valid HTTP header or path".to_vec(),
-            });
+            emit(Event::Unserved(Unserved::Endpoint));
             return Attempt::Done;
         };
         #[cfg(not(unix))]
         if let Endpoint::Unix(_) = &self.options.endpoint {
-            emit(Event::Failed {
-                status: 0,
-                body: b"no Unix sockets here".to_vec(),
-            });
+            emit(Event::Unserved(Unserved::Unix));
             return Attempt::Done;
         }
         // Connecting and the response's head are bounded; the body, a
@@ -364,7 +434,7 @@ impl Transport {
         if !status.is_success() {
             let body = self.body(response, MAX_FAILED_BODY).await;
             emit(Event::Failed {
-                status: status.as_u16(),
+                status: Some(status.as_u16()),
                 body,
             });
             self.pace().wait = true;
@@ -376,22 +446,43 @@ impl Transport {
             .unwrap_or(self.options.encoding);
         let mut decoder = Decoder::new(encoding);
         let mut body = response.into_body();
-        let drain = |decoder: &mut Decoder, emit: &mut dyn FnMut(Event)| {
-            while let Some(message) = decoder.next() {
-                self.emit(message, emit);
-            }
-        };
-        while let Some(frame) = body.frame().await {
-            let Ok(frame) = frame else {
+        // When bytes last came, and when the backoff goes back to its
+        // initial delay: `settle` after the stream's `synced`.
+        let mut heard = Instant::now();
+        let mut settles = None;
+        loop {
+            let idles = (self.options.idle).and_then(|idle| heard.checked_add(idle));
+            let frame = match idles.into_iter().chain(settles).min() {
+                // Reading a frame is cancel-safe: one cut short loses nothing.
+                Some(at) => match tokio::time::timeout_at(at, body.frame()).await {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        let now = Instant::now();
+                        if settles.is_some_and(|at| at <= now) {
+                            settles = None;
+                            self.pace().delay = self.options.backoff.initial;
+                        }
+                        if idles.is_some_and(|at| at <= now) {
+                            break;
+                        }
+                        continue;
+                    }
+                },
+                None => body.frame().await,
+            };
+            let Some(Ok(frame)) = frame else {
                 break;
             };
+            heard = Instant::now();
             if let Ok(data) = frame.into_data() {
                 decoder.feed(&data);
-                drain(&mut decoder, emit);
+                while let Some(message) = decoder.next() {
+                    self.emit(message, &mut settles, emit);
+                }
             }
         }
         if let Some(last) = decoder.finish() {
-            self.emit(last, emit);
+            self.emit(last, &mut settles, emit);
         }
         self.pace().wait = true;
         emit(Event::Ended);
@@ -420,12 +511,20 @@ impl Transport {
         body
     }
 
-    /// Hands on one decoded message; a `synced` resets the backoff.
-    fn emit(&self, message: Result<Message, DecodeError>, emit: &mut dyn FnMut(Event)) {
+    /// Hands on one decoded message; a `synced` sets when the backoff
+    /// resets, if the stream stays open.
+    fn emit(
+        &self,
+        message: Result<Message, DecodeError>,
+        settles: &mut Option<Instant>,
+        emit: &mut dyn FnMut(Event),
+    ) {
         match message {
             Ok(message) => {
-                if let Message::Synced { .. } = message {
-                    self.pace().delay = self.options.backoff.initial;
+                if let Message::Synced { .. } = message
+                    && settles.is_none()
+                {
+                    *settles = Instant::now().checked_add(self.options.backoff.settle);
                 }
                 emit(Event::Message(message));
             }
@@ -447,6 +546,15 @@ where
         let _ = connection.await;
     });
     sender.send_request(request).await
+}
+
+/// The next of a SplitMix64 sequence: enough to spread waits, not secret.
+fn splitmix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D4_9BB4_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// The most of a failed answer's body kept for [`Event::Failed`].
