@@ -843,6 +843,27 @@ describe("fromRows", () => {
   });
 });
 
+describe("fromRows's unsigned columns", () => {
+  const BIG = 1n << 53n;
+  const values = [BIG + 1n, 0n, (1n << 64n) - 1n, BIG, BIG - 1n];
+
+  for (const direction of ["ascending", "descending"] as const) {
+    test(`a column of bigints above 2^53 sorts exactly, ${direction}`, () => {
+      const rows = values.map((v) => ({ n: v }));
+      const source = fromRows(rows, [{ key: "n" }]);
+      try {
+        const view = { rows: { filter: { quick: null, conditions: [] }, sort: [{ id: "n" as const, direction }], hidden: [] }, cols: { filter: { quick: null, conditions: [] }, sort: [], hidden: [] } };
+        void source.view!(view, new AbortController().signal);
+        const sorted = [...rows.keys()].sort((a, b) => (values[a]! < values[b]! ? -1 : 1));
+        const window = source.rows.window(0, rows.length, new AbortController().signal) as number[];
+        expect(window).toEqual(direction === "ascending" ? sorted : sorted.reverse());
+      } finally {
+        source.destroy();
+      }
+    });
+  }
+});
+
 describe("fromRows's columns", () => {
   const shownColumns = (source: ReturnType<typeof fromRows<Rec>>) =>
     source.cols.window(0, source.cols.count() as number, new AbortController().signal) as (keyof Rec)[];

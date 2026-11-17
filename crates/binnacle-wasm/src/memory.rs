@@ -30,6 +30,7 @@ use crate::grouping::{WireGroupOf, WireGrouping, WireItemKind, WireOutline};
 /// One sort column's keys, staged until [`WebMemory::sort`].
 enum Staged {
     Numbers(Vec<Option<f64>>),
+    Unsigned(Vec<Option<u64>>),
     /// Every string's UTF-8 bytes end to end; `ends[i]` is where row `i`'s end.
     Strings {
         bytes: Vec<u8>,
@@ -42,6 +43,7 @@ impl Staged {
     fn keys(&self) -> SortKeys<'_> {
         match self {
             Staged::Numbers(v) => SortKeys::F64(v.clone()),
+            Staged::Unsigned(v) => SortKeys::U64(v.clone()),
             Staged::Strings { bytes, ends, nulls } => SortKeys::Bytes(
                 ends.iter()
                     .enumerate()
@@ -556,6 +558,18 @@ impl WebMemory {
         self.staged.push(Staged::Numbers(keys));
     }
 
+    /// Stages the next sort item's keys as unsigned integers, which sort
+    /// exactly (`values` crosses as a `BigUint64Array`); `nulls[i] != 0`
+    /// makes item `i` null.
+    pub fn stage_unsigned(&mut self, values: &[u64], nulls: &[u8]) {
+        let keys = values
+            .iter()
+            .zip(nulls)
+            .map(|(&v, &null)| (null == 0).then_some(v))
+            .collect();
+        self.staged.push(Staged::Unsigned(keys));
+    }
+
     /// Stages the next sort item's keys as UTF-8 strings, which sort by
     /// code point: item `i`'s bytes end at `ends[i]`.
     pub fn stage_strings(&mut self, bytes: Vec<u8>, ends: Vec<u32>, nulls: Vec<u8>) {
@@ -828,6 +842,15 @@ mod tests {
         m.stage_numbers(&[f64::NAN, 2.0, 0.0, 1.0], &[0, 0, 1, 0]);
         m.sort(ROWS, &[0], &[0]);
         assert_eq!(order(&m), vec![2, 3, 1, 0]);
+    }
+
+    #[test]
+    fn staged_unsigned_sort_exactly_above_two_to_the_53() {
+        let mut m = WebMemory::new(4, 1);
+        let big = 1u64 << 53;
+        m.stage_unsigned(&[big + 1, u64::MAX, 0, big], &[0, 0, 1, 0]);
+        m.sort(ROWS, &[0], &[0]);
+        assert_eq!(order(&m), vec![2, 3, 0, 1]);
     }
 
     #[test]
