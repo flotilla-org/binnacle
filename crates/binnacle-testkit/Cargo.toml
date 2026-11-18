@@ -21,7 +21,7 @@ serde_json = { workspace = true, optional = true }
 [dev-dependencies]
 # Its own tests run the fake.
 binnacle-testkit = { path = ".", features = ["fake-tables"] }
-ciborium = "0.2"
+ciborium.workspace = true
 
 [[bin]]
 name = "fake-tables"

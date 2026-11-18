@@ -240,6 +240,7 @@ const summaryKey = (id: number) => SUMMARY | BigInt(-id - 1);
 
 type SortKeys =
   | { type: "numbers"; values: Float64Array; nulls: Uint8Array }
+  | { type: "unsigned"; values: BigUint64Array; nulls: Uint8Array }
   | { type: "strings"; bytes: Uint8Array; ends: Uint32Array; nulls: Uint8Array };
 
 const ROWS = 0;
@@ -256,9 +257,17 @@ function numeric(v: unknown): number | undefined {
   return undefined;
 }
 
-/** A column sorts as numbers if every value that is not null does, else as strings. */
+/** A column of unsigned integers (non-negative bigints, with nulls) sorts exactly, as `u64`. */
+function unsigned(values: unknown[]): boolean {
+  return values.every((v) => v == null || (typeof v === "bigint" && v >= 0n && v < 1n << 64n)) && values.some((v) => v != null);
+}
+
+/** A column sorts as unsigned integers if all its values are, else as numbers if every value that is not null does, else as strings. */
 function extract(values: unknown[]): SortKeys {
   const nulls = Uint8Array.from(values, (v) => (v == null ? 1 : 0));
+  if (unsigned(values)) {
+    return { type: "unsigned", values: BigUint64Array.from(values, (v) => (v == null ? 0n : (v as bigint))), nulls };
+  }
   if (values.every((v) => v == null || numeric(v) !== undefined)) {
     return { type: "numbers", values: Float64Array.from(values, (v) => (v == null ? 0 : numeric(v)!)), nulls };
   }
@@ -277,6 +286,13 @@ function encoded(texts: (string | null)[]): SortKeys & { type: "strings" } {
   const bytes = new Uint8Array(end);
   parts.forEach((p, i) => bytes.set(p, ends[i]! - p.length));
   return { type: "strings", bytes, ends, nulls };
+}
+
+/** Stages `k` as the next sort item's keys. */
+function stageKeys(m: WebMemory, k: SortKeys) {
+  if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
+  else if (k.type === "unsigned") m.stage_unsigned(k.values, k.nulls);
+  else m.stage_strings(k.bytes, k.ends, k.nulls);
 }
 
 const DIRECTION = { ascending: 0, descending: 1 } as const;
@@ -753,8 +769,7 @@ export function fromRows<R extends object>(
     for (const { id } of by) {
       let k = keys.get(id);
       if (!k) keys.set(id, (k = extract(rows.map((r) => r[id]))));
-      if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
-      else m.stage_strings(k.bytes, k.ends, k.nulls);
+      stageKeys(m, k);
     }
     const moved = m.sort(
       ROWS,
@@ -952,8 +967,7 @@ export function fromRows<R extends object>(
     for (const { id } of spec) {
       let k = rowKeys.get(id);
       if (!k) rowKeys.set(id, (k = extract(columns.map((c) => rows[id]![c.key]))));
-      if (k.type === "numbers") m.stage_numbers(k.values, k.nulls);
-      else m.stage_strings(k.bytes, k.ends, k.nulls);
+      stageKeys(m, k);
     }
     const moved = m.sort(
       COLS,

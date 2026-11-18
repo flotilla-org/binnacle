@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 binnacle-core.workspace = true
-ciborium = "0.2"
+ciborium.workspace = true
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

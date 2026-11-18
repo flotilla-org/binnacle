@@ -20,5 +20,5 @@ serde_json.workspace = true
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dev-dependencies]
-ciborium = "0.2"
+ciborium.workspace = true
 hegeltest.workspace = true
