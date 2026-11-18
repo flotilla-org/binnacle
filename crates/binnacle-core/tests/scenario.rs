@@ -3,7 +3,10 @@
 
 use std::ops::Range;
 
-use binnacle_core::{Action, Axis, AxisConfig, Effect, Grid, Key, Position, Viewport};
+use binnacle_core::{
+    Action, Axis, AxisConfig, ChangeNotice, Damage, Edge, Effect, Grid, Key, PointerEvent,
+    Position, Viewport,
+};
 use binnacle_memory::IdentitySource;
 use binnacle_testkit::{IdentityTable, PumpSource, Scenario, ScenarioSource};
 
@@ -139,4 +142,72 @@ fn a_tiny_size_override_cannot_blow_up_the_window() {
     let requests = grid.begin_frame(Viewport::new(80.0, 10.0));
     let cols = requests.get(Axis::Cols).unwrap();
     assert!(cols.end - cols.start <= 80 + 7, "asked for {cols:?}");
+}
+
+/// A press while a header move is held (its release lost) ends the move:
+/// its drop line goes, which the Snapshot reports as selection damage.
+#[test]
+fn a_press_that_ends_a_held_header_move_reports_damage() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(5, 1.0).header(1.0),
+        AxisConfig::new(3, 6.0).header(4.0),
+    );
+    let viewport = Viewport::new(22.0, 4.0);
+    s.input(|g| g.set_movable(Axis::Cols, true));
+    s.frame(viewport);
+    s.input(|g| {
+        g.pointer(PointerEvent::down(7.0, 0.5));
+        g.pointer(PointerEvent::moved(20.0, 0.5));
+    });
+    let snap = s.frame(viewport);
+    assert!(snap.drop_indicator().is_some());
+    s.input(|g| g.pointer(PointerEvent::down(20.0, 0.5)));
+    let snap = s.frame(viewport);
+    assert_eq!(snap.drop_indicator(), None);
+    assert!(snap.damage().selection, "{:?}", snap.damage());
+}
+
+/// A pinned item outside the Window still draws its cells: a change to
+/// its content is positions damage, so the host draws them again.
+#[test]
+fn a_content_change_to_a_pinned_item_outside_the_window_reports_damage() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(100, 1.0).header(1.0),
+        AxisConfig::new(3, 6.0).header(4.0),
+    );
+    let viewport = Viewport::new(22.0, 4.0);
+    s.input(|g| g.pin(Axis::Rows, Edge::Leading, Key(50)));
+    s.frame(viewport);
+    let snap = s.frame(viewport);
+    assert_eq!(snap.pinned(Axis::Rows, Edge::Leading)[0].key, Some(Key(50)));
+    assert_eq!(snap.damage(), Damage::NONE);
+    s.input(|g| g.notify(Axis::Rows, ChangeNotice::ContentChanged(50..51)));
+    let snap = s.frame(viewport);
+    assert!(snap.damage().positions, "{:?}", snap.damage());
+}
+
+/// A content change in the Window empties it until the next one: a Size
+/// Override, known by Key, draws at the default size meanwhile, which is
+/// layout damage.
+#[test]
+fn a_content_change_that_empties_the_window_reports_the_sizes_it_loses() {
+    let mut s = Scenario::identity(
+        AxisConfig::new(20, 1.0).header(1.0),
+        AxisConfig::new(3, 6.0).header(4.0),
+    );
+    let viewport = Viewport::new(22.0, 6.0);
+    s.input(|g| g.set_size(Axis::Rows, Key(1), 2.0));
+    s.frame(viewport);
+    s.frame(viewport);
+    s.input(|g| g.notify(Axis::Rows, ChangeNotice::ContentChanged(1..2)));
+    let snap = s.grid.snapshot();
+    assert_eq!(snap.rows()[1].size, 1.0);
+    assert_eq!(
+        snap.damage(),
+        Damage {
+            layout: true,
+            selection: false,
+            positions: true
+        }
+    );
 }

@@ -189,7 +189,9 @@ impl Grid {
         // commits on a click elsewhere calls `edit_ended` before passing it on.
         self.end_resize();
         self.end_edit();
-        self.gesture = Gesture::Idle;
+        if std::mem::take(&mut self.gesture).capturing() {
+            self.pending_damage.selection = true;
+        }
         if self.moves.refused.take().is_some() {
             self.pending_damage.selection = true;
         }

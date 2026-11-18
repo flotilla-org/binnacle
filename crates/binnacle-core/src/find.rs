@@ -177,7 +177,9 @@ impl Grid {
         if !self.find_answered() {
             return;
         }
-        self.find.current = Some(found);
+        if self.find.current.replace(found) != Some(found) {
+            self.pending_damage.selection = true;
+        }
         let depth = ancestors[Axis::Rows.index()].len();
         let levels =
             (self.view.applied.grouping.as_ref()).map_or(&[][..], |g| g.levels(Axis::Rows));

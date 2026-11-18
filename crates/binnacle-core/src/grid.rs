@@ -1285,9 +1285,14 @@ impl Grid {
             self.hovered_border = border;
             self.pending_damage.selection = true;
         }
-        self.range = (self.selection.span)
+        let range = (self.selection.span)
             .filter(|_| !self.refiltering.locating_corners())
             .map(|s| s.range(&self.axes));
+        // A range follows drawn order, which pins change.
+        if range != self.range {
+            self.range = range;
+            self.pending_damage.selection = true;
+        }
         self.fill_selection();
         self.lay_out_spans();
         self.lay_out_corner();

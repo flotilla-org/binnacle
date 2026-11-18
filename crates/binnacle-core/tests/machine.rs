@@ -12,13 +12,14 @@
 //! Ported from the seeded chaos driver of the correctness review, which
 //! found the Cancel bugs pinned in `positional.rs`.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write;
 
 use binnacle_core::{
-    Action, Axis, AxisConfig, Button, ChangeNotice, Condition, ConditionState, DropTarget, Edge,
-    EditEnd, Effect, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key, Located, Mode,
-    Modifiers, PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit, TextQuery, Totals,
-    Value, ViewSpec, Viewport,
+    Action, Axis, AxisConfig, Button, CellState, ChangeNotice, Condition, ConditionState,
+    DropTarget, Edge, EditEnd, Effect, FindMatch, FindQuery, FocusStep, Grid, HeaderClick, Key,
+    Located, Mode, Modifiers, PointerEvent, PointerKind, ScrollAnchor, Searched, SelectionUnit,
+    Snapshot, StripItem, TextQuery, Totals, Value, ViewSpec, Viewport,
 };
 use hegel::generators as gs;
 use hegel::{Generator, TestCase};
@@ -60,6 +61,231 @@ struct Host {
     gaps: [f32; 2],
     /// Each axis's End Gap, as last set.
     end_gaps: [f32; 2],
+    seen: Seen,
+}
+
+/// What the previous Snapshot showed, and whether the content of a cell it
+/// drew has changed since.
+#[derive(Default)]
+struct Seen {
+    last: Option<Drawn>,
+    content_changed: bool,
+}
+
+/// What a Snapshot shows, split by the Damage that covers each part, with
+/// what no Damage names apart.
+#[derive(Debug, PartialEq)]
+struct Drawn {
+    /// Viewport, Header Bands, Gaps, scroll and where each item draws.
+    layout: String,
+    /// The Key and outline drawn at each Position of the scrolling Strip,
+    /// by axis.
+    keys: [BTreeMap<u64, String>; 2],
+    /// The Positions drawn with a Key, pinned or scrolling, by axis.
+    shown: [BTreeSet<u64>; 2],
+    /// The Keys and outlines of the pinned Strips, which pinning (layout)
+    /// or a notice moving their items (positions) changes.
+    pinned: String,
+    /// Focus and picks by Key, and the hovered header.
+    selection: String,
+    /// The Positions of focus and the range, which a change to the
+    /// selection or a notice that moves their items changes.
+    placed: String,
+    /// The state of each cell drawn, by row and column Position and Key.
+    cells: BTreeMap<[(u64, Option<Key>); 2], CellState>,
+    /// Where the focus, the editor and the selection draw, which a change
+    /// to the selection or the layout moves.
+    marks: String,
+    /// The rest the host draws: pins, header moves, the View Spec,
+    /// conditions and header marks. Not the Mode, pointer capture, cursor,
+    /// Find Query or find support, which a host reads every frame.
+    rest: String,
+}
+
+impl Drawn {
+    fn of(snap: &Snapshot) -> Drawn {
+        let mut layout = String::new();
+        let mut keys: [BTreeMap<u64, String>; 2] = Default::default();
+        let mut pinned = String::new();
+        let shown = Axis::ALL.map(|a| {
+            (snap.drawn(a))
+                .filter(|i| i.key.is_some())
+                .map(|i| i.position)
+                .collect()
+        });
+        // Focus by its Key where it has one: a notice that moves the
+        // focused item moves focus with it, which `positions` covers.
+        let focus = Axis::ALL.map(|a| {
+            let end = snap.focus(a).map(|f| f.key);
+            (end, snap.locating(a), snap.band_focused(a))
+        });
+        let selection = format!(
+            "{focus:?} {:?} {:?} {:?} {:?}",
+            snap.outline_focused(),
+            snap.focused_tier(),
+            Axis::ALL.map(|a| snap.picked(a)),
+            snap.hovered_header().map(|(a, i)| (a, i.position)),
+        );
+        let placed = format!(
+            "{:?} {:?}",
+            Axis::ALL.map(|a| snap.focus(a).map(|f| f.position)),
+            snap.selection_range(),
+        );
+        let marks = format!(
+            "{:?} {:?} {:?}",
+            snap.focus_rect(),
+            snap.editor_rect(),
+            snap.selection_rects(),
+        );
+        for axis in Axis::ALL {
+            let _ = write!(
+                layout,
+                "{axis:?} {} {} {} {} {:?} {:?} {:?} {:?} {:?} {:?} {:?}; ",
+                snap.count(axis),
+                snap.extent(axis),
+                snap.header(axis),
+                snap.gap(axis),
+                snap.scroll_anchor(axis),
+                snap.thumb(axis),
+                snap.scrolling(axis),
+                Edge::ALL.map(|e| snap.pinned_region(axis, e)),
+                snap.tiers(axis),
+                snap.spans(axis),
+                (snap.drawn(axis))
+                    .map(|i| (i.position, i.offset, i.size))
+                    .collect::<Vec<_>>(),
+            );
+            let outlined = |i: &StripItem| (i.position, i.key, snap.outline(axis, i.position));
+            for item in snap.strip(axis) {
+                let (_, key, outline) = outlined(item);
+                keys[axis.index()].insert(item.position, format!("{key:?} {outline:?}"));
+            }
+            for edge in Edge::ALL {
+                let items: Vec<_> = snap.pinned(axis, edge).iter().map(outlined).collect();
+                let _ = write!(pinned, "{items:?} ");
+            }
+        }
+        let _ = write!(layout, "{:?}", snap.corner());
+        let mut cells = BTreeMap::new();
+        for row in snap.drawn(Axis::Rows) {
+            for col in snap.drawn(Axis::Cols) {
+                let at = [row, col].map(|i| (i.position, i.key));
+                cells.insert(at, snap.cell_state(row, col));
+            }
+        }
+        let rest = [
+            format!(
+                "pins {:?}",
+                Axis::ALL.map(|a| Edge::ALL.map(|e| snap.pins(a, e).collect::<Vec<_>>()))
+            ),
+            format!("guide {:?}", snap.resize_guide()),
+            format!("moving {:?}", snap.moving_keys()),
+            format!("pendingmove {:?}", snap.pending_move()),
+            format!("refusal {:?}", snap.move_refusal()),
+            format!("movable {:?}", Axis::ALL.map(|a| snap.movable(a))),
+            format!("drop {:?}", snap.drop_indicator()),
+            format!("zones {:?}", snap.pin_zones()),
+            format!(
+                "view {:?}",
+                (
+                    snap.applied_view(),
+                    snap.requested_view(),
+                    snap.view_pending()
+                )
+            ),
+            format!("findmatch {:?}", snap.find_match()),
+            format!(
+                "totals {:?}",
+                Axis::ALL.map(|a| (snap.total(a), snap.quick_filter(a), snap.hidden(a)))
+            ),
+            format!("conditions {:?}", Axis::ALL.map(|a| snap.conditions(a))),
+            format!("sorts {:?}", Axis::ALL.map(|a| snap.sorts(a))),
+            format!("slicers {:?}", snap.slicers()),
+            format!("levels {:?}", Axis::ALL.map(|a| snap.levels(a))),
+            format!("values {:?}", snap.values()),
+            format!(
+                "headers {:?}",
+                Axis::ALL.map(|a| snap.headers(a).collect::<Vec<_>>())
+            ),
+            format!(
+                "hide {:?}",
+                Axis::ALL.map(|a| (snap.hide_support(a), snap.hide_cap(a)))
+            ),
+        ]
+        .join(" ");
+        Drawn {
+            layout,
+            keys,
+            shown,
+            pinned,
+            selection,
+            placed,
+            cells,
+            marks,
+            rest,
+        }
+    }
+}
+
+/// Takes a Snapshot and checks its Damage against the previous one's: a
+/// Snapshot reporting no Damage draws what the previous one did, a change
+/// is reported as its kind, and a change to the content of a cell drawn
+/// last is reported as `positions`, so the host draws it again.
+fn snapshot<'a>(grid: &'a mut Grid, seen: &mut Seen) -> Snapshot<'a> {
+    let snap = grid.snapshot();
+    let drawn = Drawn::of(&snap);
+    let damage = snap.damage();
+    if let Some(last) = &seen.last {
+        let cells =
+            (drawn.cells.iter()).any(|(at, state)| last.cells.get(at).is_some_and(|s| s != state));
+        let kinds = [
+            ("layout", last.layout != drawn.layout, damage.layout),
+            (
+                "selection",
+                last.selection != drawn.selection || cells,
+                damage.selection,
+            ),
+            (
+                "pinned Strip",
+                last.pinned != drawn.pinned,
+                damage.layout || damage.positions,
+            ),
+            (
+                "selection by Position",
+                last.placed != drawn.placed,
+                damage.selection || damage.positions,
+            ),
+            (
+                "selection drawn",
+                last.marks != drawn.marks,
+                damage.selection || damage.layout,
+            ),
+            ("content", seen.content_changed, damage.positions),
+        ];
+        for (kind, changed, reported) in kinds {
+            assert!(
+                !changed || reported,
+                "{kind} changed without its damage ({damage:?}):\n{last:?}\n{drawn:?}"
+            );
+        }
+        // A Position drawn last time too may draw another Key.
+        for axis in Axis::ALL {
+            let (before, now) = (&last.keys[axis.index()], &drawn.keys[axis.index()]);
+            for (at, key) in now {
+                assert!(
+                    damage.positions || before.get(at).is_none_or(|b| b == key),
+                    "{axis:?} {at:?} drew {:?}, now {key:?}, without positions damage ({damage:?})",
+                    before.get(at)
+                );
+            }
+        }
+        if !damage.any() {
+            assert_eq!(&drawn, last, "a Snapshot reporting no damage changed");
+        }
+    }
+    seen.last = Some(drawn);
+    seen.content_changed = false;
+    snap
 }
 
 fn axis() -> impl hegel::PrintableGenerator<Axis> {
@@ -102,7 +328,7 @@ impl Host {
     /// Before a release: a header drag in progress pins, unpins or moves
     /// as its drop target says, so the model follows that.
     fn expect_drop(&mut self) {
-        let snap = self.grid.snapshot();
+        let snap = snapshot(&mut self.grid, &mut self.seen);
         let Mode::MovingHeaders { axis, key, target } = snap.mode() else {
             return;
         };
@@ -186,7 +412,7 @@ impl Host {
     /// the latest request (else the applied one), and every condition not
     /// being removed.
     fn wanted(&mut self) -> (Option<TextQuery>, Vec<Condition>) {
-        let snap = self.grid.snapshot();
+        let snap = snapshot(&mut self.grid, &mut self.seen);
         let latest = snap.requested_view().unwrap_or(snap.applied_view());
         let quick = latest.rows.filter.quick.clone();
         let conditions = (snap.conditions(Axis::Rows).into_iter())
@@ -231,7 +457,7 @@ impl Host {
             let window: Vec<Key> = keys[start..end].iter().map(|&k| Key(k)).collect();
             self.grid.set_window(axis, range.start, &window);
         }
-        let snap = self.grid.snapshot();
+        let snap = snapshot(&mut self.grid, &mut self.seen);
         // The chips list the applied conditions, each Applied or Removing,
         // and the headers mark the columns they read. Others are Adding while
         // an answer is due, else NotApplied.
@@ -467,7 +693,9 @@ impl Host {
                 let answer = match tc.draw(gs::integers::<u8>().max_value(3)) {
                     0 | 1 => spec,
                     2 => self.part_of(tc, spec),
-                    _ => self.grid.snapshot().applied_view().clone(),
+                    _ => snapshot(&mut self.grid, &mut self.seen)
+                        .applied_view()
+                        .clone(),
                 };
                 tc.note(&format!("view_applied({answer:?})"));
                 self.view_from_source(answer, totals, true);
@@ -521,14 +749,18 @@ impl Host {
                     .draw(gs::weighted_booleans(0.8))
                     .then(|| FindMatch::new(self.key(tc, Axis::Rows), self.key(tc, Axis::Cols)));
                 tc.note(&format!("find_stepped({found:?})"));
-                let selection = |grid: &mut Grid| {
-                    let snap = grid.snapshot();
+                let selection = |grid: &mut Grid, seen: &mut Seen| {
+                    let snap = snapshot(grid, seen);
                     let picks = Axis::ALL.map(|a| snap.picked(a).to_vec());
                     (snap.selection_range().cloned(), picks)
                 };
-                let before = selection(&mut self.grid);
+                let before = selection(&mut self.grid, &mut self.seen);
                 self.grid.find_stepped(found);
-                assert_eq!(selection(&mut self.grid), before, "a find step selected");
+                assert_eq!(
+                    selection(&mut self.grid, &mut self.seen),
+                    before,
+                    "a find step selected"
+                );
             }
             // The host fits the band to content it measured.
             Effect::BandAutoSizeRequested { axis } => {
@@ -642,7 +874,7 @@ impl Host {
             return;
         }
         self.frame_and_check();
-        if let Some(m) = self.grid.snapshot().find_match() {
+        if let Some(m) = snapshot(&mut self.grid, &mut self.seen).find_match() {
             for axis in Axis::ALL {
                 assert!(
                     self.keys[axis.index()].contains(&m.key(axis).0),
@@ -652,7 +884,7 @@ impl Host {
         }
         // Once answered, every pinned Key on the axis is drawn at its
         // Position, and no other.
-        let snap = self.grid.snapshot();
+        let snap = snapshot(&mut self.grid, &mut self.seen);
         for axis in Axis::ALL {
             let keys = &self.keys[axis.index()];
             for edge in Edge::ALL {
@@ -669,7 +901,9 @@ impl Host {
             }
         }
         for axis in Axis::ALL {
-            let picked = self.grid.snapshot().picked(axis).to_vec();
+            let picked = snapshot(&mut self.grid, &mut self.seen)
+                .picked(axis)
+                .to_vec();
             for key in picked {
                 assert!(
                     !self.refiltered_out[axis.index()].contains(&key.0),
@@ -685,6 +919,14 @@ impl Host {
         let n = tc.draw(gs::integers::<u64>().max_value(3));
         self.grid
             .notify(axis, ChangeNotice::ContentChanged(at..at + n));
+        // Only Positions the source has: a pin waiting for `Locate` may
+        // still draw past the count.
+        let count = self.keys[axis.index()].len() as u64;
+        let changed = at..(at + n).min(count);
+        let drawn = self.seen.last.as_ref();
+        if drawn.is_some_and(|d| d.shown[axis.index()].range(changed).next().is_some()) {
+            self.seen.content_changed = true;
+        }
     }
 
     fn keyboard_action(&mut self, tc: &TestCase) {
@@ -707,10 +949,13 @@ impl Host {
         .map(|(dx, dy)| Action::Scroll { dx, dy });
         let scroll_by = hegel::tuples!(axis(), gs::integers::<i64>().min_value(-3).max_value(3))
             .map(|(axis, items)| Action::ScrollBy { axis, items });
+        let scroll_to = hegel::tuples!(axis(), gs::floats::<f64>().min_value(0.0).max_value(1.0))
+            .map(|(axis, fraction)| Action::ScrollTo { axis, fraction });
         let action = tc.draw(hegel::one_of!(
             move_focus,
             scroll,
             scroll_by,
+            scroll_to,
             gs::sampled_from(vec![
                 Action::SelectAll,
                 Action::SelectColumn,
@@ -774,14 +1019,14 @@ impl Host {
     fn gap(&mut self, tc: &TestCase) {
         let axis = tc.draw(axis());
         let gap = tc.draw(gs::sampled_from(vec![0.0f32, 0.5, 1.0, 2.0]));
-        let anchors = |grid: &mut Grid| -> [ScrollAnchor; 2] {
-            let snap = grid.snapshot();
+        let anchors = |grid: &mut Grid, seen: &mut Seen| -> [ScrollAnchor; 2] {
+            let snap = snapshot(grid, seen);
             Axis::ALL.map(|a| snap.scroll_anchor(a))
         };
         // A Window that finds a pinned Key changes the pinned Strip, and
         // with it the scrolling Strip's length, which may move the anchor.
-        let pinned = |grid: &mut Grid| -> Vec<Option<Key>> {
-            let snap = grid.snapshot();
+        let pinned = |grid: &mut Grid, seen: &mut Seen| -> Vec<Option<Key>> {
+            let snap = snapshot(grid, seen);
             (Axis::ALL.iter())
                 .flat_map(|&a| Edge::ALL.map(|e| (a, e)))
                 .flat_map(|(a, e)| snap.pinned(a, e).iter().map(|i| i.key))
@@ -793,12 +1038,12 @@ impl Host {
         // the end, whatever the Gap. Each frame finds more or asks nothing.
         let settled = (0..8).any(|_| !self.frame_and_check());
         assert!(settled, "the Grid still wants Windows after 8 frames");
-        let before = anchors(&mut self.grid);
-        let pinned_before = pinned(&mut self.grid);
+        let before = anchors(&mut self.grid, &mut self.seen);
+        let pinned_before = pinned(&mut self.grid, &mut self.seen);
         self.grid.set_gap(axis, gap);
         self.frame_and_check();
-        let after = anchors(&mut self.grid);
-        if pinned(&mut self.grid) != pinned_before {
+        let after = anchors(&mut self.grid, &mut self.seen);
+        if pinned(&mut self.grid, &mut self.seen) != pinned_before {
             return;
         }
         assert_eq!(self.gaps[axis.index()], gap);
@@ -1058,7 +1303,7 @@ impl Host {
     /// removed.
     #[rule(weight = 0.5)]
     fn column_condition(&mut self, tc: TestCase) {
-        let listed = self.grid.snapshot().conditions(Axis::Rows);
+        let listed = snapshot(&mut self.grid, &mut self.seen).conditions(Axis::Rows);
         // A listed condition (applied, adding or removing), or a new one.
         let pick = |tc: &TestCase| match listed.len() {
             n if n > 0 && tc.draw(gs::booleans()) => {
@@ -1129,7 +1374,9 @@ impl Host {
     #[rule(weight = 0.5)]
     fn view_pushed(&mut self, tc: TestCase) {
         self.collect();
-        let applied = self.grid.snapshot().applied_view().clone();
+        let applied = snapshot(&mut self.grid, &mut self.seen)
+            .applied_view()
+            .clone();
         let spec = self.part_of(&tc, applied);
         let total = (self.keys[0].len() + self.hidden[0].len()) as u64;
         let totals = Totals::unknown().with(Axis::Rows, Some(total));
@@ -1233,6 +1480,7 @@ fn the_grid_agrees_with_an_honest_source_through_any_input(tc: TestCase) {
         headers: [1.0, 2.0],
         gaps: [gap; 2],
         end_gaps: [0.0; 2],
+        seen: Seen::default(),
     };
     hegel::stateful::machine(host).steps(300).run(tc);
 }

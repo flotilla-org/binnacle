@@ -48,7 +48,7 @@ Cols: (unchanged)
 effect (gen 4): FindStepRequested { query: FindQuery { query: TextQuery { text: "3", case_sensitive: false, regex: false, searches: Shown }, by: Rows }, from: Some(FindMatch { row: Key(5), col: Key(0) }), direction: Next }
   find: Some(FindStep { at: FindMatch { row: Key(5), col: Key(0) }, index: Some(0), wrapped: true })
 effect (gen 4): FocusChanged { row: Key(5), col: Key(0) }
-gen 5 | damage none | focus 1#5,0#0 at 4,2 6x1 | filter quick "2" | total Rows 8 | total Cols 3 | find "3" | match 5,0
+gen 5 | damage selection | focus 1#5,0#0 at 4,2 6x1 | filter quick "2" | total Rows 8 | total Cols 3 | find "3" | match 5,0
 Rows: (unchanged)
 Cols: (unchanged)
     0      1      2
