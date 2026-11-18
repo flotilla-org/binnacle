@@ -643,93 +643,264 @@ impl Encoding {
     }
 }
 
+/// The longest item a [`Decoder`] holds by default: 16 MiB.
+pub const DEFAULT_MAX_ITEM: usize = 16 << 20;
+
+/// How deep a CBOR item may nest before it is an error. ciborium refuses
+/// far shallower ones, so this only bounds the walk's own stack.
+const MAX_DEPTH: usize = 1024;
+
 /// An incremental decoder for a rows stream: the host feeds it bytes as
 /// they come, in pieces of any size, and takes each whole message out.
-/// Newline-delimited JSON is scanned once; a CBOR item cut short is parsed
-/// again from its start only when more bytes are fed.
+/// Each byte is looked at a bounded number of times however the stream is
+/// cut: newline-delimited JSON is scanned once for line breaks, and a CBOR
+/// item's heads are walked once, keeping its place across feeds, before
+/// the whole item is decoded once.
+///
+/// A line or CBOR item longer than the maximum ([`DEFAULT_MAX_ITEM`]
+/// unless [`Decoder::with_max_item`] sets it) is an error, and the rest of
+/// the stream is dropped until [`Decoder::finish`]: a CBOR head that
+/// declares a length past it fails at once.
 #[derive(Clone, Debug)]
 pub struct Decoder {
     encoding: Encoding,
+    max_item: usize,
     buffer: Vec<u8>,
     /// Where the bytes not yet taken start.
     start: usize,
-    /// Where the search for the next line break goes on from.
+    /// Where the search for the next line break, or the walk of the CBOR
+    /// item at `start`, goes on from: for CBOR the next head, which lies
+    /// past the bytes fed while a string is cut short.
     scanned: usize,
-    /// The CBOR item at `start` was cut short and nothing was fed since.
-    short: bool,
+    /// The CBOR containers open at `scanned`, innermost last, with how
+    /// many of their items are still to begin; `None` for one that runs
+    /// to a break.
+    open: Vec<Option<u64>>,
+    /// The items still to begin in all, each at least a byte.
+    owed: u128,
+    /// The last head was a tag, whose item goes on at `scanned`.
+    tagged: bool,
+    /// The CBOR item's heads are all walked: it ends at `scanned`.
+    walked: bool,
+    /// An item went past the maximum: the rest of the stream is dropped.
+    dropped: bool,
+    read: u64,
 }
 
 impl Decoder {
     pub fn new(encoding: Encoding) -> Decoder {
         Decoder {
             encoding,
+            max_item: DEFAULT_MAX_ITEM,
             buffer: Vec::new(),
             start: 0,
             scanned: 0,
-            short: false,
+            open: Vec::new(),
+            owed: 0,
+            tagged: false,
+            walked: false,
+            dropped: false,
+            read: 0,
         }
     }
 
+    /// The decoder with `bytes` as the longest item it holds.
+    pub fn with_max_item(mut self, bytes: usize) -> Decoder {
+        self.max_item = bytes;
+        self
+    }
+
+    /// The longest item the decoder holds.
+    pub fn max_item(&self) -> usize {
+        self.max_item
+    }
+
+    /// How many bytes the decoder has read so far, counting each time it
+    /// reads one: in scanning for line breaks, in walking CBOR heads and in
+    /// decoding items. A measure of the work done, which stays within a
+    /// small multiple of the bytes fed.
+    pub fn bytes_read(&self) -> u64 {
+        self.read
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) {
+        if self.dropped {
+            return;
+        }
         if self.start > 0 && self.start * 2 >= self.buffer.len() {
             self.buffer.drain(..self.start);
             self.scanned = self.scanned.saturating_sub(self.start);
             self.start = 0;
         }
         self.buffer.extend_from_slice(bytes);
-        self.short = false;
     }
 
     /// The next whole message fed, `None` until one is. A message that
-    /// fails to decode is dropped from the buffer and its error returned.
+    /// fails to decode is dropped from the buffer and its error returned;
+    /// after an item past the maximum, every message is `None`.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Result<Message, DecodeError>> {
         match self.encoding {
             Encoding::Ndjson => loop {
                 let from = self.scanned.max(self.start);
-                let Some(at) = self.buffer[from..].iter().position(|&b| b == b'\n') else {
+                let found = self.buffer[from..].iter().position(|&b| b == b'\n');
+                self.read += found.map_or(self.buffer.len() - from, |at| at + 1) as u64;
+                let Some(at) = found else {
                     self.scanned = self.buffer.len();
+                    if self.buffer.len() - self.start > self.max_item {
+                        return Some(Err(self.drop_rest()));
+                    }
                     return None;
                 };
                 let line = self.start..from + at;
                 self.start = from + at + 1;
                 self.scanned = self.start;
+                if line.len() > self.max_item {
+                    return Some(Err(self.drop_rest()));
+                }
                 let line = &self.buffer[line];
                 if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
+                self.read += line.len() as u64;
                 return Some(decode_json_line(line));
             },
             Encoding::CborSeq => {
-                if self.short || self.start == self.buffer.len() {
+                if self.start == self.buffer.len() {
                     return None;
                 }
-                let mut reader = &self.buffer[self.start..];
-                match ciborium::from_reader::<Wire, _>(&mut reader) {
-                    Ok(wire) => {
-                        self.start = self.buffer.len() - reader.len();
-                        Some(Message::from_wire(wire))
-                    }
-                    Err(ciborium::de::Error::Io(e))
-                        if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                    {
-                        self.short = true;
-                        None
+                match self.walk() {
+                    Ok(None) => None,
+                    Ok(Some(end)) => {
+                        let item = self.start..end;
+                        self.restart(end);
+                        self.read += item.len() as u64;
+                        Some(decode_cbor_item(&self.buffer[item]))
                     }
                     Err(e) => {
-                        self.start = self.buffer.len();
-                        Some(Err(DecodeError::cbor(e)))
+                        self.restart(self.buffer.len());
+                        Some(Err(e))
                     }
                 }
             }
         }
     }
 
+    /// Walks the CBOR item at `start` from where the walk stopped: where
+    /// it ends once it is whole, `None` while it is cut short.
+    fn walk(&mut self) -> Result<Option<usize>, DecodeError> {
+        while !self.walked {
+            let at = self.scanned;
+            let Some(&initial) = self.buffer.get(at) else {
+                return Ok(None);
+            };
+            let (major, info) = (initial >> 5, initial & 0x1f);
+            let width = match info {
+                0..=23 | 31 => 0,
+                24 => 1,
+                25 => 2,
+                26 => 4,
+                27 => 8,
+                _ => return Err(DecodeError::message("CBOR: a reserved head")),
+            };
+            let Some(argument) = self.buffer.get(at + 1..at + 1 + width) else {
+                return Ok(None);
+            };
+            let argument = match info {
+                0..=23 => u64::from(info),
+                _ => (argument.iter()).fold(0, |n, &b| n << 8 | u64::from(b)),
+            };
+            self.read += 1 + width as u64;
+            self.scanned = at + 1 + width;
+            let indefinite = info == 31;
+            if !self.tagged
+                && !(major == 7 && indefinite)
+                && let Some(Some(left)) = self.open.last_mut()
+            {
+                *left -= 1;
+                self.owed -= 1;
+            }
+            self.tagged = major == 6;
+            // Whether the head ends an item, the bytes of its string, and
+            // the items it holds.
+            let (whole, payload, items) = match (major, indefinite) {
+                (0 | 1 | 6, true) => {
+                    return Err(DecodeError::message("CBOR: an indefinite integer or tag"));
+                }
+                (7, true) => match self.open.pop() {
+                    Some(None) => (true, 0, 0),
+                    _ => return Err(DecodeError::message("CBOR: a break outside its item")),
+                },
+                (0 | 1 | 7, false) => (true, 0, 0),
+                (2 | 3, false) => (true, u128::from(argument), 0),
+                // The chunks of an indefinite string are walked as items;
+                // ciborium refuses one of another type when it decodes.
+                (2..=5, true) => {
+                    self.open.push(None);
+                    (false, 0, 0)
+                }
+                (4 | 5, false) => {
+                    let items = u128::from(argument) * u128::from(major - 3);
+                    (items == 0, 0, items)
+                }
+                // A tag: the item after it stands in its place.
+                _ => (false, 0, 0),
+            };
+            let least = (self.scanned - self.start) as u128 + payload + self.owed + items;
+            if least > self.max_item as u128 {
+                return Err(self.drop_rest());
+            }
+            if items > 0 {
+                self.open.push(Some(items as u64));
+                self.owed += items;
+            }
+            if self.open.len() > MAX_DEPTH {
+                return Err(DecodeError::message("CBOR: an item nested too deep"));
+            }
+            self.scanned += payload as usize;
+            if whole {
+                loop {
+                    match self.open.last() {
+                        None => {
+                            self.walked = true;
+                            break;
+                        }
+                        Some(Some(0)) => {
+                            self.open.pop();
+                        }
+                        Some(_) => break,
+                    }
+                }
+            }
+        }
+        Ok((self.scanned <= self.buffer.len()).then_some(self.scanned))
+    }
+
+    /// Starts on the next item at `at`.
+    fn restart(&mut self, at: usize) {
+        (self.start, self.scanned, self.owed) = (at, at, 0);
+        (self.tagged, self.walked) = (false, false);
+        self.open.clear();
+    }
+
+    /// An item went past the maximum: its bytes and the rest of the
+    /// stream are dropped.
+    fn drop_rest(&mut self) -> DecodeError {
+        self.dropped = true;
+        self.buffer = Vec::new();
+        self.restart(0);
+        DecodeError {
+            message: format!("an item is longer than {} bytes", self.max_item),
+        }
+    }
+
     /// The stream ended: the last message, if one was left without its
     /// line break, or an error if the bytes left are not a whole message.
+    /// The decoder is then ready for a new stream, past the maximum or not.
     pub fn finish(&mut self) -> Option<Result<Message, DecodeError>> {
         let rest = std::mem::take(&mut self.buffer).split_off(self.start);
-        (self.start, self.scanned, self.short) = (0, 0, false);
+        self.restart(0);
+        self.dropped = false;
         if rest.iter().all(u8::is_ascii_whitespace) {
             return None;
         }

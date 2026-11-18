@@ -21,9 +21,9 @@ mod source;
 mod wire;
 
 pub use message::{
-    Category, DecodeError, Decoder, Encoding, Field, FieldType, ForeignKey, Message, Row,
-    RowsMessage, Schema, TableMessage, decode_cbor_item, decode_json_line, encode_cbor_item,
-    encode_json_line,
+    Category, DEFAULT_MAX_ITEM, DecodeError, Decoder, Encoding, Field, FieldType, ForeignKey,
+    Message, Row, RowsMessage, Schema, TableMessage, decode_cbor_item, decode_json_line,
+    encode_cbor_item, encode_json_line,
 };
 pub use scope::{HostRequest, ROW_CAP, Scope, WatchRequest};
 pub use source::{Column, DescribedSource, Received, Reference, Status, Unhandled, Values, typed};
